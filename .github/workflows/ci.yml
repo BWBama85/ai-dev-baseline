@@ -162,22 +162,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: detect must no-op cleanly on an unrecognized ecosystem
+      - name: repo-root detection surfaces the committed agents.toml gate
         run: |
           set -uo pipefail
-          rc=0
-          out="$(bash scripts/lib/project-gates.sh detect . 2>&1)" || rc=$?
-
-          if [ -n "$out" ]; then
-            echo "::error::expected no output from 'detect .' in a repo with no recognized ecosystem; got: $out"
-            exit 1
-          fi
-
-          # Contract (see the file header): emits NOTHING and exits 0 — a safe
-          # no-op in an unfamiliar repo. adb_detect_gates ends on an explicit
-          # `return 0`, so a non-zero exit here is a regression.
-          if [ "$rc" -ne 0 ]; then
-            echo "::error::'detect .' exited $rc; expected 0 (clean no-op)"
+          # The generic empty-ecosystem no-op (detect emits nothing) is covered by
+          # check-gates.sh, run in this same job below — so it isn't repeated here. This step
+          # asserts what is specific to THIS repo: the dogfooded agents.toml [gates] override
+          # (#7) must keep being exercised, so CI can't silently stop testing the manifest.
+          want="$(printf 'test\tbash scripts/selfcheck.sh')"
+          got="$(bash scripts/lib/project-gates.sh detect . 2>/dev/null)"   # compare stdout only
+          if [ "$got" != "$want" ]; then
+            echo "::error::expected repo-root 'detect .' to emit the committed test gate; got: $got"
             exit 1
           fi
 
@@ -210,6 +205,17 @@ jobs:
 
       - name: Unit-test the shared shell primitives
         run: bash scripts/check-common-lib.sh
+
+  cleanup-enum:
+    name: cleanup-enum
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: /cleanup remote enumeration must exclude the origin/HEAD symref (#38)
+        run: bash scripts/check-cleanup-enum.sh
 
   baseline:
     name: baseline

@@ -79,4 +79,12 @@ fact codex-timeout-ms regex:'420[,]?000' -- \
 fact resolution-order fixed:'global default' -- base/roles.md docs/roles-and-agents.md
 fact resolution-order fixed:'built-in'       -- base/roles.md docs/roles-and-agents.md
 
+# --- FACT: cleanup origin/HEAD symref filter (#38) ---------------------------
+# The remote-enumeration pipeline that drops the bare `origin` symref lives in the workflow
+# doc AND is re-asserted by its regression test — which can only re-implement, not source, a
+# pipeline that lives inside a markdown fence. Pin the critical fragment so editing the doc's
+# pipeline without updating the test (or vice-versa) fails CI instead of silently drifting.
+fact cleanup-origin-symref "fixed:grep '^origin/'" -- \
+  base/workflows/cleanup.md scripts/check-cleanup-enum.sh
+
 check_result "canonical facts consistent across their consumers"

@@ -216,8 +216,21 @@ different codebase, **stop** and tell the user which repo it maps to
 
 ```bash
 for n in "${ISSUE_NUMS[@]}"; do
-  gh issue view "$n" --json number,title,body,labels,author,comments,milestone > "/tmp/issue-$n.json" \
+  gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state > "/tmp/issue-$n.json" \
     || { echo "ERROR: issue #$n not found in this repo — verify repo scope"; exit 1; }
+done
+```
+
+Fetch `state` too, and check it from this fresh view — never from memory or a stale
+ref (`base/practices/verify-before-asserting.md`). A **CLOSED** issue in the batch is
+almost always a mistake (already shipped, or the wrong number), so **stop** rather than
+silently reopening resolved work: the check below exits non-zero, surfacing the closed
+issue so the owner can confirm (drop it, or re-open it intentionally) before you branch.
+
+```bash
+for n in "${ISSUE_NUMS[@]}"; do
+  st="$(jq -r .state "/tmp/issue-$n.json")"
+  [ "$st" = "OPEN" ] || { echo "ERROR: issue #$n is $st — stop and confirm with the owner before implementing (do not silently reopen already-shipped work)"; exit 1; }
 done
 ```
 
@@ -288,6 +301,15 @@ If the branch already exists locally or on the remote, write the blocked marker
   ```
   (or the repo's own commands / `agents.toml [gates]`). The Stop hook enforces this
   again on turn-end. Update `phase`: `implemented` → `gates_green`.
+
+**Post-commit / pre-push mirror gates.** If a project's gate is a *pre-push mirror* that
+compares generated/committed artifacts against `HEAD` (e.g. a codegen repo whose gate
+rebuilds and diffs generated files, like this framework's own `selfcheck.sh`), then
+correctly-rebuilt-but-uncommitted output reads as "stale" until it is committed. For such a
+gate, do step 7 first — **commit source and regenerated output together** — and run the gate
+on the clean, committed tree (the Stop hook already runs at turn-end, post-commit). The
+phase order is a guideline, not a lock: `gates_green` and `committed` may interleave when the
+gate only makes sense post-commit. This never means skipping the gate — it still must pass.
 
 **Escape clause:** if the *same* gate fails three consecutive times after fixes,
 write the blocked marker (`reason`, `branch`, `issue`) and stop.

@@ -158,6 +158,18 @@ LAST_SHA=$(git rev-parse --short HEAD)
 
 ### 5. Reply + resolve each thread
 
+**Re-check the PR state first.** Addressing findings (step 4) can take substantial
+time — edits, gates, a push — during which the PR may have merged or closed. Replying
+and resolving are outward-facing mutations, so re-verify at the moment of action
+rather than trusting the preflight check (`base/practices/verify-before-asserting.md`):
+
+```bash
+NOW_STATE=$(gh pr view "$PR_NUM" --json state --jq .state 2>/dev/null) || {
+  echo "ERROR: could not re-check PR #$PR_NUM state before resolving"; exit 1
+}
+[ "$NOW_STATE" = "OPEN" ] || { echo "PR #$PR_NUM is now $NOW_STATE — skipping reply/resolve (state changed since preflight)"; exit 0; }
+```
+
 For each thread you classified:
 
 ```bash

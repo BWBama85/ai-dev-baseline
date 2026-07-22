@@ -1,0 +1,36 @@
+# ai-dev-baseline — this repo's own agent role manifest (it dogfoods its own tooling).
+#
+# The framework should set itself up the way it tells users to (#7). These roles are
+# the template's effective defaults, made explicit and self-documenting rather than
+# inherited from a workstation-specific global manifest.
+#
+# Agent tokens: claude | codex | gemini
+
+[roles]
+primary      = "claude"     # drives /implement-issue. Exactly one agent.
+gap_analysis = "codex"      # pre-implementation adversarial pass. "" to skip.
+review       = ["claude"]   # code review before merge. 1+ agents; more = better.
+debug        = "claude"     # owns root-cause investigations.
+# issue_author = "claude"   # defaults to `primary` if unset
+# release      = "claude"   # defaults to `primary` if unset
+
+# This repo has no standard-ecosystem toolchain, so `project-gates.sh` auto-detects
+# nothing (no pnpm/cargo/go/python). Its real gate is `scripts/selfcheck.sh` — the full
+# local CI mirror — so we wire it in explicitly as the `test` gate. Both the skill's
+# in-loop gate step and the global precommit Stop-hook then run selfcheck on a feature
+# branch, catching a red check in-loop instead of only at CI (#7).
+#
+# NOTE: selfcheck is a post-commit (pre-push) mirror — its build-drift step compares the
+# freshly-built tree against HEAD (committed), exactly as CI does. Commit source and
+# generated output together (Golden Rule #1) so the Stop-hook gate — which runs at
+# turn-end, after commits — sees a clean tree. See .ai-dev-baseline/decisions.md.
+[gates]
+test = "bash scripts/selfcheck.sh"
+
+# The three remaining built-in axes have no toolchain in this stdlib-shell repo. Declare
+# them Not-Applicable (reported by `project-gates.sh status`, never a failure or a
+# detection miss) rather than leaving them to look like detection silently failed.
+[gates.state]
+typecheck = "na"
+lint      = "na"
+format    = "na"
