@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# ai-dev-baseline — keep the INSTALLED baseline current.
+#
+# The baseline installs by symlinking a stable clone (e.g. ~/Code/ai-dev-baseline)
+# into ~/.<agent>. Keeping that clone current used to be a remembered ritual:
+# `git pull` + maybe re-run `install.sh` if a PR moved an installed path. This
+# command replaces that ritual with one idempotent entrypoint.
+#
+# Usage:
+#   baseline update            # fast-forward the install-source clone + self-heal links
+#   baseline update --check    # report currency only; make NO changes (for a hook)
+#   baseline -h | --help
+#
+# `update` never touches unsafe state: it fast-forwards ONLY when the install-source
+# clone is clean, on its default branch, and merely behind origin. A dirty / detached
+# / non-default / ahead / diverged clone is surfaced and left untouched — currency is
+# a convenience, never a cause of lost work. After a fast-forward it re-runs the
+# idempotent installer ONLY when an installed path actually moved (a symlink stopped
+# resolving), preserving the exact agent set + hook preference already installed, then
+# LOUDLY verifies every canonical link still resolves.
+#
+# The two-clone dev split: this command operates on the clone the global install
+# points INTO (the "install-source"). Run from any other clone it refuses, so a dev
+# clone is never mistaken for the install source. The dev clone is kept current by
+# `/implement-issue`'s preflight auto-sync (issue #17) instead.
+#
+# `--check` exit codes (a stable machine contract for a future SessionStart hook,
+# issue #25): 0 = current · 10 = behind (update available) · 20 = needs attention
+# (dirty|ahead|diverged|detached|not-default) · 30 = error (fetch failed | no
+# origin/<default> | not a repo). It fetches, prints one status word to stdout, and
+# mutates nothing.
+
+set -uo pipefail
+
+# Resolve our own location through symlinks (this script may be reached via a PATH
+# symlink), exactly like bin/agent-init — then find the repo root above bin/.
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do self="$(readlink "$self")"; done
+REPO="$(cd "$(dirname "$self")/.." && pwd)"
+# Shared shell primitives (adb_default_branch / adb_branch_sync_state) — the ONE home.
+# shellcheck source=/dev/null
+. "$REPO/scripts/lib/common.sh"
+
+# Print just the top contiguous comment block (the header), stripping the leading
+# "# " — stops at the first non-comment line, so internal section comments never leak.
+usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
+
+# --- discovery ---------------------------------------------------------------
+
+# Print the repo root the global install points INTO, resolved from whichever agent
+# root-doc symlink exists (install.sh links each with an absolute target). Prints
+# nothing and returns 1 when no installed symlink is found.
+adb_install_source() {
+  local link target root
+  for link in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md" "$HOME/.gemini/GEMINI.md"; do
+    [ -L "$link" ] || continue
+    target="$(readlink "$link")"
+    case "$target" in /*) ;; *) continue ;; esac   # expect an absolute target
+    [ -e "$target" ] || continue                     # skip a dangling link
+    # agents/<agent>/<DOC> sits three levels below the repo root.
+    root="$(cd "$(dirname "$target")/../.." 2>/dev/null && pwd)" || continue
+    if [ -f "$root/install.sh" ] && [ -d "$root/agents" ]; then
+      printf '%s\n' "$root"; return 0
+    fi
+  done
+  return 1
+}
+
+# Print one installed agent token per line, detected from the root-doc symlinks. An
+# update must re-install exactly this set — never install.sh's bare default (claude).
+adb_installed_agents() {
+  [ -L "$HOME/.claude/CLAUDE.md" ]  && printf 'claude\n'
+  [ -L "$HOME/.codex/AGENTS.md" ]   && printf 'codex\n'
+  [ -L "$HOME/.gemini/GEMINI.md" ]  && printf 'gemini\n'
+  return 0
+}
+
+# True when the Claude Stop-hook gates are wired into settings.json. Used to preserve a
+# prior `--no-hooks` choice across a self-heal (re-install would otherwise re-add them).
+adb_hooks_wired() { grep -q 'precommit-gate\.sh' "$HOME/.claude/settings.json" 2>/dev/null; }
+
+# The canonical installed paths a healthy install always has. Each must RESOLVE (a
+# symlink whose target exists) after an update; a dangling one means a path moved.
+# Printed conditionally so we only assert links for agents actually installed.
+adb_canonical_paths() {
+  if [ -L "$HOME/.claude/CLAUDE.md" ]; then
+    printf '%s\n' \
+      "$HOME/.claude/CLAUDE.md" \
+      "$HOME/.claude/skills/implement-issue" \
+      "$HOME/.claude/scripts/precommit-gate.sh" \
+      "$HOME/.claude/scripts/lib/common.sh" \
+      "$HOME/.claude/scripts/lib/project-gates.sh"
+  fi
+  [ -L "$HOME/.codex/AGENTS.md" ]  && printf '%s\n' "$HOME/.codex/AGENTS.md"
+  [ -L "$HOME/.gemini/GEMINI.md" ] && printf '%s\n' "$HOME/.gemini/GEMINI.md"
+  return 0
+}
+
+# Return 0 iff every canonical installed path resolves. On failure, name each broken
+# path on stderr — loud by design (issue #36 safety / issue #35 path-move fail-loud).
+adb_verify_links() {
+  local p broken=0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if [ ! -e "$p" ]; then
+      printf 'baseline: BROKEN link (target missing): %s\n' "$p" >&2
+      broken=1
+    fi
+  done <<EOF
+$(adb_canonical_paths)
+EOF
+  return "$broken"
+}
+
+# Re-run the idempotent installer for the ALREADY-installed agent set, preserving the
+# hook preference. Never widens the install (no bare-default claude, no surprise hooks).
+adb_self_heal() {
+  local a
+  local -a args=()
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    args+=(--agent "$a")
+  done <<EOF
+$(adb_installed_agents)
+EOF
+  if [ "${#args[@]}" -eq 0 ]; then
+    echo "baseline: no installed agents detected — nothing to self-heal." >&2
+    return 1
+  fi
+  # Preserve a prior --no-hooks: only when Claude is installed but its gates aren't wired.
+  if [ -L "$HOME/.claude/CLAUDE.md" ] && ! adb_hooks_wired; then
+    args+=(--no-hooks)
+  fi
+  echo "baseline: self-healing installed links → ./install.sh ${args[*]}"
+  ( cd "$SRC" && ./install.sh "${args[@]}" ) || {
+    echo "baseline: install.sh exited non-zero — inspect its output above (path move? see issue #35)." >&2
+    return 1
+  }
+  return 0
+}
+
+# --- state -------------------------------------------------------------------
+
+# Classify the install-source clone. Echoes exactly one word, cheapest-safety-first:
+#   not-a-repo | dirty | detached | not-default | current | behind | ahead | diverged | no-remote
+# Requires a prior `git fetch` for behind/ahead/diverged accuracy.
+adb_clone_status() {
+  local root="$1" default cur
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { printf 'not-a-repo\n'; return 0; }
+  if [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then printf 'dirty\n'; return 0; fi
+  cur="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null)" || { printf 'detached\n'; return 0; }
+  default="$(adb_default_branch "$root")"
+  [ "$cur" = "$default" ] || { printf 'not-default\n'; return 0; }
+  adb_branch_sync_state "$root" "$default"
+}
+
+# --- argument parsing --------------------------------------------------------
+
+ACTION=""
+CHECK=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    update)      ACTION=update; shift ;;
+    --check)     CHECK=1; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    *) echo "baseline: unknown argument '$1'" >&2; echo >&2; usage >&2; exit 2 ;;
+  esac
+done
+if [ "$ACTION" != "update" ]; then
+  echo "baseline: expected a subcommand ('update')" >&2; echo >&2; usage >&2; exit 2
+fi
+
+# --- resolve the install-source clone ----------------------------------------
+
+if ! SRC="$(adb_install_source)"; then
+  echo "baseline: no installed baseline detected — no ~/.<agent> root-doc symlink points into a clone." >&2
+  echo "          Nothing to keep current. Run install.sh from your baseline clone first." >&2
+  exit 3
+fi
+
+# Guard the two-clone split: only ever update the clone the install points into. If
+# baseline was invoked from a DIFFERENT clone (e.g. a dev checkout), refuse loudly
+# rather than silently updating the wrong tree.
+if [ "$SRC" != "$REPO" ]; then
+  echo "baseline: the global install points at the clone" >&2
+  echo "            $SRC" >&2
+  echo "          but you invoked baseline from" >&2
+  echo "            $REPO" >&2
+  echo "          Run 'baseline update' from the install-source clone above — that is the" >&2
+  echo "          clone whose git state feeds every project. (A dev clone is kept current" >&2
+  echo "          by /implement-issue's preflight auto-sync instead.)" >&2
+  exit 4
+fi
+
+DEFAULT="$(adb_default_branch "$SRC")"
+
+# --- fetch + classify --------------------------------------------------------
+
+if ! git -C "$SRC" fetch --quiet origin 2>/dev/null; then
+  [ "$CHECK" -eq 1 ] && echo "fetch-failed"
+  echo "baseline: 'git fetch' failed in $SRC (offline?) — cannot determine currency." >&2
+  exit 30
+fi
+
+STATUS="$(adb_clone_status "$SRC")"
+
+# --- --check: report only, mutate nothing ------------------------------------
+
+if [ "$CHECK" -eq 1 ]; then
+  echo "$STATUS"
+  case "$STATUS" in
+    current)                                exit 0  ;;
+    behind)                                 exit 10 ;;
+    dirty|ahead|diverged|detached|not-default) exit 20 ;;
+    *)                                      exit 30 ;;   # no-remote | not-a-repo
+  esac
+fi
+
+# --- update ------------------------------------------------------------------
+
+case "$STATUS" in
+  current)
+    echo "baseline: install-source already current ($SRC on $DEFAULT, up to date with origin)."
+    if adb_verify_links; then
+      echo "baseline: all installed links resolve — nothing to do."
+      exit 0
+    fi
+    echo "baseline: an installed path is broken though up to date — repairing …"
+    adb_self_heal && adb_verify_links || { echo "baseline: repair failed — see above." >&2; exit 1; }
+    echo "baseline: repaired."
+    exit 0
+    ;;
+  behind)
+    echo "baseline: updating $SRC ($DEFAULT is behind origin) …"
+    if ! git -C "$SRC" pull --ff-only --quiet origin "$DEFAULT"; then
+      echo "baseline: 'git pull --ff-only' failed — resolve manually in $SRC (never force-pulled)." >&2
+      exit 20
+    fi
+    # Self-heal ONLY when a path actually moved — a plain docs/skills pull relinks
+    # nothing (the symlinks point at dirs), so we skip the noisier full re-install.
+    if adb_verify_links; then
+      echo "baseline: pulled to origin/$DEFAULT; all installed links still resolve — no re-install needed."
+      exit 0
+    fi
+    echo "baseline: an installed path moved — self-healing via the idempotent installer …"
+    if adb_self_heal && adb_verify_links; then
+      echo "baseline: update complete (links self-healed)."
+      exit 0
+    fi
+    echo "baseline: self-heal left a broken link — this is loud on purpose (see issue #35)." >&2
+    exit 1
+    ;;
+  dirty)
+    echo "baseline: install-source tree is dirty — skipping (never auto-pulls over uncommitted work)." >&2
+    echo "          Commit or stash in $SRC, then re-run 'baseline update'." >&2
+    exit 20
+    ;;
+  ahead|diverged|detached|not-default)
+    echo "baseline: install-source is '$STATUS' on inspection — needs attention, not auto-pulling." >&2
+    echo "          $SRC" >&2
+    echo "          Reconcile it manually (the install-source clone should sit clean on $DEFAULT)." >&2
+    exit 20
+    ;;
+  *)
+    echo "baseline: cannot determine currency (status '$STATUS') for $SRC." >&2
+    echo "          Is 'origin/$DEFAULT' present? Check the remote and re-run." >&2
+    exit 30
+    ;;
+esac

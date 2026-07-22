@@ -127,6 +127,40 @@ git -C "$gitrepo" symbolic-ref HEAD refs/heads/main 2>/dev/null
 git -C "$gitrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 eq "$(adb_default_branch "$gitrepo")" "main" "default branch falls back to local main"
 
+# --- adb_branch_sync_state ---------------------------------------------------
+# Drive every state with a LOCAL bare "origin" (file://, no network): one working
+# clone plus a second clone that advances origin, so behind/ahead/diverged are real.
+sborigin="$work/syncorigin.git"; git init -q --bare "$sborigin"
+sbrepo="$work/syncrepo"
+git init -q "$sbrepo"
+git -C "$sbrepo" symbolic-ref HEAD refs/heads/main
+git -C "$sbrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+git -C "$sbrepo" remote add origin "$sborigin"
+git -C "$sbrepo" push -q -u origin main
+eq "$(adb_branch_sync_state "$sbrepo" main)" "current" "sync state: current"
+
+# behind: a second clone pushes a commit; local fetches but stays put.
+sbclone="$work/syncclone"; git clone -q "$sborigin" "$sbclone"
+git -C "$sbclone" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2
+git -C "$sbclone" push -q origin main
+git -C "$sbrepo" fetch -q origin
+eq "$(adb_branch_sync_state "$sbrepo" main)" "behind" "sync state: behind"
+
+# ahead: fast-forward local to origin, then add an unpushed local commit.
+git -C "$sbrepo" reset -q --hard origin/main
+git -C "$sbrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m local-only
+eq "$(adb_branch_sync_state "$sbrepo" main)" "ahead" "sync state: ahead"
+
+# diverged: origin advances (via the clone) while local keeps its unpushed commit.
+git -C "$sbclone" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c3
+git -C "$sbclone" push -q origin main
+git -C "$sbrepo" fetch -q origin
+eq "$(adb_branch_sync_state "$sbrepo" main)" "diverged" "sync state: diverged"
+
+# no-remote: a purely local branch with no origin/<branch> counterpart.
+git -C "$sbrepo" branch feature-x
+eq "$(adb_branch_sync_state "$sbrepo" feature-x)" "no-remote" "sync state: no-remote"
+
 printf '\ncommon-lib: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
 echo "common-lib: PASS"

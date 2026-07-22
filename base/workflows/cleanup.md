@@ -31,13 +31,35 @@ Argument selects scope: `local` (default), `remote`, or `all`.
 
 ## Steps
 
-### 1. Resolve the default branch and current branch
+### 1. Resolve, then return to a clean, current default branch
+
+Resolve the branches and refresh remote state, then — so one command fully resets
+local state (issue #17) — **land back on an up-to-date default branch before
+sweeping.** This is what lets the sweep delete the *just-merged* branch you were on:
+once you switch away from it onto a fresh default, it is no longer the current branch
+and becomes eligible for deletion. Sweeping first (the old order) could never delete
+the branch you were standing on.
 
 ```bash
 DEFAULT="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
 [ -z "$DEFAULT" ] && DEFAULT=main
 CURRENT="$(git rev-parse --abbrev-ref HEAD)"
 git fetch --prune origin --quiet    # refresh merged status + drop deleted remote refs
+```
+
+Return to a clean, current default branch — **guarded on a clean tree** so we never
+switch or pull over uncommitted work. On a dirty tree, skip the return (surface it)
+and still sweep against the current default:
+
+```bash
+if [ -n "$(git status --porcelain)" ]; then
+  echo "NOTE: working tree dirty — staying on '$CURRENT'; sweeping without returning to $DEFAULT."
+else
+  [ "$CURRENT" = "$DEFAULT" ] || git switch "$DEFAULT" --quiet
+  git pull --ff-only origin "$DEFAULT" --quiet \
+    || echo "NOTE: could not fast-forward $DEFAULT (diverged?) — sweeping against local $DEFAULT."
+  CURRENT="$(git rev-parse --abbrev-ref HEAD)"   # now the default branch
+fi
 ```
 
 ### 2. Enumerate merged branches (never protected, never current)

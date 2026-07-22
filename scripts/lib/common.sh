@@ -93,6 +93,36 @@ adb_default_branch() {
   printf '%s\n' "$db"
 }
 
+# Classify a local branch's currency versus its origin/<branch> counterpart, using
+# ONLY already-fetched refs — the CALLER must `git fetch` first (this function never
+# touches the network, so it is safe to unit-test against a local bare "origin"). It
+# prints exactly one status word and returns 0:
+#   current   — local branch and origin/<branch> point at the same commit
+#   behind    — origin/<branch> has commits the local branch lacks (fast-forwardable)
+#   ahead     — the local branch has commits origin/<branch> lacks (unpushed)
+#   diverged  — both sides have commits the other lacks
+#   no-remote — origin/<branch> does not exist (nothing to compare against)
+# Returns 1 (printing nothing) only on an internal git error, so a caller under
+# `set -e` still sees a hard failure rather than a silent mis-classification.
+# Usage: adb_branch_sync_state <root> <branch>
+adb_branch_sync_state() {
+  local root="$1" branch="$2" counts ahead behind
+  if ! git -C "$root" rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+    printf 'no-remote\n'; return 0
+  fi
+  # `--left-right --count A...B` prints "<left>\t<right>": left = commits in A (local)
+  # not in B (origin), right = commits in B not in A. awk splits on the tab robustly.
+  counts="$(git -C "$root" rev-list --left-right --count "$branch...origin/$branch" 2>/dev/null)" || return 1
+  ahead="$(printf '%s' "$counts" | awk '{print $1}')"
+  behind="$(printf '%s' "$counts" | awk '{print $2}')"
+  [ -n "$ahead" ] && [ -n "$behind" ] || return 1
+  if [ "$ahead" -eq 0 ] && [ "$behind" -eq 0 ]; then printf 'current\n'
+  elif [ "$ahead" -eq 0 ]; then printf 'behind\n'
+  elif [ "$behind" -eq 0 ]; then printf 'ahead\n'
+  else printf 'diverged\n'
+  fi
+}
+
 # --- minimal TOML reader -----------------------------------------------------
 
 # Read one `key = value` from a named table of a TOML file. Prints the raw RHS value

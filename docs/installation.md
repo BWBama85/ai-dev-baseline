@@ -127,7 +127,8 @@ export PATH="$HOME/Code/ai-dev-baseline/bin:$PATH"   # add to your shell rc
 `agent-init` resolves its own location through symlinks (it follows
 `BASH_SOURCE[0]` until it stops being a symlink), so it works whether you
 call it directly from the clone or through something else on PATH that
-symlinks to it.
+symlinks to it. The same `bin/` directory also carries **`baseline`**, the
+keep-current command (see [Keeping the install current](#keeping-the-install-current)).
 
 Then, at the root of any project:
 
@@ -160,6 +161,49 @@ project's version. This means installing the global baseline is always safe
 to layer on top of a repo that has already built its own gate: nothing
 double-runs. See [per-project-overrides.md](per-project-overrides.md) for how
 a project uses this deliberately.
+
+## Keeping the install current
+
+Because the payloads are symlinks, the live global env is only as current as the
+clone they point into. Keeping that clone current used to be a remembered ritual —
+`git pull` in the clone, plus a re-run of `install.sh` if a PR moved an installed
+path. `bin/baseline` replaces the ritual:
+
+```bash
+baseline update            # fast-forward the install-source clone + self-heal moved links
+baseline update --check    # report currency only; make NO changes (for a lifecycle hook)
+```
+
+`baseline update` is deliberately conservative — currency is a convenience, never a
+cause of lost work:
+
+- It fast-forwards **only** when the install-source clone is **clean, on its default
+  branch, and merely behind** `origin`. A dirty / detached / non-default / ahead /
+  diverged clone is **surfaced and left untouched** — you reconcile it by hand.
+- After a fast-forward it re-runs the **idempotent** installer **only when an installed
+  path actually moved** (a symlink stopped resolving), preserving the exact agent set
+  and hook preference already installed, then **loudly verifies** every canonical link
+  still resolves and fails if one is broken.
+
+`baseline update --check` fetches, prints one status word, and changes nothing; its
+exit code is a stable contract for a future `SessionStart` lifecycle hook (issue #25):
+`0` current · `10` behind · `20` needs attention (dirty/ahead/diverged/detached/
+non-default) · `30` error (fetch failed / no `origin/<default>`).
+
+### The two-clone topology
+
+A framework developer typically keeps **two** clones:
+
+| Clone | Role | Kept current by |
+|---|---|---|
+| **install-source** (e.g. `~/Code/ai-dev-baseline`) | The clone the global symlinks point into and whose `bin/` is on `PATH`. Its git state feeds every project. | `baseline update` |
+| **dev clone** (e.g. `~/Code/ai-dev-baseline-dev`) | Where you edit the framework and open PRs. | `/implement-issue`'s preflight auto-sync (issue #17) |
+
+`baseline update` operates on the **install-source** — the clone it detects the global
+install pointing into. Run it from any *other* clone and it **refuses** (exit `4`),
+naming the install-source, so a dev clone is never mistaken for it. The dev clone is
+kept current separately: after a PR merges, the next `/implement-issue` auto-syncs it
+to a clean, current default branch.
 
 ## Uninstalling
 
