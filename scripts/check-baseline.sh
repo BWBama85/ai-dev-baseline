@@ -32,8 +32,9 @@ mkdir -p "$seed/bin" "$seed/scripts/lib" "$seed/agents/claude"
 cp "$ROOT/bin/baseline" "$seed/bin/baseline"; chmod +x "$seed/bin/baseline"
 cp "$ROOT/scripts/lib/common.sh" "$seed/scripts/lib/common.sh"
 # bin/baseline only checks install.sh EXISTS (install-source detection); --check never
-# runs it, so a stub keeps the test hermetic and side-effect free.
-printf '#!/usr/bin/env bash\necho "stub-install $*"\n' > "$seed/install.sh"
+# runs it. The `update` path DOES run it, so the stub logs its args to a fixed file (baked
+# in at creation time, absolute) — tests assert on WHICH agents self-heal invokes it with.
+printf '#!/usr/bin/env bash\nprintf "install: %%s\\n" "$*" >> "%s"\n' "$work/install.log" > "$seed/install.sh"
 chmod +x "$seed/install.sh"
 printf 'root doc\n' > "$seed/agents/claude/CLAUDE.md"
 
@@ -153,6 +154,35 @@ git_q "$src" commit -q --allow-empty -m local-only-2
 head_before="$(git -C "$src" rev-parse HEAD)"
 eq "$(run_update "$src/bin/baseline" "$fh")" "20" "update refuses ahead (exit 20)"
 eq "$(git -C "$src" rev-parse HEAD)" "$head_before" "update preserves HEAD when ahead"
+
+# A `behind` update must ALWAYS re-run the installer (a pulled commit can add a new skill
+# that pre-existing links don't cover) — not skip it just because existing links resolve.
+reset_src
+advance_origin "adds-a-payload"
+: > "$work/install.log"
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "update behind exits 0"
+[ -s "$work/install.log" ] && ok || bad "update behind re-runs install.sh (thread 4)"
+
+# self-heal must install ONLY agents whose root doc points into this source — an unrelated
+# ~/.codex symlink pointing elsewhere must be left untouched (not backed-up + replaced).
+reset_src
+advance_origin "another-commit"
+mkdir -p "$fh/.codex" "$work/other"
+ln -s "$work/other/AGENTS.md" "$fh/.codex/AGENTS.md"   # unrelated install, outside src
+: > "$work/install.log"
+run_update "$src/bin/baseline" "$fh" >/dev/null
+grep -q -- '--agent claude' "$work/install.log" && ok || bad "self-heal installs claude"
+grep -q -- '--agent codex' "$work/install.log" && bad "self-heal must not touch unrelated codex symlink (thread 2)" || ok
+rm -rf "$fh/.codex"
+
+# A DANGLING root-doc link (the doc path itself moved) must still resolve the source and
+# run — not report "no installed baseline". Point claude's doc at a missing file in src.
+rm -f "$fh/.claude/CLAUDE.md"
+ln -s "$src/agents/claude/CLAUDE-moved.md" "$fh/.claude/CLAUDE.md"   # target missing; clone intact
+reset_src
+eq "$(run_check "$src/bin/baseline" "$fh")" "current|0" "dangling root-doc still resolves the source (thread 3)"
+rm -f "$fh/.claude/CLAUDE.md"
+ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"   # restore canonical link
 
 printf '\nbaseline: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

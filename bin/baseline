@@ -58,15 +58,17 @@ usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$
 # --- discovery ---------------------------------------------------------------
 
 # Print the repo root the global install points INTO, resolved from whichever agent
-# root-doc symlink exists (install.sh links each with an absolute target). Prints
-# nothing and returns 1 when no installed symlink is found.
+# root-doc symlink exists (install.sh links each with an absolute target). The link's
+# TARGET need not currently resolve — a dangling root doc (the very path that moved, or
+# a failed prior repair) still identifies the clone, and repairing it is the whole point;
+# the clone is validated by install.sh + agents/ existing, not by the doc file existing.
+# Prints nothing and returns 1 when no installed symlink is found.
 adb_install_source() {
   local link target root
   for link in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md" "$HOME/.gemini/GEMINI.md"; do
     [ -L "$link" ] || continue
     target="$(readlink "$link")"
     case "$target" in /*) ;; *) continue ;; esac   # expect an absolute target
-    [ -e "$target" ] || continue                     # skip a dangling link
     # agents/<agent>/<DOC> sits three levels below the repo root. Logical `pwd` keeps this
     # the same flavor as the recorded symlink targets so adb_installed_links can prefix-
     # match them; the wrong-clone guard uses `-ef`, so no physical canonicalization is needed.
@@ -78,12 +80,19 @@ adb_install_source() {
   return 1
 }
 
-# Print one installed agent token per line, detected from the root-doc symlinks. An
-# update must re-install exactly this set — never install.sh's bare default (claude).
+# True iff <path> is a symlink whose target is inside <src>.
+adb_link_into() { [ -L "$1" ] && case "$(readlink "$1")" in "$2"/*) return 0 ;; esac; return 1; }
+
+# Print one installed agent token per line — ONLY agents whose root-doc symlink points
+# INTO <src>. An update must re-install exactly this set (never install.sh's bare default)
+# and must never touch a root-doc symlink that points at an UNRELATED install (which
+# install.sh would otherwise back up and replace with the baseline's).
+# Usage: adb_installed_agents <src>
 adb_installed_agents() {
-  [ -L "$HOME/.claude/CLAUDE.md" ]  && printf 'claude\n'
-  [ -L "$HOME/.codex/AGENTS.md" ]   && printf 'codex\n'
-  [ -L "$HOME/.gemini/GEMINI.md" ]  && printf 'gemini\n'
+  local src="$1"
+  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" && printf 'claude\n'
+  adb_link_into "$HOME/.codex/AGENTS.md"  "$src" && printf 'codex\n'
+  adb_link_into "$HOME/.gemini/GEMINI.md" "$src" && printf 'gemini\n'
   return 0
 }
 
@@ -134,14 +143,15 @@ adb_self_heal() {
     [ -n "$a" ] || continue
     args+=(--agent "$a")
   done <<EOF
-$(adb_installed_agents)
+$(adb_installed_agents "$SRC")
 EOF
   if [ "${#args[@]}" -eq 0 ]; then
     echo "baseline: no installed agents detected — nothing to self-heal." >&2
     return 1
   fi
-  # Preserve a prior --no-hooks: only when Claude is installed but its gates aren't wired.
-  if [ -L "$HOME/.claude/CLAUDE.md" ] && ! adb_hooks_wired; then
+  # Preserve a prior --no-hooks: only when Claude is installed FROM THIS src but its
+  # gates aren't wired (a root doc pointing elsewhere is not ours to re-wire).
+  if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC" && ! adb_hooks_wired; then
     args+=(--no-hooks)
   fi
   echo "baseline: self-healing installed links → ./install.sh ${args[*]}"
@@ -252,15 +262,13 @@ case "$STATUS" in
       echo "baseline: 'git pull --ff-only' failed — resolve manually in $SRC (never force-pulled)." >&2
       exit 20
     fi
-    # Self-heal ONLY when a path actually moved — a plain docs/skills pull relinks
-    # nothing (the symlinks point at dirs), so we skip the noisier full re-install.
-    if adb_verify_links "$SRC"; then
-      echo "baseline: pulled to origin/$DEFAULT; all installed links still resolve — no re-install needed."
-      exit 0
-    fi
-    echo "baseline: an installed path moved — self-healing via the idempotent installer …"
+    # Always re-run the idempotent installer after a pull. install.sh links each skill and
+    # script as its OWN destination, so a pulled commit that ADDS a skill/script needs a new
+    # symlink even though every pre-existing link still resolves — "links resolve" does NOT
+    # imply "all payloads linked." The installer is idempotent (unchanged links are a no-op).
+    echo "baseline: pulled to origin/$DEFAULT; re-running the idempotent installer to link any new/moved payloads …"
     if adb_self_heal && adb_verify_links "$SRC"; then
-      echo "baseline: update complete (links self-healed)."
+      echo "baseline: update complete."
       exit 0
     fi
     echo "baseline: self-heal left a broken link — this is loud on purpose (see issue #35)." >&2
