@@ -72,6 +72,13 @@ run_check() {
   printf '%s|%s' "$out" "$rc"
 }
 
+# run_update <baseline-exe> <home> -> "<exit-code>"  (the mutating `update` path)
+run_update() {
+  local rc
+  HOME="$2" "$1" update >/dev/null 2>&1; rc=$?
+  printf '%s' "$rc"
+}
+
 # --- cases -------------------------------------------------------------------
 
 # current: clean, on main, up to date with origin.
@@ -119,6 +126,19 @@ eq "$rc" "4" "wrong-clone guard exits 4"
 empty="$work/emptyhome"; mkdir -p "$empty"
 HOME="$empty" "$src/bin/baseline" update --check >/dev/null 2>&1; rc=$?
 eq "$rc" "3" "no-install exits 3"
+
+# update (current + all links resolve) → "nothing to do", exit 0.
+reset_src
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "update current + healthy links exits 0"
+
+# update with a DANGLING installed link (a moved/renamed path) must be LOUD: the stub
+# installer can't repair it, so the verify tripwire fails the run (exit 1) rather than
+# silently reporting success. This is the general-enumeration guard (not a hardcoded subset).
+reset_src
+mkdir -p "$fh/.claude/skills"
+ln -s "$src/agents/claude/skills/ghost" "$fh/.claude/skills/ghost"   # target does not exist
+eq "$(run_update "$src/bin/baseline" "$fh")" "1" "update surfaces a dangling installed link (exit 1)"
+rm -f "$fh/.claude/skills/ghost"
 
 printf '\nbaseline: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

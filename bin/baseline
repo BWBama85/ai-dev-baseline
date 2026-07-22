@@ -79,25 +79,26 @@ adb_installed_agents() {
 # prior `--no-hooks` choice across a self-heal (re-install would otherwise re-add them).
 adb_hooks_wired() { grep -q 'precommit-gate\.sh' "$HOME/.claude/settings.json" 2>/dev/null; }
 
-# The canonical installed paths a healthy install always has. Each must RESOLVE (a
-# symlink whose target exists) after an update; a dangling one means a path moved.
-# Printed conditionally so we only assert links for agents actually installed.
-adb_canonical_paths() {
-  if [ -L "$HOME/.claude/CLAUDE.md" ]; then
-    printf '%s\n' \
-      "$HOME/.claude/CLAUDE.md" \
-      "$HOME/.claude/skills/implement-issue" \
-      "$HOME/.claude/scripts/precommit-gate.sh" \
-      "$HOME/.claude/scripts/lib/common.sh" \
-      "$HOME/.claude/scripts/lib/project-gates.sh"
-  fi
-  [ -L "$HOME/.codex/AGENTS.md" ]  && printf '%s\n' "$HOME/.codex/AGENTS.md"
-  [ -L "$HOME/.gemini/GEMINI.md" ] && printf '%s\n' "$HOME/.gemini/GEMINI.md"
-  return 0
+# Enumerate the ACTUAL installed destinations that symlink INTO the source clone —
+# the real installed surface, not a hardcoded subset, so verification can't drift from
+# what install.sh links (and a moved un-listed path can't slip through). Scans the
+# install locations install.sh writes to: each agent root doc, every Claude skill dir,
+# and every Claude script/lib entry. A glob that matches nothing stays literal and is
+# filtered by the `-L` test, so no `nullglob` is needed.
+# Usage: adb_installed_links <src>
+adb_installed_links() {
+  local src="$1" p
+  for p in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md" "$HOME/.gemini/GEMINI.md" \
+           "$HOME"/.claude/skills/* "$HOME"/.claude/scripts/*; do
+    [ -L "$p" ] || continue
+    case "$(readlink "$p")" in "$src"/*) printf '%s\n' "$p" ;; esac
+  done
 }
 
-# Return 0 iff every canonical installed path resolves. On failure, name each broken
-# path on stderr — loud by design (issue #36 safety / issue #35 path-move fail-loud).
+# Return 0 iff every installed symlink into <src> resolves. On failure, name each
+# broken (dangling) link on stderr — loud by design (issue #36 safety / issue #35
+# path-move fail-loud): a moved installed path is surfaced, never silently tolerated.
+# Usage: adb_verify_links <src>
 adb_verify_links() {
   local p broken=0
   while IFS= read -r p; do
@@ -107,7 +108,7 @@ adb_verify_links() {
       broken=1
     fi
   done <<EOF
-$(adb_canonical_paths)
+$(adb_installed_links "$1")
 EOF
   return "$broken"
 }
@@ -143,13 +144,14 @@ EOF
 
 # Classify the install-source clone. Echoes exactly one word, cheapest-safety-first:
 #   not-a-repo | dirty | detached | not-default | current | behind | ahead | diverged | no-remote
-# Requires a prior `git fetch` for behind/ahead/diverged accuracy.
+# Requires a prior `git fetch` for behind/ahead/diverged accuracy. The default branch is
+# passed in (the caller already resolved it) so it isn't computed twice.
+# Usage: adb_clone_status <root> <default-branch>
 adb_clone_status() {
-  local root="$1" default cur
+  local root="$1" default="$2" cur
   git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { printf 'not-a-repo\n'; return 0; }
   if [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then printf 'dirty\n'; return 0; fi
   cur="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null)" || { printf 'detached\n'; return 0; }
-  default="$(adb_default_branch "$root")"
   [ "$cur" = "$default" ] || { printf 'not-default\n'; return 0; }
   adb_branch_sync_state "$root" "$default"
 }
@@ -202,7 +204,7 @@ if ! git -C "$SRC" fetch --quiet origin 2>/dev/null; then
   exit 30
 fi
 
-STATUS="$(adb_clone_status "$SRC")"
+STATUS="$(adb_clone_status "$SRC" "$DEFAULT")"
 
 # --- --check: report only, mutate nothing ------------------------------------
 
@@ -221,12 +223,12 @@ fi
 case "$STATUS" in
   current)
     echo "baseline: install-source already current ($SRC on $DEFAULT, up to date with origin)."
-    if adb_verify_links; then
+    if adb_verify_links "$SRC"; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
     fi
     echo "baseline: an installed path is broken though up to date — repairing …"
-    adb_self_heal && adb_verify_links || { echo "baseline: repair failed — see above." >&2; exit 1; }
+    adb_self_heal && adb_verify_links "$SRC" || { echo "baseline: repair failed — see above." >&2; exit 1; }
     echo "baseline: repaired."
     exit 0
     ;;
@@ -238,12 +240,12 @@ case "$STATUS" in
     fi
     # Self-heal ONLY when a path actually moved — a plain docs/skills pull relinks
     # nothing (the symlinks point at dirs), so we skip the noisier full re-install.
-    if adb_verify_links; then
+    if adb_verify_links "$SRC"; then
       echo "baseline: pulled to origin/$DEFAULT; all installed links still resolve — no re-install needed."
       exit 0
     fi
     echo "baseline: an installed path moved — self-healing via the idempotent installer …"
-    if adb_self_heal && adb_verify_links; then
+    if adb_self_heal && adb_verify_links "$SRC"; then
       echo "baseline: update complete (links self-healed)."
       exit 0
     fi
