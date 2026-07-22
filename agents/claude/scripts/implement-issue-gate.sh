@@ -174,7 +174,11 @@ fi
 # path above already credits a legitimately merged PR for THIS run).
 if command -v gh >/dev/null 2>&1; then
   gh_err="$(mktemp .claude/state/gh-err.XXXXXX 2>/dev/null || echo ".claude/state/gh-err.$$")"
-  pr_url="$(gh pr list --head "$current_branch" --state open --json url --jq '.[0].url // ""' 2>"$gh_err" || true)"
+  # Filter to SAME-REPO PRs (isCrossRepository==false): --head matches by branch NAME only, so
+  # in a fork-accepting repo an unrelated fork PR with the same branch name would otherwise be
+  # taken as this run's replacement PR and wrongly satisfy the invariant. This mirrors the
+  # this-repo check the stored-URL path enforces.
+  pr_url="$(gh pr list --head "$current_branch" --state open --json url,isCrossRepository --jq '[.[] | select(.isCrossRepository==false)][0].url // ""' 2>"$gh_err" || true)"
   if [ -n "$pr_url" ]; then
     rm -f "$marker" "$gh_err" 2>/dev/null || true
     exit 0
@@ -185,9 +189,13 @@ if command -v gh >/dev/null 2>&1; then
   rm -f "$gh_err" 2>/dev/null || true
 fi
 
-# Defer to precommit-gate when there are uncommitted changes — it has authority
-# over red gates, and stacking two messages confuses the resume hint.
-if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+# Defer to precommit-gate when there are uncommitted changes AND no PR was ever recorded —
+# precommit-gate has authority over red gates, and stacking two messages confuses the resume
+# hint. But when a PR WAS recorded and is now closed/unverified (a #44 fail-closed signal), the
+# problem is the invalid PR — which precommit-gate cannot see — so do NOT defer: fall through to
+# the state-specific resume hint even on a dirty tree, or the turn could stop on a stale PR in a
+# repo with no (or passing) quality gates.
+if [ "$stored_pr" = "none" ] && [ -n "$(git status --porcelain 2>/dev/null)" ]; then
   printf 'implement-issue-gate: deferring to precommit-gate (uncommitted changes)\n' >&2
   exit 0
 fi

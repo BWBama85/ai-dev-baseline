@@ -39,7 +39,16 @@ case "$1 $2" in
   "pr view")
     if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_JSON:-}" ;;
-  "pr list") printf '%s\n' "${SHIM_OPEN_PR_URL:-}" ;;
+  "pr list")
+    # When SHIM_PR_LIST_JSON is set, emulate real `gh pr list --json ... --jq EXPR` by applying
+    # EXPR to the canned array (so the gate's own isCrossRepository filter is exercised); else
+    # fall back to echoing the pre-filtered SHIM_OPEN_PR_URL.
+    if [ -n "${SHIM_PR_LIST_JSON:-}" ]; then
+      _jq='.'; while [ $# -gt 0 ]; do if [ "$1" = "--jq" ]; then _jq="$2"; break; fi; shift; done
+      printf '%s' "$SHIM_PR_LIST_JSON" | jq -r "$_jq"
+    else
+      printf '%s\n' "${SHIM_OPEN_PR_URL:-}"
+    fi ;;
   *) echo "gh-shim: unhandled args: $*" >&2; exit 3 ;;
 esac
 SH
@@ -58,8 +67,8 @@ REPO_URL="https://github.com/acme/repo"
 
 # Export the shim knobs ONCE (empty), so each case plain-reassigns them (keeping them exported
 # for the shim subprocess) without `export VAR="$(...)"` masking a command-substitution status.
-export SHIM_REPO_URL="" SHIM_PR_JSON="" SHIM_OPEN_PR_URL="" SHIM_PR_VIEW_FAIL=""
-reset_shim() { SHIM_REPO_URL=""; SHIM_PR_JSON=""; SHIM_OPEN_PR_URL=""; SHIM_PR_VIEW_FAIL=""; }
+export SHIM_REPO_URL="" SHIM_PR_JSON="" SHIM_OPEN_PR_URL="" SHIM_PR_VIEW_FAIL="" SHIM_PR_LIST_JSON=""
+reset_shim() { SHIM_REPO_URL=""; SHIM_PR_JSON=""; SHIM_OPEN_PR_URL=""; SHIM_PR_VIEW_FAIL=""; SHIM_PR_LIST_JSON=""; }
 
 pr_json() {  # <state> <mergedAt-or-empty> <url> <headRefName>
   jq -cn --arg s "$1" --arg m "$2" --arg u "$3" --arg h "$4" \
@@ -140,6 +149,40 @@ reset_shim; write_marker committed "$REPO_URL/pull/1"
 SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json OPEN '' "$REPO_URL/pull/1" some-other-branch)"; SHIM_OPEN_PR_URL=""
 run_gate
 eq "$RC" 2 "I: PR on a different branch is unverified → keep going"
+
+# J. branch-lookup fallback must EXCLUDE a fork PR (isCrossRepository=true) with the same branch
+#    name — a closed stored PR + only-a-fork-PR must keep going, not falsely satisfy.
+reset_shim; write_marker committed "$REPO_URL/pull/1"
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json CLOSED '' "$REPO_URL/pull/1" feat)"
+SHIM_PR_LIST_JSON='[{"url":"https://github.com/fork/repo/pull/9","isCrossRepository":true}]'
+run_gate
+eq "$RC" 2 "J: a same-name fork PR does NOT satisfy → keep going"
+if gone; then bad "J: fork-only lookup must RETAIN the marker"; else ok; fi
+# J2. a SAME-repo replacement in the list (isCrossRepository=false) DOES satisfy.
+reset_shim; write_marker committed "$REPO_URL/pull/1"
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json CLOSED '' "$REPO_URL/pull/1" feat)"
+SHIM_PR_LIST_JSON='[{"url":"https://github.com/fork/repo/pull/9","isCrossRepository":true},{"url":"'"$REPO_URL"'/pull/2","isCrossRepository":false}]'
+run_gate
+eq "$RC" 0 "J2: a same-repo replacement PR (past a fork) satisfies → exit 0"
+if gone; then ok; else bad "J2: same-repo replacement removes the marker"; fi
+
+# K. DIRTY tree + closed stored PR + no replacement → must KEEP GOING (fail closed), not defer to
+#    precommit (completion gating sits ahead of the uncommitted-changes deferral).
+reset_shim; write_marker complete "$REPO_URL/pull/1"
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json CLOSED '' "$REPO_URL/pull/1" feat)"; SHIM_OPEN_PR_URL=""
+printf 'dirty\n' >> "$repo/README.md"   # make the worktree dirty (tracked file)
+run_gate
+eq "$RC" 2 "K: dirty tree + closed PR → keep going (not deferred to precommit)"
+if gone; then bad "K: dirty+closed must RETAIN the marker"; else ok; fi
+git -C "$repo" checkout -q -- README.md   # restore clean tree
+
+# K2. control: dirty tree + NO recorded PR + no open PR → DEFERS to precommit (exit 0), unchanged.
+reset_shim; write_marker committed ""
+SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
+printf 'dirty\n' >> "$repo/README.md"
+run_gate
+eq "$RC" 0 "K2: dirty tree + no recorded PR → defers to precommit (exit 0)"
+git -C "$repo" checkout -q -- README.md
 
 printf '\nimplement-gate: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

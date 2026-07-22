@@ -60,8 +60,14 @@ if [ ! -f "$_adb_common" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_adb_common"
-if ! command -v adb_toml_get >/dev/null 2>&1; then
-  printf 'project-gates: FATAL — %s did not define adb_toml_get (corrupt library)\n' "$_adb_common" >&2
+# Validate EVERY common.sh helper this file depends on, not just one — a library truncated
+# after defining adb_toml_get (but before adb_toml_unquote/adb_toml_keys) would otherwise pass
+# this check and then emit command-not-found noise + an empty (no-gates) result, i.e. the
+# fail-silent broken-install case #35 exists to catch.
+if ! command -v adb_toml_get >/dev/null 2>&1 \
+   || ! command -v adb_toml_unquote >/dev/null 2>&1 \
+   || ! command -v adb_toml_keys >/dev/null 2>&1; then
+  printf 'project-gates: FATAL — %s is missing a required helper (adb_toml_get/unquote/keys) — corrupt/truncated library\n' "$_adb_common" >&2
   return 1 2>/dev/null || exit 1
 fi
 
