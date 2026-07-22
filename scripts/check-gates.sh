@@ -119,6 +119,21 @@ JSON
   _adb_pkg_has "$d" test   # a dependency, outside scripts — must stay absent
 ) ; no $? "fallback: an extra '{' in a value does not leak into dependencies"
 
+# A COMPACT single-line scripts object must open AND close on its own line, so following
+# dependency lines are not scanned as if inside scripts (Codex PR #41 finding).
+( _adb_have() { case "$1" in jq) return 1 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+  d="$work/fb-compact"; mkdir -p "$d"
+  cat > "$d/package.json" <<'JSON'
+{
+  "scripts": {"build": "webpack"},
+  "dependencies": {"test": "1.2.3"}
+}
+JSON
+  _adb_pkg_has "$d" build; b=$?
+  _adb_pkg_has "$d" test;  t=$?
+  [ "$b" -eq 0 ] && [ "$t" -ne 0 ]
+) ; yes $? "fallback: compact one-line scripts object detects its script, not a dep named 'test'"
+
 # --- detect integration: dep-named 'test' emits no 'test' gate (npm-guarded) --
 if command -v npm >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   d="$work/detect-deponly"; mkdir -p "$d"

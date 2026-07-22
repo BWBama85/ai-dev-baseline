@@ -89,19 +89,35 @@ _adb_pkg_has() {
     return
   fi
   # jq absent → best-effort: only match a "<name>": key INSIDE the top-level "scripts"
-  # object (brace depth tracked), so a top-level dependency named "test" no longer
-  # false-matches. A minified single-line package.json is out of this heuristic's reach —
-  # install jq for exact detection.
+  # object, tracking brace depth so a top-level dependency named "test" no longer
+  # false-matches. Braces are counted on a STRING-STRIPPED view (so a brace inside a
+  # command value — "prettier {src,test}" or "echo }" — can't skew depth), and the
+  # "scripts": { opener's own tail is counted too, so a scripts object that opens AND
+  # closes on one line (e.g. `"scripts": {"build": "x"},`) correctly ends the scan
+  # instead of spilling into the following dependency lines. A FULLY minified whole-file
+  # package.json (scripts and dependencies on one physical line) is still out of reach —
+  # install jq for exact detection there.
   awk -v name="$name" '
     BEGIN { depth = 0; inscripts = 0; found = 0 }
-    inscripts == 0 && $0 ~ /"scripts"[[:space:]]*:[[:space:]]*\{/ { inscripts = 1; depth = 1; next }
-    inscripts == 1 {
-      if ($0 ~ ("\"" name "\"[[:space:]]*:")) found = 1
-      # Count only STRUCTURAL braces: strip string literals (incl. \"-escapes) first, so a
-      # brace inside a script command value — "prettier {src,test}" or "echo }" — cannot
-      # skew the depth and drop or forge a later script. Key match above used the raw line.
+    {
       line = $0
-      gsub(/"([^"\\]|\\.)*"/, "", line)
+      gsub(/"([^"\\]|\\.)*"/, "", line)   # structural view: string literals removed
+    }
+    inscripts == 0 {
+      if ($0 ~ /"scripts"[[:space:]]*:[[:space:]]*\{/) {
+        inscripts = 1
+        if ($0 ~ ("\"" name "\"[[:space:]]*:")) found = 1   # single-line object: key on this line
+        tail = line
+        sub(/^[^{]*\{/, "", tail)          # count only what follows the scripts opener brace
+        depth = 1
+        o = gsub(/\{/, "{", tail); c = gsub(/\}/, "}", tail)
+        depth += o - c
+        if (depth <= 0) inscripts = 2
+      }
+      next
+    }
+    inscripts == 1 {
+      if ($0 ~ ("\"" name "\"[[:space:]]*:")) found = 1     # key match uses the raw line
       o = gsub(/\{/, "{", line); c = gsub(/\}/, "}", line)
       depth += o - c
       if (depth <= 0) inscripts = 2
