@@ -192,6 +192,14 @@ jobs:
             exit 1
           fi
 
+      - name: Install jq
+        # jq drives exact package.json script detection; install it explicitly (rather
+        # than lean on runner-image contents) so the jq-path tests actually exercise it.
+        run: sudo apt-get install -y jq
+
+      - name: Full gate-model behavior tests (detection, open set, N/A, path scope)
+        run: bash scripts/check-gates.sh
+
   common-lib:
     name: common-lib
     runs-on: ubuntu-latest

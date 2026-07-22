@@ -100,6 +100,10 @@ else
   echo "PASS (badcmd errors)"
 fi
 
+step "gates"
+# Full behavior tests for the gate model (detection, open set, N/A, path scope).
+if bash scripts/check-gates.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "common-lib"
 # Unit tests for the shared shell primitives (scripts/lib/common.sh).
 if bash scripts/check-common-lib.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi

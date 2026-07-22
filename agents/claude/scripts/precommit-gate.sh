@@ -47,14 +47,16 @@ if [ "$branch" = "$default_branch" ] || [ -z "$branch" ] || [ "$branch" = "HEAD"
 fi
 
 # Are there any changes at all on this branch? (committed vs base + working tree)
+# `--no-renames` so a moved file surfaces BOTH its old and new path — a gate scoped to
+# the area a file moved OUT of must still see the change (see project-gates.sh scope).
 base_ref="origin/$default_branch"
 git rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1 || base_ref="$default_branch"
 committed=""
 if git rev-parse --verify --quiet "$base_ref" >/dev/null 2>&1; then
-  committed="$(git diff --name-only "${base_ref}...HEAD" 2>/dev/null || true)"
+  committed="$(git diff --no-renames --name-only "${base_ref}...HEAD" 2>/dev/null || true)"
 fi
-staged="$(git diff --name-only --cached 2>/dev/null || true)"
-unstaged="$(git diff --name-only 2>/dev/null || true)"
+staged="$(git diff --no-renames --name-only --cached 2>/dev/null || true)"
+unstaged="$(git diff --no-renames --name-only 2>/dev/null || true)"
 untracked="$(git ls-files --others --exclude-standard 2>/dev/null || true)"
 changed="$(printf '%s\n%s\n%s\n%s\n' "$committed" "$staged" "$unstaged" "$untracked" | sort -u | sed '/^$/d')"
 [ -z "$changed" ] && exit 0
@@ -69,7 +71,10 @@ fi
 # shellcheck source=/dev/null
 . "$lib"
 
-if adb_run_gates "$repo_root"; then
+# Pass the branch change set so a path-scoped gate ([gates.scope] in agents.toml) runs
+# only when it touches a matching file — the escape hatch that lets a repo express
+# apps/**-style scoping without forking this whole script.
+if adb_run_gates "$repo_root" "$changed"; then
   exit 0
 fi
 

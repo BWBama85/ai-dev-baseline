@@ -68,6 +68,28 @@ adb_toml_get "$work/nope.toml" gates test >/dev/null; no $? "missing file return
 # key present in a DIFFERENT table must not match
 eq "$(adb_toml_get "$f" roles typecheck 2>/dev/null)" "" "key scoped to its table"
 
+# --- literal table matching + adb_toml_keys ---------------------------------
+# A dotted sub-table must not be matched via the "." regex metacharacter, and reading a
+# parent table must not leak the sub-table's keys (regression: issue #5/#19 [gates.scope]).
+g="$work/dotted.toml"
+cat > "$g" <<'EOF'
+[gates]
+build = "npm run build"
+test  = "vitest"
+
+[gates.scope]
+build = "apps/**"
+EOF
+eq "$(adb_toml_unquote "$(adb_toml_get "$g" gates build)")"       "npm run build" "parent [gates] value not shadowed by sub-table"
+eq "$(adb_toml_unquote "$(adb_toml_get "$g" gates.scope build)")" "apps/**"       "[gates.scope] read literally (dot is not a wildcard)"
+adb_toml_get "$g" gatesXscope build >/dev/null 2>&1; no $? "literal table: 'gatesXscope' does not match [gates.scope]"
+
+# adb_toml_keys lists only the bare identifier keys of the requested table, in file order.
+eq "$(adb_toml_keys "$g" gates | tr '\n' ',')"       "build,test," "adb_toml_keys lists [gates] keys in order"
+eq "$(adb_toml_keys "$g" gates.scope | tr '\n' ',')" "build,"      "adb_toml_keys scoped to the sub-table"
+eq "$(adb_toml_keys "$g" missingtbl)" "" "adb_toml_keys on an absent table prints nothing"
+adb_toml_keys "$work/nope.toml" gates >/dev/null; yes $? "adb_toml_keys on a missing file returns 0"
+
 # --- adb_version_ge ----------------------------------------------------------
 adb_version_ge 2.1.163 2.1.163; yes $? "equal versions >="
 adb_version_ge 2.1.200 2.1.163; yes $? "higher patch >="

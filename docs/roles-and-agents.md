@@ -68,8 +68,10 @@ debug        = "claude"     # owns root-cause investigations.
 # format    = "pnpm format:check"
 ```
 
-`[gates]` is documented in full in
-[per-project-overrides.md](per-project-overrides.md).
+`[gates]` is an open set — beyond overriding the built-in `typecheck` / `lint`
+/ `test` / `format`, you can add custom gates (e.g. `build`), declare a gate
+N/A via `[gates.state]`, or path-scope one via `[gates.scope]`. It is
+documented in full in [per-project-overrides.md](per-project-overrides.md).
 
 ## Resolution order
 
