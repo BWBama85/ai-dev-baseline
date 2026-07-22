@@ -4,6 +4,9 @@
 # Local, per-workstation runtime state (never committed)
 *.local
 .local/
+# Skill runtime state (implement-issue markers, new-release/resolve-pr-threads
+# scratch) — this repo dogfoods its own skills, which write here.
+.claude/state/
 
 # Editor
 .vscode/

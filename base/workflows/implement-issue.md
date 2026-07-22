@@ -1,7 +1,4 @@
 ---
-# GENERATED FILE — do not edit by hand.
-# Source: base/workflows/implement-issue.md · Regenerate: scripts/build.sh
-# Edits here are overwritten on the next build.
 name: implement-issue
 description: Implement a GitHub issue end-to-end — repo-scope check, role-assigned gap-analysis, auto-detected gates, self-review + assigned code review, then open a PR. Agent-neutral via agents.toml; stack-agnostic via gate auto-detection.
 argument-hint: <issue-number> [more-issue-numbers…] [extra hints]

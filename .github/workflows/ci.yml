@@ -54,16 +54,56 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Rebuild generated root docs from base/practices
+      - name: Rebuild generated root docs and skills
         run: bash scripts/build.sh
 
-      - name: Fail if generated docs are out of date
+      - name: Fail if generated docs or skills are out of date
         run: |
           set -uo pipefail
+          rc=0
+
+          # Root docs (agents/*/…): rendered from base/practices/*.md.
           if ! git diff --exit-code -- agents/claude/CLAUDE.md agents/codex/AGENTS.md agents/gemini/GEMINI.md; then
             echo "::error::agents/claude/CLAUDE.md, agents/codex/AGENTS.md, and/or agents/gemini/GEMINI.md are stale relative to base/practices/*.md. Run 'bash scripts/build.sh' locally and commit the regenerated file(s)."
-            exit 1
+            rc=1
           fi
+
+          # Generated Claude skills: rendered from base/workflows/*.md. git diff
+          # catches a modified tracked SKILL.md; git ls-files --others catches a
+          # newly-rendered skill that was never committed (git diff is blind to
+          # untracked files — the drift a rebuild-forgot most often produces).
+          if ! git diff --exit-code -- agents/claude/skills; then
+            echo "::error::agents/claude/skills/*/SKILL.md is stale relative to base/workflows/*.md. Run 'bash scripts/build.sh' locally and commit the regenerated file(s)."
+            rc=1
+          fi
+          untracked="$(git ls-files --others --exclude-standard -- agents/claude/skills)"
+          if [ -n "$untracked" ]; then
+            echo "::error::rendered skill(s) were produced but not committed:"
+            echo "$untracked"
+            rc=1
+          fi
+
+          # 1:1 mapping: every workflow source has exactly one rendered skill and
+          # every skill has a source, so nothing silently loses or orphans an artifact.
+          for wf in base/workflows/*.md; do
+            [ -e "$wf" ] || continue
+            n="$(basename "$wf" .md)"
+            [ "$n" = README ] && continue
+            if [ ! -f "agents/claude/skills/$n/SKILL.md" ]; then
+              echo "::error::base/workflows/$n.md has no rendered skill at agents/claude/skills/$n/SKILL.md"
+              rc=1
+            fi
+          done
+          for sk in agents/claude/skills/*/SKILL.md; do
+            [ -e "$sk" ] || continue
+            n="$(basename "$(dirname "$sk")")"
+            if [ ! -f "base/workflows/$n.md" ]; then
+              echo "::error::skill '$n' has no source at base/workflows/$n.md (orphaned generated artifact)"
+              rc=1
+            fi
+          done
+
+          exit "$rc"
 
   skill-frontmatter:
     name: skill-frontmatter

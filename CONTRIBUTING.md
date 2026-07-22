@@ -11,20 +11,25 @@ agent-facing quick rules live in [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS
 
 ## The one thing to internalize
 
-`base/practices/*.md` is the **single source of truth** for the shared behavioral
-law. Each agent's root document (`agents/claude/CLAUDE.md`, `agents/codex/AGENTS.md`,
-`agents/gemini/GEMINI.md`) is **generated** from those files by `scripts/build.sh`.
+`base/` is the **single source of truth**, and `scripts/build.sh` renders it into the
+per-agent files:
 
-**Never hand-edit a generated root doc.** Edit the practice, rebuild, commit both.
-CI's `build-drift` job fails a PR whose generated docs are stale.
+- `base/practices/*.md` → each agent's root doc (`agents/claude/CLAUDE.md`,
+  `agents/codex/AGENTS.md`, `agents/gemini/GEMINI.md`).
+- `base/workflows/*.md` → the Claude skills (`agents/claude/skills/<name>/SKILL.md`).
+  Each rendered skill carries a `GENERATED FILE` marker in its frontmatter.
+
+**Never hand-edit a generated file** — a root doc *or* a skill. Edit the source under
+`base/`, rebuild, commit both. CI's `build-drift` job fails a PR whose generated docs or
+skills are stale, missing, untracked, or orphaned.
 
 ## Dev loop
 
 ```bash
 # 1. change something
-$EDITOR base/practices/self-review.md      # or a skill / script / adapter / doc
+$EDITOR base/practices/self-review.md      # or base/workflows/*.md / script / adapter / doc
 
-# 2. if you touched base/practices, regenerate the root docs
+# 2. if you touched base/practices or base/workflows, regenerate
 bash scripts/build.sh
 
 # 3. run the full local check suite (mirrors CI) before pushing
@@ -32,19 +37,22 @@ bash scripts/selfcheck.sh
 ```
 
 `scripts/selfcheck.sh` runs, in order: **shellcheck** (tracked `*.sh` + `bin/agent-init`),
-**build-drift** (rebuild + assert generated docs unchanged), **skill-frontmatter**
-(each `SKILL.md` has `name`/`description`/`user-invocable`), **gate-detector**
-(`detect` no-ops cleanly, `badcmd` errors), and an **install→uninstall dry-run** into
-a throwaway `HOME`. Green locally ≈ green in CI.
+**build-drift** (rebuild + assert generated root docs **and** skills are current — not
+stale, untracked, or missing), **workflow-map** (each `base/workflows/<name>.md` maps 1:1
+to a rendered skill, no orphans), **skill-frontmatter** (each `SKILL.md` has
+`name`/`description`/`user-invocable`), **gate-detector** (`detect` no-ops cleanly,
+`badcmd` errors), and an **install→uninstall dry-run** into a throwaway `HOME`. Green
+locally ≈ green in CI.
 
 ## Repository map
 
 | Path | Purpose |
 |---|---|
 | `base/practices/*.md` | The shared law (edit here) |
+| `base/workflows/*.md` | Single source for each workflow — procedure + metadata (edit here) |
 | `base/roles.md` · `templates/agents.toml` | Role model + per-project manifest |
-| `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) `skills/` + `scripts/` |
-| `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs · local CI |
+| `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) generated `skills/` + `scripts/` |
+| `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent |
 | `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · install dry-run |
