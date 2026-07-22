@@ -6,7 +6,7 @@ user-invocable: true
 effort: high
 # Roadmap-maintenance skill: it reads the tracker and reads/writes ONE roadmap artifact (a
 # GitHub issue, edited via `gh issue edit --body-file`). It must never edit repository code —
-# Write is allowed only for the /tmp/.claude-state roadmap-body scratch consumed by gh.
+# Write is allowed only for a /tmp roadmap-body scratch file consumed by gh (never in-repo).
 disallowed-tools: Edit, NotebookEdit
 ---
 
@@ -98,7 +98,10 @@ empty result (a truncated or failed list must not look like "no open issues").
 ```bash
 command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
 gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated"; exit 1; }
-mkdir -p .claude/state   # gitignored scratch for the roadmap body
+# Scratch for the roadmap body goes to a TEMP file, never the repo. /roadmap runs in arbitrary
+# repos, many of which don't gitignore .claude/state/ — writing there would leave untracked
+# files and dirty the worktree before the next implementation batch.
+ROADMAP_BODY="$(mktemp -t roadmap-body.XXXXXX)"
 ```
 
 ### 2. Locate the canonical roadmap artifact (deterministic)
@@ -128,16 +131,20 @@ so a repo already running a pinned roadmap issue (that predates this skill) is *
 duplicated:
 
 ```bash
-# A pinned issue whose body carries the marker, or whose title begins with "Roadmap".
-CAND="$(gh issue list --state open --limit 200 \
+# Pre-existing hand-maintained roadmaps: an issue whose body carries the marker, or whose title
+# begins with "Roadmap". Collect ALL matches — never `head -n1` an arbitrary one.
+CANDS="$(gh issue list --state open --limit 200 \
   --json number,title,body \
-  --jq '.[] | select((.body|test("ai-dev-baseline:roadmap")) or (.title|test("^Roadmap"))) | .number' \
-  | head -n1)"
+  --jq '.[] | select((.body|test("ai-dev-baseline:roadmap")) or (.title|test("^Roadmap"))) | .number')"
+NCAND="$(printf '%s\n' "$CANDS" | sed '/^$/d' | wc -l | tr -d ' ')"
 ```
 
-- **Candidate found** → **adopt it:** add the `roadmap` label (creating the label if the repo
-  lacks it), ensure the marker is present in its body, and pin it if unpinned. It is now the
-  canonical home. Then reconcile it (step 4).
+- **Exactly one candidate** → **adopt it:** add the `roadmap` label (creating the label if the
+  repo lacks it), ensure the marker is present in its body, and pin it if unpinned. It is now
+  the canonical home. Then reconcile it (step 4).
+- **More than one candidate** → **ambiguous; STOP.** This is the same split-brain condition as
+  multiple *labeled* roadmaps (step 2) — never pick arbitrarily. List the matches and ask the
+  owner to retire all but one (or label the real one `roadmap`), then re-run.
 - **No candidate** → **bootstrap a fresh one:**
   1. Read **all** open issues + milestones live (`gh issue list --state open --limit 200
      --json number,title,labels,milestone,body`; `gh api` for milestones), **excluding the
@@ -147,7 +154,7 @@ CAND="$(gh issue list --state open --limit 200 \
   3. Write the artifact body (schema above) to a scratch file and create the issue:
      ```bash
      gh label create roadmap --description "The build roadmap (ai-dev-baseline /roadmap)" --color 0e8a16 2>/dev/null || true
-     gh issue create --title "Roadmap & execution order" --label roadmap --body-file .claude/state/roadmap-body.md
+     gh issue create --title "Roadmap & execution order" --label roadmap --body-file "$ROADMAP_BODY"
      # then pin it (GraphQL pinIssue) so it's easy to find
      ```
 
@@ -164,11 +171,17 @@ Reconciliation is deterministic — the same tracker state always produces the s
 - **Slot new issues.** Any open issue not already in a bundle is placed into the right
   phase/bundle (by milestone + subsystem), never left orphaned. An unmilestoned issue is
   flagged and placed by inference — surfaced, never silently dropped.
-- **Drop stale refs.** Remove closed issue numbers from bundles and dependency edges.
+- **Reconcile refs by *close reason*.** Drop a closed issue from its bundle. For **dependency
+  edges**, the reason matters: a prerequisite closed **as completed** satisfies the edge (drop
+  it — the dependent is now unblocked), but a prerequisite closed **as `NOT_PLANNED`** was
+  *canceled*, which does **not** satisfy the dependent. Never silently drop a `NOT_PLANNED`
+  edge — that would make the dependent bundle look unblocked when its prerequisite was
+  abandoned. Keep the edge and **flag it** ("dependency #N canceled — bundle B needs review")
+  until the roadmap is explicitly adjusted.
 - **Persist the grouping.** Bundles are written back to the artifact so the grouping is
   stable and reproducible across runs — not re-inferred (and re-shuffled) every time.
 
-Rewrite the issue body via `gh issue edit "$ROADMAP_NUM" --body-file .claude/state/roadmap-body.md`.
+Rewrite the issue body via `gh issue edit "$ROADMAP_NUM" --body-file "$ROADMAP_BODY"`.
 
 ### 5. Grouping & ordering rules (deterministic)
 
