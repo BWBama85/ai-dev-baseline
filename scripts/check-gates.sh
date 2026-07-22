@@ -38,13 +38,14 @@ _adb_valid_label 1build;  no  $? "invalid label: leading digit"
 _adb_valid_label "a b";   no  $? "invalid label: space"
 _adb_valid_label "a.b";   no  $? "invalid label: dot"
 
-# --- _adb_scope_has (glob matching) ------------------------------------------
-_adb_scope_has "apps/**"            "apps/x/y.js"; yes $? "scope apps/** matches apps/x/y.js"
-_adb_scope_has "apps/**"            "docs/readme"; no  $? "scope apps/** does not match docs/readme"
-_adb_scope_has "apps/**,packages/**" "packages/a"; yes $? "scope multi matches packages/a"
-_adb_scope_has "apps/** , packages/**" "packages/a"; yes $? "scope tolerates whitespace"
-_adb_scope_has "routes/**"          "routes/api.ts"; yes $? "scope routes/** matches nested"
-_adb_scope_has "*.md"               "README.md";   yes $? "scope *.md matches README.md"
+# --- _adb_path_in_scope (glob matching; single path passed as the change set) ------------
+_adb_path_in_scope "apps/**"            "apps/x/y.js"; yes $? "scope apps/** matches apps/x/y.js"
+_adb_path_in_scope "apps/**"            "docs/readme"; no  $? "scope apps/** does not match docs/readme"
+_adb_path_in_scope "apps/**,packages/**" "packages/a"; yes $? "scope multi matches packages/a"
+_adb_path_in_scope "apps/** , packages/**" "packages/a"; yes $? "scope tolerates whitespace"
+_adb_path_in_scope "routes/**"          "routes/api.ts"; yes $? "scope routes/** matches nested"
+_adb_path_in_scope "apps/*"             "apps/x/y.js"; yes $? "scope apps/* also crosses / (case glob)"
+_adb_path_in_scope "*.md"               "README.md";   yes $? "scope *.md matches README.md"
 
 # --- _adb_pkg_has (jq path) --------------------------------------------------
 if command -v jq >/dev/null 2>&1; then

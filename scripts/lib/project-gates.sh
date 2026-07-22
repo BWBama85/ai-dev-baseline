@@ -54,6 +54,13 @@ set -u
 # One literal TAB — the record field delimiter. A gate whose command or scope contains a
 # tab is rejected (below) so the delimiter can never be forged.
 _ADB_TAB="$(printf '\t')"
+# A literal newline, for building/splitting newline-joined lists without a subshell.
+_ADB_NL='
+'
+# The built-in gate axes, in emission order — the ONE place the axis set is named for the
+# open-set exclusion below. (The four literal `_adb_emit <axis>` calls remain the canonical
+# source scripts/check-fact-drift.sh derives from; adding an axis means updating both.)
+_ADB_BUILTIN_AXES="typecheck lint test format"
 
 _adb_have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -109,7 +116,7 @@ _adb_pkg_has() {
 _adb_resolve_record() {
   local label="$1" default_cmd="$2" root="$3"
   local toml="$root/agents.toml"
-  local cmd="" state="" scope="" raw disabled=0
+  local cmd="" state="" scope="" raw
 
   _adb_valid_label "$label" || {
     printf 'project-gates: ignoring invalid gate label "%s"\n' "$label" >&2
@@ -120,7 +127,7 @@ _adb_resolve_record() {
   # gate; absent falls through to the auto-detected default (built-ins only).
   if raw="$(adb_toml_get "$toml" gates "$label")"; then
     cmd="$(adb_toml_unquote "$raw")"
-    [ -z "$cmd" ] && disabled=1
+    [ -z "$cmd" ] && state="disabled"
   else
     cmd="$default_cmd"
   fi
@@ -133,16 +140,14 @@ _adb_resolve_record() {
     esac
   fi
 
-  # path scope: [gates.scope] <label> = "glob1,glob2"
-  if raw="$(adb_toml_get "$toml" gates.scope "$label")"; then
-    scope="$(adb_toml_unquote "$raw")"
+  # Finalize an as-yet-undecided state: a command → run; nothing → a detection miss.
+  if [ -z "$state" ]; then
+    if [ -n "$cmd" ]; then state="run"; else return 0; fi
   fi
 
-  if [ "$state" != "na" ]; then
-    if [ "$disabled" -eq 1 ]; then state="disabled"
-    elif [ -n "$cmd" ]; then state="run"
-    else return 0   # detection miss: no command, no override, no declared N/A → not a gate
-    fi
+  # Path scope only matters for a gate that actually runs.
+  if [ "$state" = run ] && raw="$(adb_toml_get "$toml" gates.scope "$label")"; then
+    scope="$(adb_toml_unquote "$raw")"
   fi
 
   if _adb_has_tab "$label" || _adb_has_tab "$cmd" || _adb_has_tab "$scope"; then
@@ -156,9 +161,7 @@ _adb_resolve_record() {
 # Emit a built-in axis record. These four calls are the CANONICAL gate-axis list —
 # scripts/check-fact-drift.sh derives the axes from `_adb_emit <axis>`, so keep them
 # spelled literally.
-_adb_emit()   { _adb_resolve_record "$1" "$2" "$3"; }
-# Emit a custom (open-set) gate record — no auto-detected default.
-_adb_record() { _adb_resolve_record "$1" "" "$2"; }
+_adb_emit() { _adb_resolve_record "$1" "$2" "$3"; }
 
 # Print every gate record for a repo (built-in axes first, then open-set custom gates).
 _adb_gate_records() {
@@ -216,68 +219,56 @@ _adb_gate_records() {
   _adb_emit test      "$d_test"      "$root"
   _adb_emit format    "$d_format"    "$root"
 
-  # Open set: any [gates] key that is not a built-in axis is a custom gate.
-  adb_toml_keys "$toml" gates | while IFS= read -r key; do
-    case "$key" in typecheck|lint|test|format) continue ;; esac
-    _adb_record "$key" "$root"
-  done
-
-  # Custom labels declared ONLY under [gates.state] (e.g. a declared-N/A axis with no
-  # command and no [gates] entry) still surface — skip built-ins and any already emitted
-  # via [gates].
-  adb_toml_keys "$toml" gates.state | while IFS= read -r key; do
-    case "$key" in typecheck|lint|test|format) continue ;; esac
-    adb_toml_get "$toml" gates "$key" >/dev/null 2>&1 && continue
-    _adb_record "$key" "$root"
-  done
+  # Open set: every non-built-in key across [gates] (custom gates) and [gates.state]
+  # (declared-N/A axes with no command) is a gate. Resolve the deduped union once —
+  # [gates] keys first (file order), then any state-only key — so a key present in both
+  # tables is emitted exactly once, and the built-in exclusion lives in one place.
+  { adb_toml_keys "$toml" gates; adb_toml_keys "$toml" gates.state; } \
+    | awk '!seen[$0]++' \
+    | while IFS= read -r key; do
+        case " $_ADB_BUILTIN_AXES " in *" $key "*) continue ;; esac
+        _adb_resolve_record "$key" "" "$root"
+      done
   return 0
 }
 
 # --- path scope --------------------------------------------------------------
+# A scope is a comma-separated list of shell-`case` globs, where `*` matches across "/"
+# (so "apps/*" matches "apps/x/y.js"). Match is any-path-against-any-glob.
 
-# Trim leading/trailing whitespace.
-_adb_trim() {
-  local s="$1"
-  s="${s#"${s%%[![:space:]]*}"}"
-  s="${s%"${s##*[![:space:]]}"}"
-  printf '%s' "$s"
+# Does <path> ($2) match any glob in <globs> ($1, one per line, pre-trimmed)?
+_adb_glob_list_match() {
+  local globs="$1" path="$2" pat
+  while IFS= read -r pat; do
+    [ -z "$pat" ] && continue
+    # $pat is an intentional glob pattern here.
+    # shellcheck disable=SC2254
+    case "$path" in $pat) return 0 ;; esac
+  done <<EOF
+$globs
+EOF
+  return 1
 }
 
-# Normalize a scope glob: collapse "**" to "*" (in a shell `case` glob, "*" already
-# matches across "/", so "apps/*" matches "apps/x/y.js").
-_adb_star() {
-  local s="$1"
-  while case "$s" in *'**'*) true ;; *) false ;; esac; do
-    s="${s%%'**'*}*${s#*'**'}"
-  done
-  printf '%s' "$s"
-}
-
-# Does any comma-separated pattern in <scope> match <path>?
-_adb_scope_has() {
-  local scope="$1" path="$2" pat prest="$1"
+# Does any path in <changeset> (newline-separated) match any pattern in <scope>
+# (comma-separated)? Scope patterns are split + trimmed ONCE up front (they don't vary by
+# path); a heredoc keeps each while-loop in the current shell so `return` exits here.
+_adb_path_in_scope() {
+  local scope="$1" changeset="$2" path pat prest globs=""
+  prest="$scope"
   while [ -n "$prest" ]; do
     case "$prest" in
       *,*) pat="${prest%%,*}"; prest="${prest#*,}" ;;
       *)   pat="$prest"; prest="" ;;
     esac
-    pat="$(_adb_trim "$pat")"
-    [ -z "$pat" ] && continue
-    pat="$(_adb_star "$pat")"
-    # $pat is an intentional glob pattern here.
-    # shellcheck disable=SC2254
-    case "$path" in $pat) return 0 ;; esac
+    pat="${pat#"${pat%%[![:space:]]*}"}"   # trim leading whitespace
+    pat="${pat%"${pat##*[![:space:]]}"}"   # trim trailing whitespace
+    [ -n "$pat" ] && globs="$globs$pat$_ADB_NL"
   done
-  return 1
-}
-
-# Does any path in <changeset> (newline-separated) match any pattern in <scope>?
-# The heredoc keeps the while-loop in the current shell so `return` exits the function.
-_adb_path_in_scope() {
-  local scope="$1" changeset="$2" path
+  [ -z "$globs" ] && return 1
   while IFS= read -r path; do
     [ -z "$path" ] && continue
-    _adb_scope_has "$scope" "$path" && return 0
+    _adb_glob_list_match "$globs" "$path" && return 0
   done <<EOF
 $changeset
 EOF
