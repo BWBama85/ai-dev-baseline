@@ -92,7 +92,7 @@ currently driving, it shells out to that agent's non-interactive entrypoint:
 
 | Agent | Non-interactive invocation | Root config it reads |
 |---|---|---|
-| `claude` | `claude -p "<prompt>"` (or a native skill when Claude is already driving) | `~/.claude/CLAUDE.md` |
+| `claude` | `claude -p "<prompt>"` (when Claude is already driving, the step runs in-process via **model-invokable** tools — an Agent-tool subagent and/or a model-invokable skill like `/simplify`; never a user-only skill such as `/code-review`) | `~/.claude/CLAUDE.md` |
 | `codex` | `codex exec --cd <repo> -` (prompt piped on stdin) | `~/.codex/` + `AGENTS.md` |
 | `gemini` | `agy -p "<prompt>"` (Antigravity CLI) | `~/.gemini/GEMINI.md` |
 
@@ -121,9 +121,12 @@ Running `/implement-issue 123` with Claude as the driving agent:
    ≥7-minute Bash timeout, then reads codex's findings back in.
 3. Claude implements, runs gates, commits (all native — `primary` is Claude).
 4. **Step 8 (review)** resolves to `["claude", "gemini"]` → Claude runs its
-   own native `/code-review` skill, **and** separately shells out
-   `agy -p "<review prompt over the diff>"` for Gemini's independent pass.
-   Both sets of findings feed step 9's triage.
+   own **in-process** review pass (`/simplify` for quality, then a
+   `general-purpose` Claude subagent for the adversarial bug review — it never
+   model-invokes the user-only `/code-review`), **and** separately shells out
+   `agy -p "<review prompt over the diff>"` for Gemini's independent pass. Each
+   reviewer is a slot that must complete (retry → fallback → block on failure);
+   both sets of completed findings feed step 9's triage.
 5. Claude pushes, opens the PR, and files any deferred work as issues (step
    12) — all native, since `primary` is Claude throughout.
 
@@ -148,7 +151,7 @@ just executed by a different agent:
 3. **Step 8 (review)** resolves to `["claude"]`, a different agent than the
    one driving → Codex shells out `claude -p "<review prompt over the
    diff>"` to get Claude's independent review pass, since Claude isn't
-   already resident to invoke `/code-review` natively.
+   already resident to run that pass in-process.
 4. Codex triages the findings, pushes, opens the PR, and files follow-up
    issues.
 

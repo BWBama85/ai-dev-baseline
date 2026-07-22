@@ -151,8 +151,9 @@ Resume the playbook (phase → next step):
 
 Legitimate stops only: write .claude/state/implement-issue-blocked.json with the
 reason AND a .branch field matching '${marker_branch}' if (a) a BLOCKING
-gap-analysis finding you cannot resolve, (b) the gate escape clause tripped, or
-(c) the branch already exists on remote. Otherwise, keep going.
+gap-analysis finding you cannot resolve, (b) the gate escape clause tripped,
+(c) the branch already exists on remote, or (d) a required review step cannot
+complete after retry + fallback. Otherwise, keep going.
 EOF
 }
 resume_hint="$(emit_resume_hint)"

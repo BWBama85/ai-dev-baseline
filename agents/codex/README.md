@@ -49,6 +49,9 @@ codex exec --cd <repo> -
 
 `codex exec` reads and reasons over the whole repo and routinely takes
 **3–7 minutes** — always give this call a timeout of **at least 7 minutes**.
-A 2-minute default will SIGTERM it mid-run; that's a wasted pass, not a
-failure of the command. See `base/roles.md` for the full cross-agent
-invocation table.
+A 2-minute default will SIGTERM it mid-run: that's too tight a bound, so
+re-run longer rather than reading exit 143 as a verdict. A genuine timeout or
+non-zero exit at the **full** ≥7-minute bound is an **incomplete** invocation,
+not an acceptable "wasted pass" to move past — kill it, retry once, then fall
+back, per the delegated-step **completion contract** in `base/roles.md` (which
+also carries the full cross-agent invocation table).

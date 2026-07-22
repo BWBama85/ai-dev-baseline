@@ -15,13 +15,41 @@ manifest changes.
 |---|---|---|---|
 | `primary` | Drives implementation end-to-end (`implement-issue`) | exactly 1 | required |
 | `gap_analysis` | Adversarial pre-implementation read of the issue | 0 or 1 | skip the pass |
-| `review` | Independent code review of the diff before merge | 1+ | primary's own self-review only |
+| `review` | Independent code review of the diff before merge | 1+ | the primary's own review pass |
 | `debug` | Owns root-cause investigations | 1 | primary |
 | `issue_author` | Drafts and files issues (`create-issue`) | 1 | primary |
 | `release` | Cuts releases | 1 | primary |
 
 More than one `review` agent is encouraged — independent perspectives from
-different models catch more than one model reviewing twice.
+different models catch more than one model reviewing twice. The `primary`'s own
+mandatory self-review (`base/practices/self-review.md`) is the *floor* and is always
+run; the `review` role is the **independent** pass layered on top. Left unset (or
+empty), `review` defaults to the primary running that independent pass with its own
+model-invokable tools — so an unconfigured repo still gets a completed review step,
+never a bare self-review.
+
+### Completion contract for delegated steps
+
+A role delegated to another agent (or to a subagent) is a **step that must
+complete**, not an optional extra. This binds `gap_analysis`, `review`, and any
+cross-agent dispatch:
+
+- **One bounded call; wait for it to return.** Give each dispatch a real timeout
+  (≥7 min for `codex exec`) and **wait for the process to exit** (`codex exec` /
+  `agy -p` / `claude -p`) or the tool to return (an Agent-tool subagent). **Never
+  poll a background agent's output to infer whether it is "hung"** — the outcome is
+  the call returning, not the byte count growing; that guess-and-recheck loop is
+  itself the wasted time and is unreliable in both directions.
+- **On timeout / error / hang:** kill the call, **retry once**, then **fall back** —
+  to another agent the role lists, or to a `general-purpose` Claude subagent running
+  the same prompt (always model-invokable when Claude drives; but it too can error,
+  so it is a fallback, not a guarantee).
+- **If nothing completes:** the step **failed** → block the run (write the workflow's
+  blocked marker) or surface to the owner. Never mark a delegated step done on
+  partial or empty output.
+- **"Advisory" applies to *completed* findings, not to the step.** The implementer
+  may disagree with a finding a delegated agent actually produced, documenting why. A
+  missing, hung, or empty result is an **incomplete step**, not an advisory one.
 
 ## Agent tokens
 
@@ -35,7 +63,7 @@ it shells out to that agent's non-interactive entrypoint:
 
 | Agent | Non-interactive invocation | Root config it reads |
 |---|---|---|
-| `claude` | `claude -p "<prompt>"` (or a native skill when Claude is driving) | `~/.claude/CLAUDE.md` |
+| `claude` | `claude -p "<prompt>"` (when Claude is the driving agent, the step runs in-process via **model-invokable** tools — an Agent-tool subagent and/or a model-invokable skill like `/simplify`; never a user-only skill such as `/code-review`) | `~/.claude/CLAUDE.md` |
 | `codex` | `codex exec --cd <repo> -` (prompt on stdin) | `~/.codex/` + `AGENTS.md` |
 | `gemini` | `agy -p "<prompt>"` (Antigravity CLI) | `~/.gemini/GEMINI.md` |
 
