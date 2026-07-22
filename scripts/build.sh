@@ -52,18 +52,38 @@ render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 # and the CI skill-frontmatter check, and a `#` comment inside the frontmatter is
 # valid YAML that both already accept.
 render_skill() {
-  local src="$1" name out
+  local src="$1" name out tmp first fmname
   name="$(basename "$src" .md)"
   out="$root/agents/claude/skills/$name/SKILL.md"
+
+  # Validate BEFORE writing anything. The source must start with a --- frontmatter
+  # delimiter, and its `name:` must equal the file stem (which becomes the skill
+  # directory). This rejects an empty source and a copied-but-not-renamed workflow
+  # (e.g. diagnose.md still carrying `name: debug`) that would otherwise install a
+  # misidentified or empty skill.
+  first="$(head -n1 "$src")"
+  if [ "$first" != "---" ]; then
+    echo "build.sh: base/workflows/$name.md must start with a --- frontmatter delimiter" >&2
+    exit 3
+  fi
+  fmname="$(awk '
+    NR==1 { next }
+    $0 == "---" { exit }
+    /^name:[[:space:]]/ { sub(/^name:[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); print; exit }
+  ' "$src")"
+  if [ "$fmname" != "$name" ]; then
+    echo "build.sh: base/workflows/$name.md frontmatter name '$fmname' must equal the file stem '$name'" >&2
+    exit 3
+  fi
+
   mkdir -p "$(dirname "$out")"
-  # Writes only this one SKILL.md; never clears or recreates the skills directory
-  # (install.sh symlinks each skill dir, so a wholesale rebuild would break links).
+  # Render to a temp file and mv into place only on success — a failed render must
+  # never truncate the existing SKILL.md, since install.sh symlinks each skill dir
+  # and a zero-byte file here would break the live installed skill. Writes only this
+  # one file; never clears or recreates the skills directory.
+  tmp="$out.tmp"
   awk -v name="$name" '
     NR==1 {
-      if ($0 != "---") {
-        printf "build.sh: base/workflows/%s.md must start with a --- frontmatter delimiter\n", name > "/dev/stderr"
-        exit 3
-      }
       print "---"
       print "# GENERATED FILE — do not edit by hand."
       print "# Source: base/workflows/" name ".md · Regenerate: scripts/build.sh"
@@ -71,7 +91,8 @@ render_skill() {
       next
     }
     { print }
-  ' "$src" > "$out"
+  ' "$src" > "$tmp"
+  mv "$tmp" "$out"
   echo "wrote ${out#"$root"/}"
 }
 

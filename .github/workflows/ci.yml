@@ -89,8 +89,15 @@ jobs:
             [ -e "$wf" ] || continue
             n="$(basename "$wf" .md)"
             [ "$n" = README ] && continue
-            if [ ! -f "agents/claude/skills/$n/SKILL.md" ]; then
-              echo "::error::base/workflows/$n.md has no rendered skill at agents/claude/skills/$n/SKILL.md"
+            sk="agents/claude/skills/$n/SKILL.md"
+            if [ ! -f "$sk" ]; then
+              echo "::error::base/workflows/$n.md has no rendered skill at $sk"
+              rc=1
+            elif ! git ls-files --error-unmatch "$sk" >/dev/null 2>&1; then
+              # Gitignore-immune: git ls-files --others (above) respects .gitignore, so
+              # a rendered skill under an ignored path would slip past it. A tracked
+              # check catches an ignored-and-uncommitted skill too.
+              echo "::error::$sk exists but is not git-tracked (untracked or gitignored) — run 'bash scripts/build.sh' and commit it"
               rc=1
             fi
           done

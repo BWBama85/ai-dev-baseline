@@ -40,7 +40,9 @@ bounded by each CLI).
 - **Body.** Markdown procedure. Claude-specific tokens (`$ARGUMENTS`, `.claude/state/`,
   `/code-review`, `TaskCreate`, …) currently live in the body as-is; abstracting them into
   agent-neutral templates is a tracked follow-up, not part of the source relocation.
-- **Encoding.** UTF-8, LF line endings, a single trailing newline.
+- **Encoding.** UTF-8, LF line endings, a single trailing newline. The renderer
+  normalizes the trailing newline (so the generated skill always ends with exactly one);
+  keep sources newline-terminated so the render stays a pure marker-only diff.
 - **`README.md` is not a workflow** — the renderer skips it.
 
 ## Adding a workflow
