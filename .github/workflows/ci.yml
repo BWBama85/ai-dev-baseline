@@ -166,10 +166,16 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          out="$(bash scripts/lib/project-gates.sh detect . 2>&1)" || rc=$?
+          # Assert the no-op against a CLEAN temp dir, not the repo root: this repo now
+          # ships an agents.toml [gates] override (#7), so `detect .` legitimately emits the
+          # `test` gate. A throwaway dir with no ecosystem and no agents.toml is the true
+          # "unrecognized ecosystem" fixture.
+          tmp="$(mktemp -d)"
+          out="$(bash scripts/lib/project-gates.sh detect "$tmp" 2>&1)" || rc=$?
+          rm -rf "$tmp"
 
           if [ -n "$out" ]; then
-            echo "::error::expected no output from 'detect .' in a repo with no recognized ecosystem; got: $out"
+            echo "::error::expected no output from 'detect <empty>' in a repo with no recognized ecosystem; got: $out"
             exit 1
           fi
 
@@ -177,7 +183,19 @@ jobs:
           # no-op in an unfamiliar repo. adb_detect_gates ends on an explicit
           # `return 0`, so a non-zero exit here is a regression.
           if [ "$rc" -ne 0 ]; then
-            echo "::error::'detect .' exited $rc; expected 0 (clean no-op)"
+            echo "::error::'detect <empty>' exited $rc; expected 0 (clean no-op)"
+            exit 1
+          fi
+
+      - name: repo-root detection surfaces the committed agents.toml gate
+        run: |
+          set -uo pipefail
+          # Positive counterpart to the no-op test: the dogfooded agents.toml [gates] override
+          # (#7) must keep being exercised, so CI can't silently stop testing the manifest.
+          want="$(printf 'test\tbash scripts/selfcheck.sh')"
+          got="$(bash scripts/lib/project-gates.sh detect . 2>&1)"
+          if [ "$got" != "$want" ]; then
+            echo "::error::expected repo-root 'detect .' to emit the committed test gate; got: $got"
             exit 1
           fi
 
@@ -210,6 +228,17 @@ jobs:
 
       - name: Unit-test the shared shell primitives
         run: bash scripts/check-common-lib.sh
+
+  cleanup-enum:
+    name: cleanup-enum
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: /cleanup remote enumeration must exclude the origin/HEAD symref (#38)
+        run: bash scripts/check-cleanup-enum.sh
 
   baseline:
     name: baseline

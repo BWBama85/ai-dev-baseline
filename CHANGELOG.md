@@ -9,6 +9,34 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **`/roadmap` — maintain the build roadmap and emit the next batch** (`base/workflows/roadmap.md`,
+  #39): a new skill that closes the development loop. It locates one canonical roadmap
+  artifact (the single open issue bearing the `roadmap` label — adopting a pre-existing pinned
+  roadmap issue rather than duplicating it), reconciles it against the live tracker (marking
+  done what's *closed*, slotting newly-filed issues, dropping stale refs), and emits the next
+  unblocked, one-branch bundle as a ready `Next: /implement-issue <ids>` command with a
+  rationale. The artifact holds only order + branch-bundles + dependency edges — never
+  milestone membership (the DRY split). Deterministic (same tracker state → same next batch),
+  dependency-aware (explicit `Depends on`/`Blocked by` edges only, not `Refs`), and it skips
+  in-flight bundles and excludes itself. Rendered into the Claude skill; Codex/Gemini rides the
+  existing workflow-parity follow-up.
+- **The framework dogfoods its own manifest** (`agents.toml`, #7): a committed repo-root
+  `agents.toml` makes the effective roles explicit (`primary`/`gap_analysis`/`review`/`debug`)
+  and wires the repo's real gate — `scripts/selfcheck.sh` — as the `test` gate, so the skill's
+  in-loop gate and the global precommit Stop-hook both run selfcheck on a feature branch (not
+  only CI). The three toolchain-less axes are declared N/A. The `gate-detector` self-check +ci
+  now assert the no-op against a clean temp dir *and* positively assert repo-root detection
+  surfaces the committed gate. (`.claude/state/` was already gitignored.)
+- **`verify-before-asserting` practice** (`base/practices/verify-before-asserting.md`, #42):
+  a new baseline practice — rendered into every agent root doc — that forbids stating or
+  acting on volatile external state (PR/branch/issue/CI status) from memory or a stale local
+  ref, and requires a fresh authoritative check at the moment of assertion. The PR-touching
+  skills are hardened to match: `/cleanup` never narrates a PR's open/closed status (it
+  decides purely from freshly-fetched merged-detection + `-d`'s merged-only refusal, now
+  classifying both local and remote candidates against `origin/<default>`); `/resolve-pr-threads`
+  re-checks PR state immediately before replying/resolving; `/implement-issue` fetches and
+  checks issue `state`, warning on a CLOSED issue in the batch.
+
 - **Hardened gate detection + a richer gate model** (`scripts/lib/project-gates.sh`,
   #5 · #19):
   - **Exact npm-script detection** — `_adb_pkg_has` now reads `package.json`'s `.scripts`
@@ -109,6 +137,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`/cleanup` no longer offers a phantom `origin` for deletion** (#38): remote branch
+  enumeration filtered `git branch -r --merged`'s output with `sed 's@^origin/@@'` alone,
+  which left the `origin/HEAD` symref's bare-`origin` short form in the merged list — so
+  `/cleanup remote`/`all` would offer `git push origin --delete origin` (a bogus delete of a
+  nonexistent branch). The pipeline now drops it (`grep '^origin/' | grep -v '^origin/HEAD$'`
+  before the strip). Guarded by a new regression test (`scripts/check-cleanup-enum.sh`, wired
+  into `selfcheck.sh` + CI) that reproduces the symref and asserts the fix.
 - **`implement-issue` step 8 no longer prescribes an unusable reviewer** (#9): the
   Claude `review` slot now runs an in-process, model-invokable pass — `/simplify`
   (quality) plus a `general-purpose` Claude subagent for the adversarial bug review —

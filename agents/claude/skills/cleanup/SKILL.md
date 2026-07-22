@@ -31,6 +31,12 @@ Argument selects scope: `local` (default), `remote`, or `all`.
 - **Remote deletes are outward-facing** — list them and get one confirmation before
   deleting (`base/practices/git-and-prs.md`). Local deletes are safe + reflog-
   recoverable, so they proceed autonomously.
+- **Never narrate a PR's open/closed/merged status.** A branch's eligibility for
+  deletion is decided *purely* from freshly-fetched merged-detection (`git branch
+  --merged origin/<default>`) plus `git branch -d`'s own merged-only refusal — never
+  from whether some PR "is still open," which may be stale in context or a lagging
+  local ref (`base/practices/verify-before-asserting.md`). An unmerged branch is
+  preserved because `-d` refuses it, not because a PR is open.
 
 ## Steps
 
@@ -70,13 +76,25 @@ fi
 ```bash
 PROTECTED='^(HEAD|'"$DEFAULT"'|main|master|develop|release/.*|hotfix/.*)$'
 
-# Local, merged into the default branch:
-LOCAL_MERGED="$(git branch --merged "$DEFAULT" --format='%(refname:short)' \
+# Classify both lists against the freshly-fetched remote tip, so a stale or diverged local
+# default branch can't hide a merged branch (or resurrect a just-deleted one). Fall back to
+# the local default only when there is no origin/<default> (no remote). This is the
+# is-it-merged basis — never a PR's assumed open/closed status (verify-before-asserting.md).
+BASE="origin/$DEFAULT"
+git rev-parse --verify --quiet "$BASE" >/dev/null 2>&1 || BASE="$DEFAULT"
+
+# Local, merged into the fresh base:
+LOCAL_MERGED="$(git branch --merged "$BASE" --format='%(refname:short)' \
   | grep -Ev "$PROTECTED" | grep -Fxv "$CURRENT" || true)"
 
-# Remote, merged into origin/<default>:
-REMOTE_MERGED="$(git branch -r --merged "origin/$DEFAULT" --format='%(refname:short)' \
-  | sed 's@^origin/@@' | grep -Ev "$PROTECTED" | grep -Fxv "$CURRENT" | sort -u || true)"
+# Remote, merged into the fresh base. `grep '^origin/'` drops the bare `origin` short form
+# of the origin/HEAD symref (which --format renders as plain `origin`, not a real branch, so
+# `sed 's@^origin/@@'` — no trailing slash to strip — would otherwise leak it into the list
+# and offer a bogus `git push origin --delete origin`); `grep -v '^origin/HEAD$'` is
+# belt-and-suspenders for a fully-qualified form.
+REMOTE_MERGED="$(git branch -r --merged "$BASE" --format='%(refname:short)' \
+  | grep '^origin/' | grep -v '^origin/HEAD$' | sed 's@^origin/@@' \
+  | grep -Ev "$PROTECTED" | grep -Fxv "$CURRENT" | sort -u || true)"
 ```
 
 Present both lists to the user with counts. If both are empty, report "nothing to

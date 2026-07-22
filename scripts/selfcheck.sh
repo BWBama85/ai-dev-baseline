@@ -88,11 +88,26 @@ done
 [ "$ff" -eq 0 ] && echo "PASS" || { echo "FAIL"; fail=1; }
 
 step "gate-detector"
-out="$(bash scripts/lib/project-gates.sh detect . 2>&1)"; rc=$?
+# The no-ecosystem no-op is asserted against a CLEAN temp dir, not the repo root: this repo
+# now ships an agents.toml [gates] override (#7), so `detect .` legitimately emits the `test`
+# gate. A throwaway dir with no ecosystem and no agents.toml is the true "unrecognized
+# ecosystem" fixture.
+gd_tmp="$(mktemp -d)"
+out="$(bash scripts/lib/project-gates.sh detect "$gd_tmp" 2>&1)"; rc=$?
+rm -rf "$gd_tmp"
 if [ -z "$out" ] && [ "$rc" -eq 0 ]; then
   echo "PASS (detect no-ops on unrecognized ecosystem)"
 else
   echo "FAIL (out='$out' rc=$rc)"; fail=1
+fi
+# Positive assertion: repo-root detection surfaces the committed agents.toml [gates] override,
+# so CI keeps exercising the dogfooded manifest (#7). Records are TAB-delimited "<label>\t<cmd>".
+want_gate="$(printf 'test\tbash scripts/selfcheck.sh')"
+got_gate="$(bash scripts/lib/project-gates.sh detect . 2>&1)"
+if [ "$got_gate" = "$want_gate" ]; then
+  echo "PASS (repo-root detect emits the committed test gate)"
+else
+  echo "FAIL (repo-root detect: got '$got_gate' want '$want_gate')"; fail=1
 fi
 if bash scripts/lib/project-gates.sh badcmd >/dev/null 2>&1; then
   echo "FAIL (badcmd exited 0)"; fail=1
@@ -107,6 +122,10 @@ if bash scripts/check-gates.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 step "common-lib"
 # Unit tests for the shared shell primitives (scripts/lib/common.sh).
 if bash scripts/check-common-lib.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "cleanup-enum"
+# Regression test for /cleanup's remote enumeration excluding the origin/HEAD symref (#38).
+if bash scripts/check-cleanup-enum.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "baseline"
 # End-to-end tests for bin/baseline's currency classification (safety-critical: it

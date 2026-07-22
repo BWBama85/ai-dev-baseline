@@ -17,6 +17,7 @@ Each file covers exactly one concern:
 | `repo-scope.md` | Confirm work belongs to *this* repo before starting |
 | `debugging.md` | Evidence-backed root cause, not guesses |
 | `self-review.md` | Mandatory pre-PR self-review pass |
+| `verify-before-asserting.md` | Re-check mutable PR/branch/issue/CI state; never assert it from memory |
 | `logging-and-secrets.md` | Structured logs; never log secrets |
 
 ## Precedence

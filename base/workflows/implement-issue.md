@@ -213,8 +213,21 @@ different codebase, **stop** and tell the user which repo it maps to
 
 ```bash
 for n in "${ISSUE_NUMS[@]}"; do
-  gh issue view "$n" --json number,title,body,labels,author,comments,milestone > "/tmp/issue-$n.json" \
+  gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state > "/tmp/issue-$n.json" \
     || { echo "ERROR: issue #$n not found in this repo — verify repo scope"; exit 1; }
+done
+```
+
+Fetch `state` too, and check it from this fresh view — never from memory or a stale
+ref (`base/practices/verify-before-asserting.md`). A **CLOSED** issue in the batch is
+almost always a mistake (already shipped, or the wrong number): surface it and stop for
+confirmation before implementing against it, rather than silently reopening resolved
+work.
+
+```bash
+for n in "${ISSUE_NUMS[@]}"; do
+  st="$(jq -r .state "/tmp/issue-$n.json")"
+  [ "$st" = "OPEN" ] || echo "WARNING: issue #$n is $st — confirm it should still be implemented before proceeding"
 done
 ```
 
