@@ -17,57 +17,23 @@
 
 set -uo pipefail
 
-info() { printf '%s\n' "$*"; }
-
-# Back up an existing real path (unless it's already our correct symlink),
-# then symlink. Mirrors install.sh's link() so backups land in the same
-# mirrored-absolute-path shape under backup_dir.
-link() {
-  local src="$1" dest="$2" backup_dir="$3"
-  if [ -L "$dest" ]; then
-    if [ "$(readlink "$dest")" = "$src" ]; then
-      info "  ok     ${dest/#$HOME/~}"
-      return
-    fi
-    rm -f "$dest"
-  elif [ -e "$dest" ]; then
-    mkdir -p "$backup_dir$(dirname "$dest")"
-    mv "$dest" "$backup_dir$dest"
-    info "  backup ${dest/#$HOME/~} → ${backup_dir/#$HOME/~}$dest"
-  fi
-  mkdir -p "$(dirname "$dest")"
-  ln -s "$src" "$dest"
-  info "  link   ${dest/#$HOME/~} → ${src/#$HOME/~}"
-}
-
-# Remove dest only if it is a symlink pointing back inside repo.
-unlink_if_ours() {
-  local dest="$1" repo="$2"
-  if [ -L "$dest" ]; then
-    case "$(readlink "$dest")" in
-      "$repo"/*)
-        rm -f "$dest"
-        info "  unlink ${dest/#$HOME/~}"
-        ;;
-      *)
-        info "  skip   ${dest/#$HOME/~} (not ours)"
-        ;;
-    esac
-  else
-    info "  skip   ${dest/#$HOME/~} (not a symlink)"
-  fi
-}
+# Shared symlink/backup primitives (adb_info / adb_link / adb_unlink_if_ours) — the
+# ONE home, sourced not copied. This adapter lives at agents/gemini/adapter.sh, so the
+# repo's scripts/lib is two levels up.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+. "$_here/../../scripts/lib/common.sh"
 
 cmd_install() {
   local repo="$1" backup_dir="$2"
   mkdir -p "$HOME/.gemini"
-  link "$repo/agents/gemini/GEMINI.md" "$HOME/.gemini/GEMINI.md" "$backup_dir"
-  info "  note   ~/.gemini/settings.json and ~/.gemini/config/hooks.json are yours to manage — a sample hooks file lives at agents/gemini/config/hooks.sample.json"
+  adb_link "$repo/agents/gemini/GEMINI.md" "$HOME/.gemini/GEMINI.md" "$backup_dir"
+  adb_info "  note   ~/.gemini/settings.json and ~/.gemini/config/hooks.json are yours to manage — a sample hooks file lives at agents/gemini/config/hooks.sample.json"
 }
 
 cmd_uninstall() {
   local repo="$1"
-  unlink_if_ours "$HOME/.gemini/GEMINI.md" "$repo"
+  adb_unlink_if_ours "$HOME/.gemini/GEMINI.md" "$repo"
 }
 
 case "${1:-}" in

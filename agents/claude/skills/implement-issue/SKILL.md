@@ -98,6 +98,10 @@ or empty output. Full contract: `base/roles.md`.
 - **Out-of-scope work always becomes a tracked issue** (`issues-and-scope.md`),
   filed before close-out — never just a PR-body note, never ask first.
 - **Self-review is mandatory** (`self-review.md`) before the PR.
+- **Handle the unknown deterministically** (`handling-the-unknown.md`) — when the repo
+  needs something the baseline doesn't model (a gate, convention, role setup, or a
+  general gap), classify → place it in its one prescribed home → record it → or escalate;
+  never improvise a one-off.
 - **Never push to the default branch; feature branch + PR only** (`git-and-prs.md`).
 - **Never `--no-verify`; never destructive git** without an explicit ask.
 - **Advisory findings, required steps** — gap-analysis / review *findings* are

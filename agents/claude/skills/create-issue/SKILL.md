@@ -26,6 +26,8 @@ When authoring an issue without this skill, the default failure mode is stopping
 
 This skill forces the adversarial gap-analysis pass to happen **before** `gh issue create`, not after. The bar is: a well-filed issue should survive `/review-issue` with 0-2 net-new findings, not 8-12.
 
+Filing a baseline issue is also the **"general" bucket** of `base/practices/handling-the-unknown.md`: when work in another project meets an unknown that many projects would hit, the deterministic move is to file it here (plus a supported stopgap) so everyone inherits the fix — never a bespoke local one-off.
+
 ## Scope
 
 This skill is project-agnostic — it works in any repo where `gh` is authenticated. It only assumes:

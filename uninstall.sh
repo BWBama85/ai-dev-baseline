@@ -10,6 +10,9 @@
 
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Shared shell primitives (adb_info / adb_unlink_if_ours) — the ONE home, sourced not copied.
+# shellcheck source=/dev/null
+. "$REPO/scripts/lib/common.sh"
 AGENTS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -20,33 +23,20 @@ while [ $# -gt 0 ]; do
 done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude codex gemini)
 
-info() { printf '%s\n' "$*"; }
-
-# Remove $dest only if it is a symlink pointing inside $REPO.
-unlink_if_ours() {
-  local dest="$1"
-  if [ -L "$dest" ]; then
-    case "$(readlink "$dest")" in
-      "$REPO"/*) rm -f "$dest"; info "  unlink ${dest/#$HOME/~}" ;;
-      *) info "  skip   ${dest/#$HOME/~} (not ours)" ;;
-    esac
-  fi
-}
-
 uninstall_claude() {
-  info "claude"
-  unlink_if_ours "$HOME/.claude/CLAUDE.md"
+  adb_info "claude"
+  adb_unlink_if_ours "$HOME/.claude/CLAUDE.md" "$REPO"
   local d name
   for d in "$REPO"/agents/claude/skills/*/; do
     [ -d "$d" ] || continue
     name="$(basename "$d")"
-    unlink_if_ours "$HOME/.claude/skills/$name"
+    adb_unlink_if_ours "$HOME/.claude/skills/$name" "$REPO"
   done
   local s
   for s in precommit-gate.sh implement-issue-gate.sh statusline.sh; do
-    unlink_if_ours "$HOME/.claude/scripts/$s"
+    adb_unlink_if_ours "$HOME/.claude/scripts/$s" "$REPO"
   done
-  unlink_if_ours "$HOME/.claude/scripts/lib"
+  adb_unlink_if_ours "$HOME/.claude/scripts/lib" "$REPO"
 
   if command -v jq >/dev/null 2>&1; then
     local settings="$HOME/.claude/settings.json"
@@ -58,7 +48,7 @@ uninstall_claude() {
         else . end
         | if (.hooks.Stop // []) == [] then del(.hooks.Stop) else . end
       ' "$settings" > "$settings.adb.tmp" && mv "$settings.adb.tmp" "$settings"
-      info "  hooks  removed global Stop gates from ~/.claude/settings.json"
+      adb_info "  hooks  removed global Stop gates from ~/.claude/settings.json"
     fi
   fi
 }
@@ -68,8 +58,8 @@ for a in "${AGENTS[@]}"; do
     claude) uninstall_claude ;;
     codex|gemini)
       adapter="$REPO/agents/$a/adapter.sh"
-      [ -f "$adapter" ] && { info "$a"; bash "$adapter" uninstall "$REPO"; } ;;
+      [ -f "$adapter" ] && { adb_info "$a"; bash "$adapter" uninstall "$REPO"; } ;;
   esac
 done
-info ""
-info "Uninstalled. Backups remain in ~/.claude/backups/ai-dev-baseline-*"
+adb_info ""
+adb_info "Uninstalled. Backups remain in ~/.claude/backups/ai-dev-baseline-*"

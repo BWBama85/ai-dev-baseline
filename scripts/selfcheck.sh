@@ -88,27 +88,47 @@ done
 [ "$ff" -eq 0 ] && echo "PASS" || { echo "FAIL"; fail=1; }
 
 step "gate-detector"
-out="$(bash agents/claude/scripts/lib/project-gates.sh detect . 2>&1)"; rc=$?
+out="$(bash scripts/lib/project-gates.sh detect . 2>&1)"; rc=$?
 if [ -z "$out" ] && [ "$rc" -eq 0 ]; then
   echo "PASS (detect no-ops on unrecognized ecosystem)"
 else
   echo "FAIL (out='$out' rc=$rc)"; fail=1
 fi
-if bash agents/claude/scripts/lib/project-gates.sh badcmd >/dev/null 2>&1; then
+if bash scripts/lib/project-gates.sh badcmd >/dev/null 2>&1; then
   echo "FAIL (badcmd exited 0)"; fail=1
 else
   echo "PASS (badcmd errors)"
 fi
 
+step "common-lib"
+# Unit tests for the shared shell primitives (scripts/lib/common.sh).
+if bash scripts/check-common-lib.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "fact-drift"
+# Canonical facts (gate axes, cross-agent invocations, codex timeout, resolution order)
+# must stay consistent across their consumer docs.
+if bash scripts/check-fact-drift.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "practice-index"
+# Every base/practices/*.md is listed in 00-index.md exactly once (no missing/stale rows).
+if bash scripts/check-practice-index.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "install dry-run"
 FAKE="$(mktemp -d)"; ok=1
-HOME="$FAKE" bash install.sh --agent claude >/tmp/adb-selfcheck.log 2>&1 || ok=0
+# Install all three agents so codex/gemini adapter paths (which now source common.sh)
+# are exercised too, not just Claude's inline install path.
+HOME="$FAKE" bash install.sh --agent claude --agent codex --agent gemini >/tmp/adb-selfcheck.log 2>&1 || ok=0
 [ -L "$FAKE/.claude/CLAUDE.md" ] || ok=0
 [ -L "$FAKE/.claude/skills/implement-issue" ] || ok=0
 [ -e "$FAKE/.claude/scripts/lib/project-gates.sh" ] || ok=0
+[ -e "$FAKE/.claude/scripts/lib/common.sh" ] || ok=0
+[ -L "$FAKE/.codex/AGENTS.md" ] || ok=0
+[ -L "$FAKE/.gemini/GEMINI.md" ] || ok=0
 grep -q 'precommit-gate.sh' "$FAKE/.claude/settings.json" 2>/dev/null || ok=0
-HOME="$FAKE" bash uninstall.sh --agent claude >>/tmp/adb-selfcheck.log 2>&1 || ok=0
+HOME="$FAKE" bash uninstall.sh --agent claude --agent codex --agent gemini >>/tmp/adb-selfcheck.log 2>&1 || ok=0
 [ ! -L "$FAKE/.claude/CLAUDE.md" ] || ok=0
+[ ! -L "$FAKE/.codex/AGENTS.md" ] || ok=0
+[ ! -L "$FAKE/.gemini/GEMINI.md" ] || ok=0
 rm -rf "$FAKE"
 [ "$ok" -eq 1 ] && echo "PASS" || { echo "FAIL (see /tmp/adb-selfcheck.log)"; fail=1; }
 

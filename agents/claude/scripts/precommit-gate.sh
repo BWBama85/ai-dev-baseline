@@ -30,14 +30,16 @@ if [ -e "$proj_gate" ] && [ ! "$proj_gate" -ef "$0" ]; then
   exit 0
 fi
 
+# Shared shell primitives live in the sibling lib/ (installed as ~/.claude/scripts/lib).
+# A missing library means an incomplete install → no-op (exit 0), matching how the gate
+# already skips when its gate library is absent.
+lib_dir="$(dirname "$0")/lib"
+[ -f "$lib_dir/common.sh" ] || exit 0
+# shellcheck source=/dev/null
+. "$lib_dir/common.sh"
+
 # Resolve the default branch (origin/HEAD → main → master → "main").
-default_branch="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
-if [ -z "$default_branch" ]; then
-  for b in main master; do
-    if git show-ref --verify --quiet "refs/heads/$b"; then default_branch="$b"; break; fi
-  done
-fi
-[ -z "$default_branch" ] && default_branch="main"
+default_branch="$(adb_default_branch "$repo_root")"
 
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
 if [ "$branch" = "$default_branch" ] || [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
@@ -57,9 +59,9 @@ untracked="$(git ls-files --others --exclude-standard 2>/dev/null || true)"
 changed="$(printf '%s\n%s\n%s\n%s\n' "$committed" "$staged" "$unstaged" "$untracked" | sort -u | sed '/^$/d')"
 [ -z "$changed" ] && exit 0
 
-# Load the gate library that lives next to this script (both are installed as
-# symlinks into the same ~/.<agent>/scripts/ directory).
-lib="$(dirname "$0")/lib/project-gates.sh"
+# Load the gate library that lives next to this script (installed as symlinks into
+# the same ~/.<agent>/scripts/lib/ directory as common.sh above).
+lib="$lib_dir/project-gates.sh"
 if [ ! -f "$lib" ]; then
   printf 'precommit-gate: gate library not found at %s — skipping\n' "$lib" >&2
   exit 0

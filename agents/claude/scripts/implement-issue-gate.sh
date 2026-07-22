@@ -35,6 +35,13 @@ if [ -e "$proj_gate" ] && [ ! "$proj_gate" -ef "$0" ]; then
   exit 0
 fi
 
+# Shared shell primitives live in the sibling lib/ (installed as ~/.claude/scripts/lib).
+# Sourced when present; absent (incomplete install) → the version check below falls
+# back to the legacy exit-2 path, so the gate still functions.
+_adb_lib="$(dirname "$0")/lib/common.sh"
+# shellcheck source=/dev/null
+[ -f "$_adb_lib" ] && . "$_adb_lib"
+
 # True when the RUNNING Claude Code honors additionalContext on Stop (>= 2.1.163).
 stop_hook_additional_context_supported() {
   local execpath="${CLAUDE_CODE_EXECPATH:-}"
@@ -50,16 +57,9 @@ stop_hook_additional_context_supported() {
     [0-9]*.[0-9]*.[0-9]*) : ;;
     *) return 1 ;;
   esac
-  awk -v v="$ver" -v min="2.1.163" '
-    BEGIN {
-      nv = split(v, V, "."); nm = split(min, M, ".");
-      n = (nv > nm) ? nv : nm;
-      for (i = 1; i <= n; i++) {
-        a = (i <= nv) ? V[i] + 0 : 0; b = (i <= nm) ? M[i] + 0 : 0;
-        if (a > b) exit 0; if (a < b) exit 1;
-      }
-      exit 0;
-    }'
+  # Shared semver compare; if common.sh wasn't loaded, treat as unsupported (legacy path).
+  command -v adb_version_ge >/dev/null 2>&1 || return 1
+  adb_version_ge "$ver" "2.1.163"
 }
 
 marker=".claude/state/implement-issue-active.json"

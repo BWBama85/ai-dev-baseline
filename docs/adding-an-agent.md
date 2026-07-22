@@ -15,9 +15,11 @@ token that isn't `claude` — the `codex` and `gemini` branches in both scripts
 call `bash "$REPO/agents/$agent/adapter.sh" install|uninstall …` if that file
 exists, and print `"adapter not present yet (deferred) — skipping"` if it
 doesn't. `codex` and `gemini` each ship a working `adapter.sh` you can copy as a
-template; `foo` just needs its own, following the same contract (and the same
-symlink + backup pattern Claude's `install_claude()`/`uninstall_claude()`
-functions implement inline).
+template; `foo` just needs its own, following the same contract. All the
+symlink + backup logic is shared — the adapters **source**
+`scripts/lib/common.sh` and call `adb_link` / `adb_unlink_if_ours` /
+`adb_info`; they do not re-implement it (design-principle #1, single-source —
+see [design-principles.md](design-principles.md)).
 
 The adapter must implement two subcommands, matching how it's invoked:
 
@@ -31,27 +33,27 @@ bash "$REPO/agents/foo/adapter.sh" uninstall "$REPO"
 
 `install <repo> <backup_dir>` must, at minimum:
 
-- **Symlink the generated root doc** (`agents/foo/FOO.md` or whatever `foo`'s
-  native root-doc filename is) into `foo`'s home config location (e.g.
-  `~/.foo/FOO.md`).
-- **Back up any existing file** at that destination before replacing it —
-  mirror Claude's `link()` helper in `install.sh`: if the destination is
-  already the correct symlink, no-op; if it's a symlink to something else,
-  replace it; if it's a real file, move it under `$BACKUP_DIR` (preserving
-  the absolute path structure) before linking.
-- **Be idempotent.** Running `install.sh --agent foo` twice in a row must
-  produce the same end state with no duplicate backups and no broken links.
-- If `foo` supports skills or gate scripts analogous to Claude's, symlink
-  those too, following the same backup-then-link pattern.
+- **Source the shared library:** `. "$repo/scripts/lib/common.sh"` (or, robustly
+  from the adapter's own location, `"$(dirname "$0")/../../scripts/lib/common.sh"`,
+  as the `codex`/`gemini` adapters do).
+- **Symlink the generated root doc** with `adb_link "$repo/agents/foo/FOO.md"
+  "$HOME/.foo/FOO.md" "$backup_dir"`. `adb_link` already does the whole
+  backup-then-link dance: correct symlink → no-op; wrong symlink → replace;
+  real file → move under the backup dir (mirrored absolute path) → link. It is
+  idempotent, so running `install.sh --agent foo` twice produces the same end
+  state with no duplicate backups.
+- If `foo` supports skills or gate scripts analogous to Claude's, `adb_link`
+  those too — same helper, same pattern.
 
-`uninstall <repo>` must only remove a destination if it is **currently a
-symlink pointing back into `$repo`** — never delete a real file or a symlink
-to somewhere else (mirror `unlink_if_ours()` in `uninstall.sh`). It does not
-receive a backup directory; it never needs to write one.
+`uninstall <repo>` calls `adb_unlink_if_ours "$dest" "$repo"`, which removes a
+destination only if it is **currently a symlink pointing back into `$repo`** —
+never a real file or a symlink elsewhere. It receives no backup directory and
+never writes one.
 
-The cleanest way to write this is to lift the `link()` /
-`unlink_if_ours()` logic directly out of `install.sh` / `uninstall.sh` rather
-than reinventing it — they're small, dependency-free bash functions.
+Do **not** re-implement `link()` / `unlink_if_ours()` inline — sourcing the one
+shared copy is the point (design-principle #1; see
+[design-principles.md](design-principles.md)). The `codex` and `gemini`
+adapters are the reference: a source line plus two `adb_*` calls each.
 
 ## 2. Add `foo` to `scripts/build.sh`
 

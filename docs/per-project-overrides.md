@@ -61,7 +61,7 @@ compose:
 
 ### 3a. `agents.toml [gates]`
 
-`agents/claude/scripts/lib/project-gates.sh` auto-detects gates for the
+`scripts/lib/project-gates.sh` auto-detects gates for the
 common ecosystems (Node via `package.json` + lockfile → `pnpm`/`npm`/`yarn`/
 `bun`; Rust via `Cargo.toml`; Go via `go.mod`; Python via `pyproject.toml`/
 `setup.py`/`setup.cfg`/`requirements.txt`). A project's `agents.toml` can

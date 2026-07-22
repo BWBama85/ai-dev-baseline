@@ -15,6 +15,9 @@ set -uo pipefail
 self="${BASH_SOURCE[0]}"
 while [ -L "$self" ]; do self="$(readlink "$self")"; done
 REPO="$(cd "$(dirname "$self")/.." && pwd)"
+# Shared shell primitives (adb_toml_get) — the ONE home, sourced not copied.
+# shellcheck source=/dev/null
+. "$REPO/scripts/lib/common.sh"
 
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
@@ -43,13 +46,13 @@ mkdir -p .claude/state
 # 3. Show the effective role map (repo → global default → built-in)
 echo ""
 echo "Effective roles for this repo:"
+# Show a role's value from this repo's agents.toml, or the built-in default when the
+# key is absent. (Full repo → global → built-in resolution is #15's job; agent-init
+# only reflects the repo file plus the built-in fallback.)
 show_role() {
   local key="$1" def="$2" v
-  v="$(awk -v k="$key" '
-    /^[[:space:]]*\[/ { intbl = ($0 ~ /^[[:space:]]*\[roles\][[:space:]]*$/) }
-    intbl && $0 ~ ("^[[:space:]]*" k "[[:space:]]*=") { sub(/^[^=]*=[[:space:]]*/,""); sub(/[[:space:]]*#.*$/,""); print; exit }
-  ' agents.toml 2>/dev/null)"
-  [ -z "$v" ] && v="$def (default)"
+  # adb_toml_get exits nonzero when the key is absent → fall back to the built-in default.
+  v="$(adb_toml_get agents.toml roles "$key")" || v="$def (default)"
   printf '  %-13s %s\n' "$key" "$v"
 }
 show_role primary      '"claude"'
