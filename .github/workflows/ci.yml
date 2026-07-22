@@ -170,7 +170,7 @@ jobs:
           # asserts what is specific to THIS repo: the dogfooded agents.toml [gates] override
           # (#7) must keep being exercised, so CI can't silently stop testing the manifest.
           want="$(printf 'test\tbash scripts/selfcheck.sh')"
-          got="$(bash scripts/lib/project-gates.sh detect . 2>&1)"
+          got="$(bash scripts/lib/project-gates.sh detect . 2>/dev/null)"   # compare stdout only
           if [ "$got" != "$want" ]; then
             echo "::error::expected repo-root 'detect .' to emit the committed test gate; got: $got"
             exit 1

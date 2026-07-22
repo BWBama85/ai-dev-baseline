@@ -94,7 +94,7 @@ step "gate-detector"
 # detection surfaces the committed agents.toml [gates] override (#7), so CI keeps exercising
 # the dogfooded manifest. Records are TAB-delimited "<label>\t<command>".
 want_gate="$(printf 'test\tbash scripts/selfcheck.sh')"
-got_gate="$(bash scripts/lib/project-gates.sh detect . 2>&1)"
+got_gate="$(bash scripts/lib/project-gates.sh detect . 2>/dev/null)"   # compare stdout only
 if [ "$got_gate" = "$want_gate" ]; then
   echo "PASS (repo-root detect emits the committed test gate)"
 else

@@ -54,8 +54,11 @@ run_in_repo() { ( cd "$work/local" && eval "$1" ); }
 # (1) Repro guard: the raw enumeration MUST surface the bare `origin` symref, or the fixture
 # isn't exercising the bug and a green result would be meaningless.
 raw="$(run_in_repo "git branch -r --merged \"origin/$DEFAULT\" --format='%(refname:short)'")"
-if ! printf '%s\n' "$raw" | grep -qx 'origin'; then
-  check_note "fixture did not reproduce the bare 'origin' symref (raw enumeration: $(printf '%s' "$raw" | tr '\n' ' ')) — test is not exercising #38"
+# Current git renders the HEAD symref as bare `origin`; a few builds/configs render it
+# `origin/HEAD`. Accept either — the guard only needs the fixture to surface the symref that
+# the shipped pipeline must filter, not to pin which spelling this git uses.
+if ! printf '%s\n' "$raw" | grep -Eqx 'origin|origin/HEAD'; then
+  check_note "fixture did not reproduce the origin/HEAD symref (raw enumeration: $(printf '%s' "$raw" | tr '\n' ' ')) — test is not exercising #38"
   check_fail
 fi
 

@@ -108,6 +108,11 @@ ROADMAP_NUM="$(gh issue list --label roadmap --state open --limit 50 --json numb
 COUNT="$(printf '%s\n' "$ROADMAP_NUM" | sed '/^$/d' | wc -l | tr -d ' ')"
 ```
 
+The "hard-stop on any `gh` error" rule from step 1 has one exception here: a repo that has
+never created the `roadmap` label. Treat a *label-not-found* error on this specific query as
+**zero results** (the bootstrap path), not a failure — it is distinct from a genuine
+auth/API error, which is still a hard stop.
+
 Branch on the count — this is the whole split-brain contract:
 
 - **Exactly one** → that issue is the home. Go to step 4 (reconcile + advance).
