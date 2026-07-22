@@ -47,7 +47,6 @@ git init "$work/local" >/dev/null 2>&1
   git push origin "$DEFAULT" >/dev/null 2>&1
   git push origin feature/done >/dev/null 2>&1
   git remote set-head origin "$DEFAULT" >/dev/null 2>&1   # creates the origin/HEAD symref
-  git fetch --prune origin >/dev/null 2>&1
 )
 
 run_in_repo() { ( cd "$work/local" && eval "$1" ); }

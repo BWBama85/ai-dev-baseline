@@ -88,20 +88,11 @@ done
 [ "$ff" -eq 0 ] && echo "PASS" || { echo "FAIL"; fail=1; }
 
 step "gate-detector"
-# The no-ecosystem no-op is asserted against a CLEAN temp dir, not the repo root: this repo
-# now ships an agents.toml [gates] override (#7), so `detect .` legitimately emits the `test`
-# gate. A throwaway dir with no ecosystem and no agents.toml is the true "unrecognized
-# ecosystem" fixture.
-gd_tmp="$(mktemp -d)"
-out="$(bash scripts/lib/project-gates.sh detect "$gd_tmp" 2>&1)"; rc=$?
-rm -rf "$gd_tmp"
-if [ -z "$out" ] && [ "$rc" -eq 0 ]; then
-  echo "PASS (detect no-ops on unrecognized ecosystem)"
-else
-  echo "FAIL (out='$out' rc=$rc)"; fail=1
-fi
-# Positive assertion: repo-root detection surfaces the committed agents.toml [gates] override,
-# so CI keeps exercising the dogfooded manifest (#7). Records are TAB-delimited "<label>\t<cmd>".
+# The empty-ecosystem no-op (detect on a dir with no toolchain and no agents.toml emits
+# nothing) is covered generically by check-gates.sh — run in the "gates" step below — so it
+# isn't repeated here. This step asserts only what is specific to THIS repo: repo-root
+# detection surfaces the committed agents.toml [gates] override (#7), so CI keeps exercising
+# the dogfooded manifest. Records are TAB-delimited "<label>\t<command>".
 want_gate="$(printf 'test\tbash scripts/selfcheck.sh')"
 got_gate="$(bash scripts/lib/project-gates.sh detect . 2>&1)"
 if [ "$got_gate" = "$want_gate" ]; then

@@ -190,13 +190,17 @@ Apply these in order; every tie has a stable break so two runs agree:
 Pick the next bundle whose `Status` is `ready`: all its dependency bundles/issues are done,
 and **no member has an open PR** (an in-flight bundle is frozen and skipped whole — a running
 PR must never have its scope expanded by a newly-filed issue). **Re-check the selected
-bundle's members with a fresh `gh` call immediately before emitting** (`verify-before-
-asserting.md`) — an issue may have closed or gained a PR since step 4:
+bundle's members against a fresh `gh` read immediately before emitting** (`verify-before-
+asserting.md`) — an issue may have closed or gained a PR since step 4. Fetch the fresh
+open-issue and open-PR sets **once** and filter locally, rather than spending two network
+round-trips per member:
 
 ```bash
-# For each candidate member #N: confirm still OPEN and has no open PR.
-gh issue view "$N" --json state --jq .state          # must be OPEN
-gh pr list --state open --search "$N in:body" --json number --jq '.[].number'   # must be empty
+OPEN_ISSUES="$(gh issue list --state open --limit 200 --json number --jq '.[].number')"
+OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body)"
+# A member #N is still emittable iff it is in $OPEN_ISSUES AND no open PR references it:
+#   printf '%s\n' "$OPEN_ISSUES" | grep -qx "$N"                       # must be open
+#   printf '%s' "$OPEN_PRS" | jq -e --arg n "$N" 'any(.body|test("#"+$n+"\\b"))'  # must be empty
 ```
 
 Then output the batch and a one-line rationale:
