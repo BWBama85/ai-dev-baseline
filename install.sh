@@ -19,6 +19,9 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Shared shell primitives (adb_info / adb_link / …) — the ONE home, sourced not copied.
+# shellcheck source=/dev/null
+. "$REPO/scripts/lib/common.sh"
 BACKUP_DIR="$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)"
 WIRE_HOOKS=1
 AGENTS=()
@@ -33,47 +36,31 @@ while [ $# -gt 0 ]; do
 done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude)
 
-info() { printf '%s\n' "$*"; }
-
-# Back up an existing path (unless it's already our correct symlink), then symlink.
-link() {
-  local src="$1" dest="$2"
-  if [ -L "$dest" ]; then
-    [ "$(readlink "$dest")" = "$src" ] && { info "  ok     ${dest/#$HOME/~}"; return; }
-    rm -f "$dest"
-  elif [ -e "$dest" ]; then
-    mkdir -p "$BACKUP_DIR$(dirname "$dest")"
-    mv "$dest" "$BACKUP_DIR$dest"
-    info "  backup ${dest/#$HOME/~} → ${BACKUP_DIR/#$HOME/~}$dest"
-  fi
-  mkdir -p "$(dirname "$dest")"
-  ln -s "$src" "$dest"
-  info "  link   ${dest/#$HOME/~} → ${src/#$HOME/~}"
-}
-
 install_claude() {
-  info "claude → ~/.claude"
-  link "$REPO/agents/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
+  adb_info "claude → ~/.claude"
+  adb_link "$REPO/agents/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md" "$BACKUP_DIR"
 
   local d name
   for d in "$REPO"/agents/claude/skills/*/; do
     [ -d "$d" ] || continue
     name="$(basename "$d")"
-    link "$d" "$HOME/.claude/skills/$name"
+    adb_link "$d" "$HOME/.claude/skills/$name" "$BACKUP_DIR"
   done
 
   local s
   for s in precommit-gate.sh implement-issue-gate.sh statusline.sh; do
-    link "$REPO/agents/claude/scripts/$s" "$HOME/.claude/scripts/$s"
+    adb_link "$REPO/agents/claude/scripts/$s" "$HOME/.claude/scripts/$s" "$BACKUP_DIR"
   done
-  link "$REPO/agents/claude/scripts/lib" "$HOME/.claude/scripts/lib"
+  # The shared shell library (scripts/lib/) installs as ~/.claude/scripts/lib so the
+  # runtime gates can source common.sh / project-gates.sh as siblings.
+  adb_link "$REPO/scripts/lib" "$HOME/.claude/scripts/lib" "$BACKUP_DIR"
 
-  if [ "$WIRE_HOOKS" -eq 1 ]; then wire_hooks; else info "  (gates not wired — --no-hooks)"; fi
+  if [ "$WIRE_HOOKS" -eq 1 ]; then wire_hooks; else adb_info "  (gates not wired — --no-hooks)"; fi
 }
 
 wire_hooks() {
   if ! command -v jq >/dev/null 2>&1; then
-    info "  WARN   jq not found — cannot wire hooks; install jq and re-run, or wire manually"
+    adb_info "  WARN   jq not found — cannot wire hooks; install jq and re-run, or wire manually"
     return
   fi
   local settings="$HOME/.claude/settings.json"
@@ -89,17 +76,17 @@ wire_hooks() {
               | any(test("(precommit-gate|implement-issue-gate)\\.sh$"))) | not))
         + [$group])
   ' "$settings" > "$settings.adb.tmp" && mv "$settings.adb.tmp" "$settings"
-  info "  hooks  wired global Stop gates into ~/.claude/settings.json (backed up)"
+  adb_info "  hooks  wired global Stop gates into ~/.claude/settings.json (backed up)"
 }
 
 run_adapter() {
   local agent="$1"
   local adapter="$REPO/agents/$agent/adapter.sh"
   if [ -x "$adapter" ] || [ -f "$adapter" ]; then
-    info "$agent → (adapter)"
+    adb_info "$agent → (adapter)"
     bash "$adapter" install "$REPO" "$BACKUP_DIR"
   else
-    info "$agent → adapter not present yet (deferred) — skipping"
+    adb_info "$agent → adapter not present yet (deferred) — skipping"
   fi
 }
 
@@ -109,26 +96,26 @@ write_global_manifest() {
   mkdir -p "$dir"
   if [ ! -f "$f" ]; then
     cp "$REPO/templates/agents.toml" "$f"
-    info "manifest → wrote global default ${f/#$HOME/~}"
+    adb_info "manifest → wrote global default ${f/#$HOME/~}"
   else
-    info "manifest → exists ${f/#$HOME/~} (left as-is)"
+    adb_info "manifest → exists ${f/#$HOME/~} (left as-is)"
   fi
 }
 
-info "Installing ai-dev-baseline from ${REPO/#$HOME/~}"
-info ""
+adb_info "Installing ai-dev-baseline from ${REPO/#$HOME/~}"
+adb_info ""
 for a in "${AGENTS[@]}"; do
   case "$a" in
     claude) install_claude ;;
     codex|gemini) run_adapter "$a" ;;
-    *) info "unknown agent '$a' — skipping" ;;
+    *) adb_info "unknown agent '$a' — skipping" ;;
   esac
-  info ""
+  adb_info ""
 done
 write_global_manifest
 
-info ""
-info "Done. Backups (if any): ${BACKUP_DIR/#$HOME/~}"
-info "Per project: run 'agent-init' at a repo root to set roles (see templates/agents.toml)."
-info "Note: a repo that ships its own .claude/scripts/precommit-gate.sh keeps winning —"
-info "      the global gate defers to it, so nothing double-runs."
+adb_info ""
+adb_info "Done. Backups (if any): ${BACKUP_DIR/#$HOME/~}"
+adb_info "Per project: run 'agent-init' at a repo root to set roles (see templates/agents.toml)."
+adb_info "Note: a repo that ships its own .claude/scripts/precommit-gate.sh keeps winning —"
+adb_info "      the global gate defers to it, so nothing double-runs."

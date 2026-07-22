@@ -47,9 +47,13 @@ tracked as follow-up issues. See each agent's README under `agents/<token>/`.
 | `agents/claude/scripts/precommit-gate.sh` | `~/.claude/scripts/precommit-gate.sh` |
 | `agents/claude/scripts/implement-issue-gate.sh` | `~/.claude/scripts/implement-issue-gate.sh` |
 | `agents/claude/scripts/statusline.sh` | `~/.claude/scripts/statusline.sh` |
-| `agents/claude/scripts/lib/` | `~/.claude/scripts/lib` |
+| `scripts/lib/` (the shared shell library) | `~/.claude/scripts/lib` |
 
-Every link is created by a shared `link()` helper that is **idempotent**:
+The shared shell library (`scripts/lib/common.sh` + `project-gates.sh`) installs as
+`~/.claude/scripts/lib` so the runtime gates can source it as a sibling.
+
+Every link is created by the shared `adb_link()` helper (from `scripts/lib/common.sh`,
+sourced by `install.sh`) that is **idempotent**:
 
 - If the destination is already a symlink pointing at the right source, it's
   left alone (`ok`).
@@ -162,7 +166,7 @@ cd ~/Code/ai-dev-baseline
 ```
 
 `uninstall.sh` only removes a destination if it is **currently a symlink
-pointing somewhere inside this repo** (`unlink_if_ours`) — a real file, or a
+pointing somewhere inside this repo** (`adb_unlink_if_ours`) — a real file, or a
 symlink pointing elsewhere, is left alone and reported as `skip ... (not
 ours)`. It also strips the two named Stop-hook gate entries out of
 `~/.claude/settings.json` (again via `jq`, matched by filename) and removes

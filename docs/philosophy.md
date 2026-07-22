@@ -126,6 +126,9 @@ repo (see [installation.md](installation.md)). That's a deliberate choice:
 
 ## See also
 
+- [design-principles.md](design-principles.md) — the tenets a contribution must
+  satisfy, and the CI checks that enforce each (single-source/no-drift, general-
+  over-specific, config-over-hardcode, graceful degradation).
 - [installation.md](installation.md) — how the global install actually wires
   symlinks and hooks.
 - [roles-and-agents.md](roles-and-agents.md) — the role/agent separation that

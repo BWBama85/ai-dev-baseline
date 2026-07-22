@@ -25,13 +25,15 @@ those. The rules below are specific to this repo's code.
    procedure + metadata (rendered into the Claude skills). `base/roles.md` is the
    multi-agent role model.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors CI exactly
-   (shellcheck · build-drift · skill-frontmatter · gate-detector · install dry-run).
-   Fix red at the root — never push and hope (the CI-discipline practice applies to
-   this repo too).
+   (shellcheck · build-drift · skill-frontmatter · gate-detector · common-lib ·
+   fact-drift · practice-index · install dry-run). Fix red at the root — never push and
+   hope (the CI-discipline practice applies to this repo too).
 4. **Shell code must be portable and shellcheck-clean.** `bash`/POSIX, safe on macOS
    bash 3.2 (no `mapfile`, no `readlink -f`), passing
    `shellcheck --severity=warning -e SC1091`. The install runs on a stock Mac and on
-   Linux CI.
+   Linux CI. **Source the shared primitives, never copy them** — link/unlink/backup,
+   default-branch, TOML-read, and version-compare live once in `scripts/lib/common.sh`
+   (see `docs/design-principles.md`).
 5. **Skills are self-contained.** A Claude `SKILL.md` loads whole — keep it complete.
    Keep shared content agent-neutral so adapters can render it.
 6. **Feature branch + PR + green CI.** No direct pushes to `main`. File a tracked
@@ -45,10 +47,12 @@ those. The rules below are specific to this repo's code.
 | `base/workflows/*.md` | Single source for each workflow (procedure + metadata) — **edit here** |
 | `base/roles.md`, `templates/agents.toml` | Role model + per-project manifest |
 | `agents/<agent>/` | Per-agent: generated root doc, `adapter.sh`, (Claude:) generated `skills/` + `scripts/` |
+| `scripts/lib/common.sh` | Shared shell primitives — the **ONE home** for link/unlink/backup, default-branch, TOML-read, version-compare; **source it, never copy** |
+| `scripts/lib/project-gates.sh` | Gate auto-detector (installs beside `common.sh` into `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → Claude skills |
-| `scripts/selfcheck.sh` | Local CI mirror |
+| `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index) |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |
-| `docs/` | philosophy · installation · roles · overrides · adding-an-agent |
+| `docs/` | design-principles · philosophy · installation · roles · overrides · adding-an-agent |
 
 ## Build / test loop
 

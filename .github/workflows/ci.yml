@@ -166,7 +166,7 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          out="$(bash agents/claude/scripts/lib/project-gates.sh detect . 2>&1)" || rc=$?
+          out="$(bash scripts/lib/project-gates.sh detect . 2>&1)" || rc=$?
 
           if [ -n "$out" ]; then
             echo "::error::expected no output from 'detect .' in a repo with no recognized ecosystem; got: $out"
@@ -185,12 +185,45 @@ jobs:
         run: |
           set -uo pipefail
           rc=0
-          bash agents/claude/scripts/lib/project-gates.sh badcmd >/tmp/adb-badcmd.log 2>&1 || rc=$?
+          bash scripts/lib/project-gates.sh badcmd >/tmp/adb-badcmd.log 2>&1 || rc=$?
           if [ "$rc" -eq 0 ]; then
             echo "::error::'project-gates.sh badcmd' unexpectedly exited 0; expected a non-zero usage-error exit"
             cat /tmp/adb-badcmd.log
             exit 1
           fi
+
+  common-lib:
+    name: common-lib
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unit-test the shared shell primitives
+        run: bash scripts/check-common-lib.sh
+
+  fact-drift:
+    name: fact-drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Canonical facts must be consistent across their consumer docs
+        run: bash scripts/check-fact-drift.sh
+
+  practice-index:
+    name: practice-index
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Every practice must be indexed exactly once in 00-index.md
+        run: bash scripts/check-practice-index.sh
 
   install-dry-run:
     name: install-dry-run
@@ -216,10 +249,12 @@ jobs:
         # runner-image contents.
         run: sudo apt-get install -y jq
 
-      - name: Run install.sh --agent claude
+      - name: Run install.sh for all three agents
+        # Install claude + codex + gemini so the adapter paths (which now source the
+        # shared scripts/lib/common.sh) are exercised alongside Claude's inline path.
         run: |
           set -euo pipefail
-          ./install.sh --agent claude
+          ./install.sh --agent claude --agent codex --agent gemini
 
       - name: Assert key symlinks exist and resolve
         run: |
@@ -228,7 +263,10 @@ jobs:
             "$HOME/.claude/CLAUDE.md" \
             "$HOME/.claude/skills/implement-issue" \
             "$HOME/.claude/scripts/precommit-gate.sh" \
-            "$HOME/.claude/scripts/lib/project-gates.sh"; do
+            "$HOME/.claude/scripts/lib/project-gates.sh" \
+            "$HOME/.claude/scripts/lib/common.sh" \
+            "$HOME/.codex/AGENTS.md" \
+            "$HOME/.gemini/GEMINI.md"; do
             if [ ! -e "$p" ]; then
               echo "::error::expected path to exist and resolve: $p"
               exit 1
@@ -240,15 +278,17 @@ jobs:
           set -euo pipefail
           grep -q 'precommit-gate\.sh' "$HOME/.claude/settings.json"
 
-      - name: Run uninstall.sh --agent claude
+      - name: Run uninstall.sh for all three agents
         run: |
           set -euo pipefail
-          ./uninstall.sh --agent claude
+          ./uninstall.sh --agent claude --agent codex --agent gemini
 
-      - name: Assert CLAUDE.md is no longer a symlink
+      - name: Assert root docs are no longer symlinks
         run: |
           set -euo pipefail
-          if [ -L "$HOME/.claude/CLAUDE.md" ]; then
-            echo "::error::$HOME/.claude/CLAUDE.md is still a symlink after uninstall"
-            exit 1
-          fi
+          for p in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md" "$HOME/.gemini/GEMINI.md"; do
+            if [ -L "$p" ]; then
+              echo "::error::$p is still a symlink after uninstall"
+              exit 1
+            fi
+          done

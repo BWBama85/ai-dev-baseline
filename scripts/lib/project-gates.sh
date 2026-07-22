@@ -15,42 +15,30 @@
 
 set -u
 
+# Shared primitives (adb_toml_get / adb_toml_unquote) live next to this file. At
+# runtime this is ~/.<agent>/scripts/lib/common.sh (install.sh symlinks the whole
+# scripts/lib dir there); run directly from the repo it is scripts/lib/common.sh.
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
+
 _adb_have() { command -v "$1" >/dev/null 2>&1; }
 
 # Does package.json declare an npm script named $2?
 _adb_pkg_has() { grep -Eq "\"$2\"[[:space:]]*:" "$1/package.json" 2>/dev/null; }
 
-# Extract `key = "value"` from the [gates] table of a repo's agents.toml.
-# Prints the value (possibly empty = "disabled"), or the sentinel __ADB_UNSET__
-# when the key is absent. Dependency-free (awk only).
-_adb_gates_override() {
-  local key="$1" root="$2"
-  local file="$root/agents.toml"
-  [ -f "$file" ] || { printf '__ADB_UNSET__'; return; }
-  awk -v key="$key" '
-    /^[[:space:]]*\[/ { intbl = ($0 ~ /^[[:space:]]*\[gates\][[:space:]]*$/) }
-    intbl && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
-      line = $0
-      sub(/^[^=]*=[[:space:]]*/, "", line)   # strip "key ="
-      sub(/[[:space:]]*#.*$/, "", line)        # strip trailing comment
-      sub(/[[:space:]]*$/, "", line)           # strip trailing space
-      gsub(/^"|"$/, "", line)                    # strip surrounding quotes
-      printf "%s", line; found = 1; exit
-    }
-    END { if (!found) printf "__ADB_UNSET__" }
-  ' "$file"
-}
-
-# Emit one gate line, letting an agents.toml override win over the default.
+# Emit one gate line, letting an agents.toml [gates] override win over the default.
+# The override reader is the shared adb_toml_get: present-but-empty ("") disables the
+# gate, absent falls through to the detected default.
 _adb_emit() {
   local label="$1" default_cmd="$2" root="$3" ov
-  ov="$(_adb_gates_override "$label" "$root")"
-  if [ "$ov" = "__ADB_UNSET__" ]; then
+  if ov="$(adb_toml_get "$root/agents.toml" gates "$label")"; then
+    ov="$(adb_toml_unquote "$ov")"
+    # Present: a non-empty override replaces the default; "" disables the gate.
+    [ -n "$ov" ] && printf '%s\t%s\n' "$label" "$ov"
+  else
+    # Absent: fall through to the auto-detected default (if any).
     [ -n "$default_cmd" ] && printf '%s\t%s\n' "$label" "$default_cmd"
-  elif [ -n "$ov" ]; then
-    printf '%s\t%s\n' "$label" "$ov"
   fi
-  # ov == "" (explicit empty string in agents.toml) → gate disabled, emit nothing.
 }
 
 # Print detected gates as "<label>\t<command>" lines (or nothing).

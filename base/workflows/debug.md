@@ -80,6 +80,10 @@ large change straight from a debug session.
 - If the investigation surfaced a broader class, a systemic gap, or work you're
   deferring, file a tracked issue (`base/practices/issues-and-scope.md`) — evidence,
   root cause, and the concrete follow-up. Cross-link it.
+- If the fix needs something the baseline doesn't model (a project-specific gate,
+  convention, or a general gap), place it deterministically per
+  `base/practices/handling-the-unknown.md` — its one prescribed home, recorded — rather
+  than a bespoke local patch.
 
 ## Output
 

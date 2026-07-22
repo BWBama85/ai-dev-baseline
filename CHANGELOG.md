@@ -7,6 +7,35 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **Shared shell library — the ONE home** (`scripts/lib/common.sh`, #30): a single
+  implementation of `adb_link` / `adb_unlink_if_ours` (backup-then-symlink and
+  ownership-scoped unlink), `adb_default_branch`, `adb_toml_get` / `adb_toml_unquote`
+  (used for both `[gates]` and `[roles]`), and `adb_version_ge`. The installer,
+  uninstaller, both agent adapters, `agent-init`, and the runtime gates now **source**
+  it instead of carrying four-plus copies. `scripts/lib/project-gates.sh` moved here to
+  sit beside it (it installs to `~/.<agent>/scripts/lib`). Unit-tested by
+  `scripts/check-common-lib.sh`.
+- **CI-enforced no-drift for restated facts** (#30): `scripts/check-fact-drift.sh` pins
+  the gate-axis list, cross-agent invocation commands, the codex ≥7-minute timeout, and
+  the role-resolution order to their canonical source and fails when a consumer doc
+  diverges. `scripts/check-practice-index.sh` keeps `base/practices/00-index.md` in sync
+  with the practice files. Both run in CI **and** `selfcheck.sh`; the install dry-run now
+  covers all three agents.
+- **`docs/design-principles.md`** (#30): the tenets a contribution must satisfy
+  (single-source/no-drift, general-over-specific, extensible, config-over-hardcode,
+  graceful degradation) with the concrete CI check enforcing each; referenced from
+  `CONTRIBUTING.md`. Includes the governance rule that new adapters/gates/hooks build on
+  the shared primitives rather than copying logic.
+- **`base/practices/handling-the-unknown.md`** (#32): a deterministic
+  classify → place → record → escalate protocol for when a project hits something the
+  baseline doesn't model, rendered into every agent root doc. Enumerates the prescribed
+  home per category (gate → `[gates]`, role → `[roles]`, project rule → the repo's root
+  doc, deviation → a `DEVIATION` record, general gap → a baseline issue) and defines the
+  per-project decision-log format at `.ai-dev-baseline/decisions.md`. The
+  `implement-issue`, `debug`, and `create-issue` workflows reference it.
+
 ### Added — initial framework
 
 - **Agent-neutral practices** (`base/practices/`): shell hygiene, git/PR discipline,

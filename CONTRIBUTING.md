@@ -23,6 +23,12 @@ per-agent files:
 `base/`, rebuild, commit both. CI's `build-drift` job fails a PR whose generated docs or
 skills are stale, missing, untracked, or orphaned.
 
+Before adding an adapter, gate detector, renderer, or hook, read
+[`docs/design-principles.md`](docs/design-principles.md) — the tenets a contribution
+must satisfy (single-source/no-drift, general-over-specific, config-over-hardcode,
+graceful degradation) and the CI check that enforces each. New shell logic **sources**
+`scripts/lib/common.sh`; it never copies `link()`/`unlink_if_ours()`/TOML-read.
+
 ## Dev loop
 
 ```bash
@@ -41,8 +47,11 @@ bash scripts/selfcheck.sh
 stale, untracked, or missing), **workflow-map** (each `base/workflows/<name>.md` maps 1:1
 to a rendered skill, no orphans), **skill-frontmatter** (each `SKILL.md` has
 `name`/`description`/`user-invocable`), **gate-detector** (`detect` no-ops cleanly,
-`badcmd` errors), and an **install→uninstall dry-run** into a throwaway `HOME`. Green
-locally ≈ green in CI.
+`badcmd` errors), **common-lib** (unit-test the shared `scripts/lib/common.sh`
+primitives), **fact-drift** (canonical facts consistent across their consumer docs),
+**practice-index** (every practice listed once in `00-index.md`), and an
+**install→uninstall dry-run** (all three agents) into a throwaway `HOME`. Green locally
+≈ green in CI.
 
 ## Repository map
 
@@ -52,10 +61,12 @@ locally ≈ green in CI.
 | `base/workflows/*.md` | Single source for each workflow — procedure + metadata (edit here) |
 | `base/roles.md` · `templates/agents.toml` | Role model + per-project manifest |
 | `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) generated `skills/` + `scripts/` |
+| `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
+| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · fact-drift · practice-index) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
-| `docs/` | philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent |
-| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · install dry-run |
+| `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent |
+| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · fact-drift · practice-index · install dry-run |
 
 ## Adding a new agent
 
