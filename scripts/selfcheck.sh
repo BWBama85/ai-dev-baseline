@@ -2,7 +2,9 @@
 # ai-dev-baseline — local CI mirror. Run before every push.
 #
 # Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter,
-# gate-detector, and an install→uninstall dry-run into a throwaway HOME.
+# gate-detector/gates, common-lib, cleanup-enum, baseline, precommit-gate,
+# implement-gate, install-migration, fact-drift, practice-index, and an
+# install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 
@@ -122,6 +124,21 @@ step "baseline"
 # End-to-end tests for bin/baseline's currency classification (safety-critical: it
 # must never fast-forward over dirty/ahead/diverged/detached/non-default state).
 if bash scripts/check-baseline.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "precommit-gate"
+# The Stop-hook quality gate must FAIL LOUD (never silently no-op) when its own shared
+# library is missing — a broken install is enforcement secretly off (#35).
+if bash scripts/check-precommit-gate.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "implement-gate"
+# The implement-issue Stop hook must re-verify PR state LIVE and fail closed — never trust a
+# stored prUrl over a PR that was closed without merging (#44).
+if bash scripts/check-implement-gate.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "install-migration"
+# A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
+# a pull to HEAD, and require every installed link to still resolve (#35).
+if bash scripts/check-install-migration.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "fact-drift"
 # Canonical facts (gate axes, cross-agent invocations, codex timeout, resolution order)

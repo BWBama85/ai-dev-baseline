@@ -180,10 +180,12 @@ cause of lost work:
 - It fast-forwards **only** when the install-source clone is **clean, on its default
   branch, and merely behind** `origin`. A dirty / detached / non-default / ahead /
   diverged clone is **surfaced and left untouched** — you reconcile it by hand.
-- After a fast-forward it re-runs the **idempotent** installer **only when an installed
-  path actually moved** (a symlink stopped resolving), preserving the exact agent set
-  and hook preference already installed, then **loudly verifies** every canonical link
-  still resolves and fails if one is broken.
+- After a fast-forward it **always** re-runs the **idempotent** installer (a pulled commit
+  may add a new skill or script that existing links don't cover, so "links resolve" does
+  not imply "everything is linked"), preserving the exact agent set and hook preference
+  already installed, then **loudly verifies** every canonical link still resolves and fails
+  if one is broken. When the clone is already **current**, it re-installs only if that
+  verification finds a broken link.
 
 `baseline update --check` fetches, prints one status word, and changes nothing; its
 exit code is a stable contract for a future `SessionStart` lifecycle hook (issue #25):

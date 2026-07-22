@@ -81,17 +81,50 @@ Handling a project-specific unknown deterministically — which config surface i
 and how the decision is recorded — is its own practice:
 [`base/practices/handling-the-unknown.md`](../base/practices/handling-the-unknown.md).
 
-## 5. Graceful degradation
+## 5. Graceful degradation — but a missing *required* dependency fails loud
 
-**A missing optional dependency degrades to a safe no-op; it never crashes or corrupts.**
+**A missing OPTIONAL dependency degrades to a safe no-op; it never crashes or corrupts.
+A missing REQUIRED dependency — one the mechanism cannot function without — FAILS LOUD,
+never silently no-ops.** The distinction is the difference between "this repo has nothing
+for me to do" (degrade) and "my own install is broken" (fail loud). Conflating them is how
+enforcement gets secretly turned off.
 
-- The gate detector emits nothing (exit 0) on an unfamiliar repo. The Stop-hook gates
-  no-op when not in a git repo, on the default branch, with no changes, or when the
-  shared library isn't present (an incomplete install). `selfcheck.sh` SKIPs shellcheck
-  when it isn't installed. `install.sh` warns and continues if `jq` is absent instead of
-  dying.
+- The gate detector emits nothing (exit 0) on an unfamiliar repo — a legitimate no-op. The
+  Stop-hook gates no-op when not in a git repo, on the default branch, or with no changes.
+  `selfcheck.sh` SKIPs shellcheck when it isn't installed. `install.sh` warns and continues
+  if `jq` is absent instead of dying. These are missing *optional* inputs.
+- But a gate whose OWN shared library (`common.sh` / `project-gates.sh`) is missing is a
+  broken install, not an unfamiliar repo — so `precommit-gate.sh` **fails loud (exit 2,
+  blocking)** rather than exit 0, because a silent no-op there is enforcement secretly OFF,
+  which is worse than a hard error (issue #35). `project-gates.sh` likewise fails loud when
+  it can't load `common.sh`, instead of emitting an empty (no-gates) result. "No gates
+  detected" and "the gate library is gone" must never look the same to a caller.
 - A sourced library must not mutate its caller: `common.sh` sets no shell options and
   depends on no caller globals — every input is a function argument.
+
+## 6. Never relocate an installed path without a self-healing migration
+
+**Installs are symlinks into this clone, so a path the installer links to is a public API.
+Moving one dangles every existing install's symlink until a re-install — and a plain
+`git pull` does not re-install.** So: **either keep installed paths stable and reorganize
+*behind* them, or move a path only with a self-healing, `git pull`-only migration** — leave
+a compatibility symlink at the OLD path pointing to the new one, so a pull alone keeps a
+stale install working (`baseline update` then self-heals it to the canonical link on its
+next run, loudly verifying every link resolves).
+
+- The concrete precedent: PR #34 moved `project-gates.sh` from `agents/claude/scripts/lib/`
+  to `scripts/lib/`. The compat symlink `agents/claude/scripts/lib → ../../../scripts/lib`
+  is what keeps pre-move installs working on a bare `git pull`; **deleting it would silently
+  break them**, so it is load-bearing, not cruft.
+- **The check:** `scripts/check-install-migration.sh` (run by `selfcheck.sh` and CI)
+  installs the merge-base revision into a throwaway `HOME`, checks the same clone out to
+  `HEAD` (simulating a pull with no re-install), and fails if any installed symlink no
+  longer resolves — plus an explicit assertion that the historical compat shims still exist.
+  A PR that moves an installed path without a shim fails this gate.
+- **Reflexivity footgun:** developing the framework *from the clone that is your live
+  install* means merging such a move mutates your own running environment mid-session. Use
+  the two-clone topology (a separate dev clone) — see
+  [installation.md](installation.md#the-two-clone-topology) and `CONTRIBUTING.md`.
 
 ## Governance: new adapters / gates / hooks build on the primitives
 

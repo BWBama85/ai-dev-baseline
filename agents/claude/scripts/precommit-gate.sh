@@ -14,6 +14,12 @@
 #   - there are zero changes on the branch (nothing to check);
 #   - no supported ecosystem/gates are detected (safe in unfamiliar repos).
 #
+# FAIL LOUD (exit 2), never silently — when this gate's OWN required libraries
+# (lib/common.sh, lib/project-gates.sh) are missing or corrupt. That is a broken /
+# incomplete install, NOT an unfamiliar repo: a gate that silently no-ops then is
+# enforcement secretly OFF, which is worse than a hard error (#35). This is distinct
+# from "no gates detected" (a legitimate no-op decided INSIDE adb_run_gates).
+#
 # A red gate is genuinely wrong-until-fixed, so this stays a hard exit-2 block
 # (unlike the soft "keep going" cue in implement-issue-gate.sh). See
 # base/practices/ci-discipline.md for the diagnose-before-rerun philosophy.
@@ -30,13 +36,25 @@ if [ -e "$proj_gate" ] && [ ! "$proj_gate" -ef "$0" ]; then
   exit 0
 fi
 
-# Shared shell primitives live in the sibling lib/ (installed as ~/.claude/scripts/lib).
-# A missing library means an incomplete install → no-op (exit 0), matching how the gate
-# already skips when its gate library is absent.
+# --- fail-loud dependency loading (#35) --------------------------------------
+# This gate's shared libraries live in the sibling lib/ (installed as ~/.<agent>/scripts/lib).
+# They are REQUIRED, not optional. A missing/corrupt library is a broken install, and a gate
+# that silently no-ops then is enforcement secretly OFF — so it FAILS LOUD (exit 2, blocking),
+# never exit 0. Resolving the default branch and the change set needs common.sh's
+# adb_default_branch (single-source: never re-implement it here, per docs/design-principles.md),
+# so common.sh is required up front — before the branch/changes no-op checks below.
 lib_dir="$(dirname "$0")/lib"
-[ -f "$lib_dir/common.sh" ] || exit 0
+fail_loud() {
+  printf '\nprecommit-gate: FATAL — %s\n' "$1" >&2
+  printf 'This is NOT a pass. The quality gates cannot run, so the turn is BLOCKED. The baseline\n' >&2
+  printf "install is incomplete or an installed path moved — repair it with 'baseline update'\n" >&2
+  printf '(or re-run install.sh from your baseline clone), then retry.\n' >&2
+  exit 2
+}
+[ -f "$lib_dir/common.sh" ] || fail_loud "shared library not found: $lib_dir/common.sh"
 # shellcheck source=/dev/null
-. "$lib_dir/common.sh"
+. "$lib_dir/common.sh" || fail_loud "shared library failed to source: $lib_dir/common.sh"
+command -v adb_default_branch >/dev/null 2>&1 || fail_loud "common.sh did not define adb_default_branch (corrupt library)"
 
 # Resolve the default branch (origin/HEAD → main → master → "main").
 default_branch="$(adb_default_branch "$repo_root")"
@@ -61,15 +79,14 @@ untracked="$(git ls-files --others --exclude-standard 2>/dev/null || true)"
 changed="$(printf '%s\n%s\n%s\n%s\n' "$committed" "$staged" "$unstaged" "$untracked" | sort -u | sed '/^$/d')"
 [ -z "$changed" ] && exit 0
 
-# Load the gate library that lives next to this script (installed as symlinks into
-# the same ~/.<agent>/scripts/lib/ directory as common.sh above).
+# We are on a feature branch WITH changes: the gate WILL run. The gate library is required
+# here too — a missing/corrupt one is the same broken-install fail-loud condition as common.sh
+# above (a silent skip here was the old fail-silent bug #35 fixes), never a silent skip.
 lib="$lib_dir/project-gates.sh"
-if [ ! -f "$lib" ]; then
-  printf 'precommit-gate: gate library not found at %s — skipping\n' "$lib" >&2
-  exit 0
-fi
+[ -f "$lib" ] || fail_loud "gate library not found: $lib"
 # shellcheck source=/dev/null
-. "$lib"
+. "$lib" || fail_loud "gate library failed to source: $lib"
+command -v adb_run_gates >/dev/null 2>&1 || fail_loud "project-gates.sh did not define adb_run_gates (corrupt library)"
 
 # Pass the branch change set so a path-scoped gate ([gates.scope] in agents.toml) runs
 # only when it touches a matching file — the escape hatch that lets a repo express

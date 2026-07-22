@@ -48,8 +48,22 @@ set -u
 # Shared primitives (adb_toml_get / adb_toml_unquote / adb_toml_keys) live next to this
 # file. At runtime this is ~/.<agent>/scripts/lib/common.sh (install.sh symlinks the whole
 # scripts/lib dir there); run directly from the repo it is scripts/lib/common.sh.
+#
+# common.sh is a REQUIRED dependency: without it this file's gate detection silently emits
+# nothing and every caller (a direct `run`/`detect`, or a sourced adb_run_gates) reads that
+# as "no gates" — enforcement secretly OFF. So a missing/corrupt common.sh FAILS LOUD (#35),
+# never a silent no-op. `return` unwinds a sourced caller; `|| exit 1` covers direct execution.
+_adb_common="$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
+if [ ! -f "$_adb_common" ]; then
+  printf 'project-gates: FATAL — required library not found: %s (broken/incomplete install)\n' "$_adb_common" >&2
+  return 1 2>/dev/null || exit 1
+fi
 # shellcheck source=/dev/null
-. "$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
+. "$_adb_common"
+if ! command -v adb_toml_get >/dev/null 2>&1; then
+  printf 'project-gates: FATAL — %s did not define adb_toml_get (corrupt library)\n' "$_adb_common" >&2
+  return 1 2>/dev/null || exit 1
+fi
 
 # One literal TAB — the record field delimiter. A gate whose command or scope contains a
 # tab is rejected (below) so the delimiter can never be forged.
