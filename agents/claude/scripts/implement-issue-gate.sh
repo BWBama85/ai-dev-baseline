@@ -150,10 +150,11 @@ Resume the playbook (phase → next step):
   - pushed           → gh pr create  (write prUrl into the marker)
 
 Legitimate stops only: write .claude/state/implement-issue-blocked.json with the
-reason AND a .branch field matching '${marker_branch}' if (a) a BLOCKING
-gap-analysis finding you cannot resolve, (b) the gate escape clause tripped,
-(c) the branch already exists on remote, or (d) a required review step cannot
-complete after retry + fallback. Otherwise, keep going.
+reason AND a .branch field matching '${marker_branch}' if (a) the gate escape
+clause tripped, (b) the branch already exists on remote, or (c) a required review
+step cannot complete after retry + fallback. (A BLOCKING gap-analysis finding is a
+pre-branch stop with no active marker, so it never applies once this hook fires.)
+Otherwise, keep going.
 EOF
 }
 resume_hint="$(emit_resume_hint)"

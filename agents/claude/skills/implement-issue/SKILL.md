@@ -252,8 +252,11 @@ slot it replaced; it does not silently satisfy a different reviewer's slot.
 - `claude` (Claude driving) → an **in-process, two-part** pass, both model-invokable:
   1. **`/simplify` first** — the quality / reuse / simplification pass. It may edit
      code; if it does, **re-run gates and refresh the diff** before step 2, or the
-     bug review inspects stale code. `/simplify` **does not hunt bugs**, so it does
-     not by itself satisfy the slot.
+     bug review inspects stale code. **Never let it hand-edit a generated file** —
+     anything carrying a `GENERATED FILE` marker (a rendered root doc, a `SKILL.md`):
+     if `/simplify` touches one, revert that edit, make the change in the `base/`
+     source instead, and rebuild (`scripts/build.sh`). `/simplify` **does not hunt
+     bugs**, so it does not by itself satisfy the slot.
   2. **Adversarial bug review** — dispatch a Claude subagent (Agent tool,
      `general-purpose`) over the *fresh* diff, prompted to find real bugs (edge
      cases, escaping, boundaries, idempotency, security). Run it **synchronously**

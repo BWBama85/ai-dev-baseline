@@ -46,12 +46,17 @@ cross-agent dispatch:
   and **fall back**: to another agent the role lists, or to a `general-purpose` Claude
   subagent running the same prompt (model-invokable whenever Claude drives; but it too
   can error, so it is a fallback, not a guarantee).
-- **If nothing completes:** the step **failed** → block the run (write the workflow's
-  blocked marker) or surface to the owner. Never mark a delegated step done on
-  partial or empty output.
+- **A step is complete once its call returns a result.** A reviewer that runs to the
+  end and reports **no findings** is a clean pass — proceed to triage. Only a call
+  that **never returned a result** (crashed, hung, or was killed) is incomplete; if
+  nothing completes, the step **failed** → block the run (write the workflow's blocked
+  marker) or surface to the owner. Never mark a step done on an *absent* result — but
+  do not mistake an empty *finding list* for an absent result.
 - **"Advisory" applies to *completed* findings, not to the step.** The implementer
-  may disagree with a finding a delegated agent actually produced, documenting why. A
-  missing, hung, or empty result is an **incomplete step**, not an advisory one.
+  may disagree with a finding a delegated agent actually produced, documenting why —
+  and "no findings" from a completed reviewer is itself a valid, completed result. A
+  call that *never returned a result* (missing, hung, crashed) is an **incomplete
+  step**, not an advisory one.
 
 ## Agent tokens
 

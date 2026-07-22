@@ -20,7 +20,7 @@ names for that role — **with no change to the workflow itself.** Swap
 |---|---|---|---|
 | `primary` | Drives implementation end-to-end (`implement-issue`) | exactly 1 | required |
 | `gap_analysis` | Adversarial pre-implementation read of the issue | 0 or 1 | skip the pass |
-| `review` | Independent code review of the diff before merge | 1+ | primary's own self-review only |
+| `review` | Independent code review of the diff before merge | 1+ | the primary's own review pass |
 | `debug` | Owns root-cause investigations | 1 | primary |
 | `issue_author` | Drafts and files issues (`create-issue`) | 1 | primary |
 | `release` | Cuts releases | 1 | primary |
