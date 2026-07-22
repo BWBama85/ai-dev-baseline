@@ -113,6 +113,13 @@ Gemini/Antigravity adapters install the shared practices into each agent's root
 doc today; deeper per-agent workflow parity is tracked as issues. See
 [docs/adding-an-agent.md](docs/adding-an-agent.md).
 
+## Contributing
+
+Dev guide: [CONTRIBUTING.md](CONTRIBUTING.md) (agents working on the repo start at
+[CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md)). The one rule to remember: edit
+`base/practices/*.md`, **never** the generated `agents/*/…` root docs, and run
+`scripts/selfcheck.sh` before pushing — it mirrors CI.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
