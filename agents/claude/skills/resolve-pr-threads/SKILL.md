@@ -61,6 +61,7 @@ PR_META=$(gh pr view "$PR_NUM" --json state,headRefName,baseRefName,url 2>/dev/n
 }
 PR_STATE=$(echo "$PR_META" | jq -r .state)
 PR_BRANCH=$(echo "$PR_META" | jq -r .headRefName)
+PR_BASE=$(echo "$PR_META" | jq -r .baseRefName)   # restore fallback if the start branch is gone
 [ "$PR_STATE" = "OPEN" ] || { echo "ERROR: PR #$PR_NUM is $PR_STATE"; exit 1; }
 
 if [ -n "$(git status --porcelain)" ]; then
@@ -68,10 +69,11 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-# Announce the branch switch so the user knows their working tree is changing.
-CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
-if [ "$CURRENT_BRANCH" != "$PR_BRANCH" ]; then
-  echo "Switching working tree from '$CURRENT_BRANCH' to '$PR_BRANCH' (PR #$PR_NUM's head)."
+# Capture the branch to RESTORE to on exit (issue #17: never strand the tree on the
+# PR head). This runs before any switch, so on the dirty-abort above nothing moved.
+ORIG_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+if [ "$ORIG_BRANCH" != "$PR_BRANCH" ]; then
+  echo "Switching working tree from '$ORIG_BRANCH' to '$PR_BRANCH' (PR #$PR_NUM's head); will restore '$ORIG_BRANCH' on exit."
 fi
 
 # Check out the head branch only if it actually exists locally; otherwise
@@ -114,6 +116,9 @@ if [ "${TOTAL:-0}" -ge 50 ]; then
   exit 1
 fi
 ```
+
+This abort happens **after** the step-1 branch switch, so run **step 7 (restore the
+starting branch)** before exiting — do not leave the tree stranded on the PR head.
 
 ### 3. Classify each thread
 
@@ -209,6 +214,32 @@ Emit a concise summary to the user:
 >
 > Remaining unresolved bot threads: <REMAINING>. <If >0, name them.>
 
+### 7. Restore the starting branch (never strand the tree)
+
+This skill switched your working tree to the PR head in step 1. Before exiting —
+on success **and** on every post-switch abort (the ≥50-thread guard, a gate failure,
+an API failure) — return the tree to where it started. Leaving it on the PR head is
+exactly what put a later run on a now-merged branch (issue #17). Prefer the branch you
+started on; fall back to the PR's **base** branch, then the repo default — never a
+hardcoded `main`.
+
+```bash
+# Guard on a clean tree — never switch away over uncommitted work.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "NOTE: tree not clean — staying on '$(git rev-parse --abbrev-ref HEAD)'; restore manually."
+else
+  DEFAULT="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+  [ -z "$DEFAULT" ] && DEFAULT=main
+  for b in "$ORIG_BRANCH" "$PR_BASE" "$DEFAULT"; do
+    [ -n "$b" ] || continue
+    git show-ref --verify --quiet "refs/heads/$b" || continue
+    [ "$b" = "$(git rev-parse --abbrev-ref HEAD)" ] || git switch "$b" --quiet
+    echo "Restored working tree to '$b'."
+    break
+  done
+fi
+```
+
 ## Important rules
 
 - **Never resolve a human-authored thread.** Even if it looks trivial. Human discussions require human resolution.
@@ -217,11 +248,12 @@ Emit a concise summary to the user:
 - **Never `--no-verify`** on commits. Pre-commit gates exist for a reason.
 - **Never amend already-pushed commits.** Always make a new commit per bot-review batch.
 - **Idempotent:** running this skill twice in a row should be a no-op the second time. If you're about to resolve a thread that's already `isResolved`, skip it silently.
+- **Always restore the starting branch on exit** (step 7), on success or any post-switch abort — never leave the working tree stranded on the PR head (issue #17).
 
 ## Failure modes
 
 - **PR is not OPEN** (closed, merged, draft) → abort with a clear message. This skill only addresses live review traffic.
 - **Working tree dirty** → abort. The user must commit or stash before invoking; otherwise we'd risk losing their in-progress work when we check out the PR branch.
 - **Bot finding is ambiguous** (vague comment, can't tell what change is asked for) → reply `Need clarification: <what you don't understand>`, do **not** resolve. Let the human pick it up.
-- **All gates red after a fix attempt** → revert the fix in a new commit, leave the thread unresolved with a reply explaining the conflict, ask the user.
+- **All gates red after a fix attempt** → revert the fix in a new commit, leave the thread unresolved with a reply explaining the conflict, ask the user — then run step 7 to restore the starting branch so the tree isn't stranded on the PR head.
 - **≥50 unresolved threads** → abort; pagination is intentionally not implemented.

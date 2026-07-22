@@ -132,18 +132,75 @@ ISSUE_CSV="$(IFS=,; printf '%s' "${ISSUE_NUMS[*]}")"
 ISSUE_DASH="$(IFS=-; printf '%s' "${ISSUE_NUMS[*]}")"
 ```
 
-Ensure tooling on PATH for the whole session; verify a clean tree on an up-to-date
-default branch; clear stale state. Do **not** write the marker yet (step 5 owns it).
+Ensure tooling on PATH for the whole session, then get to a **clean, current default
+branch** — auto-syncing when that is *provably safe*, else erroring as before. Clear
+stale state. Do **not** write the marker yet (step 5 owns it).
+
+**Post-merge auto-sync (issue #17).** After a PR merges, the local clone is often left
+on the now-merged branch with the default branch behind `origin` — which used to hard-
+error here ("not on main") and force a manual `switch`/`pull`/`branch -d`. Instead,
+when it is **provably safe**, this preflight brings you to a clean current default
+branch automatically. "Provably safe" is strict — it **NEVER discards unmerged or
+uncommitted work**:
+
+- **Dirty tree → always a hard error** (as before). Uncommitted work is never
+  provably safe; commit or stash it yourself.
+- **On the default branch, merely behind `origin` → fast-forward** (`git pull
+  --ff-only`). Local commits on the default branch (ahead/diverged) → hard error.
+- **On another branch that is provably merged → switch to the default branch,
+  fast-forward, and delete merged local branches whose upstream is gone.** "Provably
+  merged" = the branch tip is an ancestor of `origin/<default>` **or** `gh` reports its
+  PR merged (so squash/rebase merges count too). A branch that is **not** provably
+  merged → hard error (that protects genuine in-progress work — auto-sync must never
+  silently leave a branch you are still working).
+
+Branch deletion uses `git branch -d` (safe/merged-only) and skips protected names; a
+squash/rebase-merged branch that `-d` refuses is **left and reported**, never force-
+deleted. Getting onto a clean current default is the goal; tidy deletion is a bonus.
 
 ```bash
 command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
 command -v gh || { echo "MISSING:gh"; exit 1; }
 DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
 [ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH=main
-[ -z "$(git status --porcelain)" ] || { echo "ERROR: tree not clean"; exit 1; }
-[ "$(git rev-parse --abbrev-ref HEAD)" = "$DEFAULT_BRANCH" ] || { echo "ERROR: not on $DEFAULT_BRANCH"; exit 1; }
-git fetch origin "$DEFAULT_BRANCH" --quiet
-[ "$(git rev-list --left-right --count HEAD...origin/$DEFAULT_BRANCH)" = "$(printf '0\t0')" ] || { echo "ERROR: local $DEFAULT_BRANCH diverges"; exit 1; }
+# Dirty tree is never provably safe — hard error, as before (protects uncommitted work).
+[ -z "$(git status --porcelain)" ] || { echo "ERROR: tree not clean — commit or stash first"; exit 1; }
+git fetch --prune origin --quiet
+CURRENT="$(git rev-parse --abbrev-ref HEAD)"
+PROTECTED='^(HEAD|'"$DEFAULT_BRANCH"'|main|master|develop|release/.*|hotfix/.*)$'
+
+sync_default() {   # on the default branch: fast-forward if behind; error if ahead/diverged
+  local counts ahead behind
+  counts="$(git rev-list --left-right --count "$DEFAULT_BRANCH...origin/$DEFAULT_BRANCH" 2>/dev/null)" \
+    || { echo "ERROR: cannot compare $DEFAULT_BRANCH with origin/$DEFAULT_BRANCH"; return 1; }
+  ahead="$(printf '%s' "$counts" | awk '{print $1}')"; behind="$(printf '%s' "$counts" | awk '{print $2}')"
+  [ -n "$ahead" ] && [ -n "$behind" ] || { echo "ERROR: could not determine $DEFAULT_BRANCH sync state"; return 1; }
+  if [ "$ahead" -ne 0 ]; then echo "ERROR: local $DEFAULT_BRANCH has unpushed commits — reconcile manually"; return 1; fi
+  [ "$behind" -eq 0 ] || git pull --ff-only origin "$DEFAULT_BRANCH" --quiet
+}
+
+if [ "$CURRENT" = "$DEFAULT_BRANCH" ]; then
+  sync_default || exit 1
+else
+  # Provably merged? ancestor of origin/<default> (merge-commit / rebase-ff), OR gh reports a
+  # merged PR whose head SHA is EXACTLY this tip (covers squash/rebase). Requiring the SHA to
+  # match means a *reused* branch name carrying new, unmerged commits is NOT treated as merged,
+  # so auto-sync never switches away from genuine in-progress work.
+  merged=0
+  git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH" 2>/dev/null && merged=1
+  if [ "$merged" -eq 0 ]; then
+    merged_sha="$(gh pr list --head "$CURRENT" --state merged --json headRefOid --jq '.[0].headRefOid' 2>/dev/null || echo '')"
+    [ -n "$merged_sha" ] && [ "$merged_sha" = "$(git rev-parse HEAD)" ] && merged=1
+  fi
+  [ "$merged" -eq 1 ] || { echo "ERROR: not on $DEFAULT_BRANCH and '$CURRENT' is not provably merged — switch/stash manually"; exit 1; }
+  git switch "$DEFAULT_BRANCH" --quiet
+  sync_default || exit 1
+  # Delete merged local branches whose upstream is gone (never protected, safe -d only).
+  git for-each-ref --format='%(refname:short) %(upstream:track)' refs/heads \
+    | awk '$2=="[gone]"{print $1}' | grep -Ev "$PROTECTED" | while IFS= read -r b; do
+        git branch -d "$b" 2>/dev/null || echo "NOTE: left '$b' (git branch -d refused — squash-merged? use /cleanup)"
+      done
+fi
 mkdir -p .claude/state
 rm -f .claude/state/implement-issue-active.json .claude/state/implement-issue-blocked.json
 ```

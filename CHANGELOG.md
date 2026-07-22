@@ -9,6 +9,29 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **`baseline update` — keep the installed baseline current** (`bin/baseline`, #36):
+  one idempotent entrypoint that fast-forwards the install-source clone and self-heals a
+  moved installed path, replacing the remembered `git pull` (+ maybe re-`install.sh`)
+  ritual. It fast-forwards **only** when the clone is clean, on its default branch, and
+  merely behind `origin` — a dirty/detached/non-default/ahead/diverged clone is surfaced
+  and left untouched — then re-runs the installer **only when a symlink stopped
+  resolving**, preserving the installed agent set + hook preference, and loudly verifies
+  every canonical link. `baseline update --check` reports currency (stable exit-code
+  contract for a future `SessionStart` hook, #25) and changes nothing; it **refuses**
+  (exit 4) when invoked from a clone other than the one the install points into, so a dev
+  clone is never mistaken for the install-source. New primitive `adb_branch_sync_state`
+  in `scripts/lib/common.sh`; end-to-end tested by `scripts/check-baseline.sh` (wired into
+  CI + `selfcheck.sh`).
+- **Post-merge currency sync for the working clone** (#17): `/implement-issue`'s preflight
+  now **auto-syncs** to a clean, current default branch when it is *provably safe* —
+  clean tree, and the current branch is an ancestor of `origin/<default>` or `gh` reports
+  its PR merged (so squash/rebase merges count) — switching to the default, fast-forwarding,
+  and deleting merged local branches whose upstream is gone (safe `-d`, protected names
+  skipped). It never discards unmerged or uncommitted work: a dirty tree or a
+  not-provably-merged branch still hard-errors as before. `/cleanup` now returns to a clean,
+  current default **before** sweeping (so the just-merged branch is deletable), and
+  `/resolve-pr-threads` restores the branch it started on (or the PR's base) on every exit
+  instead of stranding the tree on the PR head.
 - **Shared shell library — the ONE home** (`scripts/lib/common.sh`, #30): a single
   implementation of `adb_link` / `adb_unlink_if_ours` (backup-then-symlink and
   ownership-scoped unlink), `adb_default_branch`, `adb_toml_get` / `adb_toml_unquote`

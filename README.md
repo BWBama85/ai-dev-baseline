@@ -40,6 +40,13 @@ agent-init          # writes agents.toml (roles), gitignores runtime state, prin
 Existing files are backed up to `~/.claude/backups/ai-dev-baseline-*`; re-running is
 idempotent; `./uninstall.sh` reverses everything. See [docs/installation.md](docs/installation.md).
 
+Keep the install current without remembering a `git pull`:
+
+```bash
+baseline update            # fast-forward the install-source clone + self-heal links
+baseline update --check    # report currency only (for a lifecycle hook); changes nothing
+```
+
 ## The roles model
 
 A repo drops an [`agents.toml`](templates/agents.toml) at its root:
@@ -105,6 +112,7 @@ scripts/build.sh    renders base/practices → root docs, base/workflows → Cla
 templates/          the per-project agents.toml
 install.sh          global installer (per --agent, symlinks + wires gates)
 bin/agent-init      per-project role setup
+bin/baseline        keep the installed baseline current (git pull + self-heal)
 docs/               installation, roles, per-project overrides, adding an agent
 ```
 

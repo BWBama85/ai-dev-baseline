@@ -13,8 +13,8 @@ step() { printf '\n=== %s ===\n' "$1"; }
 
 step "shellcheck"
 if command -v shellcheck >/dev/null 2>&1; then
-  # Enumerate tracked shell files (+ the extensionless bin/agent-init).
-  files="$(git ls-files '*.sh' 'bin/agent-init')"
+  # Enumerate tracked shell files (+ the extensionless bin/ commands).
+  files="$(git ls-files '*.sh' 'bin/agent-init' 'bin/baseline')"
   # shellcheck disable=SC2086
   if shellcheck --severity=warning -e SC1091 $files; then echo "PASS"; else echo "FAIL"; fail=1; fi
 else
@@ -103,6 +103,11 @@ fi
 step "common-lib"
 # Unit tests for the shared shell primitives (scripts/lib/common.sh).
 if bash scripts/check-common-lib.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "baseline"
+# End-to-end tests for bin/baseline's currency classification (safety-critical: it
+# must never fast-forward over dirty/ahead/diverged/detached/non-default state).
+if bash scripts/check-baseline.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "fact-drift"
 # Canonical facts (gate axes, cross-agent invocations, codex timeout, resolution order)

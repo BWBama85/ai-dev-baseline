@@ -27,9 +27,9 @@ jobs:
           # Enumerate tracked shell files instead of hardcoding a file list, so
           # a not-yet-present agents/*/adapter.sh is picked up automatically
           # once it lands (and never fails this step by being globbed while
-          # absent). bin/agent-init has no .sh extension, so it's named
+          # absent). The bin/ commands have no .sh extension, so they're named
           # explicitly alongside the *.sh glob.
-          mapfile -t files < <(git ls-files '*.sh' 'bin/agent-init')
+          mapfile -t files < <(git ls-files '*.sh' 'bin/agent-init' 'bin/baseline')
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::no tracked shell files found via 'git ls-files'"
             exit 1
@@ -202,6 +202,17 @@ jobs:
 
       - name: Unit-test the shared shell primitives
         run: bash scripts/check-common-lib.sh
+
+  baseline:
+    name: baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: End-to-end test bin/baseline currency classification
+        run: bash scripts/check-baseline.sh
 
   fact-drift:
     name: fact-drift
