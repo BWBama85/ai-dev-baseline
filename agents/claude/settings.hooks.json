@@ -1,0 +1,20 @@
+{
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "__ADB_HOME__/.claude/scripts/precommit-gate.sh",
+          "timeout": 240,
+          "statusMessage": "ai-dev-baseline: quality gates"
+        },
+        {
+          "type": "command",
+          "command": "__ADB_HOME__/.claude/scripts/implement-issue-gate.sh",
+          "timeout": 30,
+          "statusMessage": "ai-dev-baseline: implement-issue completion gate"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+---
+name: cleanup
+description: Sweep ALL merged branches (local and, on confirmation, remote), not just the current one. Names each branch explicitly so command-safety gating never blocks the delete. Never touches unmerged or protected branches.
+argument-hint: [local | remote | all]  (default: local)
+allowed-tools: Bash, Read
+user-invocable: true
+---
+
+# /cleanup
+
+Sweep merged branches after work lands. The default failure mode this skill exists
+to prevent: deleting only the *current* task's branch and leaving dozens of stale
+merged branches behind, and getting **blocked** by command-safety gating because a
+"clean up"-style instruction never named a branch. This skill sweeps **everything
+already merged** and **names each branch explicitly**.
+
+Argument selects scope: `local` (default), `remote`, or `all`.
+
+## Guardrails (never violated)
+
+- **Only ever delete branches already merged into the default branch.** Never
+  delete unmerged work.
+- **Never delete a protected branch:** the default branch itself, plus `main`,
+  `master`, `develop`, and anything matching `release/*` / `hotfix/*`.
+- **Never delete the currently checked-out branch.**
+- **Local deletes** use `git branch -d` (the safe, merged-only delete — it refuses
+  to drop an unmerged branch), never `-D`.
+- **Remote deletes are outward-facing** — list them and get one confirmation before
+  deleting (`base/practices/git-and-prs.md`). Local deletes are safe + reflog-
+  recoverable, so they proceed autonomously.
+
+## Steps
+
+### 1. Resolve the default branch and current branch
+
+```bash
+DEFAULT="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+[ -z "$DEFAULT" ] && DEFAULT=main
+CURRENT="$(git rev-parse --abbrev-ref HEAD)"
+git fetch --prune origin --quiet    # refresh merged status + drop deleted remote refs
+```
+
+### 2. Enumerate merged branches (never protected, never current)
+
+```bash
+PROTECTED='^(HEAD|'"$DEFAULT"'|main|master|develop|release/.*|hotfix/.*)$'
+
+# Local, merged into the default branch:
+LOCAL_MERGED="$(git branch --merged "$DEFAULT" --format='%(refname:short)' \
+  | grep -Ev "$PROTECTED" | grep -Fxv "$CURRENT" || true)"
+
+# Remote, merged into origin/<default>:
+REMOTE_MERGED="$(git branch -r --merged "origin/$DEFAULT" --format='%(refname:short)' \
+  | sed 's@^origin/@@' | grep -Ev "$PROTECTED" | grep -Fxv "$CURRENT" | sort -u || true)"
+```
+
+Present both lists to the user with counts. If both are empty, report "nothing to
+sweep" and stop.
+
+### 3. Delete — naming each branch explicitly
+
+**Local** (scope `local` or `all`) — proceed autonomously, one explicit name per call:
+
+```bash
+echo "$LOCAL_MERGED" | while IFS= read -r b; do
+  [ -n "$b" ] && git branch -d "$b"    # explicit name; -d refuses unmerged
+done
+```
+
+**Remote** (scope `remote` or `all`) — show `REMOTE_MERGED` and get one confirmation
+first, then delete each by explicit name:
+
+```bash
+echo "$REMOTE_MERGED" | while IFS= read -r b; do
+  [ -n "$b" ] && git push origin --delete "$b"
+done
+```
+
+Naming each branch in its own `git branch -d "$b"` / `git push origin --delete "$b"`
+call is what keeps command-safety gating from blocking the sweep — there is never a
+vague, branch-less "clean up" for it to reject.
+
+### 4. Report
+
+Summarize: N local deleted (named), M remote deleted (named), K skipped (protected/
+unmerged/current, with reason). If any delete failed (e.g. `-d` refused an unmerged
+branch), name it and leave it — do **not** escalate to `-D`; surface it for the user.
+
+## Notes
+
+- This never runs `git branch -D`, `push --force`, or `clean -fd`. It is a
+  merged-only sweep; unmerged branches are always preserved.
+- Run it after a merge, or periodically. It is idempotent — a second run finds
+  nothing new.

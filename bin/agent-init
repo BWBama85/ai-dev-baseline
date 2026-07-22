@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# ai-dev-baseline — per-project initializer.
+#
+# Run at a repo root. Sets up this project's agent role manifest and the runtime
+# state gitignore, then prints the effective role map. The global install already
+# makes the skills + gates available everywhere; this is the lightweight
+# per-project layer (base/practices/00-index.md: project overrides global).
+#
+# Usage: agent-init [--force]     (--force overwrites an existing agents.toml)
+
+set -uo pipefail
+
+# Locate the installed baseline repo (this script lives in <repo>/bin/agent-init;
+# when symlinked onto PATH, resolve through the link).
+self="${BASH_SOURCE[0]}"
+while [ -L "$self" ]; do self="$(readlink "$self")"; done
+REPO="$(cd "$(dirname "$self")/.." && pwd)"
+
+FORCE=0
+[ "${1:-}" = "--force" ] && FORCE=1
+
+git rev-parse --show-toplevel >/dev/null 2>&1 || { echo "ERROR: not inside a git repo" >&2; exit 1; }
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || { echo "ERROR: cannot cd to repo root" >&2; exit 1; }
+
+# 1. Role manifest
+if [ -f agents.toml ] && [ "$FORCE" -eq 0 ]; then
+  echo "agents.toml exists (use --force to overwrite)"
+else
+  cp "$REPO/templates/agents.toml" agents.toml
+  echo "wrote agents.toml — edit [roles] to set who is primary / reviews / debugs"
+fi
+
+# 2. Ensure runtime state is gitignored (marker/blocked files live here)
+if [ -f .gitignore ] && grep -q '^\.claude/state/' .gitignore 2>/dev/null; then
+  :
+else
+  printf '\n# ai-dev-baseline runtime state\n.claude/state/\n' >> .gitignore
+  echo "added .claude/state/ to .gitignore"
+fi
+mkdir -p .claude/state
+
+# 3. Show the effective role map (repo → global default → built-in)
+echo ""
+echo "Effective roles for this repo:"
+show_role() {
+  local key="$1" def="$2" v
+  v="$(awk -v k="$key" '
+    /^[[:space:]]*\[/ { intbl = ($0 ~ /^[[:space:]]*\[roles\][[:space:]]*$/) }
+    intbl && $0 ~ ("^[[:space:]]*" k "[[:space:]]*=") { sub(/^[^=]*=[[:space:]]*/,""); sub(/[[:space:]]*#.*$/,""); print; exit }
+  ' agents.toml 2>/dev/null)"
+  [ -z "$v" ] && v="$def (default)"
+  printf '  %-13s %s\n' "$key" "$v"
+}
+show_role primary      '"claude"'
+show_role gap_analysis '"codex"'
+show_role review       '["claude"]'
+show_role debug        'primary'
+echo ""
+echo "Done. See docs/roles-and-agents.md for how roles resolve and delegate."

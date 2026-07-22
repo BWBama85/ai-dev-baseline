@@ -1,0 +1,25 @@
+# ai-dev-baseline — per-project agent role manifest.
+#
+# Drop this file at your repo root and set who does what for THIS project, then
+# run `agent-init`. Any role you leave unset falls back to your global default
+# manifest, then to the built-in default (see docs/roles-and-agents.md).
+#
+# Agent tokens: claude | codex | gemini
+
+[roles]
+primary      = "claude"     # drives /implement-issue. Exactly one agent.
+gap_analysis = "codex"      # pre-implementation adversarial pass. "" to skip.
+review       = ["claude"]   # code review before merge. 1+ agents; more = better.
+debug        = "claude"     # owns root-cause investigations.
+# issue_author = "claude"   # defaults to `primary` if unset
+# release      = "claude"   # defaults to `primary` if unset
+
+# Optional: override the auto-detected quality gates for this repo. The gate
+# runner auto-detects pnpm/npm/yarn/bun, cargo, go, and python projects; set
+# these only when detection is wrong or the repo needs specific commands.
+# An empty string disables that gate.
+[gates]
+# typecheck = "pnpm typecheck"
+# lint      = "pnpm lint"
+# test      = "pnpm test"
+# format    = "pnpm format:check"

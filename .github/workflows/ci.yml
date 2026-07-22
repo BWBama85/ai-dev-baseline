@@ -1,0 +1,207 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        # Preinstalled on ubuntu-latest, but install explicitly so this job
+        # doesn't silently depend on runner-image contents.
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck over every tracked shell file
+        run: |
+          set -uo pipefail
+          # Enumerate tracked shell files instead of hardcoding a file list, so
+          # a not-yet-present agents/*/adapter.sh is picked up automatically
+          # once it lands (and never fails this step by being globbed while
+          # absent). bin/agent-init has no .sh extension, so it's named
+          # explicitly alongside the *.sh glob.
+          mapfile -t files < <(git ls-files '*.sh' 'bin/agent-init')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no tracked shell files found via 'git ls-files'"
+            exit 1
+          fi
+          echo "Linting ${#files[@]} shell file(s):"
+          printf '  %s\n' "${files[@]}"
+
+          # SC1091 ("not following sourced files") is expected: precommit-gate.sh
+          # and implement-issue-gate.sh source lib/project-gates.sh via a
+          # dynamically resolved relative path shellcheck can't statically follow.
+          #
+          # --severity=warning drops style/info-level nits (shellcheck's lowest
+          # two tiers, e.g. SC2015/SC2016/SC2295-class suggestions) so this gate
+          # fails on real correctness findings (warning/error), not style.
+          shellcheck --severity=warning -e SC1091 "${files[@]}"
+
+  build-drift:
+    name: build-drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rebuild generated root docs from base/practices
+        run: bash scripts/build.sh
+
+      - name: Fail if generated docs are out of date
+        run: |
+          set -uo pipefail
+          if ! git diff --exit-code -- agents/claude/CLAUDE.md agents/codex/AGENTS.md agents/gemini/GEMINI.md; then
+            echo "::error::agents/claude/CLAUDE.md, agents/codex/AGENTS.md, and/or agents/gemini/GEMINI.md are stale relative to base/practices/*.md. Run 'bash scripts/build.sh' locally and commit the regenerated file(s)."
+            exit 1
+          fi
+
+  skill-frontmatter:
+    name: skill-frontmatter
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lint SKILL.md frontmatter
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          fail=0
+          for f in agents/claude/skills/*/SKILL.md; do
+            first_line="$(head -n1 "$f")"
+            if [ "$first_line" != "---" ]; then
+              echo "::error file=$f::does not start with a '---' YAML frontmatter delimiter"
+              fail=1
+              continue
+            fi
+
+            # Line number of the SECOND '---' (the block's closing delimiter).
+            # '|| true' keeps a malformed file (no closing delimiter) from
+            # tripping the job's default errexit before the check below can
+            # report it cleanly.
+            close_line="$(grep -n '^---$' "$f" | sed -n '2p' | cut -d: -f1)" || true
+            if [ -z "$close_line" ]; then
+              echo "::error file=$f::missing closing '---' for the frontmatter block"
+              fail=1
+              continue
+            fi
+
+            frontmatter="$(sed -n "2,$((close_line - 1))p" "$f")"
+            for key in 'name:' 'description:' 'user-invocable:'; do
+              if ! printf '%s\n' "$frontmatter" | grep -q "^${key}"; then
+                echo "::error file=$f::frontmatter is missing required key '${key}'"
+                fail=1
+              fi
+            done
+          done
+          exit "$fail"
+
+  gate-detector:
+    name: gate-detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: detect must no-op cleanly on an unrecognized ecosystem
+        run: |
+          set -uo pipefail
+          rc=0
+          out="$(bash agents/claude/scripts/lib/project-gates.sh detect . 2>&1)" || rc=$?
+
+          if [ -n "$out" ]; then
+            echo "::error::expected no output from 'detect .' in a repo with no recognized ecosystem; got: $out"
+            exit 1
+          fi
+
+          # Contract (see the file header): emits NOTHING and exits 0 — a safe
+          # no-op in an unfamiliar repo. adb_detect_gates ends on an explicit
+          # `return 0`, so a non-zero exit here is a regression.
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::'detect .' exited $rc; expected 0 (clean no-op)"
+            exit 1
+          fi
+
+      - name: badcmd must exit non-zero (usage guard)
+        run: |
+          set -uo pipefail
+          rc=0
+          bash agents/claude/scripts/lib/project-gates.sh badcmd >/tmp/adb-badcmd.log 2>&1 || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::'project-gates.sh badcmd' unexpectedly exited 0; expected a non-zero usage-error exit"
+            cat /tmp/adb-badcmd.log
+            exit 1
+          fi
+
+  install-dry-run:
+    name: install-dry-run
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Point HOME at a fresh temp dir
+        # install.sh/uninstall.sh write into $HOME; overriding it keeps the
+        # runner's real HOME untouched and every later step in this job sees
+        # the same override.
+        run: |
+          set -euo pipefail
+          tmp_home="$RUNNER_TEMP/adb-home"
+          mkdir -p "$tmp_home"
+          echo "HOME=$tmp_home" >> "$GITHUB_ENV"
+
+      - name: Install jq
+        # Preinstalled on ubuntu-latest, but install explicitly (install.sh's
+        # hook-wiring step requires it) so this job doesn't silently depend on
+        # runner-image contents.
+        run: sudo apt-get install -y jq
+
+      - name: Run install.sh --agent claude
+        run: |
+          set -euo pipefail
+          ./install.sh --agent claude
+
+      - name: Assert key symlinks exist and resolve
+        run: |
+          set -euo pipefail
+          for p in \
+            "$HOME/.claude/CLAUDE.md" \
+            "$HOME/.claude/skills/implement-issue" \
+            "$HOME/.claude/scripts/precommit-gate.sh" \
+            "$HOME/.claude/scripts/lib/project-gates.sh"; do
+            if [ ! -e "$p" ]; then
+              echo "::error::expected path to exist and resolve: $p"
+              exit 1
+            fi
+          done
+
+      - name: Assert Stop hook wired into settings.json
+        run: |
+          set -euo pipefail
+          grep -q 'precommit-gate\.sh' "$HOME/.claude/settings.json"
+
+      - name: Run uninstall.sh --agent claude
+        run: |
+          set -euo pipefail
+          ./uninstall.sh --agent claude
+
+      - name: Assert CLAUDE.md is no longer a symlink
+        run: |
+          set -euo pipefail
+          if [ -L "$HOME/.claude/CLAUDE.md" ]; then
+            echo "::error::$HOME/.claude/CLAUDE.md is still a symlink after uninstall"
+            exit 1
+          fi

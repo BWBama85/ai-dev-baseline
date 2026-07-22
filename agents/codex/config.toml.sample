@@ -1,0 +1,48 @@
+# ai-dev-baseline — sample ~/.codex/config.toml
+#
+# NOT installed or symlinked by adapter.sh. Codex's own config.toml is yours to
+# manage per-workstation (it also holds project trust levels, MCP servers, and
+# other machine-specific state that has no business living in a shared repo).
+# This file is a short starting point — copy the lines you want into your real
+# ~/.codex/config.toml and uncomment. Nothing here is asserted as required or
+# as this project's preferred value; every project/operator differs.
+
+# --- Model selection ---------------------------------------------------------
+# Pins the default model so every `codex` / `codex exec` call is reproducible
+# without passing --model each time.
+# model = "gpt-5-codex"
+
+# --- Reasoning effort ---------------------------------------------------------
+# How much the model reasons before responding. Trades latency/cost for depth.
+# Typical values: "minimal" | "low" | "medium" | "high" (exact set depends on
+# the pinned model). Cross-agent codex exec calls from this framework already
+# budget for slow, thorough runs (base/roles.md's >=7-minute timeout note), so
+# a higher effort is a reasonable choice when Codex is doing gap-analysis or
+# review work rather than quick edits.
+# model_reasoning_effort = "medium"
+
+# --- Approval policy ------------------------------------------------------
+# Controls when Codex pauses to ask before running a command. Common values:
+#   "untrusted"  — ask before anything not on an allowlist (most cautious)
+#   "on-failure" — only ask after a command fails
+#   "on-request" — the model decides when to ask
+#   "never"      — fully autonomous; pair with a tight sandbox_mode only
+# approval_policy = "on-failure"
+
+# --- Sandbox mode --------------------------------------------------------
+# How much the sandbox restricts filesystem/network access. Common values:
+#   "read-only"          — can inspect but not modify anything
+#   "workspace-write"    — can edit files under the cwd; no network by default
+#   "danger-full-access" — no sandboxing at all; avoid unless you trust the task
+# sandbox_mode = "workspace-write"
+
+# [sandbox_workspace_write]
+# Allow outbound network from inside a workspace-write sandbox (off by default).
+# network_access = false
+
+# --- Profiles --------------------------------------------------------------
+# Named bundles of the settings above, selected with `codex --profile <name>`.
+# Handy for a stricter profile you reach for on unfamiliar repos.
+# [profiles.careful]
+# approval_policy = "untrusted"
+# sandbox_mode = "read-only"

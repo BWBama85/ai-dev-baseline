@@ -1,0 +1,14 @@
+# OS
+.DS_Store
+
+# Local, per-workstation runtime state (never committed)
+*.local
+.local/
+
+# Editor
+.vscode/
+.idea/
+
+# Logs / scratch
+*.log
+/tmp/

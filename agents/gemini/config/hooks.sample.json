@@ -1,0 +1,27 @@
+{
+  "example-stop-reminder": {
+    "enabled": false,
+    "Stop": [
+      {
+        "type": "command",
+        "command": "true",
+        "timeout": 5
+      }
+    ]
+  },
+  "example-pretool-gate": {
+    "enabled": false,
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "true",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
