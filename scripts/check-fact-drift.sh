@@ -4,76 +4,79 @@
 # Some FACTS are unavoidably restated in more than one hand-written doc: the gate
 # axis list, the cross-agent invocation commands, the codex ≥7-minute timeout, and
 # the role-resolution order. Those restatements are exactly where drift is born (issue
-# #30). This lint pins each fact to a canonical source and asserts every consumer doc
-# still carries the canonical token — so a value changed in one place but not the
-# others fails CI instead of silently diverging.
+# #30). This lint pins each fact to its canonical source and asserts every consumer
+# that restates it still carries the canonical token — so a value changed in one place
+# but not the others fails CI instead of silently diverging.
 #
 # It is deliberately a small, ALLOWLISTED, positive-presence check — not a
 # natural-language equivalence engine. Each rule asserts that a stable token (an axis
-# name, a literal invocation string, the number 7, "420000") is PRESENT in a named
-# file. It never forbids incidental wording (e.g. prose that correctly calls the
-# 2-minute default "too short"), so rewording a doc never trips it; only dropping or
-# changing a canonical value does. Add a fact by adding a rule below.
+# name, a literal invocation string, the number 7, "420000") is PRESENT in each file
+# that restates it. It never forbids incidental wording (e.g. prose that correctly
+# calls the 2-minute default "too short"), so rewording a doc never trips it; only
+# dropping or changing a canonical value does.
+#
+# The token appears in the lint too — that is intentional, not a fourth copy: the
+# canonical source (base/roles.md, scripts/lib/project-gates.sh) is itself in every
+# rule's file list, so renaming the value there fails the lint until the rename is
+# propagated to the token here AND to every consumer together. Adding a fact = add a
+# `fact <label> <token-or-pattern> -- <files…>` line. Adding a consumer that restates
+# an existing fact = append the file to that fact's list.
 #
 # Usage: bash scripts/check-fact-drift.sh   (exit 0 = no drift, 1 = drift found)
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_init "fact-drift"
 
-fail=0
-note() { printf 'fact-drift: %s\n' "$*" >&2; }
-
-# Assert a FIXED string is present in a file.
-req_fixed() { # <file> <token> <fact-label>
-  if [ ! -f "$1" ]; then note "[$3] file not found: $1"; fail=1; return; fi
-  grep -Fq -- "$2" "$1" || { note "[$3] canonical token '$2' missing from $1"; fail=1; }
+# fact <label> fixed:<token>|regex:<pattern> -- <file> [<file>...]
+# Asserts the token/pattern is present in every listed file.
+fact() {
+  local label="$1" spec="$2" ; shift 2
+  [ "$1" = "--" ] && shift
+  local kind="${spec%%:*}" needle="${spec#*:}" f
+  for f in "$@"; do
+    case "$kind" in
+      fixed) req_fixed "$f" "$needle" "$label" ;;
+      regex) req_regex "$f" "$needle" "$label" ;;
+    esac
+  done
 }
 
-# Assert an EXTENDED-REGEX pattern matches somewhere in a file.
-req_regex() { # <file> <pattern> <fact-label>
-  if [ ! -f "$1" ]; then note "[$3] file not found: $1"; fail=1; return; fi
-  grep -Eq -- "$2" "$1" || { note "[$3] canonical pattern /$2/ missing from $1"; fail=1; }
-}
-
-# --- FACT 1: gate axes -------------------------------------------------------
-# Source of truth: the _adb_emit <axis> calls in the gate detector. Every doc that
+# --- FACT: gate axes ---------------------------------------------------------
+# Canonical source: the _adb_emit <axis> calls in the gate detector. Every doc that
 # enumerates the gate list must mention every axis, so adding an axis to the code
 # without documenting it fails here.
 axes="$(grep -oE '_adb_emit [a-z]+' scripts/lib/project-gates.sh | awk '{print $2}')"
-[ -n "$axes" ] || { note "[gate-axes] could not derive axes from scripts/lib/project-gates.sh"; fail=1; }
-for f in docs/per-project-overrides.md docs/roles-and-agents.md templates/agents.toml; do
-  for a in $axes; do req_fixed "$f" "$a" "gate-axes"; done
+[ -n "$axes" ] || { check_note "[gate-axes] could not derive axes from scripts/lib/project-gates.sh"; check_fail; }
+for a in $axes; do
+  fact gate-axes "fixed:$a" -- docs/per-project-overrides.md docs/roles-and-agents.md templates/agents.toml
 done
 
-# --- FACT 2: cross-agent invocations ----------------------------------------
-# Canonical home: base/roles.md's cross-agent table. Every doc that restates an
-# agent's non-interactive entrypoint must use the same command string.
-for f in base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md; do
-  req_fixed "$f" "codex exec --cd" "cross-agent-invocation"
-  req_fixed "$f" "agy -p"          "cross-agent-invocation"
-  req_fixed "$f" "claude -p"       "cross-agent-invocation"
-done
+# --- FACT: cross-agent invocations -------------------------------------------
+# Canonical home: base/roles.md's cross-agent table. Each invocation is checked in
+# every doc that restates THAT agent's entrypoint (incl. the hand-written per-agent
+# READMEs, which are otherwise a silent drift surface).
+fact invocation-codex fixed:'codex exec --cd' -- \
+  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md
+fact invocation-gemini fixed:'agy -p' -- \
+  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/gemini/README.md
+fact invocation-claude fixed:'claude -p' -- \
+  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md
 
-# --- FACT 3: codex exec timeout minimum -------------------------------------
+# --- FACT: codex exec timeout minimum ----------------------------------------
 # The bound is ≥7 minutes (420000 ms). Every doc that states the codex timeout must
 # carry the 7-minute bound; the two that give the millisecond form must agree on it.
-for f in base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md; do
-  req_regex "$f" '7[-[:space:]]min' "codex-timeout-7min"
-done
-for f in base/workflows/implement-issue.md docs/roles-and-agents.md; do
-  req_regex "$f" '420[,]?000' "codex-timeout-ms"
-done
+fact codex-timeout-7min regex:'7[-[:space:]]min' -- \
+  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md \
+  agents/codex/README.md agents/codex/config.toml.sample
+fact codex-timeout-ms regex:'420[,]?000' -- \
+  base/workflows/implement-issue.md docs/roles-and-agents.md
 
-# --- FACT 4: role-resolution order ------------------------------------------
+# --- FACT: role-resolution order ---------------------------------------------
 # The order is repo agents.toml → global default manifest → built-in default.
-for f in base/roles.md docs/roles-and-agents.md; do
-  req_fixed "$f" "global default" "resolution-order"
-  req_fixed "$f" "built-in"       "resolution-order"
-done
+fact resolution-order fixed:'global default' -- base/roles.md docs/roles-and-agents.md
+fact resolution-order fixed:'built-in'       -- base/roles.md docs/roles-and-agents.md
 
-if [ "$fail" -eq 0 ]; then
-  echo "fact-drift: PASS (canonical facts consistent across their consumers)"
-  exit 0
-fi
-echo "fact-drift: FAIL — a canonical fact diverged; fix the doc(s) above to match the source" >&2
-exit 1
+check_result "canonical facts consistent across their consumers"

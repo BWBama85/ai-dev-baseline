@@ -51,11 +51,8 @@ echo "Effective roles for this repo:"
 # only reflects the repo file plus the built-in fallback.)
 show_role() {
   local key="$1" def="$2" v
-  if v="$(adb_toml_get agents.toml roles "$key")"; then
-    :
-  else
-    v="$def (default)"
-  fi
+  # adb_toml_get exits nonzero when the key is absent → fall back to the built-in default.
+  v="$(adb_toml_get agents.toml roles "$key")" || v="$def (default)"
   printf '  %-13s %s\n' "$key" "$v"
 }
 show_role primary      '"claude"'

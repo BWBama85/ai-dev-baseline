@@ -13,43 +13,39 @@
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_init "practice-index"
 
 index="base/practices/00-index.md"
-fail=0
-note() { printf 'practice-index: %s\n' "$*" >&2; }
-
 if [ ! -f "$index" ]; then
-  note "index not found: $index"
+  check_note "index not found: $index"
   exit 1
 fi
 
-# Every practice source (except the index) must be named in the index.
+# Every practice source (except the index) must be named in the index exactly once.
 for f in base/practices/*.md; do
   [ -f "$f" ] || continue
   base="$(basename "$f")"
   [ "$base" = "00-index.md" ] && continue
   n="$(grep -Fc -- "\`$base\`" "$index")"
   if [ "$n" -eq 0 ]; then
-    note "practice '$base' has no row in $index (add it to the table)"
-    fail=1
+    check_note "practice '$base' has no row in $index (add it to the table)"
+    check_fail
   elif [ "$n" -gt 1 ]; then
-    note "practice '$base' is listed $n times in $index (should be exactly once)"
-    fail=1
+    check_note "practice '$base' is listed $n times in $index (should be exactly once)"
+    check_fail
   fi
 done
 
-# Every file the index names in backticks (…\`something.md\`…) must exist as a source.
+# Every file the index names in backticks (…`something.md`…) must exist as a source.
 named="$(grep -oE '`[a-z0-9-]+\.md`' "$index" | tr -d '`' | sort -u)"
 for base in $named; do
   [ "$base" = "00-index.md" ] && continue
   if [ ! -f "base/practices/$base" ]; then
-    note "index names '$base' but base/practices/$base does not exist (stale row)"
-    fail=1
+    check_note "index names '$base' but base/practices/$base does not exist (stale row)"
+    check_fail
   fi
 done
 
-if [ "$fail" -eq 0 ]; then
-  echo "practice-index: PASS (every practice indexed exactly once, no stale rows)"
-  exit 0
-fi
-exit 1
+check_result "every practice indexed exactly once, no stale rows"
