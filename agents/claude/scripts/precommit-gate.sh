@@ -51,10 +51,15 @@ fail_loud() {
   printf '(or re-run install.sh from your baseline clone), then retry.\n' >&2
   exit 2
 }
-[ -f "$lib_dir/common.sh" ] || fail_loud "shared library not found: $lib_dir/common.sh"
-# shellcheck source=/dev/null
-. "$lib_dir/common.sh" || fail_loud "shared library failed to source: $lib_dir/common.sh"
-command -v adb_default_branch >/dev/null 2>&1 || fail_loud "common.sh did not define adb_default_branch (corrupt library)"
+# Source a REQUIRED sibling library or fail loud: a missing file, an un-sourceable one, or one
+# sourced but missing its expected function (a corrupt/truncated library) each block the turn.
+require_lib() {  # <path> <expected-fn>
+  [ -f "$1" ] || fail_loud "shared library not found: $1"
+  # shellcheck source=/dev/null
+  . "$1" || fail_loud "shared library failed to source: $1"
+  command -v "$2" >/dev/null 2>&1 || fail_loud "$1 did not define $2 (corrupt library)"
+}
+require_lib "$lib_dir/common.sh" adb_default_branch
 
 # Resolve the default branch (origin/HEAD → main → master → "main").
 default_branch="$(adb_default_branch "$repo_root")"
@@ -82,11 +87,7 @@ changed="$(printf '%s\n%s\n%s\n%s\n' "$committed" "$staged" "$unstaged" "$untrac
 # We are on a feature branch WITH changes: the gate WILL run. The gate library is required
 # here too — a missing/corrupt one is the same broken-install fail-loud condition as common.sh
 # above (a silent skip here was the old fail-silent bug #35 fixes), never a silent skip.
-lib="$lib_dir/project-gates.sh"
-[ -f "$lib" ] || fail_loud "gate library not found: $lib"
-# shellcheck source=/dev/null
-. "$lib" || fail_loud "gate library failed to source: $lib"
-command -v adb_run_gates >/dev/null 2>&1 || fail_loud "project-gates.sh did not define adb_run_gates (corrupt library)"
+require_lib "$lib_dir/project-gates.sh" adb_run_gates
 
 # Pass the branch change set so a path-scoped gate ([gates.scope] in agents.toml) runs
 # only when it touches a matching file — the escape hatch that lets a repo express

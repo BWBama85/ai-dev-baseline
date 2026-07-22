@@ -94,10 +94,11 @@ pr_stored_state() {
     rm -f "$err"; printf 'unverified\n'; return 0
   fi
   rm -f "$err"
-  state="$(printf '%s' "$pr_json" | jq -r '.state // ""')"
-  merged="$(printf '%s' "$pr_json" | jq -r '.mergedAt // ""')"
-  head="$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')"
-  pr_url="$(printf '%s' "$pr_json" | jq -r '.url // ""')"
+  # One jq pass emits the four fields, one per line (an empty field stays an empty line, so an
+  # absent mergedAt can't shift the others) — 1 jq spawn instead of 4 on every gated turn-end.
+  { read -r state; read -r merged; read -r head; read -r pr_url; } <<EOF
+$(printf '%s' "$pr_json" | jq -r '.state // "", .mergedAt // "", .headRefName // "", .url // ""')
+EOF
   case "$pr_url" in
     "$repo_url"/pull/*) : ;;                            # belongs to this repo
     *) printf 'unverified\n'; return 0 ;;               # different repo → not this run's PR

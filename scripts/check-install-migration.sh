@@ -18,6 +18,9 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
+# Single-source the default-branch resolver (don't re-implement origin/HEAD parsing here).
+# shellcheck source=/dev/null
+. "$ROOT/scripts/lib/common.sh"
 
 pass=0; fail=0
 ok()  { pass=$((pass + 1)); }
@@ -38,8 +41,7 @@ else
 fi
 
 # --- history-aware pull simulation -------------------------------------------
-default="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
-[ -n "$default" ] || default=main
+default="$(adb_default_branch .)"
 base=""
 for ref in "origin/$default" "$default"; do
   if git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
