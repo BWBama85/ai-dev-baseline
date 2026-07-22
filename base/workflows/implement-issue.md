@@ -43,10 +43,12 @@ Two gitignored files under `.claude/state/`:
   `phase`. Step 10 writes `prUrl`. Multi-issue: `.issue` is the comma-joined list;
   `.branch` carries every number.
 - **`implement-issue-blocked.json`** — written by *you* ONLY on a documented
-  legitimate stop (BLOCKING gap-analysis finding you can't resolve; gate escape
-  clause; branch already exists on remote). Shape:
-  `{"reason","phase","branch","issue"}` — `branch`/`issue` REQUIRED and must match
-  the active marker.
+  legitimate **post-branch** stop (gate escape clause; a **required review step that
+  cannot complete** after retry + fallback, step 8; branch already exists on remote).
+  Shape: `{"reason","phase","branch","issue"}` — `branch`/`issue` REQUIRED and must
+  match the active marker (the Stop-hook gate no-ops unless a matching active marker
+  exists). A gap-analysis stop is *pre-branch* — no marker exists yet to pair with,
+  so surface it to the owner and stop cleanly (step 4); do **not** write this file.
 
 Always stage marker writes inside `.claude/state/` (`.marker.tmp` → `mv`) so the
 rename is atomic. Preflight unconditionally clears stale state files.
@@ -61,9 +63,30 @@ default at `~/.config/ai-dev-baseline/agents.toml`, then to built-in defaults):
 - **`review`** (default `["claude"]`) — the code-review agents in step 8. Always
   ALSO do your own self-review (`base/practices/self-review.md`).
 
-Resolve tokens to invocations via `base/roles.md`: `claude` → native `/code-review`
-skill (or `/simplify` if unavailable); `codex` → `codex exec --cd <repo> -`;
-`gemini` → `agy -p`. A cross-agent `codex exec` needs a **≥7-minute** timeout.
+Resolve tokens to invocations via `base/roles.md`:
+
+- `claude` — when Claude is the driving agent, review runs **in-process** with
+  **model-invokable** tools only: `/simplify` (quality / reuse / simplification —
+  it explicitly does **not** hunt bugs) **plus** an independent adversarial **bug**
+  review by a Claude subagent (Agent tool, `general-purpose`). **Never model-invoke
+  `/code-review`** — it carries `disable-model-invocation` (it can launch a billed
+  cloud review, so the harness reserves it for humans) and the Skill tool rejects
+  it. Treat `/code-review` only as an *optional* step the owner runs after the PR
+  (like `/resolve-pr-threads` for bot threads).
+- `codex` → `codex exec --cd <repo> -`; `gemini` → `agy -p`. A cross-agent
+  `codex exec` needs a **≥7-minute** timeout.
+
+**Completion contract (delegated steps must terminate).** `gap_analysis`, `review`,
+and any cross-agent / subagent dispatch MUST reach a terminal, *completed* state —
+"advisory" is the standing of **completed** findings, never a license to skip the
+**step**. Run each as a **single bounded call and wait for it to return** (process
+exit for `codex exec`/`agy -p`/`claude -p`; the tool result for an Agent subagent).
+**Never poll a background agent's output to infer whether it is "hung"** — the
+outcome is the call returning, not the byte count growing. On timeout / error /
+hang: kill it, **retry once**, then **fall back** to another agent the role lists or
+a `general-purpose` Claude subagent running the same prompt. If nothing completes,
+the step **failed** → block or surface (step 4 / step 8), never proceed on partial
+or empty output. Full contract: `base/roles.md`.
 
 ## Important rules (from base/practices)
 
@@ -74,8 +97,12 @@ skill (or `/simplify` if unavailable); `codex` → `codex exec --cd <repo> -`;
 - **Self-review is mandatory** (`self-review.md`) before the PR.
 - **Never push to the default branch; feature branch + PR only** (`git-and-prs.md`).
 - **Never `--no-verify`; never destructive git** without an explicit ask.
-- **Gap-analysis / review output is advisory** — you are the implementer; disagree
-  when wrong, but document why in the PR.
+- **Advisory findings, required steps** — gap-analysis / review *findings* are
+  advisory: you are the implementer and may disagree with a **completed** finding,
+  documenting why in the PR. The *step* is **not** optional — a delegated agent that
+  hangs, times out, or errors must be driven to completion (retry → fallback →
+  block/surface per the completion contract above), never silently skipped or
+  finished on partial output.
 - **PATH:** brew tools (`gh`, `codex`) may be off PATH in non-interactive shells —
   export `/opt/homebrew/bin` once in preflight if `gh` is missing.
 
@@ -136,21 +163,33 @@ already shipped on the default branch.
 
 ### 3. Gap analysis (role: `gap_analysis`)
 
-Resolve the `gap_analysis` agent from `agents.toml`. If `""`, skip this step and
-note "gap-analysis skipped (unassigned)" for the PR. Otherwise run **one** pass over
-the whole set with that agent, asking it to flag: blocking ambiguities, hidden
-constraints (this repo's conventions/neighboring patterns), out-of-scope-creep risk,
-and test gaps. Tag each finding BLOCKING / SHOULD-CLARIFY / NICE-TO-HAVE.
+Resolve the `gap_analysis` agent from `agents.toml`. If it is `""` (**unassigned**),
+skip this step and note "gap-analysis skipped (unassigned)" for the PR — that is the
+*only* legitimate skip. An **assigned** agent that hangs / times out / errors is a
+step to complete, not to skip. Otherwise run **one** pass over the whole set with
+that agent, asking it to flag: blocking ambiguities, hidden constraints (this repo's
+conventions/neighboring patterns), out-of-scope-creep risk, and test gaps. Tag each
+finding BLOCKING / SHOULD-CLARIFY / NICE-TO-HAVE.
 
 Default (`codex`): build one payload (prompt + all issues) and pipe it to
 `codex exec --cd "$(git rev-parse --show-toplevel)" -`. **Give the Bash call a
-≥7-minute timeout** (`420000`–`600000` ms) — `codex exec` routinely runs 3–7 min;
-a 2-min SIGTERM (exit 143) is a timeout, not a failure, so re-run longer.
+≥7-minute timeout** (`420000`–`600000` ms) — `codex exec` routinely runs 3–7 min.
+
+**Completion contract (per the Roles section).** This is a single bounded call:
+**wait for the process to exit** — do not poll its output stream to guess whether it
+is "hung." A short SIGTERM (exit 143) at a *2-minute* default is just too-tight a
+bound, not a failure — re-run at the ≥7-min bound. A genuine timeout / non-zero exit
+at the full bound is an **incomplete** invocation: kill it, **retry once**, then
+**fall back** to a `general-purpose` Claude subagent (Agent tool) running the same
+adversarial read. If even the fallback cannot complete, **surface to the owner and
+stop cleanly** — gap-analysis runs *before* the branch/marker exists, so there is no
+blocked marker to write (step 4); do not proceed as if the pass had run.
 
 ### 4. Decide
 
-- Any **BLOCKING** finding you can't resolve from the repo + practices → write
-  `implement-issue-blocked.json` and stop (no marker exists yet; just stop cleanly).
+- Any **BLOCKING** finding you can't resolve from the repo + practices → surface it
+  to the owner and stop cleanly. No branch/marker exists yet (that is step 5), so
+  there is nothing to pair a blocked file with — do **not** write one.
 - Otherwise record SHOULD-CLARIFY items as assumptions for the PR body and proceed.
 - **Epic/slice or anything declared out of scope** becomes a tracked issue in step
   12 — including the parent's own "Out of scope" list. Not a PR-body note.
@@ -199,18 +238,48 @@ not `-A`. Update `phase=committed`.
 
 **Always** do your own self-review pass first (`base/practices/self-review.md`):
 edge cases, escaping/encoding, binary/NUL corruption, cascade/cancel effects,
-off-by-one, idempotency. List each finding.
+off-by-one, idempotency. List each finding. Self-review is the mandatory floor; the
+`review` role adds *independent* perspective on top of it.
 
-Then run the configured `review` agent(s):
+Then run each configured `review` agent. **Every configured reviewer is a slot** —
+each must reach a terminal state (completed, or explicitly replaced by a documented
+fallback) before you set `phase=code_reviewed`. A fallback stands in for the *one*
+slot it replaced; it does not silently satisfy a different reviewer's slot.
 
-- `claude` → invoke the native `/code-review` skill (effort `high` for
-  security/schema/scoring/`.claude` changes, else `medium`). Fall back to
-  `/simplify` if `/code-review` is unavailable.
+- `claude` (Claude driving) → an **in-process, two-part** pass, both model-invokable:
+  1. **`/simplify` first** — the quality / reuse / simplification pass. It may edit
+     code; if it does, **re-run gates and refresh the diff** before step 2, or the
+     bug review inspects stale code. **Never let it hand-edit a generated file** —
+     anything carrying a `GENERATED FILE` marker (a rendered root doc, a `SKILL.md`):
+     if `/simplify` touches one, revert that edit, make the change in the `base/`
+     source instead, and rebuild (`scripts/build.sh`). `/simplify` **does not hunt
+     bugs**, so it does not by itself satisfy the slot.
+  2. **Adversarial bug review** — dispatch a Claude subagent (Agent tool,
+     `general-purpose`) over the *fresh* diff, prompted to find real bugs (edge
+     cases, escaping, boundaries, idempotency, security). Run it **synchronously**
+     and consume its returned findings; do not poll a background stream.
+
+  **Never model-invoke `/code-review`** (user-only, `disable-model-invocation`) — it
+  is an optional step the owner runs after the PR, not part of this slot.
 - `codex` → `codex exec` a review prompt over the diff (≥7-min timeout).
 - `gemini` → `agy -p` a review prompt over the diff.
 
-Multiple reviewers → run each; independent perspectives are the point. Update
-`phase=code_reviewed`. **Review output is input to step 9, not a stopping point.**
+**Completion contract (per the Roles section).** Run each cross-agent reviewer
+(`codex` / `gemini`) and the subagent bug review as a single bounded call and **wait
+for it to return** — never poll output to guess liveness. On timeout / error, abandon
+the call (a Bash timeout kills a `codex exec` / `agy -p` process; an Agent subagent
+just returns its error), **retry once**, then **fall back** to a `general-purpose`
+Claude subagent bug review (model-invokable whenever Claude drives) standing in for
+that slot; document the substitution. A slot is **terminal** the moment its reviewer
+(or its fallback) **returns a result** — a completed review that finds *nothing* is a
+clean pass, not a failure; only a hung / errored / crashed-empty call is incomplete.
+If **any** required slot still cannot reach a terminal state after retry + fallback,
+the review step **failed** for that slot → write `implement-issue-blocked.json`
+(`reason` names the failed reviewer, `branch`/`issue` matching the marker) and leave
+`phase=committed`. Never reach step 10 (PR opened) with a required review incomplete.
+
+Once every slot is terminal, update `phase=code_reviewed`. **Completed findings are
+input to step 9, not a stopping point.**
 
 ### 9. Triage + fix
 
@@ -260,10 +329,23 @@ otherwise use the repo's default. Link the new issue from **both** the parent
 
 ## Failure modes
 
-- **Gap-analysis agent times out** (codex exit 143) → the Bash timeout fired, not a
-  failure. Re-run with `420000`–`600000` ms.
-- **Gap-analysis agent unavailable** → skip the pass, note it in the PR, continue.
-- **`/code-review` unavailable** → fall back to `/simplify`; file a toolchain issue.
+- **Delegated step (gap-analysis / review) hangs, times out, or errors** → it is
+  **incomplete**, not skippable. Run it as one bounded call and wait for it to
+  return; never poll its output to guess "hung." Then kill → **retry once** →
+  **fall back** (another listed agent, or a `general-purpose` Claude subagent running
+  the same prompt) → if still nothing completes, block/surface. Never mark the step
+  done on partial or empty output.
+- **Gap-analysis `codex exit 143` at a ~2-min bound** → the Bash timeout was too
+  tight, not a failure. Re-run at `420000`–`600000` ms. A real timeout at the full
+  ≥7-min bound is an incomplete invocation → retry → fallback (line above).
+- **Gap-analysis `""` (unassigned)** → the only legitimate skip; note it in the PR
+  and continue. An *assigned* gap-analysis agent that cannot run is a failure to
+  retry → fall back to a Claude subagent → surface — not a silent skip.
+- **`/code-review` errors with `disable-model-invocation`** → expected: it is
+  **user-only** by design (it can launch a billed cloud review), *not* a version or
+  toolchain problem. The Claude `review` slot never invokes it — use `/simplify` + a
+  Claude subagent bug review (step 8). Reference `/code-review` only as an optional
+  post-PR human step. Do **not** file a toolchain issue.
 - **Gates won't go green after the escape clause** → write the blocked marker, stop,
   report what's failing. Never push red.
 - **Branch already exists on remote** → blocked marker; ask the user; never force-push.

@@ -20,7 +20,7 @@ names for that role — **with no change to the workflow itself.** Swap
 |---|---|---|---|
 | `primary` | Drives implementation end-to-end (`implement-issue`) | exactly 1 | required |
 | `gap_analysis` | Adversarial pre-implementation read of the issue | 0 or 1 | skip the pass |
-| `review` | Independent code review of the diff before merge | 1+ | primary's own self-review only |
+| `review` | Independent code review of the diff before merge | 1+ | the primary's own review pass |
 | `debug` | Owns root-cause investigations | 1 | primary |
 | `issue_author` | Drafts and files issues (`create-issue`) | 1 | primary |
 | `release` | Cuts releases | 1 | primary |
@@ -92,7 +92,7 @@ currently driving, it shells out to that agent's non-interactive entrypoint:
 
 | Agent | Non-interactive invocation | Root config it reads |
 |---|---|---|
-| `claude` | `claude -p "<prompt>"` (or a native skill when Claude is already driving) | `~/.claude/CLAUDE.md` |
+| `claude` | `claude -p "<prompt>"` (when Claude is already driving, the step runs in-process via **model-invokable** tools — an Agent-tool subagent and/or a model-invokable skill like `/simplify`; never a user-only skill such as `/code-review`) | `~/.claude/CLAUDE.md` |
 | `codex` | `codex exec --cd <repo> -` (prompt piped on stdin) | `~/.codex/` + `AGENTS.md` |
 | `gemini` | `agy -p "<prompt>"` (Antigravity CLI) | `~/.gemini/GEMINI.md` |
 
@@ -100,8 +100,10 @@ currently driving, it shells out to that agent's non-interactive entrypoint:
 > repo — it routinely takes **3–7 minutes**, well past a default 2-minute
 > command timeout. Any cross-agent `codex exec` call needs a timeout of at
 > least **7 minutes (420,000–600,000 ms)**. A SIGTERM at 2 minutes (exit code
-> 143) is a timeout that wasted the pass, not a failure of the pass itself —
-> re-run it longer, don't treat the exit code as a verdict.
+> 143) is a too-tight bound, not a failure of the pass — re-run it longer,
+> don't treat the exit code as a verdict. A genuine timeout at the *full*
+> ≥7-min bound **is** an incomplete invocation, though — retry, then fall back,
+> per the delegated-step completion contract in [`roles.md`](../base/roles.md).
 
 ## Worked example (a): Claude primary + Codex gap-analysis + Claude & Gemini review
 
@@ -121,9 +123,12 @@ Running `/implement-issue 123` with Claude as the driving agent:
    ≥7-minute Bash timeout, then reads codex's findings back in.
 3. Claude implements, runs gates, commits (all native — `primary` is Claude).
 4. **Step 8 (review)** resolves to `["claude", "gemini"]` → Claude runs its
-   own native `/code-review` skill, **and** separately shells out
-   `agy -p "<review prompt over the diff>"` for Gemini's independent pass.
-   Both sets of findings feed step 9's triage.
+   own **in-process** review pass (`/simplify` for quality, then a
+   `general-purpose` Claude subagent for the adversarial bug review — it never
+   model-invokes the user-only `/code-review`), **and** separately shells out
+   `agy -p "<review prompt over the diff>"` for Gemini's independent pass. Each
+   reviewer is a slot that must complete (retry → fallback → block on failure);
+   both sets of completed findings feed step 9's triage.
 5. Claude pushes, opens the PR, and files any deferred work as issues (step
    12) — all native, since `primary` is Claude throughout.
 
@@ -148,7 +153,7 @@ just executed by a different agent:
 3. **Step 8 (review)** resolves to `["claude"]`, a different agent than the
    one driving → Codex shells out `claude -p "<review prompt over the
    diff>"` to get Claude's independent review pass, since Claude isn't
-   already resident to invoke `/code-review` natively.
+   already resident to run that pass in-process.
 4. Codex triages the findings, pushes, opens the PR, and files follow-up
    issues.
 
