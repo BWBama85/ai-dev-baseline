@@ -97,7 +97,12 @@ _adb_pkg_has() {
     inscripts == 0 && $0 ~ /"scripts"[[:space:]]*:[[:space:]]*\{/ { inscripts = 1; depth = 1; next }
     inscripts == 1 {
       if ($0 ~ ("\"" name "\"[[:space:]]*:")) found = 1
-      o = gsub(/\{/, "{"); c = gsub(/\}/, "}")   # count braces (best-effort; ignores braces in strings)
+      # Count only STRUCTURAL braces: strip string literals (incl. \"-escapes) first, so a
+      # brace inside a script command value — "prettier {src,test}" or "echo }" — cannot
+      # skew the depth and drop or forge a later script. Key match above used the raw line.
+      line = $0
+      gsub(/"([^"\\]|\\.)*"/, "", line)
+      o = gsub(/\{/, "{", line); c = gsub(/\}/, "}", line)
       depth += o - c
       if (depth <= 0) inscripts = 2
     }
@@ -315,7 +320,10 @@ adb_run_gates() {
   local records; records="$(_adb_gate_records "$root")"
   [ -z "$records" ] && return 0
 
-  local tmp; tmp="$(mktemp -d 2>/dev/null || echo /tmp)"
+  # Own the temp dir only when mktemp actually created one; if it fails, fall back to the
+  # shared temp dir for logs but NEVER rm it on cleanup (rm -rf a shared /tmp is data loss).
+  local tmp created=0
+  if tmp="$(mktemp -d 2>/dev/null)"; then created=1; else tmp="${TMPDIR:-/tmp}"; fi
   local failed="" state label cmd scope logf
   while IFS="$_ADB_TAB" read -r state label cmd scope; do
     [ -z "$label" ] && continue
@@ -336,7 +344,7 @@ adb_run_gates() {
   done <<EOF
 $records
 EOF
-  rm -rf "$tmp" 2>/dev/null || true
+  if [ "$created" -eq 1 ]; then rm -rf "$tmp" 2>/dev/null || true; fi
 
   if [ -n "$failed" ]; then
     printf '\nadb: failing gates: %s\n' "$failed" >&2

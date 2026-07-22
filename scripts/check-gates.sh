@@ -86,6 +86,39 @@ else
   printf 'SKIP: jq not installed — skipping jq-path _adb_pkg_has tests\n' >&2
 fi
 
+# --- _adb_pkg_has (jq-absent fallback: braces in a script value) -------------
+# Regression: a brace inside a script command value must not skew brace-depth tracking and
+# drop a later real script (false negative) or scan into dependencies (false positive).
+( _adb_have() { case "$1" in jq) return 1 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+  d="$work/fb-negative"; mkdir -p "$d"
+  cat > "$d/package.json" <<'JSON'
+{
+  "scripts": {
+    "format": "prettier '{src,test}/**/*.js'",
+    "build": "tsc && echo }",
+    "test": "jest"
+  },
+  "dependencies": { "lint": "1.0.0" }
+}
+JSON
+  _adb_pkg_has "$d" test; t=$?
+  _adb_pkg_has "$d" lint; l=$?
+  [ "$t" -eq 0 ] && [ "$l" -ne 0 ]
+) ; yes $? "fallback: brace in a value keeps later 'test' and rejects dep 'lint'"
+
+( _adb_have() { case "$1" in jq) return 1 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+  d="$work/fb-positive"; mkdir -p "$d"
+  cat > "$d/package.json" <<'JSON'
+{
+  "scripts": {
+    "build": "echo {{"
+  },
+  "dependencies": { "test": "1.0.0" }
+}
+JSON
+  _adb_pkg_has "$d" test   # a dependency, outside scripts — must stay absent
+) ; no $? "fallback: an extra '{' in a value does not leak into dependencies"
+
 # --- detect integration: dep-named 'test' emits no 'test' gate (npm-guarded) --
 if command -v npm >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   d="$work/detect-deponly"; mkdir -p "$d"
@@ -203,6 +236,16 @@ d="$work/tabby"; mkdir -p "$d"
 printf '[gates]\nbuild = "echo\thi"\n' > "$d/agents.toml"
 recs="$(_adb_gate_records "$d" 2>/dev/null)"
 hasnt "$recs" "build" "tab: a command containing a tab is rejected"
+
+# --- regression: a failed `mktemp -d` must not delete the shared temp dir ------
+# Once the fallback resolved to a literal /tmp and the cleanup did `rm -rf /tmp`.
+d="$work/mktemp-fail"; mkdir -p "$d"
+printf '[gates]\nbuild = "exit 0"\n' > "$d/agents.toml"
+faketmp="$work/faketmp"; mkdir -p "$faketmp"; : > "$faketmp/sentinel"
+( mktemp() { return 1; }        # force the mktemp-failure fallback path
+  TMPDIR="$faketmp"
+  adb_run_gates "$d" >/dev/null 2>&1 )
+if [ -f "$faketmp/sentinel" ]; then ok; else bad "mktemp-fail: cleanup must NOT rm the shared temp dir"; fi
 
 # --- empty repo: detect nothing / exit 0 (the unknown-repo contract) ---------
 d="$work/empty"; mkdir -p "$d"
