@@ -17,9 +17,23 @@ debug        = "claude"     # owns root-cause investigations.
 # Optional: override the auto-detected quality gates for this repo. The gate
 # runner auto-detects pnpm/npm/yarn/bun, cargo, go, and python projects; set
 # these only when detection is wrong or the repo needs specific commands.
-# An empty string disables that gate.
+# An empty string disables that gate. Gates are an OPEN SET — any extra key
+# (e.g. build, guards) becomes a first-class gate that blocks like the four.
 [gates]
 # typecheck = "pnpm typecheck"
 # lint      = "pnpm lint"
 # test      = "pnpm test"
 # format    = "pnpm format:check"
+# build     = "pnpm build"          # a custom gate — blocks like the built-in four
+
+# Optional: declare a gate explicitly Not-Applicable (reported, never a failure
+# or a detection miss) — e.g. a stdlib-only tool with no linter/type-checker.
+# [gates.state]
+# lint      = "na"
+# typecheck = "na"
+
+# Optional: scope a gate to a changed-files condition. Comma-separated globs;
+# "*" matches across "/". A scoped gate runs only when the change set (supplied
+# by the Stop-hook) touches a matching path — no forked gate script needed.
+# [gates.scope]
+# build = "apps/**,packages/**"

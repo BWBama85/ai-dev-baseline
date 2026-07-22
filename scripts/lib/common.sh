@@ -143,9 +143,15 @@ adb_toml_get() {
   local file="$1" table="$2" key="$3"
   [ -f "$file" ] || return 1
   awk -v tbl="$table" -v key="$key" '
-    # A table header toggles whether we are inside the target table.
+    # A table header toggles whether we are inside the target table. The header name is
+    # compared LITERALLY, not as a regex — so a dotted sub-table like [gates.scope] can
+    # never accidentally match table "gatesXscope" via the "." metacharacter, and a
+    # caller-supplied table name is never a regex-injection surface.
     /^[[:space:]]*\[/ {
-      intbl = ($0 ~ ("^[[:space:]]*\\[" tbl "\\][[:space:]]*$"))
+      hdr = $0
+      sub(/^[[:space:]]*\[/, "", hdr)   # drop leading whitespace + the opening "["
+      sub(/\][[:space:]]*$/, "", hdr)   # drop the closing "]" + trailing whitespace
+      intbl = (hdr == tbl)
       next
     }
     intbl && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
@@ -182,6 +188,32 @@ adb_toml_unquote() {
   v="${v#\"}"
   v="${v%\"}"
   printf '%s' "$v"
+}
+
+# List the bare identifier keys defined in a TOML table, one per line, in file order.
+# Only keys matching [A-Za-z0-9_-]+ at the start of a line are returned (quoted keys and
+# comment lines are skipped). Uses the SAME literal-table matching as adb_toml_get, so a
+# request for table "gates" never leaks keys from a sub-table like [gates.scope]. Returns
+# 0 even when the file is missing or the table is absent (prints nothing), so callers can
+# iterate the output unconditionally. Usage: adb_toml_keys <file> <table>
+adb_toml_keys() {
+  local file="$1" table="$2"
+  [ -f "$file" ] || return 0
+  awk -v tbl="$table" '
+    /^[[:space:]]*\[/ {
+      hdr = $0
+      sub(/^[[:space:]]*\[/, "", hdr)
+      sub(/\][[:space:]]*$/, "", hdr)
+      intbl = (hdr == tbl)
+      next
+    }
+    intbl && /^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=/ {
+      k = $0
+      sub(/^[[:space:]]*/, "", k)        # leading whitespace
+      sub(/[[:space:]]*=.*$/, "", k)     # from the "=" onward
+      print k
+    }
+  ' "$file"
 }
 
 # --- versions ----------------------------------------------------------------

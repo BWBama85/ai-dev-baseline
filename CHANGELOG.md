@@ -9,6 +9,28 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **Hardened gate detection + a richer gate model** (`scripts/lib/project-gates.sh`,
+  #5 · #19):
+  - **Exact npm-script detection** — `_adb_pkg_has` now reads `package.json`'s `.scripts`
+    with `jq` (falling back to a `"scripts"`-block-scoped heuristic only when `jq` is
+    absent), so a *dependency* named `test` no longer produces a phantom `test` gate.
+  - **Single-primary-ecosystem detection, made intentional** — the first ecosystem
+    (Node → Rust → Go → Python) that yields a command wins, fixing the case where a
+    `package.json` with no installed package manager silently suppressed Python detection.
+  - **Gates are an open set** — any extra key in `agents.toml [gates]` (e.g. `build`,
+    `guards`) is a first-class gate that runs and blocks like the built-in four.
+  - **Per-gate N/A** — `[gates.state] <label> = "na"` declares a gate Not-Applicable
+    (reported, never a failure or a detection miss), distinct from `""` (disabled).
+  - **Per-gate path scope** — `[gates.scope] <label> = "apps/**,packages/**"` runs a gate
+    only when the change set (supplied by the Stop-hook `precommit-gate.sh`, now passing
+    the branch's changed files) touches a matching path — so a repo expresses docs-only
+    skipping without forking the gate script.
+  - New `project-gates.sh status` command reports each gate's state (run / N/A / disabled);
+    `detect` keeps its two-column `<label>\t<command>` contract. New shared primitive
+    `adb_toml_keys`, and a literal-table fix to `adb_toml_get` so a dotted sub-table like
+    `[gates.scope]` can't be matched via the `.` regex metacharacter. Behavior is covered
+    by `scripts/check-gates.sh` (wired into CI + `selfcheck.sh`).
+
 - **`baseline update` — keep the installed baseline current** (`bin/baseline`, #36):
   one idempotent entrypoint that fast-forwards the install-source clone and self-heals a
   moved installed path, replacing the remembered `git pull` (+ maybe re-`install.sh`)
