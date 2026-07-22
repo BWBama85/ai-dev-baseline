@@ -137,6 +137,10 @@ git -C "$sbrepo" symbolic-ref HEAD refs/heads/main
 git -C "$sbrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
 git -C "$sbrepo" remote add origin "$sborigin"
 git -C "$sbrepo" push -q -u origin main
+# Point the bare origin's HEAD at main so the second clone checks it out cleanly and
+# gets a local main to push — otherwise (when the host git's init.defaultBranch != main,
+# e.g. Linux CI) the clone warns "remote HEAD refers to nonexistent ref" and has no main.
+git -C "$sborigin" symbolic-ref HEAD refs/heads/main
 eq "$(adb_branch_sync_state "$sbrepo" main)" "current" "sync state: current"
 
 # behind: a second clone pushes a commit; local fetches but stays put.
