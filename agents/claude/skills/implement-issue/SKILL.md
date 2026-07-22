@@ -46,12 +46,12 @@ Two gitignored files under `.claude/state/`:
   `phase`. Step 10 writes `prUrl`. Multi-issue: `.issue` is the comma-joined list;
   `.branch` carries every number.
 - **`implement-issue-blocked.json`** — written by *you* ONLY on a documented
-  legitimate stop (BLOCKING gap-analysis finding you can't resolve; gate escape
-  clause; a **required review step that cannot complete** after retry + fallback,
-  step 8; branch already exists on remote). Shape:
-  `{"reason","phase","branch","issue"}` — `branch`/`issue` REQUIRED and must match
-  the active marker. (A gap-analysis failure happens *before* the branch/marker
-  exists — surface it and stop cleanly per step 4; there is no marker to match.)
+  legitimate **post-branch** stop (gate escape clause; a **required review step that
+  cannot complete** after retry + fallback, step 8; branch already exists on remote).
+  Shape: `{"reason","phase","branch","issue"}` — `branch`/`issue` REQUIRED and must
+  match the active marker (the Stop-hook gate no-ops unless a matching active marker
+  exists). A gap-analysis stop is *pre-branch* — no marker exists yet to pair with,
+  so surface it to the owner and stop cleanly (step 4); do **not** write this file.
 
 Always stage marker writes inside `.claude/state/` (`.marker.tmp` → `mv`) so the
 rename is atomic. Preflight unconditionally clears stale state files.
@@ -190,8 +190,9 @@ blocked marker to write (step 4); do not proceed as if the pass had run.
 
 ### 4. Decide
 
-- Any **BLOCKING** finding you can't resolve from the repo + practices → write
-  `implement-issue-blocked.json` and stop (no marker exists yet; just stop cleanly).
+- Any **BLOCKING** finding you can't resolve from the repo + practices → surface it
+  to the owner and stop cleanly. No branch/marker exists yet (that is step 5), so
+  there is nothing to pair a blocked file with — do **not** write one.
 - Otherwise record SHOULD-CLARIFY items as assumptions for the PR body and proceed.
 - **Epic/slice or anything declared out of scope** becomes a tracked issue in step
   12 — including the parent's own "Out of scope" list. Not a PR-body note.
@@ -265,12 +266,15 @@ slot it replaced; it does not silently satisfy a different reviewer's slot.
 
 **Completion contract (per the Roles section).** Run each cross-agent reviewer
 (`codex` / `gemini`) and the subagent bug review as a single bounded call and **wait
-for it to return** — never poll output to guess liveness. On timeout / error: kill,
-**retry once**, then **fall back** to a `general-purpose` Claude subagent bug review
-(always model-invokable when Claude drives) standing in for that slot; document the
-substitution. If a *required* slot still cannot complete and no fallback produces
-findings — i.e. **no** reviewer (self-review does not count as the independent slot)
-completed — the review step **failed**: write `implement-issue-blocked.json`
+for it to return** — never poll output to guess liveness. On timeout / error, abandon
+the call (a Bash timeout kills a `codex exec` / `agy -p` process; an Agent subagent
+just returns its error), **retry once**, then **fall back** to a `general-purpose`
+Claude subagent bug review (model-invokable whenever Claude drives) standing in for
+that slot; document the substitution. A slot is **terminal** the moment its reviewer
+(or its fallback) **returns a result** — a completed review that finds *nothing* is a
+clean pass, not a failure; only a hung / errored / crashed-empty call is incomplete.
+If **any** required slot still cannot reach a terminal state after retry + fallback,
+the review step **failed** for that slot → write `implement-issue-blocked.json`
 (`reason` names the failed reviewer, `branch`/`issue` matching the marker) and leave
 `phase=committed`. Never reach step 10 (PR opened) with a required review incomplete.
 

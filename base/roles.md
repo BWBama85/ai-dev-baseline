@@ -40,10 +40,12 @@ cross-agent dispatch:
   poll a background agent's output to infer whether it is "hung"** — the outcome is
   the call returning, not the byte count growing; that guess-and-recheck loop is
   itself the wasted time and is unreliable in both directions.
-- **On timeout / error / hang:** kill the call, **retry once**, then **fall back** —
-  to another agent the role lists, or to a `general-purpose` Claude subagent running
-  the same prompt (always model-invokable when Claude drives; but it too can error,
-  so it is a fallback, not a guarantee).
+- **On timeout / error / hang:** abandon the call — a Bash timeout kills a
+  `codex exec` / `agy -p` / `claude -p` process; an Agent-tool subagent has no PID to
+  kill, so its error or timeout return *is* the terminal signal — then **retry once**
+  and **fall back**: to another agent the role lists, or to a `general-purpose` Claude
+  subagent running the same prompt (model-invokable whenever Claude drives; but it too
+  can error, so it is a fallback, not a guarantee).
 - **If nothing completes:** the step **failed** → block the run (write the workflow's
   blocked marker) or surface to the owner. Never mark a delegated step done on
   partial or empty output.
@@ -70,7 +72,9 @@ it shells out to that agent's non-interactive entrypoint:
 > **Note (codex timeout):** `codex exec` reads and reasons over the whole repo —
 > it routinely takes **3–7 minutes**, well past a default 2-minute command
 > timeout. Always give a cross-agent `codex exec` call a timeout of at least
-> 7 minutes; a SIGTERM at 2 minutes wastes the pass, it is not a failure.
+> 7 minutes; a SIGTERM at 2 minutes is just too-tight a bound (re-run longer), not a
+> failure. A genuine timeout at the *full* ≥7-min bound, though, is an **incomplete**
+> invocation — retry → fall back per the completion contract above.
 
 ## Resolution order
 

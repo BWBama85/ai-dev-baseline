@@ -7,23 +7,6 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
-### Fixed
-
-- **`implement-issue` step 8 no longer prescribes an unusable reviewer** (#9): the
-  Claude `review` slot now runs an in-process, model-invokable pass — `/simplify`
-  (quality) plus a `general-purpose` Claude subagent for the adversarial bug review —
-  instead of the user-only `/code-review` (`disable-model-invocation`), which the
-  Skill tool rejects. `/code-review` is documented as an optional post-PR human step,
-  and the failure-mode note now names the correct cause (user-only by design, not a
-  version/toolchain problem).
-- **Delegated steps must complete deterministically** (#10): `base/roles.md` and the
-  `implement-issue` workflow now carry a **completion contract** — gap-analysis,
-  review, and any cross-agent/subagent dispatch run as a single bounded call whose
-  outcome is decided by the call *returning* (no output-polling to guess "hung"); on
-  timeout/error they kill → retry once → fall back → block/surface, and never finish
-  on partial or empty output. Clarifies that "advisory" is the standing of a
-  **completed** finding, not license to skip the step.
-
 ### Added — initial framework
 
 - **Agent-neutral practices** (`base/practices/`): shell hygiene, git/PR discipline,
@@ -47,5 +30,22 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 - **Tooling**: `scripts/build.sh` (render practices → root docs), `scripts/selfcheck.sh`
   (local CI mirror), CI (shellcheck · build-drift · frontmatter · gate-detector ·
   install dry-run), contributor guide (`CLAUDE.md` / `AGENTS.md` / `CONTRIBUTING.md`).
+
+### Fixed
+
+- **`implement-issue` step 8 no longer prescribes an unusable reviewer** (#9): the
+  Claude `review` slot now runs an in-process, model-invokable pass — `/simplify`
+  (quality) plus a `general-purpose` Claude subagent for the adversarial bug review —
+  instead of the user-only `/code-review` (`disable-model-invocation`), which the
+  Skill tool rejects. `/code-review` is documented as an optional post-PR human step,
+  and the failure-mode note now names the correct cause (user-only by design, not a
+  version/toolchain problem).
+- **Delegated steps must complete deterministically** (#10): `base/roles.md` and the
+  `implement-issue` workflow now carry a **completion contract** — gap-analysis,
+  review, and any cross-agent/subagent dispatch run as a single bounded call whose
+  outcome is decided by the call *returning* (no output-polling to guess "hung"); on
+  timeout/error they abandon → retry once → fall back → block/surface, and never
+  finish on partial or empty output. Clarifies that "advisory" is the standing of a
+  **completed** finding, not license to skip the step.
 
 [Unreleased]: https://github.com/BWBama85/ai-dev-baseline/commits/main

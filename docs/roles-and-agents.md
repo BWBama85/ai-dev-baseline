@@ -100,8 +100,10 @@ currently driving, it shells out to that agent's non-interactive entrypoint:
 > repo — it routinely takes **3–7 minutes**, well past a default 2-minute
 > command timeout. Any cross-agent `codex exec` call needs a timeout of at
 > least **7 minutes (420,000–600,000 ms)**. A SIGTERM at 2 minutes (exit code
-> 143) is a timeout that wasted the pass, not a failure of the pass itself —
-> re-run it longer, don't treat the exit code as a verdict.
+> 143) is a too-tight bound, not a failure of the pass — re-run it longer,
+> don't treat the exit code as a verdict. A genuine timeout at the *full*
+> ≥7-min bound **is** an incomplete invocation, though — retry, then fall back,
+> per the delegated-step completion contract in [`roles.md`](../base/roles.md).
 
 ## Worked example (a): Claude primary + Codex gap-analysis + Claude & Gemini review
 
