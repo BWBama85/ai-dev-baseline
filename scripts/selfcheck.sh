@@ -22,8 +22,15 @@ else
 fi
 
 step "build-drift"
-bash scripts/build.sh >/dev/null
 bd=0
+# Capture the build exit: a malformed source makes build.sh exit non-zero WITHOUT
+# rewriting the already-tracked skill, so the diff-only checks below would still see
+# a clean tree and print PASS. CI's rebuild step fails on that non-zero exit; the
+# local mirror must too, or a broken source passes selfcheck and only fails in CI.
+if ! bash scripts/build.sh >/dev/null; then
+  echo "  scripts/build.sh failed — a base/practices or base/workflows source is malformed (see its error above)"
+  bd=1
+fi
 # Compare the freshly-built tree against HEAD (committed), not the index — so a
 # partial stage (e.g. staging a generated skill but not its edited source) can't
 # false-pass locally and then fail only in remote CI. This mirrors what CI does
