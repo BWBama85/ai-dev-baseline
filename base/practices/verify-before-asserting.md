@@ -39,6 +39,19 @@ on a thread, merge, comment "done"), re-check the state that gates it right befo
 the mutation — a status captured at the start of a long task may have changed by
 the time you act on it.
 
+## Automated hooks and gates are in scope too
+
+This is not only about an agent's prose. **Any automated actor that gates a decision on
+mutable external state must re-verify it live — a Stop hook, a CI gate, a script — not
+just the agent narrating.** Mutable state is mutable regardless of who reads it. A hook
+that concludes "the run is complete because a `prUrl` is recorded in a marker file" is
+asserting a PR's open/merged/closed status from stored context, exactly what this practice
+forbids: the PR may have been closed without merging since the value was written. Such a
+hook must re-check the authoritative source (`gh pr view … --json state,mergedAt`) at the
+moment it acts, and **fail closed** — when the live state can't be verified, it must NOT
+fall back to trusting the stored value (that is the stale-state trust this practice exists
+to remove); it holds the gate and surfaces the uncertainty.
+
 ## Why
 
 Repeated stale-state assertions — narrating a merged PR as "still open" from a

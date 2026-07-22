@@ -64,9 +64,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   moved installed path, replacing the remembered `git pull` (+ maybe re-`install.sh`)
   ritual. It fast-forwards **only** when the clone is clean, on its default branch, and
   merely behind `origin` — a dirty/detached/non-default/ahead/diverged clone is surfaced
-  and left untouched — then re-runs the installer **only when a symlink stopped
-  resolving**, preserving the installed agent set + hook preference, and loudly verifies
-  every canonical link. `baseline update --check` reports currency (stable exit-code
+  and left untouched — then **always** re-runs the idempotent installer after the
+  fast-forward (self-healing any moved or newly-added link), preserving the installed agent
+  set + hook preference, and loudly verifies every canonical link (when already current, it
+  re-installs only if a link is found broken). `baseline update --check` reports currency (stable exit-code
   contract for a future `SessionStart` hook, #25) and changes nothing; it **refuses**
   (exit 4) when invoked from a clone other than the one the install points into, so a dev
   clone is never mistaken for the install-source. New primitive `adb_branch_sync_state`
@@ -110,6 +111,29 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   doc, deviation → a `DEVIATION` record, general gap → a baseline issue) and defines the
   per-project decision-log format at `.ai-dev-baseline/decisions.md`. The
   `implement-issue`, `debug`, and `create-issue` workflows reference it.
+
+### Changed
+
+- **Stop-hook gates fail loud instead of silently no-opping** (`precommit-gate.sh` ·
+  `scripts/lib/project-gates.sh`, #35): a gate that can't load its own shared library
+  (`common.sh` / `project-gates.sh`) is a broken/incomplete install — enforcement secretly
+  OFF — so it now **blocks (exit 2) with a clear repair message**, never exit 0. `common.sh`
+  is required up front (the default-branch resolver is single-source; the gate no longer
+  copies it), and `project-gates.sh` fails loud rather than emitting an empty "no gates"
+  result when `common.sh` is absent. "No gates detected" (a legitimate no-op) and "the gate
+  library is gone" (fail loud) are now distinct. New design principle 6 (never relocate an
+  installed path without a self-healing compat shim) with a CI/`selfcheck.sh` guard
+  (`scripts/check-install-migration.sh`) that installs the merge-base and simulates a plain
+  `git pull` to fail any PR that dangles an installed symlink; `CONTRIBUTING.md` names the
+  reflexivity footgun and the two-clone workflow.
+- **`implement-issue-gate.sh` re-verifies PR state live** (#44): the Stop hook no longer
+  trusts a stored `prUrl`/`phase=complete` to decide a run is done — it queries `gh` at the
+  moment it acts, confirms the PR is *this run's* (this repo + this branch) and still OPEN or
+  MERGED, and **fails closed**: a closed-without-merge or unverifiable PR keeps the turn going
+  (with a state-specific hint) rather than letting it stop on stale state. Extends
+  `base/practices/verify-before-asserting.md` to state that automated hooks/gates are in
+  scope, not just agent narration. Both hooks tested by `scripts/check-precommit-gate.sh` and
+  `scripts/check-implement-gate.sh`.
 
 ### Added — initial framework
 

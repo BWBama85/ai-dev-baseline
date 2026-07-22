@@ -48,8 +48,28 @@ set -u
 # Shared primitives (adb_toml_get / adb_toml_unquote / adb_toml_keys) live next to this
 # file. At runtime this is ~/.<agent>/scripts/lib/common.sh (install.sh symlinks the whole
 # scripts/lib dir there); run directly from the repo it is scripts/lib/common.sh.
+#
+# common.sh is a REQUIRED dependency: without it this file's gate detection silently emits
+# nothing and every caller (a direct `run`/`detect`, or a sourced adb_run_gates) reads that
+# as "no gates" — enforcement secretly OFF. So a missing/corrupt common.sh FAILS LOUD (#35),
+# never a silent no-op. `return` unwinds a sourced caller; `|| exit 1` covers direct execution.
+_adb_common="$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
+if [ ! -f "$_adb_common" ]; then
+  printf 'project-gates: FATAL — required library not found: %s (broken/incomplete install)\n' "$_adb_common" >&2
+  return 1 2>/dev/null || exit 1
+fi
 # shellcheck source=/dev/null
-. "$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
+. "$_adb_common"
+# Validate EVERY common.sh helper this file depends on, not just one — a library truncated
+# after defining adb_toml_get (but before adb_toml_unquote/adb_toml_keys) would otherwise pass
+# this check and then emit command-not-found noise + an empty (no-gates) result, i.e. the
+# fail-silent broken-install case #35 exists to catch.
+if ! command -v adb_toml_get >/dev/null 2>&1 \
+   || ! command -v adb_toml_unquote >/dev/null 2>&1 \
+   || ! command -v adb_toml_keys >/dev/null 2>&1; then
+  printf 'project-gates: FATAL — %s is missing a required helper (adb_toml_get/unquote/keys) — corrupt/truncated library\n' "$_adb_common" >&2
+  return 1 2>/dev/null || exit 1
+fi
 
 # One literal TAB — the record field delimiter. A gate whose command or scope contains a
 # tab is rejected (below) so the delimiter can never be forged.

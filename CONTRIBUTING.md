@@ -26,8 +26,25 @@ skills are stale, missing, untracked, or orphaned.
 Before adding an adapter, gate detector, renderer, or hook, read
 [`docs/design-principles.md`](docs/design-principles.md) — the tenets a contribution
 must satisfy (single-source/no-drift, general-over-specific, config-over-hardcode,
-graceful degradation) and the CI check that enforces each. New shell logic **sources**
-`scripts/lib/common.sh`; it never copies `link()`/`unlink_if_ours()`/TOML-read.
+graceful degradation, never-relocate-an-installed-path) and the CI check that enforces
+each. New shell logic **sources** `scripts/lib/common.sh`; it never copies
+`link()`/`unlink_if_ours()`/TOML-read.
+
+## Develop from a *second* clone (reflexivity footgun)
+
+The install symlinks point into a **clone**, so if you develop the framework from the
+same clone your global install points at, **merging a PR mutates your own live
+environment mid-session** — a moved installed path can dangle your gates, and a hook
+change takes effect the instant it lands. This is exactly the friction that produced
+issue #35.
+
+Keep **two clones**: an *install-source* clone the global install points into (kept
+current with `baseline update`) and a separate *dev* clone where you edit and open PRs
+(kept current by `/implement-issue`'s preflight auto-sync). The full topology — including
+why `baseline update` refuses to run from the dev clone — is documented once in
+[`docs/installation.md`](docs/installation.md#the-two-clone-topology); don't restate it
+here. And never relocate an installed path without a compat shim (design principle 6) —
+`scripts/check-install-migration.sh` fails a PR that does.
 
 ## Dev loop
 
@@ -46,12 +63,16 @@ bash scripts/selfcheck.sh
 **build-drift** (rebuild + assert generated root docs **and** skills are current — not
 stale, untracked, or missing), **workflow-map** (each `base/workflows/<name>.md` maps 1:1
 to a rendered skill, no orphans), **skill-frontmatter** (each `SKILL.md` has
-`name`/`description`/`user-invocable`), **gate-detector** (`detect` no-ops cleanly,
-`badcmd` errors), **common-lib** (unit-test the shared `scripts/lib/common.sh`
-primitives), **fact-drift** (canonical facts consistent across their consumer docs),
-**practice-index** (every practice listed once in `00-index.md`), and an
-**install→uninstall dry-run** (all three agents) into a throwaway `HOME`. Green locally
-≈ green in CI.
+`name`/`description`/`user-invocable`), **gate-detector** + **gates** (`detect` no-ops
+cleanly, `badcmd` errors, full gate-model behavior), **common-lib** (unit-test the shared
+`scripts/lib/common.sh` primitives), **cleanup-enum** and **baseline** (the `/cleanup`
+symref fix and `bin/baseline` currency classification), **precommit-gate** (the Stop-hook
+gate fails loud, never silently no-ops, when its library is missing), **implement-gate**
+(the implement-issue Stop hook re-verifies PR state live and fails closed),
+**install-migration** (a plain `git pull` never dangles an installed symlink),
+**fact-drift** (canonical facts consistent across their consumer docs), **practice-index**
+(every practice listed once in `00-index.md`), and an **install→uninstall dry-run** (all
+three agents) into a throwaway `HOME`. Green locally ≈ green in CI.
 
 ## Repository map
 
@@ -63,10 +84,10 @@ primitives), **fact-drift** (canonical facts consistent across their consumer do
 | `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) generated `skills/` + `scripts/` |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
-| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · fact-drift · practice-index) |
+| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent |
-| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · fact-drift · practice-index · install dry-run |
+| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index · install dry-run |
 
 ## Adding a new agent
 
