@@ -78,7 +78,8 @@ concern per file, rendered into every agent's root doc:
 - **Self-review** — a mandatory pre-PR pass that catches real bugs.
 - **Logging & secrets** — structured logs; never log secrets.
 
-**Skills** ([`agents/claude/skills/`](agents/claude/skills)) — invokable workflows:
+**Skills** ([`agents/claude/skills/`](agents/claude/skills)) — invokable workflows,
+generated from the agent-neutral sources in [`base/workflows/`](base/workflows):
 
 | Skill | What it does |
 |---|---|
@@ -96,10 +97,11 @@ gates that **auto-detect** the toolchain (pnpm/npm/yarn/bun, cargo, go, python) 
 ## Layout
 
 ```
-base/practices/     agent-neutral practices (the single source of truth)
+base/practices/     agent-neutral practices (single source of truth for the root docs)
+base/workflows/     agent-neutral workflows (single source of truth for the skills)
 base/roles.md       the multi-agent role registry
 agents/<agent>/     per-agent rendering: root doc + skills + scripts + adapter
-scripts/build.sh    renders base/practices → each agent's root doc
+scripts/build.sh    renders base/practices → root docs, base/workflows → Claude skills
 templates/          the per-project agents.toml
 install.sh          global installer (per --agent, symlinks + wires gates)
 bin/agent-init      per-project role setup

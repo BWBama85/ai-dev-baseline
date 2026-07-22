@@ -1,7 +1,4 @@
 ---
-# GENERATED FILE — do not edit by hand.
-# Source: base/workflows/cleanup.md · Regenerate: scripts/build.sh
-# Edits here are overwritten on the next build.
 name: cleanup
 description: Sweep ALL merged branches (local and, on confirmation, remote), not just the current one. Names each branch explicitly so command-safety gating never blocks the delete. Never touches unmerged or protected branches.
 argument-hint: [local | remote | all]  (default: local)

@@ -22,13 +22,59 @@ else
 fi
 
 step "build-drift"
-bash scripts/build.sh >/dev/null
-if git diff --quiet -- agents/claude/CLAUDE.md agents/codex/AGENTS.md agents/gemini/GEMINI.md; then
-  echo "PASS"
-else
-  echo "FAIL — base/practices changed; run scripts/build.sh and commit the root docs"
-  fail=1
+bd=0
+# Capture the build exit: a malformed source makes build.sh exit non-zero WITHOUT
+# rewriting the already-tracked skill, so the diff-only checks below would still see
+# a clean tree and print PASS. CI's rebuild step fails on that non-zero exit; the
+# local mirror must too, or a broken source passes selfcheck and only fails in CI.
+if ! bash scripts/build.sh >/dev/null; then
+  echo "  scripts/build.sh failed — a base/practices or base/workflows source is malformed (see its error above)"
+  bd=1
 fi
+# Compare the freshly-built tree against HEAD (committed), not the index — so a
+# partial stage (e.g. staging a generated skill but not its edited source) can't
+# false-pass locally and then fail only in remote CI. This mirrors what CI does
+# (it checks out HEAD, builds, and diffs).
+if ! git diff --quiet HEAD -- agents/claude/CLAUDE.md agents/codex/AGENTS.md agents/gemini/GEMINI.md; then
+  echo "  root docs stale — base/practices changed; run scripts/build.sh and commit them"
+  bd=1
+fi
+if ! git diff --quiet HEAD -- agents/claude/skills; then
+  echo "  generated skills stale — base/workflows changed; run scripts/build.sh and commit them"
+  bd=1
+fi
+# git diff HEAD is blind to untracked files; catch a rendered-but-uncommitted skill.
+# (An ignored one won't show here — the workflow-map tracked-check covers that.)
+if [ -n "$(git ls-files --others --exclude-standard -- agents/claude/skills)" ]; then
+  echo "  rendered skill(s) not committed — run scripts/build.sh and 'git add' the result:"
+  git ls-files --others --exclude-standard -- agents/claude/skills | sed 's/^/    /'
+  bd=1
+fi
+[ "$bd" -eq 0 ] && echo "PASS" || { echo "FAIL"; fail=1; }
+
+step "workflow-map"
+# 1:1 between base/workflows/<name>.md (the source) and its rendered Claude skill, so
+# a workflow can't lose its skill and a skill can't orphan when its source is removed.
+wm=0
+for wf in base/workflows/*.md; do
+  [ -f "$wf" ] || continue
+  n="$(basename "$wf" .md)"
+  [ "$n" = README ] && continue
+  sk="agents/claude/skills/$n/SKILL.md"
+  if [ ! -f "$sk" ]; then
+    echo "  base/workflows/$n.md → no rendered skill"; wm=1
+  elif ! git ls-files --error-unmatch "$sk" >/dev/null 2>&1; then
+    # Tracked-check is gitignore-immune: git ls-files --others (above) respects
+    # .gitignore, so a rendered skill under an ignored path would slip past it.
+    echo "  $sk is not git-tracked (untracked or gitignored) — run scripts/build.sh and 'git add' it"; wm=1
+  fi
+done
+for sk in agents/claude/skills/*/SKILL.md; do
+  [ -f "$sk" ] || continue
+  n="$(basename "$(dirname "$sk")")"
+  [ -f "base/workflows/$n.md" ] || { echo "  skill '$n' → no base/workflows/$n.md source (orphan)"; wm=1; }
+done
+[ "$wm" -eq 0 ] && echo "PASS" || { echo "FAIL"; fail=1; }
 
 step "skill-frontmatter"
 ff=0

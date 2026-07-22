@@ -34,6 +34,13 @@ does it. That neutrality is enforced structurally:
 - CI re-runs `build.sh` and fails on drift, so nobody can hand-edit a rendered
   root doc and have it silently diverge from the source of truth.
 
+The **workflows** follow the same structure: `base/workflows/*.md` is the single
+source for each workflow's procedure + metadata, and `build.sh` renders it into the
+Claude skills (`agents/claude/skills/<name>/SKILL.md`), drift-checked the same way.
+Rendering those same sources into other agents' native command surfaces is the
+in-progress skill-parity work — but the *source* is already agent-neutral and
+authored once.
+
 This is also what makes **per-project role assignment** possible at all (see
 [roles-and-agents.md](roles-and-agents.md)): because the same practices and
 the same workflow shape exist under every agent, a project can pick *which*

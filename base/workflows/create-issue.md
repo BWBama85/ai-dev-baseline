@@ -1,7 +1,4 @@
 ---
-# GENERATED FILE — do not edit by hand.
-# Source: base/workflows/create-issue.md · Regenerate: scripts/build.sh
-# Edits here are overwritten on the next build.
 name: create-issue
 description: Draft and file a well-scoped GitHub issue. Enforces an 11-axis adversarial gap-analysis pass BEFORE filing so the issue ships with enough depth that /review-issue does not have to patch it later. Works in any repo where `gh` is authenticated.
 user-invocable: true

@@ -67,6 +67,15 @@ script and fails the build if the checked-in output has drifted from what
 `base/practices/*.md` would currently render, so this step isn't optional
 even though the file is generated.
 
+`scripts/build.sh` also renders `base/workflows/*.md` — the single source for
+each workflow's procedure + metadata — into the **Claude** skills
+(`agents/claude/skills/<name>/SKILL.md`). When `foo` gains a native
+command/skill surface, its workflow renderer plugs in here the same way and reads
+those same `base/workflows/*.md` sources — so the workflows are authored once, not
+re-authored per agent. That work is the "deep workflow parity" part below, tracked
+as its own issues; a `render()` for `foo`'s root doc is all that's required for
+`foo` to be installable and role-assignable.
+
 ## 3. Register `foo` in `base/roles.md`
 
 Two additions to `base/roles.md`:

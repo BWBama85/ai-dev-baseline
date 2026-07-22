@@ -1,7 +1,4 @@
 ---
-# GENERATED FILE — do not edit by hand.
-# Source: base/workflows/new-release.md · Regenerate: scripts/build.sh
-# Edits here are overwritten on the next build.
 name: new-release
 description: Review a Claude / Codex / Antigravity CLI release changelog against the current project and ACT on every actionable change — apply config/code/doc fixes this session and ship them as one PR (or edit user-level config directly), surface the few that need an owner decision, and drop the rest. Files a GitHub issue only for work genuinely blocked on a future release. Works in any repo that uses one of those CLIs.
 user-invocable: true

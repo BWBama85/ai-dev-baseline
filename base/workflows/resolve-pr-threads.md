@@ -1,7 +1,4 @@
 ---
-# GENERATED FILE — do not edit by hand.
-# Source: base/workflows/resolve-pr-threads.md · Regenerate: scripts/build.sh
-# Edits here are overwritten on the next build.
 name: resolve-pr-threads
 description: Resolve unresolved bot-authored review threads on an open PR. Switches the working tree to the PR's head branch, addresses findings (commit + push if needed), replies, then marks each thread Resolved via GraphQL so branch protection unblocks merge.
 argument-hint: <pr-number>

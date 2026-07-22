@@ -1,7 +1,4 @@
 ---
-# GENERATED FILE — do not edit by hand.
-# Source: base/workflows/debug.md · Regenerate: scripts/build.sh
-# Edits here are overwritten on the next build.
 name: debug
 description: Root-cause a bug or production incident with evidence — reproduce it, prove the cause (logs / queries / a failing regression test), rule out your own stale state, fix the cause, and ship through the normal PR + gates path. Never guesses; never re-runs flaky CI to make red go green.
 argument-hint: <symptom / incident / failing test / log snippet>
