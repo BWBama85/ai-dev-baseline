@@ -102,9 +102,12 @@ adb_default_branch() {
 # missing or the key is absent — so callers can distinguish "unset" from "set to empty".
 #
 # Supports the subset the templates actually use: a `[table]` header, quoted scalar
-# strings, and flat quoted-string arrays. A `#` inside a quoted scalar is preserved
-# (only a comment OUTSIDE the string is stripped). Inline tables, escapes, and
-# multi-line values are intentionally out of scope (see docs/design-principles.md).
+# strings, and flat quoted-string arrays. Within a quoted scalar a `#` is preserved
+# (only a comment OUTSIDE the string is stripped), and a backslash-escaped quote
+# (`\"`) does NOT end the string — so a command with nested quotes survives verbatim,
+# backslashes and all (escape *decoding* like `\"`→`"` is intentionally out of scope;
+# the value is returned as written). Inline tables and multi-line values are out of
+# scope (see docs/design-principles.md).
 # Usage: adb_toml_get <file> <table> <key>
 adb_toml_get() {
   local file="$1" table="$2" key="$3"
@@ -119,10 +122,17 @@ adb_toml_get() {
       line = $0
       sub(/^[^=]*=[[:space:]]*/, "", line)   # strip "key =" and the space after it
       if (substr(line, 1, 1) == "\"") {
-        # Quoted scalar: value runs to the next quote; anything after is a comment.
-        rest = substr(line, 2)
-        idx = index(rest, "\"")
-        if (idx > 0) line = "\"" substr(rest, 1, idx)
+        # Quoted scalar: walk to the closing quote, skipping backslash-escaped chars
+        # (so \" does not close and # inside the string is not a comment). Reconstruct
+        # the value with its outer quotes; the caller unquotes if it wants the bare form.
+        rest = substr(line, 2); n = length(rest); i = 1; body = ""
+        while (i <= n) {
+          c = substr(rest, i, 1)
+          if (c == "\\" && i < n) { body = body c substr(rest, i + 1, 1); i += 2; continue }
+          if (c == "\"") break
+          body = body c; i++
+        }
+        line = "\"" body "\""
       } else {
         sub(/[[:space:]]*#.*$/, "", line)      # unquoted / array: strip trailing comment
       }

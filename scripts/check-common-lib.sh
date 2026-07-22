@@ -41,6 +41,7 @@ review  = ["claude", "gemini"]
 typecheck = "pnpm typecheck"
 lint      = ""
 test      = "echo hi # inside string"
+format    = "printf \"hi\""
 EOF
 
 eq "$(adb_toml_get "$f" roles primary)" '"claude"' "toml scalar keeps quotes"
@@ -56,6 +57,11 @@ eq "$(adb_toml_unquote "$v")" "pnpm typecheck" "scalar unquotes"
 
 v="$(adb_toml_get "$f" gates test)"
 eq "$(adb_toml_unquote "$v")" "echo hi # inside string" "hash inside quotes preserved"
+
+# A backslash-escaped quote must NOT end the string (no truncation) — the value is
+# returned verbatim, backslashes intact (regression from PR #34 bot review).
+v="$(adb_toml_get "$f" gates format)"
+eq "$(adb_toml_unquote "$v")" 'printf \"hi\"' "escaped quote does not truncate"
 
 adb_toml_get "$work/nope.toml" gates test >/dev/null; no $? "missing file returns nonzero"
 

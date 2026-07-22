@@ -15,7 +15,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   (used for both `[gates]` and `[roles]`), and `adb_version_ge`. The installer,
   uninstaller, both agent adapters, `agent-init`, and the runtime gates now **source**
   it instead of carrying four-plus copies. `scripts/lib/project-gates.sh` moved here to
-  sit beside it (it installs to `~/.<agent>/scripts/lib`). Unit-tested by
+  sit beside it (it installs to `~/.<agent>/scripts/lib`). Existing installs keep working
+  across the move via a compatibility symlink (`agents/claude/scripts/lib` → `scripts/lib`),
+  so a plain `git pull` never silently drops gate enforcement. Unit-tested by
   `scripts/check-common-lib.sh`.
 - **CI-enforced no-drift for restated facts** (#30): `scripts/check-fact-drift.sh` pins
   the gate-axis list, cross-agent invocation commands, the codex ≥7-minute timeout, and

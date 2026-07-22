@@ -52,7 +52,11 @@ install_claude() {
     adb_link "$REPO/agents/claude/scripts/$s" "$HOME/.claude/scripts/$s" "$BACKUP_DIR"
   done
   # The shared shell library (scripts/lib/) installs as ~/.claude/scripts/lib so the
-  # runtime gates can source common.sh / project-gates.sh as siblings.
+  # runtime gates can source common.sh / project-gates.sh as siblings. Fresh installs
+  # link the canonical path directly; existing installs made before the library moved
+  # here still point at agents/claude/scripts/lib, which is now a compat symlink back
+  # to scripts/lib — so a plain `git pull` keeps their gates working without a re-install
+  # (do NOT delete that symlink). Re-running install.sh self-heals them to this direct link.
   adb_link "$REPO/scripts/lib" "$HOME/.claude/scripts/lib" "$BACKUP_DIR"
 
   if [ "$WIRE_HOOKS" -eq 1 ]; then wire_hooks; else adb_info "  (gates not wired — --no-hooks)"; fi

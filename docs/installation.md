@@ -50,7 +50,11 @@ tracked as follow-up issues. See each agent's README under `agents/<token>/`.
 | `scripts/lib/` (the shared shell library) | `~/.claude/scripts/lib` |
 
 The shared shell library (`scripts/lib/common.sh` + `project-gates.sh`) installs as
-`~/.claude/scripts/lib` so the runtime gates can source it as a sibling.
+`~/.claude/scripts/lib` so the runtime gates can source it as a sibling. An install
+made before the library moved to `scripts/lib` still points `~/.claude/scripts/lib` at
+`agents/claude/scripts/lib`; that path is now a **compatibility symlink** back to
+`scripts/lib`, so a plain `git pull` keeps such installs' gates working without a
+re-install (re-running `install.sh` self-heals them to the direct link).
 
 Every link is created by the shared `adb_link()` helper (from `scripts/lib/common.sh`,
 sourced by `install.sh`) that is **idempotent**:
