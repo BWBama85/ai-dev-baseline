@@ -171,8 +171,10 @@ PROTECTED='^(HEAD|'"$DEFAULT_BRANCH"'|main|master|develop|release/.*|hotfix/.*)$
 
 sync_default() {   # on the default branch: fast-forward if behind; error if ahead/diverged
   local counts ahead behind
-  counts="$(git rev-list --left-right --count "$DEFAULT_BRANCH...origin/$DEFAULT_BRANCH")"
+  counts="$(git rev-list --left-right --count "$DEFAULT_BRANCH...origin/$DEFAULT_BRANCH" 2>/dev/null)" \
+    || { echo "ERROR: cannot compare $DEFAULT_BRANCH with origin/$DEFAULT_BRANCH"; return 1; }
   ahead="$(printf '%s' "$counts" | awk '{print $1}')"; behind="$(printf '%s' "$counts" | awk '{print $2}')"
+  [ -n "$ahead" ] && [ -n "$behind" ] || { echo "ERROR: could not determine $DEFAULT_BRANCH sync state"; return 1; }
   if [ "$ahead" -ne 0 ]; then echo "ERROR: local $DEFAULT_BRANCH has unpushed commits — reconcile manually"; return 1; fi
   [ "$behind" -eq 0 ] || git pull --ff-only origin "$DEFAULT_BRANCH" --quiet
 }
@@ -180,10 +182,16 @@ sync_default() {   # on the default branch: fast-forward if behind; error if ahe
 if [ "$CURRENT" = "$DEFAULT_BRANCH" ]; then
   sync_default || exit 1
 else
-  # Provably merged? ancestor of origin/<default> (merge-commit/rebase-ff) OR gh says PR merged (squash).
+  # Provably merged? ancestor of origin/<default> (merge-commit / rebase-ff), OR gh reports a
+  # merged PR whose head SHA is EXACTLY this tip (covers squash/rebase). Requiring the SHA to
+  # match means a *reused* branch name carrying new, unmerged commits is NOT treated as merged,
+  # so auto-sync never switches away from genuine in-progress work.
   merged=0
   git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH" 2>/dev/null && merged=1
-  if [ "$merged" -eq 0 ] && [ "$(gh pr list --head "$CURRENT" --state merged --json number --jq 'length' 2>/dev/null || echo 0)" -gt 0 ]; then merged=1; fi
+  if [ "$merged" -eq 0 ]; then
+    merged_sha="$(gh pr list --head "$CURRENT" --state merged --json headRefOid --jq '.[0].headRefOid' 2>/dev/null || echo '')"
+    [ -n "$merged_sha" ] && [ "$merged_sha" = "$(git rev-parse HEAD)" ] && merged=1
+  fi
   [ "$merged" -eq 1 ] || { echo "ERROR: not on $DEFAULT_BRANCH and '$CURRENT' is not provably merged — switch/stash manually"; exit 1; }
   git switch "$DEFAULT_BRANCH" --quiet
   sync_default || exit 1

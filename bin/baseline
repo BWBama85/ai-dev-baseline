@@ -33,9 +33,19 @@
 set -uo pipefail
 
 # Resolve our own location through symlinks (this script may be reached via a PATH
-# symlink), exactly like bin/agent-init — then find the repo root above bin/.
+# symlink) — then find the repo root above bin/. A relative symlink target is resolved
+# against the LINK's own directory (not the caller's CWD), so a relative PATH symlink
+# (stow/brew style) doesn't yield an empty REPO. Paths stay logical to match how
+# install.sh records its symlink targets; the wrong-clone guard below uses `-ef`
+# (same-inode) so a symlinked path spelling never causes a false mismatch.
 self="${BASH_SOURCE[0]}"
-while [ -L "$self" ]; do self="$(readlink "$self")"; done
+while [ -L "$self" ]; do
+  link="$(readlink "$self")"
+  case "$link" in
+    /*) self="$link" ;;
+    *)  self="$(dirname "$self")/$link" ;;
+  esac
+done
 REPO="$(cd "$(dirname "$self")/.." && pwd)"
 # Shared shell primitives (adb_default_branch / adb_branch_sync_state) — the ONE home.
 # shellcheck source=/dev/null
@@ -57,7 +67,9 @@ adb_install_source() {
     target="$(readlink "$link")"
     case "$target" in /*) ;; *) continue ;; esac   # expect an absolute target
     [ -e "$target" ] || continue                     # skip a dangling link
-    # agents/<agent>/<DOC> sits three levels below the repo root.
+    # agents/<agent>/<DOC> sits three levels below the repo root. Logical `pwd` keeps this
+    # the same flavor as the recorded symlink targets so adb_installed_links can prefix-
+    # match them; the wrong-clone guard uses `-ef`, so no physical canonicalization is needed.
     root="$(cd "$(dirname "$target")/../.." 2>/dev/null && pwd)" || continue
     if [ -f "$root/install.sh" ] && [ -d "$root/agents" ]; then
       printf '%s\n' "$root"; return 0
@@ -182,8 +194,10 @@ fi
 
 # Guard the two-clone split: only ever update the clone the install points into. If
 # baseline was invoked from a DIFFERENT clone (e.g. a dev checkout), refuse loudly
-# rather than silently updating the wrong tree.
-if [ "$SRC" != "$REPO" ]; then
+# rather than silently updating the wrong tree. `-ef` compares by device+inode (following
+# symlinks), so the same clone reached via two path spellings is correctly seen as one;
+# only genuinely distinct directories refuse.
+if ! [ "$SRC" -ef "$REPO" ]; then
   echo "baseline: the global install points at the clone" >&2
   echo "            $SRC" >&2
   echo "          but you invoked baseline from" >&2

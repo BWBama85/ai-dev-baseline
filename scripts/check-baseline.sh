@@ -140,6 +140,20 @@ ln -s "$src/agents/claude/skills/ghost" "$fh/.claude/skills/ghost"   # target do
 eq "$(run_update "$src/bin/baseline" "$fh")" "1" "update surfaces a dangling installed link (exit 1)"
 rm -f "$fh/.claude/skills/ghost"
 
+# wrong-clone guard must NOT false-trip on a symlinked-path spelling of the SAME clone
+# (physical-path comparison via pwd -P) — regression guard for the bug review's finding.
+reset_src
+aliasdir="$work/alias-src"; ln -s "$src" "$aliasdir"
+eq "$(run_check "$aliasdir/bin/baseline" "$fh")" "current|0" "symlinked-path spelling is not treated as wrong-clone"
+
+# The mutating `update` path must also REFUSE ahead state and preserve the local commit
+# (the no-data-loss invariant on the write path, not just --check).
+reset_src
+git_q "$src" commit -q --allow-empty -m local-only-2
+head_before="$(git -C "$src" rev-parse HEAD)"
+eq "$(run_update "$src/bin/baseline" "$fh")" "20" "update refuses ahead (exit 20)"
+eq "$(git -C "$src" rev-parse HEAD)" "$head_before" "update preserves HEAD when ahead"
+
 printf '\nbaseline: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
 echo "baseline: PASS"
