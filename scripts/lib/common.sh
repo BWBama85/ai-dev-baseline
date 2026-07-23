@@ -324,6 +324,34 @@ adb_toml_keys() {
   ' "$file"
 }
 
+# Parse a flat TOML array literal (as returned RAW by adb_toml_get — outer brackets and
+# per-element quotes KEPT, e.g. `["claude", "gemini"]`) into its bare string elements, one
+# per line: surrounding quotes and whitespace stripped, empty elements dropped. A scalar
+# (a value not starting with `[`) prints nothing, and an empty array `[]` prints nothing —
+# so a caller distinguishes "unset" (adb_toml_get returned 1) from "set to []" (adb_toml_get
+# returned 0 but this prints nothing). Only the single-line, comma-separated quoted-string
+# array the templates use is supported (matching adb_toml_get's own scope); an element may
+# itself contain `[`/`]` (e.g. a `foo[bot]` login) because the outer close is found as the
+# LAST `]`. Elements containing a literal comma are out of scope. Usage: adb_toml_array <raw>
+adb_toml_array() {
+  awk -v s="$1" '
+    BEGIN {
+      if (substr(s, 1, 1) != "[") exit 0        # not an array literal → no elements
+      s = substr(s, 2)                           # drop the opening "["
+      pos = 0                                     # find the LAST "]" (the array close)
+      for (i = length(s); i >= 1; i--) { if (substr(s, i, 1) == "]") { pos = i; break } }
+      if (pos > 0) s = substr(s, 1, pos - 1)
+      m = split(s, parts, ",")
+      for (j = 1; j <= m; j++) {
+        e = parts[j]
+        gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)   # trim outer whitespace
+        sub(/^"/, "", e); sub(/"$/, "", e)                            # strip one quote layer
+        gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)   # trim inside the quotes
+        if (e != "") print e
+      }
+    }'
+}
+
 # --- versions ----------------------------------------------------------------
 
 # Compare dot-separated numeric versions. Returns 0 iff have >= want. Missing trailing

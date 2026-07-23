@@ -70,12 +70,17 @@ or `/` maps cleanly. All three columns are implemented (`scripts/build.sh`'s
 | `{{ARGS}}`              | the arguments the command was invoked with          | `$ARGUMENTS`                                         | `$ARGUMENTS`                                        | `$ARGUMENTS`                                        |
 | `{{STATE_DIR}}`         | per-workflow scratch/state dir (no trailing slash)  | `.claude/state`                                     | `.codex/state`                                     | `.gemini/state`                                    |
 | `{{GATE_RUNNER}}`       | quality-gate runner command **prefix**              | `bash "$HOME/.claude/scripts/lib/project-gates.sh"` | `bash "$HOME/.codex/scripts/lib/project-gates.sh"` | `bash "$HOME/.gemini/scripts/lib/project-gates.sh"` |
+| `{{ROLE_DISPATCH}}`     | role-resolver/dispatcher command **prefix**         | `bash "$HOME/.claude/scripts/lib/role-dispatch.sh"` | `bash "$HOME/.codex/scripts/lib/role-dispatch.sh"` | `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh"` |
+| `{{CURRENT_AGENT}}`     | the agent token this skill is rendered for          | `claude`                                            | `codex`                                            | `gemini`                                           |
 | `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        | `update_plan`                                      | `Create`                                           |
 
 Examples: `{{STATE_DIR}}/foo.json` and `{{STATE_DIR}}/` both render cleanly, and a subcommand
-goes after the prefix, e.g. `{{GATE_RUNNER}} run`. The shared gate runner
-(`scripts/lib/project-gates.sh`) installs under each agent's `scripts/lib/`, so
-`{{GATE_RUNNER}} run` resolves on all three. `{{SUBTASK_PRIMITIVE}}` maps to each agent's real
+goes after the prefix, e.g. `{{GATE_RUNNER}} run` or `{{ROLE_DISPATCH}} resolve review`. The
+shared runners (`scripts/lib/project-gates.sh`, `scripts/lib/role-dispatch.sh`) install under
+each agent's `scripts/lib/`, so `{{GATE_RUNNER}} run` and `{{ROLE_DISPATCH}} invoke gap_analysis`
+resolve on all three. `{{CURRENT_AGENT}}` renders to the driving agent's own token, so a workflow
+can ask "is this review slot me?" (`{{CURRENT_AGENT}}` == the resolved token → run in-process,
+else shell out via `{{ROLE_DISPATCH}}`). `{{SUBTASK_PRIMITIVE}}` maps to each agent's real
 task primitive where it has one (Claude `TaskCreate`, Codex `update_plan`); Antigravity has no
 distinct primitive, so it maps to the plain verb `Create` (reads as "Create N tracked sub-tasks").
 
@@ -90,10 +95,11 @@ renderer/enforcement follow-ups, not this pass:
 - Stop-hook / enforcement references (`implement-issue-gate.sh`, `precommit-gate.sh`, "Stop
   hook") — the per-agent enforcement mapping is unknown until the portable hooks layer (#25)
   and per-agent equivalents (#14) exist.
-- A "run the configured review agent" primitive resolving via the role-dispatch helper (#15,
-  not yet built) and any agent's product config surface an audited-project skill inspects
-  (e.g. `.claude/settings.json`, `.claude/hooks/` in `/new-release`), which is domain content
-  about the tool under review, not the workflow's own mechanics.
+- Any agent's product config surface an audited-project skill inspects (e.g.
+  `.claude/settings.json`, `.claude/hooks/` in `/new-release`), which is domain content about
+  the tool under review, not the workflow's own mechanics. *(The "run the configured review
+  agent" primitive is now neutral — workflows resolve + shell out via `{{ROLE_DISPATCH}}`, the
+  runtime role-dispatch helper, #15.)*
 
 ## Adding a workflow
 

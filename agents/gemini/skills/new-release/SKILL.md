@@ -6,7 +6,7 @@
 # number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
 # so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
 # variable — fill it in when you run a step. Some other refs (Stop-hook gating,
-# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#15/#25.
+# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
 name: new-release
 description: Review a Claude / Codex / Antigravity CLI release changelog against the current project and ACT on every actionable change — apply config/code/doc fixes this session and ship them as one PR (or edit user-level config directly), surface the few that need an owner decision, and drop the rest. Files a GitHub issue only for work genuinely blocked on a future release. Works in any repo that uses one of those CLIs.
 ---

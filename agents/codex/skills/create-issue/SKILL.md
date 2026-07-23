@@ -6,7 +6,7 @@
 # number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
 # so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
 # variable — fill it in when you run a step. Some other refs (Stop-hook gating,
-# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#15/#25.
+# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
 name: create-issue
 description: Draft and file a well-scoped GitHub issue. Enforces an 11-axis adversarial gap-analysis pass BEFORE filing so the issue ships with enough depth that /review-issue does not have to patch it later. Works in any repo where `gh` is authenticated.
 ---

@@ -227,6 +227,17 @@ jobs:
       - name: Unit-test the shared shell primitives
         run: bash scripts/check-common-lib.sh
 
+  role-dispatch:
+    name: role-dispatch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unit-test the runtime role-dispatch helper (#15)
+        run: bash scripts/check-role-dispatch.sh
+
   cleanup-enum:
     name: cleanup-enum
     runs-on: ubuntu-latest
@@ -363,12 +374,15 @@ jobs:
             "$HOME/.claude/scripts/precommit-gate.sh" \
             "$HOME/.claude/scripts/lib/project-gates.sh" \
             "$HOME/.claude/scripts/lib/common.sh" \
+            "$HOME/.claude/scripts/lib/role-dispatch.sh" \
             "$HOME/.codex/AGENTS.md" \
             "$HOME/.codex/skills/implement-issue" \
             "$HOME/.codex/scripts/lib/project-gates.sh" \
+            "$HOME/.codex/scripts/lib/role-dispatch.sh" \
             "$HOME/.gemini/GEMINI.md" \
             "$HOME/.gemini/config/skills/implement-issue" \
-            "$HOME/.gemini/scripts/lib/project-gates.sh"; do
+            "$HOME/.gemini/scripts/lib/project-gates.sh" \
+            "$HOME/.gemini/scripts/lib/role-dispatch.sh"; do
             if [ ! -e "$p" ]; then
               echo "::error::expected path to exist and resolve: $p"
               exit 1

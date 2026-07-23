@@ -6,7 +6,7 @@
 # number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
 # so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
 # variable — fill it in when you run a step. Some other refs (Stop-hook gating,
-# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#15/#25.
+# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
 name: implement-issue
 description: Implement a GitHub issue end-to-end — repo-scope check, role-assigned gap-analysis, auto-detected gates, self-review + assigned code review, then open a PR. Agent-neutral via agents.toml; stack-agnostic via gate auto-detection.
 ---
@@ -68,7 +68,11 @@ default at `~/.config/ai-dev-baseline/agents.toml`, then to built-in defaults):
 - **`review`** (default `["claude"]`) — the code-review agents in step 8. Always
   ALSO do your own self-review (`base/practices/self-review.md`).
 
-Resolve tokens to invocations via `base/roles.md`:
+Resolve tokens to invocations via `base/roles.md`. The runtime helper
+`bash "$HOME/.gemini/scripts/lib/role-dispatch.sh"` (`scripts/lib/role-dispatch.sh`) does the resolution + cross-agent
+shelling for you — `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" resolve <role>` prints the token(s);
+`bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" invoke <role|agent>` (prompt on stdin) runs one agent's CLI and
+returns its **clean final message** on stdout:
 
 - `claude` — when Claude is the driving agent, review runs **in-process** with
   **model-invokable** tools only: `/simplify` (quality / reuse / simplification —
@@ -79,7 +83,9 @@ Resolve tokens to invocations via `base/roles.md`:
   it. Treat `/code-review` only as an *optional* step the owner runs after the PR
   (like `/resolve-pr-threads` for bot threads).
 - `codex` → `codex exec --cd <repo> -`; `gemini` → `agy -p`. A cross-agent
-  `codex exec` needs a **≥7-minute** timeout.
+  `codex exec` needs a **≥7-minute** timeout. `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" invoke` wraps both
+  (and applies that bound), and captures codex's `--output-last-message` so the
+  reply is only the final message, never the exploration stream.
 
 **Completion contract (delegated steps must terminate).** `gap_analysis`, `review`,
 and any cross-agent / subagent dispatch MUST reach a terminal, *completed* state —
@@ -242,27 +248,42 @@ already shipped on the default branch.
 
 ### 3. Gap analysis (role: `gap_analysis`)
 
-Resolve the `gap_analysis` agent from `agents.toml`. If it is `""` (**unassigned**),
-skip this step and note "gap-analysis skipped (unassigned)" for the PR — that is the
-*only* legitimate skip. An **assigned** agent that hangs / times out / errors is a
-step to complete, not to skip. Otherwise run **one** pass over the whole set with
-that agent, asking it to flag: blocking ambiguities, hidden constraints (this repo's
-conventions/neighboring patterns), out-of-scope-creep risk, and test gaps. Tag each
-finding BLOCKING / SHOULD-CLARIFY / NICE-TO-HAVE.
+Resolve the agent with `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" resolve gap_analysis`. **Empty output means
+unassigned** — skip this step and note "gap-analysis skipped (unassigned)" for the PR;
+that is the *only* legitimate skip. An **assigned** agent that hangs / times out /
+errors is a step to complete, not to skip. Otherwise run **one** pass over the whole
+set with that agent, asking it to flag: blocking ambiguities, hidden constraints (this
+repo's conventions/neighboring patterns), out-of-scope-creep risk, and test gaps.
 
-Default (`codex`): build one payload (prompt + all issues) and pipe it to
-`codex exec --cd "$(git rev-parse --show-toplevel)" -`. **Give the Bash call a
-≥7-minute timeout** (`420000`–`600000` ms) — `codex exec` routinely runs 3–7 min.
+**Output contract (so any `gap_analysis` agent is parseable — #8).** Ask for the
+findings back as exactly three headings — `BLOCKING`, `SHOULD-CLARIFY`,
+`NICE-TO-HAVE`, each listing `- <finding>` bullets or `- none` — followed by a
+one-line `VERDICT:`. Tag each finding by its heading.
+
+Dispatch through the helper, which returns only the agent's **clean final message** on
+stdout — for `codex` it captures `--output-last-message`, so the repo-exploration
+stream never contaminates the findings (no `tail`/grep recovery, the old #8 pain):
+
+```bash
+printf '%s' "$GAP_PROMPT" | bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" invoke gap_analysis > .gemini/state/gaps.md
+```
+
+Under the hood the helper runs the resolved agent's CLI — `codex exec --cd <repo> -`
+for codex — with the documented **≥7-minute** bound (`420000`–`600000` ms), past
+codex's typical 3–7 min. **Give the Bash tool call itself a timeout ABOVE that bound**
+(e.g. `480000`–`600000` ms) so the harness never kills the helper before its own
+watchdog fires.
 
 **Completion contract (per the Roles section).** This is a single bounded call:
-**wait for the process to exit** — do not poll its output stream to guess whether it
-is "hung." A short SIGTERM (exit 143) at a *2-minute* default is just too-tight a
-bound, not a failure — re-run at the ≥7-min bound. A genuine timeout / non-zero exit
-at the full bound is an **incomplete** invocation: kill it, **retry once**, then
+**wait for it to return** — do not poll its output stream to guess whether it is
+"hung." A SIGTERM (exit 143) at a *2-minute* bound is just too-tight a bound, not a
+failure — re-run at the ≥7-min bound. A genuine timeout (the helper returns 124) or a
+non-zero exit at the full bound is an **incomplete** invocation: **retry once**, then
 **fall back** to a `general-purpose` Claude subagent (Agent tool) running the same
-adversarial read. If even the fallback cannot complete, **surface to the owner and
-stop cleanly** — gap-analysis runs *before* the branch/marker exists, so there is no
-blocked marker to write (step 4); do not proceed as if the pass had run.
+adversarial read *with the same output contract*. If even the fallback cannot complete,
+**surface to the owner and stop cleanly** — gap-analysis runs *before* the
+branch/marker exists, so there is no blocked marker to write (step 4); do not proceed
+as if the pass had run.
 
 ### 4. Decide
 
@@ -329,10 +350,16 @@ edge cases, escaping/encoding, binary/NUL corruption, cascade/cancel effects,
 off-by-one, idempotency. List each finding. Self-review is the mandatory floor; the
 `review` role adds *independent* perspective on top of it.
 
-Then run each configured `review` agent. **Every configured reviewer is a slot** —
-each must reach a terminal state (completed, or explicitly replaced by a documented
-fallback) before you set `phase=code_reviewed`. A fallback stands in for the *one*
-slot it replaced; it does not silently satisfy a different reviewer's slot.
+Then run each configured `review` agent. Resolve the slots with
+`bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" resolve review` — it prints one token per slot. **Do not**
+`invoke review` as one call (a multi-agent role is refused on purpose); **loop the
+tokens**, because each slot has its own retry/fallback and a same-agent slot must stay
+native. For each resolved token: if it equals `gemini` (the agent driving
+this run) run that agent's review **in-process** (below); otherwise shell it out with
+`bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" invoke <token>` over the diff. **Every configured reviewer is a
+slot** — each must reach a terminal state (completed, or explicitly replaced by a
+documented fallback) before you set `phase=code_reviewed`. A fallback stands in for the
+*one* slot it replaced; it does not silently satisfy a different reviewer's slot.
 
 - `claude` (Claude driving) → an **in-process, two-part** pass, both model-invokable:
   1. **`/simplify` first** — the quality / reuse / simplification pass. It may edit
@@ -349,8 +376,9 @@ slot it replaced; it does not silently satisfy a different reviewer's slot.
 
   **Never model-invoke `/code-review`** (user-only, `disable-model-invocation`) — it
   is an optional step the owner runs after the PR, not part of this slot.
-- `codex` → `codex exec` a review prompt over the diff (≥7-min timeout).
-- `gemini` → `agy -p` a review prompt over the diff.
+- `codex` → `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" invoke codex` over a review prompt on the diff (it runs
+  `codex exec` with the ≥7-min bound and the clean `--output-last-message` capture).
+- `gemini` → `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" invoke gemini` over the diff (it runs `agy -p`).
 
 **Completion contract (per the Roles section).** Run each cross-agent reviewer
 (`codex` / `gemini`) and the subagent bug review as a single bounded call and **wait

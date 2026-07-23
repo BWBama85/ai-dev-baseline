@@ -73,10 +73,10 @@ render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 #     three renders uniform). The renderer emits a minimal `name` + `description`
 #     frontmatter and DROPS the Claude-only passthrough keys, plus one caveat comment
 #     noting that some body references still describe Claude-specific machinery whose
-#     per-agent equivalents are tracked follow-ups (#14/#15/#25).
+#     per-agent equivalents are tracked follow-ups (#14/#25).
 render_agent_skill() {
   local agent="$1" src="$2" name out tmp first fmname
-  local args_to state_dir gate_run subtask fmmode
+  local args_to state_dir gate_run role_dispatch current_agent subtask fmmode
 
   # --- the per-agent MAP + MODE ------------------------------------------------------
   # Only two knobs are genuinely a per-agent choice: the tracked-sub-task primitive and the
@@ -93,6 +93,8 @@ render_agent_skill() {
   args_to='$ARGUMENTS'
   state_dir=".$agent/state"
   gate_run="bash \"\$HOME/.$agent/scripts/lib/project-gates.sh\""
+  role_dispatch="bash \"\$HOME/.$agent/scripts/lib/role-dispatch.sh\""
+  current_agent="$agent"
 
   name="$(basename "$src" .md)"
   out="$root/agents/$agent/skills/$name/SKILL.md"
@@ -147,7 +149,8 @@ render_agent_skill() {
   # so e.g. Claude's gate command emits its real quotes byte-for-byte.
   awk -v name="$name" -v fmmode="$fmmode" \
       -v args_to="$args_to" -v state_dir="$state_dir" \
-      -v gate_run="$gate_run" -v subtask="$subtask" '
+      -v gate_run="$gate_run" -v role_dispatch="$role_dispatch" \
+      -v current_agent="$current_agent" -v subtask="$subtask" '
     function lreplace(s, from, to,   out, p) {
       out = ""
       while ((p = index(s, from)) > 0) {
@@ -183,7 +186,7 @@ render_agent_skill() {
         print "# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,"
         print "# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell"
         print "# variable — fill it in when you run a step. Some other refs (Stop-hook gating,"
-        print "# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#15/#25."
+        print "# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25."
         print "name: " name
         print "description: " desc
         print "---"
@@ -196,6 +199,8 @@ render_agent_skill() {
       line = lreplace(line, "{{ARGS}}",             args_to)
       line = lreplace(line, "{{STATE_DIR}}",        state_dir)
       line = lreplace(line, "{{GATE_RUNNER}}",      gate_run)
+      line = lreplace(line, "{{ROLE_DISPATCH}}",    role_dispatch)
+      line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line
     }

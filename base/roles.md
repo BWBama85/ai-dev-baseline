@@ -81,6 +81,24 @@ it shells out to that agent's non-interactive entrypoint:
 > failure. A genuine timeout at the *full* ≥7-min bound, though, is an **incomplete**
 > invocation — retry → fall back per the completion contract above.
 
+## Runtime dispatch helper
+
+`scripts/lib/role-dispatch.sh` is the programmatic embodiment of the resolution order below and
+the invocation table above — installed beside `project-gates.sh` under every agent's
+`scripts/lib/`, so a workflow calls it instead of re-deriving the same lookup + CLI incantation
+by hand in each skill:
+
+- `role-dispatch.sh resolve <role>` prints the resolved agent token(s), one per line (empty
+  output = a legitimate skip — only `gap_analysis` resolves that way). It **validates** the
+  manifest as it resolves: an unknown agent token, or an explicit empty `review = []`, is a hard
+  error — never a silent fall-through to the next resolution layer or a degraded default.
+- `role-dispatch.sh invoke <role|agent>` (prompt on stdin) runs one agent's CLI with the
+  documented flags and the ≥7-min codex bound, returning only that agent's **clean final
+  message** on stdout. For `codex` it uses `--output-last-message`, so the exploration stream
+  never contaminates the captured findings. A multi-agent `review` role is refused on purpose:
+  use `resolve` then a per-slot `invoke <token>` loop, so a same-agent slot stays in-process and
+  each slot keeps its own retry/fallback (the completion contract above).
+
 ## Resolution order
 
 For any role, a workflow resolves the responsible agent as:
@@ -90,7 +108,9 @@ For any role, a workflow resolves the responsible agent as:
    `~/.config/ai-dev-baseline/agents.toml` (written by `install.sh`).
 3. Else the built-in default in the table above.
 
-So a repo with no `agents.toml` still works — it inherits your global defaults.
+So a repo with no `agents.toml` still works — it inherits your global defaults. An invalid
+value at any layer (an unknown token, an empty `review = []`) is surfaced as an error, not
+silently skipped down to the next layer.
 
 ## The default global manifest
 
@@ -106,3 +126,35 @@ debug        = "claude"
 
 A repo overrides any subset by dropping its own `agents.toml`
 (copy `templates/agents.toml`) and running `agent-init`.
+
+## Review: in-session agents vs. async external bots
+
+The `review` role lists **in-session** reviewers — agent tokens invoked via their CLI while the
+run is live. A repo may *also* be reviewed by an **async external bot**: a GitHub App that posts
+review threads *after* the PR opens (e.g. the Codex connector `chatgpt-codex-connector`, or a
+`…[bot]` reviewer). That is a different kind of reviewer — no CLI to invoke, it arrives later and
+is cleared by `/resolve-pr-threads` — so it has its own manifest home, `[reviewers]`:
+
+```toml
+[reviewers]
+# Async external-bot reviewer logins (GitHub App logins that post threads after the PR opens).
+# /resolve-pr-threads auto-resolves ONLY threads whose author login is in this allowlist.
+#   unset → the built-in default set of common review bots
+#   []    → disable bot-thread auto-resolution entirely
+bots = ["chatgpt-codex-connector", "gemini-code-assist[bot]", "copilot[bot]"]
+```
+
+`role-dispatch.sh bots` reads this (repo → global → the built-in default allowlist) and
+`/resolve-pr-threads` derives the logins it may resolve from that **one** source. It is an
+**exact** login allowlist (never a `[bot]`-suffix heuristic), so it can never match — and never
+auto-resolve — a human-authored thread.
+
+## Scope: bespoke orchestration stays project-scoped
+
+The role model is a **static declaration** (which agent fills each role) plus the async-bot
+allowlist above — deliberately *not* a dynamic orchestration engine. Bespoke per-project patterns
+— dynamic mid-task consult agents, worktree-parallel implement swarms, a hardened per-repo
+agent-CLI wrapper — are **out of scope for the baseline**. They live as **project-scoped skills**
+(the `handling-the-unknown` prescribed home for "a workflow that genuinely diverges"), not as new
+`agents.toml` vocabulary. The baseline gives every project the same resolvable roles and the same
+dispatch helper; it does not try to replace a project's own orchestrator.

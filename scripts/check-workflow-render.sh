@@ -55,6 +55,8 @@ allowed-tools: Bash, TaskCreate, TaskList
 Args are {{ARGS}} and again {{ARGS}}.
 State file: {{STATE_DIR}}/fixture.json and dir {{STATE_DIR}}/.
 Run gates: {{GATE_RUNNER}} run
+Dispatch: {{ROLE_DISPATCH}} resolve review
+I am {{CURRENT_AGENT}}.
 Track work: {{SUBTASK_PRIMITIVE}} some sub-tasks.
 Literal shell: echo "$HOME" and a bare $ARGUMENTS token.
 EOF
@@ -68,6 +70,8 @@ if [ -f "$out" ]; then
   has "$body" 'Args are $ARGUMENTS and again $ARGUMENTS.'                         "{{ARGS}} maps + multiple on one line"
   has "$body" 'State file: .claude/state/fixture.json and dir .claude/state/.'     "{{STATE_DIR}} as path and with trailing slash"
   has "$body" 'Run gates: bash "$HOME/.claude/scripts/lib/project-gates.sh" run'   "{{GATE_RUNNER}} is a command prefix"
+  has "$body" 'Dispatch: bash "$HOME/.claude/scripts/lib/role-dispatch.sh" resolve review' "{{ROLE_DISPATCH}} is a command prefix"
+  has "$body" 'I am claude.'                                                       "{{CURRENT_AGENT}} maps to claude"
   has "$body" 'Track work: TaskCreate some sub-tasks.'                             "{{SUBTASK_PRIMITIVE}} maps to TaskCreate"
   has "$body" 'Literal shell: echo "$HOME" and a bare $ARGUMENTS token.'           "non-placeholder \$HOME/\$ARGUMENTS text is untouched"
   has "$body" 'allowed-tools: Bash, TaskCreate, TaskList'                          "frontmatter emitted verbatim (Claude passthrough key preserved; body-only proven by neg2 below)"
@@ -84,6 +88,8 @@ if [ -f "$cout" ]; then
   has "$cbody" 'Args are $ARGUMENTS and again $ARGUMENTS.'                          "codex {{ARGS}} → \$ARGUMENTS"
   has "$cbody" 'State file: .codex/state/fixture.json and dir .codex/state/.'       "codex {{STATE_DIR}} → .codex/state"
   has "$cbody" 'Run gates: bash "$HOME/.codex/scripts/lib/project-gates.sh" run'    "codex {{GATE_RUNNER}} → the ~/.codex runner"
+  has "$cbody" 'Dispatch: bash "$HOME/.codex/scripts/lib/role-dispatch.sh" resolve review' "codex {{ROLE_DISPATCH}} → the ~/.codex helper"
+  has "$cbody" 'I am codex.'                                                        "codex {{CURRENT_AGENT}} → codex"
   has "$cbody" 'Track work: update_plan some sub-tasks.'                            "codex {{SUBTASK_PRIMITIVE}} → update_plan"
   has "$cbody" 'name: fixture'                                                      "codex synth frontmatter emits name"
   has "$cbody" 'description: test fixture'                                          "codex synth frontmatter emits description"
@@ -101,6 +107,8 @@ if [ -f "$gout" ]; then
   gbody="$(cat "$gout")"
   has "$gbody" 'State file: .gemini/state/fixture.json and dir .gemini/state/.'     "gemini {{STATE_DIR}} → .gemini/state"
   has "$gbody" 'Run gates: bash "$HOME/.gemini/scripts/lib/project-gates.sh" run'   "gemini {{GATE_RUNNER}} → the ~/.gemini runner"
+  has "$gbody" 'Dispatch: bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" resolve review' "gemini {{ROLE_DISPATCH}} → the ~/.gemini helper"
+  has "$gbody" 'I am gemini.'                                                       "gemini {{CURRENT_AGENT}} → gemini"
   has "$gbody" 'Track work: Create some sub-tasks.'                                 "gemini {{SUBTASK_PRIMITIVE}} → Create"
   has "$gbody" 'name: fixture'                                                      "gemini synth frontmatter emits name"
   hasnt "$gbody" 'allowed-tools'                                                    "gemini synth DROPS the Claude-only allowed-tools key"

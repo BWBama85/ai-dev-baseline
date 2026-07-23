@@ -60,6 +60,20 @@ adb_toml_get "$work/nope.toml" gates test >/dev/null; no $? "missing file return
 # key present in a DIFFERENT table must not match
 eq "$(adb_toml_get "$f" roles typecheck 2>/dev/null)" "" "key scoped to its table"
 
+# --- adb_toml_array ----------------------------------------------------------
+# Parse a flat TOML array literal (as adb_toml_get returns it) into bare elements, one per line.
+eq "$(adb_toml_array '["claude", "gemini"]' | tr '\n' ',')" "claude,gemini," "array → elements"
+eq "$(adb_toml_array '["claude"]')"                          "claude"         "single-element array"
+eq "$(adb_toml_array '[]')"                                  ""               "empty array → nothing"
+eq "$(adb_toml_array '"claude"')"                            ""               "a scalar is not an array"
+eq "$(adb_toml_array '')"                                    ""               "empty input → nothing"
+eq "$(adb_toml_array '[ "a" ,  "b" ]' | tr '\n' ',')"        "a,b,"           "whitespace around elements trimmed"
+# A login containing [ ] (e.g. copilot[bot]) survives — the outer close is the LAST ].
+eq "$(adb_toml_array '["chatgpt-codex-connector", "copilot[bot]"]' | tr '\n' ',')" \
+   "chatgpt-codex-connector,copilot[bot]," "elements may contain [ ]"
+# End-to-end through adb_toml_get: read the array then split it.
+eq "$(adb_toml_array "$(adb_toml_get "$f" roles review)" | tr '\n' ',')" "claude,gemini," "toml_get + toml_array compose"
+
 # --- literal table matching + adb_toml_keys ---------------------------------
 # A dotted sub-table must not be matched via the "." regex metacharacter, and reading a
 # parent table must not leak the sub-table's keys (regression: issue #5/#19 [gates.scope]).
