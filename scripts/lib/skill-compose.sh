@@ -97,6 +97,15 @@ function anchor_of(line,   t) {
   t = line; sub(/^###[[:space:]]+/, "", t); sub(/^[0-9]+\.[[:space:]]*/, "", t)
   return slug(t)
 }
+# A code-fence line, CommonMark-style: ``` after 0-3 spaces of indentation (4+ spaces is an
+# indented code block, not a fence). Counted with substr/index — NOT a `{0,3}` regex interval,
+# which old BSD/onetrueawk (macOS) doesn't support. Indented fences DO occur under list items,
+# and missing them would let a `### ` inside fenced example code be misread as a step heading.
+function is_fence(s,   n) {
+  n = 0
+  while (substr(s, n + 1, 1) == " ") n++
+  return (n <= 3 && substr(s, n + 1, 3) == "```")
+}
 BEGIN {
   in_block = 0; fatal = 0; base_seen = 0
   frontmatter = 1; fmdelims = 0; infence = 0
@@ -157,7 +166,7 @@ FILENAME == base {
   # Track fence state ALWAYS (so a `### ` inside a fence is never a heading, even while a replace
   # is skipping the body), but only PRINT the delimiter when not skipping — otherwise a replaced
   # step's fenced block would leak its empty ``` ``` delimiters into the output.
-  if ($0 ~ /^```/) { infence = !infence; if (mode == "compose" && !skipping) print; next }
+  if (is_fence($0)) { infence = !infence; if (mode == "compose" && !skipping) print; next }
   if (!infence && $0 ~ /^### /) {
     a = anchor_of($0)
     if (mode == "list") {                                # advertise the anchor; flag a base collision
@@ -264,9 +273,13 @@ adb_sc_compose_one() {
   fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/adb-sc.XXXXXX")" || { adb_sc_err "mktemp failed"; return 1; }
   if adb_sc_render "$name" "$_sc_base" "$_sc_ov" "$tmp"; then
-    mkdir -p "$(dirname "$_sc_out")"
-    mv "$tmp" "$_sc_out"
-    printf 'skill-compose: composed %s\n' "$_sc_out"
+    # A failed mkdir/mv (read-only tree, ENOSPC, …) must NOT report success — automation would
+    # otherwise believe the composed SKILL.md was refreshed while the old/missing file remains.
+    if mkdir -p "$(dirname "$_sc_out")" && mv "$tmp" "$_sc_out"; then
+      printf 'skill-compose: composed %s\n' "$_sc_out"
+    else
+      adb_sc_err "failed to write $_sc_out (read-only project tree? no space?)"; rc=1
+    fi
   else
     rc=1
   fi
@@ -307,6 +320,20 @@ adb_sc_discover() {
   done
 }
 
+# Discover ORPHANED composed outputs: a skill dir with OUR composed SKILL.md (ownership marker
+# near the top) but NO overrides.md. Its source is gone, so it is now a frozen-fork shadow that
+# no-name discovery would silently skip — the currency gate must catch it. Prints one name/line.
+adb_sc_orphans() {
+  local repo="$1" d name
+  for d in "$repo/.$_ADB_SC_AGENT/skills"/*/; do
+    [ -f "${d}SKILL.md" ] || continue
+    [ -f "${d}overrides.md" ] && continue                                   # has its source
+    head -n 5 "${d}SKILL.md" 2>/dev/null | grep -Fq "$_ADB_SC_MARKER" || continue  # only OUR outputs
+    name="$(basename "$d")"
+    printf '%s\n' "$name"
+  done
+}
+
 # --- CLI (only when executed, not when sourced) -----------------------------------------------
 adb_sc_usage() { adb_usage "${BASH_SOURCE[0]:-$0}"; }
 
@@ -316,8 +343,11 @@ adb_sc_main() {
   [ $# -gt 0 ] && { cmd="$1"; shift; }
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo)  repo="${2:-}"; shift 2 ;;
-      --agent) agent="${2:-}"; shift 2 ;;
+      # Validate the operand BEFORE `shift 2`: `shift 2` with only one arg left fails and leaves
+      # $# unchanged under this non-errexit loop, which would spin forever on `--repo`/`--agent`
+      # given no value (a simple typo could wedge a gate).
+      --repo)  [ $# -ge 2 ] || { adb_sc_err "--repo requires a value"; return 2; };  repo="$2";  shift 2 ;;
+      --agent) [ $# -ge 2 ] || { adb_sc_err "--agent requires a value"; return 2; }; agent="$2"; shift 2 ;;
       -h|--help) adb_sc_usage; return 0 ;;
       --*) adb_sc_err "unknown option: $1"; return 2 ;;
       *) names+=("$1"); shift ;;
@@ -351,16 +381,28 @@ adb_sc_main() {
     return
   fi
 
-  # compose | check: explicit names, else discover overrides in the repo.
+  # compose | check: explicit names, else discover overrides in the repo. A named orphan (an owned
+  # SKILL.md without overrides.md) already errors via adb_sc_*_one's "no overrides file" guard; the
+  # gap this closes is the no-name path, which keys off overrides.md and would skip an orphan.
   if [ "${#names[@]}" -eq 0 ]; then
-    local disc
+    local disc orph
     disc="$(adb_sc_discover "$repo")"
-    if [ -z "$disc" ]; then
+    orph="$(adb_sc_orphans "$repo")"
+    if [ -z "$disc" ] && [ -z "$orph" ]; then
       adb_sc_err "no .$_ADB_SC_AGENT/skills/*/overrides.md found under $repo — nothing to $cmd"
       return 0
     fi
     while IFS= read -r n; do [ -n "$n" ] && names+=("$n"); done <<EOF
 $disc
+EOF
+    # Orphaned owned outputs are a frozen-fork shadow with no source — always a failure, in both
+    # compose (can't regenerate it) and check (it's stale by definition).
+    while IFS= read -r n; do
+      [ -n "$n" ] || continue
+      adb_sc_err "orphaned composed skill: $repo/.$_ADB_SC_AGENT/skills/$n/SKILL.md carries the ownership marker but its overrides.md is gone — a now-frozen shadow with no source. Restore overrides.md or remove the SKILL.md."
+      rc=1
+    done <<EOF
+$orph
 EOF
   fi
 

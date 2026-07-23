@@ -290,4 +290,75 @@ sc2 compose >/dev/null 2>&1; yes $? "discovery: compose with no NAME composes ev
   || bad "discovery should have composed both skills"
 sc2 check >/dev/null 2>&1; yes $? "discovery: check with no NAME reports all current"
 
+# =========================== bot-review regressions (PR #65) ===========================
+# (I) A missing --repo/--agent operand must error, not spin forever on `shift 2`.
+sc check --repo >/dev/null 2>&1; no $? "--repo with no value errors (does not hang)"
+sc compose --agent >/dev/null 2>&1; no $? "--agent with no value errors (does not hang)"
+
+# (L) A write failure (read-only skill dir) must propagate, not report success.
+mk_base rofail
+mk_ov rofail <<'EOF'
+<!-- adb:override anchor="implement" op="append" -->
+x
+<!-- adb:end -->
+EOF
+sc compose rofail >/dev/null 2>&1; yes $? "seed an owned output before making the dir read-only"
+chmod 555 "$OVROOT/rofail"
+sc compose rofail >/dev/null 2>&1; no $? "compose reports failure when the output can't be written"
+chmod 755 "$OVROOT/rofail"    # restore so the EXIT trap can clean up
+
+# (Q) An INDENTED fenced block (under a list item) must be recognized as a fence, so a `### ` line
+# inside it is not advertised as an anchor nor spliced into.
+mk_indent() {
+  mkdir -p "$BASEDIR/$1"
+  cat > "$BASEDIR/$1/SKILL.md" <<'EOF'
+---
+name: __N__
+description: d.
+user-invocable: true
+---
+# /__N__
+### 1. Real Step
+
+- An example under a list item:
+
+   ```sh
+### fake heading inside an indented fence
+   ```
+
+trailing real-step text.
+
+### 2. Second Step
+
+body
+EOF
+  sed "s/__N__/$1/g" "$BASEDIR/$1/SKILL.md" > "$BASEDIR/$1/SKILL.md.t"; mv "$BASEDIR/$1/SKILL.md.t" "$BASEDIR/$1/SKILL.md"
+}
+mk_indent indented
+ianch="$(sc list-anchors indented)"
+has  "$ianch" "real-step"    "indented fence: real step is an anchor"
+has  "$ianch" "second-step"  "indented fence: step after the fence is an anchor"
+hasnt "$ianch" "fake-heading" "indented fence: a '### ' inside it is NOT an anchor"
+mk_ov indented <<'EOF'
+<!-- adb:override anchor="real-step" op="append" -->
+APPENDED to real step.
+<!-- adb:end -->
+EOF
+sc compose indented >/dev/null 2>&1; yes $? "compose over an indented-fence base"
+ic="$(cat "$(out_of indented)")"
+has "$ic" "### fake heading inside an indented fence" "the fenced fake heading is preserved verbatim"
+has "$ic" "APPENDED to real step." "append landed in the real step"
+
+# (E) A no-name check/compose must FAIL on an orphaned owned output (composed SKILL.md whose
+# overrides.md is gone) — a frozen-fork shadow the currency gate would otherwise miss.
+REPO3="$work/repo3"; mkdir -p "$REPO3"; git init -q "$REPO3"
+sc3() { ( cd "$REPO3" && HOME="$GHOME" bash "$SC" "$@" ); }
+mkdir -p "$REPO3/.claude/skills/orphan"
+cp "$BASEDIR/demo/SKILL.md" "$BASEDIR/orphan/SKILL.md" 2>/dev/null || { mkdir -p "$BASEDIR/orphan"; cp "$BASEDIR/demo/SKILL.md" "$BASEDIR/orphan/SKILL.md"; }
+# Seed an OWNED composed output (marker present) but NO overrides.md beside it.
+mkdir -p "$REPO3/.claude/skills/orphan"
+printf -- '---\n%s v1 — DO NOT EDIT BY HAND.\nname: orphan\n---\n# /orphan\n' "# adb:composed-skill" > "$REPO3/.claude/skills/orphan/SKILL.md"
+sc3 check   >/dev/null 2>&1; no $? "no-name check fails on an orphaned composed output"
+sc3 compose >/dev/null 2>&1; no $? "no-name compose fails on an orphaned composed output"
+
 check_summary "check-skill-compose"
