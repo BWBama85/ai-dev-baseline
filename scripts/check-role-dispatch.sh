@@ -91,6 +91,25 @@ rd resolve review >/dev/null 2>&1; no $? "unknown token inside a review list is 
 clr_repo; clr_global
 rd resolve nosuchrole >/dev/null 2>&1; no $? "unknown role name is rejected"
 
+# --- validation hardening (PR #59 Codex-connector review) ---
+# primary must be a single, non-empty, exact token.
+set_repo '[roles]' 'primary = []'
+rd resolve primary >/dev/null 2>&1; no $? "primary = [] is rejected (not silently → claude)"
+rd resolve debug   >/dev/null 2>&1; no $? "a role inheriting from an invalid primary also surfaces the error"
+set_repo '[roles]' 'primary = ["claude", "gemini"]'
+rd resolve primary >/dev/null 2>&1; no $? "primary = [list] is rejected (not silently first-of-list)"
+set_repo '[roles]' 'primary = ""'
+rd resolve primary >/dev/null 2>&1; no $? "primary = \"\" is rejected"
+set_repo '[roles]' 'primary = "claude codex"'
+rd resolve primary >/dev/null 2>&1; no $? "space-joined token is rejected (exact match, not substring)"
+err="$(set_repo '[roles]' 'review = ["claude codex"]'; rd resolve review 2>&1 >/dev/null)"; has "$err" "unknown agent" "space-joined token inside a list is rejected"
+# only review may be a list — a single-owner role given an array must surface.
+set_repo '[roles]' 'gap_analysis = ["codex", "gemini"]'
+rd resolve gap_analysis >/dev/null 2>&1; no $? "gap_analysis = [list] is rejected (single-owner role)"
+err="$(rd resolve gap_analysis 2>&1 >/dev/null)"; has "$err" "single agent" "non-review array error explains single-owner cardinality"
+set_repo '[roles]' 'debug = ["claude"]'
+rd resolve debug >/dev/null 2>&1; no $? "debug = [list] is rejected (single-owner role)"
+
 # ============================ bots ============================
 clr_repo; clr_global
 b="$(rd bots)"
@@ -104,6 +123,10 @@ eq "$(rd bots | tr '\n' ',')" "chatgpt-codex-connector,my-bot[bot]," "[reviewers
 set_repo '[reviewers]' 'bots = []'
 out="$(rd bots)"; rc=$?
 eq "$out" "" "bots = [] disables (empty output)"; yes "$rc" "bots = [] is a 0 status"
+
+# a non-array bots value is malformed — rejected, NOT mistaken for the [] disable
+set_repo '[reviewers]' 'bots = "my-bot[bot]"'
+rd bots >/dev/null 2>&1; no $? "scalar [reviewers].bots is rejected (not treated as disabled)"
 
 # ============================ invoke (PATH-stubbed agents) ============================
 # codex stub: capture the prompt from stdin and REFLECT it into --output-last-message (so the

@@ -67,9 +67,14 @@ _ADB_RD_TIMEOUT_SECS="${ADB_DISPATCH_TIMEOUT_SECS:-420}"
 
 # --- resolution --------------------------------------------------------------------------------
 
-# True iff $1 is a known agent token.
+# True iff $1 is EXACTLY a known agent token. Compares against each token rather than a
+# substring test — ` *" $1 "* ` would accept a space-joined typo like "claude codex" because
+# that run of text occurs inside the allowlist string.
 _adb_rd_valid_token() {
-  case " $_ADB_RD_KNOWN " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+  local t
+  # shellcheck disable=SC2086  # intentional word-split of the space-separated token list
+  for t in $_ADB_RD_KNOWN; do [ "$1" = "$t" ] && return 0; done
+  return 1
 }
 
 # Print the raw [<section>].<key> value from the repo manifest, else the global manifest; return 0
@@ -98,14 +103,22 @@ _adb_rd_role_default() {
 # `claude`. Resolved on its own (never via the @primary fallback recursion) so the other roles'
 # "default to primary" can reuse it without a resolution loop.
 adb_resolve_primary() {
-  local raw val=""
+  local raw val
   if raw="$(_adb_rd_layered_get roles primary)"; then
+    # primary is a single-owner role: an array or an empty value is malformed and must SURFACE,
+    # not silently reroute (taking the first of a list, or defaulting to claude) — because every
+    # other role can inherit from primary, so a bad primary quietly rewires the whole workflow.
     case "$raw" in
-      \[*) val="$(adb_toml_array "$raw" | head -n1)" ;;   # tolerate a mistaken array; take the first
-      *)   val="$(adb_toml_unquote "$raw")" ;;
+      \[*) printf 'role-dispatch: [roles].primary must be a single agent, not a list\n' >&2; return 2 ;;
     esac
+    val="$(adb_toml_unquote "$raw")"
+    if [ -z "$val" ]; then
+      printf 'role-dispatch: [roles].primary is empty — set it to a known agent (%s)\n' "$_ADB_RD_KNOWN" >&2
+      return 2
+    fi
+  else
+    val="claude"   # UNSET in every manifest → the built-in default
   fi
-  [ -n "$val" ] || val="claude"
   if ! _adb_rd_valid_token "$val"; then
     printf 'role-dispatch: [roles].primary = "%s" is not a known agent (known: %s)\n' "$val" "$_ADB_RD_KNOWN" >&2
     return 2
@@ -131,11 +144,17 @@ adb_resolve_role() {
 
   case "$raw" in
   \[*)
+    # Only `review` has list cardinality; every other role is single-owner, so an array is
+    # malformed config that must surface here — not be accepted and then rejected later at invoke.
+    if [ "$role" != review ]; then
+      printf 'role-dispatch: [roles].%s must be a single agent, not a list (only review may list multiple)\n' "$role" >&2
+      return 2
+    fi
     elems="$(adb_toml_array "$raw")"
     if [ -z "$elems" ]; then
       # An explicit empty array is a configuration mistake, not a way to disable review — leaving
       # the key UNSET is the documented way to get the primary's own pass (base/roles.md). Reject.
-      printf 'role-dispatch: [roles].%s = [] is invalid — leave it unset to use the primary'\''s own review pass, or list agent(s)\n' "$role" >&2
+      printf 'role-dispatch: [roles].review = [] is invalid — leave it unset to use the primary'\''s own review pass, or list agent(s)\n' >&2
       return 2
     fi
     while IFS= read -r tok; do
@@ -181,8 +200,12 @@ EOF
 adb_dispatch_bots() {
   local raw
   if raw="$(_adb_rd_layered_get reviewers bots)"; then
-    adb_toml_array "$raw"
-    return 0
+    # Present but not an array (e.g. bots = "x") is malformed — reject it rather than let
+    # adb_toml_array emit nothing and be mistaken for the intentional `bots = []` disable.
+    case "$raw" in
+      \[*) adb_toml_array "$raw"; return 0 ;;
+      *)   printf 'role-dispatch: [reviewers].bots must be an array (e.g. ["a[bot]","b"]) — use [] to disable\n' >&2; return 2 ;;
+    esac
   fi
   printf '%s\n' \
     'chatgpt-codex-connector' \

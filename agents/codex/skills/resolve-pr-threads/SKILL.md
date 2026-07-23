@@ -64,9 +64,14 @@ command -v gh || { echo "MISSING:gh"; exit 1; }
 command -v jq || { echo "MISSING:jq"; exit 1; }
 
 # Derive the resolvable-bot login allowlist from the manifest (single source — base/roles.md),
-# BEFORE any branch switch so an early exit strands nothing. Empty output means a repo set
-# `[reviewers] bots = []` to disable auto-resolution.
-KNOWN_BOTS="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" bots)"
+# BEFORE any branch switch so an early exit strands nothing. Check the helper's EXIT STATUS: a
+# non-zero status means the helper failed (broken install / malformed `[reviewers] bots`), which
+# must fail loud — NOT be mistaken for the empty-output `bots = []` disable, or a runtime failure
+# would silently leave every bot thread unresolved.
+if ! KNOWN_BOTS="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" bots)"; then
+  echo "ERROR: could not read the bot allowlist (broken install or malformed [reviewers] bots) — aborting rather than silently skipping every thread." >&2
+  exit 1
+fi
 if [ -z "$KNOWN_BOTS" ]; then
   echo "Bot-thread auto-resolution is disabled ([reviewers] bots = []). Nothing to do."; exit 0
 fi
