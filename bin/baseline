@@ -54,9 +54,8 @@ REPO="$(cd "$(dirname "$self")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$REPO/scripts/lib/common.sh"
 
-# Print just the top contiguous comment block (the header), stripping the leading
-# "# " — stops at the first non-comment line, so internal section comments never leak.
-usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
+# Print the top comment block as --help (the shared idiom in common.sh, sourced not copied).
+usage() { adb_usage "$0"; }
 
 # Delegate the partial-skill-override composer to its library (issue #22). It operates on the
 # PROJECT repo the user is in — NOT the install-source clone — so it must dispatch BEFORE the
@@ -255,7 +254,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ "$ACTION" != "update" ]; then
-  echo "baseline: expected a subcommand ('update')" >&2; echo >&2; usage >&2; exit 2
+  echo "baseline: expected a subcommand ('update' or 'skill-compose')" >&2; echo >&2; usage >&2; exit 2
 fi
 
 # --- resolve the install-source clone ----------------------------------------

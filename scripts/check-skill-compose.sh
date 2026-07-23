@@ -112,6 +112,12 @@ has "$comp" "echo hi"                       "fenced code inside a step is preser
 prepend_after="$(printf '%s\n' "$comp" | awk '/^### 1\. Preflight/{getline; print; exit}')"
 has "$prepend_after" "PREPENDED" "prepend sits immediately after its heading"
 
+# An EMPTY overrides.md is a no-op, not an error (base-file detection is by FILENAME, not a
+# record counter that an empty first file would never advance).
+mk_base emptyov; mk_ov emptyov </dev/null
+sc compose emptyov >/dev/null 2>&1; yes $? "empty overrides.md composes (base + marker, no error)"
+has "$(cat "$(out_of emptyov)")" "# adb:composed-skill" "empty-overrides output still carries the marker"
+
 # =========================== output validity ===========================
 eq "$(head -n1 "$(out_of demo)")" "---" "composed output starts with '---'"
 has "$comp" "# adb:composed-skill"  "composed output carries the ownership marker"

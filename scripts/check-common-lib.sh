@@ -241,6 +241,17 @@ realf="$work/realfile"; echo x > "$realf"
 adb_unlink_if_ours "$realf" "$repo" >/dev/null
 if [ -f "$realf" ]; then ok; else bad "unlink never deletes a real file"; fi
 
+# --- adb_usage ---------------------------------------------------------------
+# Prints the top comment block as --help: skips the shebang, strips "# ", stops at the first
+# non-comment line (so a later section comment never leaks into help output).
+uf="$work/tool.sh"
+printf '%s\n' '#!/usr/bin/env bash' '# Tool one-liner.' '#   detail line' 'code_here=1' '# not in help' > "$uf"
+usage_out="$(adb_usage "$uf")"
+has "$usage_out" "Tool one-liner."   "adb_usage prints the header block"
+has "$usage_out" "detail line"       "adb_usage keeps indented continuation lines"
+hasnt "$usage_out" "not in help"     "adb_usage stops at the first non-comment line"
+hasnt "$usage_out" "code_here"       "adb_usage does not print code"
+
 # --- adb_default_branch ------------------------------------------------------
 gitrepo="$work/gitrepo"
 git init -q "$gitrepo"

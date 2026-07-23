@@ -35,6 +35,12 @@ _ADB_COMMON_SH_LOADED=1
 # Print a status line. The one print helper, so even this trivial wrapper has a home.
 adb_info() { printf '%s\n' "$*"; }
 
+# Print a CLI's --help text from its own top comment block: skip the shebang (NR==1), strip a
+# leading "# ", stop at the first non-comment line (so internal section comments never leak). The
+# ONE home for this idiom — bin/baseline and scripts/lib/skill-compose.sh both call it with their
+# own file rather than each carrying a copy. Usage: adb_usage <file>   (e.g. adb_usage "$0")
+adb_usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$1"; }
+
 # --- symlink install / uninstall --------------------------------------------
 
 # Back up an existing path (unless it is already our correct symlink), then symlink.
