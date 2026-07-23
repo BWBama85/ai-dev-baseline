@@ -16,16 +16,8 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/lib/common.sh
-
-pass=0
-fail=0
-ok()   { pass=$((pass + 1)); }
-bad()  { fail=$((fail + 1)); printf 'FAIL: %s\n' "$*" >&2; }
-# eq <actual> <expected> <label>
-eq()   { if [ "$1" = "$2" ]; then ok; else bad "$3: got [$1] want [$2]"; fi; }
-# assert <status-already-evaluated 0/1> <label>   — call as: cond; assert $? "label"
-yes()  { if [ "$1" -eq 0 ]; then ok; else bad "$2 (expected success, rc=$1)"; fi; }
-no()   { if [ "$1" -ne 0 ]; then ok; else bad "$2 (expected failure, rc=$1)"; fi; }
+# shellcheck source=/dev/null
+. scripts/check-lib.sh   # ok/bad/eq/yes/no + check_summary + check_git / check_make_repo_pair
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -232,18 +224,16 @@ if [ -f "$realf" ]; then ok; else bad "unlink never deletes a real file"; fi
 gitrepo="$work/gitrepo"
 git init -q "$gitrepo"
 git -C "$gitrepo" symbolic-ref HEAD refs/heads/main 2>/dev/null
-git -C "$gitrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+check_git "$gitrepo" commit -q --allow-empty -m init
 eq "$(adb_default_branch "$gitrepo")" "main" "default branch falls back to local main"
 
 # --- adb_branch_sync_state ---------------------------------------------------
 # Drive every state with a LOCAL bare "origin" (file://, no network): one working
 # clone plus a second clone that advances origin, so behind/ahead/diverged are real.
-sborigin="$work/syncorigin.git"; git init -q --bare "$sborigin"
-sbrepo="$work/syncrepo"
-git init -q "$sbrepo"
+sborigin="$work/syncorigin.git"; sbrepo="$work/syncrepo"
+check_make_repo_pair "$sbrepo" "$sborigin" || { bad "sync-state fixture: repo pair init failed"; }
 git -C "$sbrepo" symbolic-ref HEAD refs/heads/main
-git -C "$sbrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
-git -C "$sbrepo" remote add origin "$sborigin"
+check_git "$sbrepo" commit -q --allow-empty -m c1
 git -C "$sbrepo" push -q -u origin main
 # Point the bare origin's HEAD at main so the second clone checks it out cleanly and
 # gets a local main to push — otherwise (when the host git's init.defaultBranch != main,
@@ -253,18 +243,18 @@ eq "$(adb_branch_sync_state "$sbrepo" main)" "current" "sync state: current"
 
 # behind: a second clone pushes a commit; local fetches but stays put.
 sbclone="$work/syncclone"; git clone -q "$sborigin" "$sbclone"
-git -C "$sbclone" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c2
+check_git "$sbclone" commit -q --allow-empty -m c2
 git -C "$sbclone" push -q origin main
 git -C "$sbrepo" fetch -q origin
 eq "$(adb_branch_sync_state "$sbrepo" main)" "behind" "sync state: behind"
 
 # ahead: fast-forward local to origin, then add an unpushed local commit.
 git -C "$sbrepo" reset -q --hard origin/main
-git -C "$sbrepo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m local-only
+check_git "$sbrepo" commit -q --allow-empty -m local-only
 eq "$(adb_branch_sync_state "$sbrepo" main)" "ahead" "sync state: ahead"
 
 # diverged: origin advances (via the clone) while local keeps its unpushed commit.
-git -C "$sbclone" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c3
+check_git "$sbclone" commit -q --allow-empty -m c3
 git -C "$sbclone" push -q origin main
 git -C "$sbrepo" fetch -q origin
 eq "$(adb_branch_sync_state "$sbrepo" main)" "diverged" "sync state: diverged"
@@ -273,6 +263,4 @@ eq "$(adb_branch_sync_state "$sbrepo" main)" "diverged" "sync state: diverged"
 git -C "$sbrepo" branch feature-x
 eq "$(adb_branch_sync_state "$sbrepo" feature-x)" "no-remote" "sync state: no-remote"
 
-printf '\ncommon-lib: %d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" -eq 0 ] || exit 1
-echo "common-lib: PASS"
+check_summary "common-lib"

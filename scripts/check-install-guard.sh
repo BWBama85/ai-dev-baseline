@@ -13,10 +13,8 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
-
-pass=0; fail=0
-ok()  { pass=$((pass + 1)); }
-bad() { fail=$((fail + 1)); printf 'FAIL: %s\n' "$*" >&2; }
+# shellcheck source=/dev/null
+. scripts/check-lib.sh   # ok/bad + check_summary
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -56,6 +54,4 @@ if [ -L "$dest" ] && [ ! -e "$dest" ]; then bad "guard created a dangling link a
 # (5) a mid-manifest failure does not abort the rest: the good links still got created.
 [ -L "$fh/.claude/CLAUDE.md" ] && ok || bad "install.sh should still link the good entries after one failure"
 
-printf '\ninstall-guard: %d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" -eq 0 ] || exit 1
-echo "install-guard: PASS"
+check_summary "install-guard"

@@ -28,16 +28,14 @@ CURRENT="$DEFAULT"   # /cleanup enumerates after returning to the default branch
 PROTECTED='^(HEAD|'"$DEFAULT"'|main|master|develop|release/.*|hotfix/.*)$'
 
 # --- build a local repo with a real origin, an origin/HEAD symref, and a merged branch ---
-git init --bare "$work/remote.git" >/dev/null 2>&1
-git init "$work/local" >/dev/null 2>&1
+# Shared boilerplate (bare origin + local repo with a throwaway identity + wired origin) comes
+# from check_make_repo_pair; the DISTINCT topology (default branch, a merged feature branch, the
+# origin/HEAD symref) stays local below.
+check_make_repo_pair "$work/local" "$work/remote.git" || { check_note "repo pair init failed"; check_fail; }
 (
   cd "$work/local" || exit 1
-  git config user.email t@example.com
-  git config user.name  tester
-  git config commit.gpgsign false
   git checkout -b "$DEFAULT" >/dev/null 2>&1
   git commit --allow-empty -m init >/dev/null 2>&1
-  git remote add origin "$work/remote.git"
   git push -u origin "$DEFAULT" >/dev/null 2>&1
   # a feature branch genuinely merged into the default branch
   git checkout -b feature/done >/dev/null 2>&1

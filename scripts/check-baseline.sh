@@ -15,16 +15,11 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
-
-pass=0; fail=0
-ok()  { pass=$((pass + 1)); }
-bad() { fail=$((fail + 1)); printf 'FAIL: %s\n' "$*" >&2; }
-eq()  { if [ "$1" = "$2" ]; then ok; else bad "$3: got [$1] want [$2]"; fi; }
+# shellcheck source=/dev/null
+. scripts/check-lib.sh   # ok/bad/eq + check_summary + check_git / check_make_repo_pair
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-
-git_q() { git -C "$1" -c user.email=t@t -c user.name=t "${@:2}"; }
 
 # --- fixture: a minimal but REAL install-source, served from a bare origin ----
 # The source carries the FULL claude install surface (root doc, a skill, the three runtime
@@ -49,12 +44,11 @@ for s in precommit-gate implement-issue-gate statusline; do
   printf '#stub\n' > "$seed/agents/claude/scripts/$s.sh"
 done
 
-origin="$work/origin.git"; git init -q --bare "$origin"
-git init -q "$seed"
+origin="$work/origin.git"
+check_make_repo_pair "$seed" "$origin" || { echo "baseline fixture: repo pair init failed" >&2; exit 1; }
 git -C "$seed" symbolic-ref HEAD refs/heads/main
-git_q "$seed" add -A
-git_q "$seed" commit -q -m seed
-git -C "$seed" remote add origin "$origin"
+check_git "$seed" add -A
+check_git "$seed" commit -q -m seed
 git -C "$seed" push -q -u origin main
 # Ensure the bare origin's HEAD names main so a clone checks it out cleanly regardless
 # of the host git's init.defaultBranch.
@@ -74,7 +68,7 @@ ln -s "$src/scripts/lib" "$fh/.claude/scripts/lib"
 
 # A second clone used to advance origin independently (produces behind/diverged).
 c2="$work/c2"; git clone -q "$origin" "$c2"
-advance_origin() { git_q "$c2" fetch -q origin; git_q "$c2" reset -q --hard origin/main; git_q "$c2" commit -q --allow-empty -m "$1"; git_q "$c2" push -q origin main; }
+advance_origin() { check_git "$c2" fetch -q origin; check_git "$c2" reset -q --hard origin/main; check_git "$c2" commit -q --allow-empty -m "$1"; check_git "$c2" push -q origin main; }
 
 # Return src to a clean checkout of the current origin/main tip (baseline of each case).
 reset_src() {
@@ -116,12 +110,12 @@ eq "$(run_check "$src/bin/baseline" "$fh")" "dirty|20" "dirty"
 
 # ahead: an unpushed local commit, origin unchanged.
 reset_src
-git_q "$src" commit -q --allow-empty -m local-only
+check_git "$src" commit -q --allow-empty -m local-only
 eq "$(run_check "$src/bin/baseline" "$fh")" "ahead|20" "ahead"
 
 # diverged: unique commits on both sides.
 reset_src
-git_q "$src" commit -q --allow-empty -m local-div
+check_git "$src" commit -q --allow-empty -m local-div
 advance_origin "origin-div"
 eq "$(run_check "$src/bin/baseline" "$fh")" "diverged|20" "diverged"
 
@@ -194,7 +188,7 @@ eq "$(run_check "$aliasdir/bin/baseline" "$fh")" "current|0" "symlinked-path spe
 # The mutating `update` path must also REFUSE ahead state and preserve the local commit
 # (the no-data-loss invariant on the write path, not just --check).
 reset_src
-git_q "$src" commit -q --allow-empty -m local-only-2
+check_git "$src" commit -q --allow-empty -m local-only-2
 head_before="$(git -C "$src" rev-parse HEAD)"
 eq "$(run_update "$src/bin/baseline" "$fh")" "20" "update refuses ahead (exit 20)"
 eq "$(git -C "$src" rev-parse HEAD)" "$head_before" "update preserves HEAD when ahead"
@@ -234,6 +228,4 @@ if [ -L "$fh/.claude/CLAUDE.md" ]; then ok; else bad "prune must never remove a 
 rm -f "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"   # restore canonical link
 
-printf '\nbaseline: %d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" -eq 0 ] || exit 1
-echo "baseline: PASS"
+check_summary "baseline"

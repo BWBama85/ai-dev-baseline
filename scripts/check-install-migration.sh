@@ -21,10 +21,8 @@ ROOT="$(pwd)"
 # Single-source the default-branch resolver (don't re-implement origin/HEAD parsing here).
 # shellcheck source=/dev/null
 . "$ROOT/scripts/lib/common.sh"
-
-pass=0; fail=0
-ok()  { pass=$((pass + 1)); }
-bad() { fail=$((fail + 1)); printf 'FAIL: %s\n' "$*" >&2; }
+# shellcheck source=/dev/null
+. "$ROOT/scripts/check-lib.sh"   # ok/bad/bad_quiet + check_summary
 
 # --- compat-obligation check (independent of git history) --------------------
 # The one move that has happened so far: PR #34 relocated the shared lib to scripts/lib and
@@ -80,10 +78,8 @@ else
     done <<EOF
 $(find "$fh" -type l)
 EOF
-    if [ "$broken" -eq 0 ]; then ok; else fail=$((fail + 1)); fi
+    if [ "$broken" -eq 0 ]; then ok; else bad_quiet; fi   # diagnostic already printed above
   fi
 fi
 
-printf '\ninstall-migration: %d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" -eq 0 ] || exit 1
-echo "install-migration: PASS"
+check_summary "install-migration"
