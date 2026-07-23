@@ -219,6 +219,9 @@ Both calls must succeed for a thread to count as resolved. If the reply mutation
 After processing every thread:
 
 ```bash
+# Reuse $BOT_RE from step 1; re-derive it here if this block runs in a fresh shell. Without this,
+# an empty $BOT_RE would make jq's test("") match EVERY login, over-counting human threads.
+: "${BOT_RE:=(?i)^($(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" bots | sed 's/[][]/\\&/g' | paste -sd'|' -))$}"
 # Sanity check: re-fetch and count remaining unresolved bot threads.
 REMAINING=$(gh api graphql -f query='
 query($owner:String!,$repo:String!,$num:Int!){

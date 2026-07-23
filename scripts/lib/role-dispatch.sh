@@ -207,7 +207,12 @@ _adb_rd_bounded() {
   fi
   local flag rc
   flag="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/adb-rd-flag-$$")"; rm -f "$flag"
-  "$@" & local cmd_pid=$!
+  # `<&0` is load-bearing: a backgrounded command in a non-interactive shell has its stdin
+  # redirected from /dev/null UNLESS it carries an explicit redirection. The caller's `< "$pf"`
+  # is on THIS function's invocation, not on the inner `&`, so without `<&0` the child (codex,
+  # fed its prompt on stdin) would read /dev/null — an empty prompt. Duping fd 0 in suppresses
+  # the /dev/null substitution; harmless for claude/gemini (their prompt is in argv).
+  "$@" <&0 & local cmd_pid=$!
   ( sleep "$secs"; kill -TERM "$cmd_pid" 2>/dev/null && : > "$flag"; ) </dev/null >/dev/null 2>&1 &
   local watcher=$!
   wait "$cmd_pid" 2>/dev/null; rc=$?

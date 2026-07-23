@@ -106,15 +106,16 @@ out="$(rd bots)"; rc=$?
 eq "$out" "" "bots = [] disables (empty output)"; yes "$rc" "bots = [] is a 0 status"
 
 # ============================ invoke (PATH-stubbed agents) ============================
-# codex stub: write ONLY the clean report to --output-last-message, stream noise to stdout, and
-# drain the prompt on stdin — exactly the shape the helper must tame (#8).
+# codex stub: capture the prompt from stdin and REFLECT it into --output-last-message (so the
+# test proves the prompt actually reached codex — the watchdog-stdin bug), while streaming noise
+# to stdout that the helper must route to stderr (#8).
 cat > "$BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 out=""; prev=""
 for a in "$@"; do case "$prev" in --output-last-message) out="$a" ;; esac; prev="$a"; done
+in="$(cat)"
 echo "EXPLORATION NOISE — must not reach captured stdout"
-cat >/dev/null
-[ -n "$out" ] && printf 'BLOCKING\n- none\nVERDICT: proceed\n' > "$out"
+[ -n "$out" ] && printf 'RECEIVED:%s\nVERDICT: proceed\n' "$in" > "$out"
 exit 0
 EOF
 chmod +x "$BIN/codex"
@@ -133,13 +134,18 @@ chmod +x "$BIN/agy"
 
 set_repo '[roles]' 'primary = "claude"' 'gap_analysis = "codex"' 'review = ["claude", "gemini"]'
 
-# codex: stdout is the CLEAN final message; noise is on stderr, not stdout.
+# codex: stdout is the CLEAN final message; noise is on stderr, not stdout; and the prompt
+# reached codex on stdin (default path — GNU timeout on CI).
 out="$(printf 'do gap analysis' | rd invoke gap_analysis 2>/dev/null)"; rc=$?
 yes "$rc" "invoke gap_analysis (codex) succeeds"
-eq "$out" "$(printf 'BLOCKING\n- none\nVERDICT: proceed')" "codex invoke returns ONLY the final message"
+eq "$out" "$(printf 'RECEIVED:do gap analysis\nVERDICT: proceed')" "codex invoke returns ONLY the final message AND the prompt reached codex"
 err="$(printf 'x' | rd invoke gap_analysis 2>&1 >/dev/null)"
 has "$err" "EXPLORATION NOISE" "codex exploration stream is routed to stderr"
 hasnt "$out" "EXPLORATION NOISE" "codex exploration noise never contaminates stdout"
+# REGRESSION (watchdog stdin bug): the portable watchdog path must ALSO deliver the prompt on
+# stdin, not /dev/null. Before the `<&0` fix this returned "RECEIVED:" (empty).
+outw="$(printf 'watchdog-prompt' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis 2>/dev/null ))"
+has "$outw" "RECEIVED:watchdog-prompt" "watchdog path delivers the prompt on stdin (not /dev/null)"
 
 # explicit agent tokens invoke directly
 eq "$(printf 'review it' | rd invoke claude 2>/dev/null)" "CLAUDE:review it" "invoke <claude> runs claude -p"
