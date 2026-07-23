@@ -116,6 +116,24 @@ render_agent_skill() {
     echo "build.sh: base/workflows/$name.md frontmatter name '$fmname' must equal the file stem '$name'" >&2
     exit 3
   fi
+  # `description:` must be a single, non-empty line. The Codex/Gemini synth render captures ONLY
+  # the `description:` line, so a folded/block scalar (`>`/`|`), a plain multi-line continuation,
+  # or an empty value would silently drop content and ship a skill whose description — the field
+  # that drives activation on those agents — is broken. Reject it at the source (agent-neutral,
+  # so it fails uniformly for every agent, before anything is written). No-op for a normal
+  # single-line description.
+  descprob="$(awk '
+    NR==1 { next }
+    $0 == "---" { exit }
+    seen { if ($0 ~ /^[[:space:]]/) print "a multi-line continuation"; exit }
+    /^description:[[:space:]]*$/                     { print "empty"; exit }
+    /^description:[[:space:]]*[>|][+-]?[[:space:]]*$/ { print "a folded/block scalar"; exit }
+    /^description:/ { seen = 1 }
+  ' "$src")"
+  if [ -n "$descprob" ]; then
+    echo "build.sh: base/workflows/$name.md has a non-single-line 'description:' ($descprob) — it must be one non-empty line (the Codex/Gemini render captures only that line)." >&2
+    exit 3
+  fi
 
   mkdir -p "$(dirname "$out")"
   # Render to a temp file and mv into place only on success — a failed render must

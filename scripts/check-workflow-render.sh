@@ -150,6 +150,32 @@ no "$rc" "a placeholder in frontmatter is left verbatim → fails the build (bod
 # not some unrelated earlier error — this is what makes it a body-only proof, not just "build failed".
 has "$(cat "$d/build.log" 2>/dev/null)" 'unresolved placeholder' "neg2 fails via the fail-loud guard (frontmatter placeholder not substituted)"
 
+# --- 3b: a non-single-line `description:` fails the build (Codex/Gemini synth would drop content) --
+# A folded/block scalar (`>`) description spans multiple lines; the synth render captures only the
+# `description:` line, so the source contract requires one line and build.sh rejects the rest loud.
+neg3="$WORK/neg3-src.md"
+cat > "$neg3" <<'EOF'
+---
+name: fixture
+description: >-
+  first line of a folded description
+  that continues onto a second line
+user-invocable: true
+---
+
+# /fixture
+body ok
+EOF
+d="$WORK/neg3"
+render_fixture "$d" fixture "$neg3"; rc=$?
+no "$rc" "a folded/multi-line description fails the build"
+has "$(cat "$d/build.log" 2>/dev/null)" 'non-single-line' "neg3 fails via the single-line-description guard"
+if [ -f "$d/agents/claude/skills/fixture/SKILL.md" ]; then
+  bad "skill was written despite the multi-line description"
+else
+  ok
+fi
+
 # --- 4: no committed skill ships an unresolved placeholder (EVERY agent's rendered tree) ------
 for a in claude codex gemini; do
   for sk in "$ROOT"/agents/"$a"/skills/*/SKILL.md; do
