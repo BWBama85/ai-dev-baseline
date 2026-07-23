@@ -154,10 +154,19 @@ FILENAME == base && frontmatter {                        # stream frontmatter ve
   next
 }
 FILENAME == base {
-  if ($0 ~ /^```/) { infence = !infence; if (mode == "compose") print; next }   # a fenced line is never a heading
+  # Track fence state ALWAYS (so a `### ` inside a fence is never a heading, even while a replace
+  # is skipping the body), but only PRINT the delimiter when not skipping — otherwise a replaced
+  # step's fenced block would leak its empty ``` ``` delimiters into the output.
+  if ($0 ~ /^```/) { infence = !infence; if (mode == "compose" && !skipping) print; next }
   if (!infence && $0 ~ /^### /) {
     a = anchor_of($0)
-    if (mode == "list") { h = $0; sub(/^###[[:space:]]+/, "", h); printf "%-52s (line %d)  %s\n", a, FNR, h; next }
+    if (mode == "list") {                                # advertise the anchor; flag a base collision
+      h = $0; sub(/^###[[:space:]]+/, "", h)
+      dup = (a in baseseen) ? "  [DUPLICATE — compose will reject]" : ""
+      baseseen[a] = 1
+      printf "%-52s (line %d)  %s%s\n", a, FNR, h, dup
+      next
+    }
     if (pending != "") { emit(dir_content[pending]); pending = "" }   # flush prior append
     skipping = 0
     if (a in baseseen) { err("duplicate anchor \"" a "\" in base skill (two headings collide) — ambiguous target"); fatal = 3; exit 3 }
@@ -223,8 +232,10 @@ adb_sc_render() {
       adb_sc_err "composed output for '$name' is missing required frontmatter key '${k}'"; return 1
     fi
   done
-  if grep -Eq '<!--[[:space:]]*adb:(override|end)' "$tmp"; then
-    adb_sc_err "composed output for '$name' still contains adb: directives (internal error)"; return 1
+  # Match only the actual directive shapes (`adb:override ` + attrs, or `adb:end -->`), not any
+  # content that merely contains the substring "adb:end" (e.g. a legitimate `<!-- adb:endpoint -->`).
+  if grep -Eq '<!--[[:space:]]*adb:(override[[:space:]]|end[[:space:]]*-->)' "$tmp"; then
+    adb_sc_err "composed output for '$name' still contains an adb: directive (internal error)"; return 1
   fi
   return 0
 }
@@ -244,8 +255,10 @@ adb_sc_compose_one() {
   [ -f "$_sc_ov" ]   || { adb_sc_err "no overrides file: $_sc_ov"; return 1; }
   [ -f "$_sc_base" ] || { adb_sc_err "no installed base skill: $_sc_base (is the baseline installed for $_ADB_SC_AGENT?)"; return 1; }
   # Refuse to clobber a destination we do not own — a pre-existing SKILL.md WITHOUT our marker is a
-  # hand-authored full fork; overwriting it would silently destroy the project's work.
-  if [ -e "$_sc_out" ] && ! grep -Fq "$_ADB_SC_MARKER" "$_sc_out" 2>/dev/null; then
+  # hand-authored full fork; overwriting it would silently destroy the project's work. Our marker
+  # always sits near the very top (line 2, right after the opening ---), so only the head is
+  # inspected — a fork that merely *mentions* the marker deep in its prose isn't mistaken for ours.
+  if [ -e "$_sc_out" ] && ! head -n 5 "$_sc_out" 2>/dev/null | grep -Fq "$_ADB_SC_MARKER"; then
     adb_sc_err "refusing to overwrite $_sc_out — it exists but is not a skill-compose output (a hand-authored fork?). Remove or rename it, then recompose."
     return 1
   fi

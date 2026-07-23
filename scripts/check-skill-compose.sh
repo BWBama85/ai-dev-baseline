@@ -112,6 +112,24 @@ has "$comp" "echo hi"                       "fenced code inside a step is preser
 prepend_after="$(printf '%s\n' "$comp" | awk '/^### 1\. Preflight/{getline; print; exit}')"
 has "$prepend_after" "PREPENDED" "prepend sits immediately after its heading"
 
+# replace on a step that CONTAINS a fenced code block must drop the whole body — including the
+# fence delimiters (regression: the fence rule used to print during a replace-skip, leaking an
+# empty ``` ``` pair) — and must not corrupt fence tracking for later steps.
+mk_base repfence
+mk_ov repfence <<'EOF'
+<!-- adb:override anchor="implement" op="replace" -->
+REPLACED whole implement step.
+<!-- adb:end -->
+EOF
+sc compose repfence >/dev/null 2>&1; yes $? "compose replace over a fenced step"
+rf="$(cat "$(out_of repfence)")"
+has  "$rf" "REPLACED whole implement step." "replace body present"
+hasnt "$rf" "echo hi"          "replace dropped the fenced code content"
+hasnt "$rf" "Write the code."  "replace dropped the original step body"
+hasnt "$rf" '```sh'            "replace did not leak the opening fence delimiter"
+hasnt "$rf" "More implement text." "replace dropped body text after the fence"
+has  "$rf" "File deferred work." "a later step still renders (fence state not corrupted)"
+
 # An EMPTY overrides.md is a no-op, not an error (base-file detection is by FILENAME, not a
 # record counter that an empty first file would never advance).
 mk_base emptyov; mk_ov emptyov </dev/null
@@ -165,6 +183,30 @@ EOF
 mk_base owned
 sc compose owned >/dev/null 2>&1; yes $? "first compose of an owned skill"
 sc compose owned >/dev/null 2>&1; yes $? "recompose an owned (marked) skill is allowed"
+
+# Override content may legitimately mention "adb:end…" (e.g. an <!-- adb:endpoint --> comment) —
+# the residue self-check must match only real directive shapes, not that substring.
+mk_base endsub
+mk_ov endsub <<'EOF'
+<!-- adb:override anchor="implement" op="append" -->
+See the `<!-- adb:endpoint /v1/foo -->` marker for details.
+<!-- adb:end -->
+EOF
+sc compose endsub >/dev/null 2>&1; yes $? "content mentioning adb:endpoint composes (no false residue error)"
+has "$(cat "$(out_of endsub)")" "adb:endpoint /v1/foo" "the adb:endpoint mention survives into the output"
+
+# The clobber-guard inspects only the top of the file, so a hand fork that merely MENTIONS the
+# ownership marker deep in its body is still correctly refused (not mistaken for our output).
+mk_base markbody
+mk_ov markbody <<'EOF'
+<!-- adb:override anchor="implement" op="append" -->
+x
+<!-- adb:end -->
+EOF
+{ printf -- '--- a hand fork ---\n'; i=0; while [ "$i" -lt 12 ]; do echo "filler"; i=$((i+1)); done; \
+  echo "# adb:composed-skill mentioned in prose"; } > "$OVROOT/markbody/SKILL.md"
+sc compose markbody >/dev/null 2>&1; no $? "clobber-guard refuses a fork that only mentions the marker in its body"
+has "$(cat "$OVROOT/markbody/SKILL.md")" "a hand fork" "that fork is left intact"
 
 # =========================== fail-loud errors ===========================
 err_case() {  # err_case <name> <label>  — overrides from stdin; assert compose is nonzero + no output written
