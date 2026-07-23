@@ -42,27 +42,59 @@ render "$root/agents/codex/AGENTS.md"  "Global engineering practices"
 render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 
 # base/workflows/<name>.md is the single source for each workflow (procedure +
-# metadata). Render each into the Claude agent's native skill form. Codex/Gemini
-# renderers plug in here the same way — see docs/adding-an-agent.md.
+# metadata). Render each into EVERY agent's native skill form. All three agents
+# (Claude, Codex, Antigravity/Gemini) converge on the agent-skills SKILL.md folder
+# standard — `<agent-skills-dir>/<name>/SKILL.md` with YAML frontmatter — so one
+# generic renderer serves them all, parameterised by three per-agent knobs:
+#   - the placeholder MAP (each neutral {{TOKEN}} -> that agent's real token),
+#   - the frontmatter MODE (see below),
+#   - the output tree (agents/<agent>/skills/, symlinked to each agent's skills dir
+#     by adb_agent_manifest in scripts/lib/common.sh).
+# See docs/adding-an-agent.md and base/workflows/README.md's source contract.
 #
-# The Claude skill format IS the reference form, so the render is close to verbatim.
 # Two transforms happen (see base/workflows/README.md's source contract):
 #   1. A generated-file marker is injected as YAML `#` comments right after the
 #      opening `---`. It can't be an HTML banner like the root docs use — a SKILL.md
-#      must start with `---` for Claude's skill loader and the CI skill-frontmatter
-#      check, and a `#` comment inside the frontmatter is valid YAML both accept.
-#   2. Agent-neutral {{PLACEHOLDER}} tokens in the BODY are substituted to Claude's
-#      real tokens (CLAUDE_MAP below). The mapping is literal (index/substr, never
-#      regex) and body-only — frontmatter is emitted verbatim so Claude-specific
-#      passthrough keys (allowed-tools, …) are never touched. Because the map reverses
-#      the neutralization exactly, the Claude render stays byte-for-byte what it was
-#      before the bodies were neutralized (#16); build-drift proves it every CI run.
-#      Any {{…}} that survives the map is an unmapped placeholder — a fail-loud error,
-#      never emitted into a skill.
-render_skill() {
-  local src="$1" name out tmp first fmname
+#      must start with `---` for the skill loaders and the CI skill-frontmatter
+#      check, and a `#` comment inside the frontmatter is valid YAML all three accept.
+#   2. Agent-neutral {{PLACEHOLDER}} tokens in the BODY are substituted to that
+#      agent's real tokens (the MAP passed via -v below). The mapping is literal
+#      (index/substr, never regex) and body-only. Any {{…}} that survives the map is
+#      an unmapped placeholder — a fail-loud error, never emitted into a skill.
+#
+# Frontmatter MODE, the one place the agents genuinely differ:
+#   - verbatim (Claude): the source frontmatter is streamed unchanged (only the marker
+#     is injected), so Claude passthrough keys (allowed-tools, argument-hint, effort,
+#     user-invocable, …) survive. Because the map reverses #16's neutralization exactly
+#     and the frontmatter is untouched, the Claude render stays byte-for-byte what it
+#     was before the bodies were neutralized; build-drift proves it every CI run.
+#   - synth (Codex, Gemini): those surfaces honor only `name` + `description` (Codex's
+#     `name` is implicit from the filename, but emitting it is harmless and keeps the
+#     three renders uniform). The renderer emits a minimal `name` + `description`
+#     frontmatter and DROPS the Claude-only passthrough keys, plus one caveat comment
+#     noting that some body references still describe Claude-specific machinery whose
+#     per-agent equivalents are tracked follow-ups (#14/#15/#25).
+render_agent_skill() {
+  local agent="$1" src="$2" name out tmp first fmname
+  local args_to state_dir gate_run subtask fmmode
+
+  # --- the per-agent MAP + MODE (the whole agent delta lives here) ------------------
+  case "$agent" in
+    claude)
+      args_to='$ARGUMENTS'; state_dir='.claude/state'; subtask='TaskCreate'
+      gate_run='bash "$HOME/.claude/scripts/lib/project-gates.sh"'; fmmode=verbatim ;;
+    codex)
+      args_to='$ARGUMENTS'; state_dir='.codex/state';  subtask='update_plan'
+      gate_run='bash "$HOME/.codex/scripts/lib/project-gates.sh"';  fmmode=synth ;;
+    gemini)
+      args_to='$ARGUMENTS'; state_dir='.gemini/state'; subtask='Create'
+      gate_run='bash "$HOME/.gemini/scripts/lib/project-gates.sh"'; fmmode=synth ;;
+    *)
+      echo "build.sh: render_agent_skill: unknown agent '$agent'" >&2; exit 3 ;;
+  esac
+
   name="$(basename "$src" .md)"
-  out="$root/agents/claude/skills/$name/SKILL.md"
+  out="$root/agents/$agent/skills/$name/SKILL.md"
 
   # Validate BEFORE writing anything. The source must start with a --- frontmatter
   # delimiter, and its `name:` must equal the file stem (which becomes the skill
@@ -90,12 +122,13 @@ render_skill() {
   # and a zero-byte file here would break the live installed skill. Writes only this
   # one file; never clears or recreates the skills directory.
   tmp="$out.tmp"
-  # The Claude placeholder map is the four lreplace() calls below: agent-neutral body
-  # placeholder -> Claude's real token. A second agent's renderer supplies its OWN calls for
-  # the same placeholders (that is the whole point of neutralizing the bodies); Claude's map
-  # reproduces today's skills byte-for-byte. Kept literal (index/substr in awk, no regex) so
-  # tokens with $, ", and / substitute cleanly.
-  awk -v name="$name" '
+  # The MAP is the four lreplace() calls below, fed the per-agent tokens via -v. Kept
+  # literal (index/substr in awk, no regex) so tokens with $, ", and / substitute
+  # cleanly. -v does no escape processing on these values (none contain backslashes),
+  # so e.g. Claude's gate command emits its real quotes byte-for-byte.
+  awk -v name="$name" -v fmmode="$fmmode" \
+      -v args_to="$args_to" -v state_dir="$state_dir" \
+      -v gate_run="$gate_run" -v subtask="$subtask" '
     function lreplace(s, from, to,   out, p) {
       out = ""
       while ((p = index(s, from)) > 0) {
@@ -104,34 +137,56 @@ render_skill() {
       }
       return out s
     }
-    # NR==1 is the opening --- delimiter: replace it with ---+marker, then stream the
-    # rest of the frontmatter VERBATIM (no substitution) until the closing --- so Claude
-    # passthrough keys are untouched. Substitution applies only to the body that follows.
-    NR==1 {
-      print "---"
+    # marker() prints the shared generated-file banner (identical across agents).
+    function marker() {
       print "# GENERATED FILE — do not edit by hand."
       print "# Source: base/workflows/" name ".md · Regenerate: scripts/build.sh"
       print "# Edits here are overwritten on the next build."
+    }
+    # NR==1 is the opening --- delimiter.
+    #   verbatim: emit ---+marker, then stream the rest of the frontmatter unchanged
+    #             (no substitution) until the closing --- so passthrough keys survive.
+    #   synth:    consume the source frontmatter silently (capturing only description),
+    #             then at the closing --- emit a fresh minimal name+description block.
+    NR==1 {
       infm = 1
+      if (fmmode == "verbatim") { print "---"; marker() }
       next
     }
-    infm == 1 { print; if ($0 == "---") infm = 0; next }
+    infm == 1 {
+      if (fmmode == "verbatim") { print; if ($0 == "---") infm = 0; next }
+      # synth: capture the (single-line) description; emit synthesized block at close.
+      if ($0 ~ /^description:/) { desc = $0; sub(/^description:[[:space:]]*/, "", desc) }
+      if ($0 == "---") {
+        print "---"
+        marker()
+        print "# Some body refs (Stop-hook gating, /code-review, .claude paths) are Claude-specific;"
+        print "# their per-agent equivalents are tracked follow-ups (#14/#15/#25)."
+        print "name: " name
+        print "description: " desc
+        print "---"
+        infm = 0
+      }
+      next
+    }
     {
       line = $0
-      line = lreplace(line, "{{ARGS}}",             "$ARGUMENTS")
-      line = lreplace(line, "{{STATE_DIR}}",        ".claude/state")
-      line = lreplace(line, "{{GATE_RUNNER}}",      "bash \"$HOME/.claude/scripts/lib/project-gates.sh\"")
-      line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", "TaskCreate")
+      line = lreplace(line, "{{ARGS}}",             args_to)
+      line = lreplace(line, "{{STATE_DIR}}",        state_dir)
+      line = lreplace(line, "{{GATE_RUNNER}}",      gate_run)
+      line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line
     }
   ' "$src" > "$tmp"
 
   # Fail loud on any unresolved placeholder: {{…}} is reserved for the neutral vocabulary,
-  # so a survivor means a body used a token CLAUDE_MAP does not define (a typo, or a new
-  # placeholder added without a mapping). Emitting it into a skill would ship a literal
-  # {{TOKEN}} to users, so refuse to publish — and don't mv, leaving the tracked skill intact.
+  # so a survivor means a body used a token the MAP does not define (a typo, or a new
+  # placeholder added without a mapping in every agent's MAP). Emitting it into a skill would
+  # ship a literal {{TOKEN}} to users, so refuse to publish — and don't mv, leaving the
+  # tracked skill intact. A placeholder that leaks into synth frontmatter (a {{…}} in the
+  # source `description:`) is caught here too, since the guard scans the whole rendered file.
   if LC_ALL=C grep -Fq '{{' "$tmp"; then
-    echo "build.sh: unresolved placeholder(s) in the rendered '$name' skill — every {{TOKEN}} used in a workflow body must have an lreplace() mapping in build.sh's render_skill:" >&2
+    echo "build.sh: unresolved placeholder(s) in the rendered '$agent' '$name' skill — every {{TOKEN}} used in a workflow body must have a mapping in build.sh's render_agent_skill:" >&2
     LC_ALL=C grep -Fn '{{' "$tmp" | sed 's/^/  /' >&2
     rm -f "$tmp"
     exit 3
@@ -143,5 +198,7 @@ render_skill() {
 
 for wf in "$workflows"/*.md; do
   case "$(basename "$wf")" in README.md) continue ;; esac
-  render_skill "$wf"
+  render_agent_skill claude "$wf"
+  render_agent_skill codex  "$wf"
+  render_agent_skill gemini "$wf"
 done

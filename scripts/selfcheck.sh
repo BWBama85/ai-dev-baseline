@@ -41,50 +41,65 @@ if ! git diff --quiet HEAD -- agents/claude/CLAUDE.md agents/codex/AGENTS.md age
   echo "  root docs stale — base/practices changed; run scripts/build.sh and commit them"
   bd=1
 fi
-if ! git diff --quiet HEAD -- agents/claude/skills; then
-  echo "  generated skills stale — base/workflows changed; run scripts/build.sh and commit them"
-  bd=1
-fi
-# git diff HEAD is blind to untracked files; catch a rendered-but-uncommitted skill.
-# (An ignored one won't show here — the workflow-map tracked-check covers that.)
-if [ -n "$(git ls-files --others --exclude-standard -- agents/claude/skills)" ]; then
-  echo "  rendered skill(s) not committed — run scripts/build.sh and 'git add' the result:"
-  git ls-files --others --exclude-standard -- agents/claude/skills | sed 's/^/    /'
-  bd=1
-fi
+# Every agent's rendered skills tree (Claude, Codex, Gemini) is regenerated from the
+# same base/workflows sources, so a stale/uncommitted render in ANY of them is drift.
+for tree in agents/claude/skills agents/codex/skills agents/gemini/skills; do
+  if ! git diff --quiet HEAD -- "$tree"; then
+    echo "  generated skills stale ($tree) — base/workflows changed; run scripts/build.sh and commit them"
+    bd=1
+  fi
+  # git diff HEAD is blind to untracked files; catch a rendered-but-uncommitted skill.
+  # (An ignored one won't show here — the workflow-map tracked-check covers that.)
+  if [ -n "$(git ls-files --others --exclude-standard -- "$tree")" ]; then
+    echo "  rendered skill(s) not committed ($tree) — run scripts/build.sh and 'git add' the result:"
+    git ls-files --others --exclude-standard -- "$tree" | sed 's/^/    /'
+    bd=1
+  fi
+done
 [ "$bd" -eq 0 ] && echo "PASS" || { echo "FAIL"; fail=1; }
 
 step "workflow-map"
-# 1:1 between base/workflows/<name>.md (the source) and its rendered Claude skill, so
-# a workflow can't lose its skill and a skill can't orphan when its source is removed.
+# 1:1 between base/workflows/<name>.md (the source) and its rendered skill FOR EVERY AGENT,
+# so a workflow can't lose a skill and a skill can't orphan when its source is removed.
 wm=0
-for wf in base/workflows/*.md; do
-  [ -f "$wf" ] || continue
-  n="$(basename "$wf" .md)"
-  [ "$n" = README ] && continue
-  sk="agents/claude/skills/$n/SKILL.md"
-  if [ ! -f "$sk" ]; then
-    echo "  base/workflows/$n.md → no rendered skill"; wm=1
-  elif ! git ls-files --error-unmatch "$sk" >/dev/null 2>&1; then
-    # Tracked-check is gitignore-immune: git ls-files --others (above) respects
-    # .gitignore, so a rendered skill under an ignored path would slip past it.
-    echo "  $sk is not git-tracked (untracked or gitignored) — run scripts/build.sh and 'git add' it"; wm=1
-  fi
-done
-for sk in agents/claude/skills/*/SKILL.md; do
-  [ -f "$sk" ] || continue
-  n="$(basename "$(dirname "$sk")")"
-  [ -f "base/workflows/$n.md" ] || { echo "  skill '$n' → no base/workflows/$n.md source (orphan)"; wm=1; }
+for agent in claude codex gemini; do
+  for wf in base/workflows/*.md; do
+    [ -f "$wf" ] || continue
+    n="$(basename "$wf" .md)"
+    [ "$n" = README ] && continue
+    sk="agents/$agent/skills/$n/SKILL.md"
+    if [ ! -f "$sk" ]; then
+      echo "  base/workflows/$n.md → no rendered $agent skill"; wm=1
+    elif ! git ls-files --error-unmatch "$sk" >/dev/null 2>&1; then
+      # Tracked-check is gitignore-immune: git ls-files --others (above) respects
+      # .gitignore, so a rendered skill under an ignored path would slip past it.
+      echo "  $sk is not git-tracked (untracked or gitignored) — run scripts/build.sh and 'git add' it"; wm=1
+    fi
+  done
+  for sk in agents/$agent/skills/*/SKILL.md; do
+    [ -f "$sk" ] || continue
+    n="$(basename "$(dirname "$sk")")"
+    [ -f "base/workflows/$n.md" ] || { echo "  $agent skill '$n' → no base/workflows/$n.md source (orphan)"; wm=1; }
+  done
 done
 [ "$wm" -eq 0 ] && echo "PASS" || { echo "FAIL"; fail=1; }
 
 step "skill-frontmatter"
+# Required frontmatter keys are agent-specific: every SKILL.md needs name + description;
+# only Claude's skill loader also requires user-invocable (Codex/Antigravity honor only
+# name + description — see base/workflows/README.md).
 ff=0
-for f in agents/claude/skills/*/SKILL.md; do
-  [ -f "$f" ] || continue
-  head -n1 "$f" | grep -q '^---$' || { echo "  ${f}: no frontmatter"; ff=1; continue; }
-  for k in 'name:' 'description:' 'user-invocable:'; do
-    head -n 20 "$f" | grep -q "^${k}" || { echo "  ${f}: missing ${k}"; ff=1; }
+for agent in claude codex gemini; do
+  case "$agent" in
+    claude) keys='name: description: user-invocable:' ;;
+    *)      keys='name: description:' ;;
+  esac
+  for f in agents/$agent/skills/*/SKILL.md; do
+    [ -f "$f" ] || continue
+    head -n1 "$f" | grep -q '^---$' || { echo "  ${f}: no frontmatter"; ff=1; continue; }
+    for k in $keys; do
+      head -n 20 "$f" | grep -q "^${k}" || { echo "  ${f}: missing ${k}"; ff=1; }
+    done
   done
 done
 [ "$ff" -eq 0 ] && echo "PASS" || { echo "FAIL"; fail=1; }
@@ -170,12 +185,20 @@ HOME="$FAKE" bash install.sh --agent claude --agent codex --agent gemini >/tmp/a
 [ -e "$FAKE/.claude/scripts/lib/project-gates.sh" ] || ok=0
 [ -e "$FAKE/.claude/scripts/lib/common.sh" ] || ok=0
 [ -L "$FAKE/.codex/AGENTS.md" ] || ok=0
+# Codex + Gemini now also install rendered workflow skills and the shared gate runner
+# (Gemini's skills under its ~/.gemini/config/ customization root).
+[ -L "$FAKE/.codex/skills/implement-issue" ] || ok=0
+[ -e "$FAKE/.codex/scripts/lib/project-gates.sh" ] || ok=0
 [ -L "$FAKE/.gemini/GEMINI.md" ] || ok=0
+[ -L "$FAKE/.gemini/config/skills/implement-issue" ] || ok=0
+[ -e "$FAKE/.gemini/scripts/lib/project-gates.sh" ] || ok=0
 grep -q 'precommit-gate.sh' "$FAKE/.claude/settings.json" 2>/dev/null || ok=0
 HOME="$FAKE" bash uninstall.sh --agent claude --agent codex --agent gemini >>/tmp/adb-selfcheck.log 2>&1 || ok=0
 [ ! -L "$FAKE/.claude/CLAUDE.md" ] || ok=0
 [ ! -L "$FAKE/.codex/AGENTS.md" ] || ok=0
+[ ! -L "$FAKE/.codex/skills/implement-issue" ] || ok=0
 [ ! -L "$FAKE/.gemini/GEMINI.md" ] || ok=0
+[ ! -L "$FAKE/.gemini/config/skills/implement-issue" ] || ok=0
 rm -rf "$FAKE"
 [ "$ok" -eq 1 ] && echo "PASS" || { echo "FAIL (see /tmp/adb-selfcheck.log)"; fail=1; }
 

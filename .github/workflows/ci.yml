@@ -68,46 +68,47 @@ jobs:
             rc=1
           fi
 
-          # Generated Claude skills: rendered from base/workflows/*.md. git diff
-          # catches a modified tracked SKILL.md; git ls-files --others catches a
-          # newly-rendered skill that was never committed (git diff is blind to
-          # untracked files — the drift a rebuild-forgot most often produces).
-          if ! git diff --exit-code -- agents/claude/skills; then
-            echo "::error::agents/claude/skills/*/SKILL.md is stale relative to base/workflows/*.md. Run 'bash scripts/build.sh' locally and commit the regenerated file(s)."
-            rc=1
-          fi
-          untracked="$(git ls-files --others --exclude-standard -- agents/claude/skills)"
-          if [ -n "$untracked" ]; then
-            echo "::error::rendered skill(s) were produced but not committed:"
-            echo "$untracked"
-            rc=1
-          fi
-
-          # 1:1 mapping: every workflow source has exactly one rendered skill and
-          # every skill has a source, so nothing silently loses or orphans an artifact.
-          for wf in base/workflows/*.md; do
-            [ -e "$wf" ] || continue
-            n="$(basename "$wf" .md)"
-            [ "$n" = README ] && continue
-            sk="agents/claude/skills/$n/SKILL.md"
-            if [ ! -f "$sk" ]; then
-              echo "::error::base/workflows/$n.md has no rendered skill at $sk"
-              rc=1
-            elif ! git ls-files --error-unmatch "$sk" >/dev/null 2>&1; then
-              # Gitignore-immune: git ls-files --others (above) respects .gitignore, so
-              # a rendered skill under an ignored path would slip past it. A tracked
-              # check catches an ignored-and-uncommitted skill too.
-              echo "::error::$sk exists but is not git-tracked (untracked or gitignored) — run 'bash scripts/build.sh' and commit it"
+          # Generated skills: base/workflows/*.md renders into EVERY agent's skills tree
+          # (Claude, Codex, Gemini). git diff catches a modified tracked SKILL.md;
+          # git ls-files --others catches a newly-rendered skill that was never committed
+          # (git diff is blind to untracked files — the drift a rebuild-forgot most often
+          # produces). 1:1 both ways so nothing silently loses or orphans an artifact.
+          for agent in claude codex gemini; do
+            tree="agents/$agent/skills"
+            if ! git diff --exit-code -- "$tree"; then
+              echo "::error::$tree/*/SKILL.md is stale relative to base/workflows/*.md. Run 'bash scripts/build.sh' locally and commit the regenerated file(s)."
               rc=1
             fi
-          done
-          for sk in agents/claude/skills/*/SKILL.md; do
-            [ -e "$sk" ] || continue
-            n="$(basename "$(dirname "$sk")")"
-            if [ ! -f "base/workflows/$n.md" ]; then
-              echo "::error::skill '$n' has no source at base/workflows/$n.md (orphaned generated artifact)"
+            untracked="$(git ls-files --others --exclude-standard -- "$tree")"
+            if [ -n "$untracked" ]; then
+              echo "::error::rendered $agent skill(s) were produced but not committed:"
+              echo "$untracked"
               rc=1
             fi
+            for wf in base/workflows/*.md; do
+              [ -e "$wf" ] || continue
+              n="$(basename "$wf" .md)"
+              [ "$n" = README ] && continue
+              sk="$tree/$n/SKILL.md"
+              if [ ! -f "$sk" ]; then
+                echo "::error::base/workflows/$n.md has no rendered skill at $sk"
+                rc=1
+              elif ! git ls-files --error-unmatch "$sk" >/dev/null 2>&1; then
+                # Gitignore-immune: git ls-files --others (above) respects .gitignore, so
+                # a rendered skill under an ignored path would slip past it. A tracked
+                # check catches an ignored-and-uncommitted skill too.
+                echo "::error::$sk exists but is not git-tracked (untracked or gitignored) — run 'bash scripts/build.sh' and commit it"
+                rc=1
+              fi
+            done
+            for sk in "$tree"/*/SKILL.md; do
+              [ -e "$sk" ] || continue
+              n="$(basename "$(dirname "$sk")")"
+              if [ ! -f "base/workflows/$n.md" ]; then
+                echo "::error::$agent skill '$n' has no source at base/workflows/$n.md (orphaned generated artifact)"
+                rc=1
+              fi
+            done
           done
 
           exit "$rc"
@@ -125,31 +126,40 @@ jobs:
           set -uo pipefail
           shopt -s nullglob
           fail=0
-          for f in agents/claude/skills/*/SKILL.md; do
-            first_line="$(head -n1 "$f")"
-            if [ "$first_line" != "---" ]; then
-              echo "::error file=$f::does not start with a '---' YAML frontmatter delimiter"
-              fail=1
-              continue
-            fi
-
-            # Line number of the SECOND '---' (the block's closing delimiter).
-            # '|| true' keeps a malformed file (no closing delimiter) from
-            # tripping the job's default errexit before the check below can
-            # report it cleanly.
-            close_line="$(grep -n '^---$' "$f" | sed -n '2p' | cut -d: -f1)" || true
-            if [ -z "$close_line" ]; then
-              echo "::error file=$f::missing closing '---' for the frontmatter block"
-              fail=1
-              continue
-            fi
-
-            frontmatter="$(sed -n "2,$((close_line - 1))p" "$f")"
-            for key in 'name:' 'description:' 'user-invocable:'; do
-              if ! printf '%s\n' "$frontmatter" | grep -q "^${key}"; then
-                echo "::error file=$f::frontmatter is missing required key '${key}'"
+          # Required keys are agent-specific: every SKILL.md needs name + description;
+          # only Claude's loader also requires user-invocable (Codex/Antigravity honor
+          # only name + description — see base/workflows/README.md).
+          for agent in claude codex gemini; do
+            case "$agent" in
+              claude) keys='name: description: user-invocable:' ;;
+              *)      keys='name: description:' ;;
+            esac
+            for f in agents/$agent/skills/*/SKILL.md; do
+              first_line="$(head -n1 "$f")"
+              if [ "$first_line" != "---" ]; then
+                echo "::error file=$f::does not start with a '---' YAML frontmatter delimiter"
                 fail=1
+                continue
               fi
+
+              # Line number of the SECOND '---' (the block's closing delimiter).
+              # '|| true' keeps a malformed file (no closing delimiter) from
+              # tripping the job's default errexit before the check below can
+              # report it cleanly.
+              close_line="$(grep -n '^---$' "$f" | sed -n '2p' | cut -d: -f1)" || true
+              if [ -z "$close_line" ]; then
+                echo "::error file=$f::missing closing '---' for the frontmatter block"
+                fail=1
+                continue
+              fi
+
+              frontmatter="$(sed -n "2,$((close_line - 1))p" "$f")"
+              for key in $keys; do
+                if ! printf '%s\n' "$frontmatter" | grep -q "^${key}"; then
+                  echo "::error file=$f::frontmatter is missing required key '${key}'"
+                  fail=1
+                fi
+              done
             done
           done
           exit "$fail"
@@ -354,7 +364,11 @@ jobs:
             "$HOME/.claude/scripts/lib/project-gates.sh" \
             "$HOME/.claude/scripts/lib/common.sh" \
             "$HOME/.codex/AGENTS.md" \
-            "$HOME/.gemini/GEMINI.md"; do
+            "$HOME/.codex/skills/implement-issue" \
+            "$HOME/.codex/scripts/lib/project-gates.sh" \
+            "$HOME/.gemini/GEMINI.md" \
+            "$HOME/.gemini/config/skills/implement-issue" \
+            "$HOME/.gemini/scripts/lib/project-gates.sh"; do
             if [ ! -e "$p" ]; then
               echo "::error::expected path to exist and resolve: $p"
               exit 1
@@ -371,10 +385,15 @@ jobs:
           set -euo pipefail
           ./uninstall.sh --agent claude --agent codex --agent gemini
 
-      - name: Assert root docs are no longer symlinks
+      - name: Assert root docs and rendered skills are no longer symlinks
         run: |
           set -euo pipefail
-          for p in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md" "$HOME/.gemini/GEMINI.md"; do
+          for p in \
+            "$HOME/.claude/CLAUDE.md" \
+            "$HOME/.codex/AGENTS.md" \
+            "$HOME/.codex/skills/implement-issue" \
+            "$HOME/.gemini/GEMINI.md" \
+            "$HOME/.gemini/config/skills/implement-issue"; do
             if [ -L "$p" ]; then
               echo "::error::$p is still a symlink after uninstall"
               exit 1

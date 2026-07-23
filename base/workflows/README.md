@@ -5,19 +5,23 @@
 rendered per agent by `scripts/build.sh`. A workflow added here appears on every agent
 whose renderer is wired — no per-agent porting.
 
-Today the wired renderer is **Claude**: `scripts/build.sh` regenerates
-`agents/claude/skills/<name>/SKILL.md` from `base/workflows/<name>.md`. Codex custom
-prompts (`~/.codex/prompts/<name>.md`), the Gemini/Antigravity command surface, and
-per-agent enforcement hooks render from these **same** sources and are tracked as
-follow-up issues (see the repo's GitHub Issues, and `docs/adding-an-agent.md`).
+All three agents are wired: `scripts/build.sh` regenerates
+`agents/<agent>/skills/<name>/SKILL.md` from `base/workflows/<name>.md` for **Claude,
+Codex, and Antigravity/Gemini**. The three converge on the agent-skills `SKILL.md`
+folder standard (`<name>/SKILL.md` with `name` + `description` frontmatter), so one
+generic renderer serves them all — each agent supplies only its placeholder map, its
+frontmatter policy, and its install location (see below and `docs/adding-an-agent.md`).
+Per-agent enforcement hooks (a Stop-hook equivalent) render from these **same** sources
+and remain tracked follow-ups (#14/#25).
 
 ## The rendered files are generated — edit here
 
-`agents/claude/skills/<name>/SKILL.md` carries a `GENERATED FILE — do not edit by hand`
-marker and is overwritten on the next build. **Edit `base/workflows/<name>.md`, then run
-`bash scripts/build.sh`** and commit both. CI's `build-drift` job fails a PR whose
-rendered skills are stale, missing, untracked, or orphaned — the same guarantee the root
-docs already have.
+`agents/<agent>/skills/<name>/SKILL.md` (for each of `claude`, `codex`, `gemini`) carries a
+`GENERATED FILE — do not edit by hand` marker and is overwritten on the next build. **Edit
+`base/workflows/<name>.md`, then run `bash scripts/build.sh`** and commit the source plus all
+three regenerated skills. CI's `build-drift` job fails a PR whose rendered skills (in any
+agent's tree) are stale, missing, untracked, or orphaned — the same guarantee the root docs
+already have.
 
 ## Source contract
 
@@ -50,26 +54,32 @@ bounded by each CLI).
 
 ### Neutral placeholder vocabulary
 
-Use these in workflow **bodies** (never in frontmatter — frontmatter is emitted verbatim, so
-Claude-specific passthrough keys like `allowed-tools` keep their real tokens). The renderer
-substitutes literally (index/substr, not regex) so a token containing `$`, `"`, or `/`
-maps cleanly. Only the **Claude** column is implemented today; the Codex/Gemini renderers
-(and their columns) land with those agents' workflow-render work — this table is the contract
-they fill in, not a promise those mappings exist yet.
+Use these in workflow **bodies** (never in frontmatter — Claude's render emits frontmatter
+verbatim so its passthrough keys keep their real tokens, and the Codex/Gemini renders synth a
+minimal `name` + `description` frontmatter; neither substitutes placeholders in frontmatter).
+The renderer substitutes literally (index/substr, not regex) so a token containing `$`, `"`,
+or `/` maps cleanly. All three columns are implemented (`scripts/build.sh`'s
+`render_agent_skill`).
 
-| Placeholder             | Meaning                                             | Claude mapping (implemented)                        |
-| ----------------------- | --------------------------------------------------- | --------------------------------------------------- |
-| `{{ARGS}}`              | the arguments the command was invoked with          | `$ARGUMENTS`                                         |
-| `{{STATE_DIR}}`         | per-workflow scratch/state dir (no trailing slash)  | `.claude/state`                                     |
-| `{{GATE_RUNNER}}`       | quality-gate runner command **prefix**              | `bash "$HOME/.claude/scripts/lib/project-gates.sh"` |
-| `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        |
+| Placeholder             | Meaning                                             | Claude                                              | Codex                                              | Gemini / Antigravity                               |
+| ----------------------- | --------------------------------------------------- | --------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------- |
+| `{{ARGS}}`              | the arguments the command was invoked with          | `$ARGUMENTS`                                         | `$ARGUMENTS`                                        | `$ARGUMENTS`                                        |
+| `{{STATE_DIR}}`         | per-workflow scratch/state dir (no trailing slash)  | `.claude/state`                                     | `.codex/state`                                     | `.gemini/state`                                    |
+| `{{GATE_RUNNER}}`       | quality-gate runner command **prefix**              | `bash "$HOME/.claude/scripts/lib/project-gates.sh"` | `bash "$HOME/.codex/scripts/lib/project-gates.sh"` | `bash "$HOME/.gemini/scripts/lib/project-gates.sh"` |
+| `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        | `update_plan`                                      | `Create`                                           |
 
 Examples: `{{STATE_DIR}}/foo.json` and `{{STATE_DIR}}/` both render cleanly, and a subcommand
-goes after the prefix, e.g. `{{GATE_RUNNER}} run`.
+goes after the prefix, e.g. `{{GATE_RUNNER}} run`. The shared gate runner
+(`scripts/lib/project-gates.sh`) installs under each agent's `scripts/lib/`, so
+`{{GATE_RUNNER}} run` resolves on all three. `{{SUBTASK_PRIMITIVE}}` maps to each agent's real
+task primitive where it has one (Claude `TaskCreate`, Codex `update_plan`); Antigravity has no
+distinct primitive, so it maps to the plain verb `Create` (reads as "Create N tracked sub-tasks").
 
 **Not yet neutralized (deliberately).** Some Claude-flavored references stay literal because
 their agent-neutral form can only be designed alongside the machinery that resolves them —
-per issue #16's own scope note. These ride the renderer/enforcement follow-ups, not this pass:
+per issue #16's own scope note. They render verbatim into the Codex/Gemini skills too (each
+carries a generated caveat comment saying so), and full cross-agent neutralization rides the
+renderer/enforcement follow-ups, not this pass:
 
 - `/code-review` and its `disable-model-invocation` semantics — a Claude command model; the
   step-8 invocation bug was fixed in #9, the remaining references are explanatory.
@@ -84,7 +94,7 @@ per issue #16's own scope note. These ride the renderer/enforcement follow-ups, 
 ## Adding a workflow
 
 1. Write `base/workflows/<name>.md` following the contract above.
-2. `bash scripts/build.sh` — renders `agents/claude/skills/<name>/SKILL.md`.
+2. `bash scripts/build.sh` — renders `agents/<agent>/skills/<name>/SKILL.md` for every agent.
 3. `bash scripts/selfcheck.sh` — the `build-drift` + `workflow-map` steps confirm the
-   render is committed and 1:1 with its source.
-4. Commit `base/workflows/<name>.md` **and** the generated skill together.
+   renders are committed and 1:1 with their source, across all agents.
+4. Commit `base/workflows/<name>.md` **and** all the generated skills together.

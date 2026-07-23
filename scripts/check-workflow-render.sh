@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — regression tests for the workflow-body placeholder substitution that
-# scripts/build.sh applies when rendering base/workflows/*.md into the Claude skills (#16).
+# scripts/build.sh applies when rendering base/workflows/*.md into each agent's skills (#16, #12/#13).
 #
 # build-drift already proves the rendered skills match what's committed byte-for-byte; this
 # test proves the SUBSTITUTION MECHANISM behind that render is correct and stays correct:
-#   1. every neutral {{PLACEHOLDER}} maps to its Claude token (incl. multiple on one line, a
-#      path + trailing slash, a command prefix), and non-placeholder `$` text is left alone;
+#   1. every neutral {{PLACEHOLDER}} maps to its per-agent token — Claude (verbatim frontmatter),
+#      Codex, and Gemini (synth frontmatter: name+description, Claude-only keys dropped) — incl.
+#      multiple on one line, a path + trailing slash, a command prefix; non-placeholder `$` text
+#      is left alone;
 #   2. substitution is BODY-ONLY — a placeholder in frontmatter is not substituted (so a
 #      Claude passthrough key can't be mangled), which the fail-loud guard then rejects;
 #   3. an unmapped {{TOKEN}} fails the build loud and writes no skill;
-#   4. no committed Claude skill ships an unresolved placeholder.
+#   4. no committed skill (any agent) ships an unresolved placeholder.
 #
 # Uses the shared unit-test assertion family from check-lib.sh (ok/bad/eq/has/hasnt +
 # check_summary). Run standalone or via scripts/selfcheck.sh.
@@ -75,6 +77,38 @@ else
   bad "positive fixture produced no SKILL.md (build.log: $(cat "$d/build.log" 2>/dev/null))"
 fi
 
+# --- 1 (Codex): the codex MAP + synth frontmatter (name+description, Claude-only keys dropped) --
+cout="$d/agents/codex/skills/fixture/SKILL.md"
+if [ -f "$cout" ]; then
+  cbody="$(cat "$cout")"
+  has "$cbody" 'Args are $ARGUMENTS and again $ARGUMENTS.'                          "codex {{ARGS}} → \$ARGUMENTS"
+  has "$cbody" 'State file: .codex/state/fixture.json and dir .codex/state/.'       "codex {{STATE_DIR}} → .codex/state"
+  has "$cbody" 'Run gates: bash "$HOME/.codex/scripts/lib/project-gates.sh" run'    "codex {{GATE_RUNNER}} → the ~/.codex runner"
+  has "$cbody" 'Track work: update_plan some sub-tasks.'                            "codex {{SUBTASK_PRIMITIVE}} → update_plan"
+  has "$cbody" 'name: fixture'                                                      "codex synth frontmatter emits name"
+  has "$cbody" 'description: test fixture'                                          "codex synth frontmatter emits description"
+  has "$cbody" 'Claude-specific'                                                    "codex render carries the Claude-flavored caveat comment"
+  hasnt "$cbody" 'allowed-tools'                                                    "codex synth DROPS the Claude-only allowed-tools key"
+  hasnt "$cbody" 'user-invocable'                                                   "codex synth DROPS the Claude-only user-invocable key"
+  hasnt "$cbody" '{{'                                                               "codex render has no unresolved placeholder"
+else
+  bad "positive fixture produced no codex SKILL.md (build.log: $(cat "$d/build.log" 2>/dev/null))"
+fi
+
+# --- 1 (Gemini): the gemini MAP (Antigravity tokens) + the same synth frontmatter policy -------
+gout="$d/agents/gemini/skills/fixture/SKILL.md"
+if [ -f "$gout" ]; then
+  gbody="$(cat "$gout")"
+  has "$gbody" 'State file: .gemini/state/fixture.json and dir .gemini/state/.'     "gemini {{STATE_DIR}} → .gemini/state"
+  has "$gbody" 'Run gates: bash "$HOME/.gemini/scripts/lib/project-gates.sh" run'   "gemini {{GATE_RUNNER}} → the ~/.gemini runner"
+  has "$gbody" 'Track work: Create some sub-tasks.'                                 "gemini {{SUBTASK_PRIMITIVE}} → Create"
+  has "$gbody" 'name: fixture'                                                      "gemini synth frontmatter emits name"
+  hasnt "$gbody" 'allowed-tools'                                                    "gemini synth DROPS the Claude-only allowed-tools key"
+  hasnt "$gbody" '{{'                                                               "gemini render has no unresolved placeholder"
+else
+  bad "positive fixture produced no gemini SKILL.md (build.log: $(cat "$d/build.log" 2>/dev/null))"
+fi
+
 # --- 3: an unmapped placeholder in the body fails the build and writes no skill ---------------
 neg1="$WORK/neg1-src.md"
 cat > "$neg1" <<'EOF'
@@ -116,12 +150,15 @@ no "$rc" "a placeholder in frontmatter is left verbatim → fails the build (bod
 # not some unrelated earlier error — this is what makes it a body-only proof, not just "build failed".
 has "$(cat "$d/build.log" 2>/dev/null)" 'unresolved placeholder' "neg2 fails via the fail-loud guard (frontmatter placeholder not substituted)"
 
-# --- 4: no committed Claude skill ships an unresolved placeholder -----------------------------
-for sk in "$ROOT"/agents/claude/skills/*/SKILL.md; do
+# --- 4: no committed skill ships an unresolved placeholder (EVERY agent's rendered tree) ------
+for sk in "$ROOT"/agents/claude/skills/*/SKILL.md \
+          "$ROOT"/agents/codex/skills/*/SKILL.md \
+          "$ROOT"/agents/gemini/skills/*/SKILL.md; do
   [ -f "$sk" ] || continue
+  a="$(basename "$(dirname "$(dirname "$(dirname "$sk")")")")"
   n="$(basename "$(dirname "$sk")")"
   if LC_ALL=C grep -Fq '{{' "$sk"; then
-    bad "committed skill '$n' contains an unresolved placeholder"
+    bad "committed $a skill '$n' contains an unresolved placeholder"
   else
     ok
   fi

@@ -102,9 +102,10 @@ adb_installed_agents() {
 adb_hooks_wired() { grep -q 'precommit-gate\.sh' "$HOME/.claude/settings.json" 2>/dev/null; }
 
 # Scan the ACTUAL installed symlinks that point INTO <src>, across ONLY the namespaces where a
-# rename can leave an orphan: ~/.claude/skills/* and ~/.claude/scripts/*. Unlike the manifest
-# (what SHOULD be linked), this reports what IS linked — so a renamed-away orphan (a link into
-# <src> with no current manifest entry) is visible to the pruner.
+# rename can leave an orphan: each agent's skills/* and scripts/* trees (Claude, Codex, and
+# Antigravity/Gemini — whose skills live under ~/.gemini/config/). Unlike the manifest (what
+# SHOULD be linked), this reports what IS linked — so a renamed-away orphan (a link into <src>
+# with no current manifest entry) is visible to the pruner.
 #
 # Agent ROOT-DOC links (CLAUDE.md / AGENTS.md / GEMINI.md) are DELIBERATELY excluded: they live
 # at fixed paths that never get renamed away, `bin/baseline` resolves the install source from a
@@ -116,7 +117,9 @@ adb_hooks_wired() { grep -q 'precommit-gate\.sh' "$HOME/.claude/settings.json" 2
 # Usage: adb_scan_links <src>
 adb_scan_links() {
   local src="$1" p
-  for p in "$HOME"/.claude/skills/* "$HOME"/.claude/scripts/*; do
+  for p in "$HOME"/.claude/skills/* "$HOME"/.claude/scripts/* \
+           "$HOME"/.codex/skills/* "$HOME"/.codex/scripts/* \
+           "$HOME"/.gemini/config/skills/* "$HOME"/.gemini/scripts/*; do
     adb_link_into "$p" "$src" && printf '%s\n' "$p"
   done
 }

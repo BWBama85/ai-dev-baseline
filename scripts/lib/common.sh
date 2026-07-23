@@ -118,9 +118,32 @@ adb_agent_manifest() {
       ;;
     codex)
       printf '%s\t%s\n' "$repo/agents/codex/AGENTS.md" "$home/.codex/AGENTS.md"
+      # Rendered workflow skills (agent-skills SKILL.md folders) → Codex's skills dir. Codex
+      # discovers ~/.codex/skills/<name>/SKILL.md; enumerate the same way the claude branch
+      # does its skills (glob dirs, canonical trailing-slash-free src).
+      for d in "$repo"/agents/codex/skills/*/; do
+        [ -d "$d" ] || continue
+        sdir="${d%/}"
+        printf '%s\t%s\n' "$sdir" "$home/.codex/skills/${sdir##*/}"
+      done
+      # The shared, agent-neutral gate runner (project-gates.sh + common.sh) so a rendered
+      # workflow's {{GATE_RUNNER}} step (bash "$HOME/.codex/scripts/lib/project-gates.sh" run)
+      # actually resolves. This is the runner only — NOT the Claude Stop-hook enforcement
+      # (that per-agent equivalent is #14). Same source dir the claude branch links.
+      printf '%s\t%s\n' "$repo/scripts/lib" "$home/.codex/scripts/lib"
       ;;
     gemini)
       printf '%s\t%s\n' "$repo/agents/gemini/GEMINI.md" "$home/.gemini/GEMINI.md"
+      # Rendered workflow skills → Antigravity's GLOBAL customization root, ~/.gemini/config/
+      # (agy discovers skills/<name>/SKILL.md there; confirmed in agy's own bundled
+      # agy-customizations docs). The scripts/lib runner lives beside the other agents' at
+      # ~/.gemini/scripts/lib so {{GATE_RUNNER}} resolves — see the codex note above.
+      for d in "$repo"/agents/gemini/skills/*/; do
+        [ -d "$d" ] || continue
+        sdir="${d%/}"
+        printf '%s\t%s\n' "$sdir" "$home/.gemini/config/skills/${sdir##*/}"
+      done
+      printf '%s\t%s\n' "$repo/scripts/lib" "$home/.gemini/scripts/lib"
       ;;
   esac
 }
