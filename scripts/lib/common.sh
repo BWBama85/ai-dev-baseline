@@ -201,6 +201,14 @@ adb_default_branch() {
   printf '%s\n' "$db"
 }
 
+# Resolve the repo root the caller is in: the git top-level, else the current directory (so a
+# runtime helper works both inside a checkout and in a throwaway non-git dir, e.g. a unit test).
+# The ONE home for this idiom — role-dispatch.sh and project-gates.sh both call it rather than
+# re-inlining `git rev-parse --show-toplevel 2>/dev/null || pwd`. Usage: adb_repo_root
+adb_repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+
 # Classify a local branch's currency versus its origin/<branch> counterpart, using
 # ONLY already-fetched refs — the CALLER must `git fetch` first (this function never
 # touches the network, so it is safe to unit-test against a local bare "origin"). It
@@ -322,6 +330,34 @@ adb_toml_keys() {
       print k
     }
   ' "$file"
+}
+
+# Parse a flat TOML array literal (as returned RAW by adb_toml_get — outer brackets and
+# per-element quotes KEPT, e.g. `["claude", "gemini"]`) into its bare string elements, one
+# per line: surrounding quotes and whitespace stripped, empty elements dropped. A scalar
+# (a value not starting with `[`) prints nothing, and an empty array `[]` prints nothing —
+# so a caller distinguishes "unset" (adb_toml_get returned 1) from "set to []" (adb_toml_get
+# returned 0 but this prints nothing). Only the single-line, comma-separated quoted-string
+# array the templates use is supported (matching adb_toml_get's own scope); an element may
+# itself contain `[`/`]` (e.g. a `foo[bot]` login) because the outer close is found as the
+# LAST `]`. Elements containing a literal comma are out of scope. Usage: adb_toml_array <raw>
+adb_toml_array() {
+  awk -v s="$1" '
+    BEGIN {
+      if (substr(s, 1, 1) != "[") exit 0        # not an array literal → no elements
+      s = substr(s, 2)                           # drop the opening "["
+      pos = 0                                     # find the LAST "]" (the array close)
+      for (i = length(s); i >= 1; i--) { if (substr(s, i, 1) == "]") { pos = i; break } }
+      if (pos > 0) s = substr(s, 1, pos - 1)
+      m = split(s, parts, ",")
+      for (j = 1; j <= m; j++) {
+        e = parts[j]
+        gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)   # trim outer whitespace
+        sub(/^"/, "", e); sub(/"$/, "", e)                            # strip one quote layer
+        gsub(/^[[:space:]]+/, "", e); gsub(/[[:space:]]+$/, "", e)   # trim inside the quotes
+        if (e != "") print e
+      }
+    }'
 }
 
 # --- versions ----------------------------------------------------------------

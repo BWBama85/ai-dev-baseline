@@ -58,26 +58,32 @@ done
 # Canonical home: base/roles.md's cross-agent table. Each invocation is checked in
 # every doc that restates THAT agent's entrypoint (incl. the hand-written per-agent
 # READMEs, which are otherwise a silent drift surface).
+# scripts/lib/role-dispatch.sh is the runtime EMBODIMENT of this table (issue #15): it necessarily
+# restates each agent's CLI to invoke it, so it is pinned here alongside the prose consumers — a
+# command changed in base/roles.md must change in the helper too, or this lint fails.
 fact invocation-codex fixed:'codex exec --cd' -- \
-  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md
+  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md \
+  scripts/lib/role-dispatch.sh
 fact invocation-gemini fixed:'agy -p' -- \
-  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/gemini/README.md
+  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/gemini/README.md \
+  scripts/lib/role-dispatch.sh
 fact invocation-claude fixed:'claude -p' -- \
-  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md
+  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md \
+  scripts/lib/role-dispatch.sh
 
 # --- FACT: codex exec timeout minimum ----------------------------------------
 # The bound is ≥7 minutes (420000 ms). Every doc that states the codex timeout must
 # carry the 7-minute bound; the two that give the millisecond form must agree on it.
 fact codex-timeout-7min regex:'7[-[:space:]]min' -- \
   base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md \
-  agents/codex/README.md agents/codex/config.toml.sample
+  agents/codex/README.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
 fact codex-timeout-ms regex:'420[,]?000' -- \
   base/workflows/implement-issue.md docs/roles-and-agents.md
 
 # --- FACT: role-resolution order ---------------------------------------------
 # The order is repo agents.toml → global default manifest → built-in default.
-fact resolution-order fixed:'global default' -- base/roles.md docs/roles-and-agents.md
-fact resolution-order fixed:'built-in'       -- base/roles.md docs/roles-and-agents.md
+fact resolution-order fixed:'global default' -- base/roles.md docs/roles-and-agents.md scripts/lib/role-dispatch.sh
+fact resolution-order fixed:'built-in'       -- base/roles.md docs/roles-and-agents.md scripts/lib/role-dispatch.sh
 
 # --- FACT: cleanup origin/HEAD symref filter (#38) ---------------------------
 # The remote-enumeration pipeline that drops the bare `origin` symref lives in the workflow
@@ -86,5 +92,16 @@ fact resolution-order fixed:'built-in'       -- base/roles.md docs/roles-and-age
 # pipeline without updating the test (or vice-versa) fails CI instead of silently drifting.
 fact cleanup-origin-symref "fixed:grep '^origin/'" -- \
   base/workflows/cleanup.md scripts/check-cleanup-enum.sh
+
+# --- FACT: default async-bot reviewer allowlist (#26) ------------------------
+# adb_dispatch_bots() in role-dispatch.sh is the source of the default bot logins; the
+# resolve-pr-threads workflow re-lists them in prose for the reader. Pin each login so the prose
+# can't silently drift from the code default (grep -F, so the [bot] brackets are literal).
+for bot in chatgpt-codex-connector 'gemini-code-assist[bot]' gemini-code-assist \
+           'copilot-pull-request-reviewer[bot]' 'copilot[bot]' 'github-actions[bot]' \
+           'claude[bot]' 'claude-code[bot]'; do
+  fact reviewer-bots-default "fixed:$bot" -- \
+    scripts/lib/role-dispatch.sh base/workflows/resolve-pr-threads.md
+done
 
 check_result "canonical facts consistent across their consumers"

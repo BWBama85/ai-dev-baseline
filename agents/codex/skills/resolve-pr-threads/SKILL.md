@@ -6,7 +6,7 @@
 # number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
 # so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
 # variable — fill it in when you run a step. Some other refs (Stop-hook gating,
-# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#15/#25.
+# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
 name: resolve-pr-threads
 description: Resolve unresolved bot-authored review threads on an open PR. Switches the working tree to the PR's head branch, addresses findings (commit + push if needed), replies, then marks each thread Resolved via GraphQL so branch protection unblocks merge.
 ---
@@ -24,15 +24,24 @@ Address and resolve every unresolved **bot-authored** review thread on PR **#$AR
 
 ## Scope
 
-**In scope:** unresolved review threads where the first comment was authored by a known automated reviewer login. The set of known automated-reviewer logins is **configurable** — a repo can extend or override it (e.g. via `agents.toml`, or by passing an explicit login) — and the defaults below cover the common GitHub review bots:
+**In scope:** unresolved review threads whose first comment was authored by a **known
+automated-reviewer login**. That login set is single-sourced in `agents.toml` `[reviewers] bots`
+(see `base/roles.md`) and read via `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" bots`: a repo lists/extends it there, leaves
+it unset for the built-in default set, or sets `[]` to disable auto-resolution. The built-in
+default set covers the common GitHub review bots:
 
-- `chatgpt-codex-connector` (OpenAI Codex code-review connector — note it has **no** `[bot]` suffix, so the `[bot]`-suffix heuristic never catches it; it must be matched by explicit login)
+- `chatgpt-codex-connector` (OpenAI Codex code-review connector — no `[bot]` suffix; matched by explicit login)
 - `gemini-code-assist[bot]`, `gemini-code-assist`
 - `copilot-pull-request-reviewer[bot]`, `copilot[bot]`
 - `github-actions[bot]`
 - `claude[bot]`, `claude-code[bot]`
 
-> **Note:** the login match is anchored — `(?i)\[bot\]$|^gemini-code-assist$|^chatgpt-codex-connector$` — so it catches any `[bot]`-suffixed reviewer plus the two suffixless connectors by explicit login, and **never** matches a human login. It degrades gracefully if the configured reviewers change, so nothing breaks when a repo swaps one bot for another; extend the anchored alternation to add a new suffixless connector.
+> **Note:** matching is an **exact, anchored, case-insensitive allowlist** built from those logins
+> (`(?i)^(login1|login2|…)$`, with `[`/`]` regex-escaped) — **not** a `[bot]`-suffix heuristic. So
+> it resolves *only* threads from a configured bot and can **never** match a human login (nor an
+> unlisted `[bot]` account). Add a reviewer by listing it in `[reviewers] bots`, not by editing
+> this skill — and the same allowlist drives both classification (step 3) and the remaining-count
+> sanity check (step 6), so the two can't diverge.
 
 **Out of scope:** threads authored by humans (the repo owner or any other user). Never auto-resolve those — they require human-to-human discussion. If the only unresolved threads are human-authored, this skill reports them and exits without action.
 
@@ -53,6 +62,22 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 command -v gh || { echo "MISSING:gh"; exit 1; }
 command -v jq || { echo "MISSING:jq"; exit 1; }
+
+# Derive the resolvable-bot login allowlist from the manifest (single source — base/roles.md),
+# BEFORE any branch switch so an early exit strands nothing. Check the helper's EXIT STATUS: a
+# non-zero status means the helper failed (broken install / malformed `[reviewers] bots`), which
+# must fail loud — NOT be mistaken for the empty-output `bots = []` disable, or a runtime failure
+# would silently leave every bot thread unresolved.
+if ! KNOWN_BOTS="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" bots)"; then
+  echo "ERROR: could not read the bot allowlist (broken install or malformed [reviewers] bots) — aborting rather than silently skipping every thread." >&2
+  exit 1
+fi
+if [ -z "$KNOWN_BOTS" ]; then
+  echo "Bot-thread auto-resolution is disabled ([reviewers] bots = []). Nothing to do."; exit 0
+fi
+# Build an anchored, case-insensitive exact-match alternation. Regex-escape the [ and ] that
+# appear in `foo[bot]` logins so they match literally, then join the logins with `|`.
+BOT_RE="(?i)^($(printf '%s\n' "$KNOWN_BOTS" | sed 's/[][]/\\&/g' | paste -sd'|' -))$"
 ```
 
 Confirm the PR exists and is open. Capture the head branch so we can check out and push if fixes are needed.
@@ -131,8 +156,8 @@ For every unresolved thread, read it with the Read tool (load `.codex/state/thre
 | **Legitimate code change**      | The bot found a real bug or correctness issue you agree with.                                  | Edit the relevant file, run gates, commit, push, then reply + resolve.                                               |
 | **Already addressed**           | A prior commit in this PR (yours or `/code-review`'s) already fixed the underlying issue.      | Reply with `Addressed in <sha>: <one-line summary>`. Then resolve.                                                   |
 | **Disagree with reason**        | The bot's claim is wrong, doesn't apply to the codebase, or is a style preference you decline. | Reply with `Declined: <one-sentence reason>`. Then resolve. Branch protection cares about resolution, not agreement. |
-| **Human-authored**              | Author login is NOT in the known-bot list.                                                     | Skip. Log it in the summary and let the human handle.                                                                |
-| **Bot login not in known list** | Author login looks bot-like (ends in `[bot]`) but isn't in the default known set.              | Treat as human-authored (skip + log) unless the user explicitly added it.                                            |
+| **Human-authored**              | Author login is NOT in the `[reviewers] bots` allowlist (test with `$BOT_RE`).                  | Skip. Log it in the summary and let the human handle.                                                                |
+| **Login not in the allowlist**  | Author login is not in `[reviewers] bots` — including an unlisted `[bot]` account.             | Skip + log (treat as human-authored). List it in `[reviewers] bots` to resolve it.                                  |
 
 Use Read to inspect each thread; use Edit/Write for fixes; use the Bash commands below for replies and resolution.
 
@@ -201,6 +226,9 @@ Both calls must succeed for a thread to count as resolved. If the reply mutation
 After processing every thread:
 
 ```bash
+# Reuse $BOT_RE from step 1; re-derive it here if this block runs in a fresh shell. Without this,
+# an empty $BOT_RE would make jq's test("") match EVERY login, over-counting human threads.
+: "${BOT_RE:=(?i)^($(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" bots | sed 's/[][]/\\&/g' | paste -sd'|' -))$}"
 # Sanity check: re-fetch and count remaining unresolved bot threads.
 REMAINING=$(gh api graphql -f query='
 query($owner:String!,$repo:String!,$num:Int!){
@@ -210,9 +238,9 @@ query($owner:String!,$repo:String!,$num:Int!){
     }
   }
 }' -f owner="$OWNER" -f repo="$REPO" -F num="$PR_NUM" \
-| jq '[.data.repository.pullRequest.reviewThreads.nodes[]
+| jq --arg re "$BOT_RE" '[.data.repository.pullRequest.reviewThreads.nodes[]
         | select(.isResolved==false)
-        | select(.comments.nodes[0].author.login | test("(?i)\\[bot\\]$|^gemini-code-assist$|^chatgpt-codex-connector$"))]
+        | select(.comments.nodes[0].author.login | test($re))]
        | length')
 echo "Remaining unresolved bot threads on PR #$PR_NUM: $REMAINING"
 ```

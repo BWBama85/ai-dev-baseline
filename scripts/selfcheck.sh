@@ -137,6 +137,10 @@ step "common-lib"
 # Unit tests for the shared shell primitives (scripts/lib/common.sh).
 if bash scripts/check-common-lib.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "role-dispatch"
+# Unit tests for the runtime role-dispatch helper (resolve/bots/invoke + validation, #15).
+if bash scripts/check-role-dispatch.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "cleanup-enum"
 # Regression test for /cleanup's remote enumeration excluding the origin/HEAD symref (#38).
 if bash scripts/check-cleanup-enum.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
@@ -184,6 +188,10 @@ HOME="$FAKE" bash install.sh --agent claude --agent codex --agent gemini >/tmp/a
 [ -L "$FAKE/.claude/skills/implement-issue" ] || ok=0
 [ -e "$FAKE/.claude/scripts/lib/project-gates.sh" ] || ok=0
 [ -e "$FAKE/.claude/scripts/lib/common.sh" ] || ok=0
+# The role-dispatch helper rides the same scripts/lib symlink into every agent home (#15).
+[ -e "$FAKE/.claude/scripts/lib/role-dispatch.sh" ] || ok=0
+[ -e "$FAKE/.codex/scripts/lib/role-dispatch.sh" ] || ok=0
+[ -e "$FAKE/.gemini/scripts/lib/role-dispatch.sh" ] || ok=0
 [ -L "$FAKE/.codex/AGENTS.md" ] || ok=0
 # Codex + Gemini now also install rendered workflow skills and the shared gate runner
 # (Gemini's skills under its ~/.gemini/config/ customization root).

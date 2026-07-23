@@ -14,6 +14,16 @@ debug        = "claude"     # owns root-cause investigations.
 # issue_author = "claude"   # defaults to `primary` if unset
 # release      = "claude"   # defaults to `primary` if unset
 
+# Optional: async external-bot reviewers — GitHub App logins that post review threads AFTER
+# the PR opens (distinct from the in-session `review` role above). `/resolve-pr-threads`
+# auto-resolves ONLY threads authored by a login in this allowlist — an EXACT login match,
+# never a `[bot]`-suffix heuristic, so it can never touch a human-authored thread.
+#   unset → the built-in default set of common review bots (Codex connector, Gemini, Copilot,
+#           github-actions, Claude) — see base/roles.md
+#   []    → disable bot-thread auto-resolution entirely
+# [reviewers]
+# bots = ["chatgpt-codex-connector", "gemini-code-assist[bot]", "copilot[bot]"]
+
 # Optional: override the auto-detected quality gates for this repo. The gate
 # runner auto-detects pnpm/npm/yarn/bun, cargo, go, and python projects; set
 # these only when detection is wrong or the repo needs specific commands.

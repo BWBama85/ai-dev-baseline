@@ -9,6 +9,25 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **Runtime role-dispatch helper + role-model extensibility** (`scripts/lib/role-dispatch.sh`,
+  #15 / #8 / #26): a shared, agent-neutral helper that reads `agents.toml`, resolves a role
+  through the documented order (repo → global default → built-in), and dispatches the work to
+  the configured agent's CLI — so workflows call it instead of hand-writing the same lookup +
+  invocation in each skill. `resolve <role>` prints the token(s) and **validates** the manifest
+  (an unknown agent token or an explicit `review = []` is a hard error, never a silent
+  fall-through past an invalid layer); `invoke <role|agent>` runs one agent's CLI with the ≥7-min
+  codex bound and returns only its **clean final message** — for codex via `--output-last-message`,
+  so the repo-exploration stream no longer contaminates captured gap-analysis findings (#8). It
+  installs beside `project-gates.sh` under every agent's `scripts/lib/`, and the workflows reach
+  it through two new render placeholders, `{{ROLE_DISPATCH}}` and `{{CURRENT_AGENT}}`. `agents.toml`
+  gains a first-class `[reviewers] bots` allowlist for **async external-bot reviewers** (GitHub
+  Apps that post threads after the PR opens); `/resolve-pr-threads` now derives its
+  resolvable-login set from that single source as an **exact, anchored allowlist** (never a
+  `[bot]`-suffix heuristic, so a human thread can't be caught), and `base/roles.md` states that
+  bespoke per-project orchestration stays project-scoped, not new baseline vocabulary (#26).
+  `bin/agent-init` prints the full effective role map (repo → global → built-in) through the
+  helper. New unit tests: `scripts/check-role-dispatch.sh` (+ CI job) and `adb_toml_array` cases
+  in `check-common-lib.sh`.
 - **`/roadmap` — maintain the build roadmap and emit the next batch** (`base/workflows/roadmap.md`,
   #39): a new skill that closes the development loop. It locates one canonical roadmap
   artifact (the single open issue bearing the `roadmap` label — adopting a pre-existing pinned

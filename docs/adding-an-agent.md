@@ -102,11 +102,15 @@ Two additions to `base/roles.md`:
   codex-timeout note in `base/roles.md` does — name the concrete minimum
   timeout, don't just say "give it more time."
 
-Once `foo` is in both places, it's automatically usable in any project's
-`agents.toml [roles]` table for `primary`, `gap_analysis`, `review`, `debug`,
-`issue_author`, or `release` — the role-resolution logic in
-`base/roles.md`/the skills doesn't hardcode the three existing tokens; it
-just looks up whatever string is configured.
+Then add `foo` to the **runtime resolver's token allowlist** — `_ADB_RD_KNOWN` in
+`scripts/lib/role-dispatch.sh`. That helper validates every resolved token against this
+list and *rejects* an unknown one (so a manifest typo surfaces at resolve time rather
+than failing later), which means a `foo` missing here can't be role-assigned even after
+the steps above. (Single-sourcing this token set with `build.sh`'s per-agent arms and the
+CI checks is tracked as a follow-up; until then, it is one more spot to update here.)
+
+Once `foo` is in all three places, it's usable in any project's `agents.toml [roles]`
+table for `primary`, `gap_analysis`, `review`, `debug`, `issue_author`, or `release`.
 
 ## 4. Install it
 

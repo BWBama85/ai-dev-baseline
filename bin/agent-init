@@ -43,21 +43,28 @@ else
 fi
 mkdir -p .claude/state
 
-# 3. Show the effective role map (repo → global default → built-in)
+# 3. Show the effective role map — the FULL repo → global default → built-in resolution, via the
+#    runtime helper (scripts/lib/role-dispatch.sh is the single source for the order, #15).
 echo ""
 echo "Effective roles for this repo:"
-# Show a role's value from this repo's agents.toml, or the built-in default when the
-# key is absent. (Full repo → global → built-in resolution is #15's job; agent-init
-# only reflects the repo file plus the built-in fallback.)
+RD="$REPO/scripts/lib/role-dispatch.sh"
 show_role() {
-  local key="$1" def="$2" v
-  # adb_toml_get exits nonzero when the key is absent → fall back to the built-in default.
-  v="$(adb_toml_get agents.toml roles "$key")" || v="$def (default)"
-  printf '  %-13s %s\n' "$key" "$v"
+  local key="$1" v rc
+  # `resolve` prints the token(s) (a `review` list is joined with commas); empty output with a
+  # 0 status is a legitimate skip; a nonzero status is a manifest error (whose message it already
+  # printed to stderr above).
+  v="$(bash "$RD" resolve "$key")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '  %-13s %s\n' "$key" "(invalid — see the error above)"
+  elif [ -z "$v" ]; then
+    printf '  %-13s %s\n' "$key" "(unassigned — skipped)"
+  else
+    printf '  %-13s %s\n' "$key" "$(printf '%s' "$v" | paste -sd, -)"
+  fi
 }
-show_role primary      '"claude"'
-show_role gap_analysis '"codex"'
-show_role review       '["claude"]'
-show_role debug        'primary'
+show_role primary
+show_role gap_analysis
+show_role review
+show_role debug
 echo ""
 echo "Done. See docs/roles-and-agents.md for how roles resolve and delegate."

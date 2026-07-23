@@ -84,8 +84,19 @@ For any role, a workflow resolves the responsible agent in this order:
 3. Else the **built-in default** in the role table above.
 
 So a repo with no `agents.toml` at all still works — it inherits your global
-defaults, and if those were never edited, the built-in defaults (`primary =
-claude`, `gap_analysis = codex`, `review = [claude]`, `debug = claude`).
+default manifest. Two layers are easy to conflate, so name them precisely:
+
+- **The global default manifest** `install.sh` writes sets `primary = claude`,
+  `gap_analysis = codex`, `review = ["claude"]`, `debug = claude`. This is what
+  most machines actually resolve against.
+- **The built-in fallback** — used only when even the global manifest is absent —
+  is the "Default if unset" column of the role table above: `primary = claude`,
+  `gap_analysis` **skips**, and `review` / `debug` / `issue_author` / `release`
+  fall back to the **primary**. (So the built-in `review` is *the primary's own
+  pass*, not `[claude]` literally — they happen to coincide when the primary is
+  Claude, but they are different rules.)
+
+`scripts/lib/role-dispatch.sh` implements exactly this order (see below).
 
 ## Cross-agent invocation
 
@@ -106,6 +117,47 @@ currently driving, it shells out to that agent's non-interactive entrypoint:
 > don't treat the exit code as a verdict. A genuine timeout at the *full*
 > ≥7-min bound **is** an incomplete invocation, though — retry, then fall back,
 > per the delegated-step completion contract in [`roles.md`](../base/roles.md).
+
+## The role-dispatch helper (runtime)
+
+`scripts/lib/role-dispatch.sh` turns the resolution order and the invocation table above into
+a runtime command, installed beside `project-gates.sh` under every agent's `scripts/lib/`. A
+workflow calls it instead of hand-writing the same lookup + CLI in each skill:
+
+| Command | What it does |
+|---|---|
+| `role-dispatch.sh resolve <role>` | Print the resolved agent token(s), one per line. Empty output = a legitimate skip (only `gap_analysis`). Validates the manifest — an unknown token or an explicit `review = []` is a hard error, never a silent fall-through. |
+| `role-dispatch.sh invoke <role\|agent>` | Prompt on stdin → run one agent's CLI with the documented flags + the ≥7-min codex bound; stdout is that agent's **clean final message** (for `codex`, captured via `--output-last-message`, so exploration-stream noise never leaks in). A multi-agent `review` role is refused — use `resolve` + a per-slot `invoke <token>` loop so same-agent slots stay in-process. |
+| `role-dispatch.sh bots` | Print the configured async external-bot reviewer logins (see below). |
+
+`bin/agent-init` sources it to print the full effective role map (repo → global → built-in),
+and `/implement-issue` / `/resolve-pr-threads` call it for gap-analysis, review, and the
+bot-thread allowlist.
+
+## Async external-bot reviewers
+
+The `review` role is for **in-session** reviewers (agent CLIs run while the work is live). A
+repo may *also* be reviewed by an **async external bot** — a GitHub App that posts review
+threads *after* the PR opens (the Codex connector `chatgpt-codex-connector`, a `…[bot]`
+reviewer). Those get their own manifest home, `[reviewers]`:
+
+```toml
+[reviewers]
+# Logins that post threads after the PR opens. /resolve-pr-threads auto-resolves ONLY threads
+# whose author is in this allowlist (exact login match — never a [bot]-suffix heuristic, so a
+# human thread is never touched). unset → the built-in default set; [] → disable.
+bots = ["chatgpt-codex-connector", "gemini-code-assist[bot]", "copilot[bot]"]
+```
+
+`/resolve-pr-threads` derives its resolvable-login set from `role-dispatch.sh bots`, so the
+manifest is the single source and a repo can add or disable a bot without editing a skill.
+
+> **Scope.** The role model is a static declaration plus this bot allowlist — **not** a dynamic
+> orchestration engine. Bespoke per-project patterns (dynamic mid-task consult agents,
+> worktree-parallel swarms, a hardened per-repo CLI wrapper) stay **project-scoped skills** (the
+> `handling-the-unknown` home for a genuinely-diverging workflow), not new `agents.toml`
+> vocabulary. The baseline hands every project the same resolvable roles; it does not replace a
+> project's own orchestrator.
 
 ## Worked example (a): Claude primary + Codex gap-analysis + Claude & Gemini review
 
