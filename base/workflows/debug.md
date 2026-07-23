@@ -8,7 +8,7 @@ user-invocable: true
 
 # /debug
 
-Trace **$ARGUMENTS** to a definitive, evidence-backed root cause and fix the cause —
+Trace **{{ARGS}}** to a definitive, evidence-backed root cause and fix the cause —
 not the symptom. Implements `base/practices/debugging.md` as a repeatable flow. The
 bar: you can point at the exact line/commit/row/log that proves the cause before you
 change anything, and you leave behind a regression test that would have caught it.
@@ -69,7 +69,7 @@ Before blaming a platform or library:
 
 Implement the minimal fix at the cause. Keep the step-3 failing test (or add one) so
 the bug can't silently return. Run the project's gates until green
-(`bash "$HOME/.claude/scripts/lib/project-gates.sh" run`). If the fix is more than a
+(`{{GATE_RUNNER}} run`). If the fix is more than a
 one-liner, hand off to `/implement-issue` on a tracked issue rather than shipping a
 large change straight from a debug session.
 

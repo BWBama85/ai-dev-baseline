@@ -37,13 +37,50 @@ bounded by each CLI).
 - **Optional (Claude-specific) keys, passed through verbatim:** `argument-hint`,
   `allowed-tools`, `disallowed-tools`, `effort`. A future non-Claude renderer maps or
   ignores these per its CLI.
-- **Body.** Markdown procedure. Claude-specific tokens (`$ARGUMENTS`, `.claude/state/`,
-  `/code-review`, `TaskCreate`, …) currently live in the body as-is; abstracting them into
-  agent-neutral templates is a tracked follow-up, not part of the source relocation.
+- **Body.** Markdown procedure. Agent-specific mechanics are written as agent-neutral
+  `{{PLACEHOLDER}}` tokens (see the vocabulary below) that each agent's renderer maps to
+  that agent's real token. Claude's map reproduces today's skills byte-for-byte; a second
+  agent supplies its own map for the same placeholders. `{{…}}` is **reserved** for this
+  vocabulary — any `{{…}}` that survives rendering (a typo, or a token with no map entry)
+  is a fail-loud build error, never emitted into a skill.
 - **Encoding.** UTF-8, LF line endings, a single trailing newline. The renderer
   normalizes the trailing newline (so the generated skill always ends with exactly one);
-  keep sources newline-terminated so the render stays a pure marker-only diff.
+  keep sources newline-terminated so the render stays a clean marker + placeholder diff.
 - **`README.md` is not a workflow** — the renderer skips it.
+
+### Neutral placeholder vocabulary
+
+Use these in workflow **bodies** (never in frontmatter — frontmatter is emitted verbatim, so
+Claude-specific passthrough keys like `allowed-tools` keep their real tokens). The renderer
+substitutes literally (index/substr, not regex) so a token containing `$`, `"`, or `/`
+maps cleanly. Only the **Claude** column is implemented today; the Codex/Gemini renderers
+(and their columns) land with those agents' workflow-render work — this table is the contract
+they fill in, not a promise those mappings exist yet.
+
+| Placeholder             | Meaning                                             | Claude mapping (implemented)                        |
+| ----------------------- | --------------------------------------------------- | --------------------------------------------------- |
+| `{{ARGS}}`              | the arguments the command was invoked with          | `$ARGUMENTS`                                         |
+| `{{STATE_DIR}}`         | per-workflow scratch/state dir (no trailing slash)  | `.claude/state`                                     |
+| `{{GATE_RUNNER}}`       | quality-gate runner command **prefix**              | `bash "$HOME/.claude/scripts/lib/project-gates.sh"` |
+| `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        |
+
+`{{STATE_DIR}}` is a bare path with **no trailing slash**, so both `{{STATE_DIR}}/foo.json`
+and `{{STATE_DIR}}/` render correctly. `{{GATE_RUNNER}}` is a command **prefix** — write the
+subcommand after it (e.g. `{{GATE_RUNNER}} run`).
+
+**Not yet neutralized (deliberately).** Some Claude-flavored references stay literal because
+their agent-neutral form can only be designed alongside the machinery that resolves them —
+per issue #16's own scope note. These ride the renderer/enforcement follow-ups, not this pass:
+
+- `/code-review` and its `disable-model-invocation` semantics — a Claude command model; the
+  step-8 invocation bug was fixed in #9, the remaining references are explanatory.
+- Stop-hook / enforcement references (`implement-issue-gate.sh`, `precommit-gate.sh`, "Stop
+  hook") — the per-agent enforcement mapping is unknown until the portable hooks layer (#25)
+  and per-agent equivalents (#14) exist.
+- A "run the configured review agent" primitive resolving via the role-dispatch helper (#15,
+  not yet built) and any agent's product config surface an audited-project skill inspects
+  (e.g. `.claude/settings.json`, `.claude/hooks/` in `/new-release`), which is domain content
+  about the tool under review, not the workflow's own mechanics.
 
 ## Adding a workflow
 

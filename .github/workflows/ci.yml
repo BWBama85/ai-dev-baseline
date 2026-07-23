@@ -154,6 +154,17 @@ jobs:
           done
           exit "$fail"
 
+  workflow-render:
+    name: workflow-render
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Workflow body placeholders map to Claude tokens, body-only, fail-loud on unmapped (#16)
+        run: bash scripts/check-workflow-render.sh
+
   gate-detector:
     name: gate-detector
     runs-on: ubuntu-latest

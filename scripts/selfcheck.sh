@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — local CI mirror. Run before every push.
 #
-# Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter,
+# Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter, workflow-render,
 # gate-detector/gates, common-lib, cleanup-enum, baseline, precommit-gate,
 # implement-gate, install-migration, install-guard, fact-drift, practice-index, and an
 # install→uninstall dry-run into a throwaway HOME.
@@ -88,6 +88,12 @@ for f in agents/claude/skills/*/SKILL.md; do
   done
 done
 [ "$ff" -eq 0 ] && echo "PASS" || { echo "FAIL"; fail=1; }
+
+step "workflow-render"
+# The body-placeholder substitution behind the Claude skill render (#16): every neutral
+# {{PLACEHOLDER}} maps to its Claude token, substitution is body-only, an unmapped token
+# fails loud, and no committed skill ships an unresolved placeholder.
+if bash scripts/check-workflow-render.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "gate-detector"
 # The empty-ecosystem no-op (detect on a dir with no toolchain and no agents.toml emits
