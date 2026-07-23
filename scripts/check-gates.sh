@@ -15,16 +15,8 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/lib/project-gates.sh   # transitively sources scripts/lib/common.sh
-
-pass=0
-fail=0
-ok()  { pass=$((pass + 1)); }
-bad() { fail=$((fail + 1)); printf 'FAIL: %s\n' "$*" >&2; }
-eq()  { if [ "$1" = "$2" ]; then ok; else bad "$3: got [$1] want [$2]"; fi; }
-yes() { if [ "$1" -eq 0 ]; then ok; else bad "$2 (expected success, rc=$1)"; fi; }
-no()  { if [ "$1" -ne 0 ]; then ok; else bad "$2 (expected failure, rc=$1)"; fi; }
-has() { case "$1" in *"$2"*) ok ;; *) bad "$3: [$1] missing [$2]" ;; esac; }
-hasnt() { case "$1" in *"$2"*) bad "$3: [$1] unexpectedly contains [$2]" ;; *) ok ;; esac; }
+# shellcheck source=/dev/null
+. scripts/check-lib.sh           # ok/bad/eq/yes/no/has/hasnt + check_summary
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -267,6 +259,4 @@ d="$work/empty"; mkdir -p "$d"
 out="$(adb_detect_gates "$d")"; eq "$out" "" "empty: detect emits nothing"
 adb_run_gates "$d" >/dev/null 2>&1; yes $? "empty: run is a clean no-op (exit 0)"
 
-printf '\ngates: %d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" -eq 0 ] || exit 1
-echo "gates: PASS"
+check_summary "gates"

@@ -19,16 +19,11 @@ ROOT="$(pwd)"
 GATE="$ROOT/agents/claude/scripts/implement-issue-gate.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "check-implement-gate: jq required" >&2; exit 1; }
-
-pass=0; fail=0
-ok()  { pass=$((pass + 1)); }
-bad() { fail=$((fail + 1)); printf 'FAIL: %s\n' "$*" >&2; }
-eq()  { if [ "$1" = "$2" ]; then ok; else bad "$3: got [$1] want [$2]"; fi; }
-has() { case "$1" in *"$2"*) ok ;; *) bad "$3 (missing [$2] in output)" ;; esac; }
+# shellcheck source=/dev/null
+. scripts/check-lib.sh   # ok/bad/eq/has + check_summary + check_git
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-git_q() { git -C "$1" -c user.email=t@t -c user.name=t -c commit.gpgsign=false "${@:2}"; }
 
 # --- gh shim -----------------------------------------------------------------
 shimbin="$work/bin"; mkdir -p "$shimbin"
@@ -59,7 +54,7 @@ repo="$work/repo"; mkdir -p "$repo/.claude/state"
 git init -q "$repo"; git -C "$repo" symbolic-ref HEAD refs/heads/main
 printf '.claude/state/\n' > "$repo/.gitignore"
 printf 'seed\n' > "$repo/README.md"
-git_q "$repo" add .gitignore README.md; git_q "$repo" commit -q -m seed
+check_git "$repo" add .gitignore README.md; check_git "$repo" commit -q -m seed
 git -C "$repo" checkout -q -b feat
 marker_file="$repo/.claude/state/implement-issue-active.json"
 
@@ -184,6 +179,4 @@ run_gate
 eq "$RC" 0 "K2: dirty tree + no recorded PR → defers to precommit (exit 0)"
 git -C "$repo" checkout -q -- README.md
 
-printf '\nimplement-gate: %d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" -eq 0 ] || exit 1
-echo "implement-gate: PASS"
+check_summary "implement-gate"

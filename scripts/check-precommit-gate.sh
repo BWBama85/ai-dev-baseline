@@ -14,15 +14,11 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
-
-pass=0; fail=0
-ok()  { pass=$((pass + 1)); }
-bad() { fail=$((fail + 1)); printf 'FAIL: %s\n' "$*" >&2; }
-eq()  { if [ "$1" = "$2" ]; then ok; else bad "$3: got [$1] want [$2]"; fi; }
+# shellcheck source=/dev/null
+. scripts/check-lib.sh   # ok/bad/eq + check_summary + check_git
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-git_q() { git -C "$1" -c user.email=t@t -c user.name=t -c commit.gpgsign=false "${@:2}"; }
 
 # --- a copy of the gate with a controllable lib/ -----------------------------
 gate="$work/gate"; mkdir -p "$gate"
@@ -41,7 +37,7 @@ set_libs() {  # both | nocommon | noproject | none
 repo="$work/repo"; mkdir -p "$repo"
 git init -q "$repo"; git -C "$repo" symbolic-ref HEAD refs/heads/main
 printf 'seed\n' > "$repo/README.md"
-git_q "$repo" add -A; git_q "$repo" commit -q -m seed
+check_git "$repo" add -A; check_git "$repo" commit -q -m seed
 
 on_main()            { git -C "$repo" checkout -q main; git -C "$repo" clean -qfd; }
 on_feature_clean()   { git -C "$repo" checkout -q -B feat main; git -C "$repo" clean -qfd; }
@@ -95,6 +91,4 @@ run_gate
 eq "$RC" "0" "project-local gate present → defer (exit 0)"
 rm -rf "$repo/.claude"
 
-printf '\nprecommit-gate: %d passed, %d failed\n' "$pass" "$fail"
-[ "$fail" -eq 0 ] || exit 1
-echo "precommit-gate: PASS"
+check_summary "precommit-gate"
