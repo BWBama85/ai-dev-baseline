@@ -151,17 +151,16 @@ no "$rc" "a placeholder in frontmatter is left verbatim → fails the build (bod
 has "$(cat "$d/build.log" 2>/dev/null)" 'unresolved placeholder' "neg2 fails via the fail-loud guard (frontmatter placeholder not substituted)"
 
 # --- 4: no committed skill ships an unresolved placeholder (EVERY agent's rendered tree) ------
-for sk in "$ROOT"/agents/claude/skills/*/SKILL.md \
-          "$ROOT"/agents/codex/skills/*/SKILL.md \
-          "$ROOT"/agents/gemini/skills/*/SKILL.md; do
-  [ -f "$sk" ] || continue
-  a="$(basename "$(dirname "$(dirname "$(dirname "$sk")")")")"
-  n="$(basename "$(dirname "$sk")")"
-  if LC_ALL=C grep -Fq '{{' "$sk"; then
-    bad "committed $a skill '$n' contains an unresolved placeholder"
-  else
-    ok
-  fi
+for a in claude codex gemini; do
+  for sk in "$ROOT"/agents/"$a"/skills/*/SKILL.md; do
+    [ -f "$sk" ] || continue
+    n="$(basename "$(dirname "$sk")")"
+    if LC_ALL=C grep -Fq '{{' "$sk"; then
+      bad "committed $a skill '$n' contains an unresolved placeholder"
+    else
+      ok
+    fi
+  done
 done
 
 check_summary "workflow-render"

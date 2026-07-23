@@ -78,20 +78,21 @@ render_agent_skill() {
   local agent="$1" src="$2" name out tmp first fmname
   local args_to state_dir gate_run subtask fmmode
 
-  # --- the per-agent MAP + MODE (the whole agent delta lives here) ------------------
+  # --- the per-agent MAP + MODE ------------------------------------------------------
+  # Only two knobs are genuinely a per-agent choice: the tracked-sub-task primitive and the
+  # frontmatter mode. The other three tokens derive mechanically from the agent's dot-dir
+  # (.<agent>/…), so they are computed ONCE below rather than restated per arm — and {{ARGS}}
+  # is the same on every agent. For claude these derive to exactly the pre-#12/#13 literals, so
+  # the render stays byte-for-byte (build-drift proves it).
   case "$agent" in
-    claude)
-      args_to='$ARGUMENTS'; state_dir='.claude/state'; subtask='TaskCreate'
-      gate_run='bash "$HOME/.claude/scripts/lib/project-gates.sh"'; fmmode=verbatim ;;
-    codex)
-      args_to='$ARGUMENTS'; state_dir='.codex/state';  subtask='update_plan'
-      gate_run='bash "$HOME/.codex/scripts/lib/project-gates.sh"';  fmmode=synth ;;
-    gemini)
-      args_to='$ARGUMENTS'; state_dir='.gemini/state'; subtask='Create'
-      gate_run='bash "$HOME/.gemini/scripts/lib/project-gates.sh"'; fmmode=synth ;;
-    *)
-      echo "build.sh: render_agent_skill: unknown agent '$agent'" >&2; exit 3 ;;
+    claude) subtask='TaskCreate';  fmmode=verbatim ;;
+    codex)  subtask='update_plan'; fmmode=synth ;;
+    gemini) subtask='Create';      fmmode=synth ;;
+    *) echo "build.sh: render_agent_skill: unknown agent '$agent'" >&2; exit 3 ;;
   esac
+  args_to='$ARGUMENTS'
+  state_dir=".$agent/state"
+  gate_run="bash \"\$HOME/.$agent/scripts/lib/project-gates.sh\""
 
   name="$(basename "$src" .md)"
   out="$root/agents/$agent/skills/$name/SKILL.md"

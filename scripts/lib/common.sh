@@ -101,16 +101,27 @@ adb_unlink_if_ours() {
 # compat shim) — a plain `git pull` keeps old installs working via that shim, and a re-run
 # self-heals them to this direct link. Paths are assumed free of tabs/newlines (unsupported).
 # An unknown token prints nothing (return 0). Usage: adb_agent_manifest <agent> <repo> <home>
+# Emit "<src-skill-dir>\t<dest-parent>/<name>" manifest lines for every rendered skill folder
+# under <src-skills-dir>. The ONE place the skill-folder enumeration convention lives (glob
+# dirs; unmatched glob stays literal and is filtered by -d; canonical trailing-slash-free src
+# so bin/baseline's exact-readlink idempotency check stays stable) — every agent's branch of
+# adb_agent_manifest calls this rather than re-inlining the loop. Usage:
+#   _adb_skill_manifest_lines <src-skills-dir> <dest-skills-parent>
+_adb_skill_manifest_lines() {
+  local src_dir="$1" dest_parent="$2" d sdir
+  for d in "$src_dir"/*/; do
+    [ -d "$d" ] || continue
+    sdir="${d%/}"
+    printf '%s\t%s\n' "$sdir" "$dest_parent/${sdir##*/}"
+  done
+}
+
 adb_agent_manifest() {
-  local agent="$1" repo="$2" home="$3" d sdir s
+  local agent="$1" repo="$2" home="$3" s
   case "$agent" in
     claude)
       printf '%s\t%s\n' "$repo/agents/claude/CLAUDE.md" "$home/.claude/CLAUDE.md"
-      for d in "$repo"/agents/claude/skills/*/; do
-        [ -d "$d" ] || continue          # unmatched glob stays literal → filtered here
-        sdir="${d%/}"                     # canonical source: absolute, no trailing slash
-        printf '%s\t%s\n' "$sdir" "$home/.claude/skills/${sdir##*/}"
-      done
+      _adb_skill_manifest_lines "$repo/agents/claude/skills" "$home/.claude/skills"
       for s in precommit-gate.sh implement-issue-gate.sh statusline.sh; do
         printf '%s\t%s\n' "$repo/agents/claude/scripts/$s" "$home/.claude/scripts/$s"
       done
@@ -118,14 +129,9 @@ adb_agent_manifest() {
       ;;
     codex)
       printf '%s\t%s\n' "$repo/agents/codex/AGENTS.md" "$home/.codex/AGENTS.md"
-      # Rendered workflow skills (agent-skills SKILL.md folders) → Codex's skills dir. Codex
-      # discovers ~/.codex/skills/<name>/SKILL.md; enumerate the same way the claude branch
-      # does its skills (glob dirs, canonical trailing-slash-free src).
-      for d in "$repo"/agents/codex/skills/*/; do
-        [ -d "$d" ] || continue
-        sdir="${d%/}"
-        printf '%s\t%s\n' "$sdir" "$home/.codex/skills/${sdir##*/}"
-      done
+      # Rendered workflow skills (agent-skills SKILL.md folders) → Codex's skills dir, which
+      # discovers ~/.codex/skills/<name>/SKILL.md.
+      _adb_skill_manifest_lines "$repo/agents/codex/skills" "$home/.codex/skills"
       # The shared, agent-neutral gate runner (project-gates.sh + common.sh) so a rendered
       # workflow's {{GATE_RUNNER}} step (bash "$HOME/.codex/scripts/lib/project-gates.sh" run)
       # actually resolves. This is the runner only — NOT the Claude Stop-hook enforcement
@@ -138,11 +144,7 @@ adb_agent_manifest() {
       # (agy discovers skills/<name>/SKILL.md there; confirmed in agy's own bundled
       # agy-customizations docs). The scripts/lib runner lives beside the other agents' at
       # ~/.gemini/scripts/lib so {{GATE_RUNNER}} resolves — see the codex note above.
-      for d in "$repo"/agents/gemini/skills/*/; do
-        [ -d "$d" ] || continue
-        sdir="${d%/}"
-        printf '%s\t%s\n' "$sdir" "$home/.gemini/config/skills/${sdir##*/}"
-      done
+      _adb_skill_manifest_lines "$repo/agents/gemini/skills" "$home/.gemini/config/skills"
       printf '%s\t%s\n' "$repo/scripts/lib" "$home/.gemini/scripts/lib"
       ;;
   esac
