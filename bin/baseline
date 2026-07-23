@@ -137,21 +137,28 @@ $(adb_installed_agents "$src")
 EOF
 }
 
-# Return 0 iff every intended (manifest) install destination resolves. On failure, name each
-# broken dest on stderr — loud by design (issue #36 safety / issue #35 path-move fail-loud): a
-# moved-away source (dangling link) OR a never-created link is surfaced, never silently
-# tolerated. Verifying the MANIFEST (not a scan of whatever happens to be linked) is what keeps
-# verify from drifting from install (#48). Usage: adb_verify_links <src>
+# Return 0 iff every intended (manifest) install destination is OUR symlink into <src> AND
+# resolves. On failure, name each broken dest on stderr — loud by design (issue #36 safety /
+# issue #35 path-move fail-loud): a moved-away source (dangling link), a never-created link, OR a
+# destination occupied by something that is NOT our link into the source (a real file, or a
+# symlink pointing elsewhere) is surfaced, never silently tolerated. The last case matters
+# because adb_link's guard deliberately leaves a pre-existing destination untouched when a source
+# is missing (#48) — checking mere existence (`-e`) would then wrongly report that stale dest
+# healthy and skip re-linking once the source returns (PR #51 review). Verifying the MANIFEST
+# (not a scan of whatever happens to be linked) keeps verify from drifting from install.
+# Usage: adb_verify_links <src>
 adb_verify_links() {
-  local p broken=0
+  local src="$1" p broken=0
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    if [ ! -e "$p" ]; then
-      printf 'baseline: BROKEN link (target missing): %s\n' "$p" >&2
+    # Healthy == our symlink into src (adb_link_into) AND it resolves (-e). Anything else — a
+    # dangling link, a real file, or a link pointing outside src — is BROKEN.
+    if ! adb_link_into "$p" "$src" || [ ! -e "$p" ]; then
+      printf 'baseline: BROKEN link (not our symlink into %s, or unresolved): %s\n' "$src" "$p" >&2
       broken=1
     fi
   done <<EOF
-$(adb_manifest_dests "$1")
+$(adb_manifest_dests "$src")
 EOF
   return "$broken"
 }

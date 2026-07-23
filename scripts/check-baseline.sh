@@ -173,6 +173,18 @@ if [ -L "$fh/.claude/skills/foreign" ]; then ok; else bad "prune must not remove
 if [ -f "$fh/.claude/scripts/keepme" ]; then ok; else bad "prune must never delete a real file"; fi
 rm -f "$fh/.claude/skills/foreign" "$fh/.claude/scripts/keepme"
 
+# A manifest destination occupied by a NON-symlink (or a link NOT into src) must be treated as
+# BROKEN, not "healthy" just because the path exists: verify requires each dest to be OUR symlink
+# into the source (adb_link's guard can leave a stale pre-existing dest when a source is missing).
+# The stub install.sh can't repair it, so the run must be LOUD (exit 1), never a false "nothing to
+# do" that skips re-linking (#48, PR #51 review).
+reset_src
+rm -f "$fh/.claude/scripts/statusline.sh"
+printf 'not a link\n' > "$fh/.claude/scripts/statusline.sh"   # a real file shadowing a manifest dest
+eq "$(run_update "$src/bin/baseline" "$fh")" "1" "verify rejects a manifest dest that is not our symlink into src"
+rm -f "$fh/.claude/scripts/statusline.sh"
+ln -s "$src/agents/claude/scripts/statusline.sh" "$fh/.claude/scripts/statusline.sh"   # restore canonical link
+
 # wrong-clone guard must NOT false-trip on a symlinked-path spelling of the SAME clone
 # (physical-path comparison via pwd -P) — regression guard for the bug review's finding.
 reset_src
