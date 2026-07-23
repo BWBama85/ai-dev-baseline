@@ -25,15 +25,26 @@ _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/../../scripts/lib/common.sh"
 
 cmd_install() {
-  local repo="$1" backup_dir="$2"
+  local repo="$1" backup_dir="$2" rc=0
   mkdir -p "$HOME/.gemini"
-  adb_link "$repo/agents/gemini/GEMINI.md" "$HOME/.gemini/GEMINI.md" "$backup_dir"
+  # Link via the shared manifest (#48) — the same producer install.sh + bin/baseline consume,
+  # so this adapter can't drift from them. Capture the status BEFORE the note print (adb_info
+  # would otherwise overwrite $?), so a missing source makes the adapter — and the top-level
+  # installer — exit non-zero.
+  adb_link_manifest "$backup_dir" <<EOF || rc=1
+$(adb_agent_manifest gemini "$repo" "$HOME")
+EOF
   adb_info "  note   ~/.gemini/settings.json and ~/.gemini/config/hooks.json are yours to manage — a sample hooks file lives at agents/gemini/config/hooks.sample.json"
+  return "$rc"
 }
 
 cmd_uninstall() {
   local repo="$1"
-  adb_unlink_if_ours "$HOME/.gemini/GEMINI.md" "$repo"
+  # Remove via the same shared manifest install linked from (#48), so this can't drift from
+  # cmd_install even if gemini ever grows a second installed path.
+  adb_unlink_manifest "$repo" <<EOF
+$(adb_agent_manifest gemini "$repo" "$HOME")
+EOF
 }
 
 case "${1:-}" in

@@ -16,8 +16,9 @@
 # / non-default / ahead / diverged clone is surfaced and left untouched — currency is
 # a convenience, never a cause of lost work. After a fast-forward it re-runs the
 # idempotent installer ONLY when an installed path actually moved (a symlink stopped
-# resolving), preserving the exact agent set + hook preference already installed, then
-# LOUDLY verifies every canonical link still resolves.
+# resolving), preserving the exact agent set + hook preference already installed. It first
+# PRUNES orphaned links a rename/removal left behind (ownership-scoped — only a dangling
+# symlink pointing into the clone), then LOUDLY verifies every canonical manifest link resolves.
 #
 # The two-clone dev split: this command operates on the clone the global install
 # points INTO (the "install-source"). Run from any other clone it refuses, so a dev
@@ -100,38 +101,87 @@ adb_installed_agents() {
 # prior `--no-hooks` choice across a self-heal (re-install would otherwise re-add them).
 adb_hooks_wired() { grep -q 'precommit-gate\.sh' "$HOME/.claude/settings.json" 2>/dev/null; }
 
-# Enumerate the ACTUAL installed destinations that symlink INTO the source clone —
-# the real installed surface, not a hardcoded subset, so verification can't drift from
-# what install.sh links (and a moved un-listed path can't slip through). Scans the
-# install locations install.sh writes to: each agent root doc, every Claude skill dir,
-# and every Claude script/lib entry. A glob that matches nothing stays literal and is
-# filtered by the `-L` test, so no `nullglob` is needed.
-# Usage: adb_installed_links <src>
-adb_installed_links() {
+# Scan the ACTUAL installed symlinks that point INTO <src>, across ONLY the namespaces where a
+# rename can leave an orphan: ~/.claude/skills/* and ~/.claude/scripts/*. Unlike the manifest
+# (what SHOULD be linked), this reports what IS linked — so a renamed-away orphan (a link into
+# <src> with no current manifest entry) is visible to the pruner.
+#
+# Agent ROOT-DOC links (CLAUDE.md / AGENTS.md / GEMINI.md) are DELIBERATELY excluded: they live
+# at fixed paths that never get renamed away, `bin/baseline` resolves the install source from a
+# (possibly dangling) root-doc link, and `adb_installed_agents` detects an installed agent by it.
+# A dangling root doc is therefore a genuine breakage to SURFACE (adb_link's guard fails the
+# self-heal loudly), never an orphan to silently prune — pruning one would erase the very link
+# detection depends on. NOT recursive: a user link deeper under ~/.claude is never in scope. A
+# glob that matches nothing stays literal and is filtered by `-L`, so no `nullglob` is needed.
+# Usage: adb_scan_links <src>
+adb_scan_links() {
   local src="$1" p
-  for p in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md" "$HOME/.gemini/GEMINI.md" \
-           "$HOME"/.claude/skills/* "$HOME"/.claude/scripts/*; do
-    [ -L "$p" ] || continue
-    case "$(readlink "$p")" in "$src"/*) printf '%s\n' "$p" ;; esac
+  for p in "$HOME"/.claude/skills/* "$HOME"/.claude/scripts/*; do
+    adb_link_into "$p" "$src" && printf '%s\n' "$p"
   done
 }
 
-# Return 0 iff every installed symlink into <src> resolves. On failure, name each
-# broken (dangling) link on stderr — loud by design (issue #36 safety / issue #35
-# path-move fail-loud): a moved installed path is surfaced, never silently tolerated.
+# Enumerate the destinations the install SHOULD have linked, straight from the shared manifest
+# (adb_agent_manifest) — the SAME producer install.sh links from — for every agent installed
+# FROM <src> (adb_installed_agents). One dest per line. Because create-set and verify-set share
+# one producer they can't drift: a path added/moved to the manifest is both linked AND verified,
+# and a missing intended link (not just a dangling one) is caught. Usage: adb_manifest_dests <src>
+adb_manifest_dests() {
+  local src="$1" agent
+  while IFS= read -r agent; do
+    [ -n "$agent" ] || continue
+    # `cut -f2` (TAB default) takes the <dest> column of this agent's manifest lines.
+    adb_agent_manifest "$agent" "$src" "$HOME" | cut -f2
+  done <<EOF
+$(adb_installed_agents "$src")
+EOF
+}
+
+# Return 0 iff every intended (manifest) install destination is OUR symlink into <src> AND
+# resolves. On failure, name each broken dest on stderr — loud by design (issue #36 safety /
+# issue #35 path-move fail-loud): a moved-away source (dangling link), a never-created link, OR a
+# destination occupied by something that is NOT our link into the source (a real file, or a
+# symlink pointing elsewhere) is surfaced, never silently tolerated. The last case matters
+# because adb_link's guard deliberately leaves a pre-existing destination untouched when a source
+# is missing (#48) — checking mere existence (`-e`) would then wrongly report that stale dest
+# healthy and skip re-linking once the source returns (PR #51 review). Verifying the MANIFEST
+# (not a scan of whatever happens to be linked) keeps verify from drifting from install.
 # Usage: adb_verify_links <src>
 adb_verify_links() {
-  local p broken=0
+  local src="$1" p broken=0
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    if [ ! -e "$p" ]; then
-      printf 'baseline: BROKEN link (target missing): %s\n' "$p" >&2
+    # Healthy == our symlink into src (adb_link_into) AND it resolves (-e). Anything else — a
+    # dangling link, a real file, or a link pointing outside src — is BROKEN.
+    if ! adb_link_into "$p" "$src" || [ ! -e "$p" ]; then
+      printf 'baseline: BROKEN link (not our symlink into %s, or unresolved): %s\n' "$src" "$p" >&2
       broken=1
     fi
   done <<EOF
-$(adb_installed_links "$1")
+$(adb_manifest_dests "$src")
 EOF
   return "$broken"
+}
+
+# Prune orphaned install links: a symlink in an install namespace that points INTO <src> but no
+# longer resolves — the leftover a rename/removal creates (install.sh only ever adds/relinks,
+# never removes; #48). STRICTLY ownership-scoped and re-checked at the moment of removal (never
+# trusting the enumeration): a link is removed ONLY when it is a symlink, does NOT resolve, and
+# its target is lexically inside <src>. A resolving link, a real file, or a link pointing
+# elsewhere is never touched. Best-effort (always returns 0) — the subsequent adb_verify_links
+# is the real gate. Usage: adb_prune_orphans <src>
+adb_prune_orphans() {
+  local src="$1" p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -e "$p" ] && continue          # still resolves → legitimately installed, keep
+    # Re-check ownership (symlink + target inside src) at the moment of removal, not trusting the
+    # enumeration — adb_link_into re-reads the link, so this is TOCTOU-safe against a delete.
+    adb_link_into "$p" "$src" && { rm -f "$p"; echo "baseline: pruned orphaned link (source renamed/removed): $p"; }
+  done <<EOF
+$(adb_scan_links "$src")
+EOF
+  return 0
 }
 
 # Re-run the idempotent installer for the ALREADY-installed agent set, preserving the
@@ -247,6 +297,9 @@ fi
 case "$STATUS" in
   current)
     echo "baseline: install-source already current ($SRC on $DEFAULT, up to date with origin)."
+    # Prune renamed-away orphans first (a prior manual `git pull` may have left one), THEN verify
+    # the manifest — so a leftover from a rename doesn't force a needless "broken" repair (#48).
+    adb_prune_orphans "$SRC"
     if adb_verify_links "$SRC"; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
@@ -262,11 +315,14 @@ case "$STATUS" in
       echo "baseline: 'git pull --ff-only' failed — resolve manually in $SRC (never force-pulled)." >&2
       exit 20
     fi
-    # Always re-run the idempotent installer after a pull. install.sh links each skill and
-    # script as its OWN destination, so a pulled commit that ADDS a skill/script needs a new
-    # symlink even though every pre-existing link still resolves — "links resolve" does NOT
-    # imply "all payloads linked." The installer is idempotent (unchanged links are a no-op).
-    echo "baseline: pulled to origin/$DEFAULT; re-running the idempotent installer to link any new/moved payloads …"
+    # Prune renamed-away orphans only AFTER a successful pull (never mutate the install if the
+    # pull failed), then re-run the idempotent installer. install.sh links each skill and script
+    # as its OWN destination, so a pulled commit that ADDS a skill/script needs a new symlink even
+    # though every pre-existing link still resolves — "links resolve" does NOT imply "all payloads
+    # linked." The installer is idempotent (unchanged links are a no-op); prune removes the links
+    # a rename left dangling that the installer would otherwise never clean up.
+    echo "baseline: pulled to origin/$DEFAULT; pruning orphaned links + re-running the idempotent installer …"
+    adb_prune_orphans "$SRC"
     if adb_self_heal && adb_verify_links "$SRC"; then
       echo "baseline: update complete."
       exit 0

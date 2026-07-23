@@ -25,18 +25,11 @@ done
 
 uninstall_claude() {
   adb_info "claude"
-  adb_unlink_if_ours "$HOME/.claude/CLAUDE.md" "$REPO"
-  local d name
-  for d in "$REPO"/agents/claude/skills/*/; do
-    [ -d "$d" ] || continue
-    name="$(basename "$d")"
-    adb_unlink_if_ours "$HOME/.claude/skills/$name" "$REPO"
-  done
-  local s
-  for s in precommit-gate.sh implement-issue-gate.sh statusline.sh; do
-    adb_unlink_if_ours "$HOME/.claude/scripts/$s" "$REPO"
-  done
-  adb_unlink_if_ours "$HOME/.claude/scripts/lib" "$REPO"
+  # Remove exactly what install.sh linked, straight from the shared manifest (#48) via the shared
+  # remove-side consumer — so uninstall can't drift from install (one producer, one column parse).
+  adb_unlink_manifest "$REPO" <<EOF
+$(adb_agent_manifest claude "$REPO" "$HOME")
+EOF
 
   if command -v jq >/dev/null 2>&1; then
     local settings="$HOME/.claude/settings.json"
