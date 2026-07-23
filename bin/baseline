@@ -117,8 +117,7 @@ adb_hooks_wired() { grep -q 'precommit-gate\.sh' "$HOME/.claude/settings.json" 2
 adb_scan_links() {
   local src="$1" p
   for p in "$HOME"/.claude/skills/* "$HOME"/.claude/scripts/*; do
-    [ -L "$p" ] || continue
-    case "$(readlink "$p")" in "$src"/*) printf '%s\n' "$p" ;; esac
+    adb_link_into "$p" "$src" && printf '%s\n' "$p"
   done
 }
 
@@ -128,19 +127,14 @@ adb_scan_links() {
 # one producer they can't drift: a path added/moved to the manifest is both linked AND verified,
 # and a missing intended link (not just a dangling one) is caught. Usage: adb_manifest_dests <src>
 adb_manifest_dests() {
-  local src="$1" agent tab d
-  tab="$(printf '\t')"
+  local src="$1" agent
   while IFS= read -r agent; do
     [ -n "$agent" ] || continue
-    while IFS="$tab" read -r _ d; do
-      [ -n "$d" ] || continue
-      printf '%s\n' "$d"
-    done <<INNER
-$(adb_agent_manifest "$agent" "$src" "$HOME")
-INNER
-  done <<OUTER
+    # `cut -f2` (TAB default) takes the <dest> column of this agent's manifest lines.
+    adb_agent_manifest "$agent" "$src" "$HOME" | cut -f2
+  done <<EOF
 $(adb_installed_agents "$src")
-OUTER
+EOF
 }
 
 # Return 0 iff every intended (manifest) install destination resolves. On failure, name each
@@ -173,11 +167,10 @@ adb_prune_orphans() {
   local src="$1" p
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    [ -L "$p" ] || continue          # only ever a symlink
     [ -e "$p" ] && continue          # still resolves → legitimately installed, keep
-    case "$(readlink "$p")" in
-      "$src"/*) rm -f "$p"; echo "baseline: pruned orphaned link (source renamed/removed): $p" ;;
-    esac
+    # Re-check ownership (symlink + target inside src) at the moment of removal, not trusting the
+    # enumeration — adb_link_into re-reads the link, so this is TOCTOU-safe against a delete.
+    adb_link_into "$p" "$src" && { rm -f "$p"; echo "baseline: pruned orphaned link (source renamed/removed): $p"; }
   done <<EOF
 $(adb_scan_links "$src")
 EOF

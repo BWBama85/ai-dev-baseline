@@ -200,6 +200,20 @@ $good1
 EOF
 no $? "adb_link_manifest hard-fails a malformed (single-column) line"
 
+# --- adb_unlink_manifest (#48) -----------------------------------------------
+# Remove-side mirror: unlinks each <dest> ownership-scoped. Link two dests, then unlink via a
+# manifest and assert only the OURS-into-repo one is removed (a foreign link is left alone).
+umrepo="$mrepo"     # links into this repo dir count as "ours"
+umsrc="$umrepo/agents/claude/CLAUDE.md"     # a real file inside the repo
+umdest="$work/um-ours"; ln -s "$umsrc" "$umdest"
+umforeign="$work/um-foreign"; ln -s "$work/lm-d1" "$umforeign"   # points outside the repo
+adb_unlink_manifest "$umrepo" >/dev/null <<EOF
+$umsrc	$umdest
+$umsrc	$umforeign
+EOF
+if [ ! -e "$umdest" ]; then ok; else bad "adb_unlink_manifest removes an ours-into-repo link"; fi
+if [ -L "$umforeign" ]; then ok; else bad "adb_unlink_manifest must leave a foreign link (not ours)"; fi
+
 # --- adb_unlink_if_ours ------------------------------------------------------
 repo="$work/repo"; mkdir -p "$repo"; echo r > "$repo/file"
 ours="$work/ours.link"; ln -s "$repo/file" "$ours"

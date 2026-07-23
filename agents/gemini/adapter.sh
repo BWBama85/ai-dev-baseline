@@ -40,7 +40,11 @@ EOF
 
 cmd_uninstall() {
   local repo="$1"
-  adb_unlink_if_ours "$HOME/.gemini/GEMINI.md" "$repo"
+  # Remove via the same shared manifest install linked from (#48), so this can't drift from
+  # cmd_install even if gemini ever grows a second installed path.
+  adb_unlink_manifest "$repo" <<EOF
+$(adb_agent_manifest gemini "$repo" "$HOME")
+EOF
 }
 
 case "${1:-}" in

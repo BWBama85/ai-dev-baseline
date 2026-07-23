@@ -102,14 +102,14 @@ adb_unlink_if_ours() {
 # self-heals them to this direct link. Paths are assumed free of tabs/newlines (unsupported).
 # An unknown token prints nothing (return 0). Usage: adb_agent_manifest <agent> <repo> <home>
 adb_agent_manifest() {
-  local agent="$1" repo="$2" home="$3" d name s
+  local agent="$1" repo="$2" home="$3" d sdir s
   case "$agent" in
     claude)
       printf '%s\t%s\n' "$repo/agents/claude/CLAUDE.md" "$home/.claude/CLAUDE.md"
       for d in "$repo"/agents/claude/skills/*/; do
         [ -d "$d" ] || continue          # unmatched glob stays literal → filtered here
-        name="$(basename "$d")"
-        printf '%s\t%s\n' "${d%/}" "$home/.claude/skills/$name"
+        sdir="${d%/}"                     # canonical source: absolute, no trailing slash
+        printf '%s\t%s\n' "$sdir" "$home/.claude/skills/${sdir##*/}"
       done
       for s in precommit-gate.sh implement-issue-gate.sh statusline.sh; do
         printf '%s\t%s\n' "$repo/agents/claude/scripts/$s" "$home/.claude/scripts/$s"
@@ -144,6 +144,20 @@ adb_link_manifest() {
     adb_link "$src" "$dest" "$backup_dir" || rc=1
   done
   return "$rc"
+}
+
+# Consume a manifest (TAB-separated "<src>\t<dest>" lines on stdin) and adb_unlink_if_ours each
+# <dest> — the remove-side mirror of adb_link_manifest, so uninstall parses the manifest columns
+# in the SAME one place install does (no drift between what is linked and what is removed). Only
+# the <dest> column is used; ownership scoping is adb_unlink_if_ours's job (never removes a real
+# file or a link pointing elsewhere). Usage: adb_unlink_manifest <repo>
+adb_unlink_manifest() {
+  local repo="$1" tab dest
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r _ dest; do
+    [ -n "$dest" ] || continue
+    adb_unlink_if_ours "$dest" "$repo"
+  done
 }
 
 # --- git ---------------------------------------------------------------------

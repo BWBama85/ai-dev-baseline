@@ -25,15 +25,9 @@ done
 
 uninstall_claude() {
   adb_info "claude"
-  # Remove exactly what install.sh linked, straight from the shared manifest (#48) — reading
-  # the <dest> column so uninstall can't drift from install. adb_unlink_if_ours keeps this
-  # ownership-scoped (never touches a real file or a link that points elsewhere).
-  local tab dest
-  tab="$(printf '\t')"
-  while IFS="$tab" read -r _ dest; do
-    [ -n "$dest" ] || continue
-    adb_unlink_if_ours "$dest" "$REPO"
-  done <<EOF
+  # Remove exactly what install.sh linked, straight from the shared manifest (#48) via the shared
+  # remove-side consumer — so uninstall can't drift from install (one producer, one column parse).
+  adb_unlink_manifest "$REPO" <<EOF
 $(adb_agent_manifest claude "$REPO" "$HOME")
 EOF
 
