@@ -1,20 +1,28 @@
 # shellcheck shell=bash
-# ai-dev-baseline — shared helpers for the check-*.sh scripts.
+# ai-dev-baseline — shared helpers for the check-*.sh scripts. In a repo whose thesis is
+# single-source, its own checks shouldn't grow copy-pasted scaffolds — so all three cooperating
+# helper sets live here once and every check sources what it needs:
 #
-# The anti-drift checks (check-fact-drift.sh, check-practice-index.sh) were each
-# growing their own copy of the same "grep-assert + note + fail accumulator" scaffold.
-# In a repo whose thesis is single-source, its own checks shouldn't duplicate that —
-# so it lives here once and they source it.
+#   1. grep-assert family (below) — check_init / req_fixed / req_regex / check_fail /
+#      check_result: many assertions collapse to ONE boolean verdict (the anti-drift lints).
+#   2. unit-test assertion family (§ further down) — ok / bad / bad_quiet / eq / yes / no /
+#      has / hasnt + a pass/fail COUNTER + check_summary: the *.sh unit tests.
+#   3. git fixture helpers (§ further down) — check_git + check_make_repo_pair: the throwaway
+#      identity wrapper and the local+bare-origin scaffold, accounting-neutral so either family
+#      can guard them.
 #
-# Sourced, never executed. Lives OUTSIDE scripts/lib/ on purpose: install.sh symlinks
-# the whole scripts/lib dir into ~/.<agent>/scripts/lib, and check/test code must not
-# ship into a user's runtime.
+# Sourced, never executed. Lives OUTSIDE scripts/lib/ on purpose: install.sh symlinks the whole
+# scripts/lib dir into ~/.<agent>/scripts/lib, and check/test code must not ship into a user's
+# runtime.
 #
-# A sourcing script calls check_init "<name>" to set the message prefix, then uses
-# req_fixed / req_regex (or check_fail directly) to accumulate failures, and
-# check_result to emit the final PASS line and return the right status. Callers touch
-# state only through these functions, never the vars — so shellcheck sees no
-# "unused" false positives across the source boundary.
+# Families 1 and 2 keep SEPARATE state (CHECK_FAIL/CHECK_LABEL vs pass/fail) and never collide;
+# a single check may use one, or both (e.g. check-cleanup-enum.sh uses grep-assert accounting
+# AND the git fixture). Callers touch state only through these functions, never the vars — so
+# ShellCheck sees no SC2154 / "unused" false positives across the source boundary.
+#
+# --- grep-assert family: check_init "<name>" sets the message prefix, req_fixed / req_regex
+# (or check_fail directly) accumulate into CHECK_FAIL, and check_result emits the PASS line and
+# returns the status.
 
 CHECK_LABEL="check"
 CHECK_FAIL=0
