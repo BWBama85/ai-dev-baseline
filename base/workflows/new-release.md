@@ -69,7 +69,7 @@ If the operator has wired the tool somewhere unusual (a wrapper script in `bin/`
 
 ### 0. Load And Sanity-Check State
 
-State file lives at `.claude/state/new-release.json` (project-local, gitignored). Shape:
+State file lives at `{{STATE_DIR}}/new-release.json` (project-local, gitignored). Shape:
 
 ```json
 {
@@ -87,7 +87,7 @@ State file lives at `.claude/state/new-release.json` (project-local, gitignored)
 
 State is per-tool, so a stale `claude` entry never blocks a `codex` review and vice versa.
 
-Confirm `.claude/state/` is gitignored before writing anything to it. If the project's `.gitignore` does not already cover it (look for `.claude/state/` or a wider `.claude/state*` rule), tell the operator and offer to add the line — do not write state to a tracked path.
+Confirm `{{STATE_DIR}}/` is gitignored before writing anything to it. If the project's `.gitignore` does not already cover it (look for `{{STATE_DIR}}/` or a wider `{{STATE_DIR}}*` rule), tell the operator and offer to add the line — do not write state to a tracked path.
 
 ### 1. Resolve the Changelog Source
 
@@ -231,7 +231,7 @@ Once approved, in this order:
 3. **User-level-only changes** — edit `~/.claude/settings.json` (or the tool's user config) directly; there is no PR. Tell the operator exactly what changed and flag any cross-project footgun (user-global config affects every repo).
 4. **defer-blocked issues** — `gh issue create` with the drafted body; assign the project's tracking milestone/labels if it uses them. Verify each landed (`gh issue list --search "created:>=<today> in:title <tag>"`).
 
-**Then update state.** Read `.claude/state/new-release.json` (creating an empty `{}` if absent) and write back the chosen tool's entry, preserving the other tools':
+**Then update state.** Read `{{STATE_DIR}}/new-release.json` (creating an empty `{}` if absent) and write back the chosen tool's entry, preserving the other tools':
 
 ```json
 { "<tool>": { "lastTag": "<tag-just-reviewed>", "reviewedAt": "<ISO 8601 timestamp>" } }
@@ -267,7 +267,7 @@ Final report to the operator:
 - Filing a `defer-blocked` issue.
 - Any `decide`-disposition owner choice.
 - Closing or editing pre-existing issues, even if they overlap a finding. Surface the overlap; let the operator decide.
-- Adding `.claude/state/` to `.gitignore` if it's not already there.
+- Adding `{{STATE_DIR}}/` to `.gitignore` if it's not already there.
 - Re-reviewing a tag state says was already done (the Step 0 warning).
 
 ## Anti-Patterns
@@ -281,6 +281,6 @@ Final report to the operator:
 - **Do not push to a protected branch or skip the project's gates.** Repo changes go through a branch + PR with gates green, per the project's conventions.
 - **Do not invent labels or milestones.** Reuse what the repo already has; otherwise omit.
 - **Do not cross-pollinate surface maps.** A `claude` review never greps for `codex` or `agy` patterns and vice versa. The state file is per-tool for the same reason.
-- **Do not commit `.claude/state/`.** It's per-workstation review history. If `.gitignore` doesn't cover it, fix that before writing the file.
+- **Do not commit `{{STATE_DIR}}/`.** It's per-workstation review history. If `.gitignore` doesn't cover it, fix that before writing the file.
 
-$ARGUMENTS
+{{ARGS}}

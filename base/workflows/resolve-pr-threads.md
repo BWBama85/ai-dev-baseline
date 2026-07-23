@@ -8,7 +8,7 @@ user-invocable: true
 
 # /resolve-pr-threads
 
-Address and resolve every unresolved **bot-authored** review thread on PR **#$ARGUMENTS** so the repo's "all comments must be resolved" branch protection releases.
+Address and resolve every unresolved **bot-authored** review thread on PR **#{{ARGS}}** so the repo's "all comments must be resolved" branch protection releases.
 
 > **Side effect:** this skill `git switch`-es your working tree to the PR's head branch. If you're mid-task on an unrelated branch, finish or stash that work first. The skill aborts on a dirty tree to protect uncommitted changes, but it will not warn before changing branches on a clean tree.
 
@@ -40,7 +40,7 @@ Address and resolve every unresolved **bot-authored** review thread on PR **#$AR
 Require only `gh` and `jq` — the gate runner (Step 4) auto-detects the project's stack, so this skill does not hard-require any particular package manager.
 
 ```bash
-PR_NUM="$(printf -- '%s' "$ARGUMENTS" | awk '{print $1}')"
+PR_NUM="$(printf -- '%s' "{{ARGS}}" | awk '{print $1}')"
 [ -z "$PR_NUM" ] && { echo "ERROR: no PR number"; exit 1; }
 
 if ! command -v gh >/dev/null 2>&1; then
@@ -99,13 +99,13 @@ query($owner:String!,$repo:String!,$num:Int!){
       }
     }
   }
-}' -f owner="$OWNER" -f repo="$REPO" -F num="$PR_NUM" > .claude/state/threads-$PR_NUM.json
+}' -f owner="$OWNER" -f repo="$REPO" -F num="$PR_NUM" > {{STATE_DIR}}/threads-$PR_NUM.json
 ```
 
 50-thread cap is a hard ceiling. If the response indicates ≥50 unresolved threads (anomaly), abort and ask the user — paginating would risk dropping context across calls.
 
 ```bash
-TOTAL=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false)] | length' .claude/state/threads-$PR_NUM.json)
+TOTAL=$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false)] | length' {{STATE_DIR}}/threads-$PR_NUM.json)
 # Default-if-empty guard: jq failure or malformed response would otherwise
 # yield a shell syntax error on the integer comparison below.
 if [ "${TOTAL:-0}" -ge 50 ]; then
@@ -119,7 +119,7 @@ starting branch)** before exiting — do not leave the tree stranded on the PR h
 
 ### 3. Classify each thread
 
-For every unresolved thread, read it with the Read tool (load `.claude/state/threads-$PR_NUM.json`) and decide one of:
+For every unresolved thread, read it with the Read tool (load `{{STATE_DIR}}/threads-$PR_NUM.json`) and decide one of:
 
 | Disposition                     | Criteria                                                                                       | Action                                                                                                               |
 | ------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -138,7 +138,7 @@ For each legitimate finding:
 1. Make the code change with Edit or Write.
 2. Run the project's gates with the auto-detected runner:
    ```bash
-   bash "$HOME/.claude/scripts/lib/project-gates.sh" run
+   {{GATE_RUNNER}} run
    ```
    This detects the stack and runs its typecheck/lint/test/format equivalents. A repo may override the commands via its `agents.toml` `[gates]` block or its own `.claude/scripts/precommit-gate.sh`. If anything fails, fix it before continuing — never push red.
 3. Commit:
@@ -173,7 +173,7 @@ NOW_STATE=$(gh pr view "$PR_NUM" --json state --jq .state 2>/dev/null) || {
 For each thread you classified:
 
 ```bash
-THREAD_ID="<id from .claude/state/threads-$PR_NUM.json>"
+THREAD_ID="<id from {{STATE_DIR}}/threads-$PR_NUM.json>"
 REPLY="Addressed in $LAST_SHA: <summary>."   # OR "Declined: <reason>." OR "Addressed in <earlier-sha>."
 
 gh api graphql -f query='

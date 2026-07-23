@@ -8,12 +8,12 @@ user-invocable: true
 
 # /implement-issue
 
-Implement GitHub issue(s) **#$ARGUMENTS** end-to-end. Run autonomously — only stop
+Implement GitHub issue(s) **#{{ARGS}}** end-to-end. Run autonomously — only stop
 if genuinely blocked. This skill is part of [ai-dev-baseline]; it is stack-agnostic
 (gates are auto-detected) and agent-neutral (who does gap-analysis and review is
 read from the repo's `agents.toml`; see `base/roles.md`).
 
-**Multi-issue runs.** If `$ARGUMENTS` begins with more than one issue number
+**Multi-issue runs.** If `{{ARGS}}` begins with more than one issue number
 (whitespace/comma-separated), implement **all of them on one shared branch and one
 PR**. Everything below operates over the whole set; the PR `Closes` each issue it
 fully resolves and `Refs` any it only slices. A single number is the classic flow.
@@ -30,7 +30,7 @@ mode this invariant prevents — keep going.
 
 ## State protocol
 
-Two gitignored files under `.claude/state/`:
+Two gitignored files under `{{STATE_DIR}}/`:
 
 - **`implement-issue-active.json`** — in-flight marker:
   ```json
@@ -50,7 +50,7 @@ Two gitignored files under `.claude/state/`:
   exists). A gap-analysis stop is *pre-branch* — no marker exists yet to pair with,
   so surface it to the owner and stop cleanly (step 4); do **not** write this file.
 
-Always stage marker writes inside `.claude/state/` (`.marker.tmp` → `mv`) so the
+Always stage marker writes inside `{{STATE_DIR}}/` (`.marker.tmp` → `mv`) so the
 rename is atomic. Preflight unconditionally clears stale state files.
 
 ## Roles (who does what)
@@ -116,12 +116,12 @@ or empty output. Full contract: `base/roles.md`.
 
 ### 1. Preflight
 
-Parse the leading issue number(s) from `$ARGUMENTS` (bare integers, whitespace/
+Parse the leading issue number(s) from `{{ARGS}}` (bare integers, whitespace/
 comma-separated; the first non-integer token starts prose hints). Never interpolate
-`$ARGUMENTS` raw into a shell command.
+`{{ARGS}}` raw into a shell command.
 
 ```bash
-read -r -a _toks <<< "$(printf '%s' "$ARGUMENTS" | tr ',' ' ')"
+read -r -a _toks <<< "$(printf '%s' "{{ARGS}}" | tr ',' ' ')"
 ISSUE_NUMS=()
 for t in "${_toks[@]}"; do
   case "$t" in ''|*[!0-9]*) break ;; *) ISSUE_NUMS+=("$t") ;; esac
@@ -201,8 +201,8 @@ else
         git branch -d "$b" 2>/dev/null || echo "NOTE: left '$b' (git branch -d refused — squash-merged? use /cleanup)"
       done
 fi
-mkdir -p .claude/state
-rm -f .claude/state/implement-issue-active.json .claude/state/implement-issue-blocked.json
+mkdir -p {{STATE_DIR}}
+rm -f {{STATE_DIR}}/implement-issue-active.json {{STATE_DIR}}/implement-issue-blocked.json
 ```
 
 ### 2. Verify repo scope + fetch the issue(s)
@@ -278,7 +278,7 @@ git switch -c "$BRANCH"
 jq -n --arg branch "$BRANCH" --arg issue "$ISSUE_CSV" \
       --arg startedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{branch:$branch, issue:$issue, phase:"branched", startedAt:$startedAt}' \
-   > .claude/state/.marker.tmp && mv .claude/state/.marker.tmp .claude/state/implement-issue-active.json
+   > {{STATE_DIR}}/.marker.tmp && mv {{STATE_DIR}}/.marker.tmp {{STATE_DIR}}/implement-issue-active.json
 ```
 
 If the branch already exists locally or on the remote, write the blocked marker
@@ -286,7 +286,7 @@ If the branch already exists locally or on the remote, write the blocked marker
 
 ### 6. Implement
 
-- `TaskCreate` 3–8 tracked sub-tasks. Read code before editing; honor the project's
+- `{{SUBTASK_PRIMITIVE}}` 3–8 tracked sub-tasks. Read code before editing; honor the project's
   own conventions and module boundaries.
 - Follow `base/practices` (validate external input at boundaries, structured logs,
   no secrets in logs, idempotent consumers/migrations/scripts).
@@ -294,7 +294,7 @@ If the branch already exists locally or on the remote, write the blocked marker
 - Add/extend tests in the same package.
 - Run the project's gates until green. The auto-detected runner:
   ```bash
-  bash "$HOME/.claude/scripts/lib/project-gates.sh" run   # typecheck/lint/test/format
+  {{GATE_RUNNER}} run   # typecheck/lint/test/format
   ```
   (or the repo's own commands / `agents.toml [gates]`). The Stop hook enforces this
   again on turn-end. Update `phase`: `implemented` → `gates_green`.
@@ -374,10 +374,10 @@ again if anything changed. Update `phase=triaged`.
 ### 10. Push + open PR
 
 ```bash
-BRANCH="$(jq -r .branch .claude/state/implement-issue-active.json)"
+BRANCH="$(jq -r .branch {{STATE_DIR}}/implement-issue-active.json)"
 git push -u origin "$BRANCH"
-jq '.phase="pushed"' .claude/state/implement-issue-active.json > .claude/state/.marker.tmp \
-  && mv .claude/state/.marker.tmp .claude/state/implement-issue-active.json
+jq '.phase="pushed"' {{STATE_DIR}}/implement-issue-active.json > {{STATE_DIR}}/.marker.tmp \
+  && mv {{STATE_DIR}}/.marker.tmp {{STATE_DIR}}/implement-issue-active.json
 ```
 
 PR body: summary; gap-analysis gaps + how addressed; self-review + reviewer findings

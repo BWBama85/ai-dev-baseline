@@ -99,7 +99,7 @@ empty result (a truncated or failed list must not look like "no open issues").
 command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
 gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated"; exit 1; }
 # Scratch for the roadmap body goes to a TEMP file, never the repo. /roadmap runs in arbitrary
-# repos, many of which don't gitignore .claude/state/ — writing there would leave untracked
+# repos, many of which don't gitignore {{STATE_DIR}}/ — writing there would leave untracked
 # files and dirty the worktree before the next implementation batch.
 ROADMAP_BODY="$(mktemp -t roadmap-body.XXXXXX)"
 ```

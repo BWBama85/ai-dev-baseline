@@ -45,12 +45,20 @@ render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 # metadata). Render each into the Claude agent's native skill form. Codex/Gemini
 # renderers plug in here the same way — see docs/adding-an-agent.md.
 #
-# The Claude skill format IS the reference form, so the render is near-verbatim:
-# the source is emitted unchanged except for a generated-file marker injected as
-# YAML `#` comments right after the opening `---`. It can't be an HTML banner like
-# the root docs use — a SKILL.md must start with `---` for Claude's skill loader
-# and the CI skill-frontmatter check, and a `#` comment inside the frontmatter is
-# valid YAML that both already accept.
+# The Claude skill format IS the reference form, so the render is close to verbatim.
+# Two transforms happen (see base/workflows/README.md's source contract):
+#   1. A generated-file marker is injected as YAML `#` comments right after the
+#      opening `---`. It can't be an HTML banner like the root docs use — a SKILL.md
+#      must start with `---` for Claude's skill loader and the CI skill-frontmatter
+#      check, and a `#` comment inside the frontmatter is valid YAML both accept.
+#   2. Agent-neutral {{PLACEHOLDER}} tokens in the BODY are substituted to Claude's
+#      real tokens (CLAUDE_MAP below). The mapping is literal (index/substr, never
+#      regex) and body-only — frontmatter is emitted verbatim so Claude-specific
+#      passthrough keys (allowed-tools, …) are never touched. Because the map reverses
+#      the neutralization exactly, the Claude render stays byte-for-byte what it was
+#      before the bodies were neutralized (#16); build-drift proves it every CI run.
+#      Any {{…}} that survives the map is an unmapped placeholder — a fail-loud error,
+#      never emitted into a skill.
 render_skill() {
   local src="$1" name out tmp first fmname
   name="$(basename "$src" .md)"
@@ -82,16 +90,53 @@ render_skill() {
   # and a zero-byte file here would break the live installed skill. Writes only this
   # one file; never clears or recreates the skills directory.
   tmp="$out.tmp"
+  # The Claude placeholder map is the four lreplace() calls below: agent-neutral body
+  # placeholder -> Claude's real token. A second agent's renderer supplies its OWN calls for
+  # the same placeholders (that is the whole point of neutralizing the bodies); Claude's map
+  # reproduces today's skills byte-for-byte. Kept literal (index/substr in awk, no regex) so
+  # tokens with $, ", and / substitute cleanly.
   awk -v name="$name" '
+    function lreplace(s, from, to,   out, p) {
+      out = ""
+      while ((p = index(s, from)) > 0) {
+        out = out substr(s, 1, p - 1) to
+        s = substr(s, p + length(from))
+      }
+      return out s
+    }
+    # NR==1 is the opening --- delimiter: replace it with ---+marker, then stream the
+    # rest of the frontmatter VERBATIM (no substitution) until the closing --- so Claude
+    # passthrough keys are untouched. Substitution applies only to the body that follows.
     NR==1 {
       print "---"
       print "# GENERATED FILE — do not edit by hand."
       print "# Source: base/workflows/" name ".md · Regenerate: scripts/build.sh"
       print "# Edits here are overwritten on the next build."
+      infm = 1
       next
     }
-    { print }
+    infm == 1 { print; if ($0 == "---") infm = 0; next }
+    {
+      line = $0
+      line = lreplace(line, "{{ARGS}}",             "$ARGUMENTS")
+      line = lreplace(line, "{{STATE_DIR}}",        ".claude/state")
+      line = lreplace(line, "{{GATE_RUNNER}}",      "bash \"$HOME/.claude/scripts/lib/project-gates.sh\"")
+      line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", "TaskCreate")
+      print line
+    }
   ' "$src" > "$tmp"
+
+  # Fail loud on any unresolved placeholder: {{…}} is reserved for the neutral vocabulary,
+  # so a survivor means a body used a token CLAUDE_MAP does not define (a typo, or a new
+  # placeholder added without a mapping). Emitting it into a skill would ship a literal
+  # {{TOKEN}} to users, so refuse to publish — and don't mv, leaving the tracked skill intact.
+  if LC_ALL=C grep -Fq '{{' "$tmp"; then
+    echo "build.sh: unresolved placeholder(s) in the rendered '$name' skill — every {{TOKEN}} used in a workflow body must have an lreplace() mapping in build.sh's render_skill:" >&2
+    LC_ALL=C grep -Fn '{{' "$tmp" | sed 's/^/  /' >&2
+    rm -f "$tmp"
+    exit 3
+  fi
+
   mv "$tmp" "$out"
   echo "wrote ${out#"$root"/}"
 }

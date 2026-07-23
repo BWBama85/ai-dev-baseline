@@ -25,7 +25,7 @@ those. The rules below are specific to this repo's code.
    procedure + metadata (rendered into the Claude skills). `base/roles.md` is the
    multi-agent role model.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors CI exactly
-   (shellcheck · build-drift · skill-frontmatter · gate-detector · gates · common-lib ·
+   (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
    cleanup-enum · baseline · precommit-gate · implement-gate · install-migration ·
    install-guard · fact-drift · practice-index · install dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
