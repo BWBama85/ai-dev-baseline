@@ -146,7 +146,7 @@ if [ ! -e "$work/guard-dangle.txt" ]; then ok; else bad "adb_link dangling sourc
 # sources with NO trailing slash on skill dirs, and the canonical scripts/lib entry.
 mrepo="$work/mrepo"; mhome="$work/mhome"
 mkdir -p "$mrepo/agents/claude/skills/demo" "$mrepo/agents/claude/scripts" "$mrepo/scripts/lib" \
-         "$mrepo/agents/codex" "$mrepo/agents/gemini"
+         "$mrepo/agents/codex/skills/demo" "$mrepo/agents/gemini/skills/demo"
 tab_="$(printf '\t')"
 man="$(adb_agent_manifest claude "$mrepo" "$mhome")"
 # root doc line present, TAB-separated, pointing at the right dest
@@ -157,9 +157,16 @@ echo "$man" | grep -q '/skills/demo/	' && bad "manifest skill source must not ca
 # the three runtime scripts + scripts/lib
 echo "$man" | grep -Fq -- "$mrepo/agents/claude/scripts/statusline.sh${tab_}$mhome/.claude/scripts/statusline.sh" && ok || bad "manifest emits statusline.sh"
 echo "$man" | grep -Fq -- "$mrepo/scripts/lib${tab_}$mhome/.claude/scripts/lib" && ok || bad "manifest emits canonical scripts/lib"
-# codex / gemini one-line manifests
-eq "$(adb_agent_manifest codex "$mrepo" "$mhome")"  "$mrepo/agents/codex/AGENTS.md${tab_}$mhome/.codex/AGENTS.md"  "codex manifest is the one root doc"
-eq "$(adb_agent_manifest gemini "$mrepo" "$mhome")" "$mrepo/agents/gemini/GEMINI.md${tab_}$mhome/.gemini/GEMINI.md" "gemini manifest is the one root doc"
+# codex manifest: root doc + rendered skills (no trailing slash) + shared gate runner (#12)
+cman="$(adb_agent_manifest codex "$mrepo" "$mhome")"
+echo "$cman" | grep -Fq -- "$mrepo/agents/codex/AGENTS.md${tab_}$mhome/.codex/AGENTS.md" && ok || bad "codex manifest emits the root-doc line"
+echo "$cman" | grep -Fq -- "$mrepo/agents/codex/skills/demo${tab_}$mhome/.codex/skills/demo" && ok || bad "codex manifest emits skill dir (no trailing slash) under ~/.codex/skills"
+echo "$cman" | grep -Fq -- "$mrepo/scripts/lib${tab_}$mhome/.codex/scripts/lib" && ok || bad "codex manifest emits the shared gate runner (scripts/lib)"
+# gemini manifest: root doc + rendered skills under the ~/.gemini/config customization root (#13)
+gman="$(adb_agent_manifest gemini "$mrepo" "$mhome")"
+echo "$gman" | grep -Fq -- "$mrepo/agents/gemini/GEMINI.md${tab_}$mhome/.gemini/GEMINI.md" && ok || bad "gemini manifest emits the root-doc line"
+echo "$gman" | grep -Fq -- "$mrepo/agents/gemini/skills/demo${tab_}$mhome/.gemini/config/skills/demo" && ok || bad "gemini manifest emits skill dir under ~/.gemini/config/skills"
+echo "$gman" | grep -Fq -- "$mrepo/scripts/lib${tab_}$mhome/.gemini/scripts/lib" && ok || bad "gemini manifest emits the shared gate runner (scripts/lib)"
 eq "$(adb_agent_manifest bogus "$mrepo" "$mhome")" "" "unknown agent manifest prints nothing"
 
 # --- adb_link_manifest (#48) -------------------------------------------------

@@ -13,9 +13,10 @@ those. The rules below are specific to this repo's code.
    and must not be hand-edited:
    - **Root docs** — `agents/claude/CLAUDE.md`, `agents/codex/AGENTS.md`,
      `agents/gemini/GEMINI.md` — rendered from `base/practices/*.md`.
-   - **Claude skills** — `agents/claude/skills/<name>/SKILL.md` — rendered from
-     `base/workflows/<name>.md` (each carries a `GENERATED FILE` marker in its
-     frontmatter). Edit the source, then rebuild.
+   - **Agent skills** — `agents/<agent>/skills/<name>/SKILL.md` for `claude`,
+     `codex`, and `gemini` — all rendered from `base/workflows/<name>.md` (each carries
+     a `GENERATED FILE` marker in its frontmatter). Edit the source, then rebuild; all
+     three agents' skills regenerate together.
 
    CI's `build-drift` job fails if you forget (stale, missing, untracked, or
    orphaned). (This file — the repo-root `CLAUDE.md` — is hand-written and is *not*
@@ -47,10 +48,10 @@ those. The rules below are specific to this repo's code.
 | `base/practices/*.md` | The shared law — **edit here** |
 | `base/workflows/*.md` | Single source for each workflow (procedure + metadata) — **edit here** |
 | `base/roles.md`, `templates/agents.toml` | Role model + per-project manifest |
-| `agents/<agent>/` | Per-agent: generated root doc, `adapter.sh`, (Claude:) generated `skills/` + `scripts/` |
+| `agents/<agent>/` | Per-agent: generated root doc, `adapter.sh`, generated `skills/` (all agents); Claude also has generated hook `scripts/` |
 | `scripts/lib/common.sh` | Shared shell primitives — the **ONE home** for link/unlink/backup, default-branch, TOML-read, version-compare; **source it, never copy** |
 | `scripts/lib/project-gates.sh` | Gate auto-detector (installs beside `common.sh` into `~/.<agent>/scripts/lib`) |
-| `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → Claude skills |
+| `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index) |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |
 | `docs/` | design-principles · philosophy · installation · roles · overrides · adding-an-agent |
@@ -68,9 +69,11 @@ See `docs/adding-an-agent.md`: `agents/<token>/adapter.sh` (install/uninstall), 
 `render()` call in `scripts/build.sh`, and a row in `base/roles.md`.
 
 ## Status / roadmap
-Claude is fully wired. `base/workflows/*.md` is now the single source for each
-workflow, rendered into the Claude skills by `scripts/build.sh`. Codex/Gemini install
-the shared practices today; rendering the workflows into *their* native command
-surfaces (Codex prompts, the Gemini command surface), per-agent enforcement hooks, and
-a runtime role-dispatch helper are the remaining slices of the skill-parity epic —
+`base/workflows/*.md` is the single source for each workflow, rendered by
+`scripts/build.sh` into **every agent's** native skills — Claude, Codex
+(`~/.codex/skills/`), and Antigravity/Gemini (`~/.gemini/config/skills/`), all on the
+agent-skills `SKILL.md` standard. Codex/Gemini also install the shared gate runner so a
+rendered workflow's gate step resolves. The remaining slices of the skill-parity epic are
+per-agent *enforcement* (a Stop-hook equivalent, #14/#25), a runtime role-dispatch helper
+(#15), and full cross-agent neutralization of the still-Claude-flavored body references —
 tracked in the repo's GitHub Issues. Full contributor guide: `CONTRIBUTING.md`.

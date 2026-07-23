@@ -70,13 +70,20 @@ script and fails the build if the checked-in output has drifted from what
 even though the file is generated.
 
 `scripts/build.sh` also renders `base/workflows/*.md` — the single source for
-each workflow's procedure + metadata — into the **Claude** skills
-(`agents/claude/skills/<name>/SKILL.md`). When `foo` gains a native
-command/skill surface, its workflow renderer plugs in here the same way and reads
-those same `base/workflows/*.md` sources — so the workflows are authored once, not
-re-authored per agent. That work is the "deep workflow parity" part below, tracked
-as its own issues; a `render()` for `foo`'s root doc is all that's required for
-`foo` to be installable and role-assignable.
+each workflow's procedure + metadata — into **every wired agent's** skills
+(`agents/<agent>/skills/<name>/SKILL.md`) via `render_agent_skill`. Claude,
+Codex, and Antigravity/Gemini all converge on the agent-skills `SKILL.md`
+folder standard, so `render_agent_skill` is generic — an agent needs only a
+`case` arm supplying three things: its placeholder **map** (each neutral
+`{{TOKEN}}` → that agent's real token), its frontmatter **mode** (`verbatim`
+keeps Claude passthrough keys; `synth` emits a minimal `name` + `description`),
+and its output tree. If `foo` uses the same `SKILL.md` surface, add a `case`
+arm and a `render_agent_skill foo "$wf"` call in the render loop; if it uses a
+different surface, its renderer plugs in the same way and reads the same
+`base/workflows/*.md` sources — either way the workflows are authored once, not
+re-authored per agent. A `render()` for `foo`'s root doc is all that's required
+for `foo` to be installable and role-assignable; native skills are the optional
+deeper parity described below.
 
 ## 3. Register `foo` in `base/roles.md`
 
@@ -126,14 +133,17 @@ installs it instead of printing the "deferred" message.
 ## What's deliberately out of scope here
 
 This doc covers making `foo` **installable and assignable** — the floor every
-existing agent already meets. Deep workflow parity (native skills equivalent
-to Claude's `/implement-issue`, `/debug`, `/cleanup`, `/create-issue`,
-`/new-release`, `/resolve-pr-threads`; a Stop-hook-equivalent gating
-mechanism if `foo`'s harness supports one) is real work and is the harder,
-optional part — a project can assign `foo` to `review` or `debug` today via
-its cross-agent invocation alone, without `foo` having any native skills at
-all, exactly the way `codex` and `gemini` already work as `review`/
-`gap_analysis` agents without a `codex`/`gemini`-native skill system.
+existing agent already meets. Native workflow skills (a `render_agent_skill`
+arm rendering `/implement-issue`, `/debug`, `/cleanup`, `/create-issue`,
+`/new-release`, `/resolve-pr-threads` onto `foo`'s skill surface) and a
+Stop-hook-equivalent gating mechanism (if `foo`'s harness supports one) are the
+harder, optional part on top. Claude, Codex, and Antigravity all reach native
+skills today; a Stop-hook enforcement equivalent for the non-Claude agents is
+still tracked follow-up work (#14/#25). A project can assign `foo` to `review`
+or `debug` the moment it is installable and role-assignable — via its
+cross-agent invocation alone, before any native skills exist — exactly the way
+`codex` and `gemini` served as `review`/`gap_analysis` agents before their
+skills were wired.
 
 ## See also
 
