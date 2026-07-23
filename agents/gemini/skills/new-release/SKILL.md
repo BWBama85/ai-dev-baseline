@@ -2,8 +2,11 @@
 # GENERATED FILE — do not edit by hand.
 # Source: base/workflows/new-release.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
-# Some body refs (Stop-hook gating, /code-review, .claude paths) are Claude-specific;
-# their per-agent equivalents are tracked follow-ups (#14/#15/#25).
+# $ARGUMENTS below marks where THIS skill's invocation arguments go (e.g. the issue/PR
+# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
+# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
+# variable — fill it in when you run a step. Some other refs (Stop-hook gating,
+# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#15/#25.
 name: new-release
 description: Review a Claude / Codex / Antigravity CLI release changelog against the current project and ACT on every actionable change — apply config/code/doc fixes this session and ship them as one PR (or edit user-level config directly), surface the few that need an owner decision, and drop the rest. Files a GitHub issue only for work genuinely blocked on a future release. Works in any repo that uses one of those CLIs.
 ---

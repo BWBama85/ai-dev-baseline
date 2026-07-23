@@ -179,8 +179,11 @@ render_agent_skill() {
       if ($0 == "---") {
         print "---"
         marker()
-        print "# Some body refs (Stop-hook gating, /code-review, .claude paths) are Claude-specific;"
-        print "# their per-agent equivalents are tracked follow-ups (#14/#15/#25)."
+        print "# $ARGUMENTS below marks where THIS skill'\''s invocation arguments go (e.g. the issue/PR"
+        print "# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,"
+        print "# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell"
+        print "# variable — fill it in when you run a step. Some other refs (Stop-hook gating,"
+        print "# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#15/#25."
         print "name: " name
         print "description: " desc
         print "---"

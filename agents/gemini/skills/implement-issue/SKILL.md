@@ -2,8 +2,11 @@
 # GENERATED FILE — do not edit by hand.
 # Source: base/workflows/implement-issue.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
-# Some body refs (Stop-hook gating, /code-review, .claude paths) are Claude-specific;
-# their per-agent equivalents are tracked follow-ups (#14/#15/#25).
+# $ARGUMENTS below marks where THIS skill's invocation arguments go (e.g. the issue/PR
+# number). This surface loads the body as instructions, NOT as a macro-expanded prompt,
+# so $ARGUMENTS is a placeholder you substitute with the real values, not a live shell
+# variable — fill it in when you run a step. Some other refs (Stop-hook gating,
+# /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#15/#25.
 name: implement-issue
 description: Implement a GitHub issue end-to-end — repo-scope check, role-assigned gap-analysis, auto-detected gates, self-review + assigned code review, then open a PR. Agent-neutral via agents.toml; stack-agnostic via gate auto-detection.
 ---
