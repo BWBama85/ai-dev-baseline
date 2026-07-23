@@ -16,7 +16,10 @@
 #   role-dispatch.sh resolve <role>          # print the agent token(s), one per line (empty = skip)
 #   role-dispatch.sh invoke  <role|agent>    # prompt on STDIN → run that agent's CLI; clean stdout
 #   role-dispatch.sh bots                    # print the configured async external-bot reviewer logins
-# Sourced use (bin/agent-init): . role-dispatch.sh ; adb_resolve_role review
+# The `bots` surface makes this the one runtime reader of the agents.toml manifest (roles AND the
+# `[reviewers]` bot allowlist), rather than standing up a second helper + install seam for it.
+# Sourced use: `. role-dispatch.sh` then call `adb_resolve_role <role>` / `adb_dispatch_bots`
+# in-process (the CLI dispatch below is guarded so sourcing defines the functions without running).
 #
 # Cross-agent invocation (canonical home: base/roles.md; pinned by scripts/check-fact-drift.sh):
 #   claude → claude -p "<prompt>"            (stdout is the final message)
@@ -51,9 +54,10 @@ fi
 # (docs/adding-an-agent.md) means adding its token here so the validator accepts it.
 _ADB_RD_KNOWN="claude codex gemini"
 
-# The repo manifest is resolved relative to the repo the caller is in (git top-level, else CWD),
-# so the helper works the same whether run from a skill mid-task or a unit test in a temp dir.
-_ADB_RD_REPO_TOML="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/agents.toml"
+# The repo manifest is resolved relative to the repo the caller is in (git top-level, else CWD,
+# via the shared adb_repo_root), so the helper works the same whether run from a skill mid-task or
+# a unit test in a temp dir.
+_ADB_RD_REPO_TOML="$(adb_repo_root)/agents.toml"
 # The global default manifest install.sh writes. HOME-relative, so a test that overrides HOME
 # points it at a throwaway global manifest with no extra seam.
 _ADB_RD_GLOBAL_TOML="${HOME:-/root}/.config/ai-dev-baseline/agents.toml"
@@ -68,15 +72,26 @@ _adb_rd_valid_token() {
   case " $_ADB_RD_KNOWN " in *" $1 "*) return 0 ;; *) return 1 ;; esac
 }
 
-# Print the raw [roles].<role> value from the repo manifest, else the global manifest; return 0
+# Print the raw [<section>].<key> value from the repo manifest, else the global manifest; return 0
 # if found in EITHER (repo wins, and — crucially — a repo value is returned even when invalid, so
 # resolution never falls through a bad higher-precedence value to the next layer). Return 1 when
-# neither manifest defines the key.
-_adb_rd_role_raw() {
-  local role="$1" raw
-  if raw="$(adb_toml_get "$_ADB_RD_REPO_TOML" roles "$role")"; then printf '%s' "$raw"; return 0; fi
-  if raw="$(adb_toml_get "$_ADB_RD_GLOBAL_TOML" roles "$role")"; then printf '%s' "$raw"; return 0; fi
+# neither manifest defines the key. The ONE home for the repo→global precedence — both the role
+# lookup (`roles`) and the bot allowlist (`reviewers`) go through it, so the order can't drift.
+_adb_rd_layered_get() {
+  local section="$1" key="$2" raw
+  if raw="$(adb_toml_get "$_ADB_RD_REPO_TOML"   "$section" "$key")"; then printf '%s' "$raw"; return 0; fi
+  if raw="$(adb_toml_get "$_ADB_RD_GLOBAL_TOML" "$section" "$key")"; then printf '%s' "$raw"; return 0; fi
   return 1
+}
+
+# The built-in default for a role that is UNSET or set to "": gap_analysis skips (no output, 0
+# status); every other role falls back to the primary. (primary itself is resolved directly by
+# adb_resolve_primary, so it never reaches here.) One home, so the two callers can't diverge.
+_adb_rd_role_default() {
+  case "$1" in
+    gap_analysis) return 0 ;;
+    *)            adb_resolve_primary; return $? ;;
+  esac
 }
 
 # Resolve `primary` to exactly one concrete, validated agent token. The built-in default is
@@ -84,7 +99,7 @@ _adb_rd_role_raw() {
 # "default to primary" can reuse it without a resolution loop.
 adb_resolve_primary() {
   local raw val=""
-  if raw="$(_adb_rd_role_raw primary)"; then
+  if raw="$(_adb_rd_layered_get roles primary)"; then
     case "$raw" in
       \[*) val="$(adb_toml_array "$raw" | head -n1)" ;;   # tolerate a mistaken array; take the first
       *)   val="$(adb_toml_unquote "$raw")" ;;
@@ -102,7 +117,7 @@ adb_resolve_primary() {
 # (only `gap_analysis` resolves that way). A 2 status means an invalid manifest value (unknown
 # agent token, or an explicit empty `review = []`) — surfaced, never silently degraded.
 adb_resolve_role() {
-  local role="$1" raw first val elems tok bad=0
+  local role="$1" raw val elems tok bad=0
 
   case "$role" in
     primary) adb_resolve_primary; return $? ;;
@@ -110,16 +125,12 @@ adb_resolve_role() {
     *) printf 'role-dispatch: unknown role "%s"\n' "$role" >&2; return 2 ;;
   esac
 
-  if ! raw="$(_adb_rd_role_raw "$role")"; then
-    # Unset in every manifest → the built-in default from base/roles.md's table.
-    case "$role" in
-      gap_analysis) return 0 ;;                       # default: skip the pass (no output)
-      *)            adb_resolve_primary; return $? ;;  # review/debug/issue_author/release → primary
-    esac
+  if ! raw="$(_adb_rd_layered_get roles "$role")"; then
+    _adb_rd_role_default "$role"; return $?     # unset in every manifest → built-in default
   fi
 
-  first="${raw:0:1}"
-  if [ "$first" = "[" ]; then
+  case "$raw" in
+  \[*)
     elems="$(adb_toml_array "$raw")"
     if [ -z "$elems" ]; then
       # An explicit empty array is a configuration mistake, not a way to disable review — leaving
@@ -139,15 +150,13 @@ EOF
     [ "$bad" -eq 0 ] || return 2
     printf '%s\n' "$elems"
     return 0
-  fi
+    ;;
+  esac
 
   # scalar value
   val="$(adb_toml_unquote "$raw")"
   if [ -z "$val" ]; then
-    case "$role" in
-      gap_analysis) return 0 ;;                        # "" → explicit skip
-      *)            adb_resolve_primary; return $? ;;   # "" → the primary's own pass
-    esac
+    _adb_rd_role_default "$role"; return $?     # "" → skip (gap_analysis) or the primary's own pass
   fi
   if ! _adb_rd_valid_token "$val"; then
     printf 'role-dispatch: [roles].%s = "%s" is not a known agent (known: %s)\n' "$role" "$val" "$_ADB_RD_KNOWN" >&2
@@ -163,20 +172,15 @@ EOF
 # logins it may auto-resolve from here, so the manifest is the single source. An explicit
 # `bots = []` intentionally disables auto-resolution (distinct from an invalid `review = []`).
 
-_adb_rd_reviewers_raw() {
-  local key="$1" raw
-  if raw="$(adb_toml_get "$_ADB_RD_REPO_TOML" reviewers "$key")"; then printf '%s' "$raw"; return 0; fi
-  if raw="$(adb_toml_get "$_ADB_RD_GLOBAL_TOML" reviewers "$key")"; then printf '%s' "$raw"; return 0; fi
-  return 1
-}
-
 # Print the configured async external-bot reviewer logins, one per line. If `[reviewers] bots`
 # is set (even to []) that is authoritative; if unset, the built-in default allowlist of the
 # common GitHub review bots is printed. These are EXACT logins (an anchored allowlist), never a
 # `[bot]`-suffix heuristic — so the matcher can never catch a human login.
+# NOTE: this default set is pinned to base/workflows/resolve-pr-threads.md by check-fact-drift.sh
+# (fact `reviewer-bots-default`) — change a login here and the doc must change too, or CI fails.
 adb_dispatch_bots() {
   local raw
-  if raw="$(_adb_rd_reviewers_raw bots)"; then
+  if raw="$(_adb_rd_layered_get reviewers bots)"; then
     adb_toml_array "$raw"
     return 0
   fi
@@ -218,7 +222,6 @@ _adb_rd_bounded() {
 # (return 1) rather than a clean empty pass.
 _adb_rd_invoke_agent() {
   local token="$1" pf="$2" repo rc last
-  repo="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   case "$token" in
     claude)
       _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" claude -p "$(cat "$pf")"
@@ -229,6 +232,9 @@ _adb_rd_invoke_agent() {
       return $?
       ;;
     codex)
+      # Reuse the repo root already resolved for _ADB_RD_REPO_TOML rather than a second git call
+      # (only codex's --cd needs it).
+      repo="$(dirname "$_ADB_RD_REPO_TOML")"
       last="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/adb-rd-last-$$")"; : > "$last"
       # Route codex's live stream to stderr (visible for debugging, NOT mixed into our stdout);
       # --output-last-message captures only the final agent message (#8).

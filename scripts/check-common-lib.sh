@@ -248,6 +248,11 @@ git -C "$gitrepo" symbolic-ref HEAD refs/heads/main 2>/dev/null
 check_git "$gitrepo" commit -q --allow-empty -m init
 eq "$(adb_default_branch "$gitrepo")" "main" "default branch falls back to local main"
 
+# --- adb_repo_root -----------------------------------------------------------
+eq "$( cd "$gitrepo" && adb_repo_root )" "$(git -C "$gitrepo" rev-parse --show-toplevel)" "adb_repo_root in a git repo → git top-level"
+nongit="$work/plain-dir"; mkdir -p "$nongit"
+eq "$( cd "$nongit" && adb_repo_root )" "$( cd "$nongit" && pwd )" "adb_repo_root outside a git repo → pwd"
+
 # --- adb_branch_sync_state ---------------------------------------------------
 # Drive every state with a LOCAL bare "origin" (file://, no network): one working
 # clone plus a second clone that advances origin, so behind/ahead/diverged are real.

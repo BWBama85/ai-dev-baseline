@@ -201,6 +201,14 @@ adb_default_branch() {
   printf '%s\n' "$db"
 }
 
+# Resolve the repo root the caller is in: the git top-level, else the current directory (so a
+# runtime helper works both inside a checkout and in a throwaway non-git dir, e.g. a unit test).
+# The ONE home for this idiom — role-dispatch.sh and project-gates.sh both call it rather than
+# re-inlining `git rev-parse --show-toplevel 2>/dev/null || pwd`. Usage: adb_repo_root
+adb_repo_root() {
+  git rev-parse --show-toplevel 2>/dev/null || pwd
+}
+
 # Classify a local branch's currency versus its origin/<branch> counterpart, using
 # ONLY already-fetched refs — the CALLER must `git fetch` first (this function never
 # touches the network, so it is safe to unit-test against a local bare "origin"). It
