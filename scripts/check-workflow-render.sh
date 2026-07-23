@@ -68,7 +68,7 @@ if [ -f "$out" ]; then
   has "$body" 'Run gates: bash "$HOME/.claude/scripts/lib/project-gates.sh" run'   "{{GATE_RUNNER}} is a command prefix"
   has "$body" 'Track work: TaskCreate some sub-tasks.'                             "{{SUBTASK_PRIMITIVE}} maps to TaskCreate"
   has "$body" 'Literal shell: echo "$HOME" and a bare $ARGUMENTS token.'           "non-placeholder \$HOME/\$ARGUMENTS text is untouched"
-  has "$body" 'allowed-tools: Bash, TaskCreate, TaskList'                          "frontmatter emitted verbatim (substitution is body-only)"
+  has "$body" 'allowed-tools: Bash, TaskCreate, TaskList'                          "frontmatter emitted verbatim (Claude passthrough key preserved; body-only proven by neg2 below)"
   has "$body" 'GENERATED FILE'                                                     "generated-file marker injected"
   hasnt "$body" '{{'                                                               "no unresolved placeholder remains in output"
 else
@@ -112,6 +112,9 @@ EOF
 d="$WORK/neg2"
 render_fixture "$d" fixture "$neg2"; rc=$?
 no "$rc" "a placeholder in frontmatter is left verbatim → fails the build (body-only proof)"
+# Assert it failed for the RIGHT reason (the guard caught the surviving frontmatter placeholder),
+# not some unrelated earlier error — this is what makes it a body-only proof, not just "build failed".
+has "$(cat "$d/build.log" 2>/dev/null)" 'unresolved placeholder' "neg2 fails via the fail-loud guard (frontmatter placeholder not substituted)"
 
 # --- 4: no committed Claude skill ships an unresolved placeholder -----------------------------
 for sk in "$ROOT"/agents/claude/skills/*/SKILL.md; do

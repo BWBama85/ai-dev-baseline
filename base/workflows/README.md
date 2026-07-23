@@ -64,9 +64,8 @@ they fill in, not a promise those mappings exist yet.
 | `{{GATE_RUNNER}}`       | quality-gate runner command **prefix**              | `bash "$HOME/.claude/scripts/lib/project-gates.sh"` |
 | `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        |
 
-`{{STATE_DIR}}` is a bare path with **no trailing slash**, so both `{{STATE_DIR}}/foo.json`
-and `{{STATE_DIR}}/` render correctly. `{{GATE_RUNNER}}` is a command **prefix** — write the
-subcommand after it (e.g. `{{GATE_RUNNER}} run`).
+Examples: `{{STATE_DIR}}/foo.json` and `{{STATE_DIR}}/` both render cleanly, and a subcommand
+goes after the prefix, e.g. `{{GATE_RUNNER}} run`.
 
 **Not yet neutralized (deliberately).** Some Claude-flavored references stay literal because
 their agent-neutral form can only be designed alongside the machinery that resolves them —

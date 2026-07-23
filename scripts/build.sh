@@ -90,10 +90,11 @@ render_skill() {
   # and a zero-byte file here would break the live installed skill. Writes only this
   # one file; never clears or recreates the skills directory.
   tmp="$out.tmp"
-  # CLAUDE_MAP: agent-neutral body placeholder -> Claude's real token. A second agent's
-  # renderer supplies its OWN map for the same placeholders (that is the whole point of
-  # neutralizing the bodies); Claude's map reproduces today's skills byte-for-byte. Kept
-  # literal (index/substr in awk, no regex) so tokens with $, ", and / substitute cleanly.
+  # The Claude placeholder map is the four lreplace() calls below: agent-neutral body
+  # placeholder -> Claude's real token. A second agent's renderer supplies its OWN calls for
+  # the same placeholders (that is the whole point of neutralizing the bodies); Claude's map
+  # reproduces today's skills byte-for-byte. Kept literal (index/substr in awk, no regex) so
+  # tokens with $, ", and / substitute cleanly.
   awk -v name="$name" '
     function lreplace(s, from, to,   out, p) {
       out = ""
@@ -130,7 +131,7 @@ render_skill() {
   # placeholder added without a mapping). Emitting it into a skill would ship a literal
   # {{TOKEN}} to users, so refuse to publish — and don't mv, leaving the tracked skill intact.
   if LC_ALL=C grep -Fq '{{' "$tmp"; then
-    echo "build.sh: unresolved placeholder(s) in the rendered '$name' skill — every {{TOKEN}} used in a workflow body must have a mapping in build.sh's CLAUDE_MAP:" >&2
+    echo "build.sh: unresolved placeholder(s) in the rendered '$name' skill — every {{TOKEN}} used in a workflow body must have an lreplace() mapping in build.sh's render_skill:" >&2
     LC_ALL=C grep -Fn '{{' "$tmp" | sed 's/^/  /' >&2
     rm -f "$tmp"
     exit 3
