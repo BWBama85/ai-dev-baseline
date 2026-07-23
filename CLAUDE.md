@@ -51,6 +51,7 @@ those. The rules below are specific to this repo's code.
 | `agents/<agent>/` | Per-agent: generated root doc, `adapter.sh`, generated `skills/` (all agents); Claude also has generated hook `scripts/` |
 | `scripts/lib/common.sh` | Shared shell primitives — the **ONE home** for link/unlink/backup, default-branch, TOML-read, version-compare; **source it, never copy** |
 | `scripts/lib/project-gates.sh` | Gate auto-detector (installs beside `common.sh` into `~/.<agent>/scripts/lib`) |
+| `scripts/lib/skill-compose.sh` | Partial skill-override composer — merges a project's `overrides.md` onto the installed base skill so a project carries deltas without forking the whole skill (#22); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index) |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |

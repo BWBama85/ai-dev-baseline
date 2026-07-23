@@ -101,6 +101,18 @@ renderer/enforcement follow-ups, not this pass:
   agent" primitive is now neutral — workflows resolve + shell out via `{{ROLE_DISPATCH}}`, the
   runtime role-dispatch helper, #15.)*
 
+### Step headings are project-override anchors
+
+A skill's `### ` step headings are a stable contract: a project can carry a small
+delta on one step (without forking the whole skill) by targeting its heading as an
+**anchor** in a `.claude/skills/<name>/overrides.md`, which `scripts/lib/skill-compose.sh`
+merges onto the installed base skill (issue #22 — see `docs/per-project-overrides.md`).
+The anchor is the heading slugified with the leading `N.` step number stripped, so a step
+can be **renumbered** freely; **renaming** a step heading changes its anchor and makes any
+project override that targeted it fail loud on the next recompose (the intended "your fork
+has diverged" signal). Keep step-heading wording stable across edits when you can, and
+treat a rename as a breaking change to that anchor.
+
 ## Adding a workflow
 
 1. Write `base/workflows/<name>.md` following the contract above.

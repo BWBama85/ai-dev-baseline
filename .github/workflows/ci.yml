@@ -238,6 +238,17 @@ jobs:
       - name: Unit-test the runtime role-dispatch helper (#15)
         run: bash scripts/check-role-dispatch.sh
 
+  skill-compose:
+    name: skill-compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Partial skill override composer — ops, inherit-on-recompose, currency, guards (#22)
+        run: bash scripts/check-skill-compose.sh
+
   cleanup-enum:
     name: cleanup-enum
     runs-on: ubuntu-latest
@@ -375,6 +386,7 @@ jobs:
             "$HOME/.claude/scripts/lib/project-gates.sh" \
             "$HOME/.claude/scripts/lib/common.sh" \
             "$HOME/.claude/scripts/lib/role-dispatch.sh" \
+            "$HOME/.claude/scripts/lib/skill-compose.sh" \
             "$HOME/.codex/AGENTS.md" \
             "$HOME/.codex/skills/implement-issue" \
             "$HOME/.codex/scripts/lib/project-gates.sh" \

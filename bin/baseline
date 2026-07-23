@@ -9,6 +9,8 @@
 # Usage:
 #   baseline update            # fast-forward the install-source clone + self-heal links
 #   baseline update --check    # report currency only; make NO changes (for a hook)
+#   baseline skill-compose …   # compose a project's partial skill overrides (issue #22;
+#                              #   run 'baseline skill-compose -h' for its own usage)
 #   baseline -h | --help
 #
 # `update` never touches unsafe state: it fast-forwards ONLY when the install-source
@@ -55,6 +57,15 @@ REPO="$(cd "$(dirname "$self")/.." && pwd)"
 # Print just the top contiguous comment block (the header), stripping the leading
 # "# " — stops at the first non-comment line, so internal section comments never leak.
 usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; }
+
+# Delegate the partial-skill-override composer to its library (issue #22). It operates on the
+# PROJECT repo the user is in — NOT the install-source clone — so it must dispatch BEFORE the
+# install-source resolution + wrong-clone guard below. The composer also installs into
+# ~/.<agent>/scripts/lib, so it can equally be invoked directly there (e.g. from a project gate).
+if [ "${1:-}" = "skill-compose" ]; then
+  shift
+  exec bash "$REPO/scripts/lib/skill-compose.sh" "$@"
+fi
 
 # --- discovery ---------------------------------------------------------------
 
