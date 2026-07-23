@@ -27,16 +27,27 @@ trap 'rm -rf "$work"' EXIT
 git_q() { git -C "$1" -c user.email=t@t -c user.name=t "${@:2}"; }
 
 # --- fixture: a minimal but REAL install-source, served from a bare origin ----
+# The source carries the FULL claude install surface (root doc, a skill, the three runtime
+# scripts, scripts/lib) because bin/baseline now verifies the shared MANIFEST — every intended
+# destination must resolve, not just whatever happens to be linked (#48). The fake HOME below
+# pre-links that whole surface to represent an "already installed" clone.
 seed="$work/seed"
-mkdir -p "$seed/bin" "$seed/scripts/lib" "$seed/agents/claude"
+mkdir -p "$seed/bin" "$seed/scripts/lib" "$seed/agents/claude/skills/demo" "$seed/agents/claude/scripts"
 cp "$ROOT/bin/baseline" "$seed/bin/baseline"; chmod +x "$seed/bin/baseline"
 cp "$ROOT/scripts/lib/common.sh" "$seed/scripts/lib/common.sh"
 # bin/baseline only checks install.sh EXISTS (install-source detection); --check never
 # runs it. The `update` path DOES run it, so the stub logs its args to a fixed file (baked
 # in at creation time, absolute) — tests assert on WHICH agents self-heal invokes it with.
+# The stub does NOT create links: the fixture pre-links the surface, and the update-path tests
+# below never ADD a new payload (advance_origin only makes empty commits), so no new link is
+# ever needed for verify to pass.
 printf '#!/usr/bin/env bash\nprintf "install: %%s\\n" "$*" >> "%s"\n' "$work/install.log" > "$seed/install.sh"
 chmod +x "$seed/install.sh"
 printf 'root doc\n' > "$seed/agents/claude/CLAUDE.md"
+printf 'demo skill\n' > "$seed/agents/claude/skills/demo/SKILL.md"
+for s in precommit-gate implement-issue-gate statusline; do
+  printf '#stub\n' > "$seed/agents/claude/scripts/$s.sh"
+done
 
 origin="$work/origin.git"; git init -q --bare "$origin"
 git init -q "$seed"
@@ -49,10 +60,17 @@ git -C "$seed" push -q -u origin main
 # of the host git's init.defaultBranch.
 git -C "$origin" symbolic-ref HEAD refs/heads/main
 
-# The install-source clone under test, and a fake HOME pointing into it.
+# The install-source clone under test, and a fake HOME whose links mirror the FULL manifest
+# surface (root doc + skill + the three scripts + scripts/lib), so manifest verification passes
+# on a healthy install. Spelled to match adb_agent_manifest (absolute, no trailing slash).
 src="$work/src"; git clone -q "$origin" "$src"
-fh="$work/home"; mkdir -p "$fh/.claude"
+fh="$work/home"; mkdir -p "$fh/.claude/skills" "$fh/.claude/scripts"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
+ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
+for s in precommit-gate implement-issue-gate statusline; do
+  ln -s "$src/agents/claude/scripts/$s.sh" "$fh/.claude/scripts/$s.sh"
+done
+ln -s "$src/scripts/lib" "$fh/.claude/scripts/lib"
 
 # A second clone used to advance origin independently (produces behind/diverged).
 c2="$work/c2"; git clone -q "$origin" "$c2"
@@ -132,14 +150,28 @@ eq "$rc" "3" "no-install exits 3"
 reset_src
 eq "$(run_update "$src/bin/baseline" "$fh")" "0" "update current + healthy links exits 0"
 
-# update with a DANGLING installed link (a moved/renamed path) must be LOUD: the stub
-# installer can't repair it, so the verify tripwire fails the run (exit 1) rather than
-# silently reporting success. This is the general-enumeration guard (not a hardcoded subset).
+# update with a renamed-away ORPHAN (a dangling link into src, no manifest entry) must be
+# PRUNED, not fatal: baseline removes the ownership-scoped dead link and completes (exit 0),
+# then a second update is an idempotent no-op (#48).
 reset_src
 mkdir -p "$fh/.claude/skills"
 ln -s "$src/agents/claude/skills/ghost" "$fh/.claude/skills/ghost"   # target does not exist
-eq "$(run_update "$src/bin/baseline" "$fh")" "1" "update surfaces a dangling installed link (exit 1)"
-rm -f "$fh/.claude/skills/ghost"
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "update prunes a renamed-away orphan (exit 0)"
+if [ -L "$fh/.claude/skills/ghost" ]; then bad "orphaned link should have been pruned"; else ok; fi
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "second update after prune is an idempotent no-op (exit 0)"
+
+# prune is STRICTLY ownership-scoped: it must NEVER remove a still-resolving owned link, a
+# dangling link that points ELSEWHERE (not ours), or a real file that lives in a scanned
+# namespace. Stage all three, run update, and assert each survives untouched (#48).
+reset_src
+outside="$work/outside"; mkdir -p "$outside"
+ln -s "$outside/gone" "$fh/.claude/skills/foreign"    # dangles, but NOT into src → not ours
+printf 'realfile\n' > "$fh/.claude/scripts/keepme"    # a real file in a scanned namespace
+run_update "$src/bin/baseline" "$fh" >/dev/null
+if [ -L "$fh/.claude/skills/demo" ] && [ -e "$fh/.claude/skills/demo" ]; then ok; else bad "prune kept the resolving owned link"; fi
+if [ -L "$fh/.claude/skills/foreign" ]; then ok; else bad "prune must not remove a dangling NON-ours link"; fi
+if [ -f "$fh/.claude/scripts/keepme" ]; then ok; else bad "prune must never delete a real file"; fi
+rm -f "$fh/.claude/skills/foreign" "$fh/.claude/scripts/keepme"
 
 # wrong-clone guard must NOT false-trip on a symlinked-path spelling of the SAME clone
 # (physical-path comparison via pwd -P) — regression guard for the bug review's finding.
@@ -181,6 +213,12 @@ rm -f "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/CLAUDE-moved.md" "$fh/.claude/CLAUDE.md"   # target missing; clone intact
 reset_src
 eq "$(run_check "$src/bin/baseline" "$fh")" "current|0" "dangling root-doc still resolves the source (thread 3)"
+
+# Prune must NEVER remove an agent ROOT-DOC link, even a dangling one: it lives at a fixed path
+# that DETECTS the install (and resolves the source), so a dangling root doc is surfaced loudly,
+# never silently pruned. Run the mutating path and assert the link survives (#48).
+run_update "$src/bin/baseline" "$fh" >/dev/null 2>&1
+if [ -L "$fh/.claude/CLAUDE.md" ]; then ok; else bad "prune must never remove a (dangling) root-doc link"; fi
 rm -f "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"   # restore canonical link
 

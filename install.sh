@@ -37,29 +37,21 @@ done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude)
 
 install_claude() {
+  local rc=0
   adb_info "claude → ~/.claude"
-  adb_link "$REPO/agents/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md" "$BACKUP_DIR"
-
-  local d name
-  for d in "$REPO"/agents/claude/skills/*/; do
-    [ -d "$d" ] || continue
-    name="$(basename "$d")"
-    adb_link "$d" "$HOME/.claude/skills/$name" "$BACKUP_DIR"
-  done
-
-  local s
-  for s in precommit-gate.sh implement-issue-gate.sh statusline.sh; do
-    adb_link "$REPO/agents/claude/scripts/$s" "$HOME/.claude/scripts/$s" "$BACKUP_DIR"
-  done
-  # The shared shell library (scripts/lib/) installs as ~/.claude/scripts/lib so the
-  # runtime gates can source common.sh / project-gates.sh as siblings. Fresh installs
-  # link the canonical path directly; existing installs made before the library moved
-  # here still point at agents/claude/scripts/lib, which is now a compat symlink back
-  # to scripts/lib — so a plain `git pull` keeps their gates working without a re-install
-  # (do NOT delete that symlink). Re-running install.sh self-heals them to this direct link.
-  adb_link "$REPO/scripts/lib" "$HOME/.claude/scripts/lib" "$BACKUP_DIR"
+  # The install surface (root doc, every skill, the runtime scripts, and the shared
+  # scripts/lib) is enumerated ONCE by adb_agent_manifest — install.sh links it, uninstall.sh
+  # removes it, and bin/baseline verifies it, so the three can't drift (#48). scripts/lib links
+  # at its canonical path; a plain `git pull` keeps pre-#34 installs working via the compat
+  # shim, and this re-run self-heals them to the direct link (do NOT delete that shim).
+  # Capture the accumulated status so a missing source (adb_link's guard) makes the installer
+  # exit non-zero rather than silently leaving a dangling link.
+  adb_link_manifest "$BACKUP_DIR" <<EOF || rc=1
+$(adb_agent_manifest claude "$REPO" "$HOME")
+EOF
 
   if [ "$WIRE_HOOKS" -eq 1 ]; then wire_hooks; else adb_info "  (gates not wired — --no-hooks)"; fi
+  return "$rc"
 }
 
 wire_hooks() {
@@ -108,10 +100,11 @@ write_global_manifest() {
 
 adb_info "Installing ai-dev-baseline from ${REPO/#$HOME/~}"
 adb_info ""
+install_rc=0
 for a in "${AGENTS[@]}"; do
   case "$a" in
-    claude) install_claude ;;
-    codex|gemini) run_adapter "$a" ;;
+    claude) install_claude || install_rc=1 ;;
+    codex|gemini) run_adapter "$a" || install_rc=1 ;;
     *) adb_info "unknown agent '$a' — skipping" ;;
   esac
   adb_info ""
@@ -123,3 +116,9 @@ adb_info "Done. Backups (if any): ${BACKUP_DIR/#$HOME/~}"
 adb_info "Per project: run 'agent-init' at a repo root to set roles (see templates/agents.toml)."
 adb_info "Note: a repo that ships its own .claude/scripts/precommit-gate.sh keeps winning —"
 adb_info "      the global gate defers to it, so nothing double-runs."
+# Fail loud: a missing manifest source tripped adb_link's guard somewhere above. The specific
+# link error already went to stderr; exit non-zero so callers (bin/baseline self-heal, CI) see it.
+if [ "$install_rc" -ne 0 ]; then
+  echo "install.sh: one or more links FAILED (missing source?) — see the errors above." >&2
+fi
+exit "$install_rc"

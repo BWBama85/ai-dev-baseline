@@ -128,6 +128,78 @@ dest4="$work/withspace.txt"; echo real4 > "$dest4"
 adb_link "$src" "$dest4" "$spacebk" >/dev/null
 if [ -f "$spacebk$dest4" ]; then ok; else bad "adb_link handles a spaced backup path"; fi
 
+# --- adb_link source-existence guard (#48) -----------------------------------
+# A missing source must fail LOUD and leave the destination completely untouched: no dangling
+# link, no backup, and a pre-existing real file at dest preserved byte-for-byte.
+missing="$work/does-not-exist.txt"
+
+# (a) dest absent: guard returns non-zero and creates NO link.
+guarddest="$work/guard-fresh.txt"
+adb_link "$missing" "$guarddest" "$backup" 2>/dev/null; no $? "adb_link missing source returns nonzero"
+if [ ! -e "$guarddest" ] && [ ! -L "$guarddest" ]; then ok; else bad "adb_link missing source creates no dangling link"; fi
+
+# (b) dest is a real file: it must survive untouched (not backed up, not replaced).
+guardreal="$work/guard-real.txt"; echo keepme > "$guardreal"
+adb_link "$missing" "$guardreal" "$backup" 2>/dev/null; no $? "adb_link missing source (real dest) returns nonzero"
+if [ -f "$guardreal" ] && [ ! -L "$guardreal" ]; then ok; else bad "adb_link missing source must not disturb a real dest"; fi
+eq "$(cat "$guardreal")" "keepme" "adb_link missing source preserves the real dest content"
+
+# (c) a dangling-symlink source counts as missing (never link through a broken source).
+danglesrc="$work/dangle-src"; ln -s "$work/nowhere" "$danglesrc"
+adb_link "$danglesrc" "$work/guard-dangle.txt" "$backup" 2>/dev/null; no $? "adb_link dangling-symlink source returns nonzero"
+if [ ! -e "$work/guard-dangle.txt" ]; then ok; else bad "adb_link dangling source creates no link"; fi
+
+# --- adb_agent_manifest (#48) ------------------------------------------------
+# One producer of the install surface. Assert the shape: TAB-separated <src>\t<dest>, absolute
+# sources with NO trailing slash on skill dirs, and the canonical scripts/lib entry.
+mrepo="$work/mrepo"; mhome="$work/mhome"
+mkdir -p "$mrepo/agents/claude/skills/demo" "$mrepo/agents/claude/scripts" "$mrepo/scripts/lib" \
+         "$mrepo/agents/codex" "$mrepo/agents/gemini"
+tab_="$(printf '\t')"
+man="$(adb_agent_manifest claude "$mrepo" "$mhome")"
+# root doc line present, TAB-separated, pointing at the right dest
+echo "$man" | grep -Fq -- "$mrepo/agents/claude/CLAUDE.md${tab_}$mhome/.claude/CLAUDE.md" && ok || bad "manifest emits the claude root-doc line"
+# skill dir: absolute source, NO trailing slash, dest under ~/.claude/skills/<name>
+echo "$man" | grep -Fq -- "$mrepo/agents/claude/skills/demo${tab_}$mhome/.claude/skills/demo" && ok || bad "manifest emits skill dir with no trailing slash"
+echo "$man" | grep -q '/skills/demo/	' && bad "manifest skill source must not carry a trailing slash" || ok
+# the three runtime scripts + scripts/lib
+echo "$man" | grep -Fq -- "$mrepo/agents/claude/scripts/statusline.sh${tab_}$mhome/.claude/scripts/statusline.sh" && ok || bad "manifest emits statusline.sh"
+echo "$man" | grep -Fq -- "$mrepo/scripts/lib${tab_}$mhome/.claude/scripts/lib" && ok || bad "manifest emits canonical scripts/lib"
+# codex / gemini one-line manifests
+eq "$(adb_agent_manifest codex "$mrepo" "$mhome")"  "$mrepo/agents/codex/AGENTS.md${tab_}$mhome/.codex/AGENTS.md"  "codex manifest is the one root doc"
+eq "$(adb_agent_manifest gemini "$mrepo" "$mhome")" "$mrepo/agents/gemini/GEMINI.md${tab_}$mhome/.gemini/GEMINI.md" "gemini manifest is the one root doc"
+eq "$(adb_agent_manifest bogus "$mrepo" "$mhome")" "" "unknown agent manifest prints nothing"
+
+# --- adb_link_manifest (#48) -------------------------------------------------
+# Consumes a manifest and links each entry; accumulates a non-zero status if ANY entry fails.
+lmbk="$work/lm-backup"
+good1="$mrepo/agents/claude/CLAUDE.md"; echo doc > "$good1"
+good2="$mrepo/scripts/lib/common.sh"; echo lib > "$good2"
+d1="$work/lm-d1"; d2="$work/lm-d2"
+printf '%s\t%s\n%s\t%s\n' "$good1" "$d1" "$good2" "$d2" | { adb_link_manifest "$lmbk" >/dev/null; }
+# (piping into a group runs adb_link_manifest in a subshell; assert on the RESULT links instead)
+if [ -L "$d1" ] && [ -L "$d2" ]; then ok; else bad "adb_link_manifest links every good entry"; fi
+
+# all-good manifest returns 0 (fed via heredoc so status propagates without a subshell)
+adb_link_manifest "$lmbk" >/dev/null <<EOF
+$good1	$work/lm-d3
+EOF
+yes $? "adb_link_manifest all-good returns zero"
+
+# a missing source in the manifest makes the whole call return non-zero, but still links the good ones
+adb_link_manifest "$lmbk" >/dev/null 2>&1 <<EOF
+$good1	$work/lm-ok
+$work/lm-missing-src	$work/lm-bad
+EOF
+no $? "adb_link_manifest returns nonzero when any source is missing"
+if [ -L "$work/lm-ok" ] && [ ! -e "$work/lm-bad" ]; then ok; else bad "adb_link_manifest links good entries and skips the missing-source one"; fi
+
+# a malformed line (no TAB / empty column) is a hard failure, not a silent skip
+adb_link_manifest "$lmbk" >/dev/null 2>&1 <<EOF
+$good1
+EOF
+no $? "adb_link_manifest hard-fails a malformed (single-column) line"
+
 # --- adb_unlink_if_ours ------------------------------------------------------
 repo="$work/repo"; mkdir -p "$repo"; echo r > "$repo/file"
 ours="$work/ours.link"; ln -s "$repo/file" "$ours"

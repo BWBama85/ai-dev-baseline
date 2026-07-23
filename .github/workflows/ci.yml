@@ -269,6 +269,17 @@ jobs:
       - name: A plain `git pull` must never dangle an installed symlink (#35)
         run: bash scripts/check-install-migration.sh
 
+  install-guard:
+    name: install-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: A missing manifest source must make install.sh fail loud (#48)
+        run: bash scripts/check-install-guard.sh
+
   fact-drift:
     name: fact-drift
     runs-on: ubuntu-latest

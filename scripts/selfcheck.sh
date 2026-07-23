@@ -3,7 +3,7 @@
 #
 # Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter,
 # gate-detector/gates, common-lib, cleanup-enum, baseline, precommit-gate,
-# implement-gate, install-migration, fact-drift, practice-index, and an
+# implement-gate, install-migration, install-guard, fact-drift, practice-index, and an
 # install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
@@ -139,6 +139,11 @@ step "install-migration"
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).
 if bash scripts/check-install-migration.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "install-guard"
+# adb_link's fail-loud source guard must thread through install.sh: a missing manifest source
+# makes the real installer exit non-zero, never dangling a link or disturbing a real dest (#48).
+if bash scripts/check-install-guard.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "fact-drift"
 # Canonical facts (gate axes, cross-agent invocations, codex timeout, resolution order)

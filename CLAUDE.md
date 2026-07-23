@@ -27,7 +27,7 @@ those. The rules below are specific to this repo's code.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors CI exactly
    (shellcheck · build-drift · skill-frontmatter · gate-detector · gates · common-lib ·
    cleanup-enum · baseline · precommit-gate · implement-gate · install-migration ·
-   fact-drift · practice-index · install dry-run). Fix red at the root — never push and
+   install-guard · fact-drift · practice-index · install dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
 4. **Shell code must be portable and shellcheck-clean.** `bash`/POSIX, safe on macOS
    bash 3.2 (no `mapfile`, no `readlink -f`), passing

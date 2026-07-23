@@ -44,8 +44,18 @@ adb_info() { printf '%s\n' "$*"; }
 #   - dest is a real file/dir            → move it under backup_dir (mirrored absolute
 #                                          path) before linking.
 # Idempotent: running twice produces the same end state with no duplicate backups.
+#
+# Fail-loud source guard (#48): if <src> does not exist (or is a dangling symlink), refuse
+# LOUDLY and return non-zero WITHOUT touching <dest> — no backup, no removal, no link. A bad
+# manifest entry must never silently leave a dangling install link or clobber a real dest; the
+# caller propagates this status so the top-level installer exits non-zero (see install.sh).
 adb_link() {
   local src="$1" dest="$2" backup_dir="$3"
+  if [ ! -e "$src" ]; then
+    printf 'adb_link: source does not exist: %s — refusing to link %s (dest left untouched)\n' \
+      "$src" "$dest" >&2
+    return 1
+  fi
   if [ -L "$dest" ]; then
     if [ "$(readlink "$dest")" = "$src" ]; then
       adb_info "  ok     ${dest/#$HOME/~}"
@@ -75,6 +85,65 @@ adb_unlink_if_ours() {
   else
     adb_info "  skip   ${dest/#$HOME/~} (not a symlink)"
   fi
+}
+
+# --- install manifest (the ONE enumeration of the install surface) -----------
+
+# Print the install manifest for ONE agent token as TAB-separated "<src>\t<dest>" lines,
+# given a repo/source root and a target home. This is the SINGLE source of what the install
+# links (#48): install.sh + the per-agent adapters consume it to CREATE the links; uninstall.sh
+# consumes the <dest> column to remove them; bin/baseline consumes it to VERIFY them. Because
+# all four read the same producer, the create-set, remove-set, and verify-set can never drift
+# (a path added/moved here changes every consumer at once).
+#
+# Spelling is canonical: absolute <src> with NO trailing slash (so bin/baseline's exact-readlink
+# idempotency check is stable). scripts/lib is linked at its CANONICAL path (not the pre-#34
+# compat shim) — a plain `git pull` keeps old installs working via that shim, and a re-run
+# self-heals them to this direct link. Paths are assumed free of tabs/newlines (unsupported).
+# An unknown token prints nothing (return 0). Usage: adb_agent_manifest <agent> <repo> <home>
+adb_agent_manifest() {
+  local agent="$1" repo="$2" home="$3" d name s
+  case "$agent" in
+    claude)
+      printf '%s\t%s\n' "$repo/agents/claude/CLAUDE.md" "$home/.claude/CLAUDE.md"
+      for d in "$repo"/agents/claude/skills/*/; do
+        [ -d "$d" ] || continue          # unmatched glob stays literal → filtered here
+        name="$(basename "$d")"
+        printf '%s\t%s\n' "${d%/}" "$home/.claude/skills/$name"
+      done
+      for s in precommit-gate.sh implement-issue-gate.sh statusline.sh; do
+        printf '%s\t%s\n' "$repo/agents/claude/scripts/$s" "$home/.claude/scripts/$s"
+      done
+      printf '%s\t%s\n' "$repo/scripts/lib" "$home/.claude/scripts/lib"
+      ;;
+    codex)
+      printf '%s\t%s\n' "$repo/agents/codex/AGENTS.md" "$home/.codex/AGENTS.md"
+      ;;
+    gemini)
+      printf '%s\t%s\n' "$repo/agents/gemini/GEMINI.md" "$home/.gemini/GEMINI.md"
+      ;;
+  esac
+}
+
+# Consume a manifest (TAB-separated "<src>\t<dest>" lines on stdin) and adb_link each entry,
+# so column parsing lives in ONE place (install.sh and the adapters both call this rather than
+# re-interpreting the columns). Accumulates failures: returns non-zero iff ANY line failed —
+# a missing source (adb_link's guard) or a malformed line — so a caller propagates a single
+# exit status. A blank line is skipped; a line missing either column is a hard failure (a
+# malformed manifest must never silently link nothing). Usage: adb_link_manifest <backup_dir>
+adb_link_manifest() {
+  local backup_dir="$1" tab src dest rc=0
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r src dest; do
+    [ -n "$src$dest" ] || continue
+    if [ -z "$src" ] || [ -z "$dest" ]; then
+      printf 'adb_link_manifest: malformed manifest line (want <src>TAB<dest>): [%s|%s]\n' \
+        "$src" "$dest" >&2
+      rc=1; continue
+    fi
+    adb_link "$src" "$dest" "$backup_dir" || rc=1
+  done
+  return "$rc"
 }
 
 # --- git ---------------------------------------------------------------------

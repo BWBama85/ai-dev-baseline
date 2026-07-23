@@ -24,10 +24,17 @@ _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_here/../../scripts/lib/common.sh"
 
 cmd_install() {
-  local repo="$1" backup_dir="$2"
+  local repo="$1" backup_dir="$2" rc=0
   mkdir -p "$HOME/.codex"
-  adb_link "$repo/agents/codex/AGENTS.md" "$HOME/.codex/AGENTS.md" "$backup_dir"
+  # Link via the shared manifest (#48) — the same producer install.sh + bin/baseline consume,
+  # so this adapter can't drift from them. Capture the status BEFORE the note print (adb_info
+  # would otherwise overwrite $?), so a missing source makes the adapter — and the top-level
+  # installer — exit non-zero.
+  adb_link_manifest "$backup_dir" <<EOF || rc=1
+$(adb_agent_manifest codex "$repo" "$HOME")
+EOF
   adb_info "  note   ~/.codex/config.toml (model, reasoning effort, sandbox/approval policy) is yours to manage — sample at agents/codex/config.toml.sample"
+  return "$rc"
 }
 
 cmd_uninstall() {

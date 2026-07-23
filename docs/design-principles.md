@@ -23,10 +23,13 @@ product thesis turned inward.
   Claude skills the same way, drift-checked identically.
 - **Shell logic** lives once in `scripts/lib/common.sh` — `adb_link` /
   `adb_unlink_if_ours` (backup-then-symlink and ownership-scoped unlink),
-  `adb_default_branch`, `adb_toml_get` / `adb_toml_unquote`, `adb_version_ge`. The
-  installer, uninstaller, both agent adapters, `agent-init`, and the runtime gates all
-  **source** it. `scripts/check-common-lib.sh` unit-tests the primitives; a regression
-  breaks one job, not eight silently-diverging copies.
+  `adb_agent_manifest` / `adb_link_manifest` (the one enumeration of the install surface,
+  and its consumer), `adb_default_branch`, `adb_toml_get` / `adb_toml_unquote`,
+  `adb_version_ge`. The installer, uninstaller, both agent adapters, `agent-init`, and the
+  runtime gates all **source** it. The install manifest is single-sourced too: `install.sh`
+  links it, `uninstall.sh` removes it, and `bin/baseline` verifies it — one producer, so the
+  create/remove/verify sets can't drift. `scripts/check-common-lib.sh` unit-tests the
+  primitives; a regression breaks one job, not eight silently-diverging copies.
 - **Repeated prose facts** — the cross-agent invocation commands, the codex ≥7-minute
   timeout, the role-resolution order, the gate-axis list — are pinned by
   `scripts/check-fact-drift.sh`, an allowlisted lint that fails when a canonical token
