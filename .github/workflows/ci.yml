@@ -224,8 +224,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Unit-test the shared shell primitives
+      - name: Unit-test the shared shell primitives (incl. adb_repo_shape, #23)
         run: bash scripts/check-common-lib.sh
+
+  agent-init:
+    name: agent-init
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: agent-init repo-shape tolerance — subdir, untracked parent, nested, non-git (#23)
+        run: bash scripts/check-agent-init.sh
 
   role-dispatch:
     name: role-dispatch

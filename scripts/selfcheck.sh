@@ -2,7 +2,7 @@
 # ai-dev-baseline — local CI mirror. Run before every push.
 #
 # Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter, workflow-render,
-# gate-detector/gates, common-lib, cleanup-enum, baseline, precommit-gate,
+# gate-detector/gates, common-lib, agent-init, cleanup-enum, baseline, precommit-gate,
 # implement-gate, install-migration, install-guard, fact-drift, practice-index, and an
 # install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
@@ -134,8 +134,13 @@ step "gates"
 if bash scripts/check-gates.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "common-lib"
-# Unit tests for the shared shell primitives (scripts/lib/common.sh).
+# Unit tests for the shared shell primitives (scripts/lib/common.sh), incl. adb_repo_shape (#23).
 if bash scripts/check-common-lib.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "agent-init"
+# Integration tests for bin/agent-init's repo-shape tolerance: subdir resolution, bama-style
+# untracked-parent + out-of-repo doc surfacing, nested repos, non-git refusal (#23).
+if bash scripts/check-agent-init.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "role-dispatch"
 # Unit tests for the runtime role-dispatch helper (resolve/bots/invoke + validation, #15).
