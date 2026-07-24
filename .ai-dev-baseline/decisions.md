@@ -131,3 +131,38 @@ didn't already model, so any residual divergence stays visible and auditable.
 - reason:        Acceptance says "documented opt-in auto-cut," which this satisfies; the executor
                  mechanism is filed as a tracked follow-up (per issues-and-scope) rather than
                  bolted onto a never-execute skill.
+
+## D7 — release execution stays project-owned; the baseline ships no `/release`
+- date:      2026-07-24
+- category:  project-delta
+- unknown:   #3 asked the framework to decide between shipping a *generic* `release` workflow
+             (bump a version, regenerate a changelog, tag, hand off to deploy) and documenting
+             `release` as an explicitly project-owned role. `base/roles.md` already named the
+             role, and `/roadmap` already emits `Next: /release`, but nothing said which of the
+             two the baseline was committing to — so the role read as "unimplemented yet."
+- decision:  Project-owned, permanently. The baseline NAMES `release` and resolves it like any
+             other role, and ships no `/release` workflow. A four-project sweep found four
+             mutually incompatible schemes (SemVer + git-cliff + milestone roll; SemVer + GHCR
+             image + cosign; CalVer `YYYY.MM.patch` with no changelog; a WP-plugin zip via
+             `build.sh` + `gh release create`), so a "skeleton with extension points" would be
+             wrong for three of four — and wrong under a permanent published tag. Three things
+             ship instead of a skill: (1) the decision, stated on every surface a user lands on;
+             (2) the contract that `[roles].release` names an EXECUTOR and is inert until a
+             project's own skill resolves it (`role-dispatch.sh resolve release`), since a
+             silently-ignored manifest entry was the likeliest misread; (3) a lint pinning the
+             negative invariant. The `/new-release` name collision reported on #3 is fixed with
+             a clarifying scope note, NOT a rename — renaming a shipped skill is a breaking
+             migration (installed symlink targets, project `overrides.md` anchors, per-project
+             state files, orphan-render detection), so the rename decision is tracked separately
+             as #82 (which also depends on #52, the untested renamed-skill prune/relink path).
+- placement: `base/roles.md` (role model) + `docs/roles-and-agents.md` (user guide) + `README.md`
+             (skill table) + `templates/agents.toml` (manifest comment); the disambiguation note
+             in `base/workflows/new-release.md` (rendered to all three agents); the guard in
+             `scripts/check-release-role.sh`, wired into `scripts/selfcheck.sh` and CI.
+- reason:    "General over specific" (`docs/design-principles.md`) argues FOR extraction only
+             when a general form exists; here the sweep proves it does not, so the honest
+             baseline contribution is the role + the resolution contract, not a skeleton.
+             Recorded as a decision rather than a code comment because the tempting future
+             change ("just add a small generic /release") looks like a feature, not a reversal —
+             the lint makes reversing it deliberate instead of incidental.
+- baseline-issue: n/a (this repo IS the baseline; #3 is the tracking issue)

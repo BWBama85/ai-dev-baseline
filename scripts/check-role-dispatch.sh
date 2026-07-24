@@ -71,6 +71,25 @@ eq "$out" "" 'gap_analysis="" → empty'; yes "$rc" 'gap_analysis="" is a 0 stat
 set_repo '[roles]' 'primary = "claude"' 'review = ""'
 eq "$(rd resolve review)" "claude" 'review="" → primary'
 
+# --- `release` + `issue_author`: declared roles with no shipped consumer (#3) ------------------
+# The baseline ships no /release skill on purpose — `release` names WHO would cut a release in a
+# project-owned skill someone else writes. Resolution is therefore the ONLY contract the baseline
+# owes it, so pin it. Validation (unknown token, list cardinality) is NOT re-tested per role: the
+# resolver handles gap_analysis|review|debug|issue_author|release in ONE case arm, so the
+# gap_analysis cases below already cover that arm for every key.
+set_repo '[roles]' 'primary = "claude"' 'release = "codex"'
+eq "$(rd resolve release)" "codex" "explicit release wins over the primary fallback"
+
+# "Falls back to primary" must be proven with a NON-claude primary. The built-in-default cases at
+# the top can't do this (with no manifest anywhere, primary IS claude), so "falls back to primary"
+# and "returns the literal string claude" are indistinguishable there. Set a gemini primary and
+# assert EVERY primary-defaulting role at once — the general check, not one special-cased to the
+# two roles this change happened to add.
+set_repo '[roles]' 'primary = "gemini"'
+for r in review debug issue_author release; do
+  eq "$(rd resolve "$r")" "gemini" "unset $r falls back to primary (not literal claude)"
+done
+
 # --- validation: errors, and NO fall-through past an invalid higher-precedence value ---
 set_repo '[roles]' 'review = []'
 rd resolve review >/dev/null 2>&1; no $? "review = [] is rejected (nonzero)"

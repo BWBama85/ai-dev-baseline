@@ -218,8 +218,9 @@ requirements are unmet. An `M` member whose only blocker is a non-`M` (`Backlog`
   if present else `/release`, prefixed with the banner
   `✅ Release requirements met (NAME: 0 open blockers) — cutting.` If non-blocker issues are still
   open in `M`, append `(K non-blocker issue(s) still open — they roll to the next cycle)`.
-  `/roadmap` only **emits** this command; it never runs it (`/release` is the project-owned release
-  role, #3 — a repo without one gets an unrunnable suggestion, not an error).
+  `/roadmap` only **emits** this command; it never runs it. `/release` is the **project-owned**
+  release role — the baseline ships no such skill by decision (#3, `base/roles.md`), so a repo
+  without one gets an unrunnable suggestion, not an error.
 
 **Gauge scoping.** In release-readiness mode the finish-line gauge is scoped to `M` so it equals
 the readiness trigger and the two can never disagree — see step 6's "Destination report" for the

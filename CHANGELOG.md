@@ -7,6 +7,32 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Changed
+
+- **`release` is documented as a permanently project-owned role — the baseline ships no `/release`**
+  (`base/roles.md`, `docs/roles-and-agents.md`, `README.md`, `templates/agents.toml`, #3): the role
+  was named but undecided, so it read as "not built yet" rather than "deliberately yours." A sweep of
+  four real projects found four incompatible release schemes (SemVer + `git-cliff` + a milestone roll;
+  SemVer + a `cosign`-signed GHCR image; **CalVer** `YYYY.MM.patch` with no changelog; a WordPress-plugin
+  zip via `build.sh` + `gh release create`), so a generic "bump · changelog · tag · deploy" skeleton
+  would be wrong for three of the four — under a permanent published tag. The baseline now states the
+  decision on every surface a user lands on, and spells out the contract that most easily misfires:
+  **`[roles].release` names an executor and installs nothing** — it stays inert until your own
+  `/release` skill resolves it (`role-dispatch.sh resolve release`), so a `release = "codex"` that no
+  skill consumes is silently ignored. `/roadmap` is unchanged: it still emits `Next: /release` and
+  never runs it, retargetable with `<!-- release-command: CMD -->`.
+- **`/new-release` now says what it is not** (`base/workflows/new-release.md` → all three agents' skills,
+  #3): the name collides with the project-owned `/release`, and both were live in one session. A scope
+  note at the top states that `/new-release` reviews an **upstream** CLI's changelog (Claude · Codex ·
+  Antigravity) and never bumps, tags, packages, or deploys anything of yours. Deliberately a note and
+  **not** a rename — renaming a shipped skill is a breaking migration (installed symlink targets,
+  project `overrides.md` anchors, per-project state files, orphan-render detection); the rename
+  decision is tracked separately as #82.
+- **`agent-init` prints the full effective role map** (`bin/agent-init`): it advertised the complete
+  repo → global → built-in resolution but printed only four of six roles, hiding `issue_author` and
+  `release`. All six now print, with a note naming which are actually consumed by a shipped workflow —
+  so a resolved `release` is never misread as "the baseline will cut your release."
+
 ### Fixed
 
 - **`/roadmap` no longer freezes a ready issue on a passing `#N` mention** (`base/workflows/roadmap.md`,
@@ -24,6 +50,20 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   inline comment that described a jq boolean as an empty stream.
 
 ### Added
+
+- **`release-role` check — a guard for a *negative* invariant** (`scripts/check-release-role.sh`,
+  wired into `scripts/selfcheck.sh` + CI, #3): "no `/release` skill ships" is a decision no existing
+  check could express — `build-drift` and `workflow-map` prove source↔render agreement for workflows
+  that *exist*, so a future `base/workflows/release.md` would render correctly and pass every gate,
+  silently reversing #3. The lint asserts the **absence** (no release workflow source, no rendered
+  release skill in any agent tree), the **presence** of the decision on all four user-facing surfaces,
+  the `/new-release` disambiguation in the workflow source (and, via `build-drift`, in every agent's
+  shipped skill), and the emit contract (`/roadmap` still names `/release` and its `release-command`
+  override). Like `fact-drift`
+  it is an allowlisted positive-presence check over small stable tokens, so rewording a paragraph
+  never fails CI — dropping the claim does. `check-role-dispatch.sh` also gained `release` /
+  `issue_author` resolution coverage (explicit value wins; unset falls back to `primary`, proven with
+  a non-`claude` primary so the fallback cannot pass by coincidence; lists and unknown tokens rejected).
 
 - **`/roadmap` behavioral test coverage + acceptance script** (`scripts/lib/roadmap-lib.sh`,
   `scripts/check-roadmap.sh`, `docs/roadmap-acceptance.md`, #45): `/roadmap` shipped with CI coverage
