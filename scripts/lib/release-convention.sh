@@ -27,19 +27,18 @@
 
 set -uo pipefail
 
-# Resolve our own location through symlinks, then find scripts/lib to source common.sh.
-self="${BASH_SOURCE[0]}"
-while [ -L "$self" ]; do
-  link="$(readlink "$self")"
-  case "$link" in
-    /*) self="$link" ;;
-    *)  self="$(dirname "$self")/$link" ;;
-  esac
-done
-LIBDIR="$(cd "$(dirname "$self")" && pwd)"
-# Shared shell primitives (adb_usage / adb_info) — the ONE home, sourced not copied.
+# --- required shared library (fail loud on a broken install, per design-principles §5) --------
+# common.sh lives beside this file (install.sh symlinks the whole scripts/lib dir into
+# ~/.<agent>/scripts/lib), so resolve it the same one-line way the sibling scripts/lib modules
+# do (skill-compose.sh, project-gates.sh) — not bin/baseline's PATH-symlink walk, which is inert
+# here. adb_usage / adb_info vanish without it, so a missing library FAILS LOUD.
+_adb_rc_common="$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
+if [ ! -f "$_adb_rc_common" ]; then
+  printf 'release-convention: FATAL — required library not found: %s (broken/incomplete install)\n' "$_adb_rc_common" >&2
+  exit 1
+fi
 # shellcheck source=/dev/null
-. "$LIBDIR/common.sh"
+. "$_adb_rc_common"
 
 usage() { adb_usage "$0"; }
 
@@ -50,42 +49,40 @@ BLOCKER_LABEL="release-blocker"
 POSTDEPLOY_LABEL="post-deploy"
 
 # --- gh helpers --------------------------------------------------------------------------
+REPO_SLUG=""
+
 # Fail loud on a missing/unauthenticated gh or a repo with no resolvable remote (a hard stop,
-# like the roadmap skill) — never a silent no-op.
+# like the roadmap skill) — never a silent no-op. Runs in the PARENT shell (top of each
+# subcommand), so it also caches REPO_SLUG once here — the resolve doubles as the remote check,
+# and every later `$(repo_slug)` subshell inherits it instead of re-running `gh repo view`.
 require_gh() {
   command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
   command -v gh >/dev/null 2>&1 || { echo "ERROR: gh not found on PATH" >&2; exit 1; }
   gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated (run: gh auth login)" >&2; exit 1; }
-  gh repo view --json nameWithOwner >/dev/null 2>&1 \
+  REPO_SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \
     || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; exit 1; }
+  [ -n "$REPO_SLUG" ] || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; exit 1; }
 }
 
-REPO_SLUG=""
-repo_slug() {
-  [ -n "$REPO_SLUG" ] || REPO_SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
-  printf '%s' "$REPO_SLUG"
-}
+repo_slug() { printf '%s' "$REPO_SLUG"; }
 
-# milestone_state <title> -> prints "open" | "closed" | "" for a milestone with that EXACT
-# title, checking ALL states (so a closed same-name milestone is not silently duplicated).
-milestone_state() {
-  local title="$1"
-  gh api --paginate "repos/$(repo_slug)/milestones?state=all&per_page=100" \
-    --jq ".[] | select(.title == \"$title\") | .state" 2>/dev/null | head -n1
-}
-
-# open_milestone_number <title> -> the number of an OPEN milestone with that exact title.
-open_milestone_number() {
-  local title="$1"
-  gh api --paginate "repos/$(repo_slug)/milestones?state=open&per_page=100" \
-    --jq ".[] | select(.title == \"$title\") | .number" 2>/dev/null | head -n1
+# milestone_field <title> <state:all|open> <field:state|number> -> the field of the first
+# milestone with that EXACT title in the given state set, or empty. One query for both callers.
+# The title is matched in awk (not interpolated into the jq filter, which stays FIXED), so a
+# title containing quotes or jq metacharacters can never break or inject into the query.
+# `state=all` is used to detect a closed same-name milestone so it is never silently duplicated.
+milestone_field() {
+  local title="$1" state="$2" field="$3"
+  gh api --paginate "repos/$(repo_slug)/milestones?state=$state&per_page=100" \
+    --jq '.[] | [.title, .state, (.number|tostring)] | @tsv' 2>/dev/null \
+    | awk -F'\t' -v t="$title" -v f="$field" '$1==t { print (f=="state" ? $2 : $3); exit }'
 }
 
 # ensure_milestone <title> — create it if absent. GitHub has no upsert: GET all states, POST
 # only a missing title, treat 422 (duplicate) as success, hard-fail anything else.
 ensure_milestone() {
   local title="$1" st
-  st="$(milestone_state "$title")"
+  st="$(milestone_field "$title" all state)"
   case "$st" in
     open)   adb_info "  ok       milestone '$title' (already open)"; return 0 ;;
     closed) adb_info "  note     milestone '$title' exists but is CLOSED — reopen it to use it"; return 0 ;;
@@ -187,8 +184,8 @@ cmd_init() {
 cmd_status() {
   require_gh
   local rnum bnum
-  rnum="$(open_milestone_number "$RELEASE_MILESTONE")"
-  bnum="$(open_milestone_number "$BACKLOG_MILESTONE")"
+  rnum="$(milestone_field "$RELEASE_MILESTONE" open number)"
+  bnum="$(milestone_field "$BACKLOG_MILESTONE" open number)"
   adb_info "Release-goal convention in $(repo_slug):"
   adb_info "  release milestone '$RELEASE_MILESTONE': $([ -n "$rnum" ] && echo "present (#$rnum)" || echo "ABSENT")"
   adb_info "  backlog milestone '$BACKLOG_MILESTONE': $([ -n "$bnum" ] && echo "present (#$bnum)" || echo "ABSENT")"

@@ -190,12 +190,10 @@ requirements are unmet. An `M` member whose only blocker is a non-`M` (`Backlog`
   `/roadmap` only **emits** this command; it never runs it (`/release` is the project-owned release
   role, #3 — a repo without one gets an unrunnable suggestion, not an error).
 
-**Gauge scoping.** When release-readiness mode is on and `destination-label` is `release-blocker`,
-scope the finish-line count to `M` (open `release-blocker` issues **in the active milestone**), so
-the gauge (`release-blocker: N open`) is exactly the live distance to the cut and can never
-disagree with the trigger. (Outside release-readiness mode the `destination-label` count stays
-repo-wide, as in step 6.) `release-blocker` is only meaningful inside `M`; never label a `Backlog`
-issue with it.
+**Gauge scoping.** In release-readiness mode the finish-line gauge is scoped to `M` so it equals
+the readiness trigger and the two can never disagree — see step 6's "Destination report" for the
+query mechanic. `release-blocker` is only meaningful inside `M`; never label a `Backlog` issue
+with it.
 
 **Last mile / auto-cut.** The default *is* emit-only, and that is the whole last mile shipped here:
 `/roadmap` determines readiness and prints the command; the operator runs it. A zero-touch driver
