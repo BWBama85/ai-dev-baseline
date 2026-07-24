@@ -181,17 +181,20 @@ active release milestone; always **exclude the roadmap issue itself**.
    tracker change, exactly as the `dep-canceled` rule resolves "until the roadmap is explicitly
    adjusted." Recording the flag is **not** self-acknowledgement; only a real tracker edit clears it.
 
-**Compute the verdict with the shared predicate — do not re-derive it in prose.** Feed the four
-live readings above to `roadmap-lib.sh`, which returns exactly one of `unarmed` / `unmet` /
-`held` / `met` and is regression-tested by `scripts/check-roadmap.sh` (so the precedence between
-them can't drift run to run):
+**Compute the verdict with the shared predicate — do not re-derive it in prose.** Feed the live
+readings above to `roadmap-lib.sh`, which returns exactly one of `unarmed` / `unmet` / `held` /
+`met` and is regression-tested by `scripts/check-roadmap.sh` (so the precedence between them
+can't drift run to run). Pass **both** counts and let the predicate pick: that is what keeps the
+blocker-mode/fallback choice keyed to label *existence* rather than to a live count:
 
 ```bash
-# LABEL_EXISTS: 1 if `gh api "repos/$REPO/labels/release-blocker"` returned 200, else 0
-# ARMED:        1 if M holds >=1 issue (open OR closed), else 0
-# OPEN_COUNT:   open release-blocker issues in M (blocker-mode), or open issues in M (fallback)
-# CANCELED:     1 if a release-blocker in M is closed as NOT_PLANNED, else 0
-VERDICT="$(bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-ready "$LABEL_EXISTS" "$ARMED" "$OPEN_COUNT" "$CANCELED")" \
+# LABEL_EXISTS:  1 if `gh api "repos/$REPO/labels/release-blocker"` returned 200, else 0
+# ARMED:         1 if M holds >=1 issue (open OR closed), else 0
+# OPEN_BLOCKERS: open release-blocker issues in M   (used when LABEL_EXISTS=1)
+# OPEN_ISSUES:   open issues in M, any label        (used when LABEL_EXISTS=0, the fallback)
+# CANCELED:      1 if a release-blocker in M is closed as NOT_PLANNED, else 0
+VERDICT="$(bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-ready \
+  "$LABEL_EXISTS" "$ARMED" "$OPEN_BLOCKERS" "$OPEN_ISSUES" "$CANCELED")" \
   || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
 ```
 
@@ -243,6 +246,10 @@ empty result (a truncated or failed list must not look like "no open issues").
 ```bash
 command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
 gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated"; exit 1; }
+# Resolve the repo slug ONCE here; later steps (the in-flight check in step 6, the destination
+# report) reuse "$REPO" rather than each re-running `gh repo view`.
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
+  || { echo "ERROR: cannot resolve the current repo"; exit 1; }
 # Scratch for the roadmap body goes to a TEMP file, never the repo. /roadmap runs in arbitrary
 # repos, many of which don't gitignore .claude/state/ — writing there would leave untracked
 # files and dirty the worktree before the next implementation batch.
@@ -418,18 +425,23 @@ open-issue and open-PR sets **once** and filter locally, rather than spending tw
 round-trips per member:
 
 ```bash
-REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 OPEN_ISSUES="$(gh issue list --state open --limit 200 --json number --jq '.[].number')"
 OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body,closingIssuesReferences)"
-# A member #N is still emittable iff it is OPEN and no open PR TARGETS it:
-#   printf '%s\n' "$OPEN_ISSUES" | grep -qx "$N"                   # must be open
-#   printf '%s' "$OPEN_PRS" | bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" pr-targets-issue "$N" "$REPO"
-#     exit 0 = an open PR targets #N  -> in-flight, freeze it
-#     exit 1 = none does              -> still emittable
-#     exit >=2 = ERROR (malformed JSON / missing jq) -> HARD STOP, never read as "not
-#                targeted"; a tooling failure that fell through would emit an issue someone
-#                is already implementing (fail-closed, per step 1's hard-stop rule).
+# A member #N is still emittable iff it is OPEN and no open PR TARGETS it. ($REPO is the slug
+# resolved once in step 1 — do not re-run `gh repo view` here.)
+printf '%s\n' "$OPEN_ISSUES" | grep -qx "$N" || continue      # closed since step 4 -> drop it
+printf '%s' "$OPEN_PRS" | bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" pr-targets-issue "$N" "$REPO"
+case "$?" in
+  0) : ;;   # an open PR targets #N -> in-flight: freeze the WHOLE bundle, skip it
+  1) : ;;   # none does             -> still emittable
+  *) echo "ERROR: in-flight check failed for #$N — hard stop"; exit 1 ;;
+esac
 ```
+
+**A failed targeting check is a hard stop, never a negative.** Exit `>=2` means the predicate
+could not answer (malformed JSON, missing `jq`) — treating that as "no PR targets this" would
+emit an issue someone is already implementing, so stop and surface it, exactly as step 1
+requires for any `gh` error.
 
 **Freeze only on a PR that actually targets the issue.** "Targets" is the union of the PR's
 **linked-issue set** (`closingIssuesReferences` — GitHub's own computed set, from a closing
@@ -477,7 +489,7 @@ Derive `N` live and **exactly** each run — no page-cap truncation — and excl
 (which itself may carry LABEL) **in the query**, not by post-filtering:
 
 ```bash
-REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+# "$REPO" is the slug resolved once in step 1 — do not re-resolve it here.
 # Omit the line unless the label actually exists — exact match, 404 => absent (NOT an error).
 if gh api "repos/$REPO/labels/$LABEL" >/dev/null 2>&1; then
   # Search API total_count is exact at any size; `-label:roadmap` drops the roadmap artifact.

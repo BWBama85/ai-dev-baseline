@@ -6,8 +6,8 @@ Manual, end-to-end acceptance for the `/roadmap` workflow (issue #45).
 issues, milestones, labels and PRs through `gh`, and it reads *and rewrites* a GitHub issue as
 its artifact. The parts that can be pinned in a pure unit test are the two load-bearing
 decisions — in-flight targeting and release readiness — and those are extracted into
-`scripts/lib/roadmap-lib.sh` and tested offline by `scripts/check-roadmap.sh` (90 assertions,
-wired into `selfcheck` + CI). Everything **else** in the list below is behavior over live
+`scripts/lib/roadmap-lib.sh` and tested offline by `scripts/check-roadmap.sh`, wired into
+`selfcheck` + CI. Everything **else** in the list below is behavior over live
 tracker state; this document is its acceptance script.
 
 Run it in a **scratch repo**, never a real one — several scenarios require closing issues,
@@ -207,7 +207,9 @@ Set `<!-- release-milestone: Next release -->` on the artifact.
       the milestone → **unmet**; with **0** → **met**. Non-blocker open issues do not block a cut.
 - [ ] **Fallback** (label **absent**, 404): readiness is `0 open issues in the milestone`.
 - [ ] Mode is keyed off label **existence**, never the live count — closing the last blocker must
-      not flip the repo from blocker-mode to fallback.
+      not flip the repo from blocker-mode to fallback. *(The predicate half of this is automated:
+      `check-roadmap.sh` asserts the same counts yield opposite verdicts on `label_exists` alone.
+      What is verified here is that the workflow reports label existence faithfully.)*
 - [ ] **Canceled requirement:** close a `release-blocker` in the milestone as `not planned` →
       the cut is **withheld** (`held`), the row is recorded in `Reconcile flags` as
       `owner-review`, and the same state yields the same result on every run.

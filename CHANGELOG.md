@@ -29,7 +29,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   only for frontmatter/render parity — none of its actual behavior. Its two load-bearing decisions are
   now extracted into a shared library (`roadmap-lib.sh`: `pr-targets-issue` and `release-ready`, both
   **pure** — they take already-fetched JSON/arguments and never call `gh`, so the workflow's network
-  shape is unchanged) and pinned by **90 offline assertions** wired into `selfcheck` + CI: the #69
+  shape is unchanged) and pinned by an **offline regression suite** wired into `selfcheck` + CI: the #69
   regression cases, word-boundary and cross-repo safety, null/empty/malformed shapes, the fail-closed
   error band, the four-way readiness verdict (`unarmed`/`unmet`/`held`/`met`) including blocker-mode vs
   fallback and the `NOT_PLANNED` withhold, determinism, and a **drift guard** proving the workflow still

@@ -12,30 +12,10 @@
 # batch, exactly as before — and pipes the result here. That keeps the network shape unchanged
 # and makes every predicate hermetically testable with a fixture.
 #
-# --- in-flight targeting (#69) -----------------------------------------------------------
-# A bundle member is frozen as "in-flight" only when an open PR ACTUALLY TARGETS it. The old
-# test matched any `#N` substring in a PR body, so a passing `Refs #69` or prose ("similar to
-# #69") froze a genuinely-ready issue indefinitely — contradicting the skill's own rule that
-# `Refs #N` is a cross-reference, NOT an edge. Targeting is now the union of:
-#   1. the PR's linked-issue set (`closingIssuesReferences`) — GitHub's OWN computed set, from
-#      closing keywords or a manual link. Numeric, so `#7` can never match `#70`.
-#   2. a tightly-scoped closing-keyword scan of the PR body (close/closes/closed, fix/fixes/
-#      fixed, resolve/resolves/resolved — GitHub's exact keyword list, case-insensitive,
-#      followed by optional whitespace/colon and `#N` at a word boundary).
-# (2) is not redundant: GitHub only auto-links closing keywords on a PR targeting the DEFAULT
-# branch, so a stacked PR into a feature branch has an empty closingIssuesReferences while its
-# body still declares intent to close. Freezing it is the conservative, correct read — the
-# point of the freeze is "someone is already implementing this."
-#
-# Cross-repo safety: closingIssuesReferences entries carry their own repository, and GitHub
-# supports cross-repo closing links (`owner/repo#N`). Matching a bare number would let
-# `other/repo#69` freeze THIS repo's #69, so a repo slug is required and both owner and name
-# must match. Body-keyword matches are same-repo by construction (a bare `#N` in a body always
-# means this repo; a cross-repo `owner/repo#N` mention is deliberately NOT matched).
-#
-# --- release readiness (#71/#27) ----------------------------------------------------------
-# The release-goal convention's readiness predicate, factored out of the workflow prose so its
-# four-way outcome is pinned by tests rather than re-derived in prose every run.
+# WHAT each predicate means — the targeting rules, the `Refs #N` carve-out, and the readiness
+# verdicts — is documented once, for the agent that executes it, in `base/workflows/roadmap.md`
+# step 6. This header documents the CONTRACT (arguments, stdin shape, exit status); the
+# per-function comments below note only what the code itself cannot show.
 #
 # EXIT STATUS IS FAIL-CLOSED. Every subcommand distinguishes a real answer from a broken input:
 #   0  — yes / the answer is "targeted"
@@ -47,7 +27,7 @@
 #
 # Usage:
 #   roadmap-lib.sh pr-targets-issue <issue-number> <owner/repo>   # PR JSON on stdin
-#   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <canceled 0|1>
+#   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>
 #   roadmap-lib.sh -h | --help
 #
 # `pr-targets-issue` stdin is the output of:
@@ -87,20 +67,20 @@ is_uint() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 # Exit 0 iff some open PR targets issue <n> in repo <slug>; 1 if none does; 2 on bad input.
 cmd_pr_targets_issue() {
   local n="${1-}" slug="${2-}" json rc
-  is_uint "$n" || die "pr-targets-issue: issue number must be a positive integer (got '${n-}')"
+  is_uint "$n" || die "pr-targets-issue: issue number must be a positive integer (got '$n')"
   # The slug is required (never defaulted from `gh repo view`): this library must stay pure,
   # and a silently-wrong repo would reintroduce the cross-repo false freeze it exists to stop.
   case "$slug" in
     */*) : ;;
-    *)   die "pr-targets-issue: repo slug must be OWNER/REPO (got '${slug-}')" ;;
+    *)   die "pr-targets-issue: repo slug must be OWNER/REPO (got '$slug')" ;;
   esac
   command -v jq >/dev/null 2>&1 || die "pr-targets-issue: jq is required"
 
   json="$(cat)"
   # An empty read is the "no open PRs" case, not a malformed one — `gh pr list` on an empty
   # set prints `[]`, but a caller piping from an empty capture is treated identically.
-  # Whitespace is stripped with `tr` (not a ${var//} bash-4 expansion) to stay bash-3.2-safe.
-  if [ -z "$(printf '%s' "$json" | tr -d '[:space:]')" ]; then return 1; fi
+  # A `case` glob does this with no subshell and no bash-4 expansion (bash-3.2 safe).
+  case "$json" in *[![:space:]]*) : ;; *) return 1 ;; esac
 
   # One jq program does both halves of the union. The issue number and slug are passed as
   # typed --arg/--argjson values, never interpolated into the program text, so a slug with
@@ -110,20 +90,19 @@ cmd_pr_targets_issue() {
   # keyword a standalone word — without it "precloses #12" / "unfixes #12" would match inside a
   # longer word and re-introduce the very over-match this fix removes. `[ \t]*:?[ \t]*` allows
   # the "Closes: #12" form; `(?![0-9])` stops `#7` matching `#70`; `"i"` is case-insensitive.
-  # test() is applied to a NON-NULL body only (a PR body can be null, which test() rejects).
   printf '%s' "$json" | jq -e --argjson n "$n" --arg slug "$slug" '
-    def targets_by_link:
-      (.closingIssuesReferences // [])
-      | any(
-          .number == $n
-          and ((.repository.owner.login // "") + "/" + (.repository.name // "")) == $slug
-        );
-    def targets_by_keyword:
-      ((.body // "") | type == "string")
-      and ((.body // "")
-           | test("\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[ \t]*:?[ \t]*#" + ($n|tostring) + "(?![0-9])"; "i"));
+    # Guard the SHAPE first: a non-array (an object, a string) must raise, not quietly return
+    # false — a fail-open "no PR targets this" is the outcome this predicate exists to prevent.
     if type != "array" then error("not an array") else . end
-    | any(.[]; targets_by_link or targets_by_keyword)
+    | any(.[];
+        # (1) the PR linked-issue set, matched on BOTH number and repository.
+        ((.closingIssuesReferences // [])
+         | any(.number == $n
+               and ((.repository.owner.login // "") + "/" + (.repository.name // "")) == $slug))
+        # (2) a closing keyword in the body (`// ""` covers a null body, which test() rejects).
+        or ((.body // "")
+            | test("\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[ \t]*:?[ \t]*#" + ($n|tostring) + "(?![0-9])"; "i"))
+      )
   ' >/dev/null 2>&1
   rc=$?
   # jq -e: 0 = true, 1 = false/null, >1 = a jq error (malformed JSON, non-array input). Map
@@ -138,13 +117,20 @@ cmd_pr_targets_issue() {
 # --- release-ready ------------------------------------------------------------------------
 # Print the readiness verdict for the active release milestone and exit 0 (a computed verdict
 # is a success; only bad input is an error). Arguments, in order:
-#   <label-exists>   1 = the release-blocker label EXISTS in the repo, 0 = it does not (404).
-#                    Keyed off label EXISTENCE, never the live count, so closing the last
-#                    blocker never flips the repo from blocker-mode to fallback mode.
+#   <label-exists>   1 = the `release-blocker` label EXISTS in the repo, 0 = it does not (404).
+#                    This SELECTS THE MODE, and it is keyed off label EXISTENCE, never a live
+#                    count — so closing the last blocker can never flip the repo from
+#                    blocker-mode to fallback mode (which would silently raise the bar from
+#                    "no blockers left" to "no issues left" exactly when a release came due).
 #   <armed>          1 = the milestone holds >=1 issue (open or closed), 0 = it is empty.
-#   <open-blockers>  in blocker-mode: open release-blocker issues IN the milestone.
-#                    in fallback mode (label absent): open issues in the milestone.
-#   <canceled>       1 = a release-blocker in the milestone is closed as NOT_PLANNED.
+#   <open-blockers>  open `release-blocker` issues IN the milestone. Used in blocker-mode.
+#   <open-issues>    open issues in the milestone (any label). Used in fallback mode.
+#   <canceled>       1 = a `release-blocker` in the milestone is closed as NOT_PLANNED.
+#
+# BOTH counts are passed and the LIBRARY selects between them. The caller could equally well
+# pass one pre-selected count, but then the mode rule above would live in prose an agent
+# re-derives every run, and could only be checked by hand; taking both makes it executable and
+# lets scripts/check-roadmap.sh pin it.
 #
 # Verdicts, in precedence order (first match wins — every input maps to exactly one):
 #   unarmed — the milestone has no requirements yet. Neither ready nor "roadmap complete";
@@ -156,26 +142,29 @@ cmd_pr_targets_issue() {
 #             self-clearing on a real tracker edit (reopen / unlabel / drop from the milestone).
 #   met     — armed, satisfied, nothing canceled → emit the release command.
 #
-# Precedence rationale for the two combinations the plan review flagged:
-#   unarmed + canceled     → unarmed. An empty milestone has nothing to cut regardless.
+# Precedence rationale for the combinations that are not self-evident:
+#   unarmed + canceled       → unarmed. An empty milestone has nothing to cut regardless.
 #   canceled + open blockers → unmet. The open blockers already withhold the cut, and reporting
-#                            "unmet" keeps the operator building; the canceled row is still
-#                            recorded in the artifact's Reconcile flags by the workflow.
+#                              "unmet" keeps the operator building; the canceled row is still
+#                              recorded in the artifact's Reconcile flags by the workflow.
+#   canceled in FALLBACK     → still `held`. With no `release-blocker` label the workflow cannot
+#                              produce a canceled blocker, so this combination should not arise
+#                              from a real tracker; if a caller reports one anyway, withholding
+#                              is the safe read (never invent a cut from a contradictory input).
 cmd_release_ready() {
-  local label_exists="${1-}" armed="${2-}" open_count="${3-}" canceled="${4-}"
-  [ "$#" -eq 4 ] || die "release-ready: needs exactly 4 args: <label-exists 0|1> <armed 0|1> <open-blockers N> <canceled 0|1>"
+  [ "$#" -eq 5 ] || die "release-ready: needs exactly 5 args: <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>"
+  local label_exists="$1" armed="$2" open_blockers="$3" open_issues="$4" canceled="$5" count
   case "$label_exists" in 0|1) : ;; *) die "release-ready: <label-exists> must be 0 or 1 (got '$label_exists')" ;; esac
   case "$armed"        in 0|1) : ;; *) die "release-ready: <armed> must be 0 or 1 (got '$armed')" ;; esac
   case "$canceled"     in 0|1) : ;; *) die "release-ready: <canceled> must be 0 or 1 (got '$canceled')" ;; esac
-  is_uint "$open_count" || die "release-ready: <open-blockers> must be a non-negative integer (got '$open_count')"
+  is_uint "$open_blockers" || die "release-ready: <open-blockers> must be a non-negative integer (got '$open_blockers')"
+  is_uint "$open_issues"   || die "release-ready: <open-issues> must be a non-negative integer (got '$open_issues')"
 
-  # label_exists selects WHICH count the caller passed (blocker-mode vs fallback); the
-  # predicate itself is the same "is the count zero" test either way. It is validated and
-  # documented rather than ignored so the workflow and the tests agree on the contract.
-  : "$label_exists"
+  # THE MODE SELECTION — the one thing this argument is for.
+  if [ "$label_exists" -eq 1 ]; then count="$open_blockers"; else count="$open_issues"; fi
 
   if [ "$armed" -eq 0 ]; then printf 'unarmed\n'; return 0; fi
-  if [ "$open_count" -gt 0 ]; then printf 'unmet\n'; return 0; fi
+  if [ "$count" -gt 0 ]; then printf 'unmet\n'; return 0; fi
   if [ "$canceled" -eq 1 ]; then printf 'held\n'; return 0; fi
   printf 'met\n'
 }

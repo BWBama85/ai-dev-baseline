@@ -52,8 +52,12 @@ targets() {
   printf '%s' "$json" | bash "$RL" pr-targets-issue "$n" "$slug" >/dev/null 2>&1
   printf '%s' "$?"
 }
-# ready <4 args> — run the readiness predicate, echo its stdout verdict.
-ready() { bash "$RL" release-ready "$1" "$2" "$3" "$4" 2>/dev/null; }
+# ready <5 args> — run the readiness predicate, echo its stdout verdict.
+# Args: <label-exists> <armed> <open-blockers> <open-issues> <canceled>
+ready() { bash "$RL" release-ready "$1" "$2" "$3" "$4" "$5" 2>/dev/null; }
+# run <subcommand> <args...> — capture combined output + status into OUT/RC_ (one capture idiom
+# for every non-stdin call, so `2>&1` handling can't drift between call sites).
+run() { OUT="$(bash "$RL" "$@" 2>&1)"; RC_=$?; }
 
 # ============================================================================================
 # 1. IN-FLIGHT TARGETING (#69) — the regression the bug was filed for
@@ -160,58 +164,68 @@ eq "$(targets 69 "$(arr "$(pr 100 '"x"' "$(arr "$(ref 69)")")")" '.*/.*')" 1 \
 # 2. RELEASE READINESS (#71/#27 predicate, scenarios from the #45 owner comment)
 # ============================================================================================
 
+# Arg order throughout: <label-exists> <armed> <open-blockers> <open-issues> <canceled>
+
 # --- 2a. armed guard: an empty milestone is neither ready nor complete ----------------------
-eq "$(ready 1 0 0 0)" unarmed "empty milestone (armed=0) => unarmed, never a cut"
-eq "$(ready 0 0 0 0)" unarmed "unarmed in fallback mode too"
+eq "$(ready 1 0 0 0 0)" unarmed "empty milestone (armed=0) => unarmed, never a cut"
+eq "$(ready 0 0 0 0 0)" unarmed "unarmed in fallback mode too"
 
 # --- 2b. blocker-mode (label EXISTS): met iff 0 open release-blockers in the milestone ------
-eq "$(ready 1 1 3 0)" unmet "blocker-mode with 3 open blockers => unmet"
-eq "$(ready 1 1 1 0)" unmet "blocker-mode with 1 open blocker => unmet"
-eq "$(ready 1 1 0 0)" met   "blocker-mode with 0 open blockers => met"
+eq "$(ready 1 1 3 9 0)" unmet "blocker-mode with 3 open blockers => unmet"
+eq "$(ready 1 1 1 9 0)" unmet "blocker-mode with 1 open blocker => unmet"
+eq "$(ready 1 1 0 9 0)" met   "blocker-mode with 0 open blockers => met (open non-blockers roll over)"
 
 # --- 2c. fallback (label ABSENT/404): met iff 0 open issues in the milestone ----------------
-eq "$(ready 0 1 2 0)" unmet "fallback mode with 2 open issues => unmet"
-eq "$(ready 0 1 0 0)" met   "fallback mode with 0 open issues => met"
+eq "$(ready 0 1 0 2 0)" unmet "fallback mode with 2 open issues => unmet"
+eq "$(ready 0 1 0 0 0)" met   "fallback mode with 0 open issues => met"
+
+# --- 2b/2c-bis. MODE SELECTION is keyed off label EXISTENCE, never a live count -------------
+# The load-bearing rule: the same counts must yield OPPOSITE verdicts depending only on whether
+# the label exists. Previously this could only be checked by hand (a manual acceptance
+# checkbox) because the predicate ignored the flag; passing both counts makes it executable.
+eq "$(ready 1 1 0 5 0)" met   "label EXISTS: 5 open non-blockers do NOT block the cut"
+eq "$(ready 0 1 0 5 0)" unmet "label ABSENT: the same 5 open issues DO block the cut"
+eq "$(ready 1 1 4 0 0)" unmet "label EXISTS: 4 open blockers block, even with 0 counted issues"
+eq "$(ready 0 1 4 0 0)" met   "label ABSENT: the blocker count is IGNORED (fallback reads issues)"
 
 # --- 2d. NOT_PLANNED-canceled blocker withholds the cut for owner review --------------------
-eq "$(ready 1 1 0 1)" held "count satisfied BUT a canceled blocker => held (owner review)"
-eq "$(ready 0 1 0 1)" held "held applies in fallback mode too"
+eq "$(ready 1 1 0 0 1)" held "count satisfied BUT a canceled blocker => held (owner review)"
+eq "$(ready 0 1 0 0 1)" held "held applies in fallback mode too (contradictory input => withhold)"
 
 # --- 2e. precedence — every input maps to exactly one verdict, deterministically ------------
-eq "$(ready 1 0 0 1)" unarmed "unarmed outranks canceled (nothing to cut in an empty set)"
-eq "$(ready 1 1 2 1)" unmet   "open blockers outrank canceled (still building)"
+eq "$(ready 1 0 0 0 1)" unarmed "unarmed outranks canceled (nothing to cut in an empty set)"
+eq "$(ready 1 1 2 0 1)" unmet   "open blockers outrank canceled (still building)"
 
-# --- 2f. determinism: the same inputs yield the same verdict on repeat ----------------------
-# #45 calls out determinism explicitly; a verdict that varied run to run would make /roadmap's
-# "two runs, no tracker change => identical emit" contract unprovable.
-for args in "1 1 0 0" "1 1 0 1" "1 0 0 0" "1 1 5 0" "0 1 0 0"; do
-  # shellcheck disable=SC2086  # deliberate word-split of the 4-arg fixture string
-  a="$(ready $args)"; b="$(ready $args)"; c="$(ready $args)"
-  eq "$a$b$c" "$a$a$a" "release-ready [$args] is deterministic across 3 runs"
-done
-# The targeting predicate must be deterministic too (same fixture, same answer).
+# --- 2f. determinism (#45) ------------------------------------------------------------------
+# Both predicates are pure functions of their inputs — no clock, RNG, network, or filesystem
+# read — which is what makes /roadmap's "two runs, no tracker change => identical emit" contract
+# reachable. The verdict table above IS the determinism proof for release-ready (a fixed input
+# is asserted against a fixed expected verdict), so re-running it and comparing it to itself
+# would add no distinct failure mode. For the targeting predicate, which parses external JSON,
+# assert repeat-invocation stability explicitly on one mixed fixture.
 fx="$(arr "$(pr 100 '"Refs #69"' '[]')" "$(pr 101 '"Closes #45"' "$(arr "$(ref 45)")")")"
 eq "$(targets 69 "$fx")$(targets 69 "$fx")" "11" "pr-targets-issue is deterministic (negative)"
 eq "$(targets 45 "$fx")$(targets 45 "$fx")" "00" "pr-targets-issue is deterministic (positive)"
+eq "$(ready 1 1 5 0 0)" unmet "an unlisted tuple still lands on exactly one verdict"
 
 # --- 2g. FAIL-CLOSED on bad readiness input -------------------------------------------------
 # A fabricated "met" from a bad count would cut a release that isn't ready — the worst failure
 # mode in the whole convention. Every malformed argument must exit >=2 with NO verdict printed.
-rr() { OUT="$(bash "$RL" release-ready "$@" 2>&1)"; RC_=$?; }
-rr 1 1 x 0;   eq "$RC_" 2 "non-numeric count is an ERROR"; has "$OUT" "non-negative integer" "count error names the field"
-rr 1 1 -1 0;  eq "$RC_" 2 "negative count is an ERROR"
-rr 2 1 0 0;   eq "$RC_" 2 "label-exists=2 is an ERROR";    has "$OUT" "must be 0 or 1" "flag error names the constraint"
-rr 1 2 0 0;   eq "$RC_" 2 "armed=2 is an ERROR"
-rr 1 1 0 2;   eq "$RC_" 2 "canceled=2 is an ERROR"
-rr 1 1 0;     eq "$RC_" 2 "too few args is an ERROR";      has "$OUT" "exactly 4" "arity error states the arity"
-rr 1 1 0 0 0; eq "$RC_" 2 "too many args is an ERROR"
+run release-ready 1 1 x 0 0;   eq "$RC_" 2 "non-numeric blocker count is an ERROR"; has "$OUT" "non-negative integer" "count error names the field"
+run release-ready 1 1 0 x 0;   eq "$RC_" 2 "non-numeric issue count is an ERROR"
+run release-ready 1 1 -1 0 0;  eq "$RC_" 2 "negative count is an ERROR"
+run release-ready 2 1 0 0 0;   eq "$RC_" 2 "label-exists=2 is an ERROR";  has "$OUT" "must be 0 or 1" "flag error names the constraint"
+run release-ready 1 2 0 0 0;   eq "$RC_" 2 "armed=2 is an ERROR"
+run release-ready 1 1 0 0 2;   eq "$RC_" 2 "canceled=2 is an ERROR"
+run release-ready 1 1 0 0;     eq "$RC_" 2 "too few args is an ERROR";    has "$OUT" "exactly 5" "arity error states the arity"
+run release-ready 1 1 0 0 0 0; eq "$RC_" 2 "too many args is an ERROR"
 hasnt "$OUT" "met" "an errored readiness call never prints a verdict"
 
 # --- 2h. dispatch surface -------------------------------------------------------------------
-OUT="$(bash "$RL" -h 2>&1)";     RC_=$?; yes "$RC_" "-h exits 0"; has "$OUT" "roadmap-lib.sh" "-h prints usage"
-OUT="$(bash "$RL" --help 2>&1)"; RC_=$?; yes "$RC_" "--help exits 0"
-OUT="$(bash "$RL" 2>&1)";        RC_=$?; eq "$RC_" 2 "no subcommand is an ERROR"
-OUT="$(bash "$RL" bogus 2>&1)";  RC_=$?; eq "$RC_" 2 "unknown subcommand is an ERROR"
+run -h;     yes "$RC_" "-h exits 0"; has "$OUT" "roadmap-lib.sh" "-h prints usage"
+run --help; yes "$RC_" "--help exits 0"
+run;        eq "$RC_" 2 "no subcommand is an ERROR"
+run bogus;  eq "$RC_" 2 "unknown subcommand is an ERROR"
 has "$OUT" "unknown subcommand" "unknown subcommand names itself"
 
 # ============================================================================================
@@ -230,17 +244,22 @@ has "$wf" '{{ROADMAP_LIB}} pr-targets-issue' \
   "workflow delegates in-flight targeting to the shared predicate"
 has "$wf" '{{ROADMAP_LIB}} release-ready' \
   "workflow delegates release readiness to the shared predicate"
-has "$wf" 'exit >=2' \
-  "workflow documents the fail-closed hard-stop band"
+has "$wf" 'in-flight check failed' \
+  "workflow hard-stops the run when the targeting predicate cannot answer (fail-closed)"
+has "$wf" 'A failed targeting check is a hard stop, never a negative.' \
+  "workflow states the fail-closed rule as an imperative, not only as a snippet comment"
+has "$wf" 'readiness predicate failed' \
+  "workflow hard-stops the run when the readiness predicate fails"
 
-# Every rendered agent skill must carry the resolved helper path (not the raw placeholder), so
-# a build that forgot the new MAP entry fails here as well as in build-drift.
+# Every rendered agent skill must carry the RESOLVED helper path. check-workflow-render.sh
+# proves {{ROADMAP_LIB}} substitutes correctly against a synthetic fixture and that no committed
+# skill ships an unresolved `{{`; neither of those reads the committed ROADMAP skill for this
+# path, so assert it here — that is what catches a rebuild that dropped the delegation.
 for a in claude codex gemini; do
   sk="$ROOT/agents/$a/skills/roadmap/SKILL.md"
   if [ -f "$sk" ]; then
-    body="$(cat "$sk")"
-    has   "$body" "\$HOME/.$a/scripts/lib/roadmap-lib.sh" "$a skill resolves {{ROADMAP_LIB}} to its own install path"
-    hasnt "$body" '{{ROADMAP_LIB}}'                        "$a skill has no unresolved {{ROADMAP_LIB}}"
+    has "$(cat "$sk")" "\$HOME/.$a/scripts/lib/roadmap-lib.sh" \
+        "$a roadmap skill resolves {{ROADMAP_LIB}} to its own install path"
   else
     bad "$a roadmap SKILL.md is missing"
   fi

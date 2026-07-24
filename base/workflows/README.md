@@ -71,6 +71,7 @@ or `/` maps cleanly. All three columns are implemented (`scripts/build.sh`'s
 | `{{STATE_DIR}}`         | per-workflow scratch/state dir (no trailing slash)  | `.claude/state`                                     | `.codex/state`                                     | `.gemini/state`                                    |
 | `{{GATE_RUNNER}}`       | quality-gate runner command **prefix**              | `bash "$HOME/.claude/scripts/lib/project-gates.sh"` | `bash "$HOME/.codex/scripts/lib/project-gates.sh"` | `bash "$HOME/.gemini/scripts/lib/project-gates.sh"` |
 | `{{ROLE_DISPATCH}}`     | role-resolver/dispatcher command **prefix**         | `bash "$HOME/.claude/scripts/lib/role-dispatch.sh"` | `bash "$HOME/.codex/scripts/lib/role-dispatch.sh"` | `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh"` |
+| `{{ROADMAP_LIB}}`       | `/roadmap` decision-predicate command **prefix**    | `bash "$HOME/.claude/scripts/lib/roadmap-lib.sh"`   | `bash "$HOME/.codex/scripts/lib/roadmap-lib.sh"`   | `bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh"`   |
 | `{{CURRENT_AGENT}}`     | the agent token this skill is rendered for          | `claude`                                            | `codex`                                            | `gemini`                                           |
 | `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        | `update_plan`                                      | `Create`                                           |
 

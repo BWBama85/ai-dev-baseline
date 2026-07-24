@@ -56,7 +56,7 @@ Args are {{ARGS}} and again {{ARGS}}.
 State file: {{STATE_DIR}}/fixture.json and dir {{STATE_DIR}}/.
 Run gates: {{GATE_RUNNER}} run
 Dispatch: {{ROLE_DISPATCH}} resolve review
-Roadmap predicate: {{ROADMAP_LIB}} release-ready 1 1 0 0
+Roadmap predicate: {{ROADMAP_LIB}} release-ready 1 1 0 0 0
 I am {{CURRENT_AGENT}}.
 Track work: {{SUBTASK_PRIMITIVE}} some sub-tasks.
 Literal shell: echo "$HOME" and a bare $ARGUMENTS token.
