@@ -78,20 +78,23 @@ milestone_field() {
     | awk -F'\t' -v t="$title" -v f="$field" '$1==t { print (f=="state" ? $2 : $3); exit }'
 }
 
-# ensure_milestone <title> — create it if absent. GitHub has no upsert: GET all states, POST
-# only a missing title, treat 422 (duplicate) as success, hard-fail anything else.
+# ensure_milestone <title> — create it if absent. GitHub has no upsert. Check OPEN first (so an
+# open milestone is never misreported as closed when a same-title closed one is listed ahead of
+# it), then a closed same-title one, else POST. Treat an HTTP 422 (duplicate title) as success,
+# hard-fail anything else.
 ensure_milestone() {
-  local title="$1" st
-  st="$(milestone_field "$title" all state)"
-  case "$st" in
-    open)   adb_info "  ok       milestone '$title' (already open)"; return 0 ;;
-    closed) adb_info "  note     milestone '$title' exists but is CLOSED — reopen it to use it"; return 0 ;;
-  esac
+  local title="$1"
+  if [ -n "$(milestone_field "$title" open number)" ]; then
+    adb_info "  ok       milestone '$title' (already open)"; return 0
+  fi
+  if [ "$(milestone_field "$title" all state)" = "closed" ]; then
+    adb_info "  note     milestone '$title' exists but is CLOSED — reopen it to use it"; return 0
+  fi
   local out rc
   out="$(gh api -X POST "repos/$(repo_slug)/milestones" -f title="$title" -f state=open 2>&1)"; rc=$?
   if [ "$rc" -eq 0 ]; then
     adb_info "  created  milestone '$title'"
-  elif printf '%s' "$out" | grep -q '422'; then
+  elif printf '%s' "$out" | grep -q 'HTTP 422'; then
     adb_info "  ok       milestone '$title' (already exists)"
   else
     echo "ERROR: could not create milestone '$title': $out" >&2
@@ -119,41 +122,24 @@ ensure_label() {
   fi
 }
 
-# seed_marker — if exactly one open roadmap-labelled issue exists and it lacks the
-# release-milestone marker, insert it after the artifact's first line. Explicit owner opt-in
-# (distinct from /roadmap bootstrap, which never writes it). Reports what it did; never a
-# hard failure (the marker can always be added by hand).
-seed_marker() {
-  local nums count num body
+# announce_marker — print the ONE activation step: add the release-milestone marker to the
+# roadmap artifact. We deliberately do NOT edit the artifact: /roadmap is its sole writer, and a
+# blind body rewrite risks clobbering the one artifact the whole loop depends on (and a bare
+# marker-presence grep would be fooled by the schema's own example comment). Read-only; names the
+# roadmap issue when exactly one exists.
+announce_marker() {
+  local nums count num
   nums="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number' 2>/dev/null)"
   count="$(printf '%s\n' "$nums" | sed '/^$/d' | wc -l | tr -d ' ')"
-  if [ "$count" = "0" ]; then
-    adb_info "  marker   no roadmap artifact yet — run /roadmap once, then add to its body:"
-    adb_info "             <!-- release-milestone: $RELEASE_MILESTONE -->"
-    return 0
-  fi
-  if [ "$count" != "1" ]; then
-    adb_info "  marker   $count roadmap-labelled issues found (ambiguous) — add by hand to the right one:"
-    adb_info "             <!-- release-milestone: $RELEASE_MILESTONE -->"
-    return 0
-  fi
-  num="$(printf '%s\n' "$nums" | sed '/^$/d' | head -n1)"
-  body="$(gh issue view "$num" --json body --jq .body 2>/dev/null)"
-  if printf '%s' "$body" | grep -q 'release-milestone:'; then
-    adb_info "  ok       marker already present on roadmap issue #$num"
-    return 0
-  fi
-  local tmp
-  tmp="$(mktemp -t roadmap-marker.XXXXXX)"
-  printf '%s\n' "$body" | awk -v m="<!-- release-milestone: $RELEASE_MILESTONE -->" \
-    'NR==1{print; print m; next} {print}' > "$tmp"
-  if gh issue edit "$num" --body-file "$tmp" >/dev/null 2>&1; then
-    adb_info "  seeded   release-milestone marker into roadmap issue #$num"
+  if [ "$count" = "1" ]; then
+    num="$(printf '%s\n' "$nums" | sed '/^$/d' | head -n1)"
+    adb_info "  marker   activate /roadmap release-readiness by adding this line to roadmap issue #$num:"
+  elif [ "$count" = "0" ]; then
+    adb_info "  marker   activate /roadmap release-readiness — run /roadmap once, then add to its body:"
   else
-    adb_info "  marker   could not edit roadmap issue #$num — add by hand:"
-    adb_info "             <!-- release-milestone: $RELEASE_MILESTONE -->"
+    adb_info "  marker   activate /roadmap release-readiness — add to the right roadmap issue ($count found):"
   fi
-  rm -f "$tmp"
+  adb_info "             <!-- release-milestone: $RELEASE_MILESTONE -->"
 }
 
 cmd_init() {
@@ -164,7 +150,7 @@ cmd_init() {
   ensure_milestone "$BACKLOG_MILESTONE" || rc=1
   ensure_label "$BLOCKER_LABEL"    "b60205" "Must-ship for the active release milestone (/roadmap readiness gate)" || rc=1
   ensure_label "$POSTDEPLOY_LABEL" "5319e7" "Can only happen after a release ships" || rc=1
-  seed_marker
+  announce_marker
   adb_info ""
   if [ "$rc" -ne 0 ]; then
     echo "release-convention: init finished with errors (see above)." >&2

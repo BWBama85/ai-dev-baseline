@@ -146,14 +146,17 @@ never turns on by coincidence: merely having a milestone named `Next release` is
 exactly as the `destination-label` gauge never enables itself. Stand the convention up with
 `baseline release init`; full docs in `docs/release-goal-convention.md`.
 
-**Activation (resolve the active milestone).** Read the marker's `NAME`. If absent or empty →
-**classic mode** (skip this whole section; output is byte-identical to a non-adopting repo). If
-present, resolve `NAME` live to the set of **open** milestones with that exact title:
+**Activation (resolve the active milestone).** Read the marker's `NAME`. If absent, empty, or the
+literal placeholder `NAME` (the schema's own example token, e.g. copied verbatim by bootstrap) →
+**classic mode** (skip this whole section; output is byte-identical to a non-adopting repo). This
+placeholder/empty carve-out is the same graceful degradation the `destination-label` opt-in uses,
+so a copied schema example never hard-stops a run. Otherwise resolve `NAME` live to the set of
+**open** milestones with that exact title:
 
 - **exactly one** → that milestone `M` is the active release milestone; release-readiness mode is on.
 - **zero or more than one** → **STOP and surface the mismatch** ("release-milestone marker names
   `NAME`, which matches N open milestones"). Never guess, and never silently fall back to classic —
-  a broken opt-in is an owner-fixable error, not a mode switch.
+  a marker naming a real-but-unresolvable milestone is an owner-fixable error, not a mode switch.
 
 **The readiness predicate (computed live every run, from a fresh `gh` read).** Let `M` be the
 active release milestone; always **exclude the roadmap issue itself**.
@@ -166,8 +169,14 @@ active release milestone; always **exclude the roadmap issue itself**.
    - **200 (label exists)** → readiness is met iff **0 open `release-blocker` issues in `M`**.
    - **404 (label absent)** → readiness is met iff **0 open issues in `M`** (fallback).
 3. **Canceled requirement.** A `release-blocker` in `M` closed as `NOT_PLANNED` was *canceled*,
-   not delivered — record it in the **Reconcile flags** (`owner-review`) and do **not** declare
-   readiness met while such a canceled blocker is unacknowledged (mirrors the `dep-canceled` rule).
+   not delivered. It is not "open", so step-2's count alone would treat it as satisfied — but an
+   abandoned must-have is an owner decision, not an automatic pass. Record it in the **Reconcile
+   flags** (`owner-review`) and **withhold the met-emission while it is present** — this stays
+   deterministic (the same tracker state yields the same "held for owner review" result on every
+   run) and it is not an infinite stall: it clears the moment the owner **explicitly adjusts the
+   roadmap** — reopens the blocker, removes the `release-blocker` label, or drops it from `M` — a
+   tracker change, exactly as the `dep-canceled` rule resolves "until the roadmap is explicitly
+   adjusted." Recording the flag is **not** self-acknowledgement; only a real tracker edit clears it.
 
 **Scoping is advancement-only.** Reconcile (step 4) still runs **backlog-wide** over every open
 non-roadmap issue — narrowing it would stop re-verifying whether `Backlog` issues already shipped.

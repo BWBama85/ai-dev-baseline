@@ -13,8 +13,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   `scripts/lib/release-convention.sh`, `bin/baseline`, `base/workflows/roadmap.md`, #27 + #71): an
   **opt-in** module that lets the workflow — not the operator — decide when a release is ready. `baseline
   release init` stands up the `Next release` (rolling) + `Backlog` (standing) milestones and the
-  `release-blocker` + `post-deploy` labels in a repo, idempotently, and seeds the activation marker on the
-  roadmap artifact. When a repo opts in (an explicit `<!-- release-milestone: NAME -->` marker on the
+  `release-blocker` + `post-deploy` labels in a repo, idempotently, and prints the activation marker to add to
+  the roadmap artifact (it never edits the artifact — /roadmap is its sole writer). When a repo opts in (an
+  explicit `<!-- release-milestone: NAME -->` marker on the
   roadmap issue — never coincidental milestone-name detection), `/roadmap` computes readiness live every
   run — **0 open `release-blocker` issues in the active milestone** (falling back to 0 open issues when the
   label doesn't exist), requiring an *armed* (non-empty) set and surfacing a `NOT_PLANNED`-canceled blocker

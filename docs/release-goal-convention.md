@@ -50,11 +50,12 @@ baseline release init
 This creates the `Next release` + `Backlog` milestones and the `release-blocker` +
 `post-deploy` labels in the current repo, **idempotently** — it creates only what is
 absent and never deletes or renames anything, so it is safe to re-run. It resolves the
-project repo from your `gh` remote (not the install-source clone). If a single
-`roadmap`-labelled issue exists, it also seeds the activation marker (below) into that
-artifact so `/roadmap` picks the convention up on its next run; otherwise it prints the
-marker for you to add. `baseline release status` reports which pieces are present and
-whether the convention is active, changing nothing.
+project repo from your `gh` remote (not the install-source clone). It then **prints** the
+one activation step — the `release-milestone` marker (below) to add to your roadmap
+artifact — but never edits the artifact itself: `/roadmap` is its sole writer, so seeding
+it here would risk clobbering the one issue the whole loop depends on. Adding that single
+marker line is the last step of opting in. `baseline release status` reports which pieces
+are present and whether the convention is active, changing nothing.
 
 Use a different release-milestone name with
 `baseline release init --release-name "v2.0"`.
