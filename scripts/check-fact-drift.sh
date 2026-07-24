@@ -104,4 +104,13 @@ for bot in chatgpt-codex-connector 'gemini-code-assist[bot]' gemini-code-assist 
     scripts/lib/role-dispatch.sh base/workflows/resolve-pr-threads.md
 done
 
+# --- FACT: release-goal convention label string (#27/#71) --------------------
+# The `release-blocker` label is load-bearing across three surfaces that MUST agree: the setup
+# helper CREATES it, the /roadmap workflow QUERIES it for the readiness predicate/gauge, and the
+# module doc DOCUMENTS it. A rename in one place that misses the others silently breaks readiness.
+# Pin the exact string (grep -F) so any divergence fails CI. (The milestone NAMES are deliberately
+# NOT pinned into the generic shared law — issues-and-scope.md stays convention-agnostic, #27.)
+fact release-blocker-label "fixed:release-blocker" -- \
+  docs/release-goal-convention.md base/workflows/roadmap.md scripts/lib/release-convention.sh
+
 check_result "canonical facts consistent across their consumers"

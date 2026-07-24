@@ -155,6 +155,11 @@ step "cleanup-enum"
 # Regression test for /cleanup's remote enumeration excluding the origin/HEAD symref (#38).
 if bash scripts/check-cleanup-enum.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "release-convention"
+# Offline unit tests for the release-goal convention helper (scripts/lib/release-convention.sh,
+# #27): dispatch, arg-parsing, usage, and the fail-loud gh guard before any gh call.
+if bash scripts/check-release-convention.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "baseline"
 # End-to-end tests for bin/baseline's currency classification (safety-critical: it
 # must never fast-forward over dirty/ahead/diverged/detached/non-default state).

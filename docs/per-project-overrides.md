@@ -98,9 +98,9 @@ HTML-comment directive blocks:
 <!-- adb:override anchor="file-issues-for-all-deferred-out-of-scope-work-mandatory" op="replace" -->
 ### 12. File issues (this project's milestone placement)
 
-Place a direct dependency of the current release goal in the `Next release`
-milestone; tangential / post-deploy work in `Backlog`. Never leave a new
-issue milestone-less.
+Default a discovery to `Backlog` so the frozen release set converges; only a
+genuine dependency of the current release goal goes into `Next release`.
+Never leave a new issue milestone-less.
 <!-- adb:end -->
 ```
 

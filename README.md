@@ -112,8 +112,8 @@ scripts/build.sh    renders base/practices → root docs, base/workflows → Cla
 templates/          the per-project agents.toml
 install.sh          global installer (per --agent, symlinks + wires gates)
 bin/agent-init      per-project role setup
-bin/baseline        keep the installed baseline current (git pull + self-heal)
-docs/               installation, roles, per-project overrides, adding an agent
+bin/baseline        keep the installed baseline current; also `baseline release init` (opt-in release-goal convention)
+docs/               installation, roles, per-project overrides, release-goal convention, adding an agent
 ```
 
 ## Status

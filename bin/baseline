@@ -11,6 +11,8 @@
 #   baseline update --check    # report currency only; make NO changes (for a hook)
 #   baseline skill-compose …   # compose a project's partial skill overrides (issue #22;
 #                              #   run 'baseline skill-compose -h' for its own usage)
+#   baseline release …         # set up the optional release-goal convention in this repo
+#                              #   (issue #27; run 'baseline release -h' for its own usage)
 #   baseline -h | --help
 #
 # `update` never touches unsafe state: it fast-forwards ONLY when the install-source
@@ -64,6 +66,16 @@ usage() { adb_usage "$0"; }
 if [ "${1:-}" = "skill-compose" ]; then
   shift
   exec bash "$REPO/scripts/lib/skill-compose.sh" "$@"
+fi
+
+# Delegate the release-goal convention setup to its library (issue #27). Like skill-compose it
+# operates on the PROJECT repo the user is in (resolved from the gh remote), NOT the
+# install-source clone, so it must dispatch BEFORE the wrong-clone guard below. It also
+# installs into ~/.<agent>/scripts/lib (the whole dir is symlinked), so it can be invoked
+# directly there too.
+if [ "${1:-}" = "release" ]; then
+  shift
+  exec bash "$REPO/scripts/lib/release-convention.sh" "$@"
 fi
 
 # --- discovery ---------------------------------------------------------------
@@ -254,7 +266,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ "$ACTION" != "update" ]; then
-  echo "baseline: expected a subcommand ('update' or 'skill-compose')" >&2; echo >&2; usage >&2; exit 2
+  echo "baseline: expected a subcommand ('update', 'skill-compose', or 'release')" >&2; echo >&2; usage >&2; exit 2
 fi
 
 # --- resolve the install-source clone ----------------------------------------

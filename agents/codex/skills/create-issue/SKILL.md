@@ -154,6 +154,27 @@ Title conventions:
 - If the issue is a class of bug, say so ("X: inconsistent flags, stale-PATH binary, prose-level fallback").
 - For spin-off follow-ups, reference the parent in the body, not the title.
 
+**Placement (release-goal convention, if the repo uses it).** Detect it the **same way
+`/roadmap` activates** — the single opt-in signal, so `/create-issue` never diverges from
+`/roadmap` on whether a repo has adopted the convention. That signal is the
+`<!-- release-milestone: NAME -->` marker on the `roadmap`-labelled issue (a real value, not
+the literal `NAME` placeholder), **not** the mere presence of milestones named `Next release`
+/ `Backlog` (which some repos have coincidentally):
+
+```bash
+# active iff the roadmap artifact carries a valued release-milestone marker
+gh issue list --label roadmap --state open --limit 50 --json body --jq '.[].body' \
+  | grep -Eq '<!--[[:space:]]*release-milestone:[[:space:]]*[^[:space:]>][^>]*-->' \
+  && ! gh issue list --label roadmap --state open --limit 50 --json body --jq '.[].body' \
+       | grep -Eq '<!--[[:space:]]*release-milestone:[[:space:]]*NAME[[:space:]]*-->'
+```
+
+When active, a newly *discovered* issue defaults to **`Backlog`** (`--milestone "Backlog"`) so
+the current release's requirement set stays frozen and converges; an issue only enters the
+active release milestone when the user deliberately says it is a requirement of *this* release.
+When the marker is absent (classic mode) the behavior is unchanged — omit the milestone or use
+whatever the repo already uses. See `docs/release-goal-convention.md`.
+
 Return the issue URL and a one-line summary of what was filed.
 
 ### 7. Offer follow-up handoff (optional)
@@ -180,6 +201,6 @@ If any axis in Step 3 surfaced a sibling bug or out-of-scope concern worth filin
 
 **Always ask first:**
 - `gh issue create` itself — present the final body and get explicit confirmation before filing. The user is the author of record; they sign off on the final text.
-- Adding labels, assignees, projects, or milestones beyond the default.
+- Adding labels, assignees, projects, or milestones beyond the default. **Exception:** when the repo uses the release-goal convention (detect it live — see Placement in Step 6), the **backlog** milestone is the *default* safe home for a newly discovered issue and needs no extra approval; only placing an issue *into* the active release milestone is a deliberate "this is a current-release requirement" decision that you surface.
 - Closing or editing existing issues from within this flow.
 - Filing sibling follow-up issues — present them as a list, let the user pick which ones to file.
