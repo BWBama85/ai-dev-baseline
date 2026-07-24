@@ -28,7 +28,7 @@ those. The rules below are specific to this repo's code.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors CI exactly
    (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
    cleanup-enum · baseline · precommit-gate · implement-gate · install-migration ·
-   install-guard · fact-drift · practice-index · install dry-run). Fix red at the root — never push and
+   install-guard · fact-drift · practice-index · release-role · install dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
 4. **Shell code must be portable and shellcheck-clean.** `bash`/POSIX, safe on macOS
    bash 3.2 (no `mapfile`, no `readlink -f`), passing
@@ -54,7 +54,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/lib/skill-compose.sh` | Partial skill-override composer — merges a project's `overrides.md` onto the installed base skill so a project carries deltas without forking the whole skill (#22); installs beside `common.sh` |
 | `scripts/lib/roadmap-lib.sh` | `/roadmap`'s two decision predicates — in-flight targeting (#69) + release readiness — factored out of the workflow prose so they are regression-testable offline (`scripts/check-roadmap.sh`); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
-| `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index) |
+| `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role) |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |
 | `docs/` | design-principles · philosophy · installation · roles · overrides · adding-an-agent · release-goal-convention · roadmap-acceptance |
 

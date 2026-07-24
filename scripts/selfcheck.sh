@@ -3,8 +3,8 @@
 #
 # Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter, workflow-render,
 # gate-detector/gates, common-lib, agent-init, cleanup-enum, baseline, precommit-gate,
-# implement-gate, install-migration, install-guard, fact-drift, practice-index, and an
-# install→uninstall dry-run into a throwaway HOME.
+# implement-gate, install-migration, install-guard, fact-drift, practice-index, release-role,
+# and an install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 
@@ -199,6 +199,12 @@ if bash scripts/check-fact-drift.sh; then echo "PASS"; else echo "FAIL"; fail=1;
 step "practice-index"
 # Every base/practices/*.md is listed in 00-index.md exactly once (no missing/stale rows).
 if bash scripts/check-practice-index.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "release-role"
+# #3's decision: release execution stays project-owned and no /release skill ships. A NEGATIVE
+# invariant no other check can express — build-drift/workflow-map would happily green-light a
+# newly added base/workflows/release.md.
+if bash scripts/check-release-role.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "install dry-run"
 FAKE="$(mktemp -d)"; ok=1

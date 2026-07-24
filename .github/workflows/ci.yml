@@ -383,6 +383,17 @@ jobs:
       - name: Every practice must be indexed exactly once in 00-index.md
         run: bash scripts/check-practice-index.sh
 
+  release-role:
+    name: release-role
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Release stays project-owned — no /release skill may ship (#3)
+        run: bash scripts/check-release-role.sh
+
   install-dry-run:
     name: install-dry-run
     runs-on: ubuntu-latest

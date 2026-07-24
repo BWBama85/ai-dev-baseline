@@ -118,5 +118,15 @@ show_role primary
 show_role gap_analysis
 show_role review
 show_role debug
+show_role issue_author
+show_role release
+echo ""
+# `debug`, `issue_author`, and `release` resolve correctly but no shipped workflow consumes them
+# yet — printing them without that caveat reads as "the baseline will do this for you." `release`
+# especially: the baseline ships no /release skill on purpose (#3), so the token names WHO would
+# cut a release in a project-owned skill you write.
+echo "Note: only \`gap_analysis\` and \`review\` are consumed by a shipped workflow"
+echo "      (/implement-issue). \`debug\`, \`issue_author\`, and \`release\` resolve for your"
+echo "      own skills to honor — notably \`release\`: the baseline ships no /release skill."
 echo ""
 echo "Done. See docs/roles-and-agents.md for how roles resolve and delegate."

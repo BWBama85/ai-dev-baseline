@@ -17,6 +17,14 @@ disallowed-tools: NotebookEdit
 
 # New CLI Release Review
 
+> **Not the command that cuts *your* release.** `/new-release` reviews an **upstream
+> CLI's** release (Claude Code · Codex · Antigravity) and applies the fallout to this
+> project. It never bumps a version, writes a changelog entry, tags, packages, or
+> deploys anything of yours. Cutting your own project's release is the **project-owned
+> `release` role** — a `/release` skill your repo supplies; the baseline ships none on
+> purpose (`base/roles.md`, issue #3). If you meant "ship our next version," stop: you
+> want `/release`, not this.
+
 Argument shape: `/new-release <cli> [version-or-source]`
 
 The first argument is **required** and selects which upstream CLI to review:
