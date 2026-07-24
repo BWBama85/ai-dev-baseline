@@ -57,8 +57,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   that *exist*, so a future `base/workflows/release.md` would render correctly and pass every gate,
   silently reversing #3. The lint asserts the **absence** (no release workflow source, no rendered
   release skill in any agent tree), the **presence** of the decision on all four user-facing surfaces,
-  the `/new-release` disambiguation in the source *and* in every agent's shipped skill, and the emit
-  contract (`/roadmap` still names `/release` and its `release-command` override). Like `fact-drift`
+  the `/new-release` disambiguation in the workflow source (and, via `build-drift`, in every agent's
+  shipped skill), and the emit contract (`/roadmap` still names `/release` and its `release-command`
+  override). Like `fact-drift`
   it is an allowlisted positive-presence check over small stable tokens, so rewording a paragraph
   never fails CI — dropping the claim does. `check-role-dispatch.sh` also gained `release` /
   `issue_author` resolution coverage (explicit value wins; unset falls back to `primary`, proven with

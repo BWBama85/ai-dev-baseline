@@ -89,10 +89,18 @@ and only a consumer makes it real. Your release skill resolves it and shells
 out when the resolved token is not the agent already driving:
 
 ```bash
-RELEASE_AGENT="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" resolve release)"
-if [ "$RELEASE_AGENT" != "claude" ]; then
-  printf '%s' "$RELEASE_PROMPT" \
-    | bash "$HOME/.claude/scripts/lib/role-dispatch.sh" invoke release
+RD="$HOME/.claude/scripts/lib/role-dispatch.sh"
+RELEASE_PROMPT="Cut the release for this repo: <your procedure here>."
+
+# Exit non-zero on an invalid manifest — do NOT let an unresolvable role fall through to a
+# branch. `resolve` prints the error itself; swallowing its status is the same silent-ignore
+# this whole section warns about.
+RELEASE_AGENT="$(bash "$RD" resolve release)" || exit 1
+
+if [ "$RELEASE_AGENT" = "claude" ]; then
+  : # Claude is already driving — run the release steps in-process.
+else
+  printf '%s' "$RELEASE_PROMPT" | bash "$RD" invoke release
 fi
 ```
 

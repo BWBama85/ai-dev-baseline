@@ -37,6 +37,11 @@
 # Usage: bash scripts/check-release-role.sh   (exit 0 = policy intact, 1 = violated)
 
 set -u
+# Group 1 detects a rendered release skill with a glob, so pathname expansion must be ON. A
+# caller with `set -f` (noglob) would leave the pattern literal, matching nothing, and the
+# absence check would pass while a real skill sat in the tree — a false GREEN, the one failure
+# mode a policy lint must never have. Force it on rather than trusting the invoking shell.
+set +f
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
@@ -83,9 +88,8 @@ done
 req_fixed templates/agents.toml 'installs no release skill' template-release-note
 
 # --- 3. DISAMBIGUATION: /new-release is not /release -------------------------------------------
-# The name collision is the reported UX bug (#3). The note must reach users, so assert it in the
-# SOURCE and in every agent's RENDERED skill — build-drift proves those match, this proves the
-# claim is in what actually ships.
+# The name collision is the reported UX bug (#3). Asserted on the source only — build-drift
+# carries it the rest of the way to every agent's shipped skill (see the header).
 # NOTE the backticks in the token. A bare `/release` would also match `/releases/latest` in the
 # `gh release view` / releases-URL prose further down this same workflow — so the note could be
 # deleted entirely and the assertion would still pass. The backtick-delimited code span is what
