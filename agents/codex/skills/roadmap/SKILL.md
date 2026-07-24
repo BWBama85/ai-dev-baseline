@@ -35,6 +35,11 @@ roadmap issue). It is `gh`-based and works in any repo with an issue tracker.
 - **It never asserts stale state.** Every PR / issue / label read is a fresh `gh` call at
   the moment of use (`base/practices/verify-before-asserting.md`), and the selected bundle
   is re-checked immediately before it is emitted.
+- **It never trusts a stored residual as truth.** An issue's done-ness is re-derived from
+  ground truth every run — its acceptance criteria vs the default branch, its comments, and
+  its linked/closing PRs — never read off the artifact's own note. A stored residual is a
+  *hint to re-verify*, so a still-open issue whose work already shipped elsewhere is caught
+  and surfaced, not emitted (`base/practices/verify-before-asserting.md`).
 
 ## The roadmap artifact (one prescribed home)
 
@@ -48,6 +53,9 @@ parse, and rewrite it deterministically:
 
 ```markdown
 <!-- ai-dev-baseline:roadmap:v1 -->
+<!-- destination-label: v1 -->
+<!-- ^ optional: when present AND the repo has that label, each run reports "v1: N blocker(s)
+     open" (step 6, "Destination report"). Delete the line to disable. -->
 # Build roadmap
 
 Order + branch-bundles + dependency edges. Milestone membership is **not** duplicated here
@@ -64,7 +72,8 @@ can't: the order to build in, which issues share a branch, and the blocking edge
 
 <!-- One row per branch-bundle: issues that share a subsystem/files → one branch, so a branch
      never edits the same file twice. `Issues` lists the members (this is the roadmap's own
-     grouping data, NOT milestone membership). `Status` ∈ ready | blocked | in-flight | done. -->
+     grouping data, NOT milestone membership).
+     `Status` ∈ ready | blocked | in-flight | tracker-only | done. -->
 
 | Bundle | Issues      | Subsystem      | Depends on | Status  |
 | ------ | ----------- | -------------- | ---------- | ------- |
@@ -79,13 +88,27 @@ can't: the order to build in, which issues share a branch, and the blocking edge
 
 - #39 depends on #32
 
+## Reconcile flags
+
+<!-- Open issues that reconcile (step 4) proved must NOT be emitted as ready, plus canceled
+     dependency edges. One row per issue, ordered by ascending issue number and deduped, so
+     identical runs render identically. `Kind` ∈ tracker-only | owner-review | dep-canceled.
+     `Evidence` is concise ground-truth proof (the satisfying PR / owning issue) with NO
+     volatile timestamps. `Action` is the owner step. Rows here are never bundled or emitted. -->
+
+| Issue | Kind         | Evidence                                       | Action                     |
+| ----- | ------------ | ---------------------------------------------- | -------------------------- |
+| #35   | tracker-only | acceptance shipped in PR #47; residual → open #48 | close #35 (superseded)  |
+
 ## Done (recent)
 
 - ~~#34~~ — merged (Wave-1 foundation)
 ```
 
-`Status` values: `ready` (all deps closed, no in-flight member), `blocked` (a dep is still
-open), `in-flight` (a member has an open PR), `done` (all members closed).
+`Status` values: `ready` (all deps closed, no in-flight member, **and ≥1 member still
+implementable**), `blocked` (a dep is still open), `in-flight` (a member has an open PR),
+`tracker-only` (every member's implementable acceptance is already satisfied — surfaced to the
+Reconcile flags, never emitted), `done` (all members closed).
 
 ## Steps
 
@@ -169,6 +192,42 @@ Reconciliation is deterministic — the same tracker state always produces the s
   proof — a PR may `Refs #N` and partially implement an issue that correctly stays open. Move
   a bundle whose every member is done to the `Done (recent)` list; drop closed members from a
   partially-done bundle.
+- **Verify implementable residual — from ground truth, never the stored note.** A still-OPEN
+  issue is **not** automatically implementable: its work may already have shipped even though
+  the issue is open (core landed under another PR, residual handed to a follow-up — the exact
+  case that made this skill recommend an already-satisfied issue). Run this classification on
+  **every** open non-roadmap issue — uniformly, not only the members of `ready` bundles; a
+  candidate that skips the check is the whole bug — reducing each to one of three states:
+  - **implementable** — its acceptance criteria are **not** yet satisfied on the default
+    branch and nothing proves they shipped elsewhere. Normal: it stays in its bundle and is
+    eligible to emit. (This is the ordinary case — an open issue whose work is genuinely still
+    to do stays implementable no matter what a stale note claims.)
+  - **tracker-only** — **positive proof** its implementable acceptance is already met: either
+    every acceptance criterion is satisfied on the default branch, **or** the residual was
+    explicitly handed to another **open** issue that independently owns it. Move it to the
+    **Reconcile flags** as `tracker-only` (record the satisfying PR / owning issue) and
+    recommend closing it — **never emit it as ready.**
+  - **owner-review** — signals suggest prior delivery but done-ness can't be cheaply or
+    confidently proven: the residual is only partially transferred or ambiguous, or the
+    hand-off target is missing / closed `NOT_PLANNED` / circular. Flag it as `owner-review` —
+    **never emit it as ready, and never guess** a no-op into a batch.
+
+  **Evidence precedence (ground truth, strongest first).** The artifact's own stored residual
+  is a *hint to re-verify, not proof*; a bare `Refs #N` or a stale comment can never by itself
+  establish done-ness — require positive proof:
+  1. the issue's acceptance checklist vs the **live default branch**, inspected **read-only**
+     (`git show origin/<default-branch>:<path>` / `gh api` — never a checkout, which the skill
+     must not do: it may only write the scratch body file);
+  2. **merged/closing** PRs that actually satisfy that acceptance (`Closes #N`, "landed in
+     PR #M") — a merged PR is proof only when it *meets the criteria*, not when it merely
+     mentions the issue;
+  3. the issue's comments and linked follow-up issues (an explicit deferral, e.g. "residual
+     tracked in #48").
+
+  When positive proof isn't cheaply available at (1)–(3), classify **owner-review**, never
+  implementable — an unverifiable candidate is surfaced, not silently emitted. A `tracker-only`
+  or `owner-review` classification removes the member from emission but **does not block** the
+  bundles behind it: other genuinely-ready bundles still advance (step 6).
 - **Slot new issues.** Any open issue not already in a bundle is placed into the right
   phase/bundle (by milestone + subsystem), never left orphaned. An unmilestoned issue is
   flagged and placed by inference — surfaced, never silently dropped.
@@ -177,8 +236,8 @@ Reconciliation is deterministic — the same tracker state always produces the s
   it — the dependent is now unblocked), but a prerequisite closed **as `NOT_PLANNED`** was
   *canceled*, which does **not** satisfy the dependent. Never silently drop a `NOT_PLANNED`
   edge — that would make the dependent bundle look unblocked when its prerequisite was
-  abandoned. Keep the edge and **flag it** ("dependency #N canceled — bundle B needs review")
-  until the roadmap is explicitly adjusted.
+  abandoned. Keep the edge and record it in the **Reconcile flags** section as `dep-canceled`
+  ("dependency #N canceled — bundle B needs review") until the roadmap is explicitly adjusted.
 - **Persist the grouping.** Bundles are written back to the artifact so the grouping is
   stable and reproducible across runs — not re-inferred (and re-shuffled) every time.
 
@@ -222,12 +281,37 @@ OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body)"
 #   printf '%s' "$OPEN_PRS" | jq -e --arg n "$N" 'any(.body|test("#"+$n+"\\b"))'  # must be empty
 ```
 
-Then output the batch and a one-line rationale:
+The freshness re-check is **not only** open/closed + open-PR status — **re-run the
+implementable-residual classification (step 4) on each selected member too**, because acceptance
+can land between reconcile and emit. Drop any member that is now `tracker-only` or `owner-review`
+to the Reconcile flags and emit only the members still classified `implementable`. If that empties
+the bundle, it is **not** a ready batch — skip to the next `ready` bundle (a flagged candidate
+never blocks a genuinely-ready bundle behind it) and **never emit a bundle with zero implementable
+members**.
+
+Then output the batch and a one-line rationale, prefixed by the destination line (below):
 
 ```
+v1: 1 blocker open
 Next: /implement-issue 5 19
 Why:  B1 (gates) — unblocked, no in-flight PR, foundational for M2.
 ```
+
+**Destination report (finish line) — configured, never hardcoded.** If the artifact carries a
+`<!-- destination-label: LABEL -->` marker **and** the repo actually has that label, prefix
+**every** run's output — the `Next:` batch above and the completion / all-blocked reports of
+step 7 alike — with the finish line:
+
+```
+LABEL: N blocker(s) open      # N = count of open issues carrying LABEL, excluding the roadmap issue
+```
+
+Count live each run (`gh issue list --label LABEL --state open --limit 200 --json number`); use
+singular `blocker` when `N == 1`, else `blockers`. When the count reaches **0**, report the
+destination reached (`LABEL: 0 blockers open — destination reached`). If the marker is absent or
+the label doesn't exist in the repo, **omit the line entirely** (no error): which label a repo
+counts toward is project-specific configuration that belongs in the artifact, not baked into this
+agent-neutral skill.
 
 ### 7. Completion & edge cases
 
@@ -236,6 +320,12 @@ Why:  B1 (gates) — unblocked, no in-flight PR, foundational for M2.
 - **Open issues remain but every ready bundle is blocked or in-flight** → do **not** fabricate
   a batch. Report the state explicitly: name the blocking dependency or the in-flight PR, and
   point at the next bundle that will unblock when it clears.
+- **Open issues remain but none is implementable** — every remaining candidate classified
+  `tracker-only` or `owner-review` (step 4) → do **not** fabricate a batch and do **not** report
+  "roadmap complete." Report the Reconcile flags: which issues are satisfied-but-open (recommend
+  closing them) and which need owner review, then stop. "roadmap complete" means no open
+  *non-roadmap* issues remain — a `tracker-only` issue is still open, so the loop isn't done
+  until the owner closes it.
 - **The roadmap issue excludes itself.** It is identified by the `roadmap` label and is never
   a backlog item, never bundled, and never counted toward completion — otherwise it could
   suggest itself and "roadmap complete" would be unreachable.
