@@ -152,6 +152,20 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Changed
 
+- **`/roadmap` verifies implementable residual before emitting** (`base/workflows/roadmap.md`,
+  #50): the reconcile step no longer trusts the roadmap artifact's stored residual note — it
+  re-derives each open candidate's done-ness from **ground truth** and classifies it
+  `implementable | tracker-only | owner-review` from acceptance-vs-default-branch (read-only),
+  merged/closing PRs, and comments/linked follow-ups, **uniformly on every candidate**. A
+  still-open issue whose work already shipped under another PR or whose residual was deferred to
+  another open issue (the #35 case) is marked `tracker-only` and moved to a new **Reconcile
+  flags** section — never emitted as a ready bundle; an unverifiable residual is flagged
+  `owner-review` rather than guessed into a batch. The selected bundle is re-classified fresh
+  immediately before emit, and a flagged candidate never blocks a genuinely-ready bundle behind
+  it. Adds an optional, **config-driven** destination report — a `<!-- destination-label: LABEL -->`
+  artifact marker makes each run print `LABEL: N blocker(s) open` (the finish line), kept in the
+  artifact rather than hardcoded so the skill stays repo-agnostic. Executable end-to-end coverage
+  for the reconcile semantics remains tracked by #45.
 - **Stop-hook gates fail loud instead of silently no-opping** (`precommit-gate.sh` ·
   `scripts/lib/project-gates.sh`, #35): a gate that can't load its own shared library
   (`common.sh` / `project-gates.sh`) is a broken/incomplete install — enforcement secretly
