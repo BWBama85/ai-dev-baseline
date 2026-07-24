@@ -155,6 +155,12 @@ step "cleanup-enum"
 # Regression test for /cleanup's remote enumeration excluding the origin/HEAD symref (#38).
 if bash scripts/check-cleanup-enum.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "roadmap"
+# Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
+# targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness
+# (#71), plus a drift guard that the workflow still delegates to them (#45). Offline.
+if bash scripts/check-roadmap.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "release-convention"
 # Offline unit tests for the release-goal convention helper (scripts/lib/release-convention.sh,
 # #27): dispatch, arg-parsing, usage, and the fail-loud gh guard before any gh call.

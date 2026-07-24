@@ -94,6 +94,7 @@ render_agent_skill() {
   state_dir=".$agent/state"
   gate_run="bash \"\$HOME/.$agent/scripts/lib/project-gates.sh\""
   role_dispatch="bash \"\$HOME/.$agent/scripts/lib/role-dispatch.sh\""
+  roadmap_lib="bash \"\$HOME/.$agent/scripts/lib/roadmap-lib.sh\""
   current_agent="$agent"
 
   name="$(basename "$src" .md)"
@@ -150,6 +151,7 @@ render_agent_skill() {
   awk -v name="$name" -v fmmode="$fmmode" \
       -v args_to="$args_to" -v state_dir="$state_dir" \
       -v gate_run="$gate_run" -v role_dispatch="$role_dispatch" \
+      -v roadmap_lib="$roadmap_lib" \
       -v current_agent="$current_agent" -v subtask="$subtask" '
     function lreplace(s, from, to,   out, p) {
       out = ""
@@ -200,6 +202,7 @@ render_agent_skill() {
       line = lreplace(line, "{{STATE_DIR}}",        state_dir)
       line = lreplace(line, "{{GATE_RUNNER}}",      gate_run)
       line = lreplace(line, "{{ROLE_DISPATCH}}",    role_dispatch)
+      line = lreplace(line, "{{ROADMAP_LIB}}",      roadmap_lib)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line

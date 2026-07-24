@@ -143,3 +143,6 @@ backlog, or milestone-less if it uses no milestones.
   with.
 - [roles-and-agents.md](roles-and-agents.md) — the `release` role that owns cutting a
   release.
+- [roadmap-acceptance.md](roadmap-acceptance.md) — the `/roadmap` acceptance script; §9
+  exercises every scenario of this module (activation, the readiness predicate, projection,
+  emission, and determinism).

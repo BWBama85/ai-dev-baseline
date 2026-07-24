@@ -113,7 +113,7 @@ templates/          the per-project agents.toml
 install.sh          global installer (per --agent, symlinks + wires gates)
 bin/agent-init      per-project role setup
 bin/baseline        keep the installed baseline current; also `baseline release init` (opt-in release-goal convention)
-docs/               installation, roles, per-project overrides, release-goal convention, adding an agent
+docs/               installation, roles, per-project overrides, release-goal convention, roadmap acceptance, adding an agent
 ```
 
 ## Status

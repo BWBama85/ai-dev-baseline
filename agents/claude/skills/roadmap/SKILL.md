@@ -181,6 +181,24 @@ active release milestone; always **exclude the roadmap issue itself**.
    tracker change, exactly as the `dep-canceled` rule resolves "until the roadmap is explicitly
    adjusted." Recording the flag is **not** self-acknowledgement; only a real tracker edit clears it.
 
+**Compute the verdict with the shared predicate — do not re-derive it in prose.** Feed the four
+live readings above to `roadmap-lib.sh`, which returns exactly one of `unarmed` / `unmet` /
+`held` / `met` and is regression-tested by `scripts/check-roadmap.sh` (so the precedence between
+them can't drift run to run):
+
+```bash
+# LABEL_EXISTS: 1 if `gh api "repos/$REPO/labels/release-blocker"` returned 200, else 0
+# ARMED:        1 if M holds >=1 issue (open OR closed), else 0
+# OPEN_COUNT:   open release-blocker issues in M (blocker-mode), or open issues in M (fallback)
+# CANCELED:     1 if a release-blocker in M is closed as NOT_PLANNED, else 0
+VERDICT="$(bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-ready "$LABEL_EXISTS" "$ARMED" "$OPEN_COUNT" "$CANCELED")" \
+  || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
+```
+
+`unarmed` → report "no requirements yet"; `unmet` → emit the next bundle projected onto `M`;
+`held` → record the canceled blocker in the Reconcile flags and **withhold** the cut; `met` →
+emit the release command. A non-zero exit is a **hard stop**, never a fallthrough to `met`.
+
 **Scoping is advancement-only.** Reconcile (step 4) still runs **backlog-wide** over every open
 non-roadmap issue — narrowing it would stop re-verifying whether `Backlog` issues already shipped.
 Only step-6 **selection** is scoped: **project** each `ready` bundle onto `M` and emit only the
@@ -400,12 +418,29 @@ open-issue and open-PR sets **once** and filter locally, rather than spending tw
 round-trips per member:
 
 ```bash
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 OPEN_ISSUES="$(gh issue list --state open --limit 200 --json number --jq '.[].number')"
-OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body)"
-# A member #N is still emittable iff it is in $OPEN_ISSUES AND no open PR references it:
-#   printf '%s\n' "$OPEN_ISSUES" | grep -qx "$N"                       # must be open
-#   printf '%s' "$OPEN_PRS" | jq -e --arg n "$N" 'any(.body|test("#"+$n+"\\b"))'  # must be empty
+OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body,closingIssuesReferences)"
+# A member #N is still emittable iff it is OPEN and no open PR TARGETS it:
+#   printf '%s\n' "$OPEN_ISSUES" | grep -qx "$N"                   # must be open
+#   printf '%s' "$OPEN_PRS" | bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" pr-targets-issue "$N" "$REPO"
+#     exit 0 = an open PR targets #N  -> in-flight, freeze it
+#     exit 1 = none does              -> still emittable
+#     exit >=2 = ERROR (malformed JSON / missing jq) -> HARD STOP, never read as "not
+#                targeted"; a tooling failure that fell through would emit an issue someone
+#                is already implementing (fail-closed, per step 1's hard-stop rule).
 ```
+
+**Freeze only on a PR that actually targets the issue.** "Targets" is the union of the PR's
+**linked-issue set** (`closingIssuesReferences` — GitHub's own computed set, from a closing
+keyword or a manual link) and a **closing-keyword scan of the PR body** (`Closes/Fixes/
+Resolves #N`); the body half catches a stacked PR into a non-default branch, which GitHub does
+not auto-link. A bare **`Refs #N`** or a prose mention is a cross-reference and **never** freezes
+a member — matching any `#N` substring would freeze a genuinely-ready issue indefinitely, which
+is exactly the rule step 5 states for dependency edges. The match is numeric and repo-scoped, so
+`#7` never matches `#70` and a cross-repo `owner/repo#N` link never freezes this repo's `#N`.
+The predicate lives in `scripts/lib/roadmap-lib.sh` (installed at the path above) so it is
+regression-tested offline by `scripts/check-roadmap.sh` rather than re-derived in prose.
 
 The freshness re-check is **not only** open/closed + open-PR status — **re-run the
 implementable-residual classification (step 4) on each selected member too**, because acceptance

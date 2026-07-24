@@ -7,7 +7,38 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/roadmap` no longer freezes a ready issue on a passing `#N` mention** (`base/workflows/roadmap.md`,
+  `scripts/lib/roadmap-lib.sh`, #69): step 6's in-flight check matched **any** `#N` substring in an open
+  PR body, so a bare `Refs #69` — or prose like "similar to #69" — marked a genuinely-ready member
+  `in-flight` and froze it **indefinitely**, contradicting the skill's own rule that `Refs #N` is a
+  cross-reference and not an edge. A member is now frozen only when an open PR **actually targets** it:
+  the union of the PR's **linked-issue set** (`closingIssuesReferences` — GitHub's own computed set) and
+  a **closing-keyword scan** of the body (`Closes/Fixes/Resolves #N`, which catches a stacked PR into a
+  non-default branch that GitHub does not auto-link). Matching is numeric and **repo-scoped**, so `#7`
+  never matches `#70` and a cross-repo `owner/repo#N` link never freezes this repo's `#N`. The predicate
+  is **fail-closed** — malformed JSON or a missing `jq` exits `>=2` and hard-stops the run rather than
+  reading as "no PR targets this", which would emit work someone is already implementing. Also fixes the
+  inline comment that described a jq boolean as an empty stream.
+
 ### Added
+
+- **`/roadmap` behavioral test coverage + acceptance script** (`scripts/lib/roadmap-lib.sh`,
+  `scripts/check-roadmap.sh`, `docs/roadmap-acceptance.md`, #45): `/roadmap` shipped with CI coverage
+  only for frontmatter/render parity — none of its actual behavior. Its two load-bearing decisions are
+  now extracted into a shared library (`roadmap-lib.sh`: `pr-targets-issue` and `release-ready`, both
+  **pure** — they take already-fetched JSON/arguments and never call `gh`, so the workflow's network
+  shape is unchanged) and pinned by **90 offline assertions** wired into `selfcheck` + CI: the #69
+  regression cases, word-boundary and cross-repo safety, null/empty/malformed shapes, the fail-closed
+  error band, the four-way readiness verdict (`unarmed`/`unmet`/`held`/`met`) including blocker-mode vs
+  fallback and the `NOT_PLANNED` withhold, determinism, and a **drift guard** proving the workflow still
+  delegates to the tested predicates instead of reverting to inline logic. The behaviors that are
+  irreducibly live-tracker (bootstrap, adopt-not-duplicate, reconcile, projection, completion reporting,
+  and every release-readiness scenario) are covered by a copy-pasteable acceptance script,
+  `docs/roadmap-acceptance.md`, which doubles as the specification for a future mocked-`gh` harness.
+  A new `{{ROADMAP_LIB}}` build placeholder renders the helper's path per agent, so Claude, Codex, and
+  Gemini each resolve it under their own install root.
 
 - **Release-goal convention module + `/roadmap` release-readiness** (`docs/release-goal-convention.md`,
   `scripts/lib/release-convention.sh`, `bin/baseline`, `base/workflows/roadmap.md`, #27 + #71): an
