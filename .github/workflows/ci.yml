@@ -372,6 +372,12 @@ jobs:
       - name: Canonical facts must be consistent across their consumer docs
         run: bash scripts/check-fact-drift.sh
 
+      # Same species as the step above (an allowlisted positive-presence lint over the same doc
+      # set, ~50ms), so it rides this job rather than spending a whole runner + checkout on a
+      # 21st parallel job.
+      - name: Release stays project-owned — no /release skill may ship (#3)
+        run: bash scripts/check-release-role.sh
+
   practice-index:
     name: practice-index
     runs-on: ubuntu-latest
@@ -382,17 +388,6 @@ jobs:
 
       - name: Every practice must be indexed exactly once in 00-index.md
         run: bash scripts/check-practice-index.sh
-
-  release-role:
-    name: release-role
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Release stays project-owned — no /release skill may ship (#3)
-        run: bash scripts/check-release-role.sh
 
   install-dry-run:
     name: install-dry-run

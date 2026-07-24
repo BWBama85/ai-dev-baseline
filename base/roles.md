@@ -31,38 +31,23 @@ never a bare self-review.
 ### `release` is a project-owned role — the baseline ships no `/release`
 
 The baseline **names** `release` and resolves it like any other role, but deliberately
-ships **no `/release` workflow**, and will not (issue #3). Cutting a release is the one
-job with no defensible generic shape: a four-project sweep found four incompatible
-schemes — SemVer + `git-cliff` + a milestone roll; SemVer + a GHCR image with `cosign`;
-**CalVer** (`YYYY.MM.patch`, no changelog at all); and a WordPress-plugin zip built by
-`build.sh` + `gh release create`. A skeleton that "bumps a version, regenerates a
-changelog, tags, and hands off to deploy" is wrong for three of those four — and wrong in
-the expensive direction, since a release is the one workflow whose mistakes are published
-under a permanent tag. The general-over-specific rule in `docs/design-principles.md` cuts
-the same way here: there is no general form to extract, only four specific ones.
+ships **no `/release` workflow**, and will not (issue #3): release schemes vary too much
+for a generic skeleton to be right (SemVer vs CalVer, changelog vs none, tag vs image vs
+zip), and a release is the one workflow whose mistakes are published under a permanent
+tag. Write your own project-scoped `/release` — the `handling-the-unknown` prescribed home
+for a workflow that genuinely diverges.
 
-What that means concretely:
+The one part that belongs in the law rather than the guide: **`[roles].release` names the
+executor, not an implementation.** Setting `release = "codex"` installs nothing and
+changes no behavior on its own — it is a declaration your release skill must actively
+honor, by calling `role-dispatch.sh resolve release` and shelling out with
+`role-dispatch.sh invoke release` when the token is not the agent already driving. A
+project skill that skips that lookup silently ignores the manifest: a role is only as real
+as its consumer.
 
-- **Your repo owns the skill.** A project that wants `/release` writes its own — the
-  `handling-the-unknown` prescribed home for a workflow that genuinely diverges (a
-  project-scoped skill). For Claude that path is verified today:
-  `.claude/skills/release/SKILL.md`. Codex/Gemini project-local skill placement is *not*
-  yet verified end-to-end (`scripts/lib/skill-compose.sh` is Claude-only in v1) — read
-  `docs/per-project-overrides.md` and follow-up #62 before assuming a path there.
-- **`[roles].release` names the executor, not an implementation.** Setting
-  `release = "codex"` installs nothing and changes no behavior on its own; it is a
-  declaration your release skill must actively honor. That skill resolves
-  `role-dispatch.sh resolve release` and, when the token is not the agent already
-  driving, shells out with `role-dispatch.sh invoke release`. A project skill that skips
-  that lookup silently ignores the manifest — the role is only as real as its consumer.
-- **`/roadmap` only ever *emits* `/release`.** In release-readiness mode it prints
-  `Next: /release` and never runs it, so a repo with no release skill gets an unrunnable
-  suggestion rather than an error, and can retarget the emission with the artifact's
-  `<!-- release-command: CMD -->` marker (`docs/release-goal-convention.md`).
-- **`/new-release` is a different job, not a shorter name for this one.** It reviews an
-  *upstream* CLI's changelog (Claude / Codex / Antigravity) against this project and
-  applies the fallout. It never versions, tags, packages, or deploys anything of yours.
-  The names are adjacent; the jobs do not overlap.
+The evidence for the decision, the verified skill paths per agent, and a worked dispatch
+example are in `docs/roles-and-agents.md`; the decision record is `.ai-dev-baseline/decisions.md`
+(D7).
 
 ### Completion contract for delegated steps
 

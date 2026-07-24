@@ -12,11 +12,9 @@ gap_analysis = "codex"      # pre-implementation adversarial pass. "" to skip.
 review       = ["claude"]   # code review before merge. 1+ agents; more = better.
 debug        = "claude"     # owns root-cause investigations.
 # issue_author = "claude"   # defaults to `primary` if unset
-# release      = "claude"   # defaults to `primary` if unset. NOTE: names WHO cuts a release —
-#                           # it installs no release skill. The baseline ships no `/release`
-#                           # (schemes vary too much: SemVer vs CalVer, changelog vs none, tag
-#                           # vs image vs zip); write your own project-scoped `/release`, and
-#                           # have it resolve this role. See docs/roles-and-agents.md.
+# release      = "claude"   # defaults to `primary` if unset. Names WHO cuts a release — it
+#                           # installs no release skill; write your own project-scoped
+#                           # `/release` and have it resolve this role. See docs/roles-and-agents.md
 
 # Optional: async external-bot reviewers — GitHub App logins that post review threads AFTER
 # the PR opens (distinct from the in-session `review` role above). `/resolve-pr-threads`

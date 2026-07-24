@@ -121,12 +121,11 @@ show_role debug
 show_role issue_author
 show_role release
 echo ""
-# `debug`, `issue_author`, and `release` resolve correctly but no shipped workflow consumes them
-# yet — printing them without that caveat reads as "the baseline will do this for you." `release`
-# especially: the baseline ships no /release skill on purpose (#3), so the token names WHO would
-# cut a release in a project-owned skill you write.
-echo "Note: only \`gap_analysis\` and \`review\` are consumed by a shipped workflow"
-echo "      (/implement-issue). \`debug\`, \`issue_author\`, and \`release\` resolve for your"
-echo "      own skills to honor — notably \`release\`: the baseline ships no /release skill."
+# Printing a resolved token without this caveat reads as "the baseline will do this for you."
+# Phrased as the durable rule (a role acts only where a workflow resolves it) rather than a list
+# of which roles are consumed today — that list would silently go stale the moment one is wired up.
+echo "Note: a role names WHO would do the job; it only takes effect where a workflow"
+echo "      actually resolves it. \`release\` in particular installs nothing — the baseline"
+echo "      ships no /release skill, so a project-owned one must resolve the role itself."
 echo ""
 echo "Done. See docs/roles-and-agents.md for how roles resolve and delegate."

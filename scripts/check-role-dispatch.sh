@@ -73,29 +73,22 @@ eq "$(rd resolve review)" "claude" 'review="" → primary'
 
 # --- `release` + `issue_author`: declared roles with no shipped consumer (#3) ------------------
 # The baseline ships no /release skill on purpose — `release` names WHO would cut a release in a
-# project-owned skill. That makes resolution the ONLY contract the baseline owes it, so it is
-# tested like any other role: an explicit value wins, and an unset one falls back to `primary`
-# (never to a hardcoded "claude", which would coincide by accident under the default manifest and
-# hide a regression). Same for `issue_author`.
+# project-owned skill someone else writes. Resolution is therefore the ONLY contract the baseline
+# owes it, so pin it. Validation (unknown token, list cardinality) is NOT re-tested per role: the
+# resolver handles gap_analysis|review|debug|issue_author|release in ONE case arm, so the
+# gap_analysis cases below already cover that arm for every key.
 set_repo '[roles]' 'primary = "claude"' 'release = "codex"'
 eq "$(rd resolve release)" "codex" "explicit release wins over the primary fallback"
 
-# unset release → primary, proven with a NON-claude primary so the fallback can't pass by accident
+# "Falls back to primary" must be proven with a NON-claude primary. The built-in-default cases at
+# the top can't do this (with no manifest anywhere, primary IS claude), so "falls back to primary"
+# and "returns the literal string claude" are indistinguishable there. Set a gemini primary and
+# assert EVERY primary-defaulting role at once — the general check, not one special-cased to the
+# two roles this change happened to add.
 set_repo '[roles]' 'primary = "gemini"'
-eq "$(rd resolve release)"      "gemini" "unset release falls back to primary (not literal claude)"
-eq "$(rd resolve issue_author)" "gemini" "unset issue_author falls back to primary"
-
-# release resolves through the global layer too, and is validated like every other role
-clr_repo
-set_global '[roles]' 'primary = "claude"' 'release = "gemini"'
-eq "$(rd resolve release)" "gemini" "unset repo → global release"
-clr_global
-set_repo '[roles]' 'release = "gpt5"'
-rd resolve release >/dev/null 2>&1; no $? "unknown release token is rejected, not silently skipped"
-
-# `release` is a single agent (cardinality 1) — a list is a manifest error, like `primary`
-set_repo '[roles]' 'primary = "claude"' 'release = ["claude", "codex"]'
-rd resolve release >/dev/null 2>&1; no $? "release must be a single agent, not a list"
+for r in review debug issue_author release; do
+  eq "$(rd resolve "$r")" "gemini" "unset $r falls back to primary (not literal claude)"
+done
 
 # --- validation: errors, and NO fall-through past an invalid higher-precedence value ---
 set_repo '[roles]' 'review = []'

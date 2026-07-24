@@ -26,7 +26,8 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   note at the top states that `/new-release` reviews an **upstream** CLI's changelog (Claude · Codex ·
   Antigravity) and never bumps, tags, packages, or deploys anything of yours. Deliberately a note and
   **not** a rename — renaming a shipped skill is a breaking migration (installed symlink targets,
-  project `overrides.md` anchors, per-project state files, orphan-render detection), tracked separately.
+  project `overrides.md` anchors, per-project state files, orphan-render detection); the rename
+  decision is tracked separately as #82.
 - **`agent-init` prints the full effective role map** (`bin/agent-init`): it advertised the complete
   repo → global → built-in resolution but printed only four of six roles, hiding `issue_author` and
   `release`. All six now print, with a note naming which are actually consumed by a shipped workflow —

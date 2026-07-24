@@ -108,8 +108,7 @@ prints one. The default is `/release` — and the baseline ships **no `/release`
 decision: it is the [project-owned release role](roles-and-agents.md#release-is-project-owned--the-baseline-ships-no-release),
 so a repo without one gets an unrunnable suggestion rather than an error. Write your own
 `/release`, or point the emission elsewhere with `<!-- release-command: <cmd> -->` on the
-artifact. (Note that `/new-release` is **not** that command — it reviews an *upstream* CLI's
-changelog and never cuts your release.)
+artifact.
 
 **Configurable last mile (auto-cut).** By default the operator runs the emitted `/release`,
 exactly like running an emitted `/implement-issue` — the *determination* is fully automated,

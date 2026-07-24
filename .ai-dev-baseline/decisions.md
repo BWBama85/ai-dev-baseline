@@ -153,7 +153,8 @@ didn't already model, so any residual divergence stays visible and auditable.
              negative invariant. The `/new-release` name collision reported on #3 is fixed with
              a clarifying scope note, NOT a rename — renaming a shipped skill is a breaking
              migration (installed symlink targets, project `overrides.md` anchors, per-project
-             state files, orphan-render detection) and is filed as its own issue instead.
+             state files, orphan-render detection), so the rename decision is tracked separately
+             as #82 (which also depends on #52, the untested renamed-skill prune/relink path).
 - placement: `base/roles.md` (role model) + `docs/roles-and-agents.md` (user guide) + `README.md`
              (skill table) + `templates/agents.toml` (manifest comment); the disambiguation note
              in `base/workflows/new-release.md` (rendered to all three agents); the guard in
