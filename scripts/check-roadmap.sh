@@ -219,7 +219,37 @@ run release-ready 1 2 0 0 0;   eq "$RC_" 2 "armed=2 is an ERROR"
 run release-ready 1 1 0 0 2;   eq "$RC_" 2 "canceled=2 is an ERROR"
 run release-ready 1 1 0 0;     eq "$RC_" 2 "too few args is an ERROR";    has "$OUT" "exactly 5" "arity error states the arity"
 run release-ready 1 1 0 0 0 0; eq "$RC_" 2 "too many args is an ERROR"
-hasnt "$OUT" "met" "an errored readiness call never prints a verdict"
+
+# A count too wide for a shell integer must ERROR, never fall through. `[ "$n" -gt 0 ]` fails on
+# such a value, and because that test guards the `unmet` branch the failure would print `met` —
+# inventing a release cut from a value the shell could not evaluate. (Adversarial-review find.)
+run release-ready 1 1 99999999999999999999 0 0
+eq "$RC_" 2 "an over-wide blocker count is an ERROR, not a fabricated verdict"
+hasnt "$OUT" "met" "an over-wide count never yields 'met'"
+run release-ready 0 1 0 99999999999999999999 0
+eq "$RC_" 2 "an over-wide issue count is an ERROR in fallback mode too"
+hasnt "$OUT" "met" "an over-wide fallback count never yields 'met'"
+# 18 digits is inside the supported range and must still compute normally.
+eq "$(ready 1 1 999999999999999999 0 0)" unmet "an 18-digit count still evaluates (bound is not over-tight)"
+
+# Every errored readiness call must print no verdict — assert it per call, not just on the last
+# one (the previous single check only inspected whichever `run` happened to be most recent).
+for bad_args in "1 1 x 0 0" "2 1 0 0 0" "1 1 0 0 2" "1 1 0 0"; do
+  # shellcheck disable=SC2086  # deliberate word-split of the fixture arg string
+  run release-ready $bad_args
+  eq "$RC_" 2 "[$bad_args] is an ERROR"
+  hasnt "$OUT" "met"     "[$bad_args] prints no 'met' verdict"
+  hasnt "$OUT" "unmet"   "[$bad_args] prints no 'unmet' verdict"
+  hasnt "$OUT" "unarmed" "[$bad_args] prints no 'unarmed' verdict"
+done
+
+# --- 2g-bis. arity is enforced on BOTH subcommands ------------------------------------------
+# pr-targets-issue previously ignored extra arguments; a caller that appended a stray field
+# would get a silent answer computed from the first two. (Adversarial-review find.)
+eq "$(printf '[]' | bash "$RL" pr-targets-issue 69 "$SLUG" EXTRA >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "pr-targets-issue rejects extra arguments"
+eq "$(printf '[]' | bash "$RL" pr-targets-issue 69 >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "pr-targets-issue rejects a missing slug"
 
 # --- 2h. dispatch surface -------------------------------------------------------------------
 run -h;     yes "$RC_" "-h exits 0"; has "$OUT" "roadmap-lib.sh" "-h prints usage"
@@ -250,6 +280,35 @@ has "$wf" 'A failed targeting check is a hard stop, never a negative.' \
   "workflow states the fail-closed rule as an imperative, not only as a snippet comment"
 has "$wf" 'readiness predicate failed' \
   "workflow hard-stops the run when the readiness predicate fails"
+
+# The live `gh` reads that feed the predicate must themselves be hard-stopped. An unchecked
+# capture is the one way to defeat the whole fail-closed design from outside the library: a
+# failed `gh pr list` yields empty stdin, which is a legitimate "no open PRs" (exit 1), so the
+# in-flight member would be emitted. (Adversarial-review find.)
+has "$wf" 'could not list open PRs' \
+  "workflow hard-stops when the open-PR read fails (an empty capture reads as 'no PRs')"
+has "$wf" 'could not list open issues' \
+  "workflow hard-stops when the open-issue read fails"
+
+# `continue` outside a loop: bash only warns and FALLS THROUGH (so a member closed since step 4
+# would still be emitted), while zsh aborts the block outright. The snippet must not use it.
+hasnt "$wf" '|| continue' \
+  "workflow's per-member check uses no loop-only 'continue' (bash falls through; zsh aborts)"
+
+# Each fenced snippet must resolve "$REPO" itself: these steps can be run as separate shell
+# invocations that share no variables, so a slug hoisted into an earlier step arrives EMPTY and
+# every in-flight check dies on a bad slug. (Adversarial-review find on the first fix attempt.)
+inflight_block="$(awk '/^# Self-contained: each fenced block/,/^```$/' "$WF")"
+has "$inflight_block" 'REPO=' \
+  "the in-flight snippet resolves \$REPO itself (no cross-snippet variable dependency)"
+has "$inflight_block" 'OPEN_PRS=' \
+  "...and fetches the open-PR set in that same snippet"
+gauge_block="$(awk '/^# Omit the line unless the label actually exists/,/^```$/' "$WF")"
+has "$gauge_block" 'labels/$LABEL' \
+  "the destination-report snippet probes the label"
+# The line immediately above that comment must be the snippet's own REPO resolution.
+has "$(grep -B1 '^# Omit the line unless the label actually exists' "$WF")" 'REPO=' \
+  "the destination-report snippet resolves \$REPO itself"
 
 # Every rendered agent skill must carry the RESOLVED helper path. check-workflow-render.sh
 # proves {{ROADMAP_LIB}} substitutes correctly against a synthetic fixture and that no committed

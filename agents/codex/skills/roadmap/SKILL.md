@@ -188,11 +188,13 @@ blocker-mode/fallback choice keyed to label *existence* rather than to a live co
 ```bash
 # LABEL_EXISTS:  1 if `gh api "repos/$REPO/labels/release-blocker"` returned 200, else 0
 # ARMED:         1 if M holds >=1 issue (open OR closed), else 0
-# OPEN_BLOCKERS: open release-blocker issues in M   (used when LABEL_EXISTS=1)
-# OPEN_ISSUES:   open issues in M, any label        (used when LABEL_EXISTS=0, the fallback)
+# M_BLOCKERS:    count of open release-blocker issues in M  (used when LABEL_EXISTS=1)
+# M_OPEN:        count of open issues in M, any label       (used when LABEL_EXISTS=0, fallback)
 # CANCELED:      1 if a release-blocker in M is closed as NOT_PLANNED, else 0
+# (Counts, not lists — and deliberately NOT named OPEN_ISSUES, which step 6 uses for a
+#  newline-separated list of issue NUMBERS.)
 VERDICT="$(bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" release-ready \
-  "$LABEL_EXISTS" "$ARMED" "$OPEN_BLOCKERS" "$OPEN_ISSUES" "$CANCELED")" \
+  "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED")" \
   || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
 ```
 
@@ -244,10 +246,6 @@ empty result (a truncated or failed list must not look like "no open issues").
 ```bash
 command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
 gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated"; exit 1; }
-# Resolve the repo slug ONCE here; later steps (the in-flight check in step 6, the destination
-# report) reuse "$REPO" rather than each re-running `gh repo view`.
-REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
-  || { echo "ERROR: cannot resolve the current repo"; exit 1; }
 # Scratch for the roadmap body goes to a TEMP file, never the repo. /roadmap runs in arbitrary
 # repos, many of which don't gitignore .codex/state/ — writing there would leave untracked
 # files and dirty the worktree before the next implementation batch.
@@ -423,17 +421,27 @@ open-issue and open-PR sets **once** and filter locally, rather than spending tw
 round-trips per member:
 
 ```bash
-OPEN_ISSUES="$(gh issue list --state open --limit 200 --json number --jq '.[].number')"
-OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body,closingIssuesReferences)"
-# A member #N is still emittable iff it is OPEN and no open PR TARGETS it. ($REPO is the slug
-# resolved once in step 1 — do not re-run `gh repo view` here.)
-printf '%s\n' "$OPEN_ISSUES" | grep -qx "$N" || continue      # closed since step 4 -> drop it
-printf '%s' "$OPEN_PRS" | bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" pr-targets-issue "$N" "$REPO"
-case "$?" in
-  0) : ;;   # an open PR targets #N -> in-flight: freeze the WHOLE bundle, skip it
-  1) : ;;   # none does             -> still emittable
-  *) echo "ERROR: in-flight check failed for #$N — hard stop"; exit 1 ;;
-esac
+# Self-contained: each fenced block re-resolves what it needs, because these steps may be run
+# as separate shell invocations that share no variables.
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+OPEN_NUMS="$(gh issue list --state open --limit 200 --json number --jq '.[].number')" \
+  || { echo "ERROR: could not list open issues — hard stop"; exit 1; }
+OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body,closingIssuesReferences)" \
+  || { echo "ERROR: could not list open PRs — hard stop"; exit 1; }
+# ^ Both reads are hard-stopped on failure: an errored `gh` that fell through would look like
+#   "no open issues / no open PRs" and emit work that is closed or already in flight.
+
+# Then, for each member #N of the selected bundle:
+if ! printf '%s\n' "$OPEN_NUMS" | grep -qx "$N"; then
+  : # closed since step 4 -> drop it from the batch and record it in step 4's Done list
+else
+  printf '%s' "$OPEN_PRS" | bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" pr-targets-issue "$N" "$REPO"
+  case "$?" in
+    0) : ;;  # an open PR TARGETS #N -> in-flight: freeze the WHOLE bundle and skip it
+    1) : ;;  # none does             -> #N stays in the emitted batch
+    *) echo "ERROR: in-flight check failed for #$N — hard stop"; exit 1 ;;
+  esac
+fi
 ```
 
 **A failed targeting check is a hard stop, never a negative.** Exit `>=2` means the predicate
@@ -487,7 +495,7 @@ Derive `N` live and **exactly** each run — no page-cap truncation — and excl
 (which itself may carry LABEL) **in the query**, not by post-filtering:
 
 ```bash
-# "$REPO" is the slug resolved once in step 1 — do not re-resolve it here.
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 # Omit the line unless the label actually exists — exact match, 404 => absent (NOT an error).
 if gh api "repos/$REPO/labels/$LABEL" >/dev/null 2>&1; then
   # Search API total_count is exact at any size; `-label:roadmap` drops the roadmap artifact.

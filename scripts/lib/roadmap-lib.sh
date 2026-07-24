@@ -58,15 +58,27 @@ usage() { adb_usage "$0"; }
 # never 1, which is reserved for a trustworthy negative.
 die() { printf 'roadmap-lib: %s\n' "$*" >&2; exit 2; }
 
-# is_uint <string> — true iff the argument is a non-empty run of digits. Guards every numeric
-# argument so a typo ("N", "-1", "1 2") is an ERROR (2), never silently coerced to 0 — which
-# for release-ready would fabricate a "met" release.
-is_uint() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+# is_uint <string> — true iff the argument is a non-empty run of digits that `[` can actually
+# compare. Guards every numeric argument so a typo ("N", "-1", "1 2") is an ERROR (2), never
+# silently coerced to 0 — which for release-ready would fabricate a "met" release.
+#
+# The length bound is part of that same guarantee, not decoration: a value wider than a shell
+# integer makes `[ "$n" -gt 0 ]` fail with "integer expression expected", and because that test
+# guards the `unmet` branch, the failure would fall through and print `met` — inventing a
+# release cut from a value the shell could not even evaluate. 18 digits stays inside signed
+# 64-bit on every supported shell, and no real issue count approaches it.
+is_uint() {
+  case "${1:-}" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "${#1}" -le 18 ]
+}
 
 # --- pr-targets-issue ---------------------------------------------------------------------
 # Exit 0 iff some open PR targets issue <n> in repo <slug>; 1 if none does; 2 on bad input.
 cmd_pr_targets_issue() {
-  local n="${1-}" slug="${2-}" json rc
+  [ "$#" -eq 2 ] || die "pr-targets-issue: needs exactly 2 args: <issue-number> <owner/repo> (PR JSON on stdin)"
+  local n="$1" slug="$2" json rc
   is_uint "$n" || die "pr-targets-issue: issue number must be a positive integer (got '$n')"
   # The slug is required (never defaulted from `gh repo view`): this library must stay pure,
   # and a silently-wrong repo would reintroduce the cross-repo false freeze it exists to stop.
