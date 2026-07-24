@@ -179,6 +179,29 @@ active release milestone; always **exclude the roadmap issue itself**.
    tracker change, exactly as the `dep-canceled` rule resolves "until the roadmap is explicitly
    adjusted." Recording the flag is **not** self-acknowledgement; only a real tracker edit clears it.
 
+**Compute the verdict with the shared predicate — do not re-derive it in prose.** Feed the live
+readings above to `roadmap-lib.sh`, which returns exactly one of `unarmed` / `unmet` / `held` /
+`met` and is regression-tested by `scripts/check-roadmap.sh` (so the precedence between them
+can't drift run to run). Pass **both** counts and let the predicate pick: that is what keeps the
+blocker-mode/fallback choice keyed to label *existence* rather than to a live count:
+
+```bash
+# LABEL_EXISTS:  1 if `gh api "repos/$REPO/labels/release-blocker"` returned 200, else 0
+# ARMED:         1 if M holds >=1 issue (open OR closed), else 0
+# M_BLOCKERS:    count of open release-blocker issues in M  (used when LABEL_EXISTS=1)
+# M_OPEN:        count of open issues in M, any label       (used when LABEL_EXISTS=0, fallback)
+# CANCELED:      1 if a release-blocker in M is closed as NOT_PLANNED, else 0
+# (Counts, not lists — and deliberately NOT named OPEN_ISSUES, which step 6 uses for a
+#  newline-separated list of issue NUMBERS.)
+VERDICT="$(bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" release-ready \
+  "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED")" \
+  || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
+```
+
+`unarmed` → report "no requirements yet"; `unmet` → emit the next bundle projected onto `M`;
+`held` → record the canceled blocker in the Reconcile flags and **withhold** the cut; `met` →
+emit the release command. A non-zero exit is a **hard stop**, never a fallthrough to `met`.
+
 **Scoping is advancement-only.** Reconcile (step 4) still runs **backlog-wide** over every open
 non-roadmap issue — narrowing it would stop re-verifying whether `Backlog` issues already shipped.
 Only step-6 **selection** is scoped: **project** each `ready` bundle onto `M` and emit only the
@@ -398,12 +421,45 @@ open-issue and open-PR sets **once** and filter locally, rather than spending tw
 round-trips per member:
 
 ```bash
-OPEN_ISSUES="$(gh issue list --state open --limit 200 --json number --jq '.[].number')"
-OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body)"
-# A member #N is still emittable iff it is in $OPEN_ISSUES AND no open PR references it:
-#   printf '%s\n' "$OPEN_ISSUES" | grep -qx "$N"                       # must be open
-#   printf '%s' "$OPEN_PRS" | jq -e --arg n "$N" 'any(.body|test("#"+$n+"\\b"))'  # must be empty
+# Self-contained: each fenced block re-resolves what it needs, because these steps may be run
+# as separate shell invocations that share no variables.
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+OPEN_NUMS="$(gh issue list --state open --limit 200 --json number --jq '.[].number')" \
+  || { echo "ERROR: could not list open issues — hard stop"; exit 1; }
+OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body,closingIssuesReferences)" \
+  || { echo "ERROR: could not list open PRs — hard stop"; exit 1; }
+# ^ Both reads are hard-stopped on failure: an errored `gh` that fell through would look like
+#   "no open issues / no open PRs" and emit work that is closed or already in flight.
+
+# Then, for each member #N of the selected bundle:
+if ! printf '%s\n' "$OPEN_NUMS" | grep -qx "$N"; then
+  : # closed since step 4 -> drop it from the batch and record it in step 4's Done list
+else
+  printf '%s' "$OPEN_PRS" | bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" pr-targets-issue "$N" "$REPO"
+  case "$?" in
+    0) : ;;  # an open PR TARGETS #N -> in-flight: freeze the WHOLE bundle and skip it
+    1) : ;;  # none does             -> #N stays in the emitted batch
+    *) echo "ERROR: in-flight check failed for #$N — hard stop"; exit 1 ;;
+  esac
+fi
 ```
+
+**A failed targeting check is a hard stop, never a negative.** Exit `>=2` means the predicate
+could not answer (malformed JSON, missing `jq`) — treating that as "no PR targets this" would
+emit an issue someone is already implementing, so stop and surface it, exactly as step 1
+requires for any `gh` error.
+
+**Freeze only on a PR that actually targets the issue.** "Targets" is the union of the PR's
+**linked-issue set** (`closingIssuesReferences` — GitHub's own computed set, from a closing
+keyword or a manual link) and a **closing-keyword scan of the PR body** (`Closes/Fixes/
+Resolves` followed by `#N`, `<this-repo>#N`, or this repo's issue URL — all three forms GitHub
+documents); the body half catches a stacked PR into a non-default branch, which GitHub does
+not auto-link. A bare **`Refs #N`** or a prose mention is a cross-reference and **never** freezes
+a member — matching any `#N` substring would freeze a genuinely-ready issue indefinitely, which
+is exactly the rule step 5 states for dependency edges. The match is numeric and repo-scoped, so
+`#7` never matches `#70` and a cross-repo `owner/repo#N` link never freezes this repo's `#N`.
+The predicate lives in `scripts/lib/roadmap-lib.sh` (installed at the path above) so it is
+regression-tested offline by `scripts/check-roadmap.sh` rather than re-derived in prose.
 
 The freshness re-check is **not only** open/closed + open-PR status — **re-run the
 implementable-residual classification (step 4) on each selected member too**, because acceptance

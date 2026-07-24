@@ -271,6 +271,22 @@ jobs:
       - name: /cleanup remote enumeration must exclude the origin/HEAD symref (#38)
         run: bash scripts/check-cleanup-enum.sh
 
+  roadmap:
+    name: roadmap
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        # roadmap-lib.sh parses the gh PR JSON with jq; install it explicitly rather than
+        # lean on runner-image contents, like the other jq-dependent jobs.
+        run: sudo apt-get install -y jq
+
+      - name: /roadmap predicates — in-flight targeting (#69) + release readiness, offline (#45)
+        run: bash scripts/check-roadmap.sh
+
   release-convention:
     name: release-convention
     runs-on: ubuntu-latest
@@ -409,14 +425,17 @@ jobs:
             "$HOME/.claude/scripts/lib/common.sh" \
             "$HOME/.claude/scripts/lib/role-dispatch.sh" \
             "$HOME/.claude/scripts/lib/skill-compose.sh" \
+            "$HOME/.claude/scripts/lib/roadmap-lib.sh" \
             "$HOME/.codex/AGENTS.md" \
             "$HOME/.codex/skills/implement-issue" \
             "$HOME/.codex/scripts/lib/project-gates.sh" \
             "$HOME/.codex/scripts/lib/role-dispatch.sh" \
+            "$HOME/.codex/scripts/lib/roadmap-lib.sh" \
             "$HOME/.gemini/GEMINI.md" \
             "$HOME/.gemini/config/skills/implement-issue" \
             "$HOME/.gemini/scripts/lib/project-gates.sh" \
-            "$HOME/.gemini/scripts/lib/role-dispatch.sh"; do
+            "$HOME/.gemini/scripts/lib/role-dispatch.sh" \
+            "$HOME/.gemini/scripts/lib/roadmap-lib.sh"; do
             if [ ! -e "$p" ]; then
               echo "::error::expected path to exist and resolve: $p"
               exit 1
