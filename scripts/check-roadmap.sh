@@ -110,6 +110,40 @@ eq "$(targets 69 "$(arr "$(pr 100 '"(Closes #69)"' '[]')")")" 0 \
 eq "$(targets 69 "$(arr "$(pr 100 '"Closes #69 — 日本語 🎉"' '[]')")")" 0 \
    "a body with multibyte/emoji content is matched correctly (no encoding corruption)"
 
+# --- 1c-ter. repository-QUALIFIED closing keywords, for THIS repo only ----------------------
+# GitHub documents three reference forms after a closing keyword: `#N`, `owner/repo#N`, and the
+# issue URL. The qualified forms matter exactly where the body scan is load-bearing: GitHub does
+# not auto-link keywords on a PR whose base is not the default branch, so a stacked PR writing
+# the full syntax would otherwise read "not targeted" and let /roadmap emit work it closes.
+# (Reported by the codex reviewer on PR #76.)
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/widget#69"' '[]')")")" 0 \
+   "'Closes acme/widget#69' (repo-qualified, this repo) freezes"
+eq "$(targets 69 "$(arr "$(pr 100 '"Fixes acme/widget#69"' '[]')")")" 0 \
+   "'Fixes acme/widget#69' freezes"
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes https://github.com/acme/widget/issues/69"' '[]')")")" 0 \
+   "an issue-URL reference to this repo freezes"
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes http://github.com/acme/widget/issues/69"' '[]')")")" 0 \
+   "the http (non-TLS) issue-URL form freezes too"
+# ...and the cross-repo guarantee must survive the widened pattern.
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes other/repo#69"' '[]')")")" 1 \
+   "'Closes other/repo#69' does NOT freeze (different repo)"
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/other#69"' '[]')")")" 1 \
+   "same-owner different-repo qualified keyword does NOT freeze"
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes https://github.com/other/repo/issues/69"' '[]')")")" 1 \
+   "an issue-URL for another repo does NOT freeze"
+eq "$(targets 69 "$(arr "$(pr 100 '"Refs acme/widget#69"' '[]')")")" 1 \
+   "a qualified reference without a closing keyword does NOT freeze"
+eq "$(targets 7 "$(arr "$(pr 100 '"Closes acme/widget#70"' '[]')")")" 1 \
+   "#7 does not match a qualified #70 (boundary holds in the widened pattern)"
+# The slug is embedded as a LITERAL: a repo name containing regex metacharacters must not match
+# by pattern (`acme/my.app` must never match `acme/myXapp`).
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/myXapp#69"' '[]')")" 'acme/my.app')" 1 \
+   "a '.' in the slug is literal, not a wildcard"
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/my.app#69"' '[]')")" 'acme/my.app')" 0 \
+   "...while the exact dotted slug still matches"
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/c++-lib#69"' '[]')")" 'acme/c++-lib')" 0 \
+   "a slug with regex metacharacters (+) matches literally"
+
 # --- 1d. cross-repo safety: other/repo#69 must not freeze this repo's #69 --------------------
 # GitHub supports cross-repository closing links, so closingIssuesReferences can carry an issue
 # from ANOTHER repo. Matching a bare number would let it freeze this repo's same-numbered issue.

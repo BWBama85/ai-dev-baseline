@@ -454,7 +454,8 @@ requires for any `gh` error.
 **Freeze only on a PR that actually targets the issue.** "Targets" is the union of the PR's
 **linked-issue set** (`closingIssuesReferences` — GitHub's own computed set, from a closing
 keyword or a manual link) and a **closing-keyword scan of the PR body** (`Closes/Fixes/
-Resolves #N`); the body half catches a stacked PR into a non-default branch, which GitHub does
+Resolves` followed by `#N`, `<this-repo>#N`, or this repo's issue URL — all three forms GitHub
+documents); the body half catches a stacked PR into a non-default branch, which GitHub does
 not auto-link. A bare **`Refs #N`** or a prose mention is a cross-reference and **never** freezes
 a member — matching any `#N` substring would freeze a genuinely-ready issue indefinitely, which
 is exactly the rule step 5 states for dependency edges. The match is numeric and repo-scoped, so

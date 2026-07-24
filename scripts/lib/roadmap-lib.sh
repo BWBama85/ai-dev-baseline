@@ -88,6 +88,13 @@ cmd_pr_targets_issue() {
   esac
   command -v jq >/dev/null 2>&1 || die "pr-targets-issue: jq is required"
 
+  # Regex-escape the slug so it can be embedded in the keyword pattern below as a LITERAL.
+  # A repo name legitimately contains `.`, `-`, `+`; escaping every non-alphanumeric is the
+  # portable way to neutralize all of them at once (escaping a char that needs no escape is
+  # harmless in Oniguruma). Without this, a repo like `acme/my.app` would match `my_app` too.
+  local slug_re
+  slug_re="$(printf '%s' "$slug" | LC_ALL=C sed 's/[^a-zA-Z0-9_]/\\&/g')"
+
   json="$(cat)"
   # An empty read is the "no open PRs" case, not a malformed one — `gh pr list` on an empty
   # set prints `[]`, but a caller piping from an empty capture is treated identically.
@@ -102,7 +109,15 @@ cmd_pr_targets_issue() {
   # keyword a standalone word — without it "precloses #12" / "unfixes #12" would match inside a
   # longer word and re-introduce the very over-match this fix removes. `[ \t]*:?[ \t]*` allows
   # the "Closes: #12" form; `(?![0-9])` stops `#7` matching `#70`; `"i"` is case-insensitive.
-  printf '%s' "$json" | jq -e --argjson n "$n" --arg slug "$slug" '
+  #
+  # The reference itself accepts all three forms GitHub documents, but ONLY for THIS repo:
+  #   #12  ·  owner/repo#12  ·  https://github.com/owner/repo/issues/12
+  # The repo-qualified forms matter precisely here: GitHub does not auto-link closing keywords
+  # on a PR whose base is not the default branch, so for a stacked PR the body scan is the only
+  # signal — and a PR that writes the full `owner/repo#12` syntax would otherwise read as "not
+  # targeted" and let /roadmap emit work that PR already closes. Another repo's qualified
+  # reference still does NOT match, because the slug is pinned literally.
+  printf '%s' "$json" | jq -e --argjson n "$n" --arg slug "$slug" --arg slugre "$slug_re" '
     # Guard the SHAPE first: a non-array (an object, a string) must raise, not quietly return
     # false — a fail-open "no PR targets this" is the outcome this predicate exists to prevent.
     if type != "array" then error("not an array") else . end
@@ -112,8 +127,14 @@ cmd_pr_targets_issue() {
          | any(.number == $n
                and ((.repository.owner.login // "") + "/" + (.repository.name // "")) == $slug))
         # (2) a closing keyword in the body (`// ""` covers a null body, which test() rejects).
+        #     The reference is `#N`, `<this-repo>#N`, or a this-repo issue URL — never one
+        #     belonging to another repo, since $slugre pins the current slug as a literal.
+        #     (No apostrophes in this program: it is a single-quoted shell string.)
         or ((.body // "")
-            | test("\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[ \t]*:?[ \t]*#" + ($n|tostring) + "(?![0-9])"; "i"))
+            | test("\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[ \t]*:?[ \t]*"
+                   + "((" + $slugre + ")?#|https?://github\\.com/" + $slugre + "/issues/)"
+                   + ($n|tostring) + "(?![0-9])"
+                   ; "i"))
       )
   ' >/dev/null 2>&1
   rc=$?

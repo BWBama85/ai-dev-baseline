@@ -15,8 +15,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   `in-flight` and froze it **indefinitely**, contradicting the skill's own rule that `Refs #N` is a
   cross-reference and not an edge. A member is now frozen only when an open PR **actually targets** it:
   the union of the PR's **linked-issue set** (`closingIssuesReferences` — GitHub's own computed set) and
-  a **closing-keyword scan** of the body (`Closes/Fixes/Resolves #N`, which catches a stacked PR into a
-  non-default branch that GitHub does not auto-link). Matching is numeric and **repo-scoped**, so `#7`
+  a **closing-keyword scan** of the body (`Closes/Fixes/Resolves` followed by `#N`, `owner/repo#N`, or
+  the issue URL — all three forms GitHub documents — which catches a stacked PR into a non-default
+  branch that GitHub does not auto-link). Matching is numeric and **repo-scoped**, so `#7`
   never matches `#70` and a cross-repo `owner/repo#N` link never freezes this repo's `#N`. The predicate
   is **fail-closed** — malformed JSON or a missing `jq` exits `>=2` and hard-stops the run rather than
   reading as "no PR targets this", which would emit work someone is already implementing. Also fixes the
