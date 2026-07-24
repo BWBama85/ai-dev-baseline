@@ -451,8 +451,10 @@ that belongs in the artifact, not baked into this agent-neutral skill.
 **In release-readiness mode**, when `destination-label` is `release-blocker`, scope this count to
 the active release milestone `M` (open `release-blocker` issues **in `M`**), not repo-wide — so the
 gauge equals the readiness trigger and the two can never disagree (a blocker parked in `Backlog`
-would otherwise inflate a repo-wide count). Add ` --milestone "NAME"` to the search query. Outside
-release-readiness mode the count stays repo-wide as above.
+would otherwise inflate a repo-wide count). Add the `milestone:"NAME"` qualifier to the `q` filter
+of the same `search/issues` query (e.g. `q="repo:$REPO is:issue is:open label:\"release-blocker\"
+milestone:\"NAME\" -label:roadmap"`). Outside release-readiness mode the count stays repo-wide as
+above.
 
 ### 7. Completion & edge cases
 
