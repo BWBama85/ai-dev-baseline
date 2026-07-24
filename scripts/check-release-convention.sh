@@ -44,6 +44,8 @@ rcx init -h;       yes "$RC_" "init -h exits 0";       has "$OUT" "release-goal 
 
 # ============================ arg parsing ============================
 rcx init --release-name;   no "$RC_" "init --release-name w/o value exits nonzero"; has "$OUT" "needs a value" "missing value is named"
+rcx init --release-name '';   no "$RC_" "init --release-name '' exits nonzero";     has "$OUT" "must not be empty" "empty release name is rejected"
+rcx init --release-name '   '; no "$RC_" "init --release-name whitespace exits nonzero"; has "$OUT" "must not be empty" "whitespace release name is rejected"
 rcx init --bogus;          no "$RC_" "init unknown option exits nonzero";            has "$OUT" "unknown option" "unknown option is named"
 rcx status --bogus;        no "$RC_" "status unknown option exits nonzero"
 

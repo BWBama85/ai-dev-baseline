@@ -78,24 +78,31 @@ milestone_field() {
     | awk -F'\t' -v t="$title" -v f="$field" '$1==t { print (f=="state" ? $2 : $3); exit }'
 }
 
-# ensure_milestone <title> — create it if absent. GitHub has no upsert. Check OPEN first (so an
-# open milestone is never misreported as closed when a same-title closed one is listed ahead of
-# it), then a closed same-title one, else POST. Treat an HTTP 422 (duplicate title) as success,
-# hard-fail anything else.
+# ensure_milestone <title> — guarantee an OPEN milestone with this title exists. GitHub has no
+# upsert. Check OPEN first (so an open one is never misreported when a same-title closed one is
+# listed ahead of it). A CLOSED same-title milestone must be REOPENED, not left as-is: the whole
+# point of init is a usable OPEN milestone, and a duplicate title can't be re-created anyway
+# (GitHub 422s it), so reopening is the only path to an open milestone with this title — leaving
+# it "closed but ok" would let init print Done while /roadmap then hard-stops on zero open matches.
+# Else POST; swallow ONLY the duplicate 422 (already_exists), hard-fail every other error.
 ensure_milestone() {
-  local title="$1"
+  local title="$1" num out rc
   if [ -n "$(milestone_field "$title" open number)" ]; then
     adb_info "  ok       milestone '$title' (already open)"; return 0
   fi
-  if [ "$(milestone_field "$title" all state)" = "closed" ]; then
-    adb_info "  note     milestone '$title' exists but is CLOSED — reopen it to use it"; return 0
+  num="$(milestone_field "$title" all number)"
+  if [ -n "$num" ]; then
+    if gh api -X PATCH "repos/$(repo_slug)/milestones/$num" -f state=open >/dev/null 2>&1; then
+      adb_info "  reopened milestone '$title' (was closed)"; return 0
+    fi
+    echo "ERROR: milestone '$title' exists but is closed (#$num) and could not be reopened — reopen it manually" >&2
+    return 1
   fi
-  local out rc
   out="$(gh api -X POST "repos/$(repo_slug)/milestones" -f title="$title" -f state=open 2>&1)"; rc=$?
   if [ "$rc" -eq 0 ]; then
     adb_info "  created  milestone '$title'"
-  elif printf '%s' "$out" | grep -q 'HTTP 422'; then
-    adb_info "  ok       milestone '$title' (already exists)"
+  elif printf '%s' "$out" | grep -q 'already_exists'; then
+    adb_info "  ok       milestone '$title' (already exists — created concurrently)"
   else
     echo "ERROR: could not create milestone '$title': $out" >&2
     return 1
@@ -191,7 +198,12 @@ cmd_status() {
 parse_opts() {
   while [ "$#" -ge 1 ]; do
     case "$1" in
-      --release-name) shift; [ "$#" -ge 1 ] || { echo "ERROR: --release-name needs a value" >&2; exit 2; }; RELEASE_MILESTONE="$1"; shift ;;
+      --release-name)
+        shift; [ "$#" -ge 1 ] || { echo "ERROR: --release-name needs a value" >&2; exit 2; }
+        # Reject an empty/whitespace-only title up front — GitHub would 422 the create, and an
+        # empty milestone name can never resolve a live `release-milestone` marker.
+        printf '%s' "$1" | grep -q '[^[:space:]]' || { echo "ERROR: --release-name must not be empty" >&2; exit 2; }
+        RELEASE_MILESTONE="$1"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "release-convention: unknown option '$1'" >&2; exit 2 ;;
     esac

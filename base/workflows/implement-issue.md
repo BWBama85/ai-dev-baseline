@@ -430,8 +430,9 @@ might need later — slices you cut, the parent's own "Out of scope" list, gap-a
 issue if one doesn't already exist. **File by default; never ask.** A PR body is not
 a tracker. `gh issue list --search …` first to avoid dupes.
 
-Placement: if the repo uses a release-goal/milestone convention (e.g. a rolling
-`Next release` + standing `Backlog`), **default a discovery to `Backlog`** — work you
+Placement: if the repo uses a release-goal/milestone convention — detected the same opt-in
+way `/roadmap` activates (the `roadmap` artifact's `release-milestone` marker, **not**
+coincidental milestone names) — **default a discovery to `Backlog`** — work you
 surface *while implementing* is exactly what must not expand the frozen release set, or
 readiness never converges (`docs/release-goal-convention.md`). Only an issue that is a
 genuine dependency of the *current* release goal goes into `Next release`; tangential /
