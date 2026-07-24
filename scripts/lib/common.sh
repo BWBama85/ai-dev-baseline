@@ -268,9 +268,10 @@ adb_repo_shape() {
   local start="${1:-$PWD}" abs root parent parent_root in_git=0 parent_in_git=0 nested_in=""
   local dir depth max=8 doc up truncated rel base mdir
 
-  # Canonicalize the start dir physically; a subshell keeps the caller's cwd intact. An
-  # unresolvable start is a `warning`, not a silent empty result.
-  abs="$(cd "$start" 2>/dev/null && pwd -P)"
+  # Canonicalize the start dir physically; a subshell keeps the caller's cwd intact. `--` guards a
+  # leading-dash start (a general primitive may be handed one). An unresolvable start is a
+  # `warning`, not a silent empty result.
+  abs="$(cd -- "$start" 2>/dev/null && pwd -P)"
   if [ -z "$abs" ]; then
     printf 'in_git\t0\n'
     printf 'root\t%s\n' "$start"

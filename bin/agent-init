@@ -32,6 +32,12 @@ FORCE=0
 # only SURFACE what it finds, then initialize the resolved git root.
 shape="$(adb_repo_shape "$PWD")"
 
+# Surface any diagnostics first, so a warning (e.g. an unreadable start) is shown BEFORE — and
+# gives the real reason for — a refusal below, rather than being stranded after the exit path.
+adb_shape_all "$shape" warning | while IFS= read -r m; do
+  echo "warning: $m" >&2
+done
+
 if [ "$(adb_shape_val "$shape" in_git)" != "1" ]; then
   echo "ERROR: not inside a git repo — agent-init is a per-project initializer for a git repo." >&2
   echo "  Run it anywhere inside your project's repo (it resolves the git root itself), or" >&2
@@ -69,10 +75,6 @@ done
 trunc="$(adb_shape_val "$shape" scan_truncated)"
 [ -n "$trunc" ] && \
   echo "note: stopped scanning parent directories after $trunc levels — if your project root is higher up, run agent-init closer to it."
-
-adb_shape_all "$shape" warning | while IFS= read -r m; do
-  echo "warning: $m" >&2
-done
 
 cd "$ROOT" || { echo "ERROR: cannot cd to repo root: $ROOT" >&2; exit 1; }
 
