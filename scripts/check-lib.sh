@@ -108,6 +108,13 @@ check_summary() {
 # signing gap the per-file wrappers left in some tests).
 check_git() { git -C "$1" -c user.email=t@t -c user.name=t -c commit.gpgsign=false "${@:2}"; }
 
+# canon <dir> — the physical (symlink-resolved) absolute path of <dir>, mirroring what code that
+# uses `git rev-parse --show-toplevel` / `pwd -P` compares against. On macOS a mktemp dir is
+# /var/… while its physical form is /private/var/…; without canonicalizing, a naive path assertion
+# would flap. Used by repo-shape tests (adb_repo_shape / bin/agent-init). Prints nothing if <dir>
+# is unreadable. Usage: expected="$(canon "$fixture")"
+canon() { ( cd "$1" 2>/dev/null && pwd -P ); }
+
 # check_make_repo_pair <local_dir> <bare_dir> — init a bare origin, init a local repo (its dir
 # may already contain files), stamp the local's throwaway identity + signing-off config, and
 # wire `origin` to the bare repo. It deliberately does NOT commit, branch, push, or set

@@ -28,11 +28,9 @@ trap 'rm -rf "$work"' EXIT
 FAKEHOME="$work/home"; mkdir -p "$FAKEHOME"
 
 # Run agent-init with cwd=<dir> and an isolated HOME; capture merged stdout+stderr and status.
-# (A subshell cd keeps the test's own cwd — the repo root — intact.)
+# (A subshell cd keeps the test's own cwd — the repo root — intact.) canon() (physical path,
+# for the /var vs /private/var comparison) is provided by check-lib.sh.
 run_init() { ( cd "$1" && HOME="$FAKEHOME" bash "$AGENT_INIT" 2>&1 ); }
-# Physical canonical path — agent-init echoes shape paths canonicalized via `pwd -P`, so on macOS
-# a /var vs /private/var mismatch would make a naive substring assertion flap.
-canon() { ( cd "$1" 2>/dev/null && pwd -P ); }
 
 # --- (1) tidy repo, cwd == root: writes at root, exits 0, stays quiet ---------
 tidy="$work/tidy"; mkdir -p "$tidy"; git init -q "$tidy"

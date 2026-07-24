@@ -219,7 +219,10 @@ adb_repo_root() {
 # tell a real nested project root (a monorepo package, a nested app) from a bare, stray root doc.
 # A `CLAUDE.md` sitting next to a `package.json` is a project; one sitting alone (e.g. this
 # framework's own GENERATED agents/<agent>/CLAUDE.md) is not. Deliberately a common-ecosystem
-# list; extend as new stacks appear. Usage: _adb_has_project_manifest <dir>
+# list; extend as new stacks appear. project-gates.sh carries a DELIBERATELY separate manifest
+# list — it answers "which gate command runs" (gated on tool availability), not this "is this a
+# project root" structural question, so the two are intentionally not unified. The lists may drift;
+# that is accepted. Usage: _adb_has_project_manifest <dir>
 _adb_has_project_manifest() {
   local d="$1" m
   for m in package.json pnpm-workspace.yaml composer.json Cargo.toml go.mod pyproject.toml \
@@ -262,7 +265,7 @@ _adb_has_project_manifest() {
 # docs inside a submodule/gitlink — such nested docs are not enumerated by extra_doc.
 # Usage: adb_repo_shape [start_dir]   (start_dir defaults to the current directory)
 adb_repo_shape() {
-  local start="${1:-$PWD}" abs root parent parent_root in_git=0 nested_in=""
+  local start="${1:-$PWD}" abs root parent parent_root in_git=0 parent_in_git=0 nested_in=""
   local dir depth max=8 doc up truncated rel base mdir
 
   # Canonicalize the start dir physically; a subshell keeps the caller's cwd intact. An
@@ -278,9 +281,10 @@ adb_repo_shape() {
   fi
   start="$abs"
 
+  # `git -C <physical dir> rev-parse --show-toplevel` returns a physical (symlink-resolved) path,
+  # so — because `start` is already physical — root and parent_root need no further `pwd -P`.
   if root="$(git -C "$start" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$root" ]; then
     in_git=1
-    root="$(cd "$root" 2>/dev/null && pwd -P)"
   else
     root="$start"
   fi
@@ -291,21 +295,17 @@ adb_repo_shape() {
   parent="$(dirname "$root")"
   # Is root's parent inside ANY git repo? If so and that repo's top-level differs from root, root
   # is NESTED inside it. (root's own .git lives below parent, so a parent match is always a
-  # DIFFERENT, enclosing repo — never root itself.)
-  if [ "$in_git" -eq 1 ] && [ "$parent" != "$root" ]; then
-    if parent_root="$(git -C "$parent" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$parent_root" ]; then
-      parent_root="$(cd "$parent_root" 2>/dev/null && pwd -P)"
-      printf 'parent_in_git\t1\n'
-      if [ "$parent_root" != "$root" ]; then
-        nested_in="$parent_root"
-        printf 'nested_in\t%s\n' "$parent_root"
-      fi
-    else
-      printf 'parent_in_git\t0\n'
+  # DIFFERENT, enclosing repo — never root itself.) Compute the flag once, emit once.
+  parent_in_git=0
+  if [ "$in_git" -eq 1 ] && [ "$parent" != "$root" ] \
+     && parent_root="$(git -C "$parent" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$parent_root" ]; then
+    parent_in_git=1
+    if [ "$parent_root" != "$root" ]; then
+      nested_in="$parent_root"
+      printf 'nested_in\t%s\n' "$parent_root"
     fi
-  else
-    printf 'parent_in_git\t0\n'
   fi
+  printf 'parent_in_git\t%s\n' "$parent_in_git"
 
   # foreign_doc: root docs ABOVE root, nearest-first. Check each ancestor (including an enclosing
   # repo root, then stop there); else climb to / or the depth bound. truncated stays 1 only if the
@@ -338,6 +338,16 @@ adb_repo_shape() {
   fi
   return 0
 }
+
+# Read value(s) for <key> from a TAB-separated "<key>\t<value>" facts blob (as produced by
+# adb_repo_shape) — the ONE home for reading the shape TSV, so the delimiter/column contract lives
+# in a single place instead of being re-inlined in each consumer (agent-init, tests, and the
+# deferred per-skill preflight all call these rather than hand-writing the awk). adb_shape_val
+# prints the FIRST match (empty if none); adb_shape_all prints EVERY match, one per line, for a
+# repeatable key (foreign_doc / extra_doc / warning).
+# Usage: adb_shape_val <facts> <key> ; adb_shape_all <facts> <key>
+adb_shape_val() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{print $2; exit}'; }
+adb_shape_all() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{print $2}'; }
 
 # Classify a local branch's currency versus its origin/<branch> counterpart, using
 # ONLY already-fetched refs — the CALLER must `git fetch` first (this function never
