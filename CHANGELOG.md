@@ -9,6 +9,25 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **Repo-shape tolerance — `adb_repo_shape` + shape-aware `agent-init`** (`scripts/lib/common.sh`,
+  `bin/agent-init`, `base/practices/repo-scope.md`, #23): a new shared primitive that reports the
+  *shape* of the repo a directory sits in — git-root vs. working dir (`cwd_is_root`), whether the
+  parent is itself in a repo (`parent_in_git` / `nested_in`), root docs found **above** the repo
+  and outside it (`foreign_doc`), and additional in-tree package root docs (`extra_doc`) — so
+  tooling stops assuming git-root == project-root or a single root doc. It canonicalizes paths
+  physically (so macOS `/var` vs `/private/var` never mis-compares), and never lets an unknown
+  masquerade as a clean answer (an unreadable start emits `warning`, a depth-bounded scan emits
+  `scan_truncated`). `bin/agent-init` now consumes it: run from **anywhere inside** a repo it
+  resolves and initializes the git root, and it **surfaces** a non-tidy layout — a repo nested in
+  an untracked parent tree (e.g. a plugin under a WordPress install), an out-of-repo `CLAUDE.md`
+  referenced by relative path, a monorepo/layered layout — instead of hard-failing or writing to
+  the wrong root; a non-git directory is refused without writing anything. `base/practices/repo-scope.md`
+  gains a "the project may be larger or smaller than the git root" section (rendered into all three
+  root docs). New tests: `adb_repo_shape` cases in `check-common-lib.sh` + a dedicated
+  `scripts/check-agent-init.sh` integration test (+ CI job) covering subdir resolution, the
+  bama-style untracked-parent acceptance case, nested repos, and the non-git refusal. The mechanical
+  per-skill preflight wiring (e.g. `/implement-issue`'s post-merge sync consuming the primitive) is
+  tracked as a follow-up.
 - **Runtime role-dispatch helper + role-model extensibility** (`scripts/lib/role-dispatch.sh`,
   #15 / #8 / #26): a shared, agent-neutral helper that reads `agents.toml`, resolves a role
   through the documented order (repo → global default → built-in), and dispatches the work to

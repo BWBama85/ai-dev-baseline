@@ -130,12 +130,21 @@ call it directly from the clone or through something else on PATH that
 symlinks to it. The same `bin/` directory also carries **`baseline`**, the
 keep-current command (see [Keeping the install current](#keeping-the-install-current)).
 
-Then, at the root of any project:
+Then, **anywhere inside** any project's repo (it resolves the git root itself —
+you don't have to be at the top level):
 
 ```bash
-agent-init            # writes ./agents.toml if absent
+agent-init            # writes agents.toml at the git root if absent
 agent-init --force     # overwrites an existing agents.toml
 ```
+
+`agent-init` is repo-shape tolerant (#23): run from a subdirectory it still writes
+at the git root, and it **surfaces** a non-tidy layout instead of silently guessing —
+a repo nested inside an untracked parent tree (e.g. a plugin under a WordPress
+install), a `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` that lives *outside* the repo, or a
+monorepo/layered layout with multiple root docs. It reports what it can and cannot
+see, then initializes only the resolved git root. A non-git directory is refused with
+a clear message (nothing is written) — `git init` first if it really is a project.
 
 ## 7. Requirements
 

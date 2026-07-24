@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — per-project initializer.
 #
-# Run at a repo root. Sets up this project's agent role manifest and the runtime
-# state gitignore, then prints the effective role map. The global install already
-# makes the skills + gates available everywhere; this is the lightweight
-# per-project layer (base/practices/00-index.md: project overrides global).
+# Run ANYWHERE inside a project's repo (it resolves the git root itself). Sets up this
+# project's agent role manifest and the runtime state gitignore, then prints the effective
+# role map. The global install already makes the skills + gates available everywhere; this
+# is the lightweight per-project layer (base/practices/00-index.md: project overrides global).
+#
+# Repo-shape tolerant (#23): it resolves the git root even when called from a subdirectory, and
+# surfaces a non-tidy shape — a repo nested inside an untracked parent tree, an out-of-repo root
+# doc referenced by relative path, a monorepo/layered layout — instead of silently operating on
+# the wrong root. It only ever initializes the resolved git root.
 #
 # Usage: agent-init [--force]     (--force overwrites an existing agents.toml)
 
@@ -22,9 +27,55 @@ REPO="$(cd "$(dirname "$self")/.." && pwd)"
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1
 
-git rev-parse --show-toplevel >/dev/null 2>&1 || { echo "ERROR: not inside a git repo" >&2; exit 1; }
-ROOT="$(git rev-parse --show-toplevel)"
-cd "$ROOT" || { echo "ERROR: cannot cd to repo root" >&2; exit 1; }
+# Resolve the project root shape-tolerantly (#23) via the shared primitive — the ONE home for
+# the resolution. Here we only SURFACE what it finds, then initialize the resolved git root.
+shape="$(adb_repo_shape "$PWD")"
+shape_val() { printf '%s\n' "$shape" | awk -F'\t' -v k="$1" '$1==k{print $2; exit}'; }
+shape_all() { printf '%s\n' "$shape" | awk -F'\t' -v k="$1" '$1==k{print $2}'; }
+
+if [ "$(shape_val in_git)" != "1" ]; then
+  echo "ERROR: not inside a git repo — agent-init is a per-project initializer for a git repo." >&2
+  echo "  Run it anywhere inside your project's repo (it resolves the git root itself), or" >&2
+  echo "  'git init' this directory first if it really is a standalone project." >&2
+  exit 1
+fi
+ROOT="$(shape_val root)"
+
+# Surface any non-tidy repo shape BEFORE writing anything, so the operator sees exactly what
+# agent-init can and cannot manage. None of these are errors — but agent-init must never pretend
+# a wider project is invisible, nor operate on the wrong root. It reports facts and asks the
+# operator to confirm the boundary; it never claims to know the "real" project extent.
+[ "$(shape_val cwd_is_root)" = "0" ] && \
+  echo "note: working dir is below the git root — initializing at the git root: $ROOT"
+
+nested="$(shape_val nested_in)"
+[ -n "$nested" ] && \
+  echo "note: this repo is NESTED inside another git repo at $nested — that outer repo is out of scope here; agent-init manages only $ROOT."
+
+foreign_docs="$(shape_all foreign_doc)"
+if [ -n "$foreign_docs" ]; then
+  printf '%s\n' "$foreign_docs" | while IFS= read -r d; do
+    [ -n "$d" ] && echo "note: found a root doc OUTSIDE this repo at $d — referenced by relative path but invisible to git-aware tooling; agent-init won't read or manage it."
+  done
+  # An out-of-repo doc above a repo whose parent is in no git repo is evidence this repo sits
+  # inside a larger, untracked tree. Report the fact and ask; don't assert the project's extent.
+  [ "$(shape_val parent_in_git)" = "0" ] && \
+    echo "note: the git root's parent is outside any git repo — this repo may sit inside a larger, untracked project tree. Confirm which root your work maps to; agent-init initializes only the git root."
+fi
+
+shape_all extra_doc | while IFS= read -r d; do
+  [ -n "$d" ] && echo "note: found another project root doc in-tree at $d — this looks like a monorepo/layered layout; agent-init initializes only the top-level git root ($ROOT)."
+done
+
+trunc="$(shape_val scan_truncated)"
+[ -n "$trunc" ] && \
+  echo "note: stopped scanning parent directories after $trunc levels — if your project root is higher up, run agent-init closer to it."
+
+shape_all warning | while IFS= read -r m; do
+  [ -n "$m" ] && echo "warning: $m" >&2
+done
+
+cd "$ROOT" || { echo "ERROR: cannot cd to repo root: $ROOT" >&2; exit 1; }
 
 # 1. Role manifest
 if [ -f agents.toml ] && [ "$FORCE" -eq 0 ]; then

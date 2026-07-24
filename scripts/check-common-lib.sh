@@ -264,6 +264,72 @@ eq "$( cd "$gitrepo" && adb_repo_root )" "$(git -C "$gitrepo" rev-parse --show-t
 nongit="$work/plain-dir"; mkdir -p "$nongit"
 eq "$( cd "$nongit" && adb_repo_root )" "$( cd "$nongit" && pwd )" "adb_repo_root outside a git repo → pwd"
 
+# --- adb_repo_shape (#23) ----------------------------------------------------
+# Pull one fact (all values, newline-joined) for a key out of a captured shape TSV.
+shape_fact() { printf '%s\n' "$1" | awk -F'\t' -v k="$2" '$1==k{print $2}'; }
+# Physical (symlink-resolved) canonical path — mirrors what the primitive compares against, so a
+# macOS /var vs /private/var mismatch can't make these assertions flap.
+canon() { ( cd "$1" 2>/dev/null && pwd -P ); }
+
+# (1) Tidy repo, cwd == root: root is canonical, cwd_is_root=1, parent not a repo, nothing exotic.
+tidy="$work/tidy"; mkdir -p "$tidy"; git init -q "$tidy"
+sh1="$(adb_repo_shape "$tidy")"
+eq "$(shape_fact "$sh1" in_git)"        "1"            "shape: tidy repo is in_git"
+eq "$(shape_fact "$sh1" root)"          "$(canon "$tidy")" "shape: root is the canonical git top-level"
+eq "$(shape_fact "$sh1" cwd_is_root)"   "1"            "shape: cwd==root → cwd_is_root=1"
+eq "$(shape_fact "$sh1" parent_in_git)" "0"            "shape: tidy repo's parent is not a git repo"
+eq "$(shape_fact "$sh1" nested_in)"     ""             "shape: tidy repo is not nested"
+eq "$(shape_fact "$sh1" foreign_doc)"   ""             "shape: tidy repo has no foreign docs"
+eq "$(shape_fact "$sh1" extra_doc)"     ""             "shape: tidy repo has no extra docs"
+
+# (2) Working dir below the git root → cwd_is_root=0, root still the top-level.
+mkdir -p "$tidy/sub/deeper"
+sh2="$(adb_repo_shape "$tidy/sub/deeper")"
+eq "$(shape_fact "$sh2" cwd_is_root)" "0"                "shape: cwd below root → cwd_is_root=0"
+eq "$(shape_fact "$sh2" root)"        "$(canon "$tidy")" "shape: subdir still resolves the git root"
+
+# (3) Nested repo: an inner repo checked out inside an outer repo.
+outer="$work/outer"; mkdir -p "$outer"; git init -q "$outer"
+inner="$outer/vendor/plugin"; mkdir -p "$inner"; git init -q "$inner"
+sh3="$(adb_repo_shape "$inner")"
+eq "$(shape_fact "$sh3" root)"          "$(canon "$inner")" "shape: nested inner repo resolves to itself"
+eq "$(shape_fact "$sh3" parent_in_git)" "1"                 "shape: nested repo's parent is inside a git repo"
+eq "$(shape_fact "$sh3" nested_in)"     "$(canon "$outer")" "shape: nested_in names the enclosing repo"
+
+# (4) bama-style: a git repo dropped inside an UNTRACKED parent tree, with a root doc ABOVE it.
+site="$work/site"; plugin="$site/wp-content/plugins/myplugin"
+mkdir -p "$plugin"; git init -q "$plugin"
+printf 'site root doc\n' > "$site/CLAUDE.md"        # outside any repo
+sh4="$(adb_repo_shape "$plugin")"
+eq "$(shape_fact "$sh4" root)"          "$(canon "$plugin")" "shape: bama-style resolves the plugin as root"
+eq "$(shape_fact "$sh4" parent_in_git)" "0"                  "shape: bama-style parent is outside any git repo"
+eq "$(shape_fact "$sh4" nested_in)"     ""                   "shape: bama-style is not nested in another repo"
+has "$(shape_fact "$sh4" foreign_doc)"  "$(canon "$site")/CLAUDE.md" "shape: finds the out-of-repo site CLAUDE.md above"
+
+# (5) Monorepo / layered: extra_doc lists an in-tree root doc that sits beside a manifest, and
+# NEVER a bare doc with no manifest (the framework's own generated agents/<a>/CLAUDE.md class) or
+# the top-level root doc itself.
+mono="$work/mono"; mkdir -p "$mono/packages/api" "$mono/docs"; git init -q "$mono"
+printf 'top\n'  > "$mono/CLAUDE.md"                 # top-level root doc — never an extra_doc
+printf 'pkg\n'  > "$mono/packages/api/CLAUDE.md"    # beside a manifest → an extra_doc
+printf '{}\n'   > "$mono/packages/api/package.json"
+printf 'bare\n' > "$mono/docs/CLAUDE.md"            # no manifest sibling → NOT an extra_doc
+git -C "$mono" add -A                                # extra_doc reads the index (tracked only)
+sh5="$(adb_repo_shape "$mono")"
+extra5="$(shape_fact "$sh5" extra_doc)"
+has  "$extra5" "$(canon "$mono")/packages/api/CLAUDE.md" "shape: extra_doc includes a doc beside a manifest"
+hasnt "$extra5" "docs/CLAUDE.md"                          "shape: extra_doc excludes a bare doc (no manifest)"
+hasnt "$extra5" "$(canon "$mono")/CLAUDE.md"              "shape: extra_doc never lists the top-level root doc"
+# An UNtracked package doc is invisible to extra_doc (git ls-files reads the index).
+mkdir -p "$mono/packages/web"; printf 'web\n' > "$mono/packages/web/CLAUDE.md"; printf '{}\n' > "$mono/packages/web/package.json"
+sh5b="$(adb_repo_shape "$mono")"
+hasnt "$(shape_fact "$sh5b" extra_doc)" "packages/web/CLAUDE.md" "shape: extra_doc is tracked-only (untracked package doc excluded)"
+
+# (6) Unreadable start dir → in_git=0 and a surfaced warning (never a silent empty result).
+sh6="$(adb_repo_shape "$work/no/such/path")"
+eq "$(shape_fact "$sh6" in_git)" "0"     "shape: nonexistent start is not in_git"
+has "$(shape_fact "$sh6" warning)" "unreadable" "shape: nonexistent start emits a warning"
+
 # --- adb_branch_sync_state ---------------------------------------------------
 # Drive every state with a LOCAL bare "origin" (file://, no network): one working
 # clone plus a second clone that advances origin, so behind/ahead/diverged are real.

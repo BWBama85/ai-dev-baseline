@@ -215,6 +215,130 @@ adb_repo_root() {
   git rev-parse --show-toplevel 2>/dev/null || pwd
 }
 
+# True (0) iff <dir> holds a recognizable project manifest — the signal adb_repo_shape uses to
+# tell a real nested project root (a monorepo package, a nested app) from a bare, stray root doc.
+# A `CLAUDE.md` sitting next to a `package.json` is a project; one sitting alone (e.g. this
+# framework's own GENERATED agents/<agent>/CLAUDE.md) is not. Deliberately a common-ecosystem
+# list; extend as new stacks appear. Usage: _adb_has_project_manifest <dir>
+_adb_has_project_manifest() {
+  local d="$1" m
+  for m in package.json pnpm-workspace.yaml composer.json Cargo.toml go.mod pyproject.toml \
+           setup.py build.gradle build.gradle.kts pom.xml; do
+    [ -f "$d/$m" ] && return 0
+  done
+  return 1
+}
+
+# Report the SHAPE of the repo a starting dir sits in, so tooling can tolerate the messy real
+# world — working-dir ≠ git-root, nested repos, a repo dropped inside an untracked parent tree,
+# and layered/multiple root docs — instead of assuming a tidy single-root state (#23). Prints
+# TAB-separated "<key>\t<value>" facts on stdout, one per line, and ALWAYS returns 0 (a shape is
+# descriptive, never an error) — but an unknown never masquerades as a clean answer: an
+# unreadable start emits `warning`, and a scan that hits its depth bound emits `scan_truncated`,
+# so "couldn't tell" is visible rather than silently collapsing to "nothing found".
+#
+# Facts (a stable TSV schema; consumers should ignore keys they don't know):
+#   in_git         1 if the start dir is inside a git work tree, else 0
+#   root           the resolved project root — the git top-level, else the start dir
+#   cwd_is_root    1 if the start dir IS that root, else 0 (i.e. working dir is below the git root)
+#   parent_in_git  1 if root's parent dir is itself inside ANY git repo, else 0
+#   nested_in <p>  emitted once, iff root is nested inside a DIFFERENT enclosing git repo (its root)
+#   foreign_doc <p>  0..n, nearest-first: a root doc (CLAUDE.md/AGENTS.md/GEMINI.md) found ABOVE
+#                    root — outside this repo, referenced by relative path yet invisible to any
+#                    git-aware tool. The walk includes an enclosing repo root (nested_in) and then
+#                    stops there; else it climbs to / or a depth bound.
+#   extra_doc <p>    0..n: an ADDITIONAL tracked root doc strictly BELOW root that also sits beside
+#                    a project manifest (a monorepo/layered signal). git ls-files keeps it
+#                    tracked-only + vendor-clean; the top-level root doc itself is never listed.
+#   scan_truncated <n>  the upward foreign_doc walk stopped at its depth bound <n> without reaching
+#                    / or an enclosing repo — a doc higher up may exist but was not scanned.
+#   warning <msg>  a non-fatal problem (e.g. the start dir is unreadable) worth surfacing.
+#
+# Every path is canonicalized PHYSICALLY (`pwd -P`, resolving symlinks) before comparison, because
+# `git rev-parse --show-toplevel` returns a physical path (on macOS `mktemp` gives /var/… while git
+# reports /private/var/…) — without this, cwd_is_root would mis-compare. The caller's own working
+# directory is never changed (all cd's run in subshells). Paths containing a TAB or newline are
+# unsupported (same assumption as adb_agent_manifest). A superproject's `git ls-files` cannot see
+# docs inside a submodule/gitlink — such nested docs are not enumerated by extra_doc.
+# Usage: adb_repo_shape [start_dir]   (start_dir defaults to the current directory)
+adb_repo_shape() {
+  local start="${1:-$PWD}" abs root parent parent_root in_git=0 nested_in=""
+  local dir depth max=8 doc up truncated rel base mdir
+
+  # Canonicalize the start dir physically; a subshell keeps the caller's cwd intact. An
+  # unresolvable start is a `warning`, not a silent empty result.
+  abs="$(cd "$start" 2>/dev/null && pwd -P)"
+  if [ -z "$abs" ]; then
+    printf 'in_git\t0\n'
+    printf 'root\t%s\n' "$start"
+    printf 'cwd_is_root\t1\n'
+    printf 'parent_in_git\t0\n'
+    printf 'warning\tstart directory does not exist or is unreadable: %s\n' "$start"
+    return 0
+  fi
+  start="$abs"
+
+  if root="$(git -C "$start" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$root" ]; then
+    in_git=1
+    root="$(cd "$root" 2>/dev/null && pwd -P)"
+  else
+    root="$start"
+  fi
+  printf 'in_git\t%s\n' "$in_git"
+  printf 'root\t%s\n' "$root"
+  if [ "$start" = "$root" ]; then printf 'cwd_is_root\t1\n'; else printf 'cwd_is_root\t0\n'; fi
+
+  parent="$(dirname "$root")"
+  # Is root's parent inside ANY git repo? If so and that repo's top-level differs from root, root
+  # is NESTED inside it. (root's own .git lives below parent, so a parent match is always a
+  # DIFFERENT, enclosing repo — never root itself.)
+  if [ "$in_git" -eq 1 ] && [ "$parent" != "$root" ]; then
+    if parent_root="$(git -C "$parent" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$parent_root" ]; then
+      parent_root="$(cd "$parent_root" 2>/dev/null && pwd -P)"
+      printf 'parent_in_git\t1\n'
+      if [ "$parent_root" != "$root" ]; then
+        nested_in="$parent_root"
+        printf 'nested_in\t%s\n' "$parent_root"
+      fi
+    else
+      printf 'parent_in_git\t0\n'
+    fi
+  else
+    printf 'parent_in_git\t0\n'
+  fi
+
+  # foreign_doc: root docs ABOVE root, nearest-first. Check each ancestor (including an enclosing
+  # repo root, then stop there); else climb to / or the depth bound. truncated stays 1 only if the
+  # bound is what stopped us, so scan_truncated discloses a possibly-unscanned higher doc.
+  if [ "$in_git" -eq 1 ] && [ "$parent" != "$root" ]; then
+    dir="$parent"; depth=0; truncated=1
+    while [ "$depth" -lt "$max" ]; do
+      for doc in CLAUDE.md AGENTS.md GEMINI.md; do
+        [ -f "$dir/$doc" ] && printf 'foreign_doc\t%s\n' "$dir/$doc"
+      done
+      if [ -n "$nested_in" ] && [ "$dir" = "$nested_in" ]; then truncated=0; break; fi
+      up="$(dirname "$dir")"
+      if [ "$up" = "$dir" ]; then truncated=0; break; fi
+      dir="$up"; depth=$((depth + 1))
+    done
+    [ "$truncated" -eq 1 ] && printf 'scan_truncated\t%s\n' "$max"
+  fi
+
+  # extra_doc: tracked root docs strictly below root that sit beside a project manifest. `-z`
+  # output + shell filtering avoids an ambiguous CLAUDE.md pathspec; only .md is enumerated for
+  # speed. Only printf's inside the pipe's subshell, so no state needs to survive it.
+  if [ "$in_git" -eq 1 ]; then
+    git -C "$root" ls-files -z -- '*.md' 2>/dev/null | while IFS= read -r -d '' rel; do
+      base="${rel##*/}"
+      case "$base" in CLAUDE.md|AGENTS.md|GEMINI.md) : ;; *) continue ;; esac
+      case "$rel" in */*) : ;; *) continue ;; esac   # strictly below root (has a path separator)
+      mdir="$root/${rel%/*}"
+      _adb_has_project_manifest "$mdir" && printf 'extra_doc\t%s\n' "$root/$rel"
+    done
+  fi
+  return 0
+}
+
 # Classify a local branch's currency versus its origin/<branch> counterpart, using
 # ONLY already-fetched refs — the CALLER must `git fetch` first (this function never
 # touches the network, so it is safe to unit-test against a local bare "origin"). It
