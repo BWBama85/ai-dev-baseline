@@ -270,6 +270,13 @@ This includes, without exception:
   release-slated; tangential or post-deploy work goes to the backlog). Otherwise
   default to the project's backlog. Never leave a new issue milestone-less if the
   project uses milestones.
+- **Respect a frozen release set.** When a project freezes the current release's
+  requirements (a release-goal convention with a rolling release milestone plus a
+  standing backlog), newly *discovered* work defaults to the **backlog**, never the
+  active release milestone — only a deliberate current-release requirement enters it.
+  Freezing is what lets "done" stay reachable: an ever-growing release set never
+  converges. Detect the convention live rather than assuming it; a project without one
+  is unaffected.
 
 ## Why
 

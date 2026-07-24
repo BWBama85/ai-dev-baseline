@@ -9,6 +9,22 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **Release-goal convention module + `/roadmap` release-readiness** (`docs/release-goal-convention.md`,
+  `scripts/lib/release-convention.sh`, `bin/baseline`, `base/workflows/roadmap.md`, #27 + #71): an
+  **opt-in** module that lets the workflow — not the operator — decide when a release is ready. `baseline
+  release init` stands up the `Next release` (rolling) + `Backlog` (standing) milestones and the
+  `release-blocker` + `post-deploy` labels in a repo, idempotently, and seeds the activation marker on the
+  roadmap artifact. When a repo opts in (an explicit `<!-- release-milestone: NAME -->` marker on the
+  roadmap issue — never coincidental milestone-name detection), `/roadmap` computes readiness live every
+  run — **0 open `release-blocker` issues in the active milestone** (falling back to 0 open issues when the
+  label doesn't exist), requiring an *armed* (non-empty) set and surfacing a `NOT_PLANNED`-canceled blocker
+  — scopes advancement to the release set (projecting bundles onto the milestone so `Backlog` work is never
+  pulled forward), and emits `Next: /release` with a requirements-met banner once met. It composes with the
+  destination-report gauge (#68), which is milestone-scoped in this mode so gauge and trigger agree. Issue
+  filing (`/create-issue`, `/implement-issue` deferred-work, and the `issues-and-scope` practice) defaults a
+  *discovery* to `Backlog` when the convention is detected live, so the frozen requirement set converges.
+  A repo that never adopts it sees **byte-identical** classic behavior. The auto-cut (zero-touch `/release`)
+  executor is documented as an opt-in driver-layer concern and tracked as a follow-up; `/roadmap` only emits.
 - **Repo-shape tolerance — `adb_repo_shape` + shape-aware `agent-init`** (`scripts/lib/common.sh`,
   `bin/agent-init`, `base/practices/repo-scope.md`, #23): a new shared primitive that reports the
   *shape* of the repo a directory sits in — git-root vs. working dir (`cwd_is_root`), whether the

@@ -271,6 +271,17 @@ jobs:
       - name: /cleanup remote enumeration must exclude the origin/HEAD symref (#38)
         run: bash scripts/check-cleanup-enum.sh
 
+  release-convention:
+    name: release-convention
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Release-goal convention helper — dispatch, arg-parsing, fail-loud gh guard (#27)
+        run: bash scripts/check-release-convention.sh
+
   baseline:
     name: baseline
     runs-on: ubuntu-latest

@@ -1,6 +1,6 @@
 ---
 name: roadmap
-description: Maintain the build roadmap and emit the next /implement-issue batch. Locates one canonical roadmap artifact (a `roadmap`-labeled issue), reconciles it against the live tracker, and outputs the next unblocked, one-branch bundle of issue IDs. Bootstraps the artifact if none exists. Works in any repo with a GitHub issue tracker.
+description: Maintain the build roadmap and emit the next /implement-issue batch. Locates one canonical roadmap artifact (a `roadmap`-labeled issue), reconciles it against the live tracker, and outputs the next unblocked, one-branch bundle of issue IDs. Bootstraps the artifact if none exists. When a repo opts into the release-goal convention, it also computes release readiness live and emits the release command once the active milestone's requirements are met. Works in any repo with a GitHub issue tracker.
 argument-hint: (no argument)
 user-invocable: true
 effort: high
@@ -21,6 +21,13 @@ self-draining queue: as long as **implementable** open work remains, every run y
 batch; when work is only blocked, in-flight, or already-satisfied-but-open it says so (naming
 the blocker or the flag) instead of fabricating one; and when no open issue remains it reports
 "roadmap complete."
+
+For a repo that opts into the **release-goal convention** (`base/practices` + the module doc,
+issues #27/#71), it does one more thing: it computes **release readiness** live every run — the
+workflow, not the operator, decides when the active release milestone's requirements are met — and
+emits the release command instead of a build batch once they are. That turns a divergent loop into
+a **terminating** one. This is an opt-in overlay (see "Release-readiness mode"); a repo that never
+adopts it sees byte-identical classic behavior.
 
 This automates, deterministically, the roadmap maintenance done by hand today (a pinned
 roadmap issue). It is `gh`-based and works in any repo with an issue tracker.
@@ -57,8 +64,17 @@ parse, and rewrite it deterministically:
 
 <!-- OPTIONAL finish-line report (owner opt-in): to print "LABEL: N blocker(s) open" each run
      (step 6, "Destination report"), add a line `<!-- destination-label: LABEL -->` here, naming
-     the label to count (e.g. v1). Omitted by default — bootstrap NEVER writes it, so a fresh
-     roadmap ships with no destination until the owner opts in. Delete the line to disable. -->
+     the label to count (e.g. release-blocker). Omitted by default — bootstrap NEVER writes it, so
+     a fresh roadmap ships with no destination until the owner opts in. Delete the line to disable. -->
+
+<!-- OPTIONAL release-readiness mode (owner opt-in — the release-goal convention module, #27/#71):
+     add `<!-- release-milestone: NAME -->` naming the active release milestone to make /roadmap
+     compute release readiness live and emit the release command when the requirements are met (see
+     "Release-readiness mode" below). Optionally `<!-- release-command: /release -->` overrides the
+     emitted command (default `/release`). Bootstrap NEVER writes these; absent → classic
+     backlog-wide behavior, byte-identical to a repo that never adopted the convention. Set the
+     value empty (`<!-- release-milestone: -->`) or delete the line to force classic mode. Stand the
+     convention up with `baseline release init` — see docs/release-goal-convention.md. -->
 
 Order + branch-bundles + dependency edges. Milestone membership is **not** duplicated here
 (it lives in the milestones, read live from `gh`). This artifact holds only what the tracker
@@ -119,6 +135,73 @@ build; surfaced to the Reconcile flags, never emitted) → `blocked` (a dependen
 row that will never be emitted; only a genuinely-open (`implementable`/`in-flight`) or
 `owner-review` prerequisite still blocks) → `ready` (≥1 implementable member, all deps satisfied,
 no in-flight member).
+
+## Release-readiness mode (optional — the release-goal convention, #27/#71)
+
+Most repos run in **classic mode**: everything below in this section is inert and `/roadmap`
+behaves exactly as it always has. This mode is an **opt-in overlay** that makes the workflow —
+not the operator — decide when a release is ready and emit the cut. It is active **only** when
+the artifact carries a non-empty `<!-- release-milestone: NAME -->` marker (see the schema). It
+never turns on by coincidence: merely having a milestone named `Next release` is **not** enough,
+exactly as the `destination-label` gauge never enables itself. Stand the convention up with
+`baseline release init`; full docs in `docs/release-goal-convention.md`.
+
+**Activation (resolve the active milestone).** Read the marker's `NAME`. If absent or empty →
+**classic mode** (skip this whole section; output is byte-identical to a non-adopting repo). If
+present, resolve `NAME` live to the set of **open** milestones with that exact title:
+
+- **exactly one** → that milestone `M` is the active release milestone; release-readiness mode is on.
+- **zero or more than one** → **STOP and surface the mismatch** ("release-milestone marker names
+  `NAME`, which matches N open milestones"). Never guess, and never silently fall back to classic —
+  a broken opt-in is an owner-fixable error, not a mode switch.
+
+**The readiness predicate (computed live every run, from a fresh `gh` read).** Let `M` be the
+active release milestone; always **exclude the roadmap issue itself**.
+
+1. **Armed check.** `M` must hold ≥1 issue (open or closed). An empty `M` is **not armed** →
+   report "release milestone `NAME` has no requirements yet" and do **not** emit a cut (it is
+   neither ready nor "roadmap complete").
+2. **Blocker-mode vs fallback — keyed off label *existence*, never the live count** (so closing
+   the last blocker never flips the bar): probe `gh api "repos/$REPO/labels/release-blocker"` —
+   - **200 (label exists)** → readiness is met iff **0 open `release-blocker` issues in `M`**.
+   - **404 (label absent)** → readiness is met iff **0 open issues in `M`** (fallback).
+3. **Canceled requirement.** A `release-blocker` in `M` closed as `NOT_PLANNED` was *canceled*,
+   not delivered — record it in the **Reconcile flags** (`owner-review`) and do **not** declare
+   readiness met while such a canceled blocker is unacknowledged (mirrors the `dep-canceled` rule).
+
+**Scoping is advancement-only.** Reconcile (step 4) still runs **backlog-wide** over every open
+non-roadmap issue — narrowing it would stop re-verifying whether `Backlog` issues already shipped.
+Only step-6 **selection** is scoped: **project** each `ready` bundle onto `M` and emit only the
+members that are **in `M`**, dropping non-`M` members from the emitted batch — so a mixed bundle
+never pulls `Backlog` work forward. A `ready` bundle with **zero** `M` members is skipped while
+requirements are unmet. An `M` member whose only blocker is a non-`M` (`Backlog`) prerequisite is
+**surfaced** (pull the dep into the release or resolve it) rather than silently emitted or hidden.
+
+**Emission (replaces step 6's classic emit while this mode is on):**
+
+- **Unmet** (open blockers remain) → the next unblocked bundle **projected onto `M`**, exactly like
+  classic mode but scoped to the release set. Never emit `Backlog`-only work.
+- **Met** (armed, predicate satisfied, no unacknowledged canceled blocker) → emit
+  `Next: <release-command>` where `<release-command>` is the `<!-- release-command: CMD -->` marker
+  if present else `/release`, prefixed with the banner
+  `✅ Release requirements met (NAME: 0 open blockers) — cutting.` If non-blocker issues are still
+  open in `M`, append `(K non-blocker issue(s) still open — they roll to the next cycle)`.
+  `/roadmap` only **emits** this command; it never runs it (`/release` is the project-owned release
+  role, #3 — a repo without one gets an unrunnable suggestion, not an error).
+
+**Gauge scoping.** When release-readiness mode is on and `destination-label` is `release-blocker`,
+scope the finish-line count to `M` (open `release-blocker` issues **in the active milestone**), so
+the gauge (`release-blocker: N open`) is exactly the live distance to the cut and can never
+disagree with the trigger. (Outside release-readiness mode the `destination-label` count stays
+repo-wide, as in step 6.) `release-blocker` is only meaningful inside `M`; never label a `Backlog`
+issue with it.
+
+**Last mile / auto-cut.** The default *is* emit-only, and that is the whole last mile shipped here:
+`/roadmap` determines readiness and prints the command; the operator runs it. A zero-touch driver
+that runs the release command automatically when readiness flips true is an **opt-in, off-by-default**
+concern of the enforcement-hooks / driver layer (#14/#25), gated behind explicit repo opt-in for
+charge/deploy safety — **not** this skill, which by contract never executes work. See
+`docs/release-goal-convention.md`.
 
 ## Steps
 
@@ -290,6 +373,14 @@ Apply these in order; every tie has a stable break so two runs agree:
 
 ### 6. Advance — emit the next batch
 
+**If release-readiness mode is active** (the `release-milestone` marker resolves to exactly one
+open milestone `M`, per "Release-readiness mode" above), follow that section's activation,
+predicate, projection, and emission — a **met** release emits the release command instead of a
+bundle, and an **unmet** one emits the next `ready` bundle *projected onto `M`*. The fresh-read
+re-check below still applies (extended to milestone membership, `release-blocker` labels, and the
+readiness predicate). Everything else in this step is the classic backlog-wide path used when the
+marker is absent.
+
 Pick the next bundle whose `Status` is `ready`: all its dependency bundles/issues are done,
 and **no member has an open PR** (an in-flight bundle is frozen and skipped whole — a running
 PR must never have its scope expanded by a newly-filed issue). **Re-check the selected
@@ -317,7 +408,9 @@ members** (a flagged candidate never blocks a genuinely-ready bundle behind it).
 flags or skips an emptied bundle, the artifact rewritten at the end of step 4 is now stale (it
 still lists that member as ready). Rewrite the artifact **again** (`gh issue edit "$ROADMAP_NUM"
 --body-file …`, exactly as in step 4) so the persisted roadmap matches what was actually emitted —
-otherwise the next run re-processes the same stale ready member.
+otherwise the next run re-processes the same stale ready member. This applies in release-readiness
+mode too: the **met → release-command** early exit must still persist any emit-time reconcile change
+(e.g. a `NOT_PLANNED`-canceled blocker moved to the Reconcile flags) before emitting.
 
 Then output the batch and a one-line rationale, prefixed by the destination line (below):
 
@@ -355,6 +448,12 @@ step 1's hard-stop-on-error rule, exactly like the missing-`roadmap`-label carve
 **omit the line entirely.** Which label a repo counts toward is project-specific configuration
 that belongs in the artifact, not baked into this agent-neutral skill.
 
+**In release-readiness mode**, when `destination-label` is `release-blocker`, scope this count to
+the active release milestone `M` (open `release-blocker` issues **in `M`**), not repo-wide — so the
+gauge equals the readiness trigger and the two can never disagree (a blocker parked in `Backlog`
+would otherwise inflate a repo-wide count). Add ` --milestone "NAME"` to the search query. Outside
+release-readiness mode the count stays repo-wide as above.
+
 ### 7. Completion & edge cases
 
 - **No open issues** (other than the roadmap issue itself) → report **"roadmap complete"**;
@@ -371,8 +470,15 @@ that belongs in the artifact, not baked into this agent-neutral skill.
 - **The roadmap issue excludes itself.** It is identified by the `roadmap` label and is never
   a backlog item, never bundled, and never counted toward completion — otherwise it could
   suggest itself and "roadmap complete" would be unreachable.
+- **Release-readiness mode takes precedence over the reports above when active.** With the
+  `release-milestone` marker resolved to `M`: **requirements met** emits the release command (a
+  valid terminal emission — not "roadmap complete", which still means *no open non-roadmap issues
+  repo-wide*; a met release with open `Backlog` work emits the cut, and the next cycle continues
+  from `Backlog`). **Armed but unmet** emits the next projected bundle, or names the blocker when
+  every in-`M` bundle is blocked/in-flight. **Empty (unarmed) `M`** reports "no requirements yet".
+  A **broken marker** (resolves to zero or >1 open milestones) stops and surfaces the mismatch.
 - **Determinism.** Running `/roadmap` twice with no tracker change rewrites the artifact
-  identically and emits the same `Next:` batch.
+  identically and emits the same `Next:` batch — in classic and release-readiness mode alike.
 
 ## Agent-neutral (scope note)
 

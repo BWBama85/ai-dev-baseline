@@ -90,3 +90,44 @@ didn't already model, so any residual divergence stays visible and auditable.
              already agent-neutral and single-sourced, so mirroring the Claude link is the
              honest, DRY choice (owner-confirmed).
 - baseline-issue: n/a
+
+## D5 — release-readiness activation is an explicit artifact marker, not milestone-name detection
+- date:      2026-07-24
+- category:  project-delta
+- unknown:   #71 makes `/roadmap` compute release readiness from "the active release milestone."
+             How does the agent-neutral skill KNOW a repo opts in without either hardcoding the
+             name `Next release` (assumption #27 exists to remove) or silently changing output for
+             any repo that merely happens to have such a milestone?
+- decision:  Opt-in is a single explicit marker on the roadmap artifact,
+             `<!-- release-milestone: NAME -->`, resolved live to exactly one OPEN milestone.
+             Absent/empty → classic backlog-wide mode, byte-identical. Present-but-unresolvable
+             (0 or >1) → STOP and surface, never silently classic. This mirrors the existing
+             `destination-label` opt-in exactly (bootstrap never writes it). The readiness
+             fallback keys off the `release-blocker` LABEL existing (a `gh api …/labels/…` 404
+             probe), never the live open-count, so closing the last blocker never flips the bar.
+- placement: `base/workflows/roadmap.md` ("Release-readiness mode" section + the artifact
+             schema markers); the setup helper is `scripts/lib/release-convention.sh` invoked as
+             `baseline release …` (dispatched from `bin/baseline` like `skill-compose`); the
+             module is documented in `docs/release-goal-convention.md`.
+- reason:    An explicit marker is the only safe opt-in that keeps classic behavior byte-identical
+             and honors the repo's own "never silently enable on a coincidental label/milestone"
+             law (the destination-label precedent). Both the gap-analysis and the adversarial
+             fallback flagged name-detection as a backward-compat violation.
+- baseline-issue: n/a
+
+## D6 — DEVIATION: the release-readiness "configurable last mile" ships docs-only (no auto-cut executor)
+- date:          2026-07-24
+- category:      deviation
+- baseline-rule: issues-and-scope.md — "Out-of-scope work always becomes a tracked issue"; and
+                 #71's acceptance "Configurable last mile: … documented opt-in auto-cut."
+- conflict:      #71 asks for a configurable auto-cut, but `/roadmap` carries `disallowed-tools:
+                 Edit` and the contract "it never implements / never runs a command." A safe
+                 auto-cut executor needs a driver/hook, live revalidation, one-shot idempotency, a
+                 failure circuit-breaker, and a deploy/charge guard — none of which can live in a
+                 skill that never executes.
+- scope:         `base/workflows/roadmap.md` + `docs/release-goal-convention.md` document the
+                 opt-in, off-by-default auto-cut and name its prescribed home (the #14/#25 hooks/
+                 driver layer). The default emit-only path IS the shipped last mile.
+- reason:        Acceptance says "documented opt-in auto-cut," which this satisfies; the executor
+                 mechanism is filed as a tracked follow-up (per issues-and-scope) rather than
+                 bolted onto a never-execute skill.

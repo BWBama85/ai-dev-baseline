@@ -436,10 +436,13 @@ issue if one doesn't already exist. **File by default; never ask.** A PR body is
 a tracker. `gh issue list --search …` first to avoid dupes.
 
 Placement: if the repo uses a release-goal/milestone convention (e.g. a rolling
-`Next release` + standing `Backlog`), place a direct dependency of the current
-release goal in `Next release` and tangential/post-deploy work in `Backlog`;
-otherwise use the repo's default. Link the new issue from **both** the parent
-(a comment that survives the parent closing) and the PR.
+`Next release` + standing `Backlog`), **default a discovery to `Backlog`** — work you
+surface *while implementing* is exactly what must not expand the frozen release set, or
+readiness never converges (`docs/release-goal-convention.md`). Only an issue that is a
+genuine dependency of the *current* release goal goes into `Next release`; tangential /
+post-deploy work stays in `Backlog`. Otherwise use the repo's default; never leave a new
+issue milestone-less if the project uses milestones. Link the new issue from **both** the
+parent (a comment that survives the parent closing) and the PR.
 
 ---
 
