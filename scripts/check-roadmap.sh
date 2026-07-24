@@ -91,6 +91,21 @@ eq "$(targets 7 "$(arr "$(pr 100 '"unrelated"' "$(arr "$(ref 70)")")")")" 1 \
 eq "$(targets 70 "$(arr "$(pr 100 '"Closes #70"' '[]')")")" 0 \
    "#70 DOES match its own closing keyword"
 
+# --- 1c-bis. the keyword must be a STANDALONE WORD (left boundary) --------------------------
+# Caught in self-review: without a leading \b, "precloses #69" matched inside a longer word and
+# froze a ready member — the same over-match class #69 is about, just on the keyword side.
+for w in precloses unfixes XCloses reresolves deresolved prefix; do
+  eq "$(targets 69 "$(arr "$(pr 100 "\"$w #69\"" '[]')")")" 1 \
+     "'$w #69' does NOT freeze (keyword must be a standalone word)"
+done
+# ...while the same keywords still match at a word boundary after punctuation/newlines.
+eq "$(targets 69 "$(arr "$(pr 100 '"Some text\nCloses #69\nmore"' '[]')")")" 0 \
+   "a closing keyword on its own line freezes (multi-line body)"
+eq "$(targets 69 "$(arr "$(pr 100 '"(Closes #69)"' '[]')")")" 0 \
+   "a closing keyword after an opening paren freezes"
+eq "$(targets 69 "$(arr "$(pr 100 '"Closes #69 — 日本語 🎉"' '[]')")")" 0 \
+   "a body with multibyte/emoji content is matched correctly (no encoding corruption)"
+
 # --- 1d. cross-repo safety: other/repo#69 must not freeze this repo's #69 --------------------
 # GitHub supports cross-repository closing links, so closingIssuesReferences can carry an issue
 # from ANOTHER repo. Matching a bare number would let it freeze this repo's same-numbered issue.

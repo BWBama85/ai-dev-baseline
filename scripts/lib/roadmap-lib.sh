@@ -106,8 +106,10 @@ cmd_pr_targets_issue() {
   # typed --arg/--argjson values, never interpolated into the program text, so a slug with
   # regex or jq metacharacters can neither break nor inject into the filter.
   #
-  # Keyword regex mirrors GitHub's documented closing keywords. `[ \t]*:?[ \t]*` allows the
-  # "Closes: #12" form; `(?![0-9])` stops `#7` matching `#70`; `"i"` is case-insensitive.
+  # Keyword regex mirrors GitHub's documented closing keywords. `\b` on the LEFT keeps the
+  # keyword a standalone word — without it "precloses #12" / "unfixes #12" would match inside a
+  # longer word and re-introduce the very over-match this fix removes. `[ \t]*:?[ \t]*` allows
+  # the "Closes: #12" form; `(?![0-9])` stops `#7` matching `#70`; `"i"` is case-insensitive.
   # test() is applied to a NON-NULL body only (a PR body can be null, which test() rejects).
   printf '%s' "$json" | jq -e --argjson n "$n" --arg slug "$slug" '
     def targets_by_link:
@@ -119,7 +121,7 @@ cmd_pr_targets_issue() {
     def targets_by_keyword:
       ((.body // "") | type == "string")
       and ((.body // "")
-           | test("(close[sd]?|fix(e[sd])?|resolve[sd]?)[ \t]*:?[ \t]*#" + ($n|tostring) + "(?![0-9])"; "i"));
+           | test("\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)[ \t]*:?[ \t]*#" + ($n|tostring) + "(?![0-9])"; "i"));
     if type != "array" then error("not an array") else . end
     | any(.[]; targets_by_link or targets_by_keyword)
   ' >/dev/null 2>&1
