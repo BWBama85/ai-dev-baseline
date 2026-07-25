@@ -30,7 +30,8 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   request before merging" survive instead of being silently reset.
   `automerge-ok` is the runtime guard `/implement-issue` asks before arming, with a pinned
   exit-code contract (`0` safe · `10` auto-merge off · `11` CI but no required checks · `12` no CI
-  — where `--auto` would merge *immediately* · `20` unreadable, fail closed). `status` reports
+  — where `--auto` would merge *immediately* · `13` a required context nothing reports, so an armed
+  PR would hang · `20` unreadable, fail closed). `status` reports
   drift in both directions, which is the only place a renamed CI job becomes visible: the old
   context stays required and blocks every PR while the new one gates nothing.
   Discovery refuses to require anything it cannot prove reports on every PR — including a
