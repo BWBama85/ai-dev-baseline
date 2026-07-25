@@ -119,8 +119,20 @@ req_fixed docs/release-goal-convention.md 'release-command' convention-documents
 # the way group 1 asserts against the tree.
 #
 # NEGATIVE half: the verbs that would make this file a release cutter.
+#
+# SCOPE: this catches accidental GROWTH ("while we're already in the release milestone, also tag
+# it"), which is the realistic failure. It is not an adversarial sandbox — indirection such as
+# `"$GIT" tag` defeats it, and is meant to: someone hiding a cutter behind a variable has already
+# decided to reverse #3, and the decision record is what governs that, not a grep.
+#
+# Matched against the file with COMMENTS STRIPPED. The boundary is about what the code DOES, and
+# this file must be able to say "roll never runs `gh release create`" in prose without failing its
+# own lint. (Crude `#`-to-end-of-line stripping: it can also blank the tail of a string containing
+# a literal `#`, which at worst hides a match — and no cutter command needs one.)
+roll_code() { sed 's/#.*//' scripts/lib/release-convention.sh; }
+
 roll_forbid() {   # <extended-regex> <why>
-  if grep -nEq "$1" scripts/lib/release-convention.sh; then
+  if roll_code | grep -Eq "$1"; then
     check_note "[roll-boundary] scripts/lib/release-convention.sh matches /$1/ — $2"
     check_note "[roll-boundary] #74/D8 ships rollover as BOOKKEEPING: no version bump, changelog,"
     check_note "[roll-boundary] tag, package, publish, or deploy. Growing one here reverses #3"
@@ -134,6 +146,12 @@ roll_forbid '(^|[^[:alnum:]_-])git[[:space:]]+(tag|push)([^[:alnum:]_-]|$)' 'it 
 roll_forbid '(^|[^[:alnum:]_-])gh[[:space:]]+release([^[:alnum:]_-]|$)'    'it publishes a GitHub release'
 roll_forbid '(^|[^[:alnum:]_-])(npm|pnpm|yarn|cargo|poetry)[[:space:]]+(version|publish)([^[:alnum:]_-]|$)' \
   'it bumps or publishes a package version'
+# The REALISTIC growth path is not the `gh release` porcelain — this file already does everything
+# through `gh api`, so a cutter grown here would too. Forbid the REST endpoints that publish a
+# release or create a tag ref, and the changelog surface, independent of which verb reaches them.
+roll_forbid '/releases([^[:alnum:]_-]|$)'   'it touches the releases endpoint'
+roll_forbid 'refs/tags'                     'it creates or moves a tag ref'
+roll_forbid '[Cc][Hh][Aa][Nn][Gg][Ee][Ll][Oo][Gg]' 'it writes a changelog'
 
 # POSITIVE half: the boundary is still STATED where a reader and an editor will meet it. One token,
 # used verbatim in both files, so the claim cannot drift into two different wordings.

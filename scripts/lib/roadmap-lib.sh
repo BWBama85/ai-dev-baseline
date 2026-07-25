@@ -227,11 +227,17 @@ cmd_release_ready() {
 cmd_release_counts() {
   [ "$#" -eq 1 ] || die "release-counts: needs exactly 1 arg: <blocker-label> (milestone issue JSON on stdin)"
   command -v jq >/dev/null 2>&1 || die "release-counts: jq not found"
-  local blk="$1" json out
-  json="$(cat)"
-  [ -n "$json" ] || json='[]'
-  out="$(printf '%s' "$json" | jq -r --arg blk "$blk" '
-    [ .[] | select(has("pull_request") | not)
+  local blk="$1" out
+  # `-s` + `add`: accept BOTH shapes `gh api --paginate` can produce — one merged array (what
+  # gh 2.95 returns for a REST array endpoint) and the separate-array-per-page stream its own
+  # `--help` documents ("Each page is a separate JSON array or object"). Reading only the first
+  # input would silently undercount a multi-page milestone, and undercounting open blockers
+  # produces a `met` verdict that archives a milestone with an open must-have still inside it.
+  # Depending on undocumented merging for that is not a bet worth taking; `-s` costs one flag.
+  # (Empty stdin slurps to `[]` -> `add` is null -> `// []`, so an empty milestone still works.)
+  out="$(jq -r -s --arg blk "$blk" '
+    (add // []) as $all
+    | [ $all[] | select(has("pull_request") | not)
           | select(([.labels[].name] | index("roadmap")) == null) ]            as $rows
     | [ $rows[] | select(.state == "open") ]                                   as $open
     | [ $open[] | select(([.labels[].name] | index($blk)) != null) ]           as $ob

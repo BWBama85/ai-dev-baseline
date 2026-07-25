@@ -285,21 +285,43 @@ has "$OUT" "resuming an interrupted roll" "the resume is announced"
 eq "$(plan_of)" 'create milestone "Next release"|move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' \
   "the resume skips the already-done rename"
 
-# Interrupted after the create (both open, the fresh rolling milestone EMPTY) -> resume the tail.
-fix_default; ms 'v1.1.0\topen\t9\nNext release\topen\t12\nBacklog\topen\t8\n'
-rcx_stub roll --version v1.1.0 --dry-run
-yes "$RC_" "roll resumes after the create step"
-eq "$(plan_of)" 'move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' \
-  "the resume skips both the rename and the create"
+# Both milestones open = interrupted-after-create OR a pre-existing version-named milestone. The
+# tracker cannot tell them apart, so roll refuses and asks. Emptiness of the rolling milestone is
+# deliberately NOT the discriminator: roll's own success banner tells the operator to slate the
+# next release into it, so a real interrupted roll stops looking empty almost immediately -- and a
+# genuinely pre-existing milestone alongside a not-yet-slated rolling one looks empty, which would
+# archive and close a milestone that was never part of any roll.
+for rolling_fixture in EMPTY SLATED; do
+  fix_default; ms 'v1.1.0\topen\t9\nNext release\topen\t12\nBacklog\topen\t8\n'
+  [ "$rolling_fixture" = SLATED ] && printf '%s' "$ISS_MET" > "$S/issues/12.json"
+  rcx_stub roll --version v1.1.0
+  no "$RC_" "two open milestones ($rolling_fixture rolling) refuse without --resume"
+  has "$OUT" "re-run with --resume" "the refusal names the way forward ($rolling_fixture)"
+  eq "$(calls_of)" "" "no mutation before the ambiguity refusal ($rolling_fixture)"
 
-# Same shape but the rolling milestone is NOT empty -> a real pre-existing collision, not a resume.
-fix_default; ms 'v1.1.0\topen\t9\nNext release\topen\t12\nBacklog\topen\t8\n'
-iss "$ISS_MET"; printf '%s' "$ISS_MET" > "$S/issues/12.json"
+  rcx_stub roll --version v1.1.0 --resume --dry-run
+  yes "$RC_" "--resume finishes the tail ($rolling_fixture)"
+  eq "$(plan_of)" 'move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' \
+    "--resume skips the done rename and create ($rolling_fixture)"
+  rm -f "$S/issues/12.json"
+done
+
+# A resume must NOT be re-authorized against a tracker that has changed since. After the rename the
+# rolling title does not exist, so /roadmap is hard-stopped; re-running the readiness gate there
+# would refuse and leave no in-tool way to restore the title.
+fix_default; ms 'v1.1.0\topen\t9\nBacklog\topen\t8\n'
+iss '[{"number":74,"state":"closed","state_reason":"completed","labels":[{"name":"release-blocker"}]},
+      {"number":88,"state":"open","state_reason":null,"labels":[{"name":"release-blocker"}]}]'
 rcx_stub roll --version v1.1.0
-no "$RC_" "a non-empty rolling milestone alongside an open version milestone is a collision"
-has "$OUT" "not an interrupted roll" "the collision is distinguished from a resume"
-eq "$(calls_of)" "" "no mutation on the collision refusal"
-rm -f "$S/issues/12.json"
+has "$OUT" "readiness re-check is skipped" "a resume does not re-run the readiness gate"
+# ...but it still must not demote the reopened must-have. It does the REPAIR (recreate the rolling
+# title, which un-blocks /roadmap and moves nothing) and stops before the move/close.
+has "$OUT" "Recreating 'Next release' anyway" "the repair step runs despite the open blocker"
+eq "$(calls_of)" 'POST repos/acme/widget/milestones|' "repair creates the rolling milestone and nothing else"
+has "$OUT" "still OPEN and NOT rolled" "the partial state is reported honestly"
+no "$RC_" "an unfinished roll exits nonzero"
+# The archive has been renamed, so the blocker report must name it by its CURRENT title.
+has "$OUT" "('v1.1.0')" "the blocker report names the milestone's current title, not the old one"
 
 # Missing Backlog is a refusal -- never leave issues milestone-less halfway through. The advice
 # must NOT be "run init": in a renamed-backlog repo that would create a SECOND backlog.
@@ -307,7 +329,7 @@ fix_default; ms 'Next release\topen\t9\n'
 rcx_stub roll --version v1.1.0
 no "$RC_" "roll refuses when the Backlog milestone is absent"
 has "$OUT" "--backlog-name" "the refusal points at the override, not at init"
-hasnt "$OUT" "run 'baseline release init' first" "the refusal does not advise creating a second backlog"
+hasnt "$OUT" "baseline release init" "the refusal never advises init, which would create a SECOND backlog"
 
 # ...and --backlog-name makes a renamed backlog work.
 fix_default; ms 'Next release\topen\t9\nIcebox\topen\t8\n'

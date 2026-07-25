@@ -23,16 +23,16 @@
 #   release-convention.sh init            # create the milestones + labels; seed the marker
 #   release-convention.sh init --release-name NAME   # use a custom release-milestone name
 #   release-convention.sh status          # report which pieces are present (no changes)
-#   release-convention.sh roll --version VERSION [--dry-run] [--force]
+#   release-convention.sh roll --version VERSION [--dry-run] [--force] [--resume]
 #                              [--release-name NAME] [--backlog-name NAME]
 #                                         # roll the milestone AFTER a release is cut (#74)
 #   release-convention.sh -h | --help
 #
 # `roll` is the rollover half of the convention: once your project-owned release action has cut
 # the release, `roll` archives the release milestone under the version, opens a fresh empty one
-# under the rolling title, and sends the leftover non-blocker issues to Backlog. It is milestone
-# milestone bookkeeping only — it never bumps a version, writes a changelog, tags, packages, publishes, or
-# deploys. Those stay project-owned (#3), and this file must never grow them.
+# under the rolling title, and sends the leftover non-blocker issues to Backlog. It is
+# milestone bookkeeping only — it never bumps a version, writes a changelog, tags, packages,
+# publishes, or deploys. Those stay project-owned (#3), and this file must never grow them.
 #
 # Requires: gh (authenticated for this repo's remote).
 
@@ -226,6 +226,7 @@ cmd_status() {
 ROLL_VERSION=""
 ROLL_DRY_RUN=0
 ROLL_FORCE=0
+ROLL_RESUME=0
 RELEASE_NAME_SET=0   # 1 when --release-name was passed explicitly
 
 # roadmap_issue_nums — the open `roadmap`-labelled issue numbers, blanks stripped, one per line.
@@ -345,10 +346,12 @@ resolve_rolling_title() {
 }
 
 cmd_roll() {
-  require_gh
-
+  # Argument validation BEFORE require_gh: a usage error must report itself as a usage error
+  # regardless of whether gh happens to be authenticated in this environment.
   [ -n "$ROLL_VERSION" ] \
     || { echo "ERROR: roll needs --version (the version you just cut, e.g. --version v1.2.0)" >&2; return 2; }
+
+  require_gh
 
   # --- 1. Resolve the rolling title (authoritative: the artifact marker) --------------------
   local rolling
@@ -381,7 +384,7 @@ cmd_roll() {
   [ -n "$backlog_num" ] || {
     echo "ERROR: no OPEN milestone titled '$BACKLOG_MILESTONE' to disposition leftovers into." >&2
     echo "       Pass --backlog-name NAME if this repo's backlog milestone is named differently," >&2
-    echo "       or create/reopen it first." >&2
+    echo "       or create/reopen that milestone first." >&2
     return 1
   }
 
@@ -394,27 +397,42 @@ cmd_roll() {
   #   ----------|--------------|--------------------------------|------------------------------
   #   absent    | yes          | fresh roll, nothing done       | rename + create + move + close
   #   absent    | no           | nothing to roll                | refuse
-  #   open      | no           | interrupted after rename       | resume: create + move + close
-  #   open      | yes, empty   | interrupted after create       | resume: move + close
-  #   open      | yes, NOT empty | pre-existing version-named milestone — a real collision | refuse
+  #   open      | no           | interrupted after rename       | RESUME (unambiguous, and urgent)
+  #   open      | yes          | interrupted after create, OR a pre-existing version-named
+  #                              milestone — indistinguishable from tracker state | refuse unless --resume
   #   closed    | yes          | already rolled                 | refuse (nothing to do)
   #   closed    | no           | rolled, then rolling deleted   | refuse (tell them to re-init)
-  local do_rename=0 do_create=0
+  #
+  # `resume` means "this roll was already authorized and partially executed", which changes what
+  # the gates in step 4 may do.
+  local do_rename=0 do_create=0 resume=0
   case "$ver_state" in
     "")
       [ -n "$cut_num" ] || { echo "ERROR: no OPEN milestone titled '$rolling' to roll" >&2; return 1; }
       do_rename=1; do_create=1 ;;
     open)
       if [ -z "$cut_num" ]; then
-        do_create=1; cut_num="$ver_num"
+        # Unambiguous: the rolling title can only be free because the rename took it. This is also
+        # the one state /roadmap cannot survive (zero open milestones under the marker's title), so
+        # resuming is both safe and urgent — never gate it behind a confirmation.
+        do_create=1; resume=1; cut_num="$ver_num"
         adb_info "note: resuming an interrupted roll (milestone #$ver_num already renamed to '$ROLL_VERSION')"
-      elif [ -z "$(milestone_issues_json "$cut_num" | tr -d '[:space:]' | sed 's/^\[\]$//')" ]; then
-        cut_num="$ver_num"
-        adb_info "note: resuming an interrupted roll (archive #$ver_num renamed, '$rolling' recreated)"
+      elif [ "$ROLL_RESUME" -eq 1 ]; then
+        resume=1; cut_num="$ver_num"
+        adb_info "note: --resume — treating open milestone #$ver_num ('$ROLL_VERSION') as this roll's archive"
       else
-        echo "ERROR: '$ROLL_VERSION' already exists as an OPEN milestone (#$ver_num) and '$rolling'" >&2
-        echo "       (#$cut_num) is not empty — this is not an interrupted roll. Rename or close the" >&2
-        echo "       existing '$ROLL_VERSION' milestone, or pick a different --version." >&2
+        # Do NOT guess from "is the rolling milestone empty?". That signal is wrong in BOTH
+        # directions: roll's own success banner tells the operator to slate the next release into
+        # the fresh milestone, so a real interrupted roll stops looking empty almost immediately;
+        # and a genuinely pre-existing version-named milestone alongside a not-yet-slated rolling
+        # one looks empty, which would archive and close a milestone that was never ours.
+        echo "ERROR: '$ROLL_VERSION' already exists as an OPEN milestone (#$ver_num), alongside an open" >&2
+        echo "       '$rolling' (#$cut_num). That is either an interrupted roll (this command was" >&2
+        echo "       killed between creating '$rolling' and closing the archive) or a pre-existing" >&2
+        echo "       milestone that happens to carry the version name — the tracker cannot tell them" >&2
+        echo "       apart, and guessing wrong would close a milestone that was never part of a roll." >&2
+        echo "       If #$ver_num IS this roll's archive, re-run with --resume." >&2
+        echo "       If it is not, pick a different --version, or rename/close #$ver_num first." >&2
         return 1
       fi ;;
     closed)
@@ -450,7 +468,15 @@ cmd_roll() {
 $counts
 EOF
 
-  if [ "$ROLL_FORCE" -eq 1 ]; then
+  # A RESUME is not a fresh authorization. The decision to roll was made — and half executed —
+  # against the tracker as it stood then; re-deciding it against a tracker that has changed since
+  # is how a half-rolled repo becomes an unfinishable one. Concretely: after the rename the rolling
+  # title does not exist, so /roadmap is hard-stopped; if a blocker were reopened in the archive at
+  # that moment, re-running the readiness gate would refuse, --force could not get past the
+  # demotion guard below, and there would be no in-tool way to restore the title at all.
+  if [ "$resume" -eq 1 ]; then
+    adb_info "note: resuming — the readiness re-check is skipped (this roll was already authorized)"
+  elif [ "$ROLL_FORCE" -eq 1 ]; then
     adb_info "note: --force — skipping the readiness re-check"
   else
     # Mode is keyed off label EXISTENCE, never a live count — closing the last blocker must not
@@ -474,11 +500,27 @@ EOF
   # An OPEN must-have is a refusal even under --force: --force waives the readiness VERDICT, not
   # the demotion. Moving a must-have to the backlog is an owner decision, never a bookkeeping
   # side effect — so this guard sits outside the --force branch on purpose.
+  #
+  # But it must not strand a half-rolled repo either. When a resume still owes the `create` that
+  # restores the rolling title, that one step is REPAIR, not rollover: /roadmap is hard-stopped
+  # until it runs, and it moves nothing and closes nothing. So do the repair, then stop short of
+  # the steps the blockers actually forbid, and say exactly what is left.
+  local repair_only=0
   if [ -n "$blockers" ]; then
-    echo "ERROR: open '$BLOCKER_LABEL' issue(s) in '$rolling': $blockers" >&2
-    echo "       roll will not demote a must-have to '$BACKLOG_MILESTONE'. Close them, remove the" >&2
-    echo "       label, or move them out of the milestone yourself, then re-run." >&2
-    return 1
+    # Name the milestone by its CURRENT title — after a rename it is no longer called "$rolling",
+    # and pointing the operator at a milestone that no longer exists is its own bug.
+    local cut_title="$rolling"; [ "$do_rename" -eq 0 ] && cut_title="$ROLL_VERSION"
+    if [ "$resume" -eq 1 ] && [ "$do_create" -eq 1 ]; then
+      repair_only=1
+      adb_info "note: open '$BLOCKER_LABEL' issue(s) in #$cut_num ('$cut_title'):$blockers"
+      adb_info "      Recreating '$rolling' anyway — that step is repair (it un-blocks /roadmap and"
+      adb_info "      moves nothing), then stopping before the move/close that would demote them."
+    else
+      echo "ERROR: open '$BLOCKER_LABEL' issue(s) in #$cut_num ('$cut_title'):$blockers" >&2
+      echo "       roll will not demote a must-have to '$BACKLOG_MILESTONE'. Close them, remove the" >&2
+      echo "       label, or move them out of the milestone yourself, then re-run." >&2
+      return 1
+    fi
   fi
 
   # --- 5. Build the plan, in execution order -------------------------------------------------
@@ -498,8 +540,10 @@ EOF
   local n
   [ "$do_rename" -eq 1 ] && roll_plan_add "rename$(printf '\t')$cut_num$(printf '\t')$rolling"
   [ "$do_create" -eq 1 ] && roll_plan_add "create$(printf '\t')$rolling"
-  for n in $movers; do roll_plan_add "move$(printf '\t')$n$(printf '\t')$BACKLOG_MILESTONE"; done
-  roll_plan_add "close$(printf '\t')$cut_num"
+  if [ "$repair_only" -eq 0 ]; then
+    for n in $movers; do roll_plan_add "move$(printf '\t')$n$(printf '\t')$BACKLOG_MILESTONE"; done
+    roll_plan_add "close$(printf '\t')$cut_num"
+  fi
 
   roll_plan_render
 
@@ -534,6 +578,14 @@ $ROLL_PLAN
 EOF
 
   # One audit line per owner-visible mutation (base/practices/logging-and-secrets.md).
+  if [ "$repair_only" -eq 1 ]; then
+    adb_info ""
+    adb_info "repaired: '$rolling' recreated in $(repo_slug); milestone #$cut_num ('$ROLL_VERSION') is"
+    adb_info "          still OPEN and NOT rolled — /roadmap works again, but the roll is unfinished."
+    adb_info "Next: resolve the open '$BLOCKER_LABEL' issue(s) above, then re-run with --resume to"
+    adb_info "      finish (move the leftovers to '$BACKLOG_MILESTONE' and close the archive)."
+    return 1
+  fi
   local moved_count; moved_count="$(printf '%s' "$movers" | wc -w | tr -d ' ')"
   adb_info ""
   adb_info "rolled: '$rolling' -> '$ROLL_VERSION' (milestone #$cut_num, closed); fresh '$rolling' open;" \
@@ -587,6 +639,7 @@ parse_roll_opts() {
         BACKLOG_MILESTONE="$1"; shift ;;
       --dry-run) ROLL_DRY_RUN=1; shift ;;
       --force)   ROLL_FORCE=1; shift ;;
+      --resume)  ROLL_RESUME=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "release-convention: unknown option '$1'" >&2; exit 2 ;;
     esac

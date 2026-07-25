@@ -155,6 +155,22 @@ waives that verdict (the documented override for a `held` release), but it does 
 the separate refusal to move an **open** `release-blocker` to `Backlog`: silently demoting a
 must-have is an owner decision, so close it, unlabel it, or move it out yourself.
 
+**If it is interrupted, re-run it.** Between the rename and the create there is one API call
+during which no open milestone carries the rolling title and `/roadmap` hard-stops, so `roll`
+detects a partially-executed roll and finishes it:
+
+- **Interrupted after the rename** (the rolling title is missing) — unambiguous, so re-running
+  resumes automatically. Restoring that title is *repair*, not rollover, so it happens even if a
+  blocker was reopened in the meantime: `roll` recreates the milestone, then stops before the
+  move/close and tells you what is left. A resume never re-runs the readiness gate — the roll was
+  already authorized, and re-deciding it against a tracker that changed since is what would leave
+  a half-rolled repo unfinishable.
+- **Interrupted after the create** (both milestones open) — indistinguishable from a pre-existing
+  milestone that happens to carry the version name, so `roll` refuses and asks. Re-run with
+  **`--resume`** if that milestone really is your archive. (`roll` deliberately does *not* guess
+  from "is the new milestone empty?" — it tells you to slate the next release into it, so a real
+  interrupted roll stops looking empty almost at once.)
+
 **The `release-milestone` marker never needs editing.** Because the rolling *title* is
 recreated, the marker keeps naming a live milestone across the roll. `roll` reads that marker
 to learn which milestone to roll (`--release-name` overrides it) and never writes to the
