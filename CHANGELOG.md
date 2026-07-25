@@ -7,6 +7,14 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-25
+
+First tagged release. The baseline is the agent-neutral single source of truth installed
+into other projects: shared practices rendered into each agent's root doc, workflows
+rendered into native skills for Claude · Codex · Antigravity/Gemini, a role manifest
+(`agents.toml`), auto-detected quality gates, and the enforcement hooks that hold them.
+Everything below landed before this tag; entries are grouped as they accumulated.
+
 ### Changed
 
 - **`release` is documented as a permanently project-owned role — the baseline ships no `/release`**
@@ -324,4 +332,5 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   finish on partial or empty output. Clarifies that "advisory" is the standing of a
   **completed** finding, not license to skip the step.
 
-[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/commits/main
+[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/BWBama85/ai-dev-baseline/releases/tag/v1.0.0
