@@ -25,6 +25,19 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   rather than defaulting to `Next release` — `--release-name` was never persisted, so a repo that
   opted in under a custom name would otherwise have the wrong milestone rolled — and the marker
   itself never needs editing, because the rolling *title* is what gets recreated.
+  `--resume` finishes a roll that was interrupted after the fresh milestone was created (that state
+  is genuinely indistinguishable from a pre-existing version-named milestone, so it asks rather than
+  guesses); an interruption *before* it — where no milestone carries the rolling title and
+  `/roadmap` is hard-stopped — resumes automatically, and restores that title even when a blocker
+  was reopened meanwhile, since restoring it is repair rather than rollover. `--backlog-name` names
+  a renamed backlog milestone.
+- **`roadmap-lib.sh release-counts` and `roadmap-lib.sh marker-title`** (#74): the predicate's
+  *inputs* and the release-readiness *activation marker* were being re-derived by each caller while
+  only the final verdict was shared, so `roll` and `/roadmap` could still disagree about the same
+  tracker. Both now live in the one library `scripts/check-roadmap.sh` regression-tests, which also
+  fixed a live divergence — the marker's value is matched `[^>]*` (not `.*`), so it cannot run past
+  its own `-->` into a later comment, and it is extracted per occurrence so two markers on one line
+  surface as two titles instead of silently resolving to the last.
 
 ### Changed
 
