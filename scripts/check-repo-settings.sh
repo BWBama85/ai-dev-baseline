@@ -63,10 +63,12 @@ rsx checks --branch;       no "$RC_" "checks --branch w/o value exits nonzero"
 
 # ============================ check discovery (pure file parsing) ============================
 WF="$work/wf"; mkdir -p "$WF"
+# wf_reset : drop every fixture workflow. One home — the 8 scenarios below each start from it.
+wf_reset() { rm -f "$WF"/*.yml "$WF"/*.yaml; }
 
 # disco <branch> : run `checks` against the fixture workflow dir; stdout in OUT, stderr in ERR.
 disco() {
-  OUT="$(ADB_RS_WORKFLOW_DIR="$WF" bash "$RS" checks --branch "${1:-main}" 2>"$work/err")"
+  OUT="$(bash "$RS" checks --branch "${1:-main}" --workflow-dir "$WF" 2>"$work/err")"
   RC_=$?
   ERR="$(cat "$work/err")"
 }
@@ -77,7 +79,7 @@ ctx() { printf '%s\n' "$OUT" | sed '/^$/d' | LC_ALL=C sort | tr '\n' '|'; }
 # --- the headline regression: `on:` keys sit at the same indent as job keys -------------------
 # Mirrors this repo's own .github/workflows/ci.yml. A whole-file 2-space indent scan yields 22
 # "jobs" here (push, pull_request, and the two real ones); scoping to the `jobs:` block yields 2.
-rm -f "$WF"/*.yml "$WF"/*.yaml
+wf_reset
 cat > "$WF/ci.yml" <<'EOF'
 name: CI
 
@@ -113,7 +115,7 @@ hasnt "$OUT" "Checkout"      "a step-level '- name:' is never mistaken for a job
 hasnt "$OUT" "Install shellcheck" "a second step-level '- name:' is never harvested either"
 
 # --- name vs key, and every "cannot prove it runs" skip --------------------------------------
-rm -f "$WF"/*.yml "$WF"/*.yaml
+wf_reset
 cat > "$WF/a.yml" <<'EOF'
 name: A
 on:
@@ -159,23 +161,23 @@ hasnt "$(ctx)" 'mat|'  "a matrix job never reaches the required set"
 hasnt "$(ctx)" 'cond|' "a conditional job never reaches the required set"
 
 # --- file-level triggers ----------------------------------------------------------------------
-rm -f "$WF"/*.yml "$WF"/*.yaml
+wf_reset
 printf 'name: P\non: push\njobs:\n  never-on-pr:\n    runs-on: ubuntu-latest\n' > "$WF/push-only.yml"
 disco main
 eq "$(ctx)" '' "a workflow with no pull_request trigger contributes nothing"
 has "$ERR" "no pull_request trigger" "the file skip names the missing trigger"
 
-rm -f "$WF"/*.yml "$WF"/*.yaml
+wf_reset
 printf 'name: I\non: [push, pull_request]\njobs:\n  inline:\n    runs-on: ubuntu-latest\n' > "$WF/inline.yml"
 disco main
 eq "$(ctx)" 'inline|' "an inline flow-sequence 'on: [push, pull_request]' is recognized"
 
-rm -f "$WF"/*.yml "$WF"/*.yaml
+wf_reset
 printf 'name: S\non: pull_request\njobs:\n  scalar:\n    runs-on: ubuntu-latest\n' > "$WF/scalar.yml"
 disco main
 eq "$(ctx)" 'scalar|' "an inline scalar 'on: pull_request' is recognized"
 
-rm -f "$WF"/*.yml "$WF"/*.yaml
+wf_reset
 printf 'name: Pa\non:\n  pull_request:\n    paths:\n      - "src/**"\njobs:\n  scoped:\n    runs-on: ubuntu-latest\n' > "$WF/paths.yml"
 disco main
 eq "$(ctx)" '' "a paths-filtered pull_request contributes nothing (it does not run for every PR)"
@@ -183,7 +185,7 @@ has "$ERR" "paths/paths-ignore filter" "the file skip names the paths filter"
 
 # branches: filters — provably-includes vs not. Both directions matter: over-skipping silently
 # leaves a repo ungated, under-skipping deadlocks every PR.
-rm -f "$WF"/*.yml "$WF"/*.yaml
+wf_reset
 printf 'name: B\non:\n  pull_request:\n    branches: [main]\njobs:\n  ok-inline:\n    runs-on: ubuntu-latest\n' > "$WF/b1.yml"
 printf 'name: C\non:\n  pull_request:\n    branches:\n      - main\njobs:\n  ok-block:\n    runs-on: ubuntu-latest\n' > "$WF/b2.yml"
 printf 'name: D\non:\n  pull_request:\n    branches:\n      - develop\njobs:\n  wrong-base:\n    runs-on: ubuntu-latest\n' > "$WF/b3.yml"
@@ -195,13 +197,13 @@ disco develop
 has "$(ctx)" 'wrong-base|' "the same fixture keeps the develop-only job when develop IS the target"
 
 # --- multiple files aggregate; a missing dir is 'no CI', not an error -------------------------
-rm -f "$WF"/*.yml "$WF"/*.yaml
+wf_reset
 printf 'name: One\non:\n  pull_request:\njobs:\n  one:\n    runs-on: ubuntu-latest\n' > "$WF/one.yml"
 printf 'name: Two\non:\n  pull_request:\njobs:\n  two:\n    runs-on: ubuntu-latest\n' > "$WF/two.yaml"
 disco main
 eq "$(ctx)" 'one|two|' "contexts aggregate across .yml and .yaml files"
 
-OUT="$(ADB_RS_WORKFLOW_DIR="$work/nonexistent" bash "$RS" checks --branch main 2>"$work/err")"; RC_=$?
+OUT="$(bash "$RS" checks --branch main --workflow-dir "$work/nonexistent" 2>"$work/err")"; RC_=$?
 yes "$RC_" "a repo with no .github/workflows exits 0 (no CI is a legitimate state, not an error)"
 eq "$OUT" "" "a repo with no CI discovers no contexts"
 has "$(cat "$work/err")" "no CI" "the no-CI case says so on stderr"
@@ -253,9 +255,9 @@ chmod +x "$SBIN/gh"
 # Fixture writers. Every scenario calls one of these, and each scenario re-writes what it needs,
 # so no test inherits a previous test's fixture.
 repo_fx() {   # <admin> <allow_auto_merge>
-  printf '{"default_branch":"main","allow_auto_merge":%s,"permissions":{"admin":%s}}\n' "$2" "$1" > "$S/repo.json"
+  printf '{"full_name":"acme/widget","default_branch":"main","allow_auto_merge":%s,"permissions":{"admin":%s}}\n' "$2" "$1" > "$S/repo.json"
 }
-repo_fx_noperms() { printf '{"default_branch":"main","allow_auto_merge":false}\n' > "$S/repo.json"; }
+repo_fx_noperms() { printf '{"full_name":"acme/widget","default_branch":"main","allow_auto_merge":false}\n' > "$S/repo.json"; }
 prot_none()  { rm -f "$S/protection.json"; }
 prot_checks() {   # protected, WITH required_status_checks (contexts = "$@")
   printf '%s' "$*" | tr ' ' '\n' | jq -R . | jq -s \
@@ -274,17 +276,17 @@ JSON
 }
 
 # One PR-triggered job, so discovery yields exactly one context in the gh-backed scenarios.
-wf_one() { rm -f "$WF"/*.yml "$WF"/*.yaml; printf 'name: One\non:\n  pull_request:\njobs:\n  one:\n    runs-on: ubuntu-latest\n' > "$WF/one.yml"; }
-wf_none() { rm -f "$WF"/*.yml "$WF"/*.yaml; }
+wf_one() { wf_reset; printf 'name: One\non:\n  pull_request:\njobs:\n  one:\n    runs-on: ubuntu-latest\n' > "$WF/one.yml"; }
+wf_none() { wf_reset; }
 
 rsx_stub() {   # run against the stub with a fresh call log
   STUB_CALLS="$work/calls.txt"; : > "$STUB_CALLS"
   rm -f "$S/body.json"
   OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" STUB_FAIL_WRITE="${STUB_FAIL_WRITE:-}" \
-         ADB_RS_WORKFLOW_DIR="$WF" PATH="$SBIN:$PATH" bash "$RS" "$@" 2>&1)"; RC_=$?
+         PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
 rsx_auth() {   # the SAME stub, auth knob flipped — one stub, two behaviors
-  OUT="$(S="$S" STUB_AUTH_FAIL=1 ADB_RS_WORKFLOW_DIR="$WF" PATH="$SBIN:$PATH" bash "$RS" "$@" 2>&1)"; RC_=$?
+  OUT="$(S="$S" STUB_AUTH_FAIL=1 PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
 calls_of() { tr '\n' '|' < "$STUB_CALLS"; }
 
@@ -321,6 +323,10 @@ eq "$(jq -r '.allow_force_pushes' "$S/body.json")" "false" "the PUT body preserv
 eq "$(jq -r '.allow_deletions' "$S/body.json")"    "false" "the PUT body preserves allow_deletions"
 eq "$(jq -r '.enforce_admins' "$S/body.json")"     "false" "enforce_admins is preserved, never silently flipped"
 eq "$(jq -r '.required_status_checks.contexts|join(",")' "$S/body.json")" "one" "the PUT body carries the discovered contexts"
+
+# --strict is the explicit opt-in for "require branches up to date" (D9 defaults it off).
+rsx_stub apply --strict
+eq "$(jq -r '.required_status_checks.strict' "$S/body.json")" "true" "--strict opts in explicitly"
 
 # --enforce-admins is the explicit opt-in for removing the owner's break-glass.
 rsx_stub apply --enforce-admins
@@ -403,7 +409,15 @@ has "$OUT" "allow_auto_merge is off" "status names the disabled auto-merge"
 # Exit codes are a machine contract consumed by the workflow's step 10, so each is pinned.
 wf_one; repo_fx true true; prot_checks "one"
 rsx_stub automerge-ok
-eq "$RC_" "0" "automerge-ok = 0 when auto-merge is on AND checks are required"
+eq "$RC_" "0" "automerge-ok = 0 when auto-merge is on AND the required checks are satisfiable"
+
+# The guard must be no shallower than `status`: a renamed CI job leaves the OLD context required
+# and never reported, so an armed PR would wait forever. Non-empty contexts are NOT sufficient.
+wf_one; repo_fx true true; prot_checks "stale-name"
+rsx_stub automerge-ok
+eq "$RC_" "13" "automerge-ok = 13 when a required context no workflow reports (renamed job)"
+has "$OUT" "wait forever" "code 13 explains that an armed PR would hang"
+has "$OUT" "stale-name" "code 13 names the phantom context"
 
 wf_one; repo_fx true false; prot_checks "one"
 rsx_stub automerge-ok

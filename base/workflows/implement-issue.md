@@ -425,6 +425,7 @@ case "$AM" in
   10) : ;;  # allow_auto_merge off       -> report: run 'baseline repo apply'
   11) : ;;  # CI but no required checks  -> report: arming would gate NOTHING
   12) : ;;  # no CI at all               -> report: --auto would merge immediately
+  13) : ;;  # a required context nothing reports -> an armed PR would WAIT FOREVER
   *)  : ;;  # 20/unknown                 -> report: live state unreadable, merge by hand
 esac
 ```

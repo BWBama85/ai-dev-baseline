@@ -24,6 +24,8 @@
 #   repo-settings.sh apply [--dry-run] [--branch NAME] [--strict] [--enforce-admins]
 #                                        # required checks FIRST, then allow_auto_merge
 #   repo-settings.sh automerge-ok        # runtime guard: is it safe to arm auto-merge?
+#   (any subcommand) [--workflow-dir DIR]  # discover from DIR instead of ./.github/workflows —
+#                                        # e.g. the merged default-branch tree, not this branch
 #   repo-settings.sh -h | --help
 #
 # `automerge-ok` exit codes are a stable machine contract for the workflow step:
@@ -31,6 +33,7 @@
 #   10 unsafe  — the repo has allow_auto_merge off (nothing to arm)
 #   11 unsafe  — CI exists but NO required checks: `--auto` would arm an ungated merge
 #   12 unsafe  — the repo has no PR-triggered CI at all: `--auto` would merge immediately
+#   13 unsafe  — a required context no workflow reports: an armed PR would wait forever
 #   20 unknown — live state could not be read; FAIL CLOSED, never assume safe
 #
 # What this file must never grow: it is repo *settings* bookkeeping. It does not merge, review,
@@ -71,38 +74,41 @@ OPT_STRICT=0
 # opt-in, not a side effect of running `apply`. With it off the AUTOMATED path is still fully
 # gated — `gh pr merge --auto` cannot fire on red — while a human keeps an explicit override.
 OPT_ENFORCE_ADMINS=0
+# Discover from another workflow tree (see workflow_dir).
+OPT_WORKFLOW_DIR=""
 
 REPO_SLUG=""
 REPO_JSON=""
 
-# Fail loud on a missing/unauthenticated gh or an unresolvable remote — never a silent no-op.
-# Caches REPO_SLUG once (the resolve doubles as the remote check), like release-convention.sh.
-require_gh() {
-  command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
-  command -v gh >/dev/null 2>&1 || { echo "ERROR: gh not found on PATH" >&2; exit 1; }
-  command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not found on PATH" >&2; exit 1; }
-  gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated (run: gh auth login)" >&2; exit 1; }
-  REPO_SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \
-    || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; exit 1; }
-  [ -n "$REPO_SLUG" ] || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; exit 1; }
-}
+# Fail loud on a missing/unauthenticated gh — never a silent no-op. The tool+auth preamble itself
+# lives in common.sh (adb_require_gh), sourced not copied: release-convention.sh needs the exact
+# same guard, and two copies of a fail-loud check are two things that drift.
+require_gh() { adb_require_gh jq || exit 1; }
 
-repo_slug() { printf '%s' "$REPO_SLUG"; }
-
-# repo_json — the repo object, read ONCE per run. Carries three things every subcommand needs:
-# .default_branch, .allow_auto_merge, and .permissions.admin. The admin bit matters because GitHub
-# returns 404 for BOTH "this branch has no protection" and "you may not see its protection" —
-# without the permission probe the library would misread a permission error as "unprotected",
-# stand protection up, and fail mid-write having already changed something.
+# repo_json — the repo object, read ONCE per run, and the ONE call that also resolves the slug.
+# `gh api repos/{owner}/{repo}` expands those placeholders LOCALLY from the git remote, so
+# `.full_name` yields the slug without a second `gh repo view` round trip. That matters more than
+# it looks: `automerge-ok` runs on every /implement-issue, so this is the one recurring cost.
+#
+# The object carries the three things every subcommand needs: .default_branch, .allow_auto_merge,
+# and .permissions.admin. The admin bit is load-bearing because GitHub returns 404 for BOTH "this
+# branch has no protection" and "you may not see its protection" — without the permission probe
+# the library would misread a permission error as "unprotected", stand protection up, and fail
+# mid-write having already changed something.
 repo_json() {
   if [ -z "$REPO_JSON" ]; then
-    REPO_JSON="$(gh api "repos/$(repo_slug)" 2>/dev/null)" || return 1
+    REPO_JSON="$(gh api 'repos/{owner}/{repo}' 2>/dev/null)" || return 1
     [ -n "$REPO_JSON" ] || return 1
+    REPO_SLUG="$(printf '%s' "$REPO_JSON" | jq -r '.full_name // empty' 2>/dev/null)"
+    [ -n "$REPO_SLUG" ] || return 1
   fi
   printf '%s' "$REPO_JSON"
 }
 
 repo_field() { repo_json | jq -r "$1" 2>/dev/null; }
+
+# jq_bool <flag-var-value> — render a 0/1 option flag as a JSON boolean for --argjson.
+jq_bool() { [ "$1" -eq 1 ] 2>/dev/null && printf 'true' || printf 'false'; }
 
 # nlines <text> — count non-empty lines. `grep -c` exits 1 on no match, so a naive
 # `$(grep -c . || echo 0)` emits TWO zeros and turns the caller's `[ "$n" -eq 0 ]` into a syntax
@@ -268,10 +274,13 @@ _adb_rs_jobs() {
   ' "$1"
 }
 
-# workflow_dir — .github/workflows under the repo root the caller is in. ADB_RS_WORKFLOW_DIR
-# overrides it so the offline check can point discovery at a fixture tree.
+# workflow_dir — .github/workflows under the repo root the caller is in, unless --workflow-dir
+# names another tree. That flag is not just a test hook: the real operational use is discovering
+# from the MERGED default-branch state rather than a feature branch, so `apply` never requires a
+# context whose job does not exist on the default branch yet (which would block every PR until it
+# lands). A visible flag beats an exported variable here, because this redirects a WRITE path.
 workflow_dir() {
-  if [ -n "${ADB_RS_WORKFLOW_DIR:-}" ]; then printf '%s' "$ADB_RS_WORKFLOW_DIR"; return 0; fi
+  if [ -n "$OPT_WORKFLOW_DIR" ]; then printf '%s' "$OPT_WORKFLOW_DIR"; return 0; fi
   printf '%s/.github/workflows' "$(adb_repo_root)"
 }
 
@@ -291,10 +300,15 @@ discover_checks() {
       printf 'repo-settings: skipping %s — %s\n' "${f##*/}" "$verdict" >&2
       continue
     fi
-    _adb_rs_jobs "$f" | while IFS="$(printf '\t')" read -r kind a b; do
+    # Split on the FIRST tab only (read -r kind rest), never field-by-field: a job `name:` may
+    # legally contain a tab inside a quoted scalar, and a tab-delimited multi-field read would
+    # truncate it there — silently requiring a context that does not exist, which is the phantom
+    # deadlock this whole file is built to avoid. `rest` keeps the name byte-for-byte.
+    _adb_rs_jobs "$f" | while IFS="$(printf '\t')" read -r kind rest; do
       case "$kind" in
-        CHECK) [ -n "$a" ] && printf '%s\n' "$a" ;;
-        SKIP)  printf 'repo-settings: skipping job %s (%s) — %s\n' "$a" "${f##*/}" "$b" >&2 ;;
+        CHECK) [ -n "$rest" ] && printf '%s\n' "$rest" ;;
+        SKIP)  printf 'repo-settings: skipping job %s (%s) — %s\n' \
+                 "${rest%%"$(printf '\t')"*}" "${f##*/}" "${rest#*"$(printf '\t')"}" >&2 ;;
       esac
     done
   done
@@ -315,7 +329,7 @@ PROT_STATE=""   # protected-with-checks | protected-no-checks | unprotected | fo
 read_protection() {
   local branch="$1" out rc admin
   admin="$(repo_field .permissions.admin)" || admin=""
-  out="$(gh api "repos/$(repo_slug)/branches/$branch/protection" 2>/dev/null)"; rc=$?
+  out="$(gh api "repos/$REPO_SLUG/branches/$branch/protection" 2>/dev/null)"; rc=$?
   if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
     PROT_JSON="$out"
     if printf '%s' "$out" | jq -e '.required_status_checks != null' >/dev/null 2>&1; then
@@ -339,6 +353,18 @@ live_contexts() {   # the contexts currently required, sorted, one per line (emp
   printf '%s' "$PROT_JSON" | jq -r '.required_status_checks.contexts // [] | .[]' 2>/dev/null | LC_ALL=C sort
 }
 
+# nz <text> — the non-empty lines of <text>, for feeding `comm` (which needs sorted streams).
+nz() { printf '%s\n' "$1" | sed '/^$/d'; }
+
+# phantom_contexts <want> <live> — required contexts that NO discovered workflow job reports.
+# These are the dangerous direction: GitHub validates nothing, so each one silently blocks every
+# PR forever. `status` reports them and `automerge-ok` refuses to arm on them — ONE home for the
+# comparison, so the guard can never be shallower than the report.
+phantom_contexts() { LC_ALL=C comm -13 <(nz "$1") <(nz "$2"); }
+
+# ungated_contexts <want> <live> — discovered jobs that are NOT required, i.e. gating nothing.
+ungated_contexts() { LC_ALL=C comm -23 <(nz "$1") <(nz "$2"); }
+
 # --- apply --------------------------------------------------------------------------------
 
 # run_gh <label> <body-or-empty> <args…> — execute a mutating gh call, or print it (and its JSON
@@ -359,44 +385,59 @@ run_gh() {
   fi
 }
 
-# contexts_json <contexts-file> — the {strict, contexts} object every write path shares.
+# contexts_json <contexts> — the {strict, contexts} object every write path shares.
 contexts_json() {
-  jq -n --argjson strict "$([ "$OPT_STRICT" -eq 1 ] && echo true || echo false)" \
-        --rawfile ctx "$1" \
+  jq -n --argjson strict "$(jq_bool "$OPT_STRICT")" --arg ctx "$1" \
         '{strict: $strict, contexts: ($ctx | split("\n") | map(select(length > 0)))}'
 }
 
-# write_required_checks <branch> <contexts-file> — set the required contexts through the NARROWEST
+# PROT_DEFAULTS — the protection object a repo gets when there is none yet, in the SAME shape the
+# live GET returns ({enabled: …} wrappers), so exactly one jq filter builds the PUT body for both
+# PUT paths. A second hand-written literal body would be a second thing to keep in step with the
+# filter — precisely the drift the read-modify-write property exists to prevent.
+# A PR is required before merging with zero required approvals: that enforces the feature-branch
+# rule without inventing a review requirement the repo never had.
+PROT_DEFAULTS='{"required_pull_request_reviews":{"required_approving_review_count":0},
+                "required_conversation_resolution":{"enabled":true}}'
+
+# write_required_checks <branch> <contexts> — set the required contexts through the NARROWEST
 # endpoint that works, because the wide one is destructive:
 #
 #   protected-with-checks -> PATCH …/protection/required_status_checks
 #        Touches only the status-check sub-resource. Nothing else can be lost.
-#   protected-no-checks   -> PUT …/protection with a body REBUILT FROM THE LIVE OBJECT
+#   protected-no-checks   -> PUT …/protection, body REBUILT FROM THE LIVE OBJECT
 #        There is no status-check sub-resource to PATCH when the branch has none, so the full PUT
 #        is the only path — and a full PUT REPLACES the whole protection object. Every key omitted
 #        is reset: omitting required_pull_request_reviews removes "require a PR before merging"
 #        (the no-direct-push-to-main guardrail this whole baseline rests on); omitting
 #        required_conversation_resolution turns thread resolution off. So the body is
 #        read-modify-write, never a fresh literal.
-#   unprotected           -> PUT …/protection standing protection up with conservative defaults
+#   unprotected           -> the SAME PUT, seeded from PROT_DEFAULTS instead of the live object.
 #
 # (required_signatures is deliberately absent from the PUT body: it is a separate endpoint, and a
 # PUT does not reset it.)
 write_required_checks() {
-  local branch="$1" ctxfile="$2" body
+  local branch="$1" ctx="$2" body base label
   case "$PROT_STATE" in
     protected-with-checks)
-      body="$(contexts_json "$ctxfile")" \
+      body="$(contexts_json "$ctx")" \
         || { echo "ERROR: could not build the required_status_checks body" >&2; return 1; }
       adb_info "  required checks -> PATCH branches/$branch/protection/required_status_checks (narrow; nothing else touched)"
       run_gh "set required checks" "$body" \
-        api -X PATCH "repos/$(repo_slug)/branches/$branch/protection/required_status_checks" --input - \
+        api -X PATCH "repos/$REPO_SLUG/branches/$branch/protection/required_status_checks" --input - \
         || { echo "ERROR: could not set required status checks" >&2; return 1; }
       ;;
-    protected-no-checks)
-      body="$(printf '%s' "$PROT_JSON" | jq \
-                --argjson checks "$(contexts_json "$ctxfile")" \
-                --argjson admins "$([ "$OPT_ENFORCE_ADMINS" -eq 1 ] && echo true || echo false)" '
+    protected-no-checks|unprotected)
+      if [ "$PROT_STATE" = "unprotected" ]; then
+        base="$PROT_DEFAULTS"
+        label="standing protection up from scratch"
+      else
+        base="$PROT_JSON"
+        label="read-modify-write; every existing setting preserved"
+      fi
+      body="$(printf '%s' "$base" | jq \
+                --argjson checks "$(contexts_json "$ctx")" \
+                --argjson admins "$(jq_bool "$OPT_ENFORCE_ADMINS")" '
         {
           required_status_checks: $checks,
           enforce_admins: (if $admins then true else (.enforce_admins.enabled // false) end),
@@ -421,31 +462,11 @@ write_required_checks() {
           lock_branch:                      (.lock_branch.enabled // false),
           allow_fork_syncing:               (.allow_fork_syncing.enabled // false)
         }')" \
-        || { echo "ERROR: could not rebuild the protection body from the live object" >&2; return 1; }
-      adb_info "  required checks -> PUT branches/$branch/protection (read-modify-write; every existing setting preserved)"
-      run_gh "set required checks (full protection PUT)" "$body" \
-        api -X PUT "repos/$(repo_slug)/branches/$branch/protection" --input - \
-        || { echo "ERROR: could not set required status checks" >&2; return 1; }
-      ;;
-    unprotected)
-      body="$(jq -n --argjson checks "$(contexts_json "$ctxfile")" \
-                    --argjson admins "$([ "$OPT_ENFORCE_ADMINS" -eq 1 ] && echo true || echo false)" '
-        {
-          required_status_checks: $checks,
-          enforce_admins: $admins,
-          # A PR is required before merging, with zero required approvals: that enforces the
-          # feature-branch rule without inventing a review requirement the repo never had.
-          required_pull_request_reviews: {required_approving_review_count: 0},
-          restrictions: null,
-          required_conversation_resolution: true,
-          allow_force_pushes: false,
-          allow_deletions: false
-        }')" \
         || { echo "ERROR: could not build the protection body" >&2; return 1; }
-      adb_info "  required checks -> PUT branches/$branch/protection (standing protection up from scratch)"
-      run_gh "stand up branch protection" "$body" \
-        api -X PUT "repos/$(repo_slug)/branches/$branch/protection" --input - \
-        || { echo "ERROR: could not stand up branch protection" >&2; return 1; }
+      adb_info "  required checks -> PUT branches/$branch/protection ($label)"
+      run_gh "set required checks (full protection PUT)" "$body" \
+        api -X PUT "repos/$REPO_SLUG/branches/$branch/protection" --input - \
+        || { echo "ERROR: could not set required status checks" >&2; return 1; }
       ;;
     *)
       echo "ERROR: cannot read branch protection for '$branch' (state: $PROT_STATE)" >&2
@@ -459,34 +480,32 @@ write_required_checks() {
 manual_commands() {
   local branch="$1"
   adb_info ""
-  adb_info "No admin permission on $(repo_slug) — nothing was changed. Ask an admin to run:"
+  adb_info "No admin permission on $REPO_SLUG — nothing was changed. Ask an admin to run:"
   adb_info "  baseline repo checks    # the exact context names to require"
-  adb_info "  gh api -X PATCH repos/$(repo_slug)/branches/$branch/protection/required_status_checks \\"
+  adb_info "  gh api -X PATCH repos/$REPO_SLUG/branches/$branch/protection/required_status_checks \\"
   adb_info "    -F strict=false -f 'contexts[]=<each name above>'"
-  adb_info "  gh api -X PATCH repos/$(repo_slug) -F allow_auto_merge=true"
+  adb_info "  gh api -X PATCH repos/$REPO_SLUG -F allow_auto_merge=true"
   adb_info "…in that order: required checks FIRST, or auto-merge lands PRs with nothing gating them."
 }
 
 cmd_apply() {
   require_gh
-  local branch ctxfile n admin
-  repo_json >/dev/null || { echo "ERROR: could not read repos/$(repo_slug)" >&2; exit 1; }
+  local branch ctx n admin automerge dir
+  repo_json >/dev/null || { echo "ERROR: could not read this repo via gh (no resolvable remote, or no access)" >&2; exit 1; }
   branch="$(target_branch)" || { echo "ERROR: could not resolve the target branch" >&2; exit 1; }
 
   # Probe permission BEFORE any write, so a non-admin run never flips one setting and then fails
   # on the other, leaving the repo in the exact half-configured state this file exists to prevent.
   admin="$(repo_field .permissions.admin)"
-  adb_info "Repo settings for $(repo_slug) (branch '$branch'):"
+  adb_info "Repo settings for $REPO_SLUG (branch '$branch'):"
   if [ "$admin" != "true" ]; then
     manual_commands "$branch"
     return 1
   fi
 
-  ctxfile="$(mktemp -t adb-rs-ctx.XXXXXX)" || { echo "ERROR: could not create a temp file" >&2; exit 1; }
-  # shellcheck disable=SC2064  # expand $ctxfile NOW: the trap must survive the variable's scope
-  trap "rm -f '$ctxfile'" EXIT
-  discover_checks "$branch" | LC_ALL=C sort -u > "$ctxfile"
-  n="$(nlines "$(cat "$ctxfile")")"
+  dir="$(workflow_dir)"
+  ctx="$(discover_checks "$branch" | LC_ALL=C sort -u)"
+  n="$(nlines "$ctx")"
 
   read_protection "$branch"
   if [ "$n" -eq 0 ]; then
@@ -495,20 +514,21 @@ cmd_apply() {
     # /implement-issue will not arm a merge that would land instantly with nothing gating it.
     adb_info "  required checks -> SKIPPED (no PR-triggered CI discovered; nothing to require)"
   else
-    adb_info "  discovered $n check context(s) from $(workflow_dir)"
-    sed 's/^/    - /' "$ctxfile"
-    write_required_checks "$branch" "$ctxfile" || {
+    adb_info "  discovered $n check context(s) from $dir"
+    printf '%s\n' "$ctx" | sed 's/^/    - /'
+    write_required_checks "$branch" "$ctx" || {
       echo "ERROR: required checks were NOT set — refusing to enable auto-merge (order is load-bearing)" >&2
       return 1
     }
   fi
 
   # Only now, and only because the checks write did not fail.
-  if [ "$(repo_field .allow_auto_merge)" = "true" ]; then
+  automerge="$(repo_field .allow_auto_merge)"
+  if [ "$automerge" = "true" ]; then
     adb_info "  allow_auto_merge -> already enabled"
   else
     adb_info "  allow_auto_merge -> enabling"
-    run_gh "enable auto-merge" "" api -X PATCH "repos/$(repo_slug)" -F allow_auto_merge=true \
+    run_gh "enable auto-merge" "" api -X PATCH "repos/$REPO_SLUG" -F allow_auto_merge=true \
       || { echo "ERROR: could not enable allow_auto_merge" >&2; return 1; }
   fi
 
@@ -525,14 +545,14 @@ cmd_apply() {
 cmd_status() {
   require_gh
   local branch want got missing extra rc=0
-  repo_json >/dev/null || { echo "ERROR: could not read repos/$(repo_slug)" >&2; exit 1; }
+  repo_json >/dev/null || { echo "ERROR: could not read this repo via gh (no resolvable remote, or no access)" >&2; exit 1; }
   branch="$(target_branch)" || { echo "ERROR: could not resolve the target branch" >&2; exit 1; }
   read_protection "$branch"
 
   want="$(discover_checks "$branch" 2>/dev/null | LC_ALL=C sort -u)"
   got="$(live_contexts)"
 
-  adb_info "Repo settings for $(repo_slug) (branch '$branch'):"
+  adb_info "Repo settings for $REPO_SLUG (branch '$branch'):"
   adb_info "  admin permission:  $(repo_field .permissions.admin)"
   adb_info "  branch protection: $PROT_STATE"
   adb_info "  allow_auto_merge:  $(repo_field .allow_auto_merge)"
@@ -548,8 +568,8 @@ cmd_status() {
   # Drift, BOTH directions. The dangerous one is `extra`: a renamed job leaves the OLD context
   # required and never reported, which blocks every PR forever — GitHub validates nothing and
   # reports nothing, so this command is the only place that failure becomes visible.
-  missing="$(LC_ALL=C comm -23 <(printf '%s\n' "$want" | sed '/^$/d') <(printf '%s\n' "$got" | sed '/^$/d'))"
-  extra="$(LC_ALL=C comm -13 <(printf '%s\n' "$want" | sed '/^$/d') <(printf '%s\n' "$got" | sed '/^$/d'))"
+  missing="$(ungated_contexts "$want" "$got")"
+  extra="$(phantom_contexts "$want" "$got")"
   if [ -n "$missing" ]; then
     adb_info "  DRIFT: discovered but NOT required (these jobs gate nothing):"
     printf '%s\n' "$missing" | sed 's/^/    - /'
@@ -578,20 +598,37 @@ cmd_status() {
 # what this must catch. Fails CLOSED — an unreadable state is 20, never 0.
 cmd_automerge_ok() {
   require_gh
-  local branch nwant nlive
+  local branch nwant nlive want live phantom
   repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — refusing to arm auto-merge" >&2; return 20; }
   branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — refusing to arm auto-merge" >&2; return 20; }
   read_protection "$branch"
   [ "$PROT_STATE" = "error" ] && { echo "repo-settings: cannot read branch protection — refusing to arm auto-merge" >&2; return 20; }
 
   if [ "$(repo_field .allow_auto_merge)" != "true" ]; then
-    echo "repo-settings: allow_auto_merge is off on $(repo_slug) — run 'baseline repo apply'" >&2
+    echo "repo-settings: allow_auto_merge is off on $REPO_SLUG — run 'baseline repo apply'" >&2
     return 10
   fi
-  nlive="$(nlines "$(live_contexts)")"
-  [ "$nlive" -gt 0 ] && return 0
+  live="$(live_contexts)"
+  want="$(discover_checks "$branch" 2>/dev/null | LC_ALL=C sort -u)"
+  nlive="$(nlines "$live")"
+  nwant="$(nlines "$want")"
 
-  nwant="$(nlines "$(discover_checks "$branch" 2>/dev/null)")"
+  if [ "$nlive" -gt 0 ]; then
+    # Non-empty is NOT sufficient. A required context that nothing reports hangs the PR forever,
+    # and that is this module's own headline failure mode (a renamed CI job leaves the old context
+    # required). Arming a PR that can never merge is worse than not arming it, so the guard asks
+    # the same question `status` does — is the live set actually satisfiable? — rather than a
+    # shallower one. Same comparison, one home: see phantom_contexts.
+    phantom="$(phantom_contexts "$want" "$live")"
+    if [ -n "$phantom" ]; then
+      echo "repo-settings: '$branch' requires context(s) no workflow reports — a PR armed now would" >&2
+      printf '%s\n' "$phantom" | sed 's/^/  - /' >&2
+      echo "repo-settings: …wait forever. Run 'baseline repo apply' to reconcile before arming." >&2
+      return 13
+    fi
+    return 0
+  fi
+
   if [ "$nwant" -gt 0 ]; then
     # CI exists, nothing is required: `--auto` would arm a merge no check can block.
     echo "repo-settings: CI exists but no required status checks on '$branch' — arming auto-merge would gate nothing; run 'baseline repo apply'" >&2
@@ -614,19 +651,28 @@ cmd_checks() {
 
 # --- arg parsing ---------------------------------------------------------------------------
 # Per-subcommand on purpose (the sibling release-convention.sh precedent): a shared parser would
-# make `status --dry-run` and `checks --strict` silently valid.
+# make `status --dry-run` and `checks --strict` silently valid. Two parsers, ONE copy of each
+# shared option body — the value-taking arms live in helpers so the two can't drift.
+#
+# _adb_rs_valopt <flag> <count> <value> — validate a value-taking option; echoes the value.
+# It RETURNS non-zero rather than exiting: callers invoke it in a command substitution, and an
+# `exit` there would only kill the subshell, silently accepting the bad option.
+_adb_rs_valopt() {
+  local flag="$1" count="$2" value="$3"
+  [ "$count" -ge 2 ] || { echo "repo-settings: $flag needs a value" >&2; return 2; }
+  [ -n "$(printf '%s' "$value" | tr -d '[:space:]')" ] \
+    || { echo "repo-settings: $flag must not be empty" >&2; return 2; }
+  printf '%s' "$value"
+}
+
 parse_apply_opts() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --dry-run)        OPT_DRY_RUN=1 ;;
       --strict)         OPT_STRICT=1 ;;
       --enforce-admins) OPT_ENFORCE_ADMINS=1 ;;
-      --branch)
-        [ "$#" -ge 2 ] || { echo "repo-settings: --branch needs a value" >&2; exit 2; }
-        shift; OPT_BRANCH="$1"
-        [ -n "$(printf '%s' "$OPT_BRANCH" | tr -d '[:space:]')" ] \
-          || { echo "repo-settings: --branch must not be empty" >&2; exit 2; }
-        ;;
+      --branch)         OPT_BRANCH="$(_adb_rs_valopt --branch "$#" "${2:-}")" || exit 2; shift ;;
+      --workflow-dir)   OPT_WORKFLOW_DIR="$(_adb_rs_valopt --workflow-dir "$#" "${2:-}")" || exit 2; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "repo-settings: unknown option '$1'" >&2; usage >&2; exit 2 ;;
     esac
@@ -634,15 +680,11 @@ parse_apply_opts() {
   done
 }
 
-parse_read_opts() {   # checks / status / automerge-ok: --branch and --help only
+parse_read_opts() {   # checks / status / automerge-ok: --branch / --workflow-dir / --help only
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --branch)
-        [ "$#" -ge 2 ] || { echo "repo-settings: --branch needs a value" >&2; exit 2; }
-        shift; OPT_BRANCH="$1"
-        [ -n "$(printf '%s' "$OPT_BRANCH" | tr -d '[:space:]')" ] \
-          || { echo "repo-settings: --branch must not be empty" >&2; exit 2; }
-        ;;
+      --branch)       OPT_BRANCH="$(_adb_rs_valopt --branch "$#" "${2:-}")" || exit 2; shift ;;
+      --workflow-dir) OPT_WORKFLOW_DIR="$(_adb_rs_valopt --workflow-dir "$#" "${2:-}")" || exit 2; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "repo-settings: unknown option '$1'" >&2; usage >&2; exit 2 ;;
     esac

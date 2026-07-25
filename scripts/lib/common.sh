@@ -191,6 +191,39 @@ adb_unlink_manifest() {
   done
 }
 
+# --- gh ----------------------------------------------------------------------
+
+# adb_require_gh [extra-tool…] — assert `gh` (plus any named extra tools) are present and gh is
+# authenticated. The ONE home for the "fail loud before any API call" preamble every gh-backed
+# module needs: a missing or unauthenticated gh must never degrade into a silent no-op that then
+# reports success.
+#
+# Honors the sourced-library contract above: it RETURNS non-zero (never `exit`s out of the
+# caller's shell) and prints its diagnostic to stderr, so each caller decides whether to exit.
+# The brew-prefix PATH nudge is here too — non-interactive shells routinely lack it.
+adb_require_gh() {
+  local tool
+  command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
+  command -v gh >/dev/null 2>&1 || { echo "ERROR: gh not found on PATH" >&2; return 1; }
+  for tool in "$@"; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool not found on PATH" >&2; return 1; }
+  done
+  gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated (run: gh auth login)" >&2; return 1; }
+}
+
+# adb_repo_slug — print the current repo's owner/name, resolved from the gh remote and cached for
+# the process. Returns non-zero (printing nothing) when there is no resolvable GitHub remote.
+_ADB_REPO_SLUG=""
+adb_repo_slug() {
+  if [ -z "$_ADB_REPO_SLUG" ]; then
+    _ADB_REPO_SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \
+      || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; return 1; }
+    [ -n "$_ADB_REPO_SLUG" ] \
+      || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; return 1; }
+  fi
+  printf '%s' "$_ADB_REPO_SLUG"
+}
+
 # --- git ---------------------------------------------------------------------
 
 # Resolve a repo's default branch: origin/HEAD → a local main/master → "main".

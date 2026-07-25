@@ -8,6 +8,8 @@ settings. It never merges, reviews, tags, releases, or deploys — those stay pr
 
 ```bash
 baseline repo checks        # the check contexts it would require, one per line
+                            # (any subcommand takes --workflow-dir DIR to discover from another
+                            #  tree — e.g. the merged default branch rather than a feature branch)
 baseline repo status        # desired vs live, with drift named (nonzero = drift)
 baseline repo apply         # required checks FIRST, then allow_auto_merge
 baseline repo automerge-ok  # the guard /implement-issue asks before arming auto-merge
@@ -92,7 +94,11 @@ repo ends up merging on nothing. The exit codes are a stable machine contract:
 | `10` | `allow_auto_merge` is off — nothing to arm |
 | `11` | CI exists but **no** required checks — arming would gate nothing |
 | `12` | no PR-triggered CI at all — `--auto` would merge *immediately* |
+| `13` | a required context **no workflow reports** — an armed PR would wait forever |
 | `20` | live state unreadable — **fail closed**, never assume safe |
+
+Code `13` is the renamed-job case: the guard runs the same comparison `status` does, so it can
+never be shallower than the report. Arming a PR that can never merge is worse than not arming it.
 
 Code `12` matters more than it looks: GitHub refuses to *queue* a PR that could merge right now,
 so `gh pr merge --auto` on a check-less repo is a plain merge wearing an auto-merge label. The
