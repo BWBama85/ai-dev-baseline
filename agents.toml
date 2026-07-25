@@ -12,7 +12,9 @@ gap_analysis = "codex"      # pre-implementation adversarial pass. "" to skip.
 review       = ["claude"]   # code review before merge. 1+ agents; more = better.
 debug        = "claude"     # owns root-cause investigations.
 # issue_author = "claude"   # defaults to `primary` if unset
-# release      = "claude"   # defaults to `primary` if unset
+# release      = "claude"   # defaults to `primary` if unset. Names WHO would cut a release; it
+#                           # installs nothing. This repo cuts releases by hand (CONTRIBUTING.md)
+#                           # and ships no `/release` skill — see docs/roles-and-agents.md.
 
 # This repo has no standard-ecosystem toolchain, so `project-gates.sh` auto-detects
 # nothing (no pnpm/cargo/go/python). Its real gate is `scripts/selfcheck.sh` — the full

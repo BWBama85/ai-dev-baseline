@@ -104,9 +104,10 @@ In release-readiness mode, every run `/roadmap`:
   readiness predicate is the *trigger*.
 
 **The emitted command is advisory and configurable.** `/roadmap` never runs a command — it
-prints one. The default is `/release` (this baseline ships no `/release` skill; it is the
-project-owned release role, issue #3 — a repo without one simply gets an unrunnable
-suggestion, not an error). Override the command with `<!-- release-command: <cmd> -->` on the
+prints one. The default is `/release` — and the baseline ships **no `/release` skill**, by
+decision: it is the [project-owned release role](roles-and-agents.md#release-is-project-owned--the-baseline-ships-no-release),
+so a repo without one gets an unrunnable suggestion rather than an error. Write your own
+`/release`, or point the emission elsewhere with `<!-- release-command: <cmd> -->` on the
 artifact.
 
 **Configurable last mile (auto-cut).** By default the operator runs the emitted `/release`,
@@ -132,8 +133,10 @@ backlog, or milestone-less if it uses no milestones.
 
 ## Relationship to other issues
 
-- **#3** — release *execution* (`/release`). This convention *defines* requirements and
-  *detects* readiness; `/release` cuts the tag/version and rolls the milestone. They compose.
+- **#3** — release *execution* (`/release`), resolved: it stays **project-owned** (see
+  [roles-and-agents.md](roles-and-agents.md#release-is-project-owned--the-baseline-ships-no-release)).
+  This convention *defines* requirements and *detects* readiness; your `/release` cuts the
+  tag/version and rolls the milestone. They compose.
 - **#68** — the destination-report capability (the readiness *gauge*).
 - **#71** — the keystone that wires `/roadmap` to the predicate and the release emission.
 

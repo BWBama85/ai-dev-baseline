@@ -18,7 +18,7 @@ manifest changes.
 | `review` | Independent code review of the diff before merge | 1+ | the primary's own review pass |
 | `debug` | Owns root-cause investigations | 1 | primary |
 | `issue_author` | Drafts and files issues (`create-issue`) | 1 | primary |
-| `release` | Cuts releases | 1 | primary |
+| `release` | Cuts releases — **project-owned**, see below | 1 | primary |
 
 More than one `review` agent is encouraged — independent perspectives from
 different models catch more than one model reviewing twice. The `primary`'s own
@@ -27,6 +27,27 @@ run; the `review` role is the **independent** pass layered on top. Left unset (o
 empty), `review` defaults to the primary running that independent pass with its own
 model-invokable tools — so an unconfigured repo still gets a completed review step,
 never a bare self-review.
+
+### `release` is a project-owned role — the baseline ships no `/release`
+
+The baseline **names** `release` and resolves it like any other role, but deliberately
+ships **no `/release` workflow**, and will not (issue #3): release schemes vary too much
+for a generic skeleton to be right (SemVer vs CalVer, changelog vs none, tag vs image vs
+zip), and a release is the one workflow whose mistakes are published under a permanent
+tag. Write your own project-scoped `/release` — the `handling-the-unknown` prescribed home
+for a workflow that genuinely diverges.
+
+The one part that belongs in the law rather than the guide: **`[roles].release` names the
+executor, not an implementation.** Setting `release = "codex"` installs nothing and
+changes no behavior on its own — it is a declaration your release skill must actively
+honor, by calling `role-dispatch.sh resolve release` and shelling out with
+`role-dispatch.sh invoke release` when the token is not the agent already driving. A
+project skill that skips that lookup silently ignores the manifest: a role is only as real
+as its consumer.
+
+The evidence for the decision, the verified skill paths per agent, and a worked dispatch
+example are in `docs/roles-and-agents.md`; the decision record is `.ai-dev-baseline/decisions.md`
+(D7).
 
 ### Completion contract for delegated steps
 

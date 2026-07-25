@@ -95,7 +95,14 @@ generated from the agent-neutral sources in [`base/workflows/`](base/workflows):
 | `/resolve-pr-threads` | Address + resolve bot review threads so branch protection unblocks |
 | `/cleanup` | Sweep **all** merged branches (local + remote), naming each explicitly |
 | `/debug` | Evidence-first root-cause investigation and fix |
-| `/new-release` | Review a CLI's release notes and apply/act on what affects you |
+| `/roadmap` | Reconcile the roadmap artifact and emit the next `/implement-issue` batch |
+| `/new-release` | Review an **upstream** CLI's release notes and apply what affects you |
+
+There is deliberately **no `/release`.** Cutting your own project's release is the
+project-owned [`release` role](docs/roles-and-agents.md#release-is-project-owned--the-baseline-ships-no-release):
+release schemes (SemVer vs CalVer, changelog vs none, tag vs image vs zip) vary too
+much for a generic skeleton to be right. `/new-release` is the opposite direction —
+it reacts to *someone else's* release, and never touches your version or tags.
 
 **Gates** ([`agents/claude/scripts/`](agents/claude/scripts)) — Stop-hook quality
 gates that **auto-detect** the toolchain (pnpm/npm/yarn/bun, cargo, go, python) and

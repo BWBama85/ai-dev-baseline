@@ -8,11 +8,22 @@ whole point of an agent-neutral baseline.
 
 The framework separates **what a job is** (a role) from **which AI does it**
 (an agent). A project declares the mapping once, in an `agents.toml` at its
-repo root; every workflow (`/implement-issue`, `/create-issue`, `/release`,
-…) reads that mapping and delegates each step to whichever agent the manifest
-names for that role — **with no change to the workflow itself.** Swap
-`primary` from `claude` to `codex` in `agents.toml` and the entire
-`implement-issue` playbook runs unchanged; only who executes each step moves.
+repo root; a **role-aware** workflow resolves that mapping at run time and
+delegates the step to whichever agent the manifest names — **with no change to
+the workflow itself.** Swap `primary` from `claude` to `codex` in
+`agents.toml` and the entire `implement-issue` playbook runs unchanged; only
+who executes each step moves.
+
+"Role-aware" is a property of the *consumer*, not something the manifest
+imposes. A role only takes effect where some workflow explicitly resolves it
+(via `role-dispatch.sh`, below). Today `/implement-issue` consumes
+`gap_analysis` + `review`, and `/resolve-pr-threads` consumes the
+`[reviewers]` bot allowlist. `debug`, `issue_author`, and `release` are
+**declared but not yet consumed** by any shipped workflow — they resolve
+correctly and are there for your own skills to honor. This matters most for
+`release`, which the baseline never implements at all (see below): a
+project-owned `/release` skill is responsible for resolving its own role, or
+`release = "codex"` is silently ignored.
 
 ## Roles
 
@@ -23,12 +34,100 @@ names for that role — **with no change to the workflow itself.** Swap
 | `review` | Independent code review of the diff before merge | 1+ | the primary's own review pass |
 | `debug` | Owns root-cause investigations | 1 | primary |
 | `issue_author` | Drafts and files issues (`create-issue`) | 1 | primary |
-| `release` | Cuts releases | 1 | primary |
+| `release` | Cuts releases — **project-owned**, see below | 1 | primary |
 
 More than one `review` agent is encouraged — independent perspectives from
 different models catch more than one model reviewing twice (this is also why
 `implement-issue`'s step 8 always runs the primary's own self-review pass in
 addition to whichever `review` agent(s) are configured).
+
+## `release` is project-owned — the baseline ships no `/release`
+
+The baseline **names** the `release` role and resolves it like any other. It
+deliberately ships **no `/release` workflow**, and will not (issue #3).
+
+Cutting a release is the one job with no defensible generic shape. A sweep of
+four real projects found four incompatible schemes:
+
+| Project shape | Version | Changelog | Artifact / publish |
+|---|---|---|---|
+| App with a milestone roll | SemVer | `git-cliff` | tag + roll the milestone |
+| Container service | SemVer | hand-written | GHCR image, `cosign`-signed |
+| Support tooling | **CalVer** `YYYY.MM.patch` | **none** | tag only |
+| WordPress plugin | plugin header | readme.txt section | `build.sh` zip + `gh release create` |
+
+A skeleton that "bumps a version, regenerates a changelog from commits, tags,
+and hands off to deploy" is wrong for three of those four. It is also wrong in
+the expensive direction — a release is the one workflow whose mistakes are
+published under a permanent tag, so a plausible-but-wrong default costs more
+than no default at all. The general-over-specific rule in
+[design-principles.md](design-principles.md) points the same way: there is no
+general form here to extract, only four specific ones.
+
+### What you do instead
+
+**1. Write your repo's own `/release` skill.** This is the
+`handling-the-unknown` prescribed home for a workflow that genuinely diverges:
+a project-scoped skill. For Claude the path is verified today —
+`.claude/skills/release/SKILL.md`, which takes precedence over any installed
+base skill of the same name (see
+[per-project-overrides.md](per-project-overrides.md)). Codex and Gemini
+project-local skill placement is **not** verified end-to-end yet
+(`scripts/lib/skill-compose.sh` is Claude-only in v1, and Gemini's skills
+install under a different root); if your primary is one of those, check
+follow-up #62 rather than assuming the symmetric path works.
+
+**2. Have that skill honor `[roles].release` itself.** Setting
+
+```toml
+[roles]
+release = "codex"
+```
+
+installs nothing and changes no behavior on its own — it is a *declaration*,
+and only a consumer makes it real. Your release skill resolves it and shells
+out when the resolved token is not the agent already driving:
+
+```bash
+RD="$HOME/.claude/scripts/lib/role-dispatch.sh"
+RELEASE_PROMPT="Cut the release for this repo: <your procedure here>."
+
+# Exit non-zero on an invalid manifest — do NOT let an unresolvable role fall through to a
+# branch. `resolve` prints the error itself; swallowing its status is the same silent-ignore
+# this whole section warns about.
+RELEASE_AGENT="$(bash "$RD" resolve release)" || exit 1
+
+if [ "$RELEASE_AGENT" = "claude" ]; then
+  : # Claude is already driving — run the release steps in-process.
+else
+  printf '%s' "$RELEASE_PROMPT" | bash "$RD" invoke release
+fi
+```
+
+Skip that lookup and the manifest entry is silently ignored — a common and
+confusing failure, because `agents.toml` *looks* like it is in force.
+
+**3. Let `/roadmap` call it.** In release-readiness mode `/roadmap` prints
+`Next: /release` once the active milestone's requirements are met — it
+**emits, never runs**. A repo with no release skill therefore gets an
+unrunnable suggestion, not an error. Point the emission at a different command
+with the roadmap artifact's `<!-- release-command: CMD -->` marker (see
+[release-goal-convention.md](release-goal-convention.md)).
+
+### `/release` is not `/new-release`
+
+These two are easy to confuse — both shipped in the same session once — and
+they share no work:
+
+| | `/new-release` (ships in the baseline) | `/release` (yours to write) |
+|---|---|---|
+| Subject | an **upstream CLI's** release — Claude Code, Codex, Antigravity | **your project's** release |
+| Trigger | that vendor cut a version you want to adopt | your release milestone's requirements are met |
+| Does | reads the changelog, applies config/code/doc fallout as one PR | bumps the version, tags, publishes the artifact |
+| Touches your version/tags | **never** | that is its whole job |
+
+Rule of thumb: `/new-release` reacts to *someone else's* release;
+`/release` produces *yours*.
 
 ## Agent tokens
 
