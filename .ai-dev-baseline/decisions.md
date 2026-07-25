@@ -202,3 +202,45 @@ didn't already model, so any residual divergence stays visible and auditable.
              is `roll` growing a `--tag` flag "while we're already in the release milestone" — so
              the pin guards that direction specifically.
 - baseline-issue: n/a (this repo IS the baseline; #74 is the tracking issue)
+
+## D9 — the baseline mutates GitHub repo settings; and the three defaults it picks
+- date:      2026-07-25
+- category:  project-delta
+- unknown:   #87 asks the baseline to hand PR merges to GitHub — which means WRITING repo
+             settings (branch protection + `allow_auto_merge`) out-of-band. Nothing in the
+             baseline had ever mutated a repo's GitHub configuration; every prior helper wrote
+             only issues, milestones, labels, and files. It also forced three security-relevant
+             defaults the baseline had no position on: `strict`, `enforce_admins`, and the
+             required approving review count.
+- decision:  Ship it as `baseline repo` (`scripts/lib/repo-settings.sh`), bounded to exactly two
+             settings, with these defaults:
+             1. **`strict` OFF.** "Require branches to be up to date" makes any commit on the
+                default branch un-arm an already-armed PR, and GitHub's auto-update behavior for
+                auto-merge PRs is not a documented guarantee (merge queue is the supported
+                answer). On, the realistic outcome is an auto-merge that silently never fires —
+                reintroducing the very touchpoint #87 removes. `--strict` opts in.
+             2. **`enforce_admins` OFF.** Turning it on removes the owner's break-glass. With it
+                off the AUTOMATED path is still fully gated (`gh pr merge --auto` cannot fire on
+                red) while a human keeps an explicit override. `--enforce-admins` opts in. This
+                is why #87's acceptance criterion "a PR with failing CI CANNOT merge" holds for
+                the automated path but NOT against a deliberate admin override — recorded here
+                rather than silently reinterpreted.
+             3. **Required approving reviews stays 0** when standing protection up. Requiring a
+                PR enforces the feature-branch rule; inventing an approval requirement would
+                block a solo-maintainer loop outright.
+             Two further boundaries: the checks write ALWAYS precedes the auto-merge write (a
+             failed checks write aborts before auto-merge is touched), and the required contexts
+             are DISCOVERED from `.github/workflows`, never hardcoded.
+- placement: `scripts/lib/repo-settings.sh` (the library + its stated boundary); `bin/baseline`
+             (the `repo` dispatch); `base/workflows/implement-issue.md` step 10 (the guarded
+             arm); `docs/repo-settings.md` (the operator contract); `scripts/check-repo-settings.sh`
+             + the `repo-settings` CI job + `scripts/selfcheck.sh` (the offline pins).
+- reason:    Writing repo settings sits on the D7 line ("release execution stays project-owned"),
+             so it needs the same test D8 passed: does ONE correct shape exist? For merge gating
+             it does — "require the checks your CI actually reports, then let GitHub merge" is
+             not project-specific the way cutting a release is. The defaults all resolve the same
+             way: prefer the choice that cannot silently stop the loop, and make the stricter
+             choice an explicit flag rather than a surprise. What this file must never grow is
+             the mirror of D8's temptation — a `--merge` or `--deploy` flag "while we are already
+             holding the repo's settings."
+- baseline-issue: n/a (this repo IS the baseline; #87 is the tracking issue)

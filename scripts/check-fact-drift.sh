@@ -113,4 +113,18 @@ done
 fact release-blocker-label "fixed:release-blocker" -- \
   docs/release-goal-convention.md base/workflows/roadmap.md scripts/lib/release-convention.sh
 
+# --- FACT: the auto-merge guard subcommand (#87) -----------------------------
+# `automerge-ok` is the contract between the library that IMPLEMENTS the guard, the workflow step
+# that CALLS it before arming auto-merge, and the doc that DOCUMENTS its exit codes. Renaming the
+# subcommand in the library alone would leave the workflow calling a subcommand that no longer
+# exists — and since a failed guard call is treated as "do not arm", the failure mode is silent:
+# auto-merge simply stops being armed and nobody notices. Pin the exact token.
+fact automerge-guard "fixed:automerge-ok" -- \
+  scripts/lib/repo-settings.sh base/workflows/implement-issue.md docs/repo-settings.md
+# The order these two settings are written in is the whole safety property (#87): required checks
+# FIRST, then allow_auto_merge. Pin the setting name across the library that writes it, the doc
+# that explains the order, and the workflow step that depends on it having been done.
+fact allow-auto-merge "fixed:allow_auto_merge" -- \
+  scripts/lib/repo-settings.sh docs/repo-settings.md
+
 check_result "canonical facts consistent across their consumers"

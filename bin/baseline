@@ -11,6 +11,10 @@
 #   baseline update --check    # report currency only; make NO changes (for a hook)
 #   baseline skill-compose …   # compose a project's partial skill overrides (issue #22;
 #                              #   run 'baseline skill-compose -h' for its own usage)
+#   baseline repo …            # hand PR merges to GitHub: 'checks' / 'status' / 'apply' to set
+#                              #   required status checks then allow_auto_merge, and
+#                              #   'automerge-ok', the guard /implement-issue asks before it arms
+#                              #   auto-merge (issue #87; 'baseline repo -h' for more)
 #   baseline release …         # the optional release-goal convention in this repo: 'init' /
 #                              #   'status' to stand it up, 'roll' to roll the milestone after a
 #                              #   release is cut (issues #27/#74; 'baseline release -h' for more)
@@ -77,6 +81,15 @@ fi
 if [ "${1:-}" = "release" ]; then
   shift
   exec bash "$REPO/scripts/lib/release-convention.sh" "$@"
+fi
+
+# Delegate the repo-settings contract to its library (issue #87) — same reasoning as the two
+# above: it operates on the PROJECT repo the user is in (resolved from the gh remote), so it must
+# dispatch BEFORE the wrong-clone guard, and it rides the same scripts/lib symlink into every
+# agent home so `/implement-issue`'s auto-merge guard can call it directly.
+if [ "${1:-}" = "repo" ]; then
+  shift
+  exec bash "$REPO/scripts/lib/repo-settings.sh" "$@"
 fi
 
 # --- discovery ---------------------------------------------------------------
@@ -267,7 +280,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ "$ACTION" != "update" ]; then
-  echo "baseline: expected a subcommand ('update', 'skill-compose', or 'release')" >&2; echo >&2; usage >&2; exit 2
+  echo "baseline: expected a subcommand ('update', 'skill-compose', 'release', or 'repo')" >&2; echo >&2; usage >&2; exit 2
 fi
 
 # --- resolve the install-source clone ----------------------------------------

@@ -298,6 +298,22 @@ jobs:
       - name: Release-goal convention helper — dispatch, arg-parsing, fail-loud gh guard (#27)
         run: bash scripts/check-release-convention.sh
 
+  repo-settings:
+    name: repo-settings
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        # repo-settings.sh builds its protection bodies with jq, and the stub-backed tests read
+        # them back with it; install it explicitly rather than lean on runner-image contents.
+        run: sudo apt-get install -y jq
+
+      - name: Repo settings — check discovery + write ordering + the automerge-ok table (#87)
+        run: bash scripts/check-repo-settings.sh
+
   baseline:
     name: baseline
     runs-on: ubuntu-latest
