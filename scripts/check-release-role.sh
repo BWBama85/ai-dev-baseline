@@ -113,11 +113,31 @@ req_fixed docs/release-goal-convention.md 'release-command' convention-documents
 # like a feature rather than a reversal. Group 1 cannot catch that — a cutter grown INSIDE this
 # helper ships no `release.md` and no skill directory, so every absence check stays green.
 #
-# Pin the stated boundary instead. This is the same allowlisted-token discipline as above: the
-# words may be rewritten, but the CLAIM that roll performs no version bump / changelog / tag /
-# package / publish / deploy must survive, in the helper itself and in the user-facing doc.
-req_fixed scripts/lib/release-convention.sh 'BOOKKEEPING ONLY' roll-declares-its-boundary
-req_fixed scripts/lib/release-convention.sh 'stay project-owned (#3)' roll-names-the-owning-decision
-req_fixed docs/release-goal-convention.md 'milestone bookkeeping only' convention-documents-roll-boundary
+# Groups 2-4 guard PROSE, so a token-presence grep is the right instrument there. This invariant
+# is about CODE, so a token grep is the wrong instrument: adding `git tag "$V"` to cmd_roll leaves
+# every doc token intact and the lint green (verified — it did). Assert against the code instead,
+# the way group 1 asserts against the tree.
+#
+# NEGATIVE half: the verbs that would make this file a release cutter.
+roll_forbid() {   # <extended-regex> <why>
+  if grep -nEq "$1" scripts/lib/release-convention.sh; then
+    check_note "[roll-boundary] scripts/lib/release-convention.sh matches /$1/ — $2"
+    check_note "[roll-boundary] #74/D8 ships rollover as BOOKKEEPING: no version bump, changelog,"
+    check_note "[roll-boundary] tag, package, publish, or deploy. Growing one here reverses #3"
+    check_note "[roll-boundary] without touching anything groups 1-4 can see. If that is the"
+    check_note "[roll-boundary] intent, change base/roles.md + decisions.md D7/D8 and this lint"
+    check_note "[roll-boundary] together — deliberately, not as a side effect."
+    check_fail
+  fi
+}
+roll_forbid '(^|[^[:alnum:]_-])git[[:space:]]+(tag|push)([^[:alnum:]_-]|$)' 'it tags or pushes'
+roll_forbid '(^|[^[:alnum:]_-])gh[[:space:]]+release([^[:alnum:]_-]|$)'    'it publishes a GitHub release'
+roll_forbid '(^|[^[:alnum:]_-])(npm|pnpm|yarn|cargo|poetry)[[:space:]]+(version|publish)([^[:alnum:]_-]|$)' \
+  'it bumps or publishes a package version'
+
+# POSITIVE half: the boundary is still STATED where a reader and an editor will meet it. One token,
+# used verbatim in both files, so the claim cannot drift into two different wordings.
+req_fixed scripts/lib/release-convention.sh 'milestone bookkeeping only' roll-declares-its-boundary
+req_fixed docs/release-goal-convention.md   'milestone bookkeeping only' convention-documents-roll-boundary
 
 check_result "release stays project-owned; no /release skill ships"

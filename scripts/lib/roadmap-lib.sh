@@ -28,6 +28,8 @@
 # Usage:
 #   roadmap-lib.sh pr-targets-issue <issue-number> <owner/repo>   # PR JSON on stdin
 #   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>
+#   roadmap-lib.sh release-counts <blocker-label>                 # milestone issue JSON on stdin
+#   roadmap-lib.sh marker-title                                   # roadmap artifact body on stdin
 #   roadmap-lib.sh -h | --help
 #
 # `pr-targets-issue` stdin is the output of:
@@ -202,6 +204,76 @@ cmd_release_ready() {
   printf 'met\n'
 }
 
+# --- release-counts -------------------------------------------------------------------------
+# Derive release-ready's five inputs from one milestone's issues. `release-ready` decides; this
+# decides WHAT IT IS TOLD, and those tabulation rules are load-bearing in exactly the same way:
+# armed counts closed issues too, the roadmap artifact is excluded, PRs are excluded, and only a
+# NOT_PLANNED-closed blocker counts as canceled. Get any one wrong and the verdict is wrong while
+# the predicate stays innocent — so both halves belong in the one testable home, not one here and
+# one restated per caller (design-principles §1).
+#
+# Stdin: the JSON array from `gh api --paginate "repos/OWNER/REPO/issues?milestone=N&state=all"`.
+# Empty stdin is an empty milestone (`unarmed`), not an error — a milestone with no issues is a
+# real, expected state.
+#
+# Prints THREE lines, so a caller can also act on the issues rather than only count them:
+#   1. `<armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>`  — feed straight to release-ready
+#   2. space-separated numbers of the OPEN NON-blocker issues (the rollover's leftovers)
+#   3. space-separated numbers of the OPEN blocker issues (a caller that must refuse, and name them)
+#
+# Excluding PRs is not defensive tidying: `repos/…/issues` returns pull requests too, so counting
+# them would make a milestone look armed (or blocked) by a PR, disagreeing with every `is:issue`
+# query the workflow runs.
+cmd_release_counts() {
+  [ "$#" -eq 1 ] || die "release-counts: needs exactly 1 arg: <blocker-label> (milestone issue JSON on stdin)"
+  command -v jq >/dev/null 2>&1 || die "release-counts: jq not found"
+  local blk="$1" json out
+  json="$(cat)"
+  [ -n "$json" ] || json='[]'
+  out="$(printf '%s' "$json" | jq -r --arg blk "$blk" '
+    [ .[] | select(has("pull_request") | not)
+          | select(([.labels[].name] | index("roadmap")) == null) ]            as $rows
+    | [ $rows[] | select(.state == "open") ]                                   as $open
+    | [ $open[] | select(([.labels[].name] | index($blk)) != null) ]           as $ob
+    | [ $rows[] | select(.state == "closed" and .state_reason == "not_planned")
+                | select(([.labels[].name] | index($blk)) != null) ]           as $can
+    | (
+        "\(if ($rows|length) > 0 then 1 else 0 end) \($ob|length) \($open|length) \(if ($can|length) > 0 then 1 else 0 end)",
+        ([ $open[] | select(([.labels[].name] | index($blk)) == null) | .number | tostring ] | join(" ")),
+        ([ $ob[] | .number | tostring ] | join(" "))
+      )' 2>/dev/null)" \
+    || die "release-counts: malformed JSON on stdin"
+  # Re-pad to exactly three lines. `$( )` strips TRAILING newlines, so a milestone with no
+  # leftovers and no open blockers would collapse the three-record contract to one line. Sequential
+  # `read`s happen to survive that; a consumer that takes line 3 directly would not, and a contract
+  # that only holds for some inputs is the kind that breaks a caller written later.
+  printf '%s\n' "$out" | awk 'NR <= 3 { print } END { for (i = NR + 1; i <= 3; i++) print "" }'
+}
+
+# --- marker-title ---------------------------------------------------------------------------
+# Print the DISTINCT release-milestone titles named by a roadmap artifact body (stdin), one per
+# line. Empty output means "the convention is not active here" — the caller decides whether that
+# is a refusal or classic mode; it is never an error.
+#
+# The value is matched as `[^>]*`, NOT `.*`: a greedy match would run past the marker's own `-->`
+# and absorb a later one on the same line, resolving a different title than the reader sees.
+#
+# The carve-out drops an empty value and the literal `NAME` — the schema's own example token,
+# which bootstrap can copy verbatim (base/workflows/roadmap.md). Treating that placeholder as a
+# real milestone is the classic false activation this whole opt-in is designed to avoid.
+cmd_marker_title() {
+  [ "$#" -eq 0 ] || die "marker-title: takes no arguments (roadmap artifact body on stdin)"
+  # `grep -o` (one match per LINE OF OUTPUT), not `sed s///p` (one substitution per line of
+  # INPUT): two markers on a single line must surface as two titles, so the caller can refuse an
+  # ambiguous artifact. With sed, the leading `.*` is greedy and silently keeps only the last.
+  grep -o '<!--[[:space:]]*release-milestone:[[:space:]]*[^>]*-->' \
+    | sed 's/.*release-milestone:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
+    | grep -v '^[[:space:]]*$' \
+    | grep -vx 'NAME' \
+    | sort -u
+  return 0
+}
+
 # --- dispatch ------------------------------------------------------------------------------
 main() {
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
@@ -210,6 +282,8 @@ main() {
     -h|--help|help) usage; exit 0 ;;
     pr-targets-issue) cmd_pr_targets_issue "$@" ;;
     release-ready)    cmd_release_ready "$@" ;;
+    release-counts)   cmd_release_counts "$@" ;;
+    marker-title)     cmd_marker_title "$@" ;;
     *) printf 'roadmap-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
   esac
 }

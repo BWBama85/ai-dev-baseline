@@ -23,14 +23,15 @@
 #   release-convention.sh init            # create the milestones + labels; seed the marker
 #   release-convention.sh init --release-name NAME   # use a custom release-milestone name
 #   release-convention.sh status          # report which pieces are present (no changes)
-#   release-convention.sh roll --version VERSION [--dry-run] [--force] [--release-name NAME]
+#   release-convention.sh roll --version VERSION [--dry-run] [--force]
+#                              [--release-name NAME] [--backlog-name NAME]
 #                                         # roll the milestone AFTER a release is cut (#74)
 #   release-convention.sh -h | --help
 #
 # `roll` is the rollover half of the convention: once your project-owned release action has cut
 # the release, `roll` archives the release milestone under the version, opens a fresh empty one
 # under the rolling title, and sends the leftover non-blocker issues to Backlog. It is milestone
-# BOOKKEEPING ONLY — it never bumps a version, writes a changelog, tags, packages, publishes, or
+# milestone bookkeeping only — it never bumps a version, writes a changelog, tags, packages, publishes, or
 # deploys. Those stay project-owned (#3), and this file must never grow them.
 #
 # Requires: gh (authenticated for this repo's remote).
@@ -42,7 +43,10 @@ set -uo pipefail
 # ~/.<agent>/scripts/lib), so resolve it the same one-line way the sibling scripts/lib modules
 # do (skill-compose.sh, project-gates.sh) — not bin/baseline's PATH-symlink walk, which is inert
 # here. adb_usage / adb_info vanish without it, so a missing library FAILS LOUD.
-_adb_rc_common="$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
+# Resolved ONCE: `roll` also needs the sibling roadmap-lib.sh, and two copies of this dirname
+# expression are two things to keep in step if the install layout ever changes.
+_adb_rc_libdir="$(dirname "${BASH_SOURCE[0]:-$0}")"
+_adb_rc_common="$_adb_rc_libdir/common.sh"
 if [ ! -f "$_adb_rc_common" ]; then
   printf 'release-convention: FATAL — required library not found: %s (broken/incomplete install)\n' "$_adb_rc_common" >&2
   exit 1
@@ -119,9 +123,14 @@ ensure_milestone() {
   fi
 }
 
-# label_exists <name> -> 0 if the label exists in the repo, 1 otherwise (exact match).
+# label_exists <name> -> 0 if the label exists in the repo, 1 otherwise.
+#
+# A direct 200/404 probe on the label endpoint, which is exact at any repo size and is the SAME
+# mechanism base/workflows/roadmap.md specifies for the readiness mode switch. Listing labels and
+# grepping would silently disagree with the workflow in a repo carrying more labels than the page
+# cap — and mode selection turning on a page cap is precisely the class of bug #79 is about.
 label_exists() {
-  gh label list --limit 500 --json name --jq '.[].name' 2>/dev/null | grep -qx "$1"
+  gh api "repos/$(repo_slug)/labels/$1" >/dev/null 2>&1
 }
 
 # ensure_label <name> <color> <desc> — create it if absent; report if present.
@@ -146,10 +155,10 @@ ensure_label() {
 # roadmap issue when exactly one exists.
 announce_marker() {
   local nums count num
-  nums="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number' 2>/dev/null)"
+  nums="$(roadmap_issue_nums)"
   count="$(printf '%s\n' "$nums" | sed '/^$/d' | wc -l | tr -d ' ')"
   if [ "$count" = "1" ]; then
-    num="$(printf '%s\n' "$nums" | sed '/^$/d' | head -n1)"
+    num="$(printf '%s\n' "$nums" | head -n1)"
     adb_info "  marker   activate /roadmap release-readiness by adding this line to roadmap issue #$num:"
   elif [ "$count" = "0" ]; then
     adb_info "  marker   activate /roadmap release-readiness — run /roadmap once, then add to its body:"
@@ -219,30 +228,13 @@ ROLL_DRY_RUN=0
 ROLL_FORCE=0
 RELEASE_NAME_SET=0   # 1 when --release-name was passed explicitly
 
-# marker_titles — print the distinct rolling-milestone titles named by the roadmap artifact's
-# `<!-- release-milestone: NAME -->` marker (usually exactly one line). Empty output = could not
-# resolve, which `roll` treats as a refusal, never as "use the default".
-#
-# The default title is NOT an acceptable fallback here: `--release-name` is a per-invocation flag
-# that `init` never persisted anywhere, so a repo that opted in with
-# `baseline release init --release-name "v2.0"` has no "Next release" milestone at all — rolling
-# the default would target a milestone that does not exist, or (worse, in a repo that has both)
-# roll the wrong one. The artifact marker is the only authoritative record of the rolling title,
-# and it is the same value /roadmap itself resolves, so roll and roadmap can never disagree.
-#
-# Placeholder carve-out mirrors base/workflows/roadmap.md: an empty value or the literal `NAME`
-# is the schema's own example token (bootstrap can copy it verbatim), never a real milestone.
-marker_titles() {
-  local nums count num body
-  nums="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number' 2>/dev/null)"
-  count="$(printf '%s\n' "$nums" | sed '/^$/d' | wc -l | tr -d ' ')"
-  [ "$count" = "1" ] || return 1
-  num="$(printf '%s\n' "$nums" | sed '/^$/d' | head -n1)"
-  body="$(gh issue view "$num" --json body --jq .body 2>/dev/null)" || return 1
-  printf '%s\n' "$body" \
-    | sed -n 's/.*<!--[[:space:]]*release-milestone:[[:space:]]*\(.*\)-->.*/\1/p' \
-    | sed 's/[[:space:]]*$//' \
-    | grep -v '^[[:space:]]*$' | grep -vx 'NAME' | sort -u
+# roadmap_issue_nums — the open `roadmap`-labelled issue numbers, blanks stripped, one per line.
+# ONE home for "where is the roadmap artifact", shared with announce_marker: the exactly-one rule
+# is a contract (a second labelled issue is the split brain /roadmap hard-stops on), and a
+# contract stated twice is a contract that drifts.
+roadmap_issue_nums() {
+  gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number' 2>/dev/null \
+    | sed '/^$/d'
 }
 
 # create_milestone_strict <title> — POST a NEW open milestone. Deliberately NOT ensure_milestone():
@@ -258,47 +250,99 @@ create_milestone_strict() {
   return 1
 }
 
-# milestone_rows <number> [state] — TSV of the milestone's issues: number, state, state_reason,
-# comma-joined labels. ONE paginated read (`--paginate`, never a `--limit` page cap — cf. #79)
-# and PRs are excluded: `repos/.../issues` returns pull requests too, and re-milestoning a PR
-# would both corrupt that PR and make roll's count disagree with the readiness predicate, which
-# counts issues only.
+# milestone_table — every milestone in the repo as `title<TAB>state<TAB>number`, fetched ONCE.
+# The roll preflight needs four facts about three titles; asking milestone_field for each is four
+# full paginated sweeps of the same list (and on a milestone-heavy repo, four multi-page walks).
+# All four reads happen before any mutation, so a single snapshot cannot go stale between them.
+milestone_table() {
+  gh api --paginate "repos/$(repo_slug)/milestones?state=all&per_page=100" \
+    --jq '.[] | [.title, .state, (.number|tostring)] | @tsv' 2>/dev/null
+}
+
+# table_field <table> <title> <field:state|number> [state-filter] — look up one milestone in an
+# already-fetched table. The title is matched in awk (never interpolated into a jq filter), so a
+# title carrying quotes or jq metacharacters can neither break nor inject into the query.
+table_field() {
+  printf '%s\n' "$1" | awk -F'\t' -v t="$2" -v f="$3" -v want="${4:-}" '
+    $1 == t && (want == "" || $2 == want) { print (f == "state" ? $2 : $3); exit }'
+}
+
+# milestone_issues_json <number> — the milestone's issues (open AND closed) as raw JSON, for
+# roadmap-lib.sh's release-counts. `--paginate`, never a `--limit` page cap (cf. #79). No `--jq`
+# here on purpose: the tabulation rules live in the shared lib, so this only fetches.
+milestone_issues_json() {
+  gh api --paginate "repos/$(repo_slug)/issues?milestone=$1&state=all&per_page=100" 2>/dev/null
+}
+
+# roll_plan — the ordered list of mutations, ONE record per line: `op<TAB>arg…`. Building it as a
+# VALUE rather than printing it means the order has a single source: step 6 renders these records
+# and step 7 executes the same records. A print-then-do split would state the order twice, with a
+# test as the only thing forcing the two copies to agree.
+ROLL_PLAN=""
+roll_plan_add() { ROLL_PLAN="${ROLL_PLAN}$1"$'\n'; }
+
+# roll_plan_render — the human-readable plan, in execution order. Also what --dry-run prints and
+# what the offline checks assert, so the order is pinned by the same string the operator reads.
+roll_plan_render() {
+  printf '%s' "$ROLL_PLAN" | while IFS="$(printf '\t')" read -r op a b; do
+    [ -n "$op" ] || continue
+    case "$op" in
+      rename) adb_info "plan: rename milestone #$a \"$b\" -> \"$ROLL_VERSION\"" ;;
+      create) adb_info "plan: create milestone \"$a\"" ;;
+      move)   adb_info "plan: move issue #$a -> \"$b\"" ;;
+      close)  adb_info "plan: close milestone #$a (\"$ROLL_VERSION\")" ;;
+    esac
+  done
+}
+
+# resolve_rolling_title — print the rolling milestone's title, or refuse.
 #
-# `state_reason` is emitted as "-" when null, never as "". Tab is an IFS *whitespace* character, so
-# `read` collapses a run of them into ONE delimiter — an empty third field would silently shift the
-# label list into the state_reason variable and make every open issue look unlabelled.
-milestone_rows() {
-  gh api --paginate "repos/$(repo_slug)/issues?milestone=$1&state=${2:-all}&per_page=100" \
-    --jq '.[] | select(has("pull_request")|not)
-          | [(.number|tostring), .state, (.state_reason // "-"), ([.labels[].name]|join(","))] | @tsv' 2>/dev/null
-}
+# The built-in default is NOT an acceptable fallback: `--release-name` is a per-invocation flag
+# that `init` never persisted anywhere, so a repo that opted in with
+# `baseline release init --release-name "v2.0"` has no "Next release" milestone at all — rolling
+# the default would target a milestone that does not exist, or (worse, in a repo that has both)
+# roll the wrong one. The artifact marker is the only authoritative record of the rolling title,
+# and it is the same value /roadmap resolves, so roll and /roadmap can never disagree.
+#
+# The marker GRAMMAR (and the placeholder carve-out) lives in roadmap-lib.sh, not here — it is a
+# /roadmap decision, and a third dialect of it is how the three copies drift apart.
+resolve_rolling_title() {
+  if [ "$RELEASE_NAME_SET" -eq 1 ]; then
+    printf '%s\n' "$RELEASE_MILESTONE"; return 0
+  fi
 
-# has_label <comma-joined-labels> <name> -> 0 when present (exact element match, so `release` never
-# matches `release-blocker`).
-has_label() {
-  printf '%s' "$1" | tr ',' '\n' | grep -qx "$2"
-}
+  local nums count num body titles tcount lib
+  lib="$_adb_rc_libdir/roadmap-lib.sh"
+  [ -f "$lib" ] || { echo "ERROR: required library not found: $lib (broken/incomplete install)" >&2; return 1; }
 
-# roll_counts <rows> — echo "<armed> <open_blockers> <open_issues> <canceled>", the four inputs
-# roadmap-lib.sh's release-ready predicate takes. Excludes the roadmap artifact itself, exactly as
-# the /roadmap predicate does (`-label:roadmap`), so the verdict computed here is the same verdict
-# /roadmap computed when it emitted the cut.
-roll_counts() {
-  printf '%s\n' "$1" | awk -F'\t' -v blk="$BLOCKER_LABEL" '
-    function haslabel(l, name,   n, i, a) { n = split(l, a, ","); for (i = 1; i <= n; i++) if (a[i] == name) return 1; return 0 }
-    $1 == "" { next }
-    haslabel($4, "roadmap") { next }
-    { armed = 1 }
-    $2 == "open"   { oi++; if (haslabel($4, blk)) ob++ }
-    $2 == "closed" && $3 == "not_planned" && haslabel($4, blk) { canceled = 1 }
-    END { printf "%d %d %d %d", armed + 0, ob + 0, oi + 0, canceled + 0 }
-  '
-}
+  nums="$(roadmap_issue_nums)"
+  count="$(printf '%s\n' "$nums" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [ "$count" != "1" ]; then
+    echo "ERROR: expected exactly one open 'roadmap'-labelled issue to read the rolling milestone" >&2
+    echo "       title from; found $count. Pass --release-name NAME to name it explicitly." >&2
+    return 1
+  fi
+  num="$(printf '%s\n' "$nums" | head -n1)"
+  body="$(gh issue view "$num" --json body --jq .body 2>/dev/null)" \
+    || { echo "ERROR: could not read roadmap issue #$num" >&2; return 1; }
 
-# roll_plan_line — every planned mutation prints through here, in execution order, BEFORE it runs
-# (and instead of running, under --dry-run). One stable line per operation is what makes the
-# ordering assertable offline in scripts/check-release-convention.sh without a live GitHub.
-roll_plan_line() { adb_info "plan: $*"; }
+  titles="$(printf '%s\n' "$body" | bash "$lib" marker-title)"
+  tcount="$(printf '%s\n' "$titles" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [ "$tcount" = "1" ]; then
+    printf '%s\n' "$titles"; return 0
+  fi
+  if [ "$tcount" = "0" ]; then
+    echo "ERROR: roadmap issue #$num carries no usable <!-- release-milestone: NAME --> marker" >&2
+    echo "       (absent, empty, or the literal placeholder 'NAME'), so this repo is not running" >&2
+    echo "       the release-goal convention. Pass --release-name NAME to name the milestone" >&2
+    echo "       explicitly, or run 'baseline release init' to opt in." >&2
+    return 1
+  fi
+  echo "ERROR: roadmap issue #$num names $tcount different release-milestone titles:" >&2
+  printf '%s\n' "$titles" | sed '/^$/d' | sed 's/^/         /' >&2
+  echo "       Fix the artifact so exactly one is named, or pass --release-name NAME." >&2
+  return 1
+}
 
 cmd_roll() {
   require_gh
@@ -308,31 +352,11 @@ cmd_roll() {
 
   # --- 1. Resolve the rolling title (authoritative: the artifact marker) --------------------
   local rolling
-  if [ "$RELEASE_NAME_SET" -eq 1 ]; then
-    rolling="$RELEASE_MILESTONE"
-  else
-    local titles tcount
-    titles="$(marker_titles)" || true
-    tcount="$(printf '%s\n' "$titles" | sed '/^$/d' | wc -l | tr -d ' ')"
-    if [ "$tcount" = "1" ]; then
-      rolling="$(printf '%s\n' "$titles" | sed '/^$/d' | head -n1)"
-    elif [ "$tcount" = "0" ]; then
-      echo "ERROR: could not resolve the rolling milestone title from the roadmap artifact's" >&2
-      echo "       <!-- release-milestone: NAME --> marker (no marker, a placeholder value, or" >&2
-      echo "       not exactly one open 'roadmap'-labelled issue). Pass --release-name NAME to" >&2
-      echo "       name it explicitly, or run 'baseline release init' to stand the convention up." >&2
-      return 1
-    else
-      echo "ERROR: the roadmap artifact names $tcount different release-milestone titles:" >&2
-      printf '%s\n' "$titles" | sed '/^$/d' | sed 's/^/         /' >&2
-      echo "       Fix the artifact so exactly one is named, or pass --release-name NAME." >&2
-      return 1
-    fi
-  fi
+  rolling="$(resolve_rolling_title)" || return 1
 
   # --- 2. Preflight reads + refusals (ALL before any mutation) -----------------------------
-  printf '%s' "$ROLL_VERSION" | grep -q '[^[:space:]]' \
-    || { echo "ERROR: --version must not be empty" >&2; return 2; }
+  # (--version is validated non-empty by parse_roll_opts; the only reachable miss is its absence,
+  #  caught above.)
   if [ "$ROLL_VERSION" = "$rolling" ]; then
     echo "ERROR: --version '$ROLL_VERSION' is the rolling title itself — the archive would collide" >&2
     echo "       with the milestone it archives, leaving zero open milestones under that title and" >&2
@@ -344,76 +368,94 @@ cmd_roll() {
     return 1
   fi
 
-  local cut_num ver_num ver_state backlog_num
-  cut_num="$(milestone_field "$rolling" open number)"
-  ver_num="$(milestone_field "$ROLL_VERSION" all number)"
-  ver_state="$(milestone_field "$ROLL_VERSION" all state)"
-  backlog_num="$(milestone_field "$BACKLOG_MILESTONE" open number)"
+  local table cut_num ver_num ver_state backlog_num
+  table="$(milestone_table)"
+  cut_num="$(table_field "$table" "$rolling" number open)"
+  ver_num="$(table_field "$table" "$ROLL_VERSION" number)"
+  ver_state="$(table_field "$table" "$ROLL_VERSION" state)"
+  backlog_num="$(table_field "$table" "$BACKLOG_MILESTONE" number open)"
 
   # Backlog is the disposition target — resolve it up front so a missing one is a refusal, never
-  # issues left milestone-less halfway through.
-  [ -n "$backlog_num" ] \
-    || { echo "ERROR: no OPEN milestone titled '$BACKLOG_MILESTONE' — run 'baseline release init' first" >&2; return 1; }
-
-  # --- 3. Classify the state so a re-run RESUMES instead of corrupting -----------------------
-  # GitHub has no transaction, so roll is designed to be re-run after an interruption at any
-  # step. The four reachable states, from (rolling open?, version milestone state):
-  local do_rename=1 do_create=1
-  if [ -n "$cut_num" ] && [ -z "$ver_num" ]; then
-    :                                   # (a) fresh roll — nothing done yet
-  elif [ -z "$cut_num" ] && [ "$ver_state" = "open" ]; then
-    do_rename=0; cut_num="$ver_num"     # (b) resumed after rename: archive exists, rolling freed
-    adb_info "note: resuming an interrupted roll (milestone #$ver_num already renamed to '$ROLL_VERSION')"
-  elif [ -n "$cut_num" ] && [ "$ver_state" = "open" ]; then
-    # (c) resumed after create: both open. Distinguish a genuine resume (the fresh rolling
-    # milestone is empty) from a pre-existing version-named milestone (a real collision).
-    if [ -n "$(milestone_rows "$cut_num" all)" ]; then
-      echo "ERROR: '$ROLL_VERSION' already exists as an OPEN milestone (#$ver_num) and '$rolling'" >&2
-      echo "       (#$cut_num) is not empty — this is not an interrupted roll. Rename or close the" >&2
-      echo "       existing '$ROLL_VERSION' milestone, or pick a different --version." >&2
-      return 1
-    fi
-    do_rename=0; do_create=0; cut_num="$ver_num"
-    adb_info "note: resuming an interrupted roll (archive #$ver_num renamed, '$rolling' recreated)"
-  elif [ "$ver_state" = "closed" ]; then
-    if [ -n "$cut_num" ]; then
-      echo "ERROR: already rolled — '$ROLL_VERSION' is a closed milestone (#$ver_num) and '$rolling'" >&2
-      echo "       (#$cut_num) is open. Nothing to do." >&2
-      return 1
-    fi
-    echo "ERROR: '$ROLL_VERSION' is closed (#$ver_num) but no open '$rolling' milestone exists —" >&2
-    echo "       the roll completed and the rolling milestone was removed. Run 'baseline release" >&2
-    echo "       init' to recreate it." >&2
+  # issues left milestone-less halfway through. Do NOT advise `init` here: in a repo that renamed
+  # its backlog, init would create a SECOND one rather than find the existing one.
+  [ -n "$backlog_num" ] || {
+    echo "ERROR: no OPEN milestone titled '$BACKLOG_MILESTONE' to disposition leftovers into." >&2
+    echo "       Pass --backlog-name NAME if this repo's backlog milestone is named differently," >&2
+    echo "       or create/reopen it first." >&2
     return 1
-  else
-    echo "ERROR: no OPEN milestone titled '$rolling' to roll" >&2
-    return 1
-  fi
+  }
 
-  # --- 4. Re-verify readiness LIVE, and fail closed ------------------------------------------
+  # --- 3. Classify the tracker state so a re-run RESUMES instead of corrupting ---------------
+  # GitHub has no transaction, so roll is built to be re-run after an interruption at any step.
+  # The state is fully described by (version-milestone state) x (rolling milestone open?), and
+  # every cell is reachable and distinct — hence a table, not a flat if-chain:
+  #
+  #   ver_state | rolling open | meaning                        | action
+  #   ----------|--------------|--------------------------------|------------------------------
+  #   absent    | yes          | fresh roll, nothing done       | rename + create + move + close
+  #   absent    | no           | nothing to roll                | refuse
+  #   open      | no           | interrupted after rename       | resume: create + move + close
+  #   open      | yes, empty   | interrupted after create       | resume: move + close
+  #   open      | yes, NOT empty | pre-existing version-named milestone — a real collision | refuse
+  #   closed    | yes          | already rolled                 | refuse (nothing to do)
+  #   closed    | no           | rolled, then rolling deleted   | refuse (tell them to re-init)
+  local do_rename=0 do_create=0
+  case "$ver_state" in
+    "")
+      [ -n "$cut_num" ] || { echo "ERROR: no OPEN milestone titled '$rolling' to roll" >&2; return 1; }
+      do_rename=1; do_create=1 ;;
+    open)
+      if [ -z "$cut_num" ]; then
+        do_create=1; cut_num="$ver_num"
+        adb_info "note: resuming an interrupted roll (milestone #$ver_num already renamed to '$ROLL_VERSION')"
+      elif [ -z "$(milestone_issues_json "$cut_num" | tr -d '[:space:]' | sed 's/^\[\]$//')" ]; then
+        cut_num="$ver_num"
+        adb_info "note: resuming an interrupted roll (archive #$ver_num renamed, '$rolling' recreated)"
+      else
+        echo "ERROR: '$ROLL_VERSION' already exists as an OPEN milestone (#$ver_num) and '$rolling'" >&2
+        echo "       (#$cut_num) is not empty — this is not an interrupted roll. Rename or close the" >&2
+        echo "       existing '$ROLL_VERSION' milestone, or pick a different --version." >&2
+        return 1
+      fi ;;
+    closed)
+      if [ -n "$cut_num" ]; then
+        echo "ERROR: already rolled — '$ROLL_VERSION' is a closed milestone (#$ver_num) and '$rolling'" >&2
+        echo "       (#$cut_num) is open. Nothing to do." >&2
+      else
+        echo "ERROR: '$ROLL_VERSION' is closed (#$ver_num) but no open '$rolling' milestone exists —" >&2
+        echo "       the roll completed and the rolling milestone was removed. Run 'baseline release" >&2
+        echo "       init' to recreate it." >&2
+      fi
+      return 1 ;;
+  esac
+
+  # --- 4. Tabulate the milestone, then re-verify readiness LIVE and fail closed ---------------
   # roll is an outward-facing mutation gated on volatile tracker state, so it re-checks that state
   # at the moment it acts rather than trusting the /roadmap run that emitted the cut
-  # (base/practices/verify-before-asserting.md — automated actors are in scope too). The verdict
-  # comes from the SHARED predicate in roadmap-lib.sh, never re-derived here, so roll and /roadmap
-  # can never drift apart (docs/design-principles.md: source the primitive, never copy it).
-  local rows counts armed ob oi canceled blk_exists verdict lib
-  rows="$(milestone_rows "$cut_num" all)"
-  counts="$(roll_counts "$rows")"
-  armed="$(printf '%s' "$counts" | awk '{print $1}')"
-  ob="$(printf '%s' "$counts" | awk '{print $2}')"
-  oi="$(printf '%s' "$counts" | awk '{print $3}')"
-  canceled="$(printf '%s' "$counts" | awk '{print $4}')"
-  # Mode is keyed off label EXISTENCE, never a live count — closing the last blocker must not
-  # silently raise the bar from "no blockers left" to "no issues left" (roadmap-lib.sh:153).
-  blk_exists=0; label_exists "$BLOCKER_LABEL" && blk_exists=1
+  # (base/practices/verify-before-asserting.md — automated actors are in scope too). BOTH halves of
+  # that check come from the shared lib: `release-counts` derives the five inputs and
+  # `release-ready` decides. Re-deriving either here is how roll and /roadmap drift into
+  # disagreeing about the same tracker (docs/design-principles.md: source the primitive, copy it never).
+  local counts armed ob oi canceled movers blockers blk_exists verdict lib
+  lib="$_adb_rc_libdir/roadmap-lib.sh"
+  [ -f "$lib" ] || { echo "ERROR: required library not found: $lib (broken/incomplete install)" >&2; return 1; }
 
-  lib="$(dirname "${BASH_SOURCE[0]:-$0}")/roadmap-lib.sh"
+  counts="$(milestone_issues_json "$cut_num" | bash "$lib" release-counts "$BLOCKER_LABEL")" \
+    || { echo "ERROR: could not tabulate milestone #$cut_num — refusing to roll" >&2; return 1; }
+  {
+    read -r armed ob oi canceled
+    read -r movers
+    read -r blockers
+  } <<EOF
+$counts
+EOF
+
   if [ "$ROLL_FORCE" -eq 1 ]; then
     adb_info "note: --force — skipping the readiness re-check"
-  elif [ ! -f "$lib" ]; then
-    echo "ERROR: required library not found: $lib (broken/incomplete install)" >&2
-    return 1
   else
+    # Mode is keyed off label EXISTENCE, never a live count — closing the last blocker must not
+    # silently raise the bar from "no blockers left" to "no issues left" (roadmap-lib.sh).
+    blk_exists=0; label_exists "$BLOCKER_LABEL" && blk_exists=1
     verdict="$(bash "$lib" release-ready "$blk_exists" "$armed" "$ob" "$oi" "$canceled")" \
       || { echo "ERROR: readiness predicate failed — refusing to roll" >&2; return 1; }
     if [ "$verdict" != "met" ]; then
@@ -429,46 +471,37 @@ cmd_roll() {
     fi
   fi
 
-  # --- 5. Enumerate the leftovers, refusing to silently demote a must-have -------------------
-  # Disposition is BACKLOG, never "roll forward into the fresh milestone". Rolling them forward
-  # would arm the new milestone (armed = >=1 issue, open OR closed) with zero open blockers, so the
-  # readiness predicate returns `met` on the very next /roadmap run and re-emits a cut for a
-  # release that contains nothing. Backlog leaves the fresh milestone genuinely empty -> `unarmed`
-  # -> "no requirements yet", and matches the convention's frozen-set rule (new work defaults to
-  # Backlog; slating into a release is always a deliberate act).
-  local movers="" n labels blockers=""
-  while IFS="$(printf '\t')" read -r n _st _sr labels; do
-    [ -n "$n" ] || continue
-    has_label "$labels" roadmap && continue          # the artifact is never a backlog item
-    if has_label "$labels" "$BLOCKER_LABEL"; then
-      blockers="$blockers $n"
-    else
-      movers="$movers $n"
-    fi
-  done <<EOF
-$(printf '%s\n' "$rows" | awk -F'\t' '$2 == "open"')
-EOF
-
-  # An OPEN must-have is a refusal even under --force: moving it to Backlog would silently demote
-  # a release requirement, which is an owner decision, not a bookkeeping side effect.
+  # An OPEN must-have is a refusal even under --force: --force waives the readiness VERDICT, not
+  # the demotion. Moving a must-have to the backlog is an owner decision, never a bookkeeping
+  # side effect — so this guard sits outside the --force branch on purpose.
   if [ -n "$blockers" ]; then
-    echo "ERROR: open '$BLOCKER_LABEL' issue(s) in '$rolling':$blockers" >&2
+    echo "ERROR: open '$BLOCKER_LABEL' issue(s) in '$rolling': $blockers" >&2
     echo "       roll will not demote a must-have to '$BACKLOG_MILESTONE'. Close them, remove the" >&2
     echo "       label, or move them out of the milestone yourself, then re-run." >&2
     return 1
   fi
 
-  # --- 6. Print the plan, in execution order ------------------------------------------------
+  # --- 5. Build the plan, in execution order -------------------------------------------------
   # ORDERING IS LOAD-BEARING. Milestone titles are unique repo-wide across states, so the archive
   # rename must FREE the rolling title before the create (create-first 422s). Between the rename
   # and the create there is exactly one API call during which zero open milestones carry the
   # rolling title and /roadmap would hard-stop; that window is unavoidable, which is why step 3
   # classifies and resumes rather than pretending it away. The close comes LAST so an interruption
   # always leaves the archive open and therefore still resumable.
-  [ "$do_rename" -eq 1 ] && roll_plan_line "rename milestone #$cut_num \"$rolling\" -> \"$ROLL_VERSION\""
-  [ "$do_create" -eq 1 ] && roll_plan_line "create milestone \"$rolling\""
-  for n in $movers; do roll_plan_line "move issue #$n -> \"$BACKLOG_MILESTONE\""; done
-  roll_plan_line "close milestone #$cut_num (\"$ROLL_VERSION\")"
+  #
+  # Disposition is BACKLOG, never "roll forward into the fresh milestone". Rolling them forward
+  # would arm the new milestone (armed = >=1 issue, open OR closed) with zero open blockers, so the
+  # readiness predicate returns `met` on the very next /roadmap run and re-emits a cut for a
+  # release that contains nothing. Backlog leaves the fresh milestone genuinely empty -> `unarmed`
+  # -> "no requirements yet", and matches the convention's frozen-set rule (new work defaults to
+  # Backlog; slating into a release is always a deliberate act).
+  local n
+  [ "$do_rename" -eq 1 ] && roll_plan_add "rename$(printf '\t')$cut_num$(printf '\t')$rolling"
+  [ "$do_create" -eq 1 ] && roll_plan_add "create$(printf '\t')$rolling"
+  for n in $movers; do roll_plan_add "move$(printf '\t')$n$(printf '\t')$BACKLOG_MILESTONE"; done
+  roll_plan_add "close$(printf '\t')$cut_num"
+
+  roll_plan_render
 
   if [ "$ROLL_DRY_RUN" -eq 1 ]; then
     adb_info ""
@@ -476,24 +509,29 @@ EOF
     return 0
   fi
 
-  # --- 7. Execute, in that order -------------------------------------------------------------
-  if [ "$do_rename" -eq 1 ]; then
-    gh api -X PATCH "repos/$(repo_slug)/milestones/$cut_num" -f title="$ROLL_VERSION" >/dev/null \
-      || { echo "ERROR: could not rename milestone #$cut_num to '$ROLL_VERSION'" >&2; return 1; }
-  fi
-  if [ "$do_create" -eq 1 ]; then
-    create_milestone_strict "$rolling" || {
-      echo "ERROR: the rolling title '$rolling' is now free but could not be recreated — /roadmap" >&2
-      echo "       will hard-stop until it exists. Re-run this command to resume." >&2
-      return 1
-    }
-  fi
-  for n in $movers; do
-    gh issue edit "$n" --milestone "$BACKLOG_MILESTONE" >/dev/null \
-      || { echo "ERROR: could not move issue #$n to '$BACKLOG_MILESTONE' — re-run to resume" >&2; return 1; }
-  done
-  gh api -X PATCH "repos/$(repo_slug)/milestones/$cut_num" -f state=closed >/dev/null \
-    || { echo "ERROR: could not close milestone #$cut_num — re-run to resume" >&2; return 1; }
+  # --- 6. Execute the SAME plan, record by record --------------------------------------------
+  local op a b
+  while IFS="$(printf '\t')" read -r op a b; do
+    [ -n "$op" ] || continue
+    case "$op" in
+      rename)
+        gh api -X PATCH "repos/$(repo_slug)/milestones/$a" -f title="$ROLL_VERSION" >/dev/null \
+          || { echo "ERROR: could not rename milestone #$a to '$ROLL_VERSION'" >&2; return 1; } ;;
+      create)
+        create_milestone_strict "$a" || {
+          echo "ERROR: the rolling title '$a' is now free but could not be recreated — /roadmap" >&2
+          echo "       will hard-stop until it exists. Re-run this command to resume." >&2
+          return 1; } ;;
+      move)
+        gh issue edit "$a" --milestone "$b" >/dev/null \
+          || { echo "ERROR: could not move issue #$a to '$b' — re-run to resume" >&2; return 1; } ;;
+      close)
+        gh api -X PATCH "repos/$(repo_slug)/milestones/$a" -f state=closed >/dev/null \
+          || { echo "ERROR: could not close milestone #$a — re-run to resume" >&2; return 1; } ;;
+    esac
+  done <<EOF
+$ROLL_PLAN
+EOF
 
   # One audit line per owner-visible mutation (base/practices/logging-and-secrets.md).
   local moved_count; moved_count="$(printf '%s' "$movers" | wc -w | tr -d ' ')"
@@ -540,6 +578,13 @@ parse_roll_opts() {
       --release-name)
         shift; [ "$#" -ge 1 ] || { echo "ERROR: --release-name needs a value" >&2; exit 2; }
         parse_release_name "$1"; shift ;;
+      --backlog-name)
+        # The disposition target is as unpersisted as the release title, so a repo that renamed
+        # its backlog needs a way to name it. (Carrying all of the convention's names on one
+        # resolvable surface is the deeper fix — tracked separately.)
+        shift; [ "$#" -ge 1 ] || { echo "ERROR: --backlog-name needs a value" >&2; exit 2; }
+        printf '%s' "$1" | grep -q '[^[:space:]]' || { echo "ERROR: --backlog-name must not be empty" >&2; exit 2; }
+        BACKLOG_MILESTONE="$1"; shift ;;
       --dry-run) ROLL_DRY_RUN=1; shift ;;
       --force)   ROLL_FORCE=1; shift ;;
       -h|--help) usage; exit 0 ;;
