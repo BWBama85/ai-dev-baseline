@@ -51,7 +51,7 @@ four real projects found four incompatible schemes:
 
 | Project shape | Version | Changelog | Artifact / publish |
 |---|---|---|---|
-| App with a milestone roll | SemVer | `git-cliff` | tag + roll the milestone |
+| App with a milestone roll | SemVer | `git-cliff` | tag (then `baseline release roll`) |
 | Container service | SemVer | hand-written | GHCR image, `cosign`-signed |
 | Support tooling | **CalVer** `YYYY.MM.patch` | **none** | tag only |
 | WordPress plugin | plugin header | readme.txt section | `build.sh` zip + `gh release create` |
@@ -113,6 +113,15 @@ confusing failure, because `agents.toml` *looks* like it is in force.
 unrunnable suggestion, not an error. Point the emission at a different command
 with the roadmap artifact's `<!-- release-command: CMD -->` marker (see
 [release-goal-convention.md](release-goal-convention.md)).
+
+**4. End it with `baseline release roll`.** Milestone rollover is the one part
+of cutting that is *not* yours to invent: it has a single correct shape, on
+milestones the baseline already creates, and skipping it strands the loop
+(`/roadmap` keeps re-emitting the same cut). So the baseline ships it —
+`baseline release roll --version vX.Y.Z` archives the release milestone under
+the version, opens a fresh empty one, and sends leftover non-blockers to
+`Backlog` (#74). It is bookkeeping only: **no** version bump, changelog, tag,
+package, publish, or deploy — those remain the project-owned half above.
 
 ### `/release` is not `/new-release`
 

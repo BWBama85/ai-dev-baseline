@@ -104,4 +104,20 @@ req_fixed base/workflows/roadmap.md '`/release`'      roadmap-emits-release
 req_fixed base/workflows/roadmap.md 'release-command' roadmap-release-command-override
 req_fixed docs/release-goal-convention.md 'release-command' convention-documents-override
 
+# --- 5. THE ROLLOVER BOUNDARY: `roll` is bookkeeping, never a cutter (issue #74) ---------------
+# #74 moved milestone rollover the OTHER way across the #3 line — out of the project-owned
+# `/release` and into `baseline release roll` — on the grounds that cutting has four incompatible
+# shapes while rolling has exactly one. That makes `release-convention.sh` the single file in the
+# repo with both a plausible reason and a plausible path to grow into the generic cutter #3
+# rejected: it already talks to the release milestones, so "while we're here, also tag it" reads
+# like a feature rather than a reversal. Group 1 cannot catch that — a cutter grown INSIDE this
+# helper ships no `release.md` and no skill directory, so every absence check stays green.
+#
+# Pin the stated boundary instead. This is the same allowlisted-token discipline as above: the
+# words may be rewritten, but the CLAIM that roll performs no version bump / changelog / tag /
+# package / publish / deploy must survive, in the helper itself and in the user-facing doc.
+req_fixed scripts/lib/release-convention.sh 'BOOKKEEPING ONLY' roll-declares-its-boundary
+req_fixed scripts/lib/release-convention.sh 'stay project-owned (#3)' roll-names-the-owning-decision
+req_fixed docs/release-goal-convention.md 'milestone bookkeeping only' convention-documents-roll-boundary
+
 check_result "release stays project-owned; no /release skill ships"

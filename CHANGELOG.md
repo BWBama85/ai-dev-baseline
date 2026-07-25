@@ -7,6 +7,41 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **`baseline release roll` — the release rollover contract** (`scripts/lib/release-convention.sh`,
+  #74): after your project-owned release action cuts a version, `roll --version vX.Y.Z` archives the
+  release milestone under that version, opens a fresh empty one under the rolling title, and sends
+  leftover open non-blockers to `Backlog`. Without it a cut **strands the loop** — the milestone
+  stays open with zero open blockers, so the readiness predicate returns `met` on every later run
+  and `/roadmap` re-emits the same cut forever. Three things make it safe: it re-verifies readiness
+  live through the *shared* predicate (`roadmap-lib.sh release-ready`) and fails closed rather than
+  trusting the `/roadmap` run that emitted the cut; `--force` waives that verdict (the override for
+  a `held` release) but never the separate refusal to demote an **open** `release-blocker` to
+  `Backlog`; and the four mutations run in the one safe order — rename (frees the title, which
+  GitHub requires before the create) → create → move → **close last**, so an interruption always
+  leaves a resumable state, which a re-run detects and resumes. `--dry-run` prints the plan and
+  changes nothing. The rolling title is read from the roadmap artifact's `release-milestone` marker
+  rather than defaulting to `Next release` — `--release-name` was never persisted, so a repo that
+  opted in under a custom name would otherwise have the wrong milestone rolled — and the marker
+  itself never needs editing, because the rolling *title* is what gets recreated.
+
+### Changed
+
+- **Milestone rollover moved out of the project-owned `/release`** (`docs/release-goal-convention.md`,
+  `docs/roles-and-agents.md`, decision **D8**, #74): both docs previously assigned it to your own
+  release skill. #3/D7 still holds for *cutting* — four surveyed projects cut four incompatible ways,
+  so no generic form exists — but rolling has exactly one correct shape, on milestones the baseline
+  already creates, and its non-obvious part is a trap: leftover non-blockers must go to `Backlog`,
+  never "roll forward", because a milestone counts as *armed* at ≥1 issue **open or closed**, so
+  seeding the fresh one re-fires `met` for a release containing nothing. `scripts/check-release-role.sh`
+  gains a fifth group pinning the new boundary (roll performs no version bump, changelog, tag,
+  package, publish, or deploy) — `release-convention.sh` is now the one file with a plausible path to
+  grow into the generic cutter #3 rejected, and the absence checks cannot see that.
+- **`/roadmap`'s met-emission names the rollover** (`base/workflows/roadmap.md` → all three agents):
+  it now prints `Then: baseline release roll --version <version>` under the `Next:` line, and the
+  leftover-issues note says they go to `Backlog` instead of promising they "roll to the next cycle."
+
 ## [1.0.0] - 2026-07-25
 
 First tagged release. The baseline is the agent-neutral single source of truth installed

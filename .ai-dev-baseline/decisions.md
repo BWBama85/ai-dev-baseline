@@ -166,3 +166,39 @@ didn't already model, so any residual divergence stays visible and auditable.
              change ("just add a small generic /release") looks like a feature, not a reversal —
              the lint makes reversing it deliberate instead of incidental.
 - baseline-issue: n/a (this repo IS the baseline; #3 is the tracking issue)
+
+## D8 — milestone rollover crosses back over the D7 line into `baseline release roll`
+- date:      2026-07-25
+- category:  project-delta
+- unknown:   D7 (#3) put release execution permanently in the project's hands, and the shipped
+             docs then assigned *milestone rollover* to that project-owned `/release` too
+             (`docs/release-goal-convention.md`, `docs/roles-and-agents.md`). #74 asked where the
+             rollover contract actually belongs. The baseline had no rule for "part of a
+             project-owned job that is nonetheless identical everywhere."
+- decision:  Rollover moves OUT of the project-owned half and ships as
+             `baseline release roll --version X [--dry-run] [--force]`, a third subcommand of the
+             existing `release-convention.sh`. D7 holds for *cutting*: the four-project sweep found
+             four incompatible schemes (SemVer+git-cliff, SemVer+GHCR+cosign, CalVer, WP-plugin
+             zip), so no generic form exists. Rolling is the opposite — it has exactly ONE correct
+             shape because it operates on milestones `init` already creates, and the shape is not
+             obvious: the disposition of leftover non-blockers must be `Backlog`, because a
+             milestone is "armed" at >=1 issue open OR closed, so rolling them forward arms the
+             fresh milestone with zero open blockers and the readiness predicate returns `met`
+             immediately, re-emitting a cut for an empty release. Every project re-deriving that
+             would get it wrong, and getting it wrong strands the loop. The boundary is stated in
+             the helper and pinned by a new group 5 in `scripts/check-release-role.sh`: roll does
+             no version bump, changelog, tag, package, publish, or deploy.
+- placement: `scripts/lib/release-convention.sh` (the `roll` subcommand + its stated boundary);
+             `scripts/check-release-role.sh` group 5 (the pin); `docs/release-goal-convention.md`
+             ("Rolling over on the cut"); `docs/roles-and-agents.md` (step 4 of "what you do
+             instead", and the sweep table's rollover column); `base/workflows/roadmap.md` (the
+             met-emission now names the roll); `scripts/check-release-convention.sh` (offline
+             ordering + refusal coverage).
+- reason:    "General over specific" (`docs/design-principles.md`) says extract only when a general
+             form exists. D7 applied that rule to conclude one does NOT exist for cutting; the same
+             rule applied to rolling concludes one DOES. Recording it as its own entry rather than
+             amending D7 keeps both readable: D7 is "no generic cutter," D8 is "rollover was never
+             part of the cutter." The tempting future change is the mirror image of D7's — here it
+             is `roll` growing a `--tag` flag "while we're already in the release milestone" — so
+             the pin guards that direction specifically.
+- baseline-issue: n/a (this repo IS the baseline; #74 is the tracking issue)

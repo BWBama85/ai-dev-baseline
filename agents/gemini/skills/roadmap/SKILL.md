@@ -218,10 +218,18 @@ requirements are unmet. An `M` member whose only blocker is a non-`M` (`Backlog`
   `Next: <release-command>` where `<release-command>` is the `<!-- release-command: CMD -->` marker
   if present else `/release`, prefixed with the banner
   `✅ Release requirements met (NAME: 0 open blockers) — cutting.` If non-blocker issues are still
-  open in `M`, append `(K non-blocker issue(s) still open — they roll to the next cycle)`.
-  `/roadmap` only **emits** this command; it never runs it. `/release` is the **project-owned**
-  release role — the baseline ships no such skill by decision (#3, `base/roles.md`), so a repo
-  without one gets an unrunnable suggestion, not an error.
+  open in `M`, append `(K non-blocker issue(s) still open — not holding the release; the roll sends
+  them to Backlog)`. `/roadmap` only **emits** this command; it never runs it. `/release` is the
+  **project-owned** release role — the baseline ships no such skill by decision (#3,
+  `base/roles.md`), so a repo without one gets an unrunnable suggestion, not an error.
+- **Always name the rollover on a met emission.** Under the `Next:` line, emit the reminder
+  `Then: baseline release roll --version <version>   # archive M, open a fresh NAME, leftovers → Backlog`.
+  This is not decoration: without the roll, `M` stays open with zero open blockers, so the predicate
+  returns `met` again on **every** subsequent run and `/roadmap` re-emits the same cut forever — the
+  loop stops terminating. The roll is baseline-shipped bookkeeping (#74), unlike the cut itself; a
+  project's own `/release` may run it as its last step, in which case the operator has nothing left
+  to do. Emit the reminder either way — `/roadmap` cannot know whether the project's release command
+  calls it.
 
 **Gauge scoping.** In release-readiness mode the finish-line gauge is scoped to `M` so it equals
 the readiness trigger and the two can never disagree — see step 6's "Destination report" for the

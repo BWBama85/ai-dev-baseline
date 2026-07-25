@@ -11,8 +11,9 @@
 #   baseline update --check    # report currency only; make NO changes (for a hook)
 #   baseline skill-compose …   # compose a project's partial skill overrides (issue #22;
 #                              #   run 'baseline skill-compose -h' for its own usage)
-#   baseline release …         # set up the optional release-goal convention in this repo
-#                              #   (issue #27; run 'baseline release -h' for its own usage)
+#   baseline release …         # the optional release-goal convention in this repo: 'init' /
+#                              #   'status' to stand it up, 'roll' to roll the milestone after a
+#                              #   release is cut (issues #27/#74; 'baseline release -h' for more)
 #   baseline -h | --help
 #
 # `update` never touches unsafe state: it fast-forwards ONLY when the install-source
