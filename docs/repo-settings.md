@@ -12,6 +12,7 @@ baseline repo checks        # the check contexts it would require, one per line
                             #  tree — e.g. the merged default branch rather than a feature branch)
 baseline repo status        # desired vs live, with drift named (nonzero = drift)
 baseline repo apply         # required checks FIRST, then allow_auto_merge
+baseline repo apply --prune # ...and drop required contexts no discovered job reports
 baseline repo automerge-ok  # the guard /implement-issue asks before arming auto-merge
 ```
 
@@ -48,7 +49,14 @@ Skipped on purpose:
 - a job with an `if:` condition — it may be skipped;
 - a job with a `strategy.matrix` — its check-run names carry a matrix suffix;
 - a job calling a reusable workflow (`uses:`) — its check names come from the callee;
-- a job whose `name:` interpolates `${{ … }}` — not statically knowable.
+- a job whose `name:` interpolates `${{ … }}` — not statically knowable;
+- `pull_request:` narrowing `types:` to anything that lacks **both** `opened` and `synchronize` —
+  the merge-cleanup workflow (`types: [closed]`) is the classic trap: it only runs *after* a PR
+  closes, so as a required context it would sit "waiting" on every open PR forever.
+
+Known limitation: discovery reads two-space-indented YAML (what `actions/*` templates and every
+real workflow in the wild use). A four-space-indented workflow is skipped loudly rather than
+mis-parsed, which is the fail-safe direction.
 
 Discovery is scoped to the `jobs:` block, which is not a nicety: `on:` puts `push:` and
 `pull_request:` at the *same* two-space indent as job keys, so a whole-file indent scan harvests
@@ -68,6 +76,23 @@ endpoint that works:
 | protection **with** required checks | `PATCH …/protection/required_status_checks` | touches only the sub-resource; nothing else can be lost |
 | protection **without** required checks | `PUT …/protection`, body **rebuilt from the live object** | no sub-resource exists to PATCH, so the full PUT is the only path — read-modify-write, never a fresh literal |
 | unprotected | `PUT …/protection` with conservative defaults | stands protection up: PR required, zero required approvals, thread resolution on |
+
+The read-modify-write body carries **every** sub-object the live GET returns — including
+`dismissal_restrictions` and `bypass_pull_request_allowances`. Dropping the first would turn off
+"restrict who can dismiss pull request reviews"; dropping the second would revoke a bot or team's
+bypass permission. Both are remapped from their GET shape (`{users:[{login}]}`) to their PUT shape
+(`{users:[login]}`).
+
+## External CI providers
+
+Discovery only reads `.github/workflows`, so a required context from Codecov, CircleCI, Vercel, or
+a DCO app is not something it can find. `apply` therefore **keeps** any required context it did not
+discover and says so, rather than writing the discovered set absolutely — which would silently
+delete those checks and report success. `--prune` writes the exact discovered set, and is the
+remedy when a context really is stale (a renamed or deleted job).
+
+The same asymmetry is why `automerge-ok` returns `13` on such a repo until you run `apply`: it
+cannot tell an external provider's context from a phantom one, so it fails closed and names them.
 
 ## Defaults, and why
 

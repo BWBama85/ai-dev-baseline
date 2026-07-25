@@ -21,8 +21,11 @@
 # Usage:
 #   repo-settings.sh checks              # print the discovered check contexts, one per line
 #   repo-settings.sh status              # report desired vs live (no changes); nonzero on drift
-#   repo-settings.sh apply [--dry-run] [--branch NAME] [--strict] [--enforce-admins]
-#                                        # required checks FIRST, then allow_auto_merge
+#   repo-settings.sh apply [--dry-run] [--prune] [--branch NAME] [--strict] [--enforce-admins]
+#                                        # required checks FIRST, then allow_auto_merge.
+#                                        # --prune drops required contexts this tool did not
+#                                        # discover (default: keep them — they are usually an
+#                                        # external provider, not a stale job)
 #   repo-settings.sh automerge-ok        # runtime guard: is it safe to arm auto-merge?
 #   (any subcommand) [--workflow-dir DIR]  # discover from DIR instead of ./.github/workflows —
 #                                        # e.g. the merged default-branch tree, not this branch
@@ -76,6 +79,12 @@ OPT_STRICT=0
 OPT_ENFORCE_ADMINS=0
 # Discover from another workflow tree (see workflow_dir).
 OPT_WORKFLOW_DIR=""
+# By default `apply` UNIONS the discovered contexts with whatever is already required, because a
+# required context this tool did not discover is usually an EXTERNAL provider (Codecov, CircleCI,
+# Vercel, a DCO check) that lives outside .github/workflows. Writing the discovered set absolutely
+# would silently delete those and report success. --prune writes the exact discovered set, which
+# is the remedy for a genuinely stale context left behind by a renamed or deleted job.
+OPT_PRUNE=0
 
 REPO_SLUG=""
 REPO_JSON=""
@@ -174,9 +183,20 @@ _adb_rs_file_verdict() {
       if (s ~ /^".*"$/ || s ~ /^'"'"'.*'"'"'$/) s = substr(s, 2, length(s) - 2)
       return s
     }
+    # yaml_scalar: a plain YAML scalar as GitHub would read it. A quoted value ends at its closing
+    # quote (anything after is a comment); an UNQUOTED value ends at the first whitespace-preceded
+    # "#". Without this, `name: Build  # the main build job` becomes the required context
+    # "Build  # the main build job" — which nothing ever reports, blocking every PR forever.
+    function yaml_scalar(s) {
+      s = trim(s)
+      if (s ~ /^"/)  { sub(/^"/,  "", s); sub(/".*$/,  "", s); return s }
+      if (s ~ /^'"'"'/) { sub(/^'"'"'/, "", s); sub(/'"'"'.*$/, "", s); return s }
+      sub(/[[:space:]]+#.*$/, "", s)
+      return trim(s)
+    }
     # Parse an inline YAML flow sequence "[a, b]" into the given array.
     function flow_list(s, arr,   n, i, v, parts) {
-      sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*$/, "", s)
+      sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
       n = split(s, parts, ",")
       for (i = 1; i <= n; i++) { v = unquote(trim(parts[i])); if (v != "") arr[v] = 1 }
     }
@@ -186,7 +206,7 @@ _adb_rs_file_verdict() {
       rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(rest)
       # Inline forms: "on: push" and "on: [push, pull_request]".
       if (sect == "on" && rest != "") {
-        if (rest ~ /^\[/) flow_list(rest, triggers); else triggers[unquote(rest)] = 1
+        if (rest ~ /^\[/) flow_list(rest, triggers); else triggers[yaml_scalar(rest)] = 1
       }
       trigger = ""; in_branches = 0; next
     }
@@ -196,6 +216,16 @@ _adb_rs_file_verdict() {
         triggers[trigger] = 1; in_branches = 0; next
       }
       if (trigger == "pull_request" || trigger == "pull_request_target") {
+        if ($0 ~ /^    types:/) {
+          pr_types = 1
+          rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(rest)
+          if (rest ~ /^\[/) flow_list(rest, tps)
+          in_types = 1; in_branches = 0; next
+        }
+        if (in_types && $0 ~ /^      -[[:space:]]/) {
+          v = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); tps[yaml_scalar(v)] = 1; next
+        }
+        if ($0 !~ /^      /) in_types = 0
         if ($0 ~ /^    (paths|paths-ignore):/) { pr_paths = 1;     in_branches = 0; next }
         if ($0 ~ /^    branches-ignore:/)      { pr_br_ignore = 1; in_branches = 0; next }
         if ($0 ~ /^    branches:/) {
@@ -215,6 +245,13 @@ _adb_rs_file_verdict() {
       if (!("pull_request" in triggers) && !("pull_request_target" in triggers)) {
         print "no pull_request trigger"; exit
       }
+      # A narrowed `types:` is the merge-cleanup workflow trap: `types: [closed]` runs only AFTER
+      # a PR closes, so as a required context it sits "expected — waiting" on every open PR
+      # forever. Require both `opened` (reports on the new PR) and `synchronize` (re-reports on
+      # every later push); anything narrower cannot gate a PR through its whole life.
+      if (pr_types && !(("opened" in tps) && ("synchronize" in tps))) {
+        print "pull_request narrows types: (needs both opened and synchronize to report on every PR)"; exit
+      }
       if (pr_paths)     { print "pull_request carries a paths/paths-ignore filter (it does not run for every PR)"; exit }
       if (pr_br_ignore) { print "pull_request carries a branches-ignore filter (cannot prove it runs for " target ")"; exit }
       # A branches: filter is fine as long as it provably includes the target branch. "*" / "**"
@@ -233,6 +270,17 @@ _adb_rs_jobs() {
     function unquote(s) {
       if (s ~ /^".*"$/ || s ~ /^'"'"'.*'"'"'$/) s = substr(s, 2, length(s) - 2)
       return s
+    }
+    # yaml_scalar: a plain YAML scalar as GitHub would read it. A quoted value ends at its closing
+    # quote (anything after is a comment); an UNQUOTED value ends at the first whitespace-preceded
+    # "#". Without this, `name: Build  # the main build job` becomes the required context
+    # "Build  # the main build job" — which nothing ever reports, blocking every PR forever.
+    function yaml_scalar(s) {
+      s = trim(s)
+      if (s ~ /^"/)  { sub(/^"/,  "", s); sub(/".*$/,  "", s); return s }
+      if (s ~ /^'"'"'/) { sub(/^'"'"'/, "", s); sub(/'"'"'.*$/, "", s); return s }
+      sub(/[[:space:]]+#.*$/, "", s)
+      return trim(s)
     }
     function flush_job() {
       if (job == "") return
@@ -259,7 +307,7 @@ _adb_rs_jobs() {
       # Exactly 4 spaces and no leading "-": the JOB name. A step name is "      - name:" at 6+
       # spaces behind a dash, so it can never be mistaken for the job name here.
       if ($0 ~ /^    name:/) {
-        v = $0; sub(/^[[:space:]]*name:/, "", v); v = unquote(trim(v))
+        v = $0; sub(/^[[:space:]]*name:/, "", v); v = yaml_scalar(v)
         if (v ~ /\$\{\{/) job_dynamic = 1
         job_name = v; next
       }
@@ -268,6 +316,8 @@ _adb_rs_jobs() {
       # Under strategy:. Keyed on `matrix:` itself, so a bare `strategy: {fail-fast: false}` —
       # which does NOT change the check-run name — is not skipped for nothing.
       if ($0 ~ /^      matrix:/) { job_matrix = 1; next }
+      # Inline flow style: `strategy: {matrix: {...}}` on the job line itself.
+      if ($0 ~ /^    strategy:[[:space:]]*\{.*matrix/) { job_matrix = 1; next }
       next
     }
     END { flush_job() }
@@ -426,6 +476,14 @@ write_required_checks() {
       run_gh "set required checks" "$body" \
         api -X PATCH "repos/$REPO_SLUG/branches/$branch/protection/required_status_checks" --input - \
         || { echo "ERROR: could not set required status checks" >&2; return 1; }
+      # The narrow PATCH cannot carry enforce_admins, so honor the flag through its own endpoint.
+      # Without this the flag is a silent no-op on exactly the state a repo is in after its FIRST
+      # successful apply — i.e. it would appear to work once and then quietly stop.
+      if [ "$OPT_ENFORCE_ADMINS" -eq 1 ]; then
+        adb_info "  enforce_admins -> POST branches/$branch/protection/enforce_admins"
+        run_gh "enforce admins" "" api -X POST "repos/$REPO_SLUG/branches/$branch/protection/enforce_admins" \
+          || { echo "ERROR: could not enable enforce_admins" >&2; return 1; }
+      fi
       ;;
     protected-no-checks|unprotected)
       if [ "$PROT_STATE" = "unprotected" ]; then
@@ -441,13 +499,31 @@ write_required_checks() {
         {
           required_status_checks: $checks,
           enforce_admins: (if $admins then true else (.enforce_admins.enabled // false) end),
+          # EVERY sub-field must be carried. dismissal_restrictions and
+          # bypass_pull_request_allowances are the dangerous omissions: dropping the first turns
+          # OFF "restrict who can dismiss reviews" (any write-access user can then dismiss), and
+          # dropping the second revokes the bypass permission a bot or team was granted.
+          # Both are GET-shaped ({users:[{login}]}) and PUT-shaped ({users:[login]}), so each is
+          # remapped rather than passed through.
           required_pull_request_reviews:
-            (if .required_pull_request_reviews == null then null else {
-               dismiss_stale_reviews:           (.required_pull_request_reviews.dismiss_stale_reviews // false),
-               require_code_owner_reviews:      (.required_pull_request_reviews.require_code_owner_reviews // false),
-               require_last_push_approval:      (.required_pull_request_reviews.require_last_push_approval // false),
-               required_approving_review_count: (.required_pull_request_reviews.required_approving_review_count // 0)
-             } end),
+            (if .required_pull_request_reviews == null then null else
+             (.required_pull_request_reviews as $r | {
+               dismiss_stale_reviews:           ($r.dismiss_stale_reviews // false),
+               require_code_owner_reviews:      ($r.require_code_owner_reviews // false),
+               require_last_push_approval:      ($r.require_last_push_approval // false),
+               required_approving_review_count: ($r.required_approving_review_count // 0)
+             }
+             + (if $r.dismissal_restrictions == null then {} else
+                 {dismissal_restrictions: {
+                    users: [$r.dismissal_restrictions.users[]?.login],
+                    teams: [$r.dismissal_restrictions.teams[]?.slug],
+                    apps:  [$r.dismissal_restrictions.apps[]?.slug]}} end)
+             + (if $r.bypass_pull_request_allowances == null then {} else
+                 {bypass_pull_request_allowances: {
+                    users: [$r.bypass_pull_request_allowances.users[]?.login],
+                    teams: [$r.bypass_pull_request_allowances.teams[]?.slug],
+                    apps:  [$r.bypass_pull_request_allowances.apps[]?.slug]}} end)
+             ) end),
           restrictions:
             (if .restrictions == null then null else {
                users: [.restrictions.users[]?.login],
@@ -490,7 +566,7 @@ manual_commands() {
 
 cmd_apply() {
   require_gh
-  local branch ctx n admin automerge dir
+  local branch ctx n admin automerge dir kept
   repo_json >/dev/null || { echo "ERROR: could not read this repo via gh (no resolvable remote, or no access)" >&2; exit 1; }
   branch="$(target_branch)" || { echo "ERROR: could not resolve the target branch" >&2; exit 1; }
 
@@ -505,9 +581,22 @@ cmd_apply() {
 
   dir="$(workflow_dir)"
   ctx="$(discover_checks "$branch" | LC_ALL=C sort -u)"
+  read_protection "$branch"
+
+  # Keep any required context we did not discover, unless --prune. See OPT_PRUNE: deleting an
+  # external provider's check is silent damage, and this tool only knows about GitHub Actions.
+  kept="$(phantom_contexts "$ctx" "$(live_contexts)")"
+  if [ -n "$kept" ] && [ "$OPT_PRUNE" -eq 0 ]; then
+    adb_info "  keeping $(nlines "$kept") required context(s) this tool did not discover"
+    adb_info "    (an external CI provider? re-run with --prune if a job was renamed or removed)"
+    printf '%s\n' "$kept" | sed 's/^/    ~ /'
+    ctx="$(printf '%s\n%s\n' "$ctx" "$kept" | sed '/^$/d' | LC_ALL=C sort -u)"
+  elif [ -n "$kept" ]; then
+    adb_info "  --prune: dropping $(nlines "$kept") required context(s) no discovered job reports"
+    printf '%s\n' "$kept" | sed 's/^/    - /'
+  fi
   n="$(nlines "$ctx")"
 
-  read_protection "$branch"
   if [ "$n" -eq 0 ]; then
     # No CI (#24): skip the checks write entirely and DO NOT BLOCK. Enabling auto-merge is still
     # correct — it is a repo capability, not an arming — and `automerge-ok` returns 12 here, so
@@ -602,7 +691,14 @@ cmd_automerge_ok() {
   repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — refusing to arm auto-merge" >&2; return 20; }
   branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — refusing to arm auto-merge" >&2; return 20; }
   read_protection "$branch"
-  [ "$PROT_STATE" = "error" ] && { echo "repo-settings: cannot read branch protection — refusing to arm auto-merge" >&2; return 20; }
+  case "$PROT_STATE" in
+    error|forbidden)
+      # `forbidden` means the protection exists but we may not read it — that is "unreadable",
+      # not "unprotected". Reporting 11 here would send the operator to `baseline repo apply`,
+      # which they have no permission to run.
+      echo "repo-settings: cannot read branch protection on '$branch' — refusing to arm auto-merge" >&2
+      return 20 ;;
+  esac
 
   if [ "$(repo_field .allow_auto_merge)" != "true" ]; then
     echo "repo-settings: allow_auto_merge is off on $REPO_SLUG — run 'baseline repo apply'" >&2
@@ -621,9 +717,11 @@ cmd_automerge_ok() {
     # shallower one. Same comparison, one home: see phantom_contexts.
     phantom="$(phantom_contexts "$want" "$live")"
     if [ -n "$phantom" ]; then
-      echo "repo-settings: '$branch' requires context(s) no workflow reports — a PR armed now would" >&2
+      echo "repo-settings: '$branch' requires context(s) no discovered workflow job reports:" >&2
       printf '%s\n' "$phantom" | sed 's/^/  - /' >&2
-      echo "repo-settings: …wait forever. Run 'baseline repo apply' to reconcile before arming." >&2
+      echo "repo-settings: an armed PR would wait for them forever. If these belong to an external" >&2
+      echo "repo-settings: CI provider they will report and you can merge normally; if a job was" >&2
+      echo "repo-settings: renamed or removed, run 'baseline repo apply --prune'." >&2
       return 13
     fi
     return 0
@@ -669,6 +767,7 @@ parse_apply_opts() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --dry-run)        OPT_DRY_RUN=1 ;;
+      --prune)          OPT_PRUNE=1 ;;
       --strict)         OPT_STRICT=1 ;;
       --enforce-admins) OPT_ENFORCE_ADMINS=1 ;;
       --branch)         OPT_BRANCH="$(_adb_rs_valopt --branch "$#" "${2:-}")" || exit 2; shift ;;

@@ -259,10 +259,10 @@ repo_fx() {   # <admin> <allow_auto_merge>
 }
 repo_fx_noperms() { printf '{"full_name":"acme/widget","default_branch":"main","allow_auto_merge":false}\n' > "$S/repo.json"; }
 prot_none()  { rm -f "$S/protection.json"; }
-prot_checks() {   # protected, WITH required_status_checks (contexts = "$@")
-  printf '%s' "$*" | tr ' ' '\n' | jq -R . | jq -s \
-    '{required_status_checks:{strict:false,contexts:.},required_conversation_resolution:{enabled:true}}' \
-    > "$S/protection.json"
+prot_checks() {   # protected, WITH required_status_checks (one arg per context)
+  # --args, not word-splitting: a context name legitimately contains "/" and spaces.
+  jq -n --args '{required_status_checks:{strict:false,contexts:$ARGS.positional},
+                 required_conversation_resolution:{enabled:true}}' "$@" > "$S/protection.json"
 }
 prot_nochecks() {   # protected, NO required_status_checks — this repo's real starting state
   cat > "$S/protection.json" <<'JSON'
@@ -303,7 +303,8 @@ yes "$RC_" "apply succeeds against a branch that already has required checks"
 eq "$(calls_of)" 'PATCH repos/acme/widget/branches/main/protection/required_status_checks|PATCH repos/acme/widget|' \
   "protected-with-checks -> narrow PATCH on the sub-resource, THEN the auto-merge PATCH"
 has "$OUT" "nothing else touched" "the narrow path says it cannot lose other settings"
-eq "$(jq -r '.contexts|join(",")' "$S/body.json")" "one" "the PATCH body carries the DISCOVERED contexts, replacing the stale one"
+eq "$(jq -r '.contexts|sort|join(",")' "$S/body.json")" "one,stale-name" \
+  "the PATCH body ADDS the discovered context and keeps the undiscovered one (see --prune below)"
 eq "$(jq -r '.strict' "$S/body.json")" "false" "strict defaults off (see D9)"
 
 # --- endpoint selection: read-modify-write PUT when protection exists WITHOUT checks -----------
@@ -323,6 +324,48 @@ eq "$(jq -r '.allow_force_pushes' "$S/body.json")" "false" "the PUT body preserv
 eq "$(jq -r '.allow_deletions' "$S/body.json")"    "false" "the PUT body preserves allow_deletions"
 eq "$(jq -r '.enforce_admins' "$S/body.json")"     "false" "enforce_admins is preserved, never silently flipped"
 eq "$(jq -r '.required_status_checks.contexts|join(",")' "$S/body.json")" "one" "the PUT body carries the discovered contexts"
+
+# An external provider's required context must SURVIVE apply — deleting it is silent damage, and
+# this tool only ever discovers GitHub Actions jobs.
+wf_one; repo_fx true false; prot_checks "one" "codecov/patch"
+rsx_stub apply
+eq "$(jq -r '.contexts|sort|join(",")' "$S/body.json")" "codecov/patch,one" \
+  "apply KEEPS a required context it did not discover (an external provider is not deleted)"
+has "$OUT" "did not discover" "apply reports the contexts it kept"
+
+# --prune is the remedy for a genuinely stale context (a renamed or deleted job).
+wf_one; repo_fx true false; prot_checks "one" "stale-name"
+rsx_stub apply --prune
+eq "$(jq -r '.contexts|sort|join(",")' "$S/body.json")" "one" "--prune drops an undiscovered context"
+has "$OUT" "dropping" "--prune says what it removed"
+
+# --enforce-admins must not be a silent no-op on the narrow PATCH path — the state a repo is in
+# after its first successful apply.
+wf_one; repo_fx true false; prot_checks "one"
+rsx_stub apply --enforce-admins
+has "$(calls_of)" "POST repos/acme/widget/branches/main/protection/enforce_admins" \
+  "--enforce-admins is honored on the PATCH path via its own endpoint"
+
+# The read-modify-write PUT must preserve EVERY protection sub-object. Dropping
+# dismissal_restrictions silently turns off "restrict who can dismiss reviews".
+wf_one; repo_fx true false
+cat > "$S/protection.json" <<'JSON'
+{"required_pull_request_reviews":{"dismiss_stale_reviews":true,"require_code_owner_reviews":false,
+  "require_last_push_approval":false,"required_approving_review_count":1,
+  "dismissal_restrictions":{"users":[{"login":"octocat"}],"teams":[{"slug":"core"}],"apps":[]},
+  "bypass_pull_request_allowances":{"users":[],"teams":[],"apps":[{"slug":"dependabot"}]}},
+ "enforce_admins":{"enabled":false},"required_conversation_resolution":{"enabled":true},
+ "allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":false}}
+JSON
+rsx_stub apply
+eq "$(jq -r '.required_pull_request_reviews.dismissal_restrictions.users|join(",")' "$S/body.json")" "octocat" \
+  "the PUT preserves dismissal_restrictions.users (dropping it would let anyone dismiss reviews)"
+eq "$(jq -r '.required_pull_request_reviews.dismissal_restrictions.teams|join(",")' "$S/body.json")" "core" \
+  "the PUT preserves dismissal_restrictions.teams"
+eq "$(jq -r '.required_pull_request_reviews.bypass_pull_request_allowances.apps|join(",")' "$S/body.json")" "dependabot" \
+  "the PUT preserves bypass_pull_request_allowances (dropping it breaks release automation)"
+eq "$(jq -r '.required_pull_request_reviews.required_approving_review_count' "$S/body.json")" "1" \
+  "the PUT preserves a non-default approving-review count"
 
 # --strict is the explicit opt-in for "require branches up to date" (D9 defaults it off).
 rsx_stub apply --strict
@@ -416,7 +459,7 @@ eq "$RC_" "0" "automerge-ok = 0 when auto-merge is on AND the required checks ar
 wf_one; repo_fx true true; prot_checks "stale-name"
 rsx_stub automerge-ok
 eq "$RC_" "13" "automerge-ok = 13 when a required context no workflow reports (renamed job)"
-has "$OUT" "wait forever" "code 13 explains that an armed PR would hang"
+has "$OUT" "wait for them forever" "code 13 explains that an armed PR would hang"
 has "$OUT" "stale-name" "code 13 names the phantom context"
 
 wf_one; repo_fx true false; prot_checks "one"

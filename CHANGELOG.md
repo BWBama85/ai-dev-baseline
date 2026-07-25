@@ -33,6 +33,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   — where `--auto` would merge *immediately* · `20` unreadable, fail closed). `status` reports
   drift in both directions, which is the only place a renamed CI job becomes visible: the old
   context stays required and blocks every PR while the new one gates nothing.
+  Discovery refuses to require anything it cannot prove reports on every PR — including a
+  `pull_request:` that narrows `types:` without both `opened` and `synchronize`, which is the
+  merge-cleanup workflow (`types: [closed]`) that would otherwise become a required context no
+  open PR ever satisfies. `apply` also **keeps** required contexts it did not discover (an
+  external provider such as Codecov is not in `.github/workflows`, and writing the discovered set
+  absolutely would delete it silently); `--prune` writes the exact set when a context really is
+  stale.
   Defaults are recorded in `.ai-dev-baseline/decisions.md` (D9): `strict` off, `enforce_admins`
   off, required approvals 0 — each the choice that cannot silently stall the loop, with the
   stricter option behind an explicit flag.
