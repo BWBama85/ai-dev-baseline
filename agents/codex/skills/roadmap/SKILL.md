@@ -185,14 +185,32 @@ readings above to `roadmap-lib.sh`, which returns exactly one of `unarmed` / `un
 can't drift run to run). Pass **both** counts and let the predicate pick: that is what keeps the
 blocker-mode/fallback choice keyed to label *existence* rather than to a live count:
 
+**Do not hand-derive the four counts either.** `release-counts` tabulates them from one paginated
+read, and it is the same tabulator `baseline release roll` uses before it archives the milestone —
+so the run that *emits* the cut and the command that *rolls* it can never disagree about the same
+tracker. Deriving them here with separate `search/issues` queries is what let them drift: the
+exclusion rule, the PR filter, and the page behavior would each be restated per caller.
+
 ```bash
-# LABEL_EXISTS:  1 if `gh api "repos/$REPO/labels/release-blocker"` returned 200, else 0
-# ARMED:         1 if M holds >=1 issue (open OR closed), else 0
-# M_BLOCKERS:    count of open release-blocker issues in M  (used when LABEL_EXISTS=1)
-# M_OPEN:        count of open issues in M, any label       (used when LABEL_EXISTS=0, fallback)
-# CANCELED:      1 if a release-blocker in M is closed as NOT_PLANNED, else 0
-# (Counts, not lists — and deliberately NOT named OPEN_ISSUES, which step 6 uses for a
-#  newline-separated list of issue NUMBERS.)
+# LABEL_EXISTS: 1 if `gh api "repos/$REPO/labels/release-blocker"` returned 200, else 0. This is
+#               the MODE SWITCH and is keyed off label EXISTENCE, never a live count.
+LABEL_EXISTS=0; gh api "repos/$REPO/labels/release-blocker" >/dev/null 2>&1 && LABEL_EXISTS=1
+
+# One paginated read of M's issues (open AND closed) -> the four counts + the issue-number lists.
+# M_NUM is the milestone's NUMBER; ROADMAP_NUM is this artifact's issue number, excluded BY NUMBER
+# (a closed issue that still carries the `roadmap` label must not be silently dropped from the
+# tabulation — that could hide a canceled blocker and turn a `held` release into a `met` one).
+COUNTS="$(gh api --paginate "repos/$REPO/issues?milestone=$M_NUM&state=all&per_page=100" \
+  | bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" release-counts release-blocker "$ROADMAP_NUM")" \
+  || { echo "ERROR: could not tabulate milestone $M_NUM — hard stop"; exit 1; }
+# Line 1: "<ARMED> <M_BLOCKERS> <M_OPEN> <CANCELED>"   Line 2: open non-blocker issue numbers
+# Line 3: open release-blocker issue numbers
+read -r ARMED M_BLOCKERS M_OPEN CANCELED <<EOF
+$(printf '%s\n' "$COUNTS" | sed -n '1p')
+EOF
+
+# Pass BOTH counts and let the predicate pick — that is what keeps the blocker-mode/fallback
+# choice keyed to label existence rather than to a live count.
 VERDICT="$(bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" release-ready \
   "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED")" \
   || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }

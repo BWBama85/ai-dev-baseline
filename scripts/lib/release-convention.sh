@@ -157,6 +157,7 @@ announce_marker() {
   local nums count num
   nums="$(roadmap_issue_nums)"
   count="$(printf '%s\n' "$nums" | sed '/^$/d' | wc -l | tr -d ' ')"
+  [ "$count" = "1" ] && ROADMAP_NUM="$(printf '%s\n' "$nums" | head -n1)"
   if [ "$count" = "1" ]; then
     num="$(printf '%s\n' "$nums" | head -n1)"
     adb_info "  marker   activate /roadmap release-readiness by adding this line to roadmap issue #$num:"
@@ -227,6 +228,7 @@ ROLL_VERSION=""
 ROLL_DRY_RUN=0
 ROLL_FORCE=0
 ROLL_RESUME=0
+ROADMAP_NUM=0   # the canonical roadmap artifact, excluded from the milestone tabulation
 RELEASE_NAME_SET=0   # 1 when --release-name was passed explicitly
 
 # roadmap_issue_nums — the open `roadmap`-labelled issue numbers, blanks stripped, one per line.
@@ -307,16 +309,18 @@ roll_plan_render() {
 #
 # The marker GRAMMAR (and the placeholder carve-out) lives in roadmap-lib.sh, not here — it is a
 # /roadmap decision, and a third dialect of it is how the three copies drift apart.
+
+# Takes the already-fetched artifact numbers as an argument and is otherwise PURE: its caller
+# reads it through `$( )`, i.e. a subshell, so anything it assigned would be discarded on return.
 resolve_rolling_title() {
+  local nums="$1" count num body titles tcount lib
   if [ "$RELEASE_NAME_SET" -eq 1 ]; then
     printf '%s\n' "$RELEASE_MILESTONE"; return 0
   fi
 
-  local nums count num body titles tcount lib
   lib="$_adb_rc_libdir/roadmap-lib.sh"
   [ -f "$lib" ] || { echo "ERROR: required library not found: $lib (broken/incomplete install)" >&2; return 1; }
 
-  nums="$(roadmap_issue_nums)"
   count="$(printf '%s\n' "$nums" | sed '/^$/d' | wc -l | tr -d ' ')"
   if [ "$count" != "1" ]; then
     echo "ERROR: expected exactly one open 'roadmap'-labelled issue to read the rolling milestone" >&2
@@ -354,8 +358,15 @@ cmd_roll() {
   require_gh
 
   # --- 1. Resolve the rolling title (authoritative: the artifact marker) --------------------
-  local rolling
-  rolling="$(resolve_rolling_title)" || return 1
+  # Fetch the artifact numbers HERE, in this shell. resolve_rolling_title is read through `$( )`,
+  # so anything it assigned would die with its subshell — and a lost ROADMAP_NUM means the artifact
+  # is not excluded from the tabulation and gets swept into Backlog as a "leftover".
+  local rolling roadmap_nums
+  roadmap_nums="$(roadmap_issue_nums)"
+  if [ "$(printf '%s\n' "$roadmap_nums" | sed '/^$/d' | wc -l | tr -d ' ')" = "1" ]; then
+    ROADMAP_NUM="$(printf '%s\n' "$roadmap_nums" | head -n1)"
+  fi
+  rolling="$(resolve_rolling_title "$roadmap_nums")" || return 1
 
   # --- 2. Preflight reads + refusals (ALL before any mutation) -----------------------------
   # (--version is validated non-empty by parse_roll_opts; the only reachable miss is its absence,
@@ -368,6 +379,17 @@ cmd_roll() {
   fi
   if [ "$ROLL_VERSION" = "$BACKLOG_MILESTONE" ]; then
     echo "ERROR: --version must not be the backlog milestone title ('$BACKLOG_MILESTONE')" >&2
+    return 1
+  fi
+  # The disposition target must not be the milestone being rolled. Leftovers are moved BY TITLE,
+  # after the fresh milestone is created — so a backlog named the same as the rolling title would
+  # move every leftover straight into the NEW release milestone, arming it with zero open blockers
+  # and making /roadmap emit another cut immediately: the exact trap the Backlog rule prevents.
+  if [ "$BACKLOG_MILESTONE" = "$rolling" ]; then
+    echo "ERROR: the backlog milestone and the rolling milestone are both '$rolling'. Leftovers" >&2
+    echo "       would be moved into the freshly-created release milestone, arming it with zero" >&2
+    echo "       open blockers — /roadmap would emit another cut on its next run. Pass a" >&2
+    echo "       --backlog-name that differs from the rolling title." >&2
     return 1
   fi
 
@@ -405,18 +427,32 @@ cmd_roll() {
   #
   # `resume` means "this roll was already authorized and partially executed", which changes what
   # the gates in step 4 may do.
-  local do_rename=0 do_create=0 resume=0
+  local do_rename=0 do_create=0 resume=0 repair_pending=0
   case "$ver_state" in
     "")
       [ -n "$cut_num" ] || { echo "ERROR: no OPEN milestone titled '$rolling' to roll" >&2; return 1; }
       do_rename=1; do_create=1 ;;
     open)
       if [ -z "$cut_num" ]; then
-        # Unambiguous: the rolling title can only be free because the rename took it. This is also
-        # the one state /roadmap cannot survive (zero open milestones under the marker's title), so
-        # resuming is both safe and urgent — never gate it behind a confirmation.
+        # A missing rolling title does NOT prove the rename took it — it could have been deleted,
+        # renamed by hand, or never created, while an UNRELATED open milestone happens to carry the
+        # version name (real repos do keep version-named milestones for planning). So split the two
+        # things this state needs:
+        #   * RECREATING the rolling title is safe under either explanation. It touches nothing
+        #     else, and it is what un-blocks /roadmap, which hard-stops while no open milestone
+        #     carries the marker's title. Always allowed.
+        #   * TREATING #ver_num AS THIS ROLL'S ARCHIVE is destructive — it moves that milestone's
+        #     issues out and closes it. That requires --resume, exactly like the both-open case.
         do_create=1; resume=1; cut_num="$ver_num"
-        adb_info "note: resuming an interrupted roll (milestone #$ver_num already renamed to '$ROLL_VERSION')"
+        if [ "$ROLL_RESUME" -eq 1 ]; then
+          adb_info "note: --resume — treating open milestone #$ver_num ('$ROLL_VERSION') as this roll's archive"
+        else
+          repair_pending=1
+          adb_info "note: no open milestone titled '$rolling' — /roadmap is hard-stopped until one exists."
+          adb_info "      Recreating it (safe: touches nothing else). Milestone #$ver_num ('$ROLL_VERSION')"
+          adb_info "      is NOT assumed to be this roll's archive — it could be an unrelated"
+          adb_info "      version-named milestone — so it is left untouched."
+        fi
       elif [ "$ROLL_RESUME" -eq 1 ]; then
         resume=1; cut_num="$ver_num"
         adb_info "note: --resume — treating open milestone #$ver_num ('$ROLL_VERSION') as this roll's archive"
@@ -458,7 +494,7 @@ cmd_roll() {
   lib="$_adb_rc_libdir/roadmap-lib.sh"
   [ -f "$lib" ] || { echo "ERROR: required library not found: $lib (broken/incomplete install)" >&2; return 1; }
 
-  counts="$(milestone_issues_json "$cut_num" | bash "$lib" release-counts "$BLOCKER_LABEL")" \
+  counts="$(milestone_issues_json "$cut_num" | bash "$lib" release-counts "$BLOCKER_LABEL" "$ROADMAP_NUM")" \
     || { echo "ERROR: could not tabulate milestone #$cut_num — refusing to roll" >&2; return 1; }
   {
     read -r armed ob oi canceled
@@ -505,7 +541,7 @@ EOF
   # restores the rolling title, that one step is REPAIR, not rollover: /roadmap is hard-stopped
   # until it runs, and it moves nothing and closes nothing. So do the repair, then stop short of
   # the steps the blockers actually forbid, and say exactly what is left.
-  local repair_only=0
+  local repair_only="$repair_pending"
   if [ -n "$blockers" ]; then
     # Name the milestone by its CURRENT title — after a rename it is no longer called "$rolling",
     # and pointing the operator at a milestone that no longer exists is its own bug.
@@ -554,7 +590,7 @@ EOF
   fi
 
   # --- 6. Execute the SAME plan, record by record --------------------------------------------
-  local op a b
+  local op a b mv_labels final final_blockers
   while IFS="$(printf '\t')" read -r op a b; do
     [ -n "$op" ] || continue
     case "$op" in
@@ -567,9 +603,34 @@ EOF
           echo "       will hard-stop until it exists. Re-run this command to resume." >&2
           return 1; } ;;
       move)
+        # RE-READ this issue at the moment of the move. The plan was built from ONE snapshot, and a
+        # milestone with many leftovers can take a while to drain — long enough for an issue to gain
+        # the blocker label, or a closed blocker to be reopened. The guarantee "not even --force
+        # demotes an open must-have" has to hold at mutation time, not just at planning time
+        # (base/practices/verify-before-asserting.md), so a stale plan must never carry one through.
+        mv_labels="$(gh api "repos/$(repo_slug)/issues/$a" --jq '[.labels[].name] | join(",")' 2>/dev/null)" \
+          || { echo "ERROR: could not re-verify issue #$a before moving it — refusing (re-run to resume)" >&2; return 1; }
+        if printf '%s' "$mv_labels" | tr ',' '\n' | grep -Fqx "$BLOCKER_LABEL"; then
+          echo "ERROR: issue #$a gained the '$BLOCKER_LABEL' label since the plan was built —" >&2
+          echo "       refusing to demote a must-have to '$b'. Nothing further was changed;" >&2
+          echo "       resolve it and re-run (--resume if the archive is already renamed)." >&2
+          return 1
+        fi
         gh issue edit "$a" --milestone "$b" >/dev/null \
           || { echo "ERROR: could not move issue #$a to '$b' — re-run to resume" >&2; return 1; } ;;
       close)
+        # FINAL check before the archive is sealed: re-tabulate and refuse if any must-have is open
+        # in it now. Closing a milestone that still contains an open blocker is the outcome this
+        # command promises can never happen.
+        final="$(milestone_issues_json "$a" | bash "$lib" release-counts "$BLOCKER_LABEL" "$ROADMAP_NUM")" \
+          || { echo "ERROR: could not re-verify milestone #$a before closing — refusing (re-run to resume)" >&2; return 1; }
+        final_blockers="$(printf '%s\n' "$final" | sed -n '3p')"
+        if [ -n "$final_blockers" ]; then
+          echo "ERROR: milestone #$a now holds open '$BLOCKER_LABEL' issue(s):$final_blockers" >&2
+          echo "       refusing to close an archive containing an open must-have. The leftovers were" >&2
+          echo "       already moved; resolve these and re-run with --resume to finish." >&2
+          return 1
+        fi
         gh api -X PATCH "repos/$(repo_slug)/milestones/$a" -f state=closed >/dev/null \
           || { echo "ERROR: could not close milestone #$a — re-run to resume" >&2; return 1; } ;;
     esac
@@ -582,8 +643,13 @@ EOF
     adb_info ""
     adb_info "repaired: '$rolling' recreated in $(repo_slug); milestone #$cut_num ('$ROLL_VERSION') is"
     adb_info "          still OPEN and NOT rolled — /roadmap works again, but the roll is unfinished."
-    adb_info "Next: resolve the open '$BLOCKER_LABEL' issue(s) above, then re-run with --resume to"
-    adb_info "      finish (move the leftovers to '$BACKLOG_MILESTONE' and close the archive)."
+    if [ -n "$blockers" ]; then
+      adb_info "Next: resolve the open '$BLOCKER_LABEL' issue(s) above, then re-run with --resume to"
+      adb_info "      finish (move the leftovers to '$BACKLOG_MILESTONE' and close the archive)."
+    else
+      adb_info "Next: confirm #$cut_num really is this roll's archive, then re-run with --resume to"
+      adb_info "      finish (move the leftovers to '$BACKLOG_MILESTONE' and close the archive)."
+    fi
     return 1
   fi
   local moved_count; moved_count="$(printf '%s' "$movers" | wc -w | tr -d ' ')"

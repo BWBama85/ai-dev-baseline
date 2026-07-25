@@ -105,6 +105,10 @@ case "${1:-}" in
     if [ "$method" != "GET" ]; then printf '%s %s\n' "$method" "$url" >> "$STUB_CALLS"; exit 0; fi
     case "$url" in
       */labels/*) grep -Fqx "${url##*/labels/}" "$S/labels.txt" ;;
+      */issues/[0-9]*)
+        # per-issue re-read before a move (thread 5). Fixture: $S/issue-<n>-labels.txt, else none.
+        n="${url##*/issues/}"
+        if [ -f "$S/issue-$n-labels.txt" ]; then cat "$S/issue-$n-labels.txt"; else printf '\n'; fi ;;
       *"/milestones?"*) cat "$S/milestones.tsv" ;;
       *"/issues?milestone="*)
         n="${url#*milestone=}"; n="${n%%&*}"
@@ -277,13 +281,20 @@ no "$RC_" "roll refuses when the version milestone is already closed"
 has "$OUT" "already rolled" "the already-rolled state is named"
 eq "$(calls_of)" "" "no mutation when already rolled"
 
-# Interrupted after the rename (archive open, rolling title free) -> RESUME, skipping the rename.
+# A missing rolling title does NOT prove a rename happened -- an unrelated open milestone can
+# carry the version name (real repos keep version-named planning milestones). So the two halves
+# split: RECREATING the rolling title is safe under either explanation and always runs (it is what
+# un-blocks /roadmap); treating #9 as this roll's ARCHIVE is destructive and needs --resume.
 fix_default; ms 'v1.1.0\topen\t9\nBacklog\topen\t8\n'
 rcx_stub roll --version v1.1.0 --dry-run
-yes "$RC_" "roll resumes an interrupted roll"
-has "$OUT" "resuming an interrupted roll" "the resume is announced"
+yes "$RC_" "a missing rolling title still produces a plan"
+eq "$(plan_of)" 'create milestone "Next release"|' \
+  "only the safe repair is planned without --resume -- no move, no close"
+has "$OUT" "is NOT assumed to be this roll's archive" "it says why it stopped short"
+rcx_stub roll --version v1.1.0 --resume --dry-run
+yes "$RC_" "--resume finishes an interrupted roll"
 eq "$(plan_of)" 'create milestone "Next release"|move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' \
-  "the resume skips the already-done rename"
+  "--resume skips the done rename and finishes the tail"
 
 # Both milestones open = interrupted-after-create OR a pre-existing version-named milestone. The
 # tracker cannot tell them apart, so roll refuses and asks. Emptiness of the rolling milestone is
@@ -340,5 +351,49 @@ rcx_stub roll --version v1.1.0 --backlog-name ''
 no "$RC_" "--backlog-name rejects an empty value"
 
 fix_default
+
+# --- bot-review findings on PR #91 -----------------------------------------------------------
+
+# The backlog target must not be the milestone being rolled. Leftovers move BY TITLE after the
+# fresh milestone exists, so a backlog named the same as the rolling title would move every
+# leftover into the NEW release milestone -- arming it with zero open blockers, which makes
+# /roadmap emit another cut immediately. Exactly the trap the Backlog rule exists to prevent.
+fix_default
+rcx_stub roll --version v1.1.0 --backlog-name "Next release"
+no "$RC_" "roll refuses a backlog target equal to the rolling title"
+has "$OUT" "arming it with zero" "the refusal explains the trap"
+eq "$(calls_of)" "" "no mutation before the backlog==rolling refusal"
+
+# The roadmap artifact is excluded BY NUMBER, and that number is resolved in the CALLER's shell --
+# resolve_rolling_title is read through $( ), so a value it assigned would die with the subshell
+# and the artifact would be swept into Backlog as a "leftover".
+fix_default
+iss '[{"number":74,"state":"closed","state_reason":"completed","labels":[{"name":"release-blocker"}]},
+      {"number":31,"state":"open","state_reason":null,"labels":[{"name":"roadmap"}]}]'
+rcx_stub roll --version v1.1.0 --dry-run
+eq "$(plan_of)" 'rename milestone #9 "Next release" -> "v1.1.0"|create milestone "Next release"|close milestone #9 ("v1.1.0")|' \
+  "the artifact is excluded by number and never moved"
+
+# Thread 5: the plan is built from ONE snapshot, but the guarantee "not even --force demotes an
+# open must-have" has to hold at MUTATION time. An issue that gains the label after planning must
+# stop the move -- and the archive must not be closed with an open blocker in it.
+fix_default
+printf 'enhancement\nrelease-blocker\n' > "$S/issue-99-labels.txt"
+rcx_stub roll --version v1.1.0
+no "$RC_" "a leftover that gained the blocker label mid-run stops the move"
+has "$OUT" "since the plan was built" "the mid-run label change is named as the reason"
+# The rename+create already ran; the MOVE must not have.
+hasnt "$(calls_of)" "move 99" "the must-have is never moved once it is re-read as a blocker"
+rm -f "$S/issue-99-labels.txt"
+
+# ...and the final pre-close check refuses to seal an archive that now holds an open must-have.
+fix_default
+printf 'enhancement\n' > "$S/issue-99-labels.txt"
+cat > "$SBIN/gh.close-race" <<'RACE'
+RACE
+rcx_stub roll --version v1.1.0
+yes "$RC_" "the ordinary path still completes when nothing changed mid-run"
+has "$(calls_of)" "move 99" "the leftover is moved when it is still a non-blocker at mutation time"
+rm -f "$S/issue-99-labels.txt" "$SBIN/gh.close-race"
 
 check_summary "release-convention"

@@ -28,7 +28,7 @@
 # Usage:
 #   roadmap-lib.sh pr-targets-issue <issue-number> <owner/repo>   # PR JSON on stdin
 #   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>
-#   roadmap-lib.sh release-counts <blocker-label>                 # milestone issue JSON on stdin
+#   roadmap-lib.sh release-counts <blocker-label> [roadmap-issue-number]   # milestone JSON on stdin
 #   roadmap-lib.sh marker-title                                   # roadmap artifact body on stdin
 #   roadmap-lib.sh -h | --help
 #
@@ -216,6 +216,14 @@ cmd_release_ready() {
 # Empty stdin is an empty milestone (`unarmed`), not an error — a milestone with no issues is a
 # real, expected state.
 #
+# `<roadmap-issue-number>` is THE canonical artifact's number, excluded by NUMBER — not by label.
+# The workflow's shorthand for this exclusion is a `-label:roadmap` search qualifier, but that is
+# broader than what it means: a CLOSED historical issue that still carries the label would also be
+# dropped, which can under-count a milestone into `unarmed` or, worse, hide a NOT_PLANNED-canceled
+# blocker and turn a `held` release into a `met` one. Excluding the one issue the caller identifies
+# as the artifact is exactly the documented rule ("exclude the roadmap issue itself"). Omit the
+# argument (or pass 0) when the artifact is known not to be in this milestone.
+#
 # Prints THREE lines, so a caller can also act on the issues rather than only count them:
 #   1. `<armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>`  — feed straight to release-ready
 #   2. space-separated numbers of the OPEN NON-blocker issues (the rollover's leftovers)
@@ -225,9 +233,14 @@ cmd_release_ready() {
 # them would make a milestone look armed (or blocked) by a PR, disagreeing with every `is:issue`
 # query the workflow runs.
 cmd_release_counts() {
-  [ "$#" -eq 1 ] || die "release-counts: needs exactly 1 arg: <blocker-label> (milestone issue JSON on stdin)"
+  case "$#" in
+    1|2) : ;;
+    *) die "release-counts: needs <blocker-label> [roadmap-issue-number] (milestone issue JSON on stdin)" ;;
+  esac
   command -v jq >/dev/null 2>&1 || die "release-counts: jq not found"
-  local blk="$1" out
+  local blk="$1" skip="${2:-0}" out
+  [ -n "$skip" ] || skip=0
+  is_uint "$skip" || die "release-counts: <roadmap-issue-number> must be a non-negative integer (got '$2')"
   # `-s` + `add`: accept BOTH shapes `gh api --paginate` can produce — one merged array (what
   # gh 2.95 returns for a REST array endpoint) and the separate-array-per-page stream its own
   # `--help` documents ("Each page is a separate JSON array or object"). Reading only the first
@@ -235,10 +248,10 @@ cmd_release_counts() {
   # produces a `met` verdict that archives a milestone with an open must-have still inside it.
   # Depending on undocumented merging for that is not a bet worth taking; `-s` costs one flag.
   # (Empty stdin slurps to `[]` -> `add` is null -> `// []`, so an empty milestone still works.)
-  out="$(jq -r -s --arg blk "$blk" '
+  out="$(jq -r -s --arg blk "$blk" --argjson skip "$skip" '
     (add // []) as $all
     | [ $all[] | select(has("pull_request") | not)
-          | select(([.labels[].name] | index("roadmap")) == null) ]            as $rows
+          | select(.number != $skip) ]                                         as $rows
     | [ $rows[] | select(.state == "open") ]                                   as $open
     | [ $open[] | select(([.labels[].name] | index($blk)) != null) ]           as $ob
     | [ $rows[] | select(.state == "closed" and .state_reason == "not_planned")

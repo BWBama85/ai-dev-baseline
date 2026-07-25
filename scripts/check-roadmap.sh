@@ -367,7 +367,7 @@ done
 # wrong and the verdict is wrong while the predicate stays innocent, so both halves are pinned.
 
 # counts <json> -> "<line1>|<line2>|<line3>": the four counts, the leftovers, the open blockers.
-counts() { printf '%s' "$1" | bash "$RL" release-counts release-blocker 2>/dev/null | tr '\n' '|'; }
+counts() { printf '%s' "$1" | bash "$RL" release-counts release-blocker "${2:-0}" 2>/dev/null | tr '\n' '|'; }
 iss_json() { printf '[%s]' "$1"; }
 I_CLOSED_BLK='{"number":74,"state":"closed","state_reason":"completed","labels":[{"name":"release-blocker"}]}'
 I_OPEN_PLAIN='{"number":99,"state":"open","state_reason":null,"labels":[{"name":"enhancement"}]}'
@@ -385,12 +385,22 @@ eq "$(counts "$(iss_json "$I_CANCELED")")"          '1 0 0 1|||' "a NOT_PLANNED 
 eq "$(counts "$(iss_json '{"number":60,"state":"closed","state_reason":"not_planned","labels":[]}')")" \
    '1 0 0 0|||' "a NOT_PLANNED non-blocker does not set canceled"
 # The two exclusions, asserted by their EFFECT on every field.
-eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_ROADMAP")")" '1 0 1 0|99||' \
-   "the roadmap artifact is excluded from counts and leftovers"
+eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_ROADMAP")" 31)" '1 0 1 0|99||' \
+   "the roadmap artifact is excluded BY NUMBER from counts and leftovers"
 eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_PR")")" '1 0 1 0|99||' \
    "a PR carrying the milestone is excluded from counts and leftovers"
-eq "$(counts "$(iss_json "$I_ROADMAP")")" '0 0 0 0|||' \
+eq "$(counts "$(iss_json "$I_ROADMAP")" 31)" '0 0 0 0|||' \
    "a milestone holding ONLY the roadmap artifact is unarmed, not armed by it"
+# ...and the exclusion is BY NUMBER, never by label. A CLOSED issue that still carries the
+# `roadmap` label is ordinary history: dropping it could under-count a milestone into `unarmed`,
+# or -- the dangerous direction -- hide a NOT_PLANNED-canceled blocker and turn `held` into `met`.
+I_OLD_ROADMAP_BLK='{"number":77,"state":"closed","state_reason":"not_planned","labels":[{"name":"roadmap"},{"name":"release-blocker"}]}'
+eq "$(counts "$(iss_json "$I_ROADMAP,$I_OLD_ROADMAP_BLK")" 31)" '1 0 0 1|||' \
+   "a closed issue still carrying the roadmap label is counted, not dropped"
+eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_ROADMAP")" 0)" '1 0 2 0|99 31||' \
+   "with no artifact number given, nothing is excluded by label"
+bash "$RL" release-counts release-blocker notanumber >/dev/null 2>&1 </dev/null
+eq "$?" 2 "a non-numeric roadmap-issue-number is exit 2"
 # An issue with no labels is an ordinary leftover.
 eq "$(counts "$(iss_json '{"number":12,"state":"open","state_reason":null,"labels":[]}')")" \
    '1 0 1 0|12||' "an unlabelled open issue is a leftover"
