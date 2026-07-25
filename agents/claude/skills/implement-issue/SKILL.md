@@ -421,6 +421,7 @@ re-reads the live settings and **fails closed**, so a repo that is not in the sa
 state gets a reported skip instead of an ungated merge:
 
 ```bash
+PR="$(jq -r .prUrl .claude/state/implement-issue-active.json)"   # written just above
 bash "$HOME/.claude/scripts/lib/repo-settings.sh" automerge-ok; AM=$?
 case "$AM" in
   0)  gh pr merge "$PR" --auto --squash ;;   # merges itself once checks pass + threads resolve
