@@ -236,7 +236,12 @@ Put one issue in `Next release` and leave others in `Backlog`, bundled together.
       followed by `Next: /release`. `/roadmap` only **prints** it; it never runs it.
 - [ ] A `<!-- release-command: /ship -->` marker overrides the emitted command.
 - [ ] With non-blocker issues still open in the milestone, the banner appends
-      `(K non-blocker issue(s) still open — they roll to the next cycle)`.
+      `(K non-blocker issue(s) still open — not holding the release; the roll sends them to Backlog)`.
+- [ ] A **met** emission also prints the rollover reminder
+      `Then: baseline release roll --version <version>`. Without the roll the milestone stays open
+      with zero open blockers, so the predicate returns `met` on every later run and the same cut is
+      re-emitted forever — verify a second run after an actual roll reports `unarmed`
+      ("no requirements yet"), not `met`.
 - [ ] With `destination-label: release-blocker`, the gauge is **milestone-scoped** in this mode,
       so it always equals the readiness trigger (a blocker parked in `Backlog` must not inflate it).
 - [ ] **Met** is a valid terminal emission and is **not** "roadmap complete" — open `Backlog` work

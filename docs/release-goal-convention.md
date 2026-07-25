@@ -95,8 +95,9 @@ In release-readiness mode, every run `/roadmap`:
     `/implement-issue` bundle *from the release set*.
   - **Requirements met** (0 open `release-blocker`s in an armed milestone) → `Next: /release`
     with `✅ Release requirements met (<milestone>: 0 open blockers) — cutting.` (If
-    non-blocker issues remain open in the milestone, the banner names them: they roll to the
-    next cycle, they do not hold the release.)
+    non-blocker issues remain open in the milestone, the banner names them: they do not hold
+    the release, and `baseline release roll` sends them to `Backlog` on the cut — re-slate
+    them deliberately, like any other work.)
 - **Composes with the destination report.** Point the artifact's optional
   `<!-- destination-label: release-blocker -->` marker (issue #68) at `release-blocker`; in
   release-readiness mode the count is **milestone-scoped** so the gauge (`release-blocker: N
@@ -120,6 +121,66 @@ Stop-hook / driver-loop config (the enforcement-hooks layer, issues #14/#25), no
 itself — the executor mechanism is tracked as a follow-up. Until it lands, the safe
 emit-only default is the whole last mile.
 
+### Rolling over on the cut — `baseline release roll`
+
+A cut that does not roll the milestone **strands the loop.** Once the release set's blockers
+are all closed, the milestone sits open and empty of open work, so the readiness predicate
+keeps returning `met` and `/roadmap` re-emits the same cut on every run, forever. Rolling is
+what makes the next cycle exist.
+
+```bash
+baseline release roll --version v1.2.0            # after your /release has cut v1.2.0
+baseline release roll --version v1.2.0 --dry-run  # print the plan, change nothing
+```
+
+It performs exactly four mutations, **in this order**:
+
+1. **rename** the release milestone to `--version` (leaving it open) — this frees the rolling
+   title, which GitHub requires before step 2, since milestone titles are unique repo-wide;
+2. **create** a fresh, empty milestone under the rolling title;
+3. **move** the leftover open non-blocker issues to `Backlog`;
+4. **close** the renamed milestone — last, so an interruption always leaves a resumable state.
+
+**Why `Backlog` and not "roll forward into the new milestone".** A milestone is *armed* when it
+holds ≥1 issue, open or closed. Seeding the fresh milestone with rolled-forward non-blockers
+would arm it with zero open blockers — which is the definition of `met` — so the very next
+`/roadmap` run would emit a cut for a release containing nothing. Sending them to `Backlog`
+leaves the new milestone genuinely empty (`unarmed` → "no requirements yet") and matches the
+frozen-set rule above: slating work *into* a release is always deliberate.
+
+**It re-verifies readiness itself and fails closed.** `roll` does not trust the `/roadmap` run
+that emitted the cut — it re-reads the tracker and recomputes the verdict through the same
+shared predicate (`roadmap-lib.sh release-ready`), refusing on anything but `met`. `--force`
+waives that verdict (the documented override for a `held` release), but it does **not** waive
+the separate refusal to move an **open** `release-blocker` to `Backlog`: silently demoting a
+must-have is an owner decision, so close it, unlabel it, or move it out yourself.
+
+**If it is interrupted, re-run it.** Between the rename and the create there is one API call
+during which no open milestone carries the rolling title and `/roadmap` hard-stops, so `roll`
+detects a partially-executed roll and finishes it:
+
+- **Interrupted after the rename** (the rolling title is missing) — unambiguous, so re-running
+  resumes automatically. Restoring that title is *repair*, not rollover, so it happens even if a
+  blocker was reopened in the meantime: `roll` recreates the milestone, then stops before the
+  move/close and tells you what is left. A resume never re-runs the readiness gate — the roll was
+  already authorized, and re-deciding it against a tracker that changed since is what would leave
+  a half-rolled repo unfinishable.
+- **Interrupted after the create** (both milestones open) — indistinguishable from a pre-existing
+  milestone that happens to carry the version name, so `roll` refuses and asks. Re-run with
+  **`--resume`** if that milestone really is your archive. (`roll` deliberately does *not* guess
+  from "is the new milestone empty?" — it tells you to slate the next release into it, so a real
+  interrupted roll stops looking empty almost at once.)
+
+**The `release-milestone` marker never needs editing.** Because the rolling *title* is
+recreated, the marker keeps naming a live milestone across the roll. `roll` reads that marker
+to learn which milestone to roll (`--release-name` overrides it) and never writes to the
+artifact — `/roadmap` remains its sole writer.
+
+**Boundary.** `roll` is milestone bookkeeping only: no version bump, no changelog, no tag, no
+package, no publish, no deploy. Those are the project-owned half (#3) and
+`scripts/check-release-role.sh` pins the line. Your `/release` should call `roll` as its last
+step; running it by hand afterwards is equally valid.
+
 ### Issue filing — new work defaults to `Backlog`
 
 When the convention is detected, `/create-issue` and `/implement-issue`'s deferred-work
@@ -136,7 +197,10 @@ backlog, or milestone-less if it uses no milestones.
 - **#3** — release *execution* (`/release`), resolved: it stays **project-owned** (see
   [roles-and-agents.md](roles-and-agents.md#release-is-project-owned--the-baseline-ships-no-release)).
   This convention *defines* requirements and *detects* readiness; your `/release` cuts the
-  tag/version and rolls the milestone. They compose.
+  tag/version. They compose.
+- **#74** — the *rollover* half, resolved the other way: milestone rollover moved **out** of
+  the project-owned `/release` and into `baseline release roll` (below). Cutting has four
+  incompatible shapes; rolling has exactly one, on primitives `init` already creates.
 - **#68** — the destination-report capability (the readiness *gauge*).
 - **#71** — the keystone that wires `/roadmap` to the predicate and the release emission.
 

@@ -358,4 +358,81 @@ for a in claude codex gemini; do
   fi
 done
 
+# ============================================================================================
+# 4. RELEASE-COUNTS — the predicate's five INPUTS (#74)
+# ============================================================================================
+# release-ready decides; release-counts decides what it is told. The tabulation rules are
+# load-bearing in the same way the verdict is — armed counts CLOSED issues too, the roadmap
+# artifact and PRs are excluded, and only a NOT_PLANNED-closed blocker is "canceled". Get one
+# wrong and the verdict is wrong while the predicate stays innocent, so both halves are pinned.
+
+# counts <json> -> "<line1>|<line2>|<line3>": the four counts, the leftovers, the open blockers.
+counts() { printf '%s' "$1" | bash "$RL" release-counts release-blocker "${2:-0}" 2>/dev/null | tr '\n' '|'; }
+iss_json() { printf '[%s]' "$1"; }
+I_CLOSED_BLK='{"number":74,"state":"closed","state_reason":"completed","labels":[{"name":"release-blocker"}]}'
+I_OPEN_PLAIN='{"number":99,"state":"open","state_reason":null,"labels":[{"name":"enhancement"}]}'
+I_OPEN_BLK='{"number":88,"state":"open","state_reason":null,"labels":[{"name":"release-blocker"}]}'
+I_CANCELED='{"number":77,"state":"closed","state_reason":"not_planned","labels":[{"name":"release-blocker"}]}'
+I_ROADMAP='{"number":31,"state":"open","state_reason":null,"labels":[{"name":"roadmap"}]}'
+I_PR='{"number":50,"state":"open","state_reason":null,"labels":[],"pull_request":{"url":"x"}}'
+
+eq "$(counts '[]')"                    '0 0 0 0|||'  "empty milestone => unarmed, nothing to move"
+eq "$(counts "$(iss_json "$I_CLOSED_BLK")")"        '1 0 0 0|||' "a closed blocker still ARMS the milestone"
+eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN")")" '1 0 1 0|99||' "open non-blocker is a leftover, not a blocker"
+eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_BLK")")"   '1 1 1 0||88|' "an open blocker is reported, never a leftover"
+eq "$(counts "$(iss_json "$I_CANCELED")")"          '1 0 0 1|||' "a NOT_PLANNED blocker sets canceled"
+# A NOT_PLANNED close of a NON-blocker is not a canceled requirement.
+eq "$(counts "$(iss_json '{"number":60,"state":"closed","state_reason":"not_planned","labels":[]}')")" \
+   '1 0 0 0|||' "a NOT_PLANNED non-blocker does not set canceled"
+# The two exclusions, asserted by their EFFECT on every field.
+eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_ROADMAP")" 31)" '1 0 1 0|99||' \
+   "the roadmap artifact is excluded BY NUMBER from counts and leftovers"
+eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_PR")")" '1 0 1 0|99||' \
+   "a PR carrying the milestone is excluded from counts and leftovers"
+eq "$(counts "$(iss_json "$I_ROADMAP")" 31)" '0 0 0 0|||' \
+   "a milestone holding ONLY the roadmap artifact is unarmed, not armed by it"
+# ...and the exclusion is BY NUMBER, never by label. A CLOSED issue that still carries the
+# `roadmap` label is ordinary history: dropping it could under-count a milestone into `unarmed`,
+# or -- the dangerous direction -- hide a NOT_PLANNED-canceled blocker and turn `held` into `met`.
+I_OLD_ROADMAP_BLK='{"number":77,"state":"closed","state_reason":"not_planned","labels":[{"name":"roadmap"},{"name":"release-blocker"}]}'
+eq "$(counts "$(iss_json "$I_ROADMAP,$I_OLD_ROADMAP_BLK")" 31)" '1 0 0 1|||' \
+   "a closed issue still carrying the roadmap label is counted, not dropped"
+eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_ROADMAP")" 0)" '1 0 2 0|99 31||' \
+   "with no artifact number given, nothing is excluded by label"
+bash "$RL" release-counts release-blocker notanumber >/dev/null 2>&1 </dev/null
+eq "$?" 2 "a non-numeric roadmap-issue-number is exit 2"
+# An issue with no labels is an ordinary leftover.
+eq "$(counts "$(iss_json '{"number":12,"state":"open","state_reason":null,"labels":[]}')")" \
+   '1 0 1 0|12||' "an unlabelled open issue is a leftover"
+# Fail-closed: malformed input is an ERROR (>=2), never an innocent-looking zero row.
+printf 'not json' | bash "$RL" release-counts release-blocker >/dev/null 2>&1
+eq "$?" 2 "malformed JSON is exit 2, never a silent '0 0 0 0'"
+bash "$RL" release-counts >/dev/null 2>&1 </dev/null
+eq "$?" 2 "release-counts without its label argument is exit 2"
+
+# ============================================================================================
+# 5. MARKER-TITLE — the release-readiness activation marker (#74)
+# ============================================================================================
+# This is the MODE SWITCH for the whole release-readiness overlay, so a false positive turns the
+# overlay on in a repo that never opted in, and a missed second value hides an ambiguous artifact.
+mt() { printf '%b' "$1" | bash "$RL" marker-title 2>/dev/null | tr '\n' '|'; }
+
+eq "$(mt '<!-- release-milestone: Next release -->\n')" 'Next release|' "a valued marker resolves"
+eq "$(mt 'no marker here\n')"                           ''              "no marker => empty, not an error"
+eq "$(mt '<!-- release-milestone: -->\n')"              ''              "an empty value is not a title"
+eq "$(mt '<!-- release-milestone: NAME -->\n')"         ''              "the literal placeholder NAME is not a title"
+eq "$(mt '<!-- release-milestone:Next release-->\n')"   'Next release|' "spacing around the value is optional"
+eq "$(mt '<!-- release-milestone: A -->\n<!-- release-milestone: A -->\n')" 'A|' "the same value twice is one title"
+eq "$(mt '<!-- release-milestone: B -->\n<!-- release-milestone: A -->\n')" 'A|B|' \
+   "two different values BOTH surface, so the caller can refuse an ambiguous artifact"
+# The greedy-match trap: two markers on ONE line must still be two titles. A `.*`-anchored match
+# keeps only the last, silently resolving a title the reader never wrote.
+eq "$(mt '<!-- release-milestone: B --> x <!-- release-milestone: A -->\n')" 'A|B|' \
+   "two markers on one line are two titles, not the last one"
+# ...and the value must not run past its own `-->` into a later comment on the same line.
+eq "$(mt '<!-- release-milestone: A --> then <!-- something else -->\n')" 'A|' \
+   "the value stops at its own marker terminator"
+bash "$RL" marker-title extra-arg >/dev/null 2>&1
+eq "$?" 2 "marker-title takes no arguments"
+
 check_summary "roadmap"

@@ -28,6 +28,8 @@
 # Usage:
 #   roadmap-lib.sh pr-targets-issue <issue-number> <owner/repo>   # PR JSON on stdin
 #   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>
+#   roadmap-lib.sh release-counts <blocker-label> [roadmap-issue-number]   # milestone JSON on stdin
+#   roadmap-lib.sh marker-title                                   # roadmap artifact body on stdin
 #   roadmap-lib.sh -h | --help
 #
 # `pr-targets-issue` stdin is the output of:
@@ -202,6 +204,95 @@ cmd_release_ready() {
   printf 'met\n'
 }
 
+# --- release-counts -------------------------------------------------------------------------
+# Derive release-ready's five inputs from one milestone's issues. `release-ready` decides; this
+# decides WHAT IT IS TOLD, and those tabulation rules are load-bearing in exactly the same way:
+# armed counts closed issues too, the roadmap artifact is excluded, PRs are excluded, and only a
+# NOT_PLANNED-closed blocker counts as canceled. Get any one wrong and the verdict is wrong while
+# the predicate stays innocent — so both halves belong in the one testable home, not one here and
+# one restated per caller (design-principles §1).
+#
+# Stdin: the JSON array from `gh api --paginate "repos/OWNER/REPO/issues?milestone=N&state=all"`.
+# Empty stdin is an empty milestone (`unarmed`), not an error — a milestone with no issues is a
+# real, expected state.
+#
+# `<roadmap-issue-number>` is THE canonical artifact's number, excluded by NUMBER — not by label.
+# The workflow's shorthand for this exclusion is a `-label:roadmap` search qualifier, but that is
+# broader than what it means: a CLOSED historical issue that still carries the label would also be
+# dropped, which can under-count a milestone into `unarmed` or, worse, hide a NOT_PLANNED-canceled
+# blocker and turn a `held` release into a `met` one. Excluding the one issue the caller identifies
+# as the artifact is exactly the documented rule ("exclude the roadmap issue itself"). Omit the
+# argument (or pass 0) when the artifact is known not to be in this milestone.
+#
+# Prints THREE lines, so a caller can also act on the issues rather than only count them:
+#   1. `<armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>`  — feed straight to release-ready
+#   2. space-separated numbers of the OPEN NON-blocker issues (the rollover's leftovers)
+#   3. space-separated numbers of the OPEN blocker issues (a caller that must refuse, and name them)
+#
+# Excluding PRs is not defensive tidying: `repos/…/issues` returns pull requests too, so counting
+# them would make a milestone look armed (or blocked) by a PR, disagreeing with every `is:issue`
+# query the workflow runs.
+cmd_release_counts() {
+  case "$#" in
+    1|2) : ;;
+    *) die "release-counts: needs <blocker-label> [roadmap-issue-number] (milestone issue JSON on stdin)" ;;
+  esac
+  command -v jq >/dev/null 2>&1 || die "release-counts: jq not found"
+  local blk="$1" skip="${2:-0}" out
+  [ -n "$skip" ] || skip=0
+  is_uint "$skip" || die "release-counts: <roadmap-issue-number> must be a non-negative integer (got '$2')"
+  # `-s` + `add`: accept BOTH shapes `gh api --paginate` can produce — one merged array (what
+  # gh 2.95 returns for a REST array endpoint) and the separate-array-per-page stream its own
+  # `--help` documents ("Each page is a separate JSON array or object"). Reading only the first
+  # input would silently undercount a multi-page milestone, and undercounting open blockers
+  # produces a `met` verdict that archives a milestone with an open must-have still inside it.
+  # Depending on undocumented merging for that is not a bet worth taking; `-s` costs one flag.
+  # (Empty stdin slurps to `[]` -> `add` is null -> `// []`, so an empty milestone still works.)
+  out="$(jq -r -s --arg blk "$blk" --argjson skip "$skip" '
+    (add // []) as $all
+    | [ $all[] | select(has("pull_request") | not)
+          | select(.number != $skip) ]                                         as $rows
+    | [ $rows[] | select(.state == "open") ]                                   as $open
+    | [ $open[] | select(([.labels[].name] | index($blk)) != null) ]           as $ob
+    | [ $rows[] | select(.state == "closed" and .state_reason == "not_planned")
+                | select(([.labels[].name] | index($blk)) != null) ]           as $can
+    | (
+        "\(if ($rows|length) > 0 then 1 else 0 end) \($ob|length) \($open|length) \(if ($can|length) > 0 then 1 else 0 end)",
+        ([ $open[] | select(([.labels[].name] | index($blk)) == null) | .number | tostring ] | join(" ")),
+        ([ $ob[] | .number | tostring ] | join(" "))
+      )' 2>/dev/null)" \
+    || die "release-counts: malformed JSON on stdin"
+  # Re-pad to exactly three lines. `$( )` strips TRAILING newlines, so a milestone with no
+  # leftovers and no open blockers would collapse the three-record contract to one line. Sequential
+  # `read`s happen to survive that; a consumer that takes line 3 directly would not, and a contract
+  # that only holds for some inputs is the kind that breaks a caller written later.
+  printf '%s\n' "$out" | awk 'NR <= 3 { print } END { for (i = NR + 1; i <= 3; i++) print "" }'
+}
+
+# --- marker-title ---------------------------------------------------------------------------
+# Print the DISTINCT release-milestone titles named by a roadmap artifact body (stdin), one per
+# line. Empty output means "the convention is not active here" — the caller decides whether that
+# is a refusal or classic mode; it is never an error.
+#
+# The value is matched as `[^>]*`, NOT `.*`: a greedy match would run past the marker's own `-->`
+# and absorb a later one on the same line, resolving a different title than the reader sees.
+#
+# The carve-out drops an empty value and the literal `NAME` — the schema's own example token,
+# which bootstrap can copy verbatim (base/workflows/roadmap.md). Treating that placeholder as a
+# real milestone is the classic false activation this whole opt-in is designed to avoid.
+cmd_marker_title() {
+  [ "$#" -eq 0 ] || die "marker-title: takes no arguments (roadmap artifact body on stdin)"
+  # `grep -o` (one match per LINE OF OUTPUT), not `sed s///p` (one substitution per line of
+  # INPUT): two markers on a single line must surface as two titles, so the caller can refuse an
+  # ambiguous artifact. With sed, the leading `.*` is greedy and silently keeps only the last.
+  grep -o '<!--[[:space:]]*release-milestone:[[:space:]]*[^>]*-->' \
+    | sed 's/.*release-milestone:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
+    | grep -v '^[[:space:]]*$' \
+    | grep -vx 'NAME' \
+    | sort -u
+  return 0
+}
+
 # --- dispatch ------------------------------------------------------------------------------
 main() {
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
@@ -210,6 +301,8 @@ main() {
     -h|--help|help) usage; exit 0 ;;
     pr-targets-issue) cmd_pr_targets_issue "$@" ;;
     release-ready)    cmd_release_ready "$@" ;;
+    release-counts)   cmd_release_counts "$@" ;;
+    marker-title)     cmd_marker_title "$@" ;;
     *) printf 'roadmap-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
   esac
 }
