@@ -216,10 +216,22 @@ cat > "$BIN/codex" <<'EOF'
 cat >/dev/null; sleep 2; exit 0
 EOF
 chmod +x "$BIN/codex"
-out_rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_TIMEOUT_SECS=1 bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || out_rc=$?
+# Run the helper under the fixture with extra leading env assignments: `rd_env VAR=1 ... <args>`.
+# The fixture's environment contract (cwd + HOME + PATH) already lives in `rd()`; without this the
+# new bound/escalation cases each re-spell it, so adding one fixture variable would be a six-site
+# edit. `env` rather than bare assignments on `rd` — in bash a prefix assignment on a FUNCTION call
+# persists after it returns and would leak into later assertions.
+rd_env() { ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" env "$@" ); }
+
+# ONE dispatch feeds both the rc and the stderr assertion — re-running a 1-second timeout purely to
+# capture the other stream doubles the wall-clock cost of a test whose cost IS the sleep.
+err="$(printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 bash "$RD" invoke gap_analysis 2>&1 >/dev/null)"; out_rc=$?
 eq "$out_rc" "124" "invoke enforces the timeout (rc 124)"
+has "$err" "backstop" "a timed-out dispatch reports the classified reason on stderr"
+has "$err" "gap_analysis" "the report names the ROLE, not just the resolved agent"
+has "$err" "does NOT fall back" "a failed gap_analysis states its no-substitution policy inline"
 # force the portable watchdog path (no timeout binary) and confirm it also fires
-out_rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || out_rc=$?
+out_rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis >/dev/null 2>&1 || out_rc=$?
 eq "$out_rc" "124" "the bash watchdog fallback also enforces the timeout"
 
 # --- the committed DEFAULT bound (#93) ---------------------------------------
@@ -238,8 +250,11 @@ eq "$ovr" "99" "ADB_DISPATCH_TIMEOUT_SECS still overrides the default"
 # 124 (our backstop) / 143 (an OUTER bound) / a real agent error each need a different response;
 # collapsing them into "the agent failed" is what let a bound problem masquerade as a codex
 # problem. Assert each rc maps to a DISTINCT, self-explaining classification.
+# ONE subshell sources the library and precomputes every classification. Re-sourcing per assertion
+# also re-forks `git rev-parse` (via adb_repo_root at load), so seven lookups cost seven loads.
 # shellcheck source=/dev/null
-cls() { ( . "$RD" >/dev/null 2>&1; adb_dispatch_classify_rc "$1" ); }
+_cls_all="$( . "$RD" >/dev/null 2>&1; for r in 0 7 124 137 143; do printf '%s|%s\n' "$r" "$(adb_dispatch_classify_rc "$r")"; done )"
+cls() { printf '%s\n' "$_cls_all" | grep "^$1|" | cut -d'|' -f2-; }
 has "$(cls 124)" "backstop"     "rc 124 is classified as our own hang backstop"
 has "$(cls 124)" "ADB_DISPATCH_TIMEOUT_SECS" "the 124 classification names the override knob"
 has "$(cls 143)" "OUTER"        "rc 143 is classified as an OUTER bound, not ours"
@@ -247,10 +262,6 @@ has "$(cls 137)" "outside"      "rc 137 is classified as an external kill"
 has "$(cls 7)"   "real agent"   "an arbitrary nonzero rc is classified as a real agent error"
 hasnt "$(cls 7)" "backstop"     "a real agent error is NOT blamed on our backstop"
 eq "$(cls 0)" "completed"       "rc 0 is classified as completed"
-# The classification reaches the operator: a failing dispatch prints it on stderr, never stdout
-# (stdout is reserved for the agent's clean final message).
-err="$(printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_TIMEOUT_SECS=1 bash "$RD" invoke gap_analysis 2>&1 >/dev/null ))"
-has "$err" "backstop" "a timed-out dispatch reports the classified reason on stderr"
 
 # --- the backstop must actually terminate (#93) ------------------------------
 # A backstop that only sends SIGTERM is not a backstop: a child that traps TERM leaves `wait`
@@ -263,30 +274,30 @@ trap '' TERM
 cat >/dev/null; sleep 30; exit 0
 EOF
 chmod +x "$BIN/codex"
-start="$(date +%s)"
-out_rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" \
-  ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=2 ADB_DISPATCH_NO_TIMEOUT_BIN=1 \
-  bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || out_rc=$?
-elapsed=$(( $(date +%s) - start ))
-eq "$out_rc" "124" "a TERM-resistant child still returns 124 (watchdog escalates to KILL)"
-if [ "$elapsed" -lt 15 ]; then
-  ok "the watchdog escalates instead of hanging (${elapsed}s < the child's 30s sleep)"
-else
-  bad "the watchdog hung on a TERM-resistant child (${elapsed}s)"
-fi
-# Same guarantee on the timeout-binary path, which needs `timeout -k` to escalate.
+# The two paths (hand-rolled watchdog vs `timeout -k`) are genuinely different code and both need
+# covering — but each is a fixed ~2s wait, and this sleep is the ONLY material cost this suite
+# adds to every pre-push selfcheck. So run them CONCURRENTLY (they share only a read-only stub)
+# and keep the grace at its floor of 1: the child TRAPS TERM, so the grace is a fixed wait rather
+# than a race and a short one cannot flake. Sequential at the default grace, these cost ~6s; this
+# way, ~2s.
+esc_w="$(mktemp)"; esc_t="$(mktemp)"; start=$SECONDS
+( rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 \
+    bash "$RD" invoke gap_analysis >/dev/null 2>&1 || rc=$?; printf '%s' "$rc" > "$esc_w" ) &
+( rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 \
+    bash "$RD" invoke gap_analysis >/dev/null 2>&1 || rc=$?; printf '%s' "$rc" > "$esc_t" ) &
+wait
+elapsed=$(( SECONDS - start ))
+eq "$(cat "$esc_w")" "124" "watchdog: a TERM-resistant child still returns 124 (escalates to KILL)"
+# Only a distinct assertion when a timeout binary actually exists; without one this second case
+# takes the watchdog path too and would just re-assert the line above.
 if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
-  start="$(date +%s)"
-  out_rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" \
-    ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=2 \
-    bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || out_rc=$?
-  elapsed=$(( $(date +%s) - start ))
-  eq "$out_rc" "124" "timeout-binary path returns 124 for a TERM-resistant child"
-  if [ "$elapsed" -lt 15 ]; then
-    ok "timeout -k escalates to KILL instead of hanging (${elapsed}s)"
-  else
-    bad "the timeout binary hung on a TERM-resistant child (${elapsed}s)"
-  fi
+  eq "$(cat "$esc_t")" "124" "timeout -k: a TERM-resistant child still returns 124, not 137"
+fi
+rm -f "$esc_w" "$esc_t"
+if [ "$elapsed" -lt 15 ]; then
+  ok "escalation returns promptly instead of hanging (${elapsed}s vs the child's 30s sleep)"
+else
+  bad "a TERM-resistant child hung the backstop (${elapsed}s)"
 fi
 
 # ============================ source guard ============================

@@ -34,30 +34,26 @@ cd "$(dirname "$0")/.." || exit 1
 . scripts/check-lib.sh
 check_init "fact-drift"
 
-# fact <label> fixed:<token>|regex:<pattern> -- <file> [<file>...]
-# Asserts the token/pattern is present in every listed file.
+# fact <label> fixed:<token>|regex:<pattern>|absent:<pattern> -- <file> [<file>...]
+# Asserts the token/pattern is present in every listed file — or, for `absent:`, that it is NOT.
+#
+# `absent:` is the negative counterpart, for a value a fact has SUPERSEDED. Positive presence
+# alone cannot enforce a replacement: a file carrying the new figure AND the old one beside it
+# passes every positive rule while still telling the reader the wrong thing — which is how a stale
+# "≥7-minute" bound would survive a repoint to 45 minutes (#93). Reach for it only when a fact
+# retires an earlier value, never as a general prose blocklist.
 fact() {
   local label="$1" spec="$2" ; shift 2
   [ "$1" = "--" ] && shift
   local kind="${spec%%:*}" needle="${spec#*:}" f
   for f in "$@"; do
     case "$kind" in
-      fixed) req_fixed "$f" "$needle" "$label" ;;
-      regex) req_regex "$f" "$needle" "$label" ;;
+      fixed)  req_fixed  "$f" "$needle" "$label" ;;
+      regex)  req_regex  "$f" "$needle" "$label" ;;
+      absent) req_absent "$f" "$needle" "$label" ;;
+      *) check_note "[$label] unknown spec kind '$kind' (want fixed:/regex:/absent:)"; check_fail ;;
     esac
   done
-}
-
-# stale <label> regex:<pattern> -- <file> [<file>...]
-# The negative counterpart, for a value that has been SUPERSEDED. `fact` alone cannot enforce a
-# replacement: a file carrying the new figure AND the old one next to it passes every positive
-# rule while still telling the reader the wrong thing — which is exactly how a stale "≥7-minute"
-# bound would survive a repoint to 45 minutes (#93). Use it only for a genuinely retired value.
-stale() {
-  local label="$1" spec="$2" ; shift 2
-  [ "$1" = "--" ] && shift
-  local needle="${spec#*:}" f
-  for f in "$@"; do req_absent "$f" "$needle" "$label"; done
 }
 
 # --- FACT: gate axes ---------------------------------------------------------
@@ -93,42 +89,45 @@ fact invocation-claude fixed:'claude -p' -- \
 # stays out of the way. Every doc that states the bound must carry the figure, the seconds value,
 # the override's name (so the knob stays discoverable rather than buried in the library), and the
 # backstop framing (so nobody re-tunes it down toward typical runtime, which is the regression).
-_bs_docs="base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md"
-# The rendered skills carry the fact too. They are listed in a POSITIVE rule and not only in the
-# `stale` sweep below because req_absent is vacuously true on a file that does not exist — so a
-# typo'd render path would silently sweep nothing, while req_fixed/req_regex fail loudly on it.
-_bs_renders="agents/claude/skills/implement-issue/SKILL.md"
-_bs_renders="$_bs_renders agents/codex/skills/implement-issue/SKILL.md"
-_bs_renders="$_bs_renders agents/gemini/skills/implement-issue/SKILL.md"
-# shellcheck disable=SC2086  # intentional word-split of the space-separated file lists
-fact backstop-45min regex:'45[-[:space:]](min|minute)' -- \
-  $_bs_docs $_bs_renders docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
-# shellcheck disable=SC2086
-fact backstop-secs regex:'2700' -- $_bs_docs scripts/lib/role-dispatch.sh
-# shellcheck disable=SC2086
-fact backstop-env fixed:'ADB_DISPATCH_TIMEOUT_SECS' -- $_bs_docs scripts/lib/role-dispatch.sh
-# shellcheck disable=SC2086
-fact backstop-framing fixed:'hang backstop' -- \
-  $_bs_docs $_bs_renders docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
+# ONE list, used by BOTH directions below. Keeping the positive rules and the superseded sweep on
+# separate lists is how the anti-drift lint grows its own drift: add a consumer to one list only,
+# and that file gets checked for the new value but never swept for the retired one (or vice-versa)
+# — precisely the half-updated state these rules exist to catch.
+# The rendered skills are included so a typo'd render path fails loudly: an `absent:` rule is
+# vacuously true on a file that does not exist, while `fixed:`/`regex:` report the bad path.
+# CHANGELOG.md is deliberately absent: its entries record what shipped at the time, and rewriting
+# shipped history to satisfy a lint would be a lie, not a fix.
+_bs_all="base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md"
+_bs_all="$_bs_all docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh"
+for _a in claude codex gemini; do _bs_all="$_bs_all agents/$_a/skills/implement-issue/SKILL.md"; done
+# The seconds value and the override name are only spelled out where the bound is *explained*, not
+# in every file that merely mentions it — so these two keep a narrower list.
+_bs_num="base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md"
+_bs_num="$_bs_num scripts/lib/role-dispatch.sh"
 
-# --- SUPERSEDED: the old ≥7-minute / millisecond-ceiling bound (#93) ---------
-# The 420 s bound was set near typical runtime, so ordinary high-reasoning passes tripped it; and
-# the `420000`–`600000` ms guidance taught every reader to cap the surrounding call at 10 minutes,
-# which is a HARNESS artifact, not a property of codex. Both are retired. A positive rule alone
-# cannot enforce that: a file carrying "45 minutes" AND a leftover "≥7-minute" satisfies every
-# `fact` above while still misinforming the reader — so sweep the retired forms out explicitly.
-# The three rendered skills are swept directly (build-drift proves they match their source, but
-# this names the offending line rather than reporting an opaque render diff).
-# CHANGELOG.md is deliberately NOT swept: its entries are a historical record of what shipped at
-# the time, and rewriting shipped history to satisfy a lint would be a lie, not a fix.
-_bs_sweep="$_bs_docs $_bs_renders docs/design-principles.md agents/codex/config.toml.sample"
-_bs_sweep="$_bs_sweep scripts/lib/role-dispatch.sh"
+# shellcheck disable=SC2086  # deliberate word-split of the space-separated file lists
+{
+fact backstop-45min   regex:'45[-[:space:]](min|minute)'  -- $_bs_all
+fact backstop-framing fixed:'hang backstop'               -- $_bs_all
+fact backstop-secs    regex:'2700'                        -- $_bs_num
+fact backstop-env     fixed:'ADB_DISPATCH_TIMEOUT_SECS'   -- $_bs_num
+
+# SUPERSEDED by the rules above (#93): the 420 s bound sat near typical runtime, so ordinary
+# high-reasoning passes tripped it; and the `420000`-`600000` ms guidance taught every reader to
+# cap the surrounding call at 10 minutes — a HARNESS artifact, not a property of codex.
+fact backstop-stale-ms   absent:'(4[28]0|600)[,]?000'                                   -- $_bs_all
+fact backstop-stale-secs absent:'(^|[^0-9])420([^0-9]|$)'                               -- $_bs_all
+fact backstop-stale-7min absent:'([≥>]=?[[:space:]]*7|least[[:space:]]*7|3[–-]7)[[:space:]-]*min' -- $_bs_all
+}
+
+# --- FACT: gap_analysis never substitutes another agent (#93) ----------------
+# The behavioural rule this change actually introduced, and the one an agent is most likely to
+# quietly violate under time pressure — a silently-substituted reviewer is exactly what made
+# `agents.toml` fiction for three runs. It was restated across six hand-written surfaces and
+# pinned by nothing, while the *number* got seven rules. Pin the rule too.
 # shellcheck disable=SC2086
-stale backstop-stale-ms regex:'(4[28]0|600)[,]?000' -- $_bs_sweep
-# shellcheck disable=SC2086
-stale backstop-stale-secs regex:'(^|[^0-9])420([^0-9]|$)' -- $_bs_sweep
-# shellcheck disable=SC2086
-stale backstop-stale-7min regex:'([≥>]=?[[:space:]]*7|least[[:space:]]*7|3[–-]7)[[:space:]-]*min' -- $_bs_sweep
+fact gap-analysis-no-fallback fixed:'never substitut' -- \
+  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md
 
 # --- FACT: role-resolution order ---------------------------------------------
 # The order is repo agents.toml → global default manifest → built-in default.

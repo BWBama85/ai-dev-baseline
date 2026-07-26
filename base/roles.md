@@ -78,9 +78,9 @@ cross-agent dispatch:
 - **`gap_analysis` never falls back to another agent.** Retry the assigned agent
   **exactly once**; if the second attempt also fails, **report the classified
   incompleteness and stop** (pre-branch, so no blocked marker — see the workflow's
-  step 4). Substituting a different agent here would make `agents.toml` say one thing
-  while another agent does the work — which is exactly how a too-small bound spent
-  three runs pretending to be a codex problem (#93). A too-small bound must never
+  step 4). It **never substitutes** a different agent: doing so makes `agents.toml` say
+  one thing while another agent does the work — which is exactly how a too-small bound
+  spent three runs pretending to be a codex problem (#93). A too-small bound must never
   silently demote the owner's chosen agent. This arm is finite and the backstop is
   hard (it escalates TERM → grace → KILL), so removing the fallback cannot deadlock a
   run. The `review` role keeps its fallback: its slots are independent, and a

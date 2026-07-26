@@ -80,6 +80,6 @@ than reading the code as a verdict on the pass. rc **124** is our own backstop.
 Anything else is a real codex error. Any of them is an **incomplete** invocation,
 not an acceptable "wasted pass": retry once, then handle it per the delegated-step
 **completion contract** in `base/roles.md` (which also carries the full cross-agent
-invocation table). When codex owns `gap_analysis`, an incompletion is **surfaced,
-never handed to another agent** — a bound problem must not silently demote the
+invocation table). When codex owns `gap_analysis`, an incompletion is **surfaced, and
+never substituted with another agent** — a bound problem must not silently demote the
 configured reviewer.

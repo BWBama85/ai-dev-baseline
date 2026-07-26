@@ -266,16 +266,17 @@ stdout — for `codex` it captures `--output-last-message`, so the repo-explorat
 stream never contaminates the findings (no `tail`/grep recovery, the old #8 pain):
 
 **Dispatch it in the BACKGROUND** — this is not a preference. A gap-analysis pass at
-high reasoning effort routinely runs **longer than 10 minutes**, and a harness typically
-caps a *foreground* command well below that (Claude Code's ceiling is 10 minutes). Run
-in the foreground, the outer cap — not the helper's own 45-minute backstop — is what
-fires, and no amount of raising the backstop can help. That mismatch cost three
-consecutive runs before it was diagnosed (#93).
+high reasoning effort routinely runs **longer than 10 minutes**, and agent harnesses
+commonly cap a *foreground* command well below that. Run in the foreground, that outer
+cap — not the helper's own 45-minute backstop — is what fires, and no amount of raising
+the backstop can help. That mismatch cost three consecutive runs before it was
+diagnosed (#93).
 
-"Background" means the **harness's own detached-execution facility**, the one that
-reports the call's terminal status back to you (for Claude Code, the Bash tool's
-`run_in_background`). A shell `&` is **not** it: `&` inside one foreground call is still
-inside that call's cap, and a later shell cannot `wait` on an earlier shell's child.
+"Background" means **your own harness's detached-execution facility** — whichever
+mechanism runs a command off the foreground path and reports its terminal status back to
+you. Look it up for the agent driving this run rather than assuming; the details differ
+per harness. A shell `&` is **not** it, on any harness: `&` inside one foreground call is
+still inside that call's cap, and a later shell cannot `wait` on an earlier shell's child.
 
 ```bash
 # Dispatched via the harness's background facility, NOT a shell `&`.
