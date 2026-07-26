@@ -56,7 +56,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role) |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |
-| `docs/` | design-principles · philosophy · installation · roles · overrides · adding-an-agent · release-goal-convention · roadmap-acceptance |
+| `docs/` | design-principles · philosophy · installation · roles · overrides · adding-an-agent · release-goal-convention · repo-settings · roadmap-acceptance |
 
 ## Build / test loop
 

@@ -9,6 +9,42 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **`baseline repo` — hand PR merges to GitHub** (`scripts/lib/repo-settings.sh`, #87): sets the
+  default branch's required status checks and enables `allow_auto_merge`, so a PR opened by
+  `/implement-issue` merges itself once checks pass and threads resolve. It closes a real hole
+  first: this repo carried branch protection with `required_conversation_resolution` on and **no
+  required status checks**, so a red PR could merge, gated only by a human noticing.
+  **The order is the safety property** — checks are written strictly before auto-merge, and a
+  failed checks write aborts before auto-merge is touched; reversed, auto-merge lands PRs with
+  nothing gating them at all.
+  The required contexts are **discovered** from `.github/workflows`, never hardcoded, because
+  GitHub validates nothing: it accepts any string as a context and simply waits forever for a
+  check that will never report. Discovery is scoped to the `jobs:` block — `on:` puts `push:` and
+  `pull_request:` at the same two-space indent as job keys, so a whole-file scan would require two
+  contexts that can never report and deadlock every PR — and it emits only jobs it can prove run
+  on every PR, loudly skipping the rest (`if:`, matrix, reusable `uses:`, a `${{ }}` name, a
+  paths/branches-filtered or non-PR-triggered workflow) rather than guessing.
+  `apply` picks the **narrowest endpoint that works**, since a full protection `PUT` replaces the
+  whole object: it PATCHes the status-check sub-resource when one exists, and otherwise rebuilds
+  the PUT body from the live object, so `required_conversation_resolution` and "require a pull
+  request before merging" survive instead of being silently reset.
+  `automerge-ok` is the runtime guard `/implement-issue` asks before arming, with a pinned
+  exit-code contract (`0` safe · `10` auto-merge off · `11` CI but no required checks · `12` no CI
+  — where `--auto` would merge *immediately* · `13` a required context nothing reports, so an armed
+  PR would hang · `20` unreadable, fail closed). `status` reports
+  drift in both directions, which is the only place a renamed CI job becomes visible: the old
+  context stays required and blocks every PR while the new one gates nothing.
+  Discovery refuses to require anything it cannot prove reports on every PR — including a
+  `pull_request:` that narrows `types:` without both `opened` and `synchronize`, which is the
+  merge-cleanup workflow (`types: [closed]`) that would otherwise become a required context no
+  open PR ever satisfies. `apply` also **keeps** required contexts it did not discover (an
+  external provider such as Codecov is not in `.github/workflows`, and writing the discovered set
+  absolutely would delete it silently); `--prune` writes the exact set when a context really is
+  stale.
+  Defaults are recorded in `.ai-dev-baseline/decisions.md` (D9): `strict` off, `enforce_admins`
+  off, required approvals 0 — each the choice that cannot silently stall the loop, with the
+  stricter option behind an explicit flag.
+
 - **`baseline release roll` — the release rollover contract** (`scripts/lib/release-convention.sh`,
   #74): after your project-owned release action cuts a version, `roll --version vX.Y.Z` archives the
   release milestone under that version, opens a fresh empty one under the rolling title, and sends

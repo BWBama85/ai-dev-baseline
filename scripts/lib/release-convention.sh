@@ -70,12 +70,8 @@ REPO_SLUG=""
 # subcommand), so it also caches REPO_SLUG once here — the resolve doubles as the remote check,
 # and every later `$(repo_slug)` subshell inherits it instead of re-running `gh repo view`.
 require_gh() {
-  command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
-  command -v gh >/dev/null 2>&1 || { echo "ERROR: gh not found on PATH" >&2; exit 1; }
-  gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated (run: gh auth login)" >&2; exit 1; }
-  REPO_SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \
-    || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; exit 1; }
-  [ -n "$REPO_SLUG" ] || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; exit 1; }
+  adb_require_gh || exit 1
+  REPO_SLUG="$(adb_repo_slug)" || exit 1
 }
 
 repo_slug() { printf '%s' "$REPO_SLUG"; }

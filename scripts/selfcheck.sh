@@ -2,9 +2,9 @@
 # ai-dev-baseline — local CI mirror. Run before every push.
 #
 # Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter, workflow-render,
-# gate-detector/gates, common-lib, agent-init, cleanup-enum, baseline, precommit-gate,
-# implement-gate, install-migration, install-guard, fact-drift, practice-index, release-role,
-# and an install→uninstall dry-run into a throwaway HOME.
+# gate-detector/gates, common-lib, agent-init, cleanup-enum, repo-settings, baseline,
+# precommit-gate, implement-gate, install-migration, install-guard, fact-drift, practice-index,
+# release-role, and an install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 
@@ -165,6 +165,14 @@ step "release-convention"
 # Offline unit tests for the release-goal convention helper (scripts/lib/release-convention.sh,
 # #27): dispatch, arg-parsing, usage, and the fail-loud gh guard before any gh call.
 if bash scripts/check-release-convention.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "repo-settings"
+# Offline tests for the repo-settings contract (scripts/lib/repo-settings.sh, #87): CI-check
+# discovery (the `on:` block sits at the same indent as job keys — harvesting it would require
+# contexts that can never report and deadlock every PR), the load-bearing write order (required
+# checks strictly before allow_auto_merge), the narrow-vs-destructive endpoint choice, and the
+# automerge-ok exit-code table the workflow's step 10 consumes.
+if bash scripts/check-repo-settings.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "baseline"
 # End-to-end tests for bin/baseline's currency classification (safety-critical: it

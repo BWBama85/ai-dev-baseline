@@ -418,14 +418,51 @@ PR body: summary; gap-analysis gaps + how addressed; self-review + reviewer find
 its own line), `Refs #N` for any sliced. After `gh pr create`, write `prUrl` and
 `phase=pr_opened` into the marker.
 
+**Then hand the merge to GitHub — but never arm it blind.** Ask the guard first; it
+re-reads the live settings and **fails closed**, so a repo that is not in the safe
+state gets a reported skip instead of an ungated merge:
+
+```bash
+PR="$(jq -r .prUrl .gemini/state/implement-issue-active.json)"   # written just above
+# Merge methods are per-repo settings; a hardcoded --squash is rejected wherever squash is
+# disabled, so ask which flag this repo allows rather than assuming.
+FLAG="$(bash "$HOME/.gemini/scripts/lib/repo-settings.sh" merge-flag)" || FLAG=""
+bash "$HOME/.gemini/scripts/lib/repo-settings.sh" automerge-ok; AM=$?
+case "$AM" in
+  0)  [ -n "$FLAG" ] && gh pr merge "$PR" --auto "$FLAG" ;;   # merges once checks pass + threads resolve
+  10) : ;;  # allow_auto_merge off       -> report: run 'baseline repo apply'
+  11) : ;;  # CI but no required checks  -> report: arming would gate NOTHING
+  12) : ;;  # no CI at all               -> report: --auto would merge immediately
+  13) : ;;  # a required context nothing reports -> an armed PR would WAIT FOREVER
+  14) : ;;  # a discovered job is NOT required     -> auto-merge could land a RED build
+  *)  : ;;  # 20/unknown                 -> report: live state unreadable, merge by hand
+esac
+```
+
+**Never arm auto-merge when** a `implement-issue-blocked.json` marker exists, or the
+PR is a draft (GitHub refuses it anyway). A non-zero guard code is **not** a failure
+of this step — it is the guard doing its job: report the code and its meaning in
+step 11, leave the PR open, and let the owner merge.
+
+Two things to say out loud in the close-out, because the operator no longer sees the
+merge dialog: `--squash` takes its subject from the **PR title** (so the title must
+satisfy the repo's commit convention), and an armed PR still waits on
+`required_conversation_resolution` — an unresolved bot thread holds it indefinitely
+until `/resolve-pr-threads` clears it.
+
 ### 11. Close-out
 
 **Run step 12 first** (file every deferred item). Then write `phase=complete` and
 emit a self-attested completion checklist rendering each required step's real status
 (✅ / ⚠️ / ❌ — never silently drop a skipped item), grouped Setup → Implementation →
 Review → Ship → Close-out, plus a **Needs attention** block for anything not ✅ and a
-**Follow-up issues filed** block (each with its milestone + one-line rationale). End
-with the `/resolve-pr-threads <PR#>` resume hint. Do **not** poll for bot reviews.
+**Follow-up issues filed** block (each with its milestone + one-line rationale).
+
+State the **auto-merge disposition explicitly** — armed, or skipped with the guard's
+code and what it means. An armed PR that is silently waiting on something is the one
+outcome the operator cannot see: say what it is waiting on (checks, unresolved
+threads) and what clears it. End with the `/resolve-pr-threads <PR#>` resume hint. Do
+**not** poll for bot reviews.
 
 ### 12. File issues for ALL deferred / out-of-scope work (mandatory)
 
@@ -466,6 +503,11 @@ parent (a comment that survives the parent closing) and the PR.
   toolchain problem. The Claude `review` slot never invokes it — use `/simplify` + a
   Claude subagent bug review (step 8). Reference `/code-review` only as an optional
   post-PR human step. Do **not** file a toolchain issue.
+- **`gh pr merge --auto` errors with "Pull request is in clean status"** → expected,
+  not a bug: GitHub refuses to *queue* a PR that could merge right now, which is the
+  no-required-checks case. The guard returns 11/12 precisely so this is never reached.
+  Do **not** retry it as a plain `gh pr merge --squash` — that merges unreviewed code
+  immediately, which nobody asked for. Report and leave the PR open.
 - **Gates won't go green after the escape clause** → write the blocked marker, stop,
   report what's failing. Never push red.
 - **Branch already exists on remote** → blocked marker; ask the user; never force-push.

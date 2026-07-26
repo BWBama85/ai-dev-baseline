@@ -370,4 +370,44 @@ eq "$(adb_branch_sync_state "$sbrepo" main)" "diverged" "sync state: diverged"
 git -C "$sbrepo" branch feature-x
 eq "$(adb_branch_sync_state "$sbrepo" feature-x)" "no-remote" "sync state: no-remote"
 
+# --- adb_require_gh / adb_repo_slug (#87) ------------------------------------
+# Both are sourced by release-convention.sh AND repo-settings.sh, so a regression here breaks two
+# gh-backed modules at once. The contract that matters: they RETURN non-zero (never `exit`, which
+# would kill the caller's shell from inside a sourced function) and they say what is wrong.
+ghbin="$work/ghbin"; mkdir -p "$ghbin"
+mk_gh() {   # <auth-rc> <slug-output>
+  { printf '#!/usr/bin/env bash\n'
+    printf 'case "$1" in\n'
+    printf '  auth) exit %s ;;\n' "$1"
+    printf '  repo) printf %%s "%s"; exit 0 ;;\n' "$2"
+    printf 'esac\nexit 0\n'
+  } > "$ghbin/gh"
+  chmod +x "$ghbin/gh"
+}
+
+# gh present + authenticated -> success, and an extra tool that exists is fine.
+mk_gh 0 "acme/widget"
+( PATH="$ghbin:$PATH"; adb_require_gh >/dev/null 2>&1 ); yes "$?" "adb_require_gh succeeds with an authenticated gh"
+( PATH="$ghbin:$PATH"; adb_require_gh sh >/dev/null 2>&1 ); yes "$?" "adb_require_gh accepts an extra tool that is present"
+
+# A named extra tool that is absent must fail loud, and name the tool.
+out="$( PATH="$ghbin:$PATH"; adb_require_gh definitely-not-a-real-tool 2>&1 )"; rc=$?
+no "$rc" "adb_require_gh fails when a required extra tool is missing"
+has "$out" "definitely-not-a-real-tool" "the missing extra tool is named"
+
+# Unauthenticated gh -> non-zero, with the actionable hint. RETURN, not exit: the caller is a
+# sourced context, so an `exit` here would take the whole shell down.
+mk_gh 1 "acme/widget"
+out="$( PATH="$ghbin:$PATH"; adb_require_gh 2>&1 )"; rc=$?
+no "$rc" "adb_require_gh fails when gh is not authenticated"
+has "$out" "gh auth login" "the auth failure names the fix"
+
+# adb_repo_slug resolves and caches; an unresolvable remote is non-zero with empty output.
+mk_gh 0 "acme/widget"
+eq "$( PATH="$ghbin:$PATH"; adb_repo_slug 2>/dev/null )" "acme/widget" "adb_repo_slug returns owner/name"
+mk_gh 0 ""
+out="$( PATH="$ghbin:$PATH"; adb_repo_slug 2>/dev/null )"; rc=$?
+no "$rc" "adb_repo_slug fails when there is no resolvable remote"
+eq "$out" "" "adb_repo_slug prints nothing when it fails"
+
 check_summary "common-lib"
