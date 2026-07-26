@@ -75,6 +75,16 @@ _ADB_RD_TIMEOUT_SECS="${ADB_DISPATCH_TIMEOUT_SECS:-2700}"
 # TEST SEAM, not an operator knob (nobody tunes a SIGKILL grace); the unit test shortens it so the
 # escalation cases don't each burn the full grace. Same status as ADB_DISPATCH_NO_TIMEOUT_BIN.
 _ADB_RD_KILL_GRACE_SECS="${ADB_DISPATCH_KILL_GRACE_SECS:-10}"
+# Clamped, because both degenerate values break the backstop and neither fails loudly:
+# `timeout -k 0` means "no SIGKILL at all" to GNU timeout, so a zero grace would leave the binary
+# path with no escalation while the watchdog path treats 0 as "KILL immediately" — the same input
+# making one path maximally aggressive and the other not a backstop at all. A non-numeric value
+# makes `timeout` exit 125, which classifies as "a real agent error" and sends the reader hunting
+# a codex bug. Floor of 1 keeps escalation guaranteed on both paths.
+case "$_ADB_RD_KILL_GRACE_SECS" in
+  ''|*[!0-9]*) _ADB_RD_KILL_GRACE_SECS=10 ;;
+  0)           _ADB_RD_KILL_GRACE_SECS=1  ;;
+esac
 
 # --- resolution --------------------------------------------------------------------------------
 
@@ -256,7 +266,10 @@ _adb_rd_bounded() {
     # classify as "killed from outside this helper". Without this, the same timeout would classify
     # as "our backstop" on a stock Mac (watchdog path) and "an external kill" on Linux CI (GNU
     # timeout) — a platform-dependent lie. Gated on elapsed ≥ the bound, so an unrelated external
-    # SIGKILL arriving early still reports 137.
+    # SIGKILL arriving BEFORE the bound still reports 137 honestly. Accepted residual: an external
+    # SIGKILL landing inside the grace window (after the bound) is relabelled as our backstop. The
+    # window is seconds out of 45 minutes, and the alternative — reporting our own escalation as
+    # an external kill on every Linux CI timeout — is wrong far more often.
     if [ "$trc" -eq 137 ] && [ "$(( SECONDS - t0 ))" -ge "$secs" ]; then trc=124; fi
     return "$trc"
   fi
@@ -273,18 +286,33 @@ _adb_rd_bounded() {
   # instead of 124. Writing the flag first makes "the bound fired" observable regardless of the
   # race. `kill -0` gates on the child still existing, so a child that exited on its own a moment
   # before the bound is not mislabelled as timed out.
-  ( sleep "$secs"; kill -0 "$cmd_pid" 2>/dev/null || exit 0
+  # The watchdog TICKS rather than sleeping the whole bound in one go. Killing the watcher does not
+  # kill a `sleep` it already forked — that sleep is reparented to init and runs to term — so a
+  # single `sleep "$secs"` leaks one orphan per dispatch, each now living the full 45 minutes.
+  # Ticking bounds an orphan's life to one tick and lets the watcher notice a finished child and
+  # exit on its own. The tick shrinks for small bounds so the unit test stays fast.
+  local tick=5; [ "$secs" -lt 10 ] && tick=1
+  ( waited=0
+    while [ "$waited" -lt "$secs" ]; do
+      kill -0 "$cmd_pid" 2>/dev/null || exit 0   # child finished: nothing to police
+      sleep "$tick"; waited=$(( waited + tick ))
+    done
+    kill -0 "$cmd_pid" 2>/dev/null || exit 0
     : > "$flag"; kill -TERM "$cmd_pid" 2>/dev/null
     sleep "$_ADB_RD_KILL_GRACE_SECS"; kill -KILL "$cmd_pid" 2>/dev/null || : ; ) </dev/null >/dev/null 2>&1 &
   local watcher=$!
   wait "$cmd_pid" 2>/dev/null; rc=$?
   kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
-  # `rc != 0` is the second half of the guard: the flag says the bound fired, but there is a
-  # microscopic window where the child completes on its own between the watcher's `kill -0` and
-  # its flag write. Requiring a non-zero child status means a run that genuinely SUCCEEDED is
-  # never reported as a timeout — the one misclassification here that would discard real work.
-  # A bound-fired kill always leaves a signal status (143/137), so 124 still reports correctly.
-  if [ -f "$flag" ] && [ "$rc" -ne 0 ]; then rm -f "$flag"; return 124; fi
+  # The flag ALONE decides: if the bound fired, this is 124 whatever status the child exited with.
+  # A child that traps SIGTERM and exits 0 (ordinary well-behaved-CLI cleanup) would otherwise be
+  # reported as a clean success carrying truncated output — silent incompleteness accepted as a
+  # result, which is the exact failure class #93 exists to remove, and which GNU `timeout` does
+  # NOT have (it returns 124 for that child), so gating on rc would also reintroduce the
+  # platform-dependent split the normalization above works to eliminate.
+  # The residual is the opposite, far cheaper error: a child completing on its own inside the
+  # microsecond window between the watcher's `kill -0` and its flag write is retried rather than
+  # discarded. Retrying a completed pass costs time; accepting a killed one costs correctness.
+  if [ -f "$flag" ]; then rm -f "$flag"; return 124; fi
   rm -f "$flag"; return "$rc"
 }
 

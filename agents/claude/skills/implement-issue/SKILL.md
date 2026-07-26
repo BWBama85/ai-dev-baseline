@@ -278,11 +278,24 @@ you. Look it up for the agent driving this run rather than assuming; the details
 per harness. A shell `&` is **not** it, on any harness: `&` inside one foreground call is
 still inside that call's cap, and a later shell cannot `wait` on an earlier shell's child.
 
+**Write the prompt to a file first.** A detached call cannot be fed from a shell
+variable in your current foreground call, so materialize it, *then* dispatch:
+
 ```bash
-# Dispatched via the harness's background facility, NOT a shell `&`.
+# 1. Write the gap-analysis prompt (heredoc, or your file-write tool).
+cat > .claude/state/gap-prompt.txt <<'PROMPT'
+…the adversarial gap-analysis prompt, including the three-heading output contract…
+PROMPT
+
+# 2. Dispatch via the harness's background facility, NOT a shell `&`.
 bash "$HOME/.claude/scripts/lib/role-dispatch.sh" invoke gap_analysis \
   < .claude/state/gap-prompt.txt > .claude/state/gaps.md 2> .claude/state/gaps.err
 ```
+
+Skipping step 1 fails the *redirection*, so the helper never runs and prints no
+classified line — and a bare non-zero with no classification reads, by the rules
+below, as "a real agent error", i.e. a missing local file misreported as a codex
+failure. Check the file exists before dispatching.
 
 Under the hood the helper runs the resolved agent's CLI — `codex exec --cd <repo> -`
 for codex — under a **45-minute (2700 s)** hang backstop. That bound is a backstop, not
@@ -295,7 +308,9 @@ to prevent.
 **Completion contract (per the Roles section).** This is a single bounded call:
 **wait for the harness to report it finished** — do not poll its output stream to guess
 whether it is "hung" (`gaps.err` grows steadily during healthy exploration, so its size
-tells you nothing). The helper prints one **classified** line on failure: rc **124** is
+tells you nothing). On failure, **read the classified line at the tail of `gaps.err`** —
+it is the last thing written there, behind the whole exploration stream, and it is the
+one line that tells you *which* failure this was. rc **124** is
 our backstop firing, rc **143** is an *outer* bound killing it first (re-dispatch in the
 background, or raise that outer bound — not ours), and any other non-zero is a real
 agent error. Each warrants a different response, so read the classification rather than
