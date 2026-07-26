@@ -14,6 +14,7 @@ baseline repo status        # desired vs live, with drift named (nonzero = drift
 baseline repo apply         # required checks FIRST, then allow_auto_merge
 baseline repo apply --prune # ...and drop required contexts no discovered job reports
 baseline repo automerge-ok  # the guard /implement-issue asks before arming auto-merge
+baseline repo merge-flag    # the gh pr merge flag this repo allows (--squash / --merge / --rebase)
 ```
 
 ## The order is the safety property
@@ -54,9 +55,13 @@ Skipped on purpose:
   the merge-cleanup workflow (`types: [closed]`) is the classic trap: it only runs *after* a PR
   closes, so as a required context it would sit "waiting" on every open PR forever.
 
+Discovery also refuses a `pull_request:` written as an inline flow mapping carrying a filter
+(`pull_request: {types: [closed]}`) and one whose `branches:` list uses **negative** patterns
+(`["*", "!main"]` — GitHub evaluates those in order, so the `*` is not the last word).
+
 Known limitation: discovery reads two-space-indented YAML (what `actions/*` templates and every
-real workflow in the wild use). A four-space-indented workflow is skipped loudly rather than
-mis-parsed, which is the fail-safe direction.
+real workflow in the wild use). A workflow this parser cannot read contributes no contexts and
+says so loudly on stderr — it never silently under-requires.
 
 Discovery is scoped to the `jobs:` block, which is not a nicety: `on:` puts `push:` and
 `pull_request:` at the *same* two-space indent as job keys, so a whole-file indent scan harvests
@@ -120,10 +125,19 @@ repo ends up merging on nothing. The exit codes are a stable machine contract:
 | `11` | CI exists but **no** required checks — arming would gate nothing |
 | `12` | no PR-triggered CI at all — `--auto` would merge *immediately* |
 | `13` | a required context **no workflow reports** — an armed PR would wait forever |
+| `14` | a **discovered job is not required** — auto-merge could land a red build |
 | `20` | live state unreadable — **fail closed**, never assume safe |
 
-Code `13` is the renamed-job case: the guard runs the same comparison `status` does, so it can
-never be shallower than the report. Arming a PR that can never merge is worse than not arming it.
+Codes `13` and `14` are the two drift directions, and the guard checks **both** — it runs the same
+comparison `status` does, so it can never be shallower than the report. `13` is the renamed-job
+case (arming a PR that can never merge is worse than not arming it); `14` is a job that exists but
+gates nothing, which would let auto-merge land a red build — the exact hole this all exists to
+close.
+
+`baseline repo merge-flag` prints the `gh pr merge` flag the repo actually allows. Squash, merge,
+and rebase are three independently-configurable settings, so a hardcoded `--squash` is simply
+rejected wherever squash merging is disabled — the guard would say "safe" and the merge would
+still fail. It exits `15` when no method is enabled at all.
 
 Code `12` matters more than it looks: GitHub refuses to *queue* a PR that could merge right now,
 so `gh pr merge --auto` on a check-less repo is a plain merge wearing an auto-merge label. The

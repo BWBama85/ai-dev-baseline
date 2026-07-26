@@ -27,6 +27,7 @@
 #                                        # discover (default: keep them — they are usually an
 #                                        # external provider, not a stale job)
 #   repo-settings.sh automerge-ok        # runtime guard: is it safe to arm auto-merge?
+#   repo-settings.sh merge-flag          # the `gh pr merge` flag this repo allows (--squash/…)
 #   (any subcommand) [--workflow-dir DIR]  # discover from DIR instead of ./.github/workflows —
 #                                        # e.g. the merged default-branch tree, not this branch
 #   repo-settings.sh -h | --help
@@ -37,6 +38,7 @@
 #   11 unsafe  — CI exists but NO required checks: `--auto` would arm an ungated merge
 #   12 unsafe  — the repo has no PR-triggered CI at all: `--auto` would merge immediately
 #   13 unsafe  — a required context no workflow reports: an armed PR would wait forever
+#   14 unsafe  — a discovered job is not required: auto-merge could land a red build
 #   20 unknown — live state could not be read; FAIL CLOSED, never assume safe
 #
 # What this file must never grow: it is repo *settings* bookkeeping. It does not merge, review,
@@ -198,7 +200,11 @@ _adb_rs_file_verdict() {
     function flow_list(s, arr,   n, i, v, parts) {
       sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
       n = split(s, parts, ",")
-      for (i = 1; i <= n; i++) { v = unquote(trim(parts[i])); if (v != "") arr[v] = 1 }
+      for (i = 1; i <= n; i++) {
+        v = unquote(trim(parts[i]))
+        if (v ~ /^!/) neg_branch = 1
+        if (v != "") arr[v] = 1
+      }
     }
     /^[[:space:]]*(#|$)/ { next }
     /^[^[:space:]]/ {
@@ -213,7 +219,15 @@ _adb_rs_file_verdict() {
     sect == "on" {
       if ($0 ~ /^  [^[:space:]]/) {                       # a trigger name at 2 spaces
         trigger = $0; sub(/:.*$/, "", trigger); trigger = unquote(trim(trigger))
-        triggers[trigger] = 1; in_branches = 0; next
+        triggers[trigger] = 1; in_branches = 0; in_types = 0
+        # An INLINE flow mapping carries the same filters the block form does:
+        # `pull_request: {types: [closed]}` is a real, valid trigger. Recording the trigger and
+        # skipping the rest of the line would treat every job as running on every PR.
+        rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(rest)
+        if ((trigger == "pull_request" || trigger == "pull_request_target") && rest ~ /^\{/) {
+          if (rest ~ /(paths|types|branches)/) inline_filter = 1
+        }
+        next
       }
       if (trigger == "pull_request" || trigger == "pull_request_target") {
         if ($0 ~ /^    types:/) {
@@ -235,7 +249,9 @@ _adb_rs_file_verdict() {
           in_branches = 1; next
         }
         if (in_branches && $0 ~ /^      -[[:space:]]/) {  # block-sequence branch entry
-          v = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); brs[unquote(trim(v))] = 1; next
+          v = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); v = yaml_scalar(v)
+          if (v ~ /^!/) neg_branch = 1
+          brs[v] = 1; next
         }
         if ($0 !~ /^      /) in_branches = 0
       }
@@ -244,6 +260,9 @@ _adb_rs_file_verdict() {
     END {
       if (!("pull_request" in triggers) && !("pull_request_target" in triggers)) {
         print "no pull_request trigger"; exit
+      }
+      if (inline_filter) {
+        print "pull_request carries an inline flow-mapping filter (cannot prove it runs for every PR)"; exit
       }
       # A narrowed `types:` is the merge-cleanup workflow trap: `types: [closed]` runs only AFTER
       # a PR closes, so as a required context it sits "expected — waiting" on every open PR
@@ -256,6 +275,12 @@ _adb_rs_file_verdict() {
       if (pr_br_ignore) { print "pull_request carries a branches-ignore filter (cannot prove it runs for " target ")"; exit }
       # A branches: filter is fine as long as it provably includes the target branch. "*" / "**"
       # match it; an explicit list must name it. Anything else (a partial glob) is unprovable.
+      # GitHub evaluates branch patterns IN ORDER, so a later `!main` overrides an earlier `*`.
+      # Rather than reimplement that precedence, refuse to prove anything about a filter carrying
+      # a negation — `branches: ["*", "!main"]` looks inclusive here and excludes main in fact.
+      if (pr_branches && neg_branch) {
+        print "pull_request branches filter uses negative patterns (ordered precedence not evaluated)"; exit
+      }
       if (pr_branches && !(target in brs) && !("*" in brs) && !("**" in brs)) {
         print "pull_request branches filter does not provably include " target; exit
       }
@@ -339,7 +364,7 @@ workflow_dir() {
 # finds nothing: "this repo has no CI" is a legitimate state (#24), not an error — callers
 # distinguish empty output from failure.
 discover_checks() {
-  local branch="$1" dir f verdict found=0
+  local branch="$1" dir f verdict jobs_out found=0
   dir="$(workflow_dir)"
   [ -d "$dir" ] || { printf 'repo-settings: no %s — treating this repo as having no CI\n' "$dir" >&2; return 0; }
   for f in "$dir"/*.yml "$dir"/*.yaml; do
@@ -354,7 +379,11 @@ discover_checks() {
     # legally contain a tab inside a quoted scalar, and a tab-delimited multi-field read would
     # truncate it there — silently requiring a context that does not exist, which is the phantom
     # deadlock this whole file is built to avoid. `rest` keeps the name byte-for-byte.
-    _adb_rs_jobs "$f" | while IFS="$(printf '\t')" read -r kind rest; do
+    jobs_out="$(_adb_rs_jobs "$f")"
+    if [ -z "$jobs_out" ]; then
+      printf 'repo-settings: WARNING %s declares jobs this parser could not read (unsupported indentation?) — it contributes NO required contexts\n' "${f##*/}" >&2
+    fi
+    printf '%s\n' "$jobs_out" | while IFS="$(printf '\t')" read -r kind rest; do
       case "$kind" in
         CHECK) [ -n "$rest" ] && printf '%s\n' "$rest" ;;
         SKIP)  printf 'repo-settings: skipping job %s (%s) — %s\n' \
@@ -377,23 +406,37 @@ PROT_STATE=""   # protected-with-checks | protected-no-checks | unprotected | fo
 # "unprotected" — which would send `apply` down the stand-up-from-scratch path on a repo it cannot
 # actually read.
 read_protection() {
-  local branch="$1" out rc admin
+  local branch="$1" resp status body admin
   admin="$(repo_field .permissions.admin)" || admin=""
-  out="$(gh api "repos/$REPO_SLUG/branches/$branch/protection" 2>/dev/null)"; rc=$?
-  if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
-    PROT_JSON="$out"
-    if printf '%s' "$out" | jq -e '.required_status_checks != null' >/dev/null 2>&1; then
-      PROT_STATE="protected-with-checks"
-    else
-      PROT_STATE="protected-no-checks"
-    fi
-    return 0
-  fi
+  # -i so the HTTP STATUS is inspectable. Distinguishing 404 from every other failure is not a
+  # nicety: an admin hitting a transient 5xx or a network blip would otherwise be classified
+  # `unprotected`, and `apply` would then seed its full replacement PUT from PROT_DEFAULTS —
+  # silently discarding the branch's real approval, dismissal, bypass and restriction settings.
+  # Only a CONFIRMED 404 means "no protection here".
+  resp="$(gh api -i "repos/$REPO_SLUG/branches/$branch/protection" 2>/dev/null)"
+  status="$(printf '%s\n' "$resp" | head -n1 | awk '{print $2}')"
+  body="$(printf '%s\n' "$resp" | awk 'b { print } /^\r?$/ { b = 1 }')"
   PROT_JSON=""
-  case "$admin" in
-    true)  PROT_STATE="unprotected" ;;
-    false) PROT_STATE="forbidden" ;;
-    *)     PROT_STATE="error" ;;
+  case "$status" in
+    200)
+      PROT_JSON="$body"
+      if printf '%s' "$body" | jq -e '.required_status_checks != null' >/dev/null 2>&1; then
+        PROT_STATE="protected-with-checks"
+      else
+        PROT_STATE="protected-no-checks"
+      fi
+      ;;
+    404)
+      # 404 is ambiguous between "no protection" and "you may not see it" — disambiguated by the
+      # repo object's admin bit, never assumed.
+      case "$admin" in
+        true)  PROT_STATE="unprotected" ;;
+        false) PROT_STATE="forbidden" ;;
+        *)     PROT_STATE="error" ;;
+      esac
+      ;;
+    403) PROT_STATE="forbidden" ;;
+    *)   PROT_STATE="error" ;;   # 5xx, a network failure, an unparseable response
   esac
   return 0
 }
@@ -556,11 +599,16 @@ write_required_checks() {
 manual_commands() {
   local branch="$1"
   adb_info ""
-  adb_info "No admin permission on $REPO_SLUG — nothing was changed. Ask an admin to run:"
-  adb_info "  baseline repo checks    # the exact context names to require"
-  adb_info "  gh api -X PATCH repos/$REPO_SLUG/branches/$branch/protection/required_status_checks \\"
-  adb_info "    -F strict=false -f 'contexts[]=<each name above>'"
-  adb_info "  gh api -X PATCH repos/$REPO_SLUG -F allow_auto_merge=true"
+  adb_info "No admin permission on $REPO_SLUG — nothing was changed."
+  adb_info "Ask an admin to run this same command, which picks the right endpoint for you:"
+  adb_info "  baseline repo apply"
+  adb_info ""
+  adb_info "By hand, the endpoint depends on the branch's current state (protection: $PROT_STATE):"
+  adb_info "  protected already -> gh api -X PATCH repos/$REPO_SLUG/branches/$branch/protection/required_status_checks \\"
+  adb_info "                         -F strict=false -f 'contexts[]=<each name from: baseline repo checks>'"
+  adb_info "  NOT protected yet -> that subresource 404s; POST the full object instead:"
+  adb_info "                       gh api -X PUT repos/$REPO_SLUG/branches/$branch/protection --input <body.json>"
+  adb_info "  then              -> gh api -X PATCH repos/$REPO_SLUG -F allow_auto_merge=true"
   adb_info "…in that order: required checks FIRST, or auto-merge lands PRs with nothing gating them."
 }
 
@@ -574,6 +622,9 @@ cmd_apply() {
   # on the other, leaving the repo in the exact half-configured state this file exists to prevent.
   admin="$(repo_field .permissions.admin)"
   adb_info "Repo settings for $REPO_SLUG (branch '$branch'):"
+  # Read protection first either way: the non-admin remediation has to name the endpoint that
+  # actually applies to this branch, and the subresource PATCH 404s on an unprotected one.
+  read_protection "$branch"
   if [ "$admin" != "true" ]; then
     manual_commands "$branch"
     return 1
@@ -581,7 +632,6 @@ cmd_apply() {
 
   dir="$(workflow_dir)"
   ctx="$(discover_checks "$branch" | LC_ALL=C sort -u)"
-  read_protection "$branch"
 
   # Keep any required context we did not discover, unless --prune. See OPT_PRUNE: deleting an
   # external provider's check is silent damage, and this tool only knows about GitHub Actions.
@@ -597,7 +647,15 @@ cmd_apply() {
   fi
   n="$(nlines "$ctx")"
 
-  if [ "$n" -eq 0 ]; then
+  if [ "$n" -eq 0 ] && [ -n "$kept" ] && [ "$OPT_PRUNE" -eq 1 ]; then
+    # --prune emptied the set. The write must still happen: skipping it would leave the stale
+    # context required forever while this command reports that it was dropped.
+    adb_info "  required checks -> clearing the last context(s) (--prune left nothing to require)"
+    write_required_checks "$branch" "" || {
+      echo "ERROR: could not clear the required checks" >&2
+      return 1
+    }
+  elif [ "$n" -eq 0 ]; then
     # No CI (#24): skip the checks write entirely and DO NOT BLOCK. Enabling auto-merge is still
     # correct — it is a repo capability, not an arming — and `automerge-ok` returns 12 here, so
     # /implement-issue will not arm a merge that would land instantly with nothing gating it.
@@ -687,7 +745,7 @@ cmd_status() {
 # what this must catch. Fails CLOSED — an unreadable state is 20, never 0.
 cmd_automerge_ok() {
   require_gh
-  local branch nwant nlive want live phantom
+  local branch nwant nlive want live phantom ungated
   repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — refusing to arm auto-merge" >&2; return 20; }
   branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — refusing to arm auto-merge" >&2; return 20; }
   read_protection "$branch"
@@ -715,6 +773,13 @@ cmd_automerge_ok() {
     # required). Arming a PR that can never merge is worse than not arming it, so the guard asks
     # the same question `status` does — is the live set actually satisfiable? — rather than a
     # shallower one. Same comparison, one home: see phantom_contexts.
+    ungated="$(ungated_contexts "$want" "$live")"
+    if [ -n "$ungated" ]; then
+      echo "repo-settings: '$branch' has discovered job(s) that are NOT required:" >&2
+      printf '%s\n' "$ungated" | sed 's/^/  - /' >&2
+      echo "repo-settings: auto-merge could land a PR while those are red. Run 'baseline repo apply'." >&2
+      return 14
+    fi
     phantom="$(phantom_contexts "$want" "$live")"
     if [ -n "$phantom" ]; then
       echo "repo-settings: '$branch' requires context(s) no discovered workflow job reports:" >&2
@@ -737,6 +802,21 @@ cmd_automerge_ok() {
   # the operator decide.
   echo "repo-settings: no PR-triggered CI in this repo — auto-merge would merge immediately; merge manually" >&2
   return 12
+}
+
+# cmd_merge_flag — print the `gh pr merge` flag this repo actually allows. Merge methods are three
+# independently-configurable repo settings, so a hardcoded --squash is simply rejected wherever
+# squash merging is disabled: the guard says "safe", the merge command fails, and auto-merge is
+# never armed. Preference order matches the baseline's own convention (squash first), but the
+# repo's settings decide. No enabled method -> non-zero, and the caller must not merge.
+cmd_merge_flag() {
+  require_gh
+  repo_json >/dev/null || { echo "repo-settings: cannot read the repo object" >&2; return 20; }
+  [ "$(repo_field .allow_squash_merge)" = "true" ] && { printf '%s\n' "--squash"; return 0; }
+  [ "$(repo_field .allow_merge_commit)" = "true" ] && { printf '%s\n' "--merge";  return 0; }
+  [ "$(repo_field .allow_rebase_merge)" = "true" ] && { printf '%s\n' "--rebase"; return 0; }
+  echo "repo-settings: no merge method is enabled on $REPO_SLUG — a PR cannot be merged at all" >&2
+  return 15
 }
 
 cmd_checks() {
@@ -797,8 +877,9 @@ case "$SUB" in
   checks)       parse_read_opts "$@";  cmd_checks ;;
   status)       parse_read_opts "$@";  cmd_status ;;
   automerge-ok) parse_read_opts "$@";  cmd_automerge_ok ;;
+  merge-flag)   parse_read_opts "$@";  cmd_merge_flag ;;
   apply)        parse_apply_opts "$@"; cmd_apply ;;
   -h|--help)    usage; exit 0 ;;
-  *) echo "repo-settings: unknown subcommand '$SUB' (expected 'checks', 'status', 'apply', or 'automerge-ok')" >&2
+  *) echo "repo-settings: unknown subcommand '$SUB' (expected 'checks', 'status', 'apply', 'automerge-ok', or 'merge-flag')" >&2
      usage >&2; exit 2 ;;
 esac

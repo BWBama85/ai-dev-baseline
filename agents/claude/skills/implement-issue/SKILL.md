@@ -422,13 +422,17 @@ state gets a reported skip instead of an ungated merge:
 
 ```bash
 PR="$(jq -r .prUrl .claude/state/implement-issue-active.json)"   # written just above
+# Merge methods are per-repo settings; a hardcoded --squash is rejected wherever squash is
+# disabled, so ask which flag this repo allows rather than assuming.
+FLAG="$(bash "$HOME/.claude/scripts/lib/repo-settings.sh" merge-flag)" || FLAG=""
 bash "$HOME/.claude/scripts/lib/repo-settings.sh" automerge-ok; AM=$?
 case "$AM" in
-  0)  gh pr merge "$PR" --auto --squash ;;   # merges itself once checks pass + threads resolve
+  0)  [ -n "$FLAG" ] && gh pr merge "$PR" --auto "$FLAG" ;;   # merges once checks pass + threads resolve
   10) : ;;  # allow_auto_merge off       -> report: run 'baseline repo apply'
   11) : ;;  # CI but no required checks  -> report: arming would gate NOTHING
   12) : ;;  # no CI at all               -> report: --auto would merge immediately
   13) : ;;  # a required context nothing reports -> an armed PR would WAIT FOREVER
+  14) : ;;  # a discovered job is NOT required     -> auto-merge could land a RED build
   *)  : ;;  # 20/unknown                 -> report: live state unreadable, merge by hand
 esac
 ```

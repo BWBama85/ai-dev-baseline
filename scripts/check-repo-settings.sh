@@ -45,7 +45,7 @@ rsx --help;  yes "$RC_" "--help exits 0"
 rsx;         no  "$RC_" "no subcommand exits nonzero"
 rsx bogus;   no  "$RC_" "unknown subcommand exits nonzero"
 has "$OUT" "unknown subcommand 'bogus'" "unknown subcommand names itself"
-has "$OUT" "'checks', 'status', 'apply', or 'automerge-ok'" "unknown subcommand lists every subcommand"
+has "$OUT" "'checks', 'status', 'apply', 'automerge-ok', or 'merge-flag'" "unknown subcommand lists every subcommand"
 
 # ============================ arg parsing (per-subcommand on purpose) ============================
 # A shared parser would make `status --dry-run` and `checks --strict` silently valid, so both
@@ -225,19 +225,31 @@ case "${1:-}" in
   api)  ;;
   *)    exit 0 ;;
 esac
-url=""; method="GET"; has_input=0; prev=""
+url=""; method="GET"; has_input=0; want_headers=0; prev=""
 for a in "$@"; do
   case "$a" in
     repos/*)              [ -z "$url" ] && url="$a" ;;
     PATCH|PUT|POST|DELETE) [ "$prev" = "-X" ] && method="$a" ;;
+    -i|--include)         want_headers=1 ;;
     -)                    [ "$prev" = "--input" ] && has_input=1 ;;
   esac
   prev="$a"
 done
+# `gh api -i` prefixes the response with its status line + headers, then a blank line. The library
+# parses that status to tell a real 404 from a transient failure, so the stub must reproduce it.
+emit() {   # <status-line> [<file>]
+  if [ "$want_headers" = "1" ]; then printf '%s\r\n' "$1"; printf 'Content-Type: application/json\r\n'; printf '\r\n'; fi
+  [ -n "${2:-}" ] && cat "$2"
+  return 0
+}
 if [ "$method" = "GET" ]; then
   case "$url" in
-    */protection) [ -f "$S/protection.json" ] || exit 1; cat "$S/protection.json" ;;
-    repos/*)      [ -f "$S/repo.json" ] || exit 1;       cat "$S/repo.json" ;;
+    */protection)
+      if [ -f "$S/protection.json" ]; then emit "HTTP/2.0 200 OK" "$S/protection.json"
+      else emit "HTTP/2.0 404 Not Found"; [ "$want_headers" = "1" ] || exit 1; fi ;;
+    repos/*)
+      if [ -f "$S/repo.json" ]; then emit "HTTP/2.0 200 OK" "$S/repo.json"
+      else emit "HTTP/2.0 404 Not Found"; [ "$want_headers" = "1" ] || exit 1; fi ;;
   esac
   exit 0
 fi
@@ -278,6 +290,7 @@ JSON
 # One PR-triggered job, so discovery yields exactly one context in the gh-backed scenarios.
 wf_one() { wf_reset; printf 'name: One\non:\n  pull_request:\njobs:\n  one:\n    runs-on: ubuntu-latest\n' > "$WF/one.yml"; }
 wf_none() { wf_reset; }
+wf_two() { wf_one; printf 'name: Two\non:\n  pull_request:\njobs:\n  two:\n    runs-on: ubuntu-latest\n' > "$WF/two.yml"; }
 
 rsx_stub() {   # run against the stub with a fresh call log
   STUB_CALLS="$work/calls.txt"; : > "$STUB_CALLS"
@@ -454,13 +467,24 @@ wf_one; repo_fx true true; prot_checks "one"
 rsx_stub automerge-ok
 eq "$RC_" "0" "automerge-ok = 0 when auto-merge is on AND the required checks are satisfiable"
 
-# The guard must be no shallower than `status`: a renamed CI job leaves the OLD context required
-# and never reported, so an armed PR would wait forever. Non-empty contexts are NOT sufficient.
-wf_one; repo_fx true true; prot_checks "stale-name"
+# The guard must be no shallower than `status`, in BOTH drift directions — `status` reports both,
+# so a guard that checked only one would contradict it.
+#
+# 13: a required context nothing reports (the renamed-job case). The live set is a SUPERSET of
+# discovery, so this direction is isolated from 14 below.
+wf_one; repo_fx true true; prot_checks "one" "stale-name"
 rsx_stub automerge-ok
 eq "$RC_" "13" "automerge-ok = 13 when a required context no workflow reports (renamed job)"
 has "$OUT" "wait for them forever" "code 13 explains that an armed PR would hang"
 has "$OUT" "stale-name" "code 13 names the phantom context"
+
+# 14: a discovered job that is NOT required gates nothing, so auto-merge could land a red build —
+# the exact hole #87 exists to close. Live is a SUBSET of discovery here.
+wf_two; repo_fx true true; prot_checks "one"
+rsx_stub automerge-ok
+eq "$RC_" "14" "automerge-ok = 14 when a discovered job is not required (auto-merge could land red)"
+has "$OUT" "NOT required" "code 14 explains the ungated direction"
+has "$OUT" "two" "code 14 names the ungated job"
 
 wf_one; repo_fx true false; prot_checks "one"
 rsx_stub automerge-ok
@@ -484,6 +508,21 @@ rsx_stub automerge-ok
 eq "$RC_" "20" "automerge-ok = 20 (fail closed) when protection cannot be read"
 has "$OUT" "refusing to arm" "code 20 refuses rather than assuming safe"
 
+# ============================ merge-flag: the repo decides the method ============
+# A hardcoded --squash is REJECTED wherever squash merging is disabled, so the guard would say
+# "safe" and the merge command would still fail. Each method is independently configurable.
+merge_fx() {   # <squash> <merge> <rebase>
+  printf '{"full_name":"acme/widget","default_branch":"main","allow_auto_merge":true,
+           "permissions":{"admin":true},"allow_squash_merge":%s,"allow_merge_commit":%s,
+           "allow_rebase_merge":%s}\n' "$1" "$2" "$3" > "$S/repo.json"
+}
+merge_fx true true true;    rsx_stub merge-flag; eq "$OUT" "--squash" "merge-flag prefers --squash when it is enabled"
+merge_fx false true true;   rsx_stub merge-flag; eq "$OUT" "--merge"  "merge-flag falls back to --merge when squash is disabled"
+merge_fx false false true;  rsx_stub merge-flag; eq "$OUT" "--rebase" "merge-flag falls back to --rebase"
+merge_fx false false false; rsx_stub merge-flag
+eq "$RC_" "15" "merge-flag exits 15 when NO merge method is enabled"
+has "$OUT" "cannot be merged at all" "the no-method case explains itself"
+
 # ============================ drift guard: the workflow still calls the guard ============
 # The same species of guard check-roadmap.sh applies to /roadmap: if step 10 stops consulting
 # automerge-ok, the library is still green while the workflow arms auto-merge blind.
@@ -494,5 +533,12 @@ fi
 if grep -q 'gh pr merge .*--auto' "$WFSRC"; then ok; else
   bad "base/workflows/implement-issue.md no longer arms auto-merge at all"
 fi
+# The workflow must ASK which merge flag the repo allows, never hardcode one.
+if grep -q '{{REPO_SETTINGS_LIB}} merge-flag' "$WFSRC"; then ok; else
+  bad "base/workflows/implement-issue.md no longer asks merge-flag — a hardcoded flag breaks any repo with that method disabled"
+fi
+if grep -q 'gh pr merge .*--auto --squash' "$WFSRC"; then
+  bad "base/workflows/implement-issue.md hardcodes --squash again"
+else ok; fi
 
 check_summary "repo-settings"
