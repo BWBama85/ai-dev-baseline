@@ -279,7 +279,12 @@ _adb_rd_bounded() {
   local watcher=$!
   wait "$cmd_pid" 2>/dev/null; rc=$?
   kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
-  if [ -f "$flag" ]; then rm -f "$flag"; return 124; fi
+  # `rc != 0` is the second half of the guard: the flag says the bound fired, but there is a
+  # microscopic window where the child completes on its own between the watcher's `kill -0` and
+  # its flag write. Requiring a non-zero child status means a run that genuinely SUCCEEDED is
+  # never reported as a timeout — the one misclassification here that would discard real work.
+  # A bound-fired kill always leaves a signal status (143/137), so 124 still reports correctly.
+  if [ -f "$flag" ] && [ "$rc" -ne 0 ]; then rm -f "$flag"; return 124; fi
   rm -f "$flag"; return "$rc"
 }
 

@@ -94,16 +94,22 @@ fact invocation-claude fixed:'claude -p' -- \
 # the override's name (so the knob stays discoverable rather than buried in the library), and the
 # backstop framing (so nobody re-tunes it down toward typical runtime, which is the regression).
 _bs_docs="base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md"
+# The rendered skills carry the fact too. They are listed in a POSITIVE rule and not only in the
+# `stale` sweep below because req_absent is vacuously true on a file that does not exist — so a
+# typo'd render path would silently sweep nothing, while req_fixed/req_regex fail loudly on it.
+_bs_renders="agents/claude/skills/implement-issue/SKILL.md"
+_bs_renders="$_bs_renders agents/codex/skills/implement-issue/SKILL.md"
+_bs_renders="$_bs_renders agents/gemini/skills/implement-issue/SKILL.md"
 # shellcheck disable=SC2086  # intentional word-split of the space-separated file lists
 fact backstop-45min regex:'45[-[:space:]](min|minute)' -- \
-  $_bs_docs docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
+  $_bs_docs $_bs_renders docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
 # shellcheck disable=SC2086
 fact backstop-secs regex:'2700' -- $_bs_docs scripts/lib/role-dispatch.sh
 # shellcheck disable=SC2086
 fact backstop-env fixed:'ADB_DISPATCH_TIMEOUT_SECS' -- $_bs_docs scripts/lib/role-dispatch.sh
 # shellcheck disable=SC2086
 fact backstop-framing fixed:'hang backstop' -- \
-  $_bs_docs docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
+  $_bs_docs $_bs_renders docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
 
 # --- SUPERSEDED: the old ≥7-minute / millisecond-ceiling bound (#93) ---------
 # The 420 s bound was set near typical runtime, so ordinary high-reasoning passes tripped it; and
@@ -115,10 +121,8 @@ fact backstop-framing fixed:'hang backstop' -- \
 # this names the offending line rather than reporting an opaque render diff).
 # CHANGELOG.md is deliberately NOT swept: its entries are a historical record of what shipped at
 # the time, and rewriting shipped history to satisfy a lint would be a lie, not a fix.
-_bs_sweep="$_bs_docs docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh"
-_bs_sweep="$_bs_sweep agents/claude/skills/implement-issue/SKILL.md"
-_bs_sweep="$_bs_sweep agents/codex/skills/implement-issue/SKILL.md"
-_bs_sweep="$_bs_sweep agents/gemini/skills/implement-issue/SKILL.md"
+_bs_sweep="$_bs_docs $_bs_renders docs/design-principles.md agents/codex/config.toml.sample"
+_bs_sweep="$_bs_sweep scripts/lib/role-dispatch.sh"
 # shellcheck disable=SC2086
 stale backstop-stale-ms regex:'(4[28]0|600)[,]?000' -- $_bs_sweep
 # shellcheck disable=SC2086
