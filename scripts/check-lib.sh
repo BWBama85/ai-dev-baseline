@@ -48,6 +48,23 @@ req_regex() {
   grep -Eq -- "$2" "$1" || { check_note "[$3] canonical pattern /$2/ missing from $1"; check_fail; }
 }
 
+# Assert an EXTENDED-REGEX pattern does NOT match in a file, reporting the offending lines.
+# Usage: req_absent <file> <pattern> <fact-label>
+#
+# The counterpart to req_regex, for a fact that SUPERSEDES an earlier value. Positive presence
+# alone cannot catch a file that carries the new value AND quietly keeps the old one next to it —
+# it satisfies req_regex and still misinforms every reader (#93). A missing file is NOT a failure
+# here: absence-in-a-nonexistent-file is vacuously true, and the positive rules already fail loudly
+# on a bad path, so duplicating that would double-report one typo.
+req_absent() {
+  [ -f "$1" ] || return 0
+  if grep -Eq -- "$2" "$1"; then
+    check_note "[$3] superseded pattern /$2/ still present in $1:"
+    grep -En -- "$2" "$1" | sed 's/^/    /' >&2
+    check_fail
+  fi
+}
+
 # Emit the terminal result and return 0 (pass) / 1 (fail). Usage: check_result "<pass note>"
 check_result() {
   if [ "$CHECK_FAIL" -eq 0 ]; then

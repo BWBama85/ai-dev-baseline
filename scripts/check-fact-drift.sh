@@ -2,18 +2,22 @@
 # ai-dev-baseline — fact-drift lint.
 #
 # Some FACTS are unavoidably restated in more than one hand-written doc: the gate
-# axis list, the cross-agent invocation commands, the codex ≥7-minute timeout, and
+# axis list, the cross-agent invocation commands, the dispatch hang backstop, and
 # the role-resolution order. Those restatements are exactly where drift is born (issue
 # #30). This lint pins each fact to its canonical source and asserts every consumer
 # that restates it still carries the canonical token — so a value changed in one place
 # but not the others fails CI instead of silently diverging.
 #
-# It is deliberately a small, ALLOWLISTED, positive-presence check — not a
-# natural-language equivalence engine. Each rule asserts that a stable token (an axis
-# name, a literal invocation string, the number 7, "420000") is PRESENT in each file
-# that restates it. It never forbids incidental wording (e.g. prose that correctly
-# calls the 2-minute default "too short"), so rewording a doc never trips it; only
-# dropping or changing a canonical value does.
+# It is deliberately a small, ALLOWLISTED check — not a natural-language equivalence
+# engine. Each `fact` rule asserts that a stable token (an axis name, a literal
+# invocation string, "2700", "hang backstop") is PRESENT in each file that restates it.
+# It never forbids incidental wording, so rewording a doc never trips it; only dropping
+# or changing a canonical value does.
+#
+# `stale` is the narrow negative counterpart, used ONLY for a value a fact has retired:
+# presence-checking cannot catch a file that carries the new value AND keeps the old one
+# beside it, which is how a superseded figure survives a repoint (#93). Reach for it when
+# a fact replaces an earlier one, never as a general prose blocklist.
 #
 # The token appears in the lint too — that is intentional, not a fourth copy: the
 # canonical source (base/roles.md, scripts/lib/project-gates.sh) is itself in every
@@ -44,6 +48,18 @@ fact() {
   done
 }
 
+# stale <label> regex:<pattern> -- <file> [<file>...]
+# The negative counterpart, for a value that has been SUPERSEDED. `fact` alone cannot enforce a
+# replacement: a file carrying the new figure AND the old one next to it passes every positive
+# rule while still telling the reader the wrong thing — which is exactly how a stale "≥7-minute"
+# bound would survive a repoint to 45 minutes (#93). Use it only for a genuinely retired value.
+stale() {
+  local label="$1" spec="$2" ; shift 2
+  [ "$1" = "--" ] && shift
+  local needle="${spec#*:}" f
+  for f in "$@"; do req_absent "$f" "$needle" "$label"; done
+}
+
 # --- FACT: gate axes ---------------------------------------------------------
 # Canonical source: the _adb_emit <axis> calls in the gate detector. Every doc that
 # enumerates the gate list must mention every axis, so adding an axis to the code
@@ -71,14 +87,44 @@ fact invocation-claude fixed:'claude -p' -- \
   base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md \
   scripts/lib/role-dispatch.sh
 
-# --- FACT: codex exec timeout minimum ----------------------------------------
-# The bound is ≥7 minutes (420000 ms). Every doc that states the codex timeout must
-# carry the 7-minute bound; the two that give the millisecond form must agree on it.
-fact codex-timeout-7min regex:'7[-[:space:]]min' -- \
-  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md \
-  agents/codex/README.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
-fact codex-timeout-ms regex:'420[,]?000' -- \
-  base/workflows/implement-issue.md docs/roles-and-agents.md
+# --- FACT: the dispatch hang backstop (#93) ----------------------------------
+# Canonical source: _ADB_RD_TIMEOUT_SECS in scripts/lib/role-dispatch.sh. The bound is 45 minutes
+# (2700 s) and is a HANG BACKSTOP, not a work budget — it stops a wedged process and otherwise
+# stays out of the way. Every doc that states the bound must carry the figure, the seconds value,
+# the override's name (so the knob stays discoverable rather than buried in the library), and the
+# backstop framing (so nobody re-tunes it down toward typical runtime, which is the regression).
+_bs_docs="base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md"
+# shellcheck disable=SC2086  # intentional word-split of the space-separated file lists
+fact backstop-45min regex:'45[-[:space:]](min|minute)' -- \
+  $_bs_docs docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
+# shellcheck disable=SC2086
+fact backstop-secs regex:'2700' -- $_bs_docs scripts/lib/role-dispatch.sh
+# shellcheck disable=SC2086
+fact backstop-env fixed:'ADB_DISPATCH_TIMEOUT_SECS' -- $_bs_docs scripts/lib/role-dispatch.sh
+# shellcheck disable=SC2086
+fact backstop-framing fixed:'hang backstop' -- \
+  $_bs_docs docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
+
+# --- SUPERSEDED: the old ≥7-minute / millisecond-ceiling bound (#93) ---------
+# The 420 s bound was set near typical runtime, so ordinary high-reasoning passes tripped it; and
+# the `420000`–`600000` ms guidance taught every reader to cap the surrounding call at 10 minutes,
+# which is a HARNESS artifact, not a property of codex. Both are retired. A positive rule alone
+# cannot enforce that: a file carrying "45 minutes" AND a leftover "≥7-minute" satisfies every
+# `fact` above while still misinforming the reader — so sweep the retired forms out explicitly.
+# The three rendered skills are swept directly (build-drift proves they match their source, but
+# this names the offending line rather than reporting an opaque render diff).
+# CHANGELOG.md is deliberately NOT swept: its entries are a historical record of what shipped at
+# the time, and rewriting shipped history to satisfy a lint would be a lie, not a fix.
+_bs_sweep="$_bs_docs docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh"
+_bs_sweep="$_bs_sweep agents/claude/skills/implement-issue/SKILL.md"
+_bs_sweep="$_bs_sweep agents/codex/skills/implement-issue/SKILL.md"
+_bs_sweep="$_bs_sweep agents/gemini/skills/implement-issue/SKILL.md"
+# shellcheck disable=SC2086
+stale backstop-stale-ms regex:'(4[28]0|600)[,]?000' -- $_bs_sweep
+# shellcheck disable=SC2086
+stale backstop-stale-secs regex:'(^|[^0-9])420([^0-9]|$)' -- $_bs_sweep
+# shellcheck disable=SC2086
+stale backstop-stale-7min regex:'([≥>]=?[[:space:]]*7|least[[:space:]]*7|3[–-]7)[[:space:]-]*min' -- $_bs_sweep
 
 # --- FACT: role-resolution order ---------------------------------------------
 # The order is repo agents.toml → global default manifest → built-in default.

@@ -222,6 +222,73 @@ eq "$out_rc" "124" "invoke enforces the timeout (rc 124)"
 out_rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || out_rc=$?
 eq "$out_rc" "124" "the bash watchdog fallback also enforces the timeout"
 
+# --- the committed DEFAULT bound (#93) ---------------------------------------
+# The bound that matters is the one a fresh clone gets with NO environment set. Every timeout
+# assertion above passes ADB_DISPATCH_TIMEOUT_SECS explicitly, so all of them would still pass
+# with the default back at its old too-small value — which is exactly the regression that cost
+# three runs. Pin the default itself, from the library rather than a copy of the number.
+# shellcheck source=/dev/null
+defsecs="$( . "$RD" >/dev/null 2>&1; printf '%s' "${_ADB_RD_TIMEOUT_SECS:-unset}" )"
+eq "$defsecs" "2700" "the no-environment default bound is 2700s (45-min hang backstop)"
+# shellcheck source=/dev/null
+ovr="$( ADB_DISPATCH_TIMEOUT_SECS=99 . "$RD" >/dev/null 2>&1; printf '%s' "${_ADB_RD_TIMEOUT_SECS:-unset}" )"
+eq "$ovr" "99" "ADB_DISPATCH_TIMEOUT_SECS still overrides the default"
+
+# --- failure-mode classification (#93) ---------------------------------------
+# 124 (our backstop) / 143 (an OUTER bound) / a real agent error each need a different response;
+# collapsing them into "the agent failed" is what let a bound problem masquerade as a codex
+# problem. Assert each rc maps to a DISTINCT, self-explaining classification.
+# shellcheck source=/dev/null
+cls() { ( . "$RD" >/dev/null 2>&1; adb_dispatch_classify_rc "$1" ); }
+has "$(cls 124)" "backstop"     "rc 124 is classified as our own hang backstop"
+has "$(cls 124)" "ADB_DISPATCH_TIMEOUT_SECS" "the 124 classification names the override knob"
+has "$(cls 143)" "OUTER"        "rc 143 is classified as an OUTER bound, not ours"
+has "$(cls 137)" "outside"      "rc 137 is classified as an external kill"
+has "$(cls 7)"   "real agent"   "an arbitrary nonzero rc is classified as a real agent error"
+hasnt "$(cls 7)" "backstop"     "a real agent error is NOT blamed on our backstop"
+eq "$(cls 0)" "completed"       "rc 0 is classified as completed"
+# The classification reaches the operator: a failing dispatch prints it on stderr, never stdout
+# (stdout is reserved for the agent's clean final message).
+err="$(printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_TIMEOUT_SECS=1 bash "$RD" invoke gap_analysis 2>&1 >/dev/null ))"
+has "$err" "backstop" "a timed-out dispatch reports the classified reason on stderr"
+
+# --- the backstop must actually terminate (#93) ------------------------------
+# A backstop that only sends SIGTERM is not a backstop: a child that traps TERM leaves `wait`
+# blocking forever. Harmless when the bound was minutes and an outer harness cap sat above it —
+# an unbounded deadlock now that the bound is 45 min and background dispatch removes that cap.
+# This codex TRAPS SIGTERM and keeps running; the run must still come back, via KILL escalation.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+trap '' TERM
+cat >/dev/null; sleep 30; exit 0
+EOF
+chmod +x "$BIN/codex"
+start="$(date +%s)"
+out_rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" \
+  ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=2 ADB_DISPATCH_NO_TIMEOUT_BIN=1 \
+  bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || out_rc=$?
+elapsed=$(( $(date +%s) - start ))
+eq "$out_rc" "124" "a TERM-resistant child still returns 124 (watchdog escalates to KILL)"
+if [ "$elapsed" -lt 15 ]; then
+  ok "the watchdog escalates instead of hanging (${elapsed}s < the child's 30s sleep)"
+else
+  bad "the watchdog hung on a TERM-resistant child (${elapsed}s)"
+fi
+# Same guarantee on the timeout-binary path, which needs `timeout -k` to escalate.
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  start="$(date +%s)"
+  out_rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" \
+    ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=2 \
+    bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || out_rc=$?
+  elapsed=$(( $(date +%s) - start ))
+  eq "$out_rc" "124" "timeout-binary path returns 124 for a TERM-resistant child"
+  if [ "$elapsed" -lt 15 ]; then
+    ok "timeout -k escalates to KILL instead of hanging (${elapsed}s)"
+  else
+    bad "the timeout binary hung on a TERM-resistant child (${elapsed}s)"
+  fi
+fi
+
 # ============================ source guard ============================
 # Sourcing must define the functions but NOT run the CLI dispatch (no usage/exit).
 # shellcheck source=/dev/null

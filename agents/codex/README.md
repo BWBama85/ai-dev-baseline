@@ -64,11 +64,22 @@ When another agent's workflow needs Codex for a role it owns (e.g.
 codex exec --cd <repo> -
 ```
 
-`codex exec` reads and reasons over the whole repo and routinely takes
-**3–7 minutes** — always give this call a timeout of **at least 7 minutes**.
-A 2-minute default will SIGTERM it mid-run: that's too tight a bound, so
-re-run longer rather than reading exit 143 as a verdict. A genuine timeout or
-non-zero exit at the **full** ≥7-minute bound is an **incomplete** invocation,
-not an acceptable "wasted pass" to move past — kill it, retry once, then fall
-back, per the delegated-step **completion contract** in `base/roles.md` (which
-also carries the full cross-agent invocation table).
+`codex exec` reads and reasons over the whole repo; at high reasoning effort a
+non-trivial diff **routinely runs longer than 10 minutes**. `role-dispatch.sh`
+bounds every call at **45 minutes (2700 s)** — a **hang backstop, not a work
+budget**, overridable via `ADB_DISPATCH_TIMEOUT_SECS` though a stock clone needs
+no environment set.
+
+**Dispatch it in the background.** A harness typically caps a *foreground*
+command well below the backstop (Claude Code: 10 minutes), so in the foreground
+that cap fires first and a bigger backstop changes nothing.
+
+Read the classified exit rather than treating every non-zero the same: rc **143**
+(SIGTERM) means an *outer* bound killed it — re-dispatch in the background rather
+than reading the code as a verdict on the pass. rc **124** is our own backstop.
+Anything else is a real codex error. Any of them is an **incomplete** invocation,
+not an acceptable "wasted pass": retry once, then handle it per the delegated-step
+**completion contract** in `base/roles.md` (which also carries the full cross-agent
+invocation table). When codex owns `gap_analysis`, an incompletion is **surfaced,
+never handed to another agent** — a bound problem must not silently demote the
+configured reviewer.

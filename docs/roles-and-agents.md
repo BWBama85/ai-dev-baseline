@@ -220,14 +220,29 @@ currently driving, it shells out to that agent's non-interactive entrypoint:
 | `codex` | `codex exec --cd <repo> -` (prompt piped on stdin) | `~/.codex/` + `AGENTS.md` |
 | `gemini` | `agy -p "<prompt>"` (Antigravity CLI) | `~/.gemini/GEMINI.md` |
 
-> **codex timeout caveat.** `codex exec` reads and reasons over the whole
-> repo — it routinely takes **3–7 minutes**, well past a default 2-minute
-> command timeout. Any cross-agent `codex exec` call needs a timeout of at
-> least **7 minutes (420,000–600,000 ms)**. A SIGTERM at 2 minutes (exit code
-> 143) is a too-tight bound, not a failure of the pass — re-run it longer,
-> don't treat the exit code as a verdict. A genuine timeout at the *full*
-> ≥7-min bound **is** an incomplete invocation, though — retry, then fall back,
-> per the delegated-step completion contract in [`roles.md`](../base/roles.md).
+> **Dispatch bound (hang backstop).** `codex exec` reads and reasons over the whole
+> repo; at high reasoning effort a non-trivial diff **routinely runs longer than 10
+> minutes**. `role-dispatch.sh` therefore bounds every invocation at **45 minutes
+> (2700 s)**, overridable with `ADB_DISPATCH_TIMEOUT_SECS` — though a stock clone
+> should never need to set it. The bound applies to **every agent and role** the
+> helper dispatches, not just codex gap analysis.
+>
+> Treat it as a **hang backstop, not a work budget.** A backstop belongs well above
+> the longest legitimate run; setting it near typical runtime is what made ordinary
+> passes fail for three consecutive runs (issue #93). It escalates TERM → grace →
+> KILL, so it always terminates rather than hanging on a signal-resistant child.
+>
+> **Dispatch long passes in the background.** A harness commonly caps a *foreground*
+> command (Claude Code: 10 minutes) far below this bound — so in the foreground the
+> outer cap fires first and raising the backstop changes nothing. Use the harness's
+> own detached-execution facility; a shell `&` does not escape the cap.
+>
+> Read the **classified** failure the helper prints rather than treating any non-zero
+> as "the agent failed": rc **124** is our backstop, rc **143** (SIGTERM) is an outer
+> bound killing it first, anything else is a real agent error. Each has a different
+> fix. An incomplete invocation is retried once, then handled per the delegated-step
+> completion contract in [`roles.md`](../base/roles.md) — which for `gap_analysis`
+> means **surfacing, never substituting another agent**.
 
 ## The role-dispatch helper (runtime)
 
@@ -238,7 +253,7 @@ workflow calls it instead of hand-writing the same lookup + CLI in each skill:
 | Command | What it does |
 |---|---|
 | `role-dispatch.sh resolve <role>` | Print the resolved agent token(s), one per line. Empty output = a legitimate skip (only `gap_analysis`). Validates the manifest — an unknown token or an explicit `review = []` is a hard error, never a silent fall-through. |
-| `role-dispatch.sh invoke <role\|agent>` | Prompt on stdin → run one agent's CLI with the documented flags + the ≥7-min codex bound; stdout is that agent's **clean final message** (for `codex`, captured via `--output-last-message`, so exploration-stream noise never leaks in). A multi-agent `review` role is refused — use `resolve` + a per-slot `invoke <token>` loop so same-agent slots stay in-process. |
+| `role-dispatch.sh invoke <role\|agent>` | Prompt on stdin → run one agent's CLI with the documented flags + the 45-min hang backstop; stdout is that agent's **clean final message** (for `codex`, captured via `--output-last-message`, so exploration-stream noise never leaks in). A non-zero exit prints one **classified** line to stderr (our backstop 124 / outer SIGTERM 143 / real agent error). A multi-agent `review` role is refused — use `resolve` + a per-slot `invoke <token>` loop so same-agent slots stay in-process. |
 | `role-dispatch.sh bots` | Print the configured async external-bot reviewer logins (see below). |
 
 `bin/agent-init` sources it to print the full effective role map (repo → global → built-in),
@@ -284,8 +299,11 @@ Running `/implement-issue 123` with Claude as the driving agent:
 
 1. Claude does preflight + reads the issue (native).
 2. **Step 3 (gap analysis)** resolves to `codex` → Claude builds the
-   gap-analysis prompt and pipes it to `codex exec --cd <repo> -` with a
-   ≥7-minute Bash timeout, then reads codex's findings back in.
+   gap-analysis prompt and pipes it to `codex exec --cd <repo> -` under the
+   45-minute hang backstop, **dispatched in the background** so the harness's
+   10-minute foreground cap can't kill it first, then reads codex's findings
+   back in. If codex cannot complete, Claude surfaces that — it does **not**
+   quietly run the pass itself.
 3. Claude implements, runs gates, commits (all native — `primary` is Claude).
 4. **Step 8 (review)** resolves to `["claude", "gemini"]` → Claude runs its
    own **in-process** review pass (`/simplify` for quality, then a

@@ -15,11 +15,12 @@
 # --- Reasoning effort ---------------------------------------------------------
 # How much the model reasons before responding. Trades latency/cost for depth.
 # Typical values: "minimal" | "low" | "medium" | "high" (exact set depends on
-# the pinned model). Cross-agent codex exec calls from this framework already
-# budget for slow, thorough runs (base/roles.md's >=7-minute timeout note), so
-# a higher effort is a reasonable choice when Codex is doing gap-analysis or
-# review work rather than quick edits.
-# model_reasoning_effort = "medium"
+# the pinned model). Cross-agent codex exec calls from this framework budget
+# generously for slow, thorough runs (base/roles.md's 45-minute hang backstop),
+# so a HIGH effort is the intended choice when Codex is doing gap-analysis or
+# review work rather than quick edits — the bound exists to stop a wedged
+# process, not to rush a thorough one.
+# model_reasoning_effort = "high"
 
 # --- Approval policy ------------------------------------------------------
 # Controls when Codex pauses to ask before running a command. Common values:

@@ -25,9 +25,11 @@
 #   claude → claude -p "<prompt>"            (stdout is the final message)
 #   codex  → codex exec --cd <repo> -        (prompt on stdin; --output-last-message = clean final msg)
 #   gemini → agy -p "<prompt>"               (Antigravity CLI; stdout is the final message)
-# codex exec reads the whole repo and routinely runs 3–7 min, so every invocation is given a
-# ≥7-min (420 s) bound (ADB_DISPATCH_TIMEOUT_SECS) — the helper's own inner watchdog, on top of
-# whatever outer bound the caller's shell imposes.
+# Every invocation is given a 45-min (2700 s) bound via ADB_DISPATCH_TIMEOUT_SECS — the helper's
+# own inner watchdog. That bound is a HANG BACKSTOP, not a work budget: it exists to stop a wedged
+# process, not to cap legitimate work, so it sits well above the longest real run rather than near
+# the typical one. The previous default was set near typical runtime and so killed ordinary
+# high-reasoning passes (issue #93); nothing should need to set the override.
 
 set -u
 
@@ -62,8 +64,17 @@ _ADB_RD_REPO_TOML="$(adb_repo_root)/agents.toml"
 # points it at a throwaway global manifest with no extra seam.
 _ADB_RD_GLOBAL_TOML="${HOME:-/root}/.config/ai-dev-baseline/agents.toml"
 
-# The per-invocation timeout bound (seconds). ≥7-min (420 s) matches the codex-timeout fact.
-_ADB_RD_TIMEOUT_SECS="${ADB_DISPATCH_TIMEOUT_SECS:-420}"
+# The per-invocation HANG BACKSTOP (seconds); 45-min (2700 s) matches the codex-timeout fact.
+# Applies to EVERY agent and role this helper dispatches (claude / codex / gemini; gap_analysis and
+# review alike) — not only codex gap analysis — because it wraps every invocation below.
+# ADB_DISPATCH_TIMEOUT_SECS overrides it, but a stock clone needs no environment at all (#93).
+_ADB_RD_TIMEOUT_SECS="${ADB_DISPATCH_TIMEOUT_SECS:-2700}"
+
+# How long a TERM'd child gets to exit before the backstop escalates to KILL (seconds). Without
+# escalation the backstop is not a backstop: a child that ignores SIGTERM leaves the watchdog's
+# `wait` blocking forever, which at a 45-min bound with no outer harness ceiling deadlocks the run
+# outright (found by the #93 gap-analysis pass).
+_ADB_RD_KILL_GRACE_SECS="${ADB_DISPATCH_KILL_GRACE_SECS:-10}"
 
 # --- resolution --------------------------------------------------------------------------------
 
@@ -217,16 +228,37 @@ adb_dispatch_bots() {
 
 # --- invocation --------------------------------------------------------------------------------
 
-# Run <argv> with a ≥7-min bound. Prefers a real timeout binary (GNU `timeout` on Linux CI,
+# Run <argv> with the hang backstop. Prefers a real timeout binary (GNU `timeout` on Linux CI,
 # `gtimeout` from coreutils on macOS); when neither exists (a stock Mac) it falls back to a
 # bash-3.2-safe background watchdog. Returns the child's status, or 124 when the bound fired
 # (matching GNU timeout's convention). stdin/stdout/stderr are whatever the caller redirected.
 # ADB_DISPATCH_NO_TIMEOUT_BIN=1 forces the watchdog path (exercised by the unit test).
+#
+# BOTH paths escalate TERM → grace → KILL. A bound that only sends SIGTERM is not a backstop: a
+# child that ignores or traps TERM would leave `wait` below blocking forever, and with the bound
+# raised to 45 min (and the outer harness ceiling deliberately removed for background dispatch)
+# that is an unbounded deadlock rather than a late failure. `timeout -k` does the escalation for
+# us; the watchdog path does it by hand. Escalation targets the direct child — a grandchild that
+# outlives it may linger, but `wait` returns, so the RUN is never wedged.
 _adb_rd_bounded() {
-  local secs="$1"; shift
+  local secs="$1" grace="${_ADB_RD_KILL_GRACE_SECS:-10}"; shift
   if [ "${ADB_DISPATCH_NO_TIMEOUT_BIN:-0}" != "1" ]; then
-    if command -v timeout  >/dev/null 2>&1; then timeout  "$secs" "$@"; return $?; fi
-    if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
+    local tb="" t0 trc
+    if   command -v timeout  >/dev/null 2>&1; then tb=timeout
+    elif command -v gtimeout >/dev/null 2>&1; then tb=gtimeout
+    fi
+    if [ -n "$tb" ]; then
+      t0="$(date +%s)"
+      "$tb" -k "$grace" "$secs" "$@"; trc=$?
+      # Normalize the bound-fired status. GNU timeout reports 124 when SIGTERM ended the child,
+      # but relays the child's own signal status (137) when -k had to escalate to SIGKILL — so
+      # ONE event reports two different codes depending only on how stubborn the child was, and
+      # 137 is what we classify as "killed from outside this helper". Collapse the escalation
+      # case so "our backstop fired" is 124 on every path, matching the watchdog below. Gated on
+      # elapsed ≥ the bound, so an unrelated external SIGKILL arriving early still reports 137.
+      if [ "$trc" -eq 137 ] && [ "$(( $(date +%s) - t0 ))" -ge "$secs" ]; then trc=124; fi
+      return "$trc"
+    fi
   fi
   local flag rc
   flag="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/adb-rd-flag-$$")"; rm -f "$flag"
@@ -236,12 +268,34 @@ _adb_rd_bounded() {
   # fed its prompt on stdin) would read /dev/null — an empty prompt. Duping fd 0 in suppresses
   # the /dev/null substitution; harmless for claude/gemini (their prompt is in argv).
   "$@" <&0 & local cmd_pid=$!
-  ( sleep "$secs"; kill -TERM "$cmd_pid" 2>/dev/null && : > "$flag"; ) </dev/null >/dev/null 2>&1 &
+  # Flag BEFORE the TERM: a child that dies from the signal can be reaped and the `wait` below can
+  # return before the `&&` right-hand side runs, which would return the child's signal status
+  # instead of 124. Writing the flag first makes "the bound fired" observable regardless of the
+  # race. `kill -0` gates on the child still existing, so a child that exited on its own a moment
+  # before the bound is not mislabelled as timed out.
+  ( sleep "$secs"; kill -0 "$cmd_pid" 2>/dev/null || exit 0
+    : > "$flag"; kill -TERM "$cmd_pid" 2>/dev/null
+    sleep "$grace"; kill -KILL "$cmd_pid" 2>/dev/null || : ; ) </dev/null >/dev/null 2>&1 &
   local watcher=$!
   wait "$cmd_pid" 2>/dev/null; rc=$?
   kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
   if [ -f "$flag" ]; then rm -f "$flag"; return 124; fi
   rm -f "$flag"; return "$rc"
+}
+
+# Classify a dispatch exit status in one line. Collapsing every non-zero rc into "the agent
+# failed" is precisely what let a too-small bound masquerade as a codex problem for three runs
+# (#93): our own backstop, an OUTER bound, and a genuine agent error each warrant a different
+# response, so name which one happened rather than making the reader infer it.
+adb_dispatch_classify_rc() {
+  case "$1" in
+    0)   printf 'completed' ;;
+    124) printf 'INCOMPLETE: our %ss hang backstop fired (raise ADB_DISPATCH_TIMEOUT_SECS, or dispatch in the background if an outer bound is the real cap)' "$_ADB_RD_TIMEOUT_SECS" ;;
+    143) printf 'INCOMPLETE: SIGTERM (rc 143) — an OUTER bound killed it before our %ss backstop; give the surrounding call a longer bound or run it in the background' "$_ADB_RD_TIMEOUT_SECS" ;;
+    137) printf 'INCOMPLETE: SIGKILL (rc 137) — killed from outside this helper (OOM killer or an outer harness), not by our backstop' ;;
+    3)   printf 'skipped: role unassigned' ;;
+    *)   printf 'INCOMPLETE: agent exited %s — a real agent/CLI error, not a timeout' "$1" ;;
+  esac
 }
 
 # Invoke ONE concrete agent's CLI with the prompt from file $2; the agent's clean FINAL message
@@ -288,13 +342,22 @@ _adb_rd_invoke_agent() {
 # slot keeps its own retry/fallback — never one opaque multi-agent call). An unassigned role
 # returns 3 (distinct from a completed empty result), so a caller never mistakes "skipped" for
 # "ran and found nothing".
+# Emit the one-line classified outcome of a completed dispatch. Always stderr — stdout is
+# reserved for the agent's clean final message (#8). Silent on success, so a clean pass adds no
+# noise and a failure is the only thing the operator sees.
+_adb_rd_report() {
+  [ "$2" -eq 0 ] && return 0
+  printf 'role-dispatch: %s — %s\n' "$1" "$(adb_dispatch_classify_rc "$2")" >&2
+}
+
 adb_dispatch_invoke() {
   local target="$1" pf tokens count rc
   pf="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/adb-rd-prompt-$$")"
   cat > "$pf"
 
   if _adb_rd_valid_token "$target"; then
-    _adb_rd_invoke_agent "$target" "$pf"; rc=$?; rm -f "$pf"; return "$rc"
+    _adb_rd_invoke_agent "$target" "$pf"; rc=$?; rm -f "$pf"
+    _adb_rd_report "$target" "$rc"; return "$rc"
   fi
 
   if ! tokens="$(adb_resolve_role "$target")"; then rm -f "$pf"; return 2; fi
@@ -308,7 +371,8 @@ adb_dispatch_invoke() {
       "$target" "$(printf '%s' "$tokens" | tr '\n' ' ')" "$target" >&2
     rm -f "$pf"; return 2
   fi
-  _adb_rd_invoke_agent "$tokens" "$pf"; rc=$?; rm -f "$pf"; return "$rc"
+  _adb_rd_invoke_agent "$tokens" "$pf"; rc=$?; rm -f "$pf"
+  _adb_rd_report "$tokens" "$rc"; return "$rc"
 }
 
 # --- dispatch (only when executed directly, never when sourced) --------------------------------
