@@ -240,6 +240,7 @@ eq "$rc" "3" "no-install exits 3"
 reset_src
 eq "$(run_update "$src/bin/baseline" "$fh")" "0" "update current + healthy links exits 0"
 
+
 # update with a renamed-away ORPHAN (a dangling link into src, no manifest entry) must be
 # PRUNED, not fatal: baseline removes the ownership-scoped dead link and completes (exit 0),
 # then a second update is an idempotent no-op (#48).

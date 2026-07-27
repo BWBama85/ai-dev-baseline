@@ -132,20 +132,29 @@ adb_claude_hook_scripts() {
   printf 'precommit-gate.sh\nimplement-issue-gate.sh\nsession-currency.sh\n'
 }
 
-# The jq/ERE alternation that matches a hook command ending in one of OUR hook scripts, built
-# from that same list — e.g. `(precommit-gate|implement-issue-gate|session-currency)\.sh$`.
-# install.sh uses it to replace only baseline-owned entries (never a user's own hook) and
-# uninstall.sh to remove exactly those; deriving it here means adding a hook above updates both
-# filters at once. Anchored at `$` so it matches the command's trailing script name only.
+# The jq regex matching a hook command that is EXACTLY one of the commands this install writes,
+# for the given <home> — e.g. `^/Users/x/\.claude/scripts/(precommit-gate|…)\.sh$`. install.sh
+# uses it to replace only baseline-owned entries and uninstall.sh to remove exactly those;
+# deriving both from one place means adding a hook to adb_claude_hook_scripts updates both.
+#
+# FULL PATH, not a basename. A basename-anchored pattern (`…\.sh$`) also matches a user's own
+# `/custom/precommit-gate.sh`, and because the filters walk EVERY hook event, uninstall would
+# delete that entry — and the whole group containing it — under an unrelated event such as
+# PreToolUse. That directly contradicts the promise that a user's own hooks survive. A command at
+# any other path is by definition not ours, so the exact path we install is the ownership test.
+# Usage: adb_claude_hook_regex <home>
 adb_claude_hook_regex() {
-  local s alt=""
+  local home="$1" s alt="" esc
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     alt="${alt:+$alt|}${s%.sh}"
   done <<EOF
 $(adb_claude_hook_scripts)
 EOF
-  printf '(%s)\\.sh$' "$alt"
+  # Escape regex metacharacters in the home path — a literal `.` in a username would otherwise
+  # match any character, widening ownership beyond this install.
+  esc="$(printf '%s' "$home" | sed 's/[][\.^$*+?(){}|]/\\&/g')"
+  printf '^%s/\\.claude/scripts/(%s)\\.sh$' "$esc" "$alt"
 }
 
 adb_agent_manifest() {

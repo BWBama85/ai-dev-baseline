@@ -46,6 +46,7 @@ tracked as follow-up issues. See each agent's README under `agents/<token>/`.
 | `agents/claude/skills/<name>/` (each skill dir) | `~/.claude/skills/<name>` |
 | `agents/claude/scripts/precommit-gate.sh` | `~/.claude/scripts/precommit-gate.sh` |
 | `agents/claude/scripts/implement-issue-gate.sh` | `~/.claude/scripts/implement-issue-gate.sh` |
+| `agents/claude/scripts/session-currency.sh` | `~/.claude/scripts/session-currency.sh` |
 | `agents/claude/scripts/statusline.sh` | `~/.claude/scripts/statusline.sh` |
 | `scripts/lib/` (the shared shell library) | `~/.claude/scripts/lib` |
 
@@ -82,10 +83,14 @@ real `$HOME`) into `~/.claude/settings.json`:
 | `SessionStart` (matcher `startup`) | `session-currency.sh` | Keeps the install-source clone current — see [Automatic currency](#automatic-currency-sessionstart). |
 
 The merge is driven by that file's own top-level keys, so adding an event there
-is the only edit a new hook needs. For each event it drops any group referencing
-one of *our* hook scripts by filename and appends ours — so re-running
-`install.sh` never double-adds them, and **your own hooks under the same event
-are preserved**. `uninstall.sh` is the exact mirror: it removes only those
+is the only edit a new hook needs. For each event it drops any group whose command
+is **exactly one of the paths this install writes**
+(`$HOME/.claude/scripts/<name>.sh`) and appends ours — so re-running `install.sh`
+never double-adds them, and **your own hooks under any event are preserved**.
+Matching the full path rather than the filename is what makes that promise real:
+a basename match would also claim your own `/custom/precommit-gate.sh`, and since
+the filters walk every event, uninstall would delete it from an unrelated event
+such as `PreToolUse`. `uninstall.sh` is the exact mirror: it removes only those
 entries and drops an event key once it is empty.
 
 This step requires `jq`; if it's missing, the installer prints a warning and
@@ -213,7 +218,11 @@ cause of lost work:
 - The mutating path takes a **per-clone lock**. Concurrent updates are ordinary now that a
   SessionStart hook can trigger several at once, so a second one exits `5` and steps aside
   instead of racing the first through pull + install. A lock left behind by a killed updater
-  goes stale after 10 minutes (`ADB_UPDATE_LOCK_STALE_SECS`) and is broken.
+  goes stale after 10 minutes (`ADB_UPDATE_LOCK_STALE_SECS`) **and its holder is gone** before it
+  is broken — age alone is not death, and breaking a live updater's lock would run the pull twice.
+- It exits **`6`** on a successful **same-HEAD repair**: the clone was already current, but a
+  broken installed link was restored. Distinct from `0` ("nothing to do") because the installed
+  surface changed while `HEAD` did not — a caller watching only `HEAD` cannot tell them apart.
 
 `baseline update --check` prints one status word and changes nothing in the working tree;
 its exit code is the stable contract the SessionStart hook consumes:
@@ -253,10 +262,15 @@ currency must never be the reason one looks broken.
 session_start = "auto"    # auto (default) | notify | off
 ```
 
-`auto` pulls and self-heals; `notify` only tells you that you are behind; `off` disables the
-hook. `ADB_SESSION_UPDATE` overrides it for one run. A copy of this key in a **project's**
-`agents.toml` is ignored on purpose — whether your global tooling updates itself must not
-depend on which repo you happened to open.
+`auto` pulls and self-heals; `notify` reports **only** that you are behind and stays silent for
+every other state (it is the mode chosen to be quiet — a clone deliberately parked on a branch
+would otherwise produce an attention line at every startup, forever); `off` disables the hook.
+`ADB_SESSION_UPDATE` overrides it for one run. A copy of this key in a **project's** `agents.toml`
+is ignored on purpose — whether your global tooling updates itself must not depend on which repo
+you happened to open.
+
+In `auto` mode a refusal *is* reported, because that mode promised to act and could not — silence
+there would be the staleness this whole feature exists to catch.
 
 **Two things worth knowing.** First, `auto` means each new session may fetch and then execute
 the newly pulled `install.sh`; that is the same trust you already place in the clone your

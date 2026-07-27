@@ -141,10 +141,23 @@ SESSION_CWD="$(hook_field cwd)"
 # the same surprise. --git-common-dir resolves to the shared .git for a worktree and to the
 # ordinary .git otherwise, so one comparison covers both. `-ef` is device+inode, so two spellings
 # of one path match. Falls back to the toplevel on a git too old to know the flag.
-SESSION_GIT="$(git -C "$SESSION_CWD" rev-parse --absolute-git-dir 2>/dev/null || true)"
-[ -n "$SESSION_GIT" ] && SESSION_GIT="$(git -C "$SESSION_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || printf '%s' "$SESSION_GIT")"
-SRC_GIT="$(git -C "$SRC" rev-parse --path-format=absolute --git-common-dir 2>/dev/null \
-           || git -C "$SRC" rev-parse --absolute-git-dir 2>/dev/null || true)"
+#
+# Both sides must resolve the COMMON dir the same way. Falling back to --absolute-git-dir on one
+# side would compare a worktree's own `.git/worktrees/<name>` against the main clone's `.git` —
+# unequal, so the guard would silently miss exactly the case it was added for. --git-common-dir
+# has existed far longer than --path-format, so the fallback asks for the same thing and just
+# absolutizes it by hand.
+common_git_dir() {
+  local d="$1" out
+  out="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" \
+    && [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+  # Older git: --git-common-dir may print a path relative to <d>, so resolve it from there.
+  out="$(git -C "$d" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [ -n "$out" ] || return 1
+  ( cd "$d" 2>/dev/null && cd "$out" 2>/dev/null && pwd -P )
+}
+SESSION_GIT="$(common_git_dir "$SESSION_CWD" || true)"
+SRC_GIT="$(common_git_dir "$SRC" || true)"
 if [ -n "$SESSION_GIT" ] && [ -n "$SRC_GIT" ] && [ "$SESSION_GIT" -ef "$SRC_GIT" ]; then
   exit 0
 fi
@@ -158,7 +171,14 @@ fi
 [ -n "${GIT_TERMINAL_PROMPT:-}" ] || export GIT_TERMINAL_PROMPT=0
 [ -n "${GIT_ASKPASS:-}" ]         || export GIT_ASKPASS=true
 [ -n "${SSH_ASKPASS:-}" ]         || export SSH_ASKPASS=true
-[ -n "${GIT_SSH_COMMAND:-}" ]     || export GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10'
+# GIT_SSH_COMMAND outranks the repository's own `core.sshCommand`, so setting it unconditionally
+# would replace a configured identity file / proxy / custom ssh binary with plain `ssh` — the
+# fetch then fails for a clone that works perfectly from the command line, and exit 30 is
+# deliberately silent, leaving the baseline stale with no explanation. Only install the default
+# when the clone does not configure its own.
+if [ -z "${GIT_SSH_COMMAND:-}" ] && [ -z "$(git -C "$SRC" config --get core.sshCommand 2>/dev/null)" ]; then
+  export GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10'
+fi
 # Abort an HTTP transfer that has effectively stalled, so git fails cleanly (with a real error)
 # instead of being killed mid-pull by the harness timeout — a kill is what leaves index locks.
 [ -n "${GIT_HTTP_LOW_SPEED_LIMIT:-}" ] || export GIT_HTTP_LOW_SPEED_LIMIT=1000
@@ -171,14 +191,17 @@ mkdir -p "$STAMP_DIR" 2>/dev/null && : > "$STAMP" 2>/dev/null
 # --- 6. notify mode: report, change nothing ----------------------------------
 
 if [ "$MODE" = "notify" ]; then
+  # `behind` ONLY. templates/agents.toml and docs/installation.md both define notify as reporting
+  # that you are behind, and it is the mode chosen precisely to be quiet — a clone deliberately
+  # parked on a branch, or left ahead, would otherwise produce an attention line at every startup
+  # past the rate limit, forever, for a state its owner created on purpose. `baseline update` says
+  # so plainly when they run it. (auto still reports a refusal: it promised to act and could not,
+  # and silence there would be the staleness this hook exists to catch.)
   STATUS="$("$SRC/bin/baseline" update --check 2>/dev/null | head -n1)"
   case "$STATUS" in
-    current|'')  exit 0 ;;
-    behind)      say "baseline: install-source is behind origin — run 'baseline update'." ;;
-    fetch-failed) exit 0 ;;   # offline is not news; a plain start should not nag about it
-    *)           say "baseline: install-source needs attention ($STATUS) — see 'baseline update'." ;;
+    behind) say "baseline: install-source is behind origin — run 'baseline update'." ;;
   esac
-  exit 0   # structural, not incidental: every arm above already exits
+  exit 0
 fi
 
 # --- 7. auto mode: update ------------------------------------------------------
@@ -203,6 +226,12 @@ case "$RC" in
     else
       say "baseline: updated $BEFORE → $AFTER." reload
     fi
+    ;;
+  6)
+    # A same-HEAD repair: already current, but a broken installed link was restored. HEAD did not
+    # move, so the delta check above cannot see it — and the skill that was missing when this
+    # session initialized is available again only if the harness re-reads them.
+    say "baseline: repaired the installed links (clone already current)." reload
     ;;
   5)  exit 0 ;;   # a peer session is already updating this clone — its line covers it
   20)

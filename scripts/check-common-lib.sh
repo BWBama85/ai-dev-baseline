@@ -514,8 +514,21 @@ adb_link_into "$ihome/.claude/realfile" "$isrc"; no "$?" "link_into: a real file
 eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "3" "hook scripts: three wired hooks"
 has "$(adb_claude_hook_scripts)" "session-currency.sh" "hook scripts: includes the currency hook"
 hasnt "$(adb_claude_hook_scripts)" "statusline.sh" "hook scripts: excludes the non-hook statusline"
-eq "$(adb_claude_hook_regex)" '(precommit-gate|implement-issue-gate|session-currency)\.sh$' \
-  "hook regex: built from the same list, anchored at the end"
+eq "$(adb_claude_hook_regex /home/u)" \
+  '^/home/u/\.claude/scripts/(precommit-gate|implement-issue-gate|session-currency)\.sh$' \
+  "hook regex: anchored to the EXACT installed paths, not a basename"
+# The ownership test must not claim a user's own script that merely shares a filename. A
+# basename-anchored pattern would, and because the filters walk EVERY hook event, uninstall
+# would then delete that entry from an unrelated event such as PreToolUse.
+hre="$(adb_claude_hook_regex /home/u)"
+printf '/custom/precommit-gate.sh\n' | grep -Eq "$hre" \
+  && bad "hook regex must NOT match a user script with the same basename" || ok
+printf '/home/u/.claude/scripts/precommit-gate.sh\n' | grep -Eq "$hre" \
+  && ok || bad "hook regex must match our own installed path"
+# A regex metacharacter in the home path must be escaped, or ownership widens to other paths.
+hre2="$(adb_claude_hook_regex /home/a.b)"
+printf '/home/axb/.claude/scripts/precommit-gate.sh\n' | grep -Eq "$hre2" \
+  && bad "an unescaped '.' in \$HOME widens the ownership match" || ok
 # Every wired hook must also be a manifest entry, or it is never linked into place.
 manifest_dests="$(adb_agent_manifest claude /R /H | cut -f2)"
 while IFS= read -r hs; do

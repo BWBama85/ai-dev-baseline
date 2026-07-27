@@ -54,7 +54,8 @@ debug        = "claude"     # owns root-cause investigations.
 #          re-runs the idempotent install, then reports one line naming what changed. It
 #          refuses a dirty / mid-rebase / detached / non-default / ahead / diverged clone, and
 #          never touches the clone the current session is working in.
-#   notify the same check, but it only reports "behind" — you run `baseline update` yourself.
+#   notify the same check, but it reports ONLY "behind" — every other state stays silent, so a
+#          clone you deliberately parked on a branch never nags. You run `baseline update`.
 #   off    the hook exits immediately and does nothing.
 #
 # ADB_SESSION_UPDATE overrides this for one run; ADB_SESSION_UPDATE_INTERVAL_SECS (default

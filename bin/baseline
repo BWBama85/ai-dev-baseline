@@ -46,6 +46,9 @@
 # `update` additionally exits 5 when another `baseline update` already holds the per-clone
 # lock. Concurrent updates are ordinary now that a SessionStart hook can start several at
 # once, so the second one steps aside instead of racing the first through pull + install.
+# It exits 6 on a SUCCESSFUL same-HEAD repair — the clone was already current but an installed
+# link was broken and has been restored. Distinct from 0 ("nothing to do") because the installed
+# surface changed while HEAD did not, which a caller watching HEAD alone cannot see.
 
 set -uo pipefail
 
@@ -435,7 +438,12 @@ case "$STATUS" in
     echo "baseline: an installed path is broken though up to date — repairing …"
     adb_self_heal && adb_verify_links "$SRC" || { echo "baseline: repair failed — see above." >&2; exit 1; }
     echo "baseline: repaired."
-    exit 0
+    # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that
+    # infers "something changed" from the HEAD delta would miss it entirely. The SessionStart hook
+    # does exactly that, and would leave a skill it had just restored unavailable for the session.
+    # A success code distinct from "nothing to do" is the machine-readable way to say so — the
+    # alternative is parsing this prose, which is precisely what the exit-code contract avoids.
+    exit 6
     ;;
   behind)
     echo "baseline: updating $SRC ($DEFAULT is behind origin) …"

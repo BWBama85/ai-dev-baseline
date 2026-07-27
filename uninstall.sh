@@ -38,7 +38,7 @@ EOF
   if command -v jq >/dev/null 2>&1; then
     local settings="$HOME/.claude/settings.json"
     local re
-    re="$(adb_claude_hook_regex)"
+    re="$(adb_claude_hook_regex "$HOME")"
     # `-s` not `-f`: jq reads an EMPTY file as an empty stream, exiting 0 with no output — the
     # `&&` below would then install a 0-byte settings.json and report success.
     if [ -s "$settings" ]; then

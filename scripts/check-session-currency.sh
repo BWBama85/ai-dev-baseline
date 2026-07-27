@@ -34,7 +34,22 @@ cp "$ROOT/bin/baseline" "$seed/bin/baseline"; chmod +x "$seed/bin/baseline"
 cp "$ROOT/scripts/lib/common.sh" "$seed/scripts/lib/common.sh"
 cp "$ROOT/agents/claude/scripts/session-currency.sh" "$seed/agents/claude/scripts/session-currency.sh"
 chmod +x "$seed/agents/claude/scripts/session-currency.sh"
-printf '#!/usr/bin/env bash\nprintf "install: %%s\\n" "$*" >> "%s"\n' "$work/install.log" > "$seed/install.sh"
+# The stub installer LOGS its args and re-creates any missing manifest link. It has to actually
+# relink, unlike check-baseline.sh's log-only stub: a same-HEAD repair is only observable if the
+# repair can succeed, and `baseline update` verifies the manifest afterwards. It reads the same
+# adb_agent_manifest the real installer does, so it cannot drift from what is verified.
+cat > "$seed/install.sh" <<STUB
+#!/usr/bin/env bash
+printf 'install: %s\n' "\$*" >> "$work/install.log"
+_r="\$(cd "\$(dirname "\$0")" && pwd)"
+. "\$_r/scripts/lib/common.sh"
+adb_agent_manifest claude "\$_r" "\$HOME" | while IFS="\$(printf '\\t')" read -r s d; do
+  [ -n "\$s" ] && [ -n "\$d" ] || continue
+  [ -e "\$d" ] && continue
+  mkdir -p "\$(dirname "\$d")"
+  ln -sfn "\$s" "\$d"
+done
+STUB
 chmod +x "$seed/install.sh"
 printf 'root doc\n' > "$seed/agents/claude/CLAUDE.md"
 printf 'demo skill\n' > "$seed/agents/claude/skills/demo/SKILL.md"
@@ -289,6 +304,28 @@ run_hook startup
 has "$OUT" 'behind' "mode=notify → reports that it is behind"
 eq "$(head_of)" "$before" "mode=notify → reports only, never pulls"
 
+# notify reports `behind` and NOTHING ELSE. A clone deliberately parked on a branch (or left
+# dirty) would otherwise produce an attention line at every startup past the rate limit, forever,
+# for a state its owner created on purpose — in the very mode chosen to be quiet. Both
+# templates/agents.toml and docs/installation.md define notify as reporting `behind` only.
+for staged in dirty not-default; do
+  reset_src
+  advance_origin "notify-quiet-$staged"
+  case "$staged" in
+    dirty)       printf 'local edit\n' >> "$src/agents/claude/CLAUDE.md" ;;
+    not-default) git -C "$src" checkout -q -b "notify-quiet-branch" ;;
+  esac
+  MODE_ENV=notify
+  before_q="$(head_of)"
+  run_hook startup
+  eq "$RC" "0" "mode=notify + $staged → exit 0"
+  eq "$OUT" "" "mode=notify stays silent for $staged (only 'behind' is reported)"
+  eq "$(head_of)" "$before_q" "mode=notify + $staged → clone untouched"
+done
+reset_src
+advance_origin "post-notify"
+before="$(head_of)"
+
 MODE_ENV=nonsense
 rm -rf "${work:?}/cache"
 run_hook startup
@@ -335,6 +372,45 @@ printf '[updates]\nsession_start = "off"\n' > "$proj/agents.toml"
 before="$(head_of)"
 run_hook startup "$proj"
 if [ "$(head_of)" != "$before" ]; then ok; else bad "a project agents.toml must not disable the global updater"; fi
+
+# --- a same-HEAD repair still reports, and asks for a reload -------------------
+# The clone is current but an installed link is broken: `baseline update` repairs it and returns
+# 6 without moving HEAD. A hook that inferred "something changed" from the HEAD delta alone would
+# exit silently, leaving the skill that was missing when the session initialized still missing.
+reset_src
+rm -f "$fh/.claude/skills/demo"                       # break an installed link
+ln -s "$src/agents/claude/skills/gone" "$fh/.claude/skills/demo"
+head_repair="$(head_of)"
+run_hook startup
+eq "$RC" "0" "same-HEAD repair → exit 0"
+has "$OUT" 'repaired' "same-HEAD repair is reported, not silently swallowed"
+# The exit code the hook keys off — distinct from 0 ("nothing to do"), which is what makes the
+# repair observable to a caller that otherwise only watches HEAD.
+rm -f "$fh/.claude/skills/demo"
+ln -s "$src/agents/claude/skills/gone" "$fh/.claude/skills/demo"
+HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1
+eq "$?" "6" "baseline update exits 6 on a successful same-HEAD repair"
+HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1
+eq "$?" "0" "a second run after the repair is a plain no-op (0)"
+has "$OUT" '"reloadSkills":true' "same-HEAD repair asks the harness to reload skills"
+eq "$(head_of)" "$head_repair" "same-HEAD repair does not move HEAD"
+rm -f "$fh/.claude/skills/demo"
+ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
+
+# --- a repo-configured core.sshCommand is respected ---------------------------
+# GIT_SSH_COMMAND outranks core.sshCommand, so setting it unconditionally would replace a
+# configured identity file / proxy / custom ssh binary with plain `ssh` — the fetch then fails
+# for a clone that works fine by hand, and exit 30 is deliberately silent, leaving the baseline
+# stale with no explanation. Asserted by making the configured command the ONLY way to reach the
+# origin: if the hook overrode it, the update could not happen.
+reset_src
+advance_origin "ssh-command-case"
+before="$(head_of)"
+git -C "$src" config core.sshCommand "ssh -o BatchMode=yes"
+run_hook startup
+if [ "$(head_of)" != "$before" ]; then ok; else bad "a clone with core.sshCommand must still update"; fi
+hasnt "$OUT" 'needs attention' "core.sshCommand does not turn the update into an attention line"
+git -C "$src" config --unset core.sshCommand
 
 # --- no install, and an incomplete install ------------------------------------
 
@@ -408,5 +484,24 @@ printf 'this is not json\n' > "$bh/.claude/settings.json"
 HOME="$bh" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1; rc=$?
 no "$rc" "install exits non-zero when settings.json is not valid JSON"
 eq "$(cat "$bh/.claude/settings.json")" "this is not json" "a corrupt settings.json is left byte-identical"
+
+# OWNERSHIP IS BY FULL PATH. A user's own hook that merely SHARES A FILENAME with one of ours
+# must survive install and uninstall — including under an unrelated event, since the filters walk
+# every hook key. A basename-anchored match would delete it.
+uh="$work/userhook"; mkdir -p "$uh/.claude"
+jq -n '{hooks:{
+    PreToolUse:[{hooks:[{type:"command",command:"/custom/precommit-gate.sh"}]}],
+    Stop:[{hooks:[{type:"command",command:"/custom/session-currency.sh"}]}]}}' \
+  > "$uh/.claude/settings.json"
+HOME="$uh" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
+eq "$(jq '[.hooks.PreToolUse[]?.hooks[]? | select(.command == "/custom/precommit-gate.sh")] | length' \
+      "$uh/.claude/settings.json")" "1" "install keeps a same-named user hook under another event"
+HOME="$uh" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
+eq "$(jq '[.hooks.PreToolUse[]?.hooks[]? | select(.command == "/custom/precommit-gate.sh")] | length' \
+      "$uh/.claude/settings.json")" "1" "uninstall keeps a same-named user hook under another event"
+eq "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command == "/custom/session-currency.sh")] | length' \
+      "$uh/.claude/settings.json")" "1" "uninstall keeps a same-named user hook under OUR event"
+eq "$(jq '[.hooks[]?[]?.hooks[]? | select(.command | test("\\.claude/scripts/session-currency\\.sh$"))] | length' \
+      "$uh/.claude/settings.json")" "0" "uninstall still removes our own entry"
 
 check_summary "session-currency"

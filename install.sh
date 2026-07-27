@@ -85,7 +85,7 @@ wire_hooks() {
   local tmp groups re
   groups="$(sed "s@__ADB_HOME__@$HOME@g" "$REPO/agents/claude/settings.hooks.json")" || {
     adb_info "  WARN   could not read agents/claude/settings.hooks.json — hooks NOT wired"; return 1; }
-  re="$(adb_claude_hook_regex)"
+  re="$(adb_claude_hook_regex "$HOME")"
   # `-s`, not `-f`: an EMPTY settings.json is not valid JSON, but `jq` reads empty input as an
   # empty stream — it exits 0 and prints NOTHING, so the guard below would not fire and the `mv`
   # would install a 0-byte file while reporting success. That failure is self-entrenching:
