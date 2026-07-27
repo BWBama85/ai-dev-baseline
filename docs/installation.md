@@ -69,16 +69,29 @@ Because these are real symlinks (not copies), `git pull` inside
 `~/Code/ai-dev-baseline` immediately updates the practices, skills, and gates
 in **every** project on the machine — there is no per-repo sync step.
 
-### Global Stop-hook gates
+### Global lifecycle hooks
 
-Unless `--no-hooks` is passed, `wire_hooks()` merges the two Stop-hook gate
-entries from `agents/claude/settings.hooks.json`
-(`precommit-gate.sh` and `implement-issue-gate.sh`, with `__ADB_HOME__`
-substituted for your real `$HOME`) into `~/.claude/settings.json`, replacing
-any prior entries that reference those same two gate scripts by filename
-(so re-running `install.sh` never double-adds them). This step requires `jq`;
-if it's missing, the installer prints a warning and skips wiring hooks
-without failing the rest of the install.
+Unless `--no-hooks` is passed, `wire_hooks()` merges **every** hook-event group
+in `agents/claude/settings.hooks.json` (with `__ADB_HOME__` substituted for your
+real `$HOME`) into `~/.claude/settings.json`:
+
+| Event | Script | What it does |
+|---|---|---|
+| `Stop` | `precommit-gate.sh` | Blocks ending a turn while the repo's quality gates are red. |
+| `Stop` | `implement-issue-gate.sh` | Keeps an `/implement-issue` run going until its PR is open. |
+| `SessionStart` (matcher `startup`) | `session-currency.sh` | Keeps the install-source clone current — see [Automatic currency](#automatic-currency-sessionstart). |
+
+The merge is driven by that file's own top-level keys, so adding an event there
+is the only edit a new hook needs. For each event it drops any group referencing
+one of *our* hook scripts by filename and appends ours — so re-running
+`install.sh` never double-adds them, and **your own hooks under the same event
+are preserved**. `uninstall.sh` is the exact mirror: it removes only those
+entries and drops an event key once it is empty.
+
+This step requires `jq`; if it's missing, the installer prints a warning and
+skips wiring hooks without failing the rest of the install. A malformed
+`~/.claude/settings.json` is also reported (and the file left alone) rather than
+silently claimed as wired.
 
 `~/.claude/settings.json` itself is backed up before being modified (see
 below), even though it's edited in place rather than replaced by a symlink.
@@ -152,7 +165,7 @@ a clear message (nothing is written) — `git init` first if it really is a proj
 |---|---|
 | `git` | Cloning this repo; every skill's branch/PR flow. |
 | `gh` | The issue/PR-touching skills (`implement-issue`, `create-issue`, `new-release`, `resolve-pr-threads`) and `implement-issue-gate.sh`'s live PR check. |
-| `jq` | Wiring/unwiring the Stop hooks in `install.sh`/`uninstall.sh`; parsing state JSON in both gate scripts; `agents.toml`-aware statusline fields. |
+| `jq` | Wiring/unwiring the lifecycle hooks in `install.sh`/`uninstall.sh`; parsing state JSON in both gate scripts; the SessionStart hook's structured output; `agents.toml`-aware statusline fields. |
 
 Without `jq`, hook wiring is skipped (with a warning) but the rest of the
 install still completes. Without `gh`, the install itself still works — only
@@ -186,20 +199,76 @@ baseline update --check    # report currency only; make NO changes (for a lifecy
 `baseline update` is deliberately conservative — currency is a convenience, never a
 cause of lost work:
 
-- It fast-forwards **only** when the install-source clone is **clean, on its default
-  branch, and merely behind** `origin`. A dirty / detached / non-default / ahead /
-  diverged clone is **surfaced and left untouched** — you reconcile it by hand.
+- It fast-forwards **only** when the install-source clone is **clean, free of an
+  in-progress git operation, on its default branch, and merely behind** `origin`. A dirty /
+  mid-rebase / detached / non-default / ahead / diverged clone is **surfaced and left
+  untouched** — you reconcile it by hand. Those refusals are decided from **local state
+  before any fetch**, so a run that will refuse costs no network round trip.
 - After a fast-forward it **always** re-runs the **idempotent** installer (a pulled commit
   may add a new skill or script that existing links don't cover, so "links resolve" does
   not imply "everything is linked"), preserving the exact agent set and hook preference
   already installed, then **loudly verifies** every canonical link still resolves and fails
   if one is broken. When the clone is already **current**, it re-installs only if that
   verification finds a broken link.
+- The mutating path takes a **per-clone lock**. Concurrent updates are ordinary now that a
+  SessionStart hook can trigger several at once, so a second one exits `5` and steps aside
+  instead of racing the first through pull + install. A lock left behind by a killed updater
+  goes stale after 10 minutes (`ADB_UPDATE_LOCK_STALE_SECS`) and is broken.
 
-`baseline update --check` fetches, prints one status word, and changes nothing; its
-exit code is a stable contract for a future `SessionStart` lifecycle hook (issue #25):
-`0` current · `10` behind · `20` needs attention (dirty/ahead/diverged/detached/
-non-default) · `30` error (fetch failed / no `origin/<default>`).
+`baseline update --check` prints one status word and changes nothing in the working tree;
+its exit code is the stable contract the SessionStart hook consumes:
+`0` current · `10` behind · `20` needs attention (dirty/in-progress/ahead/diverged/
+detached/non-default) · `30` error (fetch failed / no `origin/<default>`).
+
+### Automatic currency (SessionStart)
+
+Running `baseline update` is still something you have to *remember*, and forgetting it
+does not fail loudly — it silently runs **stale tooling**. So the install also wires a
+`SessionStart` hook (`session-currency.sh`) that does it for you.
+
+It is deliberately narrow about when it acts:
+
+- **Only on `source: startup`** — a genuinely new session. `/clear`, `/compact`, `resume`
+  and `fork` all happen with work already in flight, and swapping tooling underneath them
+  is exactly the mid-session surprise this avoids.
+- **Never the clone your session is working in.** If you start a session inside the
+  install-source itself (or a subdirectory of it), the hook does nothing. A session in any
+  *other* project still updates it.
+- **Never over unsafe state** — it delegates to `baseline update`, so every refusal above
+  applies unchanged.
+- **Rate-limited** to one check per 10 minutes (`ADB_SESSION_UPDATE_INTERVAL_SECS`, `0` =
+  every startup), and git is barred from interactive prompting so a session start can never
+  block on a credential prompt or a stalled transfer.
+
+Output is **one line or silence**: nothing at all when you are current, and otherwise a
+single line naming what updated (`baseline: updated 0c3bbaf → 4eb472f (1 commit).`) or which
+state needs attention. It always exits `0` — a SessionStart hook cannot block a session, and
+currency must never be the reason one looks broken.
+
+**Mode — configured globally, and only globally:**
+
+```toml
+# ~/.config/ai-dev-baseline/agents.toml
+[updates]
+session_start = "auto"    # auto (default) | notify | off
+```
+
+`auto` pulls and self-heals; `notify` only tells you that you are behind; `off` disables the
+hook. `ADB_SESSION_UPDATE` overrides it for one run. A copy of this key in a **project's**
+`agents.toml` is ignored on purpose — whether your global tooling updates itself must not
+depend on which repo you happened to open.
+
+**Two things worth knowing.** First, `auto` means each new session may fetch and then execute
+the newly pulled `install.sh`; that is the same trust you already place in the clone your
+whole toolchain is symlinked from, but it is now exercised automatically — use `notify` if you
+would rather review each pull. Second, the hook runs *after* the session has loaded its global
+root doc, so an update that changes `CLAUDE.md` fully applies from the **next** session; skills
+are re-read via `reloadSkills`.
+
+**Upgrading an existing install:** the hook can only wire itself by being installed, so a bare
+`git pull` in your clone is not enough. Run `baseline update` (or `./install.sh`) **once** by
+hand after upgrading; every session after that is automatic. An install made with `--no-hooks`
+stays opted out.
 
 ### The two-clone topology
 
@@ -216,6 +285,11 @@ naming the install-source, so a dev clone is never mistaken for it. The dev clon
 kept current separately: after a PR merges, the next `/implement-issue` auto-syncs it
 to a clean, current default branch.
 
+The SessionStart hook respects the same split from the other direction: it always targets the
+install-source (resolving it the same way `baseline` does, never via `PATH`), and it skips
+entirely when the session you just started is *inside* that clone. So a session in the dev
+clone updates the install-source; a session in the install-source updates nothing.
+
 ## Uninstalling
 
 ```bash
@@ -227,9 +301,13 @@ cd ~/Code/ai-dev-baseline
 `uninstall.sh` only removes a destination if it is **currently a symlink
 pointing somewhere inside this repo** (`adb_unlink_if_ours`) — a real file, or a
 symlink pointing elsewhere, is left alone and reported as `skip ... (not
-ours)`. It also strips the two named Stop-hook gate entries out of
-`~/.claude/settings.json` (again via `jq`, matched by filename) and removes
-the `hooks.Stop` key entirely if that leaves it empty. Your backups under
+ours)`. It also strips the baseline's own hook entries — the two `Stop` gates
+and the `SessionStart` currency check — out of `~/.claude/settings.json` (again
+via `jq`, matched by filename) and removes a hook-event key entirely once that
+leaves it empty. Hooks you added yourself under the same events are left alone.
+Removing the SessionStart entry matters as much as unlinking the script: a
+leftover entry pointing at a deleted command would error on every future
+session. Your backups under
 `~/.claude/backups/ai-dev-baseline-*` are **never** touched by uninstall —
 restore from them by hand if you want the pre-install files back.
 

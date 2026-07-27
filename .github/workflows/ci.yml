@@ -341,6 +341,21 @@ jobs:
       - name: End-to-end test bin/baseline currency classification
         run: bash scripts/check-baseline.sh
 
+  session-currency:
+    name: session-currency
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        # The hook emits its one line as structured JSON, and the test asserts on it.
+        run: sudo apt-get install -y jq
+
+      - name: SessionStart currency hook — source gate, two-clone split, safety, wiring (#36)
+        run: bash scripts/check-session-currency.sh
+
   precommit-gate:
     name: precommit-gate
     runs-on: ubuntu-latest

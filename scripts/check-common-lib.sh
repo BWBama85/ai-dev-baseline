@@ -370,6 +370,94 @@ eq "$(adb_branch_sync_state "$sbrepo" main)" "diverged" "sync state: diverged"
 git -C "$sbrepo" branch feature-x
 eq "$(adb_branch_sync_state "$sbrepo" feature-x)" "no-remote" "sync state: no-remote"
 
+# --- adb_clone_local_state / adb_clone_status (#36) ---------------------------
+# The no-network half of currency classification, moved out of bin/baseline so the SessionStart
+# hook shares one implementation. What matters is that a clone which will be REFUSED is
+# recognized from local state alone — no fetch, so no remote-tracking refs written and no
+# network cost on a session started from an unsafe clone. Reuses the sync-state fixture above,
+# which currently sits `diverged` with a local-only commit.
+git -C "$sbrepo" reset -q --hard origin/main
+git -C "$sbrepo" checkout -q main
+eq "$(adb_clone_local_state "$sbrepo" main)" "local-ok" "local state: clean + on default → local-ok"
+eq "$(adb_clone_status "$sbrepo" main)" "current" "clone status defers to the sync state when local-ok"
+
+printf 'x\n' > "$sbrepo/dirty.txt"
+eq "$(adb_clone_local_state "$sbrepo" main)" "dirty" "local state: an untracked change is dirty"
+eq "$(adb_clone_status "$sbrepo" main)" "dirty" "clone status short-circuits on dirty"
+rm -f "$sbrepo/dirty.txt"
+
+# Every sentinel git writes for an operation in progress. A clean tree is NOT proof of safety:
+# a rebase between steps and a bisect both leave one, and only some of them detach HEAD.
+sbgit="$(git -C "$sbrepo" rev-parse --absolute-git-dir)"
+for sentinel in rebase-merge/ rebase-apply/ sequencer/ MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG; do
+  case "$sentinel" in
+    */) mkdir -p "$sbgit/${sentinel%/}" ;;
+    *)  printf 'ref\n' > "$sbgit/$sentinel" ;;
+  esac
+  eq "$(adb_clone_local_state "$sbrepo" main)" "in-progress" "local state: in-progress ($sentinel)"
+  rm -rf "${sbgit:?}/${sentinel%/}"
+done
+
+git -C "$sbrepo" checkout -q --detach HEAD
+eq "$(adb_clone_local_state "$sbrepo" main)" "detached" "local state: detached HEAD"
+git -C "$sbrepo" checkout -q main
+eq "$(adb_clone_local_state "$sbrepo" feature-x)" "not-default" "local state: on a non-default branch"
+eq "$(adb_clone_local_state "$work" main)" "not-a-repo" "local state: not a git work tree"
+
+# The git dir must be resolved ABSOLUTELY: `rev-parse --git-dir` prints a path relative to the
+# work tree, which would resolve against the CALLER's cwd. Calling from elsewhere must give the
+# same verdict as calling from inside — otherwise every sentinel test silently looks in the
+# wrong directory and in-progress state reads as safe.
+mkdir -p "$sbgit/rebase-merge"
+eq "$( cd "$work" && adb_clone_local_state "$sbrepo" main )" "in-progress" \
+  "local state: in-progress is detected from any cwd"
+rm -rf "$sbgit/rebase-merge"
+
+# --- adb_install_source / adb_link_into (#36) --------------------------------
+# Shared with the SessionStart hook, which must resolve the SAME clone by the SAME rule.
+isrc="$work/isrc"; mkdir -p "$isrc/agents/claude"
+printf '#!/usr/bin/env bash\n' > "$isrc/install.sh"
+printf 'doc\n' > "$isrc/agents/claude/CLAUDE.md"
+ihome="$work/ihome"; mkdir -p "$ihome/.claude"
+eq "$(adb_install_source "$ihome" 2>/dev/null)" "" "install source: nothing linked → empty"
+adb_install_source "$ihome" >/dev/null 2>&1; no "$?" "install source: returns non-zero when nothing is linked"
+ln -s "$isrc/agents/claude/CLAUDE.md" "$ihome/.claude/CLAUDE.md"
+eq "$(adb_install_source "$ihome")" "$isrc" "install source: resolved from the root-doc symlink"
+# A DANGLING root doc still identifies the clone — repairing that link is the whole point.
+rm -f "$ihome/.claude/CLAUDE.md"
+ln -s "$isrc/agents/claude/CLAUDE-moved.md" "$ihome/.claude/CLAUDE.md"
+eq "$(adb_install_source "$ihome")" "$isrc" "install source: a dangling root doc still resolves"
+# A RELATIVE target is not one of ours (install.sh always records absolute), and must be ignored
+# rather than resolved against whatever the caller's cwd happens to be.
+rm -f "$ihome/.claude/CLAUDE.md"
+ln -s "../relative/CLAUDE.md" "$ihome/.claude/CLAUDE.md"
+adb_install_source "$ihome" >/dev/null 2>&1; no "$?" "install source: a relative target is not ours"
+
+adb_link_into "$ihome/.claude/CLAUDE.md" "$isrc"; no "$?" "link_into: a relative link is not inside src"
+rm -f "$ihome/.claude/CLAUDE.md"
+ln -s "$isrc/agents/claude/CLAUDE.md" "$ihome/.claude/CLAUDE.md"
+adb_link_into "$ihome/.claude/CLAUDE.md" "$isrc"; yes "$?" "link_into: a link into src is ours"
+adb_link_into "$ihome/.claude/CLAUDE.md" "$work/elsewhere"; no "$?" "link_into: a link elsewhere is not ours"
+printf 'real\n' > "$ihome/.claude/realfile"
+adb_link_into "$ihome/.claude/realfile" "$isrc"; no "$?" "link_into: a real file is never ours"
+
+# --- adb_claude_hook_scripts / adb_claude_hook_regex (#36) -------------------
+# One enumeration feeds the manifest AND both settings filters. If they drift, a hook is either
+# linked-but-never-wired or wired-but-never-removed on uninstall.
+eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "3" "hook scripts: three wired hooks"
+has "$(adb_claude_hook_scripts)" "session-currency.sh" "hook scripts: includes the currency hook"
+hasnt "$(adb_claude_hook_scripts)" "statusline.sh" "hook scripts: excludes the non-hook statusline"
+eq "$(adb_claude_hook_regex)" '(precommit-gate|implement-issue-gate|session-currency)\.sh$' \
+  "hook regex: built from the same list, anchored at the end"
+# Every wired hook must also be a manifest entry, or it is never linked into place.
+manifest_dests="$(adb_agent_manifest claude /R /H | cut -f2)"
+while IFS= read -r hs; do
+  [ -n "$hs" ] || continue
+  has "$manifest_dests" "/H/.claude/scripts/$hs" "manifest links the wired hook $hs"
+done <<EOF
+$(adb_claude_hook_scripts)
+EOF
+
 # --- adb_require_gh / adb_repo_slug (#87) ------------------------------------
 # Both are sourced by release-convention.sh AND repo-settings.sh, so a regression here breaks two
 # gh-backed modules at once. The contract that matters: they RETURN non-zero (never `exit`, which

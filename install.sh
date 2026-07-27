@@ -54,25 +54,45 @@ EOF
   return "$rc"
 }
 
+# Merge EVERY hook-event group in agents/claude/settings.hooks.json into ~/.claude/settings.json.
+# Driven by that file's own top-level keys (Stop, SessionStart, …) rather than a hardcoded event
+# name, so adding an event there is the only edit a new hook needs here.
+#
+# Idempotent and non-destructive in one filter: for each event, drop the groups that reference
+# one of OUR hook scripts (adb_claude_hook_regex — derived from the single hook enumeration in
+# common.sh), then append ours. A user's own groups under the same event never match the regex,
+# so they survive; a re-run replaces our previous entry instead of double-adding it.
+#
+# Returns non-zero on failure. That matters: the previous version ended with an unconditional
+# "wired" line even when jq or mv had failed, so a broken settings.json was reported as success
+# and enforcement was silently off.
 wire_hooks() {
   if ! command -v jq >/dev/null 2>&1; then
     adb_info "  WARN   jq not found — cannot wire hooks; install jq and re-run, or wire manually"
-    return
+    return 1
   fi
   local settings="$HOME/.claude/settings.json"
-  local group
-  group="$(sed "s@__ADB_HOME__@$HOME@g" "$REPO/agents/claude/settings.hooks.json" | jq '.Stop[0]')"
+  local groups re
+  groups="$(sed "s@__ADB_HOME__@$HOME@g" "$REPO/agents/claude/settings.hooks.json")" || {
+    adb_info "  WARN   could not read agents/claude/settings.hooks.json — hooks NOT wired"; return 1; }
+  re="$(adb_claude_hook_regex)"
   [ -f "$settings" ] || echo '{}' > "$settings"
   mkdir -p "$BACKUP_DIR$(dirname "$settings")"
   cp "$settings" "$BACKUP_DIR$settings"
-  jq --argjson group "$group" '
-    .hooks = (.hooks // {})
-    | .hooks.Stop = ((.hooks.Stop // [])
-        | map(select(([.hooks[]?.command // ""]
-              | any(test("(precommit-gate|implement-issue-gate)\\.sh$"))) | not))
-        + [$group])
-  ' "$settings" > "$settings.adb.tmp" && mv "$settings.adb.tmp" "$settings"
-  adb_info "  hooks  wired global Stop gates into ~/.claude/settings.json (backed up)"
+  if ! jq --argjson groups "$groups" --arg re "$re" '
+        .hooks = (.hooks // {})
+        | reduce ($groups | to_entries[]) as $e (.;
+            .hooks[$e.key] = (((.hooks[$e.key] // [])
+              | map(select(([.hooks[]?.command // ""] | any(test($re))) | not)))
+              + $e.value))
+      ' "$settings" > "$settings.adb.tmp"; then
+    rm -f "$settings.adb.tmp"
+    adb_info "  WARN   ~/.claude/settings.json is not valid JSON — hooks NOT wired (restore from the backup)"
+    return 1
+  fi
+  mv "$settings.adb.tmp" "$settings" || {
+    adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"; return 1; }
+  adb_info "  hooks  wired global Stop gates + SessionStart currency check into ~/.claude/settings.json (backed up)"
 }
 
 run_adapter() {

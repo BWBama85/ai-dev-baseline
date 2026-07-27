@@ -21,9 +21,11 @@
 #   baseline -h | --help
 #
 # `update` never touches unsafe state: it fast-forwards ONLY when the install-source
-# clone is clean, on its default branch, and merely behind origin. A dirty / detached
-# / non-default / ahead / diverged clone is surfaced and left untouched — currency is
-# a convenience, never a cause of lost work. After a fast-forward it re-runs the
+# clone is clean, on its default branch, free of an in-progress git operation, and merely
+# behind origin. A dirty / in-progress / detached / non-default / ahead / diverged clone is
+# surfaced and left untouched — currency is a convenience, never a cause of lost work. Those
+# unsafe states are classified from LOCAL state BEFORE any fetch, so a run that is going to
+# refuse costs no network round trip and writes no remote-tracking refs. After a fast-forward it re-runs the
 # idempotent installer ONLY when an installed path actually moved (a symlink stopped
 # resolving), preserving the exact agent set + hook preference already installed. It first
 # PRUNES orphaned links a rename/removal left behind (ownership-scoped — only a dangling
@@ -34,11 +36,16 @@
 # clone is never mistaken for the install source. The dev clone is kept current by
 # `/implement-issue`'s preflight auto-sync (issue #17) instead.
 #
-# `--check` exit codes (a stable machine contract for a future SessionStart hook,
-# issue #25): 0 = current · 10 = behind (update available) · 20 = needs attention
-# (dirty|ahead|diverged|detached|not-default) · 30 = error (fetch failed | no
-# origin/<default> | not a repo). It fetches, prints one status word to stdout, and
-# mutates nothing.
+# `--check` exit codes (the stable machine contract the Claude SessionStart currency hook
+# consumes, issue #36): 0 = current · 10 = behind (update available) · 20 = needs attention
+# (dirty|in-progress|ahead|diverged|detached|not-default) · 30 = error (fetch failed | no
+# origin/<default> | not a repo). It prints one status word to stdout and changes nothing in
+# the working tree; it fetches (writing remote-tracking refs) only when local state is
+# otherwise safe, since the refusing states are decided without the network.
+#
+# `update` additionally exits 5 when another `baseline update` already holds the per-clone
+# lock. Concurrent updates are ordinary now that a SessionStart hook can start several at
+# once, so the second one steps aside instead of racing the first through pull + install.
 
 set -uo pipefail
 
@@ -93,32 +100,11 @@ if [ "${1:-}" = "repo" ]; then
 fi
 
 # --- discovery ---------------------------------------------------------------
-
-# Print the repo root the global install points INTO, resolved from whichever agent
-# root-doc symlink exists (install.sh links each with an absolute target). The link's
-# TARGET need not currently resolve — a dangling root doc (the very path that moved, or
-# a failed prior repair) still identifies the clone, and repairing it is the whole point;
-# the clone is validated by install.sh + agents/ existing, not by the doc file existing.
-# Prints nothing and returns 1 when no installed symlink is found.
-adb_install_source() {
-  local link target root
-  for link in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md" "$HOME/.gemini/GEMINI.md"; do
-    [ -L "$link" ] || continue
-    target="$(readlink "$link")"
-    case "$target" in /*) ;; *) continue ;; esac   # expect an absolute target
-    # agents/<agent>/<DOC> sits three levels below the repo root. Logical `pwd` keeps this
-    # the same flavor as the recorded symlink targets so adb_installed_links can prefix-
-    # match them; the wrong-clone guard uses `-ef`, so no physical canonicalization is needed.
-    root="$(cd "$(dirname "$target")/../.." 2>/dev/null && pwd)" || continue
-    if [ -f "$root/install.sh" ] && [ -d "$root/agents" ]; then
-      printf '%s\n' "$root"; return 0
-    fi
-  done
-  return 1
-}
-
-# True iff <path> is a symlink whose target is inside <src>.
-adb_link_into() { [ -L "$1" ] && case "$(readlink "$1")" in "$2"/*) return 0 ;; esac; return 1; }
+#
+# adb_install_source (resolve the clone the global install points into) and adb_link_into
+# (the ownership test) now live in scripts/lib/common.sh, sourced above: the SessionStart
+# currency hook resolves the SAME clone by the SAME rule, and two implementations of that
+# rule would be exactly the drift this library exists to prevent.
 
 # Print one installed agent token per line — ONLY agents whose root-doc symlink points
 # INTO <src>. An update must re-install exactly this set (never install.sh's bare default)
@@ -252,19 +238,43 @@ EOF
 }
 
 # --- state -------------------------------------------------------------------
+#
+# adb_clone_local_state (no-network classification) and adb_clone_status (that, plus the
+# fetched-refs comparison) also live in scripts/lib/common.sh — the SessionStart hook needs
+# the same words to decide what to report.
 
-# Classify the install-source clone. Echoes exactly one word, cheapest-safety-first:
-#   not-a-repo | dirty | detached | not-default | current | behind | ahead | diverged | no-remote
-# Requires a prior `git fetch` for behind/ahead/diverged accuracy. The default branch is
-# passed in (the caller already resolved it) so it isn't computed twice.
-# Usage: adb_clone_status <root> <default-branch>
-adb_clone_status() {
-  local root="$1" default="$2" cur
-  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { printf 'not-a-repo\n'; return 0; }
-  if [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then printf 'dirty\n'; return 0; fi
-  cur="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null)" || { printf 'detached\n'; return 0; }
-  [ "$cur" = "$default" ] || { printf 'not-default\n'; return 0; }
-  adb_branch_sync_state "$root" "$default"
+# --- update serialization ----------------------------------------------------
+#
+# The mutating path (pull + prune + install.sh) must not run twice at once. That was already
+# possible by hand (two terminals), and the SessionStart hook makes it LIKELY: several sessions
+# can start within the same second and each would race the others through `git pull` and a
+# settings.json rewrite. `mkdir` is the portable atomic test-and-set (macOS has no flock(1)).
+#
+# Stale-lock recovery is by AGE, not by liveness: a pid check cannot distinguish "that pid died"
+# from "that pid was recycled", and the failure we are protecting against is a killed updater
+# (the hook's own harness timeout can do exactly that), not a wedged one. The bound is generous
+# because a legitimate pull + full re-install is seconds, not minutes.
+_ADB_LOCK_STALE_SECS="${ADB_UPDATE_LOCK_STALE_SECS:-600}"
+
+# Portable mtime in epoch seconds (BSD stat on macOS, GNU stat on Linux). Prints nothing when
+# the path is gone — the caller treats that as "no lock", which is the safe direction.
+adb_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+
+# Acquire the update lock for <src>. Returns 0 when held by us, 1 when another update holds it.
+# The lock lives beside the clone's git dir rather than in $HOME so it is scoped to the clone
+# being mutated (two DIFFERENT install-sources never block each other) and so a fake-HOME test
+# can never collide with a real one.
+adb_update_lock() {
+  local src="$1" lock="$2" age now
+  mkdir "$lock" 2>/dev/null && return 0
+  # Held. Break it only if it is provably older than the stale bound.
+  age="$(adb_mtime "$lock")"
+  now="$(date +%s)"
+  if [ -n "$age" ] && [ -n "$now" ] && [ "$((now - age))" -gt "$_ADB_LOCK_STALE_SECS" ]; then
+    rmdir "$lock" 2>/dev/null
+    mkdir "$lock" 2>/dev/null && return 0
+  fi
+  return 1
 }
 
 # --- argument parsing --------------------------------------------------------
@@ -309,15 +319,24 @@ fi
 
 DEFAULT="$(adb_default_branch "$SRC")"
 
-# --- fetch + classify --------------------------------------------------------
+# --- classify locally, THEN fetch --------------------------------------------
+#
+# Order matters twice over. A clone that is dirty / mid-rebase / detached / on a feature branch
+# will be refused no matter what origin says, so asking origin first is pure cost — and it is
+# not free of side effects either: `git fetch` writes remote-tracking refs and FETCH_HEAD, which
+# `--check` documents itself as never doing. Classifying local state first makes `--check`
+# honest for exactly the states it refuses, and keeps the SessionStart hook off the network on
+# every session started from an unsafe clone.
 
-if ! git -C "$SRC" fetch --quiet origin 2>/dev/null; then
-  [ "$CHECK" -eq 1 ] && echo "fetch-failed"
-  echo "baseline: 'git fetch' failed in $SRC (offline?) — cannot determine currency." >&2
-  exit 30
+STATUS="$(adb_clone_local_state "$SRC" "$DEFAULT")"
+if [ "$STATUS" = "local-ok" ]; then
+  if ! git -C "$SRC" fetch --quiet origin 2>/dev/null; then
+    [ "$CHECK" -eq 1 ] && echo "fetch-failed"
+    echo "baseline: 'git fetch' failed in $SRC (offline?) — cannot determine currency." >&2
+    exit 30
+  fi
+  STATUS="$(adb_branch_sync_state "$SRC" "$DEFAULT")"
 fi
-
-STATUS="$(adb_clone_status "$SRC" "$DEFAULT")"
 
 # --- --check: report only, mutate nothing ------------------------------------
 
@@ -326,10 +345,33 @@ if [ "$CHECK" -eq 1 ]; then
   case "$STATUS" in
     current)                                exit 0  ;;
     behind)                                 exit 10 ;;
-    dirty|ahead|diverged|detached|not-default) exit 20 ;;
+    dirty|ahead|diverged|detached|not-default|in-progress) exit 20 ;;
     *)                                      exit 30 ;;   # no-remote | not-a-repo
   esac
 fi
+
+# --- serialize the mutating path ---------------------------------------------
+#
+# Taken AFTER classification (a read-only run needs no lock) and BEFORE any mutation. When
+# another update holds it, exit 5 rather than waiting: the caller is either a human who can
+# re-run, or the SessionStart hook, which must not stall a session behind a peer's pull.
+UPDATE_LOCK="$(git -C "$SRC" rev-parse --absolute-git-dir 2>/dev/null)/adb-update.lock"
+if ! adb_update_lock "$SRC" "$UPDATE_LOCK"; then
+  echo "baseline: another 'baseline update' is running for $SRC — skipping this one." >&2
+  exit 5
+fi
+# Release on ANY exit path, including a signal: a lock left behind by a killed updater would
+# otherwise block every session for the full stale bound.
+trap 'rmdir "$UPDATE_LOCK" 2>/dev/null' EXIT
+trap 'rmdir "$UPDATE_LOCK" 2>/dev/null; exit 143' TERM
+trap 'rmdir "$UPDATE_LOCK" 2>/dev/null; exit 130' INT
+
+# Re-classify under the lock: between the read above and this point a peer update may have
+# already pulled (so `behind` became `current`), or the operator may have started editing (so
+# `local-ok` became `dirty`). Acting on the pre-lock reading would be exactly the stale-state
+# trust base/practices/verify-before-asserting.md forbids.
+STATUS="$(adb_clone_local_state "$SRC" "$DEFAULT")"
+[ "$STATUS" = "local-ok" ] && STATUS="$(adb_branch_sync_state "$SRC" "$DEFAULT")"
 
 # --- update ------------------------------------------------------------------
 
@@ -372,6 +414,12 @@ case "$STATUS" in
   dirty)
     echo "baseline: install-source tree is dirty — skipping (never auto-pulls over uncommitted work)." >&2
     echo "          Commit or stash in $SRC, then re-run 'baseline update'." >&2
+    exit 20
+    ;;
+  in-progress)
+    echo "baseline: install-source has a merge/rebase/cherry-pick/bisect in progress — skipping." >&2
+    echo "          $SRC" >&2
+    echo "          Finish or abort that operation, then re-run 'baseline update'." >&2
     exit 20
     ;;
   ahead|diverged|detached|not-default)

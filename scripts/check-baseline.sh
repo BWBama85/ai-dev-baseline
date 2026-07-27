@@ -40,7 +40,7 @@ printf '#!/usr/bin/env bash\nprintf "install: %%s\\n" "$*" >> "%s"\n' "$work/ins
 chmod +x "$seed/install.sh"
 printf 'root doc\n' > "$seed/agents/claude/CLAUDE.md"
 printf 'demo skill\n' > "$seed/agents/claude/skills/demo/SKILL.md"
-for s in precommit-gate implement-issue-gate statusline; do
+for s in precommit-gate implement-issue-gate statusline session-currency; do
   printf '#stub\n' > "$seed/agents/claude/scripts/$s.sh"
 done
 
@@ -61,7 +61,7 @@ src="$work/src"; git clone -q "$origin" "$src"
 fh="$work/home"; mkdir -p "$fh/.claude/skills" "$fh/.claude/scripts"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
-for s in precommit-gate implement-issue-gate statusline; do
+for s in precommit-gate implement-issue-gate statusline session-currency; do
   ln -s "$src/agents/claude/scripts/$s.sh" "$fh/.claude/scripts/$s.sh"
 done
 ln -s "$src/scripts/lib" "$fh/.claude/scripts/lib"
@@ -128,6 +128,56 @@ eq "$(run_check "$src/bin/baseline" "$fh")" "detached|20" "detached"
 reset_src
 git -C "$src" checkout -q -b feature-y
 eq "$(run_check "$src/bin/baseline" "$fh")" "not-default|20" "not-default"
+
+# in-progress: a mid-operation clone with a CLEAN tree — the case `git status --porcelain` and
+# the detached-HEAD test both miss. Each sentinel git itself writes must be recognized, because
+# fast-forwarding into a half-finished merge/rebase/cherry-pick is the worst possible moment.
+gitdir="$(git -C "$src" rev-parse --absolute-git-dir)"
+for sentinel in rebase-merge/ rebase-apply/ sequencer/ MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG; do
+  reset_src
+  case "$sentinel" in
+    */) mkdir -p "$gitdir/${sentinel%/}" ;;
+    *)  printf '%s\n' "$(git -C "$src" rev-parse HEAD)" > "$gitdir/$sentinel" ;;
+  esac
+  eq "$(run_check "$src/bin/baseline" "$fh")" "in-progress|20" "in-progress ($sentinel)"
+  rm -rf "${gitdir:?}/${sentinel%/}"
+done
+
+# Unsafe local state must be classified WITHOUT a fetch: `--check` documents itself as changing
+# nothing, and the SessionStart hook must not pay a network round trip on a clone it will refuse.
+# Proven by pointing origin at a path that cannot be fetched — a run that reached the network
+# would report the fetch error (exit 30) instead of the local verdict.
+reset_src
+printf 'local edit\n' >> "$src/agents/claude/CLAUDE.md"
+git -C "$src" remote set-url origin "$work/no-such-origin.git"
+eq "$(run_check "$src/bin/baseline" "$fh")" "dirty|20" "dirty is classified before any fetch"
+git -C "$src" remote set-url origin "$origin"
+reset_src
+
+# The update lock serializes the mutating path: a held lock makes a second update step aside
+# with exit 5 rather than racing the first through pull + install (several sessions can start
+# at once now that a SessionStart hook triggers this).
+reset_src
+advance_origin "lock-case"
+mkdir -p "$gitdir/adb-update.lock"
+head_locked="$(git -C "$src" rev-parse HEAD)"
+eq "$(run_update "$src/bin/baseline" "$fh")" "5" "a held update lock exits 5"
+eq "$(git -C "$src" rev-parse HEAD)" "$head_locked" "a locked-out update changes nothing"
+rmdir "$gitdir/adb-update.lock"
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "the update proceeds once the lock is released"
+if [ -d "$gitdir/adb-update.lock" ]; then bad "the lock must be released on exit"; else ok; fi
+
+# A STALE lock (older than the bound) is broken rather than blocking forever — a killed updater
+# must not lock every future session out. Aged with `touch` rather than by waiting, and against
+# the REAL default bound rather than a degenerate 0.
+reset_src
+advance_origin "stale-lock-case"
+mkdir -p "$gitdir/adb-update.lock"
+touch -t 202001010000 "$gitdir/adb-update.lock"
+head_stale="$(git -C "$src" rev-parse HEAD)"
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "a stale lock is broken, not obeyed"
+if [ "$(git -C "$src" rev-parse HEAD)" != "$head_stale" ]; then ok; else bad "a stale-locked update should proceed"; fi
+rm -rf "$gitdir/adb-update.lock"
 
 # wrong-clone guard: invoking THIS repo's baseline (a different clone) against an
 # install that points at src must refuse with exit 4, before any classification.

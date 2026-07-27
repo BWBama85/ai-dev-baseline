@@ -31,18 +31,32 @@ uninstall_claude() {
 $(adb_agent_manifest claude "$REPO" "$HOME")
 EOF
 
+  # Unwire every event we may have wired, not just Stop — a leftover SessionStart entry pointing
+  # at a removed script would produce a hook error on EVERY future session. Mirrors install.sh:
+  # same ownership regex (adb_claude_hook_regex, one home), applied across all hook events, and
+  # an event key is dropped only once it is empty (never a user's own remaining group).
   if command -v jq >/dev/null 2>&1; then
     local settings="$HOME/.claude/settings.json"
+    local re
+    re="$(adb_claude_hook_regex)"
     if [ -f "$settings" ]; then
-      jq '
-        if .hooks.Stop then
-          .hooks.Stop |= map(select(([.hooks[]?.command // ""]
-            | any(test("(precommit-gate|implement-issue-gate)\\.sh$"))) | not))
-        else . end
-        | if (.hooks.Stop // []) == [] then del(.hooks.Stop) else . end
-      ' "$settings" > "$settings.adb.tmp" && mv "$settings.adb.tmp" "$settings"
-      adb_info "  hooks  removed global Stop gates from ~/.claude/settings.json"
+      if jq --arg re "$re" '
+            if (.hooks | type) == "object" then
+              .hooks |= with_entries(
+                if (.value | type) == "array"
+                then .value |= map(select(([.hooks[]?.command // ""] | any(test($re))) | not))
+                else . end)
+              | .hooks |= with_entries(select((.value | type) != "array" or (.value | length) > 0))
+            else . end
+          ' "$settings" > "$settings.adb.tmp" && mv "$settings.adb.tmp" "$settings"; then
+        adb_info "  hooks  removed global Stop gates + SessionStart currency check from ~/.claude/settings.json"
+      else
+        rm -f "$settings.adb.tmp"
+        adb_info "  WARN   could not rewrite ~/.claude/settings.json — hook entries NOT removed; edit it by hand"
+      fi
     fi
+  else
+    adb_info "  WARN   jq not found — hook entries left in ~/.claude/settings.json; remove them by hand"
   fi
 }
 

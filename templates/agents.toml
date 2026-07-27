@@ -44,6 +44,24 @@ debug        = "claude"     # owns root-cause investigations.
 # lint      = "na"
 # typecheck = "na"
 
+# Optional: how the INSTALLED baseline keeps itself current (issue #36).
+#
+# GLOBAL ONLY — read from ~/.config/ai-dev-baseline/agents.toml and NOWHERE else. A copy of
+# this key in a PROJECT's agents.toml is ignored on purpose: whether your global tooling
+# updates itself must not depend on which repo you happened to open.
+#
+#   auto   (default) a Claude SessionStart hook fast-forwards the install-source clone and
+#          re-runs the idempotent install, then reports one line naming what changed. It
+#          refuses a dirty / mid-rebase / detached / non-default / ahead / diverged clone, and
+#          never touches the clone the current session is working in.
+#   notify the same check, but it only reports "behind" — you run `baseline update` yourself.
+#   off    the hook exits immediately and does nothing.
+#
+# ADB_SESSION_UPDATE overrides this for one run; ADB_SESSION_UPDATE_INTERVAL_SECS (default
+# 600, 0 = every session) bounds how often the check re-runs.
+# [updates]
+# session_start = "auto"
+
 # Optional: scope a gate to a changed-files condition. Comma-separated globs;
 # "*" matches across "/". A scoped gate runs only when the change set (supplied
 # by the Stop-hook) touches a matching path — no forked gate script needed.
