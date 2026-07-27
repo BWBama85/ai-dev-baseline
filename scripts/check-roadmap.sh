@@ -337,12 +337,41 @@ has "$inflight_block" 'REPO=' \
   "the in-flight snippet resolves \$REPO itself (no cross-snippet variable dependency)"
 has "$inflight_block" 'OPEN_PRS=' \
   "...and fetches the open-PR set in that same snippet"
-gauge_block="$(awk '/^# Omit the line unless the label actually exists/,/^```$/' "$WF")"
+# Extract each executable snippet by its `# ADB-SNIPPET:` marker — the same anchors
+# scripts/check-roadmap-e2e.sh runs them from. Anchoring on a marker rather than on a prose line
+# (or on "the line immediately above the comment") is what keeps this guard from breaking when
+# a legitimate statement is added to the block, which a positional check did.
+wf_snippet() {
+  awk -v want="$1" '
+    $0 ~ ("^[[:space:]]*# ADB-SNIPPET: " want "$") { inb = 1; next }
+    inb && /^[[:space:]]*```[[:space:]]*$/ { exit }
+    inb { print }
+  ' "$WF"
+}
+gauge_block="$(wf_snippet gauge)"
 has "$gauge_block" 'labels/$LABEL' \
   "the destination-report snippet probes the label"
-# The line immediately above that comment must be the snippet's own REPO resolution.
-has "$(grep -B1 '^# Omit the line unless the label actually exists' "$WF")" 'REPO=' \
+has "$gauge_block" 'REPO=' \
   "the destination-report snippet resolves \$REPO itself"
+# The gauge is OPTIONAL, so an unset LABEL is the normal "not configured" case: it must
+# short-circuit, never probe `repos/OWNER/REPO/labels/` with an empty name and never die under
+# `set -u`. (Found by the e2e harness executing this snippet.)
+has "$gauge_block" 'LABEL="${LABEL:-}"' \
+  "the gauge tolerates an unconfigured destination-label instead of exploding on it"
+has "$gauge_block" '[ -n "$LABEL" ] &&' \
+  "...and skips the probe entirely when none is configured"
+readiness_block="$(wf_snippet readiness)"
+has "$readiness_block" 'REPO=' \
+  "the readiness snippet resolves \$REPO itself (it may run as its own shell invocation)"
+has "$readiness_block" 'M_NUM:?' \
+  "...and fails loud on an unresolved milestone number rather than addressing milestone=''"
+# A pipeline reports only its LAST command's status, so `gh api … | release-counts` returns 0 on a
+# failed read — the tabulator sees empty stdin, which is a legitimately empty milestone, and the
+# verdict becomes `unarmed`. Read and tabulate must be separate, separately-checked steps.
+has "$readiness_block" 'M_ISSUES=' \
+  "the milestone READ is captured and checked on its own status, not through a pipeline"
+has "$readiness_block" 'could not read milestone' \
+  "...and a failed read reports as a failed read, never as an empty release set"
 
 # Every rendered agent skill must carry the RESOLVED helper path. check-workflow-render.sh
 # proves {{ROADMAP_LIB}} substitutes correctly against a synthetic fixture and that no committed
@@ -637,5 +666,126 @@ has "$wf" 'never** retirable' \
 # fresh repo has nowhere durable to be answered.
 has "$wf" 'empty `## Decisions` section' \
   "bootstrap seeds the Decisions section so the first question has a recording home"
+
+# ============================================================================================
+# 9. OPEN-ISSUES + READ-COMPLETE — completeness of the backlog read (#79)
+# ============================================================================================
+# The read used a bare `--limit 200` with no pagination and no truncation detection. Because `gh`
+# returns newest-first the DROPPED issues are the oldest, and because an open issue missing from
+# the open set is reconciled to `Done`, a truncated read does not merely omit rows — it deletes
+# real work from the plan. Truncation is not an error, so the hard-stop-on-gh-error rule never
+# fired on it; these two predicates are what makes completeness checkable.
+
+# oi <json> -> the open issue numbers, space-separated.
+oi() { printf '%s' "$1" | bash "$RL" open-issues 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+O_OPEN_A='{"number":5,"state":"open"}'
+O_OPEN_B='{"number":12,"state":"open"}'
+O_CLOSED='{"number":7,"state":"closed"}'
+O_PR='{"number":9,"state":"open","pull_request":{"url":"x"}}'
+
+eq "$(oi "[$O_OPEN_A,$O_OPEN_B]")"  '5 12' "open issues are reported"
+eq "$(oi "[$O_OPEN_B,$O_OPEN_A]")"  '5 12' "output is ascending, not source order"
+eq "$(oi "[$O_OPEN_A,$O_CLOSED]")"  '5'    "a closed issue is not in the open set"
+eq "$(oi "[$O_OPEN_A,$O_PR]")"      '5'    "a PR is excluded (repos/../issues returns PRs too)"
+eq "$(oi '[]')"                     ''     "an empty repo is empty output, not an error"
+eq "$(oi "[$O_OPEN_A,$O_OPEN_A]")"  '5'    "duplicates across page boundaries collapse"
+# The artifact is deliberately NOT excluded here: this set is compared against a repo-wide
+# `is:issue is:open` total, so both sides must count the same population. Excluding it here would
+# make every completeness check off by one — a `short` verdict, i.e. a hard stop, on a healthy repo.
+eq "$(oi '[{"number":31,"state":"open","labels":[{"name":"roadmap"}]}]')" '31' \
+   "the roadmap artifact is counted (the caller drops it; the completeness check must not)"
+# `gh api --paginate` can emit ONE merged array or a separate array per page. Reading only the
+# first input would silently drop every page after the first — the exact truncation this ends.
+eq "$(oi "[$O_OPEN_A]
+[$O_OPEN_B]")" '5 12' "a separate-array-per-page stream is fully consumed"
+printf 'not json' | bash "$RL" open-issues >/dev/null 2>&1
+eq "$?" 2 "malformed JSON is exit 2, never a silent empty open set"
+printf '[]' | bash "$RL" open-issues extra >/dev/null 2>&1
+eq "$?" 2 "open-issues takes no arguments"
+
+# rc <read> <expected> -> the verdict.
+rcv() { bash "$RL" read-complete "$1" "$2" 2>/dev/null; }
+eq "$(rcv 140 140)" complete "an exact match is complete"
+eq "$(rcv 0 0)"     complete "an empty repo is complete, not short"
+eq "$(rcv 200 231)" short    "a capped read that came back short is SHORT (the #79 failure)"
+eq "$(rcv 0 3)"     short    "a read that returned nothing against a non-zero total is SHORT"
+eq "$(rcv 141 140)" ahead    "more than expected is 'ahead' (the Search index lags REST)"
+# The asymmetry is the whole design: demanding equality in BOTH directions would hard-stop a
+# healthy run whenever an issue was filed between the two reads.
+run read-complete 200;        eq "$RC_" 2 "too few args is an ERROR"
+run read-complete 1 2 3;      eq "$RC_" 2 "too many args is an ERROR"
+run read-complete x 1;        eq "$RC_" 2 "a non-numeric read count is an ERROR"
+run read-complete 1 x;        eq "$RC_" 2 "a non-numeric expected total is an ERROR"
+run read-complete -1 1;       eq "$RC_" 2 "a negative count is an ERROR"
+run read-complete 99999999999999999999 1
+eq "$RC_" 2 "an over-wide count is an ERROR, not a fabricated verdict"
+# An errored call must print NO VERDICT on stdout — a caller reads stdout, and a `case` that fell
+# through to `complete` would proceed on a read it could not verify. Assert stdout alone (the
+# combined-output helper cannot: the diagnostic legitimately names the `read-complete` subcommand,
+# which contains the word "complete").
+for bad_rc in "-1 1" "x 1" "1 x" "99999999999999999999 1" "1"; do
+  # shellcheck disable=SC2086  # deliberate word-split of the fixture arg string
+  eq "$(bash "$RL" read-complete $bad_rc 2>/dev/null)" '' "[$bad_rc] prints no verdict on stdout"
+done
+
+# --- 9a. the workflow must actually USE them ------------------------------------------------
+has "$wf" 'gh api --paginate' \
+  "workflow reads collections with --paginate instead of a magic --limit constant (#79)"
+has "$wf" '{{ROADMAP_LIB}} open-issues' \
+  "workflow parses the paginated open-issue read through the shared predicate"
+has "$wf" '{{ROADMAP_LIB}} read-complete' \
+  "workflow cross-checks the read against the exact Search total"
+has "$wf" 'incomplete backlog, hard stop' \
+  "workflow FAILS LOUD on a short read rather than persisting a partial roadmap"
+has "$wf" 'possibly truncated, hard stop' \
+  "workflow treats a saturated open-PR read as possibly truncated, never as complete"
+hasnt "$wf" 'gh issue list --state open --limit 200' \
+  "the capped backlog reads are gone (#79)"
+# The gauge/readiness path was ALREADY exact (search/issues total_count) and must stay untouched.
+has "$wf" "--jq '.total_count'" \
+  "the Search-API gauge/readiness path is unchanged (already exact at any size)"
+
+# ============================================================================================
+# 10. AUTOFIX TIER — fix the unambiguous, escalate the rest (#109)
+# ============================================================================================
+# The tier line has to be explicit and CLOSED, or the next agent guesses which side a new defect
+# falls on — and a wrong guess means /roadmap silently rewrites tracker state on judgment it was
+# never given.
+has "$wf" '### 4b. Autofix the unambiguous' \
+  "workflow carries the autofix step"
+has "$wf" 'unambiguous** (exactly one correct repair)' \
+  "the four-part qualification test for autofix is stated"
+has "$wf" 'default is escalate' \
+  "anything unclassified escalates rather than being repaired on a guess"
+has "$wf" 'The list is closed' \
+  "the autofix table is closed — a new defect escalates until it is added deliberately"
+has "$wf" 'Idempotent' \
+  "autofix is required to be idempotent (a second run finds nothing)"
+has "$wf" '--no-autofix' \
+  "a repo can opt out for a read-only run"
+has "$wf" 'do not
+create a milestone' \
+  "a missing backlog milestone escalates instead of inventing the repo's convention"
+has "$wf" 'backlog-milestone:' \
+  "the autofix target milestone is configurable, not hardcoded into an agent-neutral skill"
+has "$wf" 'Never edits repository code' \
+  "the tracker-only boundary is restated where the new write powers are introduced"
+# The write powers must not leak past the tracker: no branch/commit/PR verbs anywhere.
+hasnt "$wf" 'git commit' "the skill never commits"
+hasnt "$wf" 'git push'   "the skill never pushes"
+hasnt "$wf" 'gh pr create' "the skill never opens a PR"
+# The autofix must be a runnable step, not a description of one — otherwise "fix what you find"
+# is re-invented by every agent that reads it. scripts/check-roadmap-e2e.sh executes this snippet.
+autofix_block="$(wf_snippet autofix-unmilestoned)"
+has "$autofix_block" 'select(.milestone == null)' \
+  "the limbo set is DERIVED from milestone == null (which is what makes autofix idempotent)"
+has "$autofix_block" 'first // empty' \
+  "the backlog milestone is resolved by title, and an unresolved one stays empty"
+has "$autofix_block" 'NO_AUTOFIX:-0' \
+  "the snippet honors --no-autofix rather than only the prose promising it"
+has "$autofix_block" 'gh issue edit' \
+  "the repair is a real tracker write"
+hasnt "$autofix_block" 'gh api --method POST' \
+  "autofix never CREATES a milestone (that would invent a convention the repo never opted into)"
 
 check_summary "roadmap"

@@ -32,6 +32,8 @@
 #   roadmap-lib.sh marker-title                                   # roadmap artifact body on stdin
 #   roadmap-lib.sh deps-from-body [self-issue-number]             # issue/decision body on stdin
 #   roadmap-lib.sh decisions                                      # roadmap artifact body on stdin
+#   roadmap-lib.sh open-issues                                    # paginated issues JSON on stdin
+#   roadmap-lib.sh read-complete <read-count> <expected-total>
 #   roadmap-lib.sh -h | --help
 #
 # `pr-targets-issue` stdin is the output of:
@@ -442,6 +444,71 @@ cmd_decisions() {
   return 0
 }
 
+# --- open-issues ------------------------------------------------------------------------------
+# Print the OPEN ISSUE numbers from a paginated `repos/OWNER/REPO/issues?state=open` read (stdin),
+# one per line, ascending and deduped. Empty stdin is an empty repo, not an error.
+#
+# WHY (#79). The workflow read the backlog with a bare `gh issue list --limit 200`: no pagination,
+# no truncation detection, and `gh` returns newest-first — so a repo past the cap silently loses
+# its OLDEST issues, which skew foundational and dependency-bearing. The worst consequence is not
+# a missing row: an open issue absent from the open set is reconciled to **Done**, so real work
+# vanishes from the plan. Reading `repos/…/issues` with `gh api --paginate` removes the magic
+# constant entirely — completeness stops depending on a number somebody guessed.
+#
+# Excluding PRs is the load-bearing detail: `repos/…/issues` returns pull requests too, so the
+# count would not be comparable to the `is:issue` Search query `read-complete` checks it against —
+# and every PR would be slotted into a bundle as if it were work to do.
+#
+# The roadmap artifact is deliberately NOT excluded here. This set is compared against a
+# repo-wide `is:issue is:open` total, so both sides must count the same population; the caller
+# drops the artifact where the contract calls for it ("the roadmap issue excludes itself").
+# Excluding it here would make every completeness check off by one — a `short` verdict on a
+# perfectly complete read, i.e. a hard stop on a healthy repo.
+cmd_open_issues() {
+  [ "$#" -eq 0 ] || die "open-issues: takes no arguments (paginated issues JSON on stdin)"
+  command -v jq >/dev/null 2>&1 || die "open-issues: jq not found"
+  local out
+  # `-s` + `add`: accept both shapes `gh api --paginate` can produce — one merged array, and the
+  # separate-array-per-page stream its own --help documents. Reading only the first input would
+  # silently drop every page after the first, which is the exact truncation this subcommand
+  # exists to end. (Same reasoning, same idiom as release-counts.)
+  out="$(jq -r -s '
+    (add // []) as $all
+    | [ $all[] | select(has("pull_request") | not) | select(.state == "open") | .number ]
+    | unique | .[] | tostring' 2>/dev/null)" \
+    || die "open-issues: malformed JSON on stdin"
+  [ -z "$out" ] || printf '%s\n' "$out"
+}
+
+# --- read-complete ------------------------------------------------------------------------------
+# Compare how many issues were actually read against the exact total, and print the verdict:
+#   complete — read == expected. Proceed.
+#   short    — read <  expected. The read is MISSING issues: never persist a roadmap built from it.
+#   ahead    — read >  expected. Benign: the REST read saw an issue the Search index has not
+#              caught up to yet. More data than expected can never reconcile an open issue to Done.
+# Exit 0 with a verdict; bad input exits 2 (a completeness check that cannot answer must not be
+# read as "complete").
+#
+# WHY THE ASYMMETRY. Truncation is not an error — a full page is indistinguishable from a complete
+# list, so the workflow's hard-stop-on-`gh`-error guard never fires on it. The Search API's
+# `total_count` IS exact at any size (the workflow already trusts it for the readiness gauge), so
+# it is the one cross-check available. Only the SHORT direction is dangerous, and that asymmetry is
+# what makes this usable: the Search index lags REST by a moment, so demanding exact equality in
+# both directions would hard-stop healthy runs whenever an issue was filed mid-read.
+#
+# A `short` verdict is either real truncation or a sub-second index lag on a just-closed issue.
+# Both are fixed the same way — stop, do not persist a partial plan, and re-run once state settles.
+cmd_read_complete() {
+  [ "$#" -eq 2 ] || die "read-complete: needs exactly 2 args: <read-count> <expected-total>"
+  local got="$1" want="$2"
+  is_uint "$got"  || die "read-complete: <read-count> must be a non-negative integer (got '$got')"
+  is_uint "$want" || die "read-complete: <expected-total> must be a non-negative integer (got '$want')"
+  if   [ "$got" -lt "$want" ]; then printf 'short\n'
+  elif [ "$got" -gt "$want" ]; then printf 'ahead\n'
+  else                              printf 'complete\n'
+  fi
+}
+
 # --- dispatch ------------------------------------------------------------------------------
 main() {
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
@@ -454,6 +521,8 @@ main() {
     marker-title)     cmd_marker_title "$@" ;;
     deps-from-body)   cmd_deps_from_body "$@" ;;
     decisions)        cmd_decisions "$@" ;;
+    open-issues)      cmd_open_issues "$@" ;;
+    read-complete)    cmd_read_complete "$@" ;;
     *) printf 'roadmap-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
   esac
 }

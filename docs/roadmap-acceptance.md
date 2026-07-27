@@ -1,22 +1,28 @@
 # `/roadmap` acceptance script
 
-Manual, end-to-end acceptance for the `/roadmap` workflow (issue #45).
+End-to-end acceptance for the `/roadmap` workflow (issue #45). **Part of this file is now
+automated** (issue #75); the rest is a manual script.
 
-**Why manual.** `/roadmap` is prose an agent executes against a **live** tracker: it reads
-issues, milestones, labels and PRs through `gh`, and it reads *and rewrites* a GitHub issue as
-its artifact. The parts that can be pinned in a pure unit test are the two load-bearing
-decisions — in-flight targeting and release readiness — and those are extracted into
-`scripts/lib/roadmap-lib.sh` and tested offline by `scripts/check-roadmap.sh`, wired into
-`selfcheck` + CI. Everything **else** in the list below is behavior over live
-tracker state; this document is its acceptance script.
+**What is automated, and how.** `scripts/check-roadmap-e2e.sh` **extracts the workflow's own
+fenced snippets** — by their `# ADB-SNIPPET: <name>` markers — and **executes them** against a
+stub `gh` driven by fixtures, offline, in `selfcheck` + CI. That makes doc↔behavior drift a test
+failure: a fenced command edited into something that no longer runs goes red instead of surprising
+whoever next runs `/roadmap`. The two load-bearing decisions (in-flight targeting, release
+readiness) are separately pinned as pure predicates in `scripts/lib/roadmap-lib.sh` by
+`scripts/check-roadmap.sh`.
 
-Run it in a **scratch repo**, never a real one — several scenarios require closing issues,
-canceling milestones, and rewriting the roadmap artifact.
+**What stays manual.** The half no stub can decide: bundling by subsystem, `tracker-only` vs
+`owner-review` classification from ground truth, the artifact's prose, and anything requiring a
+real repo's history. Run those in a **scratch repo**, never a real one — several scenarios close
+issues, cancel milestones, and rewrite the roadmap artifact.
 
-> **Scope note.** A fully-mocked `gh` harness that automates this file is deliberately *not*
-> built here: it would have to simulate issue/PR/milestone/label/search endpoints plus artifact
-> mutation, which is a larger surface than the workflow it guards. If that harness is built
-> later, this file is its specification — each numbered case is one test.
+Each case below is marked:
+
+| Mark | Meaning |
+|---|---|
+| **[auto]** | covered by `scripts/check-roadmap-e2e.sh` (or `check-roadmap.sh`) — run in CI |
+| **[auto-partial]** | the mechanical half is automated; the judgment half is manual |
+| *(unmarked)* | manual |
 
 ---
 
@@ -48,7 +54,7 @@ gh repo delete "$REPO" --yes
 
 ---
 
-## 1. Bootstrap — no `roadmap`-labeled issue exists
+## 1. Bootstrap — no `roadmap`-labeled issue exists **[auto-partial]**
 
 Run `/roadmap`.
 
@@ -61,7 +67,7 @@ Run `/roadmap`.
       bootstrap never enables either opt-in.
 - [ ] It emits `Next: /implement-issue 1 2` (the gates bundle), not a single issue.
 
-## 2. Adopt-not-duplicate — a pre-existing hand-maintained roadmap
+## 2. Adopt-not-duplicate — a pre-existing hand-maintained roadmap **[auto-partial]**
 
 Delete the artifact's label, then re-run:
 
@@ -111,7 +117,7 @@ gh issue comment 5 --body "Superseded — this shipped in PR #999."
       acceptance is prose — ordinary unfinished work is never quarantined.
 - [ ] A `tracker-only`/`owner-review` member does **not** block other ready bundles behind it.
 
-## 5. Advance — in-flight skipping (the #69 regression)
+## 5. Advance — in-flight skipping (the #69 regression) **[auto]**
 
 This is the case `scripts/check-roadmap.sh` pins at the predicate level; verify it end-to-end.
 
@@ -134,7 +140,7 @@ gh pr edit <pr#> --body "Closes #1"
 - [ ] A PR whose body says `Closes #10` does **not** freeze `#1` (word-boundary: `#1` ≠ `#10`).
 - [ ] A **cross-repo** link (`other/repo#1`) does not freeze this repo's `#1`.
 
-## 6. Determinism
+## 6. Determinism **[auto-partial]**
 
 With no tracker change between runs, run `/roadmap` twice and capture the artifact each time:
 
@@ -158,7 +164,7 @@ diff /tmp/r1.md /tmp/r2.md && echo "IDENTICAL"
 - [ ] **Open issues remain but none is implementable** (all `tracker-only`/`owner-review`) →
       reports the flags and stops; does **not** report "roadmap complete".
 
-## 8. Destination report (finish-line gauge)
+## 8. Destination report (finish-line gauge) **[auto-partial]**
 
 ```bash
 gh label create release-blocker --color b60205
@@ -197,7 +203,7 @@ bash scripts/lib/release-convention.sh init      # or: baseline release init
       "matches 0 open milestones". Never a silent fall back to classic.
 - [ ] Marker matching **more than one** open milestone → **STOP** the same way.
 
-### 9b. The readiness predicate
+### 9b. The readiness predicate **[auto]**
 
 Set `<!-- release-milestone: Next release -->` on the artifact.
 
@@ -258,7 +264,7 @@ Put one issue in `Next release` and leave others in `Backlog`, bundled together.
 
 ---
 
-## 10. Output contract — the last line is the next action (#107)
+## 10. Output contract — the last line is the next action (#107) **[auto-partial]**
 
 The terminal is the instruction; the artifact is the record. *(The workflow-side half of this is
 automated: `check-roadmap.sh` asserts every fenced output example in `base/workflows/roadmap.md`
@@ -277,7 +283,7 @@ ends with its `Next:` line. What is verified here is that a **run** obeys it.)*
       reported only where it changed the outcome.
 - [ ] Anything genuinely needing an owner decision appears **above** the final line.
 
-## 11. Decision durability — a question asked once (#108)
+## 11. Decision durability — a question asked once (#108) **[auto-partial]**
 
 ```bash
 gh issue create --title "Driver work" --body "Depends on #1 and #2"    # #8
@@ -305,9 +311,49 @@ gh issue create --title "Driver work" --body "Depends on #1 and #2"    # #8
 
 ---
 
+## 12. Autofix — repair the unambiguous, escalate the rest (#109) **[auto]**
+
+```bash
+gh issue create --title "In limbo" --body "no milestone"        # #9, deliberately unmilestoned
+```
+
+- [ ] A repo with unmilestoned open issues ends the run with **zero in limbo**, each reported in
+      **one line**: `fixed: #9 → milestone Backlog (was unmilestoned)`.
+- [ ] **Re-running changes nothing** — no autofix lines, no tracker writes. Idempotency comes from
+      re-deriving the limbo set (`milestone == null`) each run, not from remembering anything.
+- [ ] An unlabeled or unpinned canonical artifact is **repaired**, not reported.
+- [ ] The roadmap artifact itself is never moved into the backlog.
+- [ ] With **no** backlog milestone in the repo, it **escalates** (`? unmilestoned:#9 … Record: …`)
+      and **does not create one** — inventing a milestone would impose a convention the repo never
+      opted into.
+- [ ] A `<!-- backlog-milestone: Icebox -->` marker retargets the repair.
+- [ ] `--no-autofix` reports every defect as an owner question and performs **no** tracker write.
+- [ ] A failing milestone or issue read **hard-stops** rather than "finding nothing to fix".
+- [ ] **No repository code is modified** — no branch, no commit, no PR, ever.
+
+## 13. Completeness of the backlog read (#79) **[auto]**
+
+- [ ] A repo with **more than 200** open issues reconciles **every** open issue, verified against
+      the Search API's exact `total_count`.
+- [ ] An artificially **truncated** read fails loudly (`read N of M open issues`) instead of
+      persisting a partial roadmap. No open issue is ever reconciled to `Done` because it fell
+      outside a page.
+- [ ] Reading **more** than the index reports is *not* an error — the Search index lags REST, and
+      more data can never delete work from the plan.
+- [ ] A pre-existing roadmap sitting **past** the old cap is found by the adopt scan, so a second
+      artifact is never created (which would manufacture the split-brain §2 hard-stops on).
+- [ ] An open-PR read that exactly **saturates** its cap is treated as possibly truncated.
+- [ ] A **failed** `gh` read reports as a failed read — never as an empty tracker. (Regression:
+      `gh api … | release-counts` returned 0 on a failed read because a pipeline reports only its
+      last status, so a milestone full of open blockers read as "no requirements yet".)
+
+---
+
 ## Related
 
 - `base/workflows/roadmap.md` — the workflow this script accepts.
+- `scripts/check-roadmap-e2e.sh` — the mocked-`gh` harness that automates the cases marked
+  **[auto]** above by executing the workflow's own `# ADB-SNIPPET:` blocks.
 - `scripts/lib/roadmap-lib.sh` — the two extracted predicates (in-flight targeting, readiness).
 - `scripts/check-roadmap.sh` — their offline regression tests (run by `selfcheck` + CI).
 - `docs/release-goal-convention.md` — the opt-in module §9 exercises.
