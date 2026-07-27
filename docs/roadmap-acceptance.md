@@ -238,10 +238,11 @@ Put one issue in `Next release` and leave others in `Backlog`, bundled together.
 - [ ] With non-blocker issues still open in the milestone, the banner appends
       `(K non-blocker issue(s) still open — not holding the release; the roll sends them to Backlog)`.
 - [ ] A **met** emission also prints the rollover reminder
-      `Then: baseline release roll --version <version>`. Without the roll the milestone stays open
-      with zero open blockers, so the predicate returns `met` on every later run and the same cut is
-      re-emitted forever — verify a second run after an actual roll reports `unarmed`
-      ("no requirements yet"), not `met`.
+      `Then: baseline release roll --version <version>` — **immediately above** the `Next:` line,
+      never below it (the output contract in §10 reserves the last line for the action). Without
+      the roll the milestone stays open with zero open blockers, so the predicate returns `met` on
+      every later run and the same cut is re-emitted forever — verify a second run after an actual
+      roll reports `unarmed` ("no requirements yet"), not `met`.
 - [ ] With `destination-label: release-blocker`, the gauge is **milestone-scoped** in this mode,
       so it always equals the readiness trigger (a blocker parked in `Backlog` must not inflate it).
 - [ ] **Met** is a valid terminal emission and is **not** "roadmap complete" — open `Backlog` work
@@ -254,6 +255,53 @@ Put one issue in `Next release` and leave others in `Backlog`, bundled together.
 - [ ] An emit-time reconcile change (a member dropped to the flags, a canceled blocker recorded)
       is **persisted before** the emission, so the next run does not re-process stale state — this
       applies to the **met → release-command** early exit too.
+
+---
+
+## 10. Output contract — the last line is the next action (#107)
+
+The terminal is the instruction; the artifact is the record. *(The workflow-side half of this is
+automated: `check-roadmap.sh` asserts every fenced output example in `base/workflows/roadmap.md`
+ends with its `Next:` line. What is verified here is that a **run** obeys it.)*
+
+- [ ] A normal advance prints **≤5 lines**, and its **last line is the command to run**
+      (`Next: /implement-issue <ids>`). Nothing prints after it.
+- [ ] A cut-ready run's last line is the release command (`Next: /release`), with the
+      `Then: baseline release roll …` reminder **above** it.
+- [ ] An all-blocked run, a "roadmap complete" run, an unarmed-milestone run, and a STOP condition
+      each end with `Next: none — <state>` and no trailing prose.
+- [ ] **No** bundle table, "what changed since last run", per-issue reconcile narration, or
+      look-ahead appears in the default output.
+- [ ] **Zero-count sections are omitted entirely** — no "Reconcile flags: none".
+- [ ] No self-narration about verification performed (fresh fetches, live re-checks). It is
+      reported only where it changed the outcome.
+- [ ] Anything genuinely needing an owner decision appears **above** the final line.
+
+## 11. Decision durability — a question asked once (#108)
+
+```bash
+gh issue create --title "Driver work" --body "Depends on #1 and #2"    # #8
+```
+
+- [ ] The edge set comes from the **body**: `#8` depends on `#1` and `#2`. A `Refs #N` elsewhere in
+      the same body creates **no** edge.
+- [ ] Edit the body to `Depends on #1. No longer depends on #2.` → on the next run the `#2` edge is
+      **gone**. An edge whose source text was removed does not survive in the artifact's
+      `## Dependencies` section (it is a derived view, regenerated every run).
+- [ ] A **negated** mention creates no edge: a body reading only `No longer depends on #2` yields
+      none.
+- [ ] Surface an owner question (e.g. put an `M` member's only prerequisite in `Backlog`). The
+      printed line carries a **stable id** and names **where to record the answer**:
+      `? dep-outside-release:#8 — … Record: #8 body or artifact ## Decisions.`
+- [ ] Record the answer in the artifact's `## Decisions` table under that exact id → **the question
+      does not appear on the next run**, or any run after it.
+- [ ] Record the answer as an issue **comment** instead → the question is (correctly) **not**
+      retired, because a comment is not a prescribed home. This is the original bug: verify the
+      skill points at a home it actually reads.
+- [ ] `/roadmap` **never rewrites or removes** a `## Decisions` row: the section survives a
+      reconcile byte-for-byte, while every other section is regenerated.
+- [ ] A `## Decisions` row whose `Decision` cell says `Depends on #N` **declares** that edge; one
+      that says `no longer depends on #N` **retires** it — the same vocabulary an issue body uses.
 
 ---
 

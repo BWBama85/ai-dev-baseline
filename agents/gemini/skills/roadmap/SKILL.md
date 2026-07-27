@@ -48,6 +48,38 @@ roadmap issue). It is `gh`-based and works in any repo with an issue tracker.
   ground truth every run (the step-4 evidence ladder), never read off the artifact's own
   stored note — so a still-open issue whose work already shipped elsewhere is caught and
   surfaced, not emitted (`base/practices/verify-before-asserting.md`).
+- **It never re-asks a question the owner already answered.** A decision recorded in the
+  artifact's `## Decisions` section (or in the issue body it concerns) retires that question
+  permanently — see "Owner questions" in step 4.
+
+## Output contract — the last line is the next action
+
+**The terminal is the instruction; the artifact is the record.** Everything reconcile learned
+belongs in the artifact body, not in the run's output. A reader should be able to act on the
+**last line alone**.
+
+1. **The final line is ALWAYS the single next action, and NOTHING prints after it.** It is
+   exactly one of:
+   - `Next: /implement-issue <ids>` — the batch to build;
+   - `Next: <release-command>` — release-readiness mode, requirements met;
+   - `Next: none — <terminal state>` — roadmap complete · every bundle blocked or in-flight ·
+     no requirements yet · nothing implementable · a STOP condition. A terminal state is still
+     an action line: it says what to do next, and that is "nothing, because X".
+2. **≤5 lines for a normal advance.**
+3. **Print in this order**, omitting any line with nothing to say — an omitted line is the
+   normal case, not an error:
+   1. the **destination gauge** (step 6) — one line, only when the artifact configures it;
+   2. **owner-action lines** — one line each, only when actionable **this** run and not already
+      retired by a `## Decisions` row (step 4);
+   3. **`Why:`** — one line of rationale for the emitted batch;
+   4. **`Next:`** — the action. **Always last.**
+4. **Never print:** the bundle table, "what changed since the last run", per-issue reconcile
+   narration, look-ahead ("after this comes…"), zero-count sections ("Reconcile flags: none"),
+   or self-narration about the verification performed. Fresh re-reads and live re-checks are
+   **behavior, not output** — report them only when they changed the outcome.
+
+Reconcile detail is not lost by any of this: it is written to the artifact in step 4, which is
+where the record belongs and where the next run reads it.
 
 ## The roadmap artifact (one prescribed home)
 
@@ -102,10 +134,31 @@ can't: the order to build in, which issues share a branch, and the blocking edge
 
 ## Dependencies
 
-<!-- Explicit edges only. An edge exists when an issue body says "Depends on #N" /
-     "Blocked by #N", or when declared here. `Refs #N` is NOT a dependency. -->
+<!-- A DERIVED VIEW, rewritten from scratch every run — never a source, and never carried
+     forward. The sources are (1) each open issue's BODY and (2) the `## Decisions` rows below;
+     both are read through `roadmap-lib.sh deps-from-body`, so an edge whose source text is gone
+     DISAPPEARS on the next reconcile. Explicit keywords only (`Depends on #N` / `Blocked by
+     #N`); `Refs #N` is not a dependency, and a NEGATED mention ("no longer depends on #25")
+     retires an edge rather than creating one. -->
 
 - #39 depends on #32
+
+## Decisions
+
+<!-- OWNER-AUTHORITATIVE, and the ONE part of this artifact /roadmap never rewrites or removes.
+     A question this skill surfaces is retired the moment its id appears here — that is what
+     stops the same prompt reprinting every run forever. One row per decision:
+       `Question` — the exact id the run printed (e.g. `dep-outside-release:#73`).
+       `Decision` — the owner's answer, in prose. It may DECLARE an edge with the same keywords
+                    an issue body uses (`Depends on #78`) or RETIRE one ("no longer depends on
+                    #25"); the row is read by the same `deps-from-body` predicate.
+       `Recorded` — where the decision also lives (an issue body / PR), or `—` if only here.
+     Prefer recording a decision in the ISSUE BODY as well: the body is what every other reader
+     sees. This table is the durable fallback for a decision no single issue owns. -->
+
+| Question                | Decision                                                   | Recorded |
+| ----------------------- | ---------------------------------------------------------- | -------- |
+| dep-outside-release:#73 | Re-scoped to a standalone driver; no longer depends on #25 | #73 body |
 
 ## Reconcile flags
 
@@ -216,9 +269,23 @@ VERDICT="$(bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" release-ready \
   || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
 ```
 
-`unarmed` → report "no requirements yet"; `unmet` → emit the next bundle projected onto `M`;
-`held` → record the canceled blocker in the Reconcile flags and **withhold** the cut; `met` →
-emit the release command. A non-zero exit is a **hard stop**, never a fallthrough to `met`.
+Each verdict has exactly one emission, and every one of them ends with its action line:
+
+- `unarmed` → "no requirements yet" →
+  `Next: none — release milestone "NAME" has no requirements yet.`
+- `unmet` → emit the next bundle projected onto `M` (the classic shape: `Why:` then `Next:`).
+- `held` → record the canceled blocker in the Reconcile flags, **withhold** the cut, and say why:
+
+  ```text
+  Why:  release held — #77 (release-blocker) was closed NOT_PLANNED, so a must-have was abandoned rather than delivered.
+  Next: none — reopen #77, remove its release-blocker label, or drop it from "Next release"; then re-run.
+  ```
+
+  This line prints on **every** run the hold holds. It is a verdict, not a question, so no
+  `## Decisions` row retires it — only the tracker edit named above clears it.
+- `met` → emit the release command.
+
+A non-zero exit is a **hard stop**, never a fallthrough to `met`.
 
 **Scoping is advancement-only.** Reconcile (step 4) still runs **backlog-wide** over every open
 non-roadmap issue — narrowing it would stop re-verifying whether `Backlog` issues already shipped.
@@ -226,7 +293,9 @@ Only step-6 **selection** is scoped: **project** each `ready` bundle onto `M` an
 members that are **in `M`**, dropping non-`M` members from the emitted batch — so a mixed bundle
 never pulls `Backlog` work forward. A `ready` bundle with **zero** `M` members is skipped while
 requirements are unmet. An `M` member whose only blocker is a non-`M` (`Backlog`) prerequisite is
-**surfaced** (pull the dep into the release or resolve it) rather than silently emitted or hidden.
+**surfaced** (pull the dep into the release or resolve it) rather than silently emitted or hidden —
+as the owner question `dep-outside-release:#N`, which retires for good once the owner records the
+answer (step 4). This is the exact prompt that reprinted verbatim on three consecutive runs.
 
 **Emission (replaces step 6's classic emit while this mode is on):**
 
@@ -240,14 +309,23 @@ requirements are unmet. An `M` member whose only blocker is a non-`M` (`Backlog`
   them to Backlog)`. `/roadmap` only **emits** this command; it never runs it. `/release` is the
   **project-owned** release role — the baseline ships no such skill by decision (#3,
   `base/roles.md`), so a repo without one gets an unrunnable suggestion, not an error.
-- **Always name the rollover on a met emission.** Under the `Next:` line, emit the reminder
-  `Then: baseline release roll --version <version>   # archive M, open a fresh NAME, leftovers → Backlog`.
-  This is not decoration: without the roll, `M` stays open with zero open blockers, so the predicate
-  returns `met` again on **every** subsequent run and `/roadmap` re-emits the same cut forever — the
-  loop stops terminating. The roll is baseline-shipped bookkeeping (#74), unlike the cut itself; a
-  project's own `/release` may run it as its last step, in which case the operator has nothing left
-  to do. Emit the reminder either way — `/roadmap` cannot know whether the project's release command
-  calls it.
+- **Always name the rollover on a met emission.** Emit the reminder
+  `Then: baseline release roll --version <version>   # AFTER the cut — archive M, open a fresh NAME, leftovers → Backlog`
+  **immediately above** the `Next:` line (the output contract reserves the last line for the
+  action; `Then:` names what follows the cut, not what follows this run). This is not decoration:
+  without the roll, `M` stays open with zero open blockers, so the predicate returns `met` again on
+  **every** subsequent run and `/roadmap` re-emits the same cut forever — the loop stops
+  terminating. The roll is baseline-shipped bookkeeping (#74), unlike the cut itself; a project's
+  own `/release` may run it as its last step, in which case the operator has nothing left to do.
+  Emit the reminder either way — `/roadmap` cannot know whether the project's release command
+  calls it. The full met emission is therefore:
+
+  ```text
+  release-blocker: 0 blockers open — destination reached
+  ✅ Release requirements met (Next release: 0 open blockers) — cutting.
+  Then: baseline release roll --version <version>   # AFTER the cut — archive M, open a fresh NAME, leftovers → Backlog
+  Next: /release
+  ```
 
 **Gauge scoping.** In release-readiness mode the finish-line gauge is scoped to `M` so it equals
 the readiness trigger and the two can never disagree — see step 6's "Destination report" for the
@@ -276,7 +354,16 @@ gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated"; exit 1; 
 # Scratch for the roadmap body goes to a TEMP file, never the repo. /roadmap runs in arbitrary
 # repos, many of which don't gitignore .gemini/state/ — writing there would leave untracked
 # files and dirty the worktree before the next implementation batch.
-ROADMAP_BODY="$(mktemp -t roadmap-body.XXXXXX)"
+#
+# Make the DIRECTORY, not the file: the write tool refuses to overwrite a file it has not read,
+# and `mktemp <template>` CREATES its target (a 0-byte, mode-600 file), so writing the body to a
+# freshly-mktemp'd path fails every single time and costs a compensating read + retry. A fresh
+# directory keeps the collision-safety for parallel runs while leaving the target non-existent.
+# Use the POSITIONAL template, never `-t`: on macOS `-t` treats the argument as a prefix, keeps
+# the `XXXXXX` literally and appends its own suffix, so the same line yields differently-shaped
+# names on macOS and GNU.
+ROADMAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/roadmap.XXXXXX")" || { echo "ERROR: cannot create scratch dir"; exit 1; }
+ROADMAP_BODY="$ROADMAP_DIR/body.md"   # the directory exists; this file does NOT yet
 ```
 
 ### 2. Locate the canonical roadmap artifact (deterministic)
@@ -325,7 +412,10 @@ NCAND="$(printf '%s\n' "$CANDS" | sed '/^$/d' | wc -l | tr -d ' ')"
      --json number,title,labels,milestone,body`; `gh api` for milestones), **excluding the
      roadmap issue itself** once it exists.
   2. Group into phases by milestone build order (foundational/cross-cutting before polish),
-     order by dependency, and bundle by shared subsystem/files (see step 5's rules).
+     order by dependency, and bundle by shared subsystem/files (see step 5's rules). Write an
+     **empty `## Decisions` section** (heading + table header only): a fresh roadmap must already
+     have the home an owner question will point at, or the first question has nowhere durable to
+     be answered.
   3. Write the artifact body (schema above) to a scratch file and create the issue — **omit the
      optional `destination-label` marker** (the finish-line report is owner opt-in; a fresh
      roadmap must not silently enable it in a repo that happens to have that label):
@@ -404,20 +494,91 @@ Reconciliation is deterministic — the same tracker state always produces the s
   residual check above) **satisfies** the edge just like a completed close — drop it as a blocker
   so the dependent isn't trapped behind a row that will never be emitted; an `owner-review`
   prerequisite is unproven and keeps blocking.
+- **Re-derive every dependency edge from its source — never carry one forward.** The
+  `## Dependencies` section is a **derived view**, rewritten from scratch each run; it is not a
+  source, and an edge that survives only because it was written there last run is drift. Rebuild
+  the set from the two live sources — each open issue's **body**, and the artifact's
+  `## Decisions` rows — through the shared predicate, so an edge whose source assertion is gone
+  disappears on this run:
+
+  ```bash
+  # For each open issue #N (and once for the `## Decisions` section, with no self-number):
+  DEPS="$(printf '%s' "$BODY" | bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" deps-from-body "$N")" \
+    || { echo "ERROR: edge extraction failed for #$N — hard stop"; exit 1; }
+  ```
+
+  The predicate — not the reader — decides what counts: explicit keywords only
+  (`Depends on #N` / `Blocked by #N`), a bare `#N` or `Refs #N` is never an edge, a
+  repo-qualified `owner/repo#N` is never a local edge, and a **negated** mention ("no longer
+  depends on #25", "does not depend on #25") **retires** an edge instead of creating one — the
+  same over-match class as #69, on the dependency side. It is regression-tested offline by
+  `scripts/check-roadmap.sh`, so the rule cannot drift run to run.
 - **Persist the grouping.** Bundles are written back to the artifact so the grouping is
   stable and reproducible across runs — not re-inferred (and re-shuffled) every time.
+- **Never rewrite `## Decisions`.** Every other section of the artifact is reconcile's to own;
+  that one is the owner's. Carry it through the rewrite byte-for-byte.
 
 Rewrite the issue body via `gh issue edit "$ROADMAP_NUM" --body-file "$ROADMAP_BODY"`.
+
+#### Owner questions — surface once, name where to record the answer, never re-ask
+
+A question the owner cannot durably answer is a question this skill asks forever. Three runs
+re-printed the same `#73`/`#25` prompt verbatim after the decision had been made, because it had
+been recorded in an issue **comment** — which reconcile does not read. So:
+
+1. **Every surfaced question carries a stable id and its recording home**, on one line:
+
+   ```
+   ? <question-id> — <the question, one line>. Record: <where>.
+   ```
+
+   The id vocabulary is fixed, so the same condition yields the same id on every run and in every
+   repo: `dep-outside-release:#N` · `dep-canceled:#N` · `unmilestoned:#N` · `tracker-only:#N` ·
+   `owner-review:#N` · `cycle:#N` (the lowest-numbered issue in the cycle).
+2. **Check the recorded set before surfacing anything.** A question whose id already appears in
+   the artifact's `## Decisions` section is **retired** — do not print it, this run or ever:
+
+   ```bash
+   ANSWERED="$(printf '%s' "$ARTIFACT_BODY" | bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" decisions)" \
+     || { echo "ERROR: could not read recorded decisions — hard stop"; exit 1; }
+   # -F: the id is a literal, not a pattern. -x: a whole-line match, so `a:#1` never matches `a:#12`.
+   if printf '%s\n' "$ANSWERED" | grep -Fqx "$QID"; then
+     RETIRED=1   # answered already: never surface it again, this run or any run
+   else
+     RETIRED=0
+   fi
+   ```
+3. **Retirement suppresses a QUESTION, never a VERDICT derived from ground truth.** A recorded row
+   stops the prompt from reprinting; it does not reclassify an issue, unblock a bundle, or change
+   a readiness verdict. Two conditions are therefore **never** retirable and must print every run
+   they hold:
+   - the **`held`** release verdict (a `release-blocker` closed `NOT_PLANNED`) — its line is the
+     only explanation for a withheld cut, so suppressing it would stall the loop in silence. It
+     clears exactly as documented: a real tracker edit (reopen · unlabel · drop from `M`);
+   - any **STOP** condition (split-brain, a broken `release-milestone` marker) — the run cannot
+     proceed at all, so there is nothing to retire.
+
+   A retirable question that is *also* an edge — `dep-outside-release`, `dep-canceled` — clears
+   for real when the recorded `Decision` cell changes the derived edge set, because the row is
+   read by `deps-from-body` like any other body.
+4. **The prescribed homes are the issue body and `## Decisions`** — in that order of preference.
+   The body is what every other reader sees and what edge derivation already reads; the table is
+   the durable fallback for a decision no single issue owns. A **comment is not a home**: say so
+   when asking, rather than accepting an answer the next run will ignore.
+5. **A decision that cannot be recorded in-tracker is reported as such**, not silently re-asked.
 
 ### 5. Grouping & ordering rules (deterministic)
 
 Apply these in order; every tie has a stable break so two runs agree:
 
-1. **Dependencies first.** Never place a bundle before a bundle it depends on. An edge is
-   **explicit only**: an issue body that says `Depends on #N` / `Blocked by #N`, or an edge
-   declared in the artifact's Dependencies section. `Refs #N` is a cross-reference, **not** a
-   dependency. If edges form a cycle, surface it and break the cycle at the lowest issue
-   number, noting the break.
+1. **Dependencies first.** Never place a bundle before a bundle it depends on. The edge set is
+   the one step 4 **re-derived this run** via `bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" deps-from-body` — explicit
+   keywords only (`Depends on #N` / `Blocked by #N`) from an issue body or a `## Decisions` row.
+   `Refs #N` is a cross-reference, **not** a dependency; a negated mention retires an edge; and
+   an edge read out of the artifact's own `## Dependencies` section is **not** a source — that
+   section is regenerated from the two live sources every run. If edges form a cycle, surface it
+   (`cycle:#N`, the lowest-numbered member) and break the cycle at the lowest issue number,
+   noting the break.
 2. **Bundle by shared subsystem/files.** Group issues that touch the same subsystem so a
    branch never edits the same file twice. Infer from issue bodies, cross-refs, and
    touched-path hints — but **ignore generated fan-out** (the rendered root docs and skills
@@ -503,13 +664,17 @@ otherwise the next run re-processes the same stale ready member. This applies in
 mode too: the **met → release-command** early exit must still persist any emit-time reconcile change
 (e.g. a `NOT_PLANNED`-canceled blocker moved to the Reconcile flags) before emitting.
 
-Then output the batch and a one-line rationale, prefixed by the destination line (below):
+Then emit, **exactly as the output contract prescribes** — gauge, then any owner-action line,
+then `Why:`, then `Next:` **last, with nothing after it**:
 
-```
-v1: 1 blocker open
-Next: /implement-issue 5 19
+```text
+release-blocker: 1 blocker open
 Why:  B1 (gates) — unblocked, no in-flight PR, foundational for M2.
+Next: /implement-issue 5 19
 ```
+
+That is the whole default output. No bundle table, no reconcile narration, no look-ahead — the
+artifact rewritten above already holds all of it.
 
 **Destination report (finish line) — configured, never hardcoded.** If the artifact carries a
 `<!-- destination-label: LABEL -->` marker, prefix **every** run's output — the `Next:` batch
@@ -549,17 +714,33 @@ above.
 
 ### 7. Completion & edge cases
 
-- **No open issues** (other than the roadmap issue itself) → report **"roadmap complete"**;
-  this is success, not an error.
+**Every one of these still obeys the output contract**: a terminal state is reported *as an
+action line*, so the last line is `Next: none — <state>` and nothing follows it.
+
+- **No open issues** (other than the roadmap issue itself) → **"roadmap complete"**; this is
+  success, not an error. Last line: `Next: none — roadmap complete (no open non-roadmap issues).`
 - **Open issues remain but every ready bundle is blocked or in-flight** → do **not** fabricate
-  a batch. Report the state explicitly: name the blocking dependency or the in-flight PR, and
-  point at the next bundle that will unblock when it clears.
+  a batch. Name the blocking dependency or the in-flight PR, and point at the bundle that
+  unblocks when it clears — in the `Why:` line, not a paragraph:
+
+  ```text
+  Why:  every ready bundle is blocked — B3 waits on #32 (open), B5 on PR #101 (in flight).
+  Next: none — nothing is implementable until #32 closes or PR #101 merges.
+  ```
+
 - **Open issues remain but none is implementable** — every remaining candidate classified
   `tracker-only` or `owner-review` (step 4) → do **not** fabricate a batch and do **not** report
-  "roadmap complete." Report the Reconcile flags: which issues are satisfied-but-open (recommend
-  closing them) and which need owner review, then stop. "roadmap complete" means no open
-  *non-roadmap* issues remain — a `tracker-only` issue is still open, so the loop isn't done
-  until the owner closes it.
+  "roadmap complete." Surface the flagged issues as owner-action lines (each with its id and
+  recording home, per step 4), then stop. "roadmap complete" means no open *non-roadmap* issues
+  remain — a `tracker-only` issue is still open, so the loop isn't done until the owner closes
+  it. Last line: `Next: none — N issue(s) need owner action above; nothing implementable.`
+- **A STOP condition** (split-brain in step 2/3, a broken `release-milestone` marker) reports the
+  condition on its own line and still ends with the action line:
+
+  ```text
+  STOP: two roadmap-labeled issues (#31, #52) — split brain; this skill never guesses.
+  Next: none — retire one (remove its `roadmap` label), then re-run.
+  ```
 - **The roadmap issue excludes itself.** It is identified by the `roadmap` label and is never
   a backlog item, never bundled, and never counted toward completion — otherwise it could
   suggest itself and "roadmap complete" would be unreachable.
