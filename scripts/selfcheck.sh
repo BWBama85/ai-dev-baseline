@@ -111,6 +111,15 @@ step "workflow-render"
 # fails loud, and no committed skill ships an unresolved placeholder.
 if bash scripts/check-workflow-render.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "workflow-shell"
+# A fenced ```bash block in base/workflows/*.md is executed for real, but the linter above only
+# sees tracked *.sh files — never a workflow body. This catches the one class that is both
+# invisible there and destructive: assigning a zsh-special name. `path` IS $PATH, so
+# `read -r kind path key` emptied the search path mid-sweep and made /cleanup a silent no-op on
+# macOS (#126). (This comment deliberately does not start a line with the linter's own name —
+# that reads as a directive and fails the parse.)
+if bash scripts/check-workflow-shell.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "gate-detector"
 # The empty-ecosystem no-op (detect on a dir with no toolchain and no agents.toml emits
 # nothing) is covered generically by check-gates.sh — run in the "gates" step below — so it

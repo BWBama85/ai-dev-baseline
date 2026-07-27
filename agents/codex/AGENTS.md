@@ -427,9 +427,17 @@ you are running a script with an explicit `#!/usr/bin/env bash` shebang.
   works, `<(…)` process substitution, `${var^^}` case tricks, and `source`-ing
   interactive rc idioms all break or behave differently under zsh/sh. If you need
   bash features, put them in a real `bash` script, not a one-liner.
-- **Quote every expansion.** `"$path"`, `"${arr[@]}"`. An unquoted variable
+- **Quote every expansion.** `"$file"`, `"${arr[@]}"`. An unquoted variable
   containing a space or a glob char (`* ? [`) will word-split or glob-expand and
   silently do the wrong thing.
+- **Never assign to a zsh-special name.** `path`, `fpath`, `cdpath`, `manpath`,
+  `module_path` and `argv` are **bound to shell state** in zsh — `path` *is*
+  `$PATH`. A loop like `read -r kind path key` therefore empties the search path
+  on its first iteration, and every external command after it fails with
+  "command not found". Under bash the same line is harmless, so this survives
+  review and every bash-based test, then breaks on the default macOS shell. Pick
+  a neutral name (`file`, `sfile`, `entry`) — and remember the rule applies to
+  any snippet an agent executes, not just to `.sh` files.
 - **Don't assume PATH.** Non-interactive shells may not have your rc's PATH. If a
   brew/user-installed tool might be missing, export the prefix explicitly once
   (e.g. `export PATH="/opt/homebrew/bin:$PATH"`) rather than relying on login

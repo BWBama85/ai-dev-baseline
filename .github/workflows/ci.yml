@@ -175,6 +175,11 @@ jobs:
       - name: Workflow body placeholders map to Claude tokens, body-only, fail-loud on unmapped (#16)
         run: bash scripts/check-workflow-render.sh
 
+      # Same species as the step above (a lint over the same workflow bodies, ~50ms), so it rides
+      # this job rather than spending a whole runner on it.
+      - name: No fenced workflow block may assign a zsh-special variable name (#126)
+        run: bash scripts/check-workflow-shell.sh
+
   gate-detector:
     name: gate-detector
     runs-on: ubuntu-latest
