@@ -807,6 +807,73 @@ dfx='Depends on #9, #3 and #5; no longer blocked by #4'
 eq "$(deps "$dfx")" "$(deps "$dfx")" "deps-from-body is deterministic"
 eq "$(deps "$dfx")" '3 5 9'          "...and mixed declare/retire resolves to the declared set"
 
+# --- 6i. STRUCTURE: an issue that DOCUMENTS the keyword must not acquire the edge (#117) -----
+# The third instance of one bug family — #69 (a bare `#N`), #108 (a NEGATED mention), and now a
+# mention the author never asserted at all, because it sits in a repro block, a quoted excerpt or
+# a schema comment. Fixed as a CLASS, so the fixtures below pin every structure at once: a fourth
+# variant should fail here rather than ship. The live victim was #112, whose fenced `console`
+# repro blocks fabricated a #112 -> #52 edge and marked a ready bundle `blocked`.
+#
+# dline <line>... — a MULTI-LINE body. `deps` takes one argument through `printf '%s'`, so a
+# fenced block cannot be written as a single embedded-newline string; build it from arguments.
+dline() { printf '%s\n' "$@"; }
+depsm() { dline "$@" | bash "$RL" deps-from-body 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+q3='```'; q4='````'
+# A lone backtick MUST come from a variable: a literal one inside `$( … )` opens a nested legacy
+# command substitution even when it sits inside single quotes, which is a parse error, not a
+# failing test — and a parse error still reports as a PASS here.
+bt='`'
+
+# Fenced blocks: both characters, info strings, indentation, run lengths, interleaving.
+eq "$(depsm "${q3}console" 'Depends on #5' "$q3")" '' "a fenced block declares nothing"
+eq "$(depsm '~~~' 'Depends on #5' '~~~')" '' "a ~~~ fence declares nothing"
+eq "$(depsm '~~~' "$q3" 'Depends on #5' "$q3" '~~~')" '' \
+   'a backtick-fence run inside a ~~~ fence is content, not a closer'
+eq "$(depsm "$q3" '~~~' 'Depends on #5' '~~~' "$q3")" '' "...and the reverse"
+eq "$(depsm "$q4" 'Depends on #5' "$q3" "$q4")" '' \
+   "a closer SHORTER than its opener does not close the fence"
+eq "$(depsm "$q3" 'Depends on #5' "$q3 nope" "$q3")" '' \
+   "a would-be closer carrying trailing text is content, not a closer"
+eq "$(depsm "   $q3" 'Depends on #5' "   $q3")" '' "a fence indented 3 spaces is still a fence"
+eq "$(depsm "${q3}a${bt}b" 'Depends on #5')" '5' \
+   "a backtick fence whose info string holds a backtick does NOT open (so the prose is scanned)"
+eq "$(depsm "~~~a${bt}b" 'Depends on #5' '~~~')" '' "...but a tilde fence's info string may hold one"
+# Four spaces is an INDENTED block, deliberately out of scope: under a `- ` bullet, content starts
+# at 2 and code needs 2+4=6, so treating `^ {4}` as code would delete ordinary continuation PROSE
+# and silently DROP a real edge. Pinned so the exclusion is deliberate, not an oversight.
+eq "$(depsm "    $q3" 'Depends on #5' "    $q3")" '5' \
+   "a 4-space-indented run is NOT a fence (indented blocks are deliberately out of scope)"
+# An unterminated fence must swallow to end-of-body rather than leak its contents back to prose.
+eq "$(depsm 'Depends on #9' "$q3" 'Depends on #5')" '9' "an unterminated fence swallows to EOF"
+eq "$(depsm "$q3" 'Depends on #9' "$q3" 'Depends on #5')" '5' "prose AFTER a closed fence is scanned"
+eq "$(depsm 'Depends on #9' "$q3" 'Depends on #5' "$q3")" '9' "prose BEFORE a fence is scanned"
+eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #3' "$q3" 'Depends on #7' "$q3")" '3' \
+   "two fences with prose between them yield only the prose edge"
+
+# HTML comments — the artifact's own schema quotes `Depends on #78` as the example vocabulary.
+eq "$(deps 'a <!-- Depends on #5 --> b')" '' "an inline HTML comment declares nothing"
+eq "$(depsm '<!-- x' 'Depends on #5' '-->')" '' "a multi-line HTML comment declares nothing"
+eq "$(deps '<!-- Depends on #5 --> Depends on #7')" '7' \
+   "...and the prose AFTER a closed comment on the same line is still scanned"
+
+# Blockquotes — quoted material, never this issue's own claim.
+eq "$(deps '> Depends on #5')"    '' "a blockquote declares nothing"
+eq "$(deps '   > Depends on #5')" '' "...including one indented up to 3 spaces"
+
+# Inline code spans — TARGETED, not blanket: the KEYWORD must be outside a span, the `#N` may sit
+# inside one. Blanket stripping would delete the reference and collide head-on with #112.
+eq "$(deps "see ${bt}Depends on #5${bt} here")" '' "a whole clause quoted in a span declares nothing"
+eq "$(deps "see ${bt}${bt} Depends on ${bt}#5${bt} ${bt}${bt} here")" '' \
+   "...including a double-backtick span"
+eq "$(deps "Depends on ${bt}#5${bt}")" '' \
+   "a span around only the REFERENCE stays unresolved today — #112 owns making it an edge"
+
+# The point of the whole family: prose still declares, and a quoted negation is not a retirement.
+eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \
+   "a NEGATED mention quoted in a fence neither declares nor retires"
+eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7')" '5 6 7' \
+   "a chain in prose still resolves with a fence present"
+
 # ============================================================================================
 # 7. DECISIONS — the durable home that retires an owner question (#108)
 # ============================================================================================
@@ -909,6 +976,17 @@ has "$wf" 'Record: <where>' \
   "a surfaced question names where to record the answer"
 has "$wf" 'grep -Fqx' \
   "the recorded-decision lookup is a literal whole-line match (a:#1 never matches a:#12)"
+
+# --- 8d. #117: the workflow states that only PROSE declares an edge --------------------------
+# The rule lives in three places in the workflow (the artifact schema comment, the predicate
+# contract, the ordering rule). Pin it so a later edit cannot quietly drop the structural half and
+# leave agents re-deriving the pre-#117 substring rule by eye.
+has "$wf" 'ONLY PROSE DECLARES' \
+  "the artifact schema says a mention inside markup is documentation, not a declaration (#117)"
+has "$wf" 'Only prose declares' \
+  "the predicate contract carries the structural rule (#117)"
+has "$wf" 'fenced code block, HTML comment, blockquote or quoted span' \
+  "the ordering rule names the structures that never declare an edge (#117)"
 
 # The retirement rule must not be allowed to defeat the readiness withhold. `held` and every STOP
 # condition have to print on EVERY run that they hold: a suppressed `held` line is a release that

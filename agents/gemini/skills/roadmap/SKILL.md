@@ -147,7 +147,9 @@ can't: the order to build in, which issues share a branch, and the blocking edge
      both are read through `roadmap-lib.sh deps-from-body`, so an edge whose source text is gone
      DISAPPEARS on the next reconcile. Explicit keywords only (`Depends on #N` / `Blocked by
      #N`); `Refs #N` is not a dependency, and a NEGATED mention ("no longer depends on #25")
-     retires an edge rather than creating one. -->
+     retires an edge rather than creating one. ONLY PROSE DECLARES (#117): a mention inside a
+     fenced code block, an HTML comment (including these), a blockquote, or a code span around
+     the keyword is documentation, not a declaration. -->
 
 - #39 depends on #32
 
@@ -701,6 +703,18 @@ Reconciliation is deterministic — the same tracker state always produces the s
   depends on #25", "does not depend on #25") **retires** an edge instead of creating one — the
   same over-match class as #69, on the dependency side. It is regression-tested offline by
   `scripts/check-roadmap.sh`, so the rule cannot drift run to run.
+
+  **Only prose declares (#117).** The predicate strips what markup marks as quoted or
+  illustrative *before* it scans: **fenced code blocks** (``` and `~~~`, info strings and longer
+  runs recognized, an unterminated fence swallowing to end-of-body), **HTML comments**,
+  **blockquotes**, and **inline code spans** around the keyword. So an issue that merely
+  *documents* the vocabulary — a repro block, a quoted excerpt, this artifact's own schema
+  comments — no longer acquires the edge it describes. That was the third instance of one family
+  (#69 a bare mention, #108 a negated one, #117 an unasserted one), and it was live: #112's
+  fenced `console` blocks fabricated a #112 → #52 edge that marked a ready bundle `blocked`.
+  4-space **indented** blocks are deliberately excluded — under a `- ` bullet, code needs six
+  spaces, so treating four as code would delete ordinary continuation prose and silently drop a
+  *real* blocker, which is the more dangerous direction.
 - **Persist the grouping.** Bundles are written back to the artifact so the grouping is
   stable and reproducible across runs — not re-inferred (and re-shuffled) every time.
 - **Never rewrite `## Decisions`.** Every other section of the artifact is reconcile's to own;
@@ -922,8 +936,10 @@ Apply these in order; every tie has a stable break so two runs agree:
 1. **Dependencies first.** Never place a bundle before a bundle it depends on. The edge set is
    the one step 4 **re-derived this run** via `bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" deps-from-body` — explicit
    keywords only (`Depends on #N` / `Blocked by #N`) from an issue body or a `## Decisions` row.
-   `Refs #N` is a cross-reference, **not** a dependency; a negated mention retires an edge; and
-   an edge read out of the artifact's own `## Dependencies` section is **not** a source — that
+   `Refs #N` is a cross-reference, **not** a dependency; a negated mention retires an edge; a
+   mention inside a **fenced code block, HTML comment, blockquote or quoted span** is
+   documentation and declares nothing (#117); and an edge read out of the artifact's own
+   `## Dependencies` section is **not** a source — that
    section is regenerated from the two live sources every run. If edges form a cycle, surface it
    (`cycle:#N`, the lowest-numbered member) and break the cycle at the lowest issue number,
    noting the break.

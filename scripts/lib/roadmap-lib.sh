@@ -505,10 +505,39 @@ cmd_marker_title() {
 #     line. A dependency wrapped across a newline is not an edge (and reads as one to nobody).
 #   - NO SELF-EDGE. `<self-issue-number>`, when given, is dropped: an issue depending on itself
 #     is a degenerate cycle, never a real prerequisite.
+#   - ONLY PROSE DECLARES (#117). Text that MARKUP marks as quoted or illustrative is not the
+#     issue speaking, so it is removed BEFORE the keyword scan. See "STRUCTURE" below.
+#
+# STRUCTURE — an issue that DOCUMENTS the keyword must not acquire the edge (#117).
+# This is the third instance of one bug family: #69 (a bare `#N` mention), #108 (a NEGATED
+# mention), and now a mention the author never asserted at all — it sits inside a repro block, a
+# quoted excerpt, or a schema comment. Each earlier instance was fixed one-off; this one removes
+# the whole structural class in a single pass, so a fourth variant has nowhere to hide:
+#   - FENCED CODE. A ``` or ~~~ fence (indented 0-3 spaces, run of >=3) opens a block; every line
+#     to its closer is skipped. A closer is the SAME character, at least as long, and carries
+#     nothing but whitespace after the run — so a mid-sentence ``` or a longer run with trailing
+#     text stays content. A backtick fence's info string may not itself contain a backtick. The
+#     other delimiter never closes the current fence, which is what makes ``` inside ~~~ (and the
+#     reverse) plain content. An UNTERMINATED fence swallows to end-of-body rather than leaking.
+#   - HTML COMMENTS. `<!-- … -->` is removed, inline and across lines. The roadmap artifact's own
+#     schema comments quote `Depends on #78` as the example vocabulary; before this, reading the
+#     `## Decisions` section derived that example as a real edge.
+#   - BLOCKQUOTES. A `>` line is quoted material — someone else's text, or an excerpt — never this
+#     issue's own declaration.
+#   - INLINE CODE SPANS, targeted rather than blanket. The KEYWORD must sit outside a span; the
+#     `#N` reference may sit inside one. So `` `**Depends on: #78**` `` (the whole clause quoted as
+#     an example) declares nothing, while `Depends on `#52`` keeps its reference visible to the
+#     chain scan. Blanket span-stripping would delete that reference and put this rule in direct
+#     conflict with #112, which exists to make exactly that form resolve.
+# DELIBERATELY NOT HANDLED: 4-space INDENTED code blocks. Four spaces are not reliably code — under
+# a `- ` bullet, content starts at 2 and code needs 2+4=6, so a `^ {4}` skip deletes ordinary
+# continuation PROSE. That direction is the dangerous one: a dropped edge silently unblocks a
+# bundle that is genuinely blocked. Tracked separately rather than guessed at here.
 #
 # The artifact's `## Decisions` rows are fed through this SAME subcommand, so an owner decision
 # declares (or retires) an edge with exactly the vocabulary an issue body uses — one rule, one
-# implementation, one test.
+# implementation, one test. This is the ONLY edge extractor; `pr-targets-issue` answers a
+# different question (GitHub CLOSING keywords in a PR body) and deliberately does not share it.
 cmd_deps_from_body() {
   case "$#" in
     0|1) : ;;
@@ -531,7 +560,64 @@ cmd_deps_from_body() {
       }
       return out s
     }
+    # --- structural sanitization (#117) -------------------------------------------------------
+    # Counted with substr/index rather than regex intervals: `{0,3}` is a POSIX interval that the
+    # BSD awk on macOS and older mawk builds do not honor, and a silently-unmatched fence rule
+    # would fail OPEN (every fence leaks its contents back into the scan).
+    function lead_sp(s,   i) { i = 0; while (substr(s, i + 1, 1) == " ") i++; return i }
+    function run_len(s, pos, ch,   n) { n = 0; while (substr(s, pos + n, 1) == ch) n++; return n }
+    # The length of a fence run of `ch` on this line, or 0. A fence is indented 0-3 spaces; at 4+
+    # the line is an INDENTED block, which this pass deliberately does not treat as code.
+    function fence_of(line, ch,   sp) {
+      sp = lead_sp(line)
+      if (sp > 3) return 0
+      return run_len(line, sp + 1, ch)
+    }
+    # The text following a fence run: the info string on an opener, the must-be-blank tail on a
+    # closer.
+    function after_fence(line, n,   sp) { sp = lead_sp(line); return substr(line, sp + n + 1) }
+    # Remove `<!-- … -->`, both the inline form and one spanning lines (state in in_comment).
+    function strip_comments(s,   out, p, q) {
+      out = ""
+      while (1) {
+        if (in_comment) {
+          q = index(s, "-->")
+          if (q == 0) return out                 # the comment swallows the rest of this line
+          s = substr(s, q + 3); in_comment = 0
+          continue
+        }
+        p = index(s, "<!--")
+        if (p == 0) return out s
+        out = out substr(s, 1, p - 1)
+        s = substr(s, p + 4); in_comment = 1
+      }
+    }
+    # Replace every byte of an inline code span (delimiters included) with MASK, preserving LENGTH
+    # so positions stay 1:1 with the unmasked line. Delimiters are equal-length backtick runs, per
+    # CommonMark; an UNMATCHED run is literal text and is left alone. Only the KEYWORD scan reads
+    # the masked copy — the reference scan reads the raw line, which is what keeps a `#N` inside a
+    # span visible (see the INLINE CODE SPANS rule above).
+    function mask_spans(s,   out, i, L, n, j, m, cl, k) {
+      out = ""; i = 1; L = length(s)
+      while (i <= L) {
+        if (substr(s, i, 1) != "`") { out = out substr(s, i, 1); i++; continue }
+        n = run_len(s, i, "`")
+        cl = 0; j = i + n
+        while (j <= L) {                          # the closer is a run of EXACTLY n
+          if (substr(s, j, 1) == "`") {
+            m = run_len(s, j, "`")
+            if (m == n) { cl = j; break }
+            j += m
+          } else j++
+        }
+        if (cl == 0) { for (k = 0; k < n; k++) out = out "`"; i += n }
+        else         { for (k = i; k < cl + n; k++) out = out MASK; i = cl + n }
+      }
+      return out
+    }
     BEGIN {
+      MASK = sprintf("%c", 1)   # a byte no issue body carries; never printed, only matched against
+      in_fence = 0; fence_ch = ""; fence_len = 0; in_comment = 0
       apos = sprintf("%c", 39)   # a literal apostrophe; this program is single-quoted in shell
       KW  = "(depends?|dependent|dependant)[ \t]+(on|upon)|blocked[ \t]+(by|on)"
       NEG = "(^|[^a-z0-9_])(no|not|never|nor|longer|without|remove[sd]?|retire[sd]?"
@@ -542,13 +628,39 @@ cmd_deps_from_body() {
       STEP = "^[ \t]*(:|,|;|&|\\+|and)?[ \t]*#[0-9]+"
     }
     {
-      rest = tolower($0)
+      # STRUCTURE FIRST, on the RAW line (#117) — a fence is recognized before lowercasing, dash
+      # normalization, clause/negation analysis and chain parsing, so none of them ever sees text
+      # the markup marked as quoted or illustrative.
+      line = $0
+      if (in_fence) {                              # inside a fence: only its own closer matters
+        n = fence_of(line, fence_ch)
+        if (n >= fence_len && after_fence(line, n) ~ /^[ \t]*$/) {
+          in_fence = 0; fence_ch = ""; fence_len = 0
+        }
+        next                                       # opener, content and closer are all skipped
+      }
+      line = strip_comments(line)                  # `<!-- … -->`, inline and across lines
+      nb = fence_of(line, "`")
+      nt = fence_of(line, "~")
+      # A backtick fence opener may not carry a backtick in its info string; a tilde one may.
+      if (nb >= 3 && index(after_fence(line, nb), "`") == 0) {
+        in_fence = 1; fence_ch = "`"; fence_len = nb; next
+      }
+      if (nt >= 3) { in_fence = 1; fence_ch = "~"; fence_len = nt; next }
+      sp = lead_sp(line)
+      if (substr(line, sp + 1, 1) == ">") next     # a blockquote is quoted material, not a claim
+
+      rest = tolower(line)
       # Normalize the dashes that also end a clause (em/en) to a single-byte boundary char.
       rest = lreplace(rest, "\342\200\224", ".")
       rest = lreplace(rest, "\342\200\223", ".")
-      while (match(rest, KW)) {
+      # The keyword is matched against a copy whose inline code spans are masked, while the
+      # reference chain is read from `rest`. The two are the same length, so the offsets below
+      # stay aligned as both are consumed in lockstep.
+      masked = mask_spans(rest)
+      while (match(masked, KW)) {
         kstart = RSTART; klen = RLENGTH
-        clause = substr(rest, 1, kstart - 1)
+        clause = substr(masked, 1, kstart - 1)
         # Keep only the text since the last clause boundary — a negation in an EARLIER sentence
         # must not suppress a later, genuine edge.
         cut = 0
@@ -557,11 +669,13 @@ cmd_deps_from_body() {
           if (c == "." || c == ";" || c == ":" || c == "!" || c == "?") cut = i
         }
         clause = substr(clause, cut + 1)
-        rest = substr(rest, kstart + klen)
+        rest   = substr(rest,   kstart + klen)   # consumed in lockstep: identical lengths
+        masked = substr(masked, kstart + klen)
         if (clause ~ NEG) continue            # negated: this retires an edge, never declares one
         while (match(rest, STEP)) {
           step = substr(rest, RSTART, RLENGTH)
-          rest = substr(rest, RSTART + RLENGTH)
+          rest   = substr(rest,   RSTART + RLENGTH)
+          masked = substr(masked, RSTART + RLENGTH)
           h = index(step, "#")
           digits = substr(step, h + 1)
           # Bound the width BEFORE the numeric conversion. A run wider than an issue number is

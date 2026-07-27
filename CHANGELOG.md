@@ -9,6 +9,32 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`/roadmap` invented dependency edges from issues that merely *documented* the keyword**
+  (#117). `deps-from-body` scanned every line for `Depends on #N` / `Blocked by #N` with no notion
+  of markup, so a repro block, a quoted excerpt or a schema comment was read as if the issue had
+  declared the edge. Live on this tracker: #112's fenced `console` blocks fabricated a
+  **#112 → #52** edge, marking a `ready` bundle `blocked` behind an issue it has no relationship
+  with — and nothing in the artifact distinguishes a fabricated edge from a real one.
+  - **Fixed as a class, not an instance.** This was the third variant of one bug family — #69 (a
+    bare `#N` mention), #108 (a *negated* mention), #117 (a mention the author never asserted).
+    The predicate now strips **fenced code blocks** (both ``` and `~~~`, info strings and longer
+    runs recognized, the other delimiter never closing the current fence, an unterminated fence
+    swallowing to end-of-body), **HTML comments** (inline and multi-line), and **blockquotes**
+    before scanning.
+  - **Inline code spans are handled by position, not by blanket stripping.** The *keyword* must
+    sit outside a span; the `#N` reference may sit inside one. So `` `Depends on #78` `` (a quoted
+    example) declares nothing, while `` Depends on `#52` `` keeps its reference visible — which is
+    what keeps #112 implementable on top of this instead of in conflict with it.
+  - **4-space indented blocks are deliberately *not* treated as code.** Under a `- ` bullet,
+    content starts at column 2 and code needs 2+4=6, so a `^ {4}` skip would delete ordinary
+    continuation prose and silently drop a *real* blocker. A dropped edge unblocks a genuinely
+    blocked bundle, which is the more dangerous direction. Tracked separately.
+  - Fence and span scanning are counted with `substr`/`index` rather than regex intervals:
+    `{0,3}` is not honored by the BSD awk on macOS or older mawk, and an unmatched fence rule
+    fails **open** — every fence would leak its contents back into the scan.
+  - 24 new fixtures in `scripts/check-roadmap.sh` pin the whole family, plus three drift guards
+    that keep the rule stated in the workflow prose.
+
 - **`/cleanup` was a permanent no-op on any squash-merging repo** (#106). It decided local-branch
   eligibility from `git branch --merged origin/<default>` plus `git branch -d`'s merged-only
   refusal — and a squash merge writes a *new* commit, so the branch tip is never an ancestor and
