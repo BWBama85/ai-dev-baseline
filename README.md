@@ -93,7 +93,7 @@ generated from the agent-neutral sources in [`base/workflows/`](base/workflows):
 | `/implement-issue` | Issue → repo-scope check → role-assigned gap-analysis → implement → auto-detected gates → self-review + assigned review → PR |
 | `/create-issue` | File a well-scoped issue via an 11-axis adversarial gap-analysis pass |
 | `/resolve-pr-threads` | Address + resolve bot review threads so branch protection unblocks |
-| `/cleanup` | Sweep **all** merged branches (local + remote), naming each explicitly |
+| `/cleanup` | Sweep **all** merged branches (local + remote, incl. squash/rebase merges) and resolved run-state, naming each explicitly |
 | `/debug` | Evidence-first root-cause investigation and fix |
 | `/roadmap` | Reconcile the roadmap artifact and emit the next `/implement-issue` batch |
 | `/new-release` | Review an **upstream** CLI's release notes and apply what affects you |

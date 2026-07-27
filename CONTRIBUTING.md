@@ -65,8 +65,10 @@ stale, untracked, or missing), **workflow-map** (each `base/workflows/<name>.md`
 to a rendered skill, no orphans), **skill-frontmatter** (each `SKILL.md` has
 `name`/`description`/`user-invocable`), **gate-detector** + **gates** (`detect` no-ops
 cleanly, `badcmd` errors, full gate-model behavior), **common-lib** (unit-test the shared
-`scripts/lib/common.sh` primitives), **cleanup-enum** and **baseline** (the `/cleanup`
-symref fix and `bin/baseline` currency classification), **precommit-gate** (the Stop-hook
+`scripts/lib/common.sh` primitives), **cleanup-enum**, **cleanup** and **baseline** (the
+`/cleanup` symref fix, the `/cleanup` decision predicates — squash-merge detection, the
+destructive refusals, the terse output contract — and `bin/baseline` currency
+classification), **precommit-gate** (the Stop-hook
 gate fails loud, never silently no-ops, when its library is missing), **implement-gate**
 (the implement-issue Stop hook re-verifies PR state live and fails closed),
 **install-migration** (a plain `git pull` never dangles an installed symlink),
@@ -86,10 +88,10 @@ locally ≈ green in CI.
 | `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) generated `skills/` + `scripts/` |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
-| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index · release-role) |
+| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index · release-role) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent |
-| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index · release-role · install dry-run |
+| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index · release-role · install dry-run |
 
 ## Adding a new agent
 

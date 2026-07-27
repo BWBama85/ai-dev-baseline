@@ -156,6 +156,13 @@ step "cleanup-enum"
 # Regression test for /cleanup's remote enumeration excluding the origin/HEAD symref (#38).
 if bash scripts/check-cleanup-enum.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "cleanup"
+# Behavioral tests for the /cleanup decision predicates (scripts/lib/cleanup-lib.sh): squash-merge
+# detection against a real fixture (#106 — `--merged` alone is blind to it, so the sweep was a
+# permanent no-op), the destructive refusals (a branch that gained commits after its merge; state
+# for an open PR or an in-flight run), and the terse output contract (#84). Offline.
+if bash scripts/check-cleanup.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "roadmap"
 # Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
 # targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness
@@ -243,6 +250,11 @@ HOME="$FAKE" bash install.sh --agent claude --agent codex --agent gemini >/tmp/a
 [ -e "$FAKE/.gemini/scripts/lib/role-dispatch.sh" ] || ok=0
 # The skill-override composer rides the same scripts/lib symlink (#22).
 [ -e "$FAKE/.claude/scripts/lib/skill-compose.sh" ] || ok=0
+# /cleanup's predicates ride it too — and must resolve for EVERY agent, since the rendered
+# {{CLEANUP_LIB}} step points each agent's skill at its own copy of the path (#106/#84).
+[ -e "$FAKE/.claude/scripts/lib/cleanup-lib.sh" ] || ok=0
+[ -e "$FAKE/.codex/scripts/lib/cleanup-lib.sh" ] || ok=0
+[ -e "$FAKE/.gemini/scripts/lib/cleanup-lib.sh" ] || ok=0
 [ -L "$FAKE/.codex/AGENTS.md" ] || ok=0
 # Codex + Gemini now also install rendered workflow skills and the shared gate runner
 # (Gemini's skills under its ~/.gemini/config/ customization root).

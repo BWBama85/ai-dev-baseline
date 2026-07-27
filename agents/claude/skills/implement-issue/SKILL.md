@@ -220,8 +220,12 @@ rm -f .claude/state/implement-issue-active.json .claude/state/implement-issue-bl
 # prompt carries issue and private-repo context, and gaps.err is the agent's full exploration
 # stream (inspected source, command output). Left in place they also outlive their run — a later
 # pass with gap_analysis unassigned never overwrites them, so stale findings sit there looking
-# current. Bounding gaps.err's growth within a run is separate, and tracked in #84.
-rm -f .claude/state/gap-prompt.txt .claude/state/gaps.md .claude/state/gaps.err
+# current. Bounding gaps.err's growth WITHIN a run is separate, and tracked in #123.
+# The lock goes too: a lock left behind by a killed run would make /cleanup treat this repo's gap
+# artifacts as permanently in-flight, so the one place that can prove no dispatch is running —
+# the start of the next run — is the place that clears it.
+rm -f .claude/state/gap-prompt.txt .claude/state/gaps.md .claude/state/gaps.err \
+      .claude/state/gap-analysis.lock
 ```
 
 ### 2. Verify repo scope + fetch the issue(s)
@@ -294,9 +298,20 @@ cat > .claude/state/gap-prompt.txt <<'PROMPT'
 …the adversarial gap-analysis prompt, including the three-heading output contract…
 PROMPT
 
-# 2. Dispatch via the harness's background facility, NOT a shell `&`.
+# 2. Mark the dispatch in flight, so a concurrent /cleanup does not sweep the artifacts this
+#    pass is still writing. This step runs BEFORE the branch and the active marker exist (step 5
+#    owns those), so the marker cannot serve as the in-flight signal here — without the lock,
+#    gap-analysis output looks exactly like a finished run's leftovers.
+: > .claude/state/gap-analysis.lock
+
+# 3. Dispatch via the harness's background facility, NOT a shell `&`.
 bash "$HOME/.claude/scripts/lib/role-dispatch.sh" invoke gap_analysis \
   < .claude/state/gap-prompt.txt > .claude/state/gaps.md 2> .claude/state/gaps.err
+
+# 4. Release the lock the moment the call TERMINATES — success, failure, or backstop alike.
+#    Holding it past a failed pass would preserve a dead run's artifacts forever; the retry
+#    below re-takes it.
+rm -f .claude/state/gap-analysis.lock
 ```
 
 Skipping step 1 fails the *redirection*, so the helper never runs and prints no

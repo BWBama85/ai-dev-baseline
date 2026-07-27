@@ -1,0 +1,490 @@
+#!/usr/bin/env bash
+# ai-dev-baseline — /cleanup decision predicates (issues #106 + #84).
+#
+# /cleanup is prose an agent executes, so its load-bearing DECISIONS used to live only as
+# inline git/gh one-liners in the skill body — unexecutable, and therefore untestable. That is
+# exactly how #106 happened: the skill decided local eligibility from `git branch --merged` plus
+# `git branch -d`'s refusal, both of which are structurally blind to a squash merge, and nothing
+# could prove the blindness. This library is the ONE home for those decisions so they can be
+# regression-tested offline (scripts/check-cleanup.sh) and cited by the workflow instead of
+# restated (the DRY discipline of docs/design-principles.md: source the shared primitive, never
+# copy it). It is the same split scripts/lib/roadmap-lib.sh makes for /roadmap.
+#
+# NETWORK PURITY. No subcommand here ever calls `gh`. `branch-verdict` takes already-fetched PR
+# JSON on stdin and does only LOCAL git object queries; `state-scan` reads the filesystem
+# (deterministic and offline, not pure); `state-verdict` and `report` are pure functions of their
+# arguments and stdin. The workflow owns every live read, which keeps the network shape visible
+# in the skill and makes every predicate hermetically testable with a fixture.
+#
+# WHAT each predicate means for the operator — why a squash merge needs PR evidence, why the
+# `-D` escalation is replaced by an expected-OID delete, which state is swept — is documented
+# once, for the agent that executes it, in `base/workflows/cleanup.md`. This header documents the
+# CONTRACT (arguments, stdin shape, exit status); the per-function comments below note only what
+# the code itself cannot show.
+#
+# EXIT STATUS IS FAIL-CLOSED. Every subcommand prints its answer and exits 0; a malformed
+# argument, unreadable JSON, or a missing dependency exits 2. The caller MUST treat 2 as a hard
+# stop and preserve whatever it was about to delete — a tooling failure that read as "merged" or
+# "stale" would destroy unmerged work, which is the one thing /cleanup promises never to do.
+#
+# Usage:
+#   cleanup-lib.sh branch-verdict <branch> <base-ref>          # merged-PR JSON on stdin
+#   cleanup-lib.sh state-scan     <state-dir>
+#   cleanup-lib.sh state-verdict  threads <pr-state>
+#   cleanup-lib.sh state-verdict  marker  <pr-state> <local-ref> <remote-ref>
+#   cleanup-lib.sh state-verdict  gaps    <lock 0|1> <run keep|stale|none>
+#   cleanup-lib.sh report [--tail <line>]                      # TSV "<category>\t<item>" on stdin
+#   cleanup-lib.sh state-line     <root> <default-branch>
+#   cleanup-lib.sh -h | --help
+#
+# `branch-verdict` stdin is the output of:
+#   gh pr list --head <branch> --state merged --limit 20 --json number,headRefOid,mergeCommit
+# EMPTY stdin and `[]` both mean "no merged-PR evidence" and yield `unmerged` — that is the
+# no-`gh`/no-remote degradation #106 requires (such a repo behaves exactly as it did before this
+# library existed: only a true fast-forward is deletable). A live query that FAILED must never be
+# piped in as empty: the caller reports that branch as unverified and preserves it.
+#
+# Requires: git. jq only when PR JSON is actually supplied (a jq-less box still gets `merged-ff`).
+
+set -u
+
+# --- required shared library (fail loud on a broken install, per design-principles §5) --------
+# common.sh lives beside this file (install.sh symlinks the whole scripts/lib dir into
+# ~/.<agent>/scripts/lib), so resolve it the same one-line way the sibling scripts/lib modules
+# do (roadmap-lib.sh, repo-settings.sh). adb_usage vanishes without it, so a missing library
+# FAILS LOUD rather than silently degrading a predicate the sweep trusts with `rm` and ref deletes.
+_adb_cl_common="$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh"
+if [ ! -f "$_adb_cl_common" ]; then
+  printf 'cleanup-lib: FATAL — required library not found: %s (broken/incomplete install)\n' "$_adb_cl_common" >&2
+  exit 2
+fi
+# shellcheck source=/dev/null
+. "$_adb_cl_common"
+
+usage() { adb_usage "$0"; }
+
+# die <msg> — every hard error exits 2, the fail-closed "do not trust this answer" status. There
+# is deliberately no status 1: a caller that treated 1 as a benign negative would delete on a
+# tooling failure, and this file only ever answers questions whose wrong answer is destructive.
+die() { printf 'cleanup-lib: %s\n' "$*" >&2; exit 2; }
+
+TAB="$(printf '\t')"
+
+# --- branch-verdict ---------------------------------------------------------------------------
+# Classify ONE local branch against the default branch. Exit 0 for any computed verdict; 2 on bad
+# input. THREE lines are printed, always in this order:
+#
+#   line 1  the verdict
+#   line 2  the branch tip OID THE VERDICT WAS COMPUTED FROM
+#   line 3  an optional human-readable detail (absent when there is nothing to say)
+#
+# Line 2 is not informational. The caller deletes a rewritten-merge branch with
+# `git update-ref -d refs/heads/<b> <that OID>`, an ATOMIC compare-and-delete that removes the
+# ref only if it still points there. Handing back the exact OID the classification used is what
+# closes the window between deciding and deleting: a commit landing on the branch in between
+# makes the delete fail loudly instead of destroying it. A caller that re-read the tip itself
+# would be reading a DIFFERENT moment than the one that was judged, which is the same race
+# wearing a longer name.
+#
+#   merged-ff    the branch tip is an ancestor of <base-ref>. A plain merge or a fast-forward;
+#                `git branch -d` accepts it, and its own merged-only refusal re-validates the
+#                answer at mutation time.
+#   merged-pr    a MERGED pull request proves the content landed even though the tip is not an
+#                ancestor — i.e. the merge REWROTE the commits. Line 3 names the PR.
+#   unmerged     no evidence. Preserve, silently (this is the overwhelmingly common case).
+#   unverified   the evidence could not be evaluated. Preserve and report LOUDLY — this is not
+#                the same as "not merged", and collapsing the two is how a real problem hides.
+#
+# WHY `merged-pr` AND NOT `merged-squash` (#106's word): the proof is merge-method-neutral. A
+# squash merge and a rebase merge both rewrite the branch's commits, so both leave the tip a
+# non-ancestor while the content is fully landed, and both are recognised by exactly this rule.
+# Naming the verdict after one of the two methods would read as "rebase merges are unhandled".
+#
+# THE TWO CONDITIONS for `merged-pr`, BOTH required:
+#   (a) the PR's `mergeCommit.oid` is contained in <base-ref>. #106 asks for this, and it is what
+#       makes the evidence LOCAL and current rather than a remembered "the PR was open" — the
+#       staleness the old guardrail was really protecting against. A merged PR alone proves
+#       nothing about THIS repo's default branch (it may have merged into another base).
+#   (b) the PR's `headRefOid` EQUALS the local branch tip. #106 does not ask for this; it is
+#       added because without it a branch that was squash-merged and then had NEW LOCAL COMMITS
+#       added still matches (a) and would be deleted — destroying unmerged work, which is exactly
+#       what the issue's own "never delete anything unproven" guardrail forbids. With it, the
+#       verdict proves the local branch carries nothing beyond what landed.
+#
+# A `[gone]` upstream is deliberately NOT consulted here. #106 is explicit that it is
+# corroborating evidence only: a branch deleted on the remote WITHOUT merging looks identical,
+# so treating it as sufficient would delete abandoned-but-unmerged work.
+cmd_branch_verdict() {
+  [ "$#" -eq 2 ] || die "branch-verdict: needs exactly 2 args: <branch> <base-ref> (merged-PR JSON on stdin)"
+  local branch="$1" base="$2" tip base_oid json cands n oid rc
+  # A leading dash would be read by git as an option; an empty name resolves to nothing useful.
+  case "$branch" in
+    ''|-*) die "branch-verdict: <branch> must be a branch name (got '$branch')" ;;
+  esac
+  case "$base" in
+    ''|-*) die "branch-verdict: <base-ref> must be a ref (got '$base')" ;;
+  esac
+  command -v git >/dev/null 2>&1 || die "branch-verdict: git is required"
+
+  # Resolve BOTH refs up front, and refuse if either is missing. Resolving the branch through
+  # refs/heads/ (never the bare name) means a tag or remote-tracking ref that happens to share the
+  # name can never be classified — and then deleted — in place of the local branch.
+  tip="$(git rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null)"
+  [ -n "$tip" ] || die "branch-verdict: no such local branch: $branch"
+  base_oid="$(git rev-parse --verify --quiet "$base^{commit}" 2>/dev/null)"
+  [ -n "$base_oid" ] || die "branch-verdict: base ref not found: $base"
+
+  # `--is-ancestor` has THREE outcomes, and conflating them is a fail-open bug: 0 = ancestor,
+  # 1 = not an ancestor, anything else = git itself failed (a corrupt object store, a bad ref).
+  # A naive `if git merge-base …` reads that third band as "not merged", which is the safe
+  # direction here — but it is silent, and the same conflation on the PR loop below would be
+  # unsafe. Classify the band explicitly in both places so the code says which it meant.
+  git merge-base --is-ancestor "$tip" "$base_oid" 2>/dev/null; rc=$?
+  case "$rc" in
+    0) printf 'merged-ff\n%s\n' "$tip"; return 0 ;;
+    1) : ;;
+    *) die "branch-verdict: git merge-base failed (rc $rc) — cannot classify '$branch'" ;;
+  esac
+
+  json="$(cat)"
+  # Empty stdin is the documented "no PR evidence supplied" case (no gh, no remote, or a repo
+  # that simply has no merged PR for this head) — a normal negative, not an error.
+  case "$json" in *[![:space:]]*) : ;; *) printf 'unmerged\n%s\n' "$tip"; return 0 ;; esac
+
+  # jq is needed ONLY to read supplied evidence. A box without jq still gets the `merged-ff`
+  # answer above, so ordinary fast-forward cleanup keeps working; it is only the PR-evidence path
+  # that degrades — and it degrades to `unverified` (preserve + report), never to a quiet
+  # `unmerged` that would look like a considered negative.
+  if ! command -v jq >/dev/null 2>&1; then
+    printf 'unverified\n%s\njq is not installed — merged-PR evidence could not be evaluated\n' "$tip"
+    return 0
+  fi
+
+  # Select the PRs whose head SHA is EXACTLY this tip — condition (b) — and that carry a merge
+  # commit at all. `.mergeCommit` is null for a PR GitHub reports as merged without one, so it is
+  # defaulted before `.oid` is read rather than dereferenced blind.
+  cands="$(printf '%s' "$json" | jq -r --arg tip "$tip" '
+    # Guard the SHAPE first: a non-array (an object, an error payload, a string) must raise, not
+    # quietly yield no candidates — a fail-open "unmerged" here merely preserves, but the same
+    # silence on malformed input is what hides a broken caller.
+    if type != "array" then error("not an array") else . end
+    | .[]
+    | select((.headRefOid // "") == $tip)
+    | ((.mergeCommit // {}) | .oid // "") as $oid
+    | select($oid != "")
+    | "\(.number // 0)\t\($oid)"
+  ' 2>/dev/null)" \
+    || die "branch-verdict: could not parse the merged-PR JSON (malformed, or not a JSON array)"
+
+  # Fed by a heredoc, NOT a pipe: a pipe puts the loop in a subshell, where `return 0` returns
+  # from the subshell and the function falls through to the `unmerged` line below — reporting
+  # every squash-merged branch as unmerged, i.e. silently reinstating #106.
+  while IFS="$TAB" read -r n oid; do
+    [ -n "$oid" ] || continue
+    # The merge commit must be in the LOCAL object store before it can be tested. When it is not
+    # (an unfetched or pruned object), `--is-ancestor` fails with a hard error; skipping such a
+    # PR degrades to "cannot prove it", which preserves the branch. Checking existence first also
+    # keeps the rc band below to a clean 0/1, so a genuine git failure still surfaces.
+    git rev-parse --verify --quiet "$oid^{commit}" >/dev/null 2>&1 || continue
+    git merge-base --is-ancestor "$oid" "$base_oid" 2>/dev/null; rc=$?
+    case "$rc" in
+      0) printf 'merged-pr\n%s\n#%s (merge commit %.12s)\n' "$tip" "$n" "$oid"; return 0 ;;
+      1) : ;;
+      *) die "branch-verdict: git merge-base failed (rc $rc) while checking PR #$n" ;;
+    esac
+  done <<EOF
+$cands
+EOF
+
+  printf 'unmerged\n%s\n' "$tip"
+}
+
+# --- state-scan --------------------------------------------------------------------------------
+# Enumerate a run-state directory and print ONE TSV record per regular file:
+#   <kind>TAB<path>TAB<key>
+# Deterministic and offline (it reads the filesystem, so not pure). An absent directory prints
+# nothing and exits 0 — a repo that has never run a skill is a normal, empty result.
+#
+# Kinds, and the key each carries:
+#   threads  <pr-number>     a /resolve-pr-threads cache, `threads-<N>.json`
+#   marker   <branch>|-      an /implement-issue run marker; the key is its recorded branch
+#   lock     -               the gap-analysis in-flight lock
+#   gaps     -               a gap-analysis artifact (prompt, findings, captured stream)
+#   other    -               ANYTHING ELSE
+#
+# `other` is emitted rather than dropped, and the workflow NEVER sweeps it. That asymmetry is the
+# whole safety property of this subcommand: a sweep that deleted what it could not classify would
+# eventually eat a file some future skill depends on, and the failure would look like corruption
+# rather than a cleanup. Emitting the record keeps the scan's coverage visible (and testable)
+# while the delete set stays an explicit allowlist. Adding a category is adding an arm here.
+#
+# A `threads-<junk>.json` is deliberately `other`, not a malformed `threads`: the key must be a
+# PR number for the liveness read to mean anything, so a name that cannot supply one is simply
+# not ours to delete.
+cmd_state_scan() {
+  [ "$#" -eq 1 ] || die "state-scan: needs exactly 1 arg: <state-dir>"
+  local dir="$1" f base n key
+  [ -d "$dir" ] || return 0
+  # Both globs, so a staged `.marker.tmp` is seen (and classified `other`) rather than invisible.
+  # An unmatched glob stays literal in POSIX shells, which `[ -f ]` filters — no nullglob needed.
+  for f in "$dir"/* "$dir"/.[!.]*; do
+    [ -f "$f" ] || continue
+    base="${f##*/}"
+    case "$base" in
+      threads-*.json)
+        n="${base#threads-}"; n="${n%.json}"
+        case "$n" in
+          ''|*[!0-9]*) printf 'other\t%s\t-\n' "$f" ;;
+          *)           printf 'threads\t%s\t%s\n' "$f" "$n" ;;
+        esac
+        ;;
+      implement-issue-active.json|implement-issue-blocked.json)
+        key="$(_adb_cl_marker_branch "$f")"
+        printf 'marker\t%s\t%s\n' "$f" "${key:--}"
+        ;;
+      gap-analysis.lock)
+        printf 'lock\t%s\t-\n' "$f"
+        ;;
+      # The whole gap-analysis family, not just the two names /implement-issue writes today: a
+      # past run left `gaps-retry.{md,err}` behind, and #84 names that debris explicitly.
+      gap-prompt.txt|gaps.md|gaps.err|gaps-*.md|gaps-*.err)
+        printf 'gaps\t%s\t-\n' "$f"
+        ;;
+      *)
+        printf 'other\t%s\t-\n' "$f"
+        ;;
+    esac
+  done
+}
+
+# Print a marker's recorded branch, or nothing when it cannot be read. Deliberately quiet on
+# every failure (absent jq, malformed JSON, missing key): the CALLER turns an empty key into the
+# `unknown` liveness signal, which state-verdict fails closed on. Reporting the failure here
+# instead would make an unreadable marker an error that stops the sweep, when the correct
+# behaviour is to keep the file and carry on.
+_adb_cl_marker_branch() {
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -r '.branch // empty' "$1" 2>/dev/null || return 0
+}
+
+# --- state-verdict -----------------------------------------------------------------------------
+# Decide whether ONE state file is `stale` (the sweep may delete it) or `keep`. Exit 0 with a
+# verdict; 2 on an unrecognised kind or signal.
+#
+# It takes STRUCTURED FACTS, never a caller-invented summary word. The precedence between those
+# facts IS the decision, so putting it here — rather than letting each caller collapse them into
+# a signal first — is the whole point of the subcommand: the rule is written once, and
+# scripts/check-cleanup.sh can pin it.
+#
+# EVERY unknown fails closed to `keep`. Deleting run-state for a live run breaks the
+# /implement-issue continuation gate (the Stop hook reads exactly these markers), and deleting a
+# thread cache for an OPEN PR discards work /resolve-pr-threads still needs. Keeping a file
+# nobody needs costs a few KB; deleting one somebody needs costs the run.
+#
+# LIVENESS IS NEVER mtime. #84 is explicit: a file's age says nothing about whether the PR or run
+# it belongs to has resolved, and a mtime rule would delete a slow run's state while preserving a
+# fast one's. Every fact below is a live PR state or a freshly-fetched ref.
+cmd_state_verdict() {
+  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps)"
+  local kind="$1"; shift
+  case "$kind" in
+    threads)
+      [ "$#" -eq 1 ] || die "state-verdict threads: needs exactly 1 arg: <pr-state open|closed|merged|unknown>"
+      case "$1" in
+        open)          printf 'keep\n' ;;
+        closed|merged) printf 'stale\n' ;;
+        unknown)       printf 'keep\n' ;;
+        *) die "state-verdict threads: <pr-state> must be open|closed|merged|unknown (got '$1')" ;;
+      esac
+      ;;
+    marker)
+      [ "$#" -eq 3 ] || die "state-verdict marker: needs exactly 3 args: <pr-state open|closed|merged|none|unknown> <local-ref 0|1|unknown> <remote-ref 0|1|unknown>"
+      _adb_cl_ck_pr "$1" marker
+      _adb_cl_ck_ref "$2" "<local-ref>"
+      _adb_cl_ck_ref "$3" "<remote-ref>"
+      # An OPEN PR OUTRANKS branch absence, and that precedence is load-bearing rather than
+      # tidy: after `gh pr create` the operator may delete the local branch (or /cleanup itself
+      # may, in an earlier run) while the PR is still open and the run still in flight. Deciding
+      # on branch absence alone would drop the active marker there and disarm the continuation
+      # gate for a run that has not finished.
+      case "$1" in open) printf 'keep\n'; return 0 ;; esac
+      # Either ref still existing means the run's branch is alive somewhere. `unknown` — a ref
+      # that could not be read — is treated as "possibly present", never as absent.
+      case "$2" in 1|unknown) printf 'keep\n'; return 0 ;; esac
+      case "$3" in 1|unknown) printf 'keep\n'; return 0 ;; esac
+      # Both refs are provably gone. A PR state that could not be READ still fails closed: the
+      # marker may belong to an open PR whose branch was tidied, which is the `keep` case above.
+      case "$1" in unknown) printf 'keep\n'; return 0 ;; esac
+      printf 'stale\n'
+      ;;
+    gaps)
+      [ "$#" -eq 2 ] || die "state-verdict gaps: needs exactly 2 args: <lock 0|1> <run keep|stale|none>"
+      case "$1" in 0|1) : ;; *) die "state-verdict gaps: <lock> must be 0 or 1 (got '$1')" ;; esac
+      # THE LOCK OUTRANKS EVERYTHING. Gap analysis runs in /implement-issue step 3, BEFORE the
+      # branch and the run marker exist (step 5 owns those), so during a live gap pass there is
+      # no marker to consult and the artifacts would otherwise read as a finished run's leftovers
+      # — /cleanup would delete the findings of a dispatch that is still writing them. The lock
+      # is the only positive in-flight signal available in that window.
+      case "$1" in 1) printf 'keep\n'; return 0 ;; esac
+      # No lock: the artifacts belong to whatever run the marker describes. `none` (no marker at
+      # all) is a FINISHED or never-branched run — with the lock proving no dispatch is in
+      # flight, there is nothing left for them to belong to.
+      case "$2" in
+        keep)       printf 'keep\n' ;;
+        stale|none) printf 'stale\n' ;;
+        *) die "state-verdict gaps: <run> must be keep|stale|none (got '$2')" ;;
+      esac
+      ;;
+    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps)" ;;
+  esac
+}
+
+_adb_cl_ck_pr() {
+  case "$1" in
+    open|closed|merged|none|unknown) return 0 ;;
+    *) die "state-verdict $2: <pr-state> must be open|closed|merged|none|unknown (got '$1')" ;;
+  esac
+}
+_adb_cl_ck_ref() {
+  case "$1" in
+    0|1|unknown) return 0 ;;
+    *) die "state-verdict marker: $2 must be 0, 1 or unknown (got '$1')" ;;
+  esac
+}
+
+# --- report ------------------------------------------------------------------------------------
+# Render the sweep's TERSE OUTPUT CONTRACT (#84). Stdin is TSV "<category>TAB<item>" records;
+# stdout is ONE line per category that has records, in first-seen order, plus the `--tail` line.
+#
+# EMPTY CATEGORIES CANNOT BE PRINTED — not by convention, by construction. #84's complaint is a
+# run that emitted a `Deleted — remote (0)` heading and a paragraph explaining why nothing needed
+# deleting; a report built by concatenating per-category sections will always drift back toward
+# that, because printing a zero is what a section-shaped writer does. Here a category exists only
+# if a record created it, so "omit empty categories" is not a rule anyone has to remember.
+#
+# Runs of items sharing a prefix, a numeric middle and a suffix collapse to a brace form —
+# `threads-{41,47,51}.json` — which is what keeps twelve swept caches on ONE line instead of
+# twelve. Order is preserved exactly as given (never sorted): the caller's order is the sweep's
+# order, and a reader matching the report against what scrolled past should see the same
+# sequence. Items that do not fit the pattern pass through verbatim, in place.
+cmd_report() {
+  local tail_line=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --tail)
+        [ "$#" -ge 2 ] || die "report: --tail needs a value"
+        tail_line="$2"; shift
+        ;;
+      -h|--help) usage; return 0 ;;
+      *) die "report: unknown option '$1'" ;;
+    esac
+    shift
+  done
+
+  LC_ALL=C awk -F'\t' '
+    # split3(s, a) — 1 when s looks like <pre-><digits><.suf>, filling a["pre"/"mid"/"suf"].
+    # The match is on the LAST such run, so `gaps-2.err` groups on `gaps-`/`.err` and a name
+    # carrying an earlier number still groups on the one next to its extension.
+    function split3(s, a,   p, n) {
+      p = 0; n = 0
+      while (match(substr(s, n + 1), /-[0-9]+\./)) {
+        p = n + RSTART; n = p + RLENGTH - 1
+      }
+      if (p == 0) return 0
+      a["pre"] = substr(s, 1, p)                    # up to and including the "-"
+      a["mid"] = substr(s, p + 1, n - p - 1)        # the digits
+      a["suf"] = substr(s, n)                       # from the "." onward
+      return 1
+    }
+    {
+      if ($1 == "" || $2 == "") next
+      if (!($1 in seen)) { seen[$1] = 1; order[++nc] = $1 }
+      items[$1, ++cnt[$1]] = $2
+    }
+    END {
+      for (i = 1; i <= nc; i++) {
+        c = order[i]
+        # split("", arr) rather than `delete arr`: the whole-array delete is a later addition and
+        # this has to run on whatever awk a stock macOS ships.
+        split("", gseen); split("", gpre); split("", gsuf); split("", gmid); split("", gnum)
+        ng = 0
+        for (j = 1; j <= cnt[c]; j++) {
+          it = items[c, j]
+          split("", a)
+          if (split3(it, a)) { k = a["pre"] SUBSEP a["suf"] } else { k = "@" j }
+          if (!(k in gseen)) {
+            gseen[k] = ++ng
+            if (k ~ /^@/) { gpre[ng] = it;       gsuf[ng] = ""; gmid[ng] = "";        gnum[ng] = 0 }
+            else          { gpre[ng] = a["pre"]; gsuf[ng] = a["suf"]; gmid[ng] = a["mid"]; gnum[ng] = 1 }
+          } else {
+            g = gseen[k]; gmid[g] = gmid[g] "," a["mid"]; gnum[g]++
+          }
+        }
+        line = ""
+        for (g = 1; g <= ng; g++) {
+          if (gnum[g] == 0)      piece = gpre[g]
+          else if (gnum[g] == 1) piece = gpre[g] gmid[g] gsuf[g]
+          else                   piece = gpre[g] "{" gmid[g] "}" gsuf[g]
+          line = line (line == "" ? "" : ", ") piece
+        }
+        printf "%s: %s\n", c, line
+      }
+    }
+  '
+  [ -n "$tail_line" ] && printf '%s\n' "$tail_line"
+  return 0
+}
+
+# --- state-line ---------------------------------------------------------------------------------
+# Print the report's FINAL line: one truthful sentence about where the clone ended up. Exit 0
+# always (a description is never an error); 2 on bad arguments.
+#
+# WHY IT IS NOT A LITERAL. The obvious implementation — `printf '%s: clean, in sync with
+# origin/%s'` — is a claim, and /cleanup reaches its report from several states where that claim
+# is FALSE: a dirty tree it refused to switch away from, a fast-forward that failed on
+# divergence, a detached HEAD, a repo with no remote at all. A closing line that always says
+# "clean, in sync" is worse than no closing line, because the terse contract (#84) means it is
+# the ONLY state the operator is shown.
+#
+# The classification itself is adb_clone_status from common.sh — the same primitive bin/baseline
+# and the SessionStart currency hook use — rather than a fourth hand-rolled dirty/ahead/behind
+# comparison. This subcommand only maps its word to a sentence.
+cmd_state_line() {
+  [ "$#" -eq 2 ] || die "state-line: needs exactly 2 args: <root> <default-branch>"
+  local root="$1" default="$2" st cur
+  [ -n "$default" ] || die "state-line: <default-branch> must not be empty"
+  st="$(adb_clone_status "$root" "$default")"
+  cur="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  case "$st" in
+    current)     printf '%s: clean, in sync with origin/%s\n' "$default" "$default" ;;
+    behind)      printf '%s: BEHIND origin/%s — fast-forward before starting work\n' "$default" "$default" ;;
+    ahead)       printf '%s: has unpushed commits (never push to the default branch)\n' "$default" ;;
+    diverged)    printf '%s: DIVERGED from origin/%s — reconcile manually\n' "$default" "$default" ;;
+    no-remote)   printf '%s: no origin/%s to compare against\n' "$default" "$default" ;;
+    dirty)       printf '%s: working tree DIRTY — stayed on %s\n' "$default" "${cur:-the current branch}" ;;
+    in-progress) printf '%s: a merge/rebase/cherry-pick is IN PROGRESS — finish or abort it\n' "$default" ;;
+    detached)    printf '%s: HEAD is DETACHED — switch back to %s\n' "$default" "$default" ;;
+    not-default) printf '%s: still on %s, not %s\n' "$default" "${cur:-an unknown branch}" "$default" ;;
+    not-a-repo)  printf 'not a git repository: %s\n' "$root" ;;
+    # An unrecognised word means adb_clone_status grew a state this mapping has not learned.
+    # Print it rather than inventing a reassuring sentence for a condition nobody has classified.
+    *)           printf '%s: %s\n' "$default" "${st:-state could not be determined}" ;;
+  esac
+}
+
+# --- dispatch ----------------------------------------------------------------------------------
+main() {
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  local sub="$1"; shift
+  case "$sub" in
+    -h|--help|help) usage; exit 0 ;;
+    branch-verdict) cmd_branch_verdict "$@" ;;
+    state-scan)     cmd_state_scan "$@" ;;
+    state-verdict)  cmd_state_verdict "$@" ;;
+    report)         cmd_report "$@" ;;
+    state-line)     cmd_state_line "$@" ;;
+    *) printf 'cleanup-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"

@@ -7,7 +7,67 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/cleanup` was a permanent no-op on any squash-merging repo** (#106). It decided local-branch
+  eligibility from `git branch --merged origin/<default>` plus `git branch -d`'s merged-only
+  refusal — and a squash merge writes a *new* commit, so the branch tip is never an ancestor and
+  **neither signal can ever fire**. The sweep reported "nothing to sweep" while stale branches
+  piled up: the exact failure its own opening paragraph says it exists to prevent. Observed live
+  in this repo, which merges with `gh pr merge --auto --squash`.
+  - **A branch now counts as merged on either of two proofs**, each of which re-validates itself
+    at the moment of deletion: the tip is an ancestor of `origin/<default>` (deleted with
+    `git branch -d`, whose refusal *is* the re-check), or a **freshly-queried merged PR** whose
+    `mergeCommit.oid` is contained in `origin/<default>` **and** whose `headRefOid` equals the
+    local tip.
+  - **That second condition is not in the issue, and it is the one that protects work.** Without
+    it, a branch squash-merged and *then* given new local commits still matches and gets deleted.
+  - **`git branch -D` is never used.** A rewritten-merge branch is removed with
+    `git update-ref -d refs/heads/<b> <tip>` — an atomic compare-and-delete that fails if the
+    branch moved between being classified and being deleted. `-D` deletes whatever is there
+    *now*, on a decision made earlier.
+  - **The guardrail was reworded, not deleted.** It forbade PR status outright, which is what
+    left the skill with no detector at all; it now forbids *stale* status. A status queried live
+    in this run and then proved by local ancestry is not the thing it was protecting against.
+  - **A repo with no `gh` or no remote behaves exactly as before** — fast-forward detection only.
+    A repo that *has* `gh` and whose query *fails* is reported `UNVERIFIED` and preserved, never
+    silently downgraded to "not merged".
+
 ### Added
+
+- **`/cleanup` sweeps resolved run-state, and reports tersely** (#84). It cleaned only git
+  branches, so `{{STATE_DIR}}` accumulated indefinitely — 12 thread caches for long-merged PRs
+  and a 428 KB captured-stderr log were sitting there when this shipped — and it narrated itself,
+  emitting ~15 lines (including a `(0)` section and two paragraphs about its own re-fetch
+  discipline) for a run that deleted one branch.
+  - **Thread caches for closed/merged PRs, run markers whose branch is gone, and finished runs'
+    gap artifacts are now swept.** Liveness comes from a live PR read or a freshly-fetched ref —
+    **never file mtime** — and every unknown fails closed to *keep*.
+  - **State for an OPEN PR or an in-flight run is never touched.** An open PR outranks branch
+    absence, because a branch is often tidied while its run is still live; deleting that marker
+    would silently disarm `/implement-issue`'s continuation gate.
+  - **A new `gap-analysis.lock`** closes the one window the markers cannot cover: gap analysis
+    runs *before* the branch and marker exist, so without it a live pass's artifacts read as a
+    finished run's leftovers and were eligible for deletion mid-write.
+  - **Anything the scan cannot classify is `other`, and `other` is never deleted.**
+  - **Terse output contract:** one line per category that actually changed plus a truthful final
+    state line, target ≤3 lines. Empty categories cannot be printed — the report is built from
+    records, so there is no zero-section to suppress. Guardrail hits, refusals, unverified
+    branches and anything left behind still report in full.
+  - The **final state line is derived from `adb_clone_status`**, so a dirty tree, a failed
+    fast-forward, divergence or a detached HEAD is stated rather than papered over with
+    "clean, in sync" — which, under a ≤3-line contract, is the only state the operator sees.
+  - Bounding a **single** dispatch's captured stream is split out as #123: every safe place to
+    do it is inside `role-dispatch.sh`, and the obvious implementations regress the #93 reap/rc
+    hardening.
+- **`scripts/lib/cleanup-lib.sh`** — the one home for those decisions (`branch-verdict`,
+  `state-scan`, `state-verdict`, `report`, `state-line`), following the `roadmap-lib.sh`
+  precedent so they are executable and regression-tested rather than re-derived from prose each
+  run. It never calls `gh`; the workflow owns every live read. Covered by
+  `scripts/check-cleanup.sh` (87 assertions, offline, real squash-merge git fixture) in both
+  `selfcheck.sh` and CI.
+- **`{{CLEANUP_LIB}}`** joins the neutral workflow placeholder vocabulary, and the table in
+  `base/workflows/README.md` gains the `{{REPO_SETTINGS_LIB}}` row it was missing.
 
 - **The installed baseline now keeps itself current** (#36). Payloads are symlinks into one
   clone, so when that clone lags `origin` every project on the machine silently runs stale
