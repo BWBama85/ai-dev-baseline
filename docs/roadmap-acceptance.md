@@ -224,9 +224,10 @@ Set `<!-- release-milestone: Next release -->` on the artifact.
 
 ### 9b-bis. Branch health — a drained checklist is not a shippable build (#78) **[auto]**
 
-Health is evaluated against the default branch's **HEAD commit** (never `gh run list --limit 1`,
-which can answer with an unrelated workflow or an older commit), across **both** the Checks API and
-the legacy commit-status API. It is consulted **only** at the would-be-`met` boundary.
+Health is reduced by the shared `roadmap-lib.sh branch-health` predicate, evaluated against the
+default branch's **HEAD commit** (never `gh run list --limit 1`, which can answer with an unrelated
+workflow or an older commit), across **both** the Checks API and the legacy commit-status API. It is
+consulted **only** at the would-be-`met` boundary.
 
 - [ ] **Green + 0 open blockers** → emits the release command, banner naming the branch as green.
 - [ ] **Red + 0 open blockers** → **no cut.** `⛔ Requirements met, but <branch> is not green`,

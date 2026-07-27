@@ -134,8 +134,9 @@ autofix moves an unmilestoned open issue to `Backlog` — but it **excludes** on
 `release-blocker`. That label is only meaningful inside the active release milestone, so sweeping it
 to `Backlog` would drop a declared must-have out of the set readiness counts, and the very next run
 would compute "met" and emit a cut with an abandoned blocker parked in the backlog. It is reported
-as a `HOLD:` line every run until the tracker actually changes: assign it to the release milestone,
-or remove the label.
+as a `WARN:` line every run until the tracker actually changes: assign it to the release milestone,
+or remove the label. Note it **warns rather than gates** — nothing feeds it into the readiness
+predicate, so a run can print it and still emit the cut.
 - **Composes with the destination report.** Point the artifact's optional
   `<!-- destination-label: release-blocker -->` marker (issue #68) at `release-blocker`; in
   release-readiness mode the count is **milestone-scoped** so the gauge (`release-blocker: N

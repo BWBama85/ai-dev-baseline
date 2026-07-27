@@ -74,7 +74,11 @@ case "$sub" in
   auth) exit 0 ;;
   repo)
     fail_if repo
-    cat "$F/repo" ;;
+    # A real JSON object, run through the caller's OWN --jq — so a snippet asking for
+    # `.nameWithOwner` and one asking for `.nameWithOwner, .defaultBranchRef.name` each get
+    # exactly what they requested, and a snippet that asks for a field the fixture lacks fails
+    # here instead of silently receiving the whole blob.
+    emit "$F/repo" ;;
   api)
     case "$url" in
       search/issues)
@@ -100,9 +104,6 @@ case "$sub" in
       */actions/workflows*)
         fail_if workflows
         emit "$F/workflows.json" ;;
-      */commits/*)
-        fail_if headsha
-        emit "$F/commit.json" ;;
       *issues\?milestone=*)
         fail_if milestone
         emit "$F/milestone-issues.json" ;;
@@ -112,12 +113,6 @@ case "$sub" in
       *issues\?state=open*)
         fail_if openissues
         emit "$F/open-issues.json" ;;
-      # LAST among the repos arms on purpose: `repos/*/*` also matches
-      # `repos/acme/widget/issues?...`, so it must only see what every arm above declined —
-      # `gh api repos/OWNER/REPO`, the repo object read for .default_branch (#78).
-      repos/*/*)
-        fail_if repoapi
-        emit "$F/repo-object.json" ;;
       *) echo "gh stub: unhandled api url: $url" >&2; exit 90 ;;
     esac ;;
   issue)
@@ -188,7 +183,7 @@ run_snippet() {
 # Every scenario starts from fix_default, so no case inherits another's edits.
 fix_default() {
   rm -f "$FIX"/fail-* "$FIX/calls"
-  printf 'acme/widget\n'                 > "$FIX/repo"
+  printf '{"nameWithOwner":"acme/widget","defaultBranchRef":{"name":"main"}}\n' > "$FIX/repo"
   printf '31\n'                          > "$FIX/roadmap-nums"
   printf 'release-blocker\nroadmap\n'    > "$FIX/labels.txt"
   printf '[]\n'                          > "$FIX/open-prs.json"
@@ -205,21 +200,33 @@ fix_default() {
 # it always asserted (a `met` milestone is still `met`) and the health-specific cases below each
 # change exactly one thing.
 E2E_SHA=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
-# health_set <check-runs-json> <statuses-json> <active-workflow-count>
-health_set() {
-  printf '{"default_branch":"main"}\n'            > "$FIX/repo-object.json"
-  printf '{"sha":"%s"}\n' "$E2E_SHA"              > "$FIX/commit.json"
-  printf '{"check_runs":%s}\n' "$1"               > "$FIX/check-runs.json"
-  printf '{"state":"x","statuses":%s}\n' "$2"     > "$FIX/commit-status.json"
-  printf '{"total_count":%s,"workflows":%s}\n' "$3" \
-    "$(jq -cn --argjson n "$3" '[range($n) | {state:"active"}]')" > "$FIX/workflows.json"
+# wf_arr <n> — n active workflow definitions, built without spawning jq: fix_default runs on every
+# scenario, so a process here is a process paid ~35 times for a constant.
+wf_arr() {
+  local i=0 out=""
+  while [ "$i" -lt "$1" ]; do
+    [ -z "$out" ] || out="$out,"
+    out="$out{\"state\":\"active\"}"
+    i=$((i+1))
+  done
+  printf '[%s]' "$out"
 }
-health_green() { health_set "[{\"name\":\"ci\",\"head_sha\":\"$E2E_SHA\",\"status\":\"completed\",\"conclusion\":\"success\"}]" '[]' 1; }
-health_red()   { health_set "[{\"name\":\"ci\",\"head_sha\":\"$E2E_SHA\",\"status\":\"completed\",\"conclusion\":\"failure\"}]" '[]' 1; }
-health_running(){ health_set "[{\"name\":\"ci\",\"head_sha\":\"$E2E_SHA\",\"status\":\"in_progress\",\"conclusion\":null}]" '[]' 1; }
-health_stale() { health_set '[{"name":"ci","head_sha":"deadbeefdeadbeefdeadbeef","status":"completed","conclusion":"success"}]' '[]' 1; }
-health_nocia() { health_set '[]' '[]' 0; }
-health_norun() { health_set '[]' '[]' 2; }
+# health_set <check-runs-json> <statuses-json> <active-workflow-count>
+# The commit-status fixture carries `sha` because that is where the snippet resolves HEAD from —
+# one request answering both "which commit" and "what do the non-Actions providers say".
+health_set() {
+  printf '{"check_runs":%s}\n' "$1"                          > "$FIX/check-runs.json"
+  printf '{"sha":"%s","state":"x","statuses":%s}\n' "$E2E_SHA" "$2" > "$FIX/commit-status.json"
+  printf '{"workflows":%s}\n' "$(wf_arr "$3")"               > "$FIX/workflows.json"
+}
+# ck1 <status> <conclusion-json> [sha] — the single-check-run fixture the health cases vary.
+ck1() { printf '[{"name":"ci","head_sha":"%s","status":"%s","conclusion":%s}]' "${3:-$E2E_SHA}" "$1" "$2"; }
+health_green()  { health_set "$(ck1 completed '"success"')" '[]' 1; }
+health_red()    { health_set "$(ck1 completed '"failure"')" '[]' 1; }
+health_running(){ health_set "$(ck1 in_progress null)"      '[]' 1; }
+health_stale()  { health_set "$(ck1 completed '"success"' deadbeefdeadbeefdeadbeef)" '[]' 1; }
+health_no_ci()  { health_set '[]' '[]' 0; }
+health_norun()  { health_set '[]' '[]' 2; }
 # A non-Actions provider reports only through the legacy status API.
 health_legacy_red() { health_set '[]' '[{"context":"vercel","state":"failure"}]' 0; }
 
@@ -466,7 +473,7 @@ fix_default; ms_drained; health_stale
 readiness
 has "$OUT" "VERDICT=indeterminate" "a green check on a DIFFERENT commit is never this branch's green"
 
-fix_default; ms_drained; health_nocia
+fix_default; ms_drained; health_no_ci
 readiness
 has "$OUT" "HEALTH=no-ci"  "no checks AND no active workflows => no-ci"
 has "$OUT" "VERDICT=met"   "...and a repo with no CI is not deadlocked out of releasing (#24)"
@@ -492,12 +499,25 @@ has "$OUT" "HEALTH=skipped"    "...and health is not read at all while requireme
 # EVERY health read is separately checked. A failed read must hard-stop — falling through would
 # leave the health variable empty, and an empty health argument is exactly what must never be
 # allowed to reach `met`.
-for kind in repoapi headsha checkruns commitstatus workflows; do
+for kind in repo checkruns commitstatus; do
   fix_default; ms_drained; health_green; : > "$FIX/fail-$kind"
   readiness
   no "$RC_" "a failing '$kind' read hard-stops instead of emitting a cut on unknown health"
   hasnt "$OUT" "VERDICT=met" "...and never reports met"
 done
+# The workflow inventory is read ONLY when nothing reported on the commit, so its failure has to
+# be injected against a fixture that reaches that branch — with checks present the read never
+# happens, and asserting a hard stop there would pass for the wrong reason.
+fix_default; ms_drained; health_no_ci; : > "$FIX/fail-workflows"
+readiness
+no "$RC_" "a failing workflow-inventory read hard-stops rather than counting 0 and passing as no-ci"
+hasnt "$OUT" "VERDICT=met" "...and never reports met"
+
+# The inventory read is SKIPPED entirely when checks already answered — a green branch must not
+# pay for a read whose result the predicate cannot consult.
+fix_default; ms_drained; health_green; : > "$FIX/fail-workflows"
+readiness
+has "$OUT" "VERDICT=met" "with checks present the workflow inventory is never read (its failure cannot matter)"
 
 # ============================================================================================
 # 5. DESTINATION GAUGE (acceptance §8)

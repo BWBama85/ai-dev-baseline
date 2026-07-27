@@ -283,7 +283,21 @@ exclusion rule, the PR filter, and the page behavior would each be restated per 
 # invocations that share no variables, so a slug hoisted from an earlier block arrives EMPTY and
 # every read below would silently address `repos//labels/...`. Re-resolve it, and fail loud on the
 # two values that genuinely come from earlier steps rather than defaulting them to nothing.
-REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+# One read, two answers: the DEFAULT BRANCH comes back on the same call as the slug, so the health
+# gate below needs no extra round trip to learn it. Deliberately the REMOTE default, not the local
+# git one — a clone can disagree (stale origin/HEAD, a detached checkout), and health is a
+# statement about the remote branch a release would be cut from.
+#
+# CAPTURE FIRST, then split. Putting the `|| exit 1` inside a `$(…)` that feeds a heredoc does NOT
+# stop the script: `exit` there only leaves the SUBSHELL, so the error text itself would be read
+# in as the repo slug and every later `repos/$REPO/...` would address a nonsense path.
+REPO_VIEW="$(gh repo view --json nameWithOwner,defaultBranchRef --jq '.nameWithOwner, .defaultBranchRef.name')" \
+  || { echo "ERROR: cannot resolve repo"; exit 1; }
+{ IFS= read -r REPO; IFS= read -r DEFAULT_BRANCH; } <<EOF
+$REPO_VIEW
+EOF
+[ -n "$REPO" ] || { echo "ERROR: cannot resolve repo"; exit 1; }
+[ -n "$DEFAULT_BRANCH" ] || { echo "ERROR: cannot resolve the default branch — hard stop"; exit 1; }
 # No apostrophe in either message: inside ${VAR:?word} bash still parses a single quote as an
 # opening quote, even within double quotes, and an unbalanced one is a SYNTAX error — the whole
 # snippet stops parsing, which is worse than the unset variable it was meant to report.
@@ -313,56 +327,72 @@ $(printf '%s\n' "$COUNTS" | sed -n '1p')
 EOF
 
 # --- branch health (#78) -----------------------------------------------------------------------
-# Only consulted at the would-be-`met` boundary: with open requirements the verdict is `unmet`
-# whatever CI says, so a repo mid-build never pays for these reads. `skipped` is the honest value
-# for "not evaluated" — never a fabricated `green`.
+# TWO-PHASE, and the shape matters: ASK THE PREDICATE where the would-be-`met` boundary is rather
+# than re-deriving it here. Restating "armed, and the mode-selected count is zero" in shell would
+# copy the precedence ladder release-ready already owns into prose an agent re-derives every run —
+# the very thing that library refuses to do (its header says so) — and the copy silently drifts:
+# the first version of this block omitted CANCELED, so a `held` milestone performed five live
+# reads whose result the predicate discarded, and any one of them failing hard-stopped a run whose
+# verdict was `held` regardless.
+#
+# Phase 1 asks with health `skipped` — the honest value for "not evaluated", never a fabricated
+# `green`. Only a `met` here means health can change the answer, so only then is CI read at all.
 HEALTH=skipped
-if [ "$ARMED" -eq 1 ] && { { [ "$LABEL_EXISTS" -eq 1 ] && [ "$M_BLOCKERS" -eq 0 ]; } \
-                        || { [ "$LABEL_EXISTS" -eq 0 ] && [ "$M_OPEN" -eq 0 ]; }; }; then
-  # Resolve the default branch and its HEAD live. Health is only meaningful about a SPECIFIC
-  # commit, so every read below is anchored to this SHA.
-  DEFAULT_BRANCH="$(gh api "repos/$REPO" --jq .default_branch)" \
-    || { echo "ERROR: could not resolve the default branch — hard stop"; exit 1; }
-  HEAD_SHA="$(gh api "repos/$REPO/commits/$DEFAULT_BRANCH" --jq .sha)" \
-    || { echo "ERROR: could not resolve $DEFAULT_BRANCH HEAD — hard stop"; exit 1; }
-  # Checks API = Actions + check-run apps. Status API = every other provider. Both, or a whole CI
-  # provider goes unread and a red build reads as green.
-  CHECKS_JSON="$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100")" \
-    || { echo "ERROR: could not read check runs for $HEAD_SHA — hard stop"; exit 1; }
+VERDICT="$(bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-ready \
+  "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH")" \
+  || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
+
+if [ "$VERDICT" = "met" ]; then
+  # Resolve the default branch from the repo read this snippet ALREADY makes (one field more on an
+  # existing call costs no extra round trip), then read health. Health is only meaningful about a
+  # SPECIFIC commit, so every read below is anchored to one SHA.
+  # The combined-status response carries BOTH the resolved commit sha and the legacy statuses, so
+  # asking for it by branch name answers two questions in one request.
   # Paginated for the same reason every other list read here is (#79): the status endpoint pages
   # at 30 by default, and a repo with many contexts would silently drop the tail — where a FAILING
   # status could sit. A truncated health read that loses the one red check is a false green, which
   # is the single most dangerous direction this predicate can be wrong in.
-  STATUS_JSON="$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status?per_page=100")" \
-    || { echo "ERROR: could not read commit status for $HEAD_SHA — hard stop"; exit 1; }
-  # Active workflow definitions are the ONLY discriminator between "no CI exists" (skip, per #24)
-  # and "CI exists but has not reported here" (fail closed). An empty run list means both.
-  # Read and parse SEPARATELY, like every other read in this workflow: piping the read into the
-  # parser would report only the PARSER's status, so a failed inventory read would arrive as an
-  # empty document, count as 0 active workflows, and silently downgrade a fail-closed
-  # `indeterminate` into a "this repo has no CI" pass.
-  WF_JSON="$(gh api --paginate "repos/$REPO/actions/workflows?per_page=100")" \
-    || { echo "ERROR: could not read the workflow inventory — hard stop"; exit 1; }
-  WF_COUNT="$(printf '%s' "$WF_JSON" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')" \
-    || { echo "ERROR: could not parse the workflow inventory — hard stop"; exit 1; }
-  # `--paginate` concatenates one JSON document per page, so reduce each side to a single array
-  # before handing it over; `jq -s add` is what merges them.
-  HEALTH_IN="$(jq -n \
-      --argjson runs "$(printf '%s' "$CHECKS_JSON" | jq -s '[.[].check_runs // []] | add // []')" \
-      --argjson sts  "$(printf '%s' "$STATUS_JSON" | jq -s '[.[].statuses // []] | add // []')" \
-      '{check_runs: $runs, statuses: $sts}')" \
+  STATUS_JSON="$(gh api --paginate "repos/$REPO/commits/$DEFAULT_BRANCH/status?per_page=100")" \
+    || { echo "ERROR: could not read commit status for $DEFAULT_BRANCH — hard stop"; exit 1; }
+  HEAD_SHA="$(printf '%s' "$STATUS_JSON" | jq -r -s '[.[].sha // empty] | first // empty')" \
+    || { echo "ERROR: could not resolve $DEFAULT_BRANCH HEAD — hard stop"; exit 1; }
+  [ -n "$HEAD_SHA" ] || { echo "ERROR: $DEFAULT_BRANCH has no resolvable HEAD — hard stop"; exit 1; }
+  # Checks API = Actions + check-run apps. Status API (above) = every other provider. Both, or a
+  # whole CI provider goes unread and a red build reads as green.
+  CHECKS_JSON="$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100")" \
+    || { echo "ERROR: could not read check runs for $HEAD_SHA — hard stop"; exit 1; }
+  # `--paginate` concatenates one JSON document per page, so reduce each side to a single array.
+  # One `jq -s` over both streams does it: check-runs pages carry only `.check_runs` and status
+  # pages only `.statuses`, so the keys never collide.
+  HEALTH_IN="$(printf '%s\n%s\n' "$CHECKS_JSON" "$STATUS_JSON" \
+    | jq -s -c '{check_runs: ([.[].check_runs // []] | add // []),
+                 statuses:   ([.[].statuses   // []] | add // [])}')" \
     || { echo "ERROR: could not assemble the health read — hard stop"; exit 1; }
+  # Active workflow definitions are the ONLY discriminator between "no CI exists" (skip, per #24)
+  # and "CI exists but has not reported here" (fail closed) — an empty result means both. It is
+  # consulted ONLY when nothing reported on this commit, so the read is made only in that case.
+  # Read and parse SEPARATELY: piping the read into the parser would report only the PARSER's
+  # status, so a failed inventory read would arrive as an empty document, count as 0 active
+  # workflows, and silently downgrade a fail-closed `indeterminate` into a "no CI here" pass.
+  WF_COUNT=0
+  if [ "$(printf '%s' "$HEALTH_IN" | jq '(.check_runs | length) + (.statuses | length)')" = "0" ]; then
+    WF_JSON="$(gh api --paginate "repos/$REPO/actions/workflows?per_page=100")" \
+      || { echo "ERROR: could not read the workflow inventory — hard stop"; exit 1; }
+    WF_COUNT="$(printf '%s' "$WF_JSON" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')" \
+      || { echo "ERROR: could not parse the workflow inventory — hard stop"; exit 1; }
+  fi
   HEALTH_OUT="$(printf '%s' "$HEALTH_IN" | bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" branch-health "$HEAD_SHA" "$WF_COUNT")" \
     || { echo "ERROR: branch-health failed — hard stop (an unreadable build is never green)"; exit 1; }
-  HEALTH="$(printf '%s\n' "$HEALTH_OUT" | sed -n '1p')"
-  HEALTH_WHY="$(printf '%s\n' "$HEALTH_OUT" | sed -n '2p')"   # the failing check / why it is unknown
-fi
+  # Split the two-line answer with the same `read` heredoc idiom used for $COUNTS above.
+  { IFS= read -r HEALTH; IFS= read -r HEALTH_WHY; } <<EOF
+$HEALTH_OUT
+EOF
 
-# Pass BOTH counts and let the predicate pick — that is what keeps the blocker-mode/fallback
-# choice keyed to label existence rather than to a live count.
-VERDICT="$(bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-ready \
-  "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH")" \
-  || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
+  # Phase 2: re-decide with the real health. Same predicate, same arguments, one input resolved.
+  VERDICT="$(bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-ready \
+    "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH")" \
+    || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
+fi
 ```
 
 Each verdict has exactly one emission, and every one of them ends with its action line:
@@ -746,10 +776,16 @@ sweep is unambiguous precisely *because* the backlog is where undecided work bel
 inside the active release milestone. Moving it to `Backlog` would drop it out of the set the
 readiness predicate counts, so the very next run would compute `met` and emit a cut with an
 abandoned must-have parked in the backlog. The autofix would have *manufactured* the silent-ignore
-this issue exists to prevent. So it is excluded from the sweep and printed as a **`HOLD:` line** —
-a ground-truth hold like the `held` verdict, **not** a retirable `unmilestoned:#N` question, since
-a `## Decisions` row that retired it would hide a real release hold forever. It clears only when
-the tracker changes: assign it to the release milestone, or remove the label.
+this issue exists to prevent. So it is excluded from the sweep and printed as a **`WARN:` line**,
+derived from ground truth and **not** a retirable `unmilestoned:#N` question — a `## Decisions` row
+that retired it would hide a real release risk forever. It clears only when the tracker changes:
+assign it to the release milestone, or remove the label.
+
+**It warns; it does not gate.** Nothing feeds it into the readiness predicate, so a run can print
+this line *and* still emit the cut. That is exactly what #78 asked for — such an issue is never
+silently ignored — but it is weaker than the `held` verdict, so the wording says `WARN`, not
+`HOLD`, rather than claiming a gate that is not wired. Promoting it to a real hold is tracked
+separately.
 
 ```bash
 # ADB-SNIPPET: autofix-unmilestoned
@@ -783,15 +819,20 @@ LIMBO="$(printf '%s' "$LIMBO_JSON" \
 # the "silently ignored" case #78 names, manufactured by the autofix itself.
 #
 # It is NOT an `unmilestoned:#N` question: questions are retirable by a `## Decisions` row, and a
-# row that suppressed this one would hide a real release hold forever. It is a ground-truth hold,
-# so it prints every run until the tracker actually changes — assign it to `M`, or unlabel it.
+# row that suppressed this one would hide a real release risk forever. It is derived from ground
+# truth, so it prints every run until the tracker actually changes — assign it to `M`, or unlabel.
+#
+# It is a WARNING, not a gate: nothing here feeds the readiness predicate, so a run can print this
+# line AND emit the cut. That satisfies what #78 asked for (such an issue is never silently
+# ignored) but is deliberately weaker than the `held` verdict — say `WARN`, not `HOLD`, so the
+# output does not claim a gate that is not wired. Making it a true hold is tracked separately.
 STRAY_BLOCKERS="$(printf '%s' "$LIMBO_JSON" \
   | jq -r '.[] | select(has("pull_request") | not) | select(.milestone == null)
            | select([.labels[]?.name] | index("release-blocker")) | .number')" \
   || { echo "ERROR: could not parse the open-issue read — hard stop"; exit 1; }
 for n in $STRAY_BLOCKERS; do
   [ "$n" = "$ROADMAP_NUM" ] && continue
-  echo "HOLD: #$n is an open release-blocker in NO milestone — it is not counted by readiness and must not be swept to $BACKLOG. Assign it to the release milestone, or remove its release-blocker label."
+  echo "WARN: #$n is an open release-blocker in NO milestone — readiness does not count it, so it does NOT hold the cut. Assign it to the release milestone, or remove its release-blocker label."
 done
 
 for n in $LIMBO; do

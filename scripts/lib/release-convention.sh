@@ -534,11 +534,10 @@ EOF
         unmet)   echo "       $ob open '$BLOCKER_LABEL' issue(s) / $oi open issue(s) remain." >&2 ;;
         held)    echo "       A '$BLOCKER_LABEL' was closed NOT_PLANNED — an abandoned must-have is an" >&2
                  echo "       owner decision. Reopen it, unlabel it, or drop it from the milestone." >&2 ;;
-        # roll passes health=skipped, so these two cannot arise from THIS call today. They are
-        # named anyway: a silent generic error is what made the previous vocabulary change hard to
-        # trace, and if roll ever does consult health these must not read as "unknown verdict".
-        not-green)     echo "       The default branch is not green (health is gated in /roadmap, not here)." >&2 ;;
-        indeterminate) echo "       Branch health could not be established (health is gated in /roadmap, not here)." >&2 ;;
+        # No arms for `not-green`/`indeterminate`: roll passes health=skipped, so they cannot
+        # arise from this call, and a message asserting "health is gated elsewhere" would be
+        # guaranteed WRONG in the only future that makes them reachable. The catch-all below
+        # already reports any verdict this version does not know, which is the honest answer.
         *)       echo "       Unrecognised verdict '$verdict' — refusing to roll on an answer this version does not know." >&2 ;;
       esac
       echo "       Re-run with --force only if you are deliberately rolling an unreleased milestone." >&2

@@ -294,18 +294,25 @@ done
 # A count too wide for a shell integer must ERROR, never fall through. `[ "$n" -gt 0 ]` fails on
 # such a value, and because that test guards the `unmet` branch the failure would print `met` —
 # inventing a release cut from a value the shell could not evaluate. (Adversarial-review find.)
-run release-ready 1 1 99999999999999999999 0 0
+# NOTE: every tuple below carries the SIXTH (health) argument. Without it the call dies on ARITY
+# before it ever reaches the validator under test, so the assertion would still pass while proving
+# nothing — which is exactly what happened when #78 bumped the arity 5 -> 6 and these were missed.
+run release-ready 1 1 99999999999999999999 0 0 green
 eq "$RC_" 2 "an over-wide blocker count is an ERROR, not a fabricated verdict"
 hasnt "$OUT" "met" "an over-wide count never yields 'met'"
-run release-ready 0 1 0 99999999999999999999 0
+has "$OUT" "non-negative integer" "...and it fails on the COUNT, not on arity"
+run release-ready 0 1 0 99999999999999999999 0 green
 eq "$RC_" 2 "an over-wide issue count is an ERROR in fallback mode too"
 hasnt "$OUT" "met" "an over-wide fallback count never yields 'met'"
+has "$OUT" "non-negative integer" "...and it fails on the COUNT, not on arity"
 # 18 digits is inside the supported range and must still compute normally.
 eq "$(ready 1 1 999999999999999999 0 0)" unmet "an 18-digit count still evaluates (bound is not over-tight)"
 
 # Every errored readiness call must print no verdict — assert it per call, not just on the last
 # one (the previous single check only inspected whichever `run` happened to be most recent).
-for bad_args in "1 1 x 0 0" "2 1 0 0 0" "1 1 0 0 2" "1 1 0 0"; do
+# The first three are 6-argument tuples so they reach their respective validators; the last is
+# deliberately short, to keep the sub-arity path covered too.
+for bad_args in "1 1 x 0 0 green" "2 1 0 0 0 green" "1 1 0 0 2 green" "1 1 0 0"; do
   # shellcheck disable=SC2086  # deliberate word-split of the fixture arg string
   run release-ready $bad_args
   eq "$RC_" 2 "[$bad_args] is an ERROR"
@@ -464,8 +471,8 @@ has "$wf" 'an unreadable build is never green' \
 # The autofix must never sweep a declared must-have into the backlog (#78's guard).
 has "$wf" 'index("release-blocker") | not' \
   "step 4b excludes an unmilestoned release-blocker from the Backlog sweep"
-has "$wf" 'HOLD: #$n is an open release-blocker in NO milestone' \
-  "...and surfaces it as a non-retirable hold instead"
+has "$wf" 'WARN: #$n is an open release-blocker in NO milestone' \
+  "...and surfaces it as a non-retirable warning instead"
 has "$wf" 'in-flight check failed' \
   "workflow hard-stops the run when the targeting predicate cannot answer (fail-closed)"
 has "$wf" 'A failed targeting check is a hard stop, never a negative.' \
@@ -519,7 +526,7 @@ has "$gauge_block" 'LABEL="${LABEL:-}"' \
 has "$gauge_block" '[ -n "$LABEL" ] &&' \
   "...and skips the probe entirely when none is configured"
 readiness_block="$(wf_snippet readiness)"
-has "$readiness_block" 'REPO=' \
+has "$readiness_block" 'gh repo view' \
   "the readiness snippet resolves \$REPO itself (it may run as its own shell invocation)"
 has "$readiness_block" 'M_NUM:?' \
   "...and fails loud on an unresolved milestone number rather than addressing milestone=''"
@@ -539,7 +546,7 @@ hasnt "$readiness_block" 'gh run list' \
   "the readiness snippet does NOT use the run-list green test (it can answer with an unrelated workflow or an older commit)"
 has "$readiness_block" 'commits/$HEAD_SHA/check-runs' \
   "health is read from the Checks API for the resolved HEAD commit"
-has "$readiness_block" 'commits/$HEAD_SHA/status' \
+has "$readiness_block" 'commits/$DEFAULT_BRANCH/status' \
   "...AND from the legacy status API, so non-Actions CI providers are not silently ignored"
 has "$readiness_block" 'actions/workflows' \
   "...AND from the active-workflow inventory, the only no-ci/indeterminate discriminator"
@@ -547,8 +554,10 @@ has "$readiness_block" '{{ROADMAP_LIB}} branch-health' \
   "the snippet delegates the verdict to the shared predicate rather than re-deriving it"
 has "$readiness_block" 'HEALTH=skipped' \
   "health starts at the honest 'skipped', never a fabricated green"
-has "$readiness_block" 'default_branch' \
-  "the default branch is resolved live, not assumed to be main"
+has "$readiness_block" 'defaultBranchRef' \
+  "the default branch is resolved live from the REMOTE, not assumed to be main"
+has "$readiness_block" 'REPO_VIEW=' \
+  "...captured on its own status first, since an exit inside a heredoc substitution only leaves the subshell"
 # Each health read is captured and checked on its OWN status, for the same reason the milestone
 # read is: a pipeline reports only its last command, so a failed read would arrive as empty JSON.
 for v in CHECKS_JSON STATUS_JSON WF_JSON WF_COUNT HEAD_SHA; do
@@ -564,20 +573,13 @@ has "$readiness_block" '"$WF_JSON" | jq' \
 # Every LIST read here must paginate, for the reason #79 established. It matters most on the
 # status endpoint, which pages at 30 by default: a truncated health read that loses the one red
 # status is a FALSE GREEN — the most dangerous direction this predicate can be wrong in.
-has "$readiness_block" 'commits/$HEAD_SHA/status?per_page=100' \
+has "$readiness_block" 'commits/$DEFAULT_BRANCH/status?per_page=100' \
   "the commit-status read is paginated (a dropped failing status would be a false green)"
 has "$readiness_block" 'check-runs?per_page=100' \
   "the check-runs read is paginated too"
 has "$readiness_block" '"$HEALTH"' \
   "the resolved health is passed to release-ready (not dropped on the floor)"
 
-autofix_block="$(wf_snippet autofix-unmilestoned)"
-has "$autofix_block" 'index("release-blocker") | not' \
-  "step 4b excludes an unmilestoned release-blocker from the Backlog sweep (#78)"
-has "$autofix_block" 'HOLD:' \
-  "...and surfaces it as a hold instead of silently burying a declared must-have"
-hasnt "$autofix_block" '? unmilestoned:#$n — open release-blocker' \
-  "...and does NOT file it as a retirable question (a Decisions row must not hide a release hold)"
 
 # Every rendered agent skill must carry the RESOLVED helper path. check-workflow-render.sh
 # proves {{ROADMAP_LIB}} substitutes correctly against a synthetic fixture and that no committed
@@ -985,6 +987,17 @@ hasnt "$wf" 'gh pr create' "the skill never opens a PR"
 autofix_block="$(wf_snippet autofix-unmilestoned)"
 has "$autofix_block" 'select(.milestone == null)' \
   "the limbo set is DERIVED from milestone == null (which is what makes autofix idempotent)"
+# #78's carve-out lives here too — one home for every assertion about this snippet.
+has "$autofix_block" 'index("release-blocker") | not' \
+  "step 4b excludes an unmilestoned release-blocker from the Backlog sweep (#78)"
+has "$autofix_block" 'WARN:' \
+  "...and surfaces it instead of silently burying a declared must-have"
+# It WARNS, it does not gate — nothing feeds it to the predicate, so the wording must not promise
+# a hold the code does not implement. (Altitude-review find.)
+hasnt "$autofix_block" 'HOLD:' \
+  "...and does NOT call it a HOLD, which would claim a gate that is not wired"
+hasnt "$autofix_block" '? unmilestoned:#$n — open release-blocker' \
+  "...and does NOT file it as a retirable question (a Decisions row must not hide a release risk)"
 has "$autofix_block" 'first // empty' \
   "the backlog milestone is resolved by title, and an unresolved one stays empty"
 has "$autofix_block" 'NO_AUTOFIX:-0' \

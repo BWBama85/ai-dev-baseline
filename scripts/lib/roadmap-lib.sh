@@ -227,16 +227,23 @@ cmd_branch_health() {
     # NOTE: no apostrophe anywhere in this jq program — it is a single-quoted shell string, and
     # one stray apostrophe closes it and turns the whole file into a syntax error.
     | ($sha | ascii_downcase) as $want
-    | ([$runs[] | select((.head_sha // "" | ascii_downcase) != $want)] | length) as $wrongsha
     | [$runs[] | select((.head_sha // "" | ascii_downcase) == $want)] as $mine
-    # Anything not yet `completed`, or completed with no conclusion, is still unknown.
-    | ([$mine[] | select((.status // "") != "completed" or (.conclusion // null) == null)]) as $pending
-    | ([$sts[]  | select((.state  // "") == "pending")]) as $stpending
-    # `$bad` considers ONLY checks that actually finished. A still-running check has no conclusion,
-    # and scoring a null conclusion as "not success" would report a RUNNING build as red — turning
-    # every mid-CI run into a false `not-green` instead of the honest `indeterminate`.
-    | ([$mine[] | select((.status // "") == "completed" and (.conclusion // null) != null)
-                | select(.conclusion | IN("success","skipped","neutral") | not)]) as $bad
+    # Derived, not re-selected: the match is total, so the two sets partition $runs. Writing the
+    # complement as its own filter would be a second home for the SHA rule (including the
+    # normalization) that has to track the first by hand.
+    | (($runs | length) - ($mine | length)) as $wrongsha
+    # "Finished" is defined ONCE, as a tag, and both buckets below read that tag. Writing the two
+    # as separate hand-maintained complementary predicates would be a standing hazard: widen one
+    # notion of "still running" and forget the other, and a check falls into NEITHER bucket and
+    # silently reads as GREEN.
+    | ([$mine[] | . + {_done: (((.status // "") == "completed") and ((.conclusion // null) != null))}]) as $tagged
+    # Not yet completed, or completed with no conclusion => still unknown.
+    | ([$tagged[] | select(._done | not)]) as $pending
+    | ([$sts[]    | select((.state // "") == "pending")]) as $stpending
+    # Only a FINISHED check can be bad. A still-running one has no conclusion, and scoring a null
+    # conclusion as "not success" would report a RUNNING build as red — turning every mid-CI run
+    # into a false `not-green` instead of the honest `indeterminate`.
+    | ([$tagged[] | select(._done) | select(.conclusion | IN("success","skipped","neutral") | not)]) as $bad
     | ([$sts[]  | select((.state // "") | IN("success","pending") | not)]) as $stbad
     | (($mine | length) + ($sts | length)) as $total
     | if   ($bad | length) > 0 or ($stbad | length) > 0 then
