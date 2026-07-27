@@ -550,13 +550,9 @@ has "$inflight_block" 'OPEN_PRS=' \
 # scripts/check-roadmap-e2e.sh runs them from. Anchoring on a marker rather than on a prose line
 # (or on "the line immediately above the comment") is what keeps this guard from breaking when
 # a legitimate statement is added to the block, which a positional check did.
-wf_snippet() {
-  awk -v want="$1" '
-    $0 ~ ("^[[:space:]]*# ADB-SNIPPET: " want "$") { inb = 1; next }
-    inb && /^[[:space:]]*```[[:space:]]*$/ { exit }
-    inb { print }
-  ' "$WF"
-}
+# Delegates to check_wf_snippet (check-lib.sh), the ONE home for the marker/closing-fence
+# contract — three suites execute documented snippets and three copies of this awk could drift.
+wf_snippet() { check_wf_snippet "$WF" "$1"; }
 gauge_block="$(wf_snippet gauge)"
 has "$gauge_block" 'labels/$LABEL' \
   "the destination-report snippet probes the label"

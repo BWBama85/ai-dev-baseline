@@ -105,23 +105,26 @@ RECORD="$(bash "$_adb_cu" check --trigger startup --cwd "$SESSION_CWD" 2>/dev/nu
 { read -r OUTCOME MESSAGE || true; } <<RECORD_EOF
 $RECORD
 RECORD_EOF
-: "${OUTCOME:=}" "${MESSAGE:=}"
 
 # --- 3. presentation ------------------------------------------------------------
 #
-# Which outcomes deserve the operator's attention is the HOOK's decision, not the library's, and
-# it differs from `/cleanup`'s on purpose. `busy` and `offline` are silent HERE: an unattended
-# check at every session start must never nag about a peer update or a missing network. `/cleanup`
-# reports both, because there the operator explicitly asked for a currency check.
+# Three arms, because this hook differs from `/cleanup` in exactly TWO ways and nothing is served
+# by spelling out the arms they agree on:
+#
+#   1. `updated`/`repaired` changed the installed payload, so ask the harness to re-read skills.
+#   2. `busy` and `offline` are SILENT here. An unattended check at every session start must never
+#      nag about a peer update or a missing network. `/cleanup` reports both, because there the
+#      operator explicitly asked — that asymmetry is the whole reason the library returns a record
+#      instead of a ready-made line.
+#
+# Everything else falls through to "say it if there is anything to say", which also means an
+# outcome this mapping has not learned is REPORTED rather than silently swallowed. Silent staleness
+# is the failure this hook exists to catch, so an unknown outcome must not inherit a reassuring
+# silence. Outcomes that are not worth reporting carry an empty message by contract.
 case "$OUTCOME" in
-  updated|repaired) say "baseline: $MESSAGE" reload ;;
-  behind|refused)   say "baseline: $MESSAGE" ;;
-  failed)           say "baseline: $MESSAGE" ;;
-  busy|offline)     exit 0 ;;
-  silent|skipped)   exit 0 ;;
-  # An outcome this mapping has not learned. Say it rather than inventing a reassuring silence for
-  # a condition nobody has classified — silent staleness is the failure this hook exists to catch.
-  *)                [ -n "$MESSAGE" ] && say "baseline: $MESSAGE"; exit 0 ;;
+  updated|repaired)            say "baseline: $MESSAGE" reload ;;
+  busy|offline)                exit 0 ;;
+  *) [ -n "$MESSAGE" ] && say "baseline: $MESSAGE"; exit 0 ;;
 esac
 
 exit 0

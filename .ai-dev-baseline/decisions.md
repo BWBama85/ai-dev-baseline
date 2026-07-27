@@ -304,7 +304,7 @@ didn't already model, so any residual divergence stays visible and auditable.
              3. **`[updates] session_start` keeps its name and now governs BOTH triggers; `off`
                 disables both.** The name is wrong and kept anyway: a key that silently stopped
                 applying would re-enable an updater its owner had switched off. The neutral
-                rename is tracked as a follow-up rather than shipped as a silent semantic change.
+                rename is tracked as #140 rather than shipped as a silent semantic change.
              4. **The deliberate trigger ignores the rate-limit interval** while still refreshing
                 the shared stamp. The stamp records the last *attempt* and cannot distinguish
                 "startup just checked, nothing changed" from "startup checked, then a merge

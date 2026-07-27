@@ -436,7 +436,7 @@ CU="$ROOT/scripts/lib/currency-lib.sh"
 # $wf, which is only set inside section 6's `else` branch.
 # shellcheck source=/dev/null
 . "$ROOT/scripts/lib/common.sh"
-cuwf="$(cat "$WF")"
+cuwf="$(<"$WF")"
 
 # --- fixture: an install-source clone, pre-linked into a fake HOME ---------------------------
 # Deliberately close to check-session-currency.sh's fixture; #118 tracks sharing them.
@@ -471,15 +471,13 @@ $(adb_agent_manifest claude "$cuseed" "$cuw/unused" | cut -f1 | sed -n "s|^$cuse
 CUEOF
 
 cuorigin="$cuw/origin.git"
-git init -q --bare "$cuorigin"
-(
-  cd "$cuseed" || exit 1
-  git init -q; git checkout -q -b main
-  git -c user.email=t@t -c user.name=t add -A
-  git -c user.email=t@t -c user.name=t commit -q -m seed
-  git remote add origin "$cuorigin"
-  git push -q -u origin main
-) || bad "7 currency fixture: seed push failed"
+# check_make_repo_pair + check_git rather than a fourth hand-rolled identity wrapper: check_git
+# also sets commit.gpgsign=false, which is exactly the gap check-lib.sh:120-126 exists to close.
+check_make_repo_pair "$cuseed" "$cuorigin" || bad "7 currency fixture: init failed"
+check_git "$cuseed" checkout -q -b main
+check_git "$cuseed" add -A
+check_git "$cuseed" commit -q -m seed
+check_git "$cuseed" push -q -u origin main
 
 cusrc="$cuw/src"; git clone -q "$cuorigin" "$cusrc"
 cufh="$cuw/home"; mkdir -p "$cufh"
@@ -489,8 +487,8 @@ cusrcgit="$(git -C "$cusrc" rev-parse --absolute-git-dir)"
 cuc2="$cuw/c2"; git clone -q "$cuorigin" "$cuc2"
 
 cu_advance() {
-  git -C "$cuc2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "$1"
-  git -C "$cuc2" push -q origin main
+  check_git "$cuc2" commit -q --allow-empty -m "$1"
+  check_git "$cuc2" push -q origin main
 }
 cu_head() { git -C "$cusrc" rev-parse --short HEAD; }
 cu_reset() {
@@ -503,29 +501,24 @@ cu_reset() {
 }
 
 # --- the extractor: run the DOCUMENTED snippet ------------------------------------------------
-cu_snippet() {
-  awk '
-    $0 ~ /^[[:space:]]*# ADB-SNIPPET: currency$/ { inb = 1; next }
-    inb && /^[[:space:]]*```[[:space:]]*$/ { exit }
-    inb { print }
-  ' "$WF"
-}
+# Extracted ONCE: the snippet cannot change mid-suite, and re-awking a 600-line file on each of the
+# 13 runs below bought nothing. A missing marker also fails once here instead of thirteen times.
+CU_SNIPPET="$(check_wf_snippet "$WF" currency)"
+[ -n "$CU_SNIPPET" ] || bad "7 snippet 'currency' not found in base/workflows/cleanup.md (marker removed or renamed?)"
 # run_currency [cwd] — execute the snippet; sets CU_RC, CU_OUT_OUTCOME, CU_OUT_LINE.
 # CU_MODE / CU_INTERVAL are the knobs, mirroring check-session-currency.sh's MODE_ENV.
-CU_MODE=""; CU_INTERVAL=""
+CU_MODE=""
 run_currency() {
   local cwd="${1:-$cuw/elsewhere}" code out
   mkdir -p "$cwd"
-  code="$(cu_snippet)"
-  if [ -z "$code" ]; then
-    bad "7 snippet 'currency' not found in base/workflows/cleanup.md (marker removed or renamed?)"
-    CU_RC=90; CU_OUT_OUTCOME=""; CU_OUT_LINE=""; return 1
-  fi
-  code="${code//\{\{CURRENCY_LIB\}\}/bash \"$CU\"}"
+  code="${CU_SNIPPET//\{\{CURRENCY_LIB\}\}/bash \"$CU\"}"
   # The snippet must be self-contained: nothing is pre-set except a cwd, exactly as the workflow
   # claims (it re-resolves ROOT itself). Trailing echoes expose what the workflow computed.
+  # No ADB_SESSION_UPDATE_INTERVAL_SECS: the `cleanup` trigger ignores the interval by design, so
+  # threading a knob for it would only suggest the value matters here. Test (b) proves the bypass by
+  # writing a real, fresh stamp instead.
   out="$(cd "$cwd" && env HOME="$cufh" XDG_CACHE_HOME="$cuw/cache" \
-        ADB_SESSION_UPDATE="$CU_MODE" ADB_SESSION_UPDATE_INTERVAL_SECS="$CU_INTERVAL" \
+        ADB_SESSION_UPDATE="$CU_MODE" \
         bash -c "$code
 printf 'OUTCOME=%s\n' \"\$CU_OUTCOME\"
 printf 'LINE=%s\n' \"\$CU_LINE\"" 2>/dev/null)"
@@ -533,6 +526,38 @@ printf 'LINE=%s\n' \"\$CU_LINE\"" 2>/dev/null)"
   CU_OUT_OUTCOME="$(printf '%s\n' "$out" | sed -n 's/^OUTCOME=//p' | head -n1)"
   CU_OUT_LINE="$(printf '%s\n' "$out" | sed -n 's/^LINE=//p' | head -n1)"
 }
+
+# --- the PURE predicates, offline ---------------------------------------------------------------
+# `check` is an executor and every case below drives it end-to-end against a real clone. These three
+# subcommands are the decisions inside it that need no network, and they are public precisely so they
+# can be pinned without one — the library header says so, so it owes these tests.
+eq "$(ADB_SESSION_UPDATE=off     bash "$CU" mode)" "off"    "7 mode: the env override wins"
+eq "$(ADB_SESSION_UPDATE=notify  bash "$CU" mode)" "notify" "7 mode: notify is honored"
+eq "$(ADB_SESSION_UPDATE=auto    bash "$CU" mode)" "auto"   "7 mode: auto is honored"
+# A misspelled mode must degrade to the documented default, never disable the updater by accident.
+eq "$(ADB_SESSION_UPDATE=nonsense bash "$CU" mode)" "auto"  "7 mode: an unrecognized value degrades to auto"
+eq "$(HOME="$cuw/nohome" ADB_SESSION_UPDATE="" bash "$CU" mode)" "auto" "7 mode: no manifest at all degrades to auto"
+
+# stamp-fresh: exit 0 means SUPPRESSED. Interval 0 disables the limit; a missing stamp means "not
+# suppressed", because a redundant fetch is the safe direction and an indefinitely suppressed check
+# is the failure #139 is about.
+cu_stamp="$cuw/probe.stamp"; : > "$cu_stamp"
+if bash "$CU" stamp-fresh "$cu_stamp" 600; then ok; else bad "7 stamp-fresh: a fresh stamp suppresses"; fi
+if bash "$CU" stamp-fresh "$cu_stamp" 0; then bad "7 stamp-fresh: interval 0 must never suppress"; else ok; fi
+if bash "$CU" stamp-fresh "$cuw/absent.stamp" 600; then bad "7 stamp-fresh: a missing stamp must not suppress"; else ok; fi
+bash "$CU" stamp-fresh "$cu_stamp" x >/dev/null 2>&1; eq "$?" "2" "7 stamp-fresh: a non-numeric interval fails closed (2)"
+
+# same-clone compares git COMMON dirs, so a subdirectory and a linked worktree of one repo match
+# while two unrelated repos do not. This is the guard that stops an update under active work.
+if bash "$CU" same-clone "$cusrc" "$cusrc"; then ok; else bad "7 same-clone: a clone matches itself"; fi
+if bash "$CU" same-clone "$cusrc/scripts" "$cusrc"; then ok; else bad "7 same-clone: a subdirectory matches its repo"; fi
+if bash "$CU" same-clone "$cusrc" "$cuc2"; then bad "7 same-clone: two clones of one origin must NOT match"; else ok; fi
+if bash "$CU" same-clone "$cuw" "$cusrc"; then bad "7 same-clone: a non-repo must not match"; else ok; fi
+if git -C "$cusrc" worktree add -q "$cuw/src-wt" -b cu-wt 2>/dev/null; then
+  if bash "$CU" same-clone "$cuw/src-wt" "$cusrc"; then ok; else bad "7 same-clone: a linked WORKTREE matches its repo"; fi
+  git -C "$cusrc" worktree remove --force "$cuw/src-wt" 2>/dev/null
+  git -C "$cusrc" branch -D cu-wt >/dev/null 2>&1
+fi
 
 # (a) the core acceptance: a behind clone is updated, and the step reports one line.
 cu_reset; cu_advance "cu-behind"
@@ -663,7 +688,9 @@ wf_cuemit="$(printf '%s\n' "$cuwf" | grep -n 'printf .%s\\n. "\$CU_LINE"' | head
 if [ -n "$wf_cuemit" ] && [ -n "$wf_emit" ] && [ "$wf_cuemit" -lt "$wf_emit" ]; then ok; else
   bad "7 the currency line must print BEFORE the buffered report so the state line stays last"
 fi
-# Currency must never gate the sweep: the snippet absorbs a failing library explicitly.
-has "$cuwf" '|| true' "7 the currency capture absorbs a non-zero status (never gates the sweep)"
+# Currency must never gate the sweep. Anchor this to the SNIPPET, not the whole workflow: the file
+# already contains five unrelated `|| true`s, so a whole-file match would stay green even if both
+# currency ones were deleted — a check that proves nothing is worse than no check.
+has "$CU_SNIPPET" '|| true' "7 the currency capture absorbs a non-zero status (never gates the sweep)"
 
 check_summary "check-cleanup"

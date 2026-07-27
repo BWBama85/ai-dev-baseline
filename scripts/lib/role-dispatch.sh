@@ -86,12 +86,10 @@ esac
 # TEST SEAM, not an operator knob (nobody tunes a SIGKILL grace); the unit test shortens it so the
 # escalation cases don't each burn the full grace. Same status as ADB_DISPATCH_NO_TIMEOUT_BIN.
 _ADB_RD_KILL_GRACE_SECS="${ADB_DISPATCH_KILL_GRACE_SECS:-10}"
-# Clamped, because both degenerate values break the backstop and neither fails loudly:
-# `timeout -k 0` means "no SIGKILL at all" to GNU timeout, so a zero grace would leave the binary
-# path with no escalation while the watchdog path treats 0 as "KILL immediately" — the same input
-# making one path maximally aggressive and the other not a backstop at all. A non-numeric value
-# makes `timeout` exit 125, which classifies as "a real agent error" and sends the reader hunting
-# a codex bug. Floor of 1 keeps escalation guaranteed on both paths.
+# Clamped here so THIS VARIABLE's contract holds for anyone reading it (the unit test asserts its
+# value directly). `adb_run_bounded` clamps its own `grace` argument too, for the same reasons,
+# documented once at that function — it is a shared primitive and must validate what it is handed,
+# not assume a caller pre-clamped. Two guards, one rule, stated in one place.
 case "$_ADB_RD_KILL_GRACE_SECS" in
   ''|*[!0-9]*) _ADB_RD_KILL_GRACE_SECS=10 ;;
   0)           _ADB_RD_KILL_GRACE_SECS=1  ;;

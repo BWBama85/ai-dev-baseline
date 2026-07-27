@@ -578,4 +578,53 @@ out="$( PATH="$ghbin:$PATH"; adb_repo_slug 2>/dev/null )"; rc=$?
 no "$rc" "adb_repo_slug fails when there is no resolvable remote"
 eq "$out" "" "adb_repo_slug prints nothing when it fails"
 
+# ==================== adb_run_bounded (#139: promoted from role-dispatch) =====================
+# The mechanism was moved here so currency-lib.sh could share it instead of hand-rolling a second
+# watchdog. It had been covered only TRANSITIVELY, through check-role-dispatch.sh's agent dispatch;
+# a shared primitive with two callers needs its own tests. Both paths are exercised: the `timeout`
+# binary when present, and the bash-3.2 watchdog fallback that a stock Mac takes.
+
+# A fast child's status passes straight through, on both paths.
+adb_run_bounded 30 1 true; eq "$?" "0" "adb_run_bounded returns a successful child's status"
+adb_run_bounded 30 1 sh -c 'exit 7'; eq "$?" "7" "adb_run_bounded passes a non-zero child status through"
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 sh -c 'exit 7'
+eq "$?" "7" "the watchdog path also passes the child status through"
+
+# The bound fires as 124 (GNU timeout's convention) on BOTH paths. `secs` is small so the watchdog's
+# tick shrinks to 1s and this stays fast.
+adb_run_bounded 1 1 sleep 20; eq "$?" "124" "adb_run_bounded returns 124 when the bound fires"
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 1 sleep 20
+eq "$?" "124" "the watchdog fallback also returns 124 when the bound fires"
+
+# A TERM-RESISTANT child must still be stopped — a bound that only sends SIGTERM is not a backstop.
+# This is the escalation to KILL, which is the whole reason the grace exists.
+esc="$work/esc.sh"
+printf '#!/usr/bin/env bash\ntrap "" TERM\nsleep 20\n' > "$esc"; chmod +x "$esc"
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 1 "$esc"
+eq "$?" "124" "watchdog: a TERM-resistant child still returns 124 (escalates to KILL)"
+
+# stdin reaches the child. The `<&0` in both paths is load-bearing: a backgrounded command in a
+# non-interactive shell otherwise gets /dev/null, so a child fed its input on stdin would read
+# nothing — the bug that once silently handed codex an empty prompt.
+eq "$(printf 'fed' | adb_run_bounded 30 1 cat)" "fed" "adb_run_bounded delivers stdin to the child"
+eq "$(printf 'fed' | ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 cat)" "fed" \
+   "the watchdog path also delivers stdin to the child"
+
+# The grace is clamped for its callers, so a literal or an env value cannot disable escalation.
+# 0 would mean "no SIGKILL at all" to GNU timeout while the watchdog treats it as "kill now" — one
+# input making one path maximally aggressive and the other not a backstop. Asserted behaviorally:
+# a TERM-resistant child must still die with a 0 grace.
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 0 "$esc"
+eq "$?" "124" "a 0 grace is clamped, so escalation still happens (watchdog)"
+adb_run_bounded 1 x sleep 20; eq "$?" "124" "a non-numeric grace falls back to the default, bound still fires"
+
+# A non-numeric BOUND is refused rather than silently treated as zero (which would fire instantly).
+adb_run_bounded x 1 true; eq "$?" "2" "a non-numeric bound is refused with status 2"
+
+# The caller's own trap survives: this is a sourced library, so resetting handlers to default on
+# exit would clobber a trap the calling script installed.
+trapped="$(bash -c '. "$1"; trap "echo MINE" TERM; adb_run_bounded 5 1 true >/dev/null 2>&1; trap -p TERM' \
+  _ "$PWD/scripts/lib/common.sh" 2>/dev/null)"
+has "$trapped" "MINE" "adb_run_bounded restores the caller's own TERM trap"
+
 check_summary "common-lib"

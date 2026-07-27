@@ -530,17 +530,18 @@ unattended, whereas here the operator just asked, so `busy` and `offline` are re
 
 ```bash
 # ADB-SNIPPET: currency
-# Self-contained: this may run as a SEPARATE shell invocation from the steps above, so it
-# re-resolves the repo root rather than trusting $ROOT to still be set.
-CU_ROOT="${ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-
+# Self-contained: this may run as a SEPARATE shell invocation from the steps above, so it passes
+# NOTHING from them. It does not resolve the repo root either — the library defaults its own `--cwd`
+# to $PWD and compares git COMMON DIRS, so it recognises the install-source clone from any
+# subdirectory of it. Resolving a toplevel here would just normalize that case away before the
+# guard ever saw it.
 # `|| true` is load-bearing, twice over. Currency is housekeeping, never a gate: an unreachable
 # remote, a refused update, or a missing install must leave the sweep successful. And these fenced
 # blocks are executed by an AGENT — a block whose LAST command exits non-zero reads as a failed
 # step and can abandon the run before the report is ever printed (the same trap the `LOCK=0`
 # comment in step 5 names). The library already exits 0 for every policy outcome; this is the
 # belt-and-braces that keeps a broken install from ending the sweep.
-CU_RECORD="$({{CURRENCY_LIB}} check --trigger cleanup --cwd "$CU_ROOT" 2>/dev/null || true)"
+CU_RECORD="$({{CURRENCY_LIB}} check --trigger cleanup 2>/dev/null || true)"
 # Split on the FIRST whitespace run, never on a literal TAB. The outcome is a single word by
 # contract, so `read` gives it to $CU_OUTCOME and every remaining byte to $CU_MESSAGE. That keeps
 # no invisible character load-bearing inside a fenced block — a tab silently converted to spaces
@@ -548,24 +549,17 @@ CU_RECORD="$({{CURRENCY_LIB}} check --trigger cleanup --cwd "$CU_ROOT" 2>/dev/nu
 { read -r CU_OUTCOME CU_MESSAGE || true; } <<CU_EOF
 $CU_RECORD
 CU_EOF
-: "${CU_OUTCOME:=}" "${CU_MESSAGE:=}"
 
-# One line, and only when there is something to say. `silent` and `skipped` are the common cases
-# (already current, mode=off, sweeping the install-source clone itself, nothing installed) and the
-# terse contract means they print NOTHING.
+# One line, and only when there is something to say. Every outcome that is worth reporting carries
+# a message and every outcome that is not (`silent`, `skipped` — already current, mode=off,
+# sweeping the install-source clone itself, nothing installed) carries an EMPTY one, by contract.
+# So this keys on the message, not on a per-outcome list: nine arms that mostly said the same thing
+# were nine chances to forget one when the vocabulary grows.
+#
+# `case`, not `[ -n … ]`: a fenced block whose LAST command exits non-zero reads to an agent as a
+# failed step and would abandon the sweep right before the report. `esac` always exits 0.
 CU_LINE=""
-case "$CU_OUTCOME" in
-  updated|repaired)      CU_LINE="baseline: $CU_MESSAGE" ;;
-  behind)                CU_LINE="baseline: $CU_MESSAGE" ;;
-  refused|offline|busy)   CU_LINE="baseline: $CU_MESSAGE" ;;
-  failed)                CU_LINE="baseline: $CU_MESSAGE" ;;
-  silent|skipped)        : ;;
-  *) [ -n "$CU_MESSAGE" ] && CU_LINE="baseline: $CU_MESSAGE" ;;
-esac
-# The block must not END on a false test. `[ -n "$CU_MESSAGE" ]` in that last arm returns 1 for an
-# empty message, and an agent reads a fenced block whose last command failed as a FAILED STEP —
-# which would abandon the sweep right before the report. Terminate explicitly.
-:
+case "$CU_MESSAGE" in ?*) CU_LINE="baseline: $CU_MESSAGE" ;; esac
 ```
 
 An `updated` line means the tooling under `~/.<agent>/` changed **during this run**. That is safe

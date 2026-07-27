@@ -58,13 +58,13 @@
 #   currency-lib.sh mode                                  # auto|notify|off
 #   currency-lib.sh same-clone   <dir-a> <dir-b>           # exit 0 = the same repository
 #   currency-lib.sh stamp-fresh  <stamp-path> <interval>   # exit 0 = suppressed by the rate limit
-#   currency-lib.sh check --trigger startup|cleanup [--cwd <dir>] [--interval <secs>]
+#   currency-lib.sh check --trigger startup|cleanup [--cwd <dir>]
 #   currency-lib.sh -h | --help
 #
 # `check` reads the record's two fields with `read -r outcome message`, not by slicing on the TAB,
-# so callers never depend on an invisible character surviving an editor. --interval overrides the
-# per-trigger rate-limit default (`startup` 600 s, `cleanup` 0 = never suppressed); it exists for
-# tests and for an operator who wants a different cadence, not as a documented knob.
+# so callers never depend on an invisible character surviving an editor. The rate-limit interval is
+# a per-trigger constant, not an argument: `startup` 600 s (overridable with
+# ADB_SESSION_UPDATE_INTERVAL_SECS), `cleanup` 0 — never suppressed.
 #
 # Requires: git. `bin/baseline` is resolved from the install-source clone.
 
@@ -84,7 +84,7 @@ fi
 usage() { adb_usage "$0"; }
 die() { printf 'currency-lib: %s\n' "$*" >&2; exit 2; }
 
-TAB="$(printf '\t')"
+TAB=$'\t'   # a bash literal, not a fork: this file is sourced on every session start
 
 # The wall-clock bound on one `baseline update`. This is a fetch + a fast-forward pull + an
 # idempotent symlink pass — seconds of work — so the bound is a backstop for a wedge, not a work
@@ -96,8 +96,10 @@ _ADB_CU_KILL_GRACE_SECS="${ADB_CURRENCY_KILL_GRACE_SECS:-5}"
 # The default rate-limit interval, and the stamp both triggers share. See `check` for why the
 # `cleanup` trigger reads it differently from the way it writes it.
 _ADB_CU_INTERVAL_DEFAULT=600
-_adb_cu_stamp_dir() { printf '%s/ai-dev-baseline\n' "${XDG_CACHE_HOME:-$HOME/.cache}"; }
-_adb_cu_stamp() { printf '%s/session-currency.stamp\n' "$(_adb_cu_stamp_dir)"; }
+# Plain assignments, not printf functions read through `$( )`: these derive from environment that
+# is fixed for the life of the process, so deriving them per call spent three forks on a constant.
+_ADB_CU_STAMP_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ai-dev-baseline"
+_ADB_CU_STAMP="$_ADB_CU_STAMP_DIR/session-currency.stamp"
 
 # --- mode ---------------------------------------------------------------------------------------
 # Print auto|notify|off, exit 0 always. An unset / misspelled / unreadable value degrades to the
@@ -112,7 +114,7 @@ _adb_cu_stamp() { printf '%s/session-currency.stamp\n' "$(_adb_cu_stamp_dir)"; }
 # The key is still spelled `session_start` even though it now governs two triggers. Honoring the
 # EXISTING key is what keeps every already-configured machine working — an `off` that silently
 # stopped applying would re-enable an updater its owner had switched off, which is the worst
-# possible direction for this class of change. The neutral rename is tracked separately.
+# possible direction for this class of change. The neutral rename is tracked in #140.
 cmd_mode() {
   [ "$#" -eq 0 ] || die "mode: takes no arguments"
   local m="${ADB_SESSION_UPDATE:-}"
@@ -174,12 +176,11 @@ cmd_stamp_fresh() {
 # check is housekeeping: it must never be the reason a session start looks broken or a `/cleanup`
 # sweep aborts, so even an internal failure resolves to a record rather than a status.
 cmd_check() {
-  local trigger="" cwd="" interval=""
+  local trigger="" cwd="" interval=""   # interval is per-trigger (below), never a caller's argument
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --trigger) [ "$#" -ge 2 ] || die "check: --trigger needs a value"; trigger="$2"; shift 2 ;;
       --cwd)     [ "$#" -ge 2 ] || die "check: --cwd needs a value";     cwd="$2";     shift 2 ;;
-      --interval) [ "$#" -ge 2 ] || die "check: --interval needs a value"; interval="$2"; shift 2 ;;
       *) die "check: unknown argument: $1" ;;
     esac
   done
@@ -207,12 +208,14 @@ cmd_check() {
     return 0
   fi
 
-  # 3. never update the clone the caller is working IN. Updating the clone you are editing is
-  #    exactly the "pulled out from under active work" case. For `/cleanup` this is also what
-  #    keeps a baseline developer's own `-dev` sweep from fast-forwarding the clone under them.
-  if cmd_same_clone "$cwd" "$src"; then _adb_cu_emit skipped ""; return 0; fi
-
-  # 4. the rate limit — and the ONE place the two triggers deliberately differ.
+  # 3. the rate limit — and the ONE place the two triggers deliberately differ.
+  #
+  #    ORDER MATTERS, and it is why this sits above the self-clone guard: this is ONE `stat` while
+  #    the guard below is two `git rev-parse` forks, and on the overwhelmingly common session-start
+  #    path (checked within the interval) the guard's answer is discarded anyway. Measured, the
+  #    reverse order cost the SessionStart hot path ~25 ms per session for nothing. It stays BELOW
+  #    the mode and broken-install checks, though: hoisting it above those would suppress the loud
+  #    `failed` report for a broken install for up to a full interval.
   #
   #    The stamp records the last ATTEMPT and cannot distinguish "startup just checked and nothing
   #    changed" from "startup checked, and then a baseline merge landed". For an unattended check
@@ -225,7 +228,7 @@ cmd_check() {
   #    while still WRITING the stamp below — the deliberate, operator-initiated check always
   #    happens, and the next session start is still suppressed by it. Two back-to-back sweeps
   #    therefore each fetch, which is the correct cost for an explicitly requested action.
-  local stamp; stamp="$(_adb_cu_stamp)"
+  local stamp="$_ADB_CU_STAMP"
   if [ -z "$interval" ]; then
     case "$trigger" in
       startup) interval="${ADB_SESSION_UPDATE_INTERVAL_SECS:-$_ADB_CU_INTERVAL_DEFAULT}" ;;
@@ -234,6 +237,14 @@ cmd_check() {
   fi
   case "$interval" in ''|*[!0-9]*) interval="$_ADB_CU_INTERVAL_DEFAULT" ;; esac
   if cmd_stamp_fresh "$stamp" "$interval"; then _adb_cu_emit skipped ""; return 0; fi
+
+  # 4. never update the clone the caller is working IN. Updating the clone you are editing is
+  #    exactly the "pulled out from under active work" case. For `/cleanup` this is also what
+  #    keeps a baseline developer's own `-dev` sweep from fast-forwarding the clone under them.
+  #    Deliberately AFTER the rate limit (see above) — its two git forks are the most expensive of
+  #    the local guards, and it is outcome-identical either way: both emit `skipped`, and neither
+  #    reaches the stamp write below.
+  if cmd_same_clone "$cwd" "$src"; then _adb_cu_emit skipped ""; return 0; fi
 
   # 5. bound git's network and interaction BEFORE any of it runs. Without these an HTTPS remote
   #    with no cached credential blocks on a terminal read forever — the one failure mode a
@@ -252,7 +263,7 @@ cmd_check() {
 
   # 6. record the attempt BEFORE running it. A crash or a harness kill mid-update must not make
   #    the next trigger retry immediately and hit the same wall.
-  mkdir -p "$(_adb_cu_stamp_dir)" 2>/dev/null && : > "$stamp" 2>/dev/null
+  mkdir -p "$_ADB_CU_STAMP_DIR" 2>/dev/null && : > "$stamp" 2>/dev/null
 
   # 7. notify: report, change nothing. Precisely: it does not change the working tree or the
   #    installed payload — `--check` still fetches remote-tracking refs, which is what makes the
@@ -270,7 +281,7 @@ cmd_check() {
     # this library must never be wrong in.
     status="$(adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
                 "$src/bin/baseline" update --check 2>/dev/null)"; rc=$?
-    status="$(printf '%s\n' "$status" | head -n1)"
+    status="${status%%$'\n'*}"   # first line, no fork
     # `--check`'s contract: 0 current · 10 behind · 20 needs attention · 30 error. Only a bound
     # firing is unexpected enough to name; every other non-zero is already described by $status.
     if [ "$rc" -eq 124 ]; then
@@ -341,7 +352,11 @@ cmd_check() {
 # by construction (every caller above passes one); newlines are stripped anyway so a message that
 # ever grew one cannot break the record into two.
 _adb_cu_emit() {
-  printf '%s%s%s\n' "$1" "$TAB" "$(printf '%s' "$2" | tr -d '\n\r')"
+  # Strip with parameter expansion rather than `| tr`: a subshell + pipe + exec on every outcome,
+  # including the empty-message ones that are the common case, bought nothing.
+  local _m="${2//$'\n'/}"
+  _adb_cu_emit_msg="${_m//$'\r'/}"
+  printf '%s%s%s\n' "$1" "$TAB" "$_adb_cu_emit_msg"
 }
 
 # --- dispatch -----------------------------------------------------------------------------------
