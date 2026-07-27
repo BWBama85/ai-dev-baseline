@@ -497,21 +497,54 @@ IFS= read -r -d '' _ADB_RM_MD <<'AWKMD' || true
     # would fail OPEN — every fence would leak its contents back into the scan.
     function lead_sp(s,   i) { i = 0; while (substr(s, i + 1, 1) == " ") i++; return i }
     function run_len(s, pos, ch,   n) { n = 0; while (substr(s, pos + n, 1) == ch) n++; return n }
-    # The length of a fence run of `ch` on this line, or 0. A fence is indented 0-3 spaces; at 4+
-    # the line is an INDENTED block, which this pass deliberately does not treat as code — under a
-    # `- ` bullet, content starts at 2 and code needs 2+4=6, so a 4-space rule would strip ordinary
-    # continuation PROSE. For an edge scan that direction is the dangerous one: a dropped edge
-    # silently unblocks a bundle that is genuinely blocked.
-    function fence_of(line, ch,   sp) {
+    # How many leading characters are CONTAINER, not content: indentation plus an optional list
+    # marker (`- ` / `* ` / `+ ` / `1. ` / `1) `) and the spaces after it. Returns -1 when the line
+    # is indented past 3 with no marker — indented-block territory, which this pass leaves alone.
+    #
+    # WHY (#135). Without this, a fence or a blockquote written INSIDE a list item is invisible:
+    # `- ```console` puts the delimiter after the marker, so the block was scanned (fabricating an
+    # edge) and its indented closer was then read as a NEW opener, swallowing every real edge after
+    # the list. Placing an example in a list item is one of the most common shapes in an issue.
+    function content_at(s,   i, c, j, nsp, nd) {
+      i = lead_sp(s)
+      if (i > 3) return -1
+      c = substr(s, i + 1, 1)
+      if (c == "-" || c == "*" || c == "+") {
+        j = i + 1                                   # 1-based position of the marker character
+      } else {
+        nd = 0
+        while (nd < 10 && substr(s, i + 1 + nd, 1) >= "0" && substr(s, i + 1 + nd, 1) <= "9") nd++
+        # CommonMark caps an ordered marker at NINE digits. A tenth means this is not a list at
+        # all, and treating it as one drops the line: `1234567890. > Depends on #5` would read as
+        # a list-nested blockquote and lose a real edge.
+        if (nd == 0 || nd > 9) return i
+        c = substr(s, i + nd + 1, 1)
+        if (c != "." && c != ")") return i
+        j = i + nd + 1
+      }
+      nsp = 0
+      while (substr(s, j + 1 + nsp, 1) == " ") nsp++
+      if (nsp == 0) return i                        # `**bold**`, `---`, `1.x`: not a list marker
+      # 1-4 spaces after the marker are PADDING. At 5 or more, only the first is padding and the
+      # remainder is content INDENTATION — so `-     ```' is an indented code line inside the
+      # item, not a fence. Consuming it all would open a fence that CommonMark does not.
+      if (nsp >= 5) return j + 1
+      return j + nsp
+    }
+    # The CLOSER of an open fence: the same delimiter, a run at least as long, nothing but
+    # whitespace after it, and indented no more than 3 past the OPENER's content column. That last
+    # clause is container context, and it is load-bearing in both directions: without it a
+    # 4-space-indented backtick run *inside* a top-level fence closes it early (scanning quoted
+    # text, then reading the real closer as a fresh opener), and with too little of it a
+    # list-nested closer never matches and the fence swallows the rest of the body.
+    function fence_close(line, ch,   sp) {
       sp = lead_sp(line)
-      if (sp > 3) return 0
+      if (sp > md_fence_at + 3) return 0
       return run_len(line, sp + 1, ch)
     }
-    # The text following a fence run: the info string on an opener, the must-be-blank tail on a
-    # closer.
-    function after_fence(line, n,   sp) { sp = lead_sp(line); return substr(line, sp + n + 1) }
+    function after_close(line, n,   sp) { sp = lead_sp(line); return substr(line, sp + n + 1) }
     # Remove `<!-- ... -->`, both the inline form and one spanning lines.
-    function strip_comments(s,   out, p, q) {
+    function strip_comments(s,   out, p, q, nbs, k) {
       out = ""
       while (1) {
         if (md_in_comment) {
@@ -522,6 +555,20 @@ IFS= read -r -d '' _ADB_RM_MD <<'AWKMD' || true
         }
         p = index(s, "<!--")
         if (p == 0) return out s
+        # `\<!--` is an ESCAPED opener: CommonMark renders the `<` as text, so this is prose
+        # PARITY MATTERS. Only an ODD run of preceding backslashes escapes the `<`: with two, the
+        # first escapes the second and the opener is REAL, so treating it as prose would scan a
+        # genuine comment's contents and fabricate an edge from them.
+        # DISPLAYING the delimiter, not markup (#135). Treating it as real arms the cross-line
+        # state, and an illustrative marker rarely has a `-->` — so it swallowed every edge and
+        # every recorded decision in the rest of the body. Step over it and keep scanning.
+        nbs = 0; k = p - 1
+        while (k >= 1 && substr(s, k, 1) == "\\") { nbs++; k-- }
+        if (nbs % 2 == 1) {
+          out = out substr(s, 1, p + 3)
+          s = substr(s, p + 4)
+          continue
+        }
         out = out substr(s, 1, p - 1)
         s = substr(s, p + 4); md_in_comment = 1; md_opened_here = 1
         # `<!-->` and `<!--->` are EMPTY comments in CommonMark: the opener and closer share their
@@ -533,7 +580,7 @@ IFS= read -r -d '' _ADB_RM_MD <<'AWKMD' || true
     }
     # `md_fence_len` IS the in-a-fence flag: an opener only ever sets it from a run of >=3, so a
     # separate boolean would be a second copy of one fact for every site to keep in step.
-    function md_prose(line,   fn) {
+    function md_prose(line,   fn, at) {
       MD_SKIP = 1
       # A GitHub body submitted through the web UI is CRLF, and `gh` passes it through verbatim.
       # Without this, a closer reads as "```\r", its must-be-blank tail is not blank, the fence
@@ -541,37 +588,45 @@ IFS= read -r -d '' _ADB_RM_MD <<'AWKMD' || true
       # marks a genuinely blocked bundle `ready`. Normalize once, for every consumer.
       if (substr(line, length(line), 1) == CR) line = substr(line, 1, length(line) - 1)
       if (md_fence_len) {                          # inside a fence: only its own closer matters
-        fn = fence_of(line, md_fence_ch)
-        if (fn >= md_fence_len && after_fence(line, fn) ~ /^[[:space:]]*$/) {
-          md_fence_ch = ""; md_fence_len = 0
+        fn = fence_close(line, md_fence_ch)
+        if (fn >= md_fence_len && after_close(line, fn) ~ /^[[:space:]]*$/) {
+          md_fence_ch = ""; md_fence_len = 0; md_fence_at = 0
         }
         return ""                                  # opener, content and closer are all skipped
       }
       md_opened_here = 0
       line = strip_comments(line)
-      # A backtick fence opener may not carry a backtick in its info string; a tilde one may. The
-      # two probes are sequential, not parallel, because that asymmetry is the whole rule. The
-      # other delimiter never closes the current fence, which is what makes ``` inside ~~~ content.
-      fn = fence_of(line, "`")
-      if (fn >= 3 && index(after_fence(line, fn), "`") == 0) {
-        # A `<!--` on the OPENER line is info-string text, not a comment: the fence starts first,
-        # so it wins. Leaving the comment armed would leak past the closer (the in-fence branch
-        # never runs strip_comments) and swallow the whole rest of the body.
-        if (md_opened_here) md_in_comment = 0
-        md_fence_ch = "`"; md_fence_len = fn; return ""
+      at = content_at(line)                        # the container's content column, computed ONCE
+      if (at >= 0) {
+        # A backtick fence opener may not carry a backtick in its info string; a tilde one may. The
+        # two probes are sequential, not parallel, because that asymmetry is the whole rule. The
+        # other delimiter never closes the current fence — that is what makes ``` inside ~~~
+        # content. `md_fence_at` remembers this opener's column so its closer can be matched
+        # relative to the same container.
+        fn = run_len(line, at + 1, "`")
+        if (fn >= 3 && index(substr(line, at + fn + 1), "`") == 0) {
+          # A `<!--` on the OPENER line is info-string text, not a comment: the fence starts first,
+          # so it wins. Leaving the comment armed would leak past the closer (the in-fence branch
+          # never runs strip_comments) and swallow the whole rest of the body.
+          if (md_opened_here) md_in_comment = 0
+          md_fence_ch = "`"; md_fence_len = fn; md_fence_at = at; return ""
+        }
+        fn = run_len(line, at + 1, "~")
+        if (fn >= 3) {
+          if (md_opened_here) md_in_comment = 0
+          md_fence_ch = "~"; md_fence_len = fn; md_fence_at = at; return ""
+        }
+        # A blockquote nested under a list marker (`- > …`) is still quoted material (#135), so
+        # this tests the CONTENT position rather than the first non-space character.
+        if (substr(line, at + 1, 1) == ">") return ""
       }
-      fn = fence_of(line, "~")
-      if (fn >= 3) {
-        if (md_opened_here) md_in_comment = 0
-        md_fence_ch = "~"; md_fence_len = fn; return ""
-      }
-      if (substr(line, lead_sp(line) + 1, 1) == ">") return ""   # quoted material, not a claim
       MD_SKIP = 0
       return line
     }
     # An UNTERMINATED fence or comment swallows to end-of-body rather than leaking back to prose.
     BEGIN {
-      md_fence_ch = ""; md_fence_len = 0; md_in_comment = 0; md_opened_here = 0; MD_SKIP = 0
+      md_fence_ch = ""; md_fence_len = 0; md_fence_at = 0
+      md_in_comment = 0; md_opened_here = 0; MD_SKIP = 0
       CR = sprintf("%c", 13)
     }
 AWKMD
@@ -630,6 +685,10 @@ AWKMD
 #     `## Decisions` section derived that example as a real edge.
 #   - BLOCKQUOTES. A `>` line is quoted material — someone else's text, or an excerpt — never this
 #     issue's own declaration.
+#   - CONTAINERS. Fences and blockquotes are recognized at the CONTENT column, so a fenced example
+#     or a quote written inside a list item (`- ```console`) counts (#135). Missing that failed
+#     both ways at once: the block was scanned, AND its indented closer read as a fresh opener,
+#     swallowing every real edge after the list.
 #   - INLINE CODE SPANS, targeted rather than blanket. The KEYWORD must sit outside a span; the
 #     `#N` reference may sit inside one. So `` `**Depends on: #78**` `` (the whole clause quoted as
 #     an example) declares nothing, while `Depends on `#52`` leaves its reference intact in the

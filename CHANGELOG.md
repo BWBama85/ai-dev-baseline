@@ -9,6 +9,40 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The `/roadmap` edge scanner missed markdown structure inside list items, escaped comment
+  openers, and — worse — its own fixtures could not fail** (#135). Five findings from the codex
+  review of PR #133, which merged before the review landed (#134); all five reproduced on `main`.
+  - **A fenced block inside a list item was not a fence**, because the delimiter sits after the
+    list marker. This failed **both ways at once**: the block's contents were scanned (fabricating
+    an edge), and its indented closing fence was then read as a *new opener*, swallowing every
+    genuine edge after the list to end-of-body. Putting an example in a list item is one of the
+    most common shapes in a real issue. Fences and blockquotes are now recognized at the **content
+    column**, and a closer may sit at any indentation — failing to close is the far worse error.
+  - **A blockquote under a list marker** (`- > Depends on #6`) was scanned as prose.
+  - **`\<!--` armed the cross-line comment state.** CommonMark renders an escaped `<` as text, so
+    this is prose *displaying* the delimiter; such an illustrative marker rarely carries a `-->`,
+    so it silently swallowed every edge and every recorded decision in the rest of the body.
+  - **The fixtures could pass while the extractor crashed.** The test helpers ran the library
+    inside `$( … )`, whose exit status is discarded once expanded as an argument — `pipefail` does
+    not reach it. Most structure fixtures expect an empty result, so a crash on exactly those
+    inputs still reported PASS. A nonzero exit is now converted to a value nothing can equal.
+  - **Container context for fence closers.** A closer is matched relative to its *opener's*
+    content column. Both directions bite: too strict and a list-nested closer never matches (the
+    fence swallows the body); too loose — the first cut of this fix — and a 4-space-indented
+    backtick run *inside* a top-level fence closes it early, after which the real closer reads as
+    a fresh opener and eats every edge after the block.
+  - **Marker padding is capped.** CommonMark treats 1–4 spaces after a list marker as padding; at
+    five or more, only the first is, and the rest is content indentation — so `-     ` + a
+    delimiter is an indented code line, not a fence.
+  - **Ordered markers stop at nine digits**, per CommonMark. A tenth means the line is not a list
+    at all, and reading it as one dropped a real edge from e.g. `1234567890. > Depends on #5`.
+  - **Escaped comment openers are counted by parity.** Only an *odd* run of backslashes escapes
+    `<!--`; with two, the first escapes the second and the opener is real, so treating it as prose
+    scanned a genuine comment and fabricated an edge from its contents.
+  - Multi-line code spans (the fifth finding) are tracked in #136 rather than fixed here: the
+    streaming fix would mask to end-of-paragraph on a stray backtick, trading a rare fabricated
+    edge for a common **dropped** one — the strictly more dangerous direction.
+
 - **`/roadmap` invented dependency edges from issues that merely *documented* the keyword**
   (#117). `deps-from-body` scanned every line for `Depends on #N` / `Blocked by #N` with no notion
   of markup, so a repro block, a quoted excerpt or a schema comment was read as if the issue had
