@@ -98,9 +98,14 @@ SESSION_CWD="$(hook_field cwd)"
 # One bounded call; one outcome record on stdout ("<outcome>\t<message>"). The library never exits
 # non-zero for a policy outcome, and this hook cannot fail a session anyway.
 RECORD="$(bash "$_adb_cu" check --trigger startup --cwd "$SESSION_CWD" 2>/dev/null)" || exit 0
-OUTCOME="${RECORD%%	*}"
-MESSAGE="${RECORD#*	}"
-[ "$OUTCOME" = "$RECORD" ] && MESSAGE=""   # no TAB at all → malformed; treat as no message
+# Split on the FIRST whitespace run rather than slicing on a literal TAB. The outcome is a single
+# word by contract, so `read` gives it to $OUTCOME and every remaining byte to $MESSAGE — and it
+# degrades correctly on a record with no separator at all (empty message) instead of needing a
+# fixup. It also means no invisible tab character in this file is load-bearing.
+{ read -r OUTCOME MESSAGE || true; } <<RECORD_EOF
+$RECORD
+RECORD_EOF
+: "${OUTCOME:=}" "${MESSAGE:=}"
 
 # --- 3. presentation ------------------------------------------------------------
 #

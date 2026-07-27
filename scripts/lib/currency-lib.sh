@@ -58,8 +58,13 @@
 #   currency-lib.sh mode                                  # auto|notify|off
 #   currency-lib.sh same-clone   <dir-a> <dir-b>           # exit 0 = the same repository
 #   currency-lib.sh stamp-fresh  <stamp-path> <interval>   # exit 0 = suppressed by the rate limit
-#   currency-lib.sh check --trigger startup|cleanup [--cwd <dir>]
+#   currency-lib.sh check --trigger startup|cleanup [--cwd <dir>] [--interval <secs>]
 #   currency-lib.sh -h | --help
+#
+# `check` reads the record's two fields with `read -r outcome message`, not by slicing on the TAB,
+# so callers never depend on an invisible character surviving an editor. --interval overrides the
+# per-trigger rate-limit default (`startup` 600 s, `cleanup` 0 = never suppressed); it exists for
+# tests and for an operator who wants a different cadence, not as a documented knob.
 #
 # Requires: git. `bin/baseline` is resolved from the install-source clone.
 
@@ -192,7 +197,15 @@ cmd_check() {
   # 2. the install-source. Nothing installed by symlink -> nothing to keep current. This is the
   #    ordinary state of a machine that never ran install.sh, so it is silent, not a failure.
   local src; src="$(adb_install_source)" || { _adb_cu_emit skipped ""; return 0; }
-  [ -x "$src/bin/baseline" ] || { _adb_cu_emit skipped ""; return 0; }
+  # A resolved install-source whose `baseline` is missing or non-executable is NOT "nothing
+  # installed" — it is a BROKEN install, and staying silent about it would be the exact
+  # silent-staleness this feature exists to catch. (Running it anyway, as the pre-#139 hook did,
+  # produced a 126/127 that surfaced as `failed`; keep that loudness rather than inheriting a
+  # quieter behavior from the refactor.)
+  if [ ! -x "$src/bin/baseline" ]; then
+    _adb_cu_emit failed "install-source found at $src but bin/baseline is missing or not executable — reinstall."
+    return 0
+  fi
 
   # 3. never update the clone the caller is working IN. Updating the clone you are editing is
   #    exactly the "pulled out from under active work" case. For `/cleanup` this is also what
@@ -251,8 +264,19 @@ cmd_check() {
   #    plainly when they run it.
   local status rc
   if [ "$mode" = notify ]; then
+    # CAPTURE, then slice. Piping straight into `head` would report only HEAD's status, so a
+    # backstop firing (124) or a crashed `baseline` would arrive as an empty answer and be
+    # classified `silent` — a failure reported as "you are current", which is the one direction
+    # this library must never be wrong in.
     status="$(adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
-                "$src/bin/baseline" update --check 2>/dev/null | head -n1)" || true
+                "$src/bin/baseline" update --check 2>/dev/null)"; rc=$?
+    status="$(printf '%s\n' "$status" | head -n1)"
+    # `--check`'s contract: 0 current · 10 behind · 20 needs attention · 30 error. Only a bound
+    # firing is unexpected enough to name; every other non-zero is already described by $status.
+    if [ "$rc" -eq 124 ]; then
+      _adb_cu_emit failed "'baseline update --check' exceeded ${_ADB_CU_TIMEOUT_SECS}s and was stopped."
+      return 0
+    fi
     case "$status" in
       behind) _adb_cu_emit behind "install-source is behind origin — run 'baseline update'." ;;
       *)      _adb_cu_emit silent "" ;;

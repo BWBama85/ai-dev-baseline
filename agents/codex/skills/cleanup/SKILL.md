@@ -546,9 +546,14 @@ CU_ROOT="${ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 # comment in step 5 names). The library already exits 0 for every policy outcome; this is the
 # belt-and-braces that keeps a broken install from ending the sweep.
 CU_RECORD="$(bash "$HOME/.codex/scripts/lib/currency-lib.sh" check --trigger cleanup --cwd "$CU_ROOT" 2>/dev/null || true)"
-CU_OUTCOME="${CU_RECORD%%	*}"
-CU_MESSAGE="${CU_RECORD#*	}"
-[ "$CU_OUTCOME" = "$CU_RECORD" ] && CU_MESSAGE=""   # no TAB at all → malformed; no message
+# Split on the FIRST whitespace run, never on a literal TAB. The outcome is a single word by
+# contract, so `read` gives it to $CU_OUTCOME and every remaining byte to $CU_MESSAGE. That keeps
+# no invisible character load-bearing inside a fenced block — a tab silently converted to spaces
+# by an editor would otherwise break the parse with no error anywhere.
+{ read -r CU_OUTCOME CU_MESSAGE || true; } <<CU_EOF
+$CU_RECORD
+CU_EOF
+: "${CU_OUTCOME:=}" "${CU_MESSAGE:=}"
 
 # One line, and only when there is something to say. `silent` and `skipped` are the common cases
 # (already current, mode=off, sweeping the install-source clone itself, nothing installed) and the
@@ -562,6 +567,10 @@ case "$CU_OUTCOME" in
   silent|skipped)        : ;;
   *) [ -n "$CU_MESSAGE" ] && CU_LINE="baseline: $CU_MESSAGE" ;;
 esac
+# The block must not END on a false test. `[ -n "$CU_MESSAGE" ]` in that last arm returns 1 for an
+# empty message, and an agent reads a fenced block whose last command failed as a FAILED STEP —
+# which would abandon the sweep right before the report. Terminate explicitly.
+:
 ```
 
 An `updated` line means the tooling under `~/.<agent>/` changed **during this run**. That is safe

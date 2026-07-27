@@ -633,6 +633,18 @@ eq "$CU_OUT_OUTCOME" "skipped" "7 currency: no installed baseline skips silently
 eq "$CU_OUT_LINE" "" "7 currency: no installed baseline prints nothing"
 cufh="$CU_HOME_SAVE"
 
+# (k) a BROKEN install is loud, not silent. A resolved install-source whose `baseline` cannot be
+# executed is not "nothing installed" — reporting it as a silent skip would be the very
+# silent-staleness this feature exists to catch.
+cu_reset
+chmod -x "$cusrc/bin/baseline"
+run_currency
+eq "$CU_RC" "0" "7 currency: a broken install-source still exits 0"
+eq "$CU_OUT_OUTCOME" "failed" "7 currency: a non-executable bin/baseline is reported, not skipped"
+has "$CU_OUT_LINE" "reinstall" "7 currency: the broken-install line says what to do"
+chmod +x "$cusrc/bin/baseline"
+cu_reset
+
 # --- ordering: the report must be composed BEFORE the update swaps the libraries -------------
 # Version skew, and the reason step 6 buffers instead of printing: `baseline update` re-runs the
 # installer, whose symlinks are what {{CLEANUP_LIB}} resolves through, so a report composed AFTER
