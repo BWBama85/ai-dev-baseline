@@ -399,6 +399,22 @@ eq "$(health "$(hj '' '')" "$SHA" 3)" indeterminate \
    "no checks BUT 3 active workflows => indeterminate, NOT no-ci (fail closed)"
 has "$(health_why "$(hj '' '')" "$SHA" 3)" "none has reported" "...and explains the difference"
 
+# THE FALSE-CUT REGRESSION (adversarial-review find). `$total` counts "somebody reported", not
+# "everybody reported". Without an explicit unreported-workflows arm ahead of `green`, ONE
+# unrelated passing legacy status satisfies `$total > 0` and converts a genuinely unreported
+# Actions build into a confident `green` — i.e. adding a green status to a repo whose CI has not
+# run turns a correct refusal into a RELEASE. Fail-open, the one direction that matters.
+eq "$(health "$(hj '' "$(st vercel success)")" "$SHA" 3)" indeterminate \
+   "3 active workflows + no check runs + ONE green legacy status => still indeterminate, never green"
+has "$(health_why "$(hj '' "$(st vercel success)")" "$SHA" 3)" "none has reported" \
+   "...naming the unreported workflows rather than the status that did report"
+# The same shape with NO active workflows is the legitimate non-Actions repo: the status IS the CI.
+eq "$(health "$(hj '' "$(st vercel success)")" "$SHA" 0)" green \
+   "...but with 0 active workflows a green legacy status IS the branch's green (non-Actions CI)"
+# And a check run present alongside means the workflows did report — inventory cannot override it.
+eq "$(health "$(hj "$(ck ci "$SHA" completed success)" "$(st vercel success)")" "$SHA" 3)" green \
+   "check runs present => reported, whatever the inventory count says"
+
 # FAIL-CLOSED on every unreadable input. An unparseable health read must never be `green`.
 for bad_json in '' 'not json' '[]' '"str"' '{"check_runs":{}}' '{"statuses":5}'; do
   run_health "$bad_json" "$SHA" 1

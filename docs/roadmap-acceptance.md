@@ -251,12 +251,17 @@ consulted **only** at the would-be-`met` boundary.
 - [ ] **Live-only:** change the default branch's HEAD *between* the first readiness calculation and
       the final emission re-check — the second read must win and suppress the cut.
 
-### 9b-ter. An unmilestoned `release-blocker` is a hold, not a backlog item (#78)
+### 9b-ter. An unmilestoned `release-blocker` is never swept to `Backlog` (#78) **[auto]**
 
 - [ ] File an open issue labeled `release-blocker` with **no** milestone. The step-4b autofix must
-      **not** sweep it to `Backlog` — it prints a `HOLD:` line instead.
-- [ ] That hold is **not** retirable by a `## Decisions` row (a row must never hide a release
-      hold); it clears only by assigning the issue to the release milestone or removing the label.
+      **not** sweep it to `Backlog` — it prints a `WARN:` line instead, and issues no `issue edit`
+      for it. An unlabeled unmilestoned issue in the same run **is** still swept.
+- [ ] That warning is **not** retirable by a `## Decisions` row (a row must never hide a release
+      risk); it clears only by assigning the issue to the release milestone or removing the label.
+- [ ] It **warns, it does not gate.** Nothing feeds it into the readiness predicate, so the same
+      run may print the warning *and* emit the cut. That is deliberate — #78 required only that
+      such an issue is never silently ignored, and the wording says `WARN`, not `HOLD`, so the
+      output does not claim a gate that is not wired.
 - [ ] Confirm the failure it prevents: were it swept, readiness would count 0 blockers in the
       milestone and emit a cut with a declared must-have parked in `Backlog`.
 

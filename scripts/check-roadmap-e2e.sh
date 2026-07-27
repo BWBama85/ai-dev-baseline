@@ -239,10 +239,14 @@ limbo_issues() {
       [ "$first" -eq 1 ] || printf ','
       first=0
       n="${spec%%:*}"; ms="${spec#*:}"
+      # A `!` suffix on the number labels the issue `release-blocker` — the #78 carve-out is
+      # keyed on labels, so a fixture that never emits a `labels` array cannot exercise it.
+      local labels='[]'
+      case "$n" in *'!') n="${n%!}"; labels='[{"name":"release-blocker"}]' ;; esac
       if [ "$ms" = "$spec" ]; then
-        printf '{"number":%s,"state":"open","title":"i%s","body":"","milestone":null}' "$n" "$n"
+        printf '{"number":%s,"state":"open","title":"i%s","body":"","labels":%s,"milestone":null}' "$n" "$n" "$labels"
       else
-        printf '{"number":%s,"state":"open","title":"i%s","body":"","milestone":{"title":"%s"}}' "$n" "$n" "$ms"
+        printf '{"number":%s,"state":"open","title":"i%s","body":"","labels":%s,"milestone":{"title":"%s"}}' "$n" "$n" "$labels" "$ms"
       fi
     done
     printf ']\n'
@@ -483,6 +487,15 @@ readiness
 has "$OUT" "VERDICT=indeterminate" \
   "active workflows that have not reported here => indeterminate, NOT no-ci (the discriminator)"
 
+# THE FALSE-CUT REGRESSION, end to end (adversarial-review find). One unrelated GREEN legacy
+# status must not suppress the workflow-inventory read, and must not satisfy the predicate on
+# behalf of workflows that reported nothing. Before the fix this emitted a release.
+fix_default; ms_drained; health_set '[]' '[{"context":"vercel","state":"success"}]' 3
+readiness
+has "$OUT" "VERDICT=indeterminate" \
+  "a green status from ONE provider never speaks for 3 workflows that have not reported"
+hasnt "$OUT" "VERDICT=met" "...so adding an unrelated passing status cannot turn a refusal into a cut"
+
 fix_default; ms_drained; health_legacy_red
 readiness
 has "$OUT" "VERDICT=not-green" \
@@ -582,6 +595,31 @@ has "$OUT" "fixed: #44 → milestone Backlog (was unmilestoned)" "...every one o
 hasnt "$OUT" "#12" "an issue already in a milestone is untouched"
 hasnt "$OUT" "fixed: #31" "the roadmap artifact is never moved into the backlog"
 eq "$(grep -c 'issue edit' "$FIX/calls" 2>/dev/null || echo 0)" 2 "exactly two tracker writes, one per repaired issue"
+
+# --- 7a-bis. #78: an unmilestoned `release-blocker` is WARNED about, never swept --------------
+# The carve-out was previously pinned only by prose greps, so deleting the `| not` from the LIMBO
+# filter — which inverts the sweep and manufactures exactly the silent-ignore #78 prevents — would
+# have passed every executed test. This drives it end to end: the labeled issue must produce NO
+# tracker write, while an unlabeled sibling in the same run is still repaired.
+fix_default
+limbo_issues 5 '44!' 31
+ADB_ROADMAP_NUM=31 run_snippet autofix-unmilestoned >/dev/null
+eq "$RC_" 0 "the autofix snippet runs clean with a stray blocker present"
+has "$OUT" "WARN: #44 is an open release-blocker in NO milestone" \
+  "an unmilestoned release-blocker is surfaced, not buried in Backlog"
+hasnt "$OUT" "fixed: #44" "...and is NOT swept"
+has "$OUT" "fixed: #5 → milestone Backlog (was unmilestoned)" \
+  "...while an unlabeled unmilestoned issue in the same run IS still repaired"
+# `grep -c` prints 0 AND exits 1 on no-match, so the `|| echo 0` idiom used above would emit TWO
+# lines here (the file exists, since #5 was edited). Count with wc, which always exits 0.
+eq "$(grep 'issue edit 44' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 \
+  "no tracker write touches the stray blocker (the sweep would have made readiness count 0)"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 1 "exactly one write: the unlabeled issue"
+# The artifact is excluded even when it carries the label, so a labeled roadmap issue is silent.
+fix_default
+limbo_issues '31!'
+ADB_ROADMAP_NUM=31 run_snippet autofix-unmilestoned >/dev/null
+eq "$OUT" "" "a labeled roadmap artifact is neither swept nor warned about"
 
 # --- 7b. IDEMPOTENT: the second run finds nothing (#109's acceptance) ------------------------
 # Model the post-repair tracker — which is what the first run produced — and re-run.

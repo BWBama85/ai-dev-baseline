@@ -252,9 +252,17 @@ cmd_branch_health() {
              "indeterminate\nstill running: " + ([($pending[] | .name // "check"), ($stpending[] | .context // "status")] | join(", "))
       elif $wrongsha > 0 then
              "indeterminate\n" + ($wrongsha|tostring) + " check(s) report a different commit than " + $sha
+      # Active workflows that produced NO check run on this commit are unreported, and that is
+      # true no matter what other providers said. Testing this before `green` is the whole point:
+      # `$total` counts "somebody reported", not "everybody reported", so without this arm a
+      # single unrelated green legacy status (one Vercel deploy) would satisfy $total > 0 and turn
+      # a genuinely unreported Actions build into a confident `green` — a FALSE CUT. Adding an
+      # unrelated passing status must never convert a refusal into a release.
+      elif $wf > 0 and ($mine | length) == 0 then
+             "indeterminate\n" + ($wf|tostring) + " active workflow(s) exist but none has reported on " + $sha
       elif $total > 0 then "green"
       elif $wf == 0 then "no-ci"
-      else "indeterminate\n" + ($wf|tostring) + " active workflow(s) exist but none has reported on " + $sha
+      else "indeterminate\nno CI has reported on " + $sha
       end
   ' 2>/dev/null)" || die "branch-health: could not parse the health JSON (malformed input)"
   [ -n "$out" ] || die "branch-health: could not parse the health JSON (malformed input)"

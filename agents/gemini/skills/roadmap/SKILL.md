@@ -295,7 +295,11 @@ REPO_VIEW="$(gh repo view --json nameWithOwner,defaultBranchRef --jq '.nameWithO
 $REPO_VIEW
 EOF
 [ -n "$REPO" ] || { echo "ERROR: cannot resolve repo"; exit 1; }
-[ -n "$DEFAULT_BRANCH" ] || { echo "ERROR: cannot resolve the default branch — hard stop"; exit 1; }
+# `null` is what --jq prints for an absent defaultBranchRef (a commit-less repo). It is 4 non-empty
+# characters, so a bare -n test passes it through and every later read addresses `commits/null/...`.
+case "$DEFAULT_BRANCH" in
+  ''|null) echo "ERROR: cannot resolve the default branch — hard stop"; exit 1 ;;
+esac
 # No apostrophe in either message: inside ${VAR:?word} bash still parses a single quote as an
 # opening quote, even within double quotes, and an unbalanced one is a SYNTAX error — the whole
 # snippet stops parsing, which is worse than the unset variable it was meant to report.
@@ -336,6 +340,7 @@ EOF
 # Phase 1 asks with health `skipped` — the honest value for "not evaluated", never a fabricated
 # `green`. Only a `met` here means health can change the answer, so only then is CI read at all.
 HEALTH=skipped
+HEALTH_WHY=""   # set together: later steps read it under `set -u` on EVERY verdict, not just met
 VERDICT="$(bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" release-ready \
   "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH")" \
   || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
@@ -367,13 +372,18 @@ if [ "$VERDICT" = "met" ]; then
                  statuses:   ([.[].statuses   // []] | add // [])}')" \
     || { echo "ERROR: could not assemble the health read — hard stop"; exit 1; }
   # Active workflow definitions are the ONLY discriminator between "no CI exists" (skip, per #24)
-  # and "CI exists but has not reported here" (fail closed) — an empty result means both. It is
-  # consulted ONLY when nothing reported on this commit, so the read is made only in that case.
+  # and "CI exists but has not reported here" (fail closed) — an empty result means both.
+  #
+  # The read is skipped only when CHECK RUNS are present, which is exactly when the predicate
+  # cannot consult it. Deliberately NOT "when either list is non-empty": a single unrelated green
+  # legacy status would then suppress the read while active workflows had reported nothing, and
+  # the predicate would return `green` on an unreported build. Gate on check-runs alone.
+  #
   # Read and parse SEPARATELY: piping the read into the parser would report only the PARSER's
   # status, so a failed inventory read would arrive as an empty document, count as 0 active
   # workflows, and silently downgrade a fail-closed `indeterminate` into a "no CI here" pass.
   WF_COUNT=0
-  if [ "$(printf '%s' "$HEALTH_IN" | jq '(.check_runs | length) + (.statuses | length)')" = "0" ]; then
+  if [ "$(printf '%s' "$HEALTH_IN" | jq '.check_runs | length')" = "0" ]; then
     WF_JSON="$(gh api --paginate "repos/$REPO/actions/workflows?per_page=100")" \
       || { echo "ERROR: could not read the workflow inventory — hard stop"; exit 1; }
     WF_COUNT="$(printf '%s' "$WF_JSON" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')" \
