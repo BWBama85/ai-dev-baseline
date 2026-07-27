@@ -239,11 +239,35 @@ active release milestone; always **exclude the roadmap issue itself**.
    roadmap** — reopens the blocker, removes the `release-blocker` label, or drops it from `M` — a
    tracker change, exactly as the `dep-canceled` rule resolves "until the roadmap is explicitly
    adjusted." Recording the flag is **not** self-acknowledgement; only a real tracker edit clears it.
+4. **The branch must be green (issue #78).** A drained checklist says the *requirements* are done;
+   it says nothing about whether the code is **shippable**. On a repo that deploys on cut, emitting
+   the cut against a red `main` confidently ships a broken build — the exact failure this convention
+   exists to prevent. So the last condition is repo health, read **live at the moment of assertion**
+   (`base/practices/verify-before-asserting.md`) and evaluated by `branch-health`:
+   - **green** → all checks on the default branch's HEAD commit concluded non-failing → proceed.
+   - **not-green** → withhold the cut and name the failing check. This is a `/debug` signal.
+   - **indeterminate** → **fail closed.** A build whose state cannot be established is treated as
+     unshippable, never as green.
+   - **no-ci** → the repo has no CI at all → **skip** the condition and say so. A repo that never
+     adopted CI must not be deadlocked out of ever releasing (#24).
+
+   **Health is consulted only at the would-be-`met` boundary.** With open blockers the verdict is
+   `unmet` regardless, so a repo still building never pays for a CI read it cannot act on.
+
+**Anchor health to the HEAD COMMIT, not to a run list.** `gh run list --branch <default> --limit 1`
+is *not* a sound green test, and this is worth stating because it is the obvious thing to reach for:
+it lists runs newest-first across **all** workflows, so it can answer with an unrelated scheduled
+workflow, with a run for an **older** commit, or with one workflow's success while a sibling job is
+red. "Is the branch green" is only meaningful about a **specific commit**. Resolve the default
+branch's HEAD SHA live and evaluate every check attached to **that** SHA — through **both** the
+Checks API (GitHub Actions and check-run apps) and the legacy commit-status API (CircleCI, Vercel,
+Cloudflare, …), because reading only one silently ignores whole CI providers.
 
 **Compute the verdict with the shared predicate — do not re-derive it in prose.** Feed the live
 readings above to `roadmap-lib.sh`, which returns exactly one of `unarmed` / `unmet` / `held` /
-`met` and is regression-tested by `scripts/check-roadmap.sh` (so the precedence between them
-can't drift run to run). Pass **both** counts and let the predicate pick: that is what keeps the
+`not-green` / `indeterminate` / `met` — **all six**, each with its own emission below — and is
+regression-tested by `scripts/check-roadmap.sh` (so the precedence between them can't drift run to
+run). Pass **both** counts and let the predicate pick: that is what keeps the
 blocker-mode/fallback choice keyed to label *existence* rather than to a live count:
 
 **Do not hand-derive the four counts either.** `release-counts` tabulates them from one paginated
@@ -258,7 +282,25 @@ exclusion rule, the PR filter, and the page behavior would each be restated per 
 # invocations that share no variables, so a slug hoisted from an earlier block arrives EMPTY and
 # every read below would silently address `repos//labels/...`. Re-resolve it, and fail loud on the
 # two values that genuinely come from earlier steps rather than defaulting them to nothing.
-REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+# One read, two answers: the DEFAULT BRANCH comes back on the same call as the slug, so the health
+# gate below needs no extra round trip to learn it. Deliberately the REMOTE default, not the local
+# git one — a clone can disagree (stale origin/HEAD, a detached checkout), and health is a
+# statement about the remote branch a release would be cut from.
+#
+# CAPTURE FIRST, then split. Putting the `|| exit 1` inside a `$(…)` that feeds a heredoc does NOT
+# stop the script: `exit` there only leaves the SUBSHELL, so the error text itself would be read
+# in as the repo slug and every later `repos/$REPO/...` would address a nonsense path.
+REPO_VIEW="$(gh repo view --json nameWithOwner,defaultBranchRef --jq '.nameWithOwner, .defaultBranchRef.name')" \
+  || { echo "ERROR: cannot resolve repo"; exit 1; }
+{ IFS= read -r REPO; IFS= read -r DEFAULT_BRANCH; } <<EOF
+$REPO_VIEW
+EOF
+[ -n "$REPO" ] || { echo "ERROR: cannot resolve repo"; exit 1; }
+# `null` is what --jq prints for an absent defaultBranchRef (a commit-less repo). It is 4 non-empty
+# characters, so a bare -n test passes it through and every later read addresses `commits/null/...`.
+case "$DEFAULT_BRANCH" in
+  ''|null) echo "ERROR: cannot resolve the default branch — hard stop"; exit 1 ;;
+esac
 # No apostrophe in either message: inside ${VAR:?word} bash still parses a single quote as an
 # opening quote, even within double quotes, and an unbalanced one is a SYNTAX error — the whole
 # snippet stops parsing, which is worse than the unset variable it was meant to report.
@@ -287,11 +329,80 @@ read -r ARMED M_BLOCKERS M_OPEN CANCELED <<EOF
 $(printf '%s\n' "$COUNTS" | sed -n '1p')
 EOF
 
-# Pass BOTH counts and let the predicate pick — that is what keeps the blocker-mode/fallback
-# choice keyed to label existence rather than to a live count.
+# --- branch health (#78) -----------------------------------------------------------------------
+# TWO-PHASE, and the shape matters: ASK THE PREDICATE where the would-be-`met` boundary is rather
+# than re-deriving it here. Restating "armed, and the mode-selected count is zero" in shell would
+# copy the precedence ladder release-ready already owns into prose an agent re-derives every run —
+# the very thing that library refuses to do (its header says so) — and the copy silently drifts:
+# the first version of this block omitted CANCELED, so a `held` milestone performed five live
+# reads whose result the predicate discarded, and any one of them failing hard-stopped a run whose
+# verdict was `held` regardless.
+#
+# Phase 1 asks with health `skipped` — the honest value for "not evaluated", never a fabricated
+# `green`. Only a `met` here means health can change the answer, so only then is CI read at all.
+HEALTH=skipped
+HEALTH_WHY=""   # set together: later steps read it under `set -u` on EVERY verdict, not just met
 VERDICT="$(bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" release-ready \
-  "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED")" \
+  "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH")" \
   || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
+
+if [ "$VERDICT" = "met" ]; then
+  # Resolve the default branch from the repo read this snippet ALREADY makes (one field more on an
+  # existing call costs no extra round trip), then read health. Health is only meaningful about a
+  # SPECIFIC commit, so every read below is anchored to one SHA.
+  # The combined-status response carries BOTH the resolved commit sha and the legacy statuses, so
+  # asking for it by branch name answers two questions in one request.
+  # Paginated for the same reason every other list read here is (#79): the status endpoint pages
+  # at 30 by default, and a repo with many contexts would silently drop the tail — where a FAILING
+  # status could sit. A truncated health read that loses the one red check is a false green, which
+  # is the single most dangerous direction this predicate can be wrong in.
+  STATUS_JSON="$(gh api --paginate "repos/$REPO/commits/$DEFAULT_BRANCH/status?per_page=100")" \
+    || { echo "ERROR: could not read commit status for $DEFAULT_BRANCH — hard stop"; exit 1; }
+  HEAD_SHA="$(printf '%s' "$STATUS_JSON" | jq -r -s '[.[].sha // empty] | first // empty')" \
+    || { echo "ERROR: could not resolve $DEFAULT_BRANCH HEAD — hard stop"; exit 1; }
+  [ -n "$HEAD_SHA" ] || { echo "ERROR: $DEFAULT_BRANCH has no resolvable HEAD — hard stop"; exit 1; }
+  # Checks API = Actions + check-run apps. Status API (above) = every other provider. Both, or a
+  # whole CI provider goes unread and a red build reads as green.
+  CHECKS_JSON="$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100")" \
+    || { echo "ERROR: could not read check runs for $HEAD_SHA — hard stop"; exit 1; }
+  # `--paginate` concatenates one JSON document per page, so reduce each side to a single array.
+  # One `jq -s` over both streams does it: check-runs pages carry only `.check_runs` and status
+  # pages only `.statuses`, so the keys never collide.
+  HEALTH_IN="$(printf '%s\n%s\n' "$CHECKS_JSON" "$STATUS_JSON" \
+    | jq -s -c '{check_runs: ([.[].check_runs // []] | add // []),
+                 statuses:   ([.[].statuses   // []] | add // [])}')" \
+    || { echo "ERROR: could not assemble the health read — hard stop"; exit 1; }
+  # Active workflow definitions are the ONLY discriminator between "no CI exists" (skip, per #24)
+  # and "CI exists but has not reported here" (fail closed) — an empty result means both.
+  #
+  # The read is skipped only when GITHUB ACTIONS has already reported on this commit, which is
+  # exactly when the inventory cannot change the answer. Deliberately NOT "when any result exists":
+  # both a legacy commit status AND a check run from a different Checks API app can be present
+  # while Actions has reported nothing, and suppressing the read on either would let the predicate
+  # return `green` on an unreported build. Attribute by `app.slug`, the same rule the predicate uses.
+  #
+  # Read and parse SEPARATELY: piping the read into the parser would report only the PARSER's
+  # status, so a failed inventory read would arrive as an empty document, count as 0 active
+  # workflows, and silently downgrade a fail-closed `indeterminate` into a "no CI here" pass.
+  WF_COUNT=0
+  if [ "$(printf '%s' "$HEALTH_IN" | jq '[.check_runs[] | select((.app.slug // "") == "github")] | length')" = "0" ]; then
+    WF_JSON="$(gh api --paginate "repos/$REPO/actions/workflows?per_page=100")" \
+      || { echo "ERROR: could not read the workflow inventory — hard stop"; exit 1; }
+    WF_COUNT="$(printf '%s' "$WF_JSON" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')" \
+      || { echo "ERROR: could not parse the workflow inventory — hard stop"; exit 1; }
+  fi
+  HEALTH_OUT="$(printf '%s' "$HEALTH_IN" | bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" branch-health "$HEAD_SHA" "$WF_COUNT")" \
+    || { echo "ERROR: branch-health failed — hard stop (an unreadable build is never green)"; exit 1; }
+  # Split the two-line answer with the same `read` heredoc idiom used for $COUNTS above.
+  { IFS= read -r HEALTH; IFS= read -r HEALTH_WHY; } <<EOF
+$HEALTH_OUT
+EOF
+
+  # Phase 2: re-decide with the real health. Same predicate, same arguments, one input resolved.
+  VERDICT="$(bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" release-ready \
+    "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH")" \
+    || { echo "ERROR: readiness predicate failed — hard stop"; exit 1; }
+fi
 ```
 
 Each verdict has exactly one emission, and every one of them ends with its action line:
@@ -308,7 +419,30 @@ Each verdict has exactly one emission, and every one of them ends with its actio
 
   This line prints on **every** run the hold holds. It is a verdict, not a question, so no
   `## Decisions` row retires it — only the tracker edit named above clears it.
+- `not-green` → requirements are met but the branch is **red**. Withhold the cut and name the
+  failing check (that is what `HEALTH_WHY` carries). This is a `/debug` signal, not a cut signal:
+
+  ```text
+  ⛔ Requirements met, but main is not green — not ready to cut.
+  Why:  release held — failing: shellcheck. A drained checklist is not a shippable build.
+  Next: none — /debug the failing check on main, then re-run.
+  ```
+
+- `indeterminate` → requirements are met but health could **not** be established (a check still
+  running, or CI that has never reported on this commit). **Fail closed** — say why, and never
+  guess a cut:
+
+  ```text
+  ⛔ Requirements met, but main's health could not be established — not ready to cut.
+  Why:  release held — still running: build. An unverifiable build is treated as unshippable.
+  Next: none — wait for the run to finish (or fix the reporting), then re-run.
+  ```
+
 - `met` → emit the release command.
+
+Both health verdicts print on **every** run they hold, exactly like `held`: they are verdicts
+derived from ground truth, not questions, so **no `## Decisions` row retires them.** They clear
+when the build does.
 
 A non-zero exit is a **hard stop**, never a fallthrough to `met`.
 
@@ -326,10 +460,17 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
 
 - **Unmet** (open blockers remain) → the next unblocked bundle **projected onto `M`**, exactly like
   classic mode but scoped to the release set. Never emit `Backlog`-only work.
-- **Met** (armed, predicate satisfied, no unacknowledged canceled blocker) → emit
+- **Not green / indeterminate** (requirements met, build red or unverifiable) → **never** emit the
+  cut. Report the state and the failing check as shown above. The distinction from `unmet` matters:
+  there is no batch to build, so the action is `/debug`, not `/implement-issue`.
+- **Met** (armed, predicate satisfied, no unacknowledged canceled blocker, **and the branch is
+  green or the repo has no CI**) → emit
   `Next: <release-command>` where `<release-command>` is the `<!-- release-command: CMD -->` marker
   if present else `/release`, prefixed with the banner
-  `✅ Release requirements met (NAME: 0 open blockers) — cutting.` If non-blocker issues are still
+  `✅ Release requirements met (NAME: 0 open blockers, <branch> green) — cutting.` When health was
+  `no-ci`, say so instead of claiming green: `✅ Release requirements met (NAME: 0 open blockers;
+  no CI configured — health check skipped) — cutting.` **Never report a branch as green when it was
+  never checked.** If non-blocker issues are still
   open in `M`, append `(K non-blocker issue(s) still open — not holding the release; the roll sends
   them to Backlog)`. `/roadmap` only **emits** this command; it never runs it. `/release` is the
   **project-owned** release role — the baseline ships no such skill by decision (#3,
@@ -347,7 +488,7 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
 
   ```text
   release-blocker: 0 blockers open — destination reached
-  ✅ Release requirements met (Next release: 0 open blockers) — cutting.
+  ✅ Release requirements met (Next release: 0 open blockers, main green) — cutting.
   Then: baseline release roll --version <version>   # AFTER the cut — archive M, open a fresh NAME, leftovers → Backlog
   Next: /release
   ```
@@ -629,7 +770,7 @@ which side a new defect falls on. A defect qualifies for autofix only when it is
 
 | Defect | Repair | Why it is unambiguous |
 |---|---|---|
-| An open issue in **no** milestone | move it to the backlog milestone | The convention's core invariant is "every open issue sits in exactly one milestone, nothing in limbo", and the backlog is where *undecided* work belongs by definition — deciding it is later, and separate. |
+| An open issue in **no** milestone — **except one labeled `release-blocker`** (see below) | move it to the backlog milestone | The convention's core invariant is "every open issue sits in exactly one milestone, nothing in limbo", and the backlog is where *undecided* work belongs by definition — deciding it is later, and separate. |
 | The resolved artifact is **missing the `roadmap` label** | add it | The artifact was already identified by its marker; the label is how the next run finds it. Hit live on 2026-07-24: `/roadmap` reported "no roadmap-labeled issue exists" while the artifact sat right there. |
 | The artifact is **unpinned** | pin it | Bootstrap already pins; repairing an unpinned one is the same operation. |
 | **Stale artifact content** — rows for closed issues, retired bundles, edges whose source text is gone | rewrite it | This *is* reconcile (step 4); it is listed here so the tier table is complete, not as a new behavior. |
@@ -639,13 +780,46 @@ artifact carries one, else an open milestone titled `Backlog`. If neither resolv
 create a milestone** — escalate as `unmilestoned:#N` instead. Creating one would invent a
 convention the repo never opted into.
 
+**The one carve-out — release-readiness mode only: an open `release-blocker` in no milestone is
+never swept (issue #78).** It is gated on the overlay being **active** (`RELEASE_MODE=1`, set when
+the `release-milestone` marker resolved), because step 4b is convention-agnostic tracker hygiene
+that runs on *every* repo and the overlay promises classic mode stays byte-identical. A repo that
+merely happens to have a `release-blocker` label — for instance one that ran `baseline release
+init` but has not yet added the marker — keeps the plain sweep and sees no warning about a release
+milestone it does not have. In classic mode this whole carve-out is inert.
+
+While the overlay *is* active the carve-out matters, and here is why. The
+sweep is unambiguous precisely *because* the backlog is where undecided work belongs — but a
+`release-blocker` is not undecided, it is a declared must-have, and the label is only meaningful
+inside the active release milestone. Moving it to `Backlog` would drop it out of the set the
+readiness predicate counts, so the very next run would compute `met` and emit a cut with an
+abandoned must-have parked in the backlog. The autofix would have *manufactured* the silent-ignore
+this issue exists to prevent. So it is excluded from the sweep and printed as a **`WARN:` line**,
+derived from ground truth and **not** a retirable `unmilestoned:#N` question — a `## Decisions` row
+that retired it would hide a real release risk forever. It clears only when the tracker changes:
+assign it to the release milestone, or remove the label.
+
+**It warns; it does not gate.** Nothing feeds it into the readiness predicate, so a run can print
+this line *and* still emit the cut. That is exactly what #78 asked for — such an issue is never
+silently ignored — but it is weaker than the `held` verdict, so the wording says `WARN`, not
+`HOLD`, rather than claiming a gate that is not wired. Promoting it to a real hold is tracked
+separately.
+
 ```bash
 # ADB-SNIPPET: autofix-unmilestoned
 # Self-contained, like every other block here. Inputs: ROADMAP_NUM (step 2); BACKLOG_TITLE (the
-# `backlog-milestone` marker, defaulting to `Backlog`); NO_AUTOFIX=1 for the --no-autofix run.
+# `backlog-milestone` marker, defaulting to `Backlog`); NO_AUTOFIX=1 for the --no-autofix run;
+# RELEASE_MODE=1 when the `release-milestone` marker resolved (release-readiness mode is ACTIVE).
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
 : "${ROADMAP_NUM:?ERROR: ROADMAP_NUM (the roadmap artifact issue number) is unset — run step 2 first}"
 BACKLOG="${BACKLOG_TITLE:-Backlog}"
+# The `release-blocker` carve-out below belongs to the release-goal OVERLAY, so it is gated on the
+# overlay actually being active. Step 4b is convention-agnostic tracker hygiene that runs on every
+# repo, and the overlay promises classic mode stays byte-identical — a repo that merely happens to
+# have a `release-blocker` label (e.g. one that ran `baseline release init` but has not yet added
+# the marker) must keep the plain "nothing in limbo" sweep, with no warning about a release
+# milestone it does not have.
+RELEASE_MODE="${RELEASE_MODE:-0}"
 
 # Resolve the target milestone by TITLE, live. No open milestone with that title means there is
 # nothing unambiguous to do — escalate rather than create one.
@@ -658,9 +832,41 @@ BACKLOG_NUM="$(printf '%s' "$MS_JSON" | jq -r --arg t "$BACKLOG" '[.[] | select(
 # arrive as an empty list and this step would silently "find nothing in limbo".
 LIMBO_JSON="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100")" \
   || { echo "ERROR: could not list open issues — hard stop"; exit 1; }
+# `$carve` is 1 only in release-readiness mode, so in classic mode this reduces to the original
+# filter and the sweep is byte-identical to a repo that never adopted the convention.
 LIMBO="$(printf '%s' "$LIMBO_JSON" \
-  | jq -r '.[] | select(has("pull_request") | not) | select(.milestone == null) | .number')" \
+  | jq -r --argjson carve "$RELEASE_MODE" '.[] | select(has("pull_request") | not) | select(.milestone == null)
+           | select($carve == 0 or ([.labels[]?.name] | index("release-blocker") | not)) | .number')" \
   || { echo "ERROR: could not parse the open-issue read — hard stop"; exit 1; }
+
+# An unmilestoned open `release-blocker` is carved OUT of the sweep above and surfaced here
+# instead (issue #78) — but ONLY in release-readiness mode, since this is overlay behavior and
+# classic mode must stay byte-identical. Sweeping it into `Backlog` would be the worst possible
+# repair while the overlay IS active: the label is
+# meaningful only inside the active release milestone, so the move would silently drop a declared
+# must-have out of the release set — and the readiness predicate, which counts blockers IN `M`,
+# would then compute `met` and emit a cut with an abandoned blocker parked in the backlog. That is
+# the "silently ignored" case #78 names, manufactured by the autofix itself.
+#
+# It is NOT an `unmilestoned:#N` question: questions are retirable by a `## Decisions` row, and a
+# row that suppressed this one would hide a real release risk forever. It is derived from ground
+# truth, so it prints every run until the tracker actually changes — assign it to `M`, or unlabel.
+#
+# It is a WARNING, not a gate: nothing here feeds the readiness predicate, so a run can print this
+# line AND emit the cut. That satisfies what #78 asked for (such an issue is never silently
+# ignored) but is deliberately weaker than the `held` verdict — say `WARN`, not `HOLD`, so the
+# output does not claim a gate that is not wired. Making it a true hold is tracked separately.
+STRAY_BLOCKERS=""
+if [ "$RELEASE_MODE" = "1" ]; then
+  STRAY_BLOCKERS="$(printf '%s' "$LIMBO_JSON" \
+    | jq -r '.[] | select(has("pull_request") | not) | select(.milestone == null)
+             | select([.labels[]?.name] | index("release-blocker")) | .number')" \
+    || { echo "ERROR: could not parse the open-issue read — hard stop"; exit 1; }
+fi
+for n in $STRAY_BLOCKERS; do
+  [ "$n" = "$ROADMAP_NUM" ] && continue
+  echo "WARN: #$n is an open release-blocker in NO milestone — readiness does not count it, so it does NOT hold the cut. Assign it to the release milestone, or remove its release-blocker label."
+done
 
 for n in $LIMBO; do
   if [ "$n" = "$ROADMAP_NUM" ]; then
@@ -927,6 +1133,10 @@ action line*, so the last line is `Next: none — <state>` and nothing follows i
   from `Backlog`). **Armed but unmet** emits the next projected bundle, or names the blocker when
   every in-`M` bundle is blocked/in-flight. **Empty (unarmed) `M`** reports "no requirements yet".
   A **broken marker** (resolves to zero or >1 open milestones) stops and surfaces the mismatch.
+  **Requirements met but the branch is red or unverifiable** (`not-green` / `indeterminate`, #78)
+  withholds the cut and names the failing check — the action is `/debug`, not `/implement-issue`,
+  and it is **not** "roadmap complete" either. Last line:
+  `Next: none — main is not green; /debug the failing check, then re-run.`
 - **Determinism.** Running `/roadmap` twice with no tracker change rewrites the artifact
   identically and emits the same `Next:` batch — in classic and release-readiness mode alike.
   Autofix (step 4b) does not weaken this and is not an exception to it: determinism is *"the same

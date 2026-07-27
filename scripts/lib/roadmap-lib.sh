@@ -27,7 +27,8 @@
 #
 # Usage:
 #   roadmap-lib.sh pr-targets-issue <issue-number> <owner/repo>   # PR JSON on stdin
-#   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>
+#   roadmap-lib.sh branch-health <expected-sha> <active-workflows> # {check_runs,statuses} on stdin
+#   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1> <health>
 #   roadmap-lib.sh release-counts <blocker-label> [roadmap-issue-number]   # milestone JSON on stdin
 #   roadmap-lib.sh marker-title                                   # roadmap artifact body on stdin
 #   roadmap-lib.sh deps-from-body [self-issue-number]             # issue/decision body on stdin
@@ -153,6 +154,143 @@ cmd_pr_targets_issue() {
   esac
 }
 
+# --- branch-health ---------------------------------------------------------------------------
+# Reduce the default branch's live check state to ONE health enum (issue #78). Print it on line 1
+# and, when it is not `green`, a one-line reason on line 2. Exit 0 for any computed answer; 2 on
+# bad input — a health read that cannot be parsed must never read as `green`.
+#
+#   green         every check that ran on the expected commit concluded non-failing.
+#   not-green     at least one check on that commit concluded in a failing state.
+#   indeterminate a check is still running, reports no conclusion, or belongs to a DIFFERENT
+#                 commit — i.e. the answer is unknown. The caller FAILS CLOSED on this.
+#   no-ci         this repo has no CI at all (no active workflows AND no checks on the commit),
+#                 so there is nothing to verify. The caller proceeds and says the check was
+#                 skipped — #24's "must not deadlock a repo that has no CI" degradation.
+#
+# WHY NOT `gh run list --branch <default> --limit 1` (the shape #78's body suggested): that lists
+# workflow RUNS by branch, newest first, so it can answer with an unrelated scheduled workflow, a
+# run for an OLDER commit, or one workflow's success while a sibling is red. "Is the branch green"
+# only means anything against a specific commit, so this predicate is anchored to the expected
+# HEAD SHA and evaluates every check attached to it.
+#
+# WHY BOTH check-runs AND commit statuses: the Checks API carries GitHub Actions and check-run
+# apps; the legacy Statuses API carries everything else (CircleCI, Vercel, Cloudflare, …). Reading
+# only one silently ignores whole CI providers, which on a deploying repo is the exact
+# "confidently ship broken code" failure #78 exists to prevent.
+#
+# Arguments:
+#   <expected-sha>   the default branch's HEAD commit, resolved live by the caller. Every
+#                    check-run is matched against it: a check attached to another commit is stale
+#                    evidence, so it makes the answer `indeterminate`, never `green`.
+#   <active-workflows>  count of ACTIVE CI workflow definitions (0 = none configured). This is the
+#                    only thing that distinguishes "no CI exists" from "CI exists but has not
+#                    reported here yet" — `gh run list` returns `[]` for both, which is precisely
+#                    why it cannot be the discriminator.
+#
+# stdin is ONE JSON object the caller assembles from its two reads, so this stays pure:
+#   {"check_runs": <.check_runs of the check-runs response>, "statuses": <.statuses of the status response>}
+# BOTH keys are REQUIRED and must be arrays. A missing key is an ERROR, not an empty collection:
+# defaulting it would turn an unreadable response into `no-ci`, which reaches `met` — a release
+# fabricated from a health read nobody could parse.
+#
+# Check runs are attributed by `app.slug`: `github` is GitHub Actions, anything else is another
+# Checks API app. That distinction is load-bearing, because <active-workflows> counts ACTIONS
+# workflows — so "some check run exists" is not evidence that Actions reported.
+#
+# A conclusion of `skipped` or `neutral` is NOT a failure — that is how GitHub itself scores a
+# required check, and treating a skipped job as red would wedge every repo with conditional jobs.
+cmd_branch_health() {
+  [ "$#" -eq 2 ] || die "branch-health: needs exactly 2 args: <expected-sha> <active-workflows> (check JSON on stdin)"
+  local sha="$1" workflows="$2" json out
+  # A SHA is required and must look like one: defaulting it would let a caller that failed to
+  # resolve HEAD compare every check against the empty string and get a confident `green`.
+  case "$sha" in
+    ''|*[!0-9a-fA-F]*) die "branch-health: <expected-sha> must be a hex commit sha (got '$sha')" ;;
+  esac
+  [ "${#sha}" -ge 7 ] || die "branch-health: <expected-sha> is too short to identify a commit (got '$sha')"
+  is_uint "$workflows" || die "branch-health: <active-workflows> must be a non-negative integer (got '$workflows')"
+  command -v jq >/dev/null 2>&1 || die "branch-health: jq is required"
+
+  json="$(cat)"
+  # Unlike pr-targets-issue, an EMPTY read is not a benign "nothing here": it means the health
+  # reads produced nothing at all, which is unknown, not healthy. Fail closed.
+  case "$json" in *[![:space:]]*) : ;; *) die "branch-health: empty input (health could not be read)" ;; esac
+
+  # One jq program decides, so the rules live in one place rather than being re-derived per caller.
+  # `-e` is deliberately NOT used: this program always prints a verdict, and its exit status is
+  # reserved for a genuine parse failure.
+  out="$(printf '%s' "$json" | jq -r --arg sha "$sha" --argjson wf "$workflows" '
+    if type != "object" then error("not an object") else . end
+    # BOTH keys must be PRESENT and be arrays. Defaulting a missing key to [] would convert a
+    # malformed or truncated health response into "two empty collections", which reads as `no-ci`
+    # and lets release-ready return `met` — fabricating a release from a response nobody could
+    # parse. `no-ci` must mean "explicitly nothing reported", never "the shape was unreadable".
+    | if (has("check_runs") | not) or (has("statuses") | not)
+      then error("check_runs and statuses are both required") else . end
+    | .check_runs as $runs
+    | .statuses  as $sts
+    | if ($runs | type) != "array" or ($sts | type) != "array" then error("check_runs/statuses must be arrays") else . end
+    # A check attached to a different commit is evidence about the WRONG build. Count it, and let
+    # it force `indeterminate` below — dropping it silently could leave zero checks and read as
+    # no-ci, inventing a pass out of a stale read.
+    # Compare SHAs case-INSENSITIVELY. GitHub returns them lowercase and the workflow sources the
+    # expected one from the same API, so today both sides always match — but a caller that
+    # obtained the SHA elsewhere (an operator, or the auto-cut driver in #73) would otherwise get
+    # a confident `indeterminate` from nothing but letter case. Fail-closed, yet still wrong.
+    # NOTE: no apostrophe anywhere in this jq program — it is a single-quoted shell string, and
+    # one stray apostrophe closes it and turns the whole file into a syntax error.
+    | ($sha | ascii_downcase) as $want
+    | [$runs[] | select((.head_sha // "" | ascii_downcase) == $want)] as $mine
+    # Derived, not re-selected: the match is total, so the two sets partition $runs. Writing the
+    # complement as its own filter would be a second home for the SHA rule (including the
+    # normalization) that has to track the first by hand.
+    | (($runs | length) - ($mine | length)) as $wrongsha
+    # "Finished" is defined ONCE, as a tag, and both buckets below read that tag. Writing the two
+    # as separate hand-maintained complementary predicates would be a standing hazard: widen one
+    # notion of "still running" and forget the other, and a check falls into NEITHER bucket and
+    # silently reads as GREEN.
+    | ([$mine[] | . + {_done: (((.status // "") == "completed") and ((.conclusion // null) != null))}]) as $tagged
+    # Not yet completed, or completed with no conclusion => still unknown.
+    | ([$tagged[] | select(._done | not)]) as $pending
+    | ([$sts[]    | select((.state // "") == "pending")]) as $stpending
+    # Only a FINISHED check can be bad. A still-running one has no conclusion, and scoring a null
+    # conclusion as "not success" would report a RUNNING build as red — turning every mid-CI run
+    # into a false `not-green` instead of the honest `indeterminate`.
+    | ([$tagged[] | select(._done) | select(.conclusion | IN("success","skipped","neutral") | not)]) as $bad
+    | ([$sts[]  | select((.state // "") | IN("success","pending") | not)]) as $stbad
+    # Check runs produced by GitHub ACTIONS, which is what the workflow inventory counts. Actions
+    # check runs carry app.slug == "github"; another Checks API app (a linter bot, a deploy
+    # provider) carries its own slug. A check run whose app cannot be identified is deliberately
+    # NOT counted as Actions — unknown provenance must not stand in as proof that Actions ran.
+    | ([$mine[] | select((.app.slug // "") == "github")]) as $actions
+    | (($mine | length) + ($sts | length)) as $total
+    | if   ($bad | length) > 0 or ($stbad | length) > 0 then
+             "not-green\nfailing: " + ([($bad[] | .name // "check"), ($stbad[] | .context // "status")] | join(", "))
+      elif ($pending | length) > 0 or ($stpending | length) > 0 then
+             "indeterminate\nstill running: " + ([($pending[] | .name // "check"), ($stpending[] | .context // "status")] | join(", "))
+      elif $wrongsha > 0 then
+             "indeterminate\n" + ($wrongsha|tostring) + " check(s) report a different commit than " + $sha
+      # Active workflows that produced no ACTIONS check run on this commit are unreported, and
+      # that is true no matter what anything else said. Testing this before `green` is the whole
+      # point: `$total` counts "somebody reported", not "everybody reported", so without this arm
+      # one unrelated green result would satisfy $total > 0 and turn a genuinely unreported Actions
+      # build into a confident `green` — a FALSE CUT. Two distinct providers can supply that
+      # masking result, so the check has to be about ACTIONS specifically, not about volume:
+      #   - a legacy commit status (one Vercel deploy), which $total counts; and
+      #   - a check run from a DIFFERENT Checks API app, which $total also counts and which a
+      #     plain "are there any check runs" test cannot tell apart from an Actions run.
+      # Adding an unrelated passing result must never convert a refusal into a release.
+      elif $wf > 0 and ($actions | length) == 0 then
+             "indeterminate\n" + ($wf|tostring) + " active workflow(s) exist but Actions has not reported on " + $sha
+      elif $total > 0 then "green"
+      elif $wf == 0 then "no-ci"
+      else "indeterminate\nno CI has reported on " + $sha
+      end
+  ' 2>/dev/null)" || die "branch-health: could not parse the health JSON (malformed input)"
+  [ -n "$out" ] || die "branch-health: could not parse the health JSON (malformed input)"
+  printf '%s\n' "$out"
+}
+
 # --- release-ready ------------------------------------------------------------------------
 # Print the readiness verdict for the active release milestone and exit 0 (a computed verdict
 # is a success; only bad input is an error). Arguments, in order:
@@ -165,11 +303,21 @@ cmd_pr_targets_issue() {
 #   <open-blockers>  open `release-blocker` issues IN the milestone. Used in blocker-mode.
 #   <open-issues>    open issues in the milestone (any label). Used in fallback mode.
 #   <canceled>       1 = a `release-blocker` in the milestone is closed as NOT_PLANNED.
+#   <health>         the default branch's live health, from `branch-health` (issue #78):
+#                    green | not-green | indeterminate | no-ci | skipped.
 #
 # BOTH counts are passed and the LIBRARY selects between them. The caller could equally well
 # pass one pre-selected count, but then the mode rule above would live in prose an agent
 # re-derives every run, and could only be checked by hand; taking both makes it executable and
 # lets scripts/check-roadmap.sh pin it.
+#
+# <health> IS REQUIRED, and that is the point. An optional argument defaulting to "skip" would be
+# fail-OPEN: every caller that was not updated would keep returning `met` without ever verifying
+# the build, which is the exact hole #78 was filed to close — and it would close silently. A
+# required argument breaks such a caller loudly instead. `skipped` remains available as an
+# EXPLICIT opt-out for a caller whose decision genuinely is not about shippable code (see
+# `baseline release roll`, which runs AFTER the cut and archives bookkeeping); the difference is
+# that the opt-out is written at the call site, where a reviewer can see it.
 #
 # Verdicts, in precedence order (first match wins — every input maps to exactly one):
 #   unarmed — the milestone has no requirements yet. Neither ready nor "roadmap complete";
@@ -179,7 +327,12 @@ cmd_pr_targets_issue() {
 #             Withheld for owner review: an abandoned requirement is an owner decision, not an
 #             automatic pass. Deterministic (same tracker state → same verdict every run) and
 #             self-clearing on a real tracker edit (reopen / unlabel / drop from the milestone).
-#   met     — armed, satisfied, nothing canceled → emit the release command.
+#   not-green     — requirements are satisfied but the default branch is RED. A /debug signal,
+#                   never a cut signal.
+#   indeterminate — requirements are satisfied but health could not be established. FAIL CLOSED:
+#                   an unknown build is treated as unshippable, never as green.
+#   met     — armed, satisfied, nothing canceled, and the branch is green (or there is no CI to
+#             check) → emit the release command.
 #
 # Precedence rationale for the combinations that are not self-evident:
 #   unarmed + canceled       → unarmed. An empty milestone has nothing to cut regardless.
@@ -190,14 +343,29 @@ cmd_pr_targets_issue() {
 #                              produce a canceled blocker, so this combination should not arise
 #                              from a real tracker; if a caller reports one anyway, withholding
 #                              is the safe read (never invent a cut from a contradictory input).
+#   canceled + red branch    → `held` WINS. Both withhold the cut, so the choice cannot ship
+#                              anything wrong either way; `held` is reported first because it has
+#                              a deterministic owner remedy (reopen / unlabel / drop) whereas red
+#                              CI clears on its own once the build is fixed. Ordering health after
+#                              the tracker verdicts also means health is only consulted at the
+#                              would-be-`met` boundary, so a repo with open blockers never blocks
+#                              on a CI read it does not need.
+#   unmet/unarmed + any health → the tracker verdict wins unchanged, so a repo that has not
+#                              adopted CI sees byte-identical behavior until it is actually
+#                              at the point of cutting.
 cmd_release_ready() {
-  [ "$#" -eq 5 ] || die "release-ready: needs exactly 5 args: <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1>"
-  local label_exists="$1" armed="$2" open_blockers="$3" open_issues="$4" canceled="$5" count
+  [ "$#" -eq 6 ] || die "release-ready: needs exactly 6 args: <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1> <health green|not-green|indeterminate|no-ci|skipped>"
+  local label_exists="$1" armed="$2" open_blockers="$3" open_issues="$4" canceled="$5" health="$6" count
   case "$label_exists" in 0|1) : ;; *) die "release-ready: <label-exists> must be 0 or 1 (got '$label_exists')" ;; esac
   case "$armed"        in 0|1) : ;; *) die "release-ready: <armed> must be 0 or 1 (got '$armed')" ;; esac
   case "$canceled"     in 0|1) : ;; *) die "release-ready: <canceled> must be 0 or 1 (got '$canceled')" ;; esac
   is_uint "$open_blockers" || die "release-ready: <open-blockers> must be a non-negative integer (got '$open_blockers')"
   is_uint "$open_issues"   || die "release-ready: <open-issues> must be a non-negative integer (got '$open_issues')"
+  # An UNRECOGNISED health value is an ERROR, never a pass. A typo must not fall through to `met`.
+  case "$health" in
+    green|not-green|indeterminate|no-ci|skipped) : ;;
+    *) die "release-ready: <health> must be one of green|not-green|indeterminate|no-ci|skipped (got '$health')" ;;
+  esac
 
   # THE MODE SELECTION — the one thing this argument is for.
   if [ "$label_exists" -eq 1 ]; then count="$open_blockers"; else count="$open_issues"; fi
@@ -205,6 +373,11 @@ cmd_release_ready() {
   if [ "$armed" -eq 0 ]; then printf 'unarmed\n'; return 0; fi
   if [ "$count" -gt 0 ]; then printf 'unmet\n'; return 0; fi
   if [ "$canceled" -eq 1 ]; then printf 'held\n'; return 0; fi
+  # Health gates ONLY the final step, so it is read at the would-be-`met` boundary and nowhere else.
+  case "$health" in
+    not-green)     printf 'not-green\n';     return 0 ;;
+    indeterminate) printf 'indeterminate\n'; return 0 ;;
+  esac
   printf 'met\n'
 }
 
@@ -516,6 +689,7 @@ main() {
   case "$sub" in
     -h|--help|help) usage; exit 0 ;;
     pr-targets-issue) cmd_pr_targets_issue "$@" ;;
+    branch-health)    cmd_branch_health "$@" ;;
     release-ready)    cmd_release_ready "$@" ;;
     release-counts)   cmd_release_counts "$@" ;;
     marker-title)     cmd_marker_title "$@" ;;

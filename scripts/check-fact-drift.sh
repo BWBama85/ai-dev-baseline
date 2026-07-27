@@ -175,6 +175,16 @@ fact release-blocker-label "fixed:release-blocker" -- \
 # auto-merge simply stops being armed and nobody notices. Pin the exact token.
 fact automerge-guard "fixed:automerge-ok" -- \
   scripts/lib/repo-settings.sh base/workflows/implement-issue.md docs/repo-settings.md
+
+# --- FACT: the branch-health predicate subcommand (#78) ----------------------
+# Same contract shape as `automerge-ok` above: the library IMPLEMENTS the green-branch predicate,
+# the workflow CALLS it before emitting a cut, and two docs DOCUMENT its verdicts. A rename in the
+# library alone would leave the workflow invoking a subcommand that no longer exists — and because
+# `/roadmap` hard-stops on a failed health read, the failure is loud but the DOCS would silently
+# keep describing a predicate nobody can run. Pin the exact token across all four.
+fact branch-health-predicate "fixed:branch-health" -- \
+  scripts/lib/roadmap-lib.sh base/workflows/roadmap.md \
+  docs/release-goal-convention.md docs/roadmap-acceptance.md
 # The order these two settings are written in is the whole safety property (#87): required checks
 # FIRST, then allow_auto_merge. Pin the setting name across the library that writes it, the doc
 # that explains the order, and the workflow step that depends on it having been done.

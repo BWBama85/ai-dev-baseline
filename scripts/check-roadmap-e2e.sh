@@ -74,7 +74,11 @@ case "$sub" in
   auth) exit 0 ;;
   repo)
     fail_if repo
-    cat "$F/repo" ;;
+    # A real JSON object, run through the caller's OWN --jq — so a snippet asking for
+    # `.nameWithOwner` and one asking for `.nameWithOwner, .defaultBranchRef.name` each get
+    # exactly what they requested, and a snippet that asks for a field the fixture lacks fails
+    # here instead of silently receiving the whole blob.
+    emit "$F/repo" ;;
   api)
     case "$url" in
       search/issues)
@@ -89,6 +93,17 @@ case "$sub" in
         lbl="${url##*/labels/}"
         grep -qx "$lbl" "$F/labels.txt" 2>/dev/null || { echo "gh: Not Found" >&2; exit 1; }
         printf '{"name":"%s"}\n' "$lbl" ;;
+      # --- #78 branch health: three distinct reads, each independently failable ---------------
+      # Ordered before the bare `repos/OWNER/REPO` arm below, which would otherwise swallow them.
+      */check-runs*)
+        fail_if checkruns
+        emit "$F/check-runs.json" ;;
+      */commits/*/status*)
+        fail_if commitstatus
+        emit "$F/commit-status.json" ;;
+      */actions/workflows*)
+        fail_if workflows
+        emit "$F/workflows.json" ;;
       *issues\?milestone=*)
         fail_if milestone
         emit "$F/milestone-issues.json" ;;
@@ -156,6 +171,7 @@ run_snippet() {
       LABEL=\${ADB_LABEL-release-blocker}
       BACKLOG_TITLE=\${ADB_BACKLOG:-Backlog}
       NO_AUTOFIX=\${ADB_NO_AUTOFIX:-0}
+      RELEASE_MODE=\${ADB_RELEASE_MODE:-0}
       $code
       $tail_code
     " 2>&1
@@ -168,7 +184,7 @@ run_snippet() {
 # Every scenario starts from fix_default, so no case inherits another's edits.
 fix_default() {
   rm -f "$FIX"/fail-* "$FIX/calls"
-  printf 'acme/widget\n'                 > "$FIX/repo"
+  printf '{"nameWithOwner":"acme/widget","defaultBranchRef":{"name":"main"}}\n' > "$FIX/repo"
   printf '31\n'                          > "$FIX/roadmap-nums"
   printf 'release-blocker\nroadmap\n'    > "$FIX/labels.txt"
   printf '[]\n'                          > "$FIX/open-prs.json"
@@ -177,7 +193,46 @@ fix_default() {
   printf '{"total_count":1}\n'           > "$FIX/search-milestone.json"
   printf '[]\n'                          > "$FIX/milestone-issues.json"
   printf '[{"number":8,"title":"Backlog"},{"number":9,"title":"Next release"}]\n' > "$FIX/milestones.json"
+  health_green
 }
+
+# --- #78 branch-health fixtures ---------------------------------------------------------------
+# The default is a GREEN default branch, so every pre-existing readiness case keeps asserting what
+# it always asserted (a `met` milestone is still `met`) and the health-specific cases below each
+# change exactly one thing.
+E2E_SHA=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
+# wf_arr <n> — n active workflow definitions, built without spawning jq: fix_default runs on every
+# scenario, so a process here is a process paid ~35 times for a constant.
+wf_arr() {
+  local i=0 out=""
+  while [ "$i" -lt "$1" ]; do
+    [ -z "$out" ] || out="$out,"
+    out="$out{\"state\":\"active\"}"
+    i=$((i+1))
+  done
+  printf '[%s]' "$out"
+}
+# health_set <check-runs-json> <statuses-json> <active-workflow-count>
+# The commit-status fixture carries `sha` because that is where the snippet resolves HEAD from —
+# one request answering both "which commit" and "what do the non-Actions providers say".
+health_set() {
+  printf '{"check_runs":%s}\n' "$1"                          > "$FIX/check-runs.json"
+  printf '{"sha":"%s","state":"x","statuses":%s}\n' "$E2E_SHA" "$2" > "$FIX/commit-status.json"
+  printf '{"workflows":%s}\n' "$(wf_arr "$3")"               > "$FIX/workflows.json"
+}
+# ck1 <status> <conclusion-json> [sha] [app-slug] — the single-check-run fixture the health cases
+# vary. The app slug defaults to `github`, which is what an Actions-produced check run carries and
+# what both the snippet and the predicate attribute against.
+ck1() { printf '[{"name":"ci","head_sha":"%s","status":"%s","conclusion":%s,"app":{"slug":"%s"}}]' \
+          "${3:-$E2E_SHA}" "$1" "$2" "${4:-github}"; }
+health_green()  { health_set "$(ck1 completed '"success"')" '[]' 1; }
+health_red()    { health_set "$(ck1 completed '"failure"')" '[]' 1; }
+health_running(){ health_set "$(ck1 in_progress null)"      '[]' 1; }
+health_stale()  { health_set "$(ck1 completed '"success"' deadbeefdeadbeefdeadbeef)" '[]' 1; }
+health_no_ci()  { health_set '[]' '[]' 0; }
+health_norun()  { health_set '[]' '[]' 2; }
+# A non-Actions provider reports only through the legacy status API.
+health_legacy_red() { health_set '[]' '[{"context":"vercel","state":"failure"}]' 0; }
 
 # limbo_issues <spec>... — an open-issue fixture where `<n>` is unmilestoned and `<n>:M` is in
 # milestone M. This is what step 4b selects on, so the fixture has to model it directly.
@@ -188,10 +243,14 @@ limbo_issues() {
       [ "$first" -eq 1 ] || printf ','
       first=0
       n="${spec%%:*}"; ms="${spec#*:}"
+      # A `!` suffix on the number labels the issue `release-blocker` — the #78 carve-out is
+      # keyed on labels, so a fixture that never emits a `labels` array cannot exercise it.
+      local labels='[]'
+      case "$n" in *'!') n="${n%!}"; labels='[{"name":"release-blocker"}]' ;; esac
       if [ "$ms" = "$spec" ]; then
-        printf '{"number":%s,"state":"open","title":"i%s","body":"","milestone":null}' "$n" "$n"
+        printf '{"number":%s,"state":"open","title":"i%s","body":"","labels":%s,"milestone":null}' "$n" "$n" "$labels"
       else
-        printf '{"number":%s,"state":"open","title":"i%s","body":"","milestone":{"title":"%s"}}' "$n" "$n" "$ms"
+        printf '{"number":%s,"state":"open","title":"i%s","body":"","labels":%s,"milestone":{"title":"%s"}}' "$n" "$n" "$labels" "$ms"
       fi
     done
     printf ']\n'
@@ -343,7 +402,12 @@ eq "$OUT" "$first" "two runs over an unchanged tracker produce identical reads"
 # release-ready — the places a working predicate still yields a wrong verdict.
 ms_issues() { printf '%s\n' "$1" > "$FIX/milestone-issues.json"; }
 readiness() {
-  run_snippet readiness 'printf "VERDICT=%s ARMED=%s BLK=%s OPEN=%s CANCELED=%s\n" "$VERDICT" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED"' >/dev/null
+  run_snippet readiness 'printf "VERDICT=%s ARMED=%s BLK=%s OPEN=%s CANCELED=%s HEALTH=%s WHY=%s\n" "$VERDICT" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH" "${HEALTH_WHY:-}"' >/dev/null
+}
+# A milestone whose requirements are DRAINED — the only state in which health can change the
+# verdict. Every health case below starts from it, so each asserts health and nothing else.
+ms_drained() {
+  ms_issues '[{"number":74,"state":"closed","state_reason":"completed","labels":[{"name":"release-blocker"}]}]'
 }
 
 fix_default; ms_issues '[]'
@@ -389,6 +453,101 @@ has "$OUT" "VERDICT=unarmed" "a milestone holding only the artifact is unarmed (
 fix_default; : > "$FIX/fail-milestone"
 readiness
 no "$RC_" "a failing milestone read hard-stops instead of reporting an empty release set"
+
+# ============================================================================================
+# 4b. BRANCH HEALTH end to end (#78) — the live reads, wired through the documented snippet
+# ============================================================================================
+# check-roadmap.sh pins the branch-health VERDICT TABLE. What is proven here is the wiring: that
+# the snippet resolves the default branch and its HEAD live, reads BOTH check APIs plus the
+# workflow inventory, and feeds the result to release-ready — the places a perfect predicate
+# still yields a wrong verdict.
+fix_default; ms_drained; health_green
+readiness
+eq "$RC_" 0            "the health pipeline runs clean"
+has "$OUT" "HEALTH=green"  "a green default branch resolves to green"
+has "$OUT" "VERDICT=met"   "...and a drained milestone on a green branch is the cut"
+
+fix_default; ms_drained; health_red
+readiness
+has "$OUT" "VERDICT=not-green" "a RED default branch withholds the cut (#78's headline case)"
+has "$OUT" "WHY=failing: ci"   "...and names the failing check, so the report is actionable"
+
+fix_default; ms_drained; health_running
+readiness
+has "$OUT" "VERDICT=indeterminate" "a still-running check fails closed, and is NOT reported as red"
+has "$OUT" "still running"         "...naming what it is waiting on"
+
+fix_default; ms_drained; health_stale
+readiness
+has "$OUT" "VERDICT=indeterminate" "a green check on a DIFFERENT commit is never this branch's green"
+
+fix_default; ms_drained; health_no_ci
+readiness
+has "$OUT" "HEALTH=no-ci"  "no checks AND no active workflows => no-ci"
+has "$OUT" "VERDICT=met"   "...and a repo with no CI is not deadlocked out of releasing (#24)"
+
+fix_default; ms_drained; health_norun
+readiness
+has "$OUT" "VERDICT=indeterminate" \
+  "active workflows that have not reported here => indeterminate, NOT no-ci (the discriminator)"
+
+# THE FALSE-CUT REGRESSION, end to end (adversarial-review find). One unrelated GREEN legacy
+# status must not suppress the workflow-inventory read, and must not satisfy the predicate on
+# behalf of workflows that reported nothing. Before the fix this emitted a release.
+fix_default; ms_drained; health_set '[]' '[{"context":"vercel","state":"success"}]' 3
+readiness
+has "$OUT" "VERDICT=indeterminate" \
+  "a green status from ONE provider never speaks for 3 workflows that have not reported"
+hasnt "$OUT" "VERDICT=met" "...so adding an unrelated passing status cannot turn a refusal into a cut"
+
+# The SECOND masking provider (bot-review find): a check run from a different Checks API app lands
+# in `check_runs` too, so gating the inventory read on "any check runs" would skip it and let
+# `$total > 0` return green while Actions reported nothing. Attribution is by `app.slug`.
+fix_default; ms_drained; health_set "$(ck1 completed '"success"' "$E2E_SHA" vercel)" '[]' 3
+readiness
+has "$OUT" "VERDICT=indeterminate" \
+  "a green check run from ANOTHER Checks app never speaks for 3 silent Actions workflows"
+has "$OUT" "Actions has not reported" "...and the reason names Actions specifically"
+# Same fixture, no active workflows: that app IS the repo's CI, so it legitimately reports green.
+fix_default; ms_drained; health_set "$(ck1 completed '"success"' "$E2E_SHA" vercel)" '[]' 0
+readiness
+has "$OUT" "VERDICT=met" "...while with 0 active workflows that same app is the repo's CI"
+
+fix_default; ms_drained; health_legacy_red
+readiness
+has "$OUT" "VERDICT=not-green" \
+  "a non-Actions provider reporting failure through the legacy status API still withholds the cut"
+
+# Health is only consulted at the would-be-met boundary: with an open blocker the verdict is
+# `unmet` and the snippet must not even resolve health (so a repo mid-build never blocks on CI).
+fix_default; health_red
+ms_issues '[{"number":78,"state":"open","state_reason":null,"labels":[{"name":"release-blocker"}]}]'
+readiness
+has "$OUT" "VERDICT=unmet"     "an open blocker outranks a red branch"
+has "$OUT" "HEALTH=skipped"    "...and health is not read at all while requirements remain"
+
+# EVERY health read is separately checked. A failed read must hard-stop — falling through would
+# leave the health variable empty, and an empty health argument is exactly what must never be
+# allowed to reach `met`.
+for kind in repo checkruns commitstatus; do
+  fix_default; ms_drained; health_green; : > "$FIX/fail-$kind"
+  readiness
+  no "$RC_" "a failing '$kind' read hard-stops instead of emitting a cut on unknown health"
+  hasnt "$OUT" "VERDICT=met" "...and never reports met"
+done
+# The workflow inventory is read ONLY when nothing reported on the commit, so its failure has to
+# be injected against a fixture that reaches that branch — with checks present the read never
+# happens, and asserting a hard stop there would pass for the wrong reason.
+fix_default; ms_drained; health_no_ci; : > "$FIX/fail-workflows"
+readiness
+no "$RC_" "a failing workflow-inventory read hard-stops rather than counting 0 and passing as no-ci"
+hasnt "$OUT" "VERDICT=met" "...and never reports met"
+
+# The inventory read is SKIPPED entirely when checks already answered — a green branch must not
+# pay for a read whose result the predicate cannot consult.
+fix_default; ms_drained; health_green; : > "$FIX/fail-workflows"
+readiness
+has "$OUT" "VERDICT=met" "with checks present the workflow inventory is never read (its failure cannot matter)"
 
 # ============================================================================================
 # 5. DESTINATION GAUGE (acceptance §8)
@@ -453,6 +612,46 @@ has "$OUT" "fixed: #44 → milestone Backlog (was unmilestoned)" "...every one o
 hasnt "$OUT" "#12" "an issue already in a milestone is untouched"
 hasnt "$OUT" "fixed: #31" "the roadmap artifact is never moved into the backlog"
 eq "$(grep -c 'issue edit' "$FIX/calls" 2>/dev/null || echo 0)" 2 "exactly two tracker writes, one per repaired issue"
+
+# --- 7a-bis. #78: an unmilestoned `release-blocker` is WARNED about, never swept --------------
+# The carve-out was previously pinned only by prose greps, so deleting the `| not` from the LIMBO
+# filter — which inverts the sweep and manufactures exactly the silent-ignore #78 prevents — would
+# have passed every executed test. This drives it end to end: the labeled issue must produce NO
+# tracker write, while an unlabeled sibling in the same run is still repaired.
+fix_default
+limbo_issues 5 '44!' 31
+ADB_ROADMAP_NUM=31 ADB_RELEASE_MODE=1 run_snippet autofix-unmilestoned >/dev/null
+eq "$RC_" 0 "the autofix snippet runs clean with a stray blocker present"
+has "$OUT" "WARN: #44 is an open release-blocker in NO milestone" \
+  "an unmilestoned release-blocker is surfaced, not buried in Backlog"
+hasnt "$OUT" "fixed: #44" "...and is NOT swept"
+has "$OUT" "fixed: #5 → milestone Backlog (was unmilestoned)" \
+  "...while an unlabeled unmilestoned issue in the same run IS still repaired"
+# `grep -c` prints 0 AND exits 1 on no-match, so the `|| echo 0` idiom used above would emit TWO
+# lines here (the file exists, since #5 was edited). Count with wc, which always exits 0.
+eq "$(grep 'issue edit 44' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 \
+  "no tracker write touches the stray blocker (the sweep would have made readiness count 0)"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 1 "exactly one write: the unlabeled issue"
+# The artifact is excluded even when it carries the label, so a labeled roadmap issue is silent.
+fix_default
+limbo_issues '31!'
+ADB_ROADMAP_NUM=31 ADB_RELEASE_MODE=1 run_snippet autofix-unmilestoned >/dev/null
+eq "$OUT" "" "a labeled roadmap artifact is neither swept nor warned about"
+
+# CLASSIC MODE must stay byte-identical (bot-review find). The carve-out is overlay behavior, so
+# with RELEASE_MODE unset the SAME fixture takes the plain sweep: the labeled issue is repaired
+# like any other unmilestoned issue, and nothing warns about a release milestone the repo has not
+# adopted. A repo that ran `baseline release init` (which creates the label) but has not yet added
+# the marker sits in exactly this state.
+fix_default
+limbo_issues 5 '44!' 31
+ADB_ROADMAP_NUM=31 run_snippet autofix-unmilestoned >/dev/null
+eq "$RC_" 0 "classic mode runs clean with a labeled issue present"
+has "$OUT" "fixed: #44 → milestone Backlog (was unmilestoned)" \
+  "in CLASSIC mode a release-blocker label is just a label — the issue is swept normally"
+hasnt "$OUT" "WARN:" "...and no release-overlay warning is printed in classic mode"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 2 \
+  "...so BOTH unmilestoned issues are repaired, exactly as before the overlay existed"
 
 # --- 7b. IDEMPOTENT: the second run finds nothing (#109's acceptance) ------------------------
 # Model the post-repair tracker — which is what the first run produced — and re-run.

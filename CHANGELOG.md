@@ -9,6 +9,38 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **Release readiness now verifies the default branch is green** (#78). A drained checklist said
+  the *requirements* were done; it said nothing about whether the code was **shippable**, so on a
+  repo that deploys on cut `/roadmap` could announce "✅ Release requirements met — cutting" while
+  `main` was red. Readiness gains a second, live-verified condition, computed by a new shared
+  predicate `roadmap-lib.sh branch-health` and consulted **only** at the would-be-`met` boundary
+  (a repo with open blockers never pays for a CI read it cannot act on).
+  - **Two new verdicts.** `not-green` — requirements met but the branch is red, naming the failing
+    check; the action is `/debug`, not `/implement-issue`. `indeterminate` — health could not be
+    established (a check still running, or CI that has never reported on this commit); this
+    **fails closed**, because an unverifiable build is treated as unshippable, never as green.
+  - **Anchored to the default branch's HEAD commit**, not to `gh run list --branch … --limit 1`,
+    which lists runs newest-first across all workflows and can answer with an unrelated scheduled
+    workflow, a run for an *older* commit, or one workflow's success while a sibling is red.
+  - **Reads both check APIs.** The Checks API (GitHub Actions and check-run apps) *and* the legacy
+    commit-status API (CircleCI, Vercel, Cloudflare, …) — reading one silently ignores whole CI
+    providers. Check runs are attributed by `app.slug`, so a result from another app cannot stand
+    in as proof that Actions reported. `skipped`/`neutral` are not failures, matching how GitHub
+    scores a required check.
+  - **A repo with no CI is never deadlocked** (#24): with no active workflows and nothing reported,
+    health is skipped and the cut is emitted — saying the check was skipped rather than claiming a
+    branch is green when it was never checked.
+  - **`release-ready` takes a required sixth `<health>` argument.** Required, not defaulted: a
+    default would be fail-**open**, letting an un-updated caller keep returning `met` without ever
+    verifying the build. `baseline release roll` passes `skipped` explicitly — it is post-cut
+    bookkeeping that ships nothing, and gating it on live CI would strand the terminating loop the
+    rollover contract (#74) exists to protect.
+  - **An unmilestoned open `release-blocker` is no longer swept into `Backlog`** while
+    release-readiness mode is active. That would drop a declared must-have out of the set readiness
+    counts, so the next run would compute `met` and cut with an abandoned blocker parked in the
+    backlog — the autofix manufacturing the silent-ignore this change exists to prevent. It prints
+    a `WARN:` line instead; it warns, it does not gate. In classic mode the carve-out is inert and
+    the sweep is byte-identical.
 - **`/roadmap` fixes the unambiguous tracker-hygiene defects it finds** (#109). The skill reported
   problems it was fully capable of repairing, so each one became a manual chore or a flag that
   reprinted until someone acted. A new step 4b repairs the closed list — an open issue in no

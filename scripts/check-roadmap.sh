@@ -52,9 +52,35 @@ targets() {
   printf '%s' "$json" | bash "$RL" pr-targets-issue "$n" "$slug" >/dev/null 2>&1
   printf '%s' "$?"
 }
-# ready <5 args> — run the readiness predicate, echo its stdout verdict.
-# Args: <label-exists> <armed> <open-blockers> <open-issues> <canceled>
-ready() { bash "$RL" release-ready "$1" "$2" "$3" "$4" "$5" 2>/dev/null; }
+# ready <5 args> [health] — run the readiness predicate, echo its stdout verdict.
+# Args: <label-exists> <armed> <open-blockers> <open-issues> <canceled> [health]
+# `health` defaults to `green` so the TRACKER-precedence table below reads exactly as it did
+# before #78 added the sixth input — those cases are about counts, not CI. The health cases pass
+# it explicitly. (The REQUIRED arity of the real subcommand is pinned separately, in 2g.)
+ready() { bash "$RL" release-ready "$1" "$2" "$3" "$4" "$5" "${6:-green}" 2>/dev/null; }
+# health <json> [sha] [workflows] — run branch-health, echo line 1 (the enum).
+health() {
+  printf '%s' "$1" | bash "$RL" branch-health "${2:-$SHA}" "${3:-1}" 2>/dev/null | sed -n '1p'
+}
+# health_why <json> [sha] [workflows] — line 2 (the reason), for the cases that must explain.
+health_why() {
+  printf '%s' "$1" | bash "$RL" branch-health "${2:-$SHA}" "${3:-1}" 2>/dev/null | sed -n '2p'
+}
+# run_health <args...> — stdin-taking capture, mirroring `run` for the non-stdin subcommands.
+run_health() { OUT="$(printf '%s' "$1" | bash "$RL" branch-health "${@:2}" 2>&1)"; RC_=$?; }
+# ck <name> <sha> <status> <conclusion> [app-slug] — one check-run object.
+# The app slug defaults to `github` (GitHub Actions), because that is what an Actions-produced
+# check run carries and what the predicate attributes against. Pass a different slug to model
+# another Checks API app (a linter bot, a deploy provider).
+ck() { printf '{"name":"%s","head_sha":"%s","status":"%s","conclusion":%s,"app":{"slug":"%s"}}' \
+         "$1" "$2" "$3" "$(if [ "$4" = "null" ]; then printf 'null'; else printf '"%s"' "$4"; fi)" "${5:-github}"; }
+# st <context> <state> — one legacy commit-status object.
+st() { printf '{"context":"%s","state":"%s"}' "$1" "$2"; }
+# hj <check-objs-csv> <status-objs-csv> — the {check_runs,statuses} document branch-health reads.
+hj() { printf '{"check_runs":[%s],"statuses":[%s]}' "$1" "$2"; }
+
+SHA=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
+OTHER_SHA=999999999999999999999999999999999999abcd
 # run <subcommand> <args...> — capture combined output + status into OUT/RC_ (one capture idiom
 # for every non-stdin call, so `2>&1` handling can't drift between call sites).
 run() { OUT="$(bash "$RL" "$@" 2>&1)"; RC_=$?; }
@@ -245,30 +271,51 @@ eq "$(ready 1 1 5 0 0)" unmet "an unlisted tuple still lands on exactly one verd
 # --- 2g. FAIL-CLOSED on bad readiness input -------------------------------------------------
 # A fabricated "met" from a bad count would cut a release that isn't ready — the worst failure
 # mode in the whole convention. Every malformed argument must exit >=2 with NO verdict printed.
-run release-ready 1 1 x 0 0;   eq "$RC_" 2 "non-numeric blocker count is an ERROR"; has "$OUT" "non-negative integer" "count error names the field"
-run release-ready 1 1 0 x 0;   eq "$RC_" 2 "non-numeric issue count is an ERROR"
-run release-ready 1 1 -1 0 0;  eq "$RC_" 2 "negative count is an ERROR"
-run release-ready 2 1 0 0 0;   eq "$RC_" 2 "label-exists=2 is an ERROR";  has "$OUT" "must be 0 or 1" "flag error names the constraint"
-run release-ready 1 2 0 0 0;   eq "$RC_" 2 "armed=2 is an ERROR"
-run release-ready 1 1 0 0 2;   eq "$RC_" 2 "canceled=2 is an ERROR"
-run release-ready 1 1 0 0;     eq "$RC_" 2 "too few args is an ERROR";    has "$OUT" "exactly 5" "arity error states the arity"
-run release-ready 1 1 0 0 0 0; eq "$RC_" 2 "too many args is an ERROR"
+run release-ready 1 1 x 0 0 green;   eq "$RC_" 2 "non-numeric blocker count is an ERROR"; has "$OUT" "non-negative integer" "count error names the field"
+run release-ready 1 1 0 x 0 green;   eq "$RC_" 2 "non-numeric issue count is an ERROR"
+run release-ready 1 1 -1 0 0 green;  eq "$RC_" 2 "negative count is an ERROR"
+run release-ready 2 1 0 0 0 green;   eq "$RC_" 2 "label-exists=2 is an ERROR";  has "$OUT" "must be 0 or 1" "flag error names the constraint"
+run release-ready 1 2 0 0 0 green;   eq "$RC_" 2 "armed=2 is an ERROR"
+run release-ready 1 1 0 0 2 green;   eq "$RC_" 2 "canceled=2 is an ERROR"
+run release-ready 1 1 0 0 green;     eq "$RC_" 2 "too few args is an ERROR";    has "$OUT" "exactly 6" "arity error states the arity"
+run release-ready 1 1 0 0 0 green x; eq "$RC_" 2 "too many args is an ERROR"
+
+# #78: the health argument is REQUIRED, and that is a deliberate fail-LOUD choice. An optional
+# sixth argument defaulting to "skip" would let every un-updated caller keep returning `met`
+# without ever verifying the build — reopening the hole #78 closed, silently. The old 5-argument
+# call must therefore be an ERROR, never a legacy-compatible pass.
+run release-ready 1 1 0 0 0
+eq "$RC_" 2 "the pre-#78 five-argument call is an ERROR (no silent fail-open)"
+hasnt "$OUT" "met" "...and prints no verdict"
+# An unrecognised health value must never fall through to `met`.
+for bad_health in GREEN red yes '' 'green x'; do
+  run release-ready 1 1 0 0 0 "$bad_health"
+  eq "$RC_" 2 "health='$bad_health' is an ERROR"
+  hasnt "$OUT" "met" "health='$bad_health' prints no 'met' verdict"
+done
 
 # A count too wide for a shell integer must ERROR, never fall through. `[ "$n" -gt 0 ]` fails on
 # such a value, and because that test guards the `unmet` branch the failure would print `met` —
 # inventing a release cut from a value the shell could not evaluate. (Adversarial-review find.)
-run release-ready 1 1 99999999999999999999 0 0
+# NOTE: every tuple below carries the SIXTH (health) argument. Without it the call dies on ARITY
+# before it ever reaches the validator under test, so the assertion would still pass while proving
+# nothing — which is exactly what happened when #78 bumped the arity 5 -> 6 and these were missed.
+run release-ready 1 1 99999999999999999999 0 0 green
 eq "$RC_" 2 "an over-wide blocker count is an ERROR, not a fabricated verdict"
 hasnt "$OUT" "met" "an over-wide count never yields 'met'"
-run release-ready 0 1 0 99999999999999999999 0
+has "$OUT" "non-negative integer" "...and it fails on the COUNT, not on arity"
+run release-ready 0 1 0 99999999999999999999 0 green
 eq "$RC_" 2 "an over-wide issue count is an ERROR in fallback mode too"
 hasnt "$OUT" "met" "an over-wide fallback count never yields 'met'"
+has "$OUT" "non-negative integer" "...and it fails on the COUNT, not on arity"
 # 18 digits is inside the supported range and must still compute normally.
 eq "$(ready 1 1 999999999999999999 0 0)" unmet "an 18-digit count still evaluates (bound is not over-tight)"
 
 # Every errored readiness call must print no verdict — assert it per call, not just on the last
 # one (the previous single check only inspected whichever `run` happened to be most recent).
-for bad_args in "1 1 x 0 0" "2 1 0 0 0" "1 1 0 0 2" "1 1 0 0"; do
+# The first three are 6-argument tuples so they reach their respective validators; the last is
+# deliberately short, to keep the sub-arity path covered too.
+for bad_args in "1 1 x 0 0 green" "2 1 0 0 0 green" "1 1 0 0 2 green" "1 1 0 0"; do
   # shellcheck disable=SC2086  # deliberate word-split of the fixture arg string
   run release-ready $bad_args
   eq "$RC_" 2 "[$bad_args] is an ERROR"
@@ -276,6 +323,158 @@ for bad_args in "1 1 x 0 0" "2 1 0 0 0" "1 1 0 0 2" "1 1 0 0"; do
   hasnt "$OUT" "unmet"   "[$bad_args] prints no 'unmet' verdict"
   hasnt "$OUT" "unarmed" "[$bad_args] prints no 'unarmed' verdict"
 done
+
+# --- 2i. #78: branch health gates the FINAL step, and only the final step -------------------
+# The whole point of the issue: a drained checklist is not a shippable build.
+eq "$(ready 1 1 0 0 0 green)"         met           "0 blockers + green branch => met (the cut)"
+eq "$(ready 1 1 0 0 0 not-green)"     not-green     "0 blockers + RED branch => not-green, never a cut"
+eq "$(ready 1 1 0 0 0 indeterminate)" indeterminate "0 blockers + unknown health => fail closed"
+eq "$(ready 1 1 0 0 0 no-ci)"         met           "a repo with no CI is not deadlocked (#24)"
+eq "$(ready 1 1 0 0 0 skipped)"       met           "an explicit opt-out (release roll) still reaches met"
+
+# Health is consulted ONLY at the would-be-met boundary — a repo still building never has its
+# verdict changed by CI, so /roadmap need not read CI at all while blockers remain.
+eq "$(ready 1 1 2 0 0 not-green)"     unmet   "open blockers outrank a red branch (still building)"
+eq "$(ready 1 1 2 0 0 indeterminate)" unmet   "open blockers outrank unknown health"
+eq "$(ready 0 1 0 3 0 not-green)"     unmet   "fallback mode: open issues outrank a red branch"
+eq "$(ready 1 0 0 0 0 not-green)"     unarmed "unarmed outranks a red branch (nothing to cut)"
+eq "$(ready 1 0 0 0 0 indeterminate)" unarmed "unarmed outranks unknown health"
+
+# held vs health: BOTH withhold the cut, so neither ordering can ship anything wrong. `held` is
+# reported first because it has a deterministic owner remedy (reopen / unlabel / drop), whereas
+# red CI clears itself once the build is fixed. Pinned so the precedence cannot drift silently.
+eq "$(ready 1 1 0 0 1 not-green)"     held "a canceled blocker outranks a red branch (held first)"
+eq "$(ready 1 1 0 0 1 indeterminate)" held "a canceled blocker outranks unknown health"
+eq "$(ready 1 1 0 0 1 green)"         held "...and still holds on a green branch"
+
+# ============================================================================================
+# 2j. BRANCH HEALTH (#78) — "is the default branch green" as a pure, testable decision
+# ============================================================================================
+# Anchored to a COMMIT, never to a run list. `gh run list --branch X --limit 1` can answer with an
+# unrelated scheduled workflow, a run for an older commit, or one workflow's success while a
+# sibling is red — which is why the predicate takes the expected HEAD sha and evaluates the checks
+# attached to it.
+eq "$(health "$(hj "$(ck ci "$SHA" completed success)" '')")" green "one successful check => green"
+eq "$(health "$(hj "$(ck a "$SHA" completed success),$(ck b "$SHA" completed success)" '')")" green \
+   "every check successful => green"
+eq "$(health "$(hj "$(ck a "$SHA" completed success)" "$(st vercel success)")")" green \
+   "checks AND legacy statuses both green => green"
+
+# A red build is red no matter how many siblings passed.
+eq "$(health "$(hj "$(ck a "$SHA" completed success),$(ck b "$SHA" completed failure)" '')")" not-green \
+   "one failing check among successes => not-green (the #78 headline case)"
+has "$(health_why "$(hj "$(ck a "$SHA" completed success),$(ck b "$SHA" completed failure)" '')")" "b" \
+   "...and it NAMES the failing check (a /debug signal must be actionable)"
+for bad in failure timed_out cancelled action_required startup_failure stale; do
+  eq "$(health "$(hj "$(ck ci "$SHA" completed "$bad")" '')")" not-green "conclusion '$bad' is not green"
+done
+# GitHub itself scores these as passing a required check; treating them as red would wedge every
+# repo with conditional jobs.
+for okc in success skipped neutral; do
+  eq "$(health "$(hj "$(ck ci "$SHA" completed "$okc")" '')")" green "conclusion '$okc' does not fail the branch"
+done
+# A non-Actions provider reports through the legacy status API only. Reading one API and not the
+# other would silently ignore a whole CI provider.
+eq "$(health "$(hj '' "$(st vercel failure)")")" not-green "a failing legacy status alone => not-green"
+eq "$(health "$(hj '' "$(st vercel error)")")"   not-green "a legacy 'error' state => not-green"
+
+# A RUNNING build is unknown, not red — scoring a null conclusion as "not success" would report
+# every mid-CI run as a false failure. (Caught by smoke-testing the first implementation.)
+eq "$(health "$(hj "$(ck ci "$SHA" in_progress null)" '')")" indeterminate "an in-progress check => indeterminate"
+eq "$(health "$(hj "$(ck ci "$SHA" queued null)" '')")"      indeterminate "a queued check => indeterminate"
+eq "$(health "$(hj "$(ck ci "$SHA" completed null)" '')")"   indeterminate "completed with NO conclusion => indeterminate"
+eq "$(health "$(hj '' "$(st vercel pending)")")"             indeterminate "a pending legacy status => indeterminate"
+# ...but a check that has already FAILED settles it: a pending sibling cannot un-fail it.
+eq "$(health "$(hj "$(ck a "$SHA" completed failure),$(ck b "$SHA" in_progress null)" '')")" not-green \
+   "a failure plus a still-running sibling => not-green (the failure is decisive)"
+
+# STALE EVIDENCE. A check attached to a different commit describes the wrong build. Dropping it
+# silently could leave zero checks and read as `no-ci` — inventing a pass out of a stale read.
+eq "$(health "$(hj "$(ck ci "$OTHER_SHA" completed success)" '')")" indeterminate \
+   "a green check on a DIFFERENT commit is never this branch's green"
+has "$(health_why "$(hj "$(ck ci "$OTHER_SHA" completed success)" '')")" "different commit" \
+   "...and says so"
+
+# THE no-ci / indeterminate DISCRIMINATOR — the one #78 could not resolve from `gh run list`,
+# which returns [] for BOTH. The active-workflow count is what separates them.
+eq "$(health "$(hj '' '')" "$SHA" 0)" no-ci "no checks AND no active workflows => no-ci (skip, per #24)"
+eq "$(health "$(hj '' '')" "$SHA" 3)" indeterminate \
+   "no checks BUT 3 active workflows => indeterminate, NOT no-ci (fail closed)"
+has "$(health_why "$(hj '' '')" "$SHA" 3)" "Actions has not reported" "...and explains the difference"
+
+# THE FALSE-CUT REGRESSION (adversarial-review find). `$total` counts "somebody reported", not
+# "everybody reported". Without an explicit unreported-workflows arm ahead of `green`, ONE
+# unrelated passing legacy status satisfies `$total > 0` and converts a genuinely unreported
+# Actions build into a confident `green` — i.e. adding a green status to a repo whose CI has not
+# run turns a correct refusal into a RELEASE. Fail-open, the one direction that matters.
+eq "$(health "$(hj '' "$(st vercel success)")" "$SHA" 3)" indeterminate \
+   "3 active workflows + no check runs + ONE green legacy status => still indeterminate, never green"
+has "$(health_why "$(hj '' "$(st vercel success)")" "$SHA" 3)" "Actions has not reported" \
+   "...naming the unreported workflows rather than the status that did report"
+# The same shape with NO active workflows is the legitimate non-Actions repo: the status IS the CI.
+eq "$(health "$(hj '' "$(st vercel success)")" "$SHA" 0)" green \
+   "...but with 0 active workflows a green legacy status IS the branch's green (non-Actions CI)"
+# And an ACTIONS check run present means the workflows did report — inventory cannot override it.
+eq "$(health "$(hj "$(ck ci "$SHA" completed success)" "$(st vercel success)")" "$SHA" 3)" green \
+   "an Actions check run present => reported, whatever the inventory count says"
+
+# THE SECOND MASKING PROVIDER (bot-review find, same class as the one above). A check run from a
+# DIFFERENT Checks API app also lands in `check_runs`, so a plain "are there any check runs" test
+# cannot tell it apart from an Actions run: the inventory read would be skipped and `$total > 0`
+# would return `green` while Actions had reported nothing. Attribution is by `app.slug`.
+eq "$(health "$(hj "$(ck vercel "$SHA" completed success vercel)" '')" "$SHA" 3)" indeterminate \
+   "3 active workflows + a green check run from ANOTHER app => still indeterminate, never green"
+has "$(health_why "$(hj "$(ck vercel "$SHA" completed success vercel)" '')" "$SHA" 3)" "Actions has not reported" \
+   "...and says Actions specifically has not reported"
+eq "$(health "$(hj "$(ck vercel "$SHA" completed success vercel)" '')" "$SHA" 0)" green \
+   "...while with 0 active workflows that same app IS the repo's CI"
+# Unknown provenance must not stand in as proof Actions ran (fail closed on a missing app field).
+eq "$(health "$(printf '{"check_runs":[{"name":"ci","head_sha":"%s","status":"completed","conclusion":"success"}],"statuses":[]}' "$SHA")" "$SHA" 3)" \
+   indeterminate "a check run with no identifiable app does not prove Actions reported"
+# A FAILING non-Actions check still fails the branch — attribution gates `green`, never `not-green`.
+eq "$(health "$(hj "$(ck vercel "$SHA" completed failure vercel)" '')" "$SHA" 3)" not-green \
+   "a failing check from another app is still red (attribution never rescues a failure)"
+
+# FAIL-CLOSED on every unreadable input. An unparseable health read must never be `green`.
+# A MISSING collection is an error, not an empty one (bot-review find). `{}` previously defaulted
+# both keys to [] and returned `no-ci`, which release-ready maps to `met` — fabricating a release
+# out of a health response nobody could parse. `no-ci` must mean "explicitly nothing reported".
+for bad_json in '' 'not json' '[]' '"str"' '{"check_runs":{}}' '{"statuses":5}' \
+                '{}' '{"check_runs":[]}' '{"statuses":[]}' '{"check_runs":null,"statuses":null}' \
+                '{"check_runs":[],"statuses":null}'; do
+  run_health "$bad_json" "$SHA" 1
+  eq "$RC_" 2 "malformed health input [${bad_json:-<empty>}] is an ERROR"
+  hasnt "$OUT" "green" "[${bad_json:-<empty>}] never yields a green verdict"
+  hasnt "$OUT" "no-ci" "[${bad_json:-<empty>}] never yields no-ci (which would reach 'met')"
+done
+# ...and with BOTH keys explicitly present and empty, `no-ci` is the correct, intended answer.
+eq "$(health "$(hj '' '')" "$SHA" 0)" no-ci "two EXPLICIT empty arrays are a real no-ci, not an error"
+run_health "$(hj '' '')" "" 1;      eq "$RC_" 2 "an empty sha is an ERROR (never compare against nothing)"
+run_health "$(hj '' '')" "zzz" 1;   eq "$RC_" 2 "a non-hex sha is an ERROR"
+run_health "$(hj '' '')" "abc" 1;   eq "$RC_" 2 "a too-short sha is an ERROR"
+run_health "$(hj '' '')" "$SHA" x;  eq "$RC_" 2 "a non-numeric workflow count is an ERROR"
+run_health "$(hj '' '')" "$SHA" -1; eq "$RC_" 2 "a negative workflow count is an ERROR"
+run_health "$(hj '' '')" "$SHA";    eq "$RC_" 2 "too few args is an ERROR"; has "$OUT" "exactly 2" "arity error states the arity"
+run_health "$(hj '' '')" "$SHA" 1 EXTRA; eq "$RC_" 2 "extra args are an ERROR"
+
+# SHA comparison is case-insensitive. GitHub returns lowercase and the workflow sources the
+# expected sha from the same API, so both sides match today — but a caller that got the sha
+# elsewhere (an operator, or #73's auto-cut driver) must not be told `indeterminate` by nothing
+# but letter case. (Self-review find.)
+UPPER_SHA="$(printf '%s' "$SHA" | tr 'a-f' 'A-F')"
+eq "$(health "$(hj "$(ck ci "$SHA" completed success)" '')" "$UPPER_SHA")" green \
+   "an UPPERCASE expected sha still matches a lowercase check sha"
+eq "$(health "$(hj "$(ck ci "$UPPER_SHA" completed success)" '')" "$SHA")" green \
+   "...and the reverse (case never fabricates stale evidence)"
+
+# A check-run with NO head_sha cannot be attributed to this commit, so it is stale evidence, not
+# a silent drop — dropping it could leave zero checks and read as `no-ci`, inventing a pass.
+eq "$(health "$(printf '{"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}],"statuses":[]}')")" \
+   indeterminate "a check-run with no head_sha is stale evidence, never green"
+
+# Determinism: a pure function of its inputs, so /roadmap's "same tracker => same emit" holds.
+fx_h="$(hj "$(ck a "$SHA" completed success),$(ck b "$SHA" completed failure)" "$(st vercel success)")"
+eq "$(health "$fx_h")$(health "$fx_h")" "not-greennot-green" "branch-health is deterministic"
 
 # --- 2g-bis. arity is enforced on BOTH subcommands ------------------------------------------
 # pr-targets-issue previously ignored extra arguments; a caller that appended a stray field
@@ -308,6 +507,16 @@ has "$wf" '{{ROADMAP_LIB}} pr-targets-issue' \
   "workflow delegates in-flight targeting to the shared predicate"
 has "$wf" '{{ROADMAP_LIB}} release-ready' \
   "workflow delegates release readiness to the shared predicate"
+# #78 — the health gate must stay delegated and stay anchored to a commit.
+has "$wf" '{{ROADMAP_LIB}} branch-health' \
+  "workflow delegates branch health to the shared predicate"
+has "$wf" 'an unreadable build is never green' \
+  "workflow hard-stops when branch-health cannot answer (fail-closed)"
+# The autofix must never sweep a declared must-have into the backlog (#78's guard).
+has "$wf" 'index("release-blocker") | not' \
+  "step 4b excludes an unmilestoned release-blocker from the Backlog sweep"
+has "$wf" 'WARN: #$n is an open release-blocker in NO milestone' \
+  "...and surfaces it as a non-retirable warning instead"
 has "$wf" 'in-flight check failed' \
   "workflow hard-stops the run when the targeting predicate cannot answer (fail-closed)"
 has "$wf" 'A failed targeting check is a hard stop, never a negative.' \
@@ -361,7 +570,7 @@ has "$gauge_block" 'LABEL="${LABEL:-}"' \
 has "$gauge_block" '[ -n "$LABEL" ] &&' \
   "...and skips the probe entirely when none is configured"
 readiness_block="$(wf_snippet readiness)"
-has "$readiness_block" 'REPO=' \
+has "$readiness_block" 'gh repo view' \
   "the readiness snippet resolves \$REPO itself (it may run as its own shell invocation)"
 has "$readiness_block" 'M_NUM:?' \
   "...and fails loud on an unresolved milestone number rather than addressing milestone=''"
@@ -372,6 +581,54 @@ has "$readiness_block" 'M_ISSUES=' \
   "the milestone READ is captured and checked on its own status, not through a pipeline"
 has "$readiness_block" 'could not read milestone' \
   "...and a failed read reports as a failed read, never as an empty release set"
+
+# --- #78: the health reads, asserted against the EXECUTABLE block ---------------------------
+# Scoped to the snippet, not the whole document: the prose deliberately QUOTES `gh run list
+# --branch … --limit 1` to explain why it is unsound, so a document-wide `hasnt` would fail on
+# the explanation itself. What must never regress is the executable code.
+hasnt "$readiness_block" 'gh run list' \
+  "the readiness snippet does NOT use the run-list green test (it can answer with an unrelated workflow or an older commit)"
+has "$readiness_block" 'commits/$HEAD_SHA/check-runs' \
+  "health is read from the Checks API for the resolved HEAD commit"
+has "$readiness_block" 'commits/$DEFAULT_BRANCH/status' \
+  "...AND from the legacy status API, so non-Actions CI providers are not silently ignored"
+has "$readiness_block" 'actions/workflows' \
+  "...AND from the active-workflow inventory, the only no-ci/indeterminate discriminator"
+has "$readiness_block" '{{ROADMAP_LIB}} branch-health' \
+  "the snippet delegates the verdict to the shared predicate rather than re-deriving it"
+# The inventory read is gated on ACTIONS having reported, not on "any result exists": both a legacy
+# status and a check run from another Checks app can be present while Actions is silent, and
+# suppressing the read on either lets the predicate return `green` on an unreported build.
+has "$readiness_block" '.app.slug // "") == "github"' \
+  "the inventory gate attributes check runs by app, so another app cannot stand in for Actions"
+has "$readiness_block" 'HEALTH=skipped' \
+  "health starts at the honest 'skipped', never a fabricated green"
+has "$readiness_block" 'defaultBranchRef' \
+  "the default branch is resolved live from the REMOTE, not assumed to be main"
+has "$readiness_block" 'REPO_VIEW=' \
+  "...captured on its own status first, since an exit inside a heredoc substitution only leaves the subshell"
+# Each health read is captured and checked on its OWN status, for the same reason the milestone
+# read is: a pipeline reports only its last command, so a failed read would arrive as empty JSON.
+for v in CHECKS_JSON STATUS_JSON WF_JSON WF_COUNT HEAD_SHA; do
+  has "$readiness_block" "$v=" "the $v read is captured on its own status"
+done
+# WF_JSON/WF_COUNT are deliberately two statements, and this asserts the property rather than the
+# formatting: the COUNT must be parsed out of the CAPTURED read. Piping the inventory read
+# straight into its parser would report only the parser's status, so a failed read would count 0
+# active workflows and silently downgrade a fail-closed `indeterminate` into a "no CI here" pass.
+# (Found by the e2e fail-injection case, which the first implementation did not survive.)
+has "$readiness_block" '"$WF_JSON" | jq' \
+  "the active-workflow count is parsed from the captured read, not piped from gh"
+# Every LIST read here must paginate, for the reason #79 established. It matters most on the
+# status endpoint, which pages at 30 by default: a truncated health read that loses the one red
+# status is a FALSE GREEN — the most dangerous direction this predicate can be wrong in.
+has "$readiness_block" 'commits/$DEFAULT_BRANCH/status?per_page=100' \
+  "the commit-status read is paginated (a dropped failing status would be a false green)"
+has "$readiness_block" 'check-runs?per_page=100' \
+  "the check-runs read is paginated too"
+has "$readiness_block" '"$HEALTH"' \
+  "the resolved health is passed to release-ready (not dropped on the floor)"
+
 
 # Every rendered agent skill must carry the RESOLVED helper path. check-workflow-render.sh
 # proves {{ROADMAP_LIB}} substitutes correctly against a synthetic fixture and that no committed
@@ -779,6 +1036,24 @@ hasnt "$wf" 'gh pr create' "the skill never opens a PR"
 autofix_block="$(wf_snippet autofix-unmilestoned)"
 has "$autofix_block" 'select(.milestone == null)' \
   "the limbo set is DERIVED from milestone == null (which is what makes autofix idempotent)"
+# #78's carve-out lives here too — one home for every assertion about this snippet.
+has "$autofix_block" 'index("release-blocker") | not' \
+  "step 4b excludes an unmilestoned release-blocker from the Backlog sweep (#78)"
+# ...but ONLY in release-readiness mode. Step 4b is convention-agnostic hygiene that runs on every
+# repo, and the overlay promises classic mode stays byte-identical — a repo that merely has the
+# label (e.g. ran `release init`, no marker yet) must keep the plain sweep. (Bot-review find.)
+has "$autofix_block" 'RELEASE_MODE' \
+  "...and the carve-out is gated on release-readiness mode being ACTIVE"
+has "$autofix_block" '$carve == 0 or' \
+  "...so in classic mode the sweep filter reduces to its pre-overlay form"
+has "$autofix_block" 'WARN:' \
+  "...and surfaces it instead of silently burying a declared must-have"
+# It WARNS, it does not gate — nothing feeds it to the predicate, so the wording must not promise
+# a hold the code does not implement. (Altitude-review find.)
+hasnt "$autofix_block" 'HOLD:' \
+  "...and does NOT call it a HOLD, which would claim a gate that is not wired"
+hasnt "$autofix_block" '? unmilestoned:#$n — open release-blocker' \
+  "...and does NOT file it as a retirable question (a Decisions row must not hide a release risk)"
 has "$autofix_block" 'first // empty' \
   "the backlog milestone is resolved by title, and an unresolved one stays empty"
 has "$autofix_block" 'NO_AUTOFIX:-0' \
