@@ -99,6 +99,11 @@ fact invocation-claude fixed:'claude -p' -- \
 # shipped history to satisfy a lint would be a lie, not a fix.
 _bs_all="base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md"
 _bs_all="$_bs_all docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh"
+# docs/adding-an-agent.md is on the list because it TELLS A CONTRIBUTOR what to write about
+# timeouts for a new agent. Omitting it let the guide keep directing people to "name the concrete
+# minimum timeout" — i.e. to recreate the work-budget model this fact retires — while the sweep
+# passed (bot review, PR #105). A doc that propagates a fact is a consumer of it.
+_bs_all="$_bs_all docs/adding-an-agent.md"
 for _a in claude codex gemini; do _bs_all="$_bs_all agents/$_a/skills/implement-issue/SKILL.md"; done
 # The seconds value and the override name are only spelled out where the bound is *explained*, not
 # in every file that merely mentions it — so these two keep a narrower list.

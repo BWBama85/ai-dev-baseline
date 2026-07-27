@@ -217,6 +217,13 @@ else
 fi
 mkdir -p .gemini/state
 rm -f .gemini/state/implement-issue-active.json .gemini/state/implement-issue-blocked.json
+# Gap-analysis artifacts from a PREVIOUS run, cleared for two reasons. They are per-run data that
+# nothing consumes afterwards, and they are the most sensitive files this workflow writes: the
+# prompt carries issue and private-repo context, and gaps.err is the agent's full exploration
+# stream (inspected source, command output). Left in place they also outlive their run — a later
+# pass with gap_analysis unassigned never overwrites them, so stale findings sit there looking
+# current. Bounding gaps.err's growth within a run is separate, and tracked in #84.
+rm -f .gemini/state/gap-prompt.txt .gemini/state/gaps.md .gemini/state/gaps.err
 ```
 
 ### 2. Verify repo scope + fetch the issue(s)
@@ -314,9 +321,10 @@ tells you nothing). On failure, **read the classified line at the tail of `gaps.
 it is the last thing written there, behind the whole exploration stream, and it is the
 one line that tells you *which* failure this was. rc **124** is
 our backstop firing, rc **143** is an *outer* bound killing it first (re-dispatch in the
-background, or raise that outer bound — not ours), and any other non-zero is a real
-agent error. Each warrants a different response, so read the classification rather than
-treating every non-zero as "the agent failed".
+background, or raise that outer bound — not ours), rc **137** is an external SIGKILL —
+an OOM killer or the harness, i.e. a memory/environment problem, **not** the agent — and
+any other non-zero is a real agent error. Each warrants a different response, so read the
+classification rather than treating every non-zero as "the agent failed".
 
 An incomplete invocation is **retried exactly once**. If the retry also fails,
 **report the classified incompleteness and stop cleanly** — gap-analysis runs *before*
@@ -543,6 +551,9 @@ parent (a comment that survives the parent closing) and the PR.
   genuinely stuck or extraordinary run: retry once, then surface it as a **codex
   incompleteness** (never a silent swap to another agent). Raise
   `ADB_DISPATCH_TIMEOUT_SECS` only if a legitimate pass really needs more than 45 min.
+- **Gap-analysis returns rc 137 (SIGKILL)** → killed from *outside* the helper — an OOM
+  killer or the harness. Investigate memory/environment, **not** the agent: re-running
+  the same pass in the same conditions will be killed again.
 - **Gap-analysis output is empty while `gaps.err` is huge** → not a diagnostic signal.
   `codex exec` returns its result as a **final message**, not a stream, so a
   bound-killed run yields empty stdout whether or not it was progressing; the large

@@ -263,6 +263,16 @@ eq "$(rd_var _ADB_RD_KILL_GRACE_SECS)" "10" "the no-environment kill grace is 10
 eq "$(rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=0)" "1"  "a 0 kill grace is clamped to 1 (never 'no escalation')"
 eq "$(rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=x)" "10" "a non-numeric kill grace falls back to the default"
 eq "$(rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=3)" "3"  "a valid kill grace is honored"
+# The bound is compared arithmetically (the 137->124 normalization) and counted down by the
+# portable watchdog, both integer-only — so a fractional override that `timeout` would happily
+# accept produced `[: 0.5: integer expression expected` and fired the bound instantly, failing
+# every dispatch at once. Reject it loudly instead (bot review, PR #105).
+eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=0.5 2>/dev/null)" "2700" "a fractional bound falls back to the default rather than breaking every dispatch"
+eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=0   2>/dev/null)" "2700" "a zero bound falls back to the default"
+eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=abc 2>/dev/null)" "2700" "a non-numeric bound falls back to the default"
+# NOT via rd_var: it silences the sourcing's stderr, which is exactly the stream under test here.
+frac_err="$(ADB_DISPATCH_TIMEOUT_SECS=0.5 bash -c '. "$1" >/dev/null' rd_var "$RD" 2>&1)"
+has "$frac_err" "not a positive whole number" "a rejected bound says so on stderr rather than failing silently"
 
 # --- failure-mode classification (#93) ---------------------------------------
 # 124 (our backstop) / 143 (an OUTER bound) / a real agent error each need a different response;
@@ -307,7 +317,17 @@ chmod +x "$BIN/codex-trap0"
 # and keep the grace at its floor of 1: the child TRAPS TERM, so the grace is a fixed wait rather
 # than a race and a short one cannot flake. Sequential at the default grace, these cost ~6s; this
 # way, ~2s.
+# The outer-termination probe rides this same concurrent window rather than adding its own serial
+# ~3s: when an OUTER bound kills OUR shell mid-dispatch (a harness foreground cap, a cancelled
+# detached job), the agent must not be reparented to init and left running out the full 45-minute
+# backstop. Verified pre-fix to leak the `timeout` process AND the agent under it (bot review, PR
+# #105). The stub name is written into a FILE, never a live command line, so the `ps` probe cannot
+# match the harness's own argv and self-report a false positive.
+printf '#!/usr/bin/env bash\nsleep 300\n' > "$work/qqstub"; chmod +x "$work/qqstub"
+{ printf '. "%s"\n' "$RD"; printf '_adb_rd_bounded 2700 "%s/qqstub"\n' "$work"; } > "$work/probe.sh"
+
 esc_w="$(mktemp)"; esc_t="$(mktemp)"; esc_0="$(mktemp)"; start=$SECONDS
+( timeout 2 bash "$work/probe.sh" >/dev/null 2>&1 ) &
 ( rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 \
     bash "$RD" invoke gap_analysis >/dev/null 2>&1 || rc=$?; printf '%s' "$rc" > "$esc_w" ) &
 ( rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 \
@@ -350,6 +370,15 @@ printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=31337 ADB_DISPATCH_NO_TIMEOUT_BIN=
   bash "$RD" invoke gap_analysis >/dev/null 2>&1
 eq "$(pgrep -f 'sleep 31337' 2>/dev/null | grep -c . | tr -d ' ')" "0" \
   "the watchdog leaves no orphaned bound-length sleep behind after a fast child"
+
+# When an OUTER bound kills OUR shell mid-dispatch (a harness foreground cap, a cancelled detached
+# job), the agent must not be reparented to init and left running out the full backstop — 45
+# minutes of agent work after the run was cancelled. Verified pre-fix to leak the `timeout` process
+# AND the agent under it (bot review, PR #105). The stub name is written into a FILE, never a live
+# command line, so the `ps` probe cannot match the test harness's own argv and self-report.
+eq "$(ps -eo command | grep -c '[q]qstub' | tr -d ' ')" "0" \
+  "an outer termination reaps the dispatched agent instead of orphaning it for the full bound"
+pkill -f '[q]qstub' >/dev/null 2>&1 || true
 
 # ============================ source guard ============================
 # Sourcing must define the functions but NOT run the CLI dispatch (no usage/exit).
