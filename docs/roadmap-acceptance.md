@@ -346,6 +346,14 @@ gh issue create --title "Driver work" --body "Depends on #1 and #2"    # #8
       `## Dependencies` section (it is a derived view, regenerated every run).
 - [ ] A **negated** mention creates no edge: a body reading only `No longer depends on #2` yields
       none.
+- [ ] **Only prose declares (#117).** File an issue whose body *documents* the vocabulary rather
+      than asserting it — a `Depends on #2` inside a fenced ```` ```console ```` block, inside an
+      `<!-- … -->` comment, inside a `> ` blockquote, and inside a `` `Depends on #2` `` span.
+      **None** of the four creates an edge, while a plain `Depends on #1` in the same body still
+      does. This was live: #112's repro blocks fabricated a `#112 → #52` edge that marked a ready
+      bundle `blocked`. A 4-space-**indented** block is deliberately *not* stripped (under a
+      `- ` bullet, code needs six spaces, so treating four as code would delete continuation prose
+      and silently drop a real blocker).
 - [ ] Surface an owner question (e.g. put an `M` member's only prerequisite in `Backlog`). The
       printed line carries a **stable id** and names **where to record the answer**:
       `? dep-outside-release:#8 — … Record: #8 body or artifact ## Decisions.`
