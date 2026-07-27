@@ -423,11 +423,19 @@ cmd_report() {
           # A non-matching item gets a key unique to its position, so it can never be appended
           # to and renders verbatim: pre=the item, mid=suf="" makes the 1-member form below the
           # identity. That is why there is no third "verbatim" state to carry.
-          if (split3(it, a)) { k = a["pre"] SUBSEP a["suf"] } else { k = "@" j }
+          #
+          # `grouped` carries whether split3 matched. Re-deriving it from the SHAPE of the key (a
+          # sentinel prefix such as k ~ /^@/) would misfire on any item whose own prefix starts
+          # with that sentinel — `@foo-1.txt` + `@foo-2.txt` rendered as `@foo-1.txt{,2}`. A ref
+          # may legitimately begin with `@`, so the discriminator must be the fact, not a glyph.
+          # NOTE: no apostrophe anywhere in this awk program — it is a single-quoted shell string,
+          # and one stray apostrophe closes it and turns the whole file into a syntax error.
+          grouped = split3(it, a)
+          if (grouped) { k = "g" SUBSEP a["pre"] SUBSEP a["suf"] } else { k = "u" SUBSEP j }
           if (!(k in gseen)) {
             gseen[k] = ++ng
-            if (k ~ /^@/) { gpre[ng] = it;       gsuf[ng] = "";       gmid[ng] = "" }
-            else          { gpre[ng] = a["pre"]; gsuf[ng] = a["suf"]; gmid[ng] = a["mid"] }
+            if (grouped) { gpre[ng] = a["pre"]; gsuf[ng] = a["suf"]; gmid[ng] = a["mid"] }
+            else         { gpre[ng] = it;       gsuf[ng] = "";       gmid[ng] = "" }
             gnum[ng] = 1
           } else {
             g = gseen[k]; gmid[g] = gmid[g] "," a["mid"]; gnum[g]++

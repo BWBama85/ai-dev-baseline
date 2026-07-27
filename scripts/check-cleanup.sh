@@ -285,6 +285,13 @@ eq "$(printf 'C\tthreads-1.json\nC\tthreads-2.json\nC\tgaps.md\n' | rep)" "C: th
    "4 separate families group separately"
 # A lone member of a family must NOT gain braces.
 eq "$(printf 'C\tthreads-1.json\n' | rep)" "C: threads-1.json" "4 a single item never gains a brace group"
+# The group/verbatim discriminator must be the FACT that split3 matched, not the shape of the
+# key. A sentinel-prefix test misfires on an item whose own prefix starts with the sentinel —
+# and `git check-ref-format` accepts a branch name beginning with `@`.
+eq "$(printf 'C\t@foo-1.txt\nC\t@foo-2.txt\n' | rep)" "C: @foo-{1,2}.txt" \
+   "4 an item whose prefix starts with the sentinel character still groups correctly"
+eq "$(printf 'C\t@a.txt\nC\t@b.txt\n' | rep)" "C: @a.txt, @b.txt" \
+   "4 …and ungroupable sentinel-prefixed items still render verbatim"
 rep --tail >/dev/null 2>&1; no $? "4 --tail without a value is an error"
 rep --bogus >/dev/null 2>&1; no $? "4 an unknown report option is an error"
 
@@ -335,6 +342,18 @@ else
   has "$wf" 'grep -q "^lock' "6 the workflow reads the in-flight lock from the scan, not a second hardcoded path"
   hasnt "$wfcode" '-f "$STATE/gap-analysis.lock"' "6 …and does not re-spell the lock filename"
   has "$wf" 'worktree list' "6 branches checked out in another worktree are excluded during enumeration"
+  # WHOLE-LINE membership, and it must stay that way. `git update-ref -d` (unlike `git branch -d`)
+  # WILL delete a branch checked out in another worktree, so this test is the only thing standing
+  # between the new delete path and that outcome — and the "cheaper" builtin form silently
+  # degrades to a substring match, because `NL="$(printf '\n')"` is the empty string.
+  has "$wfcode" 'grep -Fxq "$b"' "6 the worktree exclusion matches whole lines, not substrings"
+  # An AND-list as the last command leaves the whole fenced block on exit status 1 whenever its
+  # test fails — and "no lock present" is the common case, so a healthy sweep would read as a
+  # failed step and could be abandoned before any state is swept.
+  hasnt "$wfcode" 'grep -q "^lock${TABC}" && LOCK=1' "6 the lock probe does not leave its block on a non-zero status"
+  # An unguarded `git switch` fails when the default branch is checked out in another worktree,
+  # and the fast-forward on the next line would then repoint the USER'S feature branch.
+  has "$wfcode" 'SWITCHED=0' "6 the switch to the default branch is guarded before any fast-forward"
   has "$wf" '{{CLEANUP_LIB}} marker-branch' "6 the delete-time marker re-read goes through the library's one reader"
   has "$wf" '{{CLEANUP_LIB}} clone-state' \
      "6 the switch/pull guard uses the clone classifier, not a porcelain-only test (rebase/bisect leave it clean)"
@@ -351,6 +370,24 @@ else
   ii="$(cat "$II")"
   has "$ii" ': > {{STATE_DIR}}/gap-analysis.lock' "6 /implement-issue takes the lock before dispatching"
   has "$ii" 'rm -f {{STATE_DIR}}/gap-analysis.lock' "6 /implement-issue releases the lock when the call terminates"
+  # ORDER is the contract. The lock must be taken BEFORE gap-prompt.txt exists: a /cleanup landing
+  # in between classifies that prompt as a gap artifact, sees no lock and no marker (step 5 owns
+  # markers), and deletes it — after which the dispatch's redirection fails and reads as a codex
+  # error. Writing the prompt with a file-write tool makes that window a whole agent turn.
+  iitake="$(printf '%s\n' "$ii" | grep -n ': > {{STATE_DIR}}/gap-analysis.lock' | head -n1 | cut -d: -f1)"
+  iiprompt="$(printf '%s\n' "$ii" | grep -n 'cat > {{STATE_DIR}}/gap-prompt.txt' | head -n1 | cut -d: -f1)"
+  if [ -n "$iitake" ] && [ -n "$iiprompt" ] && [ "$iitake" -lt "$iiprompt" ]; then ok; else
+    bad "6 the lock must be taken BEFORE gap-prompt.txt is written (take@${iitake:-?} prompt@${iiprompt:-?})"
+  fi
+  # The release must NOT sit in the same fenced block as the dispatch: that block is dispatched
+  # to the harness's DETACHED facility, so a release appended to it drops the lock immediately
+  # and leaves it unheld for the whole pass — the only window it exists for.
+  iidisp="$(printf '%s\n' "$ii" | grep -n '{{ROLE_DISPATCH}} invoke gap_analysis' | head -n1 | cut -d: -f1)"
+  iirel="$(printf '%s\n' "$ii" | grep -n 'rm -f {{STATE_DIR}}/gap-analysis.lock' | tail -n1 | cut -d: -f1)"
+  iifence="$(printf '%s\n' "$ii" | awk -v d="${iidisp:-0}" 'NR > d && /^```$/ { print NR; exit }')"
+  if [ -n "$iirel" ] && [ -n "$iifence" ] && [ "$iirel" -gt "$iifence" ]; then ok; else
+    bad "6 the lock release must be in a separate fenced block after the detached dispatch (release@${iirel:-?} block-end@${iifence:-?})"
+  fi
 fi
 
 check_summary "check-cleanup"

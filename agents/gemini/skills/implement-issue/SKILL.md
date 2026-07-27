@@ -295,26 +295,35 @@ still inside that call's cap, and a later shell cannot `wait` on an earlier shel
 variable in your current foreground call, so materialize it, *then* dispatch:
 
 ```bash
-# 1. Write the gap-analysis prompt (heredoc, or your file-write tool).
+# 1. Take the lock FIRST — before the prompt file exists, not after. A concurrent /cleanup
+#    classifies gap-prompt.txt as a gap artifact, and at this point no branch or run marker
+#    exists yet (step 5 owns those), so with LOCK=0 it reads as a finished run's leftovers and
+#    is deleted. Writing the prompt with a file-write tool makes that window a whole agent turn,
+#    not microseconds — and the dispatch below would then fail its redirection, which by the
+#    rules further down reads as "a real agent error": a swept local file blamed on codex.
+: > .gemini/state/gap-analysis.lock
+
+# 2. Write the gap-analysis prompt (heredoc, or your file-write tool).
 cat > .gemini/state/gap-prompt.txt <<'PROMPT'
 …the adversarial gap-analysis prompt, including the three-heading output contract…
 PROMPT
 
-# 2. Mark the dispatch in flight, so a concurrent /cleanup does not sweep the artifacts this
-#    pass is still writing. This step runs BEFORE the branch and the active marker exist (step 5
-#    owns those), so the marker cannot serve as the in-flight signal here — without the lock,
-#    gap-analysis output looks exactly like a finished run's leftovers.
-: > .gemini/state/gap-analysis.lock
-
 # 3. Dispatch via the harness's background facility, NOT a shell `&`.
 bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" invoke gap_analysis \
   < .gemini/state/gap-prompt.txt > .gemini/state/gaps.md 2> .gemini/state/gaps.err
+```
 
-# 4. Release the lock the moment the call TERMINATES — success, failure, or backstop alike.
-#    Holding it past a failed pass would preserve a dead run's artifacts forever. The retry
-#    below re-runs THIS WHOLE BLOCK, so it re-takes the lock at step 2; there is no separate
-#    re-take to remember. A run killed between 2 and 4 leaves the lock behind — deliberately
-#    fail-safe (a stray lock only preserves artifacts), and preflight clears it next run.
+**Release the lock only once the harness reports the dispatch finished** — in its own call, never
+appended to the block above. The dispatch is *detached*: everything after it in that block runs
+while the pass is still going, so a release sitting there would drop the lock immediately and
+leave it unheld for the entire run — the only window it exists for.
+
+```bash
+# Runs when the call TERMINATES — success, failure, or backstop alike. Holding it past a failed
+# pass would preserve a dead run's artifacts forever. A retry re-runs the block above, re-taking
+# the lock at step 1; there is no separate re-take to remember. A run killed between the take and
+# here leaves the lock behind — deliberately fail-safe (a stray lock only PRESERVES artifacts),
+# and preflight clears it on the next run.
 rm -f .gemini/state/gap-analysis.lock
 ```
 

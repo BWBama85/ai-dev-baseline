@@ -114,7 +114,6 @@ if [ -z "$DEFAULT" ]; then
 fi
 [ -z "$DEFAULT" ] && DEFAULT=main
 CURRENT="$(git rev-parse --abbrev-ref HEAD)"
-NL="$(printf '\n')"
 # Every accumulator is initialized HERE, not at the step that fills it: a scope that skips a step
 # (`local` never runs step 4) must still leave step 6 a defined, empty variable to report from.
 NOTES=""; DELETED_LOCAL=""; DELETED_REMOTE=""; CLEARED=""
@@ -134,14 +133,25 @@ if [ "$CSTATE" != local-ok ] && [ "$CSTATE" != not-default ]; then
   NOTES="${NOTES}NOTE: clone is '$CSTATE' — staying on '$CURRENT'; not returning to $DEFAULT.
 "
 else
-  [ "$CURRENT" = "$DEFAULT" ] || git switch "$DEFAULT" --quiet
-  # `merge --ff-only` against the ref the fetch above already retrieved, NOT `pull` — a pull is a
-  # second network round trip for refs we hold, and it can move origin/$DEFAULT *after* the fetch
-  # that BASE below is reasoned about.
-  git merge --ff-only "origin/$DEFAULT" --quiet 2>/dev/null \
-    || NOTES="${NOTES}NOTE: could not fast-forward $DEFAULT (diverged?) — sweeping against local $DEFAULT.
+  # The switch MUST be guarded. `git switch` fails if $DEFAULT is checked out in another worktree,
+  # and an unguarded failure would leave HEAD on the feature branch while the next line
+  # fast-forwards — silently repointing the USER'S BRANCH onto origin/<default>.
+  SWITCHED=1
+  if [ "$CURRENT" != "$DEFAULT" ]; then
+    git switch "$DEFAULT" --quiet 2>/dev/null || SWITCHED=0
+  fi
+  if [ "$SWITCHED" -eq 0 ]; then
+    NOTES="${NOTES}NOTE: could not switch to $DEFAULT (checked out elsewhere?) — staying on '$CURRENT'.
 "
-  CURRENT="$(git rev-parse --abbrev-ref HEAD)"   # now the default branch
+  else
+    # `merge --ff-only` against the ref the fetch above already retrieved, NOT `pull` — a pull is a
+    # second network round trip for refs we hold, and it can move origin/$DEFAULT *after* the fetch
+    # that BASE below is reasoned about.
+    git merge --ff-only "origin/$DEFAULT" --quiet 2>/dev/null \
+      || NOTES="${NOTES}NOTE: could not fast-forward $DEFAULT (diverged?) — sweeping against local $DEFAULT.
+"
+  fi
+  CURRENT="$(git rev-parse --abbrev-ref HEAD)"
 fi
 ```
 
@@ -192,13 +202,16 @@ end and read as unmerged.
 ```bash
 while IFS= read -r b; do
   [ -n "$b" ] || continue
-  # Builtin membership test — `$WORKTREES` is a small static string, and piping it through grep
-  # once per candidate spends two processes per branch to answer a question the shell can.
-  case "$NL$WORKTREES$NL" in
-    *"$NL$b$NL"*)
-      NOTES="${NOTES}SKIPPED $b — checked out in another worktree
-"; continue ;;
-  esac
+  # WHOLE-LINE match, via grep. The builtin newline-delimited `case` form looks cheaper and is a
+  # trap: a newline held in a variable from command substitution is the EMPTY STRING (the strip
+  # applies to trailing newlines), which degrades the test to a SUBSTRING match — so a deletable
+  # `issue-121` is skipped forever because a worktree holds `issue-121-currency`. Two processes
+  # per candidate is the right price for a guard that stands between `git update-ref -d` and a
+  # branch checked out somewhere else (update-ref, unlike `git branch -d`, will happily delete it).
+  if printf '%s\n' "$WORKTREES" | grep -Fxq "$b"; then
+    NOTES="${NOTES}SKIPPED $b — checked out in another worktree
+"; continue
+  fi
 
   # Spend a network round trip ONLY on a branch whose answer needs one. A branch already
   # contained in the base is settled by local ancestry, and this is the common case right after
@@ -321,8 +334,11 @@ SCAN="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-scan "$STATE")"
 # from the SCAN, not from a second hardcoded path: the library already recognises the filename,
 # and a rename that updated only one of the two spellings would silently set LOCK=0 and delete a
 # live dispatch's findings — the exact failure the lock exists to prevent.
+# An `if`, not `… && LOCK=1`: an AND-list whose test fails leaves the whole fenced block on exit
+# status 1, and "no lock present" is the overwhelmingly common case — so the agent would read a
+# perfectly healthy sweep as a failed step and could abandon it before any state is swept.
 LOCK=0
-printf '%s\n' "$SCAN" | grep -q "^lock${TABC}" && LOCK=1
+if printf '%s\n' "$SCAN" | grep -q "^lock${TABC}"; then LOCK=1; fi
 ```
 
 **Markers first** — the gap artifacts' verdict depends on whether a run is live, and an
