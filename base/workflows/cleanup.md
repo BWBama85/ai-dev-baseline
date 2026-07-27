@@ -352,9 +352,17 @@ if printf '%s\n' "$SCAN" | grep -q "^lock${TABC}"; then LOCK=1; fi
 **Markers first** — the gap artifacts' verdict depends on whether a run is live, and an
 `/implement-issue` run is exactly what a marker describes.
 
+The record field is read into `sfile`, **never `path`.** `path` is a zsh special variable bound to
+`$PATH`: assigning a string to it empties the search path on the first iteration, and every
+external command for the rest of the sweep — `bash`, `rm`, `git`, `gh` — is then not found. macOS
+runs zsh by default (`base/practices/shell.md`), so that is the common case, and the symptom is
+this skill's own worst failure mode: a sweep that deletes nothing and reports success. The same
+applies to `fpath`, `cdpath`, `manpath`, `module_path`, `argv` and `status`;
+`scripts/check-workflow-shell.sh` fails the build if any fenced block assigns one.
+
 ```bash
 RUN=none
-while IFS="$TABC" read -r kind path key; do
+while IFS="$TABC" read -r kind sfile key; do
   [ "$kind" = marker ] || continue
   # Seed on FIRST sight: a marker exists, so this is a finished run until some marker says keep.
   # (A separate "did we see one" flag plus a trailing fixup is one fact tracked twice — and the
@@ -362,7 +370,7 @@ while IFS="$TABC" read -r kind path key; do
   [ "$RUN" = none ] && RUN=stale
 
   # The identity of the FILE as judged. Re-captured immediately before deletion below.
-  IDENT="$({{CLEANUP_LIB}} marker-identity "$path")"
+  IDENT="$({{CLEANUP_LIB}} marker-identity "$sfile")"
 
   # Cheap LOCAL facts first. `state-verdict marker` returns keep whenever either ref survives, so
   # for a live branch — and always for an unreadable marker — the PR read below cannot change the
@@ -377,12 +385,12 @@ while IFS="$TABC" read -r kind path key; do
   # An OPEN PR outranks branch absence: the branch may have been tidied while the run is live.
   PRSTATE=none
   if [ "$LREF" = 0 ] && [ "$RREF" = 0 ]; then
-    URL="$(jq -r '.prUrl // empty' "$path" 2>/dev/null || true)"
+    URL="$(jq -r '.prUrl // empty' "$sfile" 2>/dev/null || true)"
     [ -n "$URL" ] && PRSTATE="$(pr_state "$URL")"
   fi
 
   if ! MV="$({{CLEANUP_LIB}} state-verdict marker "$PRSTATE" "$LREF" "$RREF")"; then
-    NOTES="${NOTES}SKIPPED ${path##*/} — could not be classified; kept
+    NOTES="${NOTES}SKIPPED ${sfile##*/} — could not be classified; kept
 "; RUN=keep; continue
   fi
   [ "$MV" = keep ] && RUN=keep
@@ -391,12 +399,12 @@ while IFS="$TABC" read -r kind path key; do
     # enough: a new /implement-issue run retrying the same issue writes the same deterministic
     # `issue-NN-slug`, so a replaced marker would compare equal and be deleted — disarming a live
     # run's continuation gate. An empty identity (unreadable) never matches, so it also keeps.
-    NOW="$({{CLEANUP_LIB}} marker-identity "$path")"
-    if [ -n "$IDENT" ] && [ "$NOW" = "$IDENT" ] && rm -f "$path" 2>/dev/null; then
-      CLEARED="${CLEARED}${path##*/}
+    NOW="$({{CLEANUP_LIB}} marker-identity "$sfile")"
+    if [ -n "$IDENT" ] && [ "$NOW" = "$IDENT" ] && rm -f "$sfile" 2>/dev/null; then
+      CLEARED="${CLEARED}${sfile##*/}
 "
     else
-      NOTES="${NOTES}SKIPPED ${path##*/} — it changed during the sweep, or could not be removed; kept
+      NOTES="${NOTES}SKIPPED ${sfile##*/} — it changed during the sweep, or could not be removed; kept
 "; RUN=keep
     fi
   fi
@@ -433,16 +441,16 @@ sweep_file() {
   fi
 }
 
-while IFS="$TABC" read -r kind path key; do
+while IFS="$TABC" read -r kind sfile key; do
   case "$kind" in
     gaps)
       [ "$GV" = stale ] || continue
-      sweep_file "$path"
+      sweep_file "$sfile"
       ;;
     threads)
       TV="$({{CLEANUP_LIB}} state-verdict threads "$(pr_state "$key")")" || continue
       [ "$TV" = stale ] || continue
-      sweep_file "$path"
+      sweep_file "$sfile"
       ;;
   esac
 done <<EOF
