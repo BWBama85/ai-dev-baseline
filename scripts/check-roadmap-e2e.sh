@@ -171,6 +171,7 @@ run_snippet() {
       LABEL=\${ADB_LABEL-release-blocker}
       BACKLOG_TITLE=\${ADB_BACKLOG:-Backlog}
       NO_AUTOFIX=\${ADB_NO_AUTOFIX:-0}
+      RELEASE_MODE=\${ADB_RELEASE_MODE:-0}
       $code
       $tail_code
     " 2>&1
@@ -219,8 +220,11 @@ health_set() {
   printf '{"sha":"%s","state":"x","statuses":%s}\n' "$E2E_SHA" "$2" > "$FIX/commit-status.json"
   printf '{"workflows":%s}\n' "$(wf_arr "$3")"               > "$FIX/workflows.json"
 }
-# ck1 <status> <conclusion-json> [sha] — the single-check-run fixture the health cases vary.
-ck1() { printf '[{"name":"ci","head_sha":"%s","status":"%s","conclusion":%s}]' "${3:-$E2E_SHA}" "$1" "$2"; }
+# ck1 <status> <conclusion-json> [sha] [app-slug] — the single-check-run fixture the health cases
+# vary. The app slug defaults to `github`, which is what an Actions-produced check run carries and
+# what both the snippet and the predicate attribute against.
+ck1() { printf '[{"name":"ci","head_sha":"%s","status":"%s","conclusion":%s,"app":{"slug":"%s"}}]' \
+          "${3:-$E2E_SHA}" "$1" "$2" "${4:-github}"; }
 health_green()  { health_set "$(ck1 completed '"success"')" '[]' 1; }
 health_red()    { health_set "$(ck1 completed '"failure"')" '[]' 1; }
 health_running(){ health_set "$(ck1 in_progress null)"      '[]' 1; }
@@ -496,6 +500,19 @@ has "$OUT" "VERDICT=indeterminate" \
   "a green status from ONE provider never speaks for 3 workflows that have not reported"
 hasnt "$OUT" "VERDICT=met" "...so adding an unrelated passing status cannot turn a refusal into a cut"
 
+# The SECOND masking provider (bot-review find): a check run from a different Checks API app lands
+# in `check_runs` too, so gating the inventory read on "any check runs" would skip it and let
+# `$total > 0` return green while Actions reported nothing. Attribution is by `app.slug`.
+fix_default; ms_drained; health_set "$(ck1 completed '"success"' "$E2E_SHA" vercel)" '[]' 3
+readiness
+has "$OUT" "VERDICT=indeterminate" \
+  "a green check run from ANOTHER Checks app never speaks for 3 silent Actions workflows"
+has "$OUT" "Actions has not reported" "...and the reason names Actions specifically"
+# Same fixture, no active workflows: that app IS the repo's CI, so it legitimately reports green.
+fix_default; ms_drained; health_set "$(ck1 completed '"success"' "$E2E_SHA" vercel)" '[]' 0
+readiness
+has "$OUT" "VERDICT=met" "...while with 0 active workflows that same app is the repo's CI"
+
 fix_default; ms_drained; health_legacy_red
 readiness
 has "$OUT" "VERDICT=not-green" \
@@ -603,7 +620,7 @@ eq "$(grep -c 'issue edit' "$FIX/calls" 2>/dev/null || echo 0)" 2 "exactly two t
 # tracker write, while an unlabeled sibling in the same run is still repaired.
 fix_default
 limbo_issues 5 '44!' 31
-ADB_ROADMAP_NUM=31 run_snippet autofix-unmilestoned >/dev/null
+ADB_ROADMAP_NUM=31 ADB_RELEASE_MODE=1 run_snippet autofix-unmilestoned >/dev/null
 eq "$RC_" 0 "the autofix snippet runs clean with a stray blocker present"
 has "$OUT" "WARN: #44 is an open release-blocker in NO milestone" \
   "an unmilestoned release-blocker is surfaced, not buried in Backlog"
@@ -618,8 +635,23 @@ eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 1 "exactl
 # The artifact is excluded even when it carries the label, so a labeled roadmap issue is silent.
 fix_default
 limbo_issues '31!'
-ADB_ROADMAP_NUM=31 run_snippet autofix-unmilestoned >/dev/null
+ADB_ROADMAP_NUM=31 ADB_RELEASE_MODE=1 run_snippet autofix-unmilestoned >/dev/null
 eq "$OUT" "" "a labeled roadmap artifact is neither swept nor warned about"
+
+# CLASSIC MODE must stay byte-identical (bot-review find). The carve-out is overlay behavior, so
+# with RELEASE_MODE unset the SAME fixture takes the plain sweep: the labeled issue is repaired
+# like any other unmilestoned issue, and nothing warns about a release milestone the repo has not
+# adopted. A repo that ran `baseline release init` (which creates the label) but has not yet added
+# the marker sits in exactly this state.
+fix_default
+limbo_issues 5 '44!' 31
+ADB_ROADMAP_NUM=31 run_snippet autofix-unmilestoned >/dev/null
+eq "$RC_" 0 "classic mode runs clean with a labeled issue present"
+has "$OUT" "fixed: #44 → milestone Backlog (was unmilestoned)" \
+  "in CLASSIC mode a release-blocker label is just a label — the issue is swept normally"
+hasnt "$OUT" "WARN:" "...and no release-overlay warning is printed in classic mode"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 2 \
+  "...so BOTH unmilestoned issues are repaired, exactly as before the overlay existed"
 
 # --- 7b. IDEMPOTENT: the second run finds nothing (#109's acceptance) ------------------------
 # Model the post-repair tracker — which is what the first run produced — and re-run.

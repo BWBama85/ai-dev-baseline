@@ -68,9 +68,12 @@ health_why() {
 }
 # run_health <args...> — stdin-taking capture, mirroring `run` for the non-stdin subcommands.
 run_health() { OUT="$(printf '%s' "$1" | bash "$RL" branch-health "${@:2}" 2>&1)"; RC_=$?; }
-# ck <name> <sha> <status> <conclusion> — one check-run object.
-ck() { printf '{"name":"%s","head_sha":"%s","status":"%s","conclusion":%s}' \
-         "$1" "$2" "$3" "$(if [ "$4" = "null" ]; then printf 'null'; else printf '"%s"' "$4"; fi)"; }
+# ck <name> <sha> <status> <conclusion> [app-slug] — one check-run object.
+# The app slug defaults to `github` (GitHub Actions), because that is what an Actions-produced
+# check run carries and what the predicate attributes against. Pass a different slug to model
+# another Checks API app (a linter bot, a deploy provider).
+ck() { printf '{"name":"%s","head_sha":"%s","status":"%s","conclusion":%s,"app":{"slug":"%s"}}' \
+         "$1" "$2" "$3" "$(if [ "$4" = "null" ]; then printf 'null'; else printf '"%s"' "$4"; fi)" "${5:-github}"; }
 # st <context> <state> — one legacy commit-status object.
 st() { printf '{"context":"%s","state":"%s"}' "$1" "$2"; }
 # hj <check-objs-csv> <status-objs-csv> — the {check_runs,statuses} document branch-health reads.
@@ -397,7 +400,7 @@ has "$(health_why "$(hj "$(ck ci "$OTHER_SHA" completed success)" '')")" "differ
 eq "$(health "$(hj '' '')" "$SHA" 0)" no-ci "no checks AND no active workflows => no-ci (skip, per #24)"
 eq "$(health "$(hj '' '')" "$SHA" 3)" indeterminate \
    "no checks BUT 3 active workflows => indeterminate, NOT no-ci (fail closed)"
-has "$(health_why "$(hj '' '')" "$SHA" 3)" "none has reported" "...and explains the difference"
+has "$(health_why "$(hj '' '')" "$SHA" 3)" "Actions has not reported" "...and explains the difference"
 
 # THE FALSE-CUT REGRESSION (adversarial-review find). `$total` counts "somebody reported", not
 # "everybody reported". Without an explicit unreported-workflows arm ahead of `green`, ONE
@@ -406,21 +409,46 @@ has "$(health_why "$(hj '' '')" "$SHA" 3)" "none has reported" "...and explains 
 # run turns a correct refusal into a RELEASE. Fail-open, the one direction that matters.
 eq "$(health "$(hj '' "$(st vercel success)")" "$SHA" 3)" indeterminate \
    "3 active workflows + no check runs + ONE green legacy status => still indeterminate, never green"
-has "$(health_why "$(hj '' "$(st vercel success)")" "$SHA" 3)" "none has reported" \
+has "$(health_why "$(hj '' "$(st vercel success)")" "$SHA" 3)" "Actions has not reported" \
    "...naming the unreported workflows rather than the status that did report"
 # The same shape with NO active workflows is the legitimate non-Actions repo: the status IS the CI.
 eq "$(health "$(hj '' "$(st vercel success)")" "$SHA" 0)" green \
    "...but with 0 active workflows a green legacy status IS the branch's green (non-Actions CI)"
-# And a check run present alongside means the workflows did report — inventory cannot override it.
+# And an ACTIONS check run present means the workflows did report — inventory cannot override it.
 eq "$(health "$(hj "$(ck ci "$SHA" completed success)" "$(st vercel success)")" "$SHA" 3)" green \
-   "check runs present => reported, whatever the inventory count says"
+   "an Actions check run present => reported, whatever the inventory count says"
+
+# THE SECOND MASKING PROVIDER (bot-review find, same class as the one above). A check run from a
+# DIFFERENT Checks API app also lands in `check_runs`, so a plain "are there any check runs" test
+# cannot tell it apart from an Actions run: the inventory read would be skipped and `$total > 0`
+# would return `green` while Actions had reported nothing. Attribution is by `app.slug`.
+eq "$(health "$(hj "$(ck vercel "$SHA" completed success vercel)" '')" "$SHA" 3)" indeterminate \
+   "3 active workflows + a green check run from ANOTHER app => still indeterminate, never green"
+has "$(health_why "$(hj "$(ck vercel "$SHA" completed success vercel)" '')" "$SHA" 3)" "Actions has not reported" \
+   "...and says Actions specifically has not reported"
+eq "$(health "$(hj "$(ck vercel "$SHA" completed success vercel)" '')" "$SHA" 0)" green \
+   "...while with 0 active workflows that same app IS the repo's CI"
+# Unknown provenance must not stand in as proof Actions ran (fail closed on a missing app field).
+eq "$(health "$(printf '{"check_runs":[{"name":"ci","head_sha":"%s","status":"completed","conclusion":"success"}],"statuses":[]}' "$SHA")" "$SHA" 3)" \
+   indeterminate "a check run with no identifiable app does not prove Actions reported"
+# A FAILING non-Actions check still fails the branch — attribution gates `green`, never `not-green`.
+eq "$(health "$(hj "$(ck vercel "$SHA" completed failure vercel)" '')" "$SHA" 3)" not-green \
+   "a failing check from another app is still red (attribution never rescues a failure)"
 
 # FAIL-CLOSED on every unreadable input. An unparseable health read must never be `green`.
-for bad_json in '' 'not json' '[]' '"str"' '{"check_runs":{}}' '{"statuses":5}'; do
+# A MISSING collection is an error, not an empty one (bot-review find). `{}` previously defaulted
+# both keys to [] and returned `no-ci`, which release-ready maps to `met` — fabricating a release
+# out of a health response nobody could parse. `no-ci` must mean "explicitly nothing reported".
+for bad_json in '' 'not json' '[]' '"str"' '{"check_runs":{}}' '{"statuses":5}' \
+                '{}' '{"check_runs":[]}' '{"statuses":[]}' '{"check_runs":null,"statuses":null}' \
+                '{"check_runs":[],"statuses":null}'; do
   run_health "$bad_json" "$SHA" 1
   eq "$RC_" 2 "malformed health input [${bad_json:-<empty>}] is an ERROR"
   hasnt "$OUT" "green" "[${bad_json:-<empty>}] never yields a green verdict"
+  hasnt "$OUT" "no-ci" "[${bad_json:-<empty>}] never yields no-ci (which would reach 'met')"
 done
+# ...and with BOTH keys explicitly present and empty, `no-ci` is the correct, intended answer.
+eq "$(health "$(hj '' '')" "$SHA" 0)" no-ci "two EXPLICIT empty arrays are a real no-ci, not an error"
 run_health "$(hj '' '')" "" 1;      eq "$RC_" 2 "an empty sha is an ERROR (never compare against nothing)"
 run_health "$(hj '' '')" "zzz" 1;   eq "$RC_" 2 "a non-hex sha is an ERROR"
 run_health "$(hj '' '')" "abc" 1;   eq "$RC_" 2 "a too-short sha is an ERROR"
@@ -568,6 +596,11 @@ has "$readiness_block" 'actions/workflows' \
   "...AND from the active-workflow inventory, the only no-ci/indeterminate discriminator"
 has "$readiness_block" '{{ROADMAP_LIB}} branch-health' \
   "the snippet delegates the verdict to the shared predicate rather than re-deriving it"
+# The inventory read is gated on ACTIONS having reported, not on "any result exists": both a legacy
+# status and a check run from another Checks app can be present while Actions is silent, and
+# suppressing the read on either lets the predicate return `green` on an unreported build.
+has "$readiness_block" '.app.slug // "") == "github"' \
+  "the inventory gate attributes check runs by app, so another app cannot stand in for Actions"
 has "$readiness_block" 'HEALTH=skipped' \
   "health starts at the honest 'skipped', never a fabricated green"
 has "$readiness_block" 'defaultBranchRef' \
@@ -1006,6 +1039,13 @@ has "$autofix_block" 'select(.milestone == null)' \
 # #78's carve-out lives here too — one home for every assertion about this snippet.
 has "$autofix_block" 'index("release-blocker") | not' \
   "step 4b excludes an unmilestoned release-blocker from the Backlog sweep (#78)"
+# ...but ONLY in release-readiness mode. Step 4b is convention-agnostic hygiene that runs on every
+# repo, and the overlay promises classic mode stays byte-identical — a repo that merely has the
+# label (e.g. ran `release init`, no marker yet) must keep the plain sweep. (Bot-review find.)
+has "$autofix_block" 'RELEASE_MODE' \
+  "...and the carve-out is gated on release-readiness mode being ACTIVE"
+has "$autofix_block" '$carve == 0 or' \
+  "...so in classic mode the sweep filter reduces to its pre-overlay form"
 has "$autofix_block" 'WARN:' \
   "...and surfaces it instead of silently burying a declared must-have"
 # It WARNS, it does not gate — nothing feeds it to the predicate, so the wording must not promise

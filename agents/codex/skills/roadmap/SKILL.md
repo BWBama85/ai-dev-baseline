@@ -265,8 +265,9 @@ Cloudflare, …), because reading only one silently ignores whole CI providers.
 
 **Compute the verdict with the shared predicate — do not re-derive it in prose.** Feed the live
 readings above to `roadmap-lib.sh`, which returns exactly one of `unarmed` / `unmet` / `held` /
-`met` and is regression-tested by `scripts/check-roadmap.sh` (so the precedence between them
-can't drift run to run). Pass **both** counts and let the predicate pick: that is what keeps the
+`not-green` / `indeterminate` / `met` — **all six**, each with its own emission below — and is
+regression-tested by `scripts/check-roadmap.sh` (so the precedence between them can't drift run to
+run). Pass **both** counts and let the predicate pick: that is what keeps the
 blocker-mode/fallback choice keyed to label *existence* rather than to a live count:
 
 **Do not hand-derive the four counts either.** `release-counts` tabulates them from one paginated
@@ -374,16 +375,17 @@ if [ "$VERDICT" = "met" ]; then
   # Active workflow definitions are the ONLY discriminator between "no CI exists" (skip, per #24)
   # and "CI exists but has not reported here" (fail closed) — an empty result means both.
   #
-  # The read is skipped only when CHECK RUNS are present, which is exactly when the predicate
-  # cannot consult it. Deliberately NOT "when either list is non-empty": a single unrelated green
-  # legacy status would then suppress the read while active workflows had reported nothing, and
-  # the predicate would return `green` on an unreported build. Gate on check-runs alone.
+  # The read is skipped only when GITHUB ACTIONS has already reported on this commit, which is
+  # exactly when the inventory cannot change the answer. Deliberately NOT "when any result exists":
+  # both a legacy commit status AND a check run from a different Checks API app can be present
+  # while Actions has reported nothing, and suppressing the read on either would let the predicate
+  # return `green` on an unreported build. Attribute by `app.slug`, the same rule the predicate uses.
   #
   # Read and parse SEPARATELY: piping the read into the parser would report only the PARSER's
   # status, so a failed inventory read would arrive as an empty document, count as 0 active
   # workflows, and silently downgrade a fail-closed `indeterminate` into a "no CI here" pass.
   WF_COUNT=0
-  if [ "$(printf '%s' "$HEALTH_IN" | jq '.check_runs | length')" = "0" ]; then
+  if [ "$(printf '%s' "$HEALTH_IN" | jq '[.check_runs[] | select((.app.slug // "") == "github")] | length')" = "0" ]; then
     WF_JSON="$(gh api --paginate "repos/$REPO/actions/workflows?per_page=100")" \
       || { echo "ERROR: could not read the workflow inventory — hard stop"; exit 1; }
     WF_COUNT="$(printf '%s' "$WF_JSON" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')" \
@@ -778,7 +780,15 @@ artifact carries one, else an open milestone titled `Backlog`. If neither resolv
 create a milestone** — escalate as `unmilestoned:#N` instead. Creating one would invent a
 convention the repo never opted into.
 
-**The one carve-out: an open `release-blocker` in no milestone is never swept (issue #78).** The
+**The one carve-out — release-readiness mode only: an open `release-blocker` in no milestone is
+never swept (issue #78).** It is gated on the overlay being **active** (`RELEASE_MODE=1`, set when
+the `release-milestone` marker resolved), because step 4b is convention-agnostic tracker hygiene
+that runs on *every* repo and the overlay promises classic mode stays byte-identical. A repo that
+merely happens to have a `release-blocker` label — for instance one that ran `baseline release
+init` but has not yet added the marker — keeps the plain sweep and sees no warning about a release
+milestone it does not have. In classic mode this whole carve-out is inert.
+
+While the overlay *is* active the carve-out matters, and here is why. The
 sweep is unambiguous precisely *because* the backlog is where undecided work belongs — but a
 `release-blocker` is not undecided, it is a declared must-have, and the label is only meaningful
 inside the active release milestone. Moving it to `Backlog` would drop it out of the set the
@@ -798,10 +808,18 @@ separately.
 ```bash
 # ADB-SNIPPET: autofix-unmilestoned
 # Self-contained, like every other block here. Inputs: ROADMAP_NUM (step 2); BACKLOG_TITLE (the
-# `backlog-milestone` marker, defaulting to `Backlog`); NO_AUTOFIX=1 for the --no-autofix run.
+# `backlog-milestone` marker, defaulting to `Backlog`); NO_AUTOFIX=1 for the --no-autofix run;
+# RELEASE_MODE=1 when the `release-milestone` marker resolved (release-readiness mode is ACTIVE).
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
 : "${ROADMAP_NUM:?ERROR: ROADMAP_NUM (the roadmap artifact issue number) is unset — run step 2 first}"
 BACKLOG="${BACKLOG_TITLE:-Backlog}"
+# The `release-blocker` carve-out below belongs to the release-goal OVERLAY, so it is gated on the
+# overlay actually being active. Step 4b is convention-agnostic tracker hygiene that runs on every
+# repo, and the overlay promises classic mode stays byte-identical — a repo that merely happens to
+# have a `release-blocker` label (e.g. one that ran `baseline release init` but has not yet added
+# the marker) must keep the plain "nothing in limbo" sweep, with no warning about a release
+# milestone it does not have.
+RELEASE_MODE="${RELEASE_MODE:-0}"
 
 # Resolve the target milestone by TITLE, live. No open milestone with that title means there is
 # nothing unambiguous to do — escalate rather than create one.
@@ -814,13 +832,17 @@ BACKLOG_NUM="$(printf '%s' "$MS_JSON" | jq -r --arg t "$BACKLOG" '[.[] | select(
 # arrive as an empty list and this step would silently "find nothing in limbo".
 LIMBO_JSON="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100")" \
   || { echo "ERROR: could not list open issues — hard stop"; exit 1; }
+# `$carve` is 1 only in release-readiness mode, so in classic mode this reduces to the original
+# filter and the sweep is byte-identical to a repo that never adopted the convention.
 LIMBO="$(printf '%s' "$LIMBO_JSON" \
-  | jq -r '.[] | select(has("pull_request") | not) | select(.milestone == null)
-           | select([.labels[]?.name] | index("release-blocker") | not) | .number')" \
+  | jq -r --argjson carve "$RELEASE_MODE" '.[] | select(has("pull_request") | not) | select(.milestone == null)
+           | select($carve == 0 or ([.labels[]?.name] | index("release-blocker") | not)) | .number')" \
   || { echo "ERROR: could not parse the open-issue read — hard stop"; exit 1; }
 
 # An unmilestoned open `release-blocker` is carved OUT of the sweep above and surfaced here
-# instead (issue #78). Sweeping it into `Backlog` would be the worst possible repair: the label is
+# instead (issue #78) — but ONLY in release-readiness mode, since this is overlay behavior and
+# classic mode must stay byte-identical. Sweeping it into `Backlog` would be the worst possible
+# repair while the overlay IS active: the label is
 # meaningful only inside the active release milestone, so the move would silently drop a declared
 # must-have out of the release set — and the readiness predicate, which counts blockers IN `M`,
 # would then compute `met` and emit a cut with an abandoned blocker parked in the backlog. That is
@@ -834,10 +856,13 @@ LIMBO="$(printf '%s' "$LIMBO_JSON" \
 # line AND emit the cut. That satisfies what #78 asked for (such an issue is never silently
 # ignored) but is deliberately weaker than the `held` verdict — say `WARN`, not `HOLD`, so the
 # output does not claim a gate that is not wired. Making it a true hold is tracked separately.
-STRAY_BLOCKERS="$(printf '%s' "$LIMBO_JSON" \
-  | jq -r '.[] | select(has("pull_request") | not) | select(.milestone == null)
-           | select([.labels[]?.name] | index("release-blocker")) | .number')" \
-  || { echo "ERROR: could not parse the open-issue read — hard stop"; exit 1; }
+STRAY_BLOCKERS=""
+if [ "$RELEASE_MODE" = "1" ]; then
+  STRAY_BLOCKERS="$(printf '%s' "$LIMBO_JSON" \
+    | jq -r '.[] | select(has("pull_request") | not) | select(.milestone == null)
+             | select([.labels[]?.name] | index("release-blocker")) | .number')" \
+    || { echo "ERROR: could not parse the open-issue read — hard stop"; exit 1; }
+fi
 for n in $STRAY_BLOCKERS; do
   [ "$n" = "$ROADMAP_NUM" ] && continue
   echo "WARN: #$n is an open release-blocker in NO milestone — readiness does not count it, so it does NOT hold the cut. Assign it to the release milestone, or remove its release-blocker label."

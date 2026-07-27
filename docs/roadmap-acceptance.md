@@ -253,9 +253,14 @@ consulted **only** at the would-be-`met` boundary.
 
 ### 9b-ter. An unmilestoned `release-blocker` is never swept to `Backlog` (#78) **[auto]**
 
-- [ ] File an open issue labeled `release-blocker` with **no** milestone. The step-4b autofix must
-      **not** sweep it to `Backlog` — it prints a `WARN:` line instead, and issues no `issue edit`
-      for it. An unlabeled unmilestoned issue in the same run **is** still swept.
+- [ ] File an open issue labeled `release-blocker` with **no** milestone. With release-readiness
+      mode **active**, the step-4b autofix must **not** sweep it to `Backlog` — it prints a `WARN:`
+      line instead, and issues no `issue edit` for it. An unlabeled unmilestoned issue in the same
+      run **is** still swept.
+- [ ] **Classic mode is byte-identical.** With the `release-milestone` marker absent, the *same*
+      fixture takes the plain sweep: the labeled issue is repaired like any other unmilestoned
+      issue and **no** `WARN:` line is printed. (A repo that ran `baseline release init` — which
+      creates the label — but has not yet added the marker sits in exactly this state.)
 - [ ] That warning is **not** retirable by a `## Decisions` row (a row must never hide a release
       risk); it clears only by assigning the issue to the release milestone or removing the label.
 - [ ] It **warns, it does not gate.** Nothing feeds it into the readiness predicate, so the same

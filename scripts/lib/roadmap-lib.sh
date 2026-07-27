@@ -189,6 +189,13 @@ cmd_pr_targets_issue() {
 #
 # stdin is ONE JSON object the caller assembles from its two reads, so this stays pure:
 #   {"check_runs": <.check_runs of the check-runs response>, "statuses": <.statuses of the status response>}
+# BOTH keys are REQUIRED and must be arrays. A missing key is an ERROR, not an empty collection:
+# defaulting it would turn an unreadable response into `no-ci`, which reaches `met` — a release
+# fabricated from a health read nobody could parse.
+#
+# Check runs are attributed by `app.slug`: `github` is GitHub Actions, anything else is another
+# Checks API app. That distinction is load-bearing, because <active-workflows> counts ACTIONS
+# workflows — so "some check run exists" is not evidence that Actions reported.
 #
 # A conclusion of `skipped` or `neutral` is NOT a failure — that is how GitHub itself scores a
 # required check, and treating a skipped job as red would wedge every repo with conditional jobs.
@@ -214,8 +221,14 @@ cmd_branch_health() {
   # reserved for a genuine parse failure.
   out="$(printf '%s' "$json" | jq -r --arg sha "$sha" --argjson wf "$workflows" '
     if type != "object" then error("not an object") else . end
-    | (.check_runs // []) as $runs
-    | (.statuses  // []) as $sts
+    # BOTH keys must be PRESENT and be arrays. Defaulting a missing key to [] would convert a
+    # malformed or truncated health response into "two empty collections", which reads as `no-ci`
+    # and lets release-ready return `met` — fabricating a release from a response nobody could
+    # parse. `no-ci` must mean "explicitly nothing reported", never "the shape was unreadable".
+    | if (has("check_runs") | not) or (has("statuses") | not)
+      then error("check_runs and statuses are both required") else . end
+    | .check_runs as $runs
+    | .statuses  as $sts
     | if ($runs | type) != "array" or ($sts | type) != "array" then error("check_runs/statuses must be arrays") else . end
     # A check attached to a different commit is evidence about the WRONG build. Count it, and let
     # it force `indeterminate` below — dropping it silently could leave zero checks and read as
@@ -245,6 +258,11 @@ cmd_branch_health() {
     # into a false `not-green` instead of the honest `indeterminate`.
     | ([$tagged[] | select(._done) | select(.conclusion | IN("success","skipped","neutral") | not)]) as $bad
     | ([$sts[]  | select((.state // "") | IN("success","pending") | not)]) as $stbad
+    # Check runs produced by GitHub ACTIONS, which is what the workflow inventory counts. Actions
+    # check runs carry app.slug == "github"; another Checks API app (a linter bot, a deploy
+    # provider) carries its own slug. A check run whose app cannot be identified is deliberately
+    # NOT counted as Actions — unknown provenance must not stand in as proof that Actions ran.
+    | ([$mine[] | select((.app.slug // "") == "github")]) as $actions
     | (($mine | length) + ($sts | length)) as $total
     | if   ($bad | length) > 0 or ($stbad | length) > 0 then
              "not-green\nfailing: " + ([($bad[] | .name // "check"), ($stbad[] | .context // "status")] | join(", "))
@@ -252,14 +270,18 @@ cmd_branch_health() {
              "indeterminate\nstill running: " + ([($pending[] | .name // "check"), ($stpending[] | .context // "status")] | join(", "))
       elif $wrongsha > 0 then
              "indeterminate\n" + ($wrongsha|tostring) + " check(s) report a different commit than " + $sha
-      # Active workflows that produced NO check run on this commit are unreported, and that is
-      # true no matter what other providers said. Testing this before `green` is the whole point:
-      # `$total` counts "somebody reported", not "everybody reported", so without this arm a
-      # single unrelated green legacy status (one Vercel deploy) would satisfy $total > 0 and turn
-      # a genuinely unreported Actions build into a confident `green` — a FALSE CUT. Adding an
-      # unrelated passing status must never convert a refusal into a release.
-      elif $wf > 0 and ($mine | length) == 0 then
-             "indeterminate\n" + ($wf|tostring) + " active workflow(s) exist but none has reported on " + $sha
+      # Active workflows that produced no ACTIONS check run on this commit are unreported, and
+      # that is true no matter what anything else said. Testing this before `green` is the whole
+      # point: `$total` counts "somebody reported", not "everybody reported", so without this arm
+      # one unrelated green result would satisfy $total > 0 and turn a genuinely unreported Actions
+      # build into a confident `green` — a FALSE CUT. Two distinct providers can supply that
+      # masking result, so the check has to be about ACTIONS specifically, not about volume:
+      #   - a legacy commit status (one Vercel deploy), which $total counts; and
+      #   - a check run from a DIFFERENT Checks API app, which $total also counts and which a
+      #     plain "are there any check runs" test cannot tell apart from an Actions run.
+      # Adding an unrelated passing result must never convert a refusal into a release.
+      elif $wf > 0 and ($actions | length) == 0 then
+             "indeterminate\n" + ($wf|tostring) + " active workflow(s) exist but Actions has not reported on " + $sha
       elif $total > 0 then "green"
       elif $wf == 0 then "no-ci"
       else "indeterminate\nno CI has reported on " + $sha

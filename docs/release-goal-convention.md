@@ -129,9 +129,12 @@ exists to prevent — a branch that goes red *after* the tag would block the rol
 milestone open with zero open blockers, so `/roadmap` re-emits the same cut on every subsequent run
 and the loop stops terminating. The green-branch gate belongs where the cut is **decided**.
 
-**An open `release-blocker` in no milestone is a hold, not a backlog item.** `/roadmap`'s tracker
-autofix moves an unmilestoned open issue to `Backlog` — but it **excludes** one carrying
-`release-blocker`. That label is only meaningful inside the active release milestone, so sweeping it
+**An open `release-blocker` in no milestone is warned about, not swept — in this mode only.**
+`/roadmap`'s tracker autofix moves an unmilestoned open issue to `Backlog` — but while
+release-readiness mode is **active** it **excludes** one carrying
+`release-blocker`. In classic mode the carve-out is inert and the sweep is byte-identical to a repo
+that never adopted the convention, so a repo that has run `baseline release init` (which creates
+the label) but has not yet added the marker keeps the plain "nothing in limbo" behavior. That label is only meaningful inside the active release milestone, so sweeping it
 to `Backlog` would drop a declared must-have out of the set readiness counts, and the very next run
 would compute "met" and emit a cut with an abandoned blocker parked in the backlog. It is reported
 as a `WARN:` line every run until the tracker actually changes: assign it to the release milestone,
