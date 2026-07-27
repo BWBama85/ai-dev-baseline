@@ -167,17 +167,63 @@ rmdir "$gitdir/adb-update.lock"
 eq "$(run_update "$src/bin/baseline" "$fh")" "0" "the update proceeds once the lock is released"
 if [ -d "$gitdir/adb-update.lock" ]; then bad "the lock must be released on exit"; else ok; fi
 
-# A STALE lock (older than the bound) is broken rather than blocking forever — a killed updater
-# must not lock every future session out. Aged with `touch` rather than by waiting, and against
-# the REAL default bound rather than a degenerate 0.
+# A STALE lock (older than the bound) whose holder is GONE is broken rather than blocking
+# forever — a killed updater must not lock every future session out. Aged with `touch` rather
+# than by waiting, and against the REAL default bound rather than a degenerate 0.
 reset_src
 advance_origin "stale-lock-case"
 mkdir -p "$gitdir/adb-update.lock"
 touch -t 202001010000 "$gitdir/adb-update.lock"
 head_stale="$(git -C "$src" rev-parse HEAD)"
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "a stale lock is broken, not obeyed"
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "a stale lock with no live holder is broken"
 if [ "$(git -C "$src" rev-parse HEAD)" != "$head_stale" ]; then ok; else bad "a stale-locked update should proceed"; fi
 rm -rf "$gitdir/adb-update.lock"
+
+# …but AGE ALONE IS NOT DEATH. A laptop suspended mid-update, or a manual run behind a slow
+# fetch, is old and perfectly alive; breaking that lock runs `git pull` + `install.sh` twice at
+# once, which is the thing the lock exists to prevent. An old lock whose recorded pid is STILL
+# ALIVE must therefore be obeyed. ($$ of this test is alive by construction.)
+reset_src
+advance_origin "live-holder-case"
+mkdir -p "$gitdir/adb-update.lock"
+printf '%s 1577836800\n' "$$" > "$gitdir/adb-update.lock/owner"
+touch -t 202001010000 "$gitdir/adb-update.lock"
+head_live="$(git -C "$src" rev-parse HEAD)"
+eq "$(run_update "$src/bin/baseline" "$fh")" "5" "an OLD lock with a LIVE holder is still obeyed"
+eq "$(git -C "$src" rev-parse HEAD)" "$head_live" "a live-holder lock blocks the pull"
+rm -rf "$gitdir/adb-update.lock"
+
+# A FUTURE-dated lock (clock skew) must never be judged stale: a negative age would compare as
+# "not older than the bound" only by luck, and a caller reading it as a small number would break
+# a live lock. adb_age_secs reports future mtimes as unknown, and an undatable lock is obeyed.
+reset_src
+advance_origin "future-lock-case"
+mkdir -p "$gitdir/adb-update.lock"
+touch -t 209901010000 "$gitdir/adb-update.lock"
+head_future="$(git -C "$src" rev-parse HEAD)"
+eq "$(run_update "$src/bin/baseline" "$fh")" "5" "a future-dated lock is never judged stale"
+eq "$(git -C "$src" rev-parse HEAD)" "$head_future" "a future-dated lock blocks the pull"
+rm -rf "$gitdir/adb-update.lock"
+
+# RELEASE IS OWNERSHIP-SCOPED. Once a peer has stale-broken our lock and taken it, our exit must
+# NOT remove the peer's lock — doing so would let a THIRD mutator in while the peer is mid-pull.
+# Simulated directly against the primitives: take the lock, replace it with a peer's (a different
+# owner token), then release and require the peer's lock to survive.
+reset_src
+mkdir -p "$work/lockprobe"
+probe_lock="$work/lockprobe/adb-update.lock"
+# shellcheck source=/dev/null
+( . "$ROOT/scripts/lib/common.sh"
+  # Pull in just the lock primitives from bin/baseline without running its main flow.
+  eval "$(sed -n '/^_ADB_LOCK_TOKEN=""/,/^}/p;/^_adb_take_lock()/,/^}/p;/^adb_update_lock()/,/^}/p;/^adb_update_unlock()/,/^}/p' "$ROOT/bin/baseline")"
+  _ADB_LOCK_STALE_SECS=600
+  adb_update_lock "$probe_lock" || exit 1
+  rm -rf "$probe_lock"                                  # peer breaks it …
+  mkdir -p "$probe_lock"; printf '99999 1\n' > "$probe_lock/owner"   # … and takes it
+  adb_update_unlock "$probe_lock"                        # our exit path runs
+  [ -d "$probe_lock" ] || exit 2                         # the peer must still hold it
+) && ok || bad "release must not remove a lock another process now owns"
+rm -rf "$work/lockprobe"
 
 # wrong-clone guard: invoking THIS repo's baseline (a different clone) against an
 # install that points at src must refuse with exit 4, before any classification.

@@ -112,8 +112,9 @@ esac
 # --- 3. rate limit ------------------------------------------------------------
 #
 # Several sessions per hour is normal; a network round trip on each is not. The stamp records
-# the last COMPLETED check, so a skipped or locked run never suppresses the next one. Set the
-# interval to 0 to check on every startup.
+# the last ATTEMPT (it is written just before `baseline` runs, below), deliberately: a run that
+# fails or finds a peer already updating must not make the next session retry immediately and
+# hit the same wall. Set the interval to 0 to check on every startup.
 INTERVAL="${ADB_SESSION_UPDATE_INTERVAL_SECS:-600}"
 case "$INTERVAL" in ''|*[!0-9]*) INTERVAL=600 ;; esac
 STAMP_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ai-dev-baseline"
@@ -135,8 +136,16 @@ SRC="$(adb_install_source)" || exit 0   # nothing installed by symlink → nothi
 # `-ef` compares device+inode so two spellings of one clone are correctly seen as the same.
 SESSION_CWD="$(hook_field cwd)"
 [ -n "$SESSION_CWD" ] || SESSION_CWD="$PWD"
-SESSION_ROOT="$(git -C "$SESSION_CWD" rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -n "$SESSION_ROOT" ] && [ "$SESSION_ROOT" -ef "$SRC" ]; then
+# Compare the COMMON git dir, not the work-tree root: a linked worktree of the install-source is
+# a different toplevel but the same repository, and fast-forwarding the main clone under it is
+# the same surprise. --git-common-dir resolves to the shared .git for a worktree and to the
+# ordinary .git otherwise, so one comparison covers both. `-ef` is device+inode, so two spellings
+# of one path match. Falls back to the toplevel on a git too old to know the flag.
+SESSION_GIT="$(git -C "$SESSION_CWD" rev-parse --absolute-git-dir 2>/dev/null || true)"
+[ -n "$SESSION_GIT" ] && SESSION_GIT="$(git -C "$SESSION_CWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || printf '%s' "$SESSION_GIT")"
+SRC_GIT="$(git -C "$SRC" rev-parse --path-format=absolute --git-common-dir 2>/dev/null \
+           || git -C "$SRC" rev-parse --absolute-git-dir 2>/dev/null || true)"
+if [ -n "$SESSION_GIT" ] && [ -n "$SRC_GIT" ] && [ "$SESSION_GIT" -ef "$SRC_GIT" ]; then
   exit 0
 fi
 

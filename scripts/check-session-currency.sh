@@ -152,9 +152,13 @@ has "$OUT" '"systemMessage"' "update reports via systemMessage (operator-visible
 has "$OUT" 'updated' "update line says it updated"
 has "$OUT" '(1 commit)' "update line names the commit count, singular"
 has "$OUT" '"reloadSkills":true' "update asks the harness to reload skills"
-# Valid JSON, and exactly one line — the terse-output contract.
+# Valid JSON, and exactly one line — the terse-output contract. Asserted as non-empty AND
+# newline-free rather than by counting lines: `printf '%s\n' "" | wc -l` is also 1, so a
+# line-count assertion passes on silence and can only ever catch two-or-more.
 printf '%s' "$OUT" | jq -e . >/dev/null 2>&1 && ok || bad "hook output must be valid JSON"
-eq "$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')" "1" "hook emits exactly one line"
+if [ -n "$OUT" ]; then ok; else bad "hook must emit a line here, not silence"; fi
+case "$OUT" in *"
+"*) bad "hook output must be a single line (contains a newline)" ;; *) ok ;; esac
 
 # Plural form, so the count is not hardcoded.
 reset_src
@@ -190,10 +194,39 @@ eq "$(head_of)" "$before" "session started inside the install-source → clone u
 # …and a session in a SUBDIRECTORY of it is the same clone.
 run_hook startup "$src/scripts"
 eq "$(head_of)" "$before" "session started in a subdirectory of the install-source → untouched"
+# A LINKED WORKTREE of the install-source is a different work-tree root but the SAME repository;
+# fast-forwarding the main clone under it is the same surprise, so it must skip too.
+reset_src
+advance_origin "worktree-case"
+git -C "$src" worktree add -q "$work/src-wt" -b wt-probe >/dev/null 2>&1
+before="$(head_of)"
+run_hook startup "$work/src-wt"
+eq "$(head_of)" "$before" "session in a linked worktree of the install-source → untouched"
+git -C "$src" worktree remove --force "$work/src-wt" >/dev/null 2>&1
+git -C "$src" branch -D wt-probe >/dev/null 2>&1
+
 # A session in any OTHER repo still gets the update — the whole point of the feature.
+reset_src
+advance_origin "other-repo-case"
+before="$(head_of)"
 other="$work/other-project"; mkdir -p "$other"; git init -q "$other"
 run_hook startup "$other"
 if [ "$(head_of)" != "$before" ]; then ok; else bad "a session in another repo must still update the install-source"; fi
+
+# A FUTURE-dated stamp (clock skew: a restored VM snapshot, a dual-boot RTC, a backup that
+# rewrites ~/.cache) must not read as "checked very recently" and suppress the check until
+# wall-clock catches up — that is silent staleness, the thing this hook exists to prevent.
+reset_src
+advance_origin "future-stamp-case"
+mkdir -p "$work/cache/ai-dev-baseline"
+: > "$work/cache/ai-dev-baseline/session-currency.stamp"
+touch -t 209901010000 "$work/cache/ai-dev-baseline/session-currency.stamp"
+INTERVAL_ENV=3600
+before="$(head_of)"
+run_hook startup
+has "$OUT" 'updated' "a future-dated stamp does not wedge the rate limit off"
+if [ "$(head_of)" != "$before" ]; then ok; else bad "a future-dated stamp must not suppress the check"; fi
+INTERVAL_ENV=""
 
 # --- unsafe clone states are refused, and named ------------------------------
 # The refusal itself is bin/baseline's (check-baseline.sh owns that); what is asserted here is
@@ -355,5 +388,25 @@ eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command | test("session-cur
       "$ih/.claude/settings.json")" "0" "uninstall removes the SessionStart hook (no dangling command)"
 eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command == "/usr/local/bin/my-own-hook.sh")] | length' \
       "$ih/.claude/settings.json")" "1" "uninstall preserves the user's own SessionStart hook"
+
+# An EMPTY settings.json is not valid JSON, but jq reads empty input as an empty STREAM: it exits
+# 0 and prints nothing. A guard that only checks jq's status would then install a 0-byte file and
+# report success — and that failure is self-entrenching, because bin/baseline's adb_hooks_wired
+# would see no precommit-gate.sh, conclude the user chose --no-hooks, and pass --no-hooks to
+# every future self-heal. The gates would never come back.
+eh="$work/emptysettings"; mkdir -p "$eh/.claude"
+: > "$eh/.claude/settings.json"
+HOME="$eh" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1
+if [ -s "$eh/.claude/settings.json" ]; then ok; else bad "install must never leave a 0-byte settings.json"; fi
+eq "$(jq '[.hooks.SessionStart[]?.hooks[]? | select(.command | test("session-currency\\.sh$"))] | length' \
+      "$eh/.claude/settings.json")" "1" "install wires the hook into a previously-empty settings.json"
+
+# A settings.json that is not valid JSON must be left ALONE and must fail the install — reporting
+# success there is enforcement silently off (bin/baseline's self-heal gates only on this status).
+bh="$work/badsettings"; mkdir -p "$bh/.claude"
+printf 'this is not json\n' > "$bh/.claude/settings.json"
+HOME="$bh" bash "$ROOT/install.sh" --agent claude >/dev/null 2>&1; rc=$?
+no "$rc" "install exits non-zero when settings.json is not valid JSON"
+eq "$(cat "$bh/.claude/settings.json")" "this is not json" "a corrupt settings.json is left byte-identical"
 
 check_summary "session-currency"

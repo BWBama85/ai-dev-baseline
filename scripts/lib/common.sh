@@ -521,16 +521,24 @@ adb_mtime() {
 }
 
 # Print how many seconds ago <path> was last modified, or nothing when that cannot be
-# established (missing path, unreadable mtime, unusable clock). Callers treat empty as "unknown
-# age" and decide their own safe direction — the SessionStart rate limit proceeds with the
-# check, the update lock declines to break a lock it cannot date. The arithmetic and the
-# clock-validation live here so those two policies are the ONLY thing that differs between them.
+# established (missing path, unreadable mtime, unusable clock, or a FUTURE mtime). Callers treat
+# empty as "unknown age" and decide their own safe direction — the SessionStart rate limit
+# proceeds with the check, the update lock declines to break a lock it cannot date. The
+# arithmetic and the validation live here so those two policies are the ONLY difference.
+#
+# A future mtime is reported as unknown rather than as a negative number, and that is
+# load-bearing rather than tidiness: clock skew is real (a restored VM snapshot, a dual-boot RTC,
+# a backup that rewrites ~/.cache), and a caller comparing `age < interval` would read a negative
+# age as "checked very recently" — silently suppressing the currency check until wall-clock time
+# caught up, which is exactly the staleness it exists to catch.
 # Usage: adb_age_secs <path>
 adb_age_secs() {
-  local m now
+  local m now age
   m="$(adb_mtime "$1")"; [ -n "$m" ] || return 0
   now="$(date +%s 2>/dev/null)"; case "$now" in ''|*[!0-9]*) return 0 ;; esac
-  printf '%s' "$((now - m))"
+  age="$((now - m))"
+  [ "$age" -lt 0 ] && return 0
+  printf '%s' "$age"
 }
 
 # --- installed-baseline discovery --------------------------------------------

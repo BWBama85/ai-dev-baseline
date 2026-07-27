@@ -39,7 +39,9 @@ EOF
     local settings="$HOME/.claude/settings.json"
     local re
     re="$(adb_claude_hook_regex)"
-    if [ -f "$settings" ]; then
+    # `-s` not `-f`: jq reads an EMPTY file as an empty stream, exiting 0 with no output — the
+    # `&&` below would then install a 0-byte settings.json and report success.
+    if [ -s "$settings" ]; then
       if jq --arg re "$re" '
             if (.hooks | type) == "object" then
               .hooks |= with_entries(
@@ -48,10 +50,11 @@ EOF
                 else . end
                 | select((.value | type) != "array" or (.value | length) > 0))
             else . end
-          ' "$settings" > "$settings.adb.tmp" && mv "$settings.adb.tmp" "$settings"; then
+          ' "$settings" > "$settings.adb.$$.tmp" && [ -s "$settings.adb.$$.tmp" ] \
+             && mv "$settings.adb.$$.tmp" "$settings"; then
         adb_info "  hooks  removed global Stop gates + SessionStart currency check from ~/.claude/settings.json"
       else
-        rm -f "$settings.adb.tmp"
+        rm -f "$settings.adb.$$.tmp"
         adb_info "  WARN   could not rewrite ~/.claude/settings.json — hook entries NOT removed; edit it by hand"
       fi
     fi
