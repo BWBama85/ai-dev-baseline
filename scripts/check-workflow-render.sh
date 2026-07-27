@@ -58,6 +58,7 @@ Run gates: {{GATE_RUNNER}} run
 Dispatch: {{ROLE_DISPATCH}} resolve review
 Roadmap predicate: {{ROADMAP_LIB}} release-ready 1 1 0 0 0
 Auto-merge guard: {{REPO_SETTINGS_LIB}} automerge-ok
+Cleanup predicate: {{CLEANUP_LIB}} state-verdict threads open
 I am {{CURRENT_AGENT}}.
 Track work: {{SUBTASK_PRIMITIVE}} some sub-tasks.
 Literal shell: echo "$HOME" and a bare $ARGUMENTS token.
@@ -75,6 +76,7 @@ if [ -f "$out" ]; then
   has "$body" 'Dispatch: bash "$HOME/.claude/scripts/lib/role-dispatch.sh" resolve review' "{{ROLE_DISPATCH}} is a command prefix"
   has "$body" 'Roadmap predicate: bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-ready' "{{ROADMAP_LIB}} is a command prefix"
   has "$body" 'Auto-merge guard: bash "$HOME/.claude/scripts/lib/repo-settings.sh" automerge-ok' "{{REPO_SETTINGS_LIB}} is a command prefix"
+  has "$body" 'Cleanup predicate: bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict'  "{{CLEANUP_LIB}} is a command prefix"
   has "$body" 'I am claude.'                                                       "{{CURRENT_AGENT}} maps to claude"
   has "$body" 'Track work: TaskCreate some sub-tasks.'                             "{{SUBTASK_PRIMITIVE}} maps to TaskCreate"
   has "$body" 'Literal shell: echo "$HOME" and a bare $ARGUMENTS token.'           "non-placeholder \$HOME/\$ARGUMENTS text is untouched"
@@ -95,6 +97,7 @@ if [ -f "$cout" ]; then
   has "$cbody" 'Dispatch: bash "$HOME/.codex/scripts/lib/role-dispatch.sh" resolve review' "codex {{ROLE_DISPATCH}} → the ~/.codex helper"
   has "$cbody" 'Roadmap predicate: bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" release-ready' "codex {{ROADMAP_LIB}} → the ~/.codex predicate"
   has "$cbody" 'Auto-merge guard: bash "$HOME/.codex/scripts/lib/repo-settings.sh" automerge-ok' "codex {{REPO_SETTINGS_LIB}} → the ~/.codex guard"
+  has "$cbody" 'Cleanup predicate: bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict'  "codex {{CLEANUP_LIB}} → the ~/.codex predicate"
   has "$cbody" 'I am codex.'                                                        "codex {{CURRENT_AGENT}} → codex"
   has "$cbody" 'Track work: update_plan some sub-tasks.'                            "codex {{SUBTASK_PRIMITIVE}} → update_plan"
   has "$cbody" 'name: fixture'                                                      "codex synth frontmatter emits name"
@@ -116,6 +119,7 @@ if [ -f "$gout" ]; then
   has "$gbody" 'Dispatch: bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" resolve review' "gemini {{ROLE_DISPATCH}} → the ~/.gemini helper"
   has "$gbody" 'Roadmap predicate: bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" release-ready' "gemini {{ROADMAP_LIB}} → the ~/.gemini predicate"
   has "$gbody" 'Auto-merge guard: bash "$HOME/.gemini/scripts/lib/repo-settings.sh" automerge-ok' "gemini {{REPO_SETTINGS_LIB}} → the ~/.gemini guard"
+  has "$gbody" 'Cleanup predicate: bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict'  "gemini {{CLEANUP_LIB}} → the ~/.gemini predicate"
   has "$gbody" 'I am gemini.'                                                       "gemini {{CURRENT_AGENT}} → gemini"
   has "$gbody" 'Track work: Create some sub-tasks.'                                 "gemini {{SUBTASK_PRIMITIVE}} → Create"
   has "$gbody" 'name: fixture'                                                      "gemini synth frontmatter emits name"

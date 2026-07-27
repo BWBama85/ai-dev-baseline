@@ -72,8 +72,18 @@ or `/` maps cleanly. All three columns are implemented (`scripts/build.sh`'s
 | `{{GATE_RUNNER}}`       | quality-gate runner command **prefix**              | `bash "$HOME/.claude/scripts/lib/project-gates.sh"` | `bash "$HOME/.codex/scripts/lib/project-gates.sh"` | `bash "$HOME/.gemini/scripts/lib/project-gates.sh"` |
 | `{{ROLE_DISPATCH}}`     | role-resolver/dispatcher command **prefix**         | `bash "$HOME/.claude/scripts/lib/role-dispatch.sh"` | `bash "$HOME/.codex/scripts/lib/role-dispatch.sh"` | `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh"` |
 | `{{ROADMAP_LIB}}`       | `/roadmap` decision-predicate command **prefix**    | `bash "$HOME/.claude/scripts/lib/roadmap-lib.sh"`   | `bash "$HOME/.codex/scripts/lib/roadmap-lib.sh"`   | `bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh"`   |
+| `{{REPO_SETTINGS_LIB}}` | repo-settings / auto-merge-guard command **prefix** | `bash "$HOME/.claude/scripts/lib/repo-settings.sh"` | `bash "$HOME/.codex/scripts/lib/repo-settings.sh"` | `bash "$HOME/.gemini/scripts/lib/repo-settings.sh"` |
+| `{{CLEANUP_LIB}}`       | `/cleanup` decision-predicate command **prefix**    | `bash "$HOME/.claude/scripts/lib/cleanup-lib.sh"`   | `bash "$HOME/.codex/scripts/lib/cleanup-lib.sh"`   | `bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh"`   |
 | `{{CURRENT_AGENT}}`     | the agent token this skill is rendered for          | `claude`                                            | `codex`                                            | `gemini`                                           |
 | `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        | `update_plan`                                      | `Create`                                           |
+
+**A workflow that writes into `{{STATE_DIR}}` owes `/cleanup` a classification.** `/cleanup`
+sweeps run-state whose PR or run has resolved, and it decides what a file *is* from an allowlist
+in `scripts/lib/cleanup-lib.sh`'s `state-scan`. Anything unrecognised is `other` and is **never**
+deleted — safe, but permanent: a new ephemeral state file that nobody registers becomes exactly
+the accumulating debris #84 was filed about. So when you add one, add an arm for it: give it a
+kind and the key its liveness is read from (a PR number, a branch), or leave it unclassified
+*deliberately* if it is durable history rather than run debris (`new-release.json` is the latter).
 
 Examples: `{{STATE_DIR}}/foo.json` and `{{STATE_DIR}}/` both render cleanly, and a subcommand
 goes after the prefix, e.g. `{{GATE_RUNNER}} run` or `{{ROLE_DISPATCH}} resolve review`. The

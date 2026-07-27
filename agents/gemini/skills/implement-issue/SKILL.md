@@ -222,8 +222,12 @@ rm -f .gemini/state/implement-issue-active.json .gemini/state/implement-issue-bl
 # prompt carries issue and private-repo context, and gaps.err is the agent's full exploration
 # stream (inspected source, command output). Left in place they also outlive their run — a later
 # pass with gap_analysis unassigned never overwrites them, so stale findings sit there looking
-# current. Bounding gaps.err's growth within a run is separate, and tracked in #84.
-rm -f .gemini/state/gap-prompt.txt .gemini/state/gaps.md .gemini/state/gaps.err
+# current. Bounding gaps.err's growth WITHIN a run is separate, and tracked in #123.
+# The lock goes too: a lock left behind by a killed run would make /cleanup treat this repo's gap
+# artifacts as permanently in-flight, so the one place that can prove no dispatch is running —
+# the start of the next run — is the place that clears it.
+rm -f .gemini/state/gap-prompt.txt .gemini/state/gaps.md .gemini/state/gaps.err \
+      .gemini/state/gap-analysis.lock
 ```
 
 ### 2. Verify repo scope + fetch the issue(s)
@@ -291,15 +295,46 @@ still inside that call's cap, and a later shell cannot `wait` on an earlier shel
 variable in your current foreground call, so materialize it, *then* dispatch:
 
 ```bash
-# 1. Write the gap-analysis prompt (heredoc, or your file-write tool).
+# 1. Take the lock FIRST — before the prompt file exists, not after. A concurrent /cleanup
+#    classifies gap-prompt.txt as a gap artifact, and at this point no branch or run marker
+#    exists yet (step 5 owns those), so with LOCK=0 it reads as a finished run's leftovers and
+#    is deleted. Writing the prompt with a file-write tool makes that window a whole agent turn,
+#    not microseconds — and the dispatch below would then fail its redirection, which by the
+#    rules further down reads as "a real agent error": a swept local file blamed on codex.
+: > .gemini/state/gap-analysis.lock
+
+# 2. Write the gap-analysis prompt (heredoc, or your file-write tool).
 cat > .gemini/state/gap-prompt.txt <<'PROMPT'
 …the adversarial gap-analysis prompt, including the three-heading output contract…
 PROMPT
 
-# 2. Dispatch via the harness's background facility, NOT a shell `&`.
+# 3. Dispatch via the harness's background facility, NOT a shell `&`.
 bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" invoke gap_analysis \
   < .gemini/state/gap-prompt.txt > .gemini/state/gaps.md 2> .gemini/state/gaps.err
 ```
+
+**Keep holding the lock after the dispatch returns.** Do NOT append a release to the block above:
+the dispatch is *detached*, so everything after it in that block runs while the pass is still
+going, and the lock would be dropped immediately — unheld for the only window it exists for.
+
+But the window it must cover is **longer than the dispatch**. You still have to read `gaps.md`
+and `gaps.err` (step 4), and the run marker that takes over as the liveness signal does not exist
+until step 5. A release the moment the call returns leaves a gap in which a concurrent `/cleanup`
+sees no lock and no marker, classifies the artifacts as a finished run's leftovers, and deletes
+the findings — or the failure classification — this run is about to act on.
+
+**The lock is therefore released at exactly two places, and nowhere else:**
+
+- **Step 5**, immediately after `implement-issue-active.json` is written — the marker now covers
+  liveness, so the lock has nothing left to protect.
+- **Step 4**, on the paths that stop the run (a BLOCKING finding you surface to the owner; a
+  gap-analysis incompleteness that survives its retry). Those runs never reach step 5, so nothing
+  else would ever clear it.
+
+A run killed between the take and either release leaves the lock behind. That is deliberately
+fail-safe — a stray lock only ever *preserves* artifacts — and preflight clears it on the next
+run. A retry of the dispatch re-runs the block above and re-takes the lock at step 1, so there is
+no separate re-take to remember.
 
 Skipping step 1 fails the *redirection*, so the helper never runs and prints no
 classified line — and a bare non-zero with no classification reads, by the rules
@@ -340,6 +375,13 @@ bound problem, not as a silent agent swap.
   to the owner and stop cleanly. No branch/marker exists yet (that is step 5), so
   there is nothing to pair a blocked file with — do **not** write one.
 - Otherwise record SHOULD-CLARIFY items as assumptions for the PR body and proceed.
+- **On any path that STOPS the run here** — a BLOCKING finding you surface, or a gap-analysis
+  incompleteness that survived its retry — **release the gap lock.** This run never reaches step
+  5, so nothing else will clear it, and a lock left behind pins its artifacts against `/cleanup`
+  indefinitely (until the next run's preflight). Read the findings first, then release:
+  ```bash
+  rm -f .gemini/state/gap-analysis.lock
+  ```
 - **Epic/slice or anything declared out of scope** becomes a tracked issue in step
   12 — including the parent's own "Out of scope" list. Not a PR-body note.
 
@@ -354,6 +396,13 @@ jq -n --arg branch "$BRANCH" --arg issue "$ISSUE_CSV" \
       --arg startedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{branch:$branch, issue:$issue, phase:"branched", startedAt:$startedAt}' \
    > .gemini/state/.marker.tmp && mv .gemini/state/.marker.tmp .gemini/state/implement-issue-active.json
+
+# The marker now exists, so IT is this run's liveness signal — /cleanup keeps its state while the
+# branch survives. Release the gap lock here and only here (the other release is step 4's
+# stop path). Releasing any earlier — e.g. the moment the dispatch returned — leaves a window in
+# which no lock and no marker exist, and a concurrent /cleanup deletes the gap findings this run
+# is still acting on.
+rm -f .gemini/state/gap-analysis.lock
 ```
 
 If the branch already exists locally or on the remote, write the blocked marker

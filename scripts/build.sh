@@ -76,7 +76,8 @@ render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 #     per-agent equivalents are tracked follow-ups (#14/#25).
 render_agent_skill() {
   local agent="$1" src="$2" name out tmp first fmname
-  local args_to state_dir gate_run role_dispatch roadmap_lib repo_settings current_agent subtask fmmode
+  local args_to state_dir gate_run role_dispatch roadmap_lib repo_settings cleanup_lib
+  local current_agent subtask fmmode
 
   # --- the per-agent MAP + MODE ------------------------------------------------------
   # Only two knobs are genuinely a per-agent choice: the tracked-sub-task primitive and the
@@ -96,6 +97,7 @@ render_agent_skill() {
   role_dispatch="bash \"\$HOME/.$agent/scripts/lib/role-dispatch.sh\""
   roadmap_lib="bash \"\$HOME/.$agent/scripts/lib/roadmap-lib.sh\""
   repo_settings="bash \"\$HOME/.$agent/scripts/lib/repo-settings.sh\""
+  cleanup_lib="bash \"\$HOME/.$agent/scripts/lib/cleanup-lib.sh\""
   current_agent="$agent"
 
   name="$(basename "$src" .md)"
@@ -153,6 +155,7 @@ render_agent_skill() {
       -v args_to="$args_to" -v state_dir="$state_dir" \
       -v gate_run="$gate_run" -v role_dispatch="$role_dispatch" \
       -v roadmap_lib="$roadmap_lib" -v repo_settings="$repo_settings" \
+      -v cleanup_lib="$cleanup_lib" \
       -v current_agent="$current_agent" -v subtask="$subtask" '
     function lreplace(s, from, to,   out, p) {
       out = ""
@@ -205,6 +208,7 @@ render_agent_skill() {
       line = lreplace(line, "{{ROLE_DISPATCH}}",    role_dispatch)
       line = lreplace(line, "{{ROADMAP_LIB}}",      roadmap_lib)
       line = lreplace(line, "{{REPO_SETTINGS_LIB}}", repo_settings)
+      line = lreplace(line, "{{CLEANUP_LIB}}",      cleanup_lib)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line

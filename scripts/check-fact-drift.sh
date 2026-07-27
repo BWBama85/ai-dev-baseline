@@ -147,6 +147,15 @@ fact resolution-order fixed:'built-in'       -- base/roles.md docs/roles-and-age
 fact cleanup-origin-symref "fixed:grep '^origin/'" -- \
   base/workflows/cleanup.md scripts/check-cleanup-enum.sh
 
+# --- FACT: the gap-analysis in-flight lock filename (#84) --------------------
+# A cross-skill contract: /implement-issue TAKES and RELEASES the lock around its gap dispatch,
+# and /cleanup's state-scan RECOGNISES it (so a live pass's artifacts are never swept mid-write).
+# The two sides only meet on this literal filename, and a rename that misses one side fails
+# SILENTLY in the destructive direction — cleanup reads "no dispatch in flight" and deletes the
+# findings the dispatch is still writing. Pin the string so a rename must change both together.
+fact gap-analysis-lock fixed:'gap-analysis.lock' -- \
+  scripts/lib/cleanup-lib.sh base/workflows/implement-issue.md
+
 # --- FACT: default async-bot reviewer allowlist (#26) ------------------------
 # adb_dispatch_bots() in role-dispatch.sh is the source of the default bot logins; the
 # resolve-pr-threads workflow re-lists them in prose for the reader. Pin each login so the prose
