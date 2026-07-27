@@ -808,20 +808,18 @@ eq "$(deps "$dfx")" "$(deps "$dfx")" "deps-from-body is deterministic"
 eq "$(deps "$dfx")" '3 5 9'          "...and mixed declare/retire resolves to the declared set"
 
 # --- 6i. STRUCTURE: an issue that DOCUMENTS the keyword must not acquire the edge (#117) -----
-# The third instance of one bug family — #69 (a bare `#N`), #108 (a NEGATED mention), and now a
-# mention the author never asserted at all, because it sits in a repro block, a quoted excerpt or
-# a schema comment. Fixed as a CLASS, so the fixtures below pin every structure at once: a fourth
-# variant should fail here rather than ship. The live victim was #112, whose fenced `console`
-# repro blocks fabricated a #112 -> #52 edge and marked a ready bundle `blocked`.
+# WHY this rule exists lives once, in the STRUCTURE block of scripts/lib/roadmap-lib.sh. These
+# fixtures pin WHAT it does, one structure at a time, so a fourth variant of the family fails here
+# rather than shipping.
 #
-# dline <line>... — a MULTI-LINE body. `deps` takes one argument through `printf '%s'`, so a
-# fenced block cannot be written as a single embedded-newline string; build it from arguments.
-dline() { printf '%s\n' "$@"; }
-depsm() { dline "$@" | bash "$RL" deps-from-body 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+# depsm <line>... — the same runner as `deps`, but for a MULTI-LINE body: `deps` passes its one
+# argument through `printf '%s'`, so a fenced block cannot be written as an embedded-newline
+# string. One line per argument instead.
+depsm() { printf '%s\n' "$@" | bash "$RL" deps-from-body 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
 q3='```'; q4='````'
-# A lone backtick MUST come from a variable: a literal one inside `$( … )` opens a nested legacy
-# command substitution even when it sits inside single quotes, which is a parse error, not a
-# failing test — and a parse error still reports as a PASS here.
+# Backticks inside a DOUBLE-quoted string within `$( … )` open a legacy command substitution — a
+# parse error, and one that still reports as a PASS here rather than a failure. (Single quotes are
+# fine; it is only the double-quoted fixtures below that need this.)
 bt='`'
 
 # Fenced blocks: both characters, info strings, indentation, run lengths, interleaving.
@@ -838,9 +836,8 @@ eq "$(depsm "   $q3" 'Depends on #5' "   $q3")" '' "a fence indented 3 spaces is
 eq "$(depsm "${q3}a${bt}b" 'Depends on #5')" '5' \
    "a backtick fence whose info string holds a backtick does NOT open (so the prose is scanned)"
 eq "$(depsm "~~~a${bt}b" 'Depends on #5' '~~~')" '' "...but a tilde fence's info string may hold one"
-# Four spaces is an INDENTED block, deliberately out of scope: under a `- ` bullet, content starts
-# at 2 and code needs 2+4=6, so treating `^ {4}` as code would delete ordinary continuation PROSE
-# and silently DROP a real edge. Pinned so the exclusion is deliberate, not an oversight.
+# A 4-space run is an INDENTED block and is deliberately NOT stripped (rationale in the lib's
+# STRUCTURE block). Pinned so the exclusion stays a decision rather than becoming an oversight.
 eq "$(depsm "    $q3" 'Depends on #5' "    $q3")" '5' \
    "a 4-space-indented run is NOT a fence (indented blocks are deliberately out of scope)"
 # An unterminated fence must swallow to end-of-body rather than leak its contents back to prose.
@@ -868,13 +865,33 @@ eq "$(deps "see ${bt}${bt} Depends on ${bt}#5${bt} ${bt}${bt} here")" '' \
 eq "$(deps "Depends on ${bt}#5${bt}")" '' \
    "a span around only the REFERENCE stays unresolved today — #112 owns making it an edge"
 
-# Masking must not leak into the NEGATION rule. Masking exists to stop a quoted keyword from
-# DECLARING an edge; if the clause were read from the masked copy too, a code-formatted negator
-# would vanish and MINT an edge the pre-#117 predicate never produced. (Self-review find.)
+# Masking must not leak into the NEGATION rule: it stops a quoted keyword from DECLARING, and must
+# not also stop a real one from RETIRING. (Self-review find; see the lib's clause comment.)
 eq "$(deps "This is ${bt}not${bt} blocked by #5")" '' \
    "a code-formatted negator still retires (the clause is read unmasked)"
 eq "$(deps "It ${bt}no longer${bt} depends on #5")" '' \
    "...including a multi-word one"
+
+# CRLF. A body submitted through the GitHub web UI is CRLF and `gh` passes it through verbatim, so
+# a closer arrives as "```\r". Before this was normalized, its must-be-blank tail was not blank,
+# the fence NEVER closed, and every edge in the rest of the body vanished — a dropped edge marks a
+# genuinely blocked bundle `ready`. This repo's own issues are all API-authored LF, which is
+# exactly why nothing here caught it. (Adversarial-review find.)
+cr="$(printf '\r')"
+eq "$(depsm "$q3" 'repro' "$q3$cr" 'Depends on #5')" '5' \
+   "a CRLF fence closer still closes the fence"
+eq "$(depsm "$q3$cr" 'repro' "$q3$cr" "Depends on #5$cr")" '5' \
+   "...with CRLF throughout"
+
+# An HTML comment must not arm the cross-line state when it is really something else.
+eq "$(depsm "${q3}html<!--" '<div/>' "$q3" 'Depends on #5')" '5' \
+   "a <!-- in a fence INFO STRING is text: the fence starts first, so it must not arm a comment"
+eq "$(depsm '~~~html<!--' '<div/>' '~~~' 'Depends on #5')" '5' "...same for a tilde fence"
+eq "$(deps '<!-->')$(depsm '<!-->' 'Depends on #5')" '5' \
+   "<!--> is an EMPTY comment (opener and closer share dashes), not an unterminated one"
+eq "$(depsm '<!--->' 'Depends on #5')" '5' "...and so is <!--->"
+eq "$(depsm '<!--' 'Depends on #9' '-->' 'Depends on #5')" '5' \
+   "a genuine multi-line comment still swallows its contents"
 
 # The point of the whole family: prose still declares, and a quoted negation is not a retirement.
 eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \
@@ -914,6 +931,20 @@ eq "$(dcs '## Decisions log\n| a:#1 | x | — |\n')" '' \
    "a differently-titled heading is NOT the Decisions section"
 eq "$(dcs "${D_HEAD}<!-- a comment -->\n| a:#1 | x | — |\n")" 'a:#1' \
    "an HTML comment inside the section is skipped"
+
+# STRUCTURE (#117) — `decisions` reads the same document as `deps-from-body`, so it runs the same
+# filter. Without it, two bugs live here, and the artifact ships BOTH shapes inside this very
+# section (a schema HTML comment, and fenced examples elsewhere in the body).
+eq "$(dcs "${D_HEAD}${q3}\n| fake:#99 | a quoted example | — |\n${q3}\n| a:#1 | x | — |\n")" 'a:#1' \
+   "a table row quoted in a fence is NOT a recorded decision (it would retire an unanswered question)"
+eq "$(dcs "${D_HEAD}${q3}\n# not a heading\n${q3}\n| a:#1 | x | — |\n")" 'a:#1' \
+   "a #-line quoted in a fence does not end the section (that is #108 returning by another route)"
+eq "$(dcs "${D_HEAD}<!--\n| example:#7 | the schema's own example row | — |\n-->\n| a:#1 | x | — |\n")" 'a:#1' \
+   "a row inside a MULTI-LINE HTML comment is not a decision"
+eq "$(dcs "${D_HEAD}> | quoted:#8 | from another thread | — |\n| a:#1 | x | — |\n")" 'a:#1' \
+   "a blockquoted row is quoted material, not a decision"
+eq "$(dcs "${D_HEAD}${q3}\r\nx\r\n${q3}\r\n| a:#1 | y | — |\r\n")" 'a:#1' \
+   "a CRLF body closes its fence here too (see the CRLF note in 6i)"
 bash "$RL" decisions extra-arg >/dev/null 2>&1
 eq "$?" 2 "decisions takes no arguments"
 

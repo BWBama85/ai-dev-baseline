@@ -32,7 +32,21 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - Fence and span scanning are counted with `substr`/`index` rather than regex intervals:
     `{0,3}` is not honored by the BSD awk on macOS or older mawk, and an unmatched fence rule
     fails **open** — every fence would leak its contents back into the scan.
-  - 24 new fixtures in `scripts/check-roadmap.sh` pin the whole family, plus three drift guards
+  - **`decisions` reads the same document, so it runs the same filter.** Two bugs lived there:
+    a `| … |` row quoted in a fence was read as a recorded owner decision — retiring a question
+    *nobody answered* — and a `#` line quoted in one ended the section early, hiding every real
+    decision after it, which is **#108 returning by another route**. The artifact ships an HTML
+    comment inside that very section, safe until now only because no line in it began with `|`.
+  - **CRLF bodies.** A body submitted through the GitHub web UI is CRLF and `gh` passes it
+    through verbatim, so a fence closer arrives as ``` ```\r ```. Its must-be-blank tail was not
+    blank, the fence never closed, and every edge in the rest of the body disappeared. Lines are
+    now normalized once, for every consumer. This repo's own issues are all API-authored LF,
+    which is exactly why the fixtures could not have caught it.
+  - `<!-->` / `<!--->` are empty comments in CommonMark (opener and closer share their dashes);
+    they were parsed as *unterminated* openers and swallowed the rest of the body. A `<!--` in a
+    fence **info string** no longer arms the cross-line comment state either — the fence starts
+    first, so it wins.
+  - 40 new fixtures in `scripts/check-roadmap.sh` pin the whole family, plus three drift guards
     that keep the rule stated in the workflow prose.
 
 - **`/cleanup` was a permanent no-op on any squash-merging repo** (#106). It decided local-branch
