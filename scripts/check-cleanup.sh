@@ -478,6 +478,15 @@ check_git "$cuseed" checkout -q -b main
 check_git "$cuseed" add -A
 check_git "$cuseed" commit -q -m seed
 check_git "$cuseed" push -q -u origin main
+# Point the SEED's and the BARE origin's HEAD at main explicitly, exactly as
+# check-session-currency.sh:76,80 does. Both are created by `git init`, which takes its branch name
+# from `init.defaultBranch` — so on a host configured for `master` (CI's shape, and git's own
+# built-in default on older versions) the bare repo's HEAD names a ref that was never pushed. Every
+# clone below then comes up with NO local `main`, and the first `push origin main` fails with
+# "src refspec main does not match any" — which is exactly how this passed locally, where the
+# default happens to be `main`, and failed in CI.
+git -C "$cuseed" symbolic-ref HEAD refs/heads/main
+git -C "$cuorigin" symbolic-ref HEAD refs/heads/main
 
 cusrc="$cuw/src"; git clone -q "$cuorigin" "$cusrc"
 cufh="$cuw/home"; mkdir -p "$cufh"
