@@ -7,7 +7,47 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Fixed
+
+- **The cross-agent dispatch bound is now a hang backstop, not a work budget**
+  (`scripts/lib/role-dispatch.sh`, #93): the default rose from 7 to **45 minutes (2700 s)**.
+  The old bound sat near typical runtime, so ordinary high-reasoning passes tripped it — codex
+  gap analysis timed out on three consecutive runs (`rc=124`) and each one silently fell back to
+  a Claude subagent, which meant `agents.toml` said `gap_analysis = "codex"` while Claude did the
+  work. A backstop belongs well above the longest legitimate run; `ADB_DISPATCH_TIMEOUT_SECS`
+  still overrides it, but a stock clone needs no environment set. The bound applies to **every**
+  agent and role the helper dispatches, not just codex.
+- **Gap analysis is dispatched in the background, and the millisecond ceiling is gone**
+  (`base/workflows/implement-issue.md`, #93): a harness typically caps a *foreground* command
+  (Claude Code: 10 minutes) far below the backstop, so raising the default alone would have
+  changed nothing — the outer cap fired first. The old `420000`–`600000` ms guidance was a
+  harness artifact documented as if it were a property of codex, and it taught every reader to
+  cap itself at 10 minutes; it is retired. Verified on this issue's own run: codex completed in
+  **~9.5 minutes**, past both the old default and the 9-minute bound that had failed before it.
+- **The backstop always terminates** (`scripts/lib/role-dispatch.sh`, #93): both paths now
+  escalate **TERM → grace → KILL** (`timeout -k`, and by hand in the portable watchdog). Sending
+  only SIGTERM left `wait` blocking forever on a child that ignores it — tolerable at a
+  seven-minute bound under an outer harness cap, an unbounded deadlock at 45 minutes without one.
+  A bound-fired kill reports `124` on **every** path, including where GNU `timeout` would
+  otherwise relay the child's `137`.
+- **Dispatch failures are classified instead of collapsed** (`adb_dispatch_classify_rc`, #93):
+  `124` (our backstop) vs `143` (an **outer** bound killed it first) vs `137` (an external kill)
+  vs any other non-zero (a real agent error) each carry a different fix, and each now says so on
+  stderr. Treating them alike is how a bound problem masqueraded as a codex problem for three runs.
+- **`gap_analysis` never silently substitutes another agent** (`base/roles.md`, #93): it retries
+  the assigned agent exactly once, then reports the classified incompleteness and stops. A
+  too-small bound must surface as a bound problem, not quietly demote the owner's chosen
+  reviewer. The `review` role keeps its fallback — its slots are independent and a documented
+  substitution there loses no configuration meaning.
+
 ### Added
+
+- **`req_absent` / `stale` — enforcing a *superseded* fact** (`scripts/check-lib.sh`,
+  `scripts/check-fact-drift.sh`, #93): fact-drift was positive-presence only, so a file carrying
+  both the new figure and the old one beside it passed every rule while still misinforming the
+  reader. Repointing a fact now also sweeps the retired form out of every consumer, including the
+  three rendered skills. `CHANGELOG.md` is deliberately exempt: its entries record what shipped at
+  the time, and rewriting shipped history to satisfy a lint would be a lie rather than a fix.
 
 - **`baseline repo` — hand PR merges to GitHub** (`scripts/lib/repo-settings.sh`, #87): sets the
   default branch's required status checks and enables `allow_auto_merge`, so a PR opened by

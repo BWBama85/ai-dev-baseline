@@ -97,10 +97,16 @@ Two additions to `base/roles.md`:
   |---|---|---|
   | `foo` | `foo exec --cd <repo> -` (adjust to `foo`'s actual CLI) | `~/.foo/FOO.md` |
 
-  If `foo`, like `codex`, is slow enough on a full-repo pass to need a longer
-  Bash timeout than the 2-minute default, document that the same way the
-  codex-timeout note in `base/roles.md` does — name the concrete minimum
-  timeout, don't just say "give it more time."
+  You do **not** need to pick a per-agent timeout. `role-dispatch.sh` already bounds
+  every invocation with one shared **45-minute hang backstop** (`ADB_DISPATCH_TIMEOUT_SECS`),
+  and that bound is deliberately a backstop rather than a work budget — it exists to
+  stop a wedged process, not to cap how long `foo` may legitimately think. Sizing a
+  bound to an agent's *typical* runtime is what made ordinary passes fail (#93), so
+  don't reintroduce it per agent.
+
+  If `foo` is slow on a full-repo pass, the note worth writing is that its dispatch
+  must run in the **background** (a harness's foreground cap is usually far below the
+  backstop), following the dispatch-bound note in `base/roles.md`.
 
 Then add `foo` to the **runtime resolver's token allowlist** — `_ADB_RD_KNOWN` in
 `scripts/lib/role-dispatch.sh`. That helper validates every resolved token against this

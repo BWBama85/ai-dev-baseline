@@ -30,10 +30,13 @@ product thesis turned inward.
   links it, `uninstall.sh` removes it, and `bin/baseline` verifies it — one producer, so the
   create/remove/verify sets can't drift. `scripts/check-common-lib.sh` unit-tests the
   primitives; a regression breaks one job, not eight silently-diverging copies.
-- **Repeated prose facts** — the cross-agent invocation commands, the codex ≥7-minute
-  timeout, the role-resolution order, the gate-axis list — are pinned by
+- **Repeated prose facts** — the cross-agent invocation commands, the 45-minute dispatch
+  hang backstop, the role-resolution order, the gate-axis list — are pinned by
   `scripts/check-fact-drift.sh`, an allowlisted lint that fails when a canonical token
-  diverges across the docs that restate it.
+  diverges across the docs that restate it. Positive presence alone is not always enough:
+  when a fact **replaces** an earlier value, the lint also asserts the superseded token is
+  **absent**, so a doc that quietly keeps the old figure fails instead of passing on the
+  strength of carrying both (#93).
 - **The practice index** (`base/practices/00-index.md`) is kept honest by
   `scripts/check-practice-index.sh`: every practice is listed exactly once, no stale rows.
 

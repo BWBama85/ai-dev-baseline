@@ -77,10 +77,10 @@ returns its **clean final message** on stdout:
   cloud review, so the harness reserves it for humans) and the Skill tool rejects
   it. Treat `/code-review` only as an *optional* step the owner runs after the PR
   (like `/resolve-pr-threads` for bot threads).
-- `codex` → `codex exec --cd <repo> -`; `gemini` → `agy -p`. A cross-agent
-  `codex exec` needs a **≥7-minute** timeout. `{{ROLE_DISPATCH}} invoke` wraps both
-  (and applies that bound), and captures codex's `--output-last-message` so the
-  reply is only the final message, never the exploration stream.
+- `codex` → `codex exec --cd <repo> -`; `gemini` → `agy -p`. `{{ROLE_DISPATCH}} invoke`
+  wraps both, applies the **45-minute hang backstop**, and captures codex's
+  `--output-last-message` so the reply is only the final message, never the
+  exploration stream.
 
 **Completion contract (delegated steps must terminate).** `gap_analysis`, `review`,
 and any cross-agent / subagent dispatch MUST reach a terminal, *completed* state —
@@ -90,9 +90,12 @@ exit for `codex exec`/`agy -p`/`claude -p`; the tool result for an Agent subagen
 **Never poll a background agent's output to infer whether it is "hung"** — the
 outcome is the call returning, not the byte count growing. On timeout / error /
 hang: kill it, **retry once**, then **fall back** to another agent the role lists or
-a `general-purpose` Claude subagent running the same prompt. If nothing completes,
-the step **failed** → block or surface (step 4 / step 8), never proceed on partial
-or empty output. Full contract: `base/roles.md`.
+a `general-purpose` Claude subagent running the same prompt — **except for
+`gap_analysis`, which never substitutes another agent** (retry once, then report the
+classified incompleteness and stop; see step 3). If nothing completes, the step
+**failed** → block or surface (step 4 / step 8), never proceed on partial or empty
+output. **Report any fallback that does fire prominently**, not as one ⚠️ line among
+many. Full contract: `base/roles.md`.
 
 ## Important rules (from base/practices)
 
@@ -209,6 +212,13 @@ else
 fi
 mkdir -p {{STATE_DIR}}
 rm -f {{STATE_DIR}}/implement-issue-active.json {{STATE_DIR}}/implement-issue-blocked.json
+# Gap-analysis artifacts from a PREVIOUS run, cleared for two reasons. They are per-run data that
+# nothing consumes afterwards, and they are the most sensitive files this workflow writes: the
+# prompt carries issue and private-repo context, and gaps.err is the agent's full exploration
+# stream (inspected source, command output). Left in place they also outlive their run — a later
+# pass with gap_analysis unassigned never overwrites them, so stale findings sit there looking
+# current. Bounding gaps.err's growth within a run is separate, and tracked in #84.
+rm -f {{STATE_DIR}}/gap-prompt.txt {{STATE_DIR}}/gaps.md {{STATE_DIR}}/gaps.err
 ```
 
 ### 2. Verify repo scope + fetch the issue(s)
@@ -259,26 +269,65 @@ Dispatch through the helper, which returns only the agent's **clean final messag
 stdout — for `codex` it captures `--output-last-message`, so the repo-exploration
 stream never contaminates the findings (no `tail`/grep recovery, the old #8 pain):
 
+**Dispatch it in the BACKGROUND** — this is not a preference. A gap-analysis pass at
+high reasoning effort routinely runs **longer than 10 minutes**, and agent harnesses
+commonly cap a *foreground* command well below that. Run in the foreground, that outer
+cap — not the helper's own 45-minute backstop — is what fires, and no amount of raising
+the backstop can help. That mismatch cost three consecutive runs before it was
+diagnosed (#93).
+
+"Background" means **your own harness's detached-execution facility** — whichever
+mechanism runs a command off the foreground path and reports its terminal status back to
+you. Look it up for the agent driving this run rather than assuming; the details differ
+per harness. A shell `&` is **not** it, on any harness: `&` inside one foreground call is
+still inside that call's cap, and a later shell cannot `wait` on an earlier shell's child.
+
+**Write the prompt to a file first.** A detached call cannot be fed from a shell
+variable in your current foreground call, so materialize it, *then* dispatch:
+
 ```bash
-printf '%s' "$GAP_PROMPT" | {{ROLE_DISPATCH}} invoke gap_analysis > {{STATE_DIR}}/gaps.md
+# 1. Write the gap-analysis prompt (heredoc, or your file-write tool).
+cat > {{STATE_DIR}}/gap-prompt.txt <<'PROMPT'
+…the adversarial gap-analysis prompt, including the three-heading output contract…
+PROMPT
+
+# 2. Dispatch via the harness's background facility, NOT a shell `&`.
+{{ROLE_DISPATCH}} invoke gap_analysis \
+  < {{STATE_DIR}}/gap-prompt.txt > {{STATE_DIR}}/gaps.md 2> {{STATE_DIR}}/gaps.err
 ```
 
+Skipping step 1 fails the *redirection*, so the helper never runs and prints no
+classified line — and a bare non-zero with no classification reads, by the rules
+below, as "a real agent error", i.e. a missing local file misreported as a codex
+failure. Check the file exists before dispatching.
+
 Under the hood the helper runs the resolved agent's CLI — `codex exec --cd <repo> -`
-for codex — with the documented **≥7-minute** bound (`420000`–`600000` ms), past
-codex's typical 3–7 min. **Give the Bash tool call itself a timeout ABOVE that bound**
-(e.g. `480000`–`600000` ms) so the harness never kills the helper before its own
-watchdog fires.
+for codex — under a **45-minute (2700 s)** hang backstop. That bound is a backstop, not
+a work budget: it stops a wedged process and otherwise stays out of the way, and it
+escalates TERM → grace → KILL so it always terminates. `ADB_DISPATCH_TIMEOUT_SECS`
+overrides it; a stock clone needs no environment set. Do **not** re-derive a
+millisecond ceiling for the surrounding call — capping it is the bug this step exists
+to prevent.
 
 **Completion contract (per the Roles section).** This is a single bounded call:
-**wait for it to return** — do not poll its output stream to guess whether it is
-"hung." A SIGTERM (exit 143) at a *2-minute* bound is just too-tight a bound, not a
-failure — re-run at the ≥7-min bound. A genuine timeout (the helper returns 124) or a
-non-zero exit at the full bound is an **incomplete** invocation: **retry once**, then
-**fall back** to a `general-purpose` Claude subagent (Agent tool) running the same
-adversarial read *with the same output contract*. If even the fallback cannot complete,
-**surface to the owner and stop cleanly** — gap-analysis runs *before* the
-branch/marker exists, so there is no blocked marker to write (step 4); do not proceed
-as if the pass had run.
+**wait for the harness to report it finished** — do not poll its output stream to guess
+whether it is "hung" (`gaps.err` grows steadily during healthy exploration, so its size
+tells you nothing). On failure, **read the classified line at the tail of `gaps.err`** —
+it is the last thing written there, behind the whole exploration stream, and it is the
+one line that tells you *which* failure this was. rc **124** is
+our backstop firing, rc **143** is an *outer* bound killing it first (re-dispatch in the
+background, or raise that outer bound — not ours), rc **137** is an external SIGKILL —
+an OOM killer or the harness, i.e. a memory/environment problem, **not** the agent — and
+any other non-zero is a real agent error. Each warrants a different response, so read the
+classification rather than treating every non-zero as "the agent failed".
+
+An incomplete invocation is **retried exactly once**. If the retry also fails,
+**report the classified incompleteness and stop cleanly** — gap-analysis runs *before*
+the branch/marker exists, so there is no blocked marker to write (step 4).
+**Do NOT substitute a different agent.** `gap_analysis` is the one role that never falls
+back: quietly running Claude while `agents.toml` says `codex` is what made the role
+assignment fiction for three runs (#93). A bound that is too small must surface as a
+bound problem, not as a silent agent swap.
 
 ### 4. Decide
 
@@ -372,7 +421,8 @@ documented fallback) before you set `phase=code_reviewed`. A fallback stands in 
   **Never model-invoke `/code-review`** (user-only, `disable-model-invocation`) — it
   is an optional step the owner runs after the PR, not part of this slot.
 - `codex` → `{{ROLE_DISPATCH}} invoke codex` over a review prompt on the diff (it runs
-  `codex exec` with the ≥7-min bound and the clean `--output-last-message` capture).
+  `codex exec` with the 45-min hang backstop and the clean `--output-last-message`
+  capture — dispatch it in the background too, for the same reason as step 3).
 - `gemini` → `{{ROLE_DISPATCH}} invoke gemini` over the diff (it runs `agy -p`).
 
 **Completion contract (per the Roles section).** Run each cross-agent reviewer
@@ -486,13 +536,27 @@ parent (a comment that survives the parent closing) and the PR.
   return; never poll its output to guess "hung." Then kill → **retry once** →
   **fall back** (another listed agent, or a `general-purpose` Claude subagent running
   the same prompt) → if still nothing completes, block/surface. Never mark the step
-  done on partial or empty output.
-- **Gap-analysis `codex exit 143` at a ~2-min bound** → the Bash timeout was too
-  tight, not a failure. Re-run at `420000`–`600000` ms. A real timeout at the full
-  ≥7-min bound is an incomplete invocation → retry → fallback (line above).
+  done on partial or empty output. **`gap_analysis` is the exception: retry once, then
+  surface — never substitute another agent** (see step 3).
+- **Gap-analysis returns rc 143 (SIGTERM)** → an **outer** bound killed the call before
+  the helper's own 45-min backstop could. The fix is *where* it runs, not a bigger
+  number: dispatch it through the harness's background facility. Re-deriving a
+  millisecond ceiling for the foreground call is the bug, not the remedy.
+- **Gap-analysis returns rc 124** → the helper's own hang backstop fired. That is a
+  genuinely stuck or extraordinary run: retry once, then surface it as a **codex
+  incompleteness** (never a silent swap to another agent). Raise
+  `ADB_DISPATCH_TIMEOUT_SECS` only if a legitimate pass really needs more than 45 min.
+- **Gap-analysis returns rc 137 (SIGKILL)** → killed from *outside* the helper — an OOM
+  killer or the harness. Investigate memory/environment, **not** the agent: re-running
+  the same pass in the same conditions will be killed again.
+- **Gap-analysis output is empty while `gaps.err` is huge** → not a diagnostic signal.
+  `codex exec` returns its result as a **final message**, not a stream, so a
+  bound-killed run yields empty stdout whether or not it was progressing; the large
+  `gaps.err` is just the exploration stream, i.e. evidence of *active work*. Read the
+  helper's classified rc instead of inferring from output sizes.
 - **Gap-analysis `""` (unassigned)** → the only legitimate skip; note it in the PR
   and continue. An *assigned* gap-analysis agent that cannot run is a failure to
-  retry → fall back to a Claude subagent → surface — not a silent skip.
+  retry → surface — not a silent skip and not a substitution.
 - **`/code-review` errors with `disable-model-invocation`** → expected: it is
   **user-only** by design (it can launch a billed cloud review), *not* a version or
   toolchain problem. The Claude `review` slot never invokes it — use `/simplify` + a

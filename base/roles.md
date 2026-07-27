@@ -56,17 +56,35 @@ complete**, not an optional extra. This binds `gap_analysis`, `review`, and any
 cross-agent dispatch:
 
 - **One bounded call; wait for it to return.** Give each dispatch a real timeout
-  (≥7 min for `codex exec`) and **wait for the process to exit** (`codex exec` /
-  `agy -p` / `claude -p`) or the tool to return (an Agent-tool subagent). **Never
-  poll a background agent's output to infer whether it is "hung"** — the outcome is
-  the call returning, not the byte count growing; that guess-and-recheck loop is
-  itself the wasted time and is unreliable in both directions.
+  (the 45-min hang backstop `role-dispatch.sh` applies) and **wait for the process to
+  exit** (`codex exec` / `agy -p` / `claude -p`) or the tool to return (an Agent-tool
+  subagent). **Never poll a background agent's output to infer whether it is "hung"** —
+  the outcome is the call returning, not the byte count growing; that guess-and-recheck
+  loop is itself the wasted time and is unreliable in both directions.
+- **Dispatch in the background when the harness caps foreground calls.** "Background"
+  means the harness's *own* detached-execution facility, which reports the call's
+  terminal status back to you — not a shell `&`. A backgrounded `&` inside one
+  foreground call is still inside that call's cap, and a *later* shell cannot `wait` on
+  an earlier shell's child, so `&` buys nothing. Backgrounding changes **where** the
+  call runs, never the wait-for-terminal-state rule above.
 - **On timeout / error / hang:** abandon the call — a Bash timeout kills a
   `codex exec` / `agy -p` / `claude -p` process; an Agent-tool subagent has no PID to
   kill, so its error or timeout return *is* the terminal signal — then **retry once**
-  and **fall back**: to another agent the role lists, or to a `general-purpose` Claude
-  subagent running the same prompt (model-invokable whenever Claude drives; but it too
-  can error, so it is a fallback, not a guarantee).
+  and, *except for `gap_analysis`* (below), **fall back**: to another agent the role
+  lists, or to a `general-purpose` Claude subagent running the same prompt
+  (model-invokable whenever Claude drives; but it too can error, so it is a fallback,
+  not a guarantee). **Report every fallback prominently** — a step running on its
+  backup is a fact the operator must not have to dig for.
+- **`gap_analysis` never falls back to another agent.** Retry the assigned agent
+  **exactly once**; if the second attempt also fails, **report the classified
+  incompleteness and stop** (pre-branch, so no blocked marker — see the workflow's
+  step 4). It **never substitutes** a different agent: doing so makes `agents.toml` say
+  one thing while another agent does the work — which is exactly how a too-small bound
+  spent three runs pretending to be a codex problem (#93). A too-small bound must never
+  silently demote the owner's chosen agent. This arm is finite and the backstop is
+  hard (it escalates TERM → grace → KILL), so removing the fallback cannot deadlock a
+  run. The `review` role keeps its fallback: its slots are independent, and a
+  documented substitution there loses no configuration meaning.
 - **A step is complete once its call returns a result.** A reviewer that runs to the
   end and reports **no findings** is a clean pass — proceed to triage. Only a call
   that **never returned a result** (crashed, hung, or was killed) is incomplete; if
@@ -95,12 +113,23 @@ it shells out to that agent's non-interactive entrypoint:
 | `codex` | `codex exec --cd <repo> -` (prompt on stdin) | `~/.codex/` + `AGENTS.md` |
 | `gemini` | `agy -p "<prompt>"` (Antigravity CLI) | `~/.gemini/GEMINI.md` |
 
-> **Note (codex timeout):** `codex exec` reads and reasons over the whole repo —
-> it routinely takes **3–7 minutes**, well past a default 2-minute command
-> timeout. Always give a cross-agent `codex exec` call a timeout of at least
-> 7 minutes; a SIGTERM at 2 minutes is just too-tight a bound (re-run longer), not a
-> failure. A genuine timeout at the *full* ≥7-min bound, though, is an **incomplete**
-> invocation — retry → fall back per the completion contract above.
+> **Note (dispatch bound):** `codex exec` reads and reasons over the whole repo. At high
+> reasoning effort a non-trivial diff **routinely exceeds 10 minutes**, so
+> `role-dispatch.sh` gives every invocation a **45-minute (2700 s)** bound, overridable
+> via `ADB_DISPATCH_TIMEOUT_SECS` — though a stock clone should never need to set it.
+>
+> Treat that bound as a **hang backstop, not a work budget**: it exists to stop a wedged
+> process, so it sits far above the longest legitimate run rather than near the typical
+> one. Setting it near typical runtime is what made ordinary passes look like failures
+> (#93). The backstop escalates **TERM → grace → KILL**, so it always terminates.
+>
+> The bound applies to **every** agent and role this helper dispatches, not just codex.
+> Because a harness may cap a *foreground* call well below it, dispatch long passes in
+> the background (see the completion contract above) — otherwise the outer cap, not this
+> bound, is what actually fires. A kill by an outer bound reports as SIGTERM (rc 143);
+> our own backstop reports as rc 124; anything else is a real agent error. Those are
+> different failures with different fixes, so `role-dispatch.sh` names which one
+> happened instead of collapsing them into "the agent failed".
 
 ## Runtime dispatch helper
 
@@ -114,11 +143,13 @@ by hand in each skill:
   manifest as it resolves: an unknown agent token, or an explicit empty `review = []`, is a hard
   error — never a silent fall-through to the next resolution layer or a degraded default.
 - `role-dispatch.sh invoke <role|agent>` (prompt on stdin) runs one agent's CLI with the
-  documented flags and the ≥7-min codex bound, returning only that agent's **clean final
+  documented flags and the 45-min hang backstop, returning only that agent's **clean final
   message** on stdout. For `codex` it uses `--output-last-message`, so the exploration stream
-  never contaminates the captured findings. A multi-agent `review` role is refused on purpose:
-  use `resolve` then a per-slot `invoke <token>` loop, so a same-agent slot stays in-process and
-  each slot keeps its own retry/fallback (the completion contract above).
+  never contaminates the captured findings. On a non-zero exit it prints one **classified**
+  diagnostic to stderr — our backstop (124) vs an outer bound's SIGTERM (143) vs a real agent
+  error — so a bound problem is never mistaken for an agent problem. A multi-agent `review` role
+  is refused on purpose: use `resolve` then a per-slot `invoke <token>` loop, so a same-agent slot
+  stays in-process and each slot keeps its own retry/fallback (the completion contract above).
 
 ## Resolution order
 

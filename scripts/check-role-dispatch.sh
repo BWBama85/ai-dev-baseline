@@ -23,7 +23,10 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 REPO="$work/repo"; GHOME="$work/home"; BIN="$work/bin"
-mkdir -p "$REPO" "$GHOME/.config/ai-dev-baseline" "$BIN"
+# A second stub dir, so a concurrent case can install a DIFFERENT codex stub without racing the
+# others over $BIN/codex.
+BIN2="$work/bin2"
+mkdir -p "$REPO" "$GHOME/.config/ai-dev-baseline" "$BIN" "$BIN2"
 # A git repo so `git rev-parse --show-toplevel` inside the helper is deterministically $REPO,
 # regardless of any ambient git repo above the temp dir.
 git init -q "$REPO"
@@ -216,11 +219,166 @@ cat > "$BIN/codex" <<'EOF'
 cat >/dev/null; sleep 2; exit 0
 EOF
 chmod +x "$BIN/codex"
-out_rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_TIMEOUT_SECS=1 bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || out_rc=$?
+# Run the helper under the fixture with extra leading env assignments: `rd_env VAR=1 ... <args>`.
+# The fixture's environment contract (cwd + HOME + PATH) already lives in `rd()`; without this the
+# new bound/escalation cases each re-spell it, so adding one fixture variable would be a six-site
+# edit. `env` rather than bare assignments on `rd` — in bash a prefix assignment on a FUNCTION call
+# persists after it returns and would leak into later assertions.
+rd_env() { ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" env "$@" ); }
+
+# ONE dispatch feeds both the rc and the stderr assertion — re-running a 1-second timeout purely to
+# capture the other stream doubles the wall-clock cost of a test whose cost IS the sleep.
+err="$(printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 bash "$RD" invoke gap_analysis 2>&1 >/dev/null)"; out_rc=$?
 eq "$out_rc" "124" "invoke enforces the timeout (rc 124)"
+has "$err" "backstop" "a timed-out dispatch reports the classified reason on stderr"
+has "$err" "gap_analysis" "the report names the ROLE, not just the resolved agent"
+has "$err" "does NOT fall back" "a failed gap_analysis states its no-substitution policy inline"
 # force the portable watchdog path (no timeout binary) and confirm it also fires
-out_rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || out_rc=$?
+out_rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis >/dev/null 2>&1 || out_rc=$?
 eq "$out_rc" "124" "the bash watchdog fallback also enforces the timeout"
+
+# --- the committed DEFAULT bound (#93) ---------------------------------------
+# The bound that matters is the one a fresh clone gets with NO environment set. Every timeout
+# assertion above passes ADB_DISPATCH_TIMEOUT_SECS explicitly, so all of them would still pass
+# with the default back at its old too-small value — which is exactly the regression that cost
+# three runs. Pin the default itself, from the library rather than a copy of the number.
+# `env -u` is load-bearing: without it this subshell inherits the very variable whose ABSENCE it
+# asserts, so a contributor who exports the knob the docs now advertise gets a red selfcheck
+# blaming the committed default.
+# Usage: rd_var <VAR-to-print> [ENV=VAL ...]  — the var name FIRST, so it is never mistaken for
+# the command `env` should exec.
+# NOTE the `rd_var` arg0: the library must NOT be passed as $0. Its "executed directly, never when
+# sourced" guard compares BASH_SOURCE[0] to $0, so `bash -c '. "$0"' "$RD"` makes them equal, trips
+# the CLI dispatch, and exits 2 before printing anything.
+rd_var() { local v="$1"; shift
+  env -u ADB_DISPATCH_TIMEOUT_SECS -u ADB_DISPATCH_KILL_GRACE_SECS -u ADB_DISPATCH_NO_TIMEOUT_BIN \
+    "$@" bash -c '. "$1" >/dev/null 2>&1; printf %s "${!2:-unset}"' rd_var "$RD" "$v"; }
+eq "$(rd_var _ADB_RD_TIMEOUT_SECS)" "2700" "the no-environment default bound is 2700s (45-min hang backstop)"
+eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=99)" "99" "ADB_DISPATCH_TIMEOUT_SECS still overrides the default"
+eq "$(rd_var _ADB_RD_KILL_GRACE_SECS)" "10" "the no-environment kill grace is 10s"
+# Both degenerate grace values are clamped: `timeout -k 0` means "no SIGKILL at all" to GNU
+# timeout (so a 0 grace would leave the binary path with NO escalation while the watchdog path
+# kills immediately), and a non-numeric value makes timeout exit 125 — which would classify as
+# "a real agent error" and send the reader hunting a codex bug that isn't there.
+eq "$(rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=0)" "1"  "a 0 kill grace is clamped to 1 (never 'no escalation')"
+eq "$(rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=x)" "10" "a non-numeric kill grace falls back to the default"
+eq "$(rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=3)" "3"  "a valid kill grace is honored"
+# The bound is compared arithmetically (the 137->124 normalization) and counted down by the
+# portable watchdog, both integer-only — so a fractional override that `timeout` would happily
+# accept produced `[: 0.5: integer expression expected` and fired the bound instantly, failing
+# every dispatch at once. Reject it loudly instead (bot review, PR #105).
+eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=0.5 2>/dev/null)" "2700" "a fractional bound falls back to the default rather than breaking every dispatch"
+eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=0   2>/dev/null)" "2700" "a zero bound falls back to the default"
+eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=abc 2>/dev/null)" "2700" "a non-numeric bound falls back to the default"
+# NOT via rd_var: it silences the sourcing's stderr, which is exactly the stream under test here.
+frac_err="$(ADB_DISPATCH_TIMEOUT_SECS=0.5 bash -c '. "$1" >/dev/null' rd_var "$RD" 2>&1)"
+has "$frac_err" "not a positive whole number" "a rejected bound says so on stderr rather than failing silently"
+
+# --- failure-mode classification (#93) ---------------------------------------
+# 124 (our backstop) / 143 (an OUTER bound) / a real agent error each need a different response;
+# collapsing them into "the agent failed" is what let a bound problem masquerade as a codex
+# problem. Assert each rc maps to a DISTINCT, self-explaining classification.
+# ONE subshell sources the library and precomputes every classification. Re-sourcing per assertion
+# also re-forks `git rev-parse` (via adb_repo_root at load), so seven lookups cost seven loads.
+# shellcheck source=/dev/null
+_cls_all="$( . "$RD" >/dev/null 2>&1; for r in 0 7 124 137 143; do printf '%s|%s\n' "$r" "$(adb_dispatch_classify_rc "$r")"; done )"
+cls() { printf '%s\n' "$_cls_all" | grep "^$1|" | cut -d'|' -f2-; }
+has "$(cls 124)" "backstop"     "rc 124 is classified as our own hang backstop"
+has "$(cls 124)" "ADB_DISPATCH_TIMEOUT_SECS" "the 124 classification names the override knob"
+has "$(cls 143)" "OUTER"        "rc 143 is classified as an OUTER bound, not ours"
+has "$(cls 137)" "outside"      "rc 137 is classified as an external kill"
+has "$(cls 7)"   "real agent"   "an arbitrary nonzero rc is classified as a real agent error"
+hasnt "$(cls 7)" "backstop"     "a real agent error is NOT blamed on our backstop"
+eq "$(cls 0)" "completed"       "rc 0 is classified as completed"
+
+# --- the backstop must actually terminate (#93) ------------------------------
+# A backstop that only sends SIGTERM is not a backstop: a child that traps TERM leaves `wait`
+# blocking forever. Harmless when the bound was minutes and an outer harness cap sat above it —
+# an unbounded deadlock now that the bound is 45 min and background dispatch removes that cap.
+# This codex TRAPS SIGTERM and keeps running; the run must still come back, via KILL escalation.
+# Two TERM-resistant stubs: one that IGNORES TERM outright, and one that TRAPS it and exits 0 —
+# ordinary well-behaved-CLI cleanup, and the case that a verdict gated on the child's exit status
+# (rather than on "did the bound fire") silently reports as a clean pass carrying truncated output.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+trap '' TERM
+cat >/dev/null; sleep 30; exit 0
+EOF
+chmod +x "$BIN/codex"
+cat > "$BIN/codex-trap0" <<'EOF'
+#!/usr/bin/env bash
+trap 'exit 0' TERM
+cat >/dev/null; sleep 30; exit 0
+EOF
+chmod +x "$BIN/codex-trap0"
+# The two paths (hand-rolled watchdog vs `timeout -k`) are genuinely different code and both need
+# covering — but each is a fixed ~2s wait, and this sleep is the ONLY material cost this suite
+# adds to every pre-push selfcheck. So run them CONCURRENTLY (they share only a read-only stub)
+# and keep the grace at its floor of 1: the child TRAPS TERM, so the grace is a fixed wait rather
+# than a race and a short one cannot flake. Sequential at the default grace, these cost ~6s; this
+# way, ~2s.
+# The outer-termination probe rides this same concurrent window rather than adding its own serial
+# ~3s: when an OUTER bound kills OUR shell mid-dispatch (a harness foreground cap, a cancelled
+# detached job), the agent must not be reparented to init and left running out the full 45-minute
+# backstop. Verified pre-fix to leak the `timeout` process AND the agent under it (bot review, PR
+# #105). The stub name is written into a FILE, never a live command line, so the `ps` probe cannot
+# match the harness's own argv and self-report a false positive.
+printf '#!/usr/bin/env bash\nsleep 300\n' > "$work/qqstub"; chmod +x "$work/qqstub"
+{ printf '. "%s"\n' "$RD"; printf '_adb_rd_bounded 2700 "%s/qqstub"\n' "$work"; } > "$work/probe.sh"
+
+esc_w="$(mktemp)"; esc_t="$(mktemp)"; esc_0="$(mktemp)"; start=$SECONDS
+( timeout 2 bash "$work/probe.sh" >/dev/null 2>&1 ) &
+( rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 \
+    bash "$RD" invoke gap_analysis >/dev/null 2>&1 || rc=$?; printf '%s' "$rc" > "$esc_w" ) &
+( rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 \
+    bash "$RD" invoke gap_analysis >/dev/null 2>&1 || rc=$?; printf '%s' "$rc" > "$esc_t" ) &
+( cp "$BIN/codex-trap0" "$BIN2/codex"
+  rc=0; printf 'x' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN2:$PATH" env \
+    ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 \
+    bash "$RD" invoke gap_analysis >/dev/null 2>&1 ) || rc=$?; printf '%s' "$rc" > "$esc_0" ) &
+wait
+elapsed=$(( SECONDS - start ))
+eq "$(cat "$esc_w")" "124" "watchdog: a TERM-resistant child still returns 124 (escalates to KILL)"
+# REGRESSION: gating the verdict on the child's exit status made this return 0 with truncated
+# output — a killed run accepted as a clean pass, the exact silent-incompleteness class #93 exists
+# to remove. GNU timeout returns 124 here too, so this also keeps the paths agreeing by platform.
+eq "$(cat "$esc_0")" "124" "a TERM-trapping child that exits 0 is still reported as timed out"
+# Only a distinct assertion when a timeout binary actually exists; without one this second case
+# takes the watchdog path too and would just re-assert the line above.
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  eq "$(cat "$esc_t")" "124" "timeout -k: a TERM-resistant child still returns 124, not 137"
+fi
+rm -f "$esc_w" "$esc_t" "$esc_0"
+if [ "$elapsed" -lt 15 ]; then
+  ok "escalation returns promptly instead of hanging (${elapsed}s vs the child's 30s sleep)"
+else
+  bad "a TERM-resistant child hung the backstop (${elapsed}s)"
+fi
+
+# The watchdog must not leak its `sleep` when the child finishes early. Killing the watcher does
+# NOT take an already-forked sleep with it — it is reparented to init and runs to term — so a
+# single `sleep "$secs"` orphans one process per dispatch, each living the FULL bound. At the old
+# 7-minute default that was untidy; at 45 minutes it is a pile of half-hour zombies (15 were found
+# on the author's machine from one day's runs). The watchdog ticks instead, so the only sleep that
+# can outlive it is one tick long — and never one matching the bound.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null; printf 'VERDICT: quick\n'; exit 0
+EOF
+chmod +x "$BIN/codex"
+printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=31337 ADB_DISPATCH_NO_TIMEOUT_BIN=1 \
+  bash "$RD" invoke gap_analysis >/dev/null 2>&1
+eq "$(pgrep -f 'sleep 31337' 2>/dev/null | grep -c . | tr -d ' ')" "0" \
+  "the watchdog leaves no orphaned bound-length sleep behind after a fast child"
+
+# When an OUTER bound kills OUR shell mid-dispatch (a harness foreground cap, a cancelled detached
+# job), the agent must not be reparented to init and left running out the full backstop — 45
+# minutes of agent work after the run was cancelled. Verified pre-fix to leak the `timeout` process
+# AND the agent under it (bot review, PR #105). The stub name is written into a FILE, never a live
+# command line, so the `ps` probe cannot match the test harness's own argv and self-report.
+eq "$(ps -eo command | grep -c '[q]qstub' | tr -d ' ')" "0" \
+  "an outer termination reaps the dispatched agent instead of orphaning it for the full bound"
+pkill -f '[q]qstub' >/dev/null 2>&1 || true
 
 # ============================ source guard ============================
 # Sourcing must define the functions but NOT run the CLI dispatch (no usage/exit).

@@ -2,18 +2,22 @@
 # ai-dev-baseline — fact-drift lint.
 #
 # Some FACTS are unavoidably restated in more than one hand-written doc: the gate
-# axis list, the cross-agent invocation commands, the codex ≥7-minute timeout, and
+# axis list, the cross-agent invocation commands, the dispatch hang backstop, and
 # the role-resolution order. Those restatements are exactly where drift is born (issue
 # #30). This lint pins each fact to its canonical source and asserts every consumer
 # that restates it still carries the canonical token — so a value changed in one place
 # but not the others fails CI instead of silently diverging.
 #
-# It is deliberately a small, ALLOWLISTED, positive-presence check — not a
-# natural-language equivalence engine. Each rule asserts that a stable token (an axis
-# name, a literal invocation string, the number 7, "420000") is PRESENT in each file
-# that restates it. It never forbids incidental wording (e.g. prose that correctly
-# calls the 2-minute default "too short"), so rewording a doc never trips it; only
-# dropping or changing a canonical value does.
+# It is deliberately a small, ALLOWLISTED check — not a natural-language equivalence
+# engine. Each `fact` rule asserts that a stable token (an axis name, a literal
+# invocation string, "2700", "hang backstop") is PRESENT in each file that restates it.
+# It never forbids incidental wording, so rewording a doc never trips it; only dropping
+# or changing a canonical value does.
+#
+# `stale` is the narrow negative counterpart, used ONLY for a value a fact has retired:
+# presence-checking cannot catch a file that carries the new value AND keeps the old one
+# beside it, which is how a superseded figure survives a repoint (#93). Reach for it when
+# a fact replaces an earlier one, never as a general prose blocklist.
 #
 # The token appears in the lint too — that is intentional, not a fourth copy: the
 # canonical source (base/roles.md, scripts/lib/project-gates.sh) is itself in every
@@ -30,16 +34,24 @@ cd "$(dirname "$0")/.." || exit 1
 . scripts/check-lib.sh
 check_init "fact-drift"
 
-# fact <label> fixed:<token>|regex:<pattern> -- <file> [<file>...]
-# Asserts the token/pattern is present in every listed file.
+# fact <label> fixed:<token>|regex:<pattern>|absent:<pattern> -- <file> [<file>...]
+# Asserts the token/pattern is present in every listed file — or, for `absent:`, that it is NOT.
+#
+# `absent:` is the negative counterpart, for a value a fact has SUPERSEDED. Positive presence
+# alone cannot enforce a replacement: a file carrying the new figure AND the old one beside it
+# passes every positive rule while still telling the reader the wrong thing — which is how a stale
+# "≥7-minute" bound would survive a repoint to 45 minutes (#93). Reach for it only when a fact
+# retires an earlier value, never as a general prose blocklist.
 fact() {
   local label="$1" spec="$2" ; shift 2
   [ "$1" = "--" ] && shift
   local kind="${spec%%:*}" needle="${spec#*:}" f
   for f in "$@"; do
     case "$kind" in
-      fixed) req_fixed "$f" "$needle" "$label" ;;
-      regex) req_regex "$f" "$needle" "$label" ;;
+      fixed)  req_fixed  "$f" "$needle" "$label" ;;
+      regex)  req_regex  "$f" "$needle" "$label" ;;
+      absent) req_absent "$f" "$needle" "$label" ;;
+      *) check_note "[$label] unknown spec kind '$kind' (want fixed:/regex:/absent:)"; check_fail ;;
     esac
   done
 }
@@ -71,14 +83,56 @@ fact invocation-claude fixed:'claude -p' -- \
   base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md \
   scripts/lib/role-dispatch.sh
 
-# --- FACT: codex exec timeout minimum ----------------------------------------
-# The bound is ≥7 minutes (420000 ms). Every doc that states the codex timeout must
-# carry the 7-minute bound; the two that give the millisecond form must agree on it.
-fact codex-timeout-7min regex:'7[-[:space:]]min' -- \
-  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md \
-  agents/codex/README.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh
-fact codex-timeout-ms regex:'420[,]?000' -- \
-  base/workflows/implement-issue.md docs/roles-and-agents.md
+# --- FACT: the dispatch hang backstop (#93) ----------------------------------
+# Canonical source: _ADB_RD_TIMEOUT_SECS in scripts/lib/role-dispatch.sh. The bound is 45 minutes
+# (2700 s) and is a HANG BACKSTOP, not a work budget — it stops a wedged process and otherwise
+# stays out of the way. Every doc that states the bound must carry the figure, the seconds value,
+# the override's name (so the knob stays discoverable rather than buried in the library), and the
+# backstop framing (so nobody re-tunes it down toward typical runtime, which is the regression).
+# ONE list, used by BOTH directions below. Keeping the positive rules and the superseded sweep on
+# separate lists is how the anti-drift lint grows its own drift: add a consumer to one list only,
+# and that file gets checked for the new value but never swept for the retired one (or vice-versa)
+# — precisely the half-updated state these rules exist to catch.
+# The rendered skills are included so a typo'd render path fails loudly: an `absent:` rule is
+# vacuously true on a file that does not exist, while `fixed:`/`regex:` report the bad path.
+# CHANGELOG.md is deliberately absent: its entries record what shipped at the time, and rewriting
+# shipped history to satisfy a lint would be a lie, not a fix.
+_bs_all="base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md"
+_bs_all="$_bs_all docs/design-principles.md agents/codex/config.toml.sample scripts/lib/role-dispatch.sh"
+# docs/adding-an-agent.md is on the list because it TELLS A CONTRIBUTOR what to write about
+# timeouts for a new agent. Omitting it let the guide keep directing people to "name the concrete
+# minimum timeout" — i.e. to recreate the work-budget model this fact retires — while the sweep
+# passed (bot review, PR #105). A doc that propagates a fact is a consumer of it.
+_bs_all="$_bs_all docs/adding-an-agent.md"
+for _a in claude codex gemini; do _bs_all="$_bs_all agents/$_a/skills/implement-issue/SKILL.md"; done
+# The seconds value and the override name are only spelled out where the bound is *explained*, not
+# in every file that merely mentions it — so these two keep a narrower list.
+_bs_num="base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md"
+_bs_num="$_bs_num scripts/lib/role-dispatch.sh"
+
+# shellcheck disable=SC2086  # deliberate word-split of the space-separated file lists
+{
+fact backstop-45min   regex:'45[-[:space:]](min|minute)'  -- $_bs_all
+fact backstop-framing fixed:'hang backstop'               -- $_bs_all
+fact backstop-secs    regex:'2700'                        -- $_bs_num
+fact backstop-env     fixed:'ADB_DISPATCH_TIMEOUT_SECS'   -- $_bs_num
+
+# SUPERSEDED by the rules above (#93): the 420 s bound sat near typical runtime, so ordinary
+# high-reasoning passes tripped it; and the `420000`-`600000` ms guidance taught every reader to
+# cap the surrounding call at 10 minutes — a HARNESS artifact, not a property of codex.
+fact backstop-stale-ms   absent:'(4[28]0|600)[,]?000'                                   -- $_bs_all
+fact backstop-stale-secs absent:'(^|[^0-9])420([^0-9]|$)'                               -- $_bs_all
+fact backstop-stale-7min absent:'([≥>]=?[[:space:]]*7|least[[:space:]]*7|3[–-]7)[[:space:]-]*min' -- $_bs_all
+}
+
+# --- FACT: gap_analysis never substitutes another agent (#93) ----------------
+# The behavioural rule this change actually introduced, and the one an agent is most likely to
+# quietly violate under time pressure — a silently-substituted reviewer is exactly what made
+# `agents.toml` fiction for three runs. It was restated across six hand-written surfaces and
+# pinned by nothing, while the *number* got seven rules. Pin the rule too.
+# shellcheck disable=SC2086
+fact gap-analysis-no-fallback fixed:'never substitut' -- \
+  base/roles.md base/workflows/implement-issue.md docs/roles-and-agents.md agents/codex/README.md
 
 # --- FACT: role-resolution order ---------------------------------------------
 # The order is repo agents.toml → global default manifest → built-in default.
