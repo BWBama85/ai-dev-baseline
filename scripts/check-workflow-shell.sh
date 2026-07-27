@@ -20,20 +20,31 @@
 # it catches the one class that is invisible to every other gate here and destructive when it hits.
 #
 # Assignment is detected in the three forms a workflow actually uses:
-#   NAME=value            a plain assignment (also `local NAME=` / `export NAME=`)
+#   NAME=value            a plain assignment (also `local`/`export`/`typeset`/`declare` NAME=)
 #   read … NAME …         a read target (the #126 shape)
 #   for NAME in …         a loop variable
 #
-# Comments are stripped first, so a block may freely NAME the variables it avoids — the cleanup
+# MATCHING RUNS INSIDE AWK, against the RAW line. An earlier version piped `NR ":" line` into
+# grep, which silently broke every `^`-anchored alternative: the character before a start-of-line
+# `path=` was then the `:` of the line-number prefix, not a start boundary, so `path=/tmp`,
+# `read -r path` and `for path in …` all passed. The real bug was still caught only because it
+# happened to have a space before `read`. The SELF-TEST at the bottom exists so that class of
+# hole — a guard that passes because it cannot see — fails the build instead of shipping.
+#
+# Comments are stripped first, so a block may freely NAME the variables it avoids; the cleanup
 # workflow documents this very trap in a comment, and flagging that would make the rule unwritable.
 #
-# Usage: bash scripts/check-workflow-shell.sh   (exit 0 = clean, 1 = a violation)
+# Usage: bash scripts/check-workflow-shell.sh [workflow-dir]
+#        (exit 0 = clean, 1 = a violation. <workflow-dir> defaults to base/workflows; it exists
+#         for the self-test and for linting a rendered tree.)
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 check_init "workflow-shell"
+
+WFDIR="${1:-base/workflows}"
 
 # The zsh specials that are realistic accidental choices for a loop/temp variable AND destructive
 # when clobbered. Deliberately NOT the full zsh special list: `status`, `options`, `commands` and
@@ -48,34 +59,48 @@ check_init "workflow-shell"
 #   argv             — positional parameters
 ZSH_SPECIALS='path fpath cdpath manpath module_path argv'
 
-found=0
-for wf in base/workflows/*.md; do
-  [ -f "$wf" ] || continue
-  case "$(basename "$wf")" in README.md) continue ;; esac
-
-  # Extract the fenced bash blocks WITH their real line numbers, then strip comments so a block
-  # can document the trap it is avoiding. `inb` tracks fence state; NR is the file line.
-  code="$(awk '
+# scan_one <file> — print "<file>:<line>: <raw line>" for every violation. All matching happens
+# here, on the raw line, so `^` genuinely means start-of-line.
+scan_one() {
+  awk -v SPECIALS="$ZSH_SPECIALS" '
+    BEGIN { nsp = split(SPECIALS, sp, " ") }
     /^```bash$/ { inb = 1; next }
     /^```$/     { inb = 0; next }
-    inb         { line = $0; sub(/[[:space:]]*#.*$/, "", line); print NR ":" line }
-  ' "$wf")"
-  [ -n "$code" ] || continue
+    !inb { next }
+    {
+      raw = $0
+      line = raw
+      # Strip a trailing/whole-line comment so a block may document the trap it avoids. A `#`
+      # inside a quoted string is stripped too; that can only cause a MISSED report on that one
+      # line, never a false one, and the alternative is a shell parser.
+      sub(/(^|[[:space:]])#.*$/, "", line)
+      if (line ~ /^[[:space:]]*$/) next
+      # A boundary is start-of-line or a shell separator. Anchoring on the raw line is the whole
+      # point — see the header note about the line-number prefix that used to defeat it.
+      B = "(^|[;&|(){}[:space:]])"
+      for (i = 1; i <= nsp; i++) {
+        nm = sp[i]
+        if (line ~ (B "(local[[:space:]]+|export[[:space:]]+|typeset[[:space:]]+|declare[[:space:]]+)?" nm "=") ||
+            line ~ (B "read([[:space:]]+-[A-Za-z]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+" nm "([[:space:]]|$)") ||
+            line ~ (B "for[[:space:]]+" nm "[[:space:]]+in([[:space:]]|$)")) {
+          printf "%s:%d: %s\n", FILENAME, FNR, raw
+          next
+        }
+      }
+    }
+  ' "$1"
+}
 
-  for name in $ZSH_SPECIALS; do
-    # Three assignment shapes, one pass each. `-w` is not enough on its own — `$path` (a READ) is
-    # fine and must not trip, so every pattern anchors on the assignment syntax itself.
-    hits="$(printf '%s\n' "$code" | grep -nE \
-      -e "(^|[;&|[:space:]])(local[[:space:]]+|export[[:space:]]+|typeset[[:space:]]+)?${name}=" \
-      -e "(^|[;&|[:space:]])read([[:space:]]+-[A-Za-z]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+${name}([[:space:]]|$)" \
-      -e "(^|[;&|[:space:]])for[[:space:]]+${name}[[:space:]]+in([[:space:]]|$)" \
-      || true)"
-    [ -n "$hits" ] || continue
-    found=1
-    check_note "$wf assigns the zsh-special variable '$name' inside a fenced block:"
-    printf '%s\n' "$hits" | sed 's/^/    /' >&2
-    check_fail
-  done
+found=0
+for wf in "$WFDIR"/*.md; do
+  [ -f "$wf" ] || continue
+  case "$(basename "$wf")" in README.md) continue ;; esac
+  hits="$(scan_one "$wf")"
+  [ -n "$hits" ] || continue
+  found=1
+  check_note "$wf assigns a zsh-special variable inside a fenced block:"
+  printf '%s\n' "$hits" | sed 's/^/    /' >&2
+  check_fail
 done
 
 if [ "$found" -eq 1 ]; then
@@ -83,4 +108,57 @@ if [ "$found" -eq 1 ]; then
   check_note "corrupts it for the rest of the block. Rename the variable (e.g. 'sfile'), never the rule."
 fi
 
-check_result "no fenced workflow block assigns a zsh-special variable name"
+# --- self-test: prove the guard can actually SEE ------------------------------------------------
+# A lint that silently matches nothing passes every clean tree, which is indistinguishable from
+# working — and is exactly how the `NR ":"` prefix defeated the `^` anchors here without anyone
+# noticing. So the guard proves itself on a fixture carrying each shape in BOTH positions
+# (start-of-line and mid-line) before it is allowed to report PASS, and proves it stays quiet on
+# the legitimate forms it must never flag. Only run for the default tree — a caller pointing this
+# at another directory is already doing something deliberate.
+if [ "$WFDIR" = "base/workflows" ]; then
+  st="$(mktemp -d)" || { check_note "self-test: mktemp failed"; check_fail; }
+  if [ -n "${st:-}" ] && [ -d "$st" ]; then
+    # MUST be caught — one file per case, so a single missed shape is named precisely.
+    i=0
+    for bad in 'path=/tmp' \
+               'read -r path' \
+               'for path in a b; do :; done' \
+               '  fpath=/x' \
+               'x=1; cdpath=/y' \
+               'while IFS= read -r kind path key; do :; done' \
+               'for argv in 1 2; do :; done' \
+               'export manpath=/z'; do
+      i=$((i + 1))
+      printf -- '---\nname: f%s\n---\n```bash\n%s\n```\n' "$i" "$bad" > "$st/f$i.md"
+      if [ -z "$(scan_one "$st/f$i.md")" ]; then
+        check_note "self-test: the guard FAILED to catch [$bad] — it cannot see the bug it exists to stop"
+        check_fail
+      fi
+    done
+    # MUST NOT be caught — reads, look-alike names, prose, and a comment naming the trap.
+    j=0
+    for good in 'echo "$path"' \
+                'sfile=/tmp' \
+                'mypath=/tmp' \
+                'PATHX=/tmp' \
+                'read -r kind sfile key' \
+                '# never assign path= here, and never for path in …' \
+                'printf "%s\n" "${path##*/}"'; do
+      j=$((j + 1))
+      printf -- '---\nname: g%s\n---\n```bash\n%s\n```\n' "$j" "$good" > "$st/g$j.md"
+      if [ -n "$(scan_one "$st/g$j.md")" ]; then
+        check_note "self-test: FALSE POSITIVE on [$good]"
+        check_fail
+      fi
+    done
+    # Text outside a fenced bash block is prose and must never be scanned.
+    printf -- '---\nname: h\n---\nProse mentioning path=/tmp inline.\n\n```text\npath=/tmp\n```\n' > "$st/h.md"
+    if [ -n "$(scan_one "$st/h.md")" ]; then
+      check_note "self-test: FALSE POSITIVE outside a fenced bash block"
+      check_fail
+    fi
+    rm -rf "$st"
+  fi
+fi
+
+check_result "no fenced workflow block assigns a zsh-special variable name (guard self-verified)"
