@@ -33,7 +33,8 @@
 #   cleanup-lib.sh state-verdict  threads <pr-state>
 #   cleanup-lib.sh state-verdict  marker  <pr-state> <local-ref> <remote-ref>
 #   cleanup-lib.sh state-verdict  gaps    <lock 0|1> <run keep|stale|none>
-#   cleanup-lib.sh marker-branch  <marker-path>
+#   cleanup-lib.sh marker-branch   <marker-path>
+#   cleanup-lib.sh marker-identity <marker-path>
 #   cleanup-lib.sh report [--tail <line>]                      # TSV "<category>\t<item>" on stdin
 #   cleanup-lib.sh state-line     <root> <default-branch>
 #   cleanup-lib.sh clone-state    <root> <default-branch>
@@ -282,6 +283,32 @@ cmd_marker_branch() {
   printf '\n'
 }
 
+# --- marker-identity ----------------------------------------------------------------------------
+# Print a stable identity for a marker FILE, or nothing when it cannot be read. The sweep captures
+# this when it classifies a marker and re-captures it at the moment of deletion; a change means the
+# file is no longer the one that was judged, so it must be kept.
+#
+# WHY A CONTENT DIGEST AND NOT `.branch`. The race is a marker atomically REPLACED between the
+# scan and the delete, and a replacement can legitimately carry the SAME branch name — retrying an
+# issue whose previous branch was already swept produces the identical deterministic
+# `issue-NN-slug`. Comparing only the branch therefore reports "unchanged" for a marker belonging
+# to a different, live run, and deleting it disarms that run's continuation gate silently. Any
+# byte differing — a new `startedAt`, a phase update, a different issue set — makes the identity
+# differ, and a differing identity always resolves to KEEP.
+#
+# Empty output means "could not be read", which the caller must also treat as keep: an identity
+# that cannot be established is not an identity that matches.
+#
+# `cksum` is POSIX and present on every platform this runs on. The digest only has to be stable
+# and change-detecting, never cryptographic — an adversary who can rewrite this file already owns
+# the state directory.
+cmd_marker_identity() {
+  [ "$#" -eq 1 ] || die "marker-identity: needs exactly 1 arg: <marker-path>"
+  [ -f "$1" ] || return 0
+  cksum < "$1" 2>/dev/null | awk 'NF >= 2 { print $1 "-" $2 }'
+  return 0
+}
+
 # --- state-verdict -----------------------------------------------------------------------------
 # Decide whether ONE state file is `stale` (the sweep may delete it) or `keep`. Exit 0 with a
 # verdict; 2 on an unrecognised kind or signal.
@@ -527,7 +554,8 @@ main() {
     branch-verdict) cmd_branch_verdict "$@" ;;
     state-scan)     cmd_state_scan "$@" ;;
     state-verdict)  cmd_state_verdict "$@" ;;
-    marker-branch)  cmd_marker_branch "$@" ;;
+    marker-branch)   cmd_marker_branch "$@" ;;
+    marker-identity) cmd_marker_identity "$@" ;;
     report)         cmd_report "$@" ;;
     state-line)     cmd_state_line "$@" ;;
     clone-state)    cmd_clone_state "$@" ;;

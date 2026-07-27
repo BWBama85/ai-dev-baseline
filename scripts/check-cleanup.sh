@@ -211,6 +211,18 @@ eq "$(bash "$CL" marker-branch "$work/m-nobranch.json")" ""          "2d a marke
 eq "$(bash "$CL" marker-branch "$work/nope.json")"       ""          "2d a missing marker yields empty"
 bash "$CL" marker-branch >/dev/null 2>&1; no $? "2d marker-branch requires a path"
 
+# marker-identity — the delete-time race guard. It must change when the FILE changes, even when
+# the recorded branch does not: retrying an issue whose branch was already swept writes the same
+# deterministic `issue-NN-slug`, so a branch-only comparison would delete a live run's marker.
+ID1="$(bash "$CL" marker-identity "$work/m-ok.json")"
+[ -n "$ID1" ] && ok || bad "2d marker-identity produces an identity for a readable marker"
+eq "$(bash "$CL" marker-identity "$work/m-ok.json")" "$ID1" "2d marker-identity is stable for an unchanged file"
+printf '{"branch":"issue-5-x","phase":"branched"}' > "$work/m-ok.json"   # SAME branch, new run
+hasnt "$(bash "$CL" marker-identity "$work/m-ok.json")" "$ID1" \
+   "2d …and CHANGES when the file is replaced, even with an identical branch name"
+eq "$(bash "$CL" marker-identity "$work/nope.json")" "" "2d a missing marker yields no identity (never matches)"
+bash "$CL" marker-identity >/dev/null 2>&1; no $? "2d marker-identity requires a path"
+
 # --- 2e. clone-state: the switch/pull guard ---------------------------------------------------
 # A clean `git status` is NOT proof it is safe to switch — this is what step 1 branches on.
 eq "$(bash "$CL" clone-state "$R" main)" "local-ok" "2e a clean clone on the default branch is safe to switch/pull"
@@ -322,17 +334,27 @@ if [ ! -f "$WF" ]; then
   bad "6 base/workflows/cleanup.md not found"
 else
   wf="$(cat "$WF")"
+  # The EXECUTABLE half only. Several assertions below must not match the guardrail prose, which
+  # legitimately names the commands it forbids ("never `git branch -D`") — a whole-file match
+  # would flag the rule for stating what it rules out.
+  wfcode="$(awk '/^```bash$/ { inb = 1; next } /^```$/ { inb = 0; next } inb' "$WF")"
+  # …and, for "this command is never RUN" assertions, the same text with shell comments dropped.
+  # The fenced blocks explain which commands they deliberately avoid and why, so a plain wfcode
+  # match would fail on the very comment documenting the avoidance.
+  wfexec="$(printf '%s\n' "$wfcode" | sed 's/[[:space:]]*#.*$//')"
   has "$wf" '{{CLEANUP_LIB}} branch-verdict' "6 the workflow classifies branches through the library"
   has "$wf" '{{CLEANUP_LIB}} state-scan'     "6 the workflow enumerates state through the library"
   has "$wf" '{{CLEANUP_LIB}} state-verdict'  "6 the workflow decides state through the library"
   has "$wf" '{{CLEANUP_LIB}} report'         "6 the workflow renders through the report contract"
   has "$wf" 'git update-ref -d "refs/heads/$b" "$TIP"' \
-     "6 a rewritten-merge branch is deleted by expected-OID compare-and-delete"
-  has "$wf" 'git branch -d "$b"' "6 a fast-forward branch still uses the self-validating -d"
-  # THE guardrail: `-D` deletes whatever is there now, on a decision made earlier. Scoped to the
-  # EXECUTABLE blocks — the guardrail prose says the words "never `git branch -D`", and a
-  # whole-file match would flag the rule for stating what it forbids.
-  wfcode="$(awk '/^```bash$/ { inb = 1; next } /^```$/ { inb = 0; next } inb' "$WF")"
+     "6 every local delete is an expected-OID compare-and-delete"
+  # `git branch -d`'s refusal tests merged-into-UPSTREAM, not merged-into-$BASE, so a branch that
+  # gained a pushed commit after being classified still satisfies it. Not used, even for the
+  # fast-forward case — the expected-OID delete is the stronger check.
+  hasnt "$wfexec" 'git branch -d' "6 …including the fast-forward case, which never falls back to git branch -d"
+  has "$wfcode" 'git config --remove-section "branch.$b"' \
+     "6 the ref delete also drops branch.<name>.* so a later branch cannot inherit a stale upstream"
+  # THE guardrail: `-D` deletes whatever is there now, on a decision made earlier.
   hasnt "$wfcode" 'git branch -D' "6 no fenced command in the workflow escalates to git branch -D"
   has "$wfcode" 'git update-ref -d' "6 …and the expected-OID delete really is in an executable block"
   has "$wf" '--limit 20' "6 the merged-PR query is paginated explicitly, so evidence cannot fall off page 1"
@@ -354,7 +376,17 @@ else
   # An unguarded `git switch` fails when the default branch is checked out in another worktree,
   # and the fast-forward on the next line would then repoint the USER'S feature branch.
   has "$wfcode" 'SWITCHED=0' "6 the switch to the default branch is guarded before any fast-forward"
-  has "$wf" '{{CLEANUP_LIB}} marker-branch' "6 the delete-time marker re-read goes through the library's one reader"
+  # Identity, not `.branch`: retrying an issue whose branch was already swept writes the SAME
+  # deterministic `issue-NN-slug`, so a branch-only comparison reports "unchanged" for a
+  # different, live run's marker and deletes it.
+  has "$wf" '{{CLEANUP_LIB}} marker-identity' "6 the delete-time marker guard compares file identity, not just the branch"
+  has "$wfcode" 'STATE="$ROOT/' "6 the state dir is anchored at the repo root, not the current directory"
+  # $SCAN/$LOCK are captured before a marker pass that makes live PR round trips; a new run can
+  # take the lock in that window and start writing the same gap filenames.
+  has "$wfcode" 'SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"' "6 the scan is re-taken before any destructive state delete"
+  eq "$(printf '%s\n' "$wfcode" | grep -c 'state-scan "\$STATE"')" "2" \
+     "6 …i.e. the lock governing a delete is the one true AT the delete, not at classification"
+  has "$wfcode" 'sweep_file' "6 state deletions report their failures instead of silently continuing"
   has "$wf" '{{CLEANUP_LIB}} clone-state' \
      "6 the switch/pull guard uses the clone classifier, not a porcelain-only test (rebase/bisect leave it clean)"
   hasnt "$wfcode" 'git pull --ff-only' \

@@ -311,19 +311,28 @@ bash "$HOME/.claude/scripts/lib/role-dispatch.sh" invoke gap_analysis \
   < .claude/state/gap-prompt.txt > .claude/state/gaps.md 2> .claude/state/gaps.err
 ```
 
-**Release the lock only once the harness reports the dispatch finished** — in its own call, never
-appended to the block above. The dispatch is *detached*: everything after it in that block runs
-while the pass is still going, so a release sitting there would drop the lock immediately and
-leave it unheld for the entire run — the only window it exists for.
+**Keep holding the lock after the dispatch returns.** Do NOT append a release to the block above:
+the dispatch is *detached*, so everything after it in that block runs while the pass is still
+going, and the lock would be dropped immediately — unheld for the only window it exists for.
 
-```bash
-# Runs when the call TERMINATES — success, failure, or backstop alike. Holding it past a failed
-# pass would preserve a dead run's artifacts forever. A retry re-runs the block above, re-taking
-# the lock at step 1; there is no separate re-take to remember. A run killed between the take and
-# here leaves the lock behind — deliberately fail-safe (a stray lock only PRESERVES artifacts),
-# and preflight clears it on the next run.
-rm -f .claude/state/gap-analysis.lock
-```
+But the window it must cover is **longer than the dispatch**. You still have to read `gaps.md`
+and `gaps.err` (step 4), and the run marker that takes over as the liveness signal does not exist
+until step 5. A release the moment the call returns leaves a gap in which a concurrent `/cleanup`
+sees no lock and no marker, classifies the artifacts as a finished run's leftovers, and deletes
+the findings — or the failure classification — this run is about to act on.
+
+**The lock is therefore released at exactly two places, and nowhere else:**
+
+- **Step 5**, immediately after `implement-issue-active.json` is written — the marker now covers
+  liveness, so the lock has nothing left to protect.
+- **Step 4**, on the paths that stop the run (a BLOCKING finding you surface to the owner; a
+  gap-analysis incompleteness that survives its retry). Those runs never reach step 5, so nothing
+  else would ever clear it.
+
+A run killed between the take and either release leaves the lock behind. That is deliberately
+fail-safe — a stray lock only ever *preserves* artifacts — and preflight clears it on the next
+run. A retry of the dispatch re-runs the block above and re-takes the lock at step 1, so there is
+no separate re-take to remember.
 
 Skipping step 1 fails the *redirection*, so the helper never runs and prints no
 classified line — and a bare non-zero with no classification reads, by the rules
@@ -364,6 +373,13 @@ bound problem, not as a silent agent swap.
   to the owner and stop cleanly. No branch/marker exists yet (that is step 5), so
   there is nothing to pair a blocked file with — do **not** write one.
 - Otherwise record SHOULD-CLARIFY items as assumptions for the PR body and proceed.
+- **On any path that STOPS the run here** — a BLOCKING finding you surface, or a gap-analysis
+  incompleteness that survived its retry — **release the gap lock.** This run never reaches step
+  5, so nothing else will clear it, and a lock left behind pins its artifacts against `/cleanup`
+  indefinitely (until the next run's preflight). Read the findings first, then release:
+  ```bash
+  rm -f .claude/state/gap-analysis.lock
+  ```
 - **Epic/slice or anything declared out of scope** becomes a tracked issue in step
   12 — including the parent's own "Out of scope" list. Not a PR-body note.
 
@@ -378,6 +394,13 @@ jq -n --arg branch "$BRANCH" --arg issue "$ISSUE_CSV" \
       --arg startedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{branch:$branch, issue:$issue, phase:"branched", startedAt:$startedAt}' \
    > .claude/state/.marker.tmp && mv .claude/state/.marker.tmp .claude/state/implement-issue-active.json
+
+# The marker now exists, so IT is this run's liveness signal — /cleanup keeps its state while the
+# branch survives. Release the gap lock here and only here (the other release is step 4's
+# stop path). Releasing any earlier — e.g. the moment the dispatch returned — leaves a window in
+# which no lock and no marker exist, and a concurrent /cleanup deletes the gap findings this run
+# is still acting on.
+rm -f .claude/state/gap-analysis.lock
 ```
 
 If the branch already exists locally or on the remote, write the blocked marker

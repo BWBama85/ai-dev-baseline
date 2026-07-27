@@ -27,16 +27,22 @@ process detail the default output deliberately omits.
 ## Guardrails (never violated)
 
 - **Only ever delete a branch PROVEN merged into the default branch.** Never delete unmerged
-  work. "Proven" has exactly two forms, and each re-validates itself at the moment of deletion:
-  - **fast-forward** — the branch tip is an ancestor of `origin/<default>`. Deleted with
-    `git branch -d`, whose own merged-only refusal is the re-check.
+  work. "Proven" has exactly two forms:
+  - **fast-forward** — the branch tip is an ancestor of `origin/<default>`.
   - **rewritten merge (squash or rebase)** — a **freshly-queried** merged PR whose
     `mergeCommit.oid` is contained in `origin/<default>` **and** whose `headRefOid` equals the
-    local tip. Deleted with `git update-ref -d refs/heads/<b> <tip>`, an atomic
-    compare-and-delete that fails if the branch moved since it was classified.
+    local tip.
+- **Every local delete is the same atomic compare-and-delete:**
+  `git update-ref -d refs/heads/<b> <the tip the verdict was computed from>`. It removes the ref
+  only if the branch still points exactly there, so a commit landing mid-sweep makes the delete
+  fail loudly instead of destroying it.
+- **Never `git branch -d` either — not even for the fast-forward case.** Its refusal tests
+  whether the branch is merged into its **upstream** (or HEAD), *not* into `origin/<default>`.
+  A branch that gained a pushed commit after being classified still satisfies that test, so `-d`
+  would delete work that was never merged into the default branch — the exact guarantee this
+  skill claims. The expected-OID delete is the stronger check, and it is the only one used.
 - **Never `git branch -D`.** It deletes whatever is there *now*, on the strength of a decision
-  made earlier — the one shape that can destroy a commit added mid-sweep. The expected-OID
-  delete above does the same job and cannot.
+  made earlier.
 - **Never delete a protected branch:** the default branch itself, plus `main`, `master`,
   `develop`, and anything matching `release/*` / `hotfix/*`.
 - **Never delete the currently checked-out branch, or one checked out in another worktree.**
@@ -236,23 +242,24 @@ $V
 EOF2
 
   case "$VERDICT" in
-    merged-ff)
-      if git branch -d "$b" >/dev/null 2>&1; then
-        DELETED_LOCAL="${DELETED_LOCAL}$b
-"
-      else
-        NOTES="${NOTES}REFUSED $b — git branch -d declined it; left in place
-"
-      fi
-      ;;
-    merged-pr)
-      # Atomic compare-and-delete: removes the ref ONLY if it still points at the exact commit
-      # the verdict was computed from. A commit landing on the branch mid-sweep fails this.
+    merged-ff|merged-pr)
+      # ONE delete path for both proofs: an atomic compare-and-delete against the exact commit the
+      # verdict was computed from. A commit landing on the branch mid-sweep makes this fail.
+      #
+      # `git branch -d` is deliberately NOT used for the fast-forward case: its refusal tests
+      # merged-into-UPSTREAM (or HEAD), not merged-into-$BASE, so a branch that gained a pushed
+      # commit after classification still passes it and is deleted carrying work that never
+      # reached the default branch.
       if git update-ref -d "refs/heads/$b" "$TIP" 2>/dev/null; then
+        # `update-ref -d` removes the ref and NOTHING else, where `git branch -d` also drops
+        # branch.<name>.*. Left behind, a later branch of the same name silently inherits the old
+        # upstream and pushes to it. `|| true` because a branch that never had config has no
+        # section to remove, which is not an error.
+        git config --remove-section "branch.$b" >/dev/null 2>&1 || true
         DELETED_LOCAL="${DELETED_LOCAL}$b
 "
       else
-        NOTES="${NOTES}REFUSED $b — it moved during the sweep (was $DETAIL); left in place
+        NOTES="${NOTES}REFUSED $b — it moved during the sweep; left in place
 "
       fi
       ;;
@@ -323,7 +330,11 @@ Runs in every scope. `state-scan` enumerates; the library decides; **anything it
 eat a file some future skill depends on.
 
 ```bash
-STATE="{{STATE_DIR}}"
+# ANCHORED AT $ROOT, never relative to the current directory. `/cleanup` is a repo-wide sweep and
+# may be invoked from a subdirectory (base/practices/repo-scope.md: working dir != git root is a
+# real, common shape). A relative path would miss the repo's actual state dir and, in a monorepo,
+# could inspect a same-named directory under some package instead.
+STATE="$ROOT/{{STATE_DIR}}"
 TABC="$(printf '\t')"
 SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"
 
@@ -350,6 +361,9 @@ while IFS="$TABC" read -r kind path key; do
   # fixup is a compound test that leaves the whole block on a non-zero status.)
   [ "$RUN" = none ] && RUN=stale
 
+  # The identity of the FILE as judged. Re-captured immediately before deletion below.
+  IDENT="$({{CLEANUP_LIB}} marker-identity "$path")"
+
   # Cheap LOCAL facts first. `state-verdict marker` returns keep whenever either ref survives, so
   # for a live branch — and always for an unreadable marker — the PR read below cannot change the
   # answer. Ordering it after the refs makes that round trip conditional instead of unconditional.
@@ -373,15 +387,16 @@ while IFS="$TABC" read -r kind path key; do
   fi
   [ "$MV" = keep ] && RUN=keep
   if [ "$MV" = stale ]; then
-    # Re-read at the moment of deletion: a marker atomically replaced since the scan belongs to
-    # a DIFFERENT run, and removing it would disarm that run's continuation gate. Through the
-    # library, so this read and the one that produced "$key" can never be two different reads.
-    NOW="$({{CLEANUP_LIB}} marker-branch "$path")"
-    if [ "${NOW:--}" = "$key" ] && rm -f "$path"; then
+    # Re-capture the FILE IDENTITY at the moment of deletion. Comparing `.branch` alone is not
+    # enough: a new /implement-issue run retrying the same issue writes the same deterministic
+    # `issue-NN-slug`, so a replaced marker would compare equal and be deleted — disarming a live
+    # run's continuation gate. An empty identity (unreadable) never matches, so it also keeps.
+    NOW="$({{CLEANUP_LIB}} marker-identity "$path")"
+    if [ -n "$IDENT" ] && [ "$NOW" = "$IDENT" ] && rm -f "$path" 2>/dev/null; then
       CLEARED="${CLEARED}${path##*/}
 "
     else
-      NOTES="${NOTES}SKIPPED ${path##*/} — it changed during the sweep; kept
+      NOTES="${NOTES}SKIPPED ${path##*/} — it changed during the sweep, or could not be removed; kept
 "; RUN=keep
     fi
   fi
@@ -392,21 +407,42 @@ EOF
 
 **Then gap artifacts and thread caches.**
 
+**Re-scan before deleting anything.** `$SCAN` and `$LOCK` were captured at the top of this step,
+before a marker pass that makes live PR round trips — seconds, sometimes longer. A new
+`/implement-issue` can take the lock and start writing the *same* gap filenames in that window,
+and deleting from the old snapshot would remove files a locked dispatch is actively writing. The
+lock that governs a destructive delete must be the one that is true *at the delete*.
+
 ```bash
+SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"
+LOCK=0
+if printf '%s\n' "$SCAN" | grep -q "^lock${TABC}"; then LOCK=1; fi
+
 GV="$({{CLEANUP_LIB}} state-verdict gaps "$LOCK" "$RUN")" || GV=keep
+
+# rm failures are REPORTED, never swallowed. A read-only state dir would otherwise leave every
+# eligible file in place while the report showed a clean, successful no-op — precisely what the
+# output contract says must never happen to work left behind.
+sweep_file() {
+  if rm -f "$1" 2>/dev/null && [ ! -e "$1" ]; then
+    CLEARED="${CLEARED}${1##*/}
+"
+  else
+    NOTES="${NOTES}REFUSED ${1##*/} — could not be removed (state dir not writable?); left in place
+"
+  fi
+}
 
 while IFS="$TABC" read -r kind path key; do
   case "$kind" in
     gaps)
       [ "$GV" = stale ] || continue
-      rm -f "$path" && CLEARED="${CLEARED}${path##*/}
-"
+      sweep_file "$path"
       ;;
     threads)
       TV="$({{CLEANUP_LIB}} state-verdict threads "$(pr_state "$key")")" || continue
       [ "$TV" = stale ] || continue
-      rm -f "$path" && CLEARED="${CLEARED}${path##*/}
-"
+      sweep_file "$path"
       ;;
   esac
 done <<EOF
