@@ -93,11 +93,49 @@ In release-readiness mode, every run `/roadmap`:
 - **Emits accordingly:**
   - **Requirements unmet** (open `release-blocker`s remain) → the next unblocked
     `/implement-issue` bundle *from the release set*.
-  - **Requirements met** (0 open `release-blocker`s in an armed milestone) → `Next: /release`
-    with `✅ Release requirements met (<milestone>: 0 open blockers) — cutting.` (If
+  - **Requirements met and the default branch is green** (0 open `release-blocker`s in an armed
+    milestone) → `Next: /release`
+    with `✅ Release requirements met (<milestone>: 0 open blockers, <branch> green) — cutting.` (If
     non-blocker issues remain open in the milestone, the banner names them: they do not hold
     the release, and `baseline release roll` sends them to `Backlog` on the cut — re-slate
     them deliberately, like any other work.)
+  - **Requirements met but the branch is not green** → **no cut.** `⛔ Requirements met, but
+    <branch> is not green` naming the failing check. A drained checklist says the *requirements*
+    are done; it says nothing about whether the code is **shippable**, and on a repo that deploys
+    on cut that difference is a broken production deploy. The action is `/debug`, not
+    `/implement-issue`.
+  - **Requirements met but health cannot be established** (a check still running, or CI that has
+    never reported on this commit) → **no cut, fail closed.** An unverifiable build is treated as
+    unshippable, never optimistically as green.
+  - **A repo with no CI at all** → the health condition is **skipped** and the cut is emitted,
+    saying so. A project that never adopted CI must not be deadlocked out of ever releasing.
+
+**How "green" is decided.** Health is evaluated against the **default branch's HEAD commit**, not
+against a run list: `gh run list --branch <default> --limit 1` lists runs newest-first across all
+workflows, so it can answer with an unrelated scheduled workflow, with a run for an *older* commit,
+or with one workflow's success while a sibling job is red. `/roadmap` resolves the default branch
+and its HEAD live, then reads **both** the Checks API (GitHub Actions and check-run apps) **and**
+the legacy commit-status API (CircleCI, Vercel, Cloudflare, …) for that commit — reading only one
+would silently ignore whole CI providers. The reduction to `green` / `not-green` / `indeterminate` /
+`no-ci` is the shared `roadmap-lib.sh branch-health` predicate, regression-tested offline, so it
+cannot drift run to run. A `skipped` or `neutral` conclusion is *not* a failure — that is how GitHub
+itself scores a required check.
+
+**`baseline release roll` deliberately does not gate on health.** It re-verifies the *requirements*
+live (fail-closed, as always) but passes `skipped` for the health input, explicitly at the call
+site. Roll is post-cut bookkeeping: it archives the milestone the operator already released, and it
+ships nothing. Gating it on live CI would strand the repo in the failure the rollover contract
+exists to prevent — a branch that goes red *after* the tag would block the roll, leaving the
+milestone open with zero open blockers, so `/roadmap` re-emits the same cut on every subsequent run
+and the loop stops terminating. The green-branch gate belongs where the cut is **decided**.
+
+**An open `release-blocker` in no milestone is a hold, not a backlog item.** `/roadmap`'s tracker
+autofix moves an unmilestoned open issue to `Backlog` — but it **excludes** one carrying
+`release-blocker`. That label is only meaningful inside the active release milestone, so sweeping it
+to `Backlog` would drop a declared must-have out of the set readiness counts, and the very next run
+would compute "met" and emit a cut with an abandoned blocker parked in the backlog. It is reported
+as a `HOLD:` line every run until the tracker actually changes: assign it to the release milestone,
+or remove the label.
 - **Composes with the destination report.** Point the artifact's optional
   `<!-- destination-label: release-blocker -->` marker (issue #68) at `release-blocker`; in
   release-readiness mode the count is **milestone-scoped** so the gauge (`release-blocker: N

@@ -89,6 +89,20 @@ case "$sub" in
         lbl="${url##*/labels/}"
         grep -qx "$lbl" "$F/labels.txt" 2>/dev/null || { echo "gh: Not Found" >&2; exit 1; }
         printf '{"name":"%s"}\n' "$lbl" ;;
+      # --- #78 branch health: three distinct reads, each independently failable ---------------
+      # Ordered before the bare `repos/OWNER/REPO` arm below, which would otherwise swallow them.
+      */check-runs*)
+        fail_if checkruns
+        emit "$F/check-runs.json" ;;
+      */commits/*/status)
+        fail_if commitstatus
+        emit "$F/commit-status.json" ;;
+      */actions/workflows*)
+        fail_if workflows
+        emit "$F/workflows.json" ;;
+      */commits/*)
+        fail_if headsha
+        emit "$F/commit.json" ;;
       *issues\?milestone=*)
         fail_if milestone
         emit "$F/milestone-issues.json" ;;
@@ -98,6 +112,12 @@ case "$sub" in
       *issues\?state=open*)
         fail_if openissues
         emit "$F/open-issues.json" ;;
+      # LAST among the repos arms on purpose: `repos/*/*` also matches
+      # `repos/acme/widget/issues?...`, so it must only see what every arm above declined —
+      # `gh api repos/OWNER/REPO`, the repo object read for .default_branch (#78).
+      repos/*/*)
+        fail_if repoapi
+        emit "$F/repo-object.json" ;;
       *) echo "gh stub: unhandled api url: $url" >&2; exit 90 ;;
     esac ;;
   issue)
@@ -177,7 +197,31 @@ fix_default() {
   printf '{"total_count":1}\n'           > "$FIX/search-milestone.json"
   printf '[]\n'                          > "$FIX/milestone-issues.json"
   printf '[{"number":8,"title":"Backlog"},{"number":9,"title":"Next release"}]\n' > "$FIX/milestones.json"
+  health_green
 }
+
+# --- #78 branch-health fixtures ---------------------------------------------------------------
+# The default is a GREEN default branch, so every pre-existing readiness case keeps asserting what
+# it always asserted (a `met` milestone is still `met`) and the health-specific cases below each
+# change exactly one thing.
+E2E_SHA=1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
+# health_set <check-runs-json> <statuses-json> <active-workflow-count>
+health_set() {
+  printf '{"default_branch":"main"}\n'            > "$FIX/repo-object.json"
+  printf '{"sha":"%s"}\n' "$E2E_SHA"              > "$FIX/commit.json"
+  printf '{"check_runs":%s}\n' "$1"               > "$FIX/check-runs.json"
+  printf '{"state":"x","statuses":%s}\n' "$2"     > "$FIX/commit-status.json"
+  printf '{"total_count":%s,"workflows":%s}\n' "$3" \
+    "$(jq -cn --argjson n "$3" '[range($n) | {state:"active"}]')" > "$FIX/workflows.json"
+}
+health_green() { health_set "[{\"name\":\"ci\",\"head_sha\":\"$E2E_SHA\",\"status\":\"completed\",\"conclusion\":\"success\"}]" '[]' 1; }
+health_red()   { health_set "[{\"name\":\"ci\",\"head_sha\":\"$E2E_SHA\",\"status\":\"completed\",\"conclusion\":\"failure\"}]" '[]' 1; }
+health_running(){ health_set "[{\"name\":\"ci\",\"head_sha\":\"$E2E_SHA\",\"status\":\"in_progress\",\"conclusion\":null}]" '[]' 1; }
+health_stale() { health_set '[{"name":"ci","head_sha":"deadbeefdeadbeefdeadbeef","status":"completed","conclusion":"success"}]' '[]' 1; }
+health_nocia() { health_set '[]' '[]' 0; }
+health_norun() { health_set '[]' '[]' 2; }
+# A non-Actions provider reports only through the legacy status API.
+health_legacy_red() { health_set '[]' '[{"context":"vercel","state":"failure"}]' 0; }
 
 # limbo_issues <spec>... — an open-issue fixture where `<n>` is unmilestoned and `<n>:M` is in
 # milestone M. This is what step 4b selects on, so the fixture has to model it directly.
@@ -343,7 +387,12 @@ eq "$OUT" "$first" "two runs over an unchanged tracker produce identical reads"
 # release-ready — the places a working predicate still yields a wrong verdict.
 ms_issues() { printf '%s\n' "$1" > "$FIX/milestone-issues.json"; }
 readiness() {
-  run_snippet readiness 'printf "VERDICT=%s ARMED=%s BLK=%s OPEN=%s CANCELED=%s\n" "$VERDICT" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED"' >/dev/null
+  run_snippet readiness 'printf "VERDICT=%s ARMED=%s BLK=%s OPEN=%s CANCELED=%s HEALTH=%s WHY=%s\n" "$VERDICT" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH" "${HEALTH_WHY:-}"' >/dev/null
+}
+# A milestone whose requirements are DRAINED — the only state in which health can change the
+# verdict. Every health case below starts from it, so each asserts health and nothing else.
+ms_drained() {
+  ms_issues '[{"number":74,"state":"closed","state_reason":"completed","labels":[{"name":"release-blocker"}]}]'
 }
 
 fix_default; ms_issues '[]'
@@ -389,6 +438,66 @@ has "$OUT" "VERDICT=unarmed" "a milestone holding only the artifact is unarmed (
 fix_default; : > "$FIX/fail-milestone"
 readiness
 no "$RC_" "a failing milestone read hard-stops instead of reporting an empty release set"
+
+# ============================================================================================
+# 4b. BRANCH HEALTH end to end (#78) — the live reads, wired through the documented snippet
+# ============================================================================================
+# check-roadmap.sh pins the branch-health VERDICT TABLE. What is proven here is the wiring: that
+# the snippet resolves the default branch and its HEAD live, reads BOTH check APIs plus the
+# workflow inventory, and feeds the result to release-ready — the places a perfect predicate
+# still yields a wrong verdict.
+fix_default; ms_drained; health_green
+readiness
+eq "$RC_" 0            "the health pipeline runs clean"
+has "$OUT" "HEALTH=green"  "a green default branch resolves to green"
+has "$OUT" "VERDICT=met"   "...and a drained milestone on a green branch is the cut"
+
+fix_default; ms_drained; health_red
+readiness
+has "$OUT" "VERDICT=not-green" "a RED default branch withholds the cut (#78's headline case)"
+has "$OUT" "WHY=failing: ci"   "...and names the failing check, so the report is actionable"
+
+fix_default; ms_drained; health_running
+readiness
+has "$OUT" "VERDICT=indeterminate" "a still-running check fails closed, and is NOT reported as red"
+has "$OUT" "still running"         "...naming what it is waiting on"
+
+fix_default; ms_drained; health_stale
+readiness
+has "$OUT" "VERDICT=indeterminate" "a green check on a DIFFERENT commit is never this branch's green"
+
+fix_default; ms_drained; health_nocia
+readiness
+has "$OUT" "HEALTH=no-ci"  "no checks AND no active workflows => no-ci"
+has "$OUT" "VERDICT=met"   "...and a repo with no CI is not deadlocked out of releasing (#24)"
+
+fix_default; ms_drained; health_norun
+readiness
+has "$OUT" "VERDICT=indeterminate" \
+  "active workflows that have not reported here => indeterminate, NOT no-ci (the discriminator)"
+
+fix_default; ms_drained; health_legacy_red
+readiness
+has "$OUT" "VERDICT=not-green" \
+  "a non-Actions provider reporting failure through the legacy status API still withholds the cut"
+
+# Health is only consulted at the would-be-met boundary: with an open blocker the verdict is
+# `unmet` and the snippet must not even resolve health (so a repo mid-build never blocks on CI).
+fix_default; health_red
+ms_issues '[{"number":78,"state":"open","state_reason":null,"labels":[{"name":"release-blocker"}]}]'
+readiness
+has "$OUT" "VERDICT=unmet"     "an open blocker outranks a red branch"
+has "$OUT" "HEALTH=skipped"    "...and health is not read at all while requirements remain"
+
+# EVERY health read is separately checked. A failed read must hard-stop — falling through would
+# leave the health variable empty, and an empty health argument is exactly what must never be
+# allowed to reach `met`.
+for kind in repoapi headsha checkruns commitstatus workflows; do
+  fix_default; ms_drained; health_green; : > "$FIX/fail-$kind"
+  readiness
+  no "$RC_" "a failing '$kind' read hard-stops instead of emitting a cut on unknown health"
+  hasnt "$OUT" "VERDICT=met" "...and never reports met"
+done
 
 # ============================================================================================
 # 5. DESTINATION GAUGE (acceptance §8)

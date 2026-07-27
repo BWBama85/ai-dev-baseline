@@ -222,6 +222,43 @@ Set `<!-- release-milestone: Next release -->` on the artifact.
 - [ ] The hold **clears** only on a real tracker edit — reopen it, remove the `release-blocker`
       label, or drop it from the milestone. Re-running `/roadmap` alone never clears it.
 
+### 9b-bis. Branch health — a drained checklist is not a shippable build (#78) **[auto]**
+
+Health is evaluated against the default branch's **HEAD commit** (never `gh run list --limit 1`,
+which can answer with an unrelated workflow or an older commit), across **both** the Checks API and
+the legacy commit-status API. It is consulted **only** at the would-be-`met` boundary.
+
+- [ ] **Green + 0 open blockers** → emits the release command, banner naming the branch as green.
+- [ ] **Red + 0 open blockers** → **no cut.** `⛔ Requirements met, but <branch> is not green`,
+      **naming the failing check**. The action is `/debug`, not `/implement-issue`.
+- [ ] **A check still running** → `indeterminate`, **fail closed** — and reported as *unknown*,
+      never as red (a mid-CI run must not read as a failure).
+- [ ] **A check attached to a different commit** → `indeterminate`. Stale evidence is never this
+      branch's green.
+- [ ] **No CI at all** (no checks *and* no active workflows) → the condition is **skipped** and the
+      cut is emitted, saying so. A repo without CI is never deadlocked (#24).
+- [ ] **Active workflows that have not reported on this commit** → `indeterminate`, **not**
+      `no-ci`. (An empty run list means both; the active-workflow inventory is the discriminator.)
+- [ ] **A non-Actions provider** (Vercel/CircleCI/Cloudflare) reporting failure through the legacy
+      status API still withholds the cut.
+- [ ] With **open blockers**, the verdict is `unmet` and health is **not read at all** — a repo
+      mid-build never blocks on a CI read it cannot act on.
+- [ ] Any failing health read (repo, HEAD, check-runs, status, workflow inventory) **hard-stops**;
+      none of them may fall through to a cut on unknown health.
+- [ ] A canceled (`NOT_PLANNED`) blocker **and** a red branch → `held` wins. Both withhold the cut;
+      `held` is reported first because it has a deterministic owner remedy.
+- [ ] **Live-only:** change the default branch's HEAD *between* the first readiness calculation and
+      the final emission re-check — the second read must win and suppress the cut.
+
+### 9b-ter. An unmilestoned `release-blocker` is a hold, not a backlog item (#78)
+
+- [ ] File an open issue labeled `release-blocker` with **no** milestone. The step-4b autofix must
+      **not** sweep it to `Backlog` — it prints a `HOLD:` line instead.
+- [ ] That hold is **not** retirable by a `## Decisions` row (a row must never hide a release
+      hold); it clears only by assigning the issue to the release milestone or removing the label.
+- [ ] Confirm the failure it prevents: were it swept, readiness would count 0 blockers in the
+      milestone and emit a cut with a declared must-have parked in `Backlog`.
+
 ### 9c. Projection — advancement is scoped, reconcile is not
 
 Put one issue in `Next release` and leave others in `Backlog`, bundled together.
@@ -238,8 +275,10 @@ Put one issue in `Next release` and leave others in `Backlog`, bundled together.
 
 - [ ] **Unmet** → emits the next ready bundle projected onto the milestone, exactly like classic
       mode but scoped.
-- [ ] **Met** → emits `✅ Release requirements met (Next release: 0 open blockers) — cutting.`
-      followed by `Next: /release`. `/roadmap` only **prints** it; it never runs it.
+- [ ] **Met** → emits `✅ Release requirements met (Next release: 0 open blockers, main green) —
+      cutting.` followed by `Next: /release`. `/roadmap` only **prints** it; it never runs it.
+      When health was `no-ci` the banner says the check was **skipped** instead of claiming green —
+      a branch that was never checked is never reported as green.
 - [ ] A `<!-- release-command: /ship -->` marker overrides the emitted command.
 - [ ] With non-blocker issues still open in the milestone, the banner appends
       `(K non-blocker issue(s) still open — not holding the release; the roll sends them to Backlog)`.

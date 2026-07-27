@@ -514,7 +514,18 @@ EOF
     # Mode is keyed off label EXISTENCE, never a live count — closing the last blocker must not
     # silently raise the bar from "no blockers left" to "no issues left" (roadmap-lib.sh).
     blk_exists=0; label_exists "$BLOCKER_LABEL" && blk_exists=1
-    verdict="$(bash "$lib" release-ready "$blk_exists" "$armed" "$ob" "$oi" "$canceled")" \
+    # `skipped` is an EXPLICIT, deliberate opt-out of #78's green-branch gate, not an oversight —
+    # which is exactly why `release-ready` makes the argument REQUIRED rather than defaulted: the
+    # decision is written here, at the call site, where a reviewer sees it.
+    #
+    # Rationale: this gate asks "are this milestone's REQUIREMENTS met", and roll is post-cut
+    # BOOKKEEPING — it archives the milestone the operator already released; it ships nothing and
+    # deploys nothing. Gating it on live CI would strand the repo in the failure #74 exists to
+    # prevent: a branch that goes red after the tag would block the roll, leaving the milestone
+    # open with zero open blockers, so /roadmap re-emits the same cut on every subsequent run and
+    # the loop stops terminating. The green-branch gate belongs where the cut is DECIDED
+    # (/roadmap's emission), which is where #78 put it.
+    verdict="$(bash "$lib" release-ready "$blk_exists" "$armed" "$ob" "$oi" "$canceled" skipped)" \
       || { echo "ERROR: readiness predicate failed — refusing to roll" >&2; return 1; }
     if [ "$verdict" != "met" ]; then
       echo "ERROR: '$rolling' (#$cut_num) is not released — readiness verdict is '$verdict', not 'met'." >&2
@@ -523,6 +534,12 @@ EOF
         unmet)   echo "       $ob open '$BLOCKER_LABEL' issue(s) / $oi open issue(s) remain." >&2 ;;
         held)    echo "       A '$BLOCKER_LABEL' was closed NOT_PLANNED — an abandoned must-have is an" >&2
                  echo "       owner decision. Reopen it, unlabel it, or drop it from the milestone." >&2 ;;
+        # roll passes health=skipped, so these two cannot arise from THIS call today. They are
+        # named anyway: a silent generic error is what made the previous vocabulary change hard to
+        # trace, and if roll ever does consult health these must not read as "unknown verdict".
+        not-green)     echo "       The default branch is not green (health is gated in /roadmap, not here)." >&2 ;;
+        indeterminate) echo "       Branch health could not be established (health is gated in /roadmap, not here)." >&2 ;;
+        *)       echo "       Unrecognised verdict '$verdict' — refusing to roll on an answer this version does not know." >&2 ;;
       esac
       echo "       Re-run with --force only if you are deliberately rolling an unreleased milestone." >&2
       return 1
