@@ -435,4 +435,207 @@ eq "$(mt '<!-- release-milestone: A --> then <!-- something else -->\n')" 'A|' \
 bash "$RL" marker-title extra-arg >/dev/null 2>&1
 eq "$?" 2 "marker-title takes no arguments"
 
+# ============================================================================================
+# 6. DEPS-FROM-BODY — the dependency-edge rule, executable (#108)
+# ============================================================================================
+# The edge rule used to live only as prose ("an issue body that says `Depends on #N`"), so every
+# run re-derived it by eye — and two failures followed: a NEGATED mention read as an edge, and an
+# edge that outlived its source text kept blocking a bundle. Same over-match class as #69, on the
+# dependency side. Pin both directions.
+
+# deps <body> [self] -> the edges, space-separated on one line ('' when none).
+deps() { printf '%s' "$1" | bash "$RL" deps-from-body ${2:+"$2"} 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+
+# --- 6a. the explicit keywords DO declare an edge -------------------------------------------
+eq "$(deps 'Depends on #78')"        '78' "'Depends on #78' is an edge"
+eq "$(deps 'Depends on: #78 only.')" '78' "the colon form is an edge"
+eq "$(deps 'Blocked by #25')"        '25' "'Blocked by #25' is an edge"
+eq "$(deps 'Blocked on #25')"        '25' "'Blocked on #25' is an edge"
+eq "$(deps 'DEPENDS ON #12')"        '12' "the keyword is case-insensitive"
+eq "$(deps 'depends upon #12')"      '12' "'depends upon' is an edge"
+eq "$(deps 'This is dependent on #9')" '9' "'dependent on' is an edge"
+eq "$(deps '- Depends on #78')"      '78' "a markdown list item is scanned"
+eq "$(deps 'Cannot proceed: blocked by #78')" '78' \
+   "'cannot' does not read as the negator 'not' (substring guard)"
+
+# --- 6b. a cross-reference is NEVER an edge (the #69 rule, dependency side) ------------------
+eq "$(deps 'Refs #69')"                    '' "'Refs #69' is not an edge"
+eq "$(deps 'Relates to #69 and see #70')"  '' "prose proximity is not an edge"
+eq "$(deps 'See #12 for context')"         '' "'See #12' is not an edge"
+eq "$(deps '#78')"                         '' "a bare #N is not an edge"
+
+# --- 6c. NEGATION retires an edge, never creates one (the #108 bug) --------------------------
+eq "$(deps 'No longer depends on #25.')"          '' "'no longer depends on' is not an edge"
+eq "$(deps 'This does not depend on #25')"        '' "'does not depend on' is not an edge"
+eq "$(deps 'It is not blocked by #25')"           '' "'is not blocked by' is not an edge"
+eq "$(deps 'Never depended on #25')"              '' "'never depended on' is not an edge"
+eq "$(deps 'Rescoped — no longer blocked by #25')" '' "an em-dash clause boundary is honored"
+eq "$(deps 'The #25 prerequisite was dropped; blocked by #78')" '78' \
+   "a negator in an EARLIER clause does not suppress a later real edge"
+eq "$(deps 'Depends on #78; it is not blocked by #25')" '78' \
+   "one line can declare one edge and retire another"
+
+# --- 6d. this repo only — a qualified reference is not a local edge --------------------------
+eq "$(deps 'Depends on acme/repo#5')"                          '' "owner/repo#N is not a local edge"
+eq "$(deps 'Depends on https://github.com/acme/repo/issues/5')" '' "an issue URL is not a local edge"
+eq "$(deps 'Depends on #5 and other/repo#7')"                  '5' \
+   "a qualified reference ends the chain instead of contributing a false edge"
+
+# --- 6e. chains, ordering, dedup, self-edges ------------------------------------------------
+eq "$(deps 'Depends on #5, #6 and #7')" '5 6 7' "a comma/and chain yields every member"
+eq "$(deps 'Depends on #7 #5')"         '5 7'   "output is ascending, not source order"
+eq "$(deps 'Depends on #5 and #5')"     '5'     "duplicates collapse"
+eq "$(deps 'Depends on #5 (the gate) and #6')" '5' \
+   "an interrupted chain stops (conservative: an invented edge blocks a bundle forever)"
+eq "$(deps 'Depends on #73 and #78' 73)" '78'   "the self-edge is dropped"
+eq "$(deps 'Depends on #73' 73)"         ''     "a body depending only on itself yields nothing"
+eq "$(deps 'Depends on #7')"             '7'    "#7 is not confused with #70"
+eq "$(deps 'Depends on #70')"            '70'   "...nor #70 with #7"
+
+# --- 6f. shapes that must be a clean empty, never an error ----------------------------------
+eq "$(deps '')"                  '' "an empty body yields no edges"
+eq "$(deps 'nothing here')"      '' "a body with no reference yields no edges"
+eq "$(deps 'Depends on issue 5')" '' "a reference without '#' is not an edge"
+# A digit run wider than any issue number must be REJECTED before the numeric conversion: awk
+# would otherwise hold a float and print it rounded/in exponent form, emitting a fabricated
+# "issue number" no tracker can have. (Self-review find, mirrors release-ready's is_uint bound.)
+eq "$(deps 'Depends on #99999999999999999999')" '' \
+   "an over-wide reference is not an edge (never a float-formatted fake number)"
+eq "$(deps 'Depends on #99999999999999999999, #5')" '5' \
+   "...and the rest of the chain still resolves"
+eq "$(deps 'Depends on #999999999')" '999999999' "a 9-digit reference still resolves (bound is not over-tight)"
+eq "$(deps 'Depends on #0')" '' "#0 is not an issue reference"
+# A keyword and its reference must share a line — a wrapped 'dependency' reads as one to nobody.
+eq "$(deps "$(printf 'Depends on\n#5')")" '' "a keyword and reference split across lines is not an edge"
+
+# --- 6g. argument validation (fail-closed, like every other subcommand) ---------------------
+printf 'x' | bash "$RL" deps-from-body notanumber >/dev/null 2>&1
+eq "$?" 2 "a non-numeric self-issue-number is an ERROR"
+printf 'x' | bash "$RL" deps-from-body 1 2 >/dev/null 2>&1
+eq "$?" 2 "deps-from-body rejects extra arguments"
+printf 'Depends on #5' | bash "$RL" deps-from-body >/dev/null 2>&1
+eq "$?" 0 "deps-from-body with no argument is valid (no self-number)"
+
+# --- 6h. determinism ------------------------------------------------------------------------
+dfx='Depends on #9, #3 and #5; no longer blocked by #4'
+eq "$(deps "$dfx")" "$(deps "$dfx")" "deps-from-body is deterministic"
+eq "$(deps "$dfx")" '3 5 9'          "...and mixed declare/retire resolves to the declared set"
+
+# ============================================================================================
+# 7. DECISIONS — the durable home that retires an owner question (#108)
+# ============================================================================================
+# The reproduced bug: a decision recorded in an issue COMMENT is invisible to reconcile, so the
+# same question reprinted every run, forever. `decisions` reads the artifact's owner-authoritative
+# section so "has the owner already answered this?" is mechanical, not re-litigated each run.
+
+# dcs <body> -> recorded question ids, space-separated ('' when none).
+dcs() { printf '%b' "$1" | bash "$RL" decisions 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+
+D_HEAD='## Decisions\n| Question | Decision | Recorded |\n| -------- | -------- | -------- |\n'
+eq "$(dcs "${D_HEAD}| dep-outside-release:#73 | re-scoped | #73 body |\n")" 'dep-outside-release:#73' \
+   "a recorded question id is reported"
+eq "$(dcs "${D_HEAD}| \`dep-outside-release:#73\` | re-scoped | — |\n")" 'dep-outside-release:#73' \
+   "surrounding backticks are stripped (a row is written by hand)"
+eq "$(dcs "${D_HEAD}|   unmilestoned:#5   | leave it | — |\n")" 'unmilestoned:#5' \
+   "cell whitespace is trimmed"
+eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n| b:#2 | y | — |\n")" 'a:#1 b:#2' "every row is reported"
+eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n| a:#1 | y | — |\n")" 'a:#1' "duplicate rows collapse"
+eq "$(dcs '# Roadmap\n## Bundles\n| B1 | #5 |\n')" '' \
+   "no Decisions section => nothing recorded (not an error)"
+eq "$(dcs "${D_HEAD}")" '' "the header and separator rows are not decisions"
+# The section ENDS at the next heading: a table in a later section must never read as a decision.
+eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n## Bundles\n| B1 | #5 | gates | — | ready |\n")" 'a:#1' \
+   "parsing stops at the next heading (a Bundles row is not a decision)"
+eq "$(dcs '## Bundles\n| B1 | #5 |\n## Decisions\n| a:#1 | x | — |\n')" 'a:#1' \
+   "a section BEFORE Decisions does not leak into it"
+eq "$(dcs '## decisions\n| a:#1 | x | — |\n')" 'a:#1' "the heading match is case-insensitive"
+eq "$(dcs '## Decisions log\n| a:#1 | x | — |\n')" '' \
+   "a differently-titled heading is NOT the Decisions section"
+eq "$(dcs "${D_HEAD}<!-- a comment -->\n| a:#1 | x | — |\n")" 'a:#1' \
+   "an HTML comment inside the section is skipped"
+bash "$RL" decisions extra-arg >/dev/null 2>&1
+eq "$?" 2 "decisions takes no arguments"
+
+# A decision row can DECLARE or RETIRE an edge in the same vocabulary an issue body uses — the
+# composition that makes `## Decisions` a real edge source rather than a second dialect.
+eq "$(deps 'Re-scoped to a standalone driver; no longer depends on #25')" '' \
+   "a decision row that retires an edge yields no edge"
+eq "$(deps 'Confirmed: depends on #78 only.')" '78' \
+   "a decision row that declares an edge yields it"
+
+# ============================================================================================
+# 8. OUTPUT CONTRACT + SCHEMA DRIFT GUARDS (#107, #108, #94)
+# ============================================================================================
+# These pin the parts of the workflow that are prose an agent executes. They are the only thing
+# standing between "the spec says the action is last" and a run that appends fifteen lines after
+# it — which is exactly what #107 was filed for.
+
+# --- 8a. #107: every OUTPUT EXAMPLE ends with the action line -------------------------------
+# Output examples are fenced ```text (bash snippets are ```bash, the artifact schema ```markdown),
+# so this can be checked mechanically. A block may be indented inside a list item.
+contract="$(awk '
+  /^[[:space:]]*```text[[:space:]]*$/ { inb = 1; last = ""; next }
+  inb && /^[[:space:]]*```[[:space:]]*$/ {
+    inb = 0; n++
+    line = last; sub(/^[[:space:]]+/, "", line)
+    if (line !~ /^Next:/) { bad++; printf "  block %d ends with: %s\n", n, last > "/dev/stderr" }
+    next
+  }
+  inb { if ($0 ~ /[^[:space:]]/) last = $0 }
+  END { printf "%d %d\n", n, bad + 0 }
+' "$WF")"
+eq "${contract##* }" 0 'every fenced text output example in the workflow ends with the Next: action line'
+[ "${contract%% *}" -ge 4 ] && ok || bad "workflow carries too few output examples (got ${contract%% *}, want >=4)"
+
+has "$wf" 'The final line is ALWAYS the single next action' \
+  "workflow states the last-line rule as an imperative (#107)"
+has "$wf" 'Next: none —' \
+  "workflow gives terminal states an action line too, so 'last line = next action' always holds"
+hasnt "$wf" 'Next: /implement-issue 5 19
+Why:' \
+  "the emit template no longer prints Why AFTER Next (the #107 defect)"
+
+# --- 8b. #94: the scratch path must not pre-exist, and must be portable ---------------------
+has "$wf" 'mktemp -d' \
+  "workflow makes a scratch DIRECTORY (a mktemp'd FILE fails every write, #94)"
+hasnt "$wf" 'mktemp -t' \
+  "workflow does not use the non-portable 'mktemp -t' (macOS keeps the Xs literally, #94)"
+has "$wf" 'ROADMAP_BODY="$ROADMAP_DIR/body.md"' \
+  "the body path is inside the scratch dir and does not yet exist"
+nr="$(cat "$ROOT/base/workflows/new-release.md" 2>/dev/null)"
+hasnt "$nr" 'mktemp` shape' \
+  "new-release no longer steers an agent into the same pre-created-file trap (#94)"
+
+# --- 8c. #108: edges are re-derived from a live source, and decisions are durable ------------
+has "$wf" '{{ROADMAP_LIB}} deps-from-body' \
+  "workflow delegates edge extraction to the shared predicate"
+has "$wf" '{{ROADMAP_LIB}} decisions' \
+  "workflow reads recorded decisions before surfacing a question"
+has "$wf" '## Decisions' \
+  "the artifact schema carries the Decisions section (the prescribed home for an answer)"
+has "$wf" 'DERIVED VIEW' \
+  "the Dependencies section is documented as derived, never a source (#108)"
+has "$wf" 'Never rewrite `## Decisions`' \
+  "reconcile is told not to overwrite the owner-authoritative section"
+has "$wf" 'dep-outside-release:' \
+  "workflow fixes a stable question-id vocabulary so the same condition retires once"
+has "$wf" 'Record: <where>' \
+  "a surfaced question names where to record the answer"
+has "$wf" 'grep -Fqx' \
+  "the recorded-decision lookup is a literal whole-line match (a:#1 never matches a:#12)"
+
+# The retirement rule must not be allowed to defeat the readiness withhold. `held` and every STOP
+# condition have to print on EVERY run that they hold: a suppressed `held` line is a release that
+# silently never cuts, with the only explanation removed. (Self-review find — #108 vs #71.)
+has "$wf" 'Retirement suppresses a QUESTION, never a VERDICT' \
+  "retirement is scoped to prompts, never to a ground-truth verdict"
+hasnt "$wf" 'canceled-blocker:#N' \
+  "the withheld-cut condition is NOT in the retirable id vocabulary (#71's hold must stay visible)"
+has "$wf" 'never** retirable' \
+  "workflow names the conditions that can never be retired by a recorded row"
+# Bootstrap has to create the home a question will point at, or the first question asked in a
+# fresh repo has nowhere durable to be answered.
+has "$wf" 'empty `## Decisions` section' \
+  "bootstrap seeds the Decisions section so the first question has a recording home"
+
 check_summary "roadmap"

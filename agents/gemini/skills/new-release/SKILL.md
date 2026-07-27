@@ -114,7 +114,13 @@ For `agy` specifically, the built-in `agy changelog` subcommand prints the full 
 
 Confirm to the operator: "Reviewing `<tool>` `<tag>` (published `<date>`)" before proceeding.
 
-Stash the raw changelog body for later reference at `/tmp/<tool>-changelog-<tag>.md` (use `mktemp` shape `/tmp/<tool>-changelog-<tag>.XXXXXX.md` to avoid clobbering across parallel runs).
+Stash the raw changelog body for later reference under a scratch **directory**, so parallel runs
+cannot clobber each other: `mktemp -d "${TMPDIR:-/tmp}/changelog.XXXXXX"`, then write
+`<tool>-changelog-<tag>.md` inside it. Make the directory, not the file — `mktemp <template>`
+creates its target, and the write tool refuses to overwrite a file it has not read, so writing to a
+freshly-`mktemp`'d path fails every time (write with shell redirection instead if you do). Use the
+**positional** template, never `-t`: on macOS `-t` keeps the `XXXXXX` literally and appends its own
+suffix, so the same line yields different names on macOS and GNU.
 
 ### 2. Parse the Changelog Into Candidate Changes
 

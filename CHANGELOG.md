@@ -7,7 +7,47 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Changed
+
+- **`/roadmap` has an output contract: the last line is always the next action** (#107). The emit
+  template printed `Why:` *after* `Next:`, so the command was never last — and nothing in the spec
+  said the emission had to come last at all, so runs appended reconcile detail, bundle tables and
+  look-ahead after it (one run stranded the instruction fifteen lines from the end). The order is
+  now fixed — gauge → owner-action lines → `Why:` → `Next:` — with **nothing after `Next:`**, a
+  ≤5-line default, and an explicit never-print list (bundle tables, "what changed since last run",
+  per-issue narration, zero-count sections, self-narration about verification performed). Terminal
+  states are action lines too (`Next: none — roadmap complete …`), so "the last line tells you what
+  to do" holds even when the answer is "nothing". A met release still prints its rollover reminder,
+  now **above** the `Next:` line. Reconcile detail is not lost: it goes to the artifact, which is
+  the record. `scripts/check-roadmap.sh` pins it — every fenced output example in the workflow must
+  end with its `Next:` line.
+
 ### Fixed
+
+- **`/roadmap` no longer re-asks a question the owner already answered** (#108). Reconcile derived
+  dependency edges from issue bodies and from the artifact's own `## Dependencies` section, so a
+  decision recorded in a **comment** was invisible and the same prompt reprinted verbatim on three
+  consecutive runs, while a stale edge that outlived its source text kept blocking a bundle. Two
+  changes fix it: the artifact gains an owner-authoritative **`## Decisions`** section that
+  `/roadmap` reads and never rewrites — a question whose id appears there is retired permanently —
+  and `## Dependencies` becomes a **derived view**, rebuilt every run from the live sources (issue
+  bodies + decision rows) so an edge whose source assertion is gone disappears. Every surfaced
+  question now carries a stable id (`dep-outside-release:#N`, `dep-canceled:#N`, …) and names where
+  to record the answer, because a question the owner cannot durably answer is a question this skill
+  asks forever.
+- **Dependency edges are extracted by a tested predicate, not by eye** (`roadmap-lib.sh
+  deps-from-body`, #108): explicit keywords only, and a **negated** mention ("no longer depends on
+  #25", "does not depend on #25") now **retires** an edge instead of creating one — the same
+  over-match class as #69, on the dependency side. A repo-qualified `owner/repo#N` is not a local
+  edge, a `#N` chain (`Depends on #5, #6 and #7`) yields every member, and an interrupted chain
+  stops rather than inventing an edge that would block a bundle forever.
+- **`/roadmap` no longer wastes a guaranteed failed write on every run** (#94). Step 1 created its
+  scratch path with `mktemp -t roadmap-body.XXXXXX`, which *creates* the file — and the write tool
+  refuses to overwrite a file it has not read, so persisting the artifact failed every single time
+  and cost a compensating read plus a retry. It now makes a scratch **directory** and writes inside
+  it (the directory exists; the target does not), using the **positional** template rather than
+  `-t`, which on macOS keeps the `XXXXXX` literally and appends its own suffix. The same latent
+  trap in `/new-release`'s changelog-stash guidance is fixed too.
 
 - **The cross-agent dispatch bound is now a hang backstop, not a work budget**
   (`scripts/lib/role-dispatch.sh`, #93): the default rose from 7 to **45 minutes (2700 s)**.
