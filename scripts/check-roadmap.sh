@@ -729,8 +729,20 @@ eq "$?" 2 "marker-title takes no arguments"
 # edge that outlived its source text kept blocking a bundle. Same over-match class as #69, on the
 # dependency side. Pin both directions.
 
+# A FAILED extractor must never look like a clean empty result (#135). These helpers run the
+# library inside `$( … )`, and a command substitution's exit status is DISCARDED once the result
+# is expanded as an argument — `set -o pipefail` does not reach it. Most structure fixtures expect
+# `''`, so without this a crash on exactly those inputs still reports PASS, silently disarming the
+# regressions they exist to pin. Convert a nonzero exit into a value nothing can equal.
+run_rl() {                     # run_rl <subcommand> [args...]  — body on stdin
+  local out rc
+  out="$(bash "$RL" "$@" 2>/dev/null)"; rc=$?
+  if [ "$rc" -ne 0 ]; then printf 'ERR(rc=%s)' "$rc"; return 0; fi
+  printf '%s' "$out" | tr '\n' ' ' | sed 's/ $//'
+}
+
 # deps <body> [self] -> the edges, space-separated on one line ('' when none).
-deps() { printf '%s' "$1" | bash "$RL" deps-from-body ${2:+"$2"} 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+deps() { printf '%s' "$1" | run_rl deps-from-body ${2:+"$2"}; }
 
 # --- 6a. the explicit keywords DO declare an edge -------------------------------------------
 eq "$(deps 'Depends on #78')"        '78' "'Depends on #78' is an edge"
@@ -815,7 +827,7 @@ eq "$(deps "$dfx")" '3 5 9'          "...and mixed declare/retire resolves to th
 # depsm <line>... — the same runner as `deps`, but for a MULTI-LINE body: `deps` passes its one
 # argument through `printf '%s'`, so a fenced block cannot be written as an embedded-newline
 # string. One line per argument instead.
-depsm() { printf '%s\n' "$@" | bash "$RL" deps-from-body 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+depsm() { printf '%s\n' "$@" | run_rl deps-from-body; }
 q3='```'; q4='````'
 # Backticks inside a DOUBLE-quoted string within `$( … )` open a legacy command substitution — a
 # parse error, and one that still reports as a PASS here rather than a failure. (Single quotes are
@@ -893,6 +905,32 @@ eq "$(depsm '<!--->' 'Depends on #5')" '5' "...and so is <!--->"
 eq "$(depsm '<!--' 'Depends on #9' '-->' 'Depends on #5')" '5' \
    "a genuine multi-line comment still swallows its contents"
 
+# STRUCTURE INSIDE A LIST ITEM (#135). Putting a fenced example in a list item is one of the most
+# common shapes in a real issue, and the delimiter then sits after the marker. Missing it failed
+# BOTH ways at once: the block was scanned (fabricating an edge), and its indented closer was read
+# as a NEW opener, swallowing every genuine edge after the list to end-of-body.
+eq "$(depsm '- '"$q3"'console' '  Depends on #5' "  $q3" 'Depends on #7')" '7' \
+   "a fence inside a list item is a fence, and its closer does not re-open one"
+eq "$(depsm '1. '"$q3" '   Depends on #5' "   $q3" 'Depends on #7')" '7' \
+   "...with an ordered list marker"
+eq "$(depsm '  - '"$q3" '    Depends on #5' "    $q3" 'Depends on #7')" '7' \
+   "...and an indented list item, whose closer sits past the 3-space opener limit"
+eq "$(deps '- > Depends on #6')" '' "a blockquote under a list marker is still quoted material"
+eq "$(deps '* > Depends on #6')" '' "...for every bullet character"
+# The marker rules must not eat ordinary prose.
+eq "$(deps '- Depends on #78')"    '78' "a list item of PROSE still declares"
+eq "$(deps '1. Depends on #78')"   '78' "...ordered too"
+eq "$(deps '**Depends on #78**')"  '78' "a bold run is not a list marker"
+eq "$(depsm '---' 'Depends on #78')" '78' "a horizontal rule is not a list marker"
+
+# An ESCAPED comment opener is prose DISPLAYING the delimiter, not markup. Treating it as real
+# armed the cross-line state, and an illustrative marker rarely carries a closer — so it swallowed
+# every edge and every recorded decision after it.
+eq "$(depsm 'Use \<!-- literally' 'Depends on #41')" '41' \
+   "a backslash-escaped <!-- does not open a comment"
+eq "$(depsm 'Real: <!-- x' 'Depends on #41' '-->' 'Depends on #7')" '7' \
+   "...while an unescaped one still does"
+
 # The point of the whole family: prose still declares, and a quoted negation is not a retirement.
 eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \
    "a NEGATED mention quoted in a fence neither declares nor retires"
@@ -907,7 +945,7 @@ eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7')" '5 6 7' \
 # section so "has the owner already answered this?" is mechanical, not re-litigated each run.
 
 # dcs <body> -> recorded question ids, space-separated ('' when none).
-dcs() { printf '%b' "$1" | bash "$RL" decisions 2>/dev/null | tr '\n' ' ' | sed 's/ $//'; }
+dcs() { printf '%b' "$1" | run_rl decisions; }
 
 D_HEAD='## Decisions\n| Question | Decision | Recorded |\n| -------- | -------- | -------- |\n'
 eq "$(dcs "${D_HEAD}| dep-outside-release:#73 | re-scoped | #73 body |\n")" 'dep-outside-release:#73' \

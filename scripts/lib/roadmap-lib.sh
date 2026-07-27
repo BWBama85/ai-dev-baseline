@@ -497,19 +497,55 @@ IFS= read -r -d '' _ADB_RM_MD <<'AWKMD' || true
     # would fail OPEN — every fence would leak its contents back into the scan.
     function lead_sp(s,   i) { i = 0; while (substr(s, i + 1, 1) == " ") i++; return i }
     function run_len(s, pos, ch,   n) { n = 0; while (substr(s, pos + n, 1) == ch) n++; return n }
+    # How many leading characters are CONTAINER, not content: indentation plus an optional list
+    # marker (`- ` / `* ` / `+ ` / `1. ` / `1) `) and the spaces after it. Returns -1 when the line
+    # is indented past 3 with no marker — indented-block territory, which this pass leaves alone.
+    #
+    # WHY (#135). Without this, a fence or a blockquote written INSIDE a list item is invisible:
+    # `- ```console` puts the delimiter after the marker, so the block was scanned (fabricating an
+    # edge) and its indented closer was then read as a NEW opener, swallowing every real edge after
+    # the list. Placing an example in a list item is one of the most common shapes in an issue.
+    function content_at(s,   i, c, j) {
+      i = lead_sp(s)
+      if (i > 3) return -1
+      c = substr(s, i + 1, 1)
+      if (c == "-" || c == "*" || c == "+") {
+        if (substr(s, i + 2, 1) != " ") return i    # `**bold**`, `---`: not a list marker
+        j = i + 1
+        while (substr(s, j + 1, 1) == " ") j++
+        return j
+      }
+      j = i                                         # an ordered marker: digits then `.` or `)`
+      while (substr(s, j + 1, 1) >= "0" && substr(s, j + 1, 1) <= "9") j++
+      if (j > i) {
+        c = substr(s, j + 1, 1)
+        if ((c == "." || c == ")") && substr(s, j + 2, 1) == " ") {
+          j++
+          while (substr(s, j + 1, 1) == " ") j++
+          return j
+        }
+      }
+      return i
+    }
     # The length of a fence run of `ch` on this line, or 0. A fence is indented 0-3 spaces; at 4+
     # the line is an INDENTED block, which this pass deliberately does not treat as code — under a
     # `- ` bullet, content starts at 2 and code needs 2+4=6, so a 4-space rule would strip ordinary
     # continuation PROSE. For an edge scan that direction is the dangerous one: a dropped edge
     # silently unblocks a bundle that is genuinely blocked.
-    function fence_of(line, ch,   sp) {
-      sp = lead_sp(line)
-      if (sp > 3) return 0
-      return run_len(line, sp + 1, ch)
+    function fence_of(line, ch,   at) {
+      at = content_at(line)
+      if (at < 0) return 0
+      return run_len(line, at + 1, ch)
     }
+    # The CLOSER of an open fence. Deliberately more permissive than the opener: any indentation,
+    # no marker needed. A list-nested fence closes at the item content column, which can be deeper
+    # than 3, and failing to close is the far worse error — the fence then swallows the rest of the
+    # body, dropping every real edge after it.
+    function fence_close(line, ch,   sp) { sp = lead_sp(line); return run_len(line, sp + 1, ch) }
     # The text following a fence run: the info string on an opener, the must-be-blank tail on a
     # closer.
-    function after_fence(line, n,   sp) { sp = lead_sp(line); return substr(line, sp + n + 1) }
+    function after_fence(line, n,   at) { at = content_at(line); return substr(line, at + n + 1) }
+    function after_close(line, n,   sp) { sp = lead_sp(line); return substr(line, sp + n + 1) }
     # Remove `<!-- ... -->`, both the inline form and one spanning lines.
     function strip_comments(s,   out, p, q) {
       out = ""
@@ -522,6 +558,15 @@ IFS= read -r -d '' _ADB_RM_MD <<'AWKMD' || true
         }
         p = index(s, "<!--")
         if (p == 0) return out s
+        # `\<!--` is an ESCAPED opener: CommonMark renders the `<` as text, so this is prose
+        # DISPLAYING the delimiter, not markup (#135). Treating it as real arms the cross-line
+        # state, and an illustrative marker rarely has a `-->` — so it swallowed every edge and
+        # every recorded decision in the rest of the body. Step over it and keep scanning.
+        if (p > 1 && substr(s, p - 1, 1) == "\\") {
+          out = out substr(s, 1, p + 3)
+          s = substr(s, p + 4)
+          continue
+        }
         out = out substr(s, 1, p - 1)
         s = substr(s, p + 4); md_in_comment = 1; md_opened_here = 1
         # `<!-->` and `<!--->` are EMPTY comments in CommonMark: the opener and closer share their
@@ -541,8 +586,8 @@ IFS= read -r -d '' _ADB_RM_MD <<'AWKMD' || true
       # marks a genuinely blocked bundle `ready`. Normalize once, for every consumer.
       if (substr(line, length(line), 1) == CR) line = substr(line, 1, length(line) - 1)
       if (md_fence_len) {                          # inside a fence: only its own closer matters
-        fn = fence_of(line, md_fence_ch)
-        if (fn >= md_fence_len && after_fence(line, fn) ~ /^[[:space:]]*$/) {
+        fn = fence_close(line, md_fence_ch)
+        if (fn >= md_fence_len && after_close(line, fn) ~ /^[[:space:]]*$/) {
           md_fence_ch = ""; md_fence_len = 0
         }
         return ""                                  # opener, content and closer are all skipped
@@ -565,7 +610,10 @@ IFS= read -r -d '' _ADB_RM_MD <<'AWKMD' || true
         if (md_opened_here) md_in_comment = 0
         md_fence_ch = "~"; md_fence_len = fn; return ""
       }
-      if (substr(line, lead_sp(line) + 1, 1) == ">") return ""   # quoted material, not a claim
+      # A blockquote nested under a list marker (`- > …`) is still quoted material (#135), so this
+      # tests the CONTENT position rather than the first non-space character.
+      fn = content_at(line)
+      if (fn >= 0 && substr(line, fn + 1, 1) == ">") return ""
       MD_SKIP = 0
       return line
     }
@@ -630,6 +678,10 @@ AWKMD
 #     `## Decisions` section derived that example as a real edge.
 #   - BLOCKQUOTES. A `>` line is quoted material — someone else's text, or an excerpt — never this
 #     issue's own declaration.
+#   - CONTAINERS. Fences and blockquotes are recognized at the CONTENT column, so a fenced example
+#     or a quote written inside a list item (`- ```console`) counts (#135). Missing that failed
+#     both ways at once: the block was scanned, AND its indented closer read as a fresh opener,
+#     swallowing every real edge after the list.
 #   - INLINE CODE SPANS, targeted rather than blanket. The KEYWORD must sit outside a span; the
 #     `#N` reference may sit inside one. So `` `**Depends on: #78**` `` (the whole clause quoted as
 #     an example) declares nothing, while `Depends on `#52`` leaves its reference intact in the
