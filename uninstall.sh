@@ -45,8 +45,8 @@ EOF
               .hooks |= with_entries(
                 if (.value | type) == "array"
                 then .value |= map(select(([.hooks[]?.command // ""] | any(test($re))) | not))
-                else . end)
-              | .hooks |= with_entries(select((.value | type) != "array" or (.value | length) > 0))
+                else . end
+                | select((.value | type) != "array" or (.value | length) > 0))
             else . end
           ' "$settings" > "$settings.adb.tmp" && mv "$settings.adb.tmp" "$settings"; then
         adb_info "  hooks  removed global Stop gates + SessionStart currency check from ~/.claude/settings.json"

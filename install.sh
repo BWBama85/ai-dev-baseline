@@ -107,8 +107,8 @@ run_adapter() {
 }
 
 write_global_manifest() {
-  local dir="$HOME/.config/ai-dev-baseline" f
-  f="$dir/agents.toml"
+  local f dir
+  f="$(adb_global_manifest)"; dir="$(dirname "$f")"
   mkdir -p "$dir"
   if [ ! -f "$f" ]; then
     cp "$REPO/templates/agents.toml" "$f"

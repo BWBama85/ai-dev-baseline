@@ -495,6 +495,15 @@ adb_clone_status() {
   adb_branch_sync_state "$1" "$2"
 }
 
+# Print the path of the GLOBAL agent manifest — the one install.sh writes once and every
+# runtime reader consults. The ONE home for this path: it was previously spelled independently
+# by the writer (install.sh) and each reader, and a third spelling that honored XDG_CONFIG_HOME
+# would read a file the writer never created — the config would silently do nothing, which is
+# exactly the class of failure this library exists to remove. Deliberately NOT XDG-aware today,
+# because matching the writer is what matters; making the whole surface XDG-aware is a separate,
+# all-at-once change.
+adb_global_manifest() { printf '%s/.config/ai-dev-baseline/agents.toml\n' "${HOME:-/root}"; }
+
 # Print a path's mtime in epoch seconds, or nothing when it cannot be read.
 #
 # The two stat flavors are NOT interchangeable and the naive `stat -f %m || stat -c %Y` is a
@@ -509,6 +518,19 @@ adb_mtime() {
     m="$(stat -f %m "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
   fi
   printf '%s' "$m"
+}
+
+# Print how many seconds ago <path> was last modified, or nothing when that cannot be
+# established (missing path, unreadable mtime, unusable clock). Callers treat empty as "unknown
+# age" and decide their own safe direction — the SessionStart rate limit proceeds with the
+# check, the update lock declines to break a lock it cannot date. The arithmetic and the
+# clock-validation live here so those two policies are the ONLY thing that differs between them.
+# Usage: adb_age_secs <path>
+adb_age_secs() {
+  local m now
+  m="$(adb_mtime "$1")"; [ -n "$m" ] || return 0
+  now="$(date +%s 2>/dev/null)"; case "$now" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$((now - m))"
 }
 
 # --- installed-baseline discovery --------------------------------------------

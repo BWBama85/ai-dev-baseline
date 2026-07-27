@@ -413,6 +413,29 @@ eq "$( cd "$work" && adb_clone_local_state "$sbrepo" main )" "in-progress" \
   "local state: in-progress is detected from any cwd"
 rm -rf "$sbgit/rebase-merge"
 
+# --- adb_global_manifest (#36) ------------------------------------------------
+# One spelling of the global manifest path, shared by its writer (install.sh) and every reader
+# (role-dispatch.sh, the SessionStart hook). A reader that spelled it differently — notably one
+# that honored XDG_CONFIG_HOME while the writer did not — would consult a file nobody writes, so
+# its config key would silently do nothing.
+eq "$( HOME=/tmp/fakehome; adb_global_manifest )" "/tmp/fakehome/.config/ai-dev-baseline/agents.toml" \
+  "global manifest: \$HOME/.config/ai-dev-baseline/agents.toml"
+# shellcheck disable=SC2034  # XDG_CONFIG_HOME being unread by adb_global_manifest IS the assertion.
+eq "$( HOME=/tmp/fakehome XDG_CONFIG_HOME=/tmp/decoy; adb_global_manifest )" \
+  "/tmp/fakehome/.config/ai-dev-baseline/agents.toml" \
+  "global manifest: XDG_CONFIG_HOME does not move it (the writer does not honor it either)"
+# The single-source claim, asserted against the actual files rather than trusted: neither the
+# writer nor the other reader may carry its own literal spelling any more. Uses the ok/bad
+# counter family (not req_absent), because THIS file reports through check_summary — a
+# grep-assert failure here would set CHECK_FAIL, which check_summary never reads, and so would
+# never fail the run.
+if grep -q '\.config/ai-dev-baseline' install.sh; then
+  bad "install.sh re-spells the global manifest path instead of calling adb_global_manifest"
+else ok; fi
+if grep -q 'HOME:-/root}/\.config' scripts/lib/role-dispatch.sh; then
+  bad "role-dispatch.sh re-spells the global manifest path instead of calling adb_global_manifest"
+else ok; fi
+
 # --- adb_mtime (#36) ----------------------------------------------------------
 # The two stat flavors are not interchangeable, and the obvious `stat -f %m || stat -c %Y` is a
 # real bug rather than a style nit: on GNU coreutils `-f` is --file-system, so `stat -f %m FILE`

@@ -38,9 +38,19 @@ printf '#!/usr/bin/env bash\nprintf "install: %%s\\n" "$*" >> "%s"\n' "$work/ins
 chmod +x "$seed/install.sh"
 printf 'root doc\n' > "$seed/agents/claude/CLAUDE.md"
 printf 'demo skill\n' > "$seed/agents/claude/skills/demo/SKILL.md"
-for s in precommit-gate implement-issue-gate statusline; do
-  printf '#stub\n' > "$seed/agents/claude/scripts/$s.sh"
-done
+# Stub every OTHER script the manifest expects, enumerated from the manifest itself rather than
+# a literal list: `baseline update` verifies the full manifest, so a script added there but not
+# here would fail this fixture in a way that looks like a bin/baseline bug.
+# shellcheck source=/dev/null
+. "$ROOT/scripts/lib/common.sh"
+while IFS= read -r s; do
+  [ -n "$s" ] || continue
+  case "$s" in session-currency.sh) continue ;; esac   # the real one, copied above
+  printf '#stub\n' > "$seed/agents/claude/scripts/$s"
+done <<EOF
+$(adb_agent_manifest claude "$seed" "$work/unused-home" \
+   | cut -f1 | sed -n "s|^$seed/agents/claude/scripts/||p")
+EOF
 
 origin="$work/origin.git"
 check_make_repo_pair "$seed" "$origin" || { echo "session-currency fixture: repo pair init failed" >&2; exit 1; }
@@ -54,10 +64,14 @@ src="$work/src"; git clone -q "$origin" "$src"
 fh="$work/home"; mkdir -p "$fh/.claude/skills" "$fh/.claude/scripts"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
-for s in precommit-gate implement-issue-gate statusline session-currency; do
-  ln -s "$src/agents/claude/scripts/$s.sh" "$fh/.claude/scripts/$s.sh"
-done
+while IFS= read -r s; do
+  [ -n "$s" ] || continue
+  ln -s "$src/agents/claude/scripts/$s" "$fh/.claude/scripts/$s"
+done <<EOF
+$(adb_agent_manifest claude "$src" "$fh" | cut -f1 | sed -n "s|^$src/agents/claude/scripts/||p")
+EOF
 ln -s "$src/scripts/lib" "$fh/.claude/scripts/lib"
+srcgit="$(git -C "$src" rev-parse --absolute-git-dir)"
 
 # The hook as the operator would reach it: through the installed symlink, so `dirname "$0"/lib`
 # resolves the same way it does in a real install.
@@ -77,19 +91,19 @@ reset_src() {
   git -C "$src" reset -q --hard origin/main
   git -C "$src" clean -qfd
   rm -rf "${work:?}/cache"                       # drop the rate-limit stamp between cases
-  rm -rf "$(git -C "$src" rev-parse --absolute-git-dir)/adb-update.lock"
+  rm -rf "${srcgit:?}/adb-update.lock"
 }
 
 # Run the hook with a given event source + cwd. Everything that could reach the developer's real
 # environment is redirected into the fixture. Sets OUT (stdout) and RC.
-# Usage: run_hook <source> [cwd] ; env knobs via HOOK_ENV_* below.
-MODE_ENV=""; INTERVAL_ENV=""
+# Usage: run_hook <source> [cwd] ; mode/interval via the MODE_ENV / INTERVAL_ENV knobs below.
+MODE_ENV=""; INTERVAL_ENV=""; XDG_CONFIG_ENV=""
 run_hook() {
   local source="$1" cwd="${2:-$work}" input
   input="$(jq -cn --arg s "$source" --arg c "$cwd" \
     '{session_id:"t", hook_event_name:"SessionStart", source:$s, cwd:$c}')"
   OUT="$(printf '%s' "$input" | env HOME="$fh" \
-      XDG_CACHE_HOME="$work/cache" XDG_CONFIG_HOME="$fh/.config" \
+      XDG_CACHE_HOME="$work/cache" XDG_CONFIG_HOME="$XDG_CONFIG_ENV" \
       ADB_SESSION_UPDATE="$MODE_ENV" ADB_SESSION_UPDATE_INTERVAL_SECS="$INTERVAL_ENV" \
       bash "$HOOK" 2>/dev/null)"
   RC=$?
@@ -184,45 +198,43 @@ if [ "$(head_of)" != "$before" ]; then ok; else bad "a session in another repo m
 # --- unsafe clone states are refused, and named ------------------------------
 # The refusal itself is bin/baseline's (check-baseline.sh owns that); what is asserted here is
 # that the hook surfaces WHICH state, rather than failing silently or claiming success.
+# refused <expected-word> <label>  — run against the clone as currently staged.
+refused() {
+  local before; before="$(head_of)"
+  run_hook startup
+  eq "$RC" "0" "$2 → still exit 0"
+  has "$OUT" "$1" "$2 → the line names $1"
+  eq "$(head_of)" "$before" "$2 → never fast-forwarded"
+}
 
 reset_src
 advance_origin "dirty-case"
 printf 'local edit\n' >> "$src/agents/claude/CLAUDE.md"
-before="$(head_of)"
-run_hook startup
-eq "$RC" "0" "dirty clone → still exit 0"
-has "$OUT" 'dirty' "dirty clone → the line names the state"
-eq "$(head_of)" "$before" "dirty clone → never fast-forwarded"
+refused dirty "dirty clone"
 
 reset_src
 advance_origin "rebase-case"
 # A mid-rebase clone with a CLEAN tree: the case a porcelain check alone cannot see.
-mkdir -p "$(git -C "$src" rev-parse --absolute-git-dir)/rebase-merge"
-before="$(head_of)"
-run_hook startup
-has "$OUT" 'in-progress' "mid-rebase clone → the line names in-progress"
-eq "$(head_of)" "$before" "mid-rebase clone → never fast-forwarded"
-rm -rf "$(git -C "$src" rev-parse --absolute-git-dir)/rebase-merge"
+mkdir -p "$srcgit/rebase-merge"
+refused in-progress "mid-rebase clone"
+rm -rf "${srcgit:?}/rebase-merge"
 
 reset_src
 advance_origin "feature-branch-case"
 git -C "$src" checkout -q -b feature-z
-before="$(head_of)"
-run_hook startup
-has "$OUT" 'not-default' "clone on a feature branch → the line names not-default"
-eq "$(head_of)" "$before" "clone on a feature branch → never fast-forwarded"
+refused not-default "clone on a feature branch"
 
 # --- lock contention ----------------------------------------------------------
 
 reset_src
 advance_origin "locked-case"
-mkdir -p "$(git -C "$src" rev-parse --absolute-git-dir)/adb-update.lock"
+mkdir -p "$srcgit/adb-update.lock"
 before="$(head_of)"
 run_hook startup
 eq "$RC" "0" "another update holding the lock → exit 0"
 eq "$OUT" "" "another update holding the lock → silent (the peer reports it)"
 eq "$(head_of)" "$before" "another update holding the lock → clone untouched"
-rmdir "$(git -C "$src" rev-parse --absolute-git-dir)/adb-update.lock"
+rmdir "$srcgit/adb-update.lock"
 # With the lock released, the very next run proceeds — the lock must not be sticky.
 rm -rf "${work:?}/cache"
 run_hook startup
@@ -263,6 +275,23 @@ printf '[updates]\nsession_start = "auto"\n' > "$fh/.config/ai-dev-baseline/agen
 rm -rf "${work:?}/cache"
 run_hook startup
 has "$OUT" 'updated' "global agents.toml session_start=auto → updates"
+rm -f "$fh/.config/ai-dev-baseline/agents.toml"
+
+# The hook must read the file install.sh WRITES. install.sh (and role-dispatch.sh) spell that
+# path as $HOME/.config/... with no XDG involvement; a reader that honored XDG_CONFIG_HOME would
+# consult a file nobody writes, so `[updates] session_start` would silently do nothing on any box
+# where that variable is set — the exact class of failure this feature exists to remove.
+reset_src
+advance_origin "xdg-decoy"
+mkdir -p "$work/xdg-decoy/ai-dev-baseline" "$fh/.config/ai-dev-baseline"
+printf '[updates]\nsession_start = "off"\n'  > "$work/xdg-decoy/ai-dev-baseline/agents.toml"
+printf '[updates]\nsession_start = "auto"\n' > "$fh/.config/ai-dev-baseline/agents.toml"
+XDG_CONFIG_ENV="$work/xdg-decoy"
+before="$(head_of)"
+run_hook startup
+has "$OUT" 'updated' "the mode is read from \$HOME/.config — an XDG_CONFIG_HOME decoy is ignored"
+if [ "$(head_of)" != "$before" ]; then ok; else bad "an XDG_CONFIG_HOME decoy must not disable the updater"; fi
+XDG_CONFIG_ENV=""
 rm -f "$fh/.config/ai-dev-baseline/agents.toml"
 
 # A PROJECT agents.toml must never steer the global updater.

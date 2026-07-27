@@ -50,22 +50,22 @@ trap 'exit 0' EXIT
 
 # --- output ------------------------------------------------------------------
 
+# Resolved once: both the event parser and the emitter need it.
+HAVE_JQ=0; command -v jq >/dev/null 2>&1 && HAVE_JQ=1
+
 # Emit at most one operator-visible line and stop. Uses jq when available (the correct
 # structured channel); degrades to plain stdout otherwise, which reaches Claude rather than the
 # operator — worse, but never wrong. `reload` adds hookSpecificOutput.reloadSkills, which asks
 # the harness to re-read skill definitions after an update actually changed them on disk.
 # Usage: say <message> [reload]
 say() {
-  local msg="$1" reload="${2:-}"
-  if command -v jq >/dev/null 2>&1; then
-    if [ -n "$reload" ]; then
-      jq -cn --arg m "$msg" \
-        '{systemMessage: $m, hookSpecificOutput: {hookEventName: "SessionStart", reloadSkills: true}}'
-    else
-      jq -cn --arg m "$msg" '{systemMessage: $m}'
-    fi
+  if [ "$HAVE_JQ" -eq 1 ]; then
+    jq -cn --arg m "$1" --arg r "${2:-}" \
+      '{systemMessage: $m}
+       + (if $r == "" then {}
+          else {hookSpecificOutput: {hookEventName: "SessionStart", reloadSkills: true}} end)'
   else
-    printf '%s\n' "$msg"
+    printf '%s\n' "$1"
   fi
   exit 0
 }
@@ -77,7 +77,7 @@ say() {
 # Usage: hook_field <name>
 HOOK_INPUT="$(cat 2>/dev/null || true)"
 hook_field() {
-  if command -v jq >/dev/null 2>&1; then
+  if [ "$HAVE_JQ" -eq 1 ]; then
     printf '%s' "$HOOK_INPUT" | jq -r --arg k "$1" '.[$k] // empty' 2>/dev/null
   else
     printf '%s' "$HOOK_INPUT" \
@@ -96,10 +96,12 @@ _adb_lib="$(dirname "$0")/lib/common.sh"
 # shellcheck source=/dev/null
 . "$_adb_lib"
 
+# Read the GLOBAL manifest — resolved by the shared primitive, so this reads exactly the file
+# install.sh writes. Spelling the path here independently is how a config key silently does
+# nothing. A PROJECT's agents.toml is never consulted (see the header).
 MODE="${ADB_SESSION_UPDATE:-}"
 if [ -z "$MODE" ]; then
-  GLOBAL_TOML="${XDG_CONFIG_HOME:-$HOME/.config}/ai-dev-baseline/agents.toml"
-  MODE="$(adb_toml_unquote "$(adb_toml_get "$GLOBAL_TOML" updates session_start 2>/dev/null)")"
+  MODE="$(adb_toml_unquote "$(adb_toml_get "$(adb_global_manifest)" updates session_start 2>/dev/null)")"
 fi
 case "$MODE" in
   off)         exit 0 ;;
@@ -116,13 +118,11 @@ INTERVAL="${ADB_SESSION_UPDATE_INTERVAL_SECS:-600}"
 case "$INTERVAL" in ''|*[!0-9]*) INTERVAL=600 ;; esac
 STAMP_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ai-dev-baseline"
 STAMP="$STAMP_DIR/session-currency.stamp"
-if [ "$INTERVAL" -gt 0 ] && [ -f "$STAMP" ]; then
-  _last="$(adb_mtime "$STAMP")"          # validated-numeric, both stat flavors (common.sh)
-  _now="$(date +%s 2>/dev/null)"
-  case "$_now" in ''|*[!0-9]*) _now="" ;; esac
-  if [ -n "$_last" ] && [ -n "$_now" ] && [ "$((_now - _last))" -lt "$INTERVAL" ]; then
-    exit 0
-  fi
+if [ "$INTERVAL" -gt 0 ]; then
+  # Empty = unknown age (no stamp yet, or an unreadable clock). Proceed with the check: the
+  # safe direction here is a redundant fetch, never an indefinitely suppressed one.
+  _age="$(adb_age_secs "$STAMP")"
+  [ -n "$_age" ] && [ "$_age" -lt "$INTERVAL" ] && exit 0
 fi
 
 # --- 4. resolve the install-source -------------------------------------------
@@ -159,9 +159,6 @@ fi
 # next session retry immediately and hit the same wall on every start.
 mkdir -p "$STAMP_DIR" 2>/dev/null && : > "$STAMP" 2>/dev/null
 
-DEFAULT_BRANCH="$(adb_default_branch "$SRC" 2>/dev/null)"
-[ -n "$DEFAULT_BRANCH" ] || exit 0
-
 # --- 6. notify mode: report, change nothing ----------------------------------
 
 if [ "$MODE" = "notify" ]; then
@@ -172,6 +169,7 @@ if [ "$MODE" = "notify" ]; then
     fetch-failed) exit 0 ;;   # offline is not news; a plain start should not nag about it
     *)           say "baseline: install-source needs attention ($STATUS) — see 'baseline update'." ;;
   esac
+  exit 0   # structural, not incidental: every arm above already exits
 fi
 
 # --- 7. auto mode: update ------------------------------------------------------
@@ -199,11 +197,9 @@ case "$RC" in
     ;;
   5)  exit 0 ;;   # a peer session is already updating this clone — its line covers it
   20)
-    # Refused for safety. Name the state so the operator knows which one, without re-fetching:
-    # the classification is local-only, and `baseline` has already fetched if it got that far.
-    STATE="$(adb_clone_local_state "$SRC" "$DEFAULT_BRANCH" 2>/dev/null)"
-    [ "$STATE" = "local-ok" ] && STATE="$(adb_branch_sync_state "$SRC" "$DEFAULT_BRANCH" 2>/dev/null)"
-    say "baseline: install-source not updated ($STATE) — reconcile $SRC, then 'baseline update'."
+    # Refused for safety. Name the state so the operator knows which one. No re-fetch is needed
+    # or wanted: `baseline` has already fetched if it got that far, so the refs are current.
+    say "baseline: install-source not updated ($(adb_clone_status "$SRC" "$(adb_default_branch "$SRC")" 2>/dev/null)) — reconcile $SRC, then 'baseline update'."
     ;;
   30) exit 0 ;;   # offline / unresolvable remote — never nag about a missing network
   *)
@@ -211,8 +207,9 @@ case "$RC" in
     # a half-repaired global install is the silent-staleness failure this hook exists to prevent.
     if [ -n "$BEFORE" ] && [ -n "$AFTER" ] && [ "$BEFORE" != "$AFTER" ]; then
       say "baseline: clone updated $BEFORE → $AFTER but the global install needs repair — run 'baseline update'."
+    else
+      say "baseline: 'baseline update' failed (exit $RC) — run it manually to see why."
     fi
-    say "baseline: 'baseline update' failed (exit $RC) — run it manually to see why."
     ;;
 esac
 

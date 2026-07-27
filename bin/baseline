@@ -358,13 +358,12 @@ fi
 # another update holds it, exit 5 rather than waiting: the caller is either a human who can
 # re-run, or the SessionStart hook, which must not stall a session behind a peer's pull.
 #
-# Resolve the git dir explicitly rather than interpolating the command substitution: an
-# unresolvable one would otherwise yield the bare path "/adb-update.lock" and try to write at
-# the filesystem ROOT. It is unresolvable only when SRC is not a repo, which the status ladder
-# below already treats as exit 30 — so say that here instead.
-GITDIR="$(git -C "$SRC" rev-parse --absolute-git-dir 2>/dev/null)"
-if [ -z "$GITDIR" ]; then
-  echo "baseline: cannot determine currency (status '$STATUS') for $SRC — not a git repository." >&2
+# Refuse a non-repo BEFORE the lock rather than at the ladder below, because the lock path is
+# derived from the git dir: interpolating an unresolvable one would yield the bare path
+# "/adb-update.lock" and try to write at the filesystem ROOT.
+if [ "$STATUS" = "not-a-repo" ] || ! GITDIR="$(git -C "$SRC" rev-parse --absolute-git-dir 2>/dev/null)" \
+   || [ -z "$GITDIR" ]; then
+  echo "baseline: cannot determine currency for $SRC — not a git repository." >&2
   exit 30
 fi
 UPDATE_LOCK="$GITDIR/adb-update.lock"
@@ -381,9 +380,9 @@ trap 'rmdir "$UPDATE_LOCK" 2>/dev/null; exit 130' INT
 # Re-classify under the lock: between the read above and this point a peer update may have
 # already pulled (so `behind` became `current`), or the operator may have started editing (so
 # `local-ok` became `dirty`). Acting on the pre-lock reading would be exactly the stale-state
-# trust base/practices/verify-before-asserting.md forbids.
-STATUS="$(adb_clone_local_state "$SRC" "$DEFAULT")"
-[ "$STATUS" = "local-ok" ] && STATUS="$(adb_branch_sync_state "$SRC" "$DEFAULT")"
+# trust base/practices/verify-before-asserting.md forbids. The fetch above already ran, so this
+# needs no network — only the composed classification.
+STATUS="$(adb_clone_status "$SRC" "$DEFAULT")"
 
 # --- update ------------------------------------------------------------------
 
