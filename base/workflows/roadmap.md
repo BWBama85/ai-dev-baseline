@@ -1,7 +1,7 @@
 ---
 name: roadmap
 description: Maintain the build roadmap and emit the next /implement-issue batch. Locates one canonical roadmap artifact (a `roadmap`-labeled issue), reconciles it against the live tracker, and outputs the next unblocked, one-branch bundle of issue IDs. Bootstraps the artifact if none exists. When a repo opts into the release-goal convention, it also computes release readiness live and emits the release command once the active milestone's requirements are met. Works in any repo with a GitHub issue tracker.
-argument-hint: (no argument)
+argument-hint: "[--no-autofix]"
 user-invocable: true
 effort: high
 # Roadmap-maintenance skill: it reads the tracker and reads/writes ONE roadmap artifact (a
@@ -34,8 +34,9 @@ roadmap issue). It is `gh`-based and works in any repo with an issue tracker.
 
 ## What this skill does NOT do
 
-- **It never implements.** It only reads the tracker and updates the roadmap artifact,
-  then prints a `Next:` command for *you* to run. No branches, no code edits, no PRs.
+- **It never implements.** It reads the tracker, updates the roadmap artifact, repairs
+  unambiguous **tracker hygiene** (step 4b), and prints a `Next:` command for *you* to run.
+  **No branches, no code edits, no PRs** — the repository is never touched, only the tracker.
 - **It never duplicates milestone membership.** Which milestone an issue belongs to lives
   in the milestones and is read live from `gh` every run. The artifact holds only what the
   tracker cannot express: **ordering, branch-bundles, and dependency edges** (the DRY split
@@ -68,10 +69,12 @@ belongs in the artifact body, not in the run's output. A reader should be able t
 3. **Print in this order**, omitting any line with nothing to say — an omitted line is the
    normal case, not an error:
    1. the **destination gauge** (step 6) — one line, only when the artifact configures it;
-   2. **owner-action lines** — one line each, only when actionable **this** run and not already
+   2. **autofix lines** (step 4b) — one line each, only for repairs actually applied. A run that
+      fixed nothing prints nothing here, which is the normal case on a healthy repo;
+   3. **owner-action lines** — one line each, only when actionable **this** run and not already
       retired by a `## Decisions` row (step 4);
-   3. **`Why:`** — one line of rationale for the emitted batch;
-   4. **`Next:`** — the action. **Always last.**
+   4. **`Why:`** — one line of rationale for the emitted batch;
+   5. **`Next:`** — the action. **Always last.**
 4. **Never print:** the bundle table, "what changed since the last run", per-issue reconcile
    narration, look-ahead ("after this comes…"), zero-count sections ("Reconcile flags: none"),
    or self-narration about the verification performed. Fresh re-reads and live re-checks are
@@ -107,6 +110,11 @@ parse, and rewrite it deterministically:
      backlog-wide behavior, byte-identical to a repo that never adopted the convention. Set the
      value empty (`<!-- release-milestone: -->`) or delete the line to force classic mode. Stand the
      convention up with `baseline release init` — see docs/release-goal-convention.md. -->
+
+<!-- OPTIONAL backlog milestone (step 4b's autofix target): `<!-- backlog-milestone: NAME -->`
+     names the milestone an UNMILESTONED open issue is moved to. Absent -> an open milestone
+     titled `Backlog`. If neither resolves, /roadmap escalates `unmilestoned:#N` instead of
+     creating a milestone the repo never opted into. -->
 
 Order + branch-bundles + dependency edges. Milestone membership is **not** duplicated here
 (it lives in the milestones, read live from `gh`). This artifact holds only what the tracker
@@ -244,6 +252,18 @@ tracker. Deriving them here with separate `search/issues` queries is what let th
 exclusion rule, the PR filter, and the page behavior would each be restated per caller.
 
 ```bash
+# ADB-SNIPPET: readiness
+# Self-contained, like every other fenced block here: these steps may be run as SEPARATE shell
+# invocations that share no variables, so a slug hoisted from an earlier block arrives EMPTY and
+# every read below would silently address `repos//labels/...`. Re-resolve it, and fail loud on the
+# two values that genuinely come from earlier steps rather than defaulting them to nothing.
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+# No apostrophe in either message: inside ${VAR:?word} bash still parses a single quote as an
+# opening quote, even within double quotes, and an unbalanced one is a SYNTAX error — the whole
+# snippet stops parsing, which is worse than the unset variable it was meant to report.
+: "${M_NUM:?ERROR: M_NUM (the active release milestone NUMBER) is unset — resolve the marker first}"
+: "${ROADMAP_NUM:?ERROR: ROADMAP_NUM (the roadmap artifact issue number) is unset — run step 2 first}"
+
 # LABEL_EXISTS: 1 if `gh api "repos/$REPO/labels/release-blocker"` returned 200, else 0. This is
 #               the MODE SWITCH and is keyed off label EXISTENCE, never a live count.
 LABEL_EXISTS=0; gh api "repos/$REPO/labels/release-blocker" >/dev/null 2>&1 && LABEL_EXISTS=1
@@ -252,8 +272,13 @@ LABEL_EXISTS=0; gh api "repos/$REPO/labels/release-blocker" >/dev/null 2>&1 && L
 # M_NUM is the milestone's NUMBER; ROADMAP_NUM is this artifact's issue number, excluded BY NUMBER
 # (a closed issue that still carries the `roadmap` label must not be silently dropped from the
 # tabulation — that could hide a canceled blocker and turn a `held` release into a `met` one).
-COUNTS="$(gh api --paginate "repos/$REPO/issues?milestone=$M_NUM&state=all&per_page=100" \
-  | {{ROADMAP_LIB}} release-counts release-blocker "$ROADMAP_NUM")" \
+# Capture the READ and the TABULATION separately. A pipeline reports only its LAST command's
+# status, so `gh api … | release-counts` returns 0 even when the read failed — the tabulator sees
+# empty stdin, which is a legitimately empty milestone, and the verdict becomes `unarmed`. A
+# failed read would then report "no requirements yet" for a milestone full of open blockers.
+M_ISSUES="$(gh api --paginate "repos/$REPO/issues?milestone=$M_NUM&state=all&per_page=100")" \
+  || { echo "ERROR: could not read milestone $M_NUM — hard stop"; exit 1; }
+COUNTS="$(printf '%s' "$M_ISSUES" | {{ROADMAP_LIB}} release-counts release-blocker "$ROADMAP_NUM")" \
   || { echo "ERROR: could not tabulate milestone $M_NUM — hard stop"; exit 1; }
 # Line 1: "<ARMED> <M_BLOCKERS> <M_OPEN> <CANCELED>"   Line 2: open non-blocker issue numbers
 # Line 3: open release-blocker issue numbers
@@ -342,10 +367,17 @@ charge/deploy safety — **not** this skill, which by contract never executes wo
 
 ### 1. Preflight
 
-Ensure `gh` is authenticated and you are inside the target repo. `gh` list commands have
-finite default page sizes — always pass an explicit `--limit` large enough to cover the
-backlog (e.g. `--limit 200`) and treat any `gh` error as a **hard stop**, never a silent
-empty result (a truncated or failed list must not look like "no open issues").
+Ensure `gh` is authenticated and you are inside the target repo. Treat any `gh` error as a
+**hard stop**, never a silent empty result (a failed list must not look like "no open issues").
+
+**Never let completeness depend on a page cap.** `gh` list commands are capped, they return
+newest-first, and **a full page is indistinguishable from a complete list** — so a capped read
+silently drops the *oldest* issues, which skew foundational and dependency-bearing, and the
+hard-stop-on-error rule above never fires because truncation is not an error. Read collections
+with `gh api --paginate` (no magic constant), and where a cap is unavoidable, **verify the read**
+against an exact total before acting on it — see step 6's completeness check. A plan built from a
+partial backlog is worse than no plan: an open issue missing from the read gets reconciled to
+**Done**, so real work disappears from the roadmap.
 
 ```bash
 command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
@@ -368,9 +400,15 @@ ROADMAP_BODY="$ROADMAP_DIR/body.md"   # the directory exists; this file does NOT
 ### 2. Locate the canonical roadmap artifact (deterministic)
 
 ```bash
+# ADB-SNIPPET: locate-artifact
 ROADMAP_NUM="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number')"
 COUNT="$(printf '%s\n' "$ROADMAP_NUM" | sed '/^$/d' | wc -l | tr -d ' ')"
 ```
+
+This is the one read whose cap is provably harmless, and the reason is worth stating so nobody
+"fixes" it into a paginated read: the branch below stops at **more than one**, so a cap can only
+ever *under*-report — and it cannot under-report to zero, because a repo with ≥1 labeled artifact
+returns ≥1 row at any cap. Every other list read in this workflow is paginated (step 1).
 
 The "hard-stop on any `gh` error" rule from step 1 has one exception here: a repo that has
 never created the `roadmap` label. Treat a *label-not-found* error on this specific query as
@@ -392,11 +430,17 @@ so a repo already running a pinned roadmap issue (that predates this skill) is *
 duplicated:
 
 ```bash
+# ADB-SNIPPET: adopt-scan
 # Pre-existing hand-maintained roadmaps: an issue whose body carries the marker, or whose title
-# begins with "Roadmap". Collect ALL matches — never `head -n1` an arbitrary one.
-CANDS="$(gh issue list --state open --limit 200 \
-  --json number,title,body \
-  --jq '.[] | select((.body|test("ai-dev-baseline:roadmap")) or (.title|test("^Roadmap"))) | .number')"
+# begins with "Roadmap". Collect ALL matches — never `head -n1` an arbitrary one, and never from a
+# capped read: a pre-existing roadmap sitting past the cap would be missed, and this step would
+# then CREATE a second artifact — manufacturing the exact split-brain step 2 hard-stops on.
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+CANDS="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" \
+  --jq '.[] | select(has("pull_request") | not)
+      | select((.body // "" | test("ai-dev-baseline:roadmap")) or (.title | test("^Roadmap")))
+      | .number')" \
+  || { echo "ERROR: could not scan for a pre-existing roadmap — hard stop"; exit 1; }
 NCAND="$(printf '%s\n' "$CANDS" | sed '/^$/d' | wc -l | tr -d ' ')"
 ```
 
@@ -407,9 +451,11 @@ NCAND="$(printf '%s\n' "$CANDS" | sed '/^$/d' | wc -l | tr -d ' ')"
   multiple *labeled* roadmaps (step 2) — never pick arbitrarily. List the matches and ask the
   owner to retire all but one (or label the real one `roadmap`), then re-run.
 - **No candidate** → **bootstrap a fresh one:**
-  1. Read **all** open issues + milestones live (`gh issue list --state open --limit 200
-     --json number,title,labels,milestone,body`; `gh api` for milestones), **excluding the
-     roadmap issue itself** once it exists.
+  1. Read **all** open issues + milestones live — `gh api --paginate
+     "repos/$REPO/issues?state=open&per_page=100"` (dropping entries with a `pull_request` key)
+     and `gh api` for milestones — **excluding the roadmap issue itself** once it exists. "All"
+     means all: a capped read here silently omits issues from the roadmap it is generating, and
+     nothing downstream ever notices they were missing.
   2. Group into phases by milestone build order (foundational/cross-cutting before polish),
      order by dependency, and bundle by shared subsystem/files (see step 5's rules). Write an
      **empty `## Decisions` section** (heading + table header only): a fresh roadmap must already
@@ -481,7 +527,8 @@ Reconciliation is deterministic — the same tracker state always produces the s
   block** the bundles behind it: other genuinely-ready bundles still advance (step 6).
 - **Slot new issues.** Any open issue not already in a bundle is placed into the right
   phase/bundle (by milestone + subsystem), never left orphaned. An unmilestoned issue is
-  flagged and placed by inference — surfaced, never silently dropped.
+  **repaired** — moved to the backlog milestone by step 4b — rather than merely flagged; if no
+  backlog milestone resolves, it is surfaced as `unmilestoned:#N` and never silently dropped.
 - **Reconcile refs by *close reason*.** Drop a closed issue from its bundle. For **dependency
   edges**, the reason matters: a prerequisite closed **as completed** satisfies the edge (drop
   it — the dependent is now unblocked), but a prerequisite closed **as `NOT_PLANNED`** was
@@ -566,6 +613,101 @@ been recorded in an issue **comment** — which reconcile does not read. So:
    when asking, rather than accepting an answer the next run will ignore.
 5. **A decision that cannot be recorded in-tracker is reported as such**, not silently re-asked.
 
+### 4b. Autofix the unambiguous — tracker hygiene only
+
+**Fix what you find; escalate what you cannot fix without guessing.** A defect this skill is
+capable of repairing, reported instead of repaired, becomes a manual chore or a flag that reprints
+until someone acts — the same wasted loop `## Decisions` closes for questions.
+
+**The tier line is explicit, and the default is escalate.** An agent must never have to guess
+which side a new defect falls on. A defect qualifies for autofix only when it is *all four* of:
+**unambiguous** (exactly one correct repair), **mechanical** (no judgment about intent),
+**reversible** (one `gh` command undoes it), and **tracker-only**.
+
+**Autofix tier — do it, then report one line each:**
+
+| Defect | Repair | Why it is unambiguous |
+|---|---|---|
+| An open issue in **no** milestone | move it to the backlog milestone | The convention's core invariant is "every open issue sits in exactly one milestone, nothing in limbo", and the backlog is where *undecided* work belongs by definition — deciding it is later, and separate. |
+| The resolved artifact is **missing the `roadmap` label** | add it | The artifact was already identified by its marker; the label is how the next run finds it. Hit live on 2026-07-24: `/roadmap` reported "no roadmap-labeled issue exists" while the artifact sat right there. |
+| The artifact is **unpinned** | pin it | Bootstrap already pins; repairing an unpinned one is the same operation. |
+| **Stale artifact content** — rows for closed issues, retired bundles, edges whose source text is gone | rewrite it | This *is* reconcile (step 4); it is listed here so the tier table is complete, not as a new behavior. |
+
+The backlog milestone is resolved **live**: the `<!-- backlog-milestone: NAME -->` marker if the
+artifact carries one, else an open milestone titled `Backlog`. If neither resolves, **do not
+create a milestone** — escalate as `unmilestoned:#N` instead. Creating one would invent a
+convention the repo never opted into.
+
+```bash
+# ADB-SNIPPET: autofix-unmilestoned
+# Self-contained, like every other block here. Inputs: ROADMAP_NUM (step 2); BACKLOG_TITLE (the
+# `backlog-milestone` marker, defaulting to `Backlog`); NO_AUTOFIX=1 for the --no-autofix run.
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+: "${ROADMAP_NUM:?ERROR: ROADMAP_NUM (the roadmap artifact issue number) is unset — run step 2 first}"
+BACKLOG="${BACKLOG_TITLE:-Backlog}"
+
+# Resolve the target milestone by TITLE, live. No open milestone with that title means there is
+# nothing unambiguous to do — escalate rather than create one.
+MS_JSON="$(gh api --paginate "repos/$REPO/milestones?state=open&per_page=100")" \
+  || { echo "ERROR: could not list milestones — hard stop"; exit 1; }
+BACKLOG_NUM="$(printf '%s' "$MS_JSON" | jq -r --arg t "$BACKLOG" '[.[] | select(.title == $t) | .number] | first // empty')" \
+  || { echo "ERROR: could not parse the milestone read — hard stop"; exit 1; }
+
+# Read and parse separately: a pipeline reports only its last status, so a failed read would
+# arrive as an empty list and this step would silently "find nothing in limbo".
+LIMBO_JSON="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100")" \
+  || { echo "ERROR: could not list open issues — hard stop"; exit 1; }
+LIMBO="$(printf '%s' "$LIMBO_JSON" \
+  | jq -r '.[] | select(has("pull_request") | not) | select(.milestone == null) | .number')" \
+  || { echo "ERROR: could not parse the open-issue read — hard stop"; exit 1; }
+
+for n in $LIMBO; do
+  if [ "$n" = "$ROADMAP_NUM" ]; then
+    :                                   # the artifact is never a backlog item (step 7)
+  elif [ -z "$BACKLOG_NUM" ]; then
+    echo "? unmilestoned:#$n — no open '$BACKLOG' milestone to move it to. Record: create it, or answer in the artifact ## Decisions."
+  elif [ "${NO_AUTOFIX:-0}" = "1" ]; then
+    echo "? unmilestoned:#$n — open issue in no milestone. Record: #$n's milestone, or the artifact ## Decisions."
+  else
+    gh issue edit "$n" --milestone "$BACKLOG" >/dev/null \
+      || { echo "ERROR: could not move #$n to $BACKLOG — hard stop"; exit 1; }
+    echo "fixed: #$n → milestone $BACKLOG (was unmilestoned)"
+  fi
+done
+```
+
+**Idempotency falls out of the selection, not out of bookkeeping**: the set is re-derived from
+`milestone == null` every run, so once an issue has been moved it is no longer selected. Nothing
+is remembered between runs, and nothing needs to be.
+
+**Escalate tier — never guess, surface as an owner question (step 4's ids and homes):**
+
+- which milestone a **slated** issue belongs to (as opposed to *no* milestone at all);
+- **promotion** out of the backlog into a release set;
+- **re-scoping** an issue, or resolving a `dep-outside-release` question;
+- **split-brain** (two roadmap artifacts) and **dependency cycles** — both already hard-stop;
+- **anything not in the autofix table above.** The list is closed; new defects escalate by
+  default until someone adds them to it deliberately.
+
+**Rules:**
+
+- **One line per repair**, in the output contract's autofix slot, never a paragraph — so a run
+  that repaired two things still fits the ≤5-line default and still ends with the action:
+
+  ```text
+  fixed: #57 → milestone Backlog (was unmilestoned)
+  fixed: #31 + roadmap label (artifact was unlabeled)
+  Why:  B1 (gates) — unblocked, no in-flight PR.
+  Next: /implement-issue 5 19
+  ```
+- **Idempotent.** A second run finds nothing to fix and prints no autofix lines. This is the
+  property to check first when changing anything here.
+- **Never edits repository code.** The boundary is unchanged: this skill mutates the tracker and
+  its own artifact, nothing else. No branches, no commits, no PRs.
+- **Opt out with `--no-autofix`** for a read-only run: defects are reported as owner questions
+  instead of repaired. Tracker writes are low-risk and reversible, so autofix is the default —
+  but a repo that wants `/roadmap` to observe and never touch can have that.
+
 ### 5. Grouping & ordering rules (deterministic)
 
 Apply these in order; every tie has a stable break so two runs agree:
@@ -608,15 +750,44 @@ open-issue and open-PR sets **once** and filter locally, rather than spending tw
 round-trips per member:
 
 ```bash
+# ADB-SNIPPET: fresh-read
 # Self-contained: each fenced block re-resolves what it needs, because these steps may be run
 # as separate shell invocations that share no variables.
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
-OPEN_NUMS="$(gh issue list --state open --limit 200 --json number --jq '.[].number')" \
+# Read and parse in SEPARATE steps: a pipeline reports only its last command's status, so
+# `gh api … | open-issues` would return 0 on a failed read (the parser sees empty stdin, which is
+# a legitimately empty repo) and the run would proceed against an empty open set.
+OPEN_JSON="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100")" \
   || { echo "ERROR: could not list open issues — hard stop"; exit 1; }
-OPEN_PRS="$(gh pr list --state open --limit 200 --json number,body,closingIssuesReferences)" \
+OPEN_NUMS="$(printf '%s' "$OPEN_JSON" | {{ROADMAP_LIB}} open-issues)" \
+  || { echo "ERROR: could not parse the open-issue read — hard stop"; exit 1; }
+PR_LIMIT=1000
+OPEN_PRS="$(gh pr list --state open --limit "$PR_LIMIT" --json number,body,closingIssuesReferences)" \
   || { echo "ERROR: could not list open PRs — hard stop"; exit 1; }
 # ^ Both reads are hard-stopped on failure: an errored `gh` that fell through would look like
 #   "no open issues / no open PRs" and emit work that is closed or already in flight.
+
+# COMPLETENESS. `total_count` from the Search API is EXACT at any size (the same primitive the
+# destination gauge already trusts), so it is the cross-check that catches a read which came back
+# short. This matters more than it looks: an OPEN issue missing from OPEN_NUMS is reconciled to
+# `Done` by the loop below, so a truncated read does not just omit a row — it deletes real work
+# from the plan, silently and permanently.
+EXPECTED="$(gh api -X GET search/issues -f q="repo:$REPO is:issue is:open" --jq '.total_count')" \
+  || { echo "ERROR: could not read the exact open-issue total — hard stop"; exit 1; }
+GOT="$(printf '%s\n' "$OPEN_NUMS" | sed '/^$/d' | wc -l | tr -d ' ')"
+case "$({{ROADMAP_LIB}} read-complete "$GOT" "$EXPECTED")" in
+  complete) : ;;
+  ahead)    : ;;  # the Search index lags REST by a moment; MORE data is never the dangerous side
+  short)    echo "ERROR: read $GOT of $EXPECTED open issues — incomplete backlog, hard stop"; exit 1 ;;
+  *)        echo "ERROR: completeness check failed — hard stop"; exit 1 ;;
+esac
+
+# The open-PR read is still capped, because `closingIssuesReferences` is computed by `gh pr list`
+# and has no paginated REST equivalent. A SATURATED read (exactly the cap) is therefore treated as
+# possibly truncated — never as complete — for the same reason: a missed open PR re-emits work
+# that is already in flight.
+NPR="$(printf '%s' "$OPEN_PRS" | jq 'length')" || { echo "ERROR: could not parse the open-PR read — hard stop"; exit 1; }
+[ "$NPR" -lt "$PR_LIMIT" ] || { echo "ERROR: open-PR read returned exactly $PR_LIMIT — possibly truncated, hard stop"; exit 1; }
 
 # Then, for each member #N of the selected bundle:
 if ! printf '%s\n' "$OPEN_NUMS" | grep -qx "$N"; then
@@ -687,9 +858,14 @@ Derive `N` live and **exactly** each run — no page-cap truncation — and excl
 (which itself may carry LABEL) **in the query**, not by post-filtering:
 
 ```bash
+# ADB-SNIPPET: gauge
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+# LABEL is the artifact's `destination-label` marker value. It is OPTIONAL, so an unset/empty
+# value is the normal "no gauge configured" case and must short-circuit here — not blow up, and
+# not probe `repos/$REPO/labels/` with an empty name.
+LABEL="${LABEL:-}"
 # Omit the line unless the label actually exists — exact match, 404 => absent (NOT an error).
-if gh api "repos/$REPO/labels/$LABEL" >/dev/null 2>&1; then
+if [ -n "$LABEL" ] && gh api "repos/$REPO/labels/$LABEL" >/dev/null 2>&1; then
   # Search API total_count is exact at any size; `-label:roadmap` drops the roadmap artifact.
   N="$(gh api -X GET search/issues -f q="repo:$REPO is:issue is:open label:\"$LABEL\" -label:roadmap" --jq '.total_count')"
   # emit "LABEL: N blocker(s) open" — singular "blocker" when N==1; when N==0 emit
@@ -752,6 +928,10 @@ action line*, so the last line is `Next: none — <state>` and nothing follows i
   A **broken marker** (resolves to zero or >1 open milestones) stops and surfaces the mismatch.
 - **Determinism.** Running `/roadmap` twice with no tracker change rewrites the artifact
   identically and emits the same `Next:` batch — in classic and release-readiness mode alike.
+  Autofix (step 4b) does not weaken this and is not an exception to it: determinism is *"the same
+  tracker state yields the same output"*, and a run that repairs something **has changed the
+  tracker state**. The second run sees the repaired state, finds nothing to fix, and prints no
+  autofix lines — which is the idempotency requirement, stated from the other side.
 
 ## Agent-neutral (scope note)
 

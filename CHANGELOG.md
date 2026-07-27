@@ -7,6 +7,28 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **`/roadmap` fixes the unambiguous tracker-hygiene defects it finds** (#109). The skill reported
+  problems it was fully capable of repairing, so each one became a manual chore or a flag that
+  reprinted until someone acted. A new step 4b repairs the closed list — an open issue in no
+  milestone moves to the backlog, a resolved artifact missing its `roadmap` label gets it, an
+  unpinned artifact is pinned — and reports each in **one line**. The tier line is explicit and the
+  **default is escalate**: a defect qualifies only if it is unambiguous, mechanical, reversible and
+  tracker-only, and anything outside the table surfaces as an owner question instead. It stays
+  idempotent, still **never touches repository code**, and `--no-autofix` gives a read-only run.
+  The backlog milestone is resolved live (a `backlog-milestone` marker, else `Backlog`); if neither
+  resolves it escalates rather than inventing a convention the repo never opted into.
+- **A mocked-`gh` harness that executes the workflow's own snippets** (`scripts/check-roadmap-e2e.sh`,
+  #75). `docs/roadmap-acceptance.md` was a manual checklist; the mechanical half is now automated in
+  `selfcheck` + CI. The harness **extracts each fenced command by its `# ADB-SNIPPET:` marker and
+  runs it** against a fixture-driven stub `gh`, so a documented command that no longer works is a
+  test failure instead of a surprise mid-run — something a prose lint cannot catch. It found three
+  real defects on its first run: the readiness snippet depended on a `$REPO` its caller had to have
+  set, the gauge snippet exploded on an unset optional `$LABEL`, and a failed milestone read piped
+  empty stdin into the tabulator and reported "no requirements yet" for a milestone full of open
+  blockers. All three are fixed here.
+
 ### Changed
 
 - **`/roadmap` has an output contract: the last line is always the next action** (#107). The emit
@@ -24,6 +46,23 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`/roadmap` no longer silently truncates the backlog** (#79). Every list read used a bare
+  `--limit 200` with no pagination and no truncation detection — and because `gh` returns
+  newest-first, the dropped issues were the **oldest**, which skew foundational and
+  dependency-bearing. Truncation is not an error, so the hard-stop-on-`gh`-error rule never fired
+  on it. The consequence was not a missing row: an open issue absent from the open set is
+  reconciled to **Done**, so real work disappeared from the plan; and a pre-existing roadmap past
+  the cap was invisible to the adopt scan, which then created a second artifact — manufacturing the
+  split-brain the skill hard-stops on. Collections are now read with `gh api --paginate` (no magic
+  constant) and cross-checked against the Search API's exact `total_count`; a **short** read is a
+  hard stop, while reading *more* than the index reports is treated as the benign index lag it is.
+  The open-PR read, which has no paginated equivalent, hard-stops when it exactly saturates its
+  cap. The Search-based gauge/readiness path was already exact and is untouched.
+- **A failed `gh` read can no longer be mistaken for an empty tracker** (#75/#79). `gh api … |
+  release-counts` reports only the **pipeline's last** status, so a failed milestone read reached
+  the tabulator as empty stdin — a legitimately empty milestone — and the run reported
+  `unarmed` ("no requirements yet") for a milestone full of open blockers. Reads and parses are now
+  separate steps, each checked on its own status. Found by the new harness.
 - **`/roadmap` no longer re-asks a question the owner already answered** (#108). Reconcile derived
   dependency edges from issue bodies and from the artifact's own `## Dependencies` section, so a
   decision recorded in a **comment** was invisible and the same prompt reprinted verbatim on three

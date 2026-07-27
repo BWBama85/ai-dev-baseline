@@ -287,6 +287,22 @@ jobs:
       - name: /roadmap predicates — in-flight targeting (#69) + release readiness, offline (#45)
         run: bash scripts/check-roadmap.sh
 
+  roadmap-e2e:
+    name: roadmap-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        # The stub gh applies the workflow's own --jq filters with real jq, so a snippet whose
+        # filter is wrong fails here rather than at /roadmap time.
+        run: sudo apt-get install -y jq
+
+      - name: /roadmap mocked-gh harness — execute the documented snippets offline (#75)
+        run: bash scripts/check-roadmap-e2e.sh
+
   release-convention:
     name: release-convention
     runs-on: ubuntu-latest

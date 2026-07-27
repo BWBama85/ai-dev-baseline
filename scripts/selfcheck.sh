@@ -161,6 +161,13 @@ step "roadmap"
 # (#71), plus a drift guard that the workflow still delegates to them (#45). Offline.
 if bash scripts/check-roadmap.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "roadmap-e2e"
+# Mocked-gh harness (#75): EXECUTES the workflow's documented snippets against a stub gh, so a
+# fenced command that no longer runs is a test failure rather than a surprise at /roadmap time.
+# Covers artifact location, the paginated adopt scan, the completeness + in-flight fresh read,
+# the readiness pipeline, the gauge, and decision durability. Offline.
+if bash scripts/check-roadmap-e2e.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "release-convention"
 # Offline unit tests for the release-goal convention helper (scripts/lib/release-convention.sh,
 # #27): dispatch, arg-parsing, usage, and the fail-loud gh guard before any gh call.
