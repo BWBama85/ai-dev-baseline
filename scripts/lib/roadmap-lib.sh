@@ -660,7 +660,11 @@ cmd_deps_from_body() {
       masked = mask_spans(rest)
       while (match(masked, KW)) {
         kstart = RSTART; klen = RLENGTH
-        clause = substr(masked, 1, kstart - 1)
+        # The clause is read UNMASKED on purpose. A negator the author happened to code-format —
+        # "this is `not` blocked by #5" — is still the author negating, and reading the masked copy
+        # here would hide it and MINT an edge the pre-#117 predicate never produced. Masking exists
+        # to stop a quoted keyword from DECLARING; it must not also stop a real one from retiring.
+        clause = substr(rest, 1, kstart - 1)
         # Keep only the text since the last clause boundary — a negation in an EARLIER sentence
         # must not suppress a later, genuine edge.
         cut = 0

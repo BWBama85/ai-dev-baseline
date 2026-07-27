@@ -868,6 +868,14 @@ eq "$(deps "see ${bt}${bt} Depends on ${bt}#5${bt} ${bt}${bt} here")" '' \
 eq "$(deps "Depends on ${bt}#5${bt}")" '' \
    "a span around only the REFERENCE stays unresolved today — #112 owns making it an edge"
 
+# Masking must not leak into the NEGATION rule. Masking exists to stop a quoted keyword from
+# DECLARING an edge; if the clause were read from the masked copy too, a code-formatted negator
+# would vanish and MINT an edge the pre-#117 predicate never produced. (Self-review find.)
+eq "$(deps "This is ${bt}not${bt} blocked by #5")" '' \
+   "a code-formatted negator still retires (the clause is read unmasked)"
+eq "$(deps "It ${bt}no longer${bt} depends on #5")" '' \
+   "...including a multi-word one"
+
 # The point of the whole family: prose still declares, and a quoted negation is not a retirement.
 eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \
    "a NEGATED mention quoted in a fence neither declares nor retires"
