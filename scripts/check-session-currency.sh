@@ -32,6 +32,10 @@ seed="$work/seed"
 mkdir -p "$seed/bin" "$seed/scripts/lib" "$seed/agents/claude/skills/demo" "$seed/agents/claude/scripts"
 cp "$ROOT/bin/baseline" "$seed/bin/baseline"; chmod +x "$seed/bin/baseline"
 cp "$ROOT/scripts/lib/common.sh" "$seed/scripts/lib/common.sh"
+# currency-lib.sh carries every DECISION the hook used to make inline (#139). Without it the hook
+# is a shell around a missing library and exits silently, which would turn most of this suite into
+# a wall of misleading "silent" passes rather than a loud failure.
+cp "$ROOT/scripts/lib/currency-lib.sh" "$seed/scripts/lib/currency-lib.sh"
 cp "$ROOT/agents/claude/scripts/session-currency.sh" "$seed/agents/claude/scripts/session-currency.sh"
 chmod +x "$seed/agents/claude/scripts/session-currency.sh"
 # The stub installer LOGS its args and re-creates any missing manifest link. It has to actually

@@ -8,7 +8,8 @@ user-invocable: true
 
 # /cleanup
 
-Sweep what a finished task leaves behind. Two kinds of debris, one command:
+Sweep what a finished task leaves behind, then leave the tooling current. Two kinds of debris and
+one currency check, one command:
 
 - **Merged branches** — local and, on confirmation, remote. The failure mode this exists to
   prevent is deleting only the *current* task's branch and leaving dozens of stale merged
@@ -19,6 +20,10 @@ Sweep what a finished task leaves behind. Two kinds of debris, one command:
   caches for PRs that have since closed, run markers whose branch is gone, gap-analysis
   artifacts from a finished run. These accumulate unboundedly and are exactly the kind of dead
   state a sweep exists to remove.
+- **The installed baseline's currency** (step 7) — `/cleanup` runs right after a merge, which is
+  when the install goes stale, and right before `/clear`, which is the step that cannot re-check.
+  So this is where `baseline update` belongs (#139). It is housekeeping, never a gate: it can
+  never fail the sweep, and it says nothing when the install is already current.
 
 Argument selects branch scope: `local` (default), `remote`, or `all`. Run-state is swept in
 every scope — it is local debris, not a remote-facing action. Add `verbose` to surface the
@@ -64,6 +69,11 @@ process detail the default output deliberately omits.
   `/implement-issue`'s continuation gate; removing one mid-run disables it silently.
 - **Liveness is never file age.** Every keep/delete decision reads a freshly-fetched ref or a
   live PR state, never an mtime — a slow run's state is not stale and a fast one's is not fresh.
+- **The currency check never gates the sweep, and never updates the clone you are standing in.**
+  It runs last, after the report is already composed; it is bounded by a wall-clock backstop; every
+  failure resolves to at most one line; and it refuses to touch the install-source clone when that
+  is the repo being swept (including through a linked worktree). `off` in the global `agents.toml`
+  disables it entirely.
 
 ## Output contract
 
@@ -81,8 +91,13 @@ narrates itself buries the one or two lines that matter.
 ```
 Deleted (local): issue-3-generic-release-workflow-or-document
 Cleared state: threads-{41,47,51,57,59,65,68,72,76}.json, gaps.md, gaps.err
+baseline: updated 3818548 → ebca0f3 (2 commits).
 main: clean, in sync with origin/main
 ```
+
+The `baseline:` line follows the same rule as every category above it — it appears only when
+something actually happened. An install that was already current, a disabled updater, or a sweep of
+the install-source clone itself all print nothing.
 
 The decisions behind all of this live in `scripts/lib/cleanup-lib.sh`, so they are executable and
 regression-tested (`scripts/check-cleanup.sh`) rather than re-derived from prose each run.
@@ -473,22 +488,93 @@ if [ "$GV" = keep ]; then
 fi
 ```
 
-### 6. Report
+### 6. Compose the report — but do not print it yet
 
 Loud lines first (they are the exception), then one line per category that changed, then the
 state line. Categories with nothing in them cannot appear — `report` builds lines from records,
 so there is no empty section to suppress.
 
+**Buffer it into a variable instead of printing.** This is the LAST step that calls
+`{{CLEANUP_LIB}}`, and step 7 may replace that very library on disk (it re-runs the installer,
+whose symlinks are what `{{CLEANUP_LIB}}` resolves through). Composing the report first means the
+whole sweep is reported by the library version that decided it — an old workflow calling a
+freshly-swapped library is a version skew with no upside.
+
 ```bash
 emit() { printf '%s\n' "$2" | while IFS= read -r x; do [ -n "$x" ] && printf '%s\t%s\n' "$1" "$x"; done; }
 
-[ -n "$NOTES" ] && printf '%s' "$NOTES"
-{
+REPORT_OUT="$({
   emit 'Deleted (local)'  "$DELETED_LOCAL"
   emit 'Deleted (remote)' "$DELETED_REMOTE"
   emit 'Cleared state'    "$CLEARED"
-} | {{CLEANUP_LIB}} report --tail "$({{CLEANUP_LIB}} state-line "$ROOT" "$DEFAULT")"
+} | {{CLEANUP_LIB}} report --tail "$({{CLEANUP_LIB}} state-line "$ROOT" "$DEFAULT")")"
 ```
+
+### 7. Keep the installed baseline current (issue #139)
+
+The sweep is done, so this is the last action of the run — and the right place for it. `/cleanup`
+runs **immediately after a merge**, which is the moment the installed baseline goes stale, and it
+sits **immediately before `/clear`**, which is the step that cannot re-check: currency's other
+trigger is a `SessionStart` hook matched on `startup` only, so the loop
+`merge → /cleanup → /clear → /roadmap` never re-checked before this existed. Staleness began at
+the merge and nothing in the loop noticed. That is not hypothetical — a `/roadmap` run computed a
+release verdict with pre-fix logic one commit after the fix shipped, and a later one derived
+dependency edges from a two-commit-stale predicate.
+
+Every decision is `{{CURRENCY_LIB}}`'s: the mode (`[updates] session_start` in the global
+`agents.toml`, or `ADB_SESSION_UPDATE`; `off` disables this too), the install-source, the
+self-clone guard, the rate limit, git's network bounds, and a wall-clock backstop on the update
+itself. This step only decides what to SHOW — which differs from the `SessionStart` hook's choice
+on purpose: the hook stays silent about a peer update or a missing network because it fires
+unattended, whereas here the operator just asked, so `busy` and `offline` are reported.
+
+```bash
+# ADB-SNIPPET: currency
+# Self-contained: this may run as a SEPARATE shell invocation from the steps above, so it
+# re-resolves the repo root rather than trusting $ROOT to still be set.
+CU_ROOT="${ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+
+# `|| true` is load-bearing, twice over. Currency is housekeeping, never a gate: an unreachable
+# remote, a refused update, or a missing install must leave the sweep successful. And these fenced
+# blocks are executed by an AGENT — a block whose LAST command exits non-zero reads as a failed
+# step and can abandon the run before the report is ever printed (the same trap the `LOCK=0`
+# comment in step 5 names). The library already exits 0 for every policy outcome; this is the
+# belt-and-braces that keeps a broken install from ending the sweep.
+CU_RECORD="$({{CURRENCY_LIB}} check --trigger cleanup --cwd "$CU_ROOT" 2>/dev/null || true)"
+CU_OUTCOME="${CU_RECORD%%	*}"
+CU_MESSAGE="${CU_RECORD#*	}"
+[ "$CU_OUTCOME" = "$CU_RECORD" ] && CU_MESSAGE=""   # no TAB at all → malformed; no message
+
+# One line, and only when there is something to say. `silent` and `skipped` are the common cases
+# (already current, mode=off, sweeping the install-source clone itself, nothing installed) and the
+# terse contract means they print NOTHING.
+CU_LINE=""
+case "$CU_OUTCOME" in
+  updated|repaired)      CU_LINE="baseline: $CU_MESSAGE" ;;
+  behind)                CU_LINE="baseline: $CU_MESSAGE" ;;
+  refused|offline|busy)   CU_LINE="baseline: $CU_MESSAGE" ;;
+  failed)                CU_LINE="baseline: $CU_MESSAGE" ;;
+  silent|skipped)        : ;;
+  *) [ -n "$CU_MESSAGE" ] && CU_LINE="baseline: $CU_MESSAGE" ;;
+esac
+```
+
+An `updated` line means the tooling under `~/.<agent>/` changed **during this run**. That is safe
+here precisely because step 6 already composed the report, and it is worth the operator seeing:
+the next skill they invoke is the new one. Note that a project's *composed* skills (a partial
+override merged onto a base skill) are not recomposed by an update — that is tracked separately
+in #64.
+
+### 8. Emit
+
+```bash
+[ -n "$NOTES" ] && printf '%s' "$NOTES"
+[ -n "$CU_LINE" ] && printf '%s\n' "$CU_LINE"
+printf '%s\n' "$REPORT_OUT"
+```
+
+The repository-state line stays **last**, where the terse contract puts it: currency is reported
+above it, in the same slot as the swept categories.
 
 Under `verbose`, additionally state what was examined and preserved: the candidate count, how
 many were classified `unmerged`, and whether the fetch changed any verdict. Never by default.
@@ -498,6 +584,12 @@ many were classified `unmerged`, and whether the fetch changed any verdict. Neve
 - This never runs `git branch -D`, `push --force`, or `clean -fd`. Unmerged branches are always
   preserved; unclassifiable run-state is always kept.
 - Run it after a merge, or periodically. It is idempotent — a second run finds nothing new and
-  prints only the state line.
+  prints only the state line. The currency check is idempotent in the same sense: once the install
+  is current it reports nothing, though a second sweep *does* re-check (an explicitly requested
+  check is never suppressed by the rate limit — see `{{CURRENCY_LIB}}`).
+- **First deployment cannot bootstrap itself.** The installed `/cleanup` is a symlink into the
+  install-source clone, so the sweep you run immediately after this change lands is still the OLD
+  one, without a currency step. Run `baseline update` by hand once; every sweep after that carries
+  it.
 - The remote half is enumerated with `--merged` alone on purpose (see step 4). Only the **local**
   half needs PR evidence, because only local refs survive a squash merge.

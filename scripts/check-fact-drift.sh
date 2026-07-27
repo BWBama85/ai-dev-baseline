@@ -200,13 +200,19 @@ fact branch-health-predicate "fixed:branch-health" -- \
 fact allow-auto-merge "fixed:allow_auto_merge" -- \
   scripts/lib/repo-settings.sh docs/repo-settings.md
 
-# --- FACT: the SessionStart currency config surface (#36) --------------------
-# The mode key is a three-way contract: the TEMPLATE advertises it, the HOOK is the only thing
-# that reads it, and the DOC + decision log tell the operator it is global-only. Renaming the
+# --- FACT: the install-currency config surface (#36, #139) -------------------
+# The mode key is a multi-way contract: the TEMPLATE advertises it, currency-lib.sh is the one
+# thing that READS it, both triggers (the Claude SessionStart hook and the /cleanup step) are
+# governed by it, and the DOC + decision log tell the operator it is global-only. Renaming the
 # table or the key in one place would leave the others describing a knob that silently does
 # nothing — and "silently does nothing" is precisely the failure this feature exists to remove.
+#
+# The key is still spelled `session_start` even though #139 gave it a second, non-session trigger.
+# That is deliberate backward compatibility: an `off` that stopped applying would re-enable an
+# updater its owner had switched off. The neutral rename is tracked separately.
 fact session-start-config "fixed:session_start" -- \
-  templates/agents.toml agents/claude/scripts/session-currency.sh \
+  templates/agents.toml scripts/lib/currency-lib.sh \
+  agents/claude/scripts/session-currency.sh base/workflows/cleanup.md \
   docs/installation.md .ai-dev-baseline/decisions.md
 # The event this hook binds to. The settings entry, the script's own source gate, and the docs
 # must name the SAME trigger: a matcher the script did not also enforce would let a `/clear` or

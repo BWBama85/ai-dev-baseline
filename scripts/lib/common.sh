@@ -550,6 +550,119 @@ adb_age_secs() {
   printf '%s' "$age"
 }
 
+# --- bounded execution -------------------------------------------------------
+#
+# Run a command under a wall-clock bound, portably. THE one home for this: role-dispatch.sh
+# bounds an agent CLI (45 min) and currency-lib.sh bounds `baseline update` (a fetch + pull), and
+# a second hand-rolled watchdog is exactly the duplicate-detector drift #131 was filed about.
+# Both callers pass their own bound and grace, because a hang backstop for an agent pass and one
+# for a git fetch have nothing in common but the mechanism.
+#
+# Prefers a real timeout binary (GNU `timeout` on Linux CI, `gtimeout` from coreutils on macOS);
+# when neither exists (a stock Mac) it falls back to a bash-3.2-safe background watchdog. Returns
+# the child's status, or 124 when the bound fired (matching GNU timeout's convention).
+# stdin/stdout/stderr are whatever the caller redirected.
+# ADB_NO_TIMEOUT_BIN=1 (or the legacy ADB_DISPATCH_NO_TIMEOUT_BIN=1) forces the watchdog path,
+# which is how the unit tests exercise it on a box that has `timeout`.
+#
+# BOTH paths escalate TERM → grace → KILL. A bound that only sends SIGTERM is not a backstop: a
+# child that ignores or traps TERM would leave `wait` blocking forever, which is an unbounded
+# deadlock rather than a late failure. `timeout -k` does the escalation for us; the watchdog path
+# does it by hand. Escalation targets the direct child — a grandchild that outlives it may linger,
+# but `wait` returns, so the RUN is never wedged.
+#
+# Usage: adb_run_bounded <secs> <kill-grace-secs> <argv...>
+
+# Reap the in-flight child when OUR shell is terminated (an outer harness bound firing, a detached
+# job cancelled, an operator ^C). Without this, bash dies while blocked in `wait` and the child is
+# reparented to init, running out the FULL bound after the run was already cancelled. `timeout`
+# forwards the TERM to the command it manages, so terminating it is enough on that path.
+_adb_bounded_reap() {
+  [ -n "${_ADB_BOUNDED_CHILD:-}" ] && kill -TERM "$_ADB_BOUNDED_CHILD" 2>/dev/null
+  [ -n "${_ADB_BOUNDED_WATCHER:-}" ] && kill -TERM "$_ADB_BOUNDED_WATCHER" 2>/dev/null
+  sleep 1
+  [ -n "${_ADB_BOUNDED_CHILD:-}" ] && kill -KILL "$_ADB_BOUNDED_CHILD" 2>/dev/null
+  exit 143   # report as "terminated by an outer bound", which is exactly what happened
+}
+
+adb_run_bounded() {
+  local secs="$1" grace="$2" tb="" t0 trc otrap; shift 2
+  # Both degenerate graces break the escalation and neither fails loudly: `timeout -k 0` means
+  # "no SIGKILL at all" to GNU timeout, so a zero grace would leave the binary path with no
+  # escalation while the watchdog path treats 0 as "KILL immediately" — the same input making one
+  # path maximally aggressive and the other not a backstop at all.
+  case "$grace" in ''|*[!0-9]*) grace=10 ;; 0) grace=1 ;; esac
+  case "$secs" in ''|*[!0-9]*) return 2 ;; esac
+  if [ "${ADB_NO_TIMEOUT_BIN:-${ADB_DISPATCH_NO_TIMEOUT_BIN:-0}}" != "1" ]; then
+    if   command -v timeout  >/dev/null 2>&1; then tb=timeout
+    elif command -v gtimeout >/dev/null 2>&1; then tb=gtimeout
+    fi
+  fi
+  # Save the caller's own handlers: this is a sourced library, so resetting to default on exit
+  # would silently clobber a trap the calling script installed.
+  otrap="$(trap -p TERM INT HUP)"
+  if [ -n "$tb" ]; then
+    t0=$SECONDS   # bash builtin: no fork, and `local` above keeps the arithmetic nesting-safe
+    # Backgrounded + `wait` (rather than run in the foreground) so the reap trap has a PID to kill.
+    # `<&0` for the same reason the watchdog path needs it — see below.
+    "$tb" -k "$grace" "$secs" "$@" <&0 &
+    _ADB_BOUNDED_CHILD=$!
+    trap '_adb_bounded_reap' TERM INT HUP
+    wait "$_ADB_BOUNDED_CHILD"; trc=$?
+    trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
+    unset _ADB_BOUNDED_CHILD
+    # Normalize the bound-fired status. GNU timeout reports 124 when SIGTERM ended the child, but
+    # relays the child's own signal status (137) when -k had to escalate to SIGKILL — so ONE event
+    # reports two different codes depending only on how stubborn the child was, and 137 is what
+    # callers classify as "killed from outside this helper". Without this, the same timeout would
+    # classify as "our backstop" on a stock Mac (watchdog path) and "an external kill" on Linux CI
+    # (GNU timeout) — a platform-dependent lie. Gated on elapsed >= the bound, so an unrelated
+    # external SIGKILL arriving BEFORE the bound still reports 137 honestly.
+    if [ "$trc" -eq 137 ] && [ "$(( SECONDS - t0 ))" -ge "$secs" ]; then trc=124; fi
+    return "$trc"
+  fi
+  local flag rc cmd_pid watcher tick
+  flag="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/adb-bounded-flag-$$")"; rm -f "$flag"
+  # `<&0` is load-bearing: a backgrounded command in a non-interactive shell has its stdin
+  # redirected from /dev/null UNLESS it carries an explicit redirection. The caller's redirection
+  # is on THIS function's invocation, not on the inner `&`, so without `<&0` a child fed its input
+  # on stdin would read /dev/null instead.
+  "$@" <&0 & cmd_pid=$!
+  _ADB_BOUNDED_CHILD=$cmd_pid
+  # Flag BEFORE the TERM: a child that dies from the signal can be reaped and the `wait` below can
+  # return before the flag write, which would return the child's signal status instead of 124.
+  # `kill -0` gates on the child still existing, so a child that exited on its own a moment before
+  # the bound is not mislabelled as timed out.
+  # The watchdog TICKS rather than sleeping the whole bound in one go. Killing the watcher does not
+  # kill a `sleep` it already forked — that sleep is reparented to init and runs to term — so a
+  # single `sleep "$secs"` leaks one orphan per call, each living the full bound. Ticking bounds an
+  # orphan's life to one tick and lets the watcher notice a finished child and exit on its own. The
+  # tick shrinks for small bounds so the unit tests stay fast.
+  tick=5; [ "$secs" -lt 10 ] && tick=1
+  ( waited=0
+    while [ "$waited" -lt "$secs" ]; do
+      kill -0 "$cmd_pid" 2>/dev/null || exit 0   # child finished: nothing to police
+      sleep "$tick"; waited=$(( waited + tick ))
+    done
+    kill -0 "$cmd_pid" 2>/dev/null || exit 0
+    : > "$flag"; kill -TERM "$cmd_pid" 2>/dev/null
+    sleep "$grace"; kill -KILL "$cmd_pid" 2>/dev/null || : ; ) </dev/null >/dev/null 2>&1 &
+  watcher=$!
+  _ADB_BOUNDED_WATCHER=$watcher
+  trap '_adb_bounded_reap' TERM INT HUP
+  wait "$cmd_pid" 2>/dev/null; rc=$?
+  trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
+  unset _ADB_BOUNDED_CHILD _ADB_BOUNDED_WATCHER
+  kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null
+  # The flag ALONE decides: if the bound fired, this is 124 whatever status the child exited with.
+  # A child that traps SIGTERM and exits 0 (ordinary well-behaved-CLI cleanup) would otherwise be
+  # reported as a clean success carrying truncated output — silent incompleteness accepted as a
+  # result, and GNU `timeout` does NOT have that flaw (it returns 124 for that child), so gating on
+  # rc would also reintroduce the platform-dependent split the normalization above eliminates.
+  if [ -f "$flag" ]; then rm -f "$flag"; return 124; fi
+  rm -f "$flag"; return "$rc"
+}
+
 # --- installed-baseline discovery --------------------------------------------
 
 # True iff <path> is a symlink whose target is inside <src>. The ownership test every

@@ -44,22 +44,34 @@ debug        = "claude"     # owns root-cause investigations.
 # lint      = "na"
 # typecheck = "na"
 
-# Optional: how the INSTALLED baseline keeps itself current (issue #36).
+# Optional: how the INSTALLED baseline keeps itself current (issues #36, #139).
 #
 # GLOBAL ONLY — read from ~/.config/ai-dev-baseline/agents.toml and NOWHERE else. A copy of
 # this key in a PROJECT's agents.toml is ignored on purpose: whether your global tooling
 # updates itself must not depend on which repo you happened to open.
 #
-#   auto   (default) a Claude SessionStart hook fast-forwards the install-source clone and
-#          re-runs the idempotent install, then reports one line naming what changed. It
-#          refuses a dirty / mid-rebase / detached / non-default / ahead / diverged clone, and
-#          never touches the clone the current session is working in.
+# TWO TRIGGERS, ONE SETTING. This key governs both, and `off` disables both:
+#   1. a Claude SessionStart hook, on `startup` only (#36);
+#   2. the last step of `/cleanup`, on every agent (#139) — because `/cleanup` runs right after
+#      a merge, when the install goes stale, and right before `/clear`, which trigger 1 skips.
+#
+#   auto   (default) fast-forwards the install-source clone and re-runs the idempotent install,
+#          then reports one line naming what changed. It refuses a dirty / mid-rebase /
+#          detached / non-default / ahead / diverged clone, and never touches the clone the
+#          caller is working in.
 #   notify the same check, but it reports ONLY "behind" — every other state stays silent, so a
 #          clone you deliberately parked on a branch never nags. You run `baseline update`.
-#   off    the hook exits immediately and does nothing.
+#          Precisely: notify never changes the working tree or the installed payload (it does
+#          still fetch remote-tracking refs, which is what makes the answer true, not remembered).
+#   off    neither trigger does anything.
 #
-# ADB_SESSION_UPDATE overrides this for one run; ADB_SESSION_UPDATE_INTERVAL_SECS (default
-# 600, 0 = every session) bounds how often the check re-runs.
+# ADB_SESSION_UPDATE overrides this for one run. ADB_SESSION_UPDATE_INTERVAL_SECS (default 600,
+# 0 = every session) bounds how often the SessionStart check re-runs; `/cleanup` deliberately
+# ignores that interval — an explicitly requested check must not be suppressed at the exact
+# moment a merge just made the clone stale — while still refreshing the shared stamp.
+#
+# The key name is historical: it predates the second trigger. It is kept for backward
+# compatibility, so an existing `off` keeps meaning off.
 # [updates]
 # session_start = "auto"
 

@@ -422,4 +422,236 @@ else
   fi
 fi
 
+# ==================== 7. the currency step, EXECUTED (#139) ==================================
+# The point of this section is that it RUNS the documented snippet rather than grepping for a
+# token. #139's whole failure mode was a currency mechanism that looked wired and never fired, so
+# a test asserting "the workflow mentions currency-lib" would reproduce the bug it is guarding.
+# The snippet is extracted from base/workflows/cleanup.md by its ADB-SNIPPET marker and executed
+# with {{CURRENCY_LIB}} resolved exactly as scripts/build.sh resolves it for a real agent.
+
+cuw="$work/cu"
+mkdir -p "$cuw"
+CU="$ROOT/scripts/lib/currency-lib.sh"
+# adb_agent_manifest builds the fixture's stub set; re-read the workflow here rather than reuse
+# $wf, which is only set inside section 6's `else` branch.
+# shellcheck source=/dev/null
+. "$ROOT/scripts/lib/common.sh"
+cuwf="$(cat "$WF")"
+
+# --- fixture: an install-source clone, pre-linked into a fake HOME ---------------------------
+# Deliberately close to check-session-currency.sh's fixture; #118 tracks sharing them.
+cuseed="$cuw/seed"
+mkdir -p "$cuseed/bin" "$cuseed/scripts/lib" "$cuseed/agents/claude/skills/demo" "$cuseed/agents/claude/scripts"
+cp "$ROOT/bin/baseline" "$cuseed/bin/baseline"; chmod +x "$cuseed/bin/baseline"
+for lib in common.sh currency-lib.sh cleanup-lib.sh; do
+  cp "$ROOT/scripts/lib/$lib" "$cuseed/scripts/lib/$lib"
+done
+cat > "$cuseed/install.sh" <<CUSTUB
+#!/usr/bin/env bash
+_r="\$(cd "\$(dirname "\$0")" && pwd)"
+. "\$_r/scripts/lib/common.sh"
+adb_agent_manifest claude "\$_r" "\$HOME" | while IFS="\$(printf '\\t')" read -r s d; do
+  [ -n "\$s" ] && [ -n "\$d" ] || continue
+  [ -e "\$d" ] && continue
+  mkdir -p "\$(dirname "\$d")"
+  ln -sfn "\$s" "\$d"
+done
+CUSTUB
+chmod +x "$cuseed/install.sh"
+printf 'root doc\n' > "$cuseed/agents/claude/CLAUDE.md"
+printf 'demo skill\n' > "$cuseed/agents/claude/skills/demo/SKILL.md"
+# Stub every OTHER script the manifest expects, enumerated from the manifest itself: `baseline
+# update` verifies the full manifest, so a script added there but missing here would fail this
+# fixture in a way that looks like a bin/baseline bug.
+while IFS= read -r sname; do
+  [ -n "$sname" ] || continue
+  [ -e "$cuseed/agents/claude/scripts/$sname" ] || printf '#stub\n' > "$cuseed/agents/claude/scripts/$sname"
+done <<CUEOF
+$(adb_agent_manifest claude "$cuseed" "$cuw/unused" | cut -f1 | sed -n "s|^$cuseed/agents/claude/scripts/||p")
+CUEOF
+
+cuorigin="$cuw/origin.git"
+git init -q --bare "$cuorigin"
+(
+  cd "$cuseed" || exit 1
+  git init -q; git checkout -q -b main
+  git -c user.email=t@t -c user.name=t add -A
+  git -c user.email=t@t -c user.name=t commit -q -m seed
+  git remote add origin "$cuorigin"
+  git push -q -u origin main
+) || bad "7 currency fixture: seed push failed"
+
+cusrc="$cuw/src"; git clone -q "$cuorigin" "$cusrc"
+cufh="$cuw/home"; mkdir -p "$cufh"
+HOME="$cufh" bash "$cusrc/install.sh" >/dev/null 2>&1
+cusrcgit="$(git -C "$cusrc" rev-parse --absolute-git-dir)"
+# A second clone drives origin forward, so $cusrc can be made genuinely behind.
+cuc2="$cuw/c2"; git clone -q "$cuorigin" "$cuc2"
+
+cu_advance() {
+  git -C "$cuc2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "$1"
+  git -C "$cuc2" push -q origin main
+}
+cu_head() { git -C "$cusrc" rev-parse --short HEAD; }
+cu_reset() {
+  git -C "$cusrc" checkout -q main 2>/dev/null || git -C "$cusrc" checkout -q -B main
+  git -C "$cusrc" fetch -q origin
+  git -C "$cusrc" reset -q --hard origin/main
+  git -C "$cusrc" clean -qfd
+  rm -rf "${cuw:?}/cache"
+  rm -rf "${cusrcgit:?}/adb-update.lock"
+}
+
+# --- the extractor: run the DOCUMENTED snippet ------------------------------------------------
+cu_snippet() {
+  awk '
+    $0 ~ /^[[:space:]]*# ADB-SNIPPET: currency$/ { inb = 1; next }
+    inb && /^[[:space:]]*```[[:space:]]*$/ { exit }
+    inb { print }
+  ' "$WF"
+}
+# run_currency [cwd] — execute the snippet; sets CU_RC, CU_OUT_OUTCOME, CU_OUT_LINE.
+# CU_MODE / CU_INTERVAL are the knobs, mirroring check-session-currency.sh's MODE_ENV.
+CU_MODE=""; CU_INTERVAL=""
+run_currency() {
+  local cwd="${1:-$cuw/elsewhere}" code out
+  mkdir -p "$cwd"
+  code="$(cu_snippet)"
+  if [ -z "$code" ]; then
+    bad "7 snippet 'currency' not found in base/workflows/cleanup.md (marker removed or renamed?)"
+    CU_RC=90; CU_OUT_OUTCOME=""; CU_OUT_LINE=""; return 1
+  fi
+  code="${code//\{\{CURRENCY_LIB\}\}/bash \"$CU\"}"
+  # The snippet must be self-contained: nothing is pre-set except a cwd, exactly as the workflow
+  # claims (it re-resolves ROOT itself). Trailing echoes expose what the workflow computed.
+  out="$(cd "$cwd" && env HOME="$cufh" XDG_CACHE_HOME="$cuw/cache" \
+        ADB_SESSION_UPDATE="$CU_MODE" ADB_SESSION_UPDATE_INTERVAL_SECS="$CU_INTERVAL" \
+        bash -c "$code
+printf 'OUTCOME=%s\n' \"\$CU_OUTCOME\"
+printf 'LINE=%s\n' \"\$CU_LINE\"" 2>/dev/null)"
+  CU_RC=$?
+  CU_OUT_OUTCOME="$(printf '%s\n' "$out" | sed -n 's/^OUTCOME=//p' | head -n1)"
+  CU_OUT_LINE="$(printf '%s\n' "$out" | sed -n 's/^LINE=//p' | head -n1)"
+}
+
+# (a) the core acceptance: a behind clone is updated, and the step reports one line.
+cu_reset; cu_advance "cu-behind"
+cu_before="$(cu_head)"
+run_currency
+eq "$CU_RC" "0" "7 currency: the snippet exits 0"
+eq "$CU_OUT_OUTCOME" "updated" "7 currency: a behind install-source is updated"
+has "$CU_OUT_LINE" "updated" "7 currency: the reported line names the update"
+if [ "$(cu_head)" != "$cu_before" ]; then ok; else bad "7 currency: the clone did not advance"; fi
+
+# (b) THE #139 PROPERTY: a fresh stamp must NOT suppress the deliberate check. This is the whole
+# reason the cleanup trigger reads the interval differently — /cleanup runs right after a merge,
+# which is exactly when the stamp is freshest and the clone is most likely stale.
+cu_reset
+mkdir -p "$cuw/cache/ai-dev-baseline"; : > "$cuw/cache/ai-dev-baseline/session-currency.stamp"
+cu_advance "cu-stamp-bypass"
+cu_before="$(cu_head)"
+run_currency
+eq "$CU_OUT_OUTCOME" "updated" "7 currency: a FRESH stamp does not suppress the /cleanup check (#139)"
+if [ "$(cu_head)" != "$cu_before" ]; then ok; else bad "7 currency: a fresh stamp wrongly suppressed the update"; fi
+
+# ...and it still WRITES the stamp, so the next session start is suppressed by it.
+if [ -f "$cuw/cache/ai-dev-baseline/session-currency.stamp" ]; then ok; else
+  bad "7 currency: the shared stamp was not refreshed"
+fi
+
+# (c) already current -> silent. The terse contract means no line at all.
+cu_reset
+run_currency
+eq "$CU_OUT_OUTCOME" "silent" "7 currency: an already-current install is silent"
+eq "$CU_OUT_LINE" "" "7 currency: silence means no line"
+
+# (d) mode=off disables THIS trigger too, not just the hook.
+cu_reset; cu_advance "cu-off"
+cu_before="$(cu_head)"
+CU_MODE=off; run_currency; CU_MODE=""
+eq "$CU_OUT_OUTCOME" "skipped" "7 currency: mode=off skips"
+eq "$CU_OUT_LINE" "" "7 currency: mode=off prints nothing"
+eq "$(cu_head)" "$cu_before" "7 currency: mode=off never touches the clone"
+
+# (e) notify reports 'behind' and changes nothing on disk.
+cu_reset; cu_advance "cu-notify"
+cu_before="$(cu_head)"
+CU_MODE=notify; run_currency; CU_MODE=""
+eq "$CU_OUT_OUTCOME" "behind" "7 currency: notify reports behind"
+has "$CU_OUT_LINE" "behind" "7 currency: the notify line says behind"
+eq "$(cu_head)" "$cu_before" "7 currency: notify never pulls"
+
+# (f) never update the clone being swept. Sweeping the install-source itself must skip — including
+# from a SUBDIRECTORY of it, which is the shape a repo-root-relative guard would miss.
+cu_reset; cu_advance "cu-selfclone"
+cu_before="$(cu_head)"
+run_currency "$cusrc"
+eq "$CU_OUT_OUTCOME" "skipped" "7 currency: sweeping the install-source clone itself skips"
+eq "$(cu_head)" "$cu_before" "7 currency: the self-clone guard left it untouched"
+run_currency "$cusrc/scripts"
+eq "$CU_OUT_OUTCOME" "skipped" "7 currency: a SUBDIRECTORY of the install-source also skips"
+
+# (g) a refused clone is reported, and named. Dirty is the case a porcelain-only check would see;
+# what matters here is that the step surfaces WHICH state instead of claiming success.
+cu_reset; cu_advance "cu-dirty"
+printf 'local edit\n' >> "$cusrc/agents/claude/CLAUDE.md"
+cu_before="$(cu_head)"
+run_currency
+eq "$CU_RC" "0" "7 currency: a refused update still exits 0"
+eq "$CU_OUT_OUTCOME" "refused" "7 currency: an unsafe clone state is refused"
+has "$CU_OUT_LINE" "dirty" "7 currency: the refusal names the state"
+eq "$(cu_head)" "$cu_before" "7 currency: a refused update never fast-forwards"
+cu_reset
+
+# (h) offline is reported here (unlike the unattended hook, which stays silent) and never fails.
+cu_reset
+git -C "$cusrc" remote set-url origin "$cuw/does-not-exist.git"
+run_currency
+eq "$CU_RC" "0" "7 currency: an unreachable remote still exits 0"
+eq "$CU_OUT_OUTCOME" "offline" "7 currency: an unreachable remote is reported as offline"
+has "$CU_OUT_LINE" "unreachable" "7 currency: the offline line says so"
+git -C "$cusrc" remote set-url origin "$cuorigin"
+cu_reset
+
+# (i) a peer update holding the lock is reported here too, and is not sticky.
+cu_reset; cu_advance "cu-busy"
+mkdir -p "$cusrcgit/adb-update.lock"
+run_currency
+eq "$CU_RC" "0" "7 currency: lock contention still exits 0"
+eq "$CU_OUT_OUTCOME" "busy" "7 currency: a peer update is reported as busy"
+rmdir "$cusrcgit/adb-update.lock"
+run_currency
+eq "$CU_OUT_OUTCOME" "updated" "7 currency: a released lock lets the next run proceed"
+
+# (j) no install at all -> silent skip, never an error. The ordinary state of a machine that never
+# ran install.sh, and of a CI checkout.
+cu_reset
+CU_HOME_SAVE="$cufh"; cufh="$cuw/emptyhome"; mkdir -p "$cufh"
+run_currency
+eq "$CU_RC" "0" "7 currency: no installed baseline still exits 0"
+eq "$CU_OUT_OUTCOME" "skipped" "7 currency: no installed baseline skips silently"
+eq "$CU_OUT_LINE" "" "7 currency: no installed baseline prints nothing"
+cufh="$CU_HOME_SAVE"
+
+# --- ordering: the report must be composed BEFORE the update swaps the libraries -------------
+# Version skew, and the reason step 6 buffers instead of printing: `baseline update` re-runs the
+# installer, whose symlinks are what {{CLEANUP_LIB}} resolves through, so a report composed AFTER
+# the update would be built by a library the sweep never used. Pin the order in the source.
+wf_compose="$(printf '%s\n' "$cuwf" | grep -n 'REPORT_OUT="\$(' | head -n1 | cut -d: -f1)"
+wf_curr="$(printf '%s\n' "$cuwf" | grep -n '# ADB-SNIPPET: currency' | head -n1 | cut -d: -f1)"
+wf_emit="$(printf '%s\n' "$cuwf" | grep -n 'printf .%s\\n. "\$REPORT_OUT"' | head -n1 | cut -d: -f1)"
+if [ -n "$wf_compose" ] && [ -n "$wf_curr" ] && [ "$wf_compose" -lt "$wf_curr" ]; then ok; else
+  bad "7 the report must be COMPOSED before the currency step (compose@${wf_compose:-?} currency@${wf_curr:-?})"
+fi
+if [ -n "$wf_emit" ] && [ -n "$wf_curr" ] && [ "$wf_emit" -gt "$wf_curr" ]; then ok; else
+  bad "7 the buffered report must be EMITTED after the currency step (currency@${wf_curr:-?} emit@${wf_emit:-?})"
+fi
+# The state line stays last: currency is emitted above the buffered report, not after it.
+wf_cuemit="$(printf '%s\n' "$cuwf" | grep -n 'printf .%s\\n. "\$CU_LINE"' | head -n1 | cut -d: -f1)"
+if [ -n "$wf_cuemit" ] && [ -n "$wf_emit" ] && [ "$wf_cuemit" -lt "$wf_emit" ]; then ok; else
+  bad "7 the currency line must print BEFORE the buffered report so the state line stays last"
+fi
+# Currency must never gate the sweep: the snippet absorbs a failing library explicitly.
+has "$cuwf" '|| true' "7 the currency capture absorbs a non-zero status (never gates the sweep)"
+
 check_summary "check-cleanup"
