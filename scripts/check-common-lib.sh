@@ -620,6 +620,25 @@ adb_run_bounded 1 x sleep 20; eq "$?" "124" "a non-numeric grace falls back to t
 
 # A non-numeric BOUND is refused rather than silently treated as zero (which would fire instantly).
 adb_run_bounded x 1 true; eq "$?" "2" "a non-numeric bound is refused with status 2"
+# ZERO is refused for the same reason and is NOT merely non-numeric: `timeout 0` means "no timeout
+# at all" to GNU timeout while the watchdog's countdown kills instantly — one input, opposite
+# behavior. Zero-padded forms must be caught too; "00" matches no literal `0)` arm.
+adb_run_bounded 0 1 true;  eq "$?" "2" "a zero bound is refused with status 2"
+adb_run_bounded 00 1 true; eq "$?" "2" "a zero-PADDED bound is refused too (arithmetic, not a literal arm)"
+
+# THE 137->124 NORMALIZATION, on the timeout-BINARY path. GNU timeout reports 124 when SIGTERM
+# ended the child but relays 137 when -k had to escalate to SIGKILL, so one event reported two
+# codes depending only on how stubborn the child was — and 137 is what callers classify as "killed
+# from OUTSIDE this helper". Without normalization the same timeout classifies as our backstop on a
+# stock Mac (watchdog) and as an external kill on Linux CI (timeout binary): a platform-dependent
+# lie. This case is the ONLY direct guard on it; deleting the normalization otherwise leaves this
+# whole suite green and fails only role-dispatch's, i.e. transitively.
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  adb_run_bounded 1 1 "$esc"
+  eq "$?" "124" "timeout-binary path: a TERM-resistant child normalizes 137 -> 124 (not an external kill)"
+else
+  check_note "no timeout/gtimeout binary — skipped the 137->124 normalization case"
+fi
 
 # The caller's own trap survives: this is a sourced library, so resetting handlers to default on
 # exit would clobber a trap the calling script installed.

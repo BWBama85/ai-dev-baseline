@@ -568,8 +568,17 @@ adb_age_secs() {
 # BOTH paths escalate TERM → grace → KILL. A bound that only sends SIGTERM is not a backstop: a
 # child that ignores or traps TERM would leave `wait` blocking forever, which is an unbounded
 # deadlock rather than a late failure. `timeout -k` does the escalation for us; the watchdog path
-# does it by hand. Escalation targets the direct child — a grandchild that outlives it may linger,
-# but `wait` returns, so the RUN is never wedged.
+# does it by hand.
+#
+# KNOWN DIVERGENCE between the two paths — they agree on STATUS but not on process CLEANUP.
+# GNU `timeout` puts the child in its own process group and signals the GROUP; the watchdog
+# signals a single PID. So on the watchdog path (a stock Mac with no `timeout`/`gtimeout`) a
+# grandchild can OUTLIVE the bound: `wait` returns and the caller gets its 124, but the orphan
+# keeps running. For role-dispatch's 45-minute bound that is nearly unreachable. For
+# currency-lib's 120 s bound on a `git fetch`/`git pull` it is not, and the orphan mutates a
+# clone AFTER we have already reported the update as failed — it can move HEAD or hold
+# .git/index.lock. Tracked as #141; mitigated meanwhile by currency-lib setting git's own
+# stall/prompt bounds, so the wall-clock backstop is the last resort rather than the first.
 #
 # Usage: adb_run_bounded <secs> <kill-grace-secs> <argv...>
 
@@ -591,8 +600,14 @@ adb_run_bounded() {
   # "no SIGKILL at all" to GNU timeout, so a zero grace would leave the binary path with no
   # escalation while the watchdog path treats 0 as "KILL immediately" — the same input making one
   # path maximally aggressive and the other not a backstop at all.
-  case "$grace" in ''|*[!0-9]*) grace=10 ;; 0) grace=1 ;; esac
-  case "$secs" in ''|*[!0-9]*) return 2 ;; esac
+  # Arithmetic comparison, not a literal `0)` arm: a zero-padded "00" matches no literal arm, so it
+  # slipped through both clamps and reinstated the very platform split described above — `timeout
+  # -k 00` never escalates, while the watchdog treats 00 as "KILL immediately".
+  case "$grace" in ''|*[!0-9]*) grace=10 ;; *) [ "$grace" -eq 0 ] && grace=1 ;; esac
+  # A ZERO bound is refused too, not just a non-numeric one: `timeout 0` means "no timeout at all"
+  # to GNU timeout while the watchdog's `while [ 0 -lt 0 ]` kills instantly — one input, opposite
+  # behaviors, and neither is a backstop. Arithmetic so "00" cannot slip past a literal arm.
+  case "$secs" in ''|*[!0-9]*) return 2 ;; *) [ "$secs" -eq 0 ] && return 2 ;; esac
   if [ "${ADB_NO_TIMEOUT_BIN:-${ADB_DISPATCH_NO_TIMEOUT_BIN:-0}}" != "1" ]; then
     if   command -v timeout  >/dev/null 2>&1; then tb=timeout
     elif command -v gtimeout >/dev/null 2>&1; then tb=gtimeout

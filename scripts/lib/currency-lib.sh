@@ -90,7 +90,9 @@ TAB=$'\t'   # a bash literal, not a fork: this file is sourced on every session 
 # idempotent symlink pass — seconds of work — so the bound is a backstop for a wedge, not a work
 # budget, and it is deliberately nothing like role-dispatch's 45-minute agent bound.
 _ADB_CU_TIMEOUT_SECS="${ADB_CURRENCY_TIMEOUT_SECS:-120}"
-case "$_ADB_CU_TIMEOUT_SECS" in ''|*[!0-9]*) _ADB_CU_TIMEOUT_SECS=120 ;; 0) _ADB_CU_TIMEOUT_SECS=120 ;; esac
+# Arithmetic, not a literal `0)` arm — a zero-padded "00" would otherwise pass through as a bound
+# of zero, which fires the backstop instantly on one path and disables it on the other.
+case "$_ADB_CU_TIMEOUT_SECS" in ''|*[!0-9]*) _ADB_CU_TIMEOUT_SECS=120 ;; *) [ "$_ADB_CU_TIMEOUT_SECS" -eq 0 ] && _ADB_CU_TIMEOUT_SECS=120 ;; esac
 _ADB_CU_KILL_GRACE_SECS="${ADB_CURRENCY_KILL_GRACE_SECS:-5}"
 
 # The default rate-limit interval, and the stamp both triggers share. See `check` for why the
@@ -198,16 +200,6 @@ cmd_check() {
   # 2. the install-source. Nothing installed by symlink -> nothing to keep current. This is the
   #    ordinary state of a machine that never ran install.sh, so it is silent, not a failure.
   local src; src="$(adb_install_source)" || { _adb_cu_emit skipped ""; return 0; }
-  # A resolved install-source whose `baseline` is missing or non-executable is NOT "nothing
-  # installed" — it is a BROKEN install, and staying silent about it would be the exact
-  # silent-staleness this feature exists to catch. (Running it anyway, as the pre-#139 hook did,
-  # produced a 126/127 that surfaced as `failed`; keep that loudness rather than inheriting a
-  # quieter behavior from the refactor.)
-  if [ ! -x "$src/bin/baseline" ]; then
-    _adb_cu_emit failed "install-source found at $src but bin/baseline is missing or not executable — reinstall."
-    return 0
-  fi
-
   # 3. the rate limit — and the ONE place the two triggers deliberately differ.
   #
   #    ORDER MATTERS, and it is why this sits above the self-clone guard: this is ONE `stat` while
@@ -246,6 +238,21 @@ cmd_check() {
   #    reaches the stamp write below.
   if cmd_same_clone "$cwd" "$src"; then _adb_cu_emit skipped ""; return 0; fi
 
+  # 4b. A resolved install-source whose `baseline` is missing or non-executable is NOT "nothing
+  #     installed" — it is a BROKEN install, and staying silent would be the exact silent-staleness
+  #     this feature exists to catch. (The pre-#139 hook ran it anyway and surfaced the 126/127 as
+  #     `failed`; keep that loudness rather than inheriting a quieter behavior from the refactor.)
+  #
+  #     Deliberately BELOW the rate limit and the self-clone guard. Above them it reported on every
+  #     single session start, unthrottled, about a clone the policy explicitly refuses to touch — so
+  #     a baseline developer who had merely `chmod -x`'d their own `bin/baseline` mid-edit would be
+  #     nagged forever. It is a real condition, but it is not more urgent than the two guards whose
+  #     entire job is to decide whether this clone is ours to talk about.
+  if [ ! -x "$src/bin/baseline" ]; then
+    _adb_cu_emit failed "install-source found at $src but bin/baseline is missing or not executable — reinstall."
+    return 0
+  fi
+
   # 5. bound git's network and interaction BEFORE any of it runs. Without these an HTTPS remote
   #    with no cached credential blocks on a terminal read forever — the one failure mode a
   #    timeout cannot make graceful. Each is set only when the caller has not, so a deliberate
@@ -260,6 +267,13 @@ cmd_check() {
   if [ -z "${GIT_SSH_COMMAND:-}" ] && [ -z "$(git -C "$src" config --get core.sshCommand 2>/dev/null)" ]; then
     export GIT_SSH_COMMAND='ssh -o BatchMode=yes -o ConnectTimeout=10'
   fi
+  # Abort an HTTP transfer that has effectively STALLED, so git fails cleanly with a real error
+  # instead of being killed mid-pull. This is not redundant with adb_run_bounded below: on the
+  # `startup` trigger the harness's own 60 s hook timeout fires long before our 120 s backstop
+  # could, so without these a stalled HTTPS fetch is killed from outside — and a kill mid-pull is
+  # what leaves an index.lock behind, where a clean git failure is just `offline`.
+  [ -n "${GIT_HTTP_LOW_SPEED_LIMIT:-}" ] || export GIT_HTTP_LOW_SPEED_LIMIT=1000
+  [ -n "${GIT_HTTP_LOW_SPEED_TIME:-}" ]  || export GIT_HTTP_LOW_SPEED_TIME=15
 
   # 6. record the attempt BEFORE running it. A crash or a harness kill mid-update must not make
   #    the next trigger retry immediately and hit the same wall.

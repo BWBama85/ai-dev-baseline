@@ -92,7 +92,7 @@ _ADB_RD_KILL_GRACE_SECS="${ADB_DISPATCH_KILL_GRACE_SECS:-10}"
 # not assume a caller pre-clamped. Two guards, one rule, stated in one place.
 case "$_ADB_RD_KILL_GRACE_SECS" in
   ''|*[!0-9]*) _ADB_RD_KILL_GRACE_SECS=10 ;;
-  0)           _ADB_RD_KILL_GRACE_SECS=1  ;;
+  *)           [ "$_ADB_RD_KILL_GRACE_SECS" -eq 0 ] && _ADB_RD_KILL_GRACE_SECS=1 ;;
 esac
 
 # --- resolution --------------------------------------------------------------------------------

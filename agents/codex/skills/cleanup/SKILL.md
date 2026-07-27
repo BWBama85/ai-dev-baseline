@@ -138,7 +138,13 @@ fi
 [ -z "$DEFAULT" ] && DEFAULT=main
 CURRENT="$(git rev-parse --abbrev-ref HEAD)"
 # Every accumulator is initialized HERE, not at the step that fills it: a scope that skips a step
-# (`local` never runs step 4) must still leave step 6 a defined, empty variable to report from.
+# (`local` never runs step 4) must still leave the report a defined, empty variable to work from.
+#
+# THIS WORKFLOW IS ONE SHELL. Every step below shares these accumulators across fenced blocks, so
+# run them in a single shell session — a step executed in a fresh shell loses them and the final
+# report silently degrades to blank lines rather than failing. (`/roadmap` is the opposite: its
+# blocks are deliberately self-contained and re-resolve everything they need. Do not carry that
+# habit here, or the reverse habit there.)
 NOTES=""; DELETED_LOCAL=""; DELETED_REMOTE=""; CLEARED=""
 git fetch --prune origin --quiet 2>/dev/null \
   || NOTES="${NOTES}NOTE: could not fetch origin — classifying against possibly-stale refs.
@@ -535,11 +541,15 @@ unattended, whereas here the operator just asked, so `busy` and `offline` are re
 
 ```bash
 # ADB-SNIPPET: currency
-# Self-contained: this may run as a SEPARATE shell invocation from the steps above, so it passes
-# NOTHING from them. It does not resolve the repo root either — the library defaults its own `--cwd`
-# to $PWD and compares git COMMON DIRS, so it recognises the install-source clone from any
-# subdirectory of it. Resolving a toplevel here would just normalize that case away before the
-# guard ever saw it.
+# This block needs NO input from the steps above — but it does export `CU_LINE` to step 8, exactly
+# as step 1 exports `NOTES` and step 3 exports `DELETED_LOCAL`. Run this whole workflow as ONE
+# shell: its accumulators have been shared across fenced blocks since step 1, and a step run in a
+# fresh shell would silently lose them (`/roadmap` is the skill whose blocks are separable — this
+# one is not, and the difference is deliberate).
+#
+# It does not resolve the repo root: the library defaults its own `--cwd` to $PWD and compares git
+# COMMON DIRS, so it recognises the install-source clone from any subdirectory of it. Resolving a
+# toplevel here would just normalize that case away before the guard ever saw it.
 # `|| true` is load-bearing, twice over. Currency is housekeeping, never a gate: an unreachable
 # remote, a refused update, or a missing install must leave the sweep successful. And these fenced
 # blocks are executed by an AGENT — a block whose LAST command exits non-zero reads as a failed
