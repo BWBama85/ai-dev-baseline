@@ -406,6 +406,21 @@ run_health "$(hj '' '')" "$SHA" -1; eq "$RC_" 2 "a negative workflow count is an
 run_health "$(hj '' '')" "$SHA";    eq "$RC_" 2 "too few args is an ERROR"; has "$OUT" "exactly 2" "arity error states the arity"
 run_health "$(hj '' '')" "$SHA" 1 EXTRA; eq "$RC_" 2 "extra args are an ERROR"
 
+# SHA comparison is case-insensitive. GitHub returns lowercase and the workflow sources the
+# expected sha from the same API, so both sides match today — but a caller that got the sha
+# elsewhere (an operator, or #73's auto-cut driver) must not be told `indeterminate` by nothing
+# but letter case. (Self-review find.)
+UPPER_SHA="$(printf '%s' "$SHA" | tr 'a-f' 'A-F')"
+eq "$(health "$(hj "$(ck ci "$SHA" completed success)" '')" "$UPPER_SHA")" green \
+   "an UPPERCASE expected sha still matches a lowercase check sha"
+eq "$(health "$(hj "$(ck ci "$UPPER_SHA" completed success)" '')" "$SHA")" green \
+   "...and the reverse (case never fabricates stale evidence)"
+
+# A check-run with NO head_sha cannot be attributed to this commit, so it is stale evidence, not
+# a silent drop — dropping it could leave zero checks and read as `no-ci`, inventing a pass.
+eq "$(health "$(printf '{"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}],"statuses":[]}')")" \
+   indeterminate "a check-run with no head_sha is stale evidence, never green"
+
 # Determinism: a pure function of its inputs, so /roadmap's "same tracker => same emit" holds.
 fx_h="$(hj "$(ck a "$SHA" completed success),$(ck b "$SHA" completed failure)" "$(st vercel success)")"
 eq "$(health "$fx_h")$(health "$fx_h")" "not-greennot-green" "branch-health is deterministic"
@@ -546,6 +561,13 @@ done
 # (Found by the e2e fail-injection case, which the first implementation did not survive.)
 has "$readiness_block" '"$WF_JSON" | jq' \
   "the active-workflow count is parsed from the captured read, not piped from gh"
+# Every LIST read here must paginate, for the reason #79 established. It matters most on the
+# status endpoint, which pages at 30 by default: a truncated health read that loses the one red
+# status is a FALSE GREEN — the most dangerous direction this predicate can be wrong in.
+has "$readiness_block" 'commits/$HEAD_SHA/status?per_page=100' \
+  "the commit-status read is paginated (a dropped failing status would be a false green)"
+has "$readiness_block" 'check-runs?per_page=100' \
+  "the check-runs read is paginated too"
 has "$readiness_block" '"$HEALTH"' \
   "the resolved health is passed to release-ready (not dropped on the floor)"
 

@@ -94,7 +94,7 @@ case "$sub" in
       */check-runs*)
         fail_if checkruns
         emit "$F/check-runs.json" ;;
-      */commits/*/status)
+      */commits/*/status*)
         fail_if commitstatus
         emit "$F/commit-status.json" ;;
       */actions/workflows*)

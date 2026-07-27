@@ -220,8 +220,15 @@ cmd_branch_health() {
     # A check attached to a different commit is evidence about the WRONG build. Count it, and let
     # it force `indeterminate` below — dropping it silently could leave zero checks and read as
     # no-ci, inventing a pass out of a stale read.
-    | ([$runs[] | select((.head_sha // "") != $sha)] | length) as $wrongsha
-    | [$runs[] | select((.head_sha // "") == $sha)] as $mine
+    # Compare SHAs case-INSENSITIVELY. GitHub returns them lowercase and the workflow sources the
+    # expected one from the same API, so today both sides always match — but a caller that
+    # obtained the SHA elsewhere (an operator, or the auto-cut driver in #73) would otherwise get
+    # a confident `indeterminate` from nothing but letter case. Fail-closed, yet still wrong.
+    # NOTE: no apostrophe anywhere in this jq program — it is a single-quoted shell string, and
+    # one stray apostrophe closes it and turns the whole file into a syntax error.
+    | ($sha | ascii_downcase) as $want
+    | ([$runs[] | select((.head_sha // "" | ascii_downcase) != $want)] | length) as $wrongsha
+    | [$runs[] | select((.head_sha // "" | ascii_downcase) == $want)] as $mine
     # Anything not yet `completed`, or completed with no conclusion, is still unknown.
     | ([$mine[] | select((.status // "") != "completed" or (.conclusion // null) == null)]) as $pending
     | ([$sts[]  | select((.state  // "") == "pending")]) as $stpending

@@ -329,7 +329,11 @@ if [ "$ARMED" -eq 1 ] && { { [ "$LABEL_EXISTS" -eq 1 ] && [ "$M_BLOCKERS" -eq 0 
   # provider goes unread and a red build reads as green.
   CHECKS_JSON="$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?per_page=100")" \
     || { echo "ERROR: could not read check runs for $HEAD_SHA — hard stop"; exit 1; }
-  STATUS_JSON="$(gh api "repos/$REPO/commits/$HEAD_SHA/status")" \
+  # Paginated for the same reason every other list read here is (#79): the status endpoint pages
+  # at 30 by default, and a repo with many contexts would silently drop the tail — where a FAILING
+  # status could sit. A truncated health read that loses the one red check is a false green, which
+  # is the single most dangerous direction this predicate can be wrong in.
+  STATUS_JSON="$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status?per_page=100")" \
     || { echo "ERROR: could not read commit status for $HEAD_SHA — hard stop"; exit 1; }
   # Active workflow definitions are the ONLY discriminator between "no CI exists" (skip, per #24)
   # and "CI exists but has not reported here" (fail closed). An empty run list means both.
@@ -345,7 +349,7 @@ if [ "$ARMED" -eq 1 ] && { { [ "$LABEL_EXISTS" -eq 1 ] && [ "$M_BLOCKERS" -eq 0 
   # before handing it over; `jq -s add` is what merges them.
   HEALTH_IN="$(jq -n \
       --argjson runs "$(printf '%s' "$CHECKS_JSON" | jq -s '[.[].check_runs // []] | add // []')" \
-      --argjson sts  "$(printf '%s' "$STATUS_JSON" | jq '.statuses // []')" \
+      --argjson sts  "$(printf '%s' "$STATUS_JSON" | jq -s '[.[].statuses // []] | add // []')" \
       '{check_runs: $runs, statuses: $sts}')" \
     || { echo "ERROR: could not assemble the health read — hard stop"; exit 1; }
   HEALTH_OUT="$(printf '%s' "$HEALTH_IN" | bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" branch-health "$HEAD_SHA" "$WF_COUNT")" \
