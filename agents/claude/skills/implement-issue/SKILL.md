@@ -309,8 +309,10 @@ bash "$HOME/.claude/scripts/lib/role-dispatch.sh" invoke gap_analysis \
   < .claude/state/gap-prompt.txt > .claude/state/gaps.md 2> .claude/state/gaps.err
 
 # 4. Release the lock the moment the call TERMINATES — success, failure, or backstop alike.
-#    Holding it past a failed pass would preserve a dead run's artifacts forever; the retry
-#    below re-takes it.
+#    Holding it past a failed pass would preserve a dead run's artifacts forever. The retry
+#    below re-runs THIS WHOLE BLOCK, so it re-takes the lock at step 2; there is no separate
+#    re-take to remember. A run killed between 2 and 4 leaves the lock behind — deliberately
+#    fail-safe (a stray lock only preserves artifacts), and preflight clears it next run.
 rm -f .claude/state/gap-analysis.lock
 ```
 

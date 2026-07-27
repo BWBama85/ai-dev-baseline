@@ -94,10 +94,24 @@ branch and becomes eligible. Sweeping first could never delete the branch you we
 printed in full in step 6 regardless of how terse the rest of the report is.
 
 ```bash
+# brew-installed tools are routinely off PATH in a non-interactive shell. Without this the `gh`
+# probe below silently fails, no PR evidence is ever fetched, and every squash-merged branch
+# classifies `unmerged` — reinstating #106 inside the fix for #106, with no note to show for it.
+command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
+
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 DEFAULT="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+# The local fallback matters: on a `master`-default repo with no origin/HEAD symref, defaulting
+# straight to `main` names a branch that does not exist, so BASE resolves to nothing and EVERY
+# branch reports UNVERIFIED. (Mirrors adb_default_branch, which a skill's markdown cannot source.)
+if [ -z "$DEFAULT" ]; then
+  for b in main master; do
+    git show-ref --verify --quiet "refs/heads/$b" && DEFAULT="$b" && break
+  done
+fi
 [ -z "$DEFAULT" ] && DEFAULT=main
 CURRENT="$(git rev-parse --abbrev-ref HEAD)"
+NL="$(printf '\n')"
 # Every accumulator is initialized HERE, not at the step that fills it: a scope that skips a step
 # (`local` never runs step 4) must still leave step 6 a defined, empty variable to report from.
 NOTES=""; DELETED_LOCAL=""; DELETED_REMOTE=""; CLEARED=""
@@ -106,17 +120,22 @@ git fetch --prune origin --quiet 2>/dev/null \
 "
 ```
 
-Return to a clean, current default branch — **guarded on a clean tree** so we never switch or
-pull over uncommitted work. On a dirty tree, skip the return and still sweep against the current
-default:
+Return to a clean, current default branch — **guarded on the clone's own safety state**, so we
+never switch or pull over work in progress. A clean `git status` is *not* that guard: a rebase
+between steps, a `git bisect`, or an interrupted cherry-pick all leave the tree clean, and
+switching away from one corrupts it. On anything unsafe, skip the return and sweep in place:
 
 ```bash
-if [ -n "$(git status --porcelain)" ]; then
-  NOTES="${NOTES}NOTE: working tree dirty — staying on '$CURRENT'; not returning to $DEFAULT.
+CSTATE="$({{CLEANUP_LIB}} clone-state "$ROOT" "$DEFAULT")" || CSTATE=dirty
+if [ "$CSTATE" != local-ok ] && [ "$CSTATE" != not-default ]; then
+  NOTES="${NOTES}NOTE: clone is '$CSTATE' — staying on '$CURRENT'; not returning to $DEFAULT.
 "
 else
   [ "$CURRENT" = "$DEFAULT" ] || git switch "$DEFAULT" --quiet
-  git pull --ff-only origin "$DEFAULT" --quiet 2>/dev/null \
+  # `merge --ff-only` against the ref the fetch above already retrieved, NOT `pull` — a pull is a
+  # second network round trip for refs we hold, and it can move origin/$DEFAULT *after* the fetch
+  # that BASE below is reasoned about.
+  git merge --ff-only "origin/$DEFAULT" --quiet 2>/dev/null \
     || NOTES="${NOTES}NOTE: could not fast-forward $DEFAULT (diverged?) — sweeping against local $DEFAULT.
 "
   CURRENT="$(git rev-parse --abbrev-ref HEAD)"   # now the default branch
@@ -150,6 +169,15 @@ whose query *fails* is reported, never silently downgraded to "not merged".
 HAVE_GH=0
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 \
    && git remote get-url origin >/dev/null 2>&1; then HAVE_GH=1; fi
+
+# One live PR read, in one place. Prints open|closed|merged|unknown; anything unreadable is
+# `unknown`, which every state-verdict arm fails closed on. `ascii_downcase` inside --jq uses the
+# jq already running in gh rather than piping through a second process.
+pr_state() {
+  local s=""
+  [ "$HAVE_GH" -eq 1 ] && s="$(gh pr view "$1" --json state --jq '.state | ascii_downcase' 2>/dev/null)"
+  printf '%s\n' "${s:-unknown}"
+}
 ```
 
 ### 3. Classify and delete local branches (scope `local` or `all`)
@@ -159,16 +187,23 @@ One fresh query per candidate, then the library decides. `--limit` is not decora
 end and read as unmerged.
 
 ```bash
-DELETED_LOCAL=""
 while IFS= read -r b; do
   [ -n "$b" ] || continue
-  if printf '%s\n' "$WORKTREES" | grep -Fxq "$b"; then
-    NOTES="${NOTES}SKIPPED $b — checked out in another worktree
-"; continue
-  fi
+  # Builtin membership test — `$WORKTREES` is a small static string, and piping it through grep
+  # once per candidate spends two processes per branch to answer a question the shell can.
+  case "$NL$WORKTREES$NL" in
+    *"$NL$b$NL"*)
+      NOTES="${NOTES}SKIPPED $b — checked out in another worktree
+"; continue ;;
+  esac
 
+  # Spend a network round trip ONLY on a branch whose answer needs one. A branch already
+  # contained in the base is settled by local ancestry, and this is the common case right after
+  # a merge — querying it would cost one API call per branch to learn nothing. This is a COST
+  # guard, never a decision: the library re-runs the same ancestry test and remains the only
+  # thing that produces a verdict, so a wrong guess here can only waste a call, never delete.
   PRJSON=""
-  if [ "$HAVE_GH" -eq 1 ]; then
+  if [ "$HAVE_GH" -eq 1 ] && ! git merge-base --is-ancestor "$b" "$BASE" 2>/dev/null; then
     if ! PRJSON="$(gh pr list --head "$b" --state merged --limit 20 \
                      --json number,headRefOid,mergeCommit 2>/dev/null)"; then
       NOTES="${NOTES}UNVERIFIED $b — the merged-PR query failed; preserved
@@ -181,9 +216,11 @@ while IFS= read -r b; do
     NOTES="${NOTES}UNVERIFIED $b — could not be classified; preserved
 "; continue
   fi
-  VERDICT="$(printf '%s\n' "$V" | sed -n 1p)"
-  TIP="$(printf '%s\n' "$V" | sed -n 2p)"
-  DETAIL="$(printf '%s\n' "$V" | sed -n 3p)"
+  # Three `read`s off a heredoc: no subshell, no process. Three `printf | sed -n Np` pipelines
+  # would spend six processes per candidate to slice a string already in hand.
+  { IFS= read -r VERDICT; IFS= read -r TIP; IFS= read -r DETAIL || DETAIL=""; } <<EOF2
+$V
+EOF2
 
   case "$VERDICT" in
     merged-ff)
@@ -223,9 +260,20 @@ what keeps command-safety gating from blocking the sweep — there is never a va
 
 ### 4. Remote branches (scope `remote` or `all`)
 
-The remote half needs no PR evidence: GitHub's `delete_branch_on_merge` already removes
-squash-merged remote branches server-side, so what is left here really is
-ancestor-merged. Enumerate, **show the list and get one confirmation**, then delete by name.
+The remote half still enumerates with `--merged` alone. That rests on an **assumption, not a
+fact**: GitHub's `delete_branch_on_merge` removes squash-merged remote branches server-side, so
+what survives on the remote really is ancestor-merged. On a repo with that setting **off**, this
+half stays as blind to a squash merge as the local half was before #106 — so say so rather than
+report a clean sweep. Enumerate, **show the list and get one confirmation**, then delete by name.
+
+```bash
+if [ "$HAVE_GH" -eq 1 ] \
+   && [ "$(gh api 'repos/{owner}/{repo}' --jq '.delete_branch_on_merge' 2>/dev/null)" = "false" ]; then
+  NOTES="${NOTES}NOTE: delete_branch_on_merge is OFF — squash-merged remote branches are not
+  detected here (only ancestor-merged ones are). See baseline issue #56.
+"
+fi
+```
 
 ```bash
 # `grep '^origin/'` drops the bare `origin` short form of the origin/HEAD symref (which --format
@@ -263,40 +311,44 @@ eat a file some future skill depends on.
 
 ```bash
 STATE="{{STATE_DIR}}"
-CLEARED=""
 TABC="$(printf '\t')"
 SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"
 
-# The gap-analysis lock, if present, means a gap dispatch is writing artifacts RIGHT NOW.
+# The gap-analysis lock, if present, means a gap dispatch is writing artifacts RIGHT NOW. Read it
+# from the SCAN, not from a second hardcoded path: the library already recognises the filename,
+# and a rename that updated only one of the two spellings would silently set LOCK=0 and delete a
+# live dispatch's findings — the exact failure the lock exists to prevent.
 LOCK=0
-[ -f "$STATE/gap-analysis.lock" ] && LOCK=1
+printf '%s\n' "$SCAN" | grep -q "^lock${TABC}" && LOCK=1
 ```
 
 **Markers first** — the gap artifacts' verdict depends on whether a run is live, and an
 `/implement-issue` run is exactly what a marker describes.
 
 ```bash
-RUN=none; SAW_MARKER=0
+RUN=none
 while IFS="$TABC" read -r kind path key; do
   [ "$kind" = marker ] || continue
-  SAW_MARKER=1
+  # Seed on FIRST sight: a marker exists, so this is a finished run until some marker says keep.
+  # (A separate "did we see one" flag plus a trailing fixup is one fact tracked twice — and the
+  # fixup is a compound test that leaves the whole block on a non-zero status.)
+  [ "$RUN" = none ] && RUN=stale
 
-  # An OPEN PR outranks branch absence: the branch may have been tidied while the run is live.
-  PRSTATE=none
-  URL="$(jq -r '.prUrl // empty' "$path" 2>/dev/null || true)"
-  if [ -n "$URL" ]; then
-    PRSTATE=unknown
-    if [ "$HAVE_GH" -eq 1 ]; then
-      S="$(gh pr view "$URL" --json state --jq '.state' 2>/dev/null | tr 'A-Z' 'a-z')"
-      [ -n "$S" ] && PRSTATE="$S"
-    fi
-  fi
-
+  # Cheap LOCAL facts first. `state-verdict marker` returns keep whenever either ref survives, so
+  # for a live branch — and always for an unreadable marker — the PR read below cannot change the
+  # answer. Ordering it after the refs makes that round trip conditional instead of unconditional.
   if [ "$key" = "-" ]; then
     LREF=unknown; RREF=unknown          # unreadable marker -> fails closed to keep
   else
     LREF=0; git show-ref --verify --quiet "refs/heads/$key" && LREF=1
     RREF=0; git show-ref --verify --quiet "refs/remotes/origin/$key" && RREF=1
+  fi
+
+  # An OPEN PR outranks branch absence: the branch may have been tidied while the run is live.
+  PRSTATE=none
+  if [ "$LREF" = 0 ] && [ "$RREF" = 0 ]; then
+    URL="$(jq -r '.prUrl // empty' "$path" 2>/dev/null || true)"
+    [ -n "$URL" ] && PRSTATE="$(pr_state "$URL")"
   fi
 
   if ! MV="$({{CLEANUP_LIB}} state-verdict marker "$PRSTATE" "$LREF" "$RREF")"; then
@@ -306,8 +358,9 @@ while IFS="$TABC" read -r kind path key; do
   [ "$MV" = keep ] && RUN=keep
   if [ "$MV" = stale ]; then
     # Re-read at the moment of deletion: a marker atomically replaced since the scan belongs to
-    # a DIFFERENT run, and removing it would disarm that run's continuation gate.
-    NOW="$(jq -r '.branch // empty' "$path" 2>/dev/null || true)"
+    # a DIFFERENT run, and removing it would disarm that run's continuation gate. Through the
+    # library, so this read and the one that produced "$key" can never be two different reads.
+    NOW="$({{CLEANUP_LIB}} marker-branch "$path")"
     if [ "${NOW:--}" = "$key" ] && rm -f "$path"; then
       CLEARED="${CLEARED}${path##*/}
 "
@@ -319,7 +372,6 @@ while IFS="$TABC" read -r kind path key; do
 done <<EOF
 $SCAN
 EOF
-[ "$RUN" = none ] && [ "$SAW_MARKER" -eq 1 ] && RUN=stale
 ```
 
 **Then gap artifacts and thread caches.**
@@ -335,12 +387,7 @@ while IFS="$TABC" read -r kind path key; do
 "
       ;;
     threads)
-      PRSTATE=unknown
-      if [ "$HAVE_GH" -eq 1 ]; then
-        S="$(gh pr view "$key" --json state --jq '.state' 2>/dev/null | tr 'A-Z' 'a-z')"
-        [ -n "$S" ] && PRSTATE="$S"
-      fi
-      TV="$({{CLEANUP_LIB}} state-verdict threads "$PRSTATE")" || continue
+      TV="$({{CLEANUP_LIB}} state-verdict threads "$(pr_state "$key")")" || continue
       [ "$TV" = stale ] || continue
       rm -f "$path" && CLEARED="${CLEARED}${path##*/}
 "
@@ -373,11 +420,13 @@ state line. Categories with nothing in them cannot appear — `report` builds li
 so there is no empty section to suppress.
 
 ```bash
+emit() { printf '%s\n' "$2" | while IFS= read -r x; do [ -n "$x" ] && printf '%s\t%s\n' "$1" "$x"; done; }
+
 [ -n "$NOTES" ] && printf '%s' "$NOTES"
 {
-  printf '%s\n' "$DELETED_LOCAL"  | while IFS= read -r x; do [ -n "$x" ] && printf 'Deleted (local)\t%s\n'  "$x"; done
-  printf '%s\n' "$DELETED_REMOTE" | while IFS= read -r x; do [ -n "$x" ] && printf 'Deleted (remote)\t%s\n' "$x"; done
-  printf '%s\n' "$CLEARED"        | while IFS= read -r x; do [ -n "$x" ] && printf 'Cleared state\t%s\n'    "$x"; done
+  emit 'Deleted (local)'  "$DELETED_LOCAL"
+  emit 'Deleted (remote)' "$DELETED_REMOTE"
+  emit 'Cleared state'    "$CLEARED"
 } | {{CLEANUP_LIB}} report --tail "$({{CLEANUP_LIB}} state-line "$ROOT" "$DEFAULT")"
 ```
 

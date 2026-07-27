@@ -74,10 +74,10 @@ check_make_repo_pair "$R" "$work/remote.git" || { bad "fixture init failed"; che
   git push -q origin main
 ) || { bad "fixture build failed"; check_summary "check-cleanup"; }
 
-rg() { git -C "$R" "$@"; }
-SQ_TIP="$(rg rev-parse feat/squash)"
-SQ_MERGE="$(rg rev-parse main)"
-OPEN_TIP="$(rg rev-parse feat/open)"
+fx() { check_git "$R" "$@"; }
+SQ_TIP="$(fx rev-parse feat/squash)"
+SQ_MERGE="$(fx rev-parse main)"
+OPEN_TIP="$(fx rev-parse feat/open)"
 
 # verdict <branch> <json> — run branch-verdict in the fixture, echo "<line1>|<line3>".
 verdict() {
@@ -93,7 +93,7 @@ prjson() { printf '[{"number":%s,"headRefOid":"%s","mergeCommit":{"oid":"%s"}}]'
 
 # --- 1a. the three merge shapes -------------------------------------------------------------
 eq "$(verdict feat/ff '[]')" "merged-ff|" "1a fast-forward merge is merged-ff without any PR evidence"
-eq "$(vtip feat/ff '[]')" "$(rg rev-parse feat/ff)" "1a line 2 is the tip the verdict was computed from"
+eq "$(vtip feat/ff '[]')" "$(fx rev-parse feat/ff)" "1a line 2 is the tip the verdict was computed from"
 
 # THE #106 REGRESSION: before the fix this branch was invisible to every detector the skill had.
 out="$(verdict feat/squash "$(prjson 7 "$SQ_TIP" "$SQ_MERGE")")"
@@ -106,21 +106,21 @@ eq "$(verdict feat/open '[]')" "unmerged|" "1a a genuinely unmerged branch is un
 # #106 asks only that mergeCommit.oid be contained in the default branch. That alone still
 # matches a branch which was squash-merged and THEN had new work added — deleting it would
 # destroy commits that never landed. `headRefOid == tip` is what refuses it.
-rg checkout -q feat/squash
-rg commit -q --allow-empty -m "new local work after the merge"
-rg checkout -q main
+fx checkout -q feat/squash
+fx commit -q --allow-empty -m "new local work after the merge"
+fx checkout -q main
 eq "$(verdict feat/squash "$(prjson 7 "$SQ_TIP" "$SQ_MERGE")")" "unmerged|" \
    "1b a branch that gained commits AFTER its squash merge is NOT deletable (headRefOid guard)"
 # Restore the fixture for the remaining cases, and prove the refusal was about the extra commit
 # and nothing else — otherwise a verdict that always said `unmerged` would pass the case above.
-rg update-ref refs/heads/feat/squash "$SQ_TIP"
+fx update-ref refs/heads/feat/squash "$SQ_TIP"
 eq "$(verdict feat/squash "$(prjson 7 "$SQ_TIP" "$SQ_MERGE")" | cut -d'|' -f1)" "merged-pr" \
    "1b …and is deletable again once the extra commit is gone"
 
 # --- 1c. evidence that does not prove anything ----------------------------------------------
 # A merged PR whose merge commit is NOT on this default branch (merged into another base, or a
 # fork's). Contained-in-base is what makes the evidence local and current.
-STRAY="$(rg rev-parse feat/open)"
+STRAY="$(fx rev-parse feat/open)"
 eq "$(verdict feat/squash "$(prjson 7 "$SQ_TIP" "$STRAY")")" "unmerged|" \
    "1c a merge commit NOT contained in the default branch proves nothing"
 # A PR for a DIFFERENT head (the [gone]-without-merge shape: someone deleted the remote branch).
@@ -154,11 +154,11 @@ no $? "1d an option-shaped branch name is refused before it reaches git"
 # A ref name using the punctuation git DOES allow (git forbids spaces, so the awkward-but-legal
 # set is `.` `-` `_` `+` and multiple slashes) must survive quoting intact.
 ODD='feat/odd.name-with_chars+v2/deep'
-rg checkout -q -b "$ODD"
-rg commit -q --allow-empty -m odd
-rg checkout -q main
-rg merge -q --no-ff "$ODD" -m "merge odd"
-rg push -q origin main   # the verdict classifies against origin/main, not the local tip
+fx checkout -q -b "$ODD"
+fx commit -q --allow-empty -m odd
+fx checkout -q main
+fx merge -q --no-ff "$ODD" -m "merge odd"
+fx push -q origin main   # the verdict classifies against origin/main, not the local tip
 eq "$(verdict "$ODD" '[]')" "merged-ff|" "1d an unusual but valid ref name is handled verbatim"
 
 # ============================ 2. state-verdict: liveness precedence ===========================
@@ -196,7 +196,26 @@ eq "$(sv gaps 0 stale)" "stale" "2c a finished run's gap artifacts are swept"
 eq "$(sv gaps 0 none)"  "stale" "2c no lock and no marker means nothing owns them"
 sv gaps 2 none >/dev/null 2>&1;  no $? "2c a non-boolean lock is an error"
 sv gaps 0 bogus >/dev/null 2>&1; no $? "2c an unrecognised run word is an error"
+# Every argument is validated BEFORE any short-circuit. Without that, the lock arm returns `keep`
+# and exits 0 for `gaps 1 <typo>` — a workflow typo reading as a considered verdict.
+sv gaps 1 bogus >/dev/null 2>&1; no $? "2c …even when the lock would short-circuit the decision"
 sv nosuchkind 0 >/dev/null 2>&1; no $? "2c an unknown kind is an error"
+
+# --- 2d. marker-branch: one reader, used by both the scan and the delete-time re-read ---------
+printf '{"branch":"issue-5-x","phase":"pushed"}' > "$work/m-ok.json"
+printf 'not json'                                > "$work/m-bad.json"
+printf '{"phase":"pushed"}'                      > "$work/m-nobranch.json"
+eq "$(bash "$CL" marker-branch "$work/m-ok.json")"       "issue-5-x" "2d marker-branch reads the recorded branch"
+eq "$(bash "$CL" marker-branch "$work/m-bad.json")"      ""          "2d an unreadable marker yields empty, not an error"
+eq "$(bash "$CL" marker-branch "$work/m-nobranch.json")" ""          "2d a marker with no branch key yields empty"
+eq "$(bash "$CL" marker-branch "$work/nope.json")"       ""          "2d a missing marker yields empty"
+bash "$CL" marker-branch >/dev/null 2>&1; no $? "2d marker-branch requires a path"
+
+# --- 2e. clone-state: the switch/pull guard ---------------------------------------------------
+# A clean `git status` is NOT proof it is safe to switch — this is what step 1 branches on.
+eq "$(bash "$CL" clone-state "$R" main)" "local-ok" "2e a clean clone on the default branch is safe to switch/pull"
+bash "$CL" clone-state "$R" >/dev/null 2>&1;         no $? "2e clone-state requires both arguments"
+eq "$(bash "$CL" clone-state "$work" main)" "not-a-repo" "2e a non-repo is classified, not crashed on"
 
 # ============================ 3. state-scan: the delete ALLOWLIST =============================
 # The safety property is the asymmetry: everything recognised is classified, everything else is
@@ -275,7 +294,7 @@ rep --bogus >/dev/null 2>&1; no $? "4 an unknown report option is an error"
 sl() { bash "$CL" state-line "$R" main 2>/dev/null; }
 # Section 1 merged into main without pushing, so bring the fixture to the clean/in-sync state
 # this first case is actually about.
-rg push -q origin main
+fx push -q origin main
 has "$(sl)" "clean, in sync" "5 a clean, synced default branch says so"
 ( cd "$R" && git checkout -q feat/open )
 has "$(sl)" "still on feat/open" "5 a run that never returned to the default branch says which branch it is on"
@@ -310,8 +329,17 @@ else
   hasnt "$wfcode" 'git branch -D' "6 no fenced command in the workflow escalates to git branch -D"
   has "$wfcode" 'git update-ref -d' "6 …and the expected-OID delete really is in an executable block"
   has "$wf" '--limit 20' "6 the merged-PR query is paginated explicitly, so evidence cannot fall off page 1"
-  has "$wf" 'gap-analysis.lock' "6 the workflow honors the gap-analysis in-flight lock"
+  # The lock's FILENAME is spelled in the library (state-scan) and in /implement-issue, never a
+  # third time here: the workflow reads the `lock` kind out of the scan. A second hardcoded path
+  # would set LOCK=0 after a rename and delete a live dispatch's findings.
+  has "$wf" 'grep -q "^lock' "6 the workflow reads the in-flight lock from the scan, not a second hardcoded path"
+  hasnt "$wfcode" '-f "$STATE/gap-analysis.lock"' "6 …and does not re-spell the lock filename"
   has "$wf" 'worktree list' "6 branches checked out in another worktree are excluded during enumeration"
+  has "$wf" '{{CLEANUP_LIB}} marker-branch' "6 the delete-time marker re-read goes through the library's one reader"
+  has "$wf" '{{CLEANUP_LIB}} clone-state' \
+     "6 the switch/pull guard uses the clone classifier, not a porcelain-only test (rebase/bisect leave it clean)"
+  hasnt "$wfcode" 'git pull --ff-only' \
+     "6 the fast-forward consumes the fetch already done, rather than a second network round trip"
 fi
 
 # The lock is only a contract if BOTH sides implement it: /implement-issue must take and release

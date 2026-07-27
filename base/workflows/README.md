@@ -77,6 +77,14 @@ or `/` maps cleanly. All three columns are implemented (`scripts/build.sh`'s
 | `{{CURRENT_AGENT}}`     | the agent token this skill is rendered for          | `claude`                                            | `codex`                                            | `gemini`                                           |
 | `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        | `update_plan`                                      | `Create`                                           |
 
+**A workflow that writes into `{{STATE_DIR}}` owes `/cleanup` a classification.** `/cleanup`
+sweeps run-state whose PR or run has resolved, and it decides what a file *is* from an allowlist
+in `scripts/lib/cleanup-lib.sh`'s `state-scan`. Anything unrecognised is `other` and is **never**
+deleted — safe, but permanent: a new ephemeral state file that nobody registers becomes exactly
+the accumulating debris #84 was filed about. So when you add one, add an arm for it: give it a
+kind and the key its liveness is read from (a PR number, a branch), or leave it unclassified
+*deliberately* if it is durable history rather than run debris (`new-release.json` is the latter).
+
 Examples: `{{STATE_DIR}}/foo.json` and `{{STATE_DIR}}/` both render cleanly, and a subcommand
 goes after the prefix, e.g. `{{GATE_RUNNER}} run` or `{{ROLE_DISPATCH}} resolve review`. The
 shared runners (`scripts/lib/project-gates.sh`, `scripts/lib/role-dispatch.sh`) install under

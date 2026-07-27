@@ -33,8 +33,10 @@
 #   cleanup-lib.sh state-verdict  threads <pr-state>
 #   cleanup-lib.sh state-verdict  marker  <pr-state> <local-ref> <remote-ref>
 #   cleanup-lib.sh state-verdict  gaps    <lock 0|1> <run keep|stale|none>
+#   cleanup-lib.sh marker-branch  <marker-path>
 #   cleanup-lib.sh report [--tail <line>]                      # TSV "<category>\t<item>" on stdin
 #   cleanup-lib.sh state-line     <root> <default-branch>
+#   cleanup-lib.sh clone-state    <root> <default-branch>
 #   cleanup-lib.sh -h | --help
 #
 # `branch-verdict` stdin is the output of:
@@ -267,6 +269,19 @@ _adb_cl_marker_branch() {
   jq -r '.branch // empty' "$1" 2>/dev/null || return 0
 }
 
+# --- marker-branch ------------------------------------------------------------------------------
+# The same read, exposed as a subcommand. The sweep must re-read a marker's branch at the MOMENT
+# it deletes it (a marker atomically replaced since the scan belongs to a different run), and that
+# re-read has to be byte-identical to the one that produced the scan key it is compared against —
+# otherwise hardening or renaming the field here silently makes every comparison fail, every
+# marker report "it changed during the sweep", and the sweep a permanent no-op. One reader, one
+# home; the caller never spells the jq itself.
+cmd_marker_branch() {
+  [ "$#" -eq 1 ] || die "marker-branch: needs exactly 1 arg: <marker-path>"
+  _adb_cl_marker_branch "$1"
+  printf '\n'
+}
+
 # --- state-verdict -----------------------------------------------------------------------------
 # Decide whether ONE state file is `stale` (the sweep may delete it) or `keep`. Exit 0 with a
 # verdict; 2 on an unrecognised kind or signal.
@@ -299,9 +314,15 @@ cmd_state_verdict() {
       ;;
     marker)
       [ "$#" -eq 3 ] || die "state-verdict marker: needs exactly 3 args: <pr-state open|closed|merged|none|unknown> <local-ref 0|1|unknown> <remote-ref 0|1|unknown>"
-      _adb_cl_ck_pr "$1" marker
-      _adb_cl_ck_ref "$2" "<local-ref>"
-      _adb_cl_ck_ref "$3" "<remote-ref>"
+      # EVERY argument is validated BEFORE any of them is acted on. Validating inside the
+      # deciding `case` instead lets a short-circuit skip the check for an argument it did not
+      # need — so a typo in the workflow reads as a considered verdict rather than an error.
+      case "$1" in open|closed|merged|none|unknown) : ;;
+        *) die "state-verdict marker: <pr-state> must be open|closed|merged|none|unknown (got '$1')" ;; esac
+      case "$2" in 0|1|unknown) : ;;
+        *) die "state-verdict marker: <local-ref> must be 0, 1 or unknown (got '$2')" ;; esac
+      case "$3" in 0|1|unknown) : ;;
+        *) die "state-verdict marker: <remote-ref> must be 0, 1 or unknown (got '$3')" ;; esac
       # An OPEN PR OUTRANKS branch absence, and that precedence is load-bearing rather than
       # tidy: after `gh pr create` the operator may delete the local branch (or /cleanup itself
       # may, in an earlier run) while the PR is still open and the run still in flight. Deciding
@@ -319,7 +340,11 @@ cmd_state_verdict() {
       ;;
     gaps)
       [ "$#" -eq 2 ] || die "state-verdict gaps: needs exactly 2 args: <lock 0|1> <run keep|stale|none>"
+      # Both up front, for the reason given under `marker`: the lock short-circuits below, so
+      # validating <run> only where it is read would let `gaps 1 <typo>` print a confident `keep`.
       case "$1" in 0|1) : ;; *) die "state-verdict gaps: <lock> must be 0 or 1 (got '$1')" ;; esac
+      case "$2" in keep|stale|none) : ;;
+        *) die "state-verdict gaps: <run> must be keep|stale|none (got '$2')" ;; esac
       # THE LOCK OUTRANKS EVERYTHING. Gap analysis runs in /implement-issue step 3, BEFORE the
       # branch and the run marker exist (step 5 owns those), so during a live gap pass there is
       # no marker to consult and the artifacts would otherwise read as a finished run's leftovers
@@ -330,25 +355,11 @@ cmd_state_verdict() {
       # all) is a FINISHED or never-branched run — with the lock proving no dispatch is in
       # flight, there is nothing left for them to belong to.
       case "$2" in
-        keep)       printf 'keep\n' ;;
-        stale|none) printf 'stale\n' ;;
-        *) die "state-verdict gaps: <run> must be keep|stale|none (got '$2')" ;;
+        keep) printf 'keep\n' ;;
+        *)    printf 'stale\n' ;;
       esac
       ;;
     *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps)" ;;
-  esac
-}
-
-_adb_cl_ck_pr() {
-  case "$1" in
-    open|closed|merged|none|unknown) return 0 ;;
-    *) die "state-verdict $2: <pr-state> must be open|closed|merged|none|unknown (got '$1')" ;;
-  esac
-}
-_adb_cl_ck_ref() {
-  case "$1" in
-    0|1|unknown) return 0 ;;
-    *) die "state-verdict marker: $2 must be 0, 1 or unknown (got '$1')" ;;
   esac
 }
 
@@ -375,7 +386,6 @@ cmd_report() {
         [ "$#" -ge 2 ] || die "report: --tail needs a value"
         tail_line="$2"; shift
         ;;
-      -h|--help) usage; return 0 ;;
       *) die "report: unknown option '$1'" ;;
     esac
     shift
@@ -410,21 +420,23 @@ cmd_report() {
         ng = 0
         for (j = 1; j <= cnt[c]; j++) {
           it = items[c, j]
-          split("", a)
+          # A non-matching item gets a key unique to its position, so it can never be appended
+          # to and renders verbatim: pre=the item, mid=suf="" makes the 1-member form below the
+          # identity. That is why there is no third "verbatim" state to carry.
           if (split3(it, a)) { k = a["pre"] SUBSEP a["suf"] } else { k = "@" j }
           if (!(k in gseen)) {
             gseen[k] = ++ng
-            if (k ~ /^@/) { gpre[ng] = it;       gsuf[ng] = ""; gmid[ng] = "";        gnum[ng] = 0 }
-            else          { gpre[ng] = a["pre"]; gsuf[ng] = a["suf"]; gmid[ng] = a["mid"]; gnum[ng] = 1 }
+            if (k ~ /^@/) { gpre[ng] = it;       gsuf[ng] = "";       gmid[ng] = "" }
+            else          { gpre[ng] = a["pre"]; gsuf[ng] = a["suf"]; gmid[ng] = a["mid"] }
+            gnum[ng] = 1
           } else {
             g = gseen[k]; gmid[g] = gmid[g] "," a["mid"]; gnum[g]++
           }
         }
         line = ""
         for (g = 1; g <= ng; g++) {
-          if (gnum[g] == 0)      piece = gpre[g]
-          else if (gnum[g] == 1) piece = gpre[g] gmid[g] gsuf[g]
-          else                   piece = gpre[g] "{" gmid[g] "}" gsuf[g]
+          if (gnum[g] == 1) piece = gpre[g] gmid[g] gsuf[g]
+          else              piece = gpre[g] "{" gmid[g] "}" gsuf[g]
           line = line (line == "" ? "" : ", ") piece
         }
         printf "%s: %s\n", c, line
@@ -451,25 +463,51 @@ cmd_report() {
 # comparison. This subcommand only maps its word to a sentence.
 cmd_state_line() {
   [ "$#" -eq 2 ] || die "state-line: needs exactly 2 args: <root> <default-branch>"
-  local root="$1" default="$2" st cur
+  local root="$1" default="$2" st
   [ -n "$default" ] || die "state-line: <default-branch> must not be empty"
   st="$(adb_clone_status "$root" "$default")"
-  cur="$(git -C "$root" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  # `cur` is resolved lazily, inside the only two arms that name it — the common `current` path
+  # should not fork a second git process to build a sentence that never mentions the branch.
   case "$st" in
     current)     printf '%s: clean, in sync with origin/%s\n' "$default" "$default" ;;
     behind)      printf '%s: BEHIND origin/%s — fast-forward before starting work\n' "$default" "$default" ;;
     ahead)       printf '%s: has unpushed commits (never push to the default branch)\n' "$default" ;;
     diverged)    printf '%s: DIVERGED from origin/%s — reconcile manually\n' "$default" "$default" ;;
     no-remote)   printf '%s: no origin/%s to compare against\n' "$default" "$default" ;;
-    dirty)       printf '%s: working tree DIRTY — stayed on %s\n' "$default" "${cur:-the current branch}" ;;
+    dirty)       printf '%s: working tree DIRTY — stayed on %s\n' "$default" "$(_adb_cl_head "$root")" ;;
     in-progress) printf '%s: a merge/rebase/cherry-pick is IN PROGRESS — finish or abort it\n' "$default" ;;
     detached)    printf '%s: HEAD is DETACHED — switch back to %s\n' "$default" "$default" ;;
-    not-default) printf '%s: still on %s, not %s\n' "$default" "${cur:-an unknown branch}" "$default" ;;
+    not-default) printf '%s: still on %s, not %s\n' "$default" "$(_adb_cl_head "$root")" "$default" ;;
     not-a-repo)  printf 'not a git repository: %s\n' "$root" ;;
     # An unrecognised word means adb_clone_status grew a state this mapping has not learned.
     # Print it rather than inventing a reassuring sentence for a condition nobody has classified.
     *)           printf '%s: %s\n' "$default" "${st:-state could not be determined}" ;;
   esac
+}
+
+# --- clone-state --------------------------------------------------------------------------------
+# Print the LOCAL-ONLY safety classification of the clone, one word, exit 0. This is the guard
+# step 1 branches on before it switches branches and fast-forwards.
+#
+# WHY NOT `git status --porcelain`: a clean porcelain is NOT proof that switching is safe.
+# `git rebase` between steps, `git bisect`, an interrupted cherry-pick and a `git am` all leave
+# the tree clean, and switching away from (or pulling over) one of those corrupts an operation
+# the operator is in the middle of. adb_clone_local_state — the same primitive bin/baseline and
+# the SessionStart currency hook refuse on — checks git's own sentinel files for exactly that.
+# Routing the guard through it means step 1 refuses on the same word step 6 later reports,
+# instead of one run classifying its clone two different ways.
+cmd_clone_state() {
+  [ "$#" -eq 2 ] || die "clone-state: needs exactly 2 args: <root> <default-branch>"
+  [ -n "$2" ] || die "clone-state: <default-branch> must not be empty"
+  adb_clone_local_state "$1" "$2"
+}
+
+# Print the checked-out branch name, or a readable stand-in. Only the two state-line arms that
+# actually name the branch call it.
+_adb_cl_head() {
+  local cur
+  cur="$(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  printf '%s' "${cur:-the current branch}"
 }
 
 # --- dispatch ----------------------------------------------------------------------------------
@@ -481,8 +519,10 @@ main() {
     branch-verdict) cmd_branch_verdict "$@" ;;
     state-scan)     cmd_state_scan "$@" ;;
     state-verdict)  cmd_state_verdict "$@" ;;
+    marker-branch)  cmd_marker_branch "$@" ;;
     report)         cmd_report "$@" ;;
     state-line)     cmd_state_line "$@" ;;
+    clone-state)    cmd_clone_state "$@" ;;
     *) printf 'cleanup-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
   esac
 }
