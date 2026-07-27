@@ -370,6 +370,174 @@ eq "$(adb_branch_sync_state "$sbrepo" main)" "diverged" "sync state: diverged"
 git -C "$sbrepo" branch feature-x
 eq "$(adb_branch_sync_state "$sbrepo" feature-x)" "no-remote" "sync state: no-remote"
 
+# --- adb_clone_local_state / adb_clone_status (#36) ---------------------------
+# The no-network half of currency classification, moved out of bin/baseline so the SessionStart
+# hook shares one implementation. What matters is that a clone which will be REFUSED is
+# recognized from local state alone — no fetch, so no remote-tracking refs written and no
+# network cost on a session started from an unsafe clone. Reuses the sync-state fixture above,
+# which currently sits `diverged` with a local-only commit.
+git -C "$sbrepo" reset -q --hard origin/main
+git -C "$sbrepo" checkout -q main
+eq "$(adb_clone_local_state "$sbrepo" main)" "local-ok" "local state: clean + on default → local-ok"
+eq "$(adb_clone_status "$sbrepo" main)" "current" "clone status defers to the sync state when local-ok"
+
+printf 'x\n' > "$sbrepo/dirty.txt"
+eq "$(adb_clone_local_state "$sbrepo" main)" "dirty" "local state: an untracked change is dirty"
+eq "$(adb_clone_status "$sbrepo" main)" "dirty" "clone status short-circuits on dirty"
+rm -f "$sbrepo/dirty.txt"
+
+# Every sentinel git writes for an operation in progress. A clean tree is NOT proof of safety:
+# a rebase between steps and a bisect both leave one, and only some of them detach HEAD.
+sbgit="$(git -C "$sbrepo" rev-parse --absolute-git-dir)"
+for sentinel in rebase-merge/ rebase-apply/ sequencer/ MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD BISECT_LOG; do
+  case "$sentinel" in
+    */) mkdir -p "$sbgit/${sentinel%/}" ;;
+    *)  printf 'ref\n' > "$sbgit/$sentinel" ;;
+  esac
+  eq "$(adb_clone_local_state "$sbrepo" main)" "in-progress" "local state: in-progress ($sentinel)"
+  rm -rf "${sbgit:?}/${sentinel%/}"
+done
+
+git -C "$sbrepo" checkout -q --detach HEAD
+eq "$(adb_clone_local_state "$sbrepo" main)" "detached" "local state: detached HEAD"
+git -C "$sbrepo" checkout -q main
+eq "$(adb_clone_local_state "$sbrepo" feature-x)" "not-default" "local state: on a non-default branch"
+eq "$(adb_clone_local_state "$work" main)" "not-a-repo" "local state: not a git work tree"
+
+# The git dir must be resolved ABSOLUTELY: `rev-parse --git-dir` prints a path relative to the
+# work tree, which would resolve against the CALLER's cwd. Calling from elsewhere must give the
+# same verdict as calling from inside — otherwise every sentinel test silently looks in the
+# wrong directory and in-progress state reads as safe.
+mkdir -p "$sbgit/rebase-merge"
+eq "$( cd "$work" && adb_clone_local_state "$sbrepo" main )" "in-progress" \
+  "local state: in-progress is detected from any cwd"
+rm -rf "$sbgit/rebase-merge"
+
+# --- adb_global_manifest (#36) ------------------------------------------------
+# One spelling of the global manifest path, shared by its writer (install.sh) and every reader
+# (role-dispatch.sh, the SessionStart hook). A reader that spelled it differently — notably one
+# that honored XDG_CONFIG_HOME while the writer did not — would consult a file nobody writes, so
+# its config key would silently do nothing.
+eq "$( HOME=/tmp/fakehome; adb_global_manifest )" "/tmp/fakehome/.config/ai-dev-baseline/agents.toml" \
+  "global manifest: \$HOME/.config/ai-dev-baseline/agents.toml"
+# shellcheck disable=SC2034  # XDG_CONFIG_HOME being unread by adb_global_manifest IS the assertion.
+eq "$( HOME=/tmp/fakehome XDG_CONFIG_HOME=/tmp/decoy; adb_global_manifest )" \
+  "/tmp/fakehome/.config/ai-dev-baseline/agents.toml" \
+  "global manifest: XDG_CONFIG_HOME does not move it (the writer does not honor it either)"
+# The single-source claim, asserted against the actual files rather than trusted: neither the
+# writer nor the other reader may carry its own literal spelling any more. Uses the ok/bad
+# counter family (not req_absent), because THIS file reports through check_summary — a
+# grep-assert failure here would set CHECK_FAIL, which check_summary never reads, and so would
+# never fail the run.
+if grep -q '\.config/ai-dev-baseline' install.sh; then
+  bad "install.sh re-spells the global manifest path instead of calling adb_global_manifest"
+else ok; fi
+if grep -q 'HOME:-/root}/\.config' scripts/lib/role-dispatch.sh; then
+  bad "role-dispatch.sh re-spells the global manifest path instead of calling adb_global_manifest"
+else ok; fi
+
+# --- adb_mtime (#36) ----------------------------------------------------------
+# The two stat flavors are not interchangeable, and the obvious `stat -f %m || stat -c %Y` is a
+# real bug rather than a style nit: on GNU coreutils `-f` is --file-system, so `stat -f %m FILE`
+# reads "%m" as a FILENAME and prints a multi-line filesystem report for FILE — to STDOUT —
+# before failing. The `||` fallback then appends the real mtime, command substitution captures
+# both, and the caller does arithmetic on a multi-line string. That silently disabled the
+# SessionStart rate limit on Linux. Both flavors are exercised here through stubs, since a given
+# CI box only has one.
+mtf="$work/mtime-file"; printf 'x\n' > "$mtf"
+mt="$(adb_mtime "$mtf")"
+case "$mt" in ''|*[!0-9]*) bad "adb_mtime: expected digits for a real file, got [$mt]" ;; *) ok ;; esac
+eq "$(adb_mtime "$work/definitely-not-here")" "" "adb_mtime: missing path → empty"
+eq "$(printf '%s' "$(adb_mtime "$mtf")" | wc -l | tr -d ' ')" "0" "adb_mtime: never multi-line"
+
+statbin="$work/statbin"; mkdir -p "$statbin"
+# A GNU-flavored stat: -c works; -f prints a multi-line report to STDOUT and fails.
+cat > "$statbin/stat" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  -c) printf '1700000000\n' ;;
+  -f) printf 'stat: cannot read file system information\n  File: "x"\n    ID: 1 Namelen: 255\n'; exit 1 ;;
+esac
+SH
+chmod +x "$statbin/stat"
+eq "$( PATH="$statbin:$PATH"; adb_mtime "$mtf" )" "1700000000" "adb_mtime: GNU-flavored stat yields only the mtime"
+# A BSD-flavored stat: -c is rejected outright; -f is the one that works.
+cat > "$statbin/stat" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  -c) printf 'stat: illegal option -- c\n' >&2; exit 1 ;;
+  -f) printf '1700000001\n' ;;
+esac
+SH
+chmod +x "$statbin/stat"
+eq "$( PATH="$statbin:$PATH"; adb_mtime "$mtf" )" "1700000001" "adb_mtime: BSD-flavored stat yields the mtime"
+# A stat that succeeds while printing nonsense must yield NOTHING, not the nonsense — the caller
+# treats empty as "unknown age", which is the safe direction.
+cat > "$statbin/stat" <<'SH'
+#!/usr/bin/env bash
+printf 'not-a-number\n'
+SH
+chmod +x "$statbin/stat"
+eq "$( PATH="$statbin:$PATH"; adb_mtime "$mtf" )" "" "adb_mtime: non-numeric output is rejected, not returned"
+
+# --- adb_install_source / adb_link_into (#36) --------------------------------
+# Shared with the SessionStart hook, which must resolve the SAME clone by the SAME rule.
+isrc="$work/isrc"; mkdir -p "$isrc/agents/claude"
+printf '#!/usr/bin/env bash\n' > "$isrc/install.sh"
+printf 'doc\n' > "$isrc/agents/claude/CLAUDE.md"
+ihome="$work/ihome"; mkdir -p "$ihome/.claude"
+eq "$(adb_install_source "$ihome" 2>/dev/null)" "" "install source: nothing linked → empty"
+adb_install_source "$ihome" >/dev/null 2>&1; no "$?" "install source: returns non-zero when nothing is linked"
+ln -s "$isrc/agents/claude/CLAUDE.md" "$ihome/.claude/CLAUDE.md"
+eq "$(adb_install_source "$ihome")" "$isrc" "install source: resolved from the root-doc symlink"
+# A DANGLING root doc still identifies the clone — repairing that link is the whole point.
+rm -f "$ihome/.claude/CLAUDE.md"
+ln -s "$isrc/agents/claude/CLAUDE-moved.md" "$ihome/.claude/CLAUDE.md"
+eq "$(adb_install_source "$ihome")" "$isrc" "install source: a dangling root doc still resolves"
+# A RELATIVE target is not one of ours (install.sh always records absolute), and must be ignored
+# rather than resolved against whatever the caller's cwd happens to be.
+rm -f "$ihome/.claude/CLAUDE.md"
+ln -s "../relative/CLAUDE.md" "$ihome/.claude/CLAUDE.md"
+adb_install_source "$ihome" >/dev/null 2>&1; no "$?" "install source: a relative target is not ours"
+
+adb_link_into "$ihome/.claude/CLAUDE.md" "$isrc"; no "$?" "link_into: a relative link is not inside src"
+rm -f "$ihome/.claude/CLAUDE.md"
+ln -s "$isrc/agents/claude/CLAUDE.md" "$ihome/.claude/CLAUDE.md"
+adb_link_into "$ihome/.claude/CLAUDE.md" "$isrc"; yes "$?" "link_into: a link into src is ours"
+adb_link_into "$ihome/.claude/CLAUDE.md" "$work/elsewhere"; no "$?" "link_into: a link elsewhere is not ours"
+printf 'real\n' > "$ihome/.claude/realfile"
+adb_link_into "$ihome/.claude/realfile" "$isrc"; no "$?" "link_into: a real file is never ours"
+
+# --- adb_claude_hook_scripts / adb_claude_hook_regex (#36) -------------------
+# One enumeration feeds the manifest AND both settings filters. If they drift, a hook is either
+# linked-but-never-wired or wired-but-never-removed on uninstall.
+eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "3" "hook scripts: three wired hooks"
+has "$(adb_claude_hook_scripts)" "session-currency.sh" "hook scripts: includes the currency hook"
+hasnt "$(adb_claude_hook_scripts)" "statusline.sh" "hook scripts: excludes the non-hook statusline"
+eq "$(adb_claude_hook_regex /home/u)" \
+  '^/home/u/\.claude/scripts/(precommit-gate|implement-issue-gate|session-currency)\.sh$' \
+  "hook regex: anchored to the EXACT installed paths, not a basename"
+# The ownership test must not claim a user's own script that merely shares a filename. A
+# basename-anchored pattern would, and because the filters walk EVERY hook event, uninstall
+# would then delete that entry from an unrelated event such as PreToolUse.
+hre="$(adb_claude_hook_regex /home/u)"
+printf '/custom/precommit-gate.sh\n' | grep -Eq "$hre" \
+  && bad "hook regex must NOT match a user script with the same basename" || ok
+printf '/home/u/.claude/scripts/precommit-gate.sh\n' | grep -Eq "$hre" \
+  && ok || bad "hook regex must match our own installed path"
+# A regex metacharacter in the home path must be escaped, or ownership widens to other paths.
+hre2="$(adb_claude_hook_regex /home/a.b)"
+printf '/home/axb/.claude/scripts/precommit-gate.sh\n' | grep -Eq "$hre2" \
+  && bad "an unescaped '.' in \$HOME widens the ownership match" || ok
+# Every wired hook must also be a manifest entry, or it is never linked into place.
+manifest_dests="$(adb_agent_manifest claude /R /H | cut -f2)"
+while IFS= read -r hs; do
+  [ -n "$hs" ] || continue
+  has "$manifest_dests" "/H/.claude/scripts/$hs" "manifest links the wired hook $hs"
+done <<EOF
+$(adb_claude_hook_scripts)
+EOF
+
 # --- adb_require_gh / adb_repo_slug (#87) ------------------------------------
 # Both are sourced by release-convention.sh AND repo-settings.sh, so a regression here breaks two
 # gh-backed modules at once. The contract that matters: they RETURN non-zero (never `exit`, which

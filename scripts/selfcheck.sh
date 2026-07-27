@@ -3,8 +3,9 @@
 #
 # Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter, workflow-render,
 # gate-detector/gates, common-lib, agent-init, cleanup-enum, repo-settings, baseline,
-# precommit-gate, implement-gate, install-migration, install-guard, fact-drift, practice-index,
-# release-role, and an install→uninstall dry-run into a throwaway HOME.
+# session-currency, precommit-gate, implement-gate, install-migration, install-guard,
+# fact-drift, practice-index, release-role, and an install→uninstall dry-run into a
+# throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 
@@ -186,6 +187,12 @@ step "baseline"
 # must never fast-forward over dirty/ahead/diverged/detached/non-default state).
 if bash scripts/check-baseline.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "session-currency"
+# The SessionStart currency hook (#36) must act ONLY on a genuinely new session, never touch the
+# clone the session is working in, refuse unsafe clone state by name, and always exit 0 — a
+# non-zero SessionStart hook renders an error notice on every start.
+if bash scripts/check-session-currency.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "precommit-gate"
 # The Stop-hook quality gate must FAIL LOUD (never silently no-op) when its own shared
 # library is missing — a broken install is enforcement secretly off (#35).
@@ -245,8 +252,15 @@ HOME="$FAKE" bash install.sh --agent claude --agent codex --agent gemini >/tmp/a
 [ -L "$FAKE/.gemini/config/skills/implement-issue" ] || ok=0
 [ -e "$FAKE/.gemini/scripts/lib/project-gates.sh" ] || ok=0
 grep -q 'precommit-gate.sh' "$FAKE/.claude/settings.json" 2>/dev/null || ok=0
+# The SessionStart currency hook is both LINKED and WIRED (#36) — a manifest entry with no
+# settings entry (or the reverse) would leave the feature silently inert.
+[ -L "$FAKE/.claude/scripts/session-currency.sh" ] || ok=0
+grep -q 'session-currency.sh' "$FAKE/.claude/settings.json" 2>/dev/null || ok=0
 HOME="$FAKE" bash uninstall.sh --agent claude --agent codex --agent gemini >>/tmp/adb-selfcheck.log 2>&1 || ok=0
 [ ! -L "$FAKE/.claude/CLAUDE.md" ] || ok=0
+[ ! -L "$FAKE/.claude/scripts/session-currency.sh" ] || ok=0
+# A leftover SessionStart entry pointing at a removed script would error on EVERY future session.
+grep -q 'session-currency.sh' "$FAKE/.claude/settings.json" 2>/dev/null && ok=0
 [ ! -L "$FAKE/.codex/AGENTS.md" ] || ok=0
 [ ! -L "$FAKE/.codex/skills/implement-issue" ] || ok=0
 [ ! -L "$FAKE/.gemini/GEMINI.md" ] || ok=0

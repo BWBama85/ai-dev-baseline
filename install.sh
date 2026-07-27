@@ -50,29 +50,75 @@ install_claude() {
 $(adb_agent_manifest claude "$REPO" "$HOME")
 EOF
 
-  if [ "$WIRE_HOOKS" -eq 1 ]; then wire_hooks; else adb_info "  (gates not wired — --no-hooks)"; fi
+  # Propagate a wiring failure into the install's exit status. Without this the `return 1`s in
+  # wire_hooks are dead: install.sh would exit 0 with a corrupt settings.json, and bin/baseline's
+  # adb_self_heal — which gates only on that status — would report "update complete" while the
+  # gates sat silently unwired. (A missing jq deliberately returns 0; see wire_hooks.)
+  if [ "$WIRE_HOOKS" -eq 1 ]; then
+    wire_hooks || rc=1
+  else
+    adb_info "  (gates not wired — --no-hooks)"
+  fi
   return "$rc"
 }
 
+# Merge EVERY hook-event group in agents/claude/settings.hooks.json into ~/.claude/settings.json.
+# Driven by that file's own top-level keys (Stop, SessionStart, …) rather than a hardcoded event
+# name, so adding an event there is the only edit a new hook needs here.
+#
+# Idempotent and non-destructive in one filter: for each event, drop the groups that reference
+# one of OUR hook scripts (adb_claude_hook_regex — derived from the single hook enumeration in
+# common.sh), then append ours. A user's own groups under the same event never match the regex,
+# so they survive; a re-run replaces our previous entry instead of double-adding it.
+#
+# Returns non-zero on failure. That matters: the previous version ended with an unconditional
+# "wired" line even when jq or mv had failed, so a broken settings.json was reported as success
+# and enforcement was silently off.
 wire_hooks() {
   if ! command -v jq >/dev/null 2>&1; then
+    # The ONE tolerated degradation, and a documented one (docs/installation.md): warn, but do
+    # not fail the install. Every other failure below is a genuinely broken state and returns 1.
     adb_info "  WARN   jq not found — cannot wire hooks; install jq and re-run, or wire manually"
-    return
+    return 0
   fi
   local settings="$HOME/.claude/settings.json"
-  local group
-  group="$(sed "s@__ADB_HOME__@$HOME@g" "$REPO/agents/claude/settings.hooks.json" | jq '.Stop[0]')"
-  [ -f "$settings" ] || echo '{}' > "$settings"
+  local tmp groups re
+  groups="$(sed "s@__ADB_HOME__@$HOME@g" "$REPO/agents/claude/settings.hooks.json")" || {
+    adb_info "  WARN   could not read agents/claude/settings.hooks.json — hooks NOT wired"; return 1; }
+  re="$(adb_claude_hook_regex "$HOME")"
+  # `-s`, not `-f`: an EMPTY settings.json is not valid JSON, but `jq` reads empty input as an
+  # empty stream — it exits 0 and prints NOTHING, so the guard below would not fire and the `mv`
+  # would install a 0-byte file while reporting success. That failure is self-entrenching:
+  # bin/baseline's adb_hooks_wired then sees no precommit-gate.sh, concludes the user chose
+  # --no-hooks, and passes --no-hooks to every future self-heal, so the gates never come back.
+  [ -s "$settings" ] || echo '{}' > "$settings"
   mkdir -p "$BACKUP_DIR$(dirname "$settings")"
   cp "$settings" "$BACKUP_DIR$settings"
-  jq --argjson group "$group" '
-    .hooks = (.hooks // {})
-    | .hooks.Stop = ((.hooks.Stop // [])
-        | map(select(([.hooks[]?.command // ""]
-              | any(test("(precommit-gate|implement-issue-gate)\\.sh$"))) | not))
-        + [$group])
-  ' "$settings" > "$settings.adb.tmp" && mv "$settings.adb.tmp" "$settings"
-  adb_info "  hooks  wired global Stop gates into ~/.claude/settings.json (backed up)"
+  # A per-process temp name in the same directory: two installs (or two SessionStart-triggered
+  # self-heals) racing on one fixed path could `mv` each other's half-written file into place.
+  tmp="$settings.adb.$$.tmp"
+  if ! jq --argjson groups "$groups" --arg re "$re" '
+        .hooks = (.hooks // {})
+        | reduce ($groups | to_entries[]) as $e (.;
+            .hooks[$e.key] = (((.hooks[$e.key] // [])
+              | map(select(([.hooks[]?.command // ""] | any(test($re))) | not)))
+              + $e.value))
+      ' "$settings" > "$tmp"; then
+    rm -f "$tmp"
+    adb_info "  WARN   ~/.claude/settings.json is not valid JSON — hooks NOT wired (restore from the backup)"
+    return 1
+  fi
+  # Belt to the -s brace above: never replace the real file with an empty one, whatever the
+  # reason (a full disk truncates the write just as effectively as an empty input does).
+  if [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    adb_info "  WARN   hook wiring produced an empty settings.json — NOT wired (original left intact)"
+    return 1
+  fi
+  mv "$tmp" "$settings" || {
+    rm -f "$tmp"
+    adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"; return 1; }
+  adb_info "  hooks  wired global Stop gates + SessionStart currency check into ~/.claude/settings.json (backed up)"
 }
 
 run_adapter() {
@@ -87,8 +133,8 @@ run_adapter() {
 }
 
 write_global_manifest() {
-  local dir="$HOME/.config/ai-dev-baseline" f
-  f="$dir/agents.toml"
+  local f dir
+  f="$(adb_global_manifest)"; dir="$(dirname "$f")"
   mkdir -p "$dir"
   if [ ! -f "$f" ]; then
     cp "$REPO/templates/agents.toml" "$f"

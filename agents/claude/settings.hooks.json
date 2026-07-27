@@ -16,5 +16,18 @@
         }
       ]
     }
+  ],
+  "SessionStart": [
+    {
+      "matcher": "startup",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "__ADB_HOME__/.claude/scripts/session-currency.sh",
+          "timeout": 60,
+          "statusMessage": "ai-dev-baseline: install currency"
+        }
+      ]
+    }
   ]
 }

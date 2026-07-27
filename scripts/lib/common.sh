@@ -122,15 +122,56 @@ _adb_skill_manifest_lines() {
   done
 }
 
+# The Claude scripts that install.sh WIRES into ~/.claude/settings.json as lifecycle hooks,
+# one per line. The ONE enumeration of the baseline-owned hook set: adb_agent_manifest links
+# them, install.sh's wire filter and uninstall.sh's unwire filter both match on exactly these
+# basenames, and a new hook is added here alone. Deliberately NOT the same list as the manifest's
+# script set — statusline.sh is installed but is not a hook, and matching it in the hook filters
+# would strip an unrelated settings key.
+adb_claude_hook_scripts() {
+  printf 'precommit-gate.sh\nimplement-issue-gate.sh\nsession-currency.sh\n'
+}
+
+# The jq regex matching a hook command that is EXACTLY one of the commands this install writes,
+# for the given <home> — e.g. `^/Users/x/\.claude/scripts/(precommit-gate|…)\.sh$`. install.sh
+# uses it to replace only baseline-owned entries and uninstall.sh to remove exactly those;
+# deriving both from one place means adding a hook to adb_claude_hook_scripts updates both.
+#
+# FULL PATH, not a basename. A basename-anchored pattern (`…\.sh$`) also matches a user's own
+# `/custom/precommit-gate.sh`, and because the filters walk EVERY hook event, uninstall would
+# delete that entry — and the whole group containing it — under an unrelated event such as
+# PreToolUse. That directly contradicts the promise that a user's own hooks survive. A command at
+# any other path is by definition not ours, so the exact path we install is the ownership test.
+# Usage: adb_claude_hook_regex <home>
+adb_claude_hook_regex() {
+  local home="$1" s alt="" esc
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    alt="${alt:+$alt|}${s%.sh}"
+  done <<EOF
+$(adb_claude_hook_scripts)
+EOF
+  # Escape regex metacharacters in the home path — a literal `.` in a username would otherwise
+  # match any character, widening ownership beyond this install.
+  esc="$(printf '%s' "$home" | sed 's/[][\.^$*+?(){}|]/\\&/g')"
+  printf '^%s/\\.claude/scripts/(%s)\\.sh$' "$esc" "$alt"
+}
+
 adb_agent_manifest() {
   local agent="$1" repo="$2" home="$3" s
   case "$agent" in
     claude)
       printf '%s\t%s\n' "$repo/agents/claude/CLAUDE.md" "$home/.claude/CLAUDE.md"
       _adb_skill_manifest_lines "$repo/agents/claude/skills" "$home/.claude/skills"
-      for s in precommit-gate.sh implement-issue-gate.sh statusline.sh; do
+      # Every wired hook, plus the one installed-but-not-wired script (the statusline). Fed
+      # through a heredoc rather than an unquoted `$(…)` so no word-splitting is relied on.
+      while IFS= read -r s; do
+        [ -n "$s" ] || continue
         printf '%s\t%s\n' "$repo/agents/claude/scripts/$s" "$home/.claude/scripts/$s"
-      done
+      done <<EOF
+$(adb_claude_hook_scripts)
+statusline.sh
+EOF
       printf '%s\t%s\n' "$repo/scripts/lib" "$home/.claude/scripts/lib"
       ;;
     codex)
@@ -411,6 +452,137 @@ adb_branch_sync_state() {
   elif [ "$behind" -eq 0 ]; then printf 'ahead\n'
   else printf 'diverged\n'
   fi
+}
+
+# Classify a clone using ONLY LOCAL state — no network, no fetch. Prints exactly one word
+# and returns 0. This is deliberately split out of the fetch-requiring classification below
+# so a caller can refuse UNSAFE state before spending a network round trip (and before a
+# fetch mutates remote-tracking refs): a dirty or mid-operation clone is never going to be
+# fast-forwarded, so asking origin about it is pure cost. Words, cheapest-safety-first:
+#   not-a-repo  — <root> is not a git work tree
+#   dirty       — uncommitted changes (never auto-pull over uncommitted work)
+#   in-progress — a merge / rebase / cherry-pick / revert / bisect is underway. A clean tree
+#                 is NOT proof of safety: `git rebase` between steps and `git bisect` can both
+#                 leave a clean tree, and detached-HEAD only catches some of them.
+#   detached    — HEAD is not on a branch
+#   not-default — on a branch other than <default>
+#   local-ok    — none of the above; the caller may fetch and then ask adb_branch_sync_state
+# Usage: adb_clone_local_state <root> <default-branch>
+adb_clone_local_state() {
+  local root="$1" default="$2" gitdir cur
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 || { printf 'not-a-repo\n'; return 0; }
+  if [ -n "$(git -C "$root" status --porcelain 2>/dev/null)" ]; then printf 'dirty\n'; return 0; fi
+  # Resolve the git dir ABSOLUTELY: `rev-parse --git-dir` prints a path relative to the
+  # work tree (usually the bare word ".git"), which would resolve against the CALLER's cwd,
+  # not <root> — so every sentinel test below would silently look in the wrong place.
+  gitdir="$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null)"
+  if [ -n "$gitdir" ]; then
+    # The sentinels git itself uses. rebase-merge covers interactive/merge-backend rebases,
+    # rebase-apply covers `git am` and the apply backend, sequencer covers a multi-commit
+    # cherry-pick/revert that is between picks (no *_HEAD file exists at that moment).
+    if [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ] || \
+       [ -f "$gitdir/MERGE_HEAD" ] || [ -f "$gitdir/CHERRY_PICK_HEAD" ] || \
+       [ -f "$gitdir/REVERT_HEAD" ] || [ -f "$gitdir/BISECT_LOG" ] || \
+       [ -d "$gitdir/sequencer" ]; then
+      printf 'in-progress\n'; return 0
+    fi
+  fi
+  cur="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null)" || { printf 'detached\n'; return 0; }
+  [ "$cur" = "$default" ] || { printf 'not-default\n'; return 0; }
+  printf 'local-ok\n'
+}
+
+# Full currency classification: the local state above, and — only when that is `local-ok` —
+# the remote comparison. Requires a prior `git fetch` for behind/ahead/diverged accuracy
+# (it performs none itself, so it stays unit-testable against a local bare "origin").
+# Prints one of: not-a-repo | dirty | in-progress | detached | not-default | current |
+# behind | ahead | diverged | no-remote. Usage: adb_clone_status <root> <default-branch>
+adb_clone_status() {
+  local state
+  state="$(adb_clone_local_state "$1" "$2")"
+  [ "$state" = "local-ok" ] || { printf '%s\n' "$state"; return 0; }
+  adb_branch_sync_state "$1" "$2"
+}
+
+# Print the path of the GLOBAL agent manifest — the one install.sh writes once and every
+# runtime reader consults. The ONE home for this path: it was previously spelled independently
+# by the writer (install.sh) and each reader, and a third spelling that honored XDG_CONFIG_HOME
+# would read a file the writer never created — the config would silently do nothing, which is
+# exactly the class of failure this library exists to remove. Deliberately NOT XDG-aware today,
+# because matching the writer is what matters; making the whole surface XDG-aware is a separate,
+# all-at-once change.
+adb_global_manifest() { printf '%s/.config/ai-dev-baseline/agents.toml\n' "${HOME:-/root}"; }
+
+# Print a path's mtime in epoch seconds, or nothing when it cannot be read.
+#
+# The two stat flavors are NOT interchangeable and the naive `stat -f %m || stat -c %Y` is a
+# latent bug: on GNU coreutils `-f` means --file-system, so it can EXIT ZERO while printing
+# something that is not an mtime — the `||` fallback then never runs and the caller does
+# arithmetic on garbage. Each result is therefore validated as digits, and only a numeric
+# answer is accepted. Usage: adb_mtime <path>
+adb_mtime() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
+  if [ -z "$m" ]; then
+    m="$(stat -f %m "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
+  fi
+  printf '%s' "$m"
+}
+
+# Print how many seconds ago <path> was last modified, or nothing when that cannot be
+# established (missing path, unreadable mtime, unusable clock, or a FUTURE mtime). Callers treat
+# empty as "unknown age" and decide their own safe direction — the SessionStart rate limit
+# proceeds with the check, the update lock declines to break a lock it cannot date. The
+# arithmetic and the validation live here so those two policies are the ONLY difference.
+#
+# A future mtime is reported as unknown rather than as a negative number, and that is
+# load-bearing rather than tidiness: clock skew is real (a restored VM snapshot, a dual-boot RTC,
+# a backup that rewrites ~/.cache), and a caller comparing `age < interval` would read a negative
+# age as "checked very recently" — silently suppressing the currency check until wall-clock time
+# caught up, which is exactly the staleness it exists to catch.
+# Usage: adb_age_secs <path>
+adb_age_secs() {
+  local m now age
+  m="$(adb_mtime "$1")"; [ -n "$m" ] || return 0
+  now="$(date +%s 2>/dev/null)"; case "$now" in ''|*[!0-9]*) return 0 ;; esac
+  age="$((now - m))"
+  [ "$age" -lt 0 ] && return 0
+  printf '%s' "$age"
+}
+
+# --- installed-baseline discovery --------------------------------------------
+
+# True iff <path> is a symlink whose target is inside <src>. The ownership test every
+# install-scoped scan and prune uses — it re-reads the link, so it is safe to call at the
+# moment of mutation rather than trusting an earlier enumeration.
+# Usage: adb_link_into <path> <src>
+adb_link_into() { [ -L "$1" ] && case "$(readlink "$1")" in "$2"/*) return 0 ;; esac; return 1; }
+
+# Print the repo root the global install points INTO ("the install-source"), resolved from
+# whichever agent root-doc symlink exists (install.sh links each with an absolute target).
+# The link's TARGET need not currently resolve — a dangling root doc (the very path that
+# moved, or a failed prior repair) still identifies the clone, and repairing it is the whole
+# point; the clone is validated by install.sh + agents/ existing, not by the doc file existing.
+# Prints nothing and returns 1 when no installed symlink is found.
+#
+# Shared (not private to bin/baseline) because the SessionStart currency hook must resolve the
+# SAME clone by the SAME rule — a second implementation is exactly the drift this library exists
+# to prevent. Usage: adb_install_source [home]   (home defaults to $HOME)
+adb_install_source() {
+  local home="${1:-$HOME}" link target root
+  for link in "$home/.claude/CLAUDE.md" "$home/.codex/AGENTS.md" "$home/.gemini/GEMINI.md"; do
+    [ -L "$link" ] || continue
+    target="$(readlink "$link")"
+    case "$target" in /*) ;; *) continue ;; esac   # expect an absolute target
+    # agents/<agent>/<DOC> sits three levels below the repo root. Logical `pwd` keeps this the
+    # same flavor as the recorded symlink targets so prefix-matching them stays stable; callers
+    # that compare clones use `-ef` (same-inode), so no physical canonicalization is needed.
+    root="$(cd "$(dirname "$target")/../.." 2>/dev/null && pwd)" || continue
+    if [ -f "$root/install.sh" ] && [ -d "$root/agents" ]; then
+      printf '%s\n' "$root"; return 0
+    fi
+  done
+  return 1
 }
 
 # --- minimal TOML reader -----------------------------------------------------

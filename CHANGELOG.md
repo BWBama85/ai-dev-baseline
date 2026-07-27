@@ -9,6 +9,47 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **The installed baseline now keeps itself current** (#36). Payloads are symlinks into one
+  clone, so when that clone lags `origin` every project on the machine silently runs stale
+  skills, practices, and gates — and forgetting the manual `baseline update` does not fail
+  loudly. It bit exactly that way: the operator's clone sat one commit behind while `/roadmap`
+  computed a release verdict with the *pre-fix* logic, minutes after shipping the fix.
+  - **A Claude `SessionStart` hook** (`session-currency.sh`, wired by `install.sh`) fast-forwards
+    the install-source and re-runs the idempotent install, then reports **one line or nothing**.
+  - **It acts only on `source: startup`.** `/clear`, `/compact`, `resume` and `fork` all happen
+    with work in flight; swapping tooling underneath them is the mid-session surprise this avoids.
+  - **It never updates the clone your session is working in** — the two-clone dev split, enforced
+    from the hook side by comparing git roots (a session in a *subdirectory* still counts). A
+    session in any other project still updates it.
+  - **It always exits 0.** A SessionStart hook cannot block a session, but a non-zero exit renders
+    an error notice on every start; currency must never be the reason a session looks broken.
+  - **Configured globally, and only globally:** `[updates] session_start = "auto" | "notify" |
+    "off"` in `~/.config/ai-dev-baseline/agents.toml` (`ADB_SESSION_UPDATE` overrides one run;
+    `ADB_SESSION_UPDATE_INTERVAL_SECS` bounds the 10-minute rate limit). A **project's**
+    `agents.toml` is ignored on purpose — see decision **D10**, which also records the trust
+    consequence of defaulting to `auto`.
+  - **Upgrading:** the hook can only wire itself by being installed, so run `baseline update` (or
+    `./install.sh`) **once** by hand after pulling this change. An install made with `--no-hooks`
+    stays opted out.
+
+### Changed
+
+- **`baseline update` classifies unsafe clone state before touching the network** (#36). A dirty /
+  mid-rebase / detached / non-default clone was going to be refused regardless, so asking `origin`
+  first was pure cost — and not side-effect-free either, since `git fetch` writes remote-tracking
+  refs that `--check` documents itself as never doing. A session started from an unsafe clone now
+  pays no network round trip.
+- **A new `in-progress` clone state** (#36) covers a merge / rebase / cherry-pick / revert /
+  bisect. A clean working tree is not proof of safety — a rebase between steps and a bisect both
+  leave one, and only some of them detach `HEAD`. Reported by `--check` as exit `20`.
+- **The mutating `baseline update` path takes a per-clone lock** (#36), exiting `5` when another
+  update holds it. Concurrent updates became ordinary the moment a SessionStart hook could start
+  several at once. A lock left by a killed updater goes stale after 10 minutes and is broken.
+- **Hook wiring is driven by `settings.hooks.json`'s own event keys**, not a hardcoded `Stop`, and
+  `uninstall.sh` mirrors it across every event. Your own hooks under the same events are preserved
+  by both. `wire_hooks()` also no longer reports success when `jq` failed or the settings file was
+  unwritable — a broken `settings.json` was being claimed as wired, i.e. enforcement silently off.
+
 - **Release readiness now verifies the default branch is green** (#78). A drained checklist said
   the *requirements* were done; it said nothing about whether the code was **shippable**, so on a
   repo that deploys on cut `/roadmap` could announce "✅ Release requirements met — cutting" while

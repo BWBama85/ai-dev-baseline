@@ -244,3 +244,38 @@ didn't already model, so any residual divergence stays visible and auditable.
              the mirror of D8's temptation — a `--merge` or `--deploy` flag "while we are already
              holding the repo's settings."
 - baseline-issue: n/a (this repo IS the baseline; #87 is the tracking issue)
+
+## D10 — the global-only `[updates]` config surface, and auto-update as the default
+- date:      2026-07-27
+- category:  general
+- unknown:   #36's remaining half is a Claude `SessionStart` hook that keeps the install-source
+             clone current. Two things the baseline did not model: (a) where a **user-level,
+             global** behavior toggle lives — every existing override surface (`agents.toml
+             [roles]`/`[gates]`, the repo root doc, `.claude/scripts/precommit-gate.sh`, a
+             project-scoped skill) is **per-project**, and a repo you happen to open must not
+             decide whether your global tooling updates itself; and (b) whether the hook should
+             auto-update or merely notify.
+- decision:  1. **A new global-only table `[updates]` with one key, `session_start = "auto" |
+                "notify" | "off"`,** read from `~/.config/ai-dev-baseline/agents.toml` and
+                **nowhere else**. `ADB_SESSION_UPDATE` overrides it for one run.
+             2. **`auto` is the default** — the owner's recommendation on #36: a session begins
+                from a clean slate, which is the safe moment to change tooling. `notify` is a
+                first-class alternative for anyone who wants to review each pull.
+             3. The hook acts **only** on `source: startup`, and **never** on the clone the
+                session itself is working in.
+- placement: `templates/agents.toml` (the documented surface, marked GLOBAL ONLY);
+             `agents/claude/scripts/session-currency.sh` (the only reader);
+             `docs/installation.md` → *Automatic currency (SessionStart)* (the operator contract);
+             `scripts/check-session-currency.sh` + the `session-currency` CI job + `selfcheck.sh`.
+- reason:    Adding a table to the existing global manifest reuses the file the installer already
+             writes and the TOML reader already in `common.sh`, so it invents no new config
+             format and no new file — the cheapest legal home. It is marked GLOBAL ONLY because
+             the per-project reading would be actively wrong: the hook runs before any project
+             context is meaningful, and honoring a project's copy would let an arbitrary repo
+             disable (or enable) a machine-wide updater. Defaulting to `auto` accepts a real
+             consequence, recorded here rather than buried: **each new session may fetch and then
+             execute the newly pulled `install.sh`.** That is the same trust already placed in
+             the clone the whole toolchain is symlinked from, but it is now exercised without a
+             human in the loop — which is why `notify`/`off` exist, why the hook refuses every
+             unsafe clone state, and why it never touches the clone you are working in.
+- baseline-issue: n/a (this repo IS the baseline; #36 is the tracking issue)

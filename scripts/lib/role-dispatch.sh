@@ -59,7 +59,7 @@ _ADB_RD_KNOWN="claude codex gemini"
 _ADB_RD_REPO_TOML="$(adb_repo_root)/agents.toml"
 # The global default manifest install.sh writes. HOME-relative, so a test that overrides HOME
 # points it at a throwaway global manifest with no extra seam.
-_ADB_RD_GLOBAL_TOML="${HOME:-/root}/.config/ai-dev-baseline/agents.toml"
+_ADB_RD_GLOBAL_TOML="$(adb_global_manifest)"
 
 # The per-invocation HANG BACKSTOP (seconds); 45-min (2700 s) matches the backstop-* facts in
 # scripts/check-fact-drift.sh. It is a backstop, NOT a work budget: it exists to stop a wedged
