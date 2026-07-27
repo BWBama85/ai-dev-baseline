@@ -117,8 +117,9 @@ case "$INTERVAL" in ''|*[!0-9]*) INTERVAL=600 ;; esac
 STAMP_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/ai-dev-baseline"
 STAMP="$STAMP_DIR/session-currency.stamp"
 if [ "$INTERVAL" -gt 0 ] && [ -f "$STAMP" ]; then
-  _last="$(stat -f %m "$STAMP" 2>/dev/null || stat -c %Y "$STAMP" 2>/dev/null)"
+  _last="$(adb_mtime "$STAMP")"          # validated-numeric, both stat flavors (common.sh)
   _now="$(date +%s 2>/dev/null)"
+  case "$_now" in ''|*[!0-9]*) _now="" ;; esac
   if [ -n "$_last" ] && [ -n "$_now" ] && [ "$((_now - _last))" -lt "$INTERVAL" ]; then
     exit 0
   fi

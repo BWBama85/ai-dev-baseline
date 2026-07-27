@@ -413,6 +413,50 @@ eq "$( cd "$work" && adb_clone_local_state "$sbrepo" main )" "in-progress" \
   "local state: in-progress is detected from any cwd"
 rm -rf "$sbgit/rebase-merge"
 
+# --- adb_mtime (#36) ----------------------------------------------------------
+# The two stat flavors are not interchangeable, and the obvious `stat -f %m || stat -c %Y` is a
+# real bug rather than a style nit: on GNU coreutils `-f` is --file-system, so `stat -f %m FILE`
+# reads "%m" as a FILENAME and prints a multi-line filesystem report for FILE — to STDOUT —
+# before failing. The `||` fallback then appends the real mtime, command substitution captures
+# both, and the caller does arithmetic on a multi-line string. That silently disabled the
+# SessionStart rate limit on Linux. Both flavors are exercised here through stubs, since a given
+# CI box only has one.
+mtf="$work/mtime-file"; printf 'x\n' > "$mtf"
+mt="$(adb_mtime "$mtf")"
+case "$mt" in ''|*[!0-9]*) bad "adb_mtime: expected digits for a real file, got [$mt]" ;; *) ok ;; esac
+eq "$(adb_mtime "$work/definitely-not-here")" "" "adb_mtime: missing path → empty"
+eq "$(printf '%s' "$(adb_mtime "$mtf")" | wc -l | tr -d ' ')" "0" "adb_mtime: never multi-line"
+
+statbin="$work/statbin"; mkdir -p "$statbin"
+# A GNU-flavored stat: -c works; -f prints a multi-line report to STDOUT and fails.
+cat > "$statbin/stat" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  -c) printf '1700000000\n' ;;
+  -f) printf 'stat: cannot read file system information\n  File: "x"\n    ID: 1 Namelen: 255\n'; exit 1 ;;
+esac
+SH
+chmod +x "$statbin/stat"
+eq "$( PATH="$statbin:$PATH"; adb_mtime "$mtf" )" "1700000000" "adb_mtime: GNU-flavored stat yields only the mtime"
+# A BSD-flavored stat: -c is rejected outright; -f is the one that works.
+cat > "$statbin/stat" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  -c) printf 'stat: illegal option -- c\n' >&2; exit 1 ;;
+  -f) printf '1700000001\n' ;;
+esac
+SH
+chmod +x "$statbin/stat"
+eq "$( PATH="$statbin:$PATH"; adb_mtime "$mtf" )" "1700000001" "adb_mtime: BSD-flavored stat yields the mtime"
+# A stat that succeeds while printing nonsense must yield NOTHING, not the nonsense — the caller
+# treats empty as "unknown age", which is the safe direction.
+cat > "$statbin/stat" <<'SH'
+#!/usr/bin/env bash
+printf 'not-a-number\n'
+SH
+chmod +x "$statbin/stat"
+eq "$( PATH="$statbin:$PATH"; adb_mtime "$mtf" )" "" "adb_mtime: non-numeric output is rejected, not returned"
+
 # --- adb_install_source / adb_link_into (#36) --------------------------------
 # Shared with the SessionStart hook, which must resolve the SAME clone by the SAME rule.
 isrc="$work/isrc"; mkdir -p "$isrc/agents/claude"

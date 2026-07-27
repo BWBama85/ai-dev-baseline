@@ -256,22 +256,24 @@ EOF
 # because a legitimate pull + full re-install is seconds, not minutes.
 _ADB_LOCK_STALE_SECS="${ADB_UPDATE_LOCK_STALE_SECS:-600}"
 
-# Portable mtime in epoch seconds (BSD stat on macOS, GNU stat on Linux). Prints nothing when
-# the path is gone — the caller treats that as "no lock", which is the safe direction.
-adb_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
-
-# Acquire the update lock for <src>. Returns 0 when held by us, 1 when another update holds it.
+# Acquire the update lock at <lock>. Returns 0 when held by us, 1 when another update holds it.
 # The lock lives beside the clone's git dir rather than in $HOME so it is scoped to the clone
 # being mutated (two DIFFERENT install-sources never block each other) and so a fake-HOME test
-# can never collide with a real one.
+# can never collide with a real one. adb_mtime (common.sh) reads the age portably.
 adb_update_lock() {
-  local src="$1" lock="$2" age now
+  local lock="$1" age now stale
   mkdir "$lock" 2>/dev/null && return 0
   # Held. Break it only if it is provably older than the stale bound.
   age="$(adb_mtime "$lock")"
-  now="$(date +%s)"
-  if [ -n "$age" ] && [ -n "$now" ] && [ "$((now - age))" -gt "$_ADB_LOCK_STALE_SECS" ]; then
-    rmdir "$lock" 2>/dev/null
+  now="$(date +%s 2>/dev/null)"
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  if [ -n "$age" ] && [ "$((now - age))" -gt "$_ADB_LOCK_STALE_SECS" ]; then
+    # Claim the break by RENAMING rather than rmdir+mkdir. Two processes that both judge the
+    # same lock stale would otherwise each remove it and each create it — both "holding" it.
+    # Rename succeeds for exactly one of them; the loser finds no source and stands down.
+    stale="$lock.stale.$$"
+    mv "$lock" "$stale" 2>/dev/null || return 1
+    rmdir "$stale" 2>/dev/null
     mkdir "$lock" 2>/dev/null && return 0
   fi
   return 1
@@ -355,8 +357,18 @@ fi
 # Taken AFTER classification (a read-only run needs no lock) and BEFORE any mutation. When
 # another update holds it, exit 5 rather than waiting: the caller is either a human who can
 # re-run, or the SessionStart hook, which must not stall a session behind a peer's pull.
-UPDATE_LOCK="$(git -C "$SRC" rev-parse --absolute-git-dir 2>/dev/null)/adb-update.lock"
-if ! adb_update_lock "$SRC" "$UPDATE_LOCK"; then
+#
+# Resolve the git dir explicitly rather than interpolating the command substitution: an
+# unresolvable one would otherwise yield the bare path "/adb-update.lock" and try to write at
+# the filesystem ROOT. It is unresolvable only when SRC is not a repo, which the status ladder
+# below already treats as exit 30 — so say that here instead.
+GITDIR="$(git -C "$SRC" rev-parse --absolute-git-dir 2>/dev/null)"
+if [ -z "$GITDIR" ]; then
+  echo "baseline: cannot determine currency (status '$STATUS') for $SRC — not a git repository." >&2
+  exit 30
+fi
+UPDATE_LOCK="$GITDIR/adb-update.lock"
+if ! adb_update_lock "$UPDATE_LOCK"; then
   echo "baseline: another 'baseline update' is running for $SRC — skipping this one." >&2
   exit 5
 fi

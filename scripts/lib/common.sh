@@ -495,6 +495,22 @@ adb_clone_status() {
   adb_branch_sync_state "$1" "$2"
 }
 
+# Print a path's mtime in epoch seconds, or nothing when it cannot be read.
+#
+# The two stat flavors are NOT interchangeable and the naive `stat -f %m || stat -c %Y` is a
+# latent bug: on GNU coreutils `-f` means --file-system, so it can EXIT ZERO while printing
+# something that is not an mtime — the `||` fallback then never runs and the caller does
+# arithmetic on garbage. Each result is therefore validated as digits, and only a numeric
+# answer is accepted. Usage: adb_mtime <path>
+adb_mtime() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
+  if [ -z "$m" ]; then
+    m="$(stat -f %m "$1" 2>/dev/null)"; case "$m" in ''|*[!0-9]*) m="" ;; esac
+  fi
+  printf '%s' "$m"
+}
+
 # --- installed-baseline discovery --------------------------------------------
 
 # True iff <path> is a symlink whose target is inside <src>. The ownership test every
