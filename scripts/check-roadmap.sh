@@ -923,6 +923,23 @@ eq "$(deps '1. Depends on #78')"   '78' "...ordered too"
 eq "$(deps '**Depends on #78**')"  '78' "a bold run is not a list marker"
 eq "$(depsm '---' 'Depends on #78')" '78' "a horizontal rule is not a list marker"
 
+# CONTAINER CONTEXT — the four ways the marker/indent rules go wrong (PR #137 review).
+# A closer is matched relative to its OPENER's content column, not globally. Both directions bite:
+# too strict and a list-nested closer never matches (the fence swallows the body); too loose and
+# indented content inside a top-level fence closes it early, after which the REAL closer reads as
+# a fresh opener and eats every edge after the block.
+eq "$(depsm "$q3" "    $q3" 'Depends on #5' "$q3" 'Depends on #7')" '7' \
+   "an indented backtick run INSIDE a top-level fence is content, not its closer"
+# CommonMark: 1-4 spaces after a marker are padding; at 5+, only the first is, and the rest is
+# content indentation — so the delimiter is an indented code line, not a fence.
+eq "$(depsm "-     $q3" 'Depends on #5' "$q3" 'Depends on #7')" '5' \
+   "5+ spaces after a list marker is content indentation, so no fence opens"
+# CommonMark caps an ordered marker at NINE digits; a tenth means it is not a list at all.
+eq "$(deps '1234567890. > Depends on #5')" '5' \
+   "a 10-digit run is not an ordered marker, so this is prose and the edge stands"
+eq "$(deps '123456789. > Depends on #5')" '' "...while nine digits IS a marker"
+eq "$(deps '1.Depends on #5')" '5' "a marker needs a space after it"
+
 # An ESCAPED comment opener is prose DISPLAYING the delimiter, not markup. Treating it as real
 # armed the cross-line state, and an illustrative marker rarely carries a closer — so it swallowed
 # every edge and every recorded decision after it.
@@ -930,6 +947,12 @@ eq "$(depsm 'Use \<!-- literally' 'Depends on #41')" '41' \
    "a backslash-escaped <!-- does not open a comment"
 eq "$(depsm 'Real: <!-- x' 'Depends on #41' '-->' 'Depends on #7')" '7' \
    "...while an unescaped one still does"
+# Only an ODD run of backslashes escapes: with two, the first escapes the second and the opener is
+# REAL, so treating it as prose would scan a genuine comment and fabricate an edge from it.
+eq "$(deps 'Text \\<!-- Depends on #5 --> Depends on #7')" '7' \
+   "two backslashes leave a REAL comment opener (only odd parity escapes)"
+eq "$(deps 'Text \\\<!-- Depends on #5 -->')" '5' \
+   "...and three escape it again"
 
 # The point of the whole family: prose still declares, and a quoted negation is not a retirement.
 eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \

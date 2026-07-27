@@ -26,6 +26,19 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     inside `$( … )`, whose exit status is discarded once expanded as an argument — `pipefail` does
     not reach it. Most structure fixtures expect an empty result, so a crash on exactly those
     inputs still reported PASS. A nonzero exit is now converted to a value nothing can equal.
+  - **Container context for fence closers.** A closer is matched relative to its *opener's*
+    content column. Both directions bite: too strict and a list-nested closer never matches (the
+    fence swallows the body); too loose — the first cut of this fix — and a 4-space-indented
+    backtick run *inside* a top-level fence closes it early, after which the real closer reads as
+    a fresh opener and eats every edge after the block.
+  - **Marker padding is capped.** CommonMark treats 1–4 spaces after a list marker as padding; at
+    five or more, only the first is, and the rest is content indentation — so `-     ` + a
+    delimiter is an indented code line, not a fence.
+  - **Ordered markers stop at nine digits**, per CommonMark. A tenth means the line is not a list
+    at all, and reading it as one dropped a real edge from e.g. `1234567890. > Depends on #5`.
+  - **Escaped comment openers are counted by parity.** Only an *odd* run of backslashes escapes
+    `<!--`; with two, the first escapes the second and the opener is real, so treating it as prose
+    scanned a genuine comment and fabricated an edge from its contents.
   - Multi-line code spans (the fifth finding) are tracked in #136 rather than fixed here: the
     streaming fix would mask to end-of-paragraph on a stray backtick, trading a rare fabricated
     edge for a common **dropped** one — the strictly more dangerous direction.
