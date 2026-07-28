@@ -13,9 +13,13 @@
 #   2. IDENTITY. The same bot has two spellings — reactions report `chatgpt-codex-connector`,
 #      reviews report `chatgpt-codex-connector[bot]` — and a declaration may use either. Both are
 #      pinned on both signals, plus a WRONG bot, which must satisfy neither.
-#   3. THE TWO SIGNALS ARE DISJOINT AND ORDERED. A clean Codex pass posts a reaction and NO review;
-#      a findings pass posts a review and NO reaction. Where both somehow appear, findings wins —
-#      the stronger, commit-scoped claim.
+#   3. THERE ARE THREE SURFACES, AND THEY ARE ORDERED. The connector has two operating modes and
+#      the repo does not pick which it gets: WITHOUT a Codex Cloud environment it posts a review
+#      object (+ inline threads) for findings and a bare `+1` reaction for a clean pass; WITH one it
+#      runs as a task and posts a single ISSUE COMMENT — no review, no threads, no reaction. Both
+#      shapes were observed on this repo the same day (PR #166 at 08:01 vs PR #178 at 19:30, after
+#      an environment was created). Reading only reviews wedges at `pending` forever on the second.
+#      Findings outrank clean; a review at the head outranks a comment.
 #   4. NON-SIGNALS. A `PENDING` (unsubmitted draft) or `DISMISSED` review is not the reviewer
 #      having spoken, and a review of an OLDER commit is not a review of this one.
 #   5. EVERY UNREADABLE PATH -> 20, never `clean`. A failed read must not look like a pass.
@@ -23,13 +27,14 @@
 #      abandon a watch on one transient error, and must give up rather than poll an endlessly
 #      unreadable API forever.
 #
-# What genuinely CANNOT be tested here (needs a live run): that the connector actually emits `+1`
-# on a clean pass and a review on a findings pass (the contract is quoted in every review body it
-# posts, and was verified live on this repo — PRs #53/#54/#66/#83/#88 carry a connector `+1` with
-# zero reviews; #127/#137/#145/#146/#154/#166 carry a review with zero reactions), that it
-# re-reviews after a push (it does NOT — its triggers are open / ready-for-review / an explicit
-# `@codex review`), and GitHub's eventual consistency between the two endpoints. A stub can prove
-# the PARSING and the DECISION; it can never prove the premise.
+# What genuinely CANNOT be tested here (needs a live run): which SHAPE the connector emits, since
+# that is decided by vendor-side configuration rather than by anything in the repo — verified live
+# here (PRs #53/#54/#66/#83/#88 carry a `+1` with zero reviews; #127/#137/#145/#146/#154/#166 carry
+# a review with zero reactions; #178 carries one issue comment with zero reviews and zero
+# reactions); that it re-reviews after a push (it does NOT — its triggers are open /
+# ready-for-review / an explicit `@codex review`); and GitHub's eventual consistency between the
+# endpoints. A stub can prove the PARSING and the DECISION; it can never prove the premise — which
+# is exactly why the decision reads all three surfaces instead of the one the vendor documents.
 #
 # Lives OUTSIDE scripts/lib/ on purpose (install.sh symlinks that dir into a user's runtime).
 # Usage: bash scripts/check-pr-watch.sh   (exit 0 = all pass, 1 = a failure)
@@ -74,6 +79,7 @@ cat > "$SBIN/gh" <<'STUB'
 #   STUB_FAIL_PR=1         -> the PR read fails
 #   STUB_FAIL_REVIEWS=1    -> the reviews read fails
 #   STUB_FAIL_REACTIONS=1  -> the reactions read fails
+#   STUB_FAIL_COMMENTS=1   -> the issue-comments read fails
 #   STUB_FAIL_COMMIT=1     -> the head-commit read fails
 [ "${STUB_AUTH_FAIL:-0}" = "1" ] && [ "${1:-} ${2:-}" = "auth status" ] && exit 1
 case "${1:-}" in
@@ -102,6 +108,11 @@ case "$url" in
     # --paginate concatenates ONE JSON DOCUMENT PER PAGE; page 2 exists only in the pagination
     # scenario, so the default case still emits a single well-formed page.
     [ -f "$S/reviews2.json" ] && cat "$S/reviews2.json"
+    exit 0 ;;
+  */issues/*/comments*)
+    [ "${STUB_FAIL_COMMENTS:-0}" = "1" ] && exit 1
+    fx comments
+    [ -f "$S/comments2.json" ] && cat "$S/comments2.json"
     exit 0 ;;
   */reactions*)
     [ "${STUB_FAIL_REACTIONS:-0}" = "1" ] && exit 1
@@ -144,10 +155,11 @@ chmod +x "$SBIN/sleep"
 
 # ---- fixtures --------------------------------------------------------------------------------
 reset_fx() {
-  rm -f "$S/reviews2.json" "$S/reactions2.json" "$S/polls" "$S/slept"
-  rm -f "$S"/pr.[0-9]*.json "$S"/reviews.[0-9]*.json "$S"/reactions.[0-9]*.json
+  rm -f "$S/reviews2.json" "$S/reactions2.json" "$S/comments2.json" "$S/polls" "$S/slept"
+  rm -f "$S"/pr.[0-9]*.json "$S"/reviews.[0-9]*.json "$S"/reactions.[0-9]*.json "$S"/comments.[0-9]*.json
   printf '[]\n' > "$S/reviews.json"
   printf '[]\n' > "$S/reactions.json"
+  printf '[]\n' > "$S/comments.json"
   pr_fx
   commit_fx
 }
@@ -168,6 +180,18 @@ _reviews_into() {
     acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg st "$2" --arg sha "$3" \
             '. + [{user:{login:$l,type:"Bot"},state:$st,commit_id:$sha}]')"
     shift 3
+  done
+  printf '%s\n' "$acc" > "$out"
+}
+# comment_fx <login> <created_at> [...] — one ISSUE COMMENT per pair (Codex "task mode" output).
+comment_fx() { _comments_into "$S/comments.json" "$@"; }
+_comments_into() {
+  local out="$1"; shift
+  local acc="[]"
+  while [ "$#" -ge 2 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg at "$2" \
+            '. + [{user:{login:$l},created_at:$at,body:"### Summary"}]')"
+    shift 2
   done
   printf '%s\n' "$acc" > "$out"
 }
@@ -193,6 +217,7 @@ _w() {
   ( cd "$REPO" && HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" \
     STUB_AUTH_FAIL="${STUB_AUTH_FAIL:-0}" STUB_FAIL_PR="${STUB_FAIL_PR:-0}" \
     STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" STUB_FAIL_REACTIONS="${STUB_FAIL_REACTIONS:-0}" \
+    STUB_FAIL_COMMENTS="${STUB_FAIL_COMMENTS:-0}" \
     STUB_FAIL_COMMIT="${STUB_FAIL_COMMIT:-0}" \
     bash "$PW" "$@" )
 }
@@ -277,6 +302,61 @@ w observe --pr 1;  rc 11 "findings: a DISMISSED review does not count"
 # A human's review is not the declared async reviewer's.
 review_fx "somebody" "COMMENTED" "$HEAD_SHA"
 w observe --pr 1;  rc 11 "identity: a review from an UNDECLARED login does not count"
+
+# ============================ 3b. findings via an ISSUE COMMENT (Codex "task mode") ============
+# The connector has TWO output shapes and the repo does not choose which it gets: with a Codex
+# Cloud environment it runs as a TASK and posts ONE ISSUE COMMENT — no review object, no inline
+# threads, no reaction. Observed live on this repo the same day as the review-shaped output
+# (PR #166 at 08:01 → review + 3 threads; PR #178 at 19:30 → one comment, zero reviews).
+# A detector reading only reviews sits at `pending` FOREVER on such a repo.
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx "${CODEX}[bot]" "$AFTER_AT"
+w observe --pr 1;  rc 10 "task mode: an issue comment from the reviewer, newer than the head -> findings"
+has "$OUT" "READ THE COMMENT" "task mode: tells the caller there may be no threads to resolve"
+
+# A comment carries no commit either, so it gets the SAME staleness rule as a reaction — otherwise
+# a summary from a previous head would keep re-triggering the resolve flow after every push.
+comment_fx "${CODEX}[bot]" "$BEFORE_AT"
+w observe --pr 1;  rc 11 "task mode: a comment predating this head is stale, not findings"
+comment_fx "${CODEX}[bot]" "$COMMIT_AT"
+w observe --pr 1;  rc 11 "task mode: a comment EQUAL to the head commit date is not proof"
+
+# Ordinary human chatter on the PR is not a reviewer signal.
+comment_fx "somebody" "$AFTER_AT"
+w observe --pr 1;  rc 11 "task mode: a comment from an UNDECLARED login is not findings"
+
+# The newest comment decides, so a fresh summary after a stale one still converges.
+comment_fx "${CODEX}[bot]" "$BEFORE_AT" "${CODEX}[bot]" "$AFTER_AT"
+w observe --pr 1;  rc 10 "task mode: uses the NEWEST comment, not the first found"
+
+# Pagination, same reasoning as the other two signals.
+reset_fx; declare_bots "[\"$CODEX\"]"
+_comments_into "$S/comments.json"  "somebody" "$AFTER_AT"
+_comments_into "$S/comments2.json" "${CODEX}[bot]" "$AFTER_AT"
+w observe --pr 1;  rc 10 "task mode: a comment on page 2 is still found"
+
+# An unreadable comments read must fail closed like every other read.
+reset_fx; declare_bots "[\"$CODEX\"]"
+STUB_FAIL_COMMENTS=1 w observe --pr 1; rc 20 "unreadable: a failed comments read -> 20"; STUB_FAIL_COMMENTS=0
+
+# FINDINGS OUTRANK CLEAN across shapes: a reviewer that commented about this head has something to
+# say, even if a `+1` from an earlier pass is still sitting there.
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx "${CODEX}[bot]" "$AFTER_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 10 "precedence: a fresh comment outranks a fresh '+1'"
+
+# ...and a review at the head still outranks a comment (the commit-scoped claim is strongest).
+reset_fx; declare_bots "[\"$CODEX\"]"
+review_fx "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
+comment_fx "${CODEX}[bot]" "$AFTER_AT"
+w observe --pr 1;  rc 10 "precedence: a review at head and a comment both yield findings"
+
+# A clean pass must still be reachable when the reviewer has commented only on an OLDER head.
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx "${CODEX}[bot]" "$BEFORE_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+wout observe --pr 1;  rc 0 "precedence: a STALE comment does not mask a fresh clean pass"
 
 # ============================ 4. the two signals together ============================
 # They are disjoint in practice (a clean pass posts no review; a findings pass posts no reaction),

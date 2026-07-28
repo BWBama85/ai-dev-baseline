@@ -16,12 +16,22 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **`scripts/lib/pr-watch.sh`** — `observe --pr N` classifies once (`"<verdict> <head-sha>"` on
     stdout); `wait --pr N` polls until a terminal answer, bounded by `--interval`/`--max-secs`.
     The model is not in the loop, so a half-hour wait costs nothing.
-  - **Two terminal signals, not three.** The connector documents its own contract in every review
-    body it posts: *"If Codex has suggestions, it will comment; otherwise it will react with 👍."*
-    So a clean pass is a `+1` reaction and **no review object at all**, and a findings pass is a
-    review at the head commit and no reaction — disjoint. Verified live on this repo: PRs
-    #53/#54/#66/#83/#88 carry a connector `+1` with zero reviews; #127/#137/#145/#146/#154/#166
-    carry a review with zero reactions.
+  - **Three surfaces are read, because the reviewer has two output shapes and the repo does not
+    choose which it gets.** Without a Codex Cloud environment the connector posts a review object
+    (plus inline threads) for findings and a bare `+1` reaction for a clean pass — the contract it
+    documents in every review body: *"If Codex has suggestions, it will comment; otherwise it will
+    react with 👍."* **With** an environment it runs as a task and posts a **single issue comment**:
+    no review, no threads, no reaction. Both shapes were observed on this repo *the same day*
+    (PR #166 at 08:01 → review + 3 threads; PR #178 at 19:30 → one comment, zero reviews), so a
+    detector reading only reviews would sit at `pending` **forever** on a repo configured the second
+    way — the same wedge this exists to remove, reintroduced by a vendor-side setting nobody in the
+    repo changed. Reviews are matched by head SHA; comments and reactions by timestamp. Findings
+    outrank clean; a review at the head outranks a comment.
+  - **`/resolve-pr-threads` no longer reports "nothing to do" on a task-mode review.** A `10`
+    verdict now tells the caller to read the reviewer's latest issue comment first, because under
+    that shape the comment *is* the review and there are zero threads to resolve — and to verify any
+    commit such a comment claims to have made, which does not exist on the branch unless the
+    reviewer has push access.
   - **The transient 👀 is deliberately not modelled.** The reactions API exposes only what exists
     *now*, never deletion history, so "👀 was here and then vanished" is knowable only to a watcher
     that happened to be looking across the transition — it cannot survive a restart, a resumed

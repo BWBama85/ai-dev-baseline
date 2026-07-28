@@ -119,12 +119,37 @@ answer this skill reports and exits on, because there is nothing to resolve:
 answer — do not treat that as "clean" or as "no findings". Report that the wait was cut short and
 either re-run with a smaller `--max-secs` or run the library directly in a terminal.
 
-**Why a clean pass is a distinct answer, not "no threads found".** The Codex connector states its
-own contract in every review body it posts: *"If Codex has suggestions, it will comment; otherwise
-it will react with 👍."* A clean pass therefore produces **no review object at all** — only a
-reaction. Running the ordinary flow against such a PR would fetch zero threads and report "nothing
-to do", which is the right action for the wrong reason and is indistinguishable from *the reviewer
-has not started yet*. `--watch` tells those two apart.
+**Why a clean pass is a distinct answer, not "no threads found".** A clean Codex pass produces **no
+review object at all** — only a `+1` reaction. Running the ordinary flow against such a PR would
+fetch zero threads and report "nothing to do", which is the right action for the wrong reason and
+is indistinguishable from *the reviewer has not started yet*. `--watch` tells those two apart.
+
+### ⚠ `10` does not guarantee there are threads to resolve
+
+The reviewer has **two output shapes**, and the repo does not choose which it gets:
+
+| Codex Cloud environment | findings arrive as | clean pass |
+| --- | --- | --- |
+| **not** configured | a review object **+ inline threads** | a `+1` reaction |
+| configured | **one issue comment** — no review, no threads, no reaction | (not yet observed) |
+
+Both were seen on this repo *the same day* (PR #166 → review + 3 threads; PR #178 → one comment,
+zero threads). So on a `10` verdict:
+
+1. **Read the reviewer's most recent issue comment on the PR first** — under the second shape that
+   comment *is* the review, and steps 2–6 will find zero threads:
+   ```bash
+   gh api "repos/{owner}/{repo}/issues/$PR_NUM/comments" \
+     --jq 'map(select(.user.login | test("^chatgpt-codex-connector"; "i"))) | last // empty | .body'
+   ```
+   (Substitute the logins your repo declares in `[reviewers] bots`.)
+2. Then continue into the thread flow below. If there are **no** threads, do **not** report
+   "nothing to do" — address what the comment raised, and say that the feedback arrived as a
+   comment rather than as resolvable threads.
+
+**A task-mode comment may claim it committed a fix.** Verify that before believing it: unless the
+reviewer has push access to this repo, the commit exists only in its sandbox and is **not** on the
+branch. `git cat-file -t <sha>` and `gh pr view <PR#> --json headRefOid` settle it in one step.
 
 **This step never mutates anything.** It observes and it waits. Every branch switch, commit, push,
 and resolution still happens in steps 1–7, under exactly the rules they already state.

@@ -13,28 +13,47 @@
 # answers "may I arm auto-merge NOW?"; this module answers "is the reviewer DONE, and with what?"
 #
 # ------------------------------------------------------------------------------------------------
-# THE SIGNAL, AND WHY IT IS TWO SIGNALS RATHER THAN THREE
+# THE SIGNALS — THREE PLACES A REVIEWER CAN SPEAK, AND WHY ALL THREE ARE READ
 #
-# The Codex connector documents its own contract in every review body it posts:
+# The Codex connector documents its own contract in every lightweight review body it posts:
 #
 #     "If Codex has suggestions, it will comment; otherwise it will react with 👍."
 #
-# So there are exactly TWO terminal outcomes, and they are disjoint:
+# That is true, but it describes only ONE of its two operating modes, and which mode a repo gets
+# depends on configuration rather than on anything in the PR:
 #
-#   clean     → a `+1` reaction on the PR's opening post, and NO review object at all
-#   findings  → a submitted review (and usually inline threads), and NO reaction
+#   no Codex Cloud environment → LIGHTWEIGHT REVIEW mode
+#       findings → a `COMMENTED` review object, usually with inline threads; no reaction
+#       clean    → a `+1` reaction on the PR's opening post; NO review object at all
 #
-# Verified live on this repo: PRs #53, #54, #66, #83, #88 carry a connector `+1` with ZERO
-# connector reviews and ZERO inline threads; PRs #127, #137, #145, #146, #154, #166 carry one
-# connector review with 1–4 inline threads and NO reaction. Nothing sits in both sets.
+#   a Cloud environment exists → TASK mode
+#       findings → ONE ISSUE COMMENT summarising what it found or changed; NO review object,
+#                  NO inline threads, and (so far) no reaction either
 #
-# The issue that asked for this described a THIRD, transient state — a 👀 reaction while the review
+# All of this was observed live on this repo INSIDE ONE DAY, which is the whole argument for
+# reading every surface rather than the documented one:
+#
+#   PRs #53/#54/#66/#83/#88 → a connector `+1`, zero reviews, zero threads      (clean, mode 1)
+#   PRs #127/#137/#145/#146/#154/#166 → one review, 1–4 threads, no reaction    (findings, mode 1)
+#   PR #166 at 08:01 → mode 1.  PR #178 at 19:30 → mode 2 (one issue comment,
+#                      zero reviews, zero threads), after an environment was created in between.
+#
+# A detector that reads only reviews and reactions therefore sits at `pending` FOREVER on a repo
+# configured the second way — the exact wedge this module exists to remove from the arming guard,
+# reintroduced by a vendor-side configuration change nobody in the repo made. So: reviews (SHA-
+# scoped), issue comments (date-scoped), and reactions (date-scoped) are all read.
+#
+# The issue that asked for this described a further transient state — a 👀 reaction while the review
 # is running, removed when findings are posted. This module deliberately does NOT model it. The
 # reactions API exposes only reactions that exist RIGHT NOW, never deletion history, so "👀 was here
 # and then vanished" is knowable only to a watcher that happened to be looking across the
 # transition. A detector that needed it could not answer correctly after a restart, a resumed
-# watch, or a late start — exactly the cases an unattended watcher must survive. Polling for either
-# TERMINAL signal instead is restart-safe, idempotent, and needs no memory of what came before.
+# watch, or a late start — exactly the cases an unattended watcher must survive. Polling for the
+# TERMINAL signals instead is restart-safe, idempotent, and needs no memory of what came before.
+#
+# PRECEDENCE: findings outrank clean, and within findings a review at the head SHA outranks a
+# comment. A reviewer that left a stale `+1` from an earlier pass AND has now commented has
+# something to say about this head.
 #
 # WHAT THIS COSTS THE CALLER. `pr-review.sh gate` reads only `pulls/N/reviews`, so a CLEAN Codex
 # pass — which posts no review — never satisfies it: it returns 16 ("awaiting review") forever, and
@@ -289,7 +308,7 @@ read_declared_bots() {
 # the next pass without any stored state to reset (base/practices/verify-before-asserting.md).
 classify() {
   local n="$1" want="$2" pjson pfields head state merged gotslug wantslug
-  local reviews hits reacts cjson commitdate whojson
+  local reviews hits reacts cjson commitdate whojson comments commented
 
   # The declared set as a JSON array, built ONCE: both jq passes below test membership against it,
   # and re-deriving it per pass would fork a second jq for the same value.
@@ -377,6 +396,29 @@ EOF
     return 10
   fi
 
+  # --- findings? an ISSUE COMMENT from a declared reviewer, newer than the head commit ----------
+  # The connector has TWO output shapes and which one you get depends on how it is configured:
+  #
+  #   without a Codex Cloud environment → a lightweight review: a `COMMENTED` review object plus
+  #                                       inline threads (what the block above reads)
+  #   with one                          → a Cloud TASK: a single issue comment summarising what it
+  #                                       found or changed, and NO review object at all
+  #
+  # Observed live on this repo within one day: PR #166 (08:01) took the first shape — one review,
+  # three inline threads; PR #178 (19:30), after an environment was created, took the second — one
+  # issue comment, zero reviews, zero threads. A detector that reads only reviews therefore sits at
+  # `pending` forever on a repo configured the second way, which is the same wedge this module
+  # exists to remove from the arming guard. Read both.
+  #
+  # A comment is NOT commit-scoped, so it gets the reaction's staleness rule rather than the
+  # review's SHA equality — see below.
+  comments="$(read_list "repos/{owner}/{repo}/issues/$n/comments?per_page=100" comments "$n")" || return 20
+  commented="$(printf '%s' "$comments" | jq -r --argjson who "$whojson" '
+      [ .[]
+        | select((((.user.login // "") | ascii_downcase | sub("\\[bot\\]$"; ""))) as $l | $who | index($l))
+        | (.created_at // "") | select(length > 0) ] | sort | last // ""' 2>/dev/null)" \
+    || { echo "pr-watch: could not evaluate the comments of PR #$n" >&2; return 20; }
+
   # --- clean? a `+1` on the PR's opening post, NEWER than the head commit -----------------------
   # A pull request IS an issue as far as reactions go, so the opening post's reactions live at
   # `issues/N/reactions`, not `pulls/N/...`. --paginate because a busy PR can push the bot's
@@ -396,16 +438,27 @@ EOF
         | (.created_at // "") | select(length > 0) ] | sort | last // ""' 2>/dev/null)" \
     || { echo "pr-watch: could not evaluate the reactions of PR #$n" >&2; return 20; }
 
-  if [ -n "$plus1at" ]; then
-    # A reaction carries no commit, so prove it POSTDATES the head commit. Only fetched on this
-    # branch — the terminating case — so a still-pending poll never pays for it.
+  # Neither a comment nor a reaction carries a commit, so both are proved against the head commit's
+  # date. Read that date ONCE, and only when at least one candidate exists — a poll with neither
+  # signal present is the common case and must not pay for it.
+  if [ -n "$commented" ] || [ -n "$plus1at" ]; then
     cjson="$(gh api "repos/{owner}/{repo}/commits/$head" 2>/dev/null)" \
       || { echo "pr-watch: could not read the head commit of PR #$n" >&2; return 20; }
     commitdate="$(printf '%s' "$cjson" | jq -r '.commit.committer.date // .commit.author.date // ""' 2>/dev/null)" \
       || { echo "pr-watch: could not parse the head commit of PR #$n" >&2; return 20; }
     [ -n "$commitdate" ] \
       || { echo "pr-watch: could not date the head commit of PR #$n" >&2; return 20; }
+  fi
 
+  # FINDINGS OUTRANK CLEAN, so the comment is tested first: a reviewer that both commented and left
+  # a stale `+1` from an earlier pass has something to say about this head.
+  if [ -n "$commented" ] && [ "$commented" \> "$commitdate" ]; then
+    printf 'findings %s\n' "$head"
+    echo "pr-watch: PR #$n at $head — the declared reviewer commented at $commented (head committed $commitdate); no inline threads may exist, so READ THE COMMENT" >&2
+    return 10
+  fi
+
+  if [ -n "$plus1at" ]; then
     # Both values are ISO-8601 UTC (`...Z`) as GitHub returns them, so a LEXICOGRAPHIC compare is
     # a chronological one — no date parsing, which is exactly where a bash-3.2/macOS-vs-GNU split
     # would otherwise appear (`date -d` vs `date -j`).
