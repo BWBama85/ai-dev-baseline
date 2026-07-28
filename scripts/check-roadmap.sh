@@ -33,6 +33,13 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+# The Actions app slug the library attributes against, read from its ONE home (common.sh) rather
+# than restated here. Sourcing it means a future change to that value cannot leave these fixtures
+# behind; the explicit API-contract assertion in section 4d is what stops the value itself from
+# silently becoming wrong again.
+ACTIONS_SLUG="$(. "$(dirname "$0")/lib/common.sh" >/dev/null 2>&1; adb_actions_app_slug)"
+[ -n "$ACTIONS_SLUG" ] || { echo "check-roadmap: FATAL — adb_actions_app_slug returned nothing" >&2; exit 1; }
+
 # --- fixture builders ----------------------------------------------------------------------
 # ref <number> [owner] [repo] — one closingIssuesReferences entry (defaults to $SLUG's repo).
 ref() {
@@ -69,11 +76,18 @@ health_why() {
 # run_health <args...> — stdin-taking capture, mirroring `run` for the non-stdin subcommands.
 run_health() { OUT="$(printf '%s' "$1" | bash "$RL" branch-health "${@:2}" 2>&1)"; RC_=$?; }
 # ck <name> <sha> <status> <conclusion> [app-slug] — one check-run object.
-# The app slug defaults to `github` (GitHub Actions), because that is what an Actions-produced
-# check run carries and what the predicate attributes against. Pass a different slug to model
-# another Checks API app (a linter bot, a deploy provider).
+# The app slug defaults to what an Actions-produced check run REALLY carries, sourced from the one
+# home rather than restated — a hard-coded default here is precisely what hid #179: the fixture
+# asserted the code's belief (`github`) instead of the API's behavior, so the suite stayed green
+# against a value GitHub never returns. The API-contract test below still pins the literal ONCE,
+# on purpose, so implementation and fixtures cannot drift together again.
+# Pass a different slug to model another Checks API app (a linter bot, a deploy provider).
 ck() { printf '{"name":"%s","head_sha":"%s","status":"%s","conclusion":%s,"app":{"slug":"%s"}}' \
-         "$1" "$2" "$3" "$(if [ "$4" = "null" ]; then printf 'null'; else printf '"%s"' "$4"; fi)" "${5:-github}"; }
+         "$1" "$2" "$3" "$(if [ "$4" = "null" ]; then printf 'null'; else printf '"%s"' "$4"; fi)" "${5:-$ACTIONS_SLUG}"; }
+# ck_noapp <name> <sha> <status> <conclusion> — a check run with `app` NULL, which the GitHub REST
+# schema permits. Its provenance is UNKNOWN, which is neither Actions nor external.
+ck_noapp() { printf '{"name":"%s","head_sha":"%s","status":"%s","conclusion":%s,"app":null}' \
+         "$1" "$2" "$3" "$(if [ "$4" = "null" ]; then printf 'null'; else printf '"%s"' "$4"; fi)"; }
 # st <context> <state> — one legacy commit-status object.
 st() { printf '{"context":"%s","state":"%s"}' "$1" "$2"; }
 # hj <check-objs-csv> <status-objs-csv> — the {check_runs,statuses} document branch-health reads.
@@ -435,6 +449,34 @@ eq "$(health "$(printf '{"check_runs":[{"name":"ci","head_sha":"%s","status":"co
 eq "$(health "$(hj "$(ck vercel "$SHA" completed failure vercel)" '')" "$SHA" 3)" not-green \
    "a failing check from another app is still red (attribution never rescues a failure)"
 
+# --- 4d. THE API CONTRACT: what slug does GitHub Actions ACTUALLY stamp? (#179) --------------
+# This block is the one place the literal is written out, and that is deliberate. Every other
+# fixture derives the slug from `adb_actions_app_slug`, which makes them immune to a change in
+# that value — and therefore blind to it being WRONG. That blindness is not hypothetical: both
+# libraries shipped attributing against `github`, the app OWNER login, while GitHub stamps
+# `github-actions` (app id 15368). The fixtures defaulted to `github` too, so the suite was green
+# against a value the API never returns, and `branch-health` could not return `green` on any
+# Actions repo — deadlocking the release-goal convention at `indeterminate`.
+#
+# So: assert the constant against a hard-coded literal, and assert the RETIRED value is treated
+# as just another foreign app. If GitHub ever renames the slug, this is the test that must be
+# changed deliberately — which is the entire point.
+eq "$ACTIONS_SLUG" "github-actions" \
+   "adb_actions_app_slug is exactly 'github-actions' (the value GitHub really stamps)"
+eq "$(health "$(hj "$(ck ci "$SHA" completed success github-actions)" '')" "$SHA" 1)" green \
+   "an API-shaped Actions check run (slug github-actions) + active workflows => GREEN (the #179 bug)"
+eq "$(health "$(hj "$(ck ci "$SHA" completed success github)" '')" "$SHA" 1)" indeterminate \
+   "the RETIRED literal 'github' is just another app slug, never Actions"
+has "$(health_why "$(hj "$(ck ci "$SHA" completed success github)" '')" "$SHA" 1)" "Actions has not reported" \
+   "...and the reason names Actions specifically, not the app that did report"
+# `app` is required-but-NULLABLE in the REST schema, so this is a real shape, not a hypothetical.
+eq "$(health "$(hj "$(ck_noapp ci "$SHA" completed success)" '')" "$SHA" 1)" indeterminate \
+   "a null app is UNKNOWN provenance, never proof Actions ran"
+# The fix must not have widened attribution to the app OWNER login, which IS `github` — that would
+# re-admit the retired literal through a second door and quietly restore the bug.
+eq "$(health "$(printf '{"check_runs":[{"name":"ci","head_sha":"%s","status":"completed","conclusion":"success","app":{"slug":"circleci","owner":{"login":"github"}}}],"statuses":[]}' "$SHA")" "$SHA" 1)" \
+   indeterminate "attribution is by app.slug ALONE — an app owned by 'github' is not Actions"
+
 # FAIL-CLOSED on every unreadable input. An unparseable health read must never be `green`.
 # A MISSING collection is an error, not an empty one (bot-review find). `{}` previously defaulted
 # both keys to [] and returned `no-ci`, which release-ready maps to `met` — fabricating a release
@@ -595,8 +637,14 @@ has "$readiness_block" '{{ROADMAP_LIB}} branch-health' \
 # The inventory read is gated on ACTIONS having reported, not on "any result exists": both a legacy
 # status and a check run from another Checks app can be present while Actions is silent, and
 # suppressing the read on either lets the predicate return `green` on an unreported build.
-has "$readiness_block" '.app.slug // "") == "github"' \
+# The expected literal is DERIVED from the one home, not restated: this assertion previously
+# pinned `== "github"` into the rendered docs, so the workflow, the library and the fixtures all
+# agreed on a value GitHub never returns (#179). Deriving it means the snippet must track the
+# constant, while section 4d is what proves the constant itself is right.
+has "$readiness_block" ".app.slug // \"\") == \"$ACTIONS_SLUG\"" \
   "the inventory gate attributes check runs by app, so another app cannot stand in for Actions"
+hasnt "$readiness_block" '== "github"' \
+  "...and the snippet no longer carries the retired literal that could never match"
 has "$readiness_block" 'HEALTH=skipped' \
   "health starts at the honest 'skipped', never a fabricated green"
 has "$readiness_block" 'defaultBranchRef' \

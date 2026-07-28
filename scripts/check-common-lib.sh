@@ -646,4 +646,29 @@ trapped="$(bash -c '. "$1"; trap "echo MINE" TERM; adb_run_bounded 5 1 true >/de
   _ "$PWD/scripts/lib/common.sh" 2>/dev/null)"
 has "$trapped" "MINE" "adb_run_bounded restores the caller's own TERM trap"
 
+# --- adb_actions_app_slug: the ONE home for check-run provenance (#179) ----------------------
+# Two libraries decide "did GitHub Actions report here?" — roadmap-lib.sh (whose answer gates a
+# release cut) and repo-settings.sh (whose answer gates the required-check lint). They shipped
+# with independent copies of the discriminator, both wrong the same way: `github`, which is the
+# app OWNER login, where GitHub stamps the slug `github-actions`. Neither could ever match, so
+# `branch-health` never returned green on an Actions repo and `required-drift` silently found no
+# Actions contexts to contradict. This is the value both now read instead of restating.
+eq "$(adb_actions_app_slug)" "github-actions" "adb_actions_app_slug is the real GitHub Actions slug"
+# Side-effect-free and stable: it is interpolated into jq --arg values, so a trailing newline or a
+# stray write to stdout would corrupt the caller's program arguments rather than fail loudly.
+eq "$(adb_actions_app_slug; adb_actions_app_slug)" "github-actionsgithub-actions" \
+   "...printed with no trailing newline, so it composes into an argument cleanly"
+
+# THE DRIFT GUARD. The accessor being right is worth nothing if a consumer still carries its own
+# literal — that is exactly the state this issue found. Assert that neither library hard-codes an
+# Actions slug of its own, and that both reference the accessor.
+for consumer in scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh; do
+  grep -q 'adb_actions_app_slug' "$consumer"
+  yes $? "$(basename "$consumer") sources the slug from common.sh"
+  # Only CODE counts: the comments in both files quote the wrong literal to explain the bug, and a
+  # document-wide search would fail on the explanation itself. Strip comment lines first.
+  grep -v '^[[:space:]]*#' "$consumer" | grep -qE 'slug[^=]*== *"github(-actions)?"'
+  no $? "$(basename "$consumer") carries no attribution literal of its own"
+done
+
 check_summary "common-lib"

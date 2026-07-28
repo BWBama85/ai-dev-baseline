@@ -592,21 +592,42 @@ _adb_rs_has_workflow_files() {
   return 1
 }
 
-# _adb_rs_actions_contexts <ref> — the check-run names GITHUB ACTIONS reported on <ref>'s head,
-# sorted and deduped. Attribution is by `app.slug == "github"`, the same discriminator
-# roadmap-lib.sh's branch-health uses, so "which provider produced this context" has one answer
-# across the repo.
+# _adb_rs_checkruns <ref> — the raw check-runs document for <ref>'s head. Split out from the two
+# filters below so PROVENANCE IS ONE READ: asking "which are Actions?" and "which cannot be
+# attributed at all?" must describe the same set of check runs, not two reads a push could
+# separate.  Returns non-zero only when the READ failed.
+_adb_rs_checkruns() {
+  gh api --paginate "repos/$REPO_SLUG/commits/$1/check-runs?per_page=100" 2>/dev/null
+}
+
+# Provenance is TRI-STATE, and conflating any two of the states is a fail-open (#179):
 #
-# This exists to answer a question the workflow files alone cannot: whether a required context
-# could plausibly have come from this repo's Actions workflows at all. Without it, a required
-# context supplied by CircleCI/Vercel is indistinguishable from one whose job discovery has
-# stopped seeing. Returns non-zero only when the READ failed — an empty result is a legitimate
-# answer ("Actions reported nothing on this ref").
+#   ACTIONS   app.slug == `github-actions`  -> came from a workflow in this tree
+#   EXTERNAL  any other NON-EMPTY slug      -> CircleCI/Vercel/a linter bot; not this lint's business
+#   UNKNOWN   `app` null or slug missing    -> cannot be attributed; the caller must fail closed
+#
+# `app` is required-but-NULLABLE in the GitHub REST schema, so UNKNOWN is a shape the API really
+# produces. Folding it into EXTERNAL (which is what a single "is it Actions?" filter does) makes an
+# unattributable context read as somebody else's problem — and `required-drift` then reports a clean
+# pass over exactly the contexts it could not vouch for.
+#
+# Both filters take the document on stdin and are otherwise pure, so the offline suite drives them
+# with fixtures. The Actions slug comes from `adb_actions_app_slug` (common.sh, the ONE home) and is
+# passed as a typed --arg, so this file cannot drift from roadmap-lib.sh: both consumers read the
+# same value, and neither restates it.
+
+# _adb_rs_actions_contexts — check-run names GITHUB ACTIONS reported, sorted and deduped.
+# An empty result is a legitimate answer ("Actions reported nothing on this ref"), not an error.
 _adb_rs_actions_contexts() {
-  local json
-  json="$(gh api --paginate "repos/$REPO_SLUG/commits/$1/check-runs?per_page=100" 2>/dev/null)" || return 1
-  printf '%s' "$json" \
-    | jq -r '.check_runs[]? | select((.app.slug // "") == "github") | .name' 2>/dev/null \
+  jq -r --arg aslug "$(adb_actions_app_slug)" \
+     '.check_runs[]? | select((.app.slug // "") == $aslug) | .name' 2>/dev/null \
+    | LC_ALL=C sort -u
+}
+
+# _adb_rs_unknown_contexts — check-run names whose producing app cannot be identified. These are
+# the ones nobody may reason about: not provably Actions, not provably external.
+_adb_rs_unknown_contexts() {
+  jq -r '.check_runs[]? | select((.app.slug // "") == "") | .name' 2>/dev/null \
     | LC_ALL=C sort -u
 }
 
@@ -1027,13 +1048,15 @@ cmd_required_drift() {
   # that Actions never reported belong to somebody else and are none of this lint's business.
   if [ "$nwant" -eq 0 ]; then
     if [ -n "$BR_CONTEXTS" ]; then
-      local actions_ctx shared
-      if ! actions_ctx="$(_adb_rs_actions_contexts "$branch")"; then
+      local cr_json actions_ctx unknown_ctx shared murky
+      if ! cr_json="$(_adb_rs_checkruns "$branch")"; then
         echo "repo-settings: discovery found no PR-triggered jobs and '$branch' requires $(nlines "$BR_CONTEXTS") context(s)," >&2
         echo "repo-settings: but the check runs that would say who produced them could not be read." >&2
         echo "repo-settings: refusing to guess which side is wrong (failing closed)." >&2
         return 20
       fi
+      actions_ctx="$(printf '%s' "$cr_json" | _adb_rs_actions_contexts)"
+      unknown_ctx="$(printf '%s' "$cr_json" | _adb_rs_unknown_contexts)"
       shared="$(LC_ALL=C comm -12 <(nz "$BR_CONTEXTS") <(nz "$actions_ctx"))"
       if [ -n "$shared" ]; then
         echo "repo-settings: discovery found NO PR-triggered jobs, yet '$branch' requires context(s) that" >&2
@@ -1044,8 +1067,27 @@ cmd_required_drift() {
         echo "repo-settings: See the skip reasons above; refusing to report 'no drift' (failing closed)." >&2
         return 20
       fi
+      # Before declaring the rest external, account for the ones nobody can attribute. `app` is
+      # nullable, so a required context whose producer is UNKNOWN is not evidence of external CI —
+      # and passing it as such is the same silent gate-loss this lint exists to catch, only issued
+      # by the lint itself. Fail closed on exactly those, and name them.
+      murky="$(LC_ALL=C comm -12 <(nz "$BR_CONTEXTS") <(nz "$unknown_ctx"))"
+      if [ -n "$murky" ]; then
+        echo "repo-settings: discovery found NO PR-triggered jobs, and '$branch' requires context(s) whose" >&2
+        echo "repo-settings: producing app the API did not identify:" >&2
+        printf '%s\n' "$murky" | sed 's/^/  - /' >&2
+        echo "repo-settings: an unattributable context is not proof of external CI, so treating it as" >&2
+        echo "repo-settings: 'not our business' would pass over a gate that may have stopped gating." >&2
+        echo "repo-settings: refusing to report 'no drift' (failing closed)." >&2
+        return 20
+      fi
       # Every required context came from outside Actions — an external provider. Out of scope by
       # this command's own contract, so this is a clean pass, not a grudging one.
+      #
+      # KNOWN LIMITATION: this reasons from "an Actions-reported context comes from a workflow in
+      # THIS tree", which an organization/enterprise ruleset can break by requiring a workflow
+      # sourced from another repository. Such a repo, with empty local discovery, fails closed at
+      # the `shared` branch above rather than passing — deliberately the safe direction. Tracked.
       adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch'; its $(nlines "$BR_CONTEXTS") required context(s) are not Actions-reported (external CI) — nothing to require"
       return 0
     fi

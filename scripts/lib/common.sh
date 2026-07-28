@@ -265,6 +265,28 @@ adb_repo_slug() {
   printf '%s' "$_ADB_REPO_SLUG"
 }
 
+# adb_actions_app_slug — print the `app.slug` that GitHub Actions stamps on every check run it
+# produces. THE ONE HOME for that value (#179): two libraries decide "did Actions report here?"
+# and both must mean the same thing by it.
+#
+# The value is `github-actions`, and the wrong one is not a typo anybody would catch by reading:
+# the app's OWNER login is `github`, its name is "GitHub Actions", and its slug is `github-actions`
+# (app id 15368, https://github.com/apps/github-actions). Both consumers shipped with `github`,
+# which matches NOTHING — so `branch-health` could never return `green` on an Actions repo (a
+# release the convention can never cut) and `required-drift`'s provenance check silently found no
+# Actions contexts (a fail-OPEN in the lint that exists to catch a gate that stopped gating).
+#
+# Deliberately a SCALAR accessor, not a shared jq fragment. One consumer embeds the test inside a
+# large jq program and the other inside a one-line filter; the only thing they can honestly share
+# is the value, passed in as a typed `--arg`. Sharing jq SOURCE would mean `eval` or generated
+# filter text — a far worse coupling than the duplication it removes.
+#
+# Matched EXACTLY, and never widened to `app.owner.login == "github"` or to the numeric app id.
+# GitHub documents `slug` as a name-derived URL slug rather than a permanent cross-GHES constant,
+# so an unrecognized value must fall through to each caller's fail-closed path (unknown
+# provenance), never be guessed at by a second, looser rule.
+adb_actions_app_slug() { printf 'github-actions'; }
+
 # --- git ---------------------------------------------------------------------
 
 # Resolve a repo's default branch: origin/HEAD → a local main/master → "main".
