@@ -111,6 +111,16 @@ _ADB_PW_ROLE_DISPATCH="$_adb_pw_libdir/role-dispatch.sh"
 usage() { adb_usage "$0"; }
 
 OPT_PR=""
+# Defaults chosen against the observed shape of a real review: the Codex connector took ~3 minutes
+# on this repo's recent PRs, so a 30s poll converges promptly, and 30 minutes is long enough to
+# cover a slow or queued review without waiting on one that is never coming.
+#
+# COST OF A POLL: three reads (the PR, its reviews, its reactions), plus a fourth — the head commit
+# — only on the branch where a `+1` was actually found. A full 30-minute watch at 30s is therefore
+# ~180 requests against an authenticated limit of 5000/hour: comfortable, but not free, which is
+# why the interval is tunable and why the clean/findings checks short-circuit the moment either
+# lands. Collapsing the reads into one GraphQL query is tracked separately (#147 makes the same
+# argument about the sibling guard).
 OPT_INTERVAL=30
 OPT_MAX_SECS=1800
 # Consecutive unreadable polls tolerated before `wait` gives up. A single 502/rate-limit must not
@@ -321,6 +331,14 @@ EOF
     # Both values are ISO-8601 UTC (`...Z`) as GitHub returns them, so a LEXICOGRAPHIC compare is
     # a chronological one — no date parsing, which is exactly where a bash-3.2/macOS-vs-GNU split
     # would otherwise appear (`date -d` vs `date -j`).
+    #
+    # THE BACKSLASH IN `\>` IS LOAD-BEARING — do not "clean it up". Unescaped, `>` inside `[ ]` is
+    # a REDIRECTION: the test would silently become `[ "$plus1at" ]` (true for any non-empty
+    # string) while creating a file named after the commit date, so EVERY `+1` would read as fresh
+    # and the staleness rule — the one direction this module must never be wrong in — would be
+    # gone with no error anywhere. Note also that `[ a \> b ]` is a bash string comparison, not a
+    # POSIX `test` one; this file is bash by shebang and every caller invokes it as `bash <path>`,
+    # which is the repo-wide convention. It does NOT work under zsh.
     if [ "$plus1at" \> "$commitdate" ]; then
       printf 'clean %s\n' "$head"
       echo "pr-watch: PR #$n at $head — clean pass signalled at $plus1at (head committed $commitdate)" >&2

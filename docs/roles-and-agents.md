@@ -314,8 +314,14 @@ the `[bot]` suffix, because GitHub's GraphQL and REST APIs report the same bot d
 > repo-level information and reads best where it is true.
 
 Expect the guard to skip arming on a bot-reviewed repo: step 10 runs seconds after the PR opens,
-so a reviewer that takes minutes has definitionally not reviewed yet. That is the intended trade —
-unattended *arming* is suspended until **#49** adds the PR watch that waits and then arms.
+so a reviewer that takes minutes has definitionally not reviewed yet. That is the intended trade.
+
+**The waiting half now exists** (#49): `/resolve-pr-threads <PR#> --watch` polls for the reviewer
+in a shell loop — no model tokens are spent while waiting — and runs the resolve flow only if
+findings land. It does **not** arm auto-merge afterwards, so unattended *arming* is still suspended
+on a bot-reviewed repo. Whether the watcher should arm is an open decision, not an oversight: #49's
+own text says it must "never merge", while this page and `docs/repo-settings.md` were written
+expecting it to arm. That contradiction is tracked rather than resolved by assumption.
 
 > **Scope.** The role model is a static declaration plus this bot allowlist — **not** a dynamic
 > orchestration engine. Bespoke per-project patterns (dynamic mid-task consult agents,
