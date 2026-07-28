@@ -197,13 +197,24 @@ else is `opaque`. (Classic protection with required checks merely switched *off*
 classic contexts are visible here, so a job required solely by the ruleset could be reported as
 ungated. Filed as a follow-up rather than guessed at — reading it needs the rules API.
 
-**An empty discovery result is ambiguous, and is not passed green on trust.** "No discoverable CI"
-and "there are workflow files and the parser saw none of them" produce the same empty set. If
-workflow files exist, discovery found nothing, *and* the branch still requires contexts, those two
-statements contradict each other — every required context is now unreported — so the lint fails
-closed at `20` and prints discovery's skip reasons. A repo whose CI is **entirely external** (no
-`.github/workflows` at all, contexts from CircleCI/Vercel) has no files and therefore makes no
-claim, so it stays on the passing side.
+**An empty discovery result is ambiguous, and is resolved by provenance.** "No discoverable CI"
+and "there are workflow files and the parser saw none of them" produce the same empty set. Passing
+both green is a fail-open; failing both is worse and wrong on this command's own terms, since a
+repo may legitimately hold a schedule-only workflow while CircleCI supplies the required PR
+context — and this command disclaims external-provider contexts.
+
+So the tiebreak is **who reported the context**, read from the check runs on the branch and
+attributed by `app.slug` (the same discriminator `roadmap-lib.sh branch-health` uses):
+
+| Discovery empty, and… | Verdict |
+|---|---|
+| no `.github/workflows` at all | `0` — no claim to contradict (#24, and external-only CI) |
+| the required contexts were **reported by GitHub Actions** on this branch | `20` — they must have come from a workflow in this tree, so the parser has gone blind |
+| the required contexts were **not** Actions-reported (CircleCI, Vercel, …) | `0` — someone else's contexts, out of scope by contract |
+| provenance itself could not be read | `20` — refuse to pick a side |
+
+The middle row is the fail-open this closes; the third is the false positive that closing it
+naively would have created.
 
 ### Where it runs, and why not its own job
 

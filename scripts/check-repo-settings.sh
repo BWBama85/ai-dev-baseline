@@ -249,6 +249,14 @@ if [ "$method" = "GET" ]; then
     */protection)
       if [ -f "$S/protection.json" ]; then emit "HTTP/2.0 200 OK" "$S/protection.json"
       else emit "HTTP/2.0 404 Not Found"; [ "$want_headers" = "1" ] || exit 1; fi ;;
+    # Check runs on a ref (#122): who PRODUCED each required context. Must precede `repos/*` for
+    # the same reason as the branch arm. An absent fixture answers with an empty check_runs list,
+    # which is a legitimate state ("Actions reported nothing here"), not an error.
+    */check-runs*)
+      if [ "${STUB_CHECKRUNS_STATUS:-200}" != "200" ]; then
+        emit "HTTP/2.0 ${STUB_CHECKRUNS_STATUS} Error"; exit 1
+      elif [ -f "$S/checkruns.json" ]; then emit "HTTP/2.0 200 OK" "$S/checkruns.json"
+      else emit "HTTP/2.0 200 OK" /dev/null; printf '{"check_runs":[]}'; fi ;;
     # The ordinary branch endpoint (#122) — must be matched BEFORE the generic `repos/*` arm, or
     # it would be answered with the REPO object and every drift assertion would read nonsense.
     # It sits after */protection so the more specific protection URL still wins.
@@ -307,6 +315,7 @@ rsx_stub() {   # run against the stub with a fresh call log
   rm -f "$S/body.json"
   OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" STUB_FAIL_WRITE="${STUB_FAIL_WRITE:-}" \
          STUB_BRANCH_STATUS="${STUB_BRANCH_STATUS:-}" \
+         STUB_CHECKRUNS_STATUS="${STUB_CHECKRUNS_STATUS:-}" \
          PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
 
@@ -330,6 +339,12 @@ branch_ruleset()     { printf '{"protected":true,"protection":{"enabled":false,"
 # job as drifted — a repo-wide false positive. It must fail closed instead.
 branch_opaque()      { printf '{"protected":true,"protection":{"enabled":true}}\n' > "$S/branch.json"; }
 branch_malformed()   { printf 'not json at all\n' > "$S/branch.json"; }
+
+# Check-run fixtures: `app.slug` is the provenance discriminator. "github" IS GitHub Actions;
+# anything else (circleci, vercel, …) is an external provider whose contexts this lint disclaims.
+checkruns_none()     { rm -f "$S/checkruns.json"; }
+checkruns_actions()  { jq -n --args '{check_runs: [$ARGS.positional[] | {name: ., app: {slug: "github"}}]}' "$@" > "$S/checkruns.json"; }
+checkruns_external() { jq -n --args '{check_runs: [$ARGS.positional[] | {name: ., app: {slug: "circleci"}}]}' "$@" > "$S/checkruns.json"; }
 rsx_auth() {   # the SAME stub, auth knob flipped — one stub, two behaviors
   OUT="$(S="$S" STUB_AUTH_FAIL=1 PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
@@ -638,14 +653,35 @@ eq "$RC_" "20" "required-drift = 20 on a ruleset-protected branch (legacy block 
 hasnt "$OUT" "  - one" "a ruleset branch does NOT report every job as ungated (1/2)"
 hasnt "$OUT" "  - two" "a ruleset branch does NOT report every job as ungated (2/2)"
 
-# The contradiction: workflow files ARE present, discovery produced nothing, and the branch still
-# requires contexts. Passing that green is the fail-open this lint exists to catch.
+# Files present + discovery empty + contexts required is only a contradiction when PROVENANCE
+# says so. These three cases are the whole rule, and the middle one is the regression that
+# matters: a schedule-only workflow beside external CI is a legitimate configuration, and failing
+# it would contradict this command's own documented exclusion of external-provider contexts —
+# permanently red, on a repo with no drift at all.
 wf_reset
 printf 'name: Sched\non:\n  schedule:\n    - cron: "0 0 * * *"\njobs:\n  nightly:\n    runs-on: ubuntu-latest\n' > "$WF/sched.yml"
-repo_fx true true; branch_checks "one" "two"
+
+# (a) the required contexts ARE Actions-reported -> they came from a workflow in this tree, so
+#     discovery finding none of them means the parser went blind. Fail closed.
+repo_fx true true; branch_checks "one" "two"; checkruns_actions "one" "two"
 rsx_stub required-drift
-eq "$RC_" "20" "required-drift = 20 when workflow files exist, discovery finds nothing, yet contexts are required"
+eq "$RC_" "20" "required-drift = 20 when discovery is empty but Actions reported the required contexts"
 has "$OUT" "cannot both be right" "the contradiction is named, not silently passed"
+has "$OUT" "  - one" "the Actions-reported context is named"
+
+# (b) the required contexts are EXTERNAL (CircleCI) -> none of this lint's business. Must pass,
+#     or a legitimate schedule-only + external-CI repo is red forever.
+repo_fx true true; branch_checks "ci/circleci: build"; checkruns_external "ci/circleci: build"
+rsx_stub required-drift
+eq "$RC_" "0" "required-drift = 0 when the required contexts are external-provider, not Actions"
+has "$OUT" "external CI" "the pass names WHY it passed (provenance), not just that it passed"
+
+# (c) provenance cannot be read at all -> refuse to pick a side.
+repo_fx true true; branch_checks "one"; checkruns_actions "one"
+STUB_CHECKRUNS_STATUS=500 rsx_stub required-drift
+eq "$RC_" "20" "required-drift = 20 when the check runs that establish provenance cannot be read"
+has "$OUT" "could not be read" "the unreadable-provenance case says so"
+checkruns_none
 
 # The CONSISTENT version of that same state — files present, none PR-triggered, nothing required —
 # is not a contradiction and must still pass. Without this, the check above could be over-broad.

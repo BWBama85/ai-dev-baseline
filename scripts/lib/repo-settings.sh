@@ -592,6 +592,24 @@ _adb_rs_has_workflow_files() {
   return 1
 }
 
+# _adb_rs_actions_contexts <ref> — the check-run names GITHUB ACTIONS reported on <ref>'s head,
+# sorted and deduped. Attribution is by `app.slug == "github"`, the same discriminator
+# roadmap-lib.sh's branch-health uses, so "which provider produced this context" has one answer
+# across the repo.
+#
+# This exists to answer a question the workflow files alone cannot: whether a required context
+# could plausibly have come from this repo's Actions workflows at all. Without it, a required
+# context supplied by CircleCI/Vercel is indistinguishable from one whose job discovery has
+# stopped seeing. Returns non-zero only when the READ failed — an empty result is a legitimate
+# answer ("Actions reported nothing on this ref").
+_adb_rs_actions_contexts() {
+  local json
+  json="$(gh api --paginate "repos/$REPO_SLUG/commits/$1/check-runs?per_page=100" 2>/dev/null)" || return 1
+  printf '%s' "$json" \
+    | jq -r '.check_runs[]? | select((.app.slug // "") == "github") | .name' 2>/dev/null \
+    | LC_ALL=C sort -u
+}
+
 # --- apply --------------------------------------------------------------------------------
 
 # run_gh <label> <body-or-empty> <args…> — execute a mutating gh call, or print it (and its JSON
@@ -996,23 +1014,40 @@ cmd_required_drift() {
       return 20 ;;
   esac
 
-  # Workflow files exist but discovery produced nothing. That is not the same as "no CI", and
-  # passing it green is a fail-open in exactly the shape this lint exists to catch — a gate that
-  # silently stopped gating. If the branch still requires contexts, the two statements contradict
-  # each other: either the parser stopped seeing jobs it used to see (a reindent, a trigger
-  # change) or CI moved. Every required context is then unreported, so the branch is gated by
-  # names nothing will satisfy — fail closed and say so.
+  # Workflow files exist but discovery produced nothing. Passing that green unconditionally is a
+  # fail-open in exactly the shape this lint exists to catch — a gate that silently stopped
+  # gating — but failing it unconditionally is worse, and wrong on its own terms: this command
+  # documents that it does NOT fail on external-provider contexts, and a repo can legitimately
+  # hold a schedule-only workflow while CircleCI supplies the required PR context. Files present
+  # + contexts required is therefore NOT yet a contradiction.
   #
-  # Requiring nothing is the consistent version of the same state (files present, none
-  # PR-triggered, nothing required), so that stays a pass.
+  # What makes it one is PROVENANCE: a required context that GitHub Actions itself reported on
+  # this branch must have come from a workflow in this tree, so discovery finding none of them
+  # means the parser stopped seeing jobs it used to see (a reindent, a trigger change). Contexts
+  # that Actions never reported belong to somebody else and are none of this lint's business.
   if [ "$nwant" -eq 0 ]; then
     if [ -n "$BR_CONTEXTS" ]; then
-      echo "repo-settings: discovery found NO PR-triggered jobs, yet '$branch' requires $(nlines "$BR_CONTEXTS") context(s)." >&2
-      echo "repo-settings: those two cannot both be right — the workflow files are present but none" >&2
-      echo "repo-settings: was discoverable, so every required context is now unreported and the" >&2
-      echo "repo-settings: branch is gated by names nothing will satisfy. See the skip reasons above." >&2
-      echo "repo-settings: refusing to report 'no drift' on a contradiction (failing closed)." >&2
-      return 20
+      local actions_ctx shared
+      if ! actions_ctx="$(_adb_rs_actions_contexts "$branch")"; then
+        echo "repo-settings: discovery found no PR-triggered jobs and '$branch' requires $(nlines "$BR_CONTEXTS") context(s)," >&2
+        echo "repo-settings: but the check runs that would say who produced them could not be read." >&2
+        echo "repo-settings: refusing to guess which side is wrong (failing closed)." >&2
+        return 20
+      fi
+      shared="$(LC_ALL=C comm -12 <(nz "$BR_CONTEXTS") <(nz "$actions_ctx"))"
+      if [ -n "$shared" ]; then
+        echo "repo-settings: discovery found NO PR-triggered jobs, yet '$branch' requires context(s) that" >&2
+        echo "repo-settings: GitHub Actions reported on this very branch:" >&2
+        printf '%s\n' "$shared" | sed 's/^/  - /' >&2
+        echo "repo-settings: those two cannot both be right — an Actions-reported context comes from a" >&2
+        echo "repo-settings: workflow in this tree, so the parser has stopped seeing jobs it used to see." >&2
+        echo "repo-settings: See the skip reasons above; refusing to report 'no drift' (failing closed)." >&2
+        return 20
+      fi
+      # Every required context came from outside Actions — an external provider. Out of scope by
+      # this command's own contract, so this is a clean pass, not a grudging one.
+      adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch'; its $(nlines "$BR_CONTEXTS") required context(s) are not Actions-reported (external CI) — nothing to require"
+      return 0
     fi
     adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch' — nothing to require"
     return 0
