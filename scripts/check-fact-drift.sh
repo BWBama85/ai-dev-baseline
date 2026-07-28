@@ -200,7 +200,9 @@ fact pr-review-guard "fixed:{{PR_REVIEW_LIB}} gate" -- \
 # workflows CALL it to render a status line. Rename it in the library alone and every call exits 2
 # with EMPTY stdout — which the workflows explicitly instruct the agent to read as "say nothing
 # about this entity". The mechanism goes permanently inert and reports nothing at all, so nothing
-# surfaces the breakage. Pin the exact token across the library and every caller.
+# surfaces the breakage. Pin the exact token across every CALLER (the library spells the
+# subcommand as a bare `observe)` case arm, which carries no placeholder to pin; its own rename is
+# caught loudly by scripts/check-state-assert.sh instead).
 fact state-assert-observe "fixed:{{STATE_ASSERT_LIB}} observe" -- \
   base/workflows/cleanup.md base/workflows/implement-issue.md \
   base/workflows/resolve-pr-threads.md

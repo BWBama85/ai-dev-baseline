@@ -141,6 +141,35 @@ SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"COMPLETED","url":"https://gith
 SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/issues/138"}' \
   fails_closed "an issue answered by 'gh pr view' is not a PR" observe pr 138
 
+# REPO-NAME COLLISION. The kind segment is compared EXACTLY at its known position, never searched
+# for in the URL, because an ordinary repo NAME can supply it. Repos called `issues` exist in the
+# wild (esphome/issues, cmangos/issues, tuna/issues) and this library installs into arbitrary
+# projects. Under a substring test, a PR in `acme/issues` has the URL
+# `https://github.com/acme/issues/pull/146` — which contains `/issues/` — so `observe issue 146`
+# rendered "issue #146 was observed CLOSED as completed" for a PULL REQUEST, at exit 0, in one
+# clean sentence. Demonstrated against the real library before the fix.
+SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/acme/issues/pull/146"}' \
+  fails_closed "a PR in a repo NAMED 'issues' is not an issue" observe issue 146
+SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/acme/pull/issues/9"}' \
+  fails_closed "an issue in a repo NAMED 'pull' is not a PR" observe pr 9
+
+# ...and the legitimate members of those same repos must STILL render, or the fix would have
+# traded a wrong sentence for a missing one.
+SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/acme/issues/pull/146"}'
+has "$(run observe pr 146)" "PR #146 was observed OPEN at " "a real PR in a repo named 'issues' still renders"
+SHIM_ISSUE_JSON='{"state":"OPEN","stateReason":null,"url":"https://github.com/acme/pull/issues/9"}'
+has "$(run observe issue 9)" "issue #9 was observed OPEN at " "a real issue in a repo named 'pull' still renders"
+
+# The response must be ABOUT the entity asked for. Only a misbehaving read produces this, but
+# rendering "PR #9" from a payload describing #146 is a wrong sentence, and a wrong sentence is
+# worse than none. Zero-padding must not fail spuriously: `-eq` compares numerically.
+SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/146"}' \
+  fails_closed "payload describes a different entity number" observe pr 9
+SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/146"}'
+has "$(run observe pr 0146)" "PR #0146 was observed OPEN at " "a zero-padded argument matches its own URL"
+SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/abc"}' \
+  fails_closed "unparseable entity number in the URL" observe pr 7
+
 # NOTE on "gh absent": deliberately NOT tested here. `adb_require_gh` (common.sh) prepends the
 # brew prefix when gh is missing, so on a macOS dev box an empty PATH still finds the real gh and
 # the case would silently become a live network test. The authentication arm above covers the same

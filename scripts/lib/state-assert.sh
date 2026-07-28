@@ -9,6 +9,7 @@
 #   0  observed     — exactly one rendered line on stdout
 #   2  usage error  — nothing on stdout
 #   3  unverifiable — nothing on stdout; the reason goes to stderr
+#   1  broken install — common.sh missing; nothing on stdout
 #
 # WHY THIS EXISTS, and why it is not just a getter.
 # `base/practices/verify-before-asserting.md` forbids stating volatile external status from
@@ -85,12 +86,21 @@ _sa_unverifiable() {
 #
 # The URL still earns its place, for a different question the number cannot answer: PRs and issues
 # share ONE number space, and `gh issue view <PR number>` really does answer with the pull request.
-# Only the `/pull/` vs `/issues/` path segment discriminates the two.
+# Only the `pull` vs `issues` path segment discriminates the two.
+#
+# That segment is compared EXACTLY, at its known position — never searched for anywhere in the URL.
+# A substring test is not merely loose here, it is exploitable by an ordinary repo NAME: repos
+# called `issues` exist in the wild (esphome/issues, cmangos/issues, tuna/issues), and this library
+# installs into arbitrary projects. In such a repo a pull request URL is
+# `https://github.com/acme/issues/pull/146`, which CONTAINS `/issues/` — so `observe issue 146`
+# would render "issue #146 was observed CLOSED as completed" for a pull request, at exit 0, in one
+# clean sentence. That is precisely the wrong-sentence outcome this file exists to make impossible,
+# and the repo name silently disarmed the one guard against it.
 _sa_read() {
   local kind="$1" n="$2" subcmd extra_field want_seg json url
   case "$kind" in
-    pr)    subcmd="pr";    extra_field="mergedAt";    want_seg="/pull/" ;;
-    issue) subcmd="issue"; extra_field="stateReason"; want_seg="/issues/" ;;
+    pr)    subcmd="pr";    extra_field="mergedAt";    want_seg="pull" ;;
+    issue) subcmd="issue"; extra_field="stateReason"; want_seg="issues" ;;
     *) usage >&2; exit 2 ;;
   esac
 
@@ -118,10 +128,26 @@ $fields
 EOF
   [ -n "$SA_STATE" ] || _sa_unverifiable "malformed response for $kind #$n"
 
-  case "$url" in
-    *"$want_seg"*) : ;;
-    *) _sa_unverifiable "#$n is not of kind '$kind' — its URL is not a ${want_seg} reference" ;;
+  # Take the segment immediately before the trailing /<number>. `tail` is a deliberate name: `path`
+  # is a zsh special bound to $PATH, and assigning it in any snippet an agent may execute empties
+  # the search path (the #126 regression).
+  local tail url_num
+  tail="${url%/*}"
+  case "${tail##*/}" in
+    "$want_seg") : ;;
+    *) _sa_unverifiable "#$n is not of kind '$kind' — its URL is not a /$want_seg/ reference" ;;
   esac
+  # The response must also be ABOUT the entity that was asked for. Real gh always returns the URL
+  # for the number requested, so this only fires on a misbehaving or spoofed read — but rendering
+  # "PR #9" from a payload describing #146 is a wrong sentence, and this file's whole contract is
+  # that a wrong sentence is worse than no sentence. `-eq` compares numerically, so a zero-padded
+  # argument (`observe pr 007`) still matches its own `/pull/7` URL rather than failing spuriously.
+  url_num="${url##*/}"
+  case "$url_num" in
+    ''|*[!0-9]*) _sa_unverifiable "unparseable entity number in the URL for $kind #$n" ;;
+  esac
+  [ "$url_num" -eq "$n" ] \
+    || _sa_unverifiable "read for $kind #$n returned data for #$url_num"
 }
 
 _sa_observe_pr() {
