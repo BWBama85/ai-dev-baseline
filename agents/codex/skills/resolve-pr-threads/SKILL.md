@@ -8,7 +8,7 @@
 # variable — fill it in when you run a step. Some other refs (Stop-hook gating,
 # /code-review, .claude paths) are Claude-specific; per-agent equivalents ride #14/#25.
 name: resolve-pr-threads
-description: Resolve unresolved bot-authored review threads on an open PR. Switches the working tree to the PR's head branch, addresses findings (commit + push if needed), replies, then marks each thread Resolved via GraphQL so branch protection unblocks merge.
+description: Resolve unresolved bot-authored review threads on an open PR. Switches the working tree to the PR's head branch, addresses findings (commit + push if needed), replies, then marks each thread Resolved via GraphQL so branch protection unblocks merge. With --watch it first waits for the async reviewer to finish, spending no model tokens while it waits.
 ---
 
 # /resolve-pr-threads
@@ -49,12 +49,79 @@ default set covers the common GitHub review bots:
 
 ## Steps
 
+### 0. Optional: wait for the reviewer first (`--watch`)
+
+**Skip this step entirely unless `--watch` appears in the arguments.** Without it every step below
+behaves exactly as it always has.
+
+`/implement-issue` opens a PR and ends; the async reviewer arrives minutes later, usually after the
+session is gone. `--watch` closes that gap without paying for it: the waiting happens in a **shell
+poll loop**, so the bound can be half an hour and **no model tokens are spent while merely
+waiting** — the model is not in the loop at all, and only re-enters if there is something to do.
+
+```bash
+# Self-contained, like every other fenced block here: these steps may run as separate shell
+# invocations that share no variables, so this block resolves the PR number itself rather than
+# borrowing step 1's. Both parsers take the first BARE INTEGER, so "--watch 42" and "42 --watch"
+# behave identically — taking the first TOKEN would read "--watch" as the PR number.
+WATCH=0
+PR_NUM=""
+for a in $ARGUMENTS; do
+  case "$a" in
+    --watch) WATCH=1 ;;
+    ''|*[!0-9]*) ;;
+    *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;;
+  esac
+done
+[ -z "$PR_NUM" ] && { echo "ERROR: no PR number"; exit 1; }
+
+if [ "$WATCH" = "1" ]; then
+  # --interval/--max-secs default to 30s and 30min; pass them through if the operator named them.
+  bash "$HOME/.codex/scripts/lib/pr-watch.sh" wait --pr "$PR_NUM"; WRC=$?
+else
+  WRC=10   # not watching: behave exactly as an ordinary invocation, i.e. "there is work to do"
+fi
+```
+
+Branch on the verdict. Only `10` continues into the resolve flow — everything else is a terminal
+answer that this skill reports and exits on, because there is nothing to resolve:
+
+| Code | Meaning | What to do |
+| ---- | ------- | ---------- |
+| `10` | the declared reviewer reviewed **this head** and left findings | **continue to step 1** |
+| `0`  | the reviewer signalled a clean pass (a `+1` on the PR post newer than the head commit), **or** the repo declares `bots = []` | report "reviewed clean — nothing to resolve" and **exit 0** |
+| `11` | the bound expired with no terminal signal | report that the wait timed out and hand back to the operator; **exit** |
+| `12` | the PR is no longer OPEN (merged or closed) | report it and **exit** |
+| `17` | the repo declares no `[reviewers] bots` | it cannot be known whether a reviewer is coming — tell the operator to declare them (or `bots = []`); **exit** |
+| `18` | `[reviewers] bots` is malformed | tell the operator to fix `agents.toml`; **exit** |
+| `20` | live state was unreadable | say so and **exit** — never assume a clean pass |
+
+**Why a clean pass is a distinct answer, not "no threads found".** The Codex connector states its
+own contract in every review body it posts: *"If Codex has suggestions, it will comment; otherwise
+it will react with 👍."* A clean pass therefore produces **no review object at all** — only a
+reaction. Running the ordinary flow against such a PR would fetch zero threads and report "nothing
+to do", which is the right action for the wrong reason and is indistinguishable from *the reviewer
+has not started yet*. `--watch` tells those two apart.
+
+**This step never mutates anything.** It observes and it waits. Every branch switch, commit, push,
+and resolution still happens in steps 1–7, under exactly the rules they already state.
+
+> **Run `--watch` in the foreground, in a session you are keeping.** The wait is cheap but it is
+> not detached: it lives as long as the invoking process does, and steps 1–7 switch your working
+> tree to the PR's head branch. Do not start a watch in a tree another session is working in. A
+> genuinely session-surviving watcher is separate, tracked work.
+
 ### 1. Preflight
 
 Require only `gh` and `jq` — the gate runner (Step 4) auto-detects the project's stack, so this skill does not hard-require any particular package manager.
 
 ```bash
-PR_NUM="$(printf -- '%s' "$ARGUMENTS" | awk '{print $1}')"
+# The first BARE INTEGER, not the first token: the argument list may lead with `--watch` (step 0),
+# and `awk '{print $1}'` would then hand every read below a PR number of "--watch".
+PR_NUM=""
+for a in $ARGUMENTS; do
+  case "$a" in ''|*[!0-9]*) ;; *) [ -z "$PR_NUM" ] && PR_NUM="$a" ;; esac
+done
 [ -z "$PR_NUM" ] && { echo "ERROR: no PR number"; exit 1; }
 
 if ! command -v gh >/dev/null 2>&1; then

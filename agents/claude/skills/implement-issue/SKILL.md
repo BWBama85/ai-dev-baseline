@@ -603,7 +603,12 @@ An armed PR that is silently waiting on something is the one outcome the operato
 cannot see: say what it is waiting on and what clears it. On code 16 the PR is **not
 armed at all** and is waiting on a *reviewer* — not the same as an armed PR waiting on
 threads. End with the `/resolve-pr-threads <PR#>` resume hint. Do **not** poll for bot
-reviews — this step reports the state and ends; waiting is #49's job.
+reviews *here* — this step reports the state and ends.
+
+**On code 16, offer the waiting form of that hint.** `/resolve-pr-threads <PR#> --watch` waits for
+the reviewer in a shell poll loop and only then resolves, so the wait itself costs **no model
+tokens**; it exits quietly when the reviewer signals a clean pass. It is a **foreground** wait in a
+session the operator keeps, so suggest it rather than starting one — this step still ends here.
 
 ### 12. File issues for ALL deferred / out-of-scope work (mandatory)
 

@@ -265,6 +265,17 @@ jobs:
       - name: Unit-test the pre-arm review guard (#134)
         run: bash scripts/check-pr-review.sh
 
+  pr-watch:
+    name: pr-watch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unit-test the async-reviewer status detector (#49)
+        run: bash scripts/check-pr-watch.sh
+
   state-assert:
     name: state-assert
     runs-on: ubuntu-latest
