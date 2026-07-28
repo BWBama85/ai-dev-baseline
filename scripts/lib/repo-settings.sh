@@ -961,9 +961,19 @@ cmd_required_drift() {
   want="$(discover_checks "$branch" | LC_ALL=C sort -u)"
   nwant="$(nlines "$want")"
 
-  # The live read happens even when discovery found nothing, because an empty desired set is
-  # AMBIGUOUS and the live set is what disambiguates it (see below). That costs one API call on a
-  # no-CI repo, which is the right trade: the alternative is returning 0 without ever looking.
+  # A repo with NO workflow files makes no claim this lint could contradict, so it exits before
+  # the live read — both because there is nothing to check and because #24 says such a repo must
+  # never be deadlocked by tooling that assumes CI exists. Failing it closed on an unreadable
+  # branch would do exactly that, over a question it does not even have.
+  #
+  # This is also the case that keeps entirely-EXTERNAL CI (contexts from CircleCI/Vercel, no
+  # .github/workflows) passing. Discovery finding nothing when files ARE present is a different
+  # story, handled after the read.
+  if [ "$nwant" -eq 0 ] && ! _adb_rs_has_workflow_files; then
+    adb_info "repo-settings: no workflow files to discover on '$branch' — nothing to require"
+    return 0
+  fi
+
   read_branch "$branch"
   case "$BR_STATE" in
     error)
@@ -976,19 +986,17 @@ cmd_required_drift() {
       return 20 ;;
   esac
 
-  # An empty desired set has two very different causes, and passing both green is a fail-open in
-  # exactly the shape this lint exists to catch — a gate that silently stopped gating.
+  # Workflow files exist but discovery produced nothing. That is not the same as "no CI", and
+  # passing it green is a fail-open in exactly the shape this lint exists to catch — a gate that
+  # silently stopped gating. If the branch still requires contexts, the two statements contradict
+  # each other: either the parser stopped seeing jobs it used to see (a reindent, a trigger
+  # change) or CI moved. Every required context is then unreported, so the branch is gated by
+  # names nothing will satisfy — fail closed and say so.
   #
-  #   * The repo genuinely has no discoverable CI  -> nothing could be required. Pass (#24).
-  #   * There ARE workflow files and discovery still produced nothing, while the branch requires
-  #     contexts -> those two statements contradict each other. Either the parser stopped seeing
-  #     jobs it used to see (a reindent, a trigger change) or CI moved. Every required context is
-  #     now unreported, so the branch is gated by things nothing reports — fail closed and say so.
-  #
-  # The workflow-files test is what keeps a repo whose CI is ENTIRELY external (no
-  # .github/workflows, contexts from CircleCI/Vercel) on the passing side: no files, no claim.
+  # Requiring nothing is the consistent version of the same state (files present, none
+  # PR-triggered, nothing required), so that stays a pass.
   if [ "$nwant" -eq 0 ]; then
-    if [ -n "$BR_CONTEXTS" ] && _adb_rs_has_workflow_files; then
+    if [ -n "$BR_CONTEXTS" ]; then
       echo "repo-settings: discovery found NO PR-triggered jobs, yet '$branch' requires $(nlines "$BR_CONTEXTS") context(s)." >&2
       echo "repo-settings: those two cannot both be right — the workflow files are present but none" >&2
       echo "repo-settings: was discoverable, so every required context is now unreported and the" >&2

@@ -573,6 +573,13 @@ rsx_stub required-drift
 eq "$RC_" "0" "required-drift = 0 when CI is entirely external (no workflow files)"
 has "$OUT" "nothing to require" "the external-CI run passes for the no-files reason"
 
+# #24, pinned structurally rather than by message: with no workflow files the branch is never
+# read, so even an outright HTTP 500 cannot deadlock a repo that has no CI to check. If this ever
+# returns 20, the short-circuit moved below the live read.
+wf_none; repo_fx true true; branch_checks "one"
+STUB_BRANCH_STATUS=500 rsx_stub required-drift
+eq "$RC_" "0" "a no-CI repo is not deadlocked by an unreadable branch (the read is skipped)"
+
 # Context names legitimately carry spaces and slashes (a job `name:` is free text). Comparing them
 # as whole lines is what keeps that from splitting into phantom drift.
 wf_reset
@@ -639,6 +646,12 @@ repo_fx true true; branch_checks "one" "two"
 rsx_stub required-drift
 eq "$RC_" "20" "required-drift = 20 when workflow files exist, discovery finds nothing, yet contexts are required"
 has "$OUT" "cannot both be right" "the contradiction is named, not silently passed"
+
+# The CONSISTENT version of that same state — files present, none PR-triggered, nothing required —
+# is not a contradiction and must still pass. Without this, the check above could be over-broad.
+repo_fx true true; branch_checks
+rsx_stub required-drift
+eq "$RC_" "0" "files present + discovery empty + nothing required is consistent, so it passes"
 
 wf_two; repo_fx true true; branch_checks "one"
 for st in 401 403 404 500; do
