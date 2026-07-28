@@ -434,10 +434,20 @@ PROT_STATE=""   # protected-with-checks | protected-no-checks | unprotected | fo
 RS_STATUS=""
 RS_BODY=""
 _adb_rs_api_i() {
-  local resp
+  local resp first
   RS_STATUS=""; RS_BODY=""
   resp="$(gh api -i "$1" 2>/dev/null)"
-  RS_STATUS="$(printf '%s\n' "$resp" | head -n1 | awk '{print $2}')"
+  # Slice the status line in-shell rather than piping the WHOLE response into `head -n1`. `head`
+  # closes the pipe after one line, so on Linux the writer reports
+  #   repo-settings.sh: line NN: printf: write error: Broken pipe
+  # on every call — observed in this repo's own CI. Harmless to the result (the value is already
+  # captured) but it is noise on every `automerge-ok` and every drift check, and it looks like a
+  # failure in a tool whose whole job is to be trusted about failures. The first line is already
+  # in `$resp`; taking it costs no process at all. An empty response yields an empty RS_STATUS,
+  # which every caller already treats as "not 200".
+  first="${resp%%$'\n'*}"
+  RS_STATUS="$(printf '%s\n' "$first" | awk '{print $2}')"
+  # No early exit here, so this one consumes its whole input and cannot take EPIPE.
   RS_BODY="$(printf '%s\n' "$resp" | awk 'b { print } /^\r?$/ { b = 1 }')"
   return 0
 }
