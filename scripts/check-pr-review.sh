@@ -141,7 +141,38 @@ eq "$OUT" "$HEAD_SHA" "bots = [] still emits the witnessed head SHA for --match-
 printf '%s\n' '[reviewers]' 'bots = "not-an-array"' > "$REPO/agents.toml"
 g gate --pr 7
 eq "$RC_" "18" "malformed [reviewers] bots -> 18 (a CONFIG remedy, not 20's retry, nor the [] disable)"
+has "$OUT" "must be an array" "18 surfaces the reader's specific diagnosis"
 has "$OUT" "fix agents.toml" "18 names the remedy"
+
+# --- the fail-open family: a declaration that READS as `[]` but is not one ---------------------
+# All three of these once returned 0 and armed auto-merge with a reviewer still to come — the one
+# direction this module must never be wrong in — because the manifest reader is line-based and
+# `adb_toml_array` yields zero elements for each, exactly as it does for a real `bots = []`.
+pr_fx; review_fx    # no review from anyone
+
+# A MULTI-LINE array is valid TOML and idiomatic. `adb_toml_get` returns just `[`.
+printf '%s\n' '[reviewers]' 'bots = [' '  "chatgpt-codex-connector",' ']' > "$REPO/agents.toml"
+g gate --pr 7
+eq "$RC_" "18" "a multi-line bots array is malformed, NOT the [] disable (fail-open regression)"
+has "$OUT" "not closed on one line" "the multi-line array is named as the problem"
+
+# A WRAPPED array silently drops every element after the first line.
+printf '%s\n' '[reviewers]' 'bots = ["chatgpt-codex-connector",' '        "gemini-code-assist[bot]"]' > "$REPO/agents.toml"
+g gate --pr 7
+eq "$RC_" "18" "a wrapped bots array is malformed rather than silently truncated"
+
+# An array that is not literally empty but yields nothing usable.
+for decl in '[""]' '["   "]' '["[bot]"]'; do
+  declare_bots "$decl"
+  g gate --pr 7
+  eq "$RC_" "18" "bots = $decl is malformed, not the [] disable"
+done
+
+# ...and the control: a REAL `[]` still arms. If this ever fails, the checks above are too broad.
+declare_bots '[]'
+gout gate --pr 7
+eq "$RC_" "0" "a genuine bots = [] still arms (the fixes above did not over-reject)"
+eq "$OUT" "$HEAD_SHA" "the genuine [] case still emits the head SHA"
 
 # ============================ identity matching ============================
 # The REST/GraphQL spelling split. Both directions, because agents.toml may carry either form.
@@ -262,6 +293,15 @@ eq "$RC_" "2" "a non-PR URL is rejected rather than guessed at"
 g gate --pr "https://github.com/other/project/pull/7"
 eq "$RC_" "2" "a PR URL naming a different repository is refused"
 has "$OUT" "refusing to answer about a different repository" "the repo mismatch is named"
+
+# jq emits `.head.sha` BEFORE it evaluates the slug expression, so a PR object whose `base` has an
+# unexpected shape makes jq error only partway: the head SHA still arrives and the slug does not.
+# Discarding jq's status there would set `head`, leave `gotslug` empty, and skip the cross-repo
+# refusal below it — answering confidently about the wrong repository.
+pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":"acme/widget"}'
+g gate --pr "https://github.com/other/project/pull/7"
+eq "$RC_" "20" "a PR object that breaks jq PARTWAY fails closed (does not skip the repo check)"
+pr_fx
 
 # ============================ workflow drift pins ============================
 # The library can be perfectly correct while the workflow never calls it — which is exactly the

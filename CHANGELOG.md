@@ -41,6 +41,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **Expect this to skip arming on a bot-reviewed repo**, every time: step 10 runs seconds after
     the PR opens. Unattended *arming* is suspended there until **#49** adds the PR watch that
     waits, resolves threads, and arms afterwards. A repo with no async reviewer sets `bots = []`.
+  - **A declaration that only *looks* empty is now rejected, not obeyed.** `adb_toml_get` is
+    line-based, so a perfectly valid multi-line TOML array (`bots = [` / `  "…",` / `]`) returned
+    just `[` and parsed to zero elements — byte-identical to an intentional `bots = []`. The guard
+    would have armed auto-merge on a repo that had just declared a reviewer. A wrapped array was
+    the same bug one line later, silently dropping every element after the first. Both now fail
+    with code `18` naming the cause, as does an array with no usable entries (`[""]`, `["[bot]"]`).
+    Found by the adversarial review of this very PR.
   - Declare `bots` **per repo** where you can: the key layers repo → global, so a global
     declaration suspends unattended arming on every repo on the machine (safely, and overridable
     with a per-repo `bots = []`).

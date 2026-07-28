@@ -102,7 +102,7 @@ parse_pr_slug() {
 # --- the guard -------------------------------------------------------------------------------
 
 cmd_gate() {
-  local n declared drc want head pjson reviews rjson kinds wantslug gotslug pending=""
+  local n declared drc want head pjson pfields reviews rjson kinds wantslug gotslug pending=""
 
   [ -n "$OPT_PR" ] || { echo "pr-review: gate requires --pr <number|url>" >&2; return 2; }
   n="$(parse_pr_arg "$OPT_PR")" \
@@ -115,13 +115,17 @@ cmd_gate() {
   # not guaranteed to carry the execute bit (a direct call returns 126, which this function would
   # then have to disambiguate from a real read failure). Every other caller in the baseline —
   # including all three rendered workflows — spells it the same way.
-  declared="$(bash "$_ADB_PR_ROLE_DISPATCH" bots --declared 2>/dev/null)"; drc=$?
+  # stderr is deliberately NOT suppressed: on a malformed declaration the reader names the exact
+  # problem ("not closed on one line", "no usable entries"), and that diagnosis is the whole value
+  # of code 18. Swallowing it would leave the operator with a generic "malformed" and a file that
+  # looks fine.
+  declared="$(bash "$_ADB_PR_ROLE_DISPATCH" bots --declared)"; drc=$?
   case "$drc" in
     0) ;;
     3) echo "pr-review: this repo declares no '[reviewers] bots' — cannot know whether a reviewer is coming." >&2
        echo "pr-review: declare the async reviewer logins in agents.toml, or 'bots = []' if there are none." >&2
        return 17 ;;
-    2) echo "pr-review: '[reviewers] bots' is malformed — fix agents.toml (it must be an array; use [] for none)" >&2
+    2) echo "pr-review: '[reviewers] bots' is unusable (see above) — fix agents.toml; use [] for none" >&2
        return 18 ;;
     *) echo "pr-review: could not read '[reviewers] bots' (broken install) — refusing to arm" >&2
        return 20 ;;
@@ -147,6 +151,15 @@ cmd_gate() {
           | sed -e 's/\[bot\]$//' -e '/^[[:space:]]*$/d' \
           | LC_ALL=C sort -u)"
 
+  # A declaration that survived the manifest reader but normalizes to NOTHING (`bots = ["[bot]"]`)
+  # is malformed, not "no reviewers". The operator declared something; treating it as the `[]`
+  # disable would arm auto-merge off the back of a typo — the fail-open direction, from the one
+  # input that looks most like a real declaration.
+  if [ -n "$declared" ] && [ -z "$want" ]; then
+    echo "pr-review: '[reviewers] bots' has no usable reviewer logins — fix agents.toml (use [] for none)" >&2
+    return 18
+  fi
+
   adb_require_gh jq || return 20
 
   # Read, then parse — two steps, deliberately. Folding the extraction into `gh --jq` would make
@@ -158,8 +171,17 @@ cmd_gate() {
     || { echo "pr-review: could not read PR #$n — refusing to arm" >&2; return 20; }
   # One jq pass for both fields this object is read for. The slug is case-folded inside it, so the
   # comparison below needs no second `tr` over the same value.
+  #
+  # CAPTURE FIRST, then split, and CHECK THE STATUS. jq emits `.head.sha` before it evaluates the
+  # second expression, so a jq that errors partway still writes a usable-looking first line: `head`
+  # ends up set and `gotslug` empty, which would skip the different-repository refusal below
+  # entirely. Putting the substitution straight into the heredoc would discard the very status that
+  # distinguishes that from a clean read.
+  pfields="$(printf '%s' "$pjson" \
+             | jq -r '(.head.sha // ""), (.base.repo.full_name // "" | ascii_downcase)' 2>/dev/null)" \
+    || { echo "pr-review: could not parse PR #$n — refusing to arm" >&2; return 20; }
   { IFS= read -r head; IFS= read -r gotslug; } <<EOF
-$(printf '%s' "$pjson" | jq -r '(.head.sha // ""), (.base.repo.full_name // "" | ascii_downcase)' 2>/dev/null)
+$pfields
 EOF
   [ -n "$head" ] \
     || { echo "pr-review: could not resolve the head SHA of PR #$n — refusing to arm" >&2; return 20; }
