@@ -315,8 +315,7 @@ but does not arm auto-merge afterwards — so unattended arming remains suspende
 > review object at all**. `gate` reads only `pulls/N/reviews`, so on such a PR it returns `16`
 > ("awaiting review") indefinitely — auto-merge stays unarmed on precisely the PRs that are
 > cleanest. `pr-watch.sh` reads the reaction and reports that case correctly as `clean`; teaching
-> *this* guard to accept it changes when merges happen, so it is tracked separately rather than
-> folded in.
+> *this* guard to accept it changes when merges happen, so it is **#167** rather than folded in.
 
 ## Operating notes
 

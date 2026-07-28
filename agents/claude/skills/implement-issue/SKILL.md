@@ -569,8 +569,14 @@ step 11, leave the PR open, and let the owner merge.
 after the PR is created, so a reviewer that takes minutes has definitionally not
 reviewed yet. On such a repo auto-merge is therefore **not armed by this workflow** —
 that is the intended trade (#134): unattended *arming* is suspended until the review
-lands, and **#49** restores it by watching the PR and arming afterwards. A repo with
-no async reviewer keeps unattended arming today by declaring `bots = []`.
+lands. A repo with no async reviewer keeps unattended arming today by declaring
+`bots = []`.
+
+**Arming is still suspended — the watch does not lift it.** #49 shipped the *waiting*
+half (`/resolve-pr-threads <PR#> --watch`), which waits for the reviewer and resolves
+findings, but it does **not** arm auto-merge afterwards. So on a bot-reviewed repo the
+operator still merges, or re-runs this workflow once the head has been reviewed. Do not
+tell them the watch will merge for them.
 
 Two things to say out loud in the close-out, because the operator no longer sees the
 merge dialog:

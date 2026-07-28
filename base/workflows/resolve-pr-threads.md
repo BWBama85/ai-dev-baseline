@@ -71,7 +71,11 @@ done
 [ -z "$PR_NUM" ] && { echo "ERROR: no PR number"; exit 1; }
 
 if [ "$WATCH" = "1" ]; then
-  # --interval/--max-secs default to 30s and 30min; pass them through if the operator named them.
+  # The poll interval and the overall bound default to 30s and 30 minutes. They are deliberately
+  # NOT forwarded from this skill's arguments: the parser above takes the first BARE INTEGER, so
+  # `--watch --max-secs 600 42` would read 600 as the PR number. An operator who needs different
+  # bounds calls the library directly ({{PR_WATCH_LIB}} wait --pr N --interval S --max-secs S)
+  # and then runs this skill without --watch.
   {{PR_WATCH_LIB}} wait --pr "$PR_NUM"; WRC=$?
 else
   WRC=10   # not watching: behave exactly as an ordinary invocation, i.e. "there is work to do"
@@ -104,7 +108,7 @@ and resolution still happens in steps 1–7, under exactly the rules they alread
 > **Run `--watch` in the foreground, in a session you are keeping.** The wait is cheap but it is
 > not detached: it lives as long as the invoking process does, and steps 1–7 switch your working
 > tree to the PR's head branch. Do not start a watch in a tree another session is working in. A
-> genuinely session-surviving watcher is separate, tracked work.
+> genuinely session-surviving watcher is #171, and isolating its working tree is #172.
 
 ### 1. Preflight
 

@@ -321,7 +321,7 @@ in a shell loop — no model tokens are spent while waiting — and runs the res
 findings land. It does **not** arm auto-merge afterwards, so unattended *arming* is still suspended
 on a bot-reviewed repo. Whether the watcher should arm is an open decision, not an oversight: #49's
 own text says it must "never merge", while this page and `docs/repo-settings.md` were written
-expecting it to arm. That contradiction is tracked rather than resolved by assumption.
+expecting it to arm. That contradiction is #168, tracked rather than resolved by assumption.
 
 > **Scope.** The role model is a static declaration plus this bot allowlist — **not** a dynamic
 > orchestration engine. Bespoke per-project patterns (dynamic mid-task consult agents,

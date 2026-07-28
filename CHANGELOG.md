@@ -34,9 +34,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     there are findings, exits quietly on a clean pass, and reports every other verdict. Without the
     flag the workflow behaves exactly as before. `/implement-issue`'s close-out offers this form of
     the resume hint on a code-16 skip.
-  - **Known boundary, stated rather than implied:** this does not arm auto-merge, does not survive
-    the session, and does not trigger a re-review (the connector re-reviews on open /
-    ready-for-review / an explicit `@codex review` — **not** on a push). Each is tracked separately.
+  - **Known boundary, stated rather than implied:** this does not arm auto-merge (#168 — #49's own
+    text says "never merges" while three docs expected it to arm; that contradiction is an owner
+    decision, not an oversight), does not survive the session (#171, with tree isolation as #172),
+    and does not trigger a re-review (#169 — the connector re-reviews on open / ready-for-review /
+    an explicit `@codex review`, **not** on a push). Per-reviewer signal profiles are #170.
+  - **A latent bug this surfaced, filed not fixed:** `pr-review.sh gate` reads only
+    `pulls/N/reviews`, so a clean Codex pass — which posts no review — leaves it returning `16`
+    ("awaiting review") forever, disabling unattended arming on the cleanest PRs. That is **#167**;
+    fixing it changes when merges happen, so it did not ride along with a detector.
 
 - **`verify-before-asserting` is now executable where it can be, and honest about where it cannot**
   (#138). The practice is one of the most explicit rules in the baseline, and it was violated twice

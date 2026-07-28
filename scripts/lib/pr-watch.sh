@@ -65,9 +65,19 @@
 #                       [--interval <secs>] [--max-secs <secs>]
 #   pr-watch.sh -h | --help
 #
+# PLUGGABILITY, STATED PLAINLY: the `+1`-means-clean convention above is the CODEX CONNECTOR's,
+# and this module applies it to every login in `[reviewers] bots` without per-reviewer dispatch.
+# For a reviewer that signals differently the degradation is safe and bounded, but it is a real
+# degradation and worth knowing: one that posts a review even on a clean pass classifies as
+# `findings`, so a caller runs its resolve flow and finds nothing; one that signals in some third
+# way never converges and the caller stops at the `wait` bound. Neither can produce a false
+# `clean`. A per-reviewer signal profile keyed off the same manifest entry is the natural
+# generalization and is tracked as #170.
+#
 # Exit codes are a stable machine contract for the workflow step that consumes them. They are
 # deliberately DISJOINT from pr-review.sh's 16–20 where the meanings differ, and identical where
-# they are the same question (17/18/20), so a caller can never confuse the two guards:
+# they are the same question (17/18/20), so a caller can never confuse the two guards.
+#
 #   0  clean      — a declared reviewer signalled a clean pass for the CURRENT head, or the repo
 #                   declared `[reviewers] bots = []` (nothing is coming). STDOUT: "clean <sha>".
 #   10 findings   — a declared reviewer submitted a review attached to the CURRENT head SHA. The
@@ -80,6 +90,12 @@
 #   18 config     — `[reviewers] bots` is present but malformed. Fix agents.toml.
 #   20 unknown    — live state unreadable (API failure, no head SHA). FAIL CLOSED — never `clean`.
 #   2  usage      — bad or missing arguments.
+#
+# NOTE THE THIRD VOCABULARY IN THIS FAMILY: `repo-settings.sh automerge-ok` uses 0/10–14/20, so its
+# 10/11/12 mean entirely different things from the 10/11/12 above. Nothing composes the two today —
+# they are read by different steps of different workflows — but do not "unify" them by assuming a
+# shared meaning, and do not add a caller that branches on both without disambiguating which
+# command produced the code. That the family now has three vocabularies is the argument #148 makes.
 #
 # THE ONE DIRECTION THIS MUST NEVER BE WRONG IN is reporting `clean` when the reviewer has not
 # actually passed this head. Every uncertainty above therefore resolves to `pending` or a non-zero
@@ -119,8 +135,8 @@ OPT_PR=""
 # — only on the branch where a `+1` was actually found. A full 30-minute watch at 30s is therefore
 # ~180 requests against an authenticated limit of 5000/hour: comfortable, but not free, which is
 # why the interval is tunable and why the clean/findings checks short-circuit the moment either
-# lands. Collapsing the reads into one GraphQL query is tracked separately (#147 makes the same
-# argument about the sibling guard).
+# lands. Collapsing the reads into one GraphQL query is #174 (the sibling of #147, which makes the same
+# argument about the arming guard but is scoped to that file only).
 OPT_INTERVAL=30
 OPT_MAX_SECS=1800
 # Consecutive unreadable polls tolerated before `wait` gives up. A single 502/rate-limit must not
@@ -155,11 +171,43 @@ parse_pr_slug() {
 # require_uint <value> <option-name> — a positive integer, or usage. Rejects the empty string, a
 # sign, and any non-digit; a zero interval would spin the poll loop as a busy-wait and a zero bound
 # would make `wait` return before its first read.
+#
+# The LENGTH bound is not belt-and-braces: an all-digit value wider than a shell integer overflows
+# the `$(( deadline - SECONDS ))` arithmetic below, so `--max-secs 99999999999999999999` would pass
+# a digits-only check and then produce a nonsense (possibly negative) remaining time — a "bound"
+# that expires immediately or never. 18 digits is the same ceiling `roadmap-lib.sh`'s `is_uint`
+# documents for the same reason; the shared validator is #150.
 require_uint() {
   case "$1" in
     ''|*[!0-9]*) echo "pr-watch: $2 must be a positive integer (got '$1')" >&2; return 1 ;;
   esac
+  [ "${#1}" -le 18 ] || { echo "pr-watch: $2 is too large (got '$1')" >&2; return 1; }
   [ "$1" -gt 0 ] 2>/dev/null || { echo "pr-watch: $2 must be greater than zero" >&2; return 1; }
+}
+
+# read_list <api-path> <label> <pr-number> — a paginated GET, flattened to one JSON array.
+#
+# Both signal reads have the same shape, and factoring them together is about the FAIL-CLOSED
+# guards rather than the line count: each read needs three of them (the fetch, the parse, and the
+# empty-result check), and if a later edit dropped one on a single path that signal would classify
+# an unreadable response as "nothing found yet" — `pending` instead of `20`. `pending` looks
+# harmless, which is what makes it the dangerous one: the watcher would keep polling a broken API
+# to its deadline and report a timeout instead of the failure. One home means both paths cannot
+# drift apart.
+#
+# Read and PARSE separately: a pipeline reports only its LAST command's status, so `gh api … | jq`
+# returns 0 on a failed read and the parser then sees empty stdin — indistinguishable from a
+# legitimately empty list.
+read_list() {
+  local url="$1" label="$2" pr="$3" raw flat
+  raw="$(gh api --paginate "$url" 2>/dev/null)" \
+    || { echo "pr-watch: could not read $label for PR #$pr" >&2; return 20; }
+  # --paginate concatenates one JSON document per page; -s flattens them into a single array.
+  flat="$(printf '%s' "$raw" | jq -s -c '[.[][]]' 2>/dev/null)" \
+    || { echo "pr-watch: could not parse the $label of PR #$pr" >&2; return 20; }
+  [ -n "$flat" ] \
+    || { echo "pr-watch: could not parse the $label of PR #$pr" >&2; return 20; }
+  printf '%s' "$flat"
 }
 
 # read_declared_bots — normalize `[reviewers] bots` into the comparison form, or return this
@@ -209,7 +257,7 @@ read_declared_bots() {
 # the next pass without any stored state to reset (base/practices/verify-before-asserting.md).
 classify() {
   local n="$1" want="$2" pjson pfields head state merged gotslug wantslug
-  local rjson reviews hits reactjson reacts cjson commitdate whojson
+  local reviews hits reacts cjson commitdate whojson
 
   # The declared set as a JSON array, built ONCE: both jq passes below test membership against it,
   # and re-deriving it per pass would fork a second jq for the same value.
@@ -269,13 +317,8 @@ EOF
   # and a reviewer that somehow produced both should be treated as having found something.
   #
   # --paginate so a PR with many reviews cannot silently drop the page carrying the one that
-  # matters. Read and PARSE separately for the reason given above.
-  rjson="$(gh api --paginate "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" 2>/dev/null)" \
-    || { echo "pr-watch: could not read reviews for PR #$n" >&2; return 20; }
-  reviews="$(printf '%s' "$rjson" | jq -s -c '[.[][]]' 2>/dev/null)" \
-    || { echo "pr-watch: could not parse the reviews of PR #$n" >&2; return 20; }
-  [ -n "$reviews" ] \
-    || { echo "pr-watch: could not parse the reviews of PR #$n" >&2; return 20; }
+  # matters.
+  reviews="$(read_list "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" reviews "$n")" || return 20
 
   # One pass over the whole document emitting the declared reviewers that submitted a REAL review
   # of this exact head. PENDING is an unsubmitted draft nobody can see; DISMISSED was explicitly
@@ -302,12 +345,7 @@ EOF
   #
   # Deliberately NOT filtered server-side with `-f content=+1`: passing `-f` makes `gh api` switch
   # to POST, which would ADD a reaction rather than list them. Filtering in jq avoids the trap.
-  reactjson="$(gh api --paginate "repos/{owner}/{repo}/issues/$n/reactions?per_page=100" 2>/dev/null)" \
-    || { echo "pr-watch: could not read reactions for PR #$n" >&2; return 20; }
-  reacts="$(printf '%s' "$reactjson" | jq -s -c '[.[][]]' 2>/dev/null)" \
-    || { echo "pr-watch: could not parse the reactions of PR #$n" >&2; return 20; }
-  [ -n "$reacts" ] \
-    || { echo "pr-watch: could not parse the reactions of PR #$n" >&2; return 20; }
+  reacts="$(read_list "repos/{owner}/{repo}/issues/$n/reactions?per_page=100" reactions "$n")" || return 20
 
   # The newest `+1` from any declared reviewer, as an ISO-8601 timestamp (empty if none).
   local plus1at
@@ -381,10 +419,10 @@ cmd_wait() {
   adb_require_gh jq || return 20
 
   # $SECONDS is a bash builtin (no fork, works on bash 3.2) counting seconds since shell start.
-  # Capturing a baseline rather than assuming it starts at 0 keeps this correct when the file is
-  # SOURCED into a long-lived shell instead of run.
-  local t0=$SECONDS
-  deadline="$OPT_MAX_SECS"
+  # Compute the DEADLINE once rather than keeping a start-time and a duration and subtracting both
+  # every pass: the name is then true, and it stays correct when the file is run from a shell whose
+  # $SECONDS did not start at 0.
+  deadline=$(( SECONDS + OPT_MAX_SECS ))
 
   # Report an interruption honestly rather than letting the shell's default status stand in for a
   # verdict: an operator ^C is "we stopped watching", which is `pending`, not `clean`. `exit`, not
@@ -421,9 +459,14 @@ cmd_wait() {
         lasthead="$head" ;;
     esac
 
-    remaining=$(( deadline - ( SECONDS - t0 ) ))
+    remaining=$(( deadline - SECONDS ))
     if [ "$remaining" -le 0 ]; then
-      printf '%s\n' "$out"
+      # Only echo a verdict line if the last poll actually produced one. An unreadable poll writes
+      # nothing to stdout, so an unguarded print would emit a BARE NEWLINE — stdout is contracted
+      # to be "<verdict> <sha>" or nothing at all, and a caller doing `read -r verdict sha` would
+      # silently get two empty strings instead of noticing there was no answer. Reachable whenever
+      # the deadline lands on a transient failure before the 3-strike arm fires.
+      [ -n "$out" ] && printf '%s\n' "$out"
       echo "pr-watch: PR #$n — bound of ${OPT_MAX_SECS}s expired with no terminal signal; handing off" >&2
       trap - INT TERM
       return 11

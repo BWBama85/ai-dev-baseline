@@ -186,22 +186,20 @@ _reactions_into() {
 declare_bots() { printf '%s\n' '[reviewers]' "bots = $1" > "$REPO/agents.toml"; }
 undeclare()    { rm -f "$REPO/agents.toml" "$GHOME/.config/ai-dev-baseline/agents.toml"; }
 
-# w <args...> : run the detector as the driving agent would — from $REPO, throwaway HOME, stubs.
-w() {
-  OUT="$( cd "$REPO" && HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" \
-          STUB_AUTH_FAIL="${STUB_AUTH_FAIL:-0}" STUB_FAIL_PR="${STUB_FAIL_PR:-0}" \
-          STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" STUB_FAIL_REACTIONS="${STUB_FAIL_REACTIONS:-0}" \
-          STUB_FAIL_COMMIT="${STUB_FAIL_COMMIT:-0}" \
-          bash "$PW" "$@" 2>&1 )"; RC_=$?
+# _w <args...> : run the detector as the driving agent would — from $REPO, throwaway HOME, stubs.
+# ONE home for the environment so a new STUB_* knob is wired in a single place; the two wrappers
+# below differ only in what they do with stderr, and the redirect composes onto this subshell.
+_w() {
+  ( cd "$REPO" && HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" \
+    STUB_AUTH_FAIL="${STUB_AUTH_FAIL:-0}" STUB_FAIL_PR="${STUB_FAIL_PR:-0}" \
+    STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" STUB_FAIL_REACTIONS="${STUB_FAIL_REACTIONS:-0}" \
+    STUB_FAIL_COMMIT="${STUB_FAIL_COMMIT:-0}" \
+    bash "$PW" "$@" )
 }
+# w : stdout AND stderr, for asserting diagnostics.
+w()    { OUT="$(_w "$@" 2>&1)"; RC_=$?; }
 # wout : stdout ONLY (the "<verdict> <sha>" contract) — stderr is diagnostics and must not pollute it.
-wout() {
-  OUT="$( cd "$REPO" && HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" \
-          STUB_AUTH_FAIL="${STUB_AUTH_FAIL:-0}" STUB_FAIL_PR="${STUB_FAIL_PR:-0}" \
-          STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" STUB_FAIL_REACTIONS="${STUB_FAIL_REACTIONS:-0}" \
-          STUB_FAIL_COMMIT="${STUB_FAIL_COMMIT:-0}" \
-          bash "$PW" "$@" 2>/dev/null )"; RC_=$?
-}
+wout() { OUT="$(_w "$@" 2>/dev/null)"; RC_=$?; }
 rc() { eq "$RC_" "$1" "$2"; }
 
 reset_fx
@@ -381,6 +379,11 @@ w wait --pr 1 --interval 0;       rc 2 "usage: --interval zero would busy-wait"
 w wait --pr 1 --interval abc;     rc 2 "usage: --interval non-numeric"
 w wait --pr 1 --max-secs 0;       rc 2 "usage: --max-secs zero would return before the first read"
 w wait --pr 1 --max-secs "";      rc 2 "usage: --max-secs empty"
+# All-digits is not enough: a value wider than a shell integer overflows the deadline arithmetic,
+# turning the bound into a nonsense (possibly negative) remaining time — a bound that expires at
+# once or never. Digits-only validators are exactly how that slips through.
+w wait --pr 1 --max-secs 99999999999999999999;  rc 2 "usage: --max-secs wider than a shell integer"
+w wait --pr 1 --interval 99999999999999999999;  rc 2 "usage: --interval wider than a shell integer"
 
 # ============================ 11. the bounded wait ============================
 # Terminal on the first poll: return immediately, and sleep NOT AT ALL. A watcher that sleeps once
@@ -414,6 +417,14 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 printf '{ broken\n' > "$S/pr.1.json"                                  # poll 1 unparseable
 _reactions_into "$S/reactions.2.json" "$CODEX" "+1" "$AFTER_AT"       # poll 2 fine
 w wait --pr 1 --interval 1 --max-secs 30;  rc 0 "wait: rides out ONE unreadable poll and converges"
+
+# The deadline can land while the LAST poll was unreadable, and that poll printed no verdict. The
+# contract says stdout is "<verdict> <sha>" or nothing — never a bare newline, which a caller doing
+# `read -r verdict sha` would silently take as two empty strings rather than "there was no answer".
+reset_fx; declare_bots "[\"$CODEX\"]"
+STUB_FAIL_PR=1 wout wait --pr 1 --interval 1 --max-secs 1;  rc 11 "wait: a bound reached mid-failure still reports pending"
+eq "$OUT" "" "wait: prints NO stdout line when the final poll produced no verdict"
+STUB_FAIL_PR=0
 
 # ...but an endlessly unreadable API must not be polled forever either.
 reset_fx; declare_bots "[\"$CODEX\"]"
