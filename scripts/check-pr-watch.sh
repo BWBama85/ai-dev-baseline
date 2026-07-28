@@ -347,6 +347,17 @@ STUB_FAIL_COMMIT=1   w observe --pr 1; rc 20 "unreadable: a failed head-commit r
 reset_fx; declare_bots "[\"$CODEX\"]"
 pr_fx_raw '{"state":"open","base":{"repo":{"full_name":"acme/widget"}}}'
 w observe --pr 1;  rc 20 "unreadable: a PR with no head SHA -> 20"
+
+# A PR object that arrives WITHOUT its base repository is unreadable, not "nothing to compare
+# against". Guarding the cross-repo refusal on a non-empty slug would make that refusal silently
+# VANISH on exactly the malformed responses it exists to catch — and a URL naming another repo
+# would then be answered about THIS repo. Both spellings of the missing field are pinned.
+pr_fx_raw "{\"head\":{\"sha\":\"$HEAD_SHA\"},\"state\":\"open\"}"
+w observe --pr 1;  rc 20 "unreadable: a PR with no base repo -> 20, never classified"
+has "$OUT" "unidentifiable repository" "unreadable: names the missing base repo"
+w observe --pr "https://github.com/other/repo/pull/7";  rc 20 "unreadable: a missing base repo cannot silently skip the cross-repo refusal"
+pr_fx_raw "{\"head\":{\"sha\":\"$HEAD_SHA\"},\"state\":\"open\",\"base\":{\"repo\":null}}"
+w observe --pr 1;  rc 20 "unreadable: an explicitly null base repo -> 20"
 pr_fx_raw '{ not json at all'
 w observe --pr 1;  rc 20 "unreadable: an unparseable PR object -> 20"
 

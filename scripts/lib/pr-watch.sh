@@ -313,12 +313,20 @@ $pfields
 EOF
   [ -n "$head" ] \
     || { echo "pr-watch: could not resolve the head SHA of PR #$n" >&2; return 20; }
+  # The base repo's slug is the ONLY evidence that these reads addressed the repository the caller
+  # meant, so a response without it is unreadable — not "no slug to compare". Guarding the
+  # comparison on `[ -n "$gotslug" ]` instead would make the check SILENTLY VANISH exactly when the
+  # metadata is malformed, and a `--pr <other-repo-url>` would then be answered about THIS repo:
+  # the confidently-wrong answer the refusal below exists to prevent. Same failure shape as a guard
+  # that no-ops on a missing input rather than failing closed. (Reported by the reviewer on #178.)
+  [ -n "$gotslug" ] \
+    || { echo "pr-watch: PR #$n carries no base repository — refusing to answer about an unidentifiable repository" >&2; return 20; }
 
   # If the caller passed a URL, prove it names the repo these reads actually addressed. Without
   # this, `--pr https://github.com/other/repo/pull/7` would faithfully report on THIS repo's #7 —
   # a confidently wrong answer, which is the one thing a detector must never produce.
   wantslug="$(parse_pr_slug "$OPT_PR" | tr '[:upper:]' '[:lower:]')"
-  if [ -n "$wantslug" ] && [ -n "$gotslug" ] && [ "$wantslug" != "$gotslug" ]; then
+  if [ -n "$wantslug" ] && [ "$wantslug" != "$gotslug" ]; then
     echo "pr-watch: --pr names '$wantslug' but this repo is '$gotslug' — refusing to answer about a different repository" >&2
     return 2
   fi
