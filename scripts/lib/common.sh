@@ -276,15 +276,22 @@ adb_repo_slug() {
 # release the convention can never cut) and `required-drift`'s provenance check silently found no
 # Actions contexts (a fail-OPEN in the lint that exists to catch a gate that stopped gating).
 #
-# Deliberately a SCALAR accessor, not a shared jq fragment. One consumer embeds the test inside a
-# large jq program and the other inside a one-line filter; the only thing they can honestly share
-# is the value, passed in as a typed `--arg`. Sharing jq SOURCE would mean `eval` or generated
-# filter text — a far worse coupling than the duplication it removes.
+# Deliberately a SCALAR accessor rather than a shared jq predicate, and the reason is the THIRD
+# consumer. A jq module (`jq -L`) or a `def` string concatenated into each program would both work
+# for the two shell libraries — that much is cheap and needs no eval. But `base/workflows/roadmap.md`
+# also attributes check runs, and it is PROSE AN AGENT PASTES INTO A SHELL: it can receive a value,
+# never a library. The only surface all three consumers share is the string itself, so that is what
+# is shared, passed in as a typed `--arg` where a jq program is involved.
 #
 # Matched EXACTLY, and never widened to `app.owner.login == "github"` or to the numeric app id.
+#
 # GitHub documents `slug` as a name-derived URL slug rather than a permanent cross-GHES constant,
 # so an unrecognized value must fall through to each caller's fail-closed path (unknown
 # provenance), never be guessed at by a second, looser rule.
+#
+# Callers MUST reject an empty result rather than passing it through: both consumers normalize a
+# missing slug to "" before comparing, so an empty expected value silently means "match the check
+# runs nobody could attribute" — fail-open in `branch-health`, which gates a release cut.
 adb_actions_app_slug() { printf 'github-actions'; }
 
 # --- git ---------------------------------------------------------------------

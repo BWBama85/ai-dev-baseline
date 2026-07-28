@@ -138,6 +138,23 @@ check_wf_snippet() {
   ' "$1"
 }
 
+# check_actions_slug — set ACTIONS_SLUG from its one home, `adb_actions_app_slug` in common.sh.
+# The ONE home for how a suite reaches into common.sh for that value: three suites build check-run
+# fixtures (check-roadmap.sh, check-roadmap-e2e.sh, check-repo-settings.sh), and each hard-coding
+# the slug is exactly what let #179 ship — the fixtures asserted the code's belief rather than the
+# API's behavior, so a value GitHub never returns stayed green in every suite.
+#
+# Sources in a SUBSHELL so the suite does not inherit common.sh's other definitions, and FATALs on
+# an empty result: a silently-empty slug would make every fixture default to `app.slug: ""`, which
+# is the unknown-provenance shape — the suites would then pass while testing the wrong thing.
+# The exit must live here rather than inside a command substitution, or it would only kill the
+# subshell and the suite would carry on with an empty value.
+check_actions_slug() {
+  ACTIONS_SLUG="$(. scripts/lib/common.sh >/dev/null 2>&1; adb_actions_app_slug)"
+  [ -n "$ACTIONS_SLUG" ] || {
+    echo "${CHECK_LABEL:-check}: FATAL — adb_actions_app_slug is unavailable or empty" >&2; exit 1; }
+}
+
 # canon <dir> — the physical (symlink-resolved) absolute path of <dir>, mirroring what code that
 # uses `git rev-parse --show-toplevel` / `pwd -P` compares against. On macOS a mktemp dir is
 # /var/… while its physical form is /private/var/…; without canonicalizing, a naive path assertion

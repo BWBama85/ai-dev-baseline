@@ -241,6 +241,28 @@ fact branch-health-predicate "fixed:branch-health" -- \
   docs/release-goal-convention.md docs/roadmap-acceptance.md \
   base/practices/verify-before-asserting.md
 
+# --- FACT: the GitHub Actions app slug (#179) --------------------------------
+# `app.slug` is `github-actions`. The app's OWNER login is `github`, and BOTH consumers shipped
+# attributing against that near-miss: `branch-health` could then never return `green` on an Actions
+# repo (deadlocking the release cut) and `required-drift`'s provenance check silently matched
+# nothing (fail-open). `adb_actions_app_slug` in common.sh is now the one home.
+#
+# Both directions are pinned, which is the whole reason `absent:` exists. Positive presence alone
+# would pass a file that calls the accessor AND keeps a hard-coded copy beside it — precisely the
+# state this fix removes. The negative pattern is anchored to a NON-comment line, because both
+# libraries quote the retired literal in prose to explain the bug.
+#
+# base/workflows/roadmap.md restates the value deliberately: it is prose an agent pastes into a
+# shell, so it can carry a value but never source a library. That is why it is pinned here rather
+# than deduplicated away.
+fact actions-slug-value  "fixed:github-actions" -- \
+  scripts/lib/common.sh base/workflows/roadmap.md
+fact actions-slug-home   "fixed:adb_actions_app_slug" -- \
+  scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh
+fact actions-slug-stale  'absent:^[[:space:]]*[^#[:space:]].*(slug|aslug)[^=]*== *"github"' -- \
+  scripts/lib/common.sh scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh \
+  base/workflows/roadmap.md
+
 # --- FACT: the branch-merge verdict subcommand (#106, #138) ------------------
 # Same routing table, second entry. Previously pinned only by a structural grep in
 # scripts/check-cleanup.sh; the practice is now a second restatement site, so the token gets a

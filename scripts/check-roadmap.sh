@@ -33,12 +33,10 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-# The Actions app slug the library attributes against, read from its ONE home (common.sh) rather
-# than restated here. Sourcing it means a future change to that value cannot leave these fixtures
-# behind; the explicit API-contract assertion in section 4d is what stops the value itself from
-# silently becoming wrong again.
-ACTIONS_SLUG="$(. "$(dirname "$0")/lib/common.sh" >/dev/null 2>&1; adb_actions_app_slug)"
-[ -n "$ACTIONS_SLUG" ] || { echo "check-roadmap: FATAL — adb_actions_app_slug returned nothing" >&2; exit 1; }
+# ACTIONS_SLUG: the value the library attributes against, read from its ONE home rather than
+# restated here (check-lib.sh owns how a suite reaches for it). The behavioral pins in section 4d
+# are what stop the value itself from silently becoming wrong again.
+check_actions_slug
 
 # --- fixture builders ----------------------------------------------------------------------
 # ref <number> [owner] [repo] — one closingIssuesReferences entry (defaults to $SLUG's repo).
@@ -450,19 +448,18 @@ eq "$(health "$(hj "$(ck vercel "$SHA" completed failure vercel)" '')" "$SHA" 3)
    "a failing check from another app is still red (attribution never rescues a failure)"
 
 # --- 4d. THE API CONTRACT: what slug does GitHub Actions ACTUALLY stamp? (#179) --------------
-# This block is the one place the literal is written out, and that is deliberate. Every other
-# fixture derives the slug from `adb_actions_app_slug`, which makes them immune to a change in
-# that value — and therefore blind to it being WRONG. That blindness is not hypothetical: both
+# These cases spell the literal out instead of deriving it from `adb_actions_app_slug`, and that is
+# deliberate. Every other fixture here derives it, which makes them immune to a CHANGE in the value
+# — and therefore blind to the value being WRONG. That blindness is not hypothetical: both
 # libraries shipped attributing against `github`, the app OWNER login, while GitHub stamps
 # `github-actions` (app id 15368). The fixtures defaulted to `github` too, so the suite was green
 # against a value the API never returns, and `branch-health` could not return `green` on any
 # Actions repo — deadlocking the release-goal convention at `indeterminate`.
 #
-# So: assert the constant against a hard-coded literal, and assert the RETIRED value is treated
-# as just another foreign app. If GitHub ever renames the slug, this is the test that must be
-# changed deliberately — which is the entire point.
-eq "$ACTIONS_SLUG" "github-actions" \
-   "adb_actions_app_slug is exactly 'github-actions' (the value GitHub really stamps)"
+# The constant ITSELF is asserted in check-common-lib.sh, which owns common.sh; what these cases
+# add is the BEHAVIOR — that an API-shaped check run reaches `green` and that the retired value
+# does not. If GitHub ever renames the slug, these are among the tests that must change
+# deliberately, which is the entire point.
 eq "$(health "$(hj "$(ck ci "$SHA" completed success github-actions)" '')" "$SHA" 1)" green \
    "an API-shaped Actions check run (slug github-actions) + active workflows => GREEN (the #179 bug)"
 eq "$(health "$(hj "$(ck ci "$SHA" completed success github)" '')" "$SHA" 1)" indeterminate \

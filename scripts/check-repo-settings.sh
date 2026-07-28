@@ -346,11 +346,13 @@ branch_malformed()   { printf 'not json at all\n' > "$S/branch.json"; }
 # tests passed while `_adb_rs_actions_contexts` returned nothing on every real repo. Any other
 # non-empty slug is an external provider whose contexts this lint disclaims; a NULL app is
 # unattributable, which is neither, and must fail closed rather than pass as "somebody else's".
-RS_ACTIONS_SLUG="$(. "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1; adb_actions_app_slug)"
-[ -n "$RS_ACTIONS_SLUG" ] || { echo "check-repo-settings: FATAL — adb_actions_app_slug returned nothing" >&2; exit 1; }
+check_actions_slug
 checkruns_none()     { rm -f "$S/checkruns.json"; }
-checkruns_actions()  { jq -n --args --arg s "$RS_ACTIONS_SLUG" '{check_runs: [$ARGS.positional[] | {name: ., app: {slug: $s}}]}' "$@" > "$S/checkruns.json"; }
-checkruns_external() { jq -n --args '{check_runs: [$ARGS.positional[] | {name: ., app: {slug: "circleci"}}]}' "$@" > "$S/checkruns.json"; }
+# checkruns_slug <slug> <name…> — the one builder; the named wrappers below just fix the slug, so
+# the envelope and the fixture path are spelled once.
+checkruns_slug()     { local s="$1"; shift; jq -n --args --arg s "$s" '{check_runs: [$ARGS.positional[] | {name: ., app: {slug: $s}}]}' "$@" > "$S/checkruns.json"; }
+checkruns_actions()  { checkruns_slug "$ACTIONS_SLUG" "$@"; }
+checkruns_external() { checkruns_slug circleci "$@"; }
 # `app` is required-but-NULLABLE in the GitHub REST schema, so this is a real response shape.
 checkruns_noapp()    { jq -n --args '{check_runs: [$ARGS.positional[] | {name: ., app: null}]}' "$@" > "$S/checkruns.json"; }
 rsx_auth() {   # the SAME stub, auth knob flipped — one stub, two behaviors
@@ -689,6 +691,26 @@ repo_fx true true; branch_checks "one"; checkruns_actions "one"
 STUB_CHECKRUNS_STATUS=500 rsx_stub required-drift
 eq "$RC_" "20" "required-drift = 20 when the check runs that establish provenance cannot be read"
 has "$OUT" "could not be read" "the unreadable-provenance case says so"
+checkruns_none
+
+# (c2) THE OTHER unreadable shape: `gh` exits 0 but the BODY is not JSON — a proxy or GHES error
+# page served as 200, or a truncated --paginate stream. Case (c) only covers an HTTP failure, so
+# nothing caught this: an unparseable body classifies as nothing at all, which is indistinguishable
+# from "no Actions contexts" and lands on the fail-OPEN external-CI pass. Both the read AND the
+# parse have to be checked, which is why the call site tests two statuses rather than one.
+repo_fx true true; branch_checks "one"
+printf 'not json at all\n' > "$S/checkruns.json"
+rsx_stub required-drift
+eq "$RC_" "20" "required-drift = 20 when gh succeeds but the check-runs BODY is unparseable"
+has "$OUT" "could not be read" "...and it reports unreadable provenance, not a clean external-CI pass"
+hasnt "$OUT" "external CI" "...never the fail-open pass"
+
+# A well-formed document of the WRONG SHAPE is the same class: `check_runs` absent or not an array
+# means the response is not what this code models, so it cannot be reasoned about.
+repo_fx true true; branch_checks "one"
+printf '{"message":"Not Found"}\n' > "$S/checkruns.json"
+rsx_stub required-drift
+eq "$RC_" "20" "required-drift = 20 when the response carries no check_runs array"
 checkruns_none
 
 # The CONSISTENT version of that same state — files present, none PR-triggered, nothing required —

@@ -220,10 +220,18 @@ cmd_branch_health() {
   # One jq program decides, so the rules live in one place rather than being re-derived per caller.
   # `-e` is deliberately NOT used: this program always prints a verdict, and its exit status is
   # reserved for a genuine parse failure.
-  # The Actions slug arrives as a typed --arg from common.sh's single home, never as a literal in
-  # the program text — so this file cannot drift from repo-settings.sh's copy of the same rule.
+  #
+  # Resolve the Actions slug BEFORE the program and refuse an empty one. This is not defensive
+  # boilerplate: the attribution test is `(.app.slug // "") == $aslug`, and the `// ""` normalizes
+  # unknown provenance to the empty string — so an empty $aslug would match exactly the check runs
+  # whose app CANNOT be identified, and count them as Actions. That flips this predicate fail-OPEN
+  # (a confident `green` from a build nobody attributed) in the one place a wrong green cuts a
+  # release. A broken install must fail loud here, exactly as the missing-common.sh guard above does.
+  local aslug
+  aslug="$(adb_actions_app_slug 2>/dev/null)" || aslug=""
+  [ -n "$aslug" ] || die "branch-health: adb_actions_app_slug is unavailable or empty (broken install)"
   out="$(printf '%s' "$json" | jq -r --arg sha "$sha" --argjson wf "$workflows" \
-                                     --arg aslug "$(adb_actions_app_slug)" '
+                                     --arg aslug "$aslug" '
     if type != "object" then error("not an object") else . end
     # BOTH keys must be PRESENT and be arrays. Defaulting a missing key to [] would convert a
     # malformed or truncated health response into "two empty collections", which reads as `no-ci`
@@ -268,7 +276,6 @@ cmd_branch_health() {
     # cannot be identified (`app` is nullable in the GitHub REST schema) is deliberately NOT
     # counted as Actions: unknown provenance must not stand in as proof that Actions ran. That
     # direction is safe here, because falling through leaves the verdict indeterminate, never green.
-    # NOTE: no apostrophe in this comment either — see the warning further up.
     | ([$mine[] | select((.app.slug // "") == $aslug)]) as $actions
     | (($mine | length) + ($sts | length)) as $total
     | if   ($bad | length) > 0 or ($stbad | length) > 0 then

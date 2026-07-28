@@ -222,10 +222,9 @@ health_set() {
 # agreed with the two libraries about a value GitHub never returns, which is what let #179 ship.
 # This suite drives the WORKFLOW end to end, so it is also the check that the snippet and the
 # predicate attribute against the same value.
-E2E_ACTIONS_SLUG="$(. "$ROOT/scripts/lib/common.sh" >/dev/null 2>&1; adb_actions_app_slug)"
-[ -n "$E2E_ACTIONS_SLUG" ] || { echo "check-roadmap-e2e: FATAL — adb_actions_app_slug returned nothing" >&2; exit 1; }
+check_actions_slug
 ck1() { printf '[{"name":"ci","head_sha":"%s","status":"%s","conclusion":%s,"app":{"slug":"%s"}}]' \
-          "${3:-$E2E_SHA}" "$1" "$2" "${4:-$E2E_ACTIONS_SLUG}"; }
+          "${3:-$E2E_SHA}" "$1" "$2" "${4:-$ACTIONS_SLUG}"; }
 health_green()  { health_set "$(ck1 completed '"success"')" '[]' 1; }
 health_red()    { health_set "$(ck1 completed '"failure"')" '[]' 1; }
 health_running(){ health_set "$(ck1 in_progress null)"      '[]' 1; }
