@@ -19,8 +19,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - A second guard, **`scripts/lib/pr-review.sh gate --pr <n>`**, runs before the arm and answers
     the question repo settings cannot: *has every reviewer this repo declares reviewed **this head
     commit**?* Exit `0` (+ the witnessed SHA on stdout) · `16` a declared reviewer is still
-    pending · `17` no `[reviewers] bots` declaration, so it is unknowable · `20` unreadable. Every
-    uncertainty is non-zero — the guard never degrades a failed read into "nobody is pending".
+    pending · `17` no `[reviewers] bots` declaration, so it is unknowable · `18` that declaration is
+    malformed · `20` unreadable. Every uncertainty is non-zero — the guard never degrades a failed
+    read into "nobody is pending" — and each code carries its own remedy, the same one-code-per-fix
+    rule `automerge-ok` follows.
   - It is a **separate module** on purpose: `repo-settings.sh` declares itself repo *settings*
     bookkeeping that "does not merge, review, tag, release, or deploy", and review state is
     per-PR. `automerge-ok` still answers *will the checks gate this?*; step 10 composes the two.
@@ -39,8 +41,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **Expect this to skip arming on a bot-reviewed repo**, every time: step 10 runs seconds after
     the PR opens. Unattended *arming* is suspended there until **#49** adds the PR watch that
     waits, resolves threads, and arms afterwards. A repo with no async reviewer sets `bots = []`.
-  - New `{{PR_REVIEW_LIB}}` placeholder (all three agents), `scripts/check-pr-review.sh` (54
-    offline cases) and a `pr-review` CI job. Recorded as **D12**.
+  - Declare `bots` **per repo** where you can: the key layers repo → global, so a global
+    declaration suspends unattended arming on every repo on the machine (safely, and overridable
+    with a per-repo `bots = []`).
+  - New `{{PR_REVIEW_LIB}}` placeholder (all three agents), `scripts/check-pr-review.sh` (57
+    offline cases), a `pr-review` CI job and a `pr-review-guard` fact pin. Recorded as **D12**,
+    which also records the two deliberate trades: enforcement is agent-side (GitHub has no
+    primitive for "wait for a bot's COMMENTED review"), and the declaration's repo→global layering.
 
 ### Fixed
 

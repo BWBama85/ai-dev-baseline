@@ -382,4 +382,26 @@ didn't already model, so any residual divergence stays visible and auditable.
              resolves its threads, and arms afterwards, at which point the guard becomes the
              precondition that watch satisfies rather than a reason to skip. A repo with no async
              reviewer opts back into unattended merging with one line, `bots = []`.
+- trade-offs recorded (both surfaced by review, both deliberate):
+             a. **Enforcement is agent-side, not GitHub-side.** #87's own premise was "let GitHub
+                be the gate so no human has to be", and this guard is an `if` in step 10: an
+                operator, the GitHub UI's auto-merge button, or any future caller bypasses it.
+                The GitHub-side version would be a check run reporting "the declared reviewer has
+                reviewed this SHA", made required via branch protection — but GitHub has no
+                primitive for "wait for a COMMENTED review from an App"
+                (`required_approving_review_count` needs an APPROVED from a write-access human),
+                so the baseline would have to WRITE a workflow into the target repo, crossing
+                repo-settings' "reads .github/workflows, never writes them" line. Agent-side is
+                also where #49 lands, so this is the end state for now, not a stopgap shape.
+                `--match-head-commit` is the one part GitHub *can* enforce, and it is pushed there.
+             b. **The declaration layers repo -> global, so a GLOBAL declaration suspends arming
+                machine-wide.** "Which logins are bots" is genuinely machine-level; "does THIS repo
+                have an async reviewer" is repo-level, and one key answers both. An operator who
+                declares the Codex connector globally therefore stops unattended arming in every
+                repo, including ones where that App is not installed — recoverable with a per-repo
+                `bots = []`, which inverts what the layering is for. Kept because it fails in the
+                SAFE direction and matches the key's established semantics; the cleaner shape (a
+                repo-scoped `[reviewers] blocking`, letting the two policies diverge — you want
+                `github-actions[bot]`'s threads resolved but never blocking a merge) is filed
+                rather than guessed at.
 - baseline-issue: n/a (this repo IS the baseline; #134 is the tracking issue)

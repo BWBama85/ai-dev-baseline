@@ -81,7 +81,7 @@ STUB
 chmod +x "$SBIN/gh"
 
 # ---- fixtures --------------------------------------------------------------------------------
-pr_fx()      { printf '{"head":{"sha":"%s"}}\n' "${1:-$HEAD_SHA}" > "$S/pr.json"; }
+pr_fx()      { printf '{"head":{"sha":"%s"},"base":{"repo":{"full_name":"acme/widget"}}}\n' "${1:-$HEAD_SHA}" > "$S/pr.json"; }
 pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
 # review_fx <login> <state> <sha> [...] — one review per triple.
 review_fx() {
@@ -103,13 +103,11 @@ g() {
   OUT="$( cd "$REPO" && HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" \
           STUB_AUTH_FAIL="${STUB_AUTH_FAIL:-0}" STUB_FAIL_PR="${STUB_FAIL_PR:-0}" \
           STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" \
-          ADB_PR_ROLE_DISPATCH="$ROOT/scripts/lib/role-dispatch.sh" \
           bash "$PR" "$@" 2>&1 )"; RC_=$?
 }
 # gout : stdout ONLY (the witnessed SHA contract) — stderr is diagnostics and must not pollute it.
 gout() {
   OUT="$( cd "$REPO" && HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" \
-          ADB_PR_ROLE_DISPATCH="$ROOT/scripts/lib/role-dispatch.sh" \
           bash "$PR" "$@" 2>/dev/null )"; RC_=$?
 }
 
@@ -142,7 +140,8 @@ eq "$OUT" "$HEAD_SHA" "bots = [] still emits the witnessed head SHA for --match-
 
 printf '%s\n' '[reviewers]' 'bots = "not-an-array"' > "$REPO/agents.toml"
 g gate --pr 7
-eq "$RC_" "20" "malformed [reviewers] bots -> 20 (never mistaken for the [] disable)"
+eq "$RC_" "18" "malformed [reviewers] bots -> 18 (a CONFIG remedy, not 20's retry, nor the [] disable)"
+has "$OUT" "fix agents.toml" "18 names the remedy"
 
 # ============================ identity matching ============================
 # The REST/GraphQL spelling split. Both directions, because agents.toml may carry either form.
@@ -255,6 +254,14 @@ gout gate --pr "https://github.com/acme/widget/pull/7/files"
 eq "$RC_" "0" "a PR sub-page URL is accepted"
 g gate --pr "https://github.com/acme/widget/issues/7"
 eq "$RC_" "2" "a non-PR URL is rejected rather than guessed at"
+
+# A URL naming a DIFFERENT repository must be refused, not answered. Every read addresses
+# repos/{owner}/{repo}, which gh expands from the LOCAL remote, so without this cross-check the
+# guard would faithfully report on this repo's #7 while the caller meant another repo's — a
+# confidently wrong answer, the one output a guard must never produce.
+g gate --pr "https://github.com/other/project/pull/7"
+eq "$RC_" "2" "a PR URL naming a different repository is refused"
+has "$OUT" "refusing to answer about a different repository" "the repo mismatch is named"
 
 # ============================ workflow drift pins ============================
 # The library can be perfectly correct while the workflow never calls it — which is exactly the

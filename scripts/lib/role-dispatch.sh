@@ -227,15 +227,16 @@ EOF
 # `[bot]`-suffix heuristic — so the matcher can never catch a human login.
 # NOTE: this default set is pinned to base/workflows/resolve-pr-threads.md by check-fact-drift.sh
 # (fact `reviewer-bots-default`) — change a login here and the doc must change too, or CI fails.
+# Defined in terms of the tri-state reader below, so "the two differ ONLY on unset" is true by
+# construction rather than by two copies of the parse agreeing. One home for what a valid
+# `[reviewers] bots` is — and for the message that rejects an invalid one.
 adb_dispatch_bots() {
-  local raw
-  if raw="$(_adb_rd_layered_get reviewers bots)"; then
-    # Present but not an array (e.g. bots = "x") is malformed — reject it rather than let
-    # adb_toml_array emit nothing and be mistaken for the intentional `bots = []` disable.
-    case "$raw" in
-      \[*) adb_toml_array "$raw"; return 0 ;;
-      *)   printf 'role-dispatch: [reviewers].bots must be an array (e.g. ["a[bot]","b"]) — use [] to disable\n' >&2; return 2 ;;
-    esac
+  local out rc
+  out="$(adb_dispatch_bots_declared)"; rc=$?
+  [ "$rc" -ne 2 ] || return 2            # malformed: already reported by the reader
+  if [ "$rc" -eq 0 ]; then               # declared — even as [] — is authoritative
+    [ -z "$out" ] || printf '%s\n' "$out"
+    return 0
   fi
   printf '%s\n' \
     'chatgpt-codex-connector' \

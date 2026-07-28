@@ -306,6 +306,13 @@ bugs. So the merge gate never defaults; it reads the key as a tri-state:
 login works (`chatgpt-codex-connector` or `chatgpt-codex-connector[bot]`): the guard normalizes
 the `[bot]` suffix, because GitHub's GraphQL and REST APIs report the same bot differently.
 
+> **Prefer declaring it per repo.** The key layers repo → global like every other manifest key,
+> so a declaration in `~/.config/ai-dev-baseline/agents.toml` applies to **every** repo on the
+> machine — including ones where that App is not installed, where the guard will then wait for a
+> reviewer that never arrives and auto-merge simply stops being armed. That fails in the safe
+> direction and a per-repo `bots = []` overrides it, but "which bot reviews *this* repo" is
+> repo-level information and reads best where it is true.
+
 Expect the guard to skip arming on a bot-reviewed repo: step 10 runs seconds after the PR opens,
 so a reviewer that takes minutes has definitionally not reviewed yet. That is the intended trade —
 unattended *arming* is suspended until **#49** adds the PR watch that waits and then arms.

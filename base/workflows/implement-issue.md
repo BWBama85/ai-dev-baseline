@@ -528,22 +528,23 @@ wait has to happen **here, before the arm**.
 
 ```bash
 PR="$(jq -r .prUrl {{STATE_DIR}}/implement-issue-active.json)"   # written just above
-# Merge methods are per-repo settings; a hardcoded --squash is rejected wherever squash is
-# disabled, so ask which flag this repo allows rather than assuming.
-FLAG="$({{REPO_SETTINGS_LIB}} merge-flag)" || FLAG=""
 {{REPO_SETTINGS_LIB}} automerge-ok; AM=$?
 case "$AM" in
   0)
-    # Checks WILL gate the merge. Now the question repo settings cannot answer: has every
-    # reviewer this repo DECLARES (`[reviewers] bots` in agents.toml) reviewed THIS head
-    # commit? On 0 the guard prints the head SHA it witnessed — pass it to
-    # --match-head-commit so a commit pushed between the check and the arm cannot slip in
-    # unreviewed (GitHub rejects the arm instead of merging the new tip).
+    # On 0 the guard prints the head SHA it witnessed — pass it to --match-head-commit so a
+    # commit pushed between the check and the arm cannot slip in unreviewed (GitHub rejects
+    # the arm instead of merging the new tip).
     HEAD_SHA="$({{PR_REVIEW_LIB}} gate --pr "$PR")"; RV=$?
     case "$RV" in
-      0)  [ -n "$FLAG" ] && gh pr merge "$PR" --auto "$FLAG" --match-head-commit "$HEAD_SHA" ;;
+      0)  # Merge methods are per-repo settings; a hardcoded --squash is rejected wherever
+          # squash is disabled, so ask which flag this repo allows. Asked HERE, not earlier:
+          # on a bot-reviewed repo the arm is skipped almost every run, and `merge-flag` is
+          # its own pair of API calls — no point paying for them to discard the answer.
+          FLAG="$({{REPO_SETTINGS_LIB}} merge-flag)" || FLAG=""
+          [ -n "$FLAG" ] && gh pr merge "$PR" --auto "$FLAG" --match-head-commit "$HEAD_SHA" ;;
       16) : ;;  # a DECLARED reviewer has not reviewed this head SHA -> do NOT arm; owner merges
       17) : ;;  # repo declares no `[reviewers] bots` -> unknowable; declare it (or `bots = []`)
+      18) : ;;  # `[reviewers] bots` is malformed     -> fix agents.toml
       *)  : ;;  # 20/unknown -> review state unreadable, merge by hand
     esac ;;
   10) : ;;  # allow_auto_merge off       -> report: run 'baseline repo apply'
@@ -572,11 +573,10 @@ merge dialog:
 
 - `--squash` takes its subject from the **PR title**, so the title must satisfy the
   repo's commit convention.
-- **State the gating condition accurately.** `required_conversation_resolution` holds
-  an armed PR only on threads that exist **at that moment** — it is *not* a promise
-  that a future review will be waited for. What actually held (or released) the arm is
-  this step's own review guard; GitHub itself gates on checks and pre-existing threads
-  alone. If threads do land later, `/resolve-pr-threads` clears them.
+- **What held the arm was this step's review guard, not GitHub.**
+  `required_conversation_resolution` holds an armed PR only on threads that exist at
+  that moment; it never waits for a future review. If threads land later,
+  `/resolve-pr-threads` clears them.
 
 ### 11. Close-out
 
@@ -586,14 +586,13 @@ emit a self-attested completion checklist rendering each required step's real st
 Review → Ship → Close-out, plus a **Needs attention** block for anything not ✅ and a
 **Follow-up issues filed** block (each with its milestone + one-line rationale).
 
-State the **auto-merge disposition explicitly** — armed, or skipped with **which**
-guard skipped it and its code (`automerge-ok` 10–14/20, or the review gate 16/17/20).
+State the **auto-merge disposition explicitly** — armed, or skipped naming **which**
+guard skipped it and its code (`automerge-ok` 10–14/20, or the review gate 16/17/18/20).
 An armed PR that is silently waiting on something is the one outcome the operator
-cannot see: say what it is waiting on and what clears it. Be accurate about which
-condition is doing the holding — on code 16 the PR is **not armed at all** and is
-waiting on a *reviewer*, which is not the same as an armed PR waiting on threads. End
-with the `/resolve-pr-threads <PR#>` resume hint. Do **not** poll for bot reviews —
-this step reports the state and ends; waiting is #49's job.
+cannot see: say what it is waiting on and what clears it. On code 16 the PR is **not
+armed at all** and is waiting on a *reviewer* — not the same as an armed PR waiting on
+threads. End with the `/resolve-pr-threads <PR#>` resume hint. Do **not** poll for bot
+reviews — this step reports the state and ends; waiting is #49's job.
 
 ### 12. File issues for ALL deferred / out-of-scope work (mandatory)
 

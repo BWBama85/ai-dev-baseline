@@ -33,6 +33,8 @@
 #   17 unknown — the repo declares no `[reviewers] bots` at all, so whether a reviewer is coming
 #                cannot be known. FAIL CLOSED. Declare the reviewers, or `bots = []` if there are
 #                none. Deliberately NOT 20: the operator action is "declare it", not "retry".
+#   18 config  — `[reviewers] bots` is present but malformed. Like 17 the remedy is "fix
+#                agents.toml", not "retry", so it is not folded into 20.
 #   20 unknown — live state unreadable (API failure, no head SHA, an unrecognized review state).
 #                FAIL CLOSED, never assume reviewed.
 #   2  usage   — bad or missing arguments.
@@ -60,8 +62,9 @@ fi
 . "$_adb_pr_common"
 
 # role-dispatch.sh owns the `[reviewers]` manifest key; this module asks it rather than re-reading
-# agents.toml, so the layering (repo -> global) can never drift between the two consumers.
-_ADB_PR_ROLE_DISPATCH="${ADB_PR_ROLE_DISPATCH:-$_adb_pr_libdir/role-dispatch.sh}"
+# agents.toml, so the layering (repo -> global) can never drift between the two consumers. It sits
+# beside this file — install.sh symlinks the whole scripts/lib dir, so the two always ship together.
+_ADB_PR_ROLE_DISPATCH="$_adb_pr_libdir/role-dispatch.sh"
 
 usage() { adb_usage "$0"; }
 
@@ -69,69 +72,37 @@ OPT_PR=""
 
 # --- helpers ---------------------------------------------------------------------------------
 
-# norm_login <login> — the comparison form of a GitHub login: lowercased, with ONE trailing
-# "[bot]" removed.
-#
-# This normalization is load-bearing, not cosmetic. The SAME bot has two spellings depending on
-# which API answered:
-#   GraphQL  author.login -> chatgpt-codex-connector        (what /resolve-pr-threads matches)
-#   REST     user.login   -> chatgpt-codex-connector[bot]   (what THIS module reads)
-# Both verified live against PR #133. The built-in allowlist carries the bare form for the Codex
-# connector and BOTH forms for gemini-code-assist, so an anchored exact match against a REST login
-# would silently never fire — and "no declared reviewer matched" would look exactly like "the
-# reviewer has not reviewed yet", wedging the guard at 16 forever even after the review landed.
-# Normalizing both sides makes either spelling work in agents.toml.
-norm_login() {
-  local l
-  l="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  case "$l" in
-    *'[bot]') printf '%s' "${l%'[bot]'}" ;;
-    *)        printf '%s' "$l" ;;
-  esac
-}
-
-# Review states that count as "this reviewer has spoken about this commit". A review is a
-# submitted opinion regardless of its verdict — COMMENTED is what the Codex connector posts, and
-# waiting for an APPROVED that a comment-only bot never sends would deadlock the guard.
-#
-# PENDING is a draft the author has not submitted (nobody can see it) and DISMISSED was explicitly
-# revoked, so neither counts. Anything else is a state this module does not recognize: it must
-# resolve to 20, never be quietly treated as "not reviewed", because a future GitHub state that
-# actually means "reviewed" would otherwise wedge the guard.
-review_state_kind() {   # accepted | rejected | unknown
-  case "$1" in
-    APPROVED|CHANGES_REQUESTED|COMMENTED) printf 'accepted' ;;
-    PENDING|DISMISSED)                    printf 'rejected' ;;
-    *)                                    printf 'unknown'  ;;
-  esac
-}
-
 # parse_pr_arg <value> — the PR NUMBER from a bare integer or a GitHub PR URL.
 #
 # Step 10 has a `prUrl` in its marker, not a number, so accepting both removes a caller-side sed.
 # Only the NUMBER is taken from a URL: every read below addresses `repos/{owner}/{repo}/...`,
-# which gh expands from the local remote. A URL naming a different repository would otherwise
-# make the guard answer about a PR in one repo while step 10 arms a PR in another.
+# which gh expands from the LOCAL remote. Trusting a URL's own slug instead would let the guard
+# be pointed at another repository entirely; parse_pr_slug below verifies the two agree rather
+# than silently answering about a different PR of the same number.
 parse_pr_arg() {
-  local v="$1" n=""
+  local n="$1"
+  case "$n" in *pull/*) n="${n##*pull/}"; n="${n%%[!0-9]*}" ;; esac
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$n" -gt 0 ] 2>/dev/null || return 1
+  printf '%s' "$n"
+}
+
+# parse_pr_slug <value> — the `owner/repo` of a PR URL, or nothing for a bare number.
+# Used only to CROSS-CHECK the URL against the repo the reads actually address. A bare number
+# carries no slug and needs no check.
+parse_pr_slug() {
+  local v="$1" rest
   case "$v" in
-    *[!0-9]*)
-      case "$v" in
-        *pull/*) n="${v##*pull/}"; n="${n%%[!0-9]*}" ;;
-        *)       n="" ;;
-      esac ;;
-    *) n="$v" ;;
+    *://*/*/*/pull/*) rest="${v#*://}"; rest="${rest#*/}" ;;   # host/ -> owner/repo/pull/N
+    *) return 0 ;;
   esac
-  case "$n" in
-    ''|*[!0-9]*) return 1 ;;
-    *) [ "$n" -gt 0 ] 2>/dev/null || return 1; printf '%s' "$n" ;;
-  esac
+  printf '%s' "${rest%%/pull/*}"
 }
 
 # --- the guard -------------------------------------------------------------------------------
 
 cmd_gate() {
-  local n declared drc want head pjson reviews rjson kinds pending=""
+  local n declared drc want head pjson reviews rjson kinds wantslug gotslug pending=""
 
   [ -n "$OPT_PR" ] || { echo "pr-review: gate requires --pr <number|url>" >&2; return 2; }
   n="$(parse_pr_arg "$OPT_PR")" \
@@ -150,15 +121,31 @@ cmd_gate() {
     3) echo "pr-review: this repo declares no '[reviewers] bots' — cannot know whether a reviewer is coming." >&2
        echo "pr-review: declare the async reviewer logins in agents.toml, or 'bots = []' if there are none." >&2
        return 17 ;;
-    *) echo "pr-review: could not read '[reviewers] bots' (broken install or malformed manifest) — refusing to arm" >&2
+    2) echo "pr-review: '[reviewers] bots' is malformed — fix agents.toml (it must be an array; use [] for none)" >&2
+       return 18 ;;
+    *) echo "pr-review: could not read '[reviewers] bots' (broken install) — refusing to arm" >&2
        return 20 ;;
   esac
 
-  # Normalize + de-duplicate the declaration. Blank entries are dropped rather than treated as a
-  # reviewer named "" that can never match.
-  want="$(printf '%s\n' "$declared" | sed '/^[[:space:]]*$/d' | while IFS= read -r l; do
-            norm_login "$l"; printf '\n'
-          done | LC_ALL=C sort -u)"
+  # Normalize and de-duplicate the declaration in ONE pass, so the comparison form is built the
+  # same way no matter how many reviewers are declared.
+  #
+  # The normalization is load-bearing, not cosmetic: the SAME bot has two spellings depending on
+  # which API answered —
+  #   GraphQL  author.login -> chatgpt-codex-connector        (what /resolve-pr-threads matches)
+  #   REST     user.login   -> chatgpt-codex-connector[bot]   (what THIS module reads)
+  # both verified live against PR #133. The built-in allowlist carries the bare form for the Codex
+  # connector, so an anchored exact match against a REST login would silently never fire — and "no
+  # declared reviewer matched" looks exactly like "the reviewer has not reviewed yet", wedging the
+  # guard at 16 forever even after the review landed. Normalizing BOTH sides (here, and in the jq
+  # select below) makes either spelling work in agents.toml.
+  #
+  # Lowercase BEFORE stripping, so `[BOT]` is stripped too; drop blanks AFTER, so an entry that is
+  # only `[bot]` becomes empty and is dropped rather than becoming a reviewer that can never match.
+  want="$(printf '%s\n' "$declared" \
+          | tr '[:upper:]' '[:lower:]' \
+          | sed -e 's/\[bot\]$//' -e '/^[[:space:]]*$/d' \
+          | LC_ALL=C sort -u)"
 
   adb_require_gh jq || return 20
 
@@ -169,10 +156,22 @@ cmd_gate() {
   # `gh … | jq` pipeline from reporting the parser's success for the reader's failure.
   pjson="$(gh api "repos/{owner}/{repo}/pulls/$n" 2>/dev/null)" \
     || { echo "pr-review: could not read PR #$n — refusing to arm" >&2; return 20; }
-  head="$(printf '%s' "$pjson" | jq -r '.head.sha // empty' 2>/dev/null)" || head=""
-  case "$head" in
-    ''|null) echo "pr-review: could not resolve the head SHA of PR #$n — refusing to arm" >&2; return 20 ;;
-  esac
+  # One jq pass for both fields this object is read for. The slug is case-folded inside it, so the
+  # comparison below needs no second `tr` over the same value.
+  { IFS= read -r head; IFS= read -r gotslug; } <<EOF
+$(printf '%s' "$pjson" | jq -r '(.head.sha // ""), (.base.repo.full_name // "" | ascii_downcase)' 2>/dev/null)
+EOF
+  [ -n "$head" ] \
+    || { echo "pr-review: could not resolve the head SHA of PR #$n — refusing to arm" >&2; return 20; }
+
+  # If the caller passed a URL, prove it names the repo these reads actually addressed. Without
+  # this, `--pr https://github.com/other/repo/pull/7` would faithfully report on THIS repo's #7 —
+  # a confidently wrong answer, which is the one thing a guard must never produce.
+  wantslug="$(parse_pr_slug "$OPT_PR" | tr '[:upper:]' '[:lower:]')"
+  if [ -n "$wantslug" ] && [ -n "$gotslug" ] && [ "$wantslug" != "$gotslug" ]; then
+    echo "pr-review: --pr names '$wantslug' but this repo is '$gotslug' — refusing to answer about a different repository" >&2
+    return 2
+  fi
 
   # `bots = []` — an explicit declaration that this repo has NO async reviewer. Nothing to wait
   # for, so arming is safe. The head SHA is still emitted: --match-head-commit is about the
@@ -209,13 +208,19 @@ cmd_gate() {
           | (.state // "") ] | .[]' 2>/dev/null)" \
       || { echo "pr-review: could not evaluate reviews for '$login' — refusing to arm" >&2; return 20; }
 
-    local satisfied=0 sawunknown=0 st kind
+    # The state taxonomy, in its one home. A review is a submitted opinion regardless of verdict —
+    # COMMENTED is what the Codex connector posts, and waiting for an APPROVED that a comment-only
+    # bot never sends would deadlock the guard. PENDING is an unsubmitted draft nobody can see and
+    # DISMISSED was explicitly revoked, so neither counts. Anything else is a state this module
+    # does not recognize: it must surface (20), never be quietly read as "not reviewed", because a
+    # future GitHub state that actually means "reviewed" would otherwise wedge the guard at 16.
+    local satisfied=0 sawunknown=0 st
     while IFS= read -r st; do
-      [ -n "$st" ] || continue
-      kind="$(review_state_kind "$st")"
-      case "$kind" in
-        accepted) satisfied=1 ;;
-        unknown)  sawunknown=1; echo "pr-review: PR #$n — unrecognized review state '$st' from '$login'" >&2 ;;
+      case "$st" in
+        '') continue ;;
+        APPROVED|CHANGES_REQUESTED|COMMENTED) satisfied=1 ;;
+        PENDING|DISMISSED) ;;
+        *) sawunknown=1; echo "pr-review: PR #$n — unrecognized review state '$st' from '$login'" >&2 ;;
       esac
     done <<EOF
 $kinds
