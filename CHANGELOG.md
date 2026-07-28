@@ -20,7 +20,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     the question repo settings cannot: *has every reviewer this repo declares reviewed **this head
     commit**?* Exit `0` (+ the witnessed SHA on stdout) · `16` a declared reviewer is still
     pending · `17` no `[reviewers] bots` declaration, so it is unknowable · `18` that declaration is
-    malformed · `20` unreadable. Every uncertainty is non-zero — the guard never degrades a failed
+    malformed · `19` a reviewer requested changes · `20` unreadable. Every uncertainty is non-zero — the guard never degrades a failed
     read into "nobody is pending" — and each code carries its own remedy, the same one-code-per-fix
     rule `automerge-ok` follows.
   - It is a **separate module** on purpose: `repo-settings.sh` declares itself repo *settings*
@@ -41,6 +41,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **Expect this to skip arming on a bot-reviewed repo**, every time: step 10 runs seconds after
     the PR opens. Unattended *arming* is suspended there until **#49** adds the PR watch that
     waits, resolves threads, and arms afterwards. A repo with no async reviewer sets `bots = []`.
+  - **A submitted review is not a satisfied one.** `APPROVED` and `COMMENTED` count —
+    `COMMENTED` is what the Codex connector posts even on a clean pass, and holding out for an
+    `APPROVED` it never sends would deadlock the gate. **`CHANGES_REQUESTED` does not** (`19`), and
+    nothing else catches that: with `required_approving_review_count: 0` GitHub merges a PR whose
+    only review says *do not merge*, and `required_conversation_resolution` gates on threads, not
+    on the verdict. A standing rejection also outranks any other review the same reviewer left on
+    the same commit, in either order. Reported by the reviewer on this feature's own PR.
   - **A declaration that only *looks* empty is now rejected, not obeyed.** `adb_toml_get` is
     line-based, so a perfectly valid multi-line TOML array (`bots = [` / `  "…",` / `]`) returned
     just `[` and parsed to zero elements — byte-identical to an intentional `bots = []`. The guard

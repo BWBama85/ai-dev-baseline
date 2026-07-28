@@ -35,6 +35,8 @@
 #                none. Deliberately NOT 20: the operator action is "declare it", not "retry".
 #   18 config  — `[reviewers] bots` is present but malformed. Like 17 the remedy is "fix
 #                agents.toml", not "retry", so it is not folded into 20.
+#   19 rejected — a declared reviewer left CHANGES_REQUESTED on this head SHA. Distinct from 16:
+#                the work exists and is described, rather than being waited for.
 #   20 unknown — live state unreadable (API failure, no head SHA, an unrecognized review state).
 #                FAIL CLOSED, never assume reviewed.
 #   2  usage   — bad or missing arguments.
@@ -102,7 +104,7 @@ parse_pr_slug() {
 # --- the guard -------------------------------------------------------------------------------
 
 cmd_gate() {
-  local n declared drc want head pjson pfields reviews rjson kinds wantslug gotslug pending=""
+  local n declared drc want head pjson pfields reviews rjson kinds wantslug gotslug pending="" rejected=""
 
   [ -n "$OPT_PR" ] || { echo "pr-review: gate requires --pr <number|url>" >&2; return 2; }
   n="$(parse_pr_arg "$OPT_PR")" \
@@ -230,17 +232,31 @@ EOF
           | (.state // "") ] | .[]' 2>/dev/null)" \
       || { echo "pr-review: could not evaluate reviews for '$login' — refusing to arm" >&2; return 20; }
 
-    # The state taxonomy, in its one home. A review is a submitted opinion regardless of verdict —
-    # COMMENTED is what the Codex connector posts, and waiting for an APPROVED that a comment-only
-    # bot never sends would deadlock the guard. PENDING is an unsubmitted draft nobody can see and
-    # DISMISSED was explicitly revoked, so neither counts. Anything else is a state this module
-    # does not recognize: it must surface (20), never be quietly read as "not reviewed", because a
-    # future GitHub state that actually means "reviewed" would otherwise wedge the guard at 16.
-    local satisfied=0 sawunknown=0 st
+    # The state taxonomy, in its one home.
+    #
+    # COMMENTED counts. It is what the Codex connector posts even on a clean pass, and waiting for
+    # an APPROVED that a comment-only bot never sends would deadlock the guard permanently.
+    #
+    # CHANGES_REQUESTED does NOT count, and this is not symmetry for its own sake. "The reviewer
+    # has spoken" is not the same claim as "the reviewer is satisfied", and only the second one
+    # makes arming safe. Nothing else catches it: this repo's branch protection carries
+    # `required_approving_review_count: 0` (verified live), so GitHub will happily merge a PR whose
+    # only review says "do not merge this", and `required_conversation_resolution` gates on threads
+    # rather than on the verdict. Treating a rejection as a green light would be the exact
+    # fail-open this module exists to prevent — reported by the reviewer on this module's own PR.
+    #
+    # It is also not a deadlock: addressing the feedback pushes a commit, which moves the head SHA,
+    # and the next review is evaluated against that. Disagreeing is the ordinary manual-merge path.
+    #
+    # PENDING is an unsubmitted draft nobody can see; DISMISSED was explicitly revoked. Anything
+    # else is a state this module does not recognize: it must surface (20), never be quietly read
+    # as "not reviewed", because a future GitHub state that means "reviewed" would wedge it at 16.
+    local satisfied=0 sawunknown=0 changes=0 st
     while IFS= read -r st; do
       case "$st" in
         '') continue ;;
-        APPROVED|CHANGES_REQUESTED|COMMENTED) satisfied=1 ;;
+        APPROVED|COMMENTED) satisfied=1 ;;
+        CHANGES_REQUESTED)  changes=1 ;;
         PENDING|DISMISSED) ;;
         *) sawunknown=1; echo "pr-review: PR #$n — unrecognized review state '$st' from '$login'" >&2 ;;
       esac
@@ -248,14 +264,30 @@ EOF
 $kinds
 EOF
 
-    if [ "$satisfied" -eq 0 ] && [ "$sawunknown" -eq 1 ]; then
+    if [ "$satisfied" -eq 0 ] && [ "$changes" -eq 0 ] && [ "$sawunknown" -eq 1 ]; then
       echo "pr-review: cannot classify '$login''s review of $head — refusing to arm" >&2
       return 20
     fi
-    [ "$satisfied" -eq 1 ] || pending="${pending:+$pending }$login"
+    # A standing CHANGES_REQUESTED outranks any other review this reviewer left on the SAME commit.
+    # GitHub keeps such a review blocking until it is dismissed or superseded by a later review, and
+    # "any accepted state wins" would let an earlier COMMENTED cancel a later rejection.
+    if [ "$changes" -eq 1 ]; then
+      rejected="${rejected:+$rejected }$login"
+    elif [ "$satisfied" -eq 0 ]; then
+      pending="${pending:+$pending }$login"
+    fi
   done <<EOF
 $want
 EOF
+
+  # A rejection is reported BEFORE a missing review: both withhold the arm, but this one names work
+  # that already exists to be done, rather than something to wait for.
+  if [ -n "$rejected" ]; then
+    echo "pr-review: PR #$n at $head — changes requested by: $rejected" >&2
+    echo "pr-review: not arming auto-merge; a submitted review is not a satisfied one, and branch protection does not block on the verdict." >&2
+    echo "pr-review: address the feedback and push (which moves the head, and is re-reviewed), or merge by hand if you disagree." >&2
+    return 19
+  fi
 
   # ALL declared reviewers must have reviewed, not any one of them. The set is DECLARED rather
   # than defaulted, so it lists exactly the bots this repo actually has — under "any", a fast

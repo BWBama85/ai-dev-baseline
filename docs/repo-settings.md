@@ -169,9 +169,18 @@ pr-review.sh gate --pr <number|url>    # prints the witnessed head SHA on 0
 | `16` | a declared reviewer has **not** reviewed this head SHA — do not arm; the operator merges after review |
 | `17` | the repo declares no `[reviewers] bots` — unknowable, **fail closed**. Declare them, or `bots = []` |
 | `18` | `[reviewers] bots` is present but malformed — fix `agents.toml` |
+| `19` | a declared reviewer left **`CHANGES_REQUESTED`** on this head SHA — address it and push |
 | `20` | live state unreadable — **fail closed**, never assume reviewed |
 
-Two properties are doing the real work:
+Three properties are doing the real work:
+
+- **"Submitted" is not "satisfied."** `APPROVED` and `COMMENTED` count — `COMMENTED` is what the
+  Codex connector posts even on a clean pass, and holding out for an `APPROVED` a comment-only bot
+  never sends would deadlock the gate. **`CHANGES_REQUESTED` does not count** (`19`). Nothing else
+  catches it: with `required_approving_review_count: 0` GitHub will merge a PR whose only review
+  says *do not merge*, and `required_conversation_resolution` gates on threads rather than on the
+  verdict. It is not a deadlock either — addressing the feedback pushes a commit, which moves the
+  head SHA and gets re-reviewed.
 
 - **It is anchored to a commit, not to the PR.** A review of an earlier push is not a review of
   what is about to merge. On a 0 the caller passes the witnessed SHA to `gh pr merge

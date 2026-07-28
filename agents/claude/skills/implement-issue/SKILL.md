@@ -548,6 +548,7 @@ case "$AM" in
       16) : ;;  # a DECLARED reviewer has not reviewed this head SHA -> do NOT arm; owner merges
       17) : ;;  # repo declares no `[reviewers] bots` -> unknowable; declare it (or `bots = []`)
       18) : ;;  # `[reviewers] bots` is malformed     -> fix agents.toml
+      19) : ;;  # a reviewer requested CHANGES on this head SHA -> address them, push, re-run
       *)  : ;;  # 20/unknown -> review state unreadable, merge by hand
     esac ;;
   10) : ;;  # allow_auto_merge off       -> report: run 'baseline repo apply'
@@ -590,7 +591,8 @@ Review → Ship → Close-out, plus a **Needs attention** block for anything not
 **Follow-up issues filed** block (each with its milestone + one-line rationale).
 
 State the **auto-merge disposition explicitly** — armed, or skipped naming **which**
-guard skipped it and its code (`automerge-ok` 10–14/20, or the review gate 16/17/18/20).
+guard skipped it and its code (`automerge-ok` 10–14/20, or the review gate
+16/17/18/19/20).
 An armed PR that is silently waiting on something is the one outcome the operator
 cannot see: say what it is waiting on and what clears it. On code 16 the PR is **not
 armed at all** and is waiting on a *reviewer* — not the same as an armed PR waiting on

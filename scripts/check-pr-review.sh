@@ -213,16 +213,57 @@ eq "$RC_" "0" "a stale review PLUS a current one is satisfied"
 
 # ============================ review states ============================
 declare_bots '["chatgpt-codex-connector"]'; pr_fx
-for st in APPROVED CHANGES_REQUESTED COMMENTED; do
+# APPROVED and COMMENTED are the two "reviewer is satisfied" states. COMMENTED must count: it is
+# what the Codex connector posts even on a clean pass, and holding out for an APPROVED that a
+# comment-only bot never sends would deadlock the guard permanently. CHANGES_REQUESTED is handled
+# below — it is submitted, but it is not satisfied.
+for st in APPROVED COMMENTED; do
   review_fx "chatgpt-codex-connector[bot]" "$st" "$HEAD_SHA"
   g gate --pr 7
-  eq "$RC_" "0" "review state $st counts as reviewed"
+  eq "$RC_" "0" "review state $st counts as a satisfied review"
 done
 for st in PENDING DISMISSED; do
   review_fx "chatgpt-codex-connector[bot]" "$st" "$HEAD_SHA"
   g gate --pr 7
   eq "$RC_" "16" "review state $st does NOT count as reviewed"
 done
+
+# --- CHANGES_REQUESTED is a REJECTION, not a "the reviewer has spoken" pass -------------------
+# Reported by the reviewer on this module's own PR (#146). "Submitted" is not "satisfied", and
+# nothing else catches the difference: this repo's branch protection carries
+# `required_approving_review_count: 0` (verified live), so GitHub merges a PR whose only review
+# says do-not-merge, and required_conversation_resolution gates on threads, not on the verdict.
+review_fx "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "19" "CHANGES_REQUESTED is a rejection (19), never a satisfied review"
+has "$OUT" "changes requested by: chatgpt-codex-connector" "19 names who rejected it"
+has "$OUT" "address the feedback and push" "19 names the remedy, which differs from 16's 'wait'"
+
+# A standing rejection OUTRANKS any other review the same reviewer left on the same commit —
+# in either order. "Any accepted state wins" would let an earlier COMMENTED cancel a later
+# CHANGES_REQUESTED, which is the fail-open in a different disguise.
+review_fx "chatgpt-codex-connector[bot]" "COMMENTED"         "$HEAD_SHA" \
+          "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "19" "COMMENTED then CHANGES_REQUESTED on one commit -> rejected"
+review_fx "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA" \
+          "chatgpt-codex-connector[bot]" "COMMENTED"         "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "19" "CHANGES_REQUESTED then COMMENTED on one commit -> still rejected"
+
+# ...but a rejection of an EARLIER commit does not block the current one: pushing a fix moves the
+# head, which is exactly how a 19 is meant to clear.
+review_fx "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$OLD_SHA" \
+          "chatgpt-codex-connector[bot]" "COMMENTED"         "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "0" "a rejection of an EARLIER commit does not block the reviewed current head"
+
+# A rejection is reported ahead of a merely-missing review: it names work that already exists.
+declare_bots '["chatgpt-codex-connector", "gemini-code-assist[bot]"]'
+review_fx "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "19" "a rejection outranks a pending reviewer in the reported verdict"
+declare_bots '["chatgpt-codex-connector"]'
 # An unrecognized state is indeterminate, and indeterminate is NEVER "reviewed" and never a
 # silent 16 either: a future GitHub state meaning "reviewed" must surface, not wedge the guard.
 review_fx "chatgpt-codex-connector[bot]" "SOME_NEW_STATE" "$HEAD_SHA"
