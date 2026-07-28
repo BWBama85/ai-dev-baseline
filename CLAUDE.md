@@ -25,11 +25,19 @@ those. The rules below are specific to this repo's code.
    concern per file. `base/workflows/` is the single source for each workflow's
    procedure + metadata (rendered into the Claude skills). `base/roles.md` is the
    multi-agent role model.
-3. **Run `scripts/selfcheck.sh` before every push.** It mirrors CI exactly
+3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs
    (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
    pr-review · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration ·
    install-guard · fact-drift · practice-index · release-role · install dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
+
+   **One CI step is deliberately not mirrored** (#122, recorded as D13 in
+   `.ai-dev-baseline/decisions.md`): the `repo-settings` job's `required-drift` step reads this
+   repo's **live** branch protection to catch a newly added CI job that stayed non-required.
+   `selfcheck` is kept hermetic — a deterministic predictor of CI — and a step whose verdict
+   depends on network, auth and externally-mutable settings would break that. It keeps the offline
+   half (`check-repo-settings.sh` drives the predicate through a `gh` stub), so the only thing a
+   local green cannot predict is the one check whose input is external mutable state.
 4. **Shell code must be portable and shellcheck-clean.** `bash`/POSIX, safe on macOS
    bash 3.2 (no `mapfile`, no `readlink -f`), passing
    `shellcheck --severity=warning -e SC1091`. The install runs on a stock Mac and on

@@ -365,6 +365,35 @@ jobs:
       - name: Repo settings — check discovery + write ordering + the automerge-ok table (#87)
         run: bash scripts/check-repo-settings.sh
 
+      # The LIVE half of #122, and the only step in this file that talks to the API. Why it rides
+      # this job rather than taking its own, and why it reads the ordinary branch endpoint rather
+      # than /protection: docs/repo-settings.md, "Catching the drift early".
+      #
+      # Local to CI, and stated nowhere else:
+      #
+      #   * a FORK PR's GITHUB_TOKEN is read-only but still carries the contents:read this needs,
+      #     so the read succeeds there too — that path runs in the base repo's context and is fine;
+      #   * the `if` is not belt-and-braces. On a PUSH to a fork (a contributor who forked and
+      #     enabled Actions), `gh api repos/{owner}/{repo}` resolves to the FORK, whose default
+      #     branch has no protection — so the step would exit 14 and hand that contributor a red
+      #     build with a remedy only this repo's admin can run. The assertion is about THIS repo's
+      #     settings, so it only runs here.
+      #
+      #   * the event filter is not tidiness either. `push:` here is unfiltered (#99), so this
+      #     step would otherwise run for TAGS and maintenance branches — which check out the
+      #     PUSHED ref's workflow definitions while the live contexts always come from the
+      #     CURRENT default branch. Rename a job, prune the old context on the default branch,
+      #     then push a tag whose tree still carries the old name: exit 14, failing release CI
+      #     over a comparison that was never meaningful for that ref.
+      - name: Required-check drift — a discovered job must not silently stay non-required (#122)
+        if: >-
+          github.repository == 'BWBama85/ai-dev-baseline'
+          && (github.event_name == 'pull_request'
+              || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/lib/repo-settings.sh required-drift
+
   baseline:
     name: baseline
     runs-on: ubuntu-latest

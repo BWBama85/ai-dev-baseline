@@ -14,6 +14,7 @@ baseline repo status        # desired vs live, with drift named (nonzero = drift
 baseline repo apply         # required checks FIRST, then allow_auto_merge
 baseline repo apply --prune # ...and drop required contexts no discovered job reports
 baseline repo automerge-ok  # the guard /implement-issue asks before arming auto-merge
+baseline repo required-drift # CI lint: has a discovered job silently stayed non-required? (#122)
 baseline repo merge-flag    # the gh pr merge flag this repo allows (--squash / --merge / --rebase)
 ```
 
@@ -142,6 +143,114 @@ still fail. It exits `15` when no method is enabled at all.
 Code `12` matters more than it looks: GitHub refuses to *queue* a PR that could merge right now,
 so `gh pr merge --auto` on a check-less repo is a plain merge wearing an auto-merge label. The
 guard refuses and lets the operator decide.
+
+## Catching the drift early: `required-drift` (#122)
+
+The guard above is correct but **late**. It runs at merge time, so the first anyone hears of a
+newly added job staying non-required is a refused arm and a manual detour — and until someone
+notices, auto-merge is simply unavailable. `roadmap-e2e` (added by PR #111) and `session-currency`
+(PR #121) each sat ungated for several PRs that way.
+
+`baseline repo required-drift` asks the **same** question early enough for the fix to be one
+command, on the PR that introduces the job:
+
+| Code | Meaning |
+|---|---|
+| `0` | in sync — every discovered job is required (or the repo has no discoverable CI, per #24) |
+| `14` | a **discovered job is not required** — names each one and the remedy |
+| `20` | live state unreadable, **or** discovery contradicts it — **fail closed** |
+
+It reuses `automerge-ok`'s numbers because it is the same question, so a code never means two
+things — and it calls the same `ungated_contexts` comparison `status` and `automerge-ok` use, so
+the lint can never be shallower than the guard it front-runs.
+
+It is deliberately **narrow**. It does *not* fail on `allow_auto_merge` being off, on phantom
+contexts, or on an external provider's context — those are different problems with different
+remedies, and `status` already reports all of them.
+
+### Why it reads a different endpoint
+
+Its home is a CI step, which runs as `GITHUB_TOKEN` — and `administration` is not a grantable
+workflow permission, so the admin-only `/branches/{branch}/protection` endpoint the other
+subcommands use would `403` on every run. The ordinary `repos/{slug}/branches/{branch}` endpoint
+needs only `contents: read` and carries the same `required_status_checks.contexts` (verified equal
+against the admin endpoint over this repo's 25 contexts). Its error model is also cleaner here: a
+`404` means "no such branch", with none of the "no protection *or* no permission" ambiguity that
+forces `read_protection` to probe `.permissions.admin`.
+
+**One shape must never be misread.** A branch that is protected but whose context list is not
+readable is classified `opaque` and fails closed at `20`. Read as "zero contexts required" it
+would report *every* discovered job as drifted — a repo-wide false positive that fails every PR
+and teaches the operator to ignore the lint. A genuinely **unprotected** branch (`protected:
+false`) is different: that is an authoritative "nothing gates this", and it is real drift.
+
+**Rulesets are the sharp edge here.** This endpoint's `protection` object is the *legacy*
+classic-protection view. A branch protected by a repository **ruleset** reports `protected: true`
+with `protection.enabled: false` and `contexts: []` — a real, empty array. Accepting that as an
+authoritative empty set would name every discovered job as ungated, on a repo where the job
+printing the message is itself required: an unbreakable deadlock, since the fix cannot merge past
+the check it broke. So `enabled: true` is required before the context list is believed; anything
+else is `opaque`. (Classic protection with required checks merely switched *off* keeps
+`enabled: true`, so it stays an actionable `14` rather than an unhelpful `20`.)
+
+**A repo protected by BOTH classic protection and a ruleset is a known blind spot**: only the
+classic contexts are visible here, so a job required solely by the ruleset could be reported as
+ungated. Filed as a follow-up rather than guessed at — reading it needs the rules API.
+
+**An empty discovery result is ambiguous, and is resolved by provenance.** "No discoverable CI"
+and "there are workflow files and the parser saw none of them" produce the same empty set. Passing
+both green is a fail-open; failing both is worse and wrong on this command's own terms, since a
+repo may legitimately hold a schedule-only workflow while CircleCI supplies the required PR
+context — and this command disclaims external-provider contexts.
+
+So the tiebreak is **who reported the context**, read from the check runs on the branch and
+attributed by `app.slug` (the same discriminator `roadmap-lib.sh branch-health` uses):
+
+| Discovery empty, and… | Verdict |
+|---|---|
+| no `.github/workflows` at all | `0` — no claim to contradict (#24, and external-only CI) |
+| the required contexts were **reported by GitHub Actions** on this branch | `20` — they must have come from a workflow in this tree, so the parser has gone blind |
+| the required contexts were **not** Actions-reported (CircleCI, Vercel, …) | `0` — someone else's contexts, out of scope by contract |
+| provenance itself could not be read | `20` — refuse to pick a side |
+
+The middle row is the fail-open this closes; the third is the false positive that closing it
+naively would have created.
+
+### Where it runs, and why not its own job
+
+It is a **step inside the already-required `repo-settings` job**, not a job of its own. A new job
+would itself be a newly added, non-required context: the fix would commit the very defect it
+detects, and would gate nothing until someone ran `apply`. Riding an already-required job means it
+enforces from the first merge.
+
+This is the one place where `scripts/selfcheck.sh` does **not** mirror CI: the local gate runs the
+offline stub coverage in `scripts/check-repo-settings.sh`, and the *live* assertion is CI-only.
+`selfcheck` is kept hermetic — its value is being a deterministic predictor of CI, and a step whose
+verdict depends on network, auth and settings someone else can change would break that. Recorded as
+D13 in `.ai-dev-baseline/decisions.md`, which also records what that reasoning does *not* claim: a
+local `20 → SKIP` arm is possible and would catch drift before the push. It is a preference for a
+hermetic gate, not an impossibility.
+
+### When it fails
+
+`baseline repo apply` adds the missing context, then **re-run the check** — it reads live state, so
+it only clears once the setting actually changed. That is revalidation after a real state change,
+not a flaky retry (`base/practices/ci-discipline.md`). If the job was *renamed* rather than added,
+the old context is now also required-but-never-reported; `status` shows that direction and
+`apply --prune` clears it.
+
+**Applying from a PR branch makes the context required before the job exists on the default
+branch.** Two consequences, and the second is the one to watch:
+
+1. Any **other** open PR that predates the job will not report the new context and will wait —
+   merge the default branch into those PRs once this one lands.
+2. If this PR is then **abandoned unmerged**, the default branch is left requiring a context that
+   nothing will ever report, which blocks *every* merge. That is the phantom deadlock
+   `automerge-ok` code `13` exists to name, and clearing it needs `apply --prune` with an admin
+   token — which CI does not have. So: if you apply for a PR you later abandon, prune before you
+   walk away. (A design that avoids the window entirely — hard-fail only on drift that exists on
+   the default branch *today*, and report a PR's prospective drift as advisory — is filed as a
+   follow-up rather than guessed at here.)
 
 ## The second guard: has review happened? (#134)
 
