@@ -148,10 +148,26 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   skills, practices, and gates — and forgetting the manual `baseline update` does not fail
   loudly. It bit exactly that way: the operator's clone sat one commit behind while `/roadmap`
   computed a release verdict with the *pre-fix* logic, minutes after shipping the fix.
+  - **Two triggers, one shared policy** (#36, #139). Both read the same configuration and the same
+    library (`scripts/lib/currency-lib.sh`); they differ only in when they fire and in what they
+    consider worth reporting.
   - **A Claude `SessionStart` hook** (`session-currency.sh`, wired by `install.sh`) fast-forwards
     the install-source and re-runs the idempotent install, then reports **one line or nothing**.
-  - **It acts only on `source: startup`.** `/clear`, `/compact`, `resume` and `fork` all happen
-    with work in flight; swapping tooling underneath them is the mid-session surprise this avoids.
+  - **The hook acts only on `source: startup`.** `/clear`, `/compact`, `resume` and `fork` all
+    happen with work in flight; swapping tooling underneath them is the mid-session surprise this
+    avoids.
+  - **The last step of `/cleanup` is the second trigger** (#139), on **all three agents**. The
+    `startup`-only matcher left the baseline's own loop uncovered: `/implement-issue → merge →
+    /cleanup → /clear → /roadmap` never re-checked, while staleness *begins* at the merge. It bit
+    exactly that way a second time — an install two commits behind meant `/roadmap` would have
+    re-derived the very dependency edges #117 had just deleted. `/cleanup` runs right after the
+    merge and right before the `/clear` the hook skips, and being agent-neutral it is the **only**
+    currency Codex and Gemini get at all.
+  - **`/cleanup` ignores the rate-limit interval** (while still refreshing the shared stamp). The
+    stamp cannot distinguish "startup just checked" from "startup checked, then a merge landed", so
+    honoring it would suppress the check at exactly the moment it matters. See decision **D11**.
+  - **The two triggers report differently, on purpose.** The unattended hook stays silent about a
+    peer update or an unreachable remote; `/cleanup` reports both, because there you asked for it.
   - **It never updates the clone your session is working in** — the two-clone dev split, enforced
     from the hook side by comparing git roots (a session in a *subdirectory* still counts). A
     session in any other project still updates it.
@@ -160,11 +176,18 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **Configured globally, and only globally:** `[updates] session_start = "auto" | "notify" |
     "off"` in `~/.config/ai-dev-baseline/agents.toml` (`ADB_SESSION_UPDATE` overrides one run;
     `ADB_SESSION_UPDATE_INTERVAL_SECS` bounds the 10-minute rate limit). A **project's**
-    `agents.toml` is ignored on purpose — see decision **D10**, which also records the trust
-    consequence of defaulting to `auto`.
-  - **Upgrading:** the hook can only wire itself by being installed, so run `baseline update` (or
-    `./install.sh`) **once** by hand after pulling this change. An install made with `--no-hooks`
-    stays opted out.
+    `agents.toml` is ignored on purpose — see decisions **D10** and **D11**, which record the
+    trust consequence of defaulting to `auto` and why one key now governs both triggers. `off`
+    disables **both**. The key keeps its now-inaccurate name for backward compatibility (a key that
+    silently stopped applying would re-enable an updater someone had switched off); the rename is
+    tracked in #140.
+  - **Upgrading:** neither trigger can bootstrap itself, so run `baseline update` (or
+    `./install.sh`) **once** by hand after pulling this change. The hook can only wire itself by
+    being installed, and your installed `/cleanup` is a symlink into the still-old clone — its
+    silence looks exactly like "already current".
+  - **`--no-hooks` no longer means "no currency".** Such an install opts out of the `SessionStart`
+    hook only; `/cleanup` still carries the second trigger, since it is a workflow step rather than
+    a hook. Set `[updates] session_start = "off"` to disable **both**.
 
 ### Changed
 

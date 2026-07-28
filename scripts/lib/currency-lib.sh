@@ -283,28 +283,36 @@ cmd_check() {
   #    installed payload — `--check` still fetches remote-tracking refs, which is what makes the
   #    answer true rather than remembered.
   #
-  #    `behind` ONLY. A clone deliberately parked on a branch, or left dirty, would otherwise
+  #    A clone deliberately parked on a branch, or left dirty, stays SILENT: it would otherwise
   #    produce an attention line at every trigger past the rate limit, forever, for a state its
   #    owner created on purpose — in the very mode chosen to be quiet. `baseline update` says so
   #    plainly when they run it.
+  #
+  #    But "quiet about deliberate states" is NOT "quiet about a failure to verify". A fetch that
+  #    could not run leaves currency UNKNOWN, and reporting that as silence is indistinguishable
+  #    from "you are current" — the one direction this library must never be wrong in. So it
+  #    resolves to `offline`, and the two callers then differ exactly as they do everywhere else:
+  #    the unattended hook suppresses `offline` (never nag about a missing network at every session
+  #    start), `/cleanup` prints it (the operator just asked).
   local status rc
   if [ "$mode" = notify ]; then
     # CAPTURE, then slice. Piping straight into `head` would report only HEAD's status, so a
     # backstop firing (124) or a crashed `baseline` would arrive as an empty answer and be
-    # classified `silent` — a failure reported as "you are current", which is the one direction
-    # this library must never be wrong in.
+    # classified `silent` — a failure reported as "you are current".
     status="$(adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
                 "$src/bin/baseline" update --check 2>/dev/null)"; rc=$?
     status="${status%%$'\n'*}"   # first line, no fork
-    # `--check`'s contract: 0 current · 10 behind · 20 needs attention · 30 error. Only a bound
-    # firing is unexpected enough to name; every other non-zero is already described by $status.
-    if [ "$rc" -eq 124 ]; then
-      _adb_cu_emit failed "'baseline update --check' exceeded ${_ADB_CU_TIMEOUT_SECS}s and was stopped."
-      return 0
-    fi
-    case "$status" in
-      behind) _adb_cu_emit behind "install-source is behind origin — run 'baseline update'." ;;
-      *)      _adb_cu_emit silent "" ;;
+    # Branch on the EXIT CODE, which is `--check`'s documented contract — 0 current · 10 behind ·
+    # 20 needs attention (a deliberate clone state) · 30 error (fetch-failed / no-remote /
+    # not-a-repo) — rather than on the prose word. The auto path below already reads rc for the
+    # same reason: prose is free to change, the contract is not. Matching on `$status` is what let
+    # `fetch-failed` fall through a catch-all into `silent`.
+    case "$rc" in
+      124) _adb_cu_emit failed "'baseline update --check' exceeded ${_ADB_CU_TIMEOUT_SECS}s and was stopped." ;;
+      10)  _adb_cu_emit behind "install-source is behind origin — run 'baseline update'." ;;
+      30)  _adb_cu_emit offline "install-source remote unreachable (${status:-unknown}) — currency not verified." ;;
+      0|20) _adb_cu_emit silent "" ;;   # current, or a deliberate clone state notify stays quiet about
+      *)   _adb_cu_emit failed "'baseline update --check' failed (exit $rc) — run it manually to see why." ;;
     esac
     return 0
   fi

@@ -615,6 +615,28 @@ eq "$CU_OUT_OUTCOME" "behind" "7 currency: notify reports behind"
 has "$CU_OUT_LINE" "behind" "7 currency: the notify line says behind"
 eq "$(cu_head)" "$cu_before" "7 currency: notify never pulls"
 
+# (e2) notify + an UNREACHABLE remote must still report offline. Bot review, PR #145: notify
+# branched on the prose word with a catch-all, so `--check`'s `fetch-failed` (exit 30) fell through
+# to `silent` — /cleanup printed nothing, indistinguishable from a verified-current install, while
+# its contract explicitly says an unreachable remote is reported because the operator asked.
+cu_reset
+git -C "$cusrc" remote set-url origin "$cuw/does-not-exist.git"
+CU_MODE=notify; run_currency; CU_MODE=""
+eq "$CU_RC" "0" "7 currency: notify + unreachable remote still exits 0"
+eq "$CU_OUT_OUTCOME" "offline" "7 currency: notify + unreachable remote reports offline, NOT silent"
+has "$CU_OUT_LINE" "unreachable" "7 currency: the notify offline line says so"
+git -C "$cusrc" remote set-url origin "$cuorigin"
+cu_reset
+
+# ...while a DELIBERATE clone state stays quiet in notify, which is the distinction: notify is
+# silent about states its owner created on purpose, never about a failure to verify.
+cu_reset; cu_advance "cu-notify-dirty"
+printf 'local edit\n' >> "$cusrc/agents/claude/CLAUDE.md"
+CU_MODE=notify; run_currency; CU_MODE=""
+eq "$CU_OUT_OUTCOME" "silent" "7 currency: notify stays silent for a deliberate clone state (dirty)"
+eq "$CU_OUT_LINE" "" "7 currency: …and prints nothing for it"
+cu_reset
+
 # (f) never update the clone being swept. Sweeping the install-source itself must skip — including
 # from a SUBDIRECTORY of it, which is the shape a repo-root-relative guard would miss.
 cu_reset; cu_advance "cu-selfclone"
