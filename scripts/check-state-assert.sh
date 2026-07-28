@@ -130,17 +130,30 @@ OUT="$(PATH="$work/empty" bash "$LIB" observe pr 7 2>/dev/null)"
 eq "$OUT" "" "gh missing: renders no sentence"
 
 # ============================ 3. argument validation ============================
-# rc 2, empty stdout. Notably `1 --json ...`: a non-numeric tail must never reach gh.
-for args in "observe pr" "observe pr abc" "observe pr ''" "observe bogus 1" "observe" "" "nonsense"; do
-  # shellcheck disable=SC2086
-  OUT="$(PATH="$shimbin:$PATH" bash "$LIB" $args 2>/dev/null)"
-  # shellcheck disable=SC2086
-  PATH="$shimbin:$PATH" bash "$LIB" $args >/dev/null 2>&1; RC=$?
-  eq "$OUT" "" "usage [$args]: renders no sentence"
-  eq "$RC" "2" "usage [$args]: exits 2"
-done
-OUT="$(PATH="$shimbin:$PATH" bash "$LIB" observe pr 1 --json state 2>/dev/null)"
-eq "$OUT" "" "trailing flag after a valid number: renders no sentence"
+# rc 2 AND empty stdout. Arguments are passed for real rather than word-split out of a string:
+# a quoted "" inside such a string is two literal apostrophes, so the empty-number case would
+# silently test something else and pass for the wrong reason.
+usage_rejects() { # <label> [args...]
+  local label="$1"; shift
+  local out rc
+  out="$(PATH="$shimbin:$PATH" bash "$LIB" "$@" 2>/dev/null)"
+  PATH="$shimbin:$PATH" bash "$LIB" "$@" >/dev/null 2>&1; rc=$?
+  eq "$out" "" "usage $label: renders no sentence"
+  eq "$rc" "2" "usage $label: exits 2"
+}
+
+usage_rejects "missing number"        observe pr
+usage_rejects "non-numeric number"    observe pr abc
+usage_rejects "empty number"          observe pr ""
+usage_rejects "negative number"       observe pr -1
+usage_rejects "path traversal"        observe pr ../../etc
+usage_rejects "unknown entity kind"   observe bogus 1
+usage_rejects "missing kind"          observe
+usage_rejects "no arguments at all"
+usage_rejects "unknown subcommand"    nonsense
+# A trailing flag must not be silently dropped: the caller thinks it asked a narrower question,
+# and answering the broader one confidently is precisely this file's failure mode.
+usage_rejects "trailing flag"         observe pr 1 --json state
 
 # `help` is not an error path.
 eq "$(run_rc --help)" "0" "--help exits 0"
