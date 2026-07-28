@@ -76,7 +76,7 @@ render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 #     per-agent equivalents are tracked follow-ups (#14/#25).
 render_agent_skill() {
   local agent="$1" src="$2" name out tmp first fmname
-  local args_to state_dir gate_run role_dispatch roadmap_lib repo_settings cleanup_lib currency_lib
+  local args_to state_dir gate_run role_dispatch roadmap_lib repo_settings cleanup_lib currency_lib pr_review
   local current_agent subtask fmmode
 
   # --- the per-agent MAP + MODE ------------------------------------------------------
@@ -97,6 +97,7 @@ render_agent_skill() {
   role_dispatch="bash \"\$HOME/.$agent/scripts/lib/role-dispatch.sh\""
   roadmap_lib="bash \"\$HOME/.$agent/scripts/lib/roadmap-lib.sh\""
   repo_settings="bash \"\$HOME/.$agent/scripts/lib/repo-settings.sh\""
+  pr_review="bash \"\$HOME/.$agent/scripts/lib/pr-review.sh\""
   cleanup_lib="bash \"\$HOME/.$agent/scripts/lib/cleanup-lib.sh\""
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
   current_agent="$agent"
@@ -157,6 +158,7 @@ render_agent_skill() {
       -v gate_run="$gate_run" -v role_dispatch="$role_dispatch" \
       -v roadmap_lib="$roadmap_lib" -v repo_settings="$repo_settings" \
       -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib" \
+      -v pr_review="$pr_review" \
       -v current_agent="$current_agent" -v subtask="$subtask" '
     function lreplace(s, from, to,   out, p) {
       out = ""
@@ -209,6 +211,7 @@ render_agent_skill() {
       line = lreplace(line, "{{ROLE_DISPATCH}}",    role_dispatch)
       line = lreplace(line, "{{ROADMAP_LIB}}",      roadmap_lib)
       line = lreplace(line, "{{REPO_SETTINGS_LIB}}", repo_settings)
+      line = lreplace(line, "{{PR_REVIEW_LIB}}",    pr_review)
       line = lreplace(line, "{{CLEANUP_LIB}}",      cleanup_lib)
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)

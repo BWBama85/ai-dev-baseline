@@ -278,6 +278,45 @@ bots = ["chatgpt-codex-connector", "gemini-code-assist[bot]", "copilot[bot]"]
 `/resolve-pr-threads` derives its resolvable-login set from `role-dispatch.sh bots`, so the
 manifest is the single source and a repo can add or disable a bot without editing a skill.
 
+### The same key has two readers, and they disagree about "unset" on purpose (#134)
+
+`[reviewers] bots` now answers a second question: **must `/implement-issue` wait for a reviewer
+before it arms auto-merge?** The two consumers need opposite defaults, and each is right for its
+own job:
+
+| Reader | Question | Unset means |
+|---|---|---|
+| `role-dispatch.sh bots` (`/resolve-pr-threads`) | *whose threads may I auto-resolve?* | the built-in allowlist |
+| `role-dispatch.sh bots --declared` (`pr-review.sh gate`) | *whose review must I wait for?* | **undeclared — fail closed** |
+
+An over-broad default is harmless when resolving threads; as a *merge* gate it is exactly wrong.
+Defaulting to the built-in set would make every repo wait for eight bots it does not have.
+Defaulting to empty would arm auto-merge on a repo that **does** have one — which is #134 itself,
+where a PR merged 29 seconds after opening and six minutes before its reviewer posted five real
+bugs. So the merge gate never defaults; it reads the key as a tri-state:
+
+- **declared, non-empty** → those reviewers must have reviewed the PR's **current head commit**
+  before auto-merge is armed. All of them, not any one — the list is declared, so it names exactly
+  the bots this repo has;
+- **`bots = []`** → this repo has **no** async reviewer; unattended arming continues as before;
+- **undeclared** → unknowable, so the guard fails closed and reports what to add.
+
+**A repo with no bot reviewer should declare `bots = []`** — one line that keeps `gh pr merge
+--auto` working. A repo that *is* bot-reviewed should list its reviewers. Either spelling of a
+login works (`chatgpt-codex-connector` or `chatgpt-codex-connector[bot]`): the guard normalizes
+the `[bot]` suffix, because GitHub's GraphQL and REST APIs report the same bot differently.
+
+> **Prefer declaring it per repo.** The key layers repo → global like every other manifest key,
+> so a declaration in `~/.config/ai-dev-baseline/agents.toml` applies to **every** repo on the
+> machine — including ones where that App is not installed, where the guard will then wait for a
+> reviewer that never arrives and auto-merge simply stops being armed. That fails in the safe
+> direction and a per-repo `bots = []` overrides it, but "which bot reviews *this* repo" is
+> repo-level information and reads best where it is true.
+
+Expect the guard to skip arming on a bot-reviewed repo: step 10 runs seconds after the PR opens,
+so a reviewer that takes minutes has definitionally not reviewed yet. That is the intended trade —
+unattended *arming* is suspended until **#49** adds the PR watch that waits and then arms.
+
 > **Scope.** The role model is a static declaration plus this bot allowlist — **not** a dynamic
 > orchestration engine. Bespoke per-project patterns (dynamic mid-task consult agents,
 > worktree-parallel swarms, a hardened per-repo CLI wrapper) stay **project-scoped skills** (the

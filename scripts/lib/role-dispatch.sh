@@ -227,15 +227,16 @@ EOF
 # `[bot]`-suffix heuristic — so the matcher can never catch a human login.
 # NOTE: this default set is pinned to base/workflows/resolve-pr-threads.md by check-fact-drift.sh
 # (fact `reviewer-bots-default`) — change a login here and the doc must change too, or CI fails.
+# Defined in terms of the tri-state reader below, so "the two differ ONLY on unset" is true by
+# construction rather than by two copies of the parse agreeing. One home for what a valid
+# `[reviewers] bots` is — and for the message that rejects an invalid one.
 adb_dispatch_bots() {
-  local raw
-  if raw="$(_adb_rd_layered_get reviewers bots)"; then
-    # Present but not an array (e.g. bots = "x") is malformed — reject it rather than let
-    # adb_toml_array emit nothing and be mistaken for the intentional `bots = []` disable.
-    case "$raw" in
-      \[*) adb_toml_array "$raw"; return 0 ;;
-      *)   printf 'role-dispatch: [reviewers].bots must be an array (e.g. ["a[bot]","b"]) — use [] to disable\n' >&2; return 2 ;;
-    esac
+  local out rc
+  out="$(adb_dispatch_bots_declared)"; rc=$?
+  [ "$rc" -ne 2 ] || return 2            # malformed: already reported by the reader
+  if [ "$rc" -eq 0 ]; then               # declared — even as [] — is authoritative
+    [ -z "$out" ] || printf '%s\n' "$out"
+    return 0
   fi
   printf '%s\n' \
     'chatgpt-codex-connector' \
@@ -243,6 +244,69 @@ adb_dispatch_bots() {
     'copilot-pull-request-reviewer[bot]' 'copilot[bot]' \
     'github-actions[bot]' \
     'claude[bot]' 'claude-code[bot]'
+}
+
+# adb_dispatch_bots_declared — the SAME manifest key, read as a TRI-STATE, with NO default (#134).
+#
+# Why a second reader rather than a flag on the first: the two consumers need opposite answers for
+# "unset", and both are right for their own job.
+#
+#   /resolve-pr-threads  asks "which thread authors may I auto-resolve?" — an over-broad default is
+#                        harmless there (it resolves a thread nobody was going to read), so unset
+#                        falls back to the built-in allowlist above.
+#   the pre-arm guard    asks "must I WAIT for a reviewer before arming auto-merge?" — and a
+#                        default is exactly wrong. Defaulting to the built-in set would make every
+#                        repo wait for eight bots it does not have; defaulting to empty would arm
+#                        auto-merge on a repo that DOES have one, which is #134 itself.
+#
+# So this reader never defaults. Three outcomes, each a distinct operator action:
+#   0 + logins  declared and non-empty  -> these reviewers must review before auto-merge is armed
+#   0 + nothing declared as `bots = []` -> this repo has NO async reviewer; arming is safe
+#   3           not declared anywhere   -> UNKNOWN. The caller must fail closed, never guess.
+#   2           malformed               -> same rejection as above, never mistaken for `[]`
+#
+# The `[]` case is what keeps the guard from being a permanent tax on repos with no bot reviewer:
+# one line in agents.toml restores unattended arming.
+adb_dispatch_bots_declared() {
+  local raw inner out
+  raw="$(_adb_rd_layered_get reviewers bots)" || return 3
+  case "$raw" in
+    \[*) ;;
+    *)   printf 'role-dispatch: [reviewers].bots must be an array (e.g. ["a[bot]","b"]) — use [] to disable\n' >&2; return 2 ;;
+  esac
+
+  # A TRUNCATED array must not read as `[]`. `adb_toml_get` is line-based, so a perfectly valid
+  # multi-line TOML array —
+  #     bots = [
+  #       "chatgpt-codex-connector",
+  #     ]
+  # — yields just `[`, which `adb_toml_array` parses to ZERO elements. That is byte-for-byte what
+  # an intentional `bots = []` produces, and the two mean opposite things to the merge gate: one
+  # says "this repo has no async reviewer, arming is safe", the other has a reviewer still to come.
+  # Reading the first as the second re-creates issue #134 from a config file that is not even
+  # wrong. A wrapped array is the same bug one line later: it silently drops every element after
+  # the first line, so a declared reviewer simply vanishes.
+  #
+  # A well-formed single-line array always ENDS in `]` here — `adb_toml_get` has already stripped
+  # a trailing comment and trailing whitespace — so "does not end in `]`" is exactly "the value
+  # continues on another line" (or is otherwise unclosed). Reject it as malformed: the remedy is
+  # to fix agents.toml, and callers must never see it as a declaration of "none".
+  case "$raw" in
+    *\]) ;;
+    *)   printf 'role-dispatch: [reviewers].bots is not closed on one line — a multi-line array is not supported; put it on a single line\n' >&2; return 2 ;;
+  esac
+
+  out="$(adb_toml_array "$raw")"
+  # An array that is not literally empty but yields no usable element (`[""]`, `[   ]`, `[,]`) is
+  # malformed for the same reason: the operator declared SOMETHING, and silently downgrading that
+  # to the "no reviewers" disable is the fail-open direction.
+  inner="${raw#\[}"; inner="${inner%\]}"
+  if [ -z "$out" ] && [ -n "$(printf '%s' "$inner" | tr -d '[:space:]')" ]; then
+    printf 'role-dispatch: [reviewers].bots has no usable entries — use [] to disable, or list logins\n' >&2
+    return 2
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out"
+  return 0
 }
 
 # --- invocation --------------------------------------------------------------------------------
@@ -367,7 +431,11 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     resolve) adb_resolve_role "${2:-}" ;;
     invoke)  [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh invoke <role|agent>" >&2; exit 2; }
              adb_dispatch_invoke "$2" ;;
-    bots)    adb_dispatch_bots ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | bots]" >&2; exit 2 ;;
+    bots)    case "${2:-}" in
+               '')          adb_dispatch_bots ;;
+               --declared)  adb_dispatch_bots_declared ;;
+               *) echo "usage: role-dispatch.sh bots [--declared]" >&2; exit 2 ;;
+             esac ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | bots [--declared]]" >&2; exit 2 ;;
   esac
 fi

@@ -185,6 +185,16 @@ fact release-blocker-label "fixed:release-blocker" -- \
 fact automerge-guard "fixed:automerge-ok" -- \
   scripts/lib/repo-settings.sh base/workflows/implement-issue.md docs/repo-settings.md
 
+# --- FACT: the pre-arm review guard subcommand (#134) ------------------------
+# Identical contract shape, and identically silent when it breaks: the library IMPLEMENTS
+# `gate`, the workflow CALLS it before arming, and the doc DOCUMENTS its exit codes. Because a
+# failed guard call is treated as "do not arm", a rename in the library alone would silently stop
+# auto-merge being armed — the same invisible failure mode `automerge-guard` above exists to
+# prevent, so it gets the same pin rather than relying on the structural greps in
+# scripts/check-pr-review.sh (which pin the WIRING, not the token).
+fact pr-review-guard "fixed:{{PR_REVIEW_LIB}} gate" -- \
+  base/workflows/implement-issue.md
+
 # --- FACT: the branch-health predicate subcommand (#78) ----------------------
 # Same contract shape as `automerge-ok` above: the library IMPLEMENTS the green-branch predicate,
 # the workflow CALLS it before emitting a cut, and two docs DOCUMENT its verdicts. A rename in the

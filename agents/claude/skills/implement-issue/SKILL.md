@@ -515,18 +515,42 @@ PR body: summary; gap-analysis gaps + how addressed; self-review + reviewer find
 its own line), `Refs #N` for any sliced. After `gh pr create`, write `prUrl` and
 `phase=pr_opened` into the marker.
 
-**Then hand the merge to GitHub — but never arm it blind.** Ask the guard first; it
-re-reads the live settings and **fails closed**, so a repo that is not in the safe
-state gets a reported skip instead of an ungated merge:
+**Then hand the merge to GitHub — but never arm it blind.** Ask **two** guards, in
+order; both re-read live state and both **fail closed**, so a repo that is not in the
+safe state gets a reported skip instead of an ungated merge:
+
+1. **`automerge-ok`** — *will the checks gate this?* (repo settings)
+2. **`pr-review.sh gate`** — *has review happened on this exact commit?* (#134)
+
+The second exists because the first cannot answer it. GitHub merges the instant the
+**required status checks** pass; an async bot reviewer is not a required check, and
+`required_conversation_resolution` only blocks on threads that **already exist** —
+at arming time there are none. That is not a narrow race: PR #133 merged **29 seconds**
+after opening and **six minutes before** its reviewer posted five real bugs. So the
+wait has to happen **here, before the arm**.
 
 ```bash
 PR="$(jq -r .prUrl .claude/state/implement-issue-active.json)"   # written just above
-# Merge methods are per-repo settings; a hardcoded --squash is rejected wherever squash is
-# disabled, so ask which flag this repo allows rather than assuming.
-FLAG="$(bash "$HOME/.claude/scripts/lib/repo-settings.sh" merge-flag)" || FLAG=""
 bash "$HOME/.claude/scripts/lib/repo-settings.sh" automerge-ok; AM=$?
 case "$AM" in
-  0)  [ -n "$FLAG" ] && gh pr merge "$PR" --auto "$FLAG" ;;   # merges once checks pass + threads resolve
+  0)
+    # On 0 the guard prints the head SHA it witnessed — pass it to --match-head-commit so a
+    # commit pushed between the check and the arm cannot slip in unreviewed (GitHub rejects
+    # the arm instead of merging the new tip).
+    HEAD_SHA="$(bash "$HOME/.claude/scripts/lib/pr-review.sh" gate --pr "$PR")"; RV=$?
+    case "$RV" in
+      0)  # Merge methods are per-repo settings; a hardcoded --squash is rejected wherever
+          # squash is disabled, so ask which flag this repo allows. Asked HERE, not earlier:
+          # on a bot-reviewed repo the arm is skipped almost every run, and `merge-flag` is
+          # its own pair of API calls — no point paying for them to discard the answer.
+          FLAG="$(bash "$HOME/.claude/scripts/lib/repo-settings.sh" merge-flag)" || FLAG=""
+          [ -n "$FLAG" ] && gh pr merge "$PR" --auto "$FLAG" --match-head-commit "$HEAD_SHA" ;;
+      16) : ;;  # a DECLARED reviewer has not reviewed this head SHA -> do NOT arm; owner merges
+      17) : ;;  # repo declares no `[reviewers] bots` -> unknowable; declare it (or `bots = []`)
+      18) : ;;  # `[reviewers] bots` is malformed     -> fix agents.toml
+      19) : ;;  # a reviewer requested CHANGES on this head SHA -> address them, push, re-run
+      *)  : ;;  # 20/unknown -> review state unreadable, merge by hand
+    esac ;;
   10) : ;;  # allow_auto_merge off       -> report: run 'baseline repo apply'
   11) : ;;  # CI but no required checks  -> report: arming would gate NOTHING
   12) : ;;  # no CI at all               -> report: --auto would merge immediately
@@ -541,11 +565,22 @@ PR is a draft (GitHub refuses it anyway). A non-zero guard code is **not** a fai
 of this step — it is the guard doing its job: report the code and its meaning in
 step 11, leave the PR open, and let the owner merge.
 
+**Expect code 16 on a bot-reviewed repo, and say so plainly.** This step runs seconds
+after the PR is created, so a reviewer that takes minutes has definitionally not
+reviewed yet. On such a repo auto-merge is therefore **not armed by this workflow** —
+that is the intended trade (#134): unattended *arming* is suspended until the review
+lands, and **#49** restores it by watching the PR and arming afterwards. A repo with
+no async reviewer keeps unattended arming today by declaring `bots = []`.
+
 Two things to say out loud in the close-out, because the operator no longer sees the
-merge dialog: `--squash` takes its subject from the **PR title** (so the title must
-satisfy the repo's commit convention), and an armed PR still waits on
-`required_conversation_resolution` — an unresolved bot thread holds it indefinitely
-until `/resolve-pr-threads` clears it.
+merge dialog:
+
+- `--squash` takes its subject from the **PR title**, so the title must satisfy the
+  repo's commit convention.
+- **What held the arm was this step's review guard, not GitHub.**
+  `required_conversation_resolution` holds an armed PR only on threads that exist at
+  that moment; it never waits for a future review. If threads land later,
+  `/resolve-pr-threads` clears them.
 
 ### 11. Close-out
 
@@ -555,11 +590,14 @@ emit a self-attested completion checklist rendering each required step's real st
 Review → Ship → Close-out, plus a **Needs attention** block for anything not ✅ and a
 **Follow-up issues filed** block (each with its milestone + one-line rationale).
 
-State the **auto-merge disposition explicitly** — armed, or skipped with the guard's
-code and what it means. An armed PR that is silently waiting on something is the one
-outcome the operator cannot see: say what it is waiting on (checks, unresolved
-threads) and what clears it. End with the `/resolve-pr-threads <PR#>` resume hint. Do
-**not** poll for bot reviews.
+State the **auto-merge disposition explicitly** — armed, or skipped naming **which**
+guard skipped it and its code (`automerge-ok` 10–14/20, or the review gate
+16/17/18/19/20).
+An armed PR that is silently waiting on something is the one outcome the operator
+cannot see: say what it is waiting on and what clears it. On code 16 the PR is **not
+armed at all** and is waiting on a *reviewer* — not the same as an armed PR waiting on
+threads. End with the `/resolve-pr-threads <PR#>` resume hint. Do **not** poll for bot
+reviews — this step reports the state and ends; waiting is #49's job.
 
 ### 12. File issues for ALL deferred / out-of-scope work (mandatory)
 

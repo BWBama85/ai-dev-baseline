@@ -156,6 +156,12 @@ step "role-dispatch"
 # Unit tests for the runtime role-dispatch helper (resolve/bots/invoke + validation, #15).
 if bash scripts/check-role-dispatch.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "pr-review"
+# Unit tests for the pre-arm review guard (scripts/lib/pr-review.sh, #134): reviewer-identity
+# matching across the REST/GraphQL `[bot]` spelling split, head-SHA freshness, the declaration
+# tri-state, and every unreadable path failing closed.
+if bash scripts/check-pr-review.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "skill-compose"
 # Unit tests for the partial skill override composer (scripts/lib/skill-compose.sh, #22):
 # ops, anchor slugging, inherit-on-recompose, byte-exact currency check, and the safety guards.

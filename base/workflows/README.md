@@ -75,6 +75,7 @@ or `/` maps cleanly. All three columns are implemented (`scripts/build.sh`'s
 | `{{REPO_SETTINGS_LIB}}` | repo-settings / auto-merge-guard command **prefix** | `bash "$HOME/.claude/scripts/lib/repo-settings.sh"` | `bash "$HOME/.codex/scripts/lib/repo-settings.sh"` | `bash "$HOME/.gemini/scripts/lib/repo-settings.sh"` |
 | `{{CLEANUP_LIB}}`       | `/cleanup` decision-predicate command **prefix**    | `bash "$HOME/.claude/scripts/lib/cleanup-lib.sh"`   | `bash "$HOME/.codex/scripts/lib/cleanup-lib.sh"`   | `bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh"`   |
 | `{{CURRENCY_LIB}}`      | install-currency trigger-policy command **prefix**  | `bash "$HOME/.claude/scripts/lib/currency-lib.sh"`  | `bash "$HOME/.codex/scripts/lib/currency-lib.sh"`  | `bash "$HOME/.gemini/scripts/lib/currency-lib.sh"`  |
+| `{{PR_REVIEW_LIB}}`     | pre-arm review-guard command **prefix**             | `bash "$HOME/.claude/scripts/lib/pr-review.sh"`     | `bash "$HOME/.codex/scripts/lib/pr-review.sh"`     | `bash "$HOME/.gemini/scripts/lib/pr-review.sh"`     |
 | `{{CURRENT_AGENT}}`     | the agent token this skill is rendered for          | `claude`                                            | `codex`                                            | `gemini`                                           |
 | `{{SUBTASK_PRIMITIVE}}` | the tool/verb for creating tracked sub-tasks        | `TaskCreate`                                        | `update_plan`                                      | `Create`                                           |
 

@@ -201,6 +201,14 @@ bots = ["chatgpt-codex-connector", "gemini-code-assist[bot]", "copilot[bot]"]
 **exact** login allowlist (never a `[bot]`-suffix heuristic), so it can never match — and never
 auto-resolve — a human-authored thread.
 
+**The same key also gates auto-merge (#134).** `role-dispatch.sh bots --declared` reads it as a
+**tri-state with no default** — declared logins / explicit `[]` / undeclared — and
+`/implement-issue` step 10 refuses to arm `gh pr merge --auto` until every declared reviewer has
+reviewed the PR's **current head commit**. The two readers differ only on *unset*, deliberately:
+a permissive default is harmless when deciding which threads to resolve and is exactly wrong as a
+merge gate, so the gate fails closed on an undeclared repo. A repo with no async reviewer declares
+`bots = []` and keeps unattended arming. See `docs/roles-and-agents.md`.
+
 ## Scope: bespoke orchestration stays project-scoped
 
 The role model is a **static declaration** (which agent fills each role) plus the async-bot

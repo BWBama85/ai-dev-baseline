@@ -27,7 +27,7 @@ those. The rules below are specific to this repo's code.
    multi-agent role model.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors CI exactly
    (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
-   cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration ·
+   pr-review · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration ·
    install-guard · fact-drift · practice-index · release-role · install dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
 4. **Shell code must be portable and shellcheck-clean.** `bash`/POSIX, safe on macOS
@@ -54,6 +54,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/lib/skill-compose.sh` | Partial skill-override composer — merges a project's `overrides.md` onto the installed base skill so a project carries deltas without forking the whole skill (#22); installs beside `common.sh` |
 | `scripts/lib/cleanup-lib.sh` | `/cleanup`'s decision predicates — squash/rebase-merge detection (#106), run-state liveness + the terse output contract (#84) — factored out of the workflow prose so they are regression-testable offline (`scripts/check-cleanup.sh`); installs beside `common.sh` |
 | `scripts/lib/roadmap-lib.sh` | `/roadmap`'s two decision predicates — in-flight targeting (#69) + release readiness — factored out of the workflow prose so they are regression-testable offline (`scripts/check-roadmap.sh`); installs beside `common.sh` |
+| `scripts/lib/pr-review.sh` | The **pre-arm review guard** (#134) — has every reviewer this repo declares (`[reviewers] bots`) reviewed the PR's *current head commit*? `/implement-issue` step 10 asks it before `gh pr merge --auto`, because GitHub gates on checks and a bot reviewer is not one. Deliberately **not** part of `repo-settings.sh`, whose charter is repo settings, not review (`scripts/check-pr-review.sh`); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role) |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |

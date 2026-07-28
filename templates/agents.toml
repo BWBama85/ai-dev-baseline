@@ -23,6 +23,18 @@ debug        = "claude"     # owns root-cause investigations.
 #   unset → the built-in default set of common review bots (Codex connector, Gemini, Copilot,
 #           github-actions, Claude) — see base/roles.md
 #   []    → disable bot-thread auto-resolution entirely
+#
+# WORTH SETTING EVEN IF YOU NEVER USE /resolve-pr-threads (#134). This key also decides whether
+# `/implement-issue` may arm `gh pr merge --auto`: it will not, until every login listed here has
+# reviewed the PR's CURRENT head commit. GitHub itself cannot enforce that — auto-merge fires when
+# the required CHECKS pass, and a bot reviewer is not a check, so a PR can (and did) merge minutes
+# before its reviewer spoke.
+#   declared → wait for these reviewers before arming
+#   []       → this repo has NO async reviewer; keep unattended auto-merge
+#   unset    → UNKNOWN, so the guard fails closed and does not arm. If nothing reviews your PRs,
+#              set `bots = []` to get unattended merging back.
+# Either login spelling works — the guard strips a trailing `[bot]`, because GitHub's GraphQL and
+# REST APIs report the same bot differently.
 # [reviewers]
 # bots = ["chatgpt-codex-connector", "gemini-code-assist[bot]", "copilot[bot]"]
 

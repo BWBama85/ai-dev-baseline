@@ -143,6 +143,62 @@ Code `12` matters more than it looks: GitHub refuses to *queue* a PR that could 
 so `gh pr merge --auto` on a check-less repo is a plain merge wearing an auto-merge label. The
 guard refuses and lets the operator decide.
 
+## The second guard: has review happened? (#134)
+
+> Documented here because it is the other half of the same hand-off, but it is a **separate
+> module** with no `baseline repo` surface — `repo-settings.sh` is repo *settings* bookkeeping and
+> review state is per-PR. Reviewer *declaration* lives in `docs/roles-and-agents.md`.
+
+`automerge-ok` answers *"will the checks gate this?"* — and that is **not** the same question as
+*"has anyone reviewed it?"*. Auto-merge fires the instant the required status checks pass. An
+async bot reviewer is not a check, and `required_conversation_resolution` only blocks on threads
+that **already exist**; at arming time there are none. On PR #133 the gap was six minutes: opened
+20:55:32, merged 20:56:01, five real bugs posted at 21:02:19.
+
+So step 10 asks a **second**, PR-scoped guard before arming — `scripts/lib/pr-review.sh`, a
+separate module because `repo-settings.sh` is repo *settings* bookkeeping and review state is
+per-PR:
+
+```bash
+pr-review.sh gate --pr <number|url>    # prints the witnessed head SHA on 0
+```
+
+| Code | Meaning |
+|---|---|
+| `0` | every **declared** reviewer has reviewed the current head SHA — or `bots = []` (no async reviewer). STDOUT is the head SHA |
+| `16` | a declared reviewer has **not** reviewed this head SHA — do not arm; the operator merges after review |
+| `17` | the repo declares no `[reviewers] bots` — unknowable, **fail closed**. Declare them, or `bots = []` |
+| `18` | `[reviewers] bots` is present but malformed — fix `agents.toml` |
+| `19` | a declared reviewer left **`CHANGES_REQUESTED`** on this head SHA — address it and push |
+| `20` | live state unreadable — **fail closed**, never assume reviewed |
+
+Three properties are doing the real work:
+
+- **"Submitted" is not "satisfied."** `APPROVED` and `COMMENTED` count — `COMMENTED` is what the
+  Codex connector posts even on a clean pass, and holding out for an `APPROVED` a comment-only bot
+  never sends would deadlock the gate. **`CHANGES_REQUESTED` does not count** (`19`). Nothing else
+  catches it: with `required_approving_review_count: 0` GitHub will merge a PR whose only review
+  says *do not merge*, and `required_conversation_resolution` gates on threads rather than on the
+  verdict. It is not a deadlock either — addressing the feedback pushes a commit, which moves the
+  head SHA and gets re-reviewed.
+
+- **It is anchored to a commit, not to the PR.** A review of an earlier push is not a review of
+  what is about to merge. On a 0 the caller passes the witnessed SHA to `gh pr merge
+  --match-head-commit`, so a commit landing between the check and the arm makes GitHub reject the
+  arm rather than merge an unreviewed tip.
+- **`17`/`18` are not `20`.** All three refuse to arm, but the operator action differs — *declare
+  your reviewers*, *fix the malformed value*, *retry / fix permissions* — and one code for three
+  fixes sends people to the wrong one. That is the same one-code-per-remedy rule `automerge-ok`
+  already follows (10 enable auto-merge, 11 add required checks, 12 add CI, …). Which reviewers a
+  repo has is configuration, and its home is `[reviewers] bots` (see `docs/roles-and-agents.md`),
+  not a guess from PR history.
+
+**On a bot-reviewed repo this guard skips arming, every time, by design.** Step 10 runs seconds
+after `gh pr create`, so a reviewer that takes minutes has not reviewed yet. Unattended *arming*
+is therefore suspended on such repos until **#49** adds the PR watch that waits for the review,
+resolves its threads, and arms afterwards. A repo with no async reviewer sets `bots = []` and is
+unaffected.
+
 ## Operating notes
 
 - **Re-run `apply` after any change to a CI job name.** A renamed job leaves the old context
