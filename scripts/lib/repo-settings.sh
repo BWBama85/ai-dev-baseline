@@ -1108,10 +1108,12 @@ cmd_required_drift() {
       # Every required context came from outside Actions — an external provider. Out of scope by
       # this command's own contract, so this is a clean pass, not a grudging one.
       #
-      # KNOWN LIMITATION: this reasons from "an Actions-reported context comes from a workflow in
-      # THIS tree", which an organization/enterprise ruleset can break by requiring a workflow
-      # sourced from another repository. Such a repo, with empty local discovery, fails closed at
-      # the `shared` branch above rather than passing — deliberately the safe direction. Tracked.
+      # KNOWN LIMITATION (#182): this reasons from "an Actions-reported context comes from a
+      # workflow in THIS tree", which an organization/enterprise ruleset can break by requiring a
+      # workflow sourced from another repository. Such a repo, with empty local discovery, fails
+      # closed at the `shared` branch above rather than passing — deliberately the safe direction,
+      # though the message there blames this repo's parser. #179 made that case reachable for the
+      # first time (before it, the attribution literal was wrong, so the arm never fired).
       adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch'; its $(nlines "$BR_CONTEXTS") required context(s) are not Actions-reported (external CI) — nothing to require"
       return 0
     fi
