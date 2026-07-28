@@ -162,6 +162,12 @@ step "pr-review"
 # tri-state, and every unreadable path failing closed.
 if bash scripts/check-pr-review.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "state-assert"
+# Unit tests for the atomic observe-and-render helper (scripts/lib/state-assert.sh, #138):
+# mergedAt-over-state, NOT_PLANNED kept distinct, every unverifiable path rendering NO sentence,
+# argument validation, and the three narrating workflows' wiring to it.
+if bash scripts/check-state-assert.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "skill-compose"
 # Unit tests for the partial skill override composer (scripts/lib/skill-compose.sh, #22):
 # ops, anchor slugging, inherit-on-recompose, byte-exact currency check, and the safety guards.

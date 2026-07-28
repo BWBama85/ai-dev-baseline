@@ -243,6 +243,15 @@ query($owner:String!,$repo:String!,$num:Int!){
 echo "Remaining unresolved bot threads on PR #$PR_NUM: $REMAINING"
 ```
 
+`$REMAINING` above is the whole point of the re-fetch: it is counted **now**, not carried from
+step 1. Apply the same rule to any PR status the summary states — render it in one step and pass
+the line through unchanged, and if the read fails, say nothing rather than reaching for the
+preflight value (`base/practices/verify-before-asserting.md`):
+
+```bash
+bash "$HOME/.claude/scripts/lib/state-assert.sh" observe pr "$PR_NUM"   # -> PR #<n> was observed <STATE> at <ISO-8601 UTC>
+```
+
 Emit a concise summary to the user:
 
 > Resolved N bot threads on PR #X.

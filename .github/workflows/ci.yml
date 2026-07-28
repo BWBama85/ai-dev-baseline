@@ -265,6 +265,17 @@ jobs:
       - name: Unit-test the pre-arm review guard (#134)
         run: bash scripts/check-pr-review.sh
 
+  state-assert:
+    name: state-assert
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unit-test the observe-and-render state helper (#138)
+        run: bash scripts/check-state-assert.sh
+
   skill-compose:
     name: skill-compose
     runs-on: ubuntu-latest

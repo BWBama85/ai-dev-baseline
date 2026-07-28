@@ -510,6 +510,47 @@ moment it acts, and **fail closed** — when the live state can't be verified, i
 fall back to trusting the stored value (that is the stale-state trust this practice exists
 to remove); it holds the gate and surfaces the uncertainty.
 
+## Render the sentence from the read, in one step
+
+Re-reading is necessary but **not sufficient**: a value fetched into a variable can still go
+stale before the sentence that quotes it, and a correct read can still be paraphrased into a
+claim it never supported. So the read and the assertion are **one operation**, not two:
+
+```bash
+state-assert.sh observe pr 137     # -> PR #137 was observed MERGED at 2026-07-28T05:22:27Z
+state-assert.sh observe issue 138  # -> issue #138 was observed OPEN at 2026-07-28T05:22:28Z
+```
+
+**Pass the printed line through unchanged.** Empty stdout means *say nothing about that
+entity* — never fall back on a remembered value, which is exactly the trust this practice
+removes. The command fails closed: an unverifiable read prints nothing and exits non-zero.
+
+**Observations are past-tense by construction, and that is not a style rule.** A read can only
+support a claim about the moment it happened. "PR #137 **is still** open" and "the gate **will**
+hold" are claims about the future that no read can support — the second one shipped, and the PR
+merged 29 seconds later. State what was observed and when; if you need to claim a future effect,
+name the *observed* fact that implies it (an exit code, an action taken) instead.
+
+**One home per entity kind** — never re-derive another's model:
+
+| Question | The one command that answers it |
+|---|---|
+| PR / issue state | `state-assert.sh observe pr\|issue <n>` |
+| Is this branch merged? | `cleanup-lib.sh branch-verdict` (models squash/rebase, exact-head, containment) |
+| Is the branch green? | `roadmap-lib.sh branch-health` (Checks API + commit-status API, fail-closed) |
+
+## What this does *not* claim to enforce
+
+Honesty about the boundary is part of the practice. These are the **executable** paths: a status
+line a workflow *defines* is rendered atomically from a live read. **Free-form prose is not
+mechanically enforced** — no hook can un-say a sentence that has already streamed, and a shell
+classifier over arbitrary natural language (negation, quotation, prediction) would be theatre.
+Portable per-agent enforcement is tracked separately as the enforcement-hooks layer.
+
+So the rule for prose is a discipline, stated plainly: **do not volunteer a status you did not
+just read.** If it is worth saying, it is worth one `observe` call — and if that call fails, the
+honest output is silence.
+
 ## Why
 
 Repeated stale-state assertions — narrating a merged PR as "still open" from a
@@ -517,6 +558,11 @@ stale local `main` or from earlier-in-session memory — are a recurring correct
 bug. A wrong claim about volatile state is worse than a slow one: it looks
 authoritative and gets acted on. Re-checking the source of truth at the moment of
 use makes the claim correct by construction.
+
+Prose alone had already failed twice in one session with this practice loaded in context, which
+is why the read-and-render step is a command rather than another paragraph — the same move that
+turned the dependency-edge rule, the release-readiness ladder and `/cleanup`'s predicates from
+remembered rules into tested code.
 
 
 ---
