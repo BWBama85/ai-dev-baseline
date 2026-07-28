@@ -76,6 +76,11 @@ _sa_is_number() {
 # the sentence dates the observation and not the printing.
 _sa_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# gh's own stderr is deliberately discarded at the call sites rather than captured into a temp
+# file the way implement-issue-gate.sh does. The trade is conscious: this is a NARRATION helper
+# whose failure mode is silence (always safe), not a gate whose failure mode is a wrong decision,
+# and the operator's immediate next move — running the same `gh` command by hand — surfaces the
+# real cause (auth, rate limit, not found) in full. That is not worth a temp-file lifecycle here.
 _sa_unverifiable() {
   printf 'state-assert: unverifiable (%s) — no status rendered\n' "$1" >&2
   exit 3

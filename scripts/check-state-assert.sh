@@ -125,6 +125,16 @@ SHIM_ISSUE_FAIL=1 fails_closed "issue read error" observe issue 1
 SHIM_ISSUE_JSON='{"state":"OPEN","stateReason":null,"url":"https://github.com/other/repo/issues/1"}' \
   fails_closed "foreign-repo issue" observe issue 1
 
+# PRs and issues share ONE number space, and `gh issue view <PR number>` really does answer with
+# the pull request (GitHub models a PR as an issue). Verified live against this repo. Only the
+# URL discriminates — `/pull/N` vs `/issues/N` — so without that check `observe issue 146` would
+# confidently render a PR's state as an issue's. Pin it: the number-space overlap is permanent.
+SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/o/r/pull/146"}' \
+  fails_closed "a PR answered by 'gh issue view' is not an issue" observe issue 146
+# ...and the mirror: a PR read whose URL is an issue URL is equally not a PR.
+SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/issues/138"}' \
+  fails_closed "an issue answered by 'gh pr view' is not a PR" observe pr 138
+
 # gh absent entirely (a real condition on a fresh machine) — still silence, never a guess.
 OUT="$(PATH="$work/empty" bash "$LIB" observe pr 7 2>/dev/null)"
 eq "$OUT" "" "gh missing: renders no sentence"
