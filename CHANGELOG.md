@@ -7,6 +7,41 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **`/implement-issue` no longer arms auto-merge before the reviewer has spoken** (#134). PR #133
+  merged **29 seconds** after opening and **six minutes before** the Codex connector posted five
+  review threads — all five were real bugs, and they landed on `main` unreviewed.
+  `required_conversation_resolution` did not fail; it was bypassed by timing, because it only
+  blocks a merge on threads that **already exist**, and at arming time there are none. Auto-merge
+  fires when the required *status checks* pass, and a bot reviewer is not a check, so the race was
+  never winnable by tuning.
+  - A second guard, **`scripts/lib/pr-review.sh gate --pr <n>`**, runs before the arm and answers
+    the question repo settings cannot: *has every reviewer this repo declares reviewed **this head
+    commit**?* Exit `0` (+ the witnessed SHA on stdout) · `16` a declared reviewer is still
+    pending · `17` no `[reviewers] bots` declaration, so it is unknowable · `20` unreadable. Every
+    uncertainty is non-zero — the guard never degrades a failed read into "nobody is pending".
+  - It is a **separate module** on purpose: `repo-settings.sh` declares itself repo *settings*
+    bookkeeping that "does not merge, review, tag, release, or deploy", and review state is
+    per-PR. `automerge-ok` still answers *will the checks gate this?*; step 10 composes the two.
+  - **`[reviewers] bots` now also gates the merge**, read as a tri-state through
+    `role-dispatch.sh bots --declared`: declared → wait for them; `bots = []` → this repo has no
+    async reviewer, keep unattended arming; **undeclared → fail closed**. The two readers differ
+    only on *unset*, deliberately — a permissive default is harmless when picking which threads
+    `/resolve-pr-threads` may resolve and is exactly wrong as a merge gate. Reviewers are
+    **declared, never inferred** from PR history: absence of past evidence must never authorize
+    an arm.
+  - Either login spelling works. GitHub reports the same bot as `chatgpt-codex-connector` over
+    GraphQL and `chatgpt-codex-connector[bot]` over REST, so the guard normalizes the suffix — an
+    anchored exact match would silently never fire and wedge the gate at `16` forever.
+  - The arm now passes **`--match-head-commit`**, so a commit pushed between the check and the arm
+    makes GitHub reject the arm instead of merging an unreviewed tip.
+  - **Expect this to skip arming on a bot-reviewed repo**, every time: step 10 runs seconds after
+    the PR opens. Unattended *arming* is suspended there until **#49** adds the PR watch that
+    waits, resolves threads, and arms afterwards. A repo with no async reviewer sets `bots = []`.
+  - New `{{PR_REVIEW_LIB}}` placeholder (all three agents), `scripts/check-pr-review.sh` (54
+    offline cases) and a `pr-review` CI job. Recorded as **D12**.
+
 ### Fixed
 
 - **The `/roadmap` edge scanner missed markdown structure inside list items, escaped comment

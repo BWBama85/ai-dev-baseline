@@ -330,3 +330,56 @@ didn't already model, so any residual divergence stays visible and auditable.
              constraint is explicit: the report is composed BEFORE the update, so no run reports
              itself through a library that was swapped underneath it.
 - baseline-issue: n/a (this repo IS the baseline; #139 is the tracking issue)
+
+## D12 — auto-merge waits for a declared reviewer, and the declaration is `[reviewers] bots`
+- date:      2026-07-27
+- category:  general
+- unknown:   The baseline had no way to express "this repo is reviewed by an async bot, so do not
+             hand the merge to GitHub until that reviewer has spoken." `automerge-ok` answers
+             "will the CHECKS gate this?"; nothing answered "has REVIEW happened?", and GitHub
+             cannot answer it either — auto-merge fires when required status checks pass, a bot
+             reviewer is not a check, and `required_conversation_resolution` only blocks on
+             threads that already exist. PR #133 merged 29s after opening and 6m18s before its
+             reviewer posted five real bugs.
+- decision:  Four choices, each of which could have gone the other way:
+             1. **A separate module, `scripts/lib/pr-review.sh`** — not a new `repo-settings.sh`
+                subcommand. That file states its own boundary ("repo *settings* bookkeeping … it
+                does not merge, review, tag, release, or deploy"); review state is per-PR, so
+                adding it there would have broken the contract rather than honored it. Step 10
+                composes the two guards; neither grows into the other's question.
+             2. **Reuse `[reviewers] bots` rather than invent a key**, read through a second
+                reader, `bots --declared`, that reads it as a TRI-STATE WITH NO DEFAULT. The two
+                consumers need opposite answers for "unset" and both are right: a permissive
+                default is harmless when choosing which threads to auto-resolve, and is exactly
+                wrong as a merge gate. Declared → wait; `[]` → no reviewer, keep unattended
+                arming; undeclared → unknowable, fail closed.
+             3. **Declaration, never inference.** Scanning PR history for past bot reviews was
+                rejected: a new repo, a bounded lookback, or a read failure all yield "no bot
+                found" while a reviewer is configured — authorizing an arm on absence of
+                evidence, in the one direction this must never be wrong. A disabled bot leaves
+                stale evidence forever. Which reviewers a repo has is configuration.
+             4. **Anchor to the head COMMIT, and arm with `--match-head-commit`.** A review of an
+                earlier push is not a review of what is about to merge (observed live on PR #145,
+                where the bot reviewed b302fa0e and three commits landed after it). Re-reading
+                before arming still leaves a race, so the witnessed SHA is passed to the merge
+                command and GitHub rejects the arm if the head moved.
+             `17` (undeclared) is deliberately distinct from `20` (unreadable): both refuse, but
+             the operator action differs — declare your reviewers vs. retry — and one code for
+             two fixes sends people to the wrong one.
+- placement: `scripts/lib/pr-review.sh` (the guard); `scripts/lib/role-dispatch.sh`
+             (`bots --declared`, in the module that owns the manifest); `base/workflows/
+             implement-issue.md` step 10/11 (rendered for all three agents);
+             `{{PR_REVIEW_LIB}}` in `scripts/build.sh` + `base/workflows/README.md`;
+             `templates/agents.toml` + `docs/roles-and-agents.md` + `docs/repo-settings.md` +
+             `base/roles.md` (the operator contract); `scripts/check-pr-review.sh` +
+             `scripts/check-role-dispatch.sh` (coverage); this repo's own `agents.toml` declares
+             `bots = ["chatgpt-codex-connector"]` (dogfood).
+- reason:    The accepted cost is explicit: on a bot-reviewed repo this SUSPENDS unattended
+             arming, because step 10 runs seconds after the PR opens and a reviewer that takes
+             minutes has definitionally not reviewed yet. That is the correct trade for now —
+             #87's convenience is worth less than the five real bugs the race shipped — and it is
+             a stopgap, not the end state: #49 adds the PR watch that waits for the review,
+             resolves its threads, and arms afterwards, at which point the guard becomes the
+             precondition that watch satisfies rather than a reason to skip. A repo with no async
+             reviewer opts back into unattended merging with one line, `bots = []`.
+- baseline-issue: n/a (this repo IS the baseline; #134 is the tracking issue)

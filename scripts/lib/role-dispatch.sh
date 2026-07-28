@@ -245,6 +245,36 @@ adb_dispatch_bots() {
     'claude[bot]' 'claude-code[bot]'
 }
 
+# adb_dispatch_bots_declared — the SAME manifest key, read as a TRI-STATE, with NO default (#134).
+#
+# Why a second reader rather than a flag on the first: the two consumers need opposite answers for
+# "unset", and both are right for their own job.
+#
+#   /resolve-pr-threads  asks "which thread authors may I auto-resolve?" — an over-broad default is
+#                        harmless there (it resolves a thread nobody was going to read), so unset
+#                        falls back to the built-in allowlist above.
+#   the pre-arm guard    asks "must I WAIT for a reviewer before arming auto-merge?" — and a
+#                        default is exactly wrong. Defaulting to the built-in set would make every
+#                        repo wait for eight bots it does not have; defaulting to empty would arm
+#                        auto-merge on a repo that DOES have one, which is #134 itself.
+#
+# So this reader never defaults. Three outcomes, each a distinct operator action:
+#   0 + logins  declared and non-empty  -> these reviewers must review before auto-merge is armed
+#   0 + nothing declared as `bots = []` -> this repo has NO async reviewer; arming is safe
+#   3           not declared anywhere   -> UNKNOWN. The caller must fail closed, never guess.
+#   2           malformed               -> same rejection as above, never mistaken for `[]`
+#
+# The `[]` case is what keeps the guard from being a permanent tax on repos with no bot reviewer:
+# one line in agents.toml restores unattended arming.
+adb_dispatch_bots_declared() {
+  local raw
+  raw="$(_adb_rd_layered_get reviewers bots)" || return 3
+  case "$raw" in
+    \[*) adb_toml_array "$raw"; return 0 ;;
+    *)   printf 'role-dispatch: [reviewers].bots must be an array (e.g. ["a[bot]","b"]) — use [] to disable\n' >&2; return 2 ;;
+  esac
+}
+
 # --- invocation --------------------------------------------------------------------------------
 
 # Run <argv> with the hang backstop. THE mechanism lives once in common.sh as `adb_run_bounded`
@@ -367,7 +397,11 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     resolve) adb_resolve_role "${2:-}" ;;
     invoke)  [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh invoke <role|agent>" >&2; exit 2; }
              adb_dispatch_invoke "$2" ;;
-    bots)    adb_dispatch_bots ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | bots]" >&2; exit 2 ;;
+    bots)    case "${2:-}" in
+               '')          adb_dispatch_bots ;;
+               --declared)  adb_dispatch_bots_declared ;;
+               *) echo "usage: role-dispatch.sh bots [--declared]" >&2; exit 2 ;;
+             esac ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | bots [--declared]]" >&2; exit 2 ;;
   esac
 fi

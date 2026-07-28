@@ -16,6 +16,20 @@ debug        = "claude"     # owns root-cause investigations.
 #                           # installs nothing. This repo cuts releases by hand (CONTRIBUTING.md)
 #                           # and ships no `/release` skill — see docs/roles-and-agents.md.
 
+# This repo IS reviewed by an async external bot — the Codex connector, which posts review
+# threads a few minutes after a PR opens. Declaring it here does two things (#134):
+#
+#   1. `/resolve-pr-threads` may auto-resolve its threads (the original purpose, #26);
+#   2. `/implement-issue` step 10 will NOT arm auto-merge until that reviewer has reviewed the
+#      PR's current head commit — the guard that PR #133 lacked when it merged 29 seconds after
+#      opening and six minutes before this very bot posted five real bugs.
+#
+# The declaration is what makes (2) possible: an UNDECLARED repo cannot be told apart from one
+# with no reviewer at all, so the guard fails closed there rather than guessing. A repo with no
+# async reviewer declares `bots = []` and keeps unattended auto-merge.
+[reviewers]
+bots = ["chatgpt-codex-connector"]
+
 # This repo has no standard-ecosystem toolchain, so `project-gates.sh` auto-detects
 # nothing (no pnpm/cargo/go/python). Its real gate is `scripts/selfcheck.sh` — the full
 # local CI mirror — so we wire it in explicitly as the `test` gate. Both the skill's

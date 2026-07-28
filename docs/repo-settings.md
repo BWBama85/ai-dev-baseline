@@ -143,6 +143,46 @@ Code `12` matters more than it looks: GitHub refuses to *queue* a PR that could 
 so `gh pr merge --auto` on a check-less repo is a plain merge wearing an auto-merge label. The
 guard refuses and lets the operator decide.
 
+## The second guard: has review happened? (#134)
+
+`automerge-ok` answers *"will the checks gate this?"* — and that is **not** the same question as
+*"has anyone reviewed it?"*. Auto-merge fires the instant the required status checks pass. An
+async bot reviewer is not a check, and `required_conversation_resolution` only blocks on threads
+that **already exist**; at arming time there are none. On PR #133 the gap was six minutes: opened
+20:55:32, merged 20:56:01, five real bugs posted at 21:02:19.
+
+So step 10 asks a **second**, PR-scoped guard before arming — `scripts/lib/pr-review.sh`, a
+separate module because `repo-settings.sh` is repo *settings* bookkeeping and review state is
+per-PR:
+
+```bash
+pr-review.sh gate --pr <number|url>    # prints the witnessed head SHA on 0
+```
+
+| Code | Meaning |
+|---|---|
+| `0` | every **declared** reviewer has reviewed the current head SHA — or `bots = []` (no async reviewer). STDOUT is the head SHA |
+| `16` | a declared reviewer has **not** reviewed this head SHA — do not arm; the operator merges after review |
+| `17` | the repo declares no `[reviewers] bots` — unknowable, **fail closed**. Declare them, or `bots = []` |
+| `20` | live state unreadable — **fail closed**, never assume reviewed |
+
+Two properties are doing the real work:
+
+- **It is anchored to a commit, not to the PR.** A review of an earlier push is not a review of
+  what is about to merge. On a 0 the caller passes the witnessed SHA to `gh pr merge
+  --match-head-commit`, so a commit landing between the check and the arm makes GitHub reject the
+  arm rather than merge an unreviewed tip.
+- **`17` is not `20`.** Both refuse to arm, but the operator action differs — *declare your
+  reviewers* versus *retry / fix permissions* — and a code that conflates them sends people to the
+  wrong fix. Which reviewers a repo has is configuration, and its home is `[reviewers] bots` (see
+  `docs/roles-and-agents.md`), not a guess from PR history.
+
+**On a bot-reviewed repo this guard skips arming, every time, by design.** Step 10 runs seconds
+after `gh pr create`, so a reviewer that takes minutes has not reviewed yet. Unattended *arming*
+is therefore suspended on such repos until **#49** adds the PR watch that waits for the review,
+resolves its threads, and arms afterwards. A repo with no async reviewer sets `bots = []` and is
+unaffected.
+
 ## Operating notes
 
 - **Re-run `apply` after any change to a CI job name.** A renamed job leaves the old context

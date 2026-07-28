@@ -254,6 +254,17 @@ jobs:
       - name: Unit-test the runtime role-dispatch helper (#15)
         run: bash scripts/check-role-dispatch.sh
 
+  pr-review:
+    name: pr-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Unit-test the pre-arm review guard (#134)
+        run: bash scripts/check-pr-review.sh
+
   skill-compose:
     name: skill-compose
     runs-on: ubuntu-latest
@@ -493,18 +504,21 @@ jobs:
             "$HOME/.claude/scripts/lib/skill-compose.sh" \
             "$HOME/.claude/scripts/lib/roadmap-lib.sh" \
             "$HOME/.claude/scripts/lib/cleanup-lib.sh" \
+            "$HOME/.claude/scripts/lib/pr-review.sh" \
             "$HOME/.codex/AGENTS.md" \
             "$HOME/.codex/skills/implement-issue" \
             "$HOME/.codex/scripts/lib/project-gates.sh" \
             "$HOME/.codex/scripts/lib/role-dispatch.sh" \
             "$HOME/.codex/scripts/lib/roadmap-lib.sh" \
             "$HOME/.codex/scripts/lib/cleanup-lib.sh" \
+            "$HOME/.codex/scripts/lib/pr-review.sh" \
             "$HOME/.gemini/GEMINI.md" \
             "$HOME/.gemini/config/skills/implement-issue" \
             "$HOME/.gemini/scripts/lib/project-gates.sh" \
             "$HOME/.gemini/scripts/lib/role-dispatch.sh" \
             "$HOME/.gemini/scripts/lib/roadmap-lib.sh" \
-            "$HOME/.gemini/scripts/lib/cleanup-lib.sh"; do
+            "$HOME/.gemini/scripts/lib/cleanup-lib.sh" \
+            "$HOME/.gemini/scripts/lib/pr-review.sh"; do
             if [ ! -e "$p" ]; then
               echo "::error::expected path to exist and resolve: $p"
               exit 1

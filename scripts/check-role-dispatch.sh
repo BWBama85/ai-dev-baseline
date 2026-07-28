@@ -150,6 +150,43 @@ eq "$out" "" "bots = [] disables (empty output)"; yes "$rc" "bots = [] is a 0 st
 set_repo '[reviewers]' 'bots = "my-bot[bot]"'
 rd bots >/dev/null 2>&1; no $? "scalar [reviewers].bots is rejected (not treated as disabled)"
 
+# ---- bots --declared : the same key read as a TRI-STATE, with NO default (#134) ---------------
+# The pre-arm review guard needs the opposite answer from /resolve-pr-threads for "unset": a
+# default is harmless when deciding which threads to auto-resolve, and is exactly wrong when
+# deciding whether to WAIT for a reviewer. So this reader must never fall back to the built-in
+# set — a default would either make every repo wait for eight bots it does not have, or arm
+# auto-merge on a repo that does have one, which is #134 itself.
+set_repo '[reviewers]' 'bots = ["chatgpt-codex-connector"]'
+clr_global
+out="$(rd bots --declared)"; rc=$?
+eq "$out" "chatgpt-codex-connector" "bots --declared returns the declared logins"
+yes "$rc" "a declared non-empty list is a 0 status"
+
+set_repo '[reviewers]' 'bots = []'
+out="$(rd bots --declared)"; rc=$?
+eq "$out" "" "bots --declared: [] is declared-and-empty (no async reviewer)"
+yes "$rc" "declared [] is a 0 status — distinct from undeclared"
+
+clr_repo; clr_global
+out="$(rd bots --declared 2>/dev/null)"; rc=$?
+eq "$out" "" "bots --declared prints nothing when undeclared"
+eq "$rc" "3" "UNDECLARED is its own status (3), never the built-in default set"
+# The contrast that matters: the SAME state yields the default allowlist for /resolve-pr-threads.
+has "$(rd bots)" "chatgpt-codex-connector" "undeclared still yields the DEFAULT set for the plain 'bots' reader"
+
+# global-only declaration still counts as declared (the layering is repo -> global)
+clr_repo; set_global '[reviewers]' 'bots = ["my-bot[bot]"]'
+out="$(rd bots --declared)"; rc=$?
+eq "$out" "my-bot[bot]" "a GLOBAL declaration counts as declared"
+yes "$rc" "global declaration is a 0 status"
+clr_global
+
+set_repo '[reviewers]' 'bots = "my-bot[bot]"'
+rd bots --declared >/dev/null 2>&1
+eq "$?" "2" "malformed [reviewers].bots is 2 under --declared (never confused with 3 or [])"
+
+rd bots --bogus >/dev/null 2>&1; eq "$?" "2" "an unknown bots flag is rejected"
+
 # ============================ invoke (PATH-stubbed agents) ============================
 # codex stub: capture the prompt from stdin and REFLECT it into --output-last-message (so the
 # test proves the prompt actually reached codex — the watchdog-stdin bug), while streaming noise
