@@ -424,17 +424,37 @@ PROT_STATE=""   # protected-with-checks | protected-no-checks | unprotected | fo
 # .permissions.admin rather than assumed. Fail-closed: an unreadable repo object is `error`, never
 # "unprotected" — which would send `apply` down the stand-up-from-scratch path on a repo it cannot
 # actually read.
+# _adb_rs_api_i <path> — GET <path> with headers and split the response into RS_STATUS + RS_BODY.
+#
+# ONE home for the split, because both live-state readers need it and neither the status line's
+# shape nor the CRLF-tolerant blank-line separator is obvious. Two pasted copies would mean a
+# later fix (a redirect, a `100 Continue` preamble, an `HTTP/2 200` variant) reaching only one
+# endpoint — and a mis-parsed status degrades silently into "unreadable", which both readers then
+# report as a fail-closed error nobody can explain. Golden rule #4: source it, never copy it.
+#
+# Never returns non-zero: an unreachable API leaves RS_STATUS empty, which every caller already
+# treats as "not 200". Callers classify; this only splits.
+RS_STATUS=""
+RS_BODY=""
+_adb_rs_api_i() {
+  local resp
+  RS_STATUS=""; RS_BODY=""
+  resp="$(gh api -i "$1" 2>/dev/null)"
+  RS_STATUS="$(printf '%s\n' "$resp" | head -n1 | awk '{print $2}')"
+  RS_BODY="$(printf '%s\n' "$resp" | awk 'b { print } /^\r?$/ { b = 1 }')"
+  return 0
+}
+
 read_protection() {
-  local branch="$1" resp status body admin
+  local branch="$1" status body admin
   admin="$(repo_field .permissions.admin)" || admin=""
   # -i so the HTTP STATUS is inspectable. Distinguishing 404 from every other failure is not a
   # nicety: an admin hitting a transient 5xx or a network blip would otherwise be classified
   # `unprotected`, and `apply` would then seed its full replacement PUT from PROT_DEFAULTS —
   # silently discarding the branch's real approval, dismissal, bypass and restriction settings.
   # Only a CONFIRMED 404 means "no protection here".
-  resp="$(gh api -i "repos/$REPO_SLUG/branches/$branch/protection" 2>/dev/null)"
-  status="$(printf '%s\n' "$resp" | head -n1 | awk '{print $2}')"
-  body="$(printf '%s\n' "$resp" | awk 'b { print } /^\r?$/ { b = 1 }')"
+  _adb_rs_api_i "repos/$REPO_SLUG/branches/$branch/protection"
+  status="$RS_STATUS"; body="$RS_BODY"
   PROT_JSON=""
   case "$status" in
     200)
@@ -490,30 +510,33 @@ ungated_contexts() { LC_ALL=C comm -23 <(nz "$1") <(nz "$2"); }
 # 404 means "no such branch", full stop — none of the "no protection OR no permission" ambiguity
 # that forces `read_protection` to probe `.permissions.admin`.
 #
-# The one shape that must never be misread is a protected branch whose protection block we cannot
-# see. Read as "zero contexts required" it would report EVERY discovered job as ungated — a
+# The one shape that must never be misread is a protected branch whose context list we cannot
+# read. Taken as "zero contexts required" it would report EVERY discovered job as ungated — a
 # repo-wide false positive that fails every PR and teaches the operator to ignore this lint. So it
-# is classified `opaque` and fails closed, exactly like an HTTP error.
+# is classified `opaque` and fails closed, exactly like an HTTP error. `opaque` covers both a
+# response we could not parse and one that hid the list, which is why its message names neither
+# cause: from here the two are indistinguishable, and guessing between them is what it refuses.
 BR_STATE=""       # checks | unprotected | opaque | error
 BR_CONTEXTS=""    # the live required contexts, sorted, one per line (empty when none)
 
 # read_branch <branch> — classify the branch's required-check state via the contents-read endpoint.
 read_branch() {
-  local branch="$1" resp status body
+  local branch="$1" body
   BR_STATE=""; BR_CONTEXTS=""
   # -i so the HTTP status is inspectable; a 5xx or a network blip must never look like "no checks".
-  resp="$(gh api -i "repos/$REPO_SLUG/branches/$branch" 2>/dev/null)"
-  status="$(printf '%s\n' "$resp" | head -n1 | awk '{print $2}')"
-  body="$(printf '%s\n' "$resp" | awk 'b { print } /^\r?$/ { b = 1 }')"
-  [ "$status" = "200" ] || { BR_STATE="error"; return 0; }
+  _adb_rs_api_i "repos/$REPO_SLUG/branches/$branch"
+  [ "$RS_STATUS" = "200" ] || { BR_STATE="error"; return 0; }
+  body="$RS_BODY"
 
   # `.protected == false` is an AUTHORITATIVE "nothing protects this branch" — not an unreadable
   # state. Every discovered job is genuinely ungated there, which is real drift worth reporting.
   if printf '%s' "$body" | jq -e '.protected == false' >/dev/null 2>&1; then
     BR_STATE="unprotected"; return 0
   fi
-  # Protected: the contexts array must be READABLE as an array. Absent/null is the redacted or
-  # unexpected shape above -> opaque, never "zero required".
+  # Protected: the contexts array must be READABLE as an array. Absent/null/unparseable is the
+  # shape above -> opaque, never "zero required". Sorted with LC_ALL=C to the same contract
+  # `live_contexts` produces, because both feed `comm`, which silently yields WRONG SETS — not an
+  # error — if the two streams were collated differently.
   if printf '%s' "$body" | jq -e '(.protection.required_status_checks.contexts | type) == "array"' >/dev/null 2>&1; then
     BR_STATE="checks"
     BR_CONTEXTS="$(printf '%s' "$body" | jq -r '.protection.required_status_checks.contexts[]' 2>/dev/null | LC_ALL=C sort)"
@@ -891,15 +914,17 @@ cmd_merge_flag() {
 # the guard it front-runs.
 cmd_required_drift() {
   require_gh
-  local branch want ungated n
+  local branch want ungated nwant
   repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — cannot check required-check drift" >&2; return 20; }
   branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — cannot check required-check drift" >&2; return 20; }
 
-  # Discovery FIRST, and the no-CI exit before any live read. A repo with no discoverable CI has
-  # nothing that could be required, so there is no drift to find and no reason to spend the call
-  # — and #24 says such a repo must never be deadlocked by tooling that assumes CI exists.
+  # Discovery FIRST, and the no-CI exit before the branch read. A repo with no discoverable CI has
+  # nothing that could be required, so there is no drift to find and no reason to spend that call
+  # — and #24 says such a repo must never be deadlocked by tooling that assumes CI exists. (It
+  # still costs the repo-object read, which `target_branch` needs to resolve the branch at all.)
   want="$(discover_checks "$branch" 2>/dev/null | LC_ALL=C sort -u)"
-  if [ "$(nlines "$want")" -eq 0 ]; then
+  nwant="$(nlines "$want")"
+  if [ "$nwant" -eq 0 ]; then
     adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch' — nothing to require"
     return 0
   fi
@@ -910,24 +935,21 @@ cmd_required_drift() {
       echo "repo-settings: cannot read branch '$branch' — required-check drift is UNVERIFIED (failing closed)" >&2
       return 20 ;;
     opaque)
-      # The dangerous shape: protected, but the protection block is not readable as an array. Read
-      # as "zero required" it would name every discovered job as drifted. Say so instead.
-      echo "repo-settings: branch '$branch' is protected but its required-check list is not readable with this token" >&2
-      echo "repo-settings: refusing to guess — a hidden list is NOT an empty one (failing closed)" >&2
+      echo "repo-settings: branch '$branch' is protected, but its required-check list could not be read" >&2
+      echo "repo-settings: refusing to guess — a list we cannot see is NOT an empty one (failing closed)" >&2
+      echo "repo-settings: run 'baseline repo status' with an admin token to see the live set" >&2
       return 20 ;;
   esac
 
   ungated="$(ungated_contexts "$want" "$BR_CONTEXTS")"
   if [ -z "$ungated" ]; then
-    adb_info "repo-settings: all $(nlines "$want") discovered job(s) are required on '$branch' — no drift"
+    adb_info "repo-settings: all $nwant discovered job(s) are required on '$branch' — no drift"
     return 0
   fi
-
-  n="$(nlines "$ungated")"
   if [ "$BR_STATE" = "unprotected" ]; then
     echo "repo-settings: branch '$branch' has NO protection, so none of its CI gates anything." >&2
   fi
-  echo "repo-settings: $n discovered job(s) on '$branch' are NOT required — they gate nothing:" >&2
+  echo "repo-settings: $(nlines "$ungated") discovered job(s) on '$branch' are NOT required — they gate nothing:" >&2
   printf '%s\n' "$ungated" | sed 's/^/  - /' >&2
   echo "repo-settings: a PR could merge while these are red. Remedy:" >&2
   echo "repo-settings:   baseline repo apply           # add the missing context(s)" >&2
@@ -977,7 +999,7 @@ parse_apply_opts() {
   done
 }
 
-parse_read_opts() {   # checks / status / automerge-ok: --branch / --workflow-dir / --help only
+parse_read_opts() {   # the read subcommands: --branch / --workflow-dir / --help only
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --branch)       OPT_BRANCH="$(_adb_rs_valopt --branch "$#" "${2:-}")" || exit 2; shift ;;
@@ -992,13 +1014,13 @@ parse_read_opts() {   # checks / status / automerge-ok: --branch / --workflow-di
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 SUB="$1"; shift
 case "$SUB" in
-  checks)       parse_read_opts "$@";  cmd_checks ;;
-  status)       parse_read_opts "$@";  cmd_status ;;
+  checks)         parse_read_opts "$@";  cmd_checks ;;
+  status)         parse_read_opts "$@";  cmd_status ;;
   automerge-ok)   parse_read_opts "$@";  cmd_automerge_ok ;;
   required-drift) parse_read_opts "$@";  cmd_required_drift ;;
-  merge-flag)   parse_read_opts "$@";  cmd_merge_flag ;;
-  apply)        parse_apply_opts "$@"; cmd_apply ;;
-  -h|--help)    usage; exit 0 ;;
+  merge-flag)     parse_read_opts "$@";  cmd_merge_flag ;;
+  apply)          parse_apply_opts "$@"; cmd_apply ;;
+  -h|--help)      usage; exit 0 ;;
   *) echo "repo-settings: unknown subcommand '$SUB' (expected 'checks', 'status', 'apply', 'automerge-ok', 'required-drift', or 'merge-flag')" >&2
      usage >&2; exit 2 ;;
 esac

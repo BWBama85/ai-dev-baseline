@@ -185,6 +185,18 @@ fact release-blocker-label "fixed:release-blocker" -- \
 fact automerge-guard "fixed:automerge-ok" -- \
   scripts/lib/repo-settings.sh base/workflows/implement-issue.md docs/repo-settings.md
 
+# --- FACT: the required-check drift lint (#122) ------------------------------
+# The same three-surface contract, with one twist that makes the pin matter more than usual: this
+# check exists to catch a gate that silently stopped gating, so an unpinned version reproduces
+# #122's own failure class one level up. The library IMPLEMENTS `required-drift`, the CI job CALLS
+# it, and the doc DOCUMENTS its exit codes. Deleting the step from ci.yml is invisible to every
+# other check in this repo — nothing else greps the workflow for it — so pin the call site too,
+# not just the token.
+fact required-drift-lint "fixed:required-drift" -- \
+  scripts/lib/repo-settings.sh docs/repo-settings.md
+fact required-drift-wired "fixed:repo-settings.sh required-drift" -- \
+  .github/workflows/ci.yml
+
 # --- FACT: the pre-arm review guard subcommand (#134) ------------------------
 # Identical contract shape, and identically silent when it breaks: the library IMPLEMENTS
 # `gate`, the workflow CALLS it before arming, and the doc DOCUMENTS its exit codes. Because a

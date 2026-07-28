@@ -406,32 +406,40 @@ didn't already model, so any residual divergence stays visible and auditable.
                 rather than guessed at.
 - baseline-issue: n/a (this repo IS the baseline; #134 is the tracking issue)
 
-## D13 — the required-check drift lint is CI-only, so selfcheck stops mirroring CI exactly
+## D13 — `selfcheck` stays hermetic; the one live assertion is CI-only
 - date:      2026-07-28
-- category:  deviation
-- baseline-rule: this repo's own Golden Rule #3 — "`scripts/selfcheck.sh` mirrors CI exactly",
-             the property that makes a green local gate a reliable predictor of a green CI run.
-- conflict:  #122 needs required-check drift caught on the PR that introduces the job, and that
-             question can only be answered by reading LIVE branch protection. A live read has no
-             honest offline behavior: making `selfcheck` perform it would either fail on every
-             offline run (a gate that is red by default is not a gate) or pass when it could not
-             read — and treating an unreadable live check as a local success is exactly the
-             fail-open that `base/practices/verify-before-asserting.md` exists to forbid. The two
-             requirements — a fail-closed live assertion, and offline selfcheck parity — cannot
-             both hold.
-- scope:     `.github/workflows/ci.yml` (the `repo-settings` job's `required-drift` step) and
-             `scripts/selfcheck.sh` (which does NOT run it). Everything else still mirrors.
-- reason:    The split keeps each side honest about what it can prove. `selfcheck` keeps the
-             OFFLINE half — `scripts/check-repo-settings.sh` drives the predicate through a
-             recording `gh` stub over in-sync, drifted, unprotected, opaque, malformed and
-             401/403/404/500 responses — so the logic is fully regression-tested locally. Only
-             the assertion against this repo's real settings is CI-only. A local `selfcheck`
-             therefore still predicts CI for every deterministic check; the one step it cannot
-             predict is the one whose input is external mutable state, which no local run could
-             have predicted anyway.
+- category:  project-delta
+- unknown:   #122 needs required-check drift caught on the PR that introduces the job, and only a
+             LIVE read of branch protection can answer that. Every other check this repo runs is
+             deterministic and offline, so there was no established home for a check whose input
+             is external mutable state.
+- decision:  The live assertion runs in CI only — a step in the already-required `repo-settings`
+             job. `scripts/selfcheck.sh` does NOT run it and keeps the offline half:
+             `scripts/check-repo-settings.sh` drives the predicate through a recording `gh` stub
+             over in-sync, drifted, all-ungated, unprotected, opaque, malformed and
+             401/403/404/500 responses. Golden Rule #3 in `CLAUDE.md` was AMENDED in the same
+             commit — from "mirrors CI exactly" to "mirrors every *offline* check CI runs" — so
+             this is a corrected over-statement, not a standing fork. That is why this is a
+             project-delta and not a `DEVIATION`: after the amendment there is no rule left to
+             contradict.
+- placement: `.github/workflows/ci.yml` (the step), `scripts/selfcheck.sh` (deliberately absent),
+             `CLAUDE.md` Golden Rule #3 (amended), `docs/repo-settings.md` (the reasoning).
+- reason:    `selfcheck` earns its keep by being a DETERMINISTIC predictor of CI: same tree, same
+             answer, every time, offline. A step whose verdict depends on network, auth, and
+             settings someone else can change out from under it is the one thing that would break
+             that property — a red local gate would no longer mean "your tree is wrong".
+             Note what this reasoning does NOT claim, because the first draft of it overstated the
+             case: a local step is not forced to choose between "always red offline" and
+             "fail-open". The predicate already returns a third code (`20` = unreadable) and
+             `selfcheck` already prints a third result (`SKIP`), so a 0→PASS / 14→FAIL / 20→SKIP
+             arm is perfectly possible and would catch drift BEFORE the push — strictly earlier
+             than CI, and strictly better for #122's goal. It was not taken here only to keep the
+             gate hermetic, which is a preference, not an impossibility. Filed as a follow-up so
+             the option is tracked rather than argued away: see the issue linked from #122.
 - also:      The step rides the ALREADY-REQUIRED `repo-settings` job rather than taking a job of
              its own. A new job would itself be a newly added, non-required context — the fix
              would commit the defect it detects, and would gate nothing until someone ran
              `baseline repo apply`. It also reads the ordinary `repos/{slug}/branches/{branch}`
              endpoint rather than the admin-only `/protection` one, because `administration` is
              not a grantable `GITHUB_TOKEN` permission; the two return the same contexts.
+- baseline-issue: n/a (this repo IS the baseline; #122 is the tracking issue)

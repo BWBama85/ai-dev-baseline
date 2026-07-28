@@ -12,9 +12,11 @@
 #   baseline skill-compose …   # compose a project's partial skill overrides (issue #22;
 #                              #   run 'baseline skill-compose -h' for its own usage)
 #   baseline repo …            # hand PR merges to GitHub: 'checks' / 'status' / 'apply' to set
-#                              #   required status checks then allow_auto_merge, and
-#                              #   'automerge-ok', the guard /implement-issue asks before it arms
-#                              #   auto-merge (issue #87; 'baseline repo -h' for more)
+#                              #   required status checks then allow_auto_merge; 'automerge-ok',
+#                              #   the guard /implement-issue asks before it arms auto-merge;
+#                              #   'required-drift', the CI lint that catches a newly added job
+#                              #   staying non-required; and 'merge-flag' (issues #87, #122;
+#                              #   'baseline repo -h' for more)
 #   baseline release …         # the optional release-goal convention in this repo: 'init' /
 #                              #   'status' to stand it up, 'roll' to roll the milestone after a
 #                              #   release is cut (issues #27/#74; 'baseline release -h' for more)

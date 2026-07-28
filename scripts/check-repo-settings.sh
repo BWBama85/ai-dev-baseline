@@ -59,6 +59,8 @@ rsx status --dry-run;      no "$RC_" "status rejects the apply-only --dry-run"
 rsx status --strict;       no "$RC_" "status rejects the apply-only --strict"
 rsx checks --enforce-admins; no "$RC_" "checks rejects the apply-only --enforce-admins"
 rsx automerge-ok --dry-run;  no "$RC_" "automerge-ok rejects the apply-only --dry-run"
+rsx required-drift --dry-run; no "$RC_" "required-drift rejects the apply-only --dry-run"
+rsx required-drift --prune;   no "$RC_" "required-drift rejects the apply-only --prune"
 rsx checks --branch;       no "$RC_" "checks --branch w/o value exits nonzero"
 
 # ============================ check discovery (pure file parsing) ============================
@@ -304,7 +306,7 @@ rsx_stub() {   # run against the stub with a fresh call log
   STUB_CALLS="$work/calls.txt"; : > "$STUB_CALLS"
   rm -f "$S/body.json"
   OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" STUB_FAIL_WRITE="${STUB_FAIL_WRITE:-}" \
-         STUB_BRANCH_STATUS="${STUB_BRANCH_STATUS:-200}" \
+         STUB_BRANCH_STATUS="${STUB_BRANCH_STATUS:-}" \
          PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
 
@@ -333,6 +335,7 @@ wf_one; repo_fx true false; prot_nochecks
 rsx_auth apply;        no "$RC_" "apply with unauthenticated gh exits nonzero";        has "$OUT" "not authenticated" "apply surfaces the auth failure"
 rsx_auth status;       no "$RC_" "status with unauthenticated gh exits nonzero";       has "$OUT" "not authenticated" "status surfaces the auth failure"
 rsx_auth automerge-ok; no "$RC_" "automerge-ok with unauthenticated gh exits nonzero"; has "$OUT" "not authenticated" "automerge-ok surfaces the auth failure"
+rsx_auth required-drift; no "$RC_" "required-drift with unauthenticated gh exits nonzero"; has "$OUT" "not authenticated" "required-drift surfaces the auth failure"
 
 # --- endpoint selection: the narrow PATCH when a status-check sub-resource exists --------------
 wf_one; repo_fx true false; prot_checks "stale-name"
@@ -604,22 +607,12 @@ rsx_stub required-drift
 eq "$RC_" "20" "required-drift = 20 on a malformed response body"
 hasnt "$OUT" "  - two" "a malformed body does not manufacture drift"
 
+wf_two; repo_fx true true; branch_checks "one"
 for st in 401 403 404 500; do
-  wf_two; repo_fx true true; branch_checks "one"
   STUB_BRANCH_STATUS="$st" rsx_stub required-drift
   eq "$RC_" "20" "required-drift = 20 on HTTP $st (fail closed)"
   hasnt "$OUT" "  - two" "HTTP $st does not manufacture drift"
 done
-unset STUB_BRANCH_STATUS
-
-wf_one; repo_fx true true; branch_checks "one"
-rsx_auth required-drift
-no "$RC_" "required-drift with unauthenticated gh exits nonzero"
-has "$OUT" "not authenticated" "required-drift surfaces the auth failure"
-
-# It is a READ subcommand, so it takes the read parser — apply-only flags must be rejected.
-rsx required-drift --dry-run; no "$RC_" "required-drift rejects the apply-only --dry-run"
-rsx required-drift --prune;   no "$RC_" "required-drift rejects the apply-only --prune"
 
 # ============================ merge-flag: the repo decides the method ============
 # A hardcoded --squash is REJECTED wherever squash merging is disabled, so the guard would say

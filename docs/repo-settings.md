@@ -14,6 +14,7 @@ baseline repo status        # desired vs live, with drift named (nonzero = drift
 baseline repo apply         # required checks FIRST, then allow_auto_merge
 baseline repo apply --prune # ...and drop required contexts no discovered job reports
 baseline repo automerge-ok  # the guard /implement-issue asks before arming auto-merge
+baseline repo required-drift # CI lint: has a discovered job silently stayed non-required? (#122)
 baseline repo merge-flag    # the gh pr merge flag this repo allows (--squash / --merge / --rebase)
 ```
 
@@ -192,9 +193,11 @@ enforces from the first merge.
 
 This is the one place where `scripts/selfcheck.sh` does **not** mirror CI: the local gate runs the
 offline stub coverage in `scripts/check-repo-settings.sh`, and the *live* assertion is CI-only.
-Making selfcheck perform it would either fail on every offline run or pass when it could not read
-— and treating an unreadable live check as a local success is precisely the fail-open this
-codebase refuses. Recorded as D13 in `.ai-dev-baseline/decisions.md`.
+`selfcheck` is kept hermetic — its value is being a deterministic predictor of CI, and a step whose
+verdict depends on network, auth and settings someone else can change would break that. Recorded as
+D13 in `.ai-dev-baseline/decisions.md`, which also records what that reasoning does *not* claim: a
+local `20 → SKIP` arm is possible and would catch drift before the push. It is a preference for a
+hermetic gate, not an impossibility.
 
 ### When it fails
 
@@ -204,9 +207,18 @@ not a flaky retry (`base/practices/ci-discipline.md`). If the job was *renamed* 
 the old context is now also required-but-never-reported; `status` shows that direction and
 `apply --prune` clears it.
 
-Note the consequence of applying from a PR branch: the new context becomes required immediately,
-so any **other** open PR that predates the job will not report it and will wait. Merge the default
-branch into those PRs once this one lands.
+**Applying from a PR branch makes the context required before the job exists on the default
+branch.** Two consequences, and the second is the one to watch:
+
+1. Any **other** open PR that predates the job will not report the new context and will wait —
+   merge the default branch into those PRs once this one lands.
+2. If this PR is then **abandoned unmerged**, the default branch is left requiring a context that
+   nothing will ever report, which blocks *every* merge. That is the phantom deadlock
+   `automerge-ok` code `13` exists to name, and clearing it needs `apply --prune` with an admin
+   token — which CI does not have. So: if you apply for a PR you later abandon, prune before you
+   walk away. (A design that avoids the window entirely — hard-fail only on drift that exists on
+   the default branch *today*, and report a PR's prospective drift as advisory — is filed as a
+   follow-up rather than guessed at here.)
 
 ## The second guard: has review happened? (#134)
 
