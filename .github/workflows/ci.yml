@@ -365,6 +365,24 @@ jobs:
       - name: Repo settings — check discovery + write ordering + the automerge-ok table (#87)
         run: bash scripts/check-repo-settings.sh
 
+      # The LIVE half of #122, and the only step in this file that talks to the API.
+      #
+      # It rides this job on purpose rather than getting one of its own: a new job would itself be
+      # a newly added, non-required context — the fix would commit the very defect it detects, and
+      # would not gate anything until someone noticed and ran `baseline repo apply`. This job is
+      # already in the required set, so the assertion inherits its enforcement on day one.
+      #
+      # Reads the ordinary branch endpoint (contents:read, granted at the top of this file), never
+      # the admin-only /protection one: GITHUB_TOKEN cannot be granted `administration`, so that
+      # endpoint would 403 on every run. Fails CLOSED — an unreadable answer is 20, not a pass.
+      #
+      # Fork PRs: `gh` needs a token, and a fork's GITHUB_TOKEN is read-only but still carries
+      # contents:read, so the read succeeds there too.
+      - name: Required-check drift — a discovered job must not silently stay non-required (#122)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/lib/repo-settings.sh required-drift
+
   baseline:
     name: baseline
     runs-on: ubuntu-latest

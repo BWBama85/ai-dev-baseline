@@ -143,6 +143,71 @@ Code `12` matters more than it looks: GitHub refuses to *queue* a PR that could 
 so `gh pr merge --auto` on a check-less repo is a plain merge wearing an auto-merge label. The
 guard refuses and lets the operator decide.
 
+## Catching the drift early: `required-drift` (#122)
+
+The guard above is correct but **late**. It runs at merge time, so the first anyone hears of a
+newly added job staying non-required is a refused arm and a manual detour — and until someone
+notices, auto-merge is simply unavailable. `roadmap-e2e` (added by PR #111) and `session-currency`
+(PR #121) each sat ungated for several PRs that way.
+
+`baseline repo required-drift` asks the **same** question early enough for the fix to be one
+command, on the PR that introduces the job:
+
+| Code | Meaning |
+|---|---|
+| `0` | in sync — every discovered job is required (or the repo has no discoverable CI, per #24) |
+| `14` | a **discovered job is not required** — names each one and the remedy |
+| `20` | live state unreadable — **fail closed** |
+
+It reuses `automerge-ok`'s numbers because it is the same question, so a code never means two
+things — and it calls the same `ungated_contexts` comparison `status` and `automerge-ok` use, so
+the lint can never be shallower than the guard it front-runs.
+
+It is deliberately **narrow**. It does *not* fail on `allow_auto_merge` being off, on phantom
+contexts, or on an external provider's context — those are different problems with different
+remedies, and `status` already reports all of them.
+
+### Why it reads a different endpoint
+
+Its home is a CI step, which runs as `GITHUB_TOKEN` — and `administration` is not a grantable
+workflow permission, so the admin-only `/branches/{branch}/protection` endpoint the other
+subcommands use would `403` on every run. The ordinary `repos/{slug}/branches/{branch}` endpoint
+needs only `contents: read` and carries the same `required_status_checks.contexts` (verified equal
+against the admin endpoint over this repo's 25 contexts). Its error model is also cleaner here: a
+`404` means "no such branch", with none of the "no protection *or* no permission" ambiguity that
+forces `read_protection` to probe `.permissions.admin`.
+
+**One shape must never be misread.** A branch that is protected but whose context list is not
+readable is classified `opaque` and fails closed at `20`. Read as "zero contexts required" it
+would report *every* discovered job as drifted — a repo-wide false positive that fails every PR
+and teaches the operator to ignore the lint. A genuinely **unprotected** branch (`protected:
+false`) is different: that is an authoritative "nothing gates this", and it is real drift.
+
+### Where it runs, and why not its own job
+
+It is a **step inside the already-required `repo-settings` job**, not a job of its own. A new job
+would itself be a newly added, non-required context: the fix would commit the very defect it
+detects, and would gate nothing until someone ran `apply`. Riding an already-required job means it
+enforces from the first merge.
+
+This is the one place where `scripts/selfcheck.sh` does **not** mirror CI: the local gate runs the
+offline stub coverage in `scripts/check-repo-settings.sh`, and the *live* assertion is CI-only.
+Making selfcheck perform it would either fail on every offline run or pass when it could not read
+— and treating an unreadable live check as a local success is precisely the fail-open this
+codebase refuses. Recorded as D13 in `.ai-dev-baseline/decisions.md`.
+
+### When it fails
+
+`baseline repo apply` adds the missing context, then **re-run the check** — it reads live state, so
+it only clears once the setting actually changed. That is revalidation after a real state change,
+not a flaky retry (`base/practices/ci-discipline.md`). If the job was *renamed* rather than added,
+the old context is now also required-but-never-reported; `status` shows that direction and
+`apply --prune` clears it.
+
+Note the consequence of applying from a PR branch: the new context becomes required immediately,
+so any **other** open PR that predates the job will not report it and will wait. Merge the default
+branch into those PRs once this one lands.
+
 ## The second guard: has review happened? (#134)
 
 > Documented here because it is the other half of the same hand-off, but it is a **separate

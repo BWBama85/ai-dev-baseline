@@ -45,7 +45,7 @@ rsx --help;  yes "$RC_" "--help exits 0"
 rsx;         no  "$RC_" "no subcommand exits nonzero"
 rsx bogus;   no  "$RC_" "unknown subcommand exits nonzero"
 has "$OUT" "unknown subcommand 'bogus'" "unknown subcommand names itself"
-has "$OUT" "'checks', 'status', 'apply', 'automerge-ok', or 'merge-flag'" "unknown subcommand lists every subcommand"
+has "$OUT" "'checks', 'status', 'apply', 'automerge-ok', 'required-drift', or 'merge-flag'" "unknown subcommand lists every subcommand"
 
 # ============================ arg parsing (per-subcommand on purpose) ============================
 # A shared parser would make `status --dry-run` and `checks --strict` silently valid, so both
@@ -247,6 +247,14 @@ if [ "$method" = "GET" ]; then
     */protection)
       if [ -f "$S/protection.json" ]; then emit "HTTP/2.0 200 OK" "$S/protection.json"
       else emit "HTTP/2.0 404 Not Found"; [ "$want_headers" = "1" ] || exit 1; fi ;;
+    # The ordinary branch endpoint (#122) — must be matched BEFORE the generic `repos/*` arm, or
+    # it would be answered with the REPO object and every drift assertion would read nonsense.
+    # It sits after */protection so the more specific protection URL still wins.
+    */branches/*)
+      if [ "${STUB_BRANCH_STATUS:-200}" != "200" ]; then
+        emit "HTTP/2.0 ${STUB_BRANCH_STATUS} Error"; [ "$want_headers" = "1" ] || exit 1
+      elif [ -f "$S/branch.json" ]; then emit "HTTP/2.0 200 OK" "$S/branch.json"
+      else emit "HTTP/2.0 404 Not Found"; [ "$want_headers" = "1" ] || exit 1; fi ;;
     repos/*)
       if [ -f "$S/repo.json" ]; then emit "HTTP/2.0 200 OK" "$S/repo.json"
       else emit "HTTP/2.0 404 Not Found"; [ "$want_headers" = "1" ] || exit 1; fi ;;
@@ -296,8 +304,25 @@ rsx_stub() {   # run against the stub with a fresh call log
   STUB_CALLS="$work/calls.txt"; : > "$STUB_CALLS"
   rm -f "$S/body.json"
   OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" STUB_FAIL_WRITE="${STUB_FAIL_WRITE:-}" \
+         STUB_BRANCH_STATUS="${STUB_BRANCH_STATUS:-200}" \
          PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
+
+# --- branch-endpoint fixtures (#122) ----------------------------------------------------------
+# The ordinary endpoint's shape is NOT the protection endpoint's: contexts hang off
+# `.protection.required_status_checks`, and it reports `.protected` for the branch as a whole.
+branch_checks() {   # protected, contexts readable (one arg per context)
+  jq -n --args '{protected:true,
+                 protection:{enabled:true,
+                             required_status_checks:{enforcement_level:"non_admins",
+                                                     contexts:$ARGS.positional}}}' "$@" > "$S/branch.json"
+}
+branch_unprotected() { printf '{"protected":false}\n' > "$S/branch.json"; }
+# The DANGEROUS shape: protected, but the protection block carries no readable context list (a
+# redacted response, or an API shape change). Misread as "zero required" it names every discovered
+# job as drifted — a repo-wide false positive. It must fail closed instead.
+branch_opaque()      { printf '{"protected":true,"protection":{"enabled":true}}\n' > "$S/branch.json"; }
+branch_malformed()   { printf 'not json at all\n' > "$S/branch.json"; }
 rsx_auth() {   # the SAME stub, auth knob flipped — one stub, two behaviors
   OUT="$(S="$S" STUB_AUTH_FAIL=1 PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
@@ -507,6 +532,94 @@ wf_one; repo_fx_noperms; prot_none
 rsx_stub automerge-ok
 eq "$RC_" "20" "automerge-ok = 20 (fail closed) when protection cannot be read"
 has "$OUT" "refusing to arm" "code 20 refuses rather than assuming safe"
+
+# ============================ required-drift: the EARLY half of code 14 (#122) ============
+# `automerge-ok` learns this at merge time; this learns it on the PR that introduces the job. The
+# assertions below are grouped by the two ways it can be wrong, because they are NOT symmetric:
+# missing a real drift costs one ungated job, while a FALSE drift fails every PR in the repo and
+# teaches the operator to ignore the lint.
+
+# --- the happy paths ---------------------------------------------------------------------------
+wf_one; repo_fx true true; branch_checks "one"
+rsx_stub required-drift
+eq "$RC_" "0" "required-drift = 0 when every discovered job is required"
+has "$OUT" "no drift" "the in-sync run says so plainly"
+
+# It must NOT need admin: its home is a CI job running as GITHUB_TOKEN, which cannot hold admin.
+# `repo_fx_noperms` has no `.permissions` key at all — the shape a non-admin token sees.
+wf_one; repo_fx_noperms; branch_checks "one"
+rsx_stub required-drift
+eq "$RC_" "0" "required-drift = 0 without admin permission (it reads the contents-scoped endpoint)"
+
+# #24: a repo with no discoverable CI has nothing to require. It must pass, not deadlock — and it
+# short-circuits BEFORE the live read, so a repo with no CI never pays for the call.
+wf_none; repo_fx true true; branch_unprotected
+rsx_stub required-drift
+eq "$RC_" "0" "required-drift = 0 on a repo with no discoverable CI (#24)"
+has "$OUT" "nothing to require" "the no-CI run names why it passed"
+
+# Context names legitimately carry spaces and slashes (a job `name:` is free text). Comparing them
+# as whole lines is what keeps that from splitting into phantom drift.
+wf_reset
+printf 'name: Odd\non:\n  pull_request:\njobs:\n  a:\n    name: build / unit (fast)\n    runs-on: ubuntu-latest\n' > "$WF/odd.yml"
+repo_fx true true; branch_checks "build / unit (fast)"
+rsx_stub required-drift
+eq "$RC_" "0" "a context with spaces and slashes matches exactly, not as split words"
+
+# --- real drift --------------------------------------------------------------------------------
+wf_two; repo_fx true true; branch_checks "one"
+rsx_stub required-drift
+eq "$RC_" "14" "required-drift = 14 when a discovered job is not required"
+has "$OUT" "  - two"  "the drifted job is NAMED"
+hasnt "$OUT" "  - one" "a job that IS required is not reported as drifted"
+has "$OUT" "baseline repo apply" "the message carries the one-command remedy"
+has "$OUT" "RENAMED" "the message distinguishes an addition from a rename (--prune is a different fix)"
+has "$OUT" "RE-RUN" "the message says to re-run after applying — live state, not a flaky retry"
+
+# Every discovered job ungated at once: a protected branch whose context list is genuinely empty.
+wf_two; repo_fx true true; branch_checks
+rsx_stub required-drift
+eq "$RC_" "14" "required-drift = 14 when a protected branch requires nothing at all"
+has "$OUT" "  - one" "both drifted jobs are named (1/2)"
+has "$OUT" "  - two" "both drifted jobs are named (2/2)"
+
+# An unprotected branch is an AUTHORITATIVE "nothing gates this" — real drift, not an unknown.
+wf_one; repo_fx true true; branch_unprotected
+rsx_stub required-drift
+eq "$RC_" "14" "required-drift = 14 when the branch has no protection at all"
+has "$OUT" "NO protection" "the unprotected case says the branch itself is unprotected"
+
+# --- fail closed: an unreadable answer is 20, and NEVER 'everything drifted' -------------------
+# The headline false-positive guard. Protected + no readable context list must not be read as
+# "zero required" — that would name every discovered job and fail every PR in the repo.
+wf_two; repo_fx true true; branch_opaque
+rsx_stub required-drift
+eq "$RC_" "20" "required-drift = 20 when protection is present but its context list is unreadable"
+hasnt "$OUT" "  - one" "an opaque read does NOT label a required job as drifted (1/2)"
+hasnt "$OUT" "  - two" "an opaque read does NOT label a required job as drifted (2/2)"
+has "$OUT" "NOT an empty one" "the opaque case explains why it refuses to guess"
+
+wf_two; repo_fx true true; branch_malformed
+rsx_stub required-drift
+eq "$RC_" "20" "required-drift = 20 on a malformed response body"
+hasnt "$OUT" "  - two" "a malformed body does not manufacture drift"
+
+for st in 401 403 404 500; do
+  wf_two; repo_fx true true; branch_checks "one"
+  STUB_BRANCH_STATUS="$st" rsx_stub required-drift
+  eq "$RC_" "20" "required-drift = 20 on HTTP $st (fail closed)"
+  hasnt "$OUT" "  - two" "HTTP $st does not manufacture drift"
+done
+unset STUB_BRANCH_STATUS
+
+wf_one; repo_fx true true; branch_checks "one"
+rsx_auth required-drift
+no "$RC_" "required-drift with unauthenticated gh exits nonzero"
+has "$OUT" "not authenticated" "required-drift surfaces the auth failure"
+
+# It is a READ subcommand, so it takes the read parser — apply-only flags must be rejected.
+rsx required-drift --dry-run; no "$RC_" "required-drift rejects the apply-only --dry-run"
+rsx required-drift --prune;   no "$RC_" "required-drift rejects the apply-only --prune"
 
 # ============================ merge-flag: the repo decides the method ============
 # A hardcoded --squash is REJECTED wherever squash merging is disabled, so the guard would say
