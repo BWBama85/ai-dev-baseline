@@ -47,7 +47,9 @@
 # two things:
 #   0  in sync — every discovered job is required (or the repo has no discoverable CI, per #24)
 #   14 drift   — discovered job(s) are NOT required; names them + the one-command remedy
-#   20 unknown — live state could not be read; FAIL CLOSED
+#   20 unknown — live state could not be read, OR discovery contradicts it; FAIL CLOSED
+#   (1        — missing/unauthenticated gh, or missing jq. Shared with every other subcommand:
+#              the tool preamble fails before any subcommand logic runs.)
 #
 # It exists because `automerge-ok` learns this at MERGE time, by which point the fix is a manual
 # detour. Deliberately narrow: it does NOT fail on allow_auto_merge being off, on phantom contexts,
@@ -419,11 +421,6 @@ discover_checks() {
 PROT_JSON=""
 PROT_STATE=""   # protected-with-checks | protected-no-checks | unprotected | forbidden | error
 
-# read_protection <branch> — classify the branch's protection ONCE. GitHub's 404 is ambiguous (no
-# protection OR no permission to see it), so it is disambiguated against the repo object's
-# .permissions.admin rather than assumed. Fail-closed: an unreadable repo object is `error`, never
-# "unprotected" — which would send `apply` down the stand-up-from-scratch path on a repo it cannot
-# actually read.
 # _adb_rs_api_i <path> — GET <path> with headers and split the response into RS_STATUS + RS_BODY.
 #
 # ONE home for the split, because both live-state readers need it and neither the status line's
@@ -445,6 +442,11 @@ _adb_rs_api_i() {
   return 0
 }
 
+# read_protection <branch> — classify the branch's protection ONCE. GitHub's 404 is ambiguous (no
+# protection OR no permission to see it), so it is disambiguated against the repo object's
+# .permissions.admin rather than assumed. Fail-closed: an unreadable repo object is `error`, never
+# "unprotected" — which would send `apply` down the stand-up-from-scratch path on a repo it cannot
+# actually read.
 read_protection() {
   local branch="$1" status body admin
   admin="$(repo_field .permissions.admin)" || admin=""
@@ -533,17 +535,51 @@ read_branch() {
   if printf '%s' "$body" | jq -e '.protected == false' >/dev/null 2>&1; then
     BR_STATE="unprotected"; return 0
   fi
-  # Protected: the contexts array must be READABLE as an array. Absent/null/unparseable is the
-  # shape above -> opaque, never "zero required". Sorted with LC_ALL=C to the same contract
-  # `live_contexts` produces, because both feed `comm`, which silently yields WRONG SETS — not an
-  # error — if the two streams were collated differently.
-  if printf '%s' "$body" | jq -e '(.protection.required_status_checks.contexts | type) == "array"' >/dev/null 2>&1; then
+  # Protected: the contexts array must be readable as an array AND the legacy protection block it
+  # hangs off must actually be ENABLED. Both halves are load-bearing, and the second one is not
+  # obvious — it is what keeps a RULESET-protected branch from reading as "requires nothing".
+  #
+  # This endpoint's `protection` object is the LEGACY classic-protection view. A branch protected
+  # by a repository ruleset instead reports, verified live on github/docs and vercel/next.js:
+  #
+  #     {"protected": true,
+  #      "protection": {"enabled": false,
+  #                     "required_status_checks": {"enforcement_level": "off", "contexts": []}}}
+  #
+  # `contexts` IS an array there, so an array-only test accepts it as an authoritative empty set
+  # and reports every discovered job as ungated — the repo-wide false positive this reader exists
+  # to avoid, and a hard deadlock when the job printing it is itself one of the required contexts.
+  # `enabled: false` with `protected: true` means "protected by something this legacy view does
+  # not describe", which is precisely `opaque`: not readable here, so do not guess.
+  #
+  # Classic protection with required checks switched off is a DIFFERENT state and stays actionable:
+  # `enabled` is true there, so it lands in `checks` with an empty set and reports real drift.
+  #
+  # Sorted with LC_ALL=C to the same contract `live_contexts` produces, because both feed `comm`,
+  # which silently yields WRONG SETS — not an error — if the two streams were collated differently.
+  if printf '%s' "$body" \
+       | jq -e '.protection.enabled == true
+                and (.protection.required_status_checks.contexts | type) == "array"' >/dev/null 2>&1; then
     BR_STATE="checks"
     BR_CONTEXTS="$(printf '%s' "$body" | jq -r '.protection.required_status_checks.contexts[]' 2>/dev/null | LC_ALL=C sort)"
     return 0
   fi
   BR_STATE="opaque"
   return 0
+}
+
+# _adb_rs_has_workflow_files — 0 when the workflow dir exists and holds at least one workflow file.
+# Distinguishes "this repo has no CI to discover" (#24, a legitimate pass) from "there are
+# workflow files and discovery still produced nothing", which is a parser problem wearing the
+# same empty result. Globs are guarded with -f because there is no portable nullglob.
+_adb_rs_has_workflow_files() {
+  local dir f
+  dir="$(workflow_dir)"
+  [ -d "$dir" ] || return 1
+  for f in "$dir"/*.yml "$dir"/*.yaml; do
+    [ -f "$f" ] && return 0
+  done
+  return 1
 }
 
 # --- apply --------------------------------------------------------------------------------
@@ -918,17 +954,16 @@ cmd_required_drift() {
   repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — cannot check required-check drift" >&2; return 20; }
   branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — cannot check required-check drift" >&2; return 20; }
 
-  # Discovery FIRST, and the no-CI exit before the branch read. A repo with no discoverable CI has
-  # nothing that could be required, so there is no drift to find and no reason to spend that call
-  # — and #24 says such a repo must never be deadlocked by tooling that assumes CI exists. (It
-  # still costs the repo-object read, which `target_branch` needs to resolve the branch at all.)
-  want="$(discover_checks "$branch" 2>/dev/null | LC_ALL=C sort -u)"
+  # Discovery's stderr is NOT swallowed: every "skipping <job> — <reason>" line is the only
+  # explanation for a job missing from the desired set, and this runs in CI where the log is the
+  # whole diagnostic. Hiding them is how a parser that stopped seeing a job looks like a repo that
+  # stopped having one.
+  want="$(discover_checks "$branch" | LC_ALL=C sort -u)"
   nwant="$(nlines "$want")"
-  if [ "$nwant" -eq 0 ]; then
-    adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch' — nothing to require"
-    return 0
-  fi
 
+  # The live read happens even when discovery found nothing, because an empty desired set is
+  # AMBIGUOUS and the live set is what disambiguates it (see below). That costs one API call on a
+  # no-CI repo, which is the right trade: the alternative is returning 0 without ever looking.
   read_branch "$branch"
   case "$BR_STATE" in
     error)
@@ -940,6 +975,30 @@ cmd_required_drift() {
       echo "repo-settings: run 'baseline repo status' with an admin token to see the live set" >&2
       return 20 ;;
   esac
+
+  # An empty desired set has two very different causes, and passing both green is a fail-open in
+  # exactly the shape this lint exists to catch — a gate that silently stopped gating.
+  #
+  #   * The repo genuinely has no discoverable CI  -> nothing could be required. Pass (#24).
+  #   * There ARE workflow files and discovery still produced nothing, while the branch requires
+  #     contexts -> those two statements contradict each other. Either the parser stopped seeing
+  #     jobs it used to see (a reindent, a trigger change) or CI moved. Every required context is
+  #     now unreported, so the branch is gated by things nothing reports — fail closed and say so.
+  #
+  # The workflow-files test is what keeps a repo whose CI is ENTIRELY external (no
+  # .github/workflows, contexts from CircleCI/Vercel) on the passing side: no files, no claim.
+  if [ "$nwant" -eq 0 ]; then
+    if [ -n "$BR_CONTEXTS" ] && _adb_rs_has_workflow_files; then
+      echo "repo-settings: discovery found NO PR-triggered jobs, yet '$branch' requires $(nlines "$BR_CONTEXTS") context(s)." >&2
+      echo "repo-settings: those two cannot both be right — the workflow files are present but none" >&2
+      echo "repo-settings: was discoverable, so every required context is now unreported and the" >&2
+      echo "repo-settings: branch is gated by names nothing will satisfy. See the skip reasons above." >&2
+      echo "repo-settings: refusing to report 'no drift' on a contradiction (failing closed)." >&2
+      return 20
+    fi
+    adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch' — nothing to require"
+    return 0
+  fi
 
   ungated="$(ungated_contexts "$want" "$BR_CONTEXTS")"
   if [ -z "$ungated" ]; then

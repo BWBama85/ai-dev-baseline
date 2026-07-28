@@ -158,7 +158,7 @@ command, on the PR that introduces the job:
 |---|---|
 | `0` | in sync — every discovered job is required (or the repo has no discoverable CI, per #24) |
 | `14` | a **discovered job is not required** — names each one and the remedy |
-| `20` | live state unreadable — **fail closed** |
+| `20` | live state unreadable, **or** discovery contradicts it — **fail closed** |
 
 It reuses `automerge-ok`'s numbers because it is the same question, so a code never means two
 things — and it calls the same `ungated_contexts` comparison `status` and `automerge-ok` use, so
@@ -183,6 +183,27 @@ readable is classified `opaque` and fails closed at `20`. Read as "zero contexts
 would report *every* discovered job as drifted — a repo-wide false positive that fails every PR
 and teaches the operator to ignore the lint. A genuinely **unprotected** branch (`protected:
 false`) is different: that is an authoritative "nothing gates this", and it is real drift.
+
+**Rulesets are the sharp edge here.** This endpoint's `protection` object is the *legacy*
+classic-protection view. A branch protected by a repository **ruleset** reports `protected: true`
+with `protection.enabled: false` and `contexts: []` — a real, empty array. Accepting that as an
+authoritative empty set would name every discovered job as ungated, on a repo where the job
+printing the message is itself required: an unbreakable deadlock, since the fix cannot merge past
+the check it broke. So `enabled: true` is required before the context list is believed; anything
+else is `opaque`. (Classic protection with required checks merely switched *off* keeps
+`enabled: true`, so it stays an actionable `14` rather than an unhelpful `20`.)
+
+**A repo protected by BOTH classic protection and a ruleset is a known blind spot**: only the
+classic contexts are visible here, so a job required solely by the ruleset could be reported as
+ungated. Filed as a follow-up rather than guessed at — reading it needs the rules API.
+
+**An empty discovery result is ambiguous, and is not passed green on trust.** "No discoverable CI"
+and "there are workflow files and the parser saw none of them" produce the same empty set. If
+workflow files exist, discovery found nothing, *and* the branch still requires contexts, those two
+statements contradict each other — every required context is now unreported — so the lint fails
+closed at `20` and prints discovery's skip reasons. A repo whose CI is **entirely external** (no
+`.github/workflows` at all, contexts from CircleCI/Vercel) has no files and therefore makes no
+claim, so it stays on the passing side.
 
 ### Where it runs, and why not its own job
 

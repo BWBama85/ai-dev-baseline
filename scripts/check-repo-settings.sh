@@ -320,6 +320,11 @@ branch_checks() {   # protected, contexts readable (one arg per context)
                                                      contexts:$ARGS.positional}}}' "$@" > "$S/branch.json"
 }
 branch_unprotected() { printf '{"protected":false}\n' > "$S/branch.json"; }
+# A RULESET-protected branch, verbatim from the live shape github/docs and vercel/next.js return.
+# `contexts` is a real (empty) array, so an array-only test would accept it as "requires nothing"
+# and name every discovered job — a repo-wide false 14, and a deadlock when the job printing it is
+# itself required. `enabled:false` is the discriminator.
+branch_ruleset()     { printf '{"protected":true,"protection":{"enabled":false,"required_status_checks":{"enforcement_level":"off","contexts":[],"checks":[]}}}\n' > "$S/branch.json"; }
 # The DANGEROUS shape: protected, but the protection block carries no readable context list (a
 # redacted response, or an API shape change). Misread as "zero required" it names every discovered
 # job as drifted — a repo-wide false positive. It must fail closed instead.
@@ -554,12 +559,19 @@ wf_one; repo_fx_noperms; branch_checks "one"
 rsx_stub required-drift
 eq "$RC_" "0" "required-drift = 0 without admin permission (it reads the contents-scoped endpoint)"
 
-# #24: a repo with no discoverable CI has nothing to require. It must pass, not deadlock — and it
-# short-circuits BEFORE the live read, so a repo with no CI never pays for the call.
+# #24: a repo with no discoverable CI has nothing to require. It must pass, not deadlock.
 wf_none; repo_fx true true; branch_unprotected
 rsx_stub required-drift
 eq "$RC_" "0" "required-drift = 0 on a repo with no discoverable CI (#24)"
 has "$OUT" "nothing to require" "the no-CI run names why it passed"
+
+# Entirely-external CI: no workflow files at all, but the branch requires contexts (CircleCI,
+# Vercel, a DCO check). No files means no claim to contradict, so this must PASS — it is the case
+# that keeps the contradiction check below from firing on a legitimate configuration.
+wf_none; repo_fx true true; branch_checks "ci/circleci: build" "vercel"
+rsx_stub required-drift
+eq "$RC_" "0" "required-drift = 0 when CI is entirely external (no workflow files)"
+has "$OUT" "nothing to require" "the external-CI run passes for the no-files reason"
 
 # Context names legitimately carry spaces and slashes (a job `name:` is free text). Comparing them
 # as whole lines is what keeps that from splitting into phantom drift.
@@ -568,6 +580,9 @@ printf 'name: Odd\non:\n  pull_request:\njobs:\n  a:\n    name: build / unit (fa
 repo_fx true true; branch_checks "build / unit (fast)"
 rsx_stub required-drift
 eq "$RC_" "0" "a context with spaces and slashes matches exactly, not as split words"
+# rc 0 alone would ALSO pass if discovery stopped emitting the job entirely (the no-CI arm returns
+# 0 too), so pin the reason — otherwise this assertion survives the very regression it guards.
+has "$OUT" "no drift" "...and it passed by MATCHING, not by discovering nothing"
 
 # --- real drift --------------------------------------------------------------------------------
 wf_two; repo_fx true true; branch_checks "one"
@@ -606,6 +621,24 @@ wf_two; repo_fx true true; branch_malformed
 rsx_stub required-drift
 eq "$RC_" "20" "required-drift = 20 on a malformed response body"
 hasnt "$OUT" "  - two" "a malformed body does not manufacture drift"
+
+# The RULESET regression. `contexts` is a real empty array here, so the array-only test this
+# replaced accepted it as "requires nothing" and named every discovered job — on a repo whose own
+# required `repo-settings` job prints that, an unbreakable deadlock. Must be opaque -> 20.
+wf_two; repo_fx true true; branch_ruleset
+rsx_stub required-drift
+eq "$RC_" "20" "required-drift = 20 on a ruleset-protected branch (legacy block disabled)"
+hasnt "$OUT" "  - one" "a ruleset branch does NOT report every job as ungated (1/2)"
+hasnt "$OUT" "  - two" "a ruleset branch does NOT report every job as ungated (2/2)"
+
+# The contradiction: workflow files ARE present, discovery produced nothing, and the branch still
+# requires contexts. Passing that green is the fail-open this lint exists to catch.
+wf_reset
+printf 'name: Sched\non:\n  schedule:\n    - cron: "0 0 * * *"\njobs:\n  nightly:\n    runs-on: ubuntu-latest\n' > "$WF/sched.yml"
+repo_fx true true; branch_checks "one" "two"
+rsx_stub required-drift
+eq "$RC_" "20" "required-drift = 20 when workflow files exist, discovery finds nothing, yet contexts are required"
+has "$OUT" "cannot both be right" "the contradiction is named, not silently passed"
 
 wf_two; repo_fx true true; branch_checks "one"
 for st in 401 403 404 500; do
