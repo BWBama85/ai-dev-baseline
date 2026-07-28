@@ -53,10 +53,19 @@
 # So a `+1` counts only when it is NEWER than the current head commit's committer date. A commit
 # pushed after the reaction makes the reaction stale, and the verdict falls back to `pending`.
 #
-# The comparison mixes a GitHub-assigned timestamp (the reaction) with a client-supplied one (the
-# commit), so a skewed or deliberately back/forward-dated commit can shift the boundary. It shifts
-# it in the SAFE direction: a commit dated in the future makes a genuine `+1` look stale, which
-# reports `pending` — a watcher that waits longer, never one that green-lights unreviewed code.
+# THE COMPARISON IS NOT SYMMETRIC IN ITS TRUST, AND THIS IS ITS ONE REAL WEAKNESS. The reaction's
+# timestamp is GitHub-assigned; the commit's is CLIENT-SUPPLIED, echoed back verbatim from whatever
+# the committing machine claimed. So the two directions of skew are not equally safe:
+#
+#   commit dated in the FUTURE  → a genuine `+1` looks stale → `pending`. Safe: waits longer.
+#   commit dated in the PAST    → a STALE `+1` looks fresh   → `clean`. NOT safe.
+#
+# The second is reachable without an attacker: a force-push back to an older commit, a rebase that
+# preserves committer dates, or simply a machine whose clock is behind by more than the review
+# latency. Closing it properly needs a server-assigned "when did this head arrive" anchor rather
+# than the commit's own date — a design change, tracked as #175. Until then this rule is a strong
+# heuristic rather than a proof, and saying otherwise would be the kind of confident-but-wrong
+# claim this module exists to avoid.
 #
 # ------------------------------------------------------------------------------------------------
 # Usage:
@@ -100,6 +109,21 @@
 # THE ONE DIRECTION THIS MUST NEVER BE WRONG IN is reporting `clean` when the reviewer has not
 # actually passed this head. Every uncertainty above therefore resolves to `pending` or a non-zero
 # unknown, and there is no path where a failed read degrades into "clean".
+#
+# TWO KNOWN NARROW EXCEPTIONS, stated because a guarantee with unlisted holes is worse than an
+# honest one. Both are filed; neither is reachable by an ordinary repo:
+#
+#   * The staleness comparison's lower bound is CLIENT-SUPPLIED (#175). See the section above: a
+#     head commit whose committer date is in the PAST relative to a stale `+1` — a force-push back
+#     to an older commit, a date-rewriting rebase, or a machine clock behind by more than the
+#     review latency — makes that reaction look fresh. Closing it needs a server-assigned "when did
+#     this head arrive" anchor, which is a design change rather than a tweak.
+#   * The `[bot]`-suffix normalization is BIDIRECTIONAL (#176), so a declaration of `foo[bot]` is
+#     also satisfied by a human account literally named `foo`. Reactions are publicly writable, so
+#     the bar is a login collision rather than any privilege. Note for whoever fixes it: `user.type`
+#     does NOT discriminate here — verified live, the reactions endpoint reports `type: "User"` for
+#     the Codex connector while the reviews endpoint reports `type: "Bot"` for the same App, so a
+#     type filter would reject the real signal.
 #
 # What this file must never grow: it does not resolve threads, edit code, push, or merge. It
 # observes and it waits. Acting on a `findings` verdict is the resolver's job; arming a merge is
@@ -159,10 +183,17 @@ parse_pr_arg() {
 # CROSS-CHECK the URL against the repo the reads actually address: every read below addresses
 # `repos/{owner}/{repo}/...`, which gh expands from the LOCAL remote, so a URL naming another
 # repository would otherwise be answered about THIS one.
+#
+# The SCHEME IS OPTIONAL. Matching only `*://*` would let `github.com/other/repo/pull/7` — which
+# `parse_pr_arg` happily reduces to `7` — arrive with an empty slug, skipping the cross-repo
+# refusal entirely and confidently answering about THIS repo's #7. A copy-pasted URL loses its
+# scheme often enough that this is a realistic input, not a contrived one.
 parse_pr_slug() {
   local v="$1" rest
   case "$v" in
-    *://*/*/*/pull/*) rest="${v#*://}"; rest="${rest#*/}" ;;
+    *://*/*/*/pull/*) rest="${v#*://}"; rest="${rest#*/}" ;;   # scheme://host/owner/repo/pull/N
+    */*/*/pull/*)     rest="${v#*/}" ;;                        # host/owner/repo/pull/N
+    */*/pull/*)       rest="$v" ;;                             # owner/repo/pull/N
     *) return 0 ;;
   esac
   printf '%s' "${rest%%/pull/*}"
@@ -214,8 +245,9 @@ read_list() {
 # module's code for why it could not. Prints the normalized, de-duplicated login set on stdout.
 #
 # The normalization is load-bearing and not cosmetic: the SAME bot has two spellings depending on
-# which API answered — GraphQL/REST reaction `user.login` is the bare `chatgpt-codex-connector`
-# while REST review `user.login` is `chatgpt-codex-connector[bot]`. Both sides are normalized (here
+# which API answered — GraphQL reports the bare `chatgpt-codex-connector` while BOTH REST endpoints
+# read here report `chatgpt-codex-connector[bot]` (verified live on this repo's PRs #88 and #166).
+# A declaration may use either form, so both sides are normalized (here
 # and in the jq below) so either spelling works in agents.toml. Lowercase BEFORE stripping so
 # `[BOT]` is stripped too; drop blanks AFTER so an entry that is only `[bot]` disappears rather
 # than becoming a reviewer that can never match.
@@ -437,7 +469,10 @@ cmd_wait() {
 
     case "$rc" in
       0|10|12|2|17|18)
-        printf '%s\n' "$out"
+        # Same guard as the deadline path below, and for the same reason: `2` (a slug mismatch) and
+        # the config codes print no verdict line, so an unguarded print would emit a bare newline
+        # where the contract promises "<verdict> <sha>" or nothing at all.
+        [ -n "$out" ] && printf '%s\n' "$out"
         trap - INT TERM
         return "$rc" ;;
       20)

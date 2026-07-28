@@ -11,7 +11,7 @@ user-invocable: true
 
 # /resolve-pr-threads
 
-Address and resolve every unresolved **bot-authored** review thread on PR **#$ARGUMENTS** so the repo's "all comments must be resolved" branch protection releases.
+Address and resolve every unresolved **bot-authored** review thread on the PR named by `$ARGUMENTS` so the repo's "all comments must be resolved" branch protection releases. The PR number is the **first bare integer** in those arguments — the rest may carry flags such as `--watch` (step 0).
 
 > **Side effect:** this skill `git switch`-es your working tree to the PR's head branch. If you're mid-task on an unrelated branch, finish or stash that work first. The skill aborts on a dirty tree to protect uncommitted changes, but it will not warn before changing branches on a clean tree.
 
@@ -74,19 +74,33 @@ done
 [ -z "$PR_NUM" ] && { echo "ERROR: no PR number"; exit 1; }
 
 if [ "$WATCH" = "1" ]; then
-  # The poll interval and the overall bound default to 30s and 30 minutes. They are deliberately
-  # NOT forwarded from this skill's arguments: the parser above takes the first BARE INTEGER, so
-  # `--watch --max-secs 600 42` would read 600 as the PR number. An operator who needs different
-  # bounds calls the library directly (bash "$HOME/.claude/scripts/lib/pr-watch.sh" wait --pr N --interval S --max-secs S)
-  # and then runs this skill without --watch.
-  bash "$HOME/.claude/scripts/lib/pr-watch.sh" wait --pr "$PR_NUM"; WRC=$?
+  # --max-secs is passed EXPLICITLY and is deliberately far below the library's own 30-minute
+  # default, because this call runs inside an agent's shell-tool invocation and that tool has its
+  # own ceiling (commonly ~2 minutes by default, ~10 minutes maximum). A wait longer than the
+  # harness allows does not "wait longer" — it gets KILLED mid-wait, which loses the verdict
+  # entirely. 540s sits under a 600s ceiling with margin, and the connector has been taking ~3
+  # minutes on this repo, so it converges well inside that.
+  #
+  # RAISE YOUR SHELL TOOL'S TIMEOUT to at least 600000ms for this one call. If your harness cannot,
+  # lower --max-secs to fit it rather than letting the call be killed.
+  #
+  # For a genuinely long watch, run the library directly in a terminal you keep — it is a plain
+  # command with no agent in the loop:
+  #     bash "$HOME/.claude/scripts/lib/pr-watch.sh" wait --pr N --interval 30 --max-secs 1800
+  # then run this skill without --watch once it reports findings.
+  #
+  # The call is the LAST command in this block ON PURPOSE: its exit status becomes the block's, so
+  # the verdict reaches you as an exit code. Assigning it to a variable would make the block exit 0
+  # for every verdict and the table below unusable.
+  bash "$HOME/.claude/scripts/lib/pr-watch.sh" wait --pr "$PR_NUM" --max-secs 540
 else
-  WRC=10   # not watching: behave exactly as an ordinary invocation, i.e. "there is work to do"
+  exit 10   # not watching: behave exactly as an ordinary invocation, i.e. "there is work to do"
 fi
 ```
 
-Branch on the verdict. Only `10` continues into the resolve flow — everything else is a terminal
-answer that this skill reports and exits on, because there is nothing to resolve:
+**Branch on that block's EXIT CODE** (not on its stdout — codes `2`, `17`, `18` and `20` print no
+verdict line at all). Only `10` continues into the resolve flow; every other code is a terminal
+answer this skill reports and exits on, because there is nothing to resolve:
 
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
@@ -97,6 +111,11 @@ answer that this skill reports and exits on, because there is nothing to resolve
 | `17` | the repo declares no `[reviewers] bots` | it cannot be known whether a reviewer is coming — tell the operator to declare them (or `bots = []`); **exit** |
 | `18` | `[reviewers] bots` is malformed | tell the operator to fix `agents.toml`; **exit** |
 | `20` | live state was unreadable | say so and **exit** — never assume a clean pass |
+| `2`  | bad arguments (e.g. a PR number of `0`, or a URL naming another repository) | report the message and **exit** |
+
+**A killed call is not a verdict.** If the shell tool times out mid-wait, you get no code and no
+answer — do not treat that as "clean" or as "no findings". Report that the wait was cut short and
+either re-run with a smaller `--max-secs` or run the library directly in a terminal.
 
 **Why a clean pass is a distinct answer, not "no threads found".** The Codex connector states its
 own contract in every review body it posts: *"If Codex has suggestions, it will comment; otherwise

@@ -360,9 +360,20 @@ STUB_AUTH_FAIL=1 w observe --pr 1; rc 20 "unreadable: unauthenticated gh -> 20";
 reset_fx; declare_bots "[\"$CODEX\"]"
 w observe --pr "https://github.com/other/repo/pull/7";  rc 2 "slug: a URL naming another repo is refused"
 has "$OUT" "different repository" "slug: says why"
+# The SCHEME IS OPTIONAL in a pasted URL, and matching only `*://*` let these through with an empty
+# slug — skipping the refusal entirely and confidently answering about THIS repo's #7.
+w observe --pr "github.com/other/repo/pull/7";  rc 2 "slug: a scheme-less URL naming another repo is refused"
+w observe --pr "other/repo/pull/7";             rc 2 "slug: a bare owner/repo/pull/N naming another repo is refused"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 wout observe --pr "https://github.com/acme/widget/pull/7";  rc 0 "slug: a URL naming THIS repo is accepted"
 eq "$OUT" "clean $HEAD_SHA" "slug: a URL argument yields the same contract as a bare number"
+wout observe --pr "acme/widget/pull/7";  rc 0 "slug: a scheme-less URL naming THIS repo is still accepted"
+
+# stdout is "<verdict> <sha>" or NOTHING — never a bare newline. `wait`'s terminal arm prints the
+# captured line, and a slug mismatch produces a code with no line, so an unguarded print would emit
+# one empty line that a caller doing `read -r verdict sha` would take as two empty strings.
+wout wait --pr "https://github.com/other/repo/pull/7" --interval 1 --max-secs 5;  rc 2 "wait: a slug mismatch is refused"
+eq "$OUT" "" "wait: prints NO stdout line for a verdict-less terminal code"
 
 # ============================ 10. usage ============================
 w;                                rc 2 "usage: no subcommand"
