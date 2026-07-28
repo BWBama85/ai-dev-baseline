@@ -200,18 +200,48 @@ fact branch-health-predicate "fixed:branch-health" -- \
 fact allow-auto-merge "fixed:allow_auto_merge" -- \
   scripts/lib/repo-settings.sh docs/repo-settings.md
 
-# --- FACT: the SessionStart currency config surface (#36) --------------------
-# The mode key is a three-way contract: the TEMPLATE advertises it, the HOOK is the only thing
-# that reads it, and the DOC + decision log tell the operator it is global-only. Renaming the
+# --- FACT: the install-currency config surface (#36, #139) -------------------
+# The mode key is a multi-way contract: the TEMPLATE advertises it, currency-lib.sh is the one
+# thing that READS it, both triggers (the Claude SessionStart hook and the /cleanup step) are
+# governed by it, and the DOC + decision log tell the operator it is global-only. Renaming the
 # table or the key in one place would leave the others describing a knob that silently does
 # nothing — and "silently does nothing" is precisely the failure this feature exists to remove.
+#
+# The key is still spelled `session_start` even though #139 gave it a second, non-session trigger.
+# That is deliberate backward compatibility: an `off` that stopped applying would re-enable an
+# updater its owner had switched off. The neutral rename is tracked in #140.
 fact session-start-config "fixed:session_start" -- \
-  templates/agents.toml agents/claude/scripts/session-currency.sh \
+  templates/agents.toml scripts/lib/currency-lib.sh \
+  agents/claude/scripts/session-currency.sh base/workflows/cleanup.md \
   docs/installation.md .ai-dev-baseline/decisions.md
 # The event this hook binds to. The settings entry, the script's own source gate, and the docs
 # must name the SAME trigger: a matcher the script did not also enforce would let a `/clear` or
 # a `compact` swap tooling mid-session.
 fact session-start-source "fixed:startup" -- \
   agents/claude/settings.hooks.json agents/claude/scripts/session-currency.sh docs/installation.md
+
+# --- FACT: the currency outcome vocabulary (#139) -----------------------------
+# currency-lib.sh's `check` returns `<outcome><TAB><message>` and leaves PRESENTATION to the caller,
+# because the two triggers legitimately disagree about what deserves attention. That split is only
+# safe while the caller's tokens match the ones the library actually emits — and the coupling is
+# invisible: rename an outcome in the library and the Claude hook's `case` silently stops matching,
+# which costs the `reloadSkills` on an update (a repaired skill stays unavailable for the session)
+# or turns the deliberate silence on `busy`/`offline` into a nagging line at every session start.
+# Nothing else pins it: the executing tests only assert the outcomes that exist today.
+#
+# Only the four tokens a caller BRANCHES on are pinned. The workflow step deliberately branches on
+# none of them (it keys on message-emptiness), so it is not a consumer of this fact.
+#
+# Pinned at the CONSTRUCTS, not as bare words. A plain presence check is useless here: every one of
+# these tokens also appears in this library's own header, which documents the vocabulary — so
+# renaming an emit site while leaving the docs intact would pass a `fixed:` rule. Verified: a
+# `fixed:busy` rule did NOT catch `_adb_cu_emit busy` → `_adb_cu_emit occupied`. Anchor on the
+# emitter call in the library and on the `case` arm in the hook, which are the two things that must
+# agree.
+for _o in updated repaired busy offline; do
+  fact currency-outcomes "regex:_adb_cu_emit +$_o" -- scripts/lib/currency-lib.sh
+done
+fact currency-outcomes regex:'updated\|repaired\)' -- agents/claude/scripts/session-currency.sh
+fact currency-outcomes regex:'busy\|offline\)'     -- agents/claude/scripts/session-currency.sh
 
 check_result "canonical facts consistent across their consumers"

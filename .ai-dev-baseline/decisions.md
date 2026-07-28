@@ -279,3 +279,54 @@ didn't already model, so any residual divergence stays visible and auditable.
              human in the loop — which is why `notify`/`off` exist, why the hook refuses every
              unsafe clone state, and why it never touches the clone you are working in.
 - baseline-issue: n/a (this repo IS the baseline; #36 is the tracking issue)
+
+## D11 — currency gets a second trigger in `/cleanup`, and `session_start` keeps its name
+- date:      2026-07-27
+- category:  general
+- unknown:   D10 bound install currency to ONE trigger — a Claude `SessionStart` hook on
+             `source: startup`, justified there because "a session begins from a clean slate,
+             which is the safe moment to change tooling." #139 is the hole that reasoning left:
+             the baseline's own documented loop is `/implement-issue → merge → /cleanup → /clear
+             → /roadmap`, and `/clear` is **deliberately excluded** from the matcher. So the loop
+             never re-checks, while staleness *begins* at the merge. Three things the baseline did
+             not model: (a) where a SECOND, non-session trigger belongs; (b) whether a key named
+             `session_start` may govern a trigger that is not a session start; (c) how a
+             deliberate check should interact with a rate limit designed for an unattended one.
+- decision:  1. **`/cleanup`'s last step is the second trigger.** It runs immediately after a
+                merge (when the install goes stale) and immediately before the `/clear` the hook
+                skips. Being agent-neutral, it is also the only currency Codex and Gemini get —
+                a Claude hook could never give them any.
+             2. **The shared policy moves to `scripts/lib/currency-lib.sh`**, leaving
+                `session-currency.sh` a thin harness adapter. `check` returns a machine record
+                `<outcome><TAB><message>`; **presentation stays with the caller**, because the two
+                triggers legitimately disagree — the unattended hook must not nag about a peer
+                update or a missing network, while `/cleanup` must report both, having been asked.
+             3. **`[updates] session_start` keeps its name and now governs BOTH triggers; `off`
+                disables both.** The name is wrong and kept anyway: a key that silently stopped
+                applying would re-enable an updater its owner had switched off. The neutral
+                rename is tracked as #140 rather than shipped as a silent semantic change.
+             4. **The deliberate trigger ignores the rate-limit interval** while still refreshing
+                the shared stamp. The stamp records the last *attempt* and cannot distinguish
+                "startup just checked, nothing changed" from "startup checked, then a merge
+                landed" — so honoring it in `/cleanup` would suppress the check at the exact
+                moment #139 exists to cover.
+- placement: `scripts/lib/currency-lib.sh` (the one reader of the key, and the one policy);
+             `base/workflows/cleanup.md` step 7 (the trigger, rendered for all three agents);
+             `agents/claude/scripts/session-currency.sh` (harness adapter only);
+             `templates/agents.toml` + `docs/installation.md` (the operator contract);
+             `scripts/check-cleanup.sh` + `scripts/check-session-currency.sh` + the
+             `session-start-config` fact in `scripts/check-fact-drift.sh`.
+- reason:    D10's premise was that a clean session boundary is the safe moment to swap tooling.
+             That is still true, but it is not the only safe moment, and treating it as the only
+             one is what produced a two-commit-stale predicate deciding a release board. The end
+             of `/cleanup` is a comparably clean boundary — the sweep is finished, the report is
+             already composed, and the operator is between tasks — and it is the boundary that
+             actually follows a merge. It is deliberately **not** a gate: it cannot fail the
+             sweep, it is bounded by a wall-clock backstop (`adb_run_bounded`, shared with
+             role-dispatch rather than copied), and it refuses the install-source clone when that
+             is what is being swept. The residual D10 named — `auto` executes a freshly pulled
+             `install.sh` — is now exercised from a second place, which is why #120 (the
+             auto-update trust boundary) matters more than it did, and why the ordering
+             constraint is explicit: the report is composed BEFORE the update, so no run reports
+             itself through a library that was swapped underneath it.
+- baseline-issue: n/a (this repo IS the baseline; #139 is the tracking issue)

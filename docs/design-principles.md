@@ -26,10 +26,21 @@ product thesis turned inward.
   `adb_agent_manifest` / `adb_link_manifest` (the one enumeration of the install surface,
   and its consumer), `adb_default_branch`, `adb_toml_get` / `adb_toml_unquote`,
   `adb_version_ge`. The installer, uninstaller, both agent adapters, `agent-init`, and the
-  runtime gates all **source** it. The install manifest is single-sourced too: `install.sh`
+  runtime gates all **source** it. `adb_run_bounded` (a portable TERM → grace → KILL wall-clock
+  backstop) lives there for the same reason: `role-dispatch.sh` bounds an agent CLI and
+  `currency-lib.sh` bounds `baseline update`, and a second hand-rolled watchdog would have been
+  drift the moment it was written. The install manifest is single-sourced too: `install.sh`
   links it, `uninstall.sh` removes it, and `bin/baseline` verifies it — one producer, so the
   create/remove/verify sets can't drift. `scripts/check-common-lib.sh` unit-tests the
   primitives; a regression breaks one job, not eight silently-diverging copies.
+- **`scripts/lib/` is the installed shared-module directory, and purity is per-module — not a
+  property of the directory.** `install.sh` symlinks the whole directory into every agent's
+  `~/.<agent>/scripts/lib`, so anything placed there is available to every agent's skills. What a
+  given module promises is stated in *its own* header: `cleanup-lib.sh` and `roadmap-lib.sh` declare
+  themselves **network-pure** (their answers gate `rm` and ref deletes, so they must be hermetically
+  testable), while `repo-settings.sh`, `release-convention.sh`, `skill-compose.sh`,
+  `role-dispatch.sh` and `currency-lib.sh` all deliberately mutate outside state. Do not infer a
+  directory-wide rule from the first header you read; state your module's contract in your module.
 - **Repeated prose facts** — the cross-agent invocation commands, the 45-minute dispatch
   hang backstop, the role-resolution order, the gate-axis list — are pinned by
   `scripts/check-fact-drift.sh`, an allowlisted lint that fails when a canonical token

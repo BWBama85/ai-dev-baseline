@@ -139,13 +139,9 @@ chmod +x "$SBIN/gh"
 # Snippet extraction — the point of the harness
 # ============================================================================================
 # snippet <name> — the fenced bash between `# ADB-SNIPPET: <name>` and the closing fence.
-snippet() {
-  awk -v want="$1" '
-    $0 ~ ("^[[:space:]]*# ADB-SNIPPET: " want "$") { inb = 1; next }
-    inb && /^[[:space:]]*```[[:space:]]*$/ { exit }
-    inb { print }
-  ' "$WF"
-}
+# Delegates to check_wf_snippet (check-lib.sh), the ONE home for the marker/closing-fence
+# contract — three suites execute documented snippets and three copies of this awk could drift.
+snippet() { check_wf_snippet "$WF" "$1"; }
 
 # run_snippet <name> [tail-code] — execute the documented snippet against the stub, with the
 # {{ROADMAP_LIB}} placeholder resolved exactly as scripts/build.sh resolves it for a real agent.

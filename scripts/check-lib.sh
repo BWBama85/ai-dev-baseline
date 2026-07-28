@@ -125,6 +125,19 @@ check_summary() {
 # signing gap the per-file wrappers left in some tests).
 check_git() { git -C "$1" -c user.email=t@t -c user.name=t -c commit.gpgsign=false "${@:2}"; }
 
+# check_wf_snippet <workflow-file> <name> — print the fenced bash between `# ADB-SNIPPET: <name>`
+# and the closing fence. The ONE home for the marker/closing-fence contract: three suites execute
+# documented workflow snippets (check-roadmap.sh, check-roadmap-e2e.sh, check-cleanup.sh), and three
+# copies of this awk meant a change to the marker convention had to be found in three places with
+# nothing checking they agreed. Prints nothing when the marker is absent, so callers guard on empty.
+check_wf_snippet() {
+  awk -v want="$2" '
+    $0 ~ ("^[[:space:]]*# ADB-SNIPPET: " want "$") { inb = 1; next }
+    inb && /^[[:space:]]*```[[:space:]]*$/ { exit }
+    inb { print }
+  ' "$1"
+}
+
 # canon <dir> — the physical (symlink-resolved) absolute path of <dir>, mirroring what code that
 # uses `git rev-parse --show-toplevel` / `pwd -P` compares against. On macOS a mktemp dir is
 # /var/… while its physical form is /private/var/…; without canonicalizing, a naive path assertion

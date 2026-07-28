@@ -229,13 +229,29 @@ its exit code is the stable contract the SessionStart hook consumes:
 `0` current · `10` behind · `20` needs attention (dirty/in-progress/ahead/diverged/
 detached/non-default) · `30` error (fetch failed / no `origin/<default>`).
 
-### Automatic currency (SessionStart)
+### Automatic currency — two triggers
 
 Running `baseline update` is still something you have to *remember*, and forgetting it
-does not fail loudly — it silently runs **stale tooling**. So the install also wires a
-`SessionStart` hook (`session-currency.sh`) that does it for you.
+does not fail loudly — it silently runs **stale tooling**. So the install wires it for you, at
+**two** points. Both read the same configuration and share one policy library
+(`scripts/lib/currency-lib.sh`); they differ only in when they fire and in what they consider
+worth reporting.
 
-It is deliberately narrow about when it acts:
+| Trigger | Fires | Agents | Issue |
+|---|---|---|---|
+| `SessionStart` hook (`session-currency.sh`) | a genuinely new session (`source: startup`) | Claude | #36 |
+| the last step of `/cleanup` | after every sweep — i.e. right after a merge | Claude · Codex · Gemini | #139 |
+
+**Why two.** The hook alone left a hole big enough to drive the whole loop through: it fires only
+on `startup`, and the documented loop is `/implement-issue → merge → /cleanup → /clear → /roadmap`.
+`/clear` is excluded by design, so the loop never re-checked — while staleness *begins* at the
+merge. That is not theoretical: a `/roadmap` run once computed a release verdict with pre-fix logic
+one commit after the fix shipped, and a later one derived dependency edges from a predicate two
+commits stale. `/cleanup` is the natural second trigger because it runs immediately after the merge
+and immediately before the `/clear` that the hook skips — and because it is agent-neutral, it is
+also the only currency Codex and Gemini get.
+
+The `SessionStart` hook is deliberately narrow about when it acts:
 
 - **Only on `source: startup`** — a genuinely new session. `/clear`, `/compact`, `resume`
   and `fork` all happen with work already in flight, and swapping tooling underneath them
@@ -264,10 +280,28 @@ session_start = "auto"    # auto (default) | notify | off
 
 `auto` pulls and self-heals; `notify` reports **only** that you are behind and stays silent for
 every other state (it is the mode chosen to be quiet — a clone deliberately parked on a branch
-would otherwise produce an attention line at every startup, forever); `off` disables the hook.
-`ADB_SESSION_UPDATE` overrides it for one run. A copy of this key in a **project's** `agents.toml`
-is ignored on purpose — whether your global tooling updates itself must not depend on which repo
-you happened to open.
+would otherwise produce an attention line at every startup, forever); `off` disables **both
+triggers**. `ADB_SESSION_UPDATE` overrides it for one run. A copy of this key in a **project's**
+`agents.toml` is ignored on purpose — whether your global tooling updates itself must not depend on
+which repo you happened to open.
+
+`notify` means: never changes the working tree or the installed payload. It does still fetch
+remote-tracking refs, which is what makes "you are behind" a fact rather than a memory.
+
+The key is still spelled `session_start` although it now governs a trigger that is not a session
+start. That is kept for backward compatibility — a key that silently stopped applying would
+re-enable an updater someone had deliberately switched `off`.
+
+**The two triggers differ in what they report, on purpose.** The hook is unattended, so it says
+nothing when a peer update holds the lock or the remote is unreachable — otherwise every session
+start would nag about a missing network. `/cleanup` reports both, because there you explicitly
+asked for a currency check and silence would be indistinguishable from success.
+
+**`/cleanup` ignores the rate-limit interval.** The shared stamp records the last *attempt* and
+cannot tell "startup just checked and nothing changed" from "startup checked, then a merge landed".
+Suppressing the post-merge check would defeat the point, so the deliberate trigger always runs —
+and still refreshes the stamp, so the next session start is suppressed by it. Two sweeps in a row
+therefore each fetch, which is the right cost for something you asked for.
 
 In `auto` mode a refusal *is* reported, because that mode promised to act and could not — silence
 there would be the staleness this whole feature exists to catch.
@@ -283,6 +317,17 @@ are re-read via `reloadSkills`.
 `git pull` in your clone is not enough. Run `baseline update` (or `./install.sh`) **once** by
 hand after upgrading; every session after that is automatic. An install made with `--no-hooks`
 stays opted out.
+
+**Neither trigger can bootstrap itself, and the `/cleanup` one is the easier to misread.** Your
+installed skills are symlinks into the install-source clone, so the `/cleanup` you invoke
+immediately after this change lands is still the **old** one — it has no currency step, and its
+silence looks exactly like "already current". Run `baseline update` by hand once; from the next
+sweep on it carries itself. The same applies to a `--no-hooks` install, where `/cleanup` becomes
+your *only* automatic trigger.
+
+**One thing an update does not do:** a project's *composed* skills — a partial override merged onto
+a base skill — are not recomposed when the base skill changes. Their staleness is a separate check;
+see issue #64.
 
 ### The two-clone topology
 
