@@ -26,9 +26,9 @@ Query the authoritative source *immediately before* you assert or act on it — 
 a `git branch --merged` against an unsynced local default, not a value you
 remember from earlier in the session:
 
-- **PR status** → `gh pr view <N> --json state,mergedAt` (not memory, not a stale
-  local ref).
-- **Issue status** → `gh issue view <N> --json state`.
+- **PR / issue status** → see *"Render the sentence from the read, in one step"* below. Do **not**
+  reach for a bare `gh issue view <N> --json state`: it flattens a `NOT_PLANNED` close into a plain
+  "closed", which reads an *abandoned* issue as a *delivered* one.
 - **Branch merged?** → a **freshly-fetched** `git fetch --prune` then
   `git branch --merged origin/<default>` (classify against the remote tip, not a
   lagging local branch).
@@ -56,16 +56,14 @@ to remove); it holds the gate and surfaces the uncertainty.
 
 Re-reading is necessary but **not sufficient**: a value fetched into a variable can still go
 stale before the sentence that quotes it, and a correct read can still be paraphrased into a
-claim it never supported. So the read and the assertion are **one operation**, not two:
-
-```bash
-state-assert.sh observe pr 137     # -> PR #137 was observed MERGED at 2026-07-28T05:22:27Z
-state-assert.sh observe issue 138  # -> issue #138 was observed OPEN at 2026-07-28T05:22:28Z
-```
+claim it never supported. So the read and the assertion are **one operation**, not two — the
+`state-assert.sh` module's `observe` subcommand performs the read *and* renders the finished
+sentence, e.g. `PR #137 was observed MERGED at 2026-07-28T05:22:27Z`. Each workflow carries the
+invocation for its own agent; this document states the rule, not the path.
 
 **Pass the printed line through unchanged.** Empty stdout means *say nothing about that
 entity* — never fall back on a remembered value, which is exactly the trust this practice
-removes. The command fails closed: an unverifiable read prints nothing and exits non-zero.
+removes. It fails closed: an unverifiable read prints nothing and exits non-zero.
 
 **Observations are past-tense by construction, and that is not a style rule.** A read can only
 support a claim about the moment it happened. "PR #137 **is still** open" and "the gate **will**
@@ -83,13 +81,24 @@ name the *observed* fact that implies it (an exit code, an action taken) instead
 
 ## What this does *not* claim to enforce
 
-Honesty about the boundary is part of the practice. These are the **executable** paths: a status
-line a workflow *defines* is rendered atomically from a live read. **Free-form prose is not
-mechanically enforced** — no hook can un-say a sentence that has already streamed, and a shell
-classifier over arbitrary natural language (negation, quotation, prediction) would be theatre.
-Portable per-agent enforcement is tracked separately as the enforcement-hooks layer.
+Honesty about the boundary is part of the practice, so state it exactly rather than flatteringly.
 
-So the rule for prose is a discipline, stated plainly: **do not volunteer a status you did not
+**`observe` makes a stated status correct; it cannot make anyone state one.** Nothing couples its
+exit code to an action. Compare the two nearest siblings: the pre-arm review guard's exit code
+gates an actual `gh pr merge --auto`, and `/cleanup`'s branch verdict decides whether a branch
+survives — those are *structural*, because a wrong answer stops the machine. This renders optional
+narration. So the honest line is not "defined status lines are enforced, free-form prose is not";
+it is that **both** depend on someone choosing to make the call. What the command removes is the
+*stale or paraphrased* sentence, not the *unsourced* one.
+
+Mechanical enforcement of free-form prose is a separate problem and is **not** solved here: a Stop
+hook fires only after the text has already streamed, so it could force a correction but never
+prevent the claim, and a deterministic shell classifier over arbitrary English — negation,
+quotation, hypotheticals, predictions — would be theatre beyond a small documented grammar. That
+work belongs to the portable enforcement-hooks layer, which should treat *nothing* below as
+already covered.
+
+So the rule for prose remains a discipline, stated plainly: **do not volunteer a status you did not
 just read.** If it is worth saying, it is worth one `observe` call — and if that call fails, the
 honest output is silence.
 

@@ -40,7 +40,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     **not** mechanically enforced — a Stop hook fires after the text has already streamed, so it
     could only ever force a correction, and a shell classifier over arbitrary English would be
     theatre. Portable per-agent enforcement remains with the enforcement-hooks layer.
-  - Regression-tested offline by **`scripts/check-state-assert.sh`** (50 assertions, `gh` stubbed
+  - Regression-tested offline by **`scripts/check-state-assert.sh`** (47 assertions, `gh` stubbed
     on PATH), wired into `selfcheck.sh` and CI.
 
 - **`/implement-issue` no longer arms auto-merge before the reviewer has spoken** (#134). PR #133

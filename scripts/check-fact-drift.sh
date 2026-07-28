@@ -195,15 +195,45 @@ fact automerge-guard "fixed:automerge-ok" -- \
 fact pr-review-guard "fixed:{{PR_REVIEW_LIB}} gate" -- \
   base/workflows/implement-issue.md
 
+# --- FACT: the observe-and-render subcommand (#138) --------------------------
+# The worst failure shape of the four. The library IMPLEMENTS `observe` and all three narrating
+# workflows CALL it to render a status line. Rename it in the library alone and every call exits 2
+# with EMPTY stdout — which the workflows explicitly instruct the agent to read as "say nothing
+# about this entity". The mechanism goes permanently inert and reports nothing at all, so nothing
+# surfaces the breakage. Pin the exact token across the library and every caller.
+fact state-assert-observe "fixed:{{STATE_ASSERT_LIB}} observe" -- \
+  base/workflows/cleanup.md base/workflows/implement-issue.md \
+  base/workflows/resolve-pr-threads.md
+
+# --- FACT: the close-out must not predict a future gate effect (#134, #138) --
+# The RETIRED phrasing, pinned with `absent:` rather than pinning the corrected sentence. Grepping
+# for the correction pins an English sentence: a reflow across the wrap column fails CI with zero
+# behavior change, and a freshly-added prediction two lines away leaves the grep green. Pinning
+# what must NOT come back survives reformatting and catches the actual regression.
+fact no-arm-prediction "absent:will wait on" -- \
+  base/workflows/implement-issue.md
+
 # --- FACT: the branch-health predicate subcommand (#78) ----------------------
 # Same contract shape as `automerge-ok` above: the library IMPLEMENTS the green-branch predicate,
 # the workflow CALLS it before emitting a cut, and two docs DOCUMENT its verdicts. A rename in the
 # library alone would leave the workflow invoking a subcommand that no longer exists — and because
 # `/roadmap` hard-stops on a failed health read, the failure is loud but the DOCS would silently
 # keep describing a predicate nobody can run. Pin the exact token across all four.
+# The practice joined this list in #138: its "one home per entity kind" routing table names the
+# predicate, and that table renders into EVERY agent's root doc — so a rename that missed it would
+# leave the most-read document in the baseline naming a subcommand nobody can run.
 fact branch-health-predicate "fixed:branch-health" -- \
   scripts/lib/roadmap-lib.sh base/workflows/roadmap.md \
-  docs/release-goal-convention.md docs/roadmap-acceptance.md
+  docs/release-goal-convention.md docs/roadmap-acceptance.md \
+  base/practices/verify-before-asserting.md
+
+# --- FACT: the branch-merge verdict subcommand (#106, #138) ------------------
+# Same routing table, second entry. Previously pinned only by a structural grep in
+# scripts/check-cleanup.sh; the practice is now a second restatement site, so the token gets a
+# real pin across the library that implements it and both documents that name it.
+fact branch-verdict-predicate "fixed:branch-verdict" -- \
+  scripts/lib/cleanup-lib.sh base/workflows/cleanup.md \
+  base/practices/verify-before-asserting.md
 # The order these two settings are written in is the whole safety property (#87): required checks
 # FIRST, then allow_auto_merge. Pin the setting name across the library that writes it, the doc
 # that explains the order, and the workflow step that depends on it having been done.

@@ -582,18 +582,11 @@ merge dialog:
   that moment; it never waits for a future review. If threads land later,
   `/resolve-pr-threads` clears them.
 
-**Report the guard's OBSERVED result, never a prediction about what will hold.** The close-out
-once said an armed PR "would wait on `required_conversation_resolution`"; it merged 29 seconds
-later with zero threads, six minutes before the reviewer posted (#134, #138). The setting was read
-correctly — what was asserted unchecked was its *effect at that moment*, and no read of a setting
-can prove that future threads will exist. So state the fact you observed and its consequence:
-"review guard returned 16; auto-merge was **not** armed" — not "the PR will wait". Any PR/issue
-status in the close-out is rendered in one step and passed through unchanged
-(`base/practices/verify-before-asserting.md`):
-
-```bash
-bash "$HOME/.claude/scripts/lib/state-assert.sh" observe pr <N>   # empty stdout -> say nothing; never substitute memory
-```
+**Report the guard's OBSERVED result, never a prediction about what will hold.** No read of a
+*setting* can prove that future threads will exist, so the close-out's line shape is the observed
+fact and its consequence — "review guard returned 16; auto-merge was **not** armed" — never a
+forecast about what the PR will do next. Any PR/issue status in the close-out comes from
+`bash "$HOME/.claude/scripts/lib/state-assert.sh" observe pr <N>` (`base/practices/verify-before-asserting.md`).
 
 ### 11. Close-out
 

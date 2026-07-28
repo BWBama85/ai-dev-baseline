@@ -5,9 +5,9 @@
 #   1. A rendered line is PAST-TENSE and carries the observation time.
 #   2. MERGED is decided by `mergedAt`, NOT by `state` — GitHub reports a merged PR as CLOSED,
 #      so keying off state alone would render "CLOSED without merging" for a merged PR.
-#   3. FAIL CLOSED means stdout is EMPTY. Every unverifiable path (gh missing, read error,
-#      malformed JSON, foreign repo, unknown state) must render NO sentence — because the whole
-#      point is that silence is safe and a guessed status is the bug.
+#   3. FAIL CLOSED means stdout is EMPTY. Every unverifiable path (unauthenticated gh, read
+#      error, malformed JSON, wrong entity kind, unknown state) must render NO sentence — the
+#      whole point is that silence is safe and a guessed status is the bug.
 #   4. A number is a number: no flag, path or empty string reaches `gh`.
 #
 # `gh` is stubbed by a shim on PATH driven by SHIM_* env vars, so the suite runs offline with no
@@ -38,9 +38,11 @@ shimbin="$work/bin"; mkdir -p "$shimbin"
 cat > "$shimbin/gh" <<'SH'
 #!/usr/bin/env bash
 case "$1 $2" in
-  "repo view")
-    if [ "${SHIM_REPO_FAIL:-0}" = "1" ]; then echo "gh: auth error" >&2; exit 1; fi
-    printf '%s\n' "${SHIM_REPO_URL:-https://github.com/o/r}" ;;
+  "auth status")
+    # adb_require_gh (common.sh) checks auth before any read; an unauthenticated gh must
+    # fail closed exactly like an unreadable one.
+    if [ "${SHIM_AUTH_FAIL:-0}" = "1" ]; then echo "gh: not authenticated" >&2; exit 1; fi
+    exit 0 ;;
   "pr view")
     if [ "${SHIM_PR_FAIL:-0}" = "1" ]; then echo "gh: no such PR" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_JSON:-}" ;;
@@ -53,17 +55,19 @@ SH
 chmod +x "$shimbin/gh"
 
 # Run the library with the shim in front of PATH. Captures stdout only; stderr is diagnostic.
+# ONE invocation per assertion. `out="$(run ...)"; rc=$?` yields both the stdout and the exit
+# status, because a command substitution's status IS the command's. Running twice (once for each)
+# doubled every case's process cost for nothing. `local out rc` must stay on its own line: a
+# combined `local out="$(...)"` would mask $? with local's own status.
 run() { PATH="$shimbin:$PATH" bash "$LIB" "$@" 2>/dev/null; }
-run_rc() { PATH="$shimbin:$PATH" bash "$LIB" "$@" >/dev/null 2>&1; printf '%s' "$?"; }
 
 # ============================ 1. rendered observations ============================
 
 # An OPEN PR renders past-tense and names the entity.
-export SHIM_REPO_URL="https://github.com/o/r"
 export SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/7"}'
 OUT="$(run observe pr 7)"
 has "$OUT" "PR #7 was observed OPEN at " "open PR renders past-tense with a timestamp"
-eq "$(run_rc observe pr 7)" "0" "open PR exits 0"
+run observe pr 7 >/dev/null 2>&1; eq "$?" "0" "open PR exits 0"
 
 # THE CORE CASE (#138's first observed violation): a PR that MERGED between reads. GitHub reports
 # it as state=CLOSED with a mergedAt, so a `state`-only implementation would say "CLOSED without
@@ -98,13 +102,16 @@ esac
 # ============================ 2. fail closed = EMPTY stdout ============================
 # Each of these must render NOTHING. A non-empty stdout here is the bug the file exists to prevent.
 
-fails_closed() { # <label> — asserts empty stdout AND rc 3, with the env already set
-  local label="$1"; shift
+# expect_silent <rc> <label> [args...] — the one shape both the unverifiable and the usage
+# families need: stdout MUST be empty, and the exit code must be the expected one.
+expect_silent() {
+  local want_rc="$1" label="$2"; shift 2
   local out rc
-  out="$(run "$@")"; rc="$(run_rc "$@")"
+  out="$(run "$@")"; rc=$?
   eq "$out" "" "$label: renders no sentence"
-  eq "$rc" "3" "$label: exits 3 (unverifiable)"
+  eq "$rc" "$want_rc" "$label: exits $want_rc"
 }
+fails_closed() { local label="$1"; shift; expect_silent 3 "$label" "$@"; }
 
 export SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/7"}'
 SHIM_PR_FAIL=1 fails_closed "gh read error" observe pr 7
@@ -114,17 +121,16 @@ SHIM_PR_JSON='{"state":"","mergedAt":null,"url":"https://github.com/o/r/pull/7"}
   fails_closed "blank state" observe pr 7
 SHIM_PR_JSON='{"state":"WEIRD","mergedAt":null,"url":"https://github.com/o/r/pull/7"}' \
   fails_closed "unrecognized state" observe pr 7
-# A same-numbered PR in ANOTHER repo must never be rendered as if it were local — the identity
-# check #44 established on the Stop-hook side, applied to narration.
-SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/other/repo/pull/7"}' \
-  fails_closed "foreign-repo PR" observe pr 7
-SHIM_REPO_FAIL=1 fails_closed "repo unresolvable" observe pr 7
+# Cross-repo safety is now STRUCTURAL rather than a string compare: the argument is validated as
+# a bare integer and `gh pr view <n>` resolves it against the LOCAL remote's repo, so no other
+# repository is addressable. An earlier draft spent a whole `gh repo view` round trip proving
+# this — 55-70% of the command's wall time for a property the argument type already guarantees.
+# What the URL check still earns is the entity-kind discrimination below, which the number cannot
+# answer. gh being present but UNAUTHENTICATED is a real condition and must fail closed too.
+SHIM_AUTH_FAIL=1 fails_closed "gh not authenticated" observe pr 7
 
 export SHIM_ISSUE_JSON='{"state":"OPEN","stateReason":null,"url":"https://github.com/o/r/issues/1"}'
 SHIM_ISSUE_FAIL=1 fails_closed "issue read error" observe issue 1
-SHIM_ISSUE_JSON='{"state":"OPEN","stateReason":null,"url":"https://github.com/other/repo/issues/1"}' \
-  fails_closed "foreign-repo issue" observe issue 1
-
 # PRs and issues share ONE number space, and `gh issue view <PR number>` really does answer with
 # the pull request (GitHub models a PR as an issue). Verified live against this repo. Only the
 # URL discriminates — `/pull/N` vs `/issues/N` — so without that check `observe issue 146` would
@@ -135,22 +141,16 @@ SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"COMPLETED","url":"https://gith
 SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/issues/138"}' \
   fails_closed "an issue answered by 'gh pr view' is not a PR" observe pr 138
 
-# gh absent entirely (a real condition on a fresh machine) — still silence, never a guess.
-OUT="$(PATH="$work/empty" bash "$LIB" observe pr 7 2>/dev/null)"
-eq "$OUT" "" "gh missing: renders no sentence"
+# NOTE on "gh absent": deliberately NOT tested here. `adb_require_gh` (common.sh) prepends the
+# brew prefix when gh is missing, so on a macOS dev box an empty PATH still finds the real gh and
+# the case would silently become a live network test. The authentication arm above covers the same
+# fail-closed branch offline and deterministically.
 
 # ============================ 3. argument validation ============================
 # rc 2 AND empty stdout. Arguments are passed for real rather than word-split out of a string:
 # a quoted "" inside such a string is two literal apostrophes, so the empty-number case would
 # silently test something else and pass for the wrong reason.
-usage_rejects() { # <label> [args...]
-  local label="$1"; shift
-  local out rc
-  out="$(PATH="$shimbin:$PATH" bash "$LIB" "$@" 2>/dev/null)"
-  PATH="$shimbin:$PATH" bash "$LIB" "$@" >/dev/null 2>&1; rc=$?
-  eq "$out" "" "usage $label: renders no sentence"
-  eq "$rc" "2" "usage $label: exits 2"
-}
+usage_rejects() { local label="$1"; shift; expect_silent 2 "usage $label" "$@"; }
 
 usage_rejects "missing number"        observe pr
 usage_rejects "non-numeric number"    observe pr abc
@@ -166,38 +166,20 @@ usage_rejects "unknown subcommand"    nonsense
 usage_rejects "trailing flag"         observe pr 1 --json state
 
 # `help` is not an error path.
-eq "$(run_rc --help)" "0" "--help exits 0"
+run --help >/dev/null 2>&1; eq "$?" "0" "--help exits 0"
 
-# ============================ 4. workflow wiring ============================
-# A library nothing calls enforces nothing. These pin the three narrating workflows to it.
-for wf in cleanup implement-issue resolve-pr-threads; do
-  src="$ROOT/base/workflows/$wf.md"
-  if grep -q '{{STATE_ASSERT_LIB}}' "$src"; then ok; else
-    bad "base/workflows/$wf.md does not reference {{STATE_ASSERT_LIB}}"
-  fi
-done
-
-# The placeholder must actually be substituted by the renderer, or the rendered skills would ship
-# a literal `{{STATE_ASSERT_LIB}}` for agents to execute.
-if grep -q '{{STATE_ASSERT_LIB}}' "$ROOT/scripts/build.sh"; then ok; else
-  bad "scripts/build.sh has no {{STATE_ASSERT_LIB}} substitution"
-fi
-
-# The regression that started this: the close-out must not claim the setting waits for a review
-# that has not happened. Pin the corrected wording rather than the absence of a phrase, so a
-# reflow cannot silently drop the correction.
-if grep -q 'never waits for a future review' "$ROOT/base/workflows/implement-issue.md"; then ok; else
-  bad "implement-issue.md lost the 'never waits for a future review' correction (#138)"
-fi
-if grep -q 'not "the PR will wait"' "$ROOT/base/workflows/implement-issue.md"; then ok; else
-  bad "implement-issue.md lost the observed-result-not-prediction rule (#138)"
-fi
-
-# The practice is the single source for the law; the workflows only carry call sites (#124's
-# defect is a law restated per workflow, and this check exists so we do not recreate it).
-if grep -q 'Render the sentence from the read, in one step' \
-     "$ROOT/base/practices/verify-before-asserting.md"; then ok; else
-  bad "verify-before-asserting.md lost the read-and-render section (#138)"
-fi
+# ============================ 4. wiring lives in its declared home ============================
+# The token pins that used to sit here moved to scripts/check-fact-drift.sh, which is the lint
+# whose charter this is:
+#   - `state-assert-observe`  pins `{{STATE_ASSERT_LIB}} observe` across all three workflows.
+#   - `no-arm-prediction`     pins the RETIRED predictive phrasing with `absent:`.
+# Two reasons, both learned from #148. First, this file is a library UNIT test; a cross-file docs
+# lint is a different genre and belongs with the other facts. Second, the pins here grepped ENGLISH
+# SENTENCES — one of them containing a nested quote sitting near the wrap column — so a reflow
+# would fail CI with zero behavior change, while a freshly-added prediction two lines away would
+# leave the grep green. `absent:` pins what must not come back, which survives reformatting.
+#
+# Per-agent render coverage for {{STATE_ASSERT_LIB}} likewise lives in check-workflow-render.sh
+# beside the other placeholders, rather than as a weaker grep of build.sh for the bare token.
 
 check_summary "check-state-assert"
