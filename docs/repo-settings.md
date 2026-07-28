@@ -204,12 +204,24 @@ repo may legitimately hold a schedule-only workflow while CircleCI supplies the 
 context — and this command disclaims external-provider contexts.
 
 So the tiebreak is **who reported the context**, read from the check runs on the branch and
-attributed by `app.slug` (the same discriminator `roadmap-lib.sh branch-health` uses):
+attributed by `app.slug` — the same discriminator `roadmap-lib.sh branch-health` uses, and the same
+*value*, which both read from `adb_actions_app_slug` in `common.sh`. GitHub Actions stamps
+**`github-actions`**; the app's *owner* is `github`, and attributing against that near-miss is what
+made this check silently find no Actions contexts at all (#179).
+
+Provenance is **tri-state**, because `app` is required-but-nullable in GitHub's REST schema:
+
+| `app.slug` | Meaning |
+|---|---|
+| `github-actions` | GitHub Actions — came from a workflow in this tree |
+| any other non-empty value | an external provider (CircleCI, Vercel, a linter bot) |
+| null / absent | **unknown** — not provably either, so the verdict fails closed |
 
 | Discovery empty, and… | Verdict |
 |---|---|
 | no `.github/workflows` at all | `0` — no claim to contradict (#24, and external-only CI) |
 | the required contexts were **reported by GitHub Actions** on this branch | `20` — they must have come from a workflow in this tree, so the parser has gone blind |
+| a required context's producing app **cannot be identified** | `20` — an unattributable context is not evidence of external CI |
 | the required contexts were **not** Actions-reported (CircleCI, Vercel, …) | `0` — someone else's contexts, out of scope by contract |
 | provenance itself could not be read | `20` — refuse to pick a side |
 

@@ -193,9 +193,10 @@ cmd_pr_targets_issue() {
 # defaulting it would turn an unreadable response into `no-ci`, which reaches `met` — a release
 # fabricated from a health read nobody could parse.
 #
-# Check runs are attributed by `app.slug`: `github` is GitHub Actions, anything else is another
-# Checks API app. That distinction is load-bearing, because <active-workflows> counts ACTIONS
-# workflows — so "some check run exists" is not evidence that Actions reported.
+# Check runs are attributed by `app.slug`: `github-actions` is GitHub Actions (the value comes from
+# `adb_actions_app_slug` in common.sh — the ONE home, #179), anything else is another Checks API
+# app. That distinction is load-bearing, because <active-workflows> counts ACTIONS workflows — so
+# "some check run exists" is not evidence that Actions reported.
 #
 # A conclusion of `skipped` or `neutral` is NOT a failure — that is how GitHub itself scores a
 # required check, and treating a skipped job as red would wedge every repo with conditional jobs.
@@ -219,7 +220,18 @@ cmd_branch_health() {
   # One jq program decides, so the rules live in one place rather than being re-derived per caller.
   # `-e` is deliberately NOT used: this program always prints a verdict, and its exit status is
   # reserved for a genuine parse failure.
-  out="$(printf '%s' "$json" | jq -r --arg sha "$sha" --argjson wf "$workflows" '
+  #
+  # Resolve the Actions slug BEFORE the program and refuse an empty one. This is not defensive
+  # boilerplate: the attribution test is `(.app.slug // "") == $aslug`, and the `// ""` normalizes
+  # unknown provenance to the empty string — so an empty $aslug would match exactly the check runs
+  # whose app CANNOT be identified, and count them as Actions. That flips this predicate fail-OPEN
+  # (a confident `green` from a build nobody attributed) in the one place a wrong green cuts a
+  # release. A broken install must fail loud here, exactly as the missing-common.sh guard above does.
+  local aslug
+  aslug="$(adb_actions_app_slug 2>/dev/null)" || aslug=""
+  [ -n "$aslug" ] || die "branch-health: adb_actions_app_slug is unavailable or empty (broken install)"
+  out="$(printf '%s' "$json" | jq -r --arg sha "$sha" --argjson wf "$workflows" \
+                                     --arg aslug "$aslug" '
     if type != "object" then error("not an object") else . end
     # BOTH keys must be PRESENT and be arrays. Defaulting a missing key to [] would convert a
     # malformed or truncated health response into "two empty collections", which reads as `no-ci`
@@ -259,10 +271,12 @@ cmd_branch_health() {
     | ([$tagged[] | select(._done) | select(.conclusion | IN("success","skipped","neutral") | not)]) as $bad
     | ([$sts[]  | select((.state // "") | IN("success","pending") | not)]) as $stbad
     # Check runs produced by GitHub ACTIONS, which is what the workflow inventory counts. Actions
-    # check runs carry app.slug == "github"; another Checks API app (a linter bot, a deploy
-    # provider) carries its own slug. A check run whose app cannot be identified is deliberately
-    # NOT counted as Actions — unknown provenance must not stand in as proof that Actions ran.
-    | ([$mine[] | select((.app.slug // "") == "github")]) as $actions
+    # check runs carry app.slug == "github-actions" ($aslug, from the one home in common.sh); another
+    # Checks API app (a linter bot, a deploy provider) carries its own slug. A check run whose app
+    # cannot be identified (`app` is nullable in the GitHub REST schema) is deliberately NOT
+    # counted as Actions: unknown provenance must not stand in as proof that Actions ran. That
+    # direction is safe here, because falling through leaves the verdict indeterminate, never green.
+    | ([$mine[] | select((.app.slug // "") == $aslug)]) as $actions
     | (($mine | length) + ($sts | length)) as $total
     | if   ($bad | length) > 0 or ($stbad | length) > 0 then
              "not-green\nfailing: " + ([($bad[] | .name // "check"), ($stbad[] | .context // "status")] | join(", "))

@@ -265,6 +265,35 @@ adb_repo_slug() {
   printf '%s' "$_ADB_REPO_SLUG"
 }
 
+# adb_actions_app_slug — print the `app.slug` that GitHub Actions stamps on every check run it
+# produces. THE ONE HOME for that value (#179): two libraries decide "did Actions report here?"
+# and both must mean the same thing by it.
+#
+# The value is `github-actions`, and the wrong one is not a typo anybody would catch by reading:
+# the app's OWNER login is `github`, its name is "GitHub Actions", and its slug is `github-actions`
+# (app id 15368, https://github.com/apps/github-actions). Both consumers shipped with `github`,
+# which matches NOTHING — so `branch-health` could never return `green` on an Actions repo (a
+# release the convention can never cut) and `required-drift`'s provenance check silently found no
+# Actions contexts (a fail-OPEN in the lint that exists to catch a gate that stopped gating).
+#
+# Deliberately a SCALAR accessor rather than a shared jq predicate, and the reason is the THIRD
+# consumer. A jq module (`jq -L`) or a `def` string concatenated into each program would both work
+# for the two shell libraries — that much is cheap and needs no eval. But `base/workflows/roadmap.md`
+# also attributes check runs, and it is PROSE AN AGENT PASTES INTO A SHELL: it can receive a value,
+# never a library. The only surface all three consumers share is the string itself, so that is what
+# is shared, passed in as a typed `--arg` where a jq program is involved.
+#
+# Matched EXACTLY, and never widened to `app.owner.login == "github"` or to the numeric app id.
+#
+# GitHub documents `slug` as a name-derived URL slug rather than a permanent cross-GHES constant,
+# so an unrecognized value must fall through to each caller's fail-closed path (unknown
+# provenance), never be guessed at by a second, looser rule.
+#
+# Callers MUST reject an empty result rather than passing it through: both consumers normalize a
+# missing slug to "" before comparing, so an empty expected value silently means "match the check
+# runs nobody could attribute" — fail-open in `branch-health`, which gates a release cut.
+adb_actions_app_slug() { printf 'github-actions'; }
+
 # --- git ---------------------------------------------------------------------
 
 # Resolve a repo's default branch: origin/HEAD → a local main/master → "main".

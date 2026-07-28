@@ -340,11 +340,21 @@ branch_ruleset()     { printf '{"protected":true,"protection":{"enabled":false,"
 branch_opaque()      { printf '{"protected":true,"protection":{"enabled":true}}\n' > "$S/branch.json"; }
 branch_malformed()   { printf 'not json at all\n' > "$S/branch.json"; }
 
-# Check-run fixtures: `app.slug` is the provenance discriminator. "github" IS GitHub Actions;
-# anything else (circleci, vercel, …) is an external provider whose contexts this lint disclaims.
+# Check-run fixtures: `app.slug` is the provenance discriminator, and it is TRI-state (#179).
+# `github-actions` IS GitHub Actions — read from its one home rather than restated, because the
+# hard-coded `github` that used to sit here matched the library's equally wrong literal, so these
+# tests passed while `_adb_rs_actions_contexts` returned nothing on every real repo. Any other
+# non-empty slug is an external provider whose contexts this lint disclaims; a NULL app is
+# unattributable, which is neither, and must fail closed rather than pass as "somebody else's".
+check_actions_slug
 checkruns_none()     { rm -f "$S/checkruns.json"; }
-checkruns_actions()  { jq -n --args '{check_runs: [$ARGS.positional[] | {name: ., app: {slug: "github"}}]}' "$@" > "$S/checkruns.json"; }
-checkruns_external() { jq -n --args '{check_runs: [$ARGS.positional[] | {name: ., app: {slug: "circleci"}}]}' "$@" > "$S/checkruns.json"; }
+# checkruns_slug <slug> <name…> — the one builder; the named wrappers below just fix the slug, so
+# the envelope and the fixture path are spelled once.
+checkruns_slug()     { local s="$1"; shift; jq -n --args --arg s "$s" '{check_runs: [$ARGS.positional[] | {name: ., app: {slug: $s}}]}' "$@" > "$S/checkruns.json"; }
+checkruns_actions()  { checkruns_slug "$ACTIONS_SLUG" "$@"; }
+checkruns_external() { checkruns_slug circleci "$@"; }
+# `app` is required-but-NULLABLE in the GitHub REST schema, so this is a real response shape.
+checkruns_noapp()    { jq -n --args '{check_runs: [$ARGS.positional[] | {name: ., app: null}]}' "$@" > "$S/checkruns.json"; }
 rsx_auth() {   # the SAME stub, auth knob flipped — one stub, two behaviors
   OUT="$(S="$S" STUB_AUTH_FAIL=1 PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
@@ -683,11 +693,66 @@ eq "$RC_" "20" "required-drift = 20 when the check runs that establish provenanc
 has "$OUT" "could not be read" "the unreadable-provenance case says so"
 checkruns_none
 
+# (c2) THE OTHER unreadable shape: `gh` exits 0 but the BODY is not JSON — a proxy or GHES error
+# page served as 200, or a truncated --paginate stream. Case (c) only covers an HTTP failure, so
+# nothing caught this: an unparseable body classifies as nothing at all, which is indistinguishable
+# from "no Actions contexts" and lands on the fail-OPEN external-CI pass. Both the read AND the
+# parse have to be checked, which is why the call site tests two statuses rather than one.
+repo_fx true true; branch_checks "one"
+printf 'not json at all\n' > "$S/checkruns.json"
+rsx_stub required-drift
+eq "$RC_" "20" "required-drift = 20 when gh succeeds but the check-runs BODY is unparseable"
+has "$OUT" "could not be read" "...and it reports unreadable provenance, not a clean external-CI pass"
+hasnt "$OUT" "external CI" "...never the fail-open pass"
+
+# A well-formed document of the WRONG SHAPE is the same class: `check_runs` absent or not an array
+# means the response is not what this code models, so it cannot be reasoned about.
+repo_fx true true; branch_checks "one"
+printf '{"message":"Not Found"}\n' > "$S/checkruns.json"
+rsx_stub required-drift
+eq "$RC_" "20" "required-drift = 20 when the response carries no check_runs array"
+checkruns_none
+
 # The CONSISTENT version of that same state — files present, none PR-triggered, nothing required —
 # is not a contradiction and must still pass. Without this, the check above could be over-broad.
 repo_fx true true; branch_checks
 rsx_stub required-drift
 eq "$RC_" "0" "files present + discovery empty + nothing required is consistent, so it passes"
+
+# (d) THE ATTRIBUTION ITSELF (#179). Case (a) above proves the contradiction is caught *given* that
+#     Actions check runs are recognized — but it drove `checkruns_actions`, and both the fixture and
+#     the library said `github`, a slug GitHub never stamps. Two wrongs agreeing is a green suite
+#     over a helper that returned NOTHING on every real repo, so case (a) silently degraded into
+#     case (b): the fail-OPEN "external CI, nothing to require" pass, issued by the lint whose whole
+#     job is catching a gate that stopped gating. Pin the real value here, once, explicitly.
+repo_fx true true; branch_checks "one"
+jq -n '{check_runs: [{name: "one", app: {slug: "github-actions"}}]}' > "$S/checkruns.json"
+rsx_stub required-drift
+eq "$RC_" "20" "an API-shaped Actions check run (slug github-actions) IS attributed to Actions (#179)"
+has "$OUT" "cannot both be right" "...so the contradiction is still named, not passed over"
+
+# The RETIRED literal must be treated as just another foreign app, or the bug returns by the door
+# it left through.
+repo_fx true true; branch_checks "one"
+jq -n '{check_runs: [{name: "one", app: {slug: "github"}}]}' > "$S/checkruns.json"
+rsx_stub required-drift
+eq "$RC_" "0" "the retired literal 'github' is an external provider, not Actions"
+
+# UNKNOWN provenance is the third state, and folding it into "external" is the fail-open this
+# issue exists to close: `app` is nullable, so a required context nobody can attribute must hold
+# the verdict rather than pass as somebody else's CI.
+repo_fx true true; branch_checks "one"; checkruns_noapp "one"
+rsx_stub required-drift
+eq "$RC_" "20" "a required context whose producing app is NULL fails closed, never 'external CI'"
+has "$OUT" "did not identify" "...and the unattributable context is named"
+
+# ...but an unattributable check run that is NOT required is nobody's problem — the fail-closed arm
+# must be scoped to the required set, or any stray null-app check would wedge every repo.
+repo_fx true true; branch_checks "ci/circleci: build"
+jq -n '{check_runs: [{name: "ci/circleci: build", app: {slug: "circleci"}}, {name: "stray", app: null}]}' > "$S/checkruns.json"
+rsx_stub required-drift
+eq "$RC_" "0" "an unattributable check run outside the required set does not hold the verdict"
+checkruns_none
 
 wf_two; repo_fx true true; branch_checks "one"
 for st in 401 403 404 500; do

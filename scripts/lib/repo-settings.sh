@@ -509,6 +509,11 @@ phantom_contexts() { LC_ALL=C comm -13 <(nz "$1") <(nz "$2"); }
 # ungated_contexts <want> <live> — discovered jobs that are NOT required, i.e. gating nothing.
 ungated_contexts() { LC_ALL=C comm -23 <(nz "$1") <(nz "$2"); }
 
+# shared_contexts <a> <b> — the intersection, the third sibling of the two above. Kept here with
+# them so `nz` and the C collation have one home: both operands must be sorted the same way, and
+# restating that per call site is how one of them eventually gets it wrong.
+shared_contexts() { LC_ALL=C comm -12 <(nz "$1") <(nz "$2"); }
+
 # --- live protection state, the contents-read way (#122) ---------------------------------------
 #
 # A SECOND reader, not a second model. `read_protection` above uses the admin-only
@@ -592,22 +597,59 @@ _adb_rs_has_workflow_files() {
   return 1
 }
 
-# _adb_rs_actions_contexts <ref> — the check-run names GITHUB ACTIONS reported on <ref>'s head,
-# sorted and deduped. Attribution is by `app.slug == "github"`, the same discriminator
-# roadmap-lib.sh's branch-health uses, so "which provider produced this context" has one answer
-# across the repo.
+# _adb_rs_checkruns <ref> — the raw check-runs document for <ref>'s head. Split out from the two
+# filters below so PROVENANCE IS ONE READ: asking "which are Actions?" and "which cannot be
+# attributed at all?" must describe the same set of check runs, not two reads a push could
+# separate.  Returns non-zero only when the READ failed.
+_adb_rs_checkruns() {
+  gh api --paginate "repos/$REPO_SLUG/commits/$1/check-runs?per_page=100" 2>/dev/null
+}
+
+# Provenance is TRI-STATE, and conflating any two of the states is a fail-open (#179):
 #
-# This exists to answer a question the workflow files alone cannot: whether a required context
-# could plausibly have come from this repo's Actions workflows at all. Without it, a required
-# context supplied by CircleCI/Vercel is indistinguishable from one whose job discovery has
-# stopped seeing. Returns non-zero only when the READ failed — an empty result is a legitimate
-# answer ("Actions reported nothing on this ref").
-_adb_rs_actions_contexts() {
-  local json
-  json="$(gh api --paginate "repos/$REPO_SLUG/commits/$1/check-runs?per_page=100" 2>/dev/null)" || return 1
-  printf '%s' "$json" \
-    | jq -r '.check_runs[]? | select((.app.slug // "") == "github") | .name' 2>/dev/null \
-    | LC_ALL=C sort -u
+#   ACTIONS   app.slug == `github-actions`  -> came from a workflow in this tree
+#   EXTERNAL  any other NON-EMPTY slug      -> CircleCI/Vercel/a linter bot; not this lint's business
+#   UNKNOWN   `app` null or slug missing    -> cannot be attributed; the caller must fail closed
+#
+# `app` is required-but-NULLABLE in the GitHub REST schema, so UNKNOWN is a shape the API really
+# produces. Folding it into EXTERNAL (which is what a single "is it Actions?" filter does) makes an
+# unattributable context read as somebody else's problem — and `required-drift` then reports a clean
+# pass over exactly the contexts it could not vouch for.
+#
+# Both filters take the document on stdin and are otherwise pure, so the offline suite drives them
+# with fixtures. The Actions slug comes from `adb_actions_app_slug` (common.sh, the ONE home) and is
+# passed as a typed --arg, so this file cannot drift from roadmap-lib.sh: both consumers read the
+# same value, and neither restates it.
+
+# _adb_rs_classify_contexts — read the check-runs document on stdin, emit one
+# `<state>\t<name>` line per check run. ONE filter decides all three states, so they PARTITION by
+# construction: widening what counts as Actions cannot leave the unknown arm behind, which is
+# exactly what two independent half-filters would allow (and what the first draft of this fix did).
+#
+# FAILS CLOSED on a document it cannot read. The status matters and callers MUST test it: an
+# unparseable body would otherwise yield an empty classification, which is indistinguishable from
+# "no check runs" and lands on the external-CI pass — reintroducing the fail-open this whole change
+# exists to remove. `.app.slug?` rather than `.app.slug` so a malformed `app` (a string, say) is
+# UNKNOWN rather than a hard error, keeping "shape we did not expect" inside the tri-state instead
+# of collapsing it into a parse failure.
+_adb_rs_classify_contexts() {
+  jq -r --arg aslug "$(adb_actions_app_slug)" '
+    if type != "object" then error("check-runs response is not a JSON object") else . end
+    | if (.check_runs | type) != "array" then error("check_runs is missing or not an array") else . end
+    | .check_runs[]
+    | (((.app.slug? // "") | if type == "string" then . else "" end)) as $s
+    | (if   $s == ""     then "unknown"
+       elif $s == $aslug then "actions"
+       else                   "external" end)
+      + "\t" + ((.name? // "") | tostring)
+  ' 2>/dev/null
+}
+
+# _adb_rs_pick <state> — the sorted, deduped context names for one state of the classification,
+# read on stdin. `sort -u` matches the collation of the `sort` that produces BR_CONTEXTS, which is
+# what lets `shared_contexts` compare the two.
+_adb_rs_pick() {
+  LC_ALL=C awk -F'\t' -v want="$1" '$1 == want { print $2 }' | LC_ALL=C sort -u
 }
 
 # --- apply --------------------------------------------------------------------------------
@@ -1027,14 +1069,19 @@ cmd_required_drift() {
   # that Actions never reported belong to somebody else and are none of this lint's business.
   if [ "$nwant" -eq 0 ]; then
     if [ -n "$BR_CONTEXTS" ]; then
-      local actions_ctx shared
-      if ! actions_ctx="$(_adb_rs_actions_contexts "$branch")"; then
+      local cr_json cls shared murky
+      # BOTH the read and the PARSE must succeed. Testing only the read is how the fail-open came
+      # back: `gh` can exit 0 with a body jq cannot parse (a proxy or GHES error page served as
+      # 200, a truncated --paginate stream), and an unparseable body classifies as nothing at all,
+      # which reads as "no Actions contexts" and passes as external CI.
+      if ! cr_json="$(_adb_rs_checkruns "$branch")" \
+         || ! cls="$(printf '%s' "$cr_json" | _adb_rs_classify_contexts)"; then
         echo "repo-settings: discovery found no PR-triggered jobs and '$branch' requires $(nlines "$BR_CONTEXTS") context(s)," >&2
         echo "repo-settings: but the check runs that would say who produced them could not be read." >&2
         echo "repo-settings: refusing to guess which side is wrong (failing closed)." >&2
         return 20
       fi
-      shared="$(LC_ALL=C comm -12 <(nz "$BR_CONTEXTS") <(nz "$actions_ctx"))"
+      shared="$(shared_contexts "$BR_CONTEXTS" "$(printf '%s' "$cls" | _adb_rs_pick actions)")"
       if [ -n "$shared" ]; then
         echo "repo-settings: discovery found NO PR-triggered jobs, yet '$branch' requires context(s) that" >&2
         echo "repo-settings: GitHub Actions reported on this very branch:" >&2
@@ -1044,8 +1091,29 @@ cmd_required_drift() {
         echo "repo-settings: See the skip reasons above; refusing to report 'no drift' (failing closed)." >&2
         return 20
       fi
+      # Before declaring the rest external, account for the ones nobody can attribute. Computed
+      # here rather than beside `shared` so the arm above can return without paying for it.
+      murky="$(shared_contexts "$BR_CONTEXTS" "$(printf '%s' "$cls" | _adb_rs_pick unknown)")"
+      if [ -n "$murky" ]; then
+        echo "repo-settings: discovery found NO PR-triggered jobs, and '$branch' requires context(s) whose" >&2
+        echo "repo-settings: producing app the API did not identify:" >&2
+        printf '%s\n' "$murky" | sed 's/^/  - /' >&2
+        echo "repo-settings: an unattributable context is not proof of external CI, so treating it as" >&2
+        echo "repo-settings: 'not our business' would pass over a gate that may have stopped gating." >&2
+        echo "repo-settings: refusing to report 'no drift' (failing closed). Remedy: re-run once the" >&2
+        echo "repo-settings: producing app reports again, or drop the context if its app is gone:" >&2
+        echo "repo-settings:   baseline repo apply --prune" >&2
+        return 20
+      fi
       # Every required context came from outside Actions — an external provider. Out of scope by
       # this command's own contract, so this is a clean pass, not a grudging one.
+      #
+      # KNOWN LIMITATION (#182): this reasons from "an Actions-reported context comes from a
+      # workflow in THIS tree", which an organization/enterprise ruleset can break by requiring a
+      # workflow sourced from another repository. Such a repo, with empty local discovery, fails
+      # closed at the `shared` branch above rather than passing — deliberately the safe direction,
+      # though the message there blames this repo's parser. #179 made that case reachable for the
+      # first time (before it, the attribution literal was wrong, so the arm never fired).
       adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch'; its $(nlines "$BR_CONTEXTS") required context(s) are not Actions-reported (external CI) — nothing to require"
       return 0
     fi

@@ -155,6 +155,29 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **Neither library could ever recognize a GitHub Actions check run, because both attributed them
+  to the wrong app** (#179). GitHub stamps `app.slug` = **`github-actions`**; the app's *owner*
+  login is `github`, and that near-miss is what shipped — in two places, plus every fixture that
+  was supposed to catch it.
+  - **`branch-health` deadlocked the release gate.** With the Actions set always empty, the
+    "active workflows exist but Actions has not reported" arm fired ahead of `green` on **every**
+    repo whose CI is GitHub Actions. `/roadmap` therefore could not emit a cut once a milestone
+    drained — the release-goal convention (#27/#71/#78) could not terminate. Caught live on this
+    repo: `main` carried 26 successful Actions checks and read as `indeterminate`.
+  - **`required-drift` had the same literal, but there it failed OPEN.** With
+    `_adb_rs_actions_contexts` always empty, the contradiction detector never fired and the lint
+    took its "external CI — nothing to require" pass instead. The check that exists to catch a
+    gate that stopped gating was itself a gate that had stopped gating.
+  - **Provenance is now tri-state.** `app` is required-but-*nullable* in GitHub's REST schema, so
+    "not Actions" and "unattributable" are different answers. A required context whose producing
+    app cannot be identified now fails closed (`20`) instead of passing as somebody else's CI.
+  - **The value has one home** — `adb_actions_app_slug` in `common.sh` — passed to both jq
+    programs as a typed `--arg`. Fixtures derive it from there rather than restating it, since
+    fixtures that restate a constant are precisely what let this ship: they asserted the code's
+    belief instead of the API's behavior, so the suite stayed green against a value GitHub never
+    returns. One explicit API-contract test still pins the literal, and a drift guard in
+    `check-common-lib.sh` fails if either consumer grows a copy again.
+
 - **The `/roadmap` edge scanner missed markdown structure inside list items, escaped comment
   openers, and — worse — its own fixtures could not fail** (#135). Five findings from the codex
   review of PR #133, which merged before the review landed (#134); all five reproduced on `main`.

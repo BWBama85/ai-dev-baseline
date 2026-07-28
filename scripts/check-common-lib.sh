@@ -646,4 +646,22 @@ trapped="$(bash -c '. "$1"; trap "echo MINE" TERM; adb_run_bounded 5 1 true >/de
   _ "$PWD/scripts/lib/common.sh" 2>/dev/null)"
 has "$trapped" "MINE" "adb_run_bounded restores the caller's own TERM trap"
 
+# --- adb_actions_app_slug: the ONE home for check-run provenance (#179) ----------------------
+# Two libraries decide "did GitHub Actions report here?" — roadmap-lib.sh (whose answer gates a
+# release cut) and repo-settings.sh (whose answer gates the required-check lint). They shipped
+# with independent copies of the discriminator, both wrong the same way: `github`, which is the
+# app OWNER login, where GitHub stamps the slug `github-actions`. Neither could ever match, so
+# `branch-health` never returned green on an Actions repo and `required-drift` silently found no
+# Actions contexts to contradict. This is the value both now read instead of restating.
+eq "$(adb_actions_app_slug)" "github-actions" "adb_actions_app_slug is the real GitHub Actions slug"
+# NON-EMPTY is a correctness property, not a smoke test: both consumers compare against
+# `(.app.slug // "")`, so an empty expected value matches exactly the check runs whose app could
+# NOT be identified — counting unknown provenance as Actions, fail-open, in the predicate that
+# gates a release cut. Callers guard on this; so does the value itself.
+no "$([ -z "$(adb_actions_app_slug)" ]; echo $?)" "adb_actions_app_slug is never empty"
+
+# Cross-file pinning of this value ("both consumers call the accessor, neither keeps a copy") is
+# NOT here: `scripts/check-fact-drift.sh` is the declared home for a fact restated across files,
+# and it already pins branch-health and required-drift. See the `actions-slug-*` facts there.
+
 check_summary "common-lib"

@@ -381,13 +381,15 @@ if [ "$VERDICT" = "met" ]; then
   # exactly when the inventory cannot change the answer. Deliberately NOT "when any result exists":
   # both a legacy commit status AND a check run from a different Checks API app can be present
   # while Actions has reported nothing, and suppressing the read on either would let the predicate
-  # return `green` on an unreported build. Attribute by `app.slug`, the same rule the predicate uses.
+  # return `green` on an unreported build. Attribute by `app.slug`, the same rule the predicate uses
+  # — and by the same VALUE: GitHub Actions stamps `github-actions` (the app OWNER is `github`,
+  # which is the near-miss that shipped in both libraries and made the green arm unreachable, #179).
   #
   # Read and parse SEPARATELY: piping the read into the parser would report only the PARSER's
   # status, so a failed inventory read would arrive as an empty document, count as 0 active
   # workflows, and silently downgrade a fail-closed `indeterminate` into a "no CI here" pass.
   WF_COUNT=0
-  if [ "$(printf '%s' "$HEALTH_IN" | jq '[.check_runs[] | select((.app.slug // "") == "github")] | length')" = "0" ]; then
+  if [ "$(printf '%s' "$HEALTH_IN" | jq '[.check_runs[] | select((.app.slug // "") == "github-actions")] | length')" = "0" ]; then
     WF_JSON="$(gh api --paginate "repos/$REPO/actions/workflows?per_page=100")" \
       || { echo "ERROR: could not read the workflow inventory — hard stop"; exit 1; }
     WF_COUNT="$(printf '%s' "$WF_JSON" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')" \
