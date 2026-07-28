@@ -245,6 +245,10 @@ query($owner:String!,$repo:String!,$num:Int!){
 echo "Remaining unresolved bot threads on PR #$PR_NUM: $REMAINING"
 ```
 
+`$REMAINING` above is the whole point of the re-fetch: it is counted **now**, not carried from
+step 1. Any PR status the summary states follows the same rule via
+`bash "$HOME/.gemini/scripts/lib/state-assert.sh" observe pr "$PR_NUM"` (`base/practices/verify-before-asserting.md`).
+
 Emit a concise summary to the user:
 
 > Resolved N bot threads on PR #X.

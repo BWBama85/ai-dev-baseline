@@ -77,6 +77,7 @@ render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 render_agent_skill() {
   local agent="$1" src="$2" name out tmp first fmname
   local args_to state_dir gate_run role_dispatch roadmap_lib repo_settings cleanup_lib currency_lib pr_review
+  local state_assert
   local current_agent subtask fmmode
 
   # --- the per-agent MAP + MODE ------------------------------------------------------
@@ -100,6 +101,7 @@ render_agent_skill() {
   pr_review="bash \"\$HOME/.$agent/scripts/lib/pr-review.sh\""
   cleanup_lib="bash \"\$HOME/.$agent/scripts/lib/cleanup-lib.sh\""
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
+  state_assert="bash \"\$HOME/.$agent/scripts/lib/state-assert.sh\""
   current_agent="$agent"
 
   name="$(basename "$src" .md)"
@@ -158,7 +160,7 @@ render_agent_skill() {
       -v gate_run="$gate_run" -v role_dispatch="$role_dispatch" \
       -v roadmap_lib="$roadmap_lib" -v repo_settings="$repo_settings" \
       -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib" \
-      -v pr_review="$pr_review" \
+      -v pr_review="$pr_review" -v state_assert="$state_assert" \
       -v current_agent="$current_agent" -v subtask="$subtask" '
     function lreplace(s, from, to,   out, p) {
       out = ""
@@ -214,6 +216,7 @@ render_agent_skill() {
       line = lreplace(line, "{{PR_REVIEW_LIB}}",    pr_review)
       line = lreplace(line, "{{CLEANUP_LIB}}",      cleanup_lib)
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
+      line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line

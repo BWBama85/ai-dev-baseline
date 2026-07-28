@@ -26,9 +26,9 @@ Query the authoritative source *immediately before* you assert or act on it — 
 a `git branch --merged` against an unsynced local default, not a value you
 remember from earlier in the session:
 
-- **PR status** → `gh pr view <N> --json state,mergedAt` (not memory, not a stale
-  local ref).
-- **Issue status** → `gh issue view <N> --json state`.
+- **PR / issue status** → see *"Render the sentence from the read, in one step"* below. Do **not**
+  reach for a bare `gh issue view <N> --json state`: it flattens a `NOT_PLANNED` close into a plain
+  "closed", which reads an *abandoned* issue as a *delivered* one.
 - **Branch merged?** → a **freshly-fetched** `git fetch --prune` then
   `git branch --merged origin/<default>` (classify against the remote tip, not a
   lagging local branch).
@@ -52,6 +52,56 @@ moment it acts, and **fail closed** — when the live state can't be verified, i
 fall back to trusting the stored value (that is the stale-state trust this practice exists
 to remove); it holds the gate and surfaces the uncertainty.
 
+## Render the sentence from the read, in one step
+
+Re-reading is necessary but **not sufficient**: a value fetched into a variable can still go
+stale before the sentence that quotes it, and a correct read can still be paraphrased into a
+claim it never supported. So the read and the assertion are **one operation**, not two — the
+`state-assert.sh` module's `observe` subcommand performs the read *and* renders the finished
+sentence, e.g. `PR #137 was observed MERGED at 2026-07-28T05:22:27Z`. Each workflow carries the
+invocation for its own agent; this document states the rule, not the path.
+
+**Pass the printed line through unchanged.** Empty stdout means *say nothing about that
+entity* — never fall back on a remembered value, which is exactly the trust this practice
+removes. It fails closed: an unverifiable read prints nothing and exits non-zero.
+
+**Observations are past-tense by construction, and that is not a style rule.** A read can only
+support a claim about the moment it happened. "PR #137 **is still** open" and "the gate **will**
+hold" are claims about the future that no read can support — the second one shipped, and the PR
+merged 29 seconds later. State what was observed and when; if you need to claim a future effect,
+name the *observed* fact that implies it (an exit code, an action taken) instead.
+
+**One home per entity kind** — never re-derive another's model:
+
+| Question | The one command that answers it |
+|---|---|
+| PR / issue state | `state-assert.sh observe pr\|issue <n>` |
+| Is this branch merged? | `cleanup-lib.sh branch-verdict` (models squash/rebase, exact-head, containment) |
+| Is the branch green? | `roadmap-lib.sh branch-health` (Checks API + commit-status API, fail-closed) |
+
+## What this does *not* claim to enforce
+
+Honesty about the boundary is part of the practice, so state it exactly rather than flatteringly.
+
+**`observe` makes a stated status correct; it cannot make anyone state one.** Nothing couples its
+exit code to an action. Compare the two nearest siblings: the pre-arm review guard's exit code
+gates an actual `gh pr merge --auto`, and `/cleanup`'s branch verdict decides whether a branch
+survives — those are *structural*, because a wrong answer stops the machine. This renders optional
+narration. So the honest line is not "defined status lines are enforced, free-form prose is not";
+it is that **both** depend on someone choosing to make the call. What the command removes is the
+*stale or paraphrased* sentence, not the *unsourced* one.
+
+Mechanical enforcement of free-form prose is a separate problem and is **not** solved here: a Stop
+hook fires only after the text has already streamed, so it could force a correction but never
+prevent the claim, and a deterministic shell classifier over arbitrary English — negation,
+quotation, hypotheticals, predictions — would be theatre beyond a small documented grammar. That
+work belongs to the portable enforcement-hooks layer, which should treat *nothing* below as
+already covered.
+
+So the rule for prose remains a discipline, stated plainly: **do not volunteer a status you did not
+just read.** If it is worth saying, it is worth one `observe` call — and if that call fails, the
+honest output is silence.
+
 ## Why
 
 Repeated stale-state assertions — narrating a merged PR as "still open" from a
@@ -59,3 +109,8 @@ stale local `main` or from earlier-in-session memory — are a recurring correct
 bug. A wrong claim about volatile state is worse than a slow one: it looks
 authoritative and gets acted on. Re-checking the source of truth at the moment of
 use makes the claim correct by construction.
+
+Prose alone had already failed twice in one session with this practice loaded in context, which
+is why the read-and-render step is a command rather than another paragraph — the same move that
+turned the dependency-edge rule, the release-readiness ladder and `/cleanup`'s predicates from
+remembered rules into tested code.

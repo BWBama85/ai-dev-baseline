@@ -579,6 +579,12 @@ merge dialog:
   that moment; it never waits for a future review. If threads land later,
   `/resolve-pr-threads` clears them.
 
+**Report the guard's OBSERVED result, never a prediction about what will hold.** No read of a
+*setting* can prove that future threads will exist, so the close-out's line shape is the observed
+fact and its consequence — "review guard returned 16; auto-merge was **not** armed" — never a
+forecast about what the PR will do next. Any PR/issue status in the close-out comes from
+`{{STATE_ASSERT_LIB}} observe pr <N>` (`base/practices/verify-before-asserting.md`).
+
 ### 11. Close-out
 
 **Run step 12 first** (file every deferred item). Then write `phase=complete` and

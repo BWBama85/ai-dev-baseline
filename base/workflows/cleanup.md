@@ -85,6 +85,11 @@ narrates itself buries the one or two lines that matter.
 - **Omit empty categories entirely.** No `(0)` sections, no explanation of absent work.
 - **No process narration.** Re-fetch discipline and step ordering are *behavior*, not prose.
   Mention them only when they changed the outcome, or under `verbose`.
+- **The preamble is part of the report.** Every branch/state line below is already rendered from a
+  live read by the library; the gap that bit was the *framing sentence before the work*, which no
+  executable path covers. A PR or issue status stated anywhere in this run — preamble included —
+  comes from `{{STATE_ASSERT_LIB}} observe pr|issue <n>`, per
+  `base/practices/verify-before-asserting.md`.
 - **Brevity applies to success only.** A guardrail firing, a refused delete, a branch that could
   not be verified, anything skipped or left behind — all report in full, every run.
 

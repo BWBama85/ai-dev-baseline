@@ -9,6 +9,51 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **`verify-before-asserting` is now executable where it can be, and honest about where it cannot**
+  (#138). The practice is one of the most explicit rules in the baseline, and it was violated twice
+  in one session *with the practice loaded in context*: a merged PR narrated as open from a read 25
+  minutes stale (which then shaped the plan — it pre-committed a sweep to preserving an
+  already-deletable branch), and a close-out claiming an armed PR would wait on
+  `required_conversation_resolution` when it merged 29 seconds later. Prose was the one option
+  already known not to work, so the rule became a command — the same move that turned the
+  dependency-edge rule, the release-readiness ladder and `/cleanup`'s predicates into tested code.
+  - **`scripts/lib/state-assert.sh observe pr|issue <n>`** performs the authoritative read **and**
+    renders the finished sentence in one call, so there is no window for the value to age between
+    the read and the claim, and no paraphrase step in which an observation becomes a prediction.
+    Callers pass the line through unchanged. A getter alone would not have fixed this: an agent can
+    ignore a getter exactly as easily as a paragraph.
+  - **Fail closed means empty stdout.** Every unverifiable path — no `gh`, read error, malformed
+    JSON, a same-numbered PR in another repo, an unrecognized state — renders **no sentence** and
+    exits non-zero. Silence is safe; a guessed status is the bug.
+  - **`mergedAt` decides MERGED, not `state`.** GitHub reports a merged PR as `CLOSED`, so a
+    state-only reading would have called the merged PR "closed without merging" — swapping one
+    wrong sentence for another. `NOT_PLANNED` stays distinct from completed for the same reason: an
+    abandoned issue is not a delivered one.
+  - **Observations are past-tense by construction.** A read supports a claim about the moment it
+    happened and nothing more, so `/implement-issue` now reports the guard's *observed* result
+    ("review guard returned 16; auto-merge was not armed") instead of predicting what will hold.
+  - **One home per entity kind, no second model:** PR/issue state here; "is this branch merged?"
+    stays with `cleanup-lib.sh branch-verdict` (which already handles squash/rebase and exact-head
+    matching); "is the branch green?" stays with `roadmap-lib.sh branch-health`.
+  - **Scope is stated rather than overclaimed.** The enforceable guarantee covers the *defined*
+    status outputs of `/cleanup`, `/implement-issue` and `/resolve-pr-threads`. Free-form prose is
+    **not** mechanically enforced — a Stop hook fires after the text has already streamed, so it
+    could only ever force a correction, and a shell classifier over arbitrary English would be
+    theatre. Portable per-agent enforcement remains with the enforcement-hooks layer.
+  - **Every read is pinned to the checkout's repo** with `--repo`, and the slug comes from `git
+    remote`, not from `gh`: an unqualified read is redirected by the documented `GH_REPO` override,
+    and the entity-kind and number guards both still pass, so a confident status was rendered for a
+    *different project*. A `gh repo view` identity call could not have caught it either — that
+    honors `GH_REPO` too and would simply have agreed with itself.
+  - **The observation time is recorded after the read returns**, not before it starts. If the
+    entity changes mid-flight, a pre-read stamp names an instant at which the reported state was
+    demonstrably false.
+  - **A `CLOSED` issue with no recognized `stateReason` is unverifiable**, never "completed" —
+    inferring delivery from absent evidence is the exact false-delivery claim this prevents, and
+    GitHub returns the field null for issues closed before it existed.
+  - Regression-tested offline by **`scripts/check-state-assert.sh`** (67 assertions, `gh` stubbed
+    on PATH), wired into `selfcheck.sh` and CI.
+
 - **`/implement-issue` no longer arms auto-merge before the reviewer has spoken** (#134). PR #133
   merged **29 seconds** after opening and **six minutes before** the Codex connector posted five
   review threads — all five were real bugs, and they landed on `main` unreviewed.
