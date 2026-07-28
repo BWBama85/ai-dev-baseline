@@ -162,6 +162,13 @@ step "pr-review"
 # tri-state, and every unreadable path failing closed.
 if bash scripts/check-pr-review.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "pr-watch"
+# Unit tests for the async-reviewer status detector (scripts/lib/pr-watch.sh, #49): the two
+# terminal signals (a `+1` reaction = clean, a review at head = findings), the staleness rule that
+# stops a reaction left on an earlier head from reading as a pass, the declaration tri-state, every
+# unreadable path failing closed, and the bounded wait actually honouring its bound.
+if bash scripts/check-pr-watch.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "state-assert"
 # Unit tests for the atomic observe-and-render helper (scripts/lib/state-assert.sh, #138):
 # mergedAt-over-state, NOT_PLANNED kept distinct, every unverifiable path rendering NO sentence,

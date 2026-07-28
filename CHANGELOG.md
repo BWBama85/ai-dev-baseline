@@ -9,6 +9,51 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **Waiting for the async reviewer no longer costs model tokens** (#49). `/implement-issue` opens a
+  PR and ends; the Codex connector reviews minutes later, usually after the session is gone, so the
+  operator had to come back and run `/resolve-pr-threads` by hand. The waiting half of that loop is
+  something a shell can do, and now does.
+  - **`scripts/lib/pr-watch.sh`** — `observe --pr N` classifies once (`"<verdict> <head-sha>"` on
+    stdout); `wait --pr N` polls until a terminal answer, bounded by `--interval`/`--max-secs`.
+    The model is not in the loop, so a half-hour wait costs nothing.
+  - **Three surfaces are read, because the reviewer has two output shapes and the repo does not
+    choose which it gets.** Without a Codex Cloud environment the connector posts a review object
+    (plus inline threads) for findings and a bare `+1` reaction for a clean pass — the contract it
+    documents in every review body: *"If Codex has suggestions, it will comment; otherwise it will
+    react with 👍."* **With** an environment it runs as a task and posts a **single issue comment**:
+    no review, no threads, no reaction. Both shapes were observed on this repo *the same day*
+    (PR #166 at 08:01 → review + 3 threads; PR #178 at 19:30 → one comment, zero reviews), so a
+    detector reading only reviews would sit at `pending` **forever** on a repo configured the second
+    way — the same wedge this exists to remove, reintroduced by a vendor-side setting nobody in the
+    repo changed. Reviews are matched by head SHA; comments and reactions by timestamp. Findings
+    outrank clean; a review at the head outranks a comment.
+  - **`/resolve-pr-threads` no longer reports "nothing to do" on a task-mode review.** A `10`
+    verdict now tells the caller to read the reviewer's latest issue comment first, because under
+    that shape the comment *is* the review and there are zero threads to resolve — and to verify any
+    commit such a comment claims to have made, which does not exist on the branch unless the
+    reviewer has push access.
+  - **The transient 👀 is deliberately not modelled.** The reactions API exposes only what exists
+    *now*, never deletion history, so "👀 was here and then vanished" is knowable only to a watcher
+    that happened to be looking across the transition — it cannot survive a restart, a resumed
+    watch, or a late start. Polling for either *terminal* signal is restart-safe and idempotent.
+  - **A reaction is not commit-scoped, and that is the one dangerous direction.** A `+1` left on an
+    earlier head still sits there after new commits land; counting it would report a clean pass for
+    code nobody reviewed. A `+1` therefore counts only when it postdates the head commit's
+    committer date. Every unreadable path fails closed — never `clean`.
+  - **`/resolve-pr-threads <PR#> --watch`** waits, then runs the existing resolve flow only when
+    there are findings, exits quietly on a clean pass, and reports every other verdict. Without the
+    flag the workflow behaves exactly as before. `/implement-issue`'s close-out offers this form of
+    the resume hint on a code-16 skip.
+  - **Known boundary, stated rather than implied:** this does not arm auto-merge (#168 — #49's own
+    text says "never merges" while three docs expected it to arm; that contradiction is an owner
+    decision, not an oversight), does not survive the session (#171, with tree isolation as #172),
+    and does not trigger a re-review (#169 — the connector re-reviews on open / ready-for-review /
+    an explicit `@codex review`, **not** on a push). Per-reviewer signal profiles are #170.
+  - **A latent bug this surfaced, filed not fixed:** `pr-review.sh gate` reads only
+    `pulls/N/reviews`, so a clean Codex pass — which posts no review — leaves it returning `16`
+    ("awaiting review") forever, disabling unattended arming on the cleanest PRs. That is **#167**;
+    fixing it changes when merges happen, so it did not ride along with a detector.
+
 - **`verify-before-asserting` is now executable where it can be, and honest about where it cannot**
   (#138). The practice is one of the most explicit rules in the baseline, and it was violated twice
   in one session *with the practice loaded in context*: a merged PR narrated as open from a read 25

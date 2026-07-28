@@ -303,10 +303,19 @@ Three properties are doing the real work:
   not a guess from PR history.
 
 **On a bot-reviewed repo this guard skips arming, every time, by design.** Step 10 runs seconds
-after `gh pr create`, so a reviewer that takes minutes has not reviewed yet. Unattended *arming*
-is therefore suspended on such repos until **#49** adds the PR watch that waits for the review,
-resolves its threads, and arms afterwards. A repo with no async reviewer sets `bots = []` and is
-unaffected.
+after `gh pr create`, so a reviewer that takes minutes has not reviewed yet. A repo with no async
+reviewer sets `bots = []` and is unaffected.
+
+**The waiting half shipped with #49; the arming half did not.** `/resolve-pr-threads <PR#> --watch`
+(`scripts/lib/pr-watch.sh`) waits for the reviewer in a shell poll loop and resolves any findings,
+but does not arm auto-merge afterwards — so unattended arming remains suspended on such repos.
+
+> **A clean Codex pass does not satisfy this guard, and will not until that is fixed.** The
+> connector signals "reviewed, nothing found" with a `+1` reaction on the PR post and posts **no
+> review object at all**. `gate` reads only `pulls/N/reviews`, so on such a PR it returns `16`
+> ("awaiting review") indefinitely — auto-merge stays unarmed on precisely the PRs that are
+> cleanest. `pr-watch.sh` reads the reaction and reports that case correctly as `clean`; teaching
+> *this* guard to accept it changes when merges happen, so it is **#167** rather than folded in.
 
 ## Operating notes
 
