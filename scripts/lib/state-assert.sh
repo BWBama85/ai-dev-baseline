@@ -74,15 +74,41 @@ _sa_unverifiable() {
   exit 3
 }
 
+# _sa_local_slug — the checkout's `owner/repo`, derived from git's own remote so no gh environment
+# override can move it. Handles the three URL shapes git emits: scp-style `git@host:owner/repo`,
+# `https://host/owner/repo`, and `ssh://git@host/owner/repo`, each with an optional `.git`.
+# Returns non-zero (printing nothing) when there is no parseable remote — which fails closed.
+_sa_local_slug() {
+  local url
+  url="$(git remote get-url origin 2>/dev/null)" || return 1
+  [ -n "$url" ] || return 1
+  url="${url%.git}"; url="${url%/}"
+  case "$url" in
+    *://*) url="${url#*://}"; url="${url#*@}"; url="${url#*/}" ;;
+    *:*)   url="${url#*:}" ;;
+  esac
+  # Exactly one slash, both halves non-empty — anything else is not an owner/repo pair.
+  case "$url" in
+    */*/*|/*|*/) return 1 ;;
+    */*) : ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$url"
+}
+
 # _sa_read <kind> <number> — the half that is identical for both entity kinds, written ONCE.
 # Sets SA_STATE, SA_EXTRA (mergedAt for a PR, stateReason for an issue) and SA_AT. Exits 3 on any
 # unverifiable condition, so a caller that returns has usable values by construction.
 #
-# NO SEPARATE REPO-IDENTITY CALL. An earlier draft spent a whole `gh repo view` round trip — 55-70%
-# of this command's wall time — proving the entity was local. It is redundant: the argument is
-# validated as a bare INTEGER, and `gh pr view <n>` resolves that number against the repo of the
-# LOCAL remote, exactly the property pr-review.sh relies on for `repos/{owner}/{repo}/...`. A
-# number cannot address another repository.
+# EVERY READ IS PINNED TO THE CHECKOUT'S REPO WITH `--repo`, and the slug comes from `git remote`,
+# NOT from gh. This is not belt-and-braces: an unqualified `gh pr view <n>` is redirected by the
+# documented `GH_REPO` environment override, and then BOTH remaining guards below pass — the URL
+# still has the right segment and the right number, just for a different project. Demonstrated:
+# `GH_REPO=cli/cli state-assert.sh observe pr 1` rendered "PR #1 was observed MERGED" while
+# standing in this repository. A `gh repo view` identity call (an earlier draft had one, at 55-70%
+# of the command's wall time) could never have caught it either, because that honors `GH_REPO` too
+# and would simply have agreed with itself. Asking git — which cannot be redirected by a gh env
+# var — is both the correct anchor and free of a network round trip.
 #
 # The URL still earns its place, for a different question the number cannot answer: PRs and issues
 # share ONE number space, and `gh issue view <PR number>` really does answer with the pull request.
@@ -106,16 +132,23 @@ _sa_read() {
 
   adb_require_gh jq || _sa_unverifiable "gh/jq unavailable or gh not authenticated"
 
-  # Stamped BEFORE the read, so the sentence dates the observation no later than it actually was —
-  # erring older is the safe direction for a freshness claim.
-  SA_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local slug
+  slug="$(_sa_local_slug)" || _sa_unverifiable "cannot resolve this checkout's GitHub repository"
 
   # Read and parse as SEPARATE steps. A pipeline reports only its LAST command's status, so
   # `gh ... | jq` returns 0 on a failed read and the parser sees empty stdin — indistinguishable
   # from a legitimately empty answer, and a sentence would be rendered from nothing.
-  json="$(gh "$subcmd" view "$n" --json "state,$extra_field,url" 2>/dev/null)" \
+  json="$(gh "$subcmd" view "$n" --repo "$slug" --json "state,$extra_field,url" 2>/dev/null)" \
     || _sa_unverifiable "gh could not read $kind #$n"
   [ -n "$json" ] || _sa_unverifiable "empty response for $kind #$n"
+
+  # Stamped AFTER the read returns, never before it starts. An earlier draft stamped first, on the
+  # reasoning that erring older is conservative for a freshness claim. That reasoning is wrong: if
+  # the entity changes WHILE the read is in flight — an issue reopened mid-call — a pre-read stamp
+  # names an instant at which the reported state was demonstrably FALSE, and the sentence asserts
+  # something that never held. The read's completion is the earliest instant the value is known to
+  # have been true, so that is what "observed at" must mean.
+  SA_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
   # One jq pass, one field per line. An absent field stays an EMPTY LINE rather than collapsing,
   # so a missing mergedAt cannot shift url into state's position. Capture first, then split: the
@@ -171,13 +204,18 @@ _sa_observe_issue() {
   # work was ABANDONED, not delivered, and collapsing the two reads a cancelled requirement as a
   # satisfied one (the distinction /roadmap's release predicate also turns on).
   case "$SA_STATE" in
-    OPEN)   printf 'issue #%s was observed OPEN at %s\n' "$1" "$SA_AT" ;;
+    OPEN) printf 'issue #%s was observed OPEN at %s\n' "$1" "$SA_AT" ;;
     CLOSED)
-      if [ "$SA_EXTRA" = "NOT_PLANNED" ]; then
-        printf 'issue #%s was observed CLOSED as NOT_PLANNED at %s\n' "$1" "$SA_AT"
-      else
-        printf 'issue #%s was observed CLOSED as completed at %s\n' "$1" "$SA_AT"
-      fi ;;
+      # BOTH reasons are matched explicitly and everything else is unverifiable. An earlier draft
+      # treated "not NOT_PLANNED" as completed, which asserts DELIVERY from the mere absence of
+      # evidence — and `stateReason` is precisely the field distinguishing delivered work from
+      # abandoned work. GitHub can return it null (issues closed before the field existed), so the
+      # fallback was reachable and produced exactly the false-delivery claim this file prevents.
+      case "$SA_EXTRA" in
+        COMPLETED)   printf 'issue #%s was observed CLOSED as completed at %s\n' "$1" "$SA_AT" ;;
+        NOT_PLANNED) printf 'issue #%s was observed CLOSED as NOT_PLANNED at %s\n' "$1" "$SA_AT" ;;
+        *) _sa_unverifiable "issue #$1 is CLOSED with no recognized stateReason ('$SA_EXTRA') — cannot tell delivered from abandoned" ;;
+      esac ;;
     *) _sa_unverifiable "unrecognized state '$SA_STATE' for issue #$1" ;;
   esac
 }

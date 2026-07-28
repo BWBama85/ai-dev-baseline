@@ -44,6 +44,8 @@ case "$1 $2" in
     if [ "${SHIM_AUTH_FAIL:-0}" = "1" ]; then echo "gh: not authenticated" >&2; exit 1; fi
     exit 0 ;;
   "pr view")
+    [ -n "${SHIM_ARGLOG:-}" ] && printf '%s\n' "$*" >> "$SHIM_ARGLOG"
+    [ -n "${SHIM_DELAY:-}" ] && sleep "$SHIM_DELAY"
     if [ "${SHIM_PR_FAIL:-0}" = "1" ]; then echo "gh: no such PR" >&2; exit 1; fi
     printf '%s\n' "${SHIM_PR_JSON:-}" ;;
   "issue view")
@@ -196,6 +198,55 @@ usage_rejects "trailing flag"         observe pr 1 --json state
 
 # `help` is not an error path.
 run --help >/dev/null 2>&1; eq "$?" "0" "--help exits 0"
+
+# ============ 3b. review findings from PR #154 (chatgpt-codex-connector) ============
+
+# FINDING 1 — the observation time must be recorded AFTER the read, not before it.
+# If the entity changes while the read is in flight, a pre-read stamp names an instant at which
+# the reported state was demonstrably false. Proven with a deliberately slow read: the rendered
+# timestamp must land after the read RETURNS, not when it started.
+export SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/7"}'
+_t_before="$(date -u +%s)"
+_rendered="$(SHIM_DELAY=2 run observe pr 7)"
+_stamp="${_rendered##*at }"
+# Portable ISO-8601 -> epoch: BSD `date -j -f` on macOS, GNU `date -d` elsewhere.
+_stamp_epoch="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$_stamp" +%s 2>/dev/null \
+             || date -u -d "$_stamp" +%s 2>/dev/null)"
+if [ -n "$_stamp_epoch" ] && [ "$_stamp_epoch" -ge "$((_t_before + 2))" ]; then ok; else
+  bad "timestamp must be recorded after the read returns: stamp=$_stamp before=$_t_before"
+fi
+
+# FINDING 2 — every read is pinned to the CHECKOUT's repo with --repo, so the documented GH_REPO
+# override cannot redirect it. Without this, both remaining guards still pass (right segment, right
+# number) and a confident status is rendered for a DIFFERENT project. Demonstrated live before the
+# fix: `GH_REPO=cli/cli ... observe pr 1` rendered "PR #1 was observed MERGED" from this checkout.
+_arglog="$work/args.txt"; : > "$_arglog"
+SHIM_ARGLOG="$_arglog" run observe pr 7 >/dev/null 2>&1
+if grep -q -- '--repo' "$_arglog"; then ok; else
+  bad "the read must pass --repo so GH_REPO cannot redirect it (args: $(cat "$_arglog"))"
+fi
+# The slug is derived from git, which no gh env var can move — so GH_REPO must not change the
+# arguments the library builds.
+: > "$_arglog"
+GH_REPO="other/repo" SHIM_ARGLOG="$_arglog" run observe pr 7 >/dev/null 2>&1
+if grep -q -- "--repo" "$_arglog" && ! grep -q -- "other/repo" "$_arglog"; then ok; else
+  bad "GH_REPO must not influence the --repo slug (args: $(cat "$_arglog"))"
+fi
+# No parseable git remote -> fail closed, never an unqualified read.
+_norepo="$work/norepo"; mkdir -p "$_norepo"
+_out="$(cd "$_norepo" && PATH="$shimbin:$PATH" bash "$LIB" observe pr 7 2>/dev/null)"
+eq "$_out" "" "no parseable git remote: renders no sentence"
+
+# FINDING 3 — a CLOSED issue with no recognized stateReason is UNVERIFIABLE, never "completed".
+# stateReason is the field that distinguishes delivered work from abandoned work, so inferring
+# delivery from the mere absence of evidence is the false-delivery claim this file exists to stop.
+# GitHub returns it null for issues closed before the field existed, so the arm is reachable.
+SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":null,"url":"https://github.com/o/r/issues/5"}' \
+  fails_closed "CLOSED issue with a null stateReason" observe issue 5
+SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"REOPENED_THEN_CLOSED","url":"https://github.com/o/r/issues/5"}' \
+  fails_closed "CLOSED issue with an unknown stateReason" observe issue 5
+export SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/o/r/issues/5"}'
+has "$(run observe issue 5)" "issue #5 was observed CLOSED as completed at " "an explicit COMPLETED still renders"
 
 # ============================ 4. wiring lives in its declared home ============================
 # The token pins that used to sit here moved to scripts/check-fact-drift.sh, which is the lint

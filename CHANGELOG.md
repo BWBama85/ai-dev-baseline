@@ -40,7 +40,18 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     **not** mechanically enforced — a Stop hook fires after the text has already streamed, so it
     could only ever force a correction, and a shell classifier over arbitrary English would be
     theatre. Portable per-agent enforcement remains with the enforcement-hooks layer.
-  - Regression-tested offline by **`scripts/check-state-assert.sh`** (47 assertions, `gh` stubbed
+  - **Every read is pinned to the checkout's repo** with `--repo`, and the slug comes from `git
+    remote`, not from `gh`: an unqualified read is redirected by the documented `GH_REPO` override,
+    and the entity-kind and number guards both still pass, so a confident status was rendered for a
+    *different project*. A `gh repo view` identity call could not have caught it either — that
+    honors `GH_REPO` too and would simply have agreed with itself.
+  - **The observation time is recorded after the read returns**, not before it starts. If the
+    entity changes mid-flight, a pre-read stamp names an instant at which the reported state was
+    demonstrably false.
+  - **A `CLOSED` issue with no recognized `stateReason` is unverifiable**, never "completed" —
+    inferring delivery from absent evidence is the exact false-delivery claim this prevents, and
+    GitHub returns the field null for issues closed before it existed.
+  - Regression-tested offline by **`scripts/check-state-assert.sh`** (67 assertions, `gh` stubbed
     on PATH), wired into `selfcheck.sh` and CI.
 
 - **`/implement-issue` no longer arms auto-merge before the reviewer has spoken** (#134). PR #133
