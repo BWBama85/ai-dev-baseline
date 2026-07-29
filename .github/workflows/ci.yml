@@ -500,6 +500,15 @@ jobs:
       - name: Release stays project-owned — no /release skill may ship (#3)
         run: bash scripts/check-release-role.sh
 
+      # The other half of the same decision: #3 says the PROJECT supplies its own release skill,
+      # so this repo's copy (.claude/skills/release/) needs a gate too. Rides this job for the
+      # same reasons as the step above — same decision family, ~100ms — and deliberately NOT a new
+      # job: a newly added job is a newly added non-required context, which is the drift #122
+      # exists to catch. Nothing else in the harness reads .claude/skills/, so before this step a
+      # green CI said nothing at all about the skill that cuts our releases.
+      - name: This project's own /release predicates must hold (D14)
+        run: bash scripts/check-release-skill.sh
+
   practice-index:
     name: practice-index
     runs-on: ubuntu-latest

@@ -4,7 +4,7 @@
 # Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter, workflow-render,
 # gate-detector/gates, common-lib, agent-init, cleanup-enum, repo-settings, baseline,
 # session-currency, precommit-gate, implement-gate, install-migration, install-guard,
-# fact-drift, practice-index, release-role, and an install→uninstall dry-run into a
+# fact-drift, practice-index, release-role, release-skill, and an install→uninstall dry-run into a
 # throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
@@ -262,6 +262,14 @@ step "release-role"
 # invariant no other check can express — build-drift/workflow-map would happily green-light a
 # newly added base/workflows/release.md.
 if bash scripts/check-release-role.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "release-skill"
+# The other half of #3: the project supplies its OWN release skill, so this repo's copy needs a
+# gate. Offline unit tests for .claude/skills/release/release-lib.sh (version-ok, changelog-verify,
+# checks-settled) plus the boundary invariants — no {{PLACEHOLDER}} inside a runnable block, no
+# release predicate in the installed scripts/lib, and the skill still delegating to the tested
+# predicates rather than re-deriving them (D14). Nothing else here reads .claude/skills/.
+if bash scripts/check-release-skill.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "install dry-run"
 FAKE="$(mktemp -d)"; ok=1

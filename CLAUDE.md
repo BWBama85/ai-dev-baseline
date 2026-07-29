@@ -28,7 +28,7 @@ those. The rules below are specific to this repo's code.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs
    (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
    pr-review · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration ·
-   install-guard · fact-drift · practice-index · release-role · install dry-run). Fix red at the root — never push and
+   install-guard · fact-drift · practice-index · release-role · release-skill · install dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
 
    **One CI step is deliberately not mirrored** (#122, recorded as D13 in
@@ -57,6 +57,7 @@ those. The rules below are specific to this repo's code.
 | `base/workflows/*.md` | Single source for each workflow (procedure + metadata) — **edit here** |
 | `base/roles.md`, `templates/agents.toml` | Role model + per-project manifest |
 | `agents/<agent>/` | Per-agent: generated root doc, `adapter.sh`, generated `skills/` (all agents); Claude also has generated hook `scripts/` |
+| `.claude/skills/release/SKILL.md` | **This project's own `/release`** — hand-written, **not** generated, and deliberately outside `base/`+`agents/` so decision #3/D7's "no baseline `/release`" lint stays green. Cuts the tag: re-verifies readiness + branch health live, stamps `CHANGELOG.md` through a normal PR, tags the verified-green merge commit, then `baseline release roll`. Every adopting repo owes itself one of these (D14) |
 | `scripts/lib/common.sh` | Shared shell primitives — the **ONE home** for link/unlink/backup, default-branch, TOML-read, version-compare; **source it, never copy** |
 | `scripts/lib/project-gates.sh` | Gate auto-detector (installs beside `common.sh` into `~/.<agent>/scripts/lib`) |
 | `scripts/lib/skill-compose.sh` | Partial skill-override composer — merges a project's `overrides.md` onto the installed base skill so a project carries deltas without forking the whole skill (#22); installs beside `common.sh` |
@@ -65,7 +66,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/lib/pr-watch.sh` | The **async-reviewer status detector** (#49) — has the declared reviewer finished with this PR, and did it find anything? `observe` classifies once; `wait` polls until a terminal answer **in shell**, so a half-hour wait costs no model tokens. Reads the two disjoint terminal signals the Codex connector actually emits: a `+1` reaction on the PR post (clean, and it posts *no review*) or a review at the current head (findings). Powers `/resolve-pr-threads --watch`. Deliberately **not** part of `pr-review.sh`, whose header forbids it growing a wait (`scripts/check-pr-watch.sh`); installs beside `common.sh` |
 | `scripts/lib/pr-review.sh` | The **pre-arm review guard** (#134) — has every reviewer this repo declares (`[reviewers] bots`) reviewed the PR's *current head commit*? `/implement-issue` step 10 asks it before `gh pr merge --auto`, because GitHub gates on checks and a bot reviewer is not one. Deliberately **not** part of `repo-settings.sh`, whose charter is repo settings, not review (`scripts/check-pr-review.sh`); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
-| `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role) |
+| `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role · release-skill) |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |
 | `docs/` | design-principles · philosophy · installation · roles · overrides · adding-an-agent · release-goal-convention · repo-settings · roadmap-acceptance |
 

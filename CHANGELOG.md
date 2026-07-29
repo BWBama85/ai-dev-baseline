@@ -7,6 +7,58 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **This repo now has its own `/release`** (`.claude/skills/release/SKILL.md`, D14). Decision
+  **#3/D7** committed the baseline to shipping **no** generic release workflow and made `release`
+  a permanently project-owned role — but this project never supplied its own copy, so the role was
+  named, `/roadmap` emitted it on a `met` readiness verdict, and nothing resolved it. The procedure
+  lived as three prose sentences in `CONTRIBUTING.md` → *Releases* and was hand-executed for both
+  v1.0.0 and v1.1.0.
+  - **#188 is what made the gap visible.** A slash command that does not exist does not fail loudly
+    in Claude Code — it fuzzy-matches the nearest built-in (`release-notes`). Verified against the
+    2.1.220 binary: there is **no** `/release` built-in, only `release-notes`, and `release` is not
+    among the 110 built-in command names. So a repo that *does* ship a `/release` skill was never
+    broken by this; a repo without one gets a silent wrong answer at the exact moment `/roadmap`
+    says "cutting."
+  - **Every decision is delegated to an already-tested predicate** — `release-ready` and
+    `branch-health` gate the cut, `pr-watch.sh wait` waits out the reviewer, `baseline release roll`
+    closes the loop. The skill is glue plus the two genuinely project-specific parts: the CHANGELOG
+    format and the tag convention.
+  - **It lives outside `base/` and `agents/*/skills/`**, the two paths `check-release-role.sh`
+    guards, so D7's negative invariant stays green — "the baseline ships no `/release`" and "this
+    project has one" are both true, which is what D7 intended.
+  - **Two SHAs are captured rather than re-derived**, because both guard a race against an
+    irreversible act: the reviewed head becomes `--match-head-commit` so a commit pushed after the
+    pass cannot merge unreviewed, and the PR's own `mergeCommit.oid` is what gets tagged — a second
+    PR merging in between moves the default branch's HEAD, and tagging that would ship commits the
+    changelog never mentions.
+  - **It resolves `[roles].release`** before any mutation and stops if the configured executor is
+    not the agent driving, rather than silently ignoring the manifest.
+- **`agents.toml` declares `release = "claude"` explicitly** instead of leaving it to the `primary`
+  default, so the key that the new skill resolves is visible where a reader looks for it.
+- **The release skill's decisions live in a tested library, not in prose**
+  (`.claude/skills/release/release-lib.sh` + `scripts/check-release-skill.sh`, wired into
+  `selfcheck` and CI). The first cut put the whole procedure in SKILL.md with inline shell; two
+  review rounds found **17** defects in it, one fatal — and `selfcheck` was **green for all of
+  them**, because nothing in the harness reads `.claude/skills/`.
+  - `version-ok` — rejects a malformed version (a shell glob is not a validator: `v1.2.3-rc1`,
+    `v1x.2.3` and `v1.2.3.4` all pass one), a **reused** version, and one not strictly newer than
+    the latest already-used. Reuse matters more than it looks: the stamp merges first, so the
+    failure surfaces at `git tag`, leaving the branch claiming a release that was never cut.
+  - `changelog-verify` — asserts the heading, the date, that `[Unreleased]` is left **empty**, and
+    that **both** link refs match whole-line against URLs derived from slug/last/version, so a
+    compare against the *wrong previous tag* is caught. Fixed-string throughout, because `1.1.0`
+    is all `.` metacharacters and a plain `grep` accepts `1x1x0`.
+  - `checks-settled` — "are this commit's checks **done**", distinct from `branch-health`'s "are
+    they **green**". Refuses both shapes that tag an unverified commit: an empty set (CI has not
+    registered) and a set smaller than the reviewed head's (GitHub registers jobs incrementally,
+    so on a ~26-job repo one fast check finishing makes "nothing pending" briefly true).
+  - The library sits **beside the skill**, never in `scripts/lib/` — `adb_agent_manifest` links
+    that directory into every install, so a release predicate there would ship generic release
+    machinery to every adopting repo, reversing #3/D7 by accident. The check asserts that
+    boundary, and that no `{{PLACEHOLDER}}` appears inside a runnable fenced block.
+
 ## [1.1.0] - 2026-07-28
 
 The loop closes on itself. v1.0.0 shipped the practices, the workflows and the gates;
