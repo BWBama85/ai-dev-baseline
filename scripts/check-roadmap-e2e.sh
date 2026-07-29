@@ -113,6 +113,13 @@ case "$sub" in
       *issues\?state=open*)
         fail_if openissues
         emit "$F/open-issues.json" ;;
+      # A single issue by number — the canceled-prerequisite probe. Absent fixture => a normal
+      # completed close, which is the common case and must NOT read as canceled.
+      */issues/[0-9]*)
+        n="${url##*/issues/}"; n="${n%%\?*}"
+        if [ -f "$F/issue-$n.json" ]; then emit "$F/issue-$n.json"
+        else printf '{"number":%s,"state":"closed","state_reason":"completed"}\n' "$n" | { if [ -n "$jqexpr" ]; then jq -r "$jqexpr"; else cat; fi; }
+        fi ;;
       *) echo "gh stub: unhandled api url: $url" >&2; exit 90 ;;
     esac ;;
   issue)
@@ -121,7 +128,20 @@ case "$sub" in
         fail_if issuelist
         cat "$F/roadmap-nums" 2>/dev/null || true ;;
       edit|create|comment)
-        printf 'issue %s %s %s\n' "$sub2" "${args[0]:-}" "${bodyfile:+body-file}" >> "$F/calls"
+        # Record the FULL argv. `${args[0]}` is the subcommand itself (argv is shifted once, so it
+        # re-prints "edit"), which meant the issue NUMBER never reached the log — and an assertion
+        # like `grep 'issue edit 44'` could therefore never match, passing whatever the snippet did.
+        # The flags matter too now: composition's correctness is "promoted AND labelled", and a
+        # promotion that dropped `--add-label release-blocker` arms a phantom cut.
+        printf 'issue %s %s\n' "$*" "${bodyfile:+body-file}" >> "$F/calls"
+        # `fail-edit-after N` fails every PROMOTION past the Nth, so a partial composition — and the
+        # rollback that must follow it — can be driven. Counted on `--add-label`, which only
+        # promotions carry, so the rollback's own edits never trip it.
+        if [ -f "$F/fail-edit-after" ]; then
+          lim="$(cat "$F/fail-edit-after")"
+          cnt="$(grep -c -- '--add-label' "$F/calls" 2>/dev/null || true)"
+          [ "${cnt:-0}" -gt "${lim:-0}" ] && { echo "gh: simulated edit failure" >&2; exit 1; }
+        fi
         printf 'https://example.invalid/issues/1\n' ;;
       *) echo "gh stub: unhandled issue subcommand: $sub2" >&2; exit 90 ;;
     esac ;;
@@ -168,6 +188,7 @@ run_snippet() {
       BACKLOG_TITLE=\${ADB_BACKLOG:-Backlog}
       NO_AUTOFIX=\${ADB_NO_AUTOFIX:-0}
       RELEASE_MODE=\${ADB_RELEASE_MODE:-0}
+      COMPOSE_EXCLUDE=\${ADB_EXCLUDE-}
       $code
       $tail_code
     " 2>&1
@@ -839,11 +860,290 @@ printf -- '---\nname:\ndescription:\n---\n' > "$work/sk/emptyval/SKILL.md"
 eq "$(rc_snip '/emptyval' "$work/sk" sk)"             0 "empty frontmatter values do not resolve"
 
 # ============================================================================================
+# 9. AUTO-COMPOSITION — an empty release milestone is filled, not reported (D15 / #80)
+# ============================================================================================
+# WHY END-TO-END AND NOT JUST THE PREDICATE. check-roadmap.sh proves `compose-candidates` ranks
+# correctly. What it cannot prove is that the shell the workflow hands an agent actually promotes
+# anything — and the failure mode that matters is not "promoted the wrong issue", it is
+# "promoted WITHOUT the release-blocker label", which arms the milestone with zero blockers so the
+# next run reads `met` and emits a cut for a release nobody built. That is a property of the
+# snippet's argv, so it is only visible here.
+
+# compose_issues <spec>... — open-issues.json for composition. Spec: `N` (enhancement),
+# `N!` (bug), `N>P` (declares `Depends on #P` in its body), `N@Title` (a milestone other than the
+# backlog), combinable as `N!>P@Title`. Default milestone is `Backlog`, because composition draws
+# ONLY from the backlog membership — a fixture left unmilestoned would be filtered out and every
+# case here would pass by composing nothing.
+compose_issues() {
+  { printf '['
+    local first=1 spec n dep ms labels body
+    for spec in "$@"; do
+      [ "$first" -eq 1 ] || printf ','
+      first=0
+      n="$spec"; dep=""; ms="Backlog"; labels='[{"name":"enhancement"}]'; body=""
+      case "$n" in *'@'*) ms="${n#*@}"; n="${n%%@*}" ;; esac
+      case "$n" in *'>'*) dep="${n#*>}"; n="${n%%>*}" ;; esac
+      case "$n" in *'!') n="${n%!}"; labels='[{"name":"bug"}]' ;; esac
+      [ -z "$dep" ] || body="Depends on #$dep"
+      if [ "$ms" = "none" ]; then
+        printf '{"number":%s,"state":"open","title":"issue %s","body":"%s","labels":%s,"milestone":null}' \
+          "$n" "$n" "$body" "$labels"
+      else
+        printf '{"number":%s,"state":"open","title":"issue %s","body":"%s","labels":%s,"milestone":{"title":"%s"}}' \
+          "$n" "$n" "$body" "$labels" "$ms"
+      fi
+    done
+    printf ']\n'
+  } > "$FIX/open-issues.json"
+}
+# artifact_body <text> — append the roadmap artifact (#31) to open-issues.json carrying <text>.
+# The Decisions-edge source is the artifact itself, so a case that exercises it needs the artifact
+# present in the SAME open read.
+artifact_body() {
+  local body; body="$(printf '%s' "$1" | jq -Rs .)"
+  jq --argjson a "{\"number\":31,\"state\":\"open\",\"title\":\"roadmap\",\"labels\":[{\"name\":\"roadmap\"}],\"milestone\":null,\"body\":$body}" \
+     '. + [$a]' "$FIX/open-issues.json" > "$FIX/open-issues.json.tmp" \
+     && mv "$FIX/open-issues.json.tmp" "$FIX/open-issues.json"
+}
+# promoted — the issue numbers the snippet actually promoted, ascending, space-joined.
+promoted() {
+  grep '^issue edit ' "$FIX/calls" 2>/dev/null | awk '{print $3}' | sort -n | tr '\n' ' ' | sed 's/ $//'
+}
+
+# --- 9a. bugs are the floor: every bug is promoted, enhancements are not ---------------------
+fix_default
+compose_issues '102!' '112!' 20 80 31
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+eq "$RC_" 0 "the compose snippet runs clean"
+eq "$(promoted)" "102 112" "every open bug is promoted; enhancements are not"
+has "$OUT" "composed: #102 -> Next release (release-blocker)" "each promotion reports one line"
+has "$OUT" "rider candidates" "the enhancement slate is printed for judgement"
+
+# --- 9b. THE PHANTOM-CUT GUARD: every promotion carries the blocker label --------------------
+# A milestone armed with issues that carry NO release-blocker label reads `met` on the next run
+# (`release-ready 1 1 0 N 0 green` -> met) and emits a cut for a release nothing has built.
+eq "$(grep -- '--add-label release-blocker' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 2 \
+   "every promotion carries --add-label release-blocker"
+eq "$(grep -- '--milestone Next release' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 2 \
+   "...and names the milestone by TITLE, resolved from its number"
+
+# --- 9c. dependency closure: a prerequisite is pulled in even when it is not a bug -----------
+# Without this the milestone holds a blocker whose prerequisite sits in the backlog — it can never
+# close, so /roadmap reports `unmet` forever and the loop stops terminating one step further in.
+fix_default
+compose_issues '136!>55' 55 31
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "55 136" "a bug's open prerequisite is promoted with it, even as an enhancement"
+
+# --- 9c-bis. closure is TRANSITIVE --------------------------------------------------------
+fix_default
+compose_issues '136!>55' '55>62' 62 31
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "55 62 136" "closure follows the chain to its end, not one hop"
+
+# --- 9c-ter. a CLOSED prerequisite is satisfied and pulls nothing in -------------------------
+# #999 is absent from the open read, so the edge is already satisfied.
+fix_default
+compose_issues '136!>999' 31
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "136" "a prerequisite that is not open is satisfied and promotes nothing extra"
+
+# --- 9d. --no-autofix is read-only ----------------------------------------------------------
+fix_default
+compose_issues '102!' 31
+ADB_RELEASE_MODE=1 ADB_NO_AUTOFIX=1 run_snippet compose-candidates >/dev/null
+eq "$RC_" 0 "--no-autofix exits clean"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 "--no-autofix performs NO tracker write"
+has "$OUT" "no-autofix" "...and says why"
+
+# --- 9e. classic mode composes nothing ------------------------------------------------------
+fix_default
+compose_issues '102!' 31
+ADB_RELEASE_MODE=0 run_snippet compose-candidates >/dev/null
+eq "$RC_" 0 "classic mode exits clean"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 \
+   "a repo that never adopted the convention is never composed for"
+
+# --- 9f. no bugs open: the floor is empty, and nothing is promoted by accident ---------------
+# Promoting an unlabeled rider here is exactly how a phantom cut is armed, so the snippet must
+# write NOTHING and hand the decision back.
+fix_default
+compose_issues 20 80 31
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+eq "$RC_" 0 "an all-enhancement backlog exits clean"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 "no bugs -> no automatic promotion"
+has "$OUT" "no promotable bugs" "...and the empty floor is stated"
+
+# --- 9g. the roadmap artifact is never promoted into the release it plans --------------------
+fix_default
+compose_issues '31!' '102!'
+ADB_RELEASE_MODE=1 ADB_ROADMAP_NUM=31 run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "102" "the roadmap issue is excluded even when it carries the bug label"
+
+# --- 9h. hard stops: a failed read never composes a release out of nothing -------------------
+fix_default; compose_issues '102!' 31; : > "$FIX/fail-openissues"
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+no "$RC_" "a failed open-issue read is a hard stop"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 "...and writes nothing on the way out"
+fix_default; compose_issues '102!' 31; : > "$FIX/fail-milestones"
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+no "$RC_" "a failed milestone read is a hard stop"
+
+# --- 9i. an unresolvable milestone number refuses rather than promoting into nothing ---------
+fix_default; compose_issues '102!' 31
+ADB_RELEASE_MODE=1 ADB_M_NUM=4242 run_snippet compose-candidates >/dev/null
+no "$RC_" "a milestone number with no open title is a hard stop"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 "...and promotes nothing"
+
+# --- 9k. A NON-EMPTY MILESTONE IS NEVER ADDED TO — the scope-drift guard, structural ---------
+# This is the whole answer to #80's objection, so it must be code rather than calling prose: a
+# re-run after composition would otherwise promote every bug filed since into a set the owner
+# already froze. Open and closed members both count as "composed".
+fix_default
+compose_issues '102!' '112!' 31
+printf '[{"number":77,"state":"open","labels":[],"title":"already composed"}]\n' > "$FIX/milestone-issues.json"
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+eq "$RC_" 0 "a non-empty milestone exits clean"
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 \
+   "a milestone that already holds work is never added to"
+has "$OUT" "already holds" "...and says so"
+# A milestone holding only CLOSED work is mid-cycle, not fresh.
+fix_default
+compose_issues '102!' 31
+printf '[{"number":77,"state":"closed","labels":[],"title":"delivered"}]\n' > "$FIX/milestone-issues.json"
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 \
+   "a milestone holding only closed issues is a composed set, not an empty one"
+# ...but the roadmap artifact sitting in the milestone does NOT make it non-empty.
+fix_default
+compose_issues '102!' 31
+printf '[{"number":31,"state":"open","labels":[{"name":"roadmap"}],"title":"the roadmap"}]\n' > "$FIX/milestone-issues.json"
+ADB_RELEASE_MODE=1 ADB_ROADMAP_NUM=31 run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "102" "the artifact itself never counts as a composed member"
+
+# --- 9l. NON-IMPLEMENTABLE ISSUES ARE NEVER PROMOTED (review round 1) -----------------------
+# A `bug` that step 4 classified `tracker-only` or `owner-review` is never emitted by the advance
+# logic. Promoting it on the strength of its LABEL alone arms the milestone with a blocker that
+# nothing can close: readiness stays `unmet` forever and the release stops terminating — the same
+# stall auto-composition exists to remove, one step further in.
+fix_default
+compose_issues '102!' '112!' 31
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="112" run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "102" "an excluded (tracker-only / owner-review) bug is not promoted"
+
+# ...and a bug whose PREREQUISITE is excluded is dropped too, with the reason stated.
+fix_default
+compose_issues '136!>112' '112!' 31
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="112" run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "" "a bug whose prerequisite is excluded is not promoted either"
+has "$OUT" "#136 NOT promoted" "...and the drop is reported, never silent"
+
+# COMPOSE_EXCLUDE must be SET, even when empty — a silently-unset exclusion set is the bug above.
+fix_default
+compose_issues '102!' 31
+OUT="$(PATH="$SBIN:$PATH" ADB_FIX="$FIX" bash -c "
+  set -u
+  M_NUM=9; ROADMAP_NUM=31; RELEASE_MODE=1
+  $(snippet compose-candidates)" 2>&1)"; RC_=$?
+no "$RC_" "an UNSET COMPOSE_EXCLUDE is a hard stop, not an empty set"
+has "$OUT" "COMPOSE_EXCLUDE" "...and the message names the variable"
+
+# --- 9m. A CANCELED PREREQUISITE STILL BLOCKS (review round 1) -------------------------------
+# Closed `NOT_PLANNED` means abandoned, not delivered — step 4's `dep-canceled` rule. Treating it
+# like a completed close promotes a bug whose prerequisite is never coming.
+fix_default
+compose_issues '136!>99' '102!' 31
+printf '{"number":99,"state":"closed","state_reason":"not_planned"}\n' > "$FIX/issue-99.json"
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "102" "a bug whose prerequisite was CANCELED is not promoted"
+has "$OUT" "#136 NOT promoted" "...and says which prerequisite cannot be promoted"
+# ...while a prerequisite closed as COMPLETED is genuinely satisfied.
+fix_default
+compose_issues '136!>99' 31
+printf '{"number":99,"state":"closed","state_reason":"completed"}\n' > "$FIX/issue-99.json"
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "136" "a prerequisite closed as COMPLETED is satisfied and blocks nothing"
+
+# --- 9n. ISSUES IN ANOTHER MILESTONE ARE NOT CANDIDATES (review round 1) ---------------------
+# An issue slated into some other milestone carries a scope decision an owner already made;
+# `gh issue edit --milestone` would silently overwrite it, and step 4b calls choosing a slated
+# issue's milestone an owner escalation.
+fix_default
+compose_issues '102!' '200!@v2.0' 31
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "102" "a bug already slated into another milestone is never reassigned"
+# ...and it is not silently pulled in as a prerequisite either.
+fix_default
+compose_issues '136!>200' '200!@v2.0' 31
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "" "...nor dragged in through another issue's dependency closure"
+
+# --- 9o. DECISIONS ROWS ARE AN EDGE SOURCE (review round 1) ----------------------------------
+# Step 4 defines the edge set as issue bodies UNION the artifact's `## Decisions` rows. Reading
+# only bodies loses an edge reconcile already knew, and the dependent gets promoted while its
+# prerequisite stays in the backlog.
+fix_default
+compose_issues '73!' 78
+artifact_body '## Decisions
+
+| Question | Decision | Recorded |
+| --- | --- | --- |
+| dep-outside-release:#73 | Re-scoped to a thin driver; Depends on #78 only. | #73 body |'
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "73 78" "an edge declared only in a Decisions row still pulls its prerequisite in"
+
+# ...and attribution is PER ROW: a second row must not cross-multiply into a fabricated edge.
+fix_default
+compose_issues '73!' 78 '90!'
+artifact_body '## Decisions
+
+| Question | Decision | Recorded |
+| --- | --- | --- |
+| dep-outside-release:#73 | Depends on #78 only. | #73 body |
+| install-currency:#90 | No dependency; a policy note. | #90 body |'
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "73 78 90" "a second decision row declares nothing extra (no cross-product edges)"
+
+# --- 9p. --no-autofix PREVIEWS the slate instead of a generic message (review round 1) -------
+# The refusal contract promises to say what a normal run WOULD have promoted; returning before the
+# slate is computed can only print "reporting only", which is not an audit of a new mutation.
+fix_default
+compose_issues '102!' '112!' 20 31
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="" ADB_NO_AUTOFIX=1 run_snippet compose-candidates >/dev/null
+eq "$(grep 'issue edit' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 0 "--no-autofix still writes nothing"
+has "$OUT" "would promote 2 issue(s)" "--no-autofix names how many it would have promoted"
+has "$OUT" "102" "...and which"
+has "$OUT" "rider candidates" "...and still prints the rider slate"
+
+# --- 9q. PARTIAL COMPOSITION ROLLS BACK (review round 1) ------------------------------------
+# Stopping halfway leaves the milestone non-empty, and the emptiness guard would then refuse to
+# compose ever again — freezing the release around whichever prefix happened to succeed while the
+# rest of the bugs sit in the backlog. Undo instead, so the next run retries the whole selection.
+fix_default
+compose_issues '102!' '112!' 31
+# Fail every promotion past the first, then assert the rollback returns the milestone to empty.
+printf '1\n' > "$FIX/fail-edit-after"
+ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
+no "$RC_" "a failed promotion is a hard stop"
+has "$OUT" "rolling back" "...and says it is rolling back"
+eq "$(grep -- '--remove-label release-blocker' "$FIX/calls" 2>/dev/null | wc -l | tr -d ' ')" 1 \
+   "the already-promoted issue is returned to the backlog and unlabelled"
+has "$OUT" "is empty again" "...and states the milestone is composable again"
+
+# --- 9j. determinism: two runs over an unchanged tracker promote the same set ----------------
+fix_default; compose_issues '102!' '112!>20' 20 80 31
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null; FIRST="$(promoted)"
+fix_default; compose_issues '102!' '112!>20' 20 80 31
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
+eq "$(promoted)" "$FIRST" "composition is deterministic over an unchanged tracker"
+eq "$FIRST" "20 102 112" "...and closes the chain it selected"
+
+# ============================================================================================
 # 8. THE HARNESS GUARDS ITSELF
 # ============================================================================================
 # Every snippet this file claims to execute must still exist. Without this, renaming a marker
 # would make run_snippet quietly find nothing and the suite would go green on zero coverage.
-for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do
+for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command compose-candidates; do
   if [ -n "$(snippet "$s")" ]; then ok; else bad "workflow lost its '# ADB-SNIPPET: $s' marker"; fi
 done
 
@@ -851,7 +1151,7 @@ done
 # the failing line. This is the cheapest guard in the file and it has already earned its place: an
 # apostrophe inside a `${VAR:?word}` message is a syntax error even within double quotes, and bash
 # then refuses the WHOLE snippet — a fail-loud guard that silently broke everything around it.
-for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do
+for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command compose-candidates; do
   body="$(snippet "$s")"
   [ -n "$body" ] || continue
   body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
@@ -867,7 +1167,7 @@ for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilesto
 done
 # A snippet body must not ship an unresolved placeholder: build.sh maps {{…}} per agent, so a
 # token added to a snippet without a mapping would reach a user as literal text.
-allsnips="$(for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do snippet "$s"; done)"
+allsnips="$(for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command compose-candidates; do snippet "$s"; done)"
 allsnips="${allsnips//\{\{ROADMAP_LIB\}\}/}"
 allsnips="${allsnips//\{\{SKILLS_SUBDIRS\}\}/}"
 allsnips="${allsnips//\{\{SKILL_REGISTRY_PROBE\}\}/}"

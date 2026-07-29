@@ -35,6 +35,9 @@
 #   roadmap-lib.sh decisions                                      # roadmap artifact body on stdin
 #   roadmap-lib.sh open-issues                                    # paginated issues JSON on stdin
 #   roadmap-lib.sh read-complete <read-count> <expected-total>
+#   roadmap-lib.sh compose-candidates <roadmap-issue-number> [bug-label]
+#                                     # {issues,edges,exclude,canceled} on stdin
+#   roadmap-lib.sh compose-select     # compose-candidates TSV on stdin
 #   roadmap-lib.sh -h | --help
 #
 # `pr-targets-issue` stdin is the output of:
@@ -1003,6 +1006,166 @@ cmd_read_complete() {
   fi
 }
 
+# --- compose-candidates ----------------------------------------------------------------------
+# The MECHANICAL half of release composition (D15 / #80). Rank the open backlog into the slate an
+# agent then judges, so the parts that must not vary — tiering, dependency closure and the tie-break
+# — are code with tests rather than prose an agent re-derives every cycle.
+#
+# WHY THIS IS A PREDICATE AND NOT WORKFLOW PROSE. The dangerous failure is not a mediocre pick, it
+# is composing a release that can never DRAIN: promote an issue whose prerequisite stays in the
+# backlog and the milestone holds a blocker nothing can close, so `/roadmap` reports `unmet`
+# forever and the loop stops terminating — the same class of stall D15 exists to remove, one step
+# further in. Whether a candidate is blocked is therefore computed here, from the derived edge set,
+# and pinned by scripts/check-roadmap.sh.
+#
+# Stdin is ONE document, `{"issues": [...], "edges": [[dependent, prerequisite], ...]}`, assembled
+# by the caller exactly as `branch-health` takes `{check_runs, statuses}`. `issues` is the open-issue
+# read; `edges` is what `deps-from-body` derived THIS RUN. Multiple documents are slurped and
+# merged, so a `--paginate` stream works unchanged. A missing `edges` key means "no edges known",
+# which yields nothing blocked — the caller must not pass an edge set it failed to derive.
+#
+# Output is TSV, one candidate per line, and EMPTY output is a valid answer (an empty backlog),
+# never an error:
+#
+#   tier  number  blocked  prereqs  title
+#   bug   102     0        -        repo-settings: a 4-space-indented workflow is invisible…
+#   bug   136     1        112      One paragraph-aware CommonMark prose filter…
+#   other 20      0        -        /adopt: project-agnostic migration flow…
+#
+# ORDERING IS TOTAL AND STABLE: tier (bug before other, the owner-stated priority in D15), then
+# unblocked before blocked, then ascending issue number — step 5 rule 4, so two runs over an
+# unchanged tracker rank identically. `blocked` counts only prerequisites that are still OPEN in
+# the same read: a closed one is satisfied and must not hold a candidate out of the release.
+#
+# What it deliberately does NOT do: pick. Tier `other` is offered ranked, not selected, because
+# "which enhancements matter for this release" is judgement the workflow records in the artifact.
+# It also does not rank by unblock leverage or capability closure — that is #80's surviving half.
+cmd_compose_candidates() {
+  case "$#" in
+    1|2) : ;;
+    *) die "compose-candidates: needs <roadmap-issue-number> [bug-label] ({issues,edges} JSON on stdin)" ;;
+  esac
+  command -v jq >/dev/null 2>&1 || die "compose-candidates: jq not found"
+  # `${2-bug}`, NOT `${2:-bug}`: `:-` substitutes the default for an EMPTY argument as well as an
+  # absent one, so an explicitly-empty label would silently become `bug` and the refusal below
+  # could never fire — a caller passing an unset variable would compose against the wrong tier
+  # and be told nothing.
+  local skip="$1" bug="${2-bug}"
+  is_uint "$skip" || die "compose-candidates: <roadmap-issue-number> must be a non-negative integer (got '$1')"
+  [ -n "$bug" ] || die "compose-candidates: <bug-label> must not be empty"
+  # `--arg`/`--argjson` for BOTH values: the label reaches jq as data, never as filter text, so a
+  # label containing a quote or a backslash cannot alter the program (the same injection guard
+  # pr-targets-issue applies to the repo slug).
+  jq -r -s --arg bug "$bug" --argjson skip "$skip" '
+    def clean: gsub("[\t\r\n]+"; " ");
+    (map(.issues // []) | add // []) as $in
+    | (map(.edges // []) | add // [])                                          as $ed
+    | (map(.exclude // []) | add // [] | unique)                               as $ex
+    | (map(.canceled // []) | add // [] | unique)                              as $can
+    # THE UNIVERSE is every open non-roadmap issue, INCLUDING the excluded ones. Blocking is asked
+    # of it, candidacy is asked of the set with `exclude` removed — two different questions, and
+    # collapsing them is what would let a bug be promoted whose prerequisite reconcile has already
+    # ruled un-emittable.
+    | [ $in[] | select(has("pull_request") | not) | select(.number != $skip) ] as $univ
+    | ([ $univ[].number ] | unique)                                            as $open
+    | [ $univ[] | select(.number as $x | $ex | index($x) == null) ]            as $rows
+    | [ $ed[]
+        | select(type == "array" and length >= 2)
+        | { d: (.[0] | tonumber?), p: (.[1] | tonumber?) }
+        | select(.d != null and .p != null) ]                                  as $edges
+    | [ $rows[]
+        | . as $r
+        | ( [ $edges[] | select(.d == $r.number) | .p ]
+            | map(select(. != $r.number))
+            # A prerequisite BLOCKS when it is still open (whether or not reconcile excluded it)
+            # or when it was CANCELED — closed `NOT_PLANNED`. Cancellation does not satisfy a
+            # dependent (step 4s `dep-canceled` rule), so equating every non-open prerequisite
+            # with success would promote a bug whose prerequisite is never coming.
+            | map(select(. as $x | ($open | index($x)) != null or ($can | index($x)) != null))
+            | unique )                                                         as $pre
+        | { n:     $r.number,
+            t:     (if ([$r.labels[]?.name] | index($bug)) != null then 0 else 1 end),
+            b:     (if ($pre | length) > 0 then 1 else 0 end),
+            pre:   $pre,
+            title: (($r.title // "") | clean) } ]
+    | sort_by(.t, .b, .n)
+    | .[]
+    | [ (if .t == 0 then "bug" else "other" end),
+        (.n | tostring),
+        (.b | tostring),
+        (if (.pre | length) > 0 then (.pre | map(tostring) | join(",")) else "-" end),
+        .title ]
+    | @tsv' 2>/dev/null \
+    || die "compose-candidates: malformed JSON on stdin"
+  return 0
+}
+
+# --- compose-select ---------------------------------------------------------------------------
+# Turn the ranked slate into the set that is actually promoted: seed with the bug tier, close over
+# prerequisites, then PRUNE anything whose prerequisites cannot all be promoted.
+#
+# The prune pass is the half that is easy to leave out and expensive to leave out. Closure alone
+# pulls in a prerequisite only when it is itself a candidate; a prerequisite that reconcile
+# EXCLUDED (tracker-only / owner-review) or that was CANCELED (closed `NOT_PLANNED`) has no row, so
+# it can never be pulled in — and promoting its dependent anyway arms the milestone with a blocker
+# that nothing can close. `/roadmap` would then report `unmet` forever: the release stops
+# terminating, which is the same stall auto-composition exists to remove, one step further in.
+#
+# Stdin is the `compose-candidates` TSV. Output is one decision per line, so a drop is REPORTED
+# rather than silently applied (the no-silent-caps discipline):
+#
+#   sel   102
+#   sel   112
+#   drop  136   112        # 136 wanted 112, which is not promotable
+#
+# Both loops are fixpoints over a finite candidate set, so both terminate: closure only ever adds,
+# prune only ever removes, and each pass that changes nothing ends it.
+cmd_compose_select() {
+  [ "$#" -eq 0 ] || die "compose-select: takes no arguments (compose-candidates TSV on stdin)"
+  # POSIX awk only — no gawk extensions, no `asort`. The output is sorted by the caller.
+  awk -F'\t' '
+    { tier[$2] = $1; pre[$2] = $4; n++; num[n] = $2 }
+    END {
+      for (i = 1; i <= n; i++) if (tier[num[i]] == "bug") sel[num[i]] = 1
+      # closure: pull in every promotable prerequisite of everything selected
+      do {
+        changed = 0
+        for (i = 1; i <= n; i++) {
+          k = num[i]
+          if (!(k in sel)) continue
+          if (pre[k] == "-" || pre[k] == "") continue
+          m = split(pre[k], part, ",")
+          for (j = 1; j <= m; j++) {
+            p = part[j]
+            if (!(p in tier)) continue        # not a candidate row -> not promotable
+            if (!(p in sel)) { sel[p] = 1; changed = 1 }
+          }
+        }
+      } while (changed)
+      # prune: drop anything still holding a prerequisite that will not be promoted, and record why
+      do {
+        changed = 0
+        for (i = 1; i <= n; i++) {
+          k = num[i]
+          if (!(k in sel)) continue
+          if (pre[k] == "-" || pre[k] == "") continue
+          m = split(pre[k], part, ",")
+          for (j = 1; j <= m; j++) {
+            p = part[j]
+            if (!(p in sel)) { delete sel[k]; why[k] = p; changed = 1; break }
+          }
+        }
+      } while (changed)
+      for (i = 1; i <= n; i++) {
+        k = num[i]
+        if (k in sel)      print "sel\t" k
+        else if (k in why) print "drop\t" k "\t" why[k]
+      }
+    }' 2>/dev/null \
+    || die "compose-select: could not process the candidate slate"
+  return 0
+}
+
 # --- dispatch ------------------------------------------------------------------------------
 main() {
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
@@ -1019,6 +1182,8 @@ main() {
     decisions)        cmd_decisions "$@" ;;
     open-issues)      cmd_open_issues "$@" ;;
     read-complete)    cmd_read_complete "$@" ;;
+    compose-candidates) cmd_compose_candidates "$@" ;;
+    compose-select)   cmd_compose_select "$@" ;;
     *) printf 'roadmap-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
   esac
 }

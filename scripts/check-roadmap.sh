@@ -523,6 +523,161 @@ eq "$(printf '[]' | bash "$RL" pr-targets-issue 69 "$SLUG" EXTRA >/dev/null 2>&1
 eq "$(printf '[]' | bash "$RL" pr-targets-issue 69 >/dev/null 2>&1; printf '%s' "$?")" 2 \
    "pr-targets-issue rejects a missing slug"
 
+# ============================================================================================
+# 2j. COMPOSE-CANDIDATES (D15 / #80) — the mechanical half of release composition
+# ============================================================================================
+# WHAT MUST NOT VARY. The dangerous failure is not a mediocre pick, it is composing a release that
+# can never DRAIN — promote an issue whose prerequisite stays in the backlog and the milestone holds
+# a blocker nothing can close, so /roadmap reports `unmet` forever. So: tiering (bugs first),
+# blocked-ness computed against the OPEN set only, and a total stable order.
+
+# ci <number> <title> <label> — one open issue row.
+ci() { printf '{"number":%s,"title":"%s","labels":[{"name":"%s"}]}' "$1" "$2" "$3"; }
+# cdoc <issues-csv> <edges-json> — the {issues,edges} document the predicate reads.
+cdoc() { printf '{"issues":[%s],"edges":%s}' "$1" "${2:-[]}"; }
+# compose <doc> [roadmap-num] [bug-label] — run it, echo stdout.
+compose() { printf '%s' "$1" | bash "$RL" compose-candidates "${2:-31}" "${3:-bug}" 2>/dev/null; }
+
+C_BUGS="$(ci 102 'bug A' bug),$(ci 136 'bug B' bug),$(ci 112 'bug C' bug)"
+C_ENH="$(ci 20 'enh A' enhancement),$(ci 80 'enh B' enhancement)"
+C_ALL="$C_BUGS,$C_ENH,$(ci 31 'the roadmap' roadmap)"
+
+# --- 2j-a. bugs rank before enhancements, ascending within tier -----------------------------
+eq "$(compose "$(cdoc "$C_ALL")" | awk -F'\t' '{printf "%s%s ", $1, $2}')" \
+   "bug102 bug112 bug136 other20 other80 " \
+   "bugs first, then others; ascending issue number within each tier"
+
+# --- 2j-b. the roadmap artifact is never a candidate ----------------------------------------
+eq "$(compose "$(cdoc "$C_ALL")" | grep -c '	31	' || true)" 0 \
+   "the roadmap issue is excluded from its own composition"
+
+# --- 2j-c. pull requests are never candidates -----------------------------------------------
+# Built through a variable rather than a doubly-nested `$( )`: an escaped quote inside a command
+# substitution that is itself inside one does not survive re-parsing, and the fixture arrives as
+# malformed JSON — which the predicate correctly rejects, so the test would fail for a reason that
+# has nothing to do with the behavior under test.
+C_PR="$C_BUGS,{\"number\":999,\"title\":\"a PR\",\"labels\":[],\"pull_request\":{}}"
+C_PR_DOC="$(cdoc "$C_PR")"
+eq "$(compose "$C_PR_DOC" | wc -l | tr -d ' ')" 3 \
+   "a pull_request entry is not a composition candidate"
+
+# --- 2j-d. THE DRAIN GUARD: an open prerequisite marks a candidate blocked -------------------
+eq "$(compose "$(cdoc "$C_ALL" '[[136,112]]')" | awk -F'\t' '$2 == 136 { print $3 "/" $4 }')" "1/112" \
+   "a candidate with an OPEN prerequisite is blocked, and names it"
+eq "$(compose "$(cdoc "$C_ALL" '[[136,112]]')" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "0/-" \
+   "the prerequisite itself is unblocked"
+
+# --- 2j-e. a CLOSED prerequisite is satisfied and must not hold a candidate out --------------
+# #178 is absent from the open set, so the edge is satisfied. Getting this wrong is the failure
+# that would exclude every issue whose history mentions a shipped dependency.
+eq "$(compose "$(cdoc "$C_ALL" '[[112,178]]')" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "0/-" \
+   "a prerequisite that is not open is satisfied, never blocking"
+
+# --- 2j-f. unblocked sorts before blocked WITHIN a tier --------------------------------------
+eq "$(compose "$(cdoc "$C_ALL" '[[102,112]]')" | awk -F'\t' '$1 == "bug" { printf "%s ", $2 }')" "112 136 102 " \
+   "within a tier, unblocked candidates rank above blocked ones"
+
+# --- 2j-g. a self-edge is ignored, never a self-block ---------------------------------------
+eq "$(compose "$(cdoc "$C_ALL" '[[112,112]]')" | awk -F'\t' '$2 == 112 { print $3 }')" 0 \
+   "an issue declaring itself as a prerequisite is not blocked by itself"
+
+# --- 2j-h. duplicate edges collapse ---------------------------------------------------------
+eq "$(compose "$(cdoc "$C_ALL" '[[136,112],[136,112]]')" | awk -F'\t' '$2 == 136 { print $4 }')" "112" \
+   "a duplicated edge is reported once"
+
+# --- 2j-i. the bug label is configurable, and drives the tier --------------------------------
+eq "$(compose "$(cdoc "$(ci 5 'x' defect),$(ci 6 'y' enhancement)")" 31 defect | awk -F'\t' '{printf "%s%s ", $1, $2}')" \
+   "bug5 other6 " "the tier label is a parameter, not a hardcoded 'bug'"
+eq "$(compose "$(cdoc "$(ci 5 'x' defect),$(ci 6 'y' enhancement)")" | awk -F'\t' '{printf "%s ", $1}')" \
+   "other other " "a repo with no issue carrying the label composes an all-'other' slate, not an error"
+
+# --- 2j-j. zero-config generality (#80's non-negotiable): no labels, no edges, no error ------
+eq "$(printf '{"issues":[{"number":7,"title":"bare"}]}' | bash "$RL" compose-candidates 31 bug 2>/dev/null | awk -F'\t' '{print $1 "/" $2 "/" $3}')" \
+   "other/7/0" "an issue with no labels and no edges key ranks cleanly"
+
+# --- 2j-k. an empty backlog is a valid EMPTY answer, never an error --------------------------
+run_c() { OUT="$(printf '%s' "$1" | bash "$RL" compose-candidates "${2:-31}" 2>&1)"; RC_=$?; }
+run_c '{"issues":[],"edges":[]}'; yes "$RC_" "an empty backlog exits 0"; eq "$OUT" "" "...with empty output"
+
+# --- 2j-l. TSV integrity: a title containing a tab or newline cannot break the format --------
+eq "$(compose "$(cdoc '{"number":9,"title":"a\ttab\nand a newline","labels":[]}')" | wc -l | tr -d ' ')" 1 \
+   "a title containing a tab or newline still yields exactly one row"
+eq "$(compose "$(cdoc '{"number":9,"title":"a\ttab\nand a newline","labels":[]}')" | awk -F'\t' '{print NF}')" 5 \
+   "...with exactly five fields"
+
+# --- 2j-m. determinism (#45) ----------------------------------------------------------------
+eq "$(compose "$(cdoc "$C_ALL" '[[136,112],[80,112]]')")" "$(compose "$(cdoc "$C_ALL" '[[136,112],[80,112]]')")" \
+   "compose-candidates is deterministic over an unchanged tracker"
+
+# --- 2j-n. FAIL-CLOSED on bad input ----------------------------------------------------------
+run_c 'not json';        eq "$RC_" 2 "malformed JSON is an ERROR, never an empty slate"
+run_c '{"issues":[]}' x; eq "$RC_" 2 "a non-numeric roadmap number is an ERROR"
+eq "$(printf '{"issues":[]}' | bash "$RL" compose-candidates >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "a missing roadmap number is an ERROR"
+eq "$(printf '{"issues":[]}' | bash "$RL" compose-candidates 31 bug EXTRA >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "extra arguments are an ERROR"
+eq "$(printf '{"issues":[]}' | bash "$RL" compose-candidates 31 '' >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "an empty bug label is an ERROR"
+
+# --- 2j-o. a label containing jq metacharacters is DATA, never filter text -------------------
+eq "$(compose "$(cdoc "$(ci 5 'x' 'a\"b')")" 31 'a"b' | awk -F'\t' '{print $1}')" "bug" \
+   "a label containing a quote is matched as data (no filter injection)"
+
+# --- 2j-p. `exclude`: present and blocking, but never a candidate (review round 1) -----------
+# Reconcile's `tracker-only` / `owner-review` issues, and anything outside the backlog, share one
+# meaning here. Both must BLOCK a dependent (they are open and undelivered) while never being
+# promoted themselves — collapsing the two questions is what would promote a bug the advance logic
+# can never emit.
+CX_DOC="$(cdoc "$C_ALL" '[[136,112]]')"
+CX_DOC="$(printf '%s' "$CX_DOC" | jq -c '. + {exclude: [112]}')"
+eq "$(compose "$CX_DOC" | awk -F'\t' '{printf "%s ", $2}')" "102 136 20 80 " \
+   "an excluded issue is not offered as a candidate"
+eq "$(compose "$CX_DOC" | awk -F'\t' '$2 == 136 { print $3 "/" $4 }')" "1/112" \
+   "...but it still BLOCKS the dependent that needs it"
+
+# --- 2j-q. `canceled`: a NOT_PLANNED prerequisite is not satisfied (review round 1) ----------
+# #999 is absent from the open set. As a completed close that is satisfaction; as a cancellation it
+# is abandonment, and step 4's `dep-canceled` rule says it does not satisfy the dependent.
+eq "$(compose "$(cdoc "$C_ALL" '[[112,999]]')" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "0/-" \
+   "a prerequisite absent from the open set is satisfied by default (completed close)"
+CN_DOC="$(printf '%s' "$(cdoc "$C_ALL" '[[112,999]]')" | jq -c '. + {canceled: [999]}')"
+eq "$(compose "$CN_DOC" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "1/999" \
+   "...but a CANCELED one keeps blocking"
+
+# ============================================================================================
+# 2k. COMPOSE-SELECT — seed, close, and prune what cannot drain (review round 1)
+# ============================================================================================
+# sel <candidate-tsv> — the promoted numbers, ascending, space-joined.
+sel() { printf '%s\n' "$1" | bash "$RL" compose-select 2>/dev/null | awk -F'\t' '$1=="sel"{print $2}' | sort -n | tr '\n' ' ' | sed 's/ $//'; }
+# drops <candidate-tsv> — the `n:blocker` pairs that were dropped.
+drops() { printf '%s\n' "$1" | bash "$RL" compose-select 2>/dev/null | awk -F'\t' '$1=="drop"{printf "%s:%s ", $2, $3}' | sed 's/ $//'; }
+
+T_PLAIN="$(printf 'bug\t102\t0\t-\tb1\nother\t20\t0\t-\te1\n')"
+eq "$(sel "$T_PLAIN")" "102" "the bug tier is the seed; an unrelated enhancement is not selected"
+
+T_CLOSE="$(printf 'bug\t136\t1\t55\tb1\nother\t55\t0\t-\te1\n')"
+eq "$(sel "$T_CLOSE")" "55 136" "closure pulls a promotable prerequisite in, even an enhancement"
+
+T_CHAIN="$(printf 'bug\t136\t1\t55\tb1\nother\t55\t1\t62\te1\nother\t62\t0\t-\te2\n')"
+eq "$(sel "$T_CHAIN")" "55 62 136" "closure is transitive"
+
+# THE PRUNE PASS. A prerequisite with no candidate row can never be promoted, so its dependent
+# cannot drain — and a milestone holding a blocker nothing can close never reports `met`.
+T_PRUNE="$(printf 'bug\t136\t1\t99\tb1\nbug\t102\t0\t-\tb2\n')"
+eq "$(sel "$T_PRUNE")" "102" "a bug whose prerequisite is not promotable is dropped"
+eq "$(drops "$T_PRUNE")" "136:99" "...and the drop names the prerequisite that caused it"
+
+T_CASCADE="$(printf 'bug\t136\t1\t99\tb1\nbug\t200\t1\t136\tb2\n')"
+eq "$(sel "$T_CASCADE")" "" "pruning cascades to whatever depended on the dropped issue"
+eq "$(drops "$T_CASCADE")" "136:99 200:136" "...and every drop is reported, never silent"
+
+eq "$(sel "$(printf '')")" "" "an empty slate selects nothing"
+eq "$(printf '' | bash "$RL" compose-select >/dev/null 2>&1; printf '%s' "$?")" 0 \
+   "...and exits 0, because an empty backlog is an answer"
+eq "$(printf 'bug\t1\t0\t-\tx\n' | bash "$RL" compose-select EXTRA >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "compose-select rejects arguments"
+eq "$(sel "$T_CASCADE")" "$(sel "$T_CASCADE")" "compose-select is deterministic"
+
 # --- 2h. dispatch surface -------------------------------------------------------------------
 run -h;     yes "$RC_" "-h exits 0"; has "$OUT" "roadmap-lib.sh" "-h prints usage"
 run --help; yes "$RC_" "--help exits 0"

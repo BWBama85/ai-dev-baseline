@@ -207,8 +207,10 @@ bash scripts/lib/release-convention.sh init      # or: baseline release init
 
 Set `<!-- release-milestone: Next release -->` on the artifact.
 
-- [ ] **Unarmed:** `Next release` holds **no** issues → reports "release milestone `Next release`
-      has no requirements yet". Emits **neither** a cut nor "roadmap complete".
+- [ ] **Unarmed:** `Next release` holds **no** issues → the milestone is **composed** (§9d), and the
+      run continues into the unmet advance. It emits **neither** a cut nor "roadmap complete". Only a
+      composition that is refused or finds no promotable candidate reports "release milestone
+      `Next release` has no requirements yet".
 - [ ] **Blocker-mode** (the `release-blocker` label **exists**): with ≥1 open `release-blocker` in
       the milestone → **unmet**; with **0** → **met**. Non-blocker open issues do not block a cut.
 - [ ] **Fallback** (label **absent**, 404): readiness is `0 open issues in the milestone`.
@@ -310,7 +312,35 @@ Put one issue in `Next release` and leave others in `Backlog`, bundled together.
       never below it (the output contract in §10 reserves the last line for the action). Without
       the roll the milestone stays open with zero open blockers, so the predicate returns `met` on
       every later run and the same cut is re-emitted forever — verify a second run after an actual
-      roll reports `unarmed` ("no requirements yet"), not `met`.
+      roll does **not** report `met`. Since D15 that run composes the freshly-emptied milestone
+      (§9d) and advances; before D15 it reported `unarmed`.
+### 9d. Composition of an empty release milestone (D15) **[auto]**
+
+Covered end-to-end by `scripts/check-roadmap-e2e.sh` §9 against the stub `gh`; the ranking and
+selection predicates are unit-tested in `scripts/check-roadmap.sh` §2j/§2k.
+
+- [ ] An **empty** release milestone is filled rather than reported: every implementable backlog
+      **bug** is promoted, plus the transitive closure of the prerequisites it needs.
+- [ ] **Every promotion carries `release-blocker`.** Without the label the milestone reads `met` on
+      the next run and emits a cut for a release nothing has built. This is the single most
+      important assertion in the section.
+- [ ] A **non-empty** milestone — holding open *or* closed issues — is never added to. The artifact
+      issue itself does not count as a member.
+- [ ] **Not composed, and reported rather than silently skipped:** an issue reconcile classified
+      `tracker-only` / `owner-review`; an issue in any milestone other than the backlog; a bug whose
+      prerequisite was closed `NOT_PLANNED`; a bug whose prerequisite is itself excluded (pruning
+      cascades).
+- [ ] Those same out-of-scope issues still **block** a dependent — they are open and undelivered, so
+      treating them as satisfied would compose a release that cannot drain.
+- [ ] A dependency declared only in the artifact's `## Decisions` table is honoured, attributed
+      **per row** (the Question id names the dependent), never cross-multiplied across rows.
+- [ ] `--no-autofix` performs **no** tracker write and still prints the slate it would have
+      promoted.
+- [ ] A promotion that fails mid-loop **rolls back** the ones that succeeded, so the milestone
+      returns to empty and the next run retries the whole selection instead of freezing around the
+      prefix that landed.
+- [ ] Classic mode (no `release-milestone` marker) composes nothing.
+
 - [ ] With `destination-label: release-blocker`, the gauge is **milestone-scoped** in this mode,
       so it always equals the readiness trigger (a blocker parked in `Backlog` must not inflate it).
 - [ ] **Met** is a valid terminal emission and is **not** "roadmap complete" — open `Backlog` work
