@@ -7,6 +7,17 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-28
+
+The loop closes on itself. v1.0.0 shipped the practices, the workflows and the gates;
+v1.1.0 makes the parts that *decide* — readiness, review, cleanup, edge extraction —
+tested shell predicates instead of remembered prose, and stops the model paying for
+waits a shell can do. `/implement-issue` no longer arms auto-merge before the declared
+reviewer has spoken; `/resolve-pr-threads --watch` waits out the async reviewer for free;
+release readiness verifies the default branch is actually green; `/cleanup` sees squash
+and rebase merges; and `verify-before-asserting` gained a command that performs the read
+and renders the sentence in one step.
+
 ### Added
 
 - **Waiting for the async reviewer no longer costs model tokens** (#49). `/implement-issue` opens a
@@ -934,5 +945,6 @@ Everything below landed before this tag; entries are grouped as they accumulated
   finish on partial or empty output. Clarifies that "advisory" is the standing of a
   **completed** finding, not license to skip the step.
 
-[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/BWBama85/ai-dev-baseline/releases/tag/v1.0.0
