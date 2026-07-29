@@ -703,16 +703,17 @@ done
 # The met-emission must name a command that EXISTS. An unresolvable slash command does not fail
 # loudly — Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo without
 # one silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
-rc_snip() {   # <CMD> <user-skills-root> [project-subdir] [prefix] -> prints RESOLVES
+rc_snip() {   # <CMD> <user-skills-root> [project-subdir] [prefix] [extra-key] -> prints RESOLVES
   body="$(snippet release-command)"
   body="${body//\{\{SKILLS_SUBDIR\}\}/${3-no-project-skills}}"
   body="${body//\{\{SKILLS_USER_ROOT\}\}/\"$2\"}"
   body="${body//\{\{SKILL_PREFIX\}\}/${4:-/}}"
+  body="${body//\{\{SKILL_EXTRA_KEY\}\}/${5-}}"
   printf 'CMD=%s\n%s\nprintf %%s "$RESOLVES"\n' "$(printf '%q' "$1")" "$body" > "$work/rc.sh"
   ( cd "$work" && bash "$work/rc.sh" )
 }
 # A LOADABLE skill: opening `---` plus the two keys every registry needs. `printf x` is not one.
-mk_skill() { mkdir -p "$1"; printf -- '---\nname: %s\ndescription: d\n---\n' "$(basename "$1")" > "$1/SKILL.md"; }
+mk_skill() { mkdir -p "$1"; printf -- '---\nname: %s\ndescription: d\nuser-invocable: true\n---\n' "$(basename "$1")" > "$1/SKILL.md"; }
 mkdir -p "$work/sk" "$work/empty-sk"
 mk_skill "$work/sk/release"; mk_skill "$work/sk/ship"
 
@@ -755,6 +756,15 @@ eq "$(rc_snip '$release' "$work/sk" sk '/')"          0 "claude prefix: \$releas
 mkdir -p "$work/sk/todofm"
 printf -- '---\nname: # TODO\ndescription: # TODO\n---\n' > "$work/sk/todofm/SKILL.md"
 eq "$(rc_snip '/todofm' "$work/sk" sk)"               0 "a commented-out frontmatter value does not resolve"
+# The loader contract, per agent. `name` must EQUAL the directory (a mismatch is the
+# misidentified-skill case build.sh refuses), and Claude additionally requires `user-invocable`.
+mkdir -p "$work/sk/misnamed"
+printf -- '---\nname: something-else\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/misnamed/SKILL.md"
+eq "$(rc_snip '/misnamed' "$work/sk" sk '/' user-invocable)"  0 "name not matching the directory does not resolve"
+mkdir -p "$work/sk/noinvoke"
+printf -- '---\nname: noinvoke\ndescription: d\n---\n' > "$work/sk/noinvoke/SKILL.md"
+eq "$(rc_snip '/noinvoke' "$work/sk" sk '/' user-invocable)" 0 "Claude: missing user-invocable does not resolve"
+eq "$(rc_snip '/noinvoke' "$work/sk" sk '/' '')"            1 "Codex/Antigravity: name+description suffice"
 # Frontmatter must be CLOSED. An unterminated block is an incomplete edit the loader rejects.
 mkdir -p "$work/sk/unclosed"
 printf -- '---\nname: unclosed\ndescription: d\n' > "$work/sk/unclosed/SKILL.md"
@@ -784,6 +794,7 @@ for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilesto
   body="${body//\{\{SKILLS_SUBDIR\}\}/.claude\/skills}"
   body="${body//\{\{SKILLS_USER_ROOT\}\}/\"\$HOME\/.claude\/skills\"}"
   body="${body//\{\{SKILL_PREFIX\}\}/\/}"
+  body="${body//\{\{SKILL_EXTRA_KEY\}\}/user-invocable}"
   printf '%s\n' "$body" > "$work/parse-$s.sh"
   if bash -n "$work/parse-$s.sh" 2>/dev/null; then ok; else
     bad "snippet '$s' is not valid bash: $(bash -n "$work/parse-$s.sh" 2>&1 | head -1)"
@@ -796,6 +807,7 @@ allsnips="${allsnips//\{\{ROADMAP_LIB\}\}/}"
 allsnips="${allsnips//\{\{SKILLS_SUBDIR\}\}/}"
 allsnips="${allsnips//\{\{SKILLS_USER_ROOT\}\}/}"
 allsnips="${allsnips//\{\{SKILL_PREFIX\}\}/}"
+allsnips="${allsnips//\{\{SKILL_EXTRA_KEY\}\}/}"
 hasnt "$allsnips" '{{' \
   "no executed snippet carries a placeholder outside the mapped vocabulary"
 

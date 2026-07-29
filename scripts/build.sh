@@ -138,6 +138,14 @@ render_agent_skill() {
     codex) skill_prefix='$' ;;
     *)     skill_prefix='/' ;;
   esac
+  # The EXTRA frontmatter key this agent's loader requires beyond name+description. Claude also
+  # needs `user-invocable` (see selfcheck's skill-frontmatter step); Codex and Antigravity honour
+  # only the two. A skill missing its loader's required key is not registered, so certifying it
+  # would emit an unrunnable command.
+  case "$agent" in
+    claude) skill_extra_key='user-invocable' ;;
+    *)      skill_extra_key='' ;;
+  esac
 
   name="$(basename "$src" .md)"
   out="$root/agents/$agent/skills/$name/SKILL.md"
@@ -199,7 +207,7 @@ render_agent_skill() {
       -v pr_watch="$pr_watch" \
       -v current_agent="$current_agent" -v subtask="$subtask" \
       -v skills_subdir="$skills_subdir" -v skills_user_root="$skills_user_root" \
-      -v skill_prefix="$skill_prefix" '
+      -v skill_prefix="$skill_prefix" -v skill_extra_key="$skill_extra_key" '
     function lreplace(s, from, to,   out, p) {
       out = ""
       while ((p = index(s, from)) > 0) {
@@ -260,6 +268,7 @@ render_agent_skill() {
       line = lreplace(line, "{{SKILLS_SUBDIR}}",    skills_subdir)
       line = lreplace(line, "{{SKILLS_USER_ROOT}}", skills_user_root)
       line = lreplace(line, "{{SKILL_PREFIX}}",     skill_prefix)
+      line = lreplace(line, "{{SKILL_EXTRA_KEY}}",  skill_extra_key)
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line
     }

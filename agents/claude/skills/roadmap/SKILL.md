@@ -525,16 +525,25 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
         # the agent's registry, so `-f` alone would certify a command the agent cannot invoke.
         # Require the opening `---` and both keys every loader needs.
         head -n1 "$f" | grep -q '^---$' || continue
-        # The frontmatter must be CLOSED and both values NON-EMPTY. Reaching END without a second
-        # `---` means the block is unterminated — an incomplete edit — which the loader rejects
-        # while a keys-only test would happily certify it. `#` is excluded from the first value
-        # character because `name: # TODO` parses as YAML null: the remainder is a comment, so the
-        # field is absent even though something follows the colon.
-        awk 'NR==1{next}
+        # The frontmatter must satisfy THIS LOADER'S contract, not merely exist:
+        #   * CLOSED — reaching END with no second `---` is an unterminated block the loader
+        #     rejects, which a keys-only test happily certifies.
+        #   * NON-EMPTY values — and `#` is excluded from the first character, because
+        #     `name: # TODO` parses as YAML null (the rest is a comment).
+        #   * `name` EQUALS THE DIRECTORY — that is what identifies the skill; a mismatch is the
+        #     misidentified-skill case scripts/build.sh refuses for generated skills.
+        #   * user-invocable present when this agent requires one (Claude needs
+        #     `user-invocable`; Codex and Antigravity honour only name+description).
+        awk -v want="$SKILL_NAME" -v extra='user-invocable' '
+             NR==1{next}
              $0=="---"{closed=1; exit}
-             /^name:[[:space:]]*[^[:space:]#]/{n=1}
+             /^name:[[:space:]]*[^[:space:]#]/ {
+               v=$0; sub(/^name:[[:space:]]*/,"",v); sub(/[[:space:]]+$/,"",v)
+               if (v == want) n=1
+             }
              /^description:[[:space:]]*[^[:space:]#]/{d=1}
-             END{exit !(closed && n && d)}' "$f" || continue
+             { if (extra != "" && index($0, extra ":") == 1) e=1 }
+             END{exit !(closed && n && d && (extra == "" || e))}' "$f" || continue
         RESOLVES=1; break
       done
       ;;

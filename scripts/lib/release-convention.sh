@@ -163,6 +163,15 @@ announce_marker() {
     adb_info "  marker   activate /roadmap release-readiness — add to the right roadmap issue ($count found):"
   fi
   adb_info "             <!-- release-milestone: $RELEASE_MILESTONE -->"
+  # BOTH markers, because both are required to reach a cut. `release-milestone` arms readiness;
+  # `release-command` is what a met verdict emits — and it has NO default, deliberately: an
+  # unresolvable slash command fuzzy-matches an unrelated built-in rather than failing (#188), and
+  # #3/D7 guarantees the baseline ships no `/release` to fall back on. Announcing only the first
+  # marker sends a project through the prescribed one-command setup into release-readiness mode
+  # with no way to cut, discovering it only at `Next: none` when the release is finally ready.
+  adb_info "             <!-- release-command: /your-release-skill -->"
+  adb_info "  note     the release command is REQUIRED and has no default; /roadmap emits it only"
+  adb_info "           if it resolves to an installed skill. Release execution is project-owned."
 }
 
 cmd_init() {

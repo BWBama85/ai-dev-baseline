@@ -53,8 +53,12 @@ absent and never deletes or renames anything, so it is safe to re-run. It resolv
 project repo from your `gh` remote (not the install-source clone). It then **prints** the
 one activation step — the `release-milestone` marker (below) to add to your roadmap
 artifact — but never edits the artifact itself: `/roadmap` is its sole writer, so seeding
-it here would risk clobbering the one issue the whole loop depends on. Adding that single
-marker line is the last step of opting in. `baseline release status` reports which pieces
+it here would risk clobbering the one issue the whole loop depends on. It prints **two** markers,
+and both are required: `release-milestone` arms readiness, and `release-command` is what a met
+verdict emits — the latter has **no default** (see *You must declare the release command*), so a
+repo that adds only the first enters release-readiness mode with no way to cut and discovers it at
+`Next: none` when the release is finally ready. Adding those marker lines is the last step of
+opting in. `baseline release status` reports which pieces
 are present and whether the convention is active, changing nothing.
 
 Use a different release-milestone name with
