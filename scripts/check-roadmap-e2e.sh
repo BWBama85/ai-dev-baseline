@@ -763,6 +763,18 @@ eq "$(rc_snip '/your-skill' "$work/sk" sk '/')"       0 "the schema placeholder 
 mkdir -p "$work/sk/todofm"
 printf -- '---\nname: # TODO\ndescription: # TODO\n---\n' > "$work/sk/todofm/SKILL.md"
 eq "$(rc_snip '/todofm' "$work/sk" sk)"               0 "a commented-out frontmatter value does not resolve"
+# `user-invocable: false` is an explicit statement that the operator cannot invoke the skill.
+mkdir -p "$work/sk/notinvocable"
+printf -- '---\nname: notinvocable\ndescription: d\nuser-invocable: false\n---\n' > "$work/sk/notinvocable/SKILL.md"
+eq "$(rc_snip '/notinvocable' "$work/sk" sk '/' user-invocable)" 0 "user-invocable: false does not resolve"
+# An untrusted name reaching grep as an OPTION exits 0 with no match, certifying a phantom skill.
+eq "$(rc_snip '/--help' "$work/sk" sk '/' user-invocable)"    0 "an option-shaped name does not resolve"
+eq "$(rc_snip '/../escape' "$work/sk" sk '/' user-invocable)" 0 "a path-traversal name does not resolve"
+# The LEGACY schema example every upgraded artifact carries must not read as a declaration.
+eq "$(printf 'Optionally `<!-- release-command: /release -->` overrides it.\n' \
+      | bash "$RL" release-command | sed "/^$/d" | wc -l | tr -d " ")" 0 "the backticked schema example declares nothing"
+eq "$(printf '<!-- release-command: release -->\n' \
+      | bash "$RL" release-command)" release "a top-level declaration is read"
 # A QUOTED YAML name is valid and registers fine; a raw compare would reject it.
 mkdir -p "$work/sk/quoted"
 printf -- '---\nname: "quoted"\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/quoted/SKILL.md"

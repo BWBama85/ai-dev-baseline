@@ -543,7 +543,16 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
                if (v == want) n=1
              }
              /^description:[[:space:]]*[^[:space:]#]/{d=1}
-             { if (extra != "" && index($0, extra ":") == 1) e=1 }
+             # The extra key must be TRUE, not merely PRESENT. `user-invocable: false` is an
+             # explicit statement that the operator cannot invoke this skill, so certifying it
+             # emits exactly the unrunnable command this gate exists to suppress.
+             {
+               if (extra != "" && index($0, extra ":") == 1) {
+                 ev=$0; sub(/^[^:]*:[[:space:]]*/,"",ev); sub(/[[:space:]]+$/,"",ev)
+                 gsub(/^["'"'"']|["'"'"']$/,"",ev)
+                 if (ev == "true") e=1
+               }
+             }
              END{exit !(closed && n && d && (extra == "" || e))}' "$1"
       }
 
@@ -551,16 +560,42 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
       # filesystem check can see — a skill disabled via config is omitted from the registry while
       # its SKILL.md sits right there.  is empty for agents with no such
       # command; then the frontmatter contract above is the fallback.
+      # The skill name must match the agents' shared name grammar BEFORE it reaches any command.
+      # An untrusted `--help` or `--version` reaching `grep -Fxq "$NAME"` is read as a grep OPTION,
+      # and both exit 0 with no match — certifying a command that does not exist.
+      case "$SKILL_NAME" in
+        ''|*[!A-Za-z0-9_.-]*|-*|.*) SKILL_NAME="" ;;
+      esac
       PROBE=''
-      if [ -n "$PROBE" ] && command -v "${PROBE%% *}" >/dev/null 2>&1; then
+      if [ -z "$SKILL_NAME" ]; then
+        : # not a legal skill name -> unresolvable, fall through with RESOLVES=0
+      elif [ -n "$PROBE" ] && command -v "${PROBE%% *}" >/dev/null 2>&1; then
         # Match the ENTRY NAME, never the section text. Descriptions live in that section too, and
         # this repo's own `new-release` and `roadmap` descriptions both contain the standalone word
         # "release" — so a substring search certifies a `release` skill that does not exist.
-        $PROBE 2>/dev/null \
-          | sed -n '/^#* *Available skills/,$p' \
-          | sed -n 's/^[[:space:]]*[-*][[:space:]]*//; s/^\([A-Za-z0-9_.-][A-Za-z0-9_.-]*\).*$/\1/p' \
-          | grep -Fxq "$SKILL_NAME" && RESOLVES=1
-      else
+        # CAPTURE the probe, then validate it. A pipeline reports only its LAST command's status,
+        # so a failed `codex debug prompt-input` (subcommand missing, config invalid) would look
+        # exactly like an empty registry — reporting a present skill as nonexistent and blocking a
+        # ready release with the wrong remediation. A probe that cannot answer is not an answer:
+        # fall back to the filesystem contract rather than trusting its silence.
+        PROBE_OUT=""; PROBE_OK=0
+        if PROBE_OUT="$($PROBE 2>/dev/null)" \
+           && printf '%s\n' "$PROBE_OUT" | grep -q '^#* *Available skills'; then
+          PROBE_OK=1
+        fi
+        if [ "$PROBE_OK" -eq 1 ]; then
+          # `--` terminates options so an untrusted name is never read as one.
+          printf '%s\n' "$PROBE_OUT" \
+            | sed -n '/^#* *Available skills/,$p' \
+            | sed -n 's/^[[:space:]]*[-*][[:space:]]*//; s/^\([A-Za-z0-9_.-][A-Za-z0-9_.-]*\).*$/\1/p' \
+            | grep -Fxq -- "$SKILL_NAME" && RESOLVES=1
+        else
+          PROBE=""   # unusable -> the filesystem branch below is the authority
+        fi
+      fi
+      # FILESYSTEM FALLBACK — reached when there is no usable probe. Also the authority when the
+      # probe existed but could not answer, which is why PROBE is cleared above rather than trusted.
+      if [ -n "$SKILL_NAME" ] && [ "$RESOLVES" -eq 0 ] && [ -z "$PROBE" ]; then
         GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
         # Each root is joined and quoted INSIDE the loop. Serializing them into a space-delimited
         # string and re-splitting destroys a repo path containing spaces — a supported layout —
@@ -586,11 +621,16 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   esac
   ```
 
-  - **Marker present and it resolves** → emit the `✅ … — cutting.` banner, the `Then: baseline
-    release roll …` reminder, and `Next: <CMD>` (the **full** marker value, arguments included).
-  - **Marker present but it does NOT resolve** → emit
+  Branch on **`$CMD` and `$RESOLVES` only** — never on whether the value looks like a `/command`.
+  The marker is agent-neutral and the resolver already normalized it, so a slash-specific condition
+  here would emit `Next: none` on a Codex run whose snippet had just set `RESOLVES=1`:
+
+  - **`CMD` non-empty and `RESOLVES=1`** → emit the `✅ … — cutting.` banner, the `Then: baseline
+    release roll …` reminder, and `Next: <CMD>` (with this agent's prefix, arguments included).
+  - **`CMD` non-empty and `RESOLVES=0`** → emit
     `Next: none — release-command "<CMD>" is declared but no such skill exists; fix the marker or add the skill.`
-  - **No marker, or a value that is not a `/command`** → do **not** substitute `/release`. Emit
+  - **`CMD` empty** (no declaration, or only the schema's own backticked example) → do **not**
+    substitute `/release`. Emit
     ``Next: none — requirements met, but this repo declares no release command. Add `<!-- release-command: your-skill -->` to the roadmap artifact, or follow the project's documented release procedure.``
 
     **Wrap the marker in backticks**, exactly as shown. The action line is rendered as Markdown by

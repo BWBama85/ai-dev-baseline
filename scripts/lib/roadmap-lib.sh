@@ -485,7 +485,14 @@ cmd_release_counts() {
 # verbatim reads as "not declared" rather than as a command that can never resolve.
 cmd_release_command() {
   [ "$#" -eq 0 ] || die "release-command: takes no arguments (roadmap artifact body on stdin)"
-  grep -o '<!--[[:space:]]*release-command:[[:space:]]*[^>]*-->' \
+  # STRIP INLINE CODE SPANS FIRST — only prose declares (#117), applied to this marker.
+  # The artifact schema documents the marker by EXAMPLE, and every body bootstrapped by an earlier
+  # version carries `<!-- release-command: /release -->` inside the OPTIONAL comment block. Its
+  # shape is identical to a real declaration, so no value-based carve-out can tell them apart:
+  # `release` is a perfectly legitimate thing to declare. What distinguishes them is markup — the
+  # example is written inside backticks, a declaration is not. Same rule `deps-from-body` uses.
+  sed 's/`[^`]*`//g' \
+    | grep -o '<!--[[:space:]]*release-command:[[:space:]]*[^>]*-->' \
     | sed 's/.*release-command:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \
     | sed 's/^[/$]//' \
