@@ -254,7 +254,13 @@ cmd_lint() {
     BEGIN {
       # STATUS words. Kept tight on purpose: every addition is a new false-positive surface, and
       # the ones here are the vocabulary in which the failures actually occurred.
-      split("open closed merged unmerged reopened draft green red passing failing", T, " ")
+      # `draft` is DELIBERATELY ABSENT. It is an ordinary English noun that collides constantly
+      # with prose an agent actually writes ("my first draft of the summary for #196"), and it
+      # fired on exactly that within hours of shipping. Its status value is the lowest in the set —
+      # a PR being a draft rarely misleads anyone in a damaging way — so it is the clearest case of
+      # the precision-over-recall trade this grammar is built on: a gate that fires on ordinary
+      # prose gets worked around, and then it protects nothing at all.
+      split("open closed merged unmerged reopened green red passing failing", T, " ")
       # Verb usage: a status word that TAKES AN OBJECT is a verb, not a state ("open a PR",
       # "merged the branch", "closed it").
       split("a an the this that it them pr prs pull issue issues branch branches", OBJ, " ")

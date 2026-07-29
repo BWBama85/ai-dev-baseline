@@ -98,7 +98,8 @@ When it fires, it names the offending excerpt and the command that can answer th
 the claim is re-read or removed.
 
 It is deliberately **precision-first**: quoting a status inside a fence, a code span, a blockquote
-or an HTML comment declares nothing, and `open a PR` / `closed #195` are treated as verbs. It also
+or an HTML comment declares nothing, `open a PR` / `closed #195` are treated as verbs, and words
+that collide too often with ordinary prose are kept out of the token set entirely. It also
 never wedges a session — a missing `jq`, an unreadable transcript, a text-free turn or a broken
 linter install are all reported on stderr and then allowed through.
 

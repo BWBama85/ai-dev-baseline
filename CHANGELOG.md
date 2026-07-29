@@ -24,7 +24,8 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     joining `pr-review.sh gate` (gates a real merge) and `cleanup-lib.sh branch-verdict` (gates a
     branch delete) as the third guard that works because a wrong answer stops the machine.
   - Precision-first by design: fenced blocks, code spans (including multi-backtick), blockquotes
-    and HTML comments declare nothing; `open a PR` and `closed #195` are verbs. It never wedges a
+    and HTML comments declare nothing; `open a PR` and `closed #195` are verbs; and words that
+    collide with ordinary prose (`draft`) are kept out of the token set. It never wedges a
     session — missing `jq`, an unreadable transcript, a text-free turn or a broken linter install
     are reported on stderr and allowed through.
   - `verify-before-asserting.md`'s *"what this does not claim to enforce"* section is **rewritten,
