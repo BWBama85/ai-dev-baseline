@@ -35,7 +35,9 @@
 #   roadmap-lib.sh decisions                                      # roadmap artifact body on stdin
 #   roadmap-lib.sh open-issues                                    # paginated issues JSON on stdin
 #   roadmap-lib.sh read-complete <read-count> <expected-total>
-#   roadmap-lib.sh compose-candidates <roadmap-issue-number> [bug-label]  # {issues,edges} on stdin
+#   roadmap-lib.sh compose-candidates <roadmap-issue-number> [bug-label]
+#                                     # {issues,edges,exclude,canceled} on stdin
+#   roadmap-lib.sh compose-select     # compose-candidates TSV on stdin
 #   roadmap-lib.sh -h | --help
 #
 # `pr-targets-issue` stdin is the output of:
@@ -1058,8 +1060,15 @@ cmd_compose_candidates() {
     def clean: gsub("[\t\r\n]+"; " ");
     (map(.issues // []) | add // []) as $in
     | (map(.edges // []) | add // [])                                          as $ed
-    | [ $in[] | select(has("pull_request") | not) | select(.number != $skip) ] as $rows
-    | ([ $rows[].number ] | unique)                                            as $open
+    | (map(.exclude // []) | add // [] | unique)                               as $ex
+    | (map(.canceled // []) | add // [] | unique)                              as $can
+    # THE UNIVERSE is every open non-roadmap issue, INCLUDING the excluded ones. Blocking is asked
+    # of it, candidacy is asked of the set with `exclude` removed — two different questions, and
+    # collapsing them is what would let a bug be promoted whose prerequisite reconcile has already
+    # ruled un-emittable.
+    | [ $in[] | select(has("pull_request") | not) | select(.number != $skip) ] as $univ
+    | ([ $univ[].number ] | unique)                                            as $open
+    | [ $univ[] | select(.number as $x | $ex | index($x) == null) ]            as $rows
     | [ $ed[]
         | select(type == "array" and length >= 2)
         | { d: (.[0] | tonumber?), p: (.[1] | tonumber?) }
@@ -1068,7 +1077,11 @@ cmd_compose_candidates() {
         | . as $r
         | ( [ $edges[] | select(.d == $r.number) | .p ]
             | map(select(. != $r.number))
-            | map(select(. as $x | $open | index($x) != null))
+            # A prerequisite BLOCKS when it is still open (whether or not reconcile excluded it)
+            # or when it was CANCELED — closed `NOT_PLANNED`. Cancellation does not satisfy a
+            # dependent (step 4s `dep-canceled` rule), so equating every non-open prerequisite
+            # with success would promote a bug whose prerequisite is never coming.
+            | map(select(. as $x | ($open | index($x)) != null or ($can | index($x)) != null))
             | unique )                                                         as $pre
         | { n:     $r.number,
             t:     (if ([$r.labels[]?.name] | index($bug)) != null then 0 else 1 end),
@@ -1084,6 +1097,72 @@ cmd_compose_candidates() {
         .title ]
     | @tsv' 2>/dev/null \
     || die "compose-candidates: malformed JSON on stdin"
+  return 0
+}
+
+# --- compose-select ---------------------------------------------------------------------------
+# Turn the ranked slate into the set that is actually promoted: seed with the bug tier, close over
+# prerequisites, then PRUNE anything whose prerequisites cannot all be promoted.
+#
+# The prune pass is the half that is easy to leave out and expensive to leave out. Closure alone
+# pulls in a prerequisite only when it is itself a candidate; a prerequisite that reconcile
+# EXCLUDED (tracker-only / owner-review) or that was CANCELED (closed `NOT_PLANNED`) has no row, so
+# it can never be pulled in — and promoting its dependent anyway arms the milestone with a blocker
+# that nothing can close. `/roadmap` would then report `unmet` forever: the release stops
+# terminating, which is the same stall auto-composition exists to remove, one step further in.
+#
+# Stdin is the `compose-candidates` TSV. Output is one decision per line, so a drop is REPORTED
+# rather than silently applied (the no-silent-caps discipline):
+#
+#   sel   102
+#   sel   112
+#   drop  136   112        # 136 wanted 112, which is not promotable
+#
+# Both loops are fixpoints over a finite candidate set, so both terminate: closure only ever adds,
+# prune only ever removes, and each pass that changes nothing ends it.
+cmd_compose_select() {
+  [ "$#" -eq 0 ] || die "compose-select: takes no arguments (compose-candidates TSV on stdin)"
+  # POSIX awk only — no gawk extensions, no `asort`. The output is sorted by the caller.
+  awk -F'\t' '
+    { tier[$2] = $1; pre[$2] = $4; n++; num[n] = $2 }
+    END {
+      for (i = 1; i <= n; i++) if (tier[num[i]] == "bug") sel[num[i]] = 1
+      # closure: pull in every promotable prerequisite of everything selected
+      do {
+        changed = 0
+        for (i = 1; i <= n; i++) {
+          k = num[i]
+          if (!(k in sel)) continue
+          if (pre[k] == "-" || pre[k] == "") continue
+          m = split(pre[k], part, ",")
+          for (j = 1; j <= m; j++) {
+            p = part[j]
+            if (!(p in tier)) continue        # not a candidate row -> not promotable
+            if (!(p in sel)) { sel[p] = 1; changed = 1 }
+          }
+        }
+      } while (changed)
+      # prune: drop anything still holding a prerequisite that will not be promoted, and record why
+      do {
+        changed = 0
+        for (i = 1; i <= n; i++) {
+          k = num[i]
+          if (!(k in sel)) continue
+          if (pre[k] == "-" || pre[k] == "") continue
+          m = split(pre[k], part, ",")
+          for (j = 1; j <= m; j++) {
+            p = part[j]
+            if (!(p in sel)) { delete sel[k]; why[k] = p; changed = 1; break }
+          }
+        }
+      } while (changed)
+      for (i = 1; i <= n; i++) {
+        k = num[i]
+        if (k in sel)      print "sel\t" k
+        else if (k in why) print "drop\t" k "\t" why[k]
+      }
+    }' 2>/dev/null \
+    || die "compose-select: could not process the candidate slate"
   return 0
 }
 
@@ -1104,6 +1183,7 @@ main() {
     open-issues)      cmd_open_issues "$@" ;;
     read-complete)    cmd_read_complete "$@" ;;
     compose-candidates) cmd_compose_candidates "$@" ;;
+    compose-select)   cmd_compose_select "$@" ;;
     *) printf 'roadmap-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
   esac
 }

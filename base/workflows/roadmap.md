@@ -1196,7 +1196,9 @@ nothing needs to be — the same way step 4b's autofix is idempotent because it 
   composition;
 - **zero bugs and a rider budget of `0`** — nothing would be labelled `release-blocker`, and a
   milestone armed with no blockers reads `met` on the very next run and emits a phantom cut. Say so
-  and stop.
+  and stop;
+- **every candidate bug pruned** — each one's prerequisite is canceled or un-promotable. The
+  snippet reports which, per bug; the release genuinely has no implementable floor yet.
 
 #### The slate
 
@@ -1212,9 +1214,14 @@ or the tie-break in prose.** `compose-candidates` owns them so they are regressi
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
 : "${M_NUM:?ERROR: M_NUM (the active release milestone NUMBER) is unset — resolve the marker first}"
 : "${ROADMAP_NUM:?ERROR: ROADMAP_NUM (the roadmap artifact issue number) is unset — run step 2 first}"
+# COMPOSE_EXCLUDE — the issues step 4 classified `tracker-only` or `owner-review`, space or newline
+# separated. It MAY be empty; it may not be UNSET. `${VAR?}` (no colon) draws exactly that line, and
+# the line matters: a silently-empty exclusion set promotes an issue the advance logic will never
+# emit, so the milestone holds a blocker nothing can close and the release stops terminating.
+: "${COMPOSE_EXCLUDE?ERROR: COMPOSE_EXCLUDE is unset — pass step 4s non-implementable issues (empty is fine, unset is not)}"
 RELEASE_MODE="${RELEASE_MODE:-0}"
+BACKLOG="${BACKLOG_TITLE:-Backlog}"
 [ "$RELEASE_MODE" = "1" ] || { echo "compose: classic mode — nothing to compose"; exit 0; }
-[ "${NO_AUTOFIX:-0}" = "0" ] || { echo "compose: --no-autofix — reporting only, no tracker write"; exit 0; }
 
 CDIR="$(mktemp -d "${TMPDIR:-/tmp}/compose.XXXXXX")" || { echo "ERROR: cannot create scratch dir"; exit 1; }
 
@@ -1247,91 +1254,180 @@ M_COUNT="$(printf '%s' "$M_ISSUES" | jq -s --argjson r "$ROADMAP_NUM" \
 OPEN_JSON="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100")" \
   || { echo "ERROR: could not list open issues — hard stop"; exit 1; }
 
+# CANDIDATES COME FROM THE BACKLOG, NOT FROM EVERY OPEN ISSUE. An adopting repo can carry other
+# milestones (a future release, a parked epic); an issue sitting in one is a scope decision an owner
+# already made, and `gh issue edit --milestone` would silently overwrite it. Step 4b calls choosing
+# a SLATED issue's milestone an owner escalation, so composition must not do it by side effect.
+# Unmilestoned issues are already swept into the backlog by step 4b earlier in this same run.
+#
+# BUT THE UNIVERSE STAYS REPO-WIDE, and the distinction is load-bearing. A non-backlog issue must
+# still BLOCK a candidate that depends on it: it is open, undelivered, and out of this release, so a
+# dependent promoted without it holds a blocker that cannot drain. Restricting the whole read would
+# make such a prerequisite look SATISFIED — the same false-satisfied direction as a canceled one.
+# So the full open set is passed as the universe and non-backlog membership joins `exclude`, whose
+# contract is exactly "blocks, but is never itself promotable".
+UNIV_JSON="$(printf '%s' "$OPEN_JSON" | jq -c -s \
+  '[(add // [])[] | select(has("pull_request") | not)]')" \
+  || { echo "ERROR: could not assemble the open universe — hard stop"; exit 1; }
+OFF_BACKLOG="$(printf '%s' "$UNIV_JSON" | jq -r --arg b "$BACKLOG" \
+  '.[] | select((.milestone.title // "") != $b) | .number')" \
+  || { echo "ERROR: could not partition by milestone — hard stop"; exit 1; }
+CAND_JSON="$(printf '%s' "$UNIV_JSON" | jq -c --arg b "$BACKLOG" \
+  '[.[] | select((.milestone.title // "") == $b)]')" \
+  || { echo "ERROR: could not select the backlog membership — hard stop"; exit 1; }
+
 # Edges, derived HERE from the same read — `deps-from-body` per body, exactly as step 4 does. A
 # composition that guessed at dependencies is the one that promotes an issue whose prerequisite
 # stays in the backlog, arming the milestone with a blocker nothing can close.
 : > "$CDIR/edges"
-for n in $(printf '%s' "$OPEN_JSON" | jq -r '.[] | select(has("pull_request") | not) | .number'); do
-  [ "$n" = "$ROADMAP_NUM" ] && continue
-  BODY="$(printf '%s' "$OPEN_JSON" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""')"
+for n in $(printf '%s' "$CAND_JSON" | jq -r '.[].number'); do
+  BODY="$(printf '%s' "$CAND_JSON" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""')"
   for d in $(printf '%s' "$BODY" | {{ROADMAP_LIB}} deps-from-body "$n"); do
     printf '[%s,%s]\n' "$n" "$d" >> "$CDIR/edges"
   done
 done
+# THE SECOND SOURCE. Step 4 defines the edge set as the union of every issue body AND the artifact's
+# `## Decisions` rows, so reading only bodies loses an edge the ordinary reconcile already knew —
+# and the dependent then gets promoted while its prerequisite stays in the backlog. The artifact is
+# itself an open issue, so no extra read is needed; extract the section and run the same predicate
+# with NO self-number. Only that section: the `## Dependencies` section is a DERIVED VIEW, and
+# feeding it back would resurrect edges whose source text is gone.
+ART_BODY="$(printf '%s' "$OPEN_JSON" | jq -r -s --argjson r "$ROADMAP_NUM" \
+  '[(add // [])[] | select(.number == $r) | .body // ""] | first // ""')" \
+  || { echo "ERROR: could not read the roadmap artifact body — hard stop"; exit 1; }
+DEC_SECTION="$(printf '%s\n' "$ART_BODY" | awk '/^## Decisions/ { f = 1; next } /^## / { f = 0 } f')"
+# ATTRIBUTE PER ROW, never across the section. A row is `| Question | Decision | Recorded |`: the
+# DEPENDENT is the issue its Question id names (`dep-outside-release:#73`), the PREREQUISITES are
+# what its Decision cell declares (`Depends on #78`). Running the predicate over the whole section
+# at once would return a bare prerequisite list with no dependent attached, and pairing that against
+# every number in the section is a cross-product that FABRICATES edges — the same over-match class
+# as #69/#108/#117, on the decisions side.
+printf '%s\n' "$DEC_SECTION" | grep '^[[:space:]]*|' | while IFS= read -r row; do
+  Q="$(printf '%s' "$row" | awk -F'|' '{print $2}' | grep -o '#[0-9][0-9]*' | head -n1 | tr -d '#')"
+  [ -n "$Q" ] || continue                       # the header/separator rows carry no issue id
+  DCELL="$(printf '%s' "$row" | awk -F'|' '{print $3}')"
+  for d in $(printf '%s' "$DCELL" | {{ROADMAP_LIB}} deps-from-body "$Q"); do
+    printf '[%s,%s]\n' "$Q" "$d" >> "$CDIR/edges"
+  done
+done
 EDGES="$(jq -c -s '.' < "$CDIR/edges")" || { echo "ERROR: could not assemble the edge set — hard stop"; exit 1; }
 
-# One document in, one ranked slate out. `--argjson` for the issue array so a body containing a
-# quote or a backslash cannot break the assembly.
-printf '%s' "$OPEN_JSON" \
-  | jq -c -s --argjson edges "$EDGES" '{issues: (add // []), edges: $edges}' \
+# CANCELED PREREQUISITES. A prerequisite closed `NOT_PLANNED` was abandoned, not delivered — step 4's
+# `dep-canceled` rule — so it must keep blocking. Probe only the prerequisites that are NOT in the
+# candidate set (a handful at most), rather than paginating every closed issue in the repo.
+: > "$CDIR/canceled"
+CAND_NUMS="$(printf '%s' "$CAND_JSON" | jq -r '.[].number' | sort -n -u)"
+for p in $(printf '%s' "$EDGES" | jq -r '.[][1]' | sort -n -u); do
+  printf '%s\n' "$CAND_NUMS" | grep -qx "$p" && continue
+  SR="$(gh api "repos/$REPO/issues/$p" --jq '.state_reason // ""' 2>/dev/null)" || SR=""
+  [ "$SR" = "not_planned" ] && printf '%s\n' "$p" >> "$CDIR/canceled"
+done
+CANCELED="$(jq -c -R -s 'split("\n") | map(select(length > 0) | tonumber)' < "$CDIR/canceled")" \
+  || { echo "ERROR: could not assemble the canceled set — hard stop"; exit 1; }
+# The exclusion set is the UNION of what reconcile ruled un-emittable and what sits outside the
+# backlog. Both mean the same thing to the predicate: present and blocking, never promotable.
+EXCLUDE="$(printf '%s\n%s\n' "$COMPOSE_EXCLUDE" "$OFF_BACKLOG" | tr ' ' '\n' \
+  | jq -c -R -s 'split("\n") | map(select(test("^[0-9]+$")) | tonumber) | unique')" \
+  || { echo "ERROR: could not assemble the exclusion set — hard stop"; exit 1; }
+
+# One document in, one ranked slate out.
+printf '%s' "$UNIV_JSON" \
+  | jq -c --argjson edges "$EDGES" --argjson ex "$EXCLUDE" --argjson can "$CANCELED" \
+      '{issues: ., edges: $edges, exclude: $ex, canceled: $can}' \
   | {{ROADMAP_LIB}} compose-candidates "$ROADMAP_NUM" bug > "$CDIR/cand.tsv" \
   || { echo "ERROR: compose-candidates failed — hard stop"; exit 1; }
 
-# --- the mechanical floor: every bug, plus the transitive closure of what they need ------------
-# Seed with the bugs, then take a fixpoint over prerequisites. A prerequisite pulled in this way is
-# NOT discretionary — the release genuinely cannot cut without it — so it is promoted and labelled
-# like any other blocker, and it is NOT charged against the rider budget.
-awk -F'\t' '$1 == "bug" { print $2 }' "$CDIR/cand.tsv" | sort -n -u > "$CDIR/sel"
-while : ; do
-  cp "$CDIR/sel" "$CDIR/sel.in"
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    p="$(awk -F'\t' -v n="$n" '$2 == n { print $4 }' "$CDIR/cand.tsv")"
-    # `case`, not `[ … ] || [ … ] && continue`: that chain reads as (A || B) && continue, which is
-    # right by accident and silently wrong the moment anyone reorders it.
-    case "$p" in ''|'-') continue ;; esac
-    printf '%s\n' "$p" | tr ',' '\n' >> "$CDIR/sel"
-  done < "$CDIR/sel.in"
-  sort -n -u "$CDIR/sel" -o "$CDIR/sel"
-  # Terminates: each pass either adds a candidate from a finite set or changes nothing.
-  [ "$(wc -l < "$CDIR/sel" | tr -d ' ')" = "$(wc -l < "$CDIR/sel.in" | tr -d ' ')" ] && break
-done
+# Seed with the bug tier, close over prerequisites, prune what cannot drain. All three live in the
+# predicate so they are unit-tested rather than re-derived in awk here.
+{{ROADMAP_LIB}} compose-select < "$CDIR/cand.tsv" > "$CDIR/plan" \
+  || { echo "ERROR: compose-select failed — hard stop"; exit 1; }
+awk -F'\t' '$1 == "sel" { print $2 }' "$CDIR/plan" | sort -n -u > "$CDIR/sel"
 
-NSEL="$(sed '/^$/d' "$CDIR/sel" | wc -l | tr -d ' ')"
-if [ "$NSEL" = "0" ]; then
-  echo "compose: no bugs open — the floor is empty; select riders by judgement or stop (see the refusals above)"
-else
-  while IFS= read -r n; do
-    [ -n "$n" ] || continue
-    gh issue edit "$n" --milestone "$M_TITLE" --add-label release-blocker >/dev/null \
-      || { echo "ERROR: could not promote #$n into $M_TITLE — hard stop"; exit 1; }
-    echo "composed: #$n -> $M_TITLE (release-blocker)"
-  done < "$CDIR/sel"
-fi
+# A DROPPED BUG IS REPORTED, NEVER SILENT: it is a bug this release deliberately does not carry.
+awk -F'\t' '$1 == "drop" { print "compose: #" $2 " NOT promoted — prerequisite #" $3 " cannot be promoted (canceled, or not implementable)" }' "$CDIR/plan"
 
-# The rider slate the AGENT judges — printed, never auto-promoted. One awk pass over both files
-# drops anything the closure already took; splitting it into a shell loop over tab-delimited rows
-# needs a literal tab in a parameter expansion, which is exactly the kind of character that does
-# not survive being copied out of a document.
-echo "--- rider candidates (tier 'other', not yet promoted) ---"
+echo "--- rider candidates (tier other, not yet promoted) ---"
 awk -F'\t' 'NR == FNR { sel[$1] = 1; next }
             $1 == "other" && !($2 in sel) { print $2 "\t" $3 "\t" $4 "\t" $5 }' \
   "$CDIR/sel" "$CDIR/cand.tsv"
+
+NSEL="$(sed '/^$/d' "$CDIR/sel" | wc -l | tr -d ' ')"
+# THE READ-ONLY EXIT SITS HERE, NOT AT THE TOP. `--no-autofix` promises a report of what a normal
+# run WOULD have promoted; returning before the slate is computed could only print a generic
+# "reporting only" line, which is exactly the audit an owner needs for a new automatic mutation.
+if [ "${NO_AUTOFIX:-0}" != "0" ]; then
+  echo "compose: --no-autofix — would promote $NSEL issue(s) into $M_TITLE: $(tr '\n' ' ' < "$CDIR/sel")"
+  exit 0
+fi
+
+if [ "$NSEL" = "0" ]; then
+  echo "compose: no promotable bugs — the floor is empty; select riders by judgement or stop (see the refusals above)"
+else
+  # PARTIAL COMPOSITION IS ROLLED BACK, NOT LEFT BEHIND. Stopping halfway leaves the milestone
+  # non-empty, and the emptiness guard above would then refuse to compose ever again — freezing the
+  # release around whichever prefix happened to succeed, with the rest of the bugs stranded in the
+  # backlog and readiness free to report `met` once that prefix closes. Undo instead, so the next
+  # run sees a clean empty milestone and retries the whole selection.
+  : > "$CDIR/done"
+  FAILED=""
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if gh issue edit "$n" --milestone "$M_TITLE" --add-label release-blocker >/dev/null; then
+      printf '%s\n' "$n" >> "$CDIR/done"
+      echo "composed: #$n -> $M_TITLE (release-blocker)"
+    else
+      FAILED="$n"; break
+    fi
+  done < "$CDIR/sel"
+  if [ -n "$FAILED" ]; then
+    echo "ERROR: could not promote #$FAILED — rolling back this composition"
+    while IFS= read -r u; do
+      [ -n "$u" ] || continue
+      gh issue edit "$u" --milestone "$BACKLOG" --remove-label release-blocker >/dev/null \
+        || echo "WARN: rollback of #$u failed — remove it from $M_TITLE by hand before re-running"
+    done < "$CDIR/done"
+    echo "ERROR: composition rolled back; $M_TITLE is empty again — fix the cause and re-run"
+    exit 1
+  fi
+fi
 ```
 
 #### What to promote
 
-1. **Every bug is the floor, not a budget line.** The snippet above promotes them and their
-   transitive prerequisites and labels each `release-blocker`. This is the owner-stated priority
-   (D15): a release ships what is broken.
-2. **Riders are judgement, and capped.** From the printed `other` slate, select up to
+1. **Every implementable bug is the floor, not a budget line.** The snippet above promotes them and
+   their transitive prerequisites and labels each `release-blocker`. This is the owner-stated
+   priority (D15): a release ships what is broken. **Pass step 4's non-implementable set as
+   `COMPOSE_EXCLUDE`** — a `tracker-only` or `owner-review` issue is never emitted by the advance
+   logic, so promoting it on the strength of its label alone arms the milestone with a blocker that
+   can never close. The variable must be **set**, even when empty; the snippet refuses if it is not.
+2. **Four things are deliberately kept out, and each one is reported, never silently dropped** —
+   every one of them would compose a release that cannot drain:
+   - an issue reconcile classified `tracker-only` / `owner-review` (`COMPOSE_EXCLUDE`);
+   - an issue in **any other milestone** — that is an owner's existing scope decision, and
+     reassigning it is what step 4b calls an escalation. It still **blocks** a dependent, because it
+     is open and undelivered;
+   - a bug whose prerequisite was closed **`NOT_PLANNED`** — cancellation is abandonment, not
+     delivery (the `dep-canceled` rule);
+   - a bug whose prerequisite is itself excluded. Pruning **cascades**: dropping one issue drops
+     whatever needed it.
+3. **Riders are judgement, and capped.** From the printed `other` slate, select up to
    `<!-- release-budget: N -->` (absent → **3**) issues that genuinely belong in *this* release, and
    promote them the same way. Prefer, in this order: an issue that **unblocks** several others (its
    number appears in other rows' `prereqs` column); a **live, reproduced** defect that was filed as
    an enhancement; the **head of a blocked chain** whose members are already promoted. Skip anything
    step 4 classified `tracker-only` or `owner-review` — those are not implementable, and promoting
    one arms the milestone with a blocker that can never close.
-3. **Label every promotion `release-blocker`.** This is not optional and it is not cosmetic.
+4. **Label every promotion `release-blocker`.** This is not optional and it is not cosmetic.
    Readiness is in blocker-mode whenever the label exists, so a milestone holding issues that carry
    **no** blocker label reads `met` — `release-ready 1 1 0 3 0 green` → `met` — and the next run
    emits a cut for a release nothing has built. `baseline release roll` refuses a same-named backlog
    for exactly this reason (`scripts/lib/release-convention.sh`); this is the same trap on the
    composition side. A rider you deliberately want *not* to hold the cut is the one exception, and
    it must be a conscious choice, stated in the artifact.
-4. **Assert the compose did not arm a phantom cut** — re-run the readiness snippet after promoting.
+5. **Assert the compose did not arm a phantom cut** — re-run the readiness snippet after promoting.
    A verdict of `met` immediately after composition means every promotion missed its label: **hard
    stop and report it**, never emit the cut.
-5. **Record it in the artifact** (step 4's rewrite): a `## Release composition` section naming the
+6. **Record it in the artifact** (step 4's rewrite): a `## Release composition` section naming the
    date, the promoted set split into *bugs* / *closure* / *riders*, and **one line of reasoning per
    rider**. The mechanical half is reproducible from the predicate; the judgement half is only
    auditable if it is written down, which is what makes this reviewable rather than a black box.

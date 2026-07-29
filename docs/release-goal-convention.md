@@ -92,8 +92,11 @@ In release-readiness mode, every run `/roadmap`:
   so it never pulls `Backlog` work forward. (Reconciliation still runs backlog-wide; only
   the *selection* is scoped.)
 - **Computes the readiness predicate live** (the rule above), excluding the roadmap issue
-  itself, and requiring the milestone to be **armed** — a brand-new milestone with zero
-  issues reports "no requirements defined yet," it does not emit a cut.
+  itself, and requiring the milestone to be **armed**. A brand-new milestone with zero issues is
+  **composed** rather than reported (decision D15): `/roadmap` fills it from the backlog — every
+  implementable bug plus the prerequisites they need, labelled `release-blocker` — and continues
+  the same run into the ordinary unmet advance. It still never emits a cut for an empty milestone.
+  See *Composition* below.
 - **Emits accordingly:**
   - **Requirements unmet** (open `release-blocker`s remain) → the next unblocked
     `/implement-issue` bundle *from the release set*.
@@ -221,8 +224,10 @@ It performs exactly four mutations, **in this order**:
 holds ≥1 issue, open or closed. Seeding the fresh milestone with rolled-forward non-blockers
 would arm it with zero open blockers — which is the definition of `met` — so the very next
 `/roadmap` run would emit a cut for a release containing nothing. Sending them to `Backlog`
-leaves the new milestone genuinely empty (`unarmed` → "no requirements yet") and matches the
-frozen-set rule above: slating work *into* a release is always deliberate.
+leaves the new milestone genuinely empty, which is precisely the state `/roadmap`'s composition
+step recognises and fills (D15). Note the asymmetry, because it is the whole safety argument:
+`roll` moves leftovers **without** the `release-blocker` label, while composition **always**
+applies it. Seeding here would arm a phantom cut; composing there cannot.
 
 **It re-verifies readiness itself and fails closed.** `roll` does not trust the `/roadmap` run
 that emitted the cut — it re-reads the tracker and recomputes the verdict through the same
@@ -263,7 +268,9 @@ When the convention is detected, `/create-issue` and `/implement-issue`'s deferr
 filing default a **newly discovered** issue to `Backlog` — never the active release
 milestone — so the frozen requirement set converges. `Backlog` is the safe default home and
 needs no extra confirmation; placing an issue *into* the active release milestone is the
-deliberate decision that it is a requirement of *this* release. An unfinished release
+deliberate decision that it is a requirement of *this* release — deliberate by a person, or by
+`/roadmap`'s composition step against an **empty** milestone (D15), never by accretion into a set
+that already holds work. An unfinished release
 requirement keeps its own `release-blocker` issue open — you never silently transfer its
 acceptance into `Backlog`. A repo without the convention is unchanged: it files to its own
 backlog, or milestone-less if it uses no milestones.
@@ -289,3 +296,41 @@ backlog, or milestone-less if it uses no milestones.
 - [roadmap-acceptance.md](roadmap-acceptance.md) — the `/roadmap` acceptance script; §9
   exercises every scenario of this module (activation, the readiness predicate, projection,
   emission, and determinism).
+
+
+## Composition — filling an empty release milestone (D15)
+
+`baseline release roll` archives the release milestone and opens a fresh **empty** one. Without a
+step to fill it, the next `/roadmap` run computes `unarmed`, reports "no requirements yet" and
+stops — so every cycle needs an owner to hand-slate the next set before the loop can advance again.
+That is a person wired into a loop whose entire purpose is to terminate on its own.
+
+So `/roadmap` composes an empty release milestone and continues the same run into the unmet advance.
+
+**What goes in.** Every implementable **bug** in the backlog is promoted — bugs are the floor, not a
+budget line — together with the transitive closure of the prerequisites they need. Enhancement
+riders are selected by judgement, capped by `<!-- release-budget: N -->` (default 3), and each one's
+reasoning is recorded in the artifact's `## Release composition` section.
+
+**What is deliberately kept out**, because each of these would compose a release that can never
+drain:
+
+| Excluded | Why |
+|---|---|
+| Issues reconcile classified `tracker-only` / `owner-review` | The advance logic never emits them, so as a `release-blocker` they can never close. |
+| Issues in **any other milestone** | That is an owner's existing scope decision; reassigning it silently is what step 4b calls an escalation. |
+| A bug whose prerequisite was closed **`NOT_PLANNED`** | Cancellation is abandonment, not delivery — the `dep-canceled` rule. The bug is dropped and the drop is reported. |
+| A bug whose prerequisite is itself excluded | Same reason, one hop out. Pruning cascades. |
+
+**The frozen-set rule is intact.** Composition fires **only** when the milestone holds zero issues,
+open or closed — asserted in the workflow's own shell, not in prose around it. A set that already
+holds work is never added to, so the convergence argument this convention rests on is unchanged: a
+release set is composed once and then frozen. A partial composition (one promotion succeeds, a later
+one fails) is **rolled back** rather than left behind, precisely so the milestone returns to empty
+and the next run can compose the whole set instead of freezing around the prefix that happened to
+land.
+
+**Turning it off.** There is no separate switch: composition is part of release-readiness mode. A
+repo that wants to slate every release by hand keeps `<!-- release-milestone: -->` unset (classic
+mode), or runs `/roadmap --no-autofix`, which prints the slate it *would* have promoted and writes
+nothing.

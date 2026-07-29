@@ -623,6 +623,61 @@ eq "$(printf '{"issues":[]}' | bash "$RL" compose-candidates 31 '' >/dev/null 2>
 eq "$(compose "$(cdoc "$(ci 5 'x' 'a\"b')")" 31 'a"b' | awk -F'\t' '{print $1}')" "bug" \
    "a label containing a quote is matched as data (no filter injection)"
 
+# --- 2j-p. `exclude`: present and blocking, but never a candidate (review round 1) -----------
+# Reconcile's `tracker-only` / `owner-review` issues, and anything outside the backlog, share one
+# meaning here. Both must BLOCK a dependent (they are open and undelivered) while never being
+# promoted themselves — collapsing the two questions is what would promote a bug the advance logic
+# can never emit.
+CX_DOC="$(cdoc "$C_ALL" '[[136,112]]')"
+CX_DOC="$(printf '%s' "$CX_DOC" | jq -c '. + {exclude: [112]}')"
+eq "$(compose "$CX_DOC" | awk -F'\t' '{printf "%s ", $2}')" "102 136 20 80 " \
+   "an excluded issue is not offered as a candidate"
+eq "$(compose "$CX_DOC" | awk -F'\t' '$2 == 136 { print $3 "/" $4 }')" "1/112" \
+   "...but it still BLOCKS the dependent that needs it"
+
+# --- 2j-q. `canceled`: a NOT_PLANNED prerequisite is not satisfied (review round 1) ----------
+# #999 is absent from the open set. As a completed close that is satisfaction; as a cancellation it
+# is abandonment, and step 4's `dep-canceled` rule says it does not satisfy the dependent.
+eq "$(compose "$(cdoc "$C_ALL" '[[112,999]]')" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "0/-" \
+   "a prerequisite absent from the open set is satisfied by default (completed close)"
+CN_DOC="$(printf '%s' "$(cdoc "$C_ALL" '[[112,999]]')" | jq -c '. + {canceled: [999]}')"
+eq "$(compose "$CN_DOC" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "1/999" \
+   "...but a CANCELED one keeps blocking"
+
+# ============================================================================================
+# 2k. COMPOSE-SELECT — seed, close, and prune what cannot drain (review round 1)
+# ============================================================================================
+# sel <candidate-tsv> — the promoted numbers, ascending, space-joined.
+sel() { printf '%s\n' "$1" | bash "$RL" compose-select 2>/dev/null | awk -F'\t' '$1=="sel"{print $2}' | sort -n | tr '\n' ' ' | sed 's/ $//'; }
+# drops <candidate-tsv> — the `n:blocker` pairs that were dropped.
+drops() { printf '%s\n' "$1" | bash "$RL" compose-select 2>/dev/null | awk -F'\t' '$1=="drop"{printf "%s:%s ", $2, $3}' | sed 's/ $//'; }
+
+T_PLAIN="$(printf 'bug\t102\t0\t-\tb1\nother\t20\t0\t-\te1\n')"
+eq "$(sel "$T_PLAIN")" "102" "the bug tier is the seed; an unrelated enhancement is not selected"
+
+T_CLOSE="$(printf 'bug\t136\t1\t55\tb1\nother\t55\t0\t-\te1\n')"
+eq "$(sel "$T_CLOSE")" "55 136" "closure pulls a promotable prerequisite in, even an enhancement"
+
+T_CHAIN="$(printf 'bug\t136\t1\t55\tb1\nother\t55\t1\t62\te1\nother\t62\t0\t-\te2\n')"
+eq "$(sel "$T_CHAIN")" "55 62 136" "closure is transitive"
+
+# THE PRUNE PASS. A prerequisite with no candidate row can never be promoted, so its dependent
+# cannot drain — and a milestone holding a blocker nothing can close never reports `met`.
+T_PRUNE="$(printf 'bug\t136\t1\t99\tb1\nbug\t102\t0\t-\tb2\n')"
+eq "$(sel "$T_PRUNE")" "102" "a bug whose prerequisite is not promotable is dropped"
+eq "$(drops "$T_PRUNE")" "136:99" "...and the drop names the prerequisite that caused it"
+
+T_CASCADE="$(printf 'bug\t136\t1\t99\tb1\nbug\t200\t1\t136\tb2\n')"
+eq "$(sel "$T_CASCADE")" "" "pruning cascades to whatever depended on the dropped issue"
+eq "$(drops "$T_CASCADE")" "136:99 200:136" "...and every drop is reported, never silent"
+
+eq "$(sel "$(printf '')")" "" "an empty slate selects nothing"
+eq "$(printf '' | bash "$RL" compose-select >/dev/null 2>&1; printf '%s' "$?")" 0 \
+   "...and exits 0, because an empty backlog is an answer"
+eq "$(printf 'bug\t1\t0\t-\tx\n' | bash "$RL" compose-select EXTRA >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "compose-select rejects arguments"
+eq "$(sel "$T_CASCADE")" "$(sel "$T_CASCADE")" "compose-select is deterministic"
+
 # --- 2h. dispatch surface -------------------------------------------------------------------
 run -h;     yes "$RC_" "-h exits 0"; has "$OUT" "roadmap-lib.sh" "-h prints usage"
 run --help; yes "$RC_" "--help exits 0"
