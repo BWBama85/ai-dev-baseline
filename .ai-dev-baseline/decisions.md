@@ -659,8 +659,12 @@ didn't already model, so any residual divergence stays visible and auditable.
              no new `{{PLACEHOLDER}}` and no new config surface.
 - known-gap: Ownership makes the READER safe, not the PATH exclusive. Two real runs in one
              checkout still collide on the fixed state filenames, and preflight's unconditional
-             clear can delete a live foreign marker before any ownership check sees it. Scoped out
-             deliberately — separating a live foreign marker from a dead one is liveness detection,
-             and an owner-aware preflight without it would leave a crashed run's marker
-             uncleanable. Tracked in #202.
+             clear can delete a live foreign marker before any ownership check sees it. Tracked in
+             #202. The reason to defer is NOT that a crashed run's marker would become uncleanable
+             — `cleanup-lib.sh state-verdict marker` reaps a stale marker from PR state and branch
+             refs, with no session liveness involved, so `/cleanup` is a second cleaner. It is that
+             per-run state paths would be solving the wrong problem: two `/implement-issue` runs in
+             one checkout share ONE HEAD, so they fight over the branch whether or not their state
+             files collide. #202's likely resolution is therefore "refuse to start a second run"
+             (which wants #159's liveness read), not per-session filenames.
 - baseline-issue: #180

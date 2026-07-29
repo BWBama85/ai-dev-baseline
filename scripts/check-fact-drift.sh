@@ -328,6 +328,11 @@ fact currency-outcomes regex:'busy\|offline\)'     -- agents/claude/scripts/sess
 # the checkout — the exact defect this shipped to fix, back with no test failing. The rendered
 # skills are pinned too, so a render that drops the writer fails loudly rather than quietly
 # shipping an agent that never stamps an owner.
+#
+# EXPECTED TO CHANGE at #14/#25. Pinning a Claude env-var name in the Codex/Gemini renders is only
+# right while `owner` has no reader outside Claude; once those agents get their own enforcement
+# hook the writer becomes a placeholder and this rule must narrow to the Claude render. A failure
+# here at that point is this tripwire working — see base/workflows/README.md's carve-out list.
 _own_all="base/workflows/implement-issue.md agents/claude/scripts/implement-issue-gate.sh"
 for _a in claude codex gemini; do _own_all="$_own_all agents/$_a/skills/implement-issue/SKILL.md"; done
 # shellcheck disable=SC2086  # deliberate word-split of the space-separated file list
