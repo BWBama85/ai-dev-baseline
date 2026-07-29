@@ -507,3 +507,58 @@ didn't already model, so any residual divergence stays visible and auditable.
              snippets from any project-scoped skill, the way `check-roadmap-e2e.sh` does for
              `base/workflows/` — is #190.
 - baseline-issue: n/a (this repo IS the baseline; #3/D7 is the standing decision, #188 the trigger)
+
+## D15 — /roadmap composes the next release set itself; "advisory, never automatic" is retracted
+- date:      2026-07-29
+- category:  general
+- unknown:   The release-goal convention (#27/#71) makes the loop TERMINATE — readiness is computed
+             live and the cut is emitted rather than remembered. What it never covered is the state
+             immediately AFTER a cut. `baseline release roll` archives the release milestone and
+             opens a fresh EMPTY one, so the very next `/roadmap` run computes `unarmed` and stops:
+             "release milestone has no requirements yet". Nothing in the baseline fills it. Observed
+             live on 2026-07-29, the first run after the v1.1.0 roll: 62 open issues, every one of
+             them implementable, and the workflow emitted no batch and no cut.
+             So the convention closes the loop at the release boundary and re-opens it at the
+             composition boundary. It is not a bug in any predicate — every one returned the right
+             answer — it is a MISSING STEP, and the owner's judgement was the only thing that
+             supplied it.
+- decision:  `/roadmap` auto-composes the next release set when it detects `unarmed`, then continues
+             the SAME run into the ordinary `unmet` advance. Four sub-decisions:
+             (1) IT LIVES IN `/roadmap`, NOT IN `baseline release roll`. `roll` is deterministic
+                 shell whose header states it has "exactly ONE correct shape"; composition needs
+                 judgement, which shell cannot hold. `roll` also fires once, at cut time, while the
+                 milestone can drain at any point — `/roadmap` runs every iteration and already owns
+                 the bundles, the derived edges and the ordering.
+             (2) BUGS ARE THE FLOOR, NOT A BUDGET LINE. Every implementable open `bug` is promoted
+                 and labelled `release-blocker`. Enhancement riders are judgement-selected and capped
+                 by `<!-- release-budget: N -->` (default 3). Owner-stated priority.
+             (3) THE MECHANICAL HALF IS A TESTED PREDICATE, THE JUDGEMENT HALF IS RECORDED.
+                 `roadmap-lib.sh compose-candidates` owns tiering, dependency closure and the stable
+                 tie-break; the agent picks riders from that ranked slate and WRITES ITS REASONING
+                 into the artifact. Determinism is preserved where it is checkable and made auditable
+                 where it cannot be.
+             (4) COMPOSITION IS ONCE PER CYCLE, BY CONSTRUCTION. It fires only on `unarmed`, and its
+                 first act makes the milestone non-empty — so no later run re-composes, exactly as
+                 step 4b's autofix is idempotent because it re-selects on `milestone == null`.
+                 Nothing is remembered between runs and nothing needs to be.
+- placement: `base/workflows/roadmap.md` (the compose step) + `scripts/lib/roadmap-lib.sh`
+             (`compose-candidates`) + `scripts/check-roadmap.sh` (regression tests).
+- reason:    A loop that terminates into a manual step every cycle is not a closed loop — it is a
+             loop with a person wired into it, which is the exact shape this convention exists to
+             remove. The counter-argument is real and is why #80 said "advisory, never automatic":
+             auto-composition can reintroduce scope drift, and a frozen human-approved set is what
+             made the release converge. It is answered rather than ignored: the set is still FROZEN
+             once composed (the trigger is an empty milestone, never a non-empty one), it is bounded
+             (bugs are finite, riders are capped), and every promotion is a reversible tracker edit
+             the owner can undo with one `gh issue edit`. Scope drift came from an ever-GROWING set;
+             this composes a bounded set once and then leaves it alone.
+- retracts:  #80's Design section C and two of its acceptance criteria — "`/roadmap` **never**
+             milestones issues itself" and "The proposal is advisory: nothing is milestoned without
+             owner action." The rest of #80 (leverage ranking, capability closure, shown scores,
+             zero-config generality, reproducible slates) SURVIVES and is what upgrades the ranking
+             this decision ships. #80 is re-scoped, not superseded.
+- known-gap: The ranking shipped here is bug-first + ascending number + dependency closure. It does
+             NOT rank by unblock leverage or capability closure — that is #80's remaining half, and
+             it is itself weakened until #112 lands, because `deps-from-body` still drops an edge
+             written with markdown emphasis and the graph is what leverage is computed from.
+- baseline-issue: n/a (this repo IS the baseline; #80 is the tracking issue)

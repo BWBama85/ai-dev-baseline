@@ -43,7 +43,8 @@ roadmap issue). It is `gh`-based and works in any repo with an issue tracker.
 - **It never duplicates milestone membership.** Which milestone an issue belongs to lives
   in the milestones and is read live from `gh` every run. The artifact holds only what the
   tracker cannot express: **ordering, branch-bundles, and dependency edges** (the DRY split
-  — see the schema).
+  — see the schema). It may *set* membership in exactly one situation — composing an **empty**
+  release milestone (step 6a) — but it never keeps a second copy of the answer.
 - **It never asserts stale state.** Every PR / issue / label read is a fresh `gh` call at
   the moment of use (`base/practices/verify-before-asserting.md`), and the selected bundle
   is re-checked immediately before it is emitted.
@@ -120,6 +121,12 @@ parse, and rewrite it deterministically:
      names the milestone an UNMILESTONED open issue is moved to. Absent -> an open milestone
      titled `Backlog`. If neither resolves, /roadmap escalates `unmilestoned:#N` instead of
      creating a milestone the repo never opted into. -->
+
+<!-- OPTIONAL rider budget (step 6a, release-readiness mode only): `<!-- release-budget: N -->`
+     caps how many NON-BUG issues auto-composition may add to an empty release milestone. Bugs are
+     never capped — they are the floor. Absent -> 3. `0` ships bug-only releases. Auto-composition
+     itself is not opt-in: once release-readiness mode is on, an EMPTY release milestone is composed
+     rather than reported (D15). -->
 
 Order + branch-bundles + dependency edges. Milestone membership is **not** duplicated here
 (it lives in the milestones, read live from `gh`). This artifact holds only what the tracker
@@ -415,7 +422,10 @@ fi
 
 Each verdict has exactly one emission, and every one of them ends with its action line:
 
-- `unarmed` → "no requirements yet" →
+- `unarmed` → the milestone is **empty**, which is the state `baseline release roll` leaves behind
+  after a cut. **Do not stop here** — go to **step 6a** and compose the set, then re-run the
+  predicate and continue this same run into the `unmet` advance (D15). Only a run that composes
+  **nothing** (empty backlog, `--no-autofix`, or a refusal 6a names) reports the terminal line
   `Next: none — release milestone "NAME" has no requirements yet.`
 - `unmet` → emit the next bundle projected onto `M` (the classic shape: `Why:` then `Next:`).
 - `held` → record the canceled blocker in the Reconcile flags, **withhold** the cut, and say why:
@@ -1109,7 +1119,9 @@ is remembered between runs, and nothing needs to be.
 **Escalate tier — never guess, surface as an owner question (step 4's ids and homes):**
 
 - which milestone a **slated** issue belongs to (as opposed to *no* milestone at all);
-- **promotion** out of the backlog into a release set;
+- **promotion** out of the backlog into a **non-empty** release set — adding to a set the owner has
+  already composed is scope drift, and it is the case #80 warned about. Composing an **empty** one
+  is step 6a and is not this tier;
 - **re-scoping** an issue, or resolving a `dep-outside-release` question;
 - **split-brain** (two roadmap artifacts) and **dependency cycles** — both already hard-stop;
 - **anything not in the autofix table above.** The list is closed; new defects escalate by
@@ -1158,6 +1170,184 @@ Apply these in order; every tie has a stable break so two runs agree:
    foundational / cross-cutting / high-leverage before polish.
 4. **Stable tie-break.** When ordering is otherwise equal, order by ascending issue number,
    so the output is identical on repeated runs with no tracker change.
+
+### 6a. Compose an empty release milestone — release-readiness mode only (D15, #80)
+
+**Runs BEFORE step 6's emission, and only on the `unarmed` verdict.** Release-readiness mode is
+active, the marker resolved to exactly one open milestone `M`, and `M` holds **zero** issues, open
+or closed. That is precisely what `baseline release roll` leaves behind: the cut shipped, the old
+milestone was archived under its version, a fresh empty one was opened, leftovers went to `Backlog`.
+Reporting "no requirements yet" and stopping there is what wires a person into the loop **every
+cycle** — the loop terminates at the release boundary and re-opens at the composition boundary. So
+compose the set, then re-run the readiness predicate and continue **this same run** into the
+ordinary `unmet` advance.
+
+**It fires only on EMPTY, and that is the whole scope-drift answer.** A milestone holding even one
+issue — open or closed — is a set the owner has already composed, and adding to it is the escalate
+tier (step 4b), because an ever-growing release set is exactly the divergence the release-goal
+convention was built to stop. Composition is therefore **once per cycle by construction**: its first
+promotion makes `M` non-empty, so no later run re-composes. Nothing is remembered between runs and
+nothing needs to be — the same way step 4b's autofix is idempotent because it re-selects on
+`milestone == null`.
+
+**Refuse — report and fall through to the terminal `unarmed` line — when:**
+
+- **classic mode** (no `release-milestone` marker) — there is no release set to compose;
+- **`--no-autofix`** — a read-only run must not mutate the tracker. Say the milestone is empty and
+  what a normal run would have promoted;
+- **zero candidates** — no open non-roadmap issue exists. That is `roadmap complete`, not a
+  composition;
+- **zero bugs and a rider budget of `0`** — nothing would be labelled `release-blocker`, and a
+  milestone armed with no blockers reads `met` on the very next run and emits a phantom cut. Say so
+  and stop.
+
+#### The slate
+
+Rank the reconciled backlog with the shared predicate — **do not re-derive the tiering, the closure
+or the tie-break in prose.** `compose-candidates` owns them so they are regression-tested offline
+(`scripts/check-roadmap.sh`) rather than re-decided by whichever agent runs the cycle:
+
+```bash
+# ADB-SNIPPET: compose-candidates
+# Self-contained, like every other fenced block here: these steps may be run as SEPARATE shell
+# invocations that share no variables. Inputs that genuinely come from earlier steps are asserted,
+# never defaulted — a composition built on an empty milestone number would promote into nothing.
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+: "${M_NUM:?ERROR: M_NUM (the active release milestone NUMBER) is unset — resolve the marker first}"
+: "${ROADMAP_NUM:?ERROR: ROADMAP_NUM (the roadmap artifact issue number) is unset — run step 2 first}"
+RELEASE_MODE="${RELEASE_MODE:-0}"
+[ "$RELEASE_MODE" = "1" ] || { echo "compose: classic mode — nothing to compose"; exit 0; }
+[ "${NO_AUTOFIX:-0}" = "0" ] || { echo "compose: --no-autofix — reporting only, no tracker write"; exit 0; }
+
+CDIR="$(mktemp -d "${TMPDIR:-/tmp}/compose.XXXXXX")" || { echo "ERROR: cannot create scratch dir"; exit 1; }
+
+# The milestone TITLE, resolved from its NUMBER: `gh issue edit --milestone` takes a title, and
+# guessing it from the marker a second time is how two spellings of the same milestone appear.
+MS_JSON="$(gh api --paginate "repos/$REPO/milestones?state=open&per_page=100")" \
+  || { echo "ERROR: could not list milestones — hard stop"; exit 1; }
+M_TITLE="$(printf '%s' "$MS_JSON" | jq -r -s --argjson n "$M_NUM" '[.[][] | select(.number == $n) | .title] | first // empty')" \
+  || { echo "ERROR: could not parse the milestone read — hard stop"; exit 1; }
+[ -n "$M_TITLE" ] || { echo "ERROR: milestone $M_NUM has no open title — hard stop"; exit 1; }
+
+# EMPTY OR NOTHING. The "compose only an empty milestone" rule is the entire answer to the scope
+# drift #80 warned about, so it is asserted HERE rather than left to the calling prose: a snippet
+# re-run after composition — or reached by an agent that mis-read the verdict — would otherwise
+# promote every bug filed since, growing a release set the owner already froze. Open AND closed
+# both count: a milestone whose issues have all been delivered is a composed set mid-cycle, not a
+# fresh one.
+M_ISSUES="$(gh api --paginate "repos/$REPO/issues?milestone=$M_NUM&state=all&per_page=100")" \
+  || { echo "ERROR: could not read milestone $M_NUM — hard stop"; exit 1; }
+M_COUNT="$(printf '%s' "$M_ISSUES" | jq -s --argjson r "$ROADMAP_NUM" \
+  '[(add // [])[] | select(has("pull_request") | not) | select(.number != $r)] | length')" \
+  || { echo "ERROR: could not tabulate milestone $M_NUM — hard stop"; exit 1; }
+[ "$M_COUNT" = "0" ] || {
+  echo "compose: $M_TITLE already holds $M_COUNT issue(s) — a composed set is never added to (that is step 4b's escalate tier)"
+  exit 0
+}
+
+# Read and parse separately (a pipeline reports only its LAST status, so a failed read would arrive
+# as an empty list and compose a release out of nothing).
+OPEN_JSON="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100")" \
+  || { echo "ERROR: could not list open issues — hard stop"; exit 1; }
+
+# Edges, derived HERE from the same read — `deps-from-body` per body, exactly as step 4 does. A
+# composition that guessed at dependencies is the one that promotes an issue whose prerequisite
+# stays in the backlog, arming the milestone with a blocker nothing can close.
+: > "$CDIR/edges"
+for n in $(printf '%s' "$OPEN_JSON" | jq -r '.[] | select(has("pull_request") | not) | .number'); do
+  [ "$n" = "$ROADMAP_NUM" ] && continue
+  BODY="$(printf '%s' "$OPEN_JSON" | jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""')"
+  for d in $(printf '%s' "$BODY" | bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" deps-from-body "$n"); do
+    printf '[%s,%s]\n' "$n" "$d" >> "$CDIR/edges"
+  done
+done
+EDGES="$(jq -c -s '.' < "$CDIR/edges")" || { echo "ERROR: could not assemble the edge set — hard stop"; exit 1; }
+
+# One document in, one ranked slate out. `--argjson` for the issue array so a body containing a
+# quote or a backslash cannot break the assembly.
+printf '%s' "$OPEN_JSON" \
+  | jq -c -s --argjson edges "$EDGES" '{issues: (add // []), edges: $edges}' \
+  | bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" compose-candidates "$ROADMAP_NUM" bug > "$CDIR/cand.tsv" \
+  || { echo "ERROR: compose-candidates failed — hard stop"; exit 1; }
+
+# --- the mechanical floor: every bug, plus the transitive closure of what they need ------------
+# Seed with the bugs, then take a fixpoint over prerequisites. A prerequisite pulled in this way is
+# NOT discretionary — the release genuinely cannot cut without it — so it is promoted and labelled
+# like any other blocker, and it is NOT charged against the rider budget.
+awk -F'\t' '$1 == "bug" { print $2 }' "$CDIR/cand.tsv" | sort -n -u > "$CDIR/sel"
+while : ; do
+  cp "$CDIR/sel" "$CDIR/sel.in"
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    p="$(awk -F'\t' -v n="$n" '$2 == n { print $4 }' "$CDIR/cand.tsv")"
+    # `case`, not `[ … ] || [ … ] && continue`: that chain reads as (A || B) && continue, which is
+    # right by accident and silently wrong the moment anyone reorders it.
+    case "$p" in ''|'-') continue ;; esac
+    printf '%s\n' "$p" | tr ',' '\n' >> "$CDIR/sel"
+  done < "$CDIR/sel.in"
+  sort -n -u "$CDIR/sel" -o "$CDIR/sel"
+  # Terminates: each pass either adds a candidate from a finite set or changes nothing.
+  [ "$(wc -l < "$CDIR/sel" | tr -d ' ')" = "$(wc -l < "$CDIR/sel.in" | tr -d ' ')" ] && break
+done
+
+NSEL="$(sed '/^$/d' "$CDIR/sel" | wc -l | tr -d ' ')"
+if [ "$NSEL" = "0" ]; then
+  echo "compose: no bugs open — the floor is empty; select riders by judgement or stop (see the refusals above)"
+else
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    gh issue edit "$n" --milestone "$M_TITLE" --add-label release-blocker >/dev/null \
+      || { echo "ERROR: could not promote #$n into $M_TITLE — hard stop"; exit 1; }
+    echo "composed: #$n -> $M_TITLE (release-blocker)"
+  done < "$CDIR/sel"
+fi
+
+# The rider slate the AGENT judges — printed, never auto-promoted. One awk pass over both files
+# drops anything the closure already took; splitting it into a shell loop over tab-delimited rows
+# needs a literal tab in a parameter expansion, which is exactly the kind of character that does
+# not survive being copied out of a document.
+echo "--- rider candidates (tier 'other', not yet promoted) ---"
+awk -F'\t' 'NR == FNR { sel[$1] = 1; next }
+            $1 == "other" && !($2 in sel) { print $2 "\t" $3 "\t" $4 "\t" $5 }' \
+  "$CDIR/sel" "$CDIR/cand.tsv"
+```
+
+#### What to promote
+
+1. **Every bug is the floor, not a budget line.** The snippet above promotes them and their
+   transitive prerequisites and labels each `release-blocker`. This is the owner-stated priority
+   (D15): a release ships what is broken.
+2. **Riders are judgement, and capped.** From the printed `other` slate, select up to
+   `<!-- release-budget: N -->` (absent → **3**) issues that genuinely belong in *this* release, and
+   promote them the same way. Prefer, in this order: an issue that **unblocks** several others (its
+   number appears in other rows' `prereqs` column); a **live, reproduced** defect that was filed as
+   an enhancement; the **head of a blocked chain** whose members are already promoted. Skip anything
+   step 4 classified `tracker-only` or `owner-review` — those are not implementable, and promoting
+   one arms the milestone with a blocker that can never close.
+3. **Label every promotion `release-blocker`.** This is not optional and it is not cosmetic.
+   Readiness is in blocker-mode whenever the label exists, so a milestone holding issues that carry
+   **no** blocker label reads `met` — `release-ready 1 1 0 3 0 green` → `met` — and the next run
+   emits a cut for a release nothing has built. `baseline release roll` refuses a same-named backlog
+   for exactly this reason (`scripts/lib/release-convention.sh`); this is the same trap on the
+   composition side. A rider you deliberately want *not* to hold the cut is the one exception, and
+   it must be a conscious choice, stated in the artifact.
+4. **Assert the compose did not arm a phantom cut** — re-run the readiness snippet after promoting.
+   A verdict of `met` immediately after composition means every promotion missed its label: **hard
+   stop and report it**, never emit the cut.
+5. **Record it in the artifact** (step 4's rewrite): a `## Release composition` section naming the
+   date, the promoted set split into *bugs* / *closure* / *riders*, and **one line of reasoning per
+   rider**. The mechanical half is reproducible from the predicate; the judgement half is only
+   auditable if it is written down, which is what makes this reviewable rather than a black box.
+
+Then re-run the readiness predicate and continue into step 6 with the resulting `unmet` verdict. The
+run's output stays inside the contract — the composition is reported as **one** line, not a table:
+
+```text
+release-blocker: 11 blockers open
+composed: Next release ← 10 bugs + 1 closure + 3 riders (was empty after the v1.1.0 roll)
+Why:  B04 (#112) — unblocked, no in-flight PR, and it unblocks B05/B06/B40.
+Next: /implement-issue 112
+```
 
 ### 6. Advance — emit the next batch
 
@@ -1352,7 +1542,9 @@ action line*, so the last line is `Next: none — <state>` and nothing follows i
   valid terminal emission — not "roadmap complete", which still means *no open non-roadmap issues
   repo-wide*; a met release with open `Backlog` work emits the cut, and the next cycle continues
   from `Backlog`). **Armed but unmet** emits the next projected bundle, or names the blocker when
-  every in-`M` bundle is blocked/in-flight. **Empty (unarmed) `M`** reports "no requirements yet".
+  every in-`M` bundle is blocked/in-flight. **Empty (unarmed) `M`** is **composed** (step 6a) and the
+  run continues into the `unmet` advance; only a composition that is refused or finds no candidate
+  reports "no requirements yet".
   A **broken marker** (resolves to zero or >1 open milestones) stops and surfaces the mismatch.
   **Requirements met but the branch is red or unverifiable** (`not-green` / `indeterminate`, #78)
   withholds the cut and names the failing check — the action is `/debug`, not `/implement-issue`,
@@ -1364,6 +1556,13 @@ action line*, so the last line is `Next: none — <state>` and nothing follows i
   tracker state yields the same output"*, and a run that repairs something **has changed the
   tracker state**. The second run sees the repaired state, finds nothing to fix, and prints no
   autofix lines — which is the idempotency requirement, stated from the other side.
+  **Composition (step 6a) is the same shape, and it is the one place a judgement call enters the
+  loop.** Its mechanical half — tiering, dependency closure, tie-break — is `compose-candidates`
+  and is reproducible by test. Its rider half is not, so it is bounded (it runs only against an
+  **empty** milestone, so at most once per release cycle) and **recorded** (the artifact's
+  `## Release composition` section carries one line of reasoning per rider). The second run finds a
+  non-empty milestone, composes nothing, and is deterministic again — idempotency by re-selection,
+  exactly as in step 4b.
 
 ## Agent-neutral (scope note)
 
