@@ -233,13 +233,19 @@ cmd_status() {
     # already be correct.
     if rc_body="$(gh issue view "$(printf '%s\n' "$rnums" | sed '/^$/d' | head -n1)" --json body --jq .body 2>/dev/null)"; then
       rc_read_ok=1
-      rc_vals="$(printf '%s' "$rc_body" | bash "$(dirname "${BASH_SOURCE[0]}")/roadmap-lib.sh" release-command 2>/dev/null || true)"
-      rc_n="$(printf '%s\n' "$rc_vals" | sed '/^$/d' | wc -l | tr -d ' ')"
+      # The PREDICATE's status matters too. `|| true` turned a missing or corrupt roadmap-lib into
+      # an empty result while the read still looked successful, so the marker was reported
+      # definitively ABSENT on an extraction that never ran.
+      if rc_vals="$(printf '%s' "$rc_body" | bash "$(dirname "${BASH_SOURCE[0]}")/roadmap-lib.sh" release-command 2>/dev/null)"; then
+        rc_n="$(printf '%s\n' "$rc_vals" | sed '/^$/d' | wc -l | tr -d ' ')"
+      else
+        rc_read_ok=0
+      fi
     fi
   fi
   if [ "$rcount" = "1" ] && [ "$rc_read_ok" = "0" ]; then
-    adb_info "  release-command marker: UNKNOWN — could not read roadmap issue body (transient"
-    adb_info "                          error or permissions); retry rather than assuming absent"
+    adb_info "  release-command marker: UNKNOWN — could not read the roadmap body or run the"
+    adb_info "                          extractor; retry rather than assuming absent"
   elif [ "$rcount" = "1" ]; then
     case "$rc_n" in
       0) adb_info "  release-command marker: ABSENT — REQUIRED, and it has no default" ;;

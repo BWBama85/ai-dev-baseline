@@ -763,6 +763,26 @@ eq "$(rc_snip '/your-skill' "$work/sk" sk '/')"       0 "the schema placeholder 
 mkdir -p "$work/sk/todofm"
 printf -- '---\nname: # TODO\ndescription: # TODO\n---\n' > "$work/sk/todofm/SKILL.md"
 eq "$(rc_snip '/todofm' "$work/sk" sk)"               0 "a commented-out frontmatter value does not resolve"
+# THE AGENT SKILLS NAME GRAMMAR: lowercase hyphen-case, <=64, no leading/trailing/consecutive
+# hyphens. A looser check certifies a directory the agent will not register.
+# NOT `Release`: macOS is case-insensitive, so that directory IS `release` and mk_skill would
+# overwrite the shared fixture's name field, breaking every later /release assertion.
+mk_skill "$work/sk/Upcase"
+eq "$(rc_snip '/Upcase' "$work/sk" sk '/' user-invocable)"      0 "an uppercase name does not resolve"
+mk_skill "$work/sk/trail-"
+eq "$(rc_snip '/trail-' "$work/sk" sk '/' user-invocable)"      0 "a trailing hyphen does not resolve"
+mk_skill "$work/sk/dou--ble"
+eq "$(rc_snip '/dou--ble' "$work/sk" sk '/' user-invocable)"    0 "consecutive hyphens do not resolve"
+mk_skill "$work/sk/under_score"
+eq "$(rc_snip '/under_score' "$work/sk" sk '/' user-invocable)" 0 "an underscore does not resolve"
+LONGNAME="$(printf 'a%.0s' $(seq 1 65))"
+mk_skill "$work/sk/$LONGNAME"
+eq "$(rc_snip "/$LONGNAME" "$work/sk" sk '/' user-invocable)"   0 "a name over 64 chars does not resolve"
+mk_skill "$work/sk/ok-name"
+eq "$(rc_snip '/ok-name' "$work/sk" sk '/' user-invocable)"     1 "valid hyphen-case resolves"
+# A TAB is a valid shell argument separator; splitting on a literal space alone leaves it in
+# the name and reports an installed skill as missing.
+eq "$(rc_snip "$(printf '/release\t--channel prod')" "$work/sk" sk '/' user-invocable)" 1 "tab-separated arguments still resolve"
 # A valid unquoted YAML value ends at an inline comment; the loader sees `release`.
 mkdir -p "$work/sk/inlinec"
 printf -- '---\nname: inlinec # the project cutter\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/inlinec/SKILL.md"

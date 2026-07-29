@@ -520,7 +520,10 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
       # Resolve the COMMAND NAME only. A marker may carry arguments (`/ship --channel production`);
       # searching for a directory with the arguments in its name reports a valid skill missing.
       # The FULL value is still what gets emitted.
-      SKILL_NAME="${CMD%% *}"; SKILL_NAME="${SKILL_NAME#"$PFX"}"
+      # Split at the first SHELL WHITESPACE, not a literal space: a tab is a valid separator, and
+      # `%% *` would leave it plus every argument inside the name, failing the grammar check and
+      # reporting an installed skill as missing.
+      SKILL_NAME="${CMD%%[[:space:]]*}"; SKILL_NAME="${SKILL_NAME#"$PFX"}"
 
       # ONE frontmatter contract, used by both search roots below. It must satisfy THIS LOADER:
       #   * the FIRST line is the opening `---`. A file whose frontmatter starts later is rejected
@@ -568,9 +571,16 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
       # The skill name must match the agents' shared name grammar BEFORE it reaches any command.
       # An untrusted `--help` or `--version` reaching `grep -Fxq "$NAME"` is read as a grep OPTION,
       # and both exit 0 with no match — certifying a command that does not exist.
+      # THE AGENT SKILLS NAME GRAMMAR: lowercase hyphen-case, <=64 chars, no leading, trailing or
+      # consecutive hyphens. A looser check certifies a directory the agent will not register —
+      # and it is also what keeps an untrusted `--help` from reaching a command as an OPTION.
+      # The class is ENUMERATED, not a range: under some locales `[a-z]` collates uppercase in too
+      # (verified on macOS — `Upcase` passed a `[!a-z0-9-]*` test), which would certify a name the
+      # agent will not register.
       case "$SKILL_NAME" in
-        ''|*[!A-Za-z0-9_.-]*|-*|.*) SKILL_NAME="" ;;
+        ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*|-*|*-|*--*) SKILL_NAME="" ;;
       esac
+      [ "${#SKILL_NAME}" -le 64 ] || SKILL_NAME=""
       PROBE=''
       if [ -z "$SKILL_NAME" ]; then
         : # not a legal skill name -> unresolvable, fall through with RESOLVES=0
