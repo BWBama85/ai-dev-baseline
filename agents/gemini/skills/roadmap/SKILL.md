@@ -536,8 +536,13 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
              NR==1{next}
              $0=="---"{closed=1; exit}
              /^name:[[:space:]]*[^[:space:]#]/ {
-               v=$0; sub(/^name:[[:space:]]*/,"",v); sub(/[[:space:]]+$/,"",v)
-               gsub(/^["'"'"']|["'"'"']$/,"",v)
+               v=$0; sub(/^name:[[:space:]]*/,"",v)
+               # A QUOTED value keeps everything inside the quotes; an UNQUOTED one ends at an
+               # inline comment. `name: release # project cutter` is valid YAML whose value is
+               # `release`, and a raw compare would reject the skill as misnamed.
+               if (v ~ /^["'"'"']/) { q = substr(v,1,1); sub(/^./,"",v); sub(q "[[:space:]]*(#.*)?$","",v) }
+               else { sub(/[[:space:]]+#.*$/,"",v) }
+               sub(/[[:space:]]+$/,"",v)
                if (v == want) n=1
              }
              /^description:[[:space:]]*[^[:space:]#]/{d=1}
@@ -583,9 +588,23 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
         fi
         if [ "$PROBE_OK" -eq 1 ]; then
           # `--` terminates options so an untrusted name is never read as one.
+          # BOUND the section and require an ENTRY SHAPE. Streaming to end-of-output and accepting
+          # any line that starts with a name character means unrelated prompt content after the
+          # section — an AGENTS or user line beginning "release …" — certifies a missing skill.
+          # Stop at the next heading or a blank line, and take only list entries (`- name`,
+          # `- name: desc`) or `name: desc` rows.
           printf '%s\n' "$PROBE_OUT" \
-            | sed -n '/^#* *Available skills/,$p' \
-            | sed -n 's/^[[:space:]]*[-*][[:space:]]*//; s/^\([A-Za-z0-9_.-][A-Za-z0-9_.-]*\).*$/\1/p' \
+            | awk '
+                /^#* *Available skills/ { insec = 1; next }
+                insec && /^#/           { exit }
+                insec && /^[[:space:]]*$/ { exit }
+                insec {
+                  l = $0
+                  if (!sub(/^[[:space:]]*[-*][[:space:]]+/, "", l)) {
+                    if (l !~ /^[A-Za-z0-9_.-]+:/) next
+                  }
+                  if (match(l, /^[A-Za-z0-9_.-]+/)) print substr(l, 1, RLENGTH)
+                }' \
             | grep -Fxq -- "$SKILL_NAME" && RESOLVES=1
         else
           PROBE=""   # unusable -> the filesystem branch below is the authority

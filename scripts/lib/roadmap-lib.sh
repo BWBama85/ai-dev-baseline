@@ -485,13 +485,23 @@ cmd_release_counts() {
 # verbatim reads as "not declared" rather than as a command that can never resolve.
 cmd_release_command() {
   [ "$#" -eq 0 ] || die "release-command: takes no arguments (roadmap artifact body on stdin)"
-  # STRIP INLINE CODE SPANS FIRST — only prose declares (#117), applied to this marker.
-  # The artifact schema documents the marker by EXAMPLE, and every body bootstrapped by an earlier
-  # version carries `<!-- release-command: /release -->` inside the OPTIONAL comment block. Its
-  # shape is identical to a real declaration, so no value-based carve-out can tell them apart:
-  # `release` is a perfectly legitimate thing to declare. What distinguishes them is markup — the
-  # example is written inside backticks, a declaration is not. Same rule `deps-from-body` uses.
-  sed 's/`[^`]*`//g' \
+  # ONLY PROSE DECLARES (#117), applied to this marker. Structure is dropped BEFORE extraction:
+  # fenced blocks, blockquotes, and inline code spans.
+  #
+  # The shared `md_prose` filter cannot be reused here — it strips HTML COMMENTS, and this marker
+  # IS an HTML comment — so the same rule is applied with that half omitted.
+  #
+  # Why it is needed at all: the artifact schema documents the marker BY EXAMPLE, and every body
+  # bootstrapped by an earlier version carries `<!-- release-command: /release -->` in its OPTIONAL
+  # comment block. Its shape is identical to a real declaration, so no value-based carve-out can
+  # tell them apart — `release` is a perfectly legitimate thing to declare. What distinguishes them
+  # is MARKUP: the example sits in a code span or a fence; a declaration does not.
+  awk '
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    /^[[:space:]]*>/ { next }
+    { line = $0; gsub(/`[^`]*`/, "", line); print line }
+  ' \
     | grep -o '<!--[[:space:]]*release-command:[[:space:]]*[^>]*-->' \
     | sed 's/.*release-command:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \

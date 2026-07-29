@@ -763,6 +763,18 @@ eq "$(rc_snip '/your-skill' "$work/sk" sk '/')"       0 "the schema placeholder 
 mkdir -p "$work/sk/todofm"
 printf -- '---\nname: # TODO\ndescription: # TODO\n---\n' > "$work/sk/todofm/SKILL.md"
 eq "$(rc_snip '/todofm' "$work/sk" sk)"               0 "a commented-out frontmatter value does not resolve"
+# A valid unquoted YAML value ends at an inline comment; the loader sees `release`.
+mkdir -p "$work/sk/inlinec"
+printf -- '---\nname: inlinec # the project cutter\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/inlinec/SKILL.md"
+eq "$(rc_snip '/inlinec' "$work/sk" sk '/' user-invocable)"  1 "an inline YAML comment after the name resolves"
+mkdir -p "$work/sk/quotedc"
+printf -- '---\nname: "quotedc" # note\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/quotedc/SKILL.md"
+eq "$(rc_snip '/quotedc' "$work/sk" sk '/' user-invocable)"  1 "a quoted name with a trailing comment resolves"
+# Structure never declares: a marker inside a fence, blockquote or code span is documentation.
+eq "$(printf '\140\140\140\n<!-- release-command: fenced -->\n\140\140\140\n' \
+      | bash "$RL" release-command | sed "/^$/d" | wc -l | tr -d " ")" 0 "a fenced marker declares nothing"
+eq "$(printf '> <!-- release-command: bq -->\n' \
+      | bash "$RL" release-command | sed "/^$/d" | wc -l | tr -d " ")" 0 "a blockquoted marker declares nothing"
 # `user-invocable: false` is an explicit statement that the operator cannot invoke the skill.
 mkdir -p "$work/sk/notinvocable"
 printf -- '---\nname: notinvocable\ndescription: d\nuser-invocable: false\n---\n' > "$work/sk/notinvocable/SKILL.md"

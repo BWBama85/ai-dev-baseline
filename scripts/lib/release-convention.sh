@@ -225,14 +225,22 @@ cmd_status() {
   rc_body=""; rc_vals=""; rc_n=0
   rnums="$(roadmap_issue_nums)"
   rcount="$(printf '%s\n' "$rnums" | sed '/^$/d' | wc -l | tr -d ' ')"
+  local rc_read_ok=0
   if [ "$rcount" = "1" ]; then
-    rc_body="$(gh issue view "$(printf '%s\n' "$rnums" | sed '/^$/d' | head -n1)" --json body --jq .body 2>/dev/null || true)"
-    if [ -n "$rc_body" ]; then
+    # A FAILED READ IS NOT AN ABSENCE. `|| true` turned a transient gh error or a permissions
+    # problem into an empty body, and the marker was then reported ABSENT — presenting an
+    # unverified state as a confirmed one and sending the operator to edit an artifact that may
+    # already be correct.
+    if rc_body="$(gh issue view "$(printf '%s\n' "$rnums" | sed '/^$/d' | head -n1)" --json body --jq .body 2>/dev/null)"; then
+      rc_read_ok=1
       rc_vals="$(printf '%s' "$rc_body" | bash "$(dirname "${BASH_SOURCE[0]}")/roadmap-lib.sh" release-command 2>/dev/null || true)"
       rc_n="$(printf '%s\n' "$rc_vals" | sed '/^$/d' | wc -l | tr -d ' ')"
     fi
   fi
-  if [ "$rcount" = "1" ]; then
+  if [ "$rcount" = "1" ] && [ "$rc_read_ok" = "0" ]; then
+    adb_info "  release-command marker: UNKNOWN — could not read roadmap issue body (transient"
+    adb_info "                          error or permissions); retry rather than assuming absent"
+  elif [ "$rcount" = "1" ]; then
     case "$rc_n" in
       0) adb_info "  release-command marker: ABSENT — REQUIRED, and it has no default" ;;
       1) adb_info "  release-command marker: declared ($(printf '%s\n' "$rc_vals" | head -n1))" ;;
@@ -248,7 +256,7 @@ cmd_status() {
   if [ -n "$rnum" ]; then
     adb_info "Primitives present. /roadmap runs in release-readiness mode once its artifact carries"
     adb_info "the marker:  <!-- release-milestone: $RELEASE_MILESTONE -->"
-    if [ "$rcount" = "1" ] && [ "$rc_n" != "1" ]; then
+    if [ "$rcount" = "1" ] && [ "$rc_read_ok" = "1" ] && [ "$rc_n" != "1" ]; then
       adb_info "It will still stop at 'Next: none' when the release is ready until the artifact also"
       adb_info "declares:    <!-- release-command: <your-release-skill> -->"
       adb_info "using YOUR agent's invocation syntax. /roadmap emits it only if it resolves."
