@@ -146,12 +146,34 @@ predicate, so a run can print it and still emit the cut.
   open`) is exactly the live distance to the cut. The destination-label is the *gauge*; the
   readiness predicate is the *trigger*.
 
-**The emitted command is advisory and configurable.** `/roadmap` never runs a command — it
-prints one. The default is `/release` — and the baseline ships **no `/release` skill**, by
-decision: it is the [project-owned release role](roles-and-agents.md#release-is-project-owned--the-baseline-ships-no-release),
-so a repo without one gets an unrunnable suggestion rather than an error. Write your own
-`/release`, or point the emission elsewhere with `<!-- release-command: <cmd> -->` on the
-artifact.
+**You must declare the release command, and it must resolve.** `/roadmap` never runs a command —
+it prints one — but it will only print one that **exists**. Name it on the artifact:
+
+```markdown
+<!-- release-command: /release -->
+```
+
+There is **no default**, and that is deliberate (#188). An unresolvable slash command does not
+fail loudly: Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo that
+has no such skill silently opens the CLI's `release-notes` viewer — succeeding at something
+unrelated at the exact moment the roadmap says *cutting*. Verified against Claude Code 2.1.220:
+there is no `/release` built-in (`release-notes` is the only release-named command), so the hazard
+is the **miss**, not a name collision, and renaming the default would not fix it.
+
+So `/roadmap` resolves the declared command against the project and user skill directories before
+emitting it, and reports a terminal state instead of guessing when it cannot:
+
+| Artifact | Emission |
+|---|---|
+| marker present, skill exists | `Next: <cmd>` |
+| marker present, skill missing | `Next: none — release-command "<cmd>" is declared but no such skill exists` |
+| no marker | `Next: none — this repo declares no release command` |
+
+The last two are not failures — the release *is* ready; the missing piece is a declaration the
+owner owns. Write your own release skill (it is the
+[project-owned release role](roles-and-agents.md#release-is-project-owned--the-baseline-ships-no-release);
+the baseline ships none by decision) and point the marker at it. This repo's own copy lives at
+`.claude/skills/release/`, and its procedure is an executable driver rather than prose — see D14.
 
 **Configurable last mile (auto-cut).** By default the operator runs the emitted `/release`,
 exactly like running an emitted `/implement-issue` — the *determination* is fully automated,

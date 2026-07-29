@@ -97,11 +97,17 @@ req_fixed templates/agents.toml 'installs no release skill' template-release-not
 req_fixed base/workflows/new-release.md '`/release`'   new-release-names-the-other-command
 req_fixed base/workflows/new-release.md 'project-owned' new-release-points-at-the-owned-role
 
-# --- 4. THE EMIT CONTRACT: /roadmap still points at a project-owned /release -------------------
-# "The baseline ships no /release" is only safe because /roadmap emits it (never runs it) and
-# lets a repo retarget the emission. Losing either half turns the decision into a dead end.
-req_fixed base/workflows/roadmap.md '`/release`'      roadmap-emits-release
+# --- 4. THE EMIT CONTRACT: /roadmap emits a RESOLVABLE project-owned command -------------------
+# "The baseline ships no /release" is only safe because /roadmap lets a repo NAME its own release
+# command and emits that. Losing that half turns the decision into a dead end.
+#
+# What changed with #188: the emission must also RESOLVE. An unresolvable slash command does not
+# fail loudly — Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo
+# without one silently opens the CLI's release-notes viewer at the moment the roadmap says
+# "cutting". So the old `roadmap-emits-release` token is gone deliberately: emitting the literal
+# `/release` as a DEFAULT is now the bug, not the contract. These two assert what replaced it.
 req_fixed base/workflows/roadmap.md 'release-command' roadmap-release-command-override
+req_fixed base/workflows/roadmap.md 'RESOLVES'        roadmap-verifies-the-command-resolves
 req_fixed docs/release-goal-convention.md 'release-command' convention-documents-override
 
 # --- 5. THE ROLLOVER BOUNDARY: `roll` is bookkeeping, never a cutter (issue #74) ---------------

@@ -105,8 +105,10 @@ parse, and rewrite it deterministically:
 <!-- OPTIONAL release-readiness mode (owner opt-in — the release-goal convention module, #27/#71):
      add `<!-- release-milestone: NAME -->` naming the active release milestone to make /roadmap
      compute release readiness live and emit the release command when the requirements are met (see
-     "Release-readiness mode" below). Optionally `<!-- release-command: /release -->` overrides the
-     emitted command (default `/release`). Bootstrap NEVER writes these; absent → classic
+     "Release-readiness mode" below). `<!-- release-command: /your-skill -->` names the command a
+     met release emits — REQUIRED for a cut to be emitted, because there is no safe default: an
+     unresolvable slash command fuzzy-matches an unrelated built-in rather than failing (#188), and
+     #3/D7 guarantees the baseline ships no `/release` to fall back on. Absent → classic
      backlog-wide behavior, byte-identical to a repo that never adopted the convention. Set the
      value empty (`<!-- release-milestone: -->`) or delete the line to force classic mode. Stand the
      convention up with `baseline release init` — see docs/release-goal-convention.md. -->
@@ -468,16 +470,48 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   there is no batch to build, so the action is `/debug`, not `/implement-issue`.
 - **Met** (armed, predicate satisfied, no unacknowledged canceled blocker, **and the branch is
   green or the repo has no CI**) → emit
-  `Next: <release-command>` where `<release-command>` is the `<!-- release-command: CMD -->` marker
-  if present else `/release`, prefixed with the banner
+  `Next: <release-command>` — **but only a command that RESOLVES**, prefixed with the banner
   `✅ Release requirements met (NAME: 0 open blockers, <branch> green) — cutting.` When health was
   `no-ci`, say so instead of claiming green: `✅ Release requirements met (NAME: 0 open blockers;
   no CI configured — health check skipped) — cutting.` **Never report a branch as green when it was
   never checked.** If non-blocker issues are still
   open in `M`, append `(K non-blocker issue(s) still open — not holding the release; the roll sends
-  them to Backlog)`. `/roadmap` only **emits** this command; it never runs it. `/release` is the
-  **project-owned** release role — the baseline ships no such skill by decision (#3,
-  `base/roles.md`), so a repo without one gets an unrunnable suggestion, not an error.
+  them to Backlog)`. `/roadmap` only **emits** this command; it never runs it.
+
+  **Resolve it before emitting it, and never invent one (#188).** An unresolvable slash command
+  does **not** fail loudly on every agent — Claude Code fuzzy-matches the nearest built-in, so a
+  bare `/release` on a repo that has no such skill silently opens the CLI's `release-notes` viewer.
+  That is worse than an error: it succeeds at something unrelated at the exact moment the roadmap
+  says "cutting". Verified against Claude Code 2.1.220 — there is **no** `/release` built-in
+  (`release-notes` is the only release-named command, and `release` is absent from its 110
+  built-in names), so the hazard is the *miss*, not a name collision, and no rename fixes it.
+
+  ```bash
+  # ADB-SNIPPET: release-command
+  # Self-contained, like every other block here. CMD is the `release-command` marker value ("" if
+  # the artifact carries none). The skill DIRECTORY is the resolution test — that is what makes a
+  # slash command exist for the agent reading this.
+  CMD="${CMD:-}"
+  SKILL_NAME="${CMD#/}"
+  RESOLVES=0
+  if [ -n "$SKILL_NAME" ]; then
+    for d in "$PWD/.claude/skills/$SKILL_NAME" "$HOME/.claude/skills/$SKILL_NAME"; do
+      [ -f "$d/SKILL.md" ] && RESOLVES=1 && break
+    done
+  fi
+  ```
+
+  - **Marker present and it resolves** → emit `Next: <CMD>`.
+  - **Marker present but it does NOT resolve** → emit
+    `Next: none — release-command "<CMD>" is declared but no such skill exists; fix the marker or add the skill.`
+  - **No marker** → do **not** substitute `/release`. Emit
+    `Next: none — requirements met, but this repo declares no release command. Add <!-- release-command: /your-skill --> to the roadmap artifact, or follow the project's documented release procedure.`
+
+  All three still end with a single action line, per the output contract. The last two are terminal
+  states, not failures: the release *is* ready, and the missing piece is a declaration the owner
+  owns. `/release` remains the **project-owned** release role — the baseline ships no such skill by
+  decision (#3, `base/roles.md`), which is exactly why a default that names it cannot be trusted to
+  exist.
 - **Always name the rollover on a met emission.** Emit the reminder
   `Then: baseline release roll --version <version>   # AFTER the cut — archive M, open a fresh NAME, leftovers → Backlog`
   **immediately above** the `Next:` line (the output contract reserves the last line for the
