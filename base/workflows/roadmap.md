@@ -519,49 +519,65 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
       # The FULL value is still what gets emitted.
       SKILL_NAME="${CMD%% *}"; SKILL_NAME="${SKILL_NAME#"$PFX"}"
 
-      # PREFER THE AGENT'S OWN REGISTRY. It is the ground truth, and it accounts for state no
+      # ONE frontmatter contract, used by both search roots below. It must satisfy THIS LOADER:
+      #   * the FIRST line is the opening `---`. A file whose frontmatter starts later is rejected
+      #     by the loader, but a scan that just skips line 1 finds a later `---` and calls it the
+      #     close — certifying a partially-edited file.
+      #   * CLOSED — reaching END with no second `---` is an unterminated block.
+      #   * NON-EMPTY values, and `#` excluded from the first character: `name: # TODO` parses as
+      #     YAML null, because the rest is a comment.
+      #   * `name` EQUALS the directory, after stripping surrounding quotes — `name: "release"` is
+      #     valid YAML that registers fine and a raw compare would reject it.
+      #   * {{SKILL_EXTRA_KEY}} present when this agent requires one (Claude: `user-invocable`).
+      skill_frontmatter_ok() {
+        [ "$(head -n1 "$1")" = "---" ] || return 1
+        awk -v want="$2" -v extra='{{SKILL_EXTRA_KEY}}' '
+             NR==1{next}
+             $0=="---"{closed=1; exit}
+             /^name:[[:space:]]*[^[:space:]#]/ {
+               v=$0; sub(/^name:[[:space:]]*/,"",v); sub(/[[:space:]]+$/,"",v)
+               gsub(/^["'"'"']|["'"'"']$/,"",v)
+               if (v == want) n=1
+             }
+             /^description:[[:space:]]*[^[:space:]#]/{d=1}
+             { if (extra != "" && index($0, extra ":") == 1) e=1 }
+             END{exit !(closed && n && d && (extra == "" || e))}' "$1"
+      }
+
+      # PREFER THE AGENT'S OWN REGISTRY. It is the ground truth and accounts for state no
       # filesystem check can see — a skill disabled via config is omitted from the registry while
-      # its SKILL.md sits right there, and a quoted YAML `name:` registers fine but would fail a
-      # naive string compare. {{SKILL_REGISTRY_PROBE}} is empty for agents with no such command.
+      # its SKILL.md sits right there. {{SKILL_REGISTRY_PROBE}} is empty for agents with no such
+      # command; then the frontmatter contract above is the fallback.
       PROBE='{{SKILL_REGISTRY_PROBE}}'
       if [ -n "$PROBE" ] && command -v "${PROBE%% *}" >/dev/null 2>&1; then
+        # Match the ENTRY NAME, never the section text. Descriptions live in that section too, and
+        # this repo's own `new-release` and `roadmap` descriptions both contain the standalone word
+        # "release" — so a substring search certifies a `release` skill that does not exist.
         $PROBE 2>/dev/null \
           | sed -n '/^#* *Available skills/,$p' \
-          | grep -Eq "(^|[^A-Za-z0-9_-])$SKILL_NAME([^A-Za-z0-9_-]|$)" && RESOLVES=1
+          | sed -n 's/^[[:space:]]*[-*][[:space:]]*//; s/^\([A-Za-z0-9_.-][A-Za-z0-9_.-]*\).*$/\1/p' \
+          | grep -Fxq "$SKILL_NAME" && RESOLVES=1
       else
-        # FILESYSTEM FALLBACK — the loader's contract, checked by hand.
         GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
-        # {{SKILLS_SUBDIRS}} is a LIST (Codex loads both `.codex/skills` and `.agents/skills`) and
-        # is EMPTY for an agent whose project-local discovery is unestablished, in which case only
-        # the user root is searched. Certifying a command from a directory the agent never loads is
-        # the same failure as inventing one.
-        SEARCH=""
-        for sub in {{SKILLS_SUBDIRS}}; do SEARCH="$SEARCH $GITROOT/$sub"; done
-        for d in $SEARCH {{SKILLS_USER_ROOT}}; do
-          f="$d/$SKILL_NAME/SKILL.md"
+        # Each root is joined and quoted INSIDE the loop. Serializing them into a space-delimited
+        # string and re-splitting destroys a repo path containing spaces — a supported layout —
+        # and reports a present skill as missing. {{SKILLS_SUBDIRS}} is a LIST (Codex loads both
+        # `.codex/skills` and `.agents/skills`) and is EMPTY where project-local discovery is
+        # unestablished, in which case only the user root is searched.
+        for sub in {{SKILLS_SUBDIRS}}; do
+          f="$GITROOT/$sub/$SKILL_NAME/SKILL.md"
           [ -f "$f" ] || continue
-          # The frontmatter must satisfy THIS LOADER'S contract, not merely exist:
-          #   * CLOSED — reaching END with no second `---` is an unterminated block the loader
-          #     rejects, which a keys-only test happily certifies.
-          #   * NON-EMPTY values — `#` is excluded from the first character, because
-          #     `name: # TODO` parses as YAML null (the rest is a comment).
-          #   * `name` EQUALS THE DIRECTORY, after stripping surrounding quotes: `name: "release"`
-          #     is valid YAML that registers fine, and a raw compare would reject it.
-          #   * {{SKILL_EXTRA_KEY}} present when this agent requires one (Claude needs
-          #     `user-invocable`; Codex and Antigravity honour only name+description).
-          awk -v want="$SKILL_NAME" -v extra='{{SKILL_EXTRA_KEY}}' '
-               NR==1{next}
-               $0=="---"{closed=1; exit}
-               /^name:[[:space:]]*[^[:space:]#]/ {
-                 v=$0; sub(/^name:[[:space:]]*/,"",v); sub(/[[:space:]]+$/,"",v)
-                 gsub(/^["'"'"']|["'"'"']$/,"",v)
-                 if (v == want) n=1
-               }
-               /^description:[[:space:]]*[^[:space:]#]/{d=1}
-               { if (extra != "" && index($0, extra ":") == 1) e=1 }
-               END{exit !(closed && n && d && (extra == "" || e))}' "$f" || continue
+          skill_frontmatter_ok "$f" "$SKILL_NAME" || continue
           RESOLVES=1; break
         done
+        if [ "$RESOLVES" -eq 0 ]; then
+          for d in {{SKILLS_USER_ROOT}}; do
+            f="$d/$SKILL_NAME/SKILL.md"
+            [ -f "$f" ] || continue
+            skill_frontmatter_ok "$f" "$SKILL_NAME" || continue
+            RESOLVES=1; break
+          done
+        fi
       fi
       ;;
   esac

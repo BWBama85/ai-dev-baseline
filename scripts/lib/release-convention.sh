@@ -219,25 +219,36 @@ cmd_status() {
   # BOTH markers are reported, because both are required to reach a cut. Reporting only the
   # milestone let a user run the documented status check, see nothing missing, and discover the
   # incomplete convention at `Next: none` when the release was finally ready (#188).
-  local rc_body rc_vals rc_n
+  # EXACTLY ONE artifact, like /roadmap. `head -n1` over a split brain would report the marker as
+  # declared or absent based on an arbitrary issue, while the convention cannot run at all.
+  local rc_body rc_vals rc_n rnums rcount
   rc_body=""; rc_vals=""; rc_n=0
-  if [ -n "$ROADMAP_NUM" ] || ROADMAP_NUM="$(roadmap_issue_nums | head -n1)"; then
-    [ -n "${ROADMAP_NUM:-}" ] && rc_body="$(gh issue view "$ROADMAP_NUM" --json body --jq .body 2>/dev/null || true)"
+  rnums="$(roadmap_issue_nums)"
+  rcount="$(printf '%s\n' "$rnums" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [ "$rcount" = "1" ]; then
+    rc_body="$(gh issue view "$(printf '%s\n' "$rnums" | sed '/^$/d' | head -n1)" --json body --jq .body 2>/dev/null || true)"
+    if [ -n "$rc_body" ]; then
+      rc_vals="$(printf '%s' "$rc_body" | bash "$(dirname "${BASH_SOURCE[0]}")/roadmap-lib.sh" release-command 2>/dev/null || true)"
+      rc_n="$(printf '%s\n' "$rc_vals" | sed '/^$/d' | wc -l | tr -d ' ')"
+    fi
   fi
-  if [ -n "$rc_body" ]; then
-    rc_vals="$(printf '%s' "$rc_body" | bash "$(dirname "${BASH_SOURCE[0]}")/roadmap-lib.sh" release-command 2>/dev/null || true)"
-    rc_n="$(printf '%s\n' "$rc_vals" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [ "$rcount" = "1" ]; then
+    case "$rc_n" in
+      0) adb_info "  release-command marker: ABSENT — REQUIRED, and it has no default" ;;
+      1) adb_info "  release-command marker: declared ($(printf '%s\n' "$rc_vals" | head -n1))" ;;
+      *) adb_info "  release-command marker: AMBIGUOUS ($rc_n values declared — need exactly 1)" ;;
+    esac
+  elif [ "$rcount" = "0" ]; then
+    adb_info "  release-command marker: UNKNOWN — no open roadmap-labelled issue to read"
+  else
+    adb_info "  release-command marker: UNKNOWN — $rcount roadmap-labelled issues (split brain);"
+    adb_info "                          /roadmap hard-stops on this. Retire all but one."
   fi
-  case "$rc_n" in
-    0) adb_info "  release-command marker: ABSENT — REQUIRED, and it has no default" ;;
-    1) adb_info "  release-command marker: declared ($(printf '%s\n' "$rc_vals" | head -n1))" ;;
-    *) adb_info "  release-command marker: AMBIGUOUS ($rc_n values declared — need exactly 1)" ;;
-  esac
   adb_info ""
   if [ -n "$rnum" ]; then
     adb_info "Primitives present. /roadmap runs in release-readiness mode once its artifact carries"
     adb_info "the marker:  <!-- release-milestone: $RELEASE_MILESTONE -->"
-    if [ "$rc_n" != "1" ]; then
+    if [ "$rcount" = "1" ] && [ "$rc_n" != "1" ]; then
       adb_info "It will still stop at 'Next: none' when the release is ready until the artifact also"
       adb_info "declares:    <!-- release-command: <your-release-skill> -->"
       adb_info "using YOUR agent's invocation syntax. /roadmap emits it only if it resolves."

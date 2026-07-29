@@ -703,7 +703,7 @@ done
 # The met-emission must name a command that EXISTS. An unresolvable slash command does not fail
 # loudly — Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo without
 # one silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
-rc_snip() {   # <CMD> <user-root> [subdirs] [prefix] [extra-key] [probe] -> prints RESOLVES
+rc_snip() {   # <CMD> <user-root> [subdirs] [prefix] [extra-key] [probe] [cwd] -> prints RESOLVES
   body="$(snippet release-command)"
   body="${body//\{\{SKILLS_SUBDIRS\}\}/${3-no-project-skills}}"
   body="${body//\{\{SKILL_REGISTRY_PROBE\}\}/${6-}}"
@@ -713,7 +713,7 @@ rc_snip() {   # <CMD> <user-root> [subdirs] [prefix] [extra-key] [probe] -> prin
   body="${body//\{\{SKILL_EXTRA_KEY\}\}/${5-}}"
   printf 'ARTIFACT_BODY=%s\n%s\nprintf %%s "$RESOLVES"\n' \
     "$(printf '%q' "<!-- release-command: $1 -->")" "$body" > "$work/rc.sh"
-  ( cd "$work" && bash "$work/rc.sh" )
+  ( cd "${7:-$work}" && bash "$work/rc.sh" )
 }
 # A LOADABLE skill: opening `---` plus the two keys every registry needs. `printf x` is not one.
 mk_skill() { mkdir -p "$1"; printf -- '---\nname: %s\ndescription: d\nuser-invocable: true\n---\n' "$(basename "$1")" > "$1/SKILL.md"; }
@@ -767,6 +767,15 @@ eq "$(rc_snip '/todofm' "$work/sk" sk)"               0 "a commented-out frontma
 mkdir -p "$work/sk/quoted"
 printf -- '---\nname: "quoted"\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/quoted/SKILL.md"
 eq "$(rc_snip '/quoted' "$work/sk" sk '/' user-invocable)"    1 "a quoted YAML name resolves"
+# The FIRST line must be the opening `---`. A file whose frontmatter starts later is rejected by
+# the loader, but a scan that skips line 1 finds the later delimiter and calls it the close.
+mkdir -p "$work/sk/lateopen"
+printf 'stray prose\n---\nname: lateopen\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/lateopen/SKILL.md"
+eq "$(rc_snip '/lateopen' "$work/sk" sk '/' user-invocable)" 0 "frontmatter not starting at line 1 does not resolve"
+# A repo path containing SPACES must not word-split the project root.
+mkdir -p "$work/sp dir"; cp -R "$work/sk" "$work/sp dir/sk"
+( cd "$work/sp dir" && :; )
+eq "$(rc_snip '/release' "$work/empty-sk" sk '/' user-invocable '' "$work/sp dir")" 1 "a project root containing spaces still resolves"
 # The loader contract, per agent. `name` must EQUAL the directory (a mismatch is the
 # misidentified-skill case build.sh refuses), and Claude additionally requires `user-invocable`.
 mkdir -p "$work/sk/misnamed"
