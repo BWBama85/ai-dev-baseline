@@ -126,6 +126,18 @@ render_agent_skill() {
     codex)  skills_subdir="";              skills_user_root="\"\${CODEX_HOME:-\$HOME/.codex}/skills\"" ;;
     *)      skills_subdir=".$agent/skills"; skills_user_root="\"\$HOME/.$agent/skills\"" ;;
   esac
+  # How a skill is INVOKED on this agent. Claude and Antigravity use a slash command; Codex's own
+  # skill reference documents `$skill`. Rendering Claude's `/` into every agent means no marker
+  # value can both validate and invoke on Codex — `/release` passes the check but is not the
+  # invocation, and `$release` is rejected as undeclared.
+  #
+  # PROVENANCE: the Codex value comes from its bundled skill reference as cited in review, not from
+  # anything verifiable in this tree. If it is wrong, THIS LINE is the single place to correct it —
+  # which is the point of rendering it rather than hardcoding a prefix in the workflow body.
+  case "$agent" in
+    codex) skill_prefix='$' ;;
+    *)     skill_prefix='/' ;;
+  esac
 
   name="$(basename "$src" .md)"
   out="$root/agents/$agent/skills/$name/SKILL.md"
@@ -186,7 +198,8 @@ render_agent_skill() {
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
       -v pr_watch="$pr_watch" \
       -v current_agent="$current_agent" -v subtask="$subtask" \
-      -v skills_subdir="$skills_subdir" -v skills_user_root="$skills_user_root" '
+      -v skills_subdir="$skills_subdir" -v skills_user_root="$skills_user_root" \
+      -v skill_prefix="$skill_prefix" '
     function lreplace(s, from, to,   out, p) {
       out = ""
       while ((p = index(s, from)) > 0) {
@@ -246,6 +259,7 @@ render_agent_skill() {
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
       line = lreplace(line, "{{SKILLS_SUBDIR}}",    skills_subdir)
       line = lreplace(line, "{{SKILLS_USER_ROOT}}", skills_user_root)
+      line = lreplace(line, "{{SKILL_PREFIX}}",     skill_prefix)
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line
     }

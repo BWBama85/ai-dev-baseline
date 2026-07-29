@@ -493,15 +493,18 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   # is what makes a slash command exist for the agent reading this.
   CMD="${CMD:-}"
   RESOLVES=0
-  # The marker must declare an INVOCATION, i.e. start with `/`. `release` with no slash resolves a
-  # directory just as happily but emits `Next: release`, which is not a command anyone can run —
-  # the resolver would be certifying something that cannot be invoked as advertised.
+  # The marker must declare an INVOCATION for THIS agent. `release` with no prefix resolves a
+  # directory just as happily but emits `Next: release`, which nobody can run — the resolver would
+  # certify something that cannot be invoked as advertised. The prefix is RENDERED per agent
+  # ({{SKILL_PREFIX}}): Claude and Antigravity use a slash command, Codex uses `$skill`. Hardcoding
+  # `/` meant no marker value could both validate and invoke on Codex.
+  PFX='{{SKILL_PREFIX}}'
   case "$CMD" in
-    /?*)
+    "$PFX"?*)
       # Resolve the COMMAND NAME only. A marker may carry arguments (`/ship --channel production`);
       # searching for a directory with the arguments in its name reports a valid skill missing.
       # The FULL value is still what gets emitted.
-      SKILL_NAME="${CMD%% *}"; SKILL_NAME="${SKILL_NAME#/}"
+      SKILL_NAME="${CMD%% *}"; SKILL_NAME="${SKILL_NAME#"$PFX"}"
       # PROJECT root is the GIT TOPLEVEL, not $PWD: /roadmap may run from a package subdirectory of
       # a monorepo, where the agent still discovers the repo-root skills but a relative path would
       # not. USER root is agent-specific and pre-quoted by the renderer ($HOME may contain spaces;
@@ -521,11 +524,13 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
         head -n1 "$f" | grep -q '^---$' || continue
         # The frontmatter must be CLOSED and both values NON-EMPTY. Reaching END without a second
         # `---` means the block is unterminated — an incomplete edit — which the loader rejects
-        # while a keys-only test would happily certify it.
+        # while a keys-only test would happily certify it. `#` is excluded from the first value
+        # character because `name: # TODO` parses as YAML null: the remainder is a comment, so the
+        # field is absent even though something follows the colon.
         awk 'NR==1{next}
              $0=="---"{closed=1; exit}
-             /^name:[[:space:]]*[^[:space:]]/{n=1}
-             /^description:[[:space:]]*[^[:space:]]/{d=1}
+             /^name:[[:space:]]*[^[:space:]#]/{n=1}
+             /^description:[[:space:]]*[^[:space:]#]/{d=1}
              END{exit !(closed && n && d)}' "$f" || continue
         RESOLVES=1; break
       done
@@ -538,7 +543,7 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   - **Marker present but it does NOT resolve** → emit
     `Next: none — release-command "<CMD>" is declared but no such skill exists; fix the marker or add the skill.`
   - **No marker, or a value that is not a `/command`** → do **not** substitute `/release`. Emit
-    ``Next: none — requirements met, but this repo declares no release command. Add `<!-- release-command: /your-skill -->` to the roadmap artifact, or follow the project's documented release procedure.``
+    ``Next: none — requirements met, but this repo declares no release command. Add `<!-- release-command: {{SKILL_PREFIX}}your-skill -->` to the roadmap artifact, or follow the project's documented release procedure.``
 
     **Wrap the marker in backticks**, exactly as shown. The action line is rendered as Markdown by
     most clients, so a bare `<!-- … -->` is parsed as an HTML comment and **hidden** — leaving the
@@ -556,7 +561,11 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   owns. `/release` remains the **project-owned** release role — the baseline ships no such skill by
   decision (#3, `base/roles.md`), which is exactly why a default that names it cannot be trusted to
   exist.
-- **Always name the rollover on a met emission.** Emit the reminder
+- **Always name the rollover on a CUT emission** — i.e. the resolving branch above, the only one
+  that emits a release command. When requirements are met but the command is undeclared or does not
+  resolve, the run emits `Next: none` and **no cut is happening**, so the reminder is withheld along
+  with the `— cutting.` banner. Telling an operator to roll a milestone for a release that was never
+  made is the unsafe outcome that branch exists to prevent. Emit the reminder
   `Then: baseline release roll --version <version>   # AFTER the cut — archive M, open a fresh NAME, leftovers → Backlog`
   **immediately above** the `Next:` line (the output contract reserves the last line for the
   action; `Then:` names what follows the cut, not what follows this run). This is not decoration:
@@ -564,8 +573,8 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   **every** subsequent run and `/roadmap` re-emits the same cut forever — the loop stops
   terminating. The roll is baseline-shipped bookkeeping (#74), unlike the cut itself; a project's
   own `/release` may run it as its last step, in which case the operator has nothing left to do.
-  Emit the reminder either way — `/roadmap` cannot know whether the project's release command
-  calls it. The full met emission is therefore:
+  On a cut emission, emit the reminder whether or not the project's release command rolls the
+  milestone itself — `/roadmap` cannot know which. The full met emission is therefore:
 
   ```text
   release-blocker: 0 blockers open — destination reached
