@@ -40,7 +40,12 @@ printf '#!/usr/bin/env bash\nprintf "install: %%s\\n" "$*" >> "%s"\n' "$work/ins
 chmod +x "$seed/install.sh"
 printf 'root doc\n' > "$seed/agents/claude/CLAUDE.md"
 printf 'demo skill\n' > "$seed/agents/claude/skills/demo/SKILL.md"
-for s in precommit-gate implement-issue-gate statusline session-currency; do
+# Derived from the REAL script set, never re-listed here. adb_agent_manifest links every
+# agents/claude/scripts/*.sh, so a hand-maintained list silently omits each newly added hook —
+# the manifest then expects a link the fixture never made, and every `baseline update` case in
+# this file fails for a reason that has nothing to do with what it tests.
+ADB_SCRIPTS="$(for f in "$ROOT"/agents/claude/scripts/*.sh; do b="${f##*/}"; printf '%s ' "${b%.sh}"; done)"
+for s in $ADB_SCRIPTS; do
   printf '#stub\n' > "$seed/agents/claude/scripts/$s.sh"
 done
 
@@ -55,13 +60,13 @@ git -C "$seed" push -q -u origin main
 git -C "$origin" symbolic-ref HEAD refs/heads/main
 
 # The install-source clone under test, and a fake HOME whose links mirror the FULL manifest
-# surface (root doc + skill + the three scripts + scripts/lib), so manifest verification passes
+# surface (root doc + skill + every agents/claude/scripts/*.sh + scripts/lib), so manifest verification passes
 # on a healthy install. Spelled to match adb_agent_manifest (absolute, no trailing slash).
 src="$work/src"; git clone -q "$origin" "$src"
 fh="$work/home"; mkdir -p "$fh/.claude/skills" "$fh/.claude/scripts"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
-for s in precommit-gate implement-issue-gate statusline session-currency; do
+for s in $ADB_SCRIPTS; do
   ln -s "$src/agents/claude/scripts/$s.sh" "$fh/.claude/scripts/$s.sh"
 done
 ln -s "$src/scripts/lib" "$fh/.claude/scripts/lib"

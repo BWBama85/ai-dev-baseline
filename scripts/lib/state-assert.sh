@@ -220,9 +220,107 @@ _sa_observe_issue() {
   esac
 }
 
+# --- lint — the claim grammar (issue #195) ----------------------------------------------------
+# Read agent prose on stdin; print one violation per line; exit 1 if any were found.
+#
+# WHY THIS EXISTS AND `observe` DID NOT SUFFICE. `observe` makes a STATED status correct; it
+# cannot make anyone state one, because nothing couples its exit code to an action. The failure it
+# leaves open is not "the agent did not check" — it is an agent that checked, and then wrote a
+# sentence anyway. Observed 2026-07-29: a cleanup report volunteered `(OPEN at 14:55:26Z)` for a PR
+# that had merged 14 minutes earlier. The reading was real; quoting it was the defect.
+#
+# THE GRAMMAR IS DELIBERATELY SMALL, and the practice sanctions exactly that much: a classifier
+# over arbitrary English "would be theatre beyond a small documented grammar". So this is not a
+# natural-language model. It is one rule:
+#
+#   In prose, a STATUS word appearing in the same sentence as an issue/PR reference must itself be
+#   introduced by `was observed`.
+#
+# The check is per-OCCURRENCE, never per-sentence, and that is load-bearing: the 2026-07-29
+# sentence contained a compliant `was observed MERGED` clause AND a stale `(OPEN at …)` clause. A
+# sentence-level test finds the template and passes the whole line — the exact defect, unflagged.
+#
+# ONLY PROSE DECLARES (#117, applied here): fenced blocks, HTML comments, blockquotes and inline
+# code spans are stripped BEFORE scanning, so quoting a status, documenting this grammar, or
+# showing an example never trips it. This repeats a container-stripping idiom that #136 exists to
+# single-source; when that lands, this becomes its third consumer rather than a fourth copy.
+#
+# BIASED TOWARD FLAGGING. A false positive costs one rephrase; a false negative costs the trust
+# this practice exists to protect. The verb carve-outs below exist only to keep ordinary English
+# ("open a PR", "merged the branch") from firing — never to excuse a state claim.
+cmd_lint() {
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  awk '
+    BEGIN {
+      # STATUS words. Kept tight on purpose: every addition is a new false-positive surface, and
+      # the ones here are the vocabulary in which the failures actually occurred.
+      split("open closed merged unmerged reopened draft green red passing failing", T, " ")
+      # Verb usage: a status word that TAKES AN OBJECT is a verb, not a state ("open a PR",
+      # "merged the branch", "closed it").
+      split("a an the this that it them pr prs pull issue issues branch branches", OBJ, " ")
+      # An intent marker before the word is likewise a verb ("going to open", "let me close").
+      split("to will can could should would must may let lets", MOD, " ")
+    }
+    # --- structure stripping: only prose declares -----------------------------------------
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    /^[[:space:]]*>/ { next }
+    {
+      line = $0
+      gsub(/<!--.*-->/, " ", line)          # single-line HTML comment
+      if (line ~ /<!--/) { htm = 1 }
+      if (htm) { if (line ~ /-->/) { htm = 0 }; next }
+      gsub(/`[^`]*`/, " ", line)            # inline code spans
+    }
+    {
+      # --- sentence split. Terminators only when followed by space or end of line, so a version
+      # number or a timestamp is never cut in half.
+      n = split(line, S, /[.!?](  *|$)/)
+      for (i = 1; i <= n; i++) {
+        s = S[i]
+        if (s !~ /#[0-9]+/) continue         # no entity reference -> not a status claim about one
+        low = tolower(s)
+        for (t in T) {
+          w = T[t]
+          pos = 1
+          while (1) {
+            r = index(substr(low, pos), w)
+            if (r == 0) break
+            at = pos + r - 1
+            pos = at + length(w)
+            # whole word only
+            before = (at == 1) ? " " : substr(low, at - 1, 1)
+            after  = substr(low, at + length(w), 1)
+            if (before ~ /[a-z0-9_]/) continue
+            if (after  ~ /[a-z0-9_]/) continue
+            # COMPLIANT: introduced by the observe template.
+            pre = substr(low, 1, at - 1)
+            if (pre ~ /was observed [a-z ]*$/) continue
+            # Verb carve-outs.
+            rest = substr(low, at + length(w))
+            sub(/^[^a-z0-9]+/, "", rest)
+            nextw = rest; sub(/[^a-z0-9].*$/, "", nextw)
+            skip = 0
+            for (o in OBJ) if (nextw == OBJ[o]) skip = 1
+            prevw = pre; sub(/[^a-z0-9]+$/, "", prevw); sub(/^.*[^a-z0-9]/, "", prevw)
+            for (m in MOD) if (prevw == MOD[m]) skip = 1
+            if (skip) continue
+            ex = s; gsub(/^[[:space:]]+|[[:space:]]+$/, "", ex)
+            if (length(ex) > 120) ex = substr(ex, 1, 117) "..."
+            printf "%d\t%s\t%s\n", NR, w, ex
+            found = 1
+          }
+        }
+      }
+    }
+    END { exit (found ? 1 : 0) }
+  '
+}
+
 SA_STATE=""; SA_EXTRA=""; SA_AT=""
 
 case "${1:-}" in
+  lint) shift; cmd_lint "$@" ;;
   observe)
     # EXACTLY three arguments. Ignoring a tail would let `observe pr 1 --json state` render a
     # sentence while silently dropping the flag — a caller that thinks it asked a narrower

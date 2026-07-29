@@ -129,7 +129,7 @@ _adb_skill_manifest_lines() {
 # script set — statusline.sh is installed but is not a hook, and matching it in the hook filters
 # would strip an unrelated settings key.
 adb_claude_hook_scripts() {
-  printf 'precommit-gate.sh\nimplement-issue-gate.sh\nsession-currency.sh\n'
+  printf 'precommit-gate.sh\nimplement-issue-gate.sh\nsession-currency.sh\nstate-claim-gate.sh\n'
 }
 
 # The jq regex matching a hook command that is EXACTLY one of the commands this install writes,

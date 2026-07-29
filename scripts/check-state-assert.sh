@@ -248,6 +248,126 @@ SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"REOPENED_THEN_CLOSED","url":"h
 export SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/o/r/issues/5"}'
 has "$(run observe issue 5)" "issue #5 was observed CLOSED as completed at " "an explicit COMPLETED still renders"
 
+# ============================ 3b. lint — the claim grammar (#195) ============================
+# `observe` makes a stated status correct; it cannot make anyone state one. `lint` is the half that
+# can fail a turn, so its grammar is pinned here — precision first, because a gate that cries wolf
+# gets worked around and this ships to every adopting repo.
+
+# lint <text> — echo the exit status (0 clean, 1 violations).
+lint_rc() { printf '%s\n' "$1" | bash "$LIB" lint >/dev/null 2>&1; printf '%s' "$?"; }
+# lint_out <text> — the violation rows.
+lint_out() { printf '%s\n' "$1" | bash "$LIB" lint 2>/dev/null; }
+
+# --- 3b-a. THE REGRESSION FIXTURE: the exact sentence that shipped on 2026-07-29 --------------
+# One sentence, two clauses: a COMPLIANT `was observed MERGED` and a STALE `(OPEN at …)` quoting a
+# 14-minute-old read. A sentence-level test finds the template and passes the whole line, which is
+# why the check is per-OCCURRENCE. If this ever goes green, the gate has stopped working.
+SHIPPED='PR #194 was observed MERGED at 2026-07-29T15:09:10Z — it merged between my last check (OPEN at 14:55:26Z) and this sweep.'
+eq "$(lint_rc "$SHIPPED")" 1 "the 2026-07-29 sentence is a violation"
+has "$(lint_out "$SHIPPED")" "open" "...the stale parenthetical is named"
+
+# --- 3b-b. a verbatim observe line is always compliant ---------------------------------------
+for line in \
+  'PR #194 was observed MERGED at 2026-07-29T15:09:10Z' \
+  'PR #194 was observed OPEN at 2026-07-29T14:55:26Z' \
+  'PR #12 was observed CLOSED without merging at 2026-07-29T14:55:26Z' \
+  'issue #5 was observed OPEN at 2026-07-29T14:55:26Z' \
+  'issue #5 was observed CLOSED as completed at 2026-07-29T14:55:26Z' \
+  'issue #5 was observed CLOSED as NOT_PLANNED at 2026-07-29T14:55:26Z'
+do
+  eq "$(lint_rc "$line")" 0 "compliant: ${line:0:38}..."
+done
+
+# --- 3b-c. the canonical failures the practice names ------------------------------------------
+eq "$(lint_rc 'PR #137 is still open.')" 1 "\"still open\" is a violation"
+eq "$(lint_rc 'Issue #40 is closed.')" 1 "a bare closed-claim is a violation"
+eq "$(lint_rc 'CI is green on PR #194.')" 1 "an unsourced CI claim bound to a PR is a violation"
+eq "$(lint_rc 'PR #194 is merged and #195 is still open.')" 1 "multiple claims in one line are caught"
+
+# --- 3b-d. PRECISION: ordinary English must not fire ------------------------------------------
+# Every one of these is a verb or an intent, not a state assertion. A gate that flags them is a
+# gate that gets disabled.
+eq "$(lint_rc 'Let me open a PR for #195.')" 0 "\"open a PR\" is a verb, not a claim"
+eq "$(lint_rc 'I merged the branch for #195.')" 0 "\"merged the branch\" is a verb"
+eq "$(lint_rc 'I will close #195 once this lands.')" 0 "an intent is not a claim"
+eq "$(lint_rc 'Filed as #195 and started the branch.')" 0 "no status word at all"
+eq "$(lint_rc 'The green path in roadmap-lib was unreachable.')" 0 "a status word with no entity reference"
+eq "$(lint_rc 'This closed a whole class of bugs.')" 0 "\"closed a class\" is a verb with no entity"
+
+# --- 3b-e. ONLY PROSE DECLARES (#117 applied to claims) ---------------------------------------
+eq "$(lint_rc "$(printf '```\nPR #1 is still open\n```')")" 0 "a fenced block declares nothing"
+eq "$(lint_rc "$(printf '~~~\nPR #1 is still open\n~~~')")" 0 "a tilde fence declares nothing"
+eq "$(lint_rc 'The rule forbids `PR #1 is still open` in prose.')" 0 "an inline code span declares nothing"
+eq "$(lint_rc '> PR #1 is still open')" 0 "a blockquote declares nothing"
+eq "$(lint_rc '<!-- PR #1 is still open -->')" 0 "an HTML comment declares nothing"
+eq "$(lint_rc "$(printf '<!--\nPR #1 is still open\n-->')")" 0 "a multi-line HTML comment declares nothing"
+# ...but a real claim AFTER a closed fence is still caught.
+eq "$(lint_rc "$(printf '```\ncode\n```\nPR #1 is still open.')")" 1 "a claim after a fence is still a violation"
+
+# --- 3b-f. determinism + hygiene ---------------------------------------------------------------
+eq "$(lint_out "$SHIPPED")" "$(lint_out "$SHIPPED")" "lint is deterministic"
+eq "$(printf '' | bash "$LIB" lint >/dev/null 2>&1; printf '%s' "$?")" 0 "empty input is clean"
+eq "$(printf 'x' | bash "$LIB" lint EXTRA >/dev/null 2>&1; printf '%s' "$?")" 2 "lint rejects arguments"
+
+# ================== 3c. the Stop hook that gives the grammar teeth (#195) ===================
+# The grammar only matters if something acts on it. These drive the hook end to end against a
+# synthetic transcript, because the failure this whole issue is about is a rule nothing enforced.
+GATE="$ROOT/agents/claude/scripts/state-claim-gate.sh"
+tdir="$work/hook"; mkdir -p "$tdir"
+# The gate resolves its linter as `$(dirname $0)/lib/state-assert.sh`, matching the installed
+# layout (~/.claude/scripts + ~/.claude/scripts/lib). Mirror that here rather than in the gate.
+mkdir -p "$tdir/lib" && cp "$GATE" "$tdir/" && cp "$LIB" "$tdir/lib/" \
+  && cp "$ROOT/scripts/lib/common.sh" "$tdir/lib/"
+HOOK="$tdir/state-claim-gate.sh"
+
+# transcript <text> — a one-message JSONL session log, then the hook payload naming it.
+transcript() {
+  printf '{"type":"assistant","message":{"content":[{"type":"text","text":%s}]}}\n' \
+    "$(printf '%s' "$1" | jq -Rs .)" > "$tdir/t.jsonl"
+  printf '{"transcript_path":"%s"}' "$tdir/t.jsonl"
+}
+run_hook() { HOOK_OUT="$(printf '%s' "$(transcript "$1")" | bash "$HOOK" 2>&1)"; HOOK_RC=$?; }
+
+run_hook "$SHIPPED"
+eq "$HOOK_RC" 2 "the hook BLOCKS the turn on the 2026-07-29 sentence"
+has "$HOOK_OUT" "volatile external status" "...and says why"
+has "$HOOK_OUT" "state-assert.sh" "...and names the command that fixes it"
+has "$HOOK_OUT" "Delete the claim" "...and offers deleting the claim as the other option"
+
+run_hook 'PR #194 was observed MERGED at 2026-07-29T15:09:10Z.'
+eq "$HOOK_RC" 0 "a compliant turn passes"
+eq "$HOOK_OUT" "" "...silently"
+
+run_hook 'Filed as #195; the branch is pushed.'
+eq "$HOOK_RC" 0 "a turn with no status claim passes"
+
+# --- the hook NEVER wedges a session on infrastructure absence -------------------------------
+HOOK_OUT="$(printf '{"transcript_path":"/nonexistent/t.jsonl"}' | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+eq "$HOOK_RC" 0 "a missing transcript is a no-op, never a block"
+HOOK_OUT="$(printf '{}' | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+eq "$HOOK_RC" 0 "a payload with no transcript_path is a no-op"
+HOOK_OUT="$(printf 'not json' | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+eq "$HOOK_RC" 0 "an unparseable payload is a no-op"
+printf 'garbage not json\n' > "$tdir/t.jsonl"
+HOOK_OUT="$(printf '{"transcript_path":"%s"}' "$tdir/t.jsonl" | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+eq "$HOOK_RC" 0 "an unparseable transcript is a no-op"
+# A turn whose final message is pure tool use has no text to lint.
+printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}\n' > "$tdir/t.jsonl"
+HOOK_OUT="$(printf '{"transcript_path":"%s"}' "$tdir/t.jsonl" | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+eq "$HOOK_RC" 0 "a text-free final message is a no-op"
+# Missing linter -> reports, never blocks (#35: not silent, but not wedging either).
+mv "$tdir/lib/state-assert.sh" "$tdir/lib/state-assert.sh.bak"
+HOOK_OUT="$(printf '%s' "$(transcript "$SHIPPED")" | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+eq "$HOOK_RC" 0 "a missing linter does not block the session"
+has "$HOOK_OUT" "incomplete install" "...but says the claims are NOT being checked"
+mv "$tdir/lib/state-assert.sh.bak" "$tdir/lib/state-assert.sh"
+
+# The hook must be in the ONE hook enumeration, or install wires it and uninstall never removes it.
+has "$(bash -c '. scripts/lib/common.sh; adb_claude_hook_scripts')" "state-claim-gate.sh" \
+  "the gate is registered in adb_claude_hook_scripts"
+has "$(cat "$ROOT/agents/claude/settings.hooks.json")" "state-claim-gate.sh" \
+  "...and wired as a Stop hook in settings.hooks.json"
+
 # ============================ 4. wiring lives in its declared home ============================
 # The token pins that used to sit here moved to scripts/check-fact-drift.sh, which is the lint
 # whose charter this is:
