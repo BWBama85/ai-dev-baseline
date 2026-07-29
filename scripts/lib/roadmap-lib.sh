@@ -717,6 +717,17 @@ AWKMD
 #     matched: another repo's issue number is meaningless as a local edge, and matching the
 #     trailing `#N` would fabricate an edge to whatever local issue shares that number (the
 #     cross-repo false-positive `pr-targets-issue` also refuses).
+#   - EMPHASIS IS NOT CONTENT (#112). Markdown emphasis and code delimiters (`*`, `**`, `_`,
+#     `__`, backtick runs) between the keyword and the `#N`, or wrapping the `#N`, are stepped
+#     over: `Depends on **#52**`, `**Depends on:** #78`, `` Depends on `#52` `` and
+#     `- **Blocked by** #155` all declare. This is the UNDER-match mirror of #69's over-match and
+#     the more dangerous half — a fabricated edge blocks a ready bundle where a dropped one marks
+#     a genuinely blocked bundle `ready`, and six real edges were being dropped in this repo.
+#     The tolerance is deliberately NOT a blanket "skip punctuation": each run must be tight
+#     against the keyword, the separator, or the `#` (see the STEP slots in BEGIN), and a run that
+#     OPENS before the reference must close after it. So `Depends on * #5` and
+#     `` Depends on `#5 and more` `` still declare nothing. Emphasis INSIDE the keyword
+#     (`Depends **on** #5`) is out of scope — that needs the real inline parser #136 carries.
 #   - CHAINS. `Depends on #5, #6 and #7` yields all three: after the keyword the scan consumes
 #     `#N` runs separated only by `,` `;` `&` `+` `and` or spaces, and STOPS at the first other
 #     word. "Depends on #5 (the gate) and #6" therefore yields #5 only — conservative on purpose;
@@ -750,11 +761,10 @@ AWKMD
 #     swallowing every real edge after the list.
 #   - INLINE CODE SPANS, targeted rather than blanket. The KEYWORD must sit outside a span; the
 #     `#N` reference may sit inside one. So `` `**Depends on: #78**` `` (the whole clause quoted as
-#     an example) declares nothing, while `Depends on `#52`` leaves its reference intact in the
-#     scanned text. That form still yields NO edge today — `STEP` cannot reach past the backtick —
-#     and making it resolve is #112's job. The point is that blanket span-stripping would DELETE
-#     the reference outright, putting this rule in direct conflict with the issue that has to
-#     read it; masking only the keyword leaves #112 something to build on.
+#     an example) declares nothing, while `` Depends on `#52` `` leaves its reference intact in the
+#     scanned text and DOES declare (#112, which the targeting was built to leave room for).
+#     Blanket span-stripping would DELETE the reference outright and put this rule in direct
+#     conflict with that one; masking only the keyword lets both hold at once.
 # DELIBERATELY NOT HANDLED: 4-space INDENTED code blocks. Four spaces are not reliably code — under
 # a `- ` bullet, content starts at 2 and code needs 2+4=6, so a `^ {4}` skip deletes ordinary
 # continuation PROSE. That direction is the dangerous one: a dropped edge silently unblocks a
@@ -795,7 +805,8 @@ cmd_deps_from_body() {
     # so positions stay 1:1 with the unmasked line. Delimiters are equal-length backtick runs, per
     # CommonMark; an UNMATCHED run is literal text and is left alone. Only the KEYWORD scan reads
     # the masked copy — the reference scan reads the raw line, so a `#N` inside a span is left
-    # intact rather than deleted (see the INLINE CODE SPANS rule above; #112 owns resolving it).
+    # intact rather than deleted, which is what lets STEP resolve it (see the INLINE CODE SPANS
+    # and EMPHASIS IS NOT CONTENT rules above).
     # span_end(s, from, n) — where the run of EXACTLY n backticks that closes this span begins, or
     # 0 when the span is never closed. A LONGER run is not a closer: it is skipped whole, so
     # ``` inside a `` span stays content. (`close` is an awk builtin and cannot name this.)
@@ -835,9 +846,26 @@ cmd_deps_from_body() {
       NEG = "(^|[^a-z0-9_])(no|not|never|nor|longer|without|remove[sd]?|retire[sd]?"
       NEG = NEG "|drops?|dropped|cancels?|cancell?ed|supersede[sd]?|obsolete|n" apos "t)"
       NEG = NEG "([^a-z0-9_]|$)"
-      # A `#N` chain step: an optional separator, then the reference. `#` must be reached
-      # directly, so `acme/repo#5` (a qualified reference) never enters the chain.
-      STEP = "^[ \t]*(:|,|;|&|\\+|and)?[ \t]*#[0-9]+"
+      # The markdown emphasis / code characters, as a SET for index() and as a bracket expression
+      # for the regexes below. A bare backtick, because awk has no escape for one and needs none.
+      EMPH = "*_`"
+      EMR  = "[" EMPH "]*"                 # a run of them, possibly empty
+      # A `#N` chain step: an optional emphasis run, an optional separator, then the reference.
+      # `#` must still be reached without crossing a WORD character, so `acme/repo#5` (a qualified
+      # reference) never enters the chain.
+      #
+      # WHERE THE THREE EMR SLOTS MAY SIT, and why not simply "skip any punctuation" (#112). Each
+      # slot is TIGHT against the thing it belongs to, and that tightness is the whole guard:
+      #   1. `^EMR`      — a CLOSER of emphasis that opened before/around the keyword, so it is
+      #                    flush against the keyword: `**Depends on** #5` leaves `** #5`.
+      #   2. `SEP EMR`   — the same closer when the author put the `:` inside the emphasis:
+      #                    `**Depends on:** #5` leaves `:** #5`. Tight against the separator.
+      #   3. `EMR#`      — an OPENER wrapping the reference: `Depends on **#5**`. Tight against `#`.
+      # A run that floats in whitespace belongs to none of them and is REFUSED, which is what keeps
+      # `Depends on * #5` (a stray asterisk, or a bullet that wandered onto the keyword line) from
+      # reading as an edge while `*Blocked by* #5` — byte-identical except for that space — still
+      # does. A blanket "step over punctuation" cannot tell those two apart.
+      STEP = "^" EMR "[ \t]*((:|,|;|&|\\+|and)" EMR ")?[ \t]*" EMR "#[0-9]+"
     }
     {
       # STRUCTURE FIRST, on the RAW line (#117) — a fence is recognized before lowercasing, dash
@@ -881,6 +909,30 @@ cmd_deps_from_body() {
           step = substr(rest, RSTART, RLENGTH)
           eat(RSTART + RLENGTH)
           h = index(step, "#")
+          # WRAPPER BALANCE (#112). An emphasis run that OPENS immediately before the reference
+          # must reappear immediately after it. `Depends on **#5**` is a wrapped reference;
+          # ``Depends on `#5 and more` `` is a quoted PHRASE that merely starts with one, and
+          # without this the opener would be stepped over and the phrase mined for a number the
+          # author never declared. The run is same-character and maximal, so nesting resolves at
+          # its INNERMOST pair (`_**#5**_` checks the `**`) — matching an outer delimiter would
+          # need a real inline parser, which is #136, not this predicate.
+          #
+          # Only an OPENER is held to this. A run with no opener to match is left alone, because
+          # `Depends on #5**` already yielded 5 before this change and narrowing that would be the
+          # under-match direction this issue exists to close. By the same reasoning an UNCLOSED
+          # opener yields nothing: the balanced form is what authors actually write, and the rule
+          # has to be statable in one sentence or the next variant has somewhere to hide.
+          wrap = ""
+          if (h > 1) {
+            wc = substr(step, h - 1, 1)
+            if (index(EMPH, wc) > 0) {
+              j = h - 1
+              while (j >= 1 && substr(step, j, 1) == wc) j--
+              wrap = substr(step, j + 1, h - 1 - j)
+            }
+          }
+          # `rest` was already advanced past the digits, so it begins exactly where a closer would.
+          if (wrap != "" && substr(rest, 1, length(wrap)) != wrap) continue
           digits = substr(step, h + 1)
           # Bound the width BEFORE the numeric conversion. A run wider than an issue number is
           # not an issue reference, and converting it would leave awk holding a float that prints

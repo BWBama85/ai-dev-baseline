@@ -82,6 +82,27 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     machinery to every adopting repo, reversing #3/D7 by accident. The check asserts that
     boundary, and that no `{{PLACEHOLDER}}` appears inside a runnable fenced block.
 
+### Fixed
+
+- **`/roadmap` no longer drops a dependency edge that carries markdown emphasis** (#112).
+  `roadmap-lib.sh deps-from-body` required the `#N` to sit directly after the keyword, so
+  `Depends on **#52**`, `**Depends on:** #78`, `` Depends on `#52` `` and `- **Blocked by** #155`
+  all declared **nothing** — while `- **Blocked by #155**` (the same bold, one character over)
+  worked, which is why it survived three releases. A corpus scan of this repo's 91 open issue
+  bodies found **six** real edges being dropped, four of them load-bearing.
+  - This is the **under-match** mirror of #69, and the dangerous half of that family: an
+    over-match blocks a bundle that is ready (visible, annoying), while a dropped edge marks a
+    genuinely **blocked** bundle `ready` — so the skill emits work whose prerequisite is open.
+  - The tolerance is not a blanket punctuation skip, which would trade one silent fabrication
+    for another. Each emphasis run must sit **tight** against the keyword, the separator, or the
+    `#`, and a run that *opens* before the reference must *close* after it. So `*Blocked by* #5`
+    declares while `Depends on * #5` does not, and `` Depends on `#5` `` declares while
+    `` Depends on `#5 and more` `` does not.
+  - Every #69/#108/#117 guarantee is re-pinned **with** the new syntax: `Refs **#52**`, bare
+    `**#52**` and `Depends on **acme/repo#5**` are still not edges; `no longer depends on **#25**`
+    still retires; a formatted edge inside a fence, comment or blockquote still declares nothing.
+    48 new fixtures in `scripts/check-roadmap.sh`, each labelled UNDER or OVER.
+
 ## [1.1.0] - 2026-07-28
 
 The loop closes on itself. v1.0.0 shipped the practices, the workflows and the gates;
