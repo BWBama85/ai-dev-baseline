@@ -57,6 +57,7 @@ those. The rules below are specific to this repo's code.
 | `base/workflows/*.md` | Single source for each workflow (procedure + metadata) — **edit here** |
 | `base/roles.md`, `templates/agents.toml` | Role model + per-project manifest |
 | `agents/<agent>/` | Per-agent: generated root doc, `adapter.sh`, generated `skills/` (all agents); Claude also has generated hook `scripts/` |
+| `.claude/skills/release/SKILL.md` | **This project's own `/release`** — hand-written, **not** generated, and deliberately outside `base/`+`agents/` so decision #3/D7's "no baseline `/release`" lint stays green. Cuts the tag: re-verifies readiness + branch health live, stamps `CHANGELOG.md` through a normal PR, tags the verified-green merge commit, then `baseline release roll`. Every adopting repo owes itself one of these (D14) |
 | `scripts/lib/common.sh` | Shared shell primitives — the **ONE home** for link/unlink/backup, default-branch, TOML-read, version-compare; **source it, never copy** |
 | `scripts/lib/project-gates.sh` | Gate auto-detector (installs beside `common.sh` into `~/.<agent>/scripts/lib`) |
 | `scripts/lib/skill-compose.sh` | Partial skill-override composer — merges a project's `overrides.md` onto the installed base skill so a project carries deltas without forking the whole skill (#22); installs beside `common.sh` |

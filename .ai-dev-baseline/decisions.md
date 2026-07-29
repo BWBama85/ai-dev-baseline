@@ -443,3 +443,45 @@ didn't already model, so any residual divergence stays visible and auditable.
              endpoint rather than the admin-only `/protection` one, because `administration` is
              not a grantable `GITHUB_TOKEN` permission; the two return the same contexts.
 - baseline-issue: n/a (this repo IS the baseline; #122 is the tracking issue)
+
+## D14 — this repo supplies its own `/release`, and it calls the working tree, not the install
+- date:      2026-07-28
+- category:  project-delta
+- unknown:   D7 committed the baseline to shipping NO `/release` and made `release` a permanently
+             project-owned role. What it never did was supply THIS project's copy. So the repo sat
+             in the one state D7 does not describe: the role is named, `/roadmap` emits it on a met
+             readiness verdict, and nothing resolves it. The procedure lived only as three prose
+             sentences in `CONTRIBUTING.md` -> Releases and was hand-executed for v1.0.0 and again
+             for v1.1.0. The trigger was #188: a slash command that does not exist does not fail
+             loudly in Claude Code, it fuzzy-matches the nearest built-in (`release-notes`), so the
+             gap was invisible at the exact moment `/roadmap` said "cutting".
+- decision:  Write the project's own skill at `.claude/skills/release/SKILL.md`. Four sub-decisions
+             are worth pinning because each has a plausible-looking wrong answer:
+             (1) IT CALLS THE WORKING TREE'S `scripts/lib/`, not the installed symlinks under
+                 `~/.claude/scripts/lib/`. You are releasing this tree, so the predicates that gate
+                 the release must be the ones in it — an installed lib can lag the tree (#142's
+                 stale-read concern) and would gate the cut on code that is not what ships.
+             (2) IT WAITS ON `pr-watch.sh`, NEVER `pr-review.sh gate`. The guard reads only the
+                 reviews surface, so the Codex connector's clean pass — a `+1` reaction with NO
+                 review object — wedges it at 16 forever (#167, reproduced live on PR #187 during
+                 the v1.1.0 cut). A release skill that consulted the guard could never merge.
+             (3) TAG-ONLY. No GitHub Release object, no package publish, no deploy — matching
+                 v1.0.0 and v1.1.0. Adding one is a decision change, not an implementation detail.
+             (4) IT REFUSES ON `indeterminate` HEALTH and on a zero-check read of the merge commit.
+                 An unverifiable build is never tagged; zero check runs is "CI has not registered
+                 yet", not "all checks complete".
+- placement: `.claude/skills/release/SKILL.md` — the prescribed home for a project-scoped skill
+             (`docs/per-project-overrides.md` -> Override 2a). Deliberately OUTSIDE `base/` and
+             `agents/*/skills/`, the two paths `scripts/check-release-role.sh` guards, so D7's
+             negative invariant stays intact and green.
+- reason:    D7 says the baseline ships no generic release workflow BECAUSE the four real schemes
+             are mutually incompatible. That argument is about the BASELINE's contents; it never
+             argued a project should keep its own cut in prose. Leaving it unwritten is what made
+             `/roadmap`'s terminating loop stop terminating at the last step. This is a
+             project-delta and not a DEVIATION: writing the project's own copy is D7 being
+             executed, not contradicted.
+- known-gap: The skill's inline snippets are NOT executed by any check. `base/workflows/roadmap.md`
+             has `scripts/check-roadmap-e2e.sh` running its snippets against a mocked `gh`; nothing
+             equivalent covers a project-scoped skill, so the CHANGELOG-stamp verifier is guarded
+             only by the assertions written into it. Filed as a follow-up rather than argued away.
+- baseline-issue: n/a (this repo IS the baseline; #3/D7 is the standing decision, #188 the trigger)

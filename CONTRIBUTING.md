@@ -119,3 +119,15 @@ Versioning is by git tag; user-visible changes go in [`CHANGELOG.md`](CHANGELOG.
 under **Unreleased** as you land them, then get stamped into a version on tag. Because
 installs are symlinks, `git pull` in a user's clone picks up `main` immediately — so
 keep `main` releasable.
+
+**Run `/release` to cut one.** The procedure below used to be hand-executed every time;
+it now has a code home at [`.claude/skills/release/SKILL.md`](.claude/skills/release/SKILL.md)
+— this project's own release skill, since the baseline ships none by decision #3 (D7/D14).
+It re-verifies release readiness and branch health live, refuses to cut on a red or
+unverifiable `main`, stamps the changelog through an ordinary PR, tags the *merge commit it
+just watched go green*, and finishes with `baseline release roll` so the release milestone
+does not stay open and re-trigger the next `/roadmap` run.
+
+The manual equivalent, if you ever need it: stamp `[Unreleased]` into `## [X.Y.Z] - DATE`
+(leaving `[Unreleased]` in place and empty), repoint the link refs, ship it as a PR, then
+`git tag -a vX.Y.Z` on a green `main` and push the tag.

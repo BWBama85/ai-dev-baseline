@@ -7,6 +7,10 @@
 # Skill runtime state (implement-issue markers, new-release/resolve-pr-threads
 # scratch) — this repo dogfoods its own skills, which write here.
 .claude/state/
+# Claude Code's own per-workstation runtime file. `.claude/` became a TRACKED tree when the
+# project-owned /release skill landed there (D14), so this needs to be ignored explicitly —
+# before that, nothing under .claude/ was tracked and it went unnoticed.
+.claude/scheduled_tasks.lock
 
 # Editor
 .vscode/
