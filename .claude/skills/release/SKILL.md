@@ -41,418 +41,90 @@ the tag convention.
 - **It never edits the roadmap artifact.** `/roadmap` owns that. This skill's last act is
   `baseline release roll`, which mutates milestones only.
 
-## The two SHAs this skill is built around
 
-Most of the hazards here are **races between a read and the irreversible act it authorises**, so
-two values are captured once and carried forward. Everything else is bookkeeping.
+## How this skill runs
 
-| Name | Captured | Why it cannot be re-derived later |
-|---|---|---|
-| `REVIEWED_SHA` | step 6, printed by `pr-watch` | The reviewer passed *that* head. A commit pushed after the pass must not merge — so it becomes `--match-head-commit`. |
-| `MERGE_SHA` | step 7, the PR's `mergeCommit.oid` | `git rev-parse HEAD` on the default branch is **not** it: another PR merging in between moves HEAD, and tagging that would ship commits absent from the changelog. |
+**The procedure is a script, not prose.** `./release.sh` holds every step; this file explains what
+each one means and what you must decide. That split is deliberate and was earned: the procedure
+lived in fenced shell here for three review rounds and produced **27 defects** — 10, then 7, then
+10, and the third round's were mostly *regressions introduced while fixing the second*.
 
-## Library paths
+The reason is structural, not carelessness. A Markdown code block is a program nothing can run:
+`shellcheck` never sees it, the tests never execute it, and the shell-session contract is invisible
+(this repo has **two opposite ones** — `base/workflows/roadmap.md`'s blocks share nothing,
+`base/workflows/cleanup.md`'s share everything). Every class of defect round 3 found is impossible
+in a script: positional arguments are real arguments, cross-step values are real state, and a
+GNU-only `sort -V` fails the moment a test runs it on macOS.
 
-This skill runs only in this repo, so it calls the **working tree's** libraries directly rather
-than the installed symlinks under `~/.claude/scripts/lib/`. You are releasing this tree; the
-predicates that gate the release should be the ones in it.
-
-```bash
-# ADB-SNIPPET: preflight
-command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"
-gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated"; exit 1; }
-ROOT="$(git rev-parse --show-toplevel)" || { echo "ERROR: not in a git repo"; exit 1; }
-cd "$ROOT" || exit 1
-LIB="$ROOT/scripts/lib"
-[ -f "$LIB/roadmap-lib.sh" ] || { echo "ERROR: $LIB/roadmap-lib.sh missing — wrong repo?"; exit 1; }
-# SLUG is used by every `gh api repos/...` read below. Resolve it once, here.
-# Deliberately NOT compared against a hardcoded `owner/name`: this skill ships INSIDE the repo, so
-# a fork carries it and should be able to cut its own release.
-SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
-# Scratch goes to a temp dir, never into the repo — a release must not dirty the tree it stamps.
-TMPD="$(mktemp -d "${TMPDIR:-/tmp}/release.XXXXXX")" || { echo "ERROR: cannot create scratch dir"; exit 1; }
-```
-
-### Honour the configured release executor
-
-`[roles].release` in `agents.toml` names **who** cuts the release. A project release skill that
-ignores it is the silent-ignore `docs/roles-and-agents.md` explicitly warns about — the manifest
-entry would look effective and do nothing. Resolve it **before any mutation**:
-
-```bash
-# ADB-SNIPPET: role
-# The WORKING TREE's copy, not $HOME's. A clone without a complete install has no
-# ~/.claude/scripts/lib, and an `if [ -f ... ]` around this would then SKIP role resolution
-# silently — letting the release proceed even when agents.toml assigns it elsewhere, which is the
-# precise silent-ignore this guard exists to prevent. The tree always has it; fail closed if not.
-RD="$LIB/role-dispatch.sh"
-[ -f "$RD" ] || { echo "ERROR: $RD missing — cannot resolve [roles].release; refusing to release"; exit 1; }
-# Exit non-zero on an invalid manifest — never let an unresolvable role fall through to a branch.
-# `resolve` prints its own error.
-RELEASE_AGENT="$(bash "$RD" resolve release)" || exit 1
-if [ "$RELEASE_AGENT" != "claude" ]; then
-  echo "STOP: [roles].release = '$RELEASE_AGENT', not claude. This skill is Claude's executor."
-  echo "Run the release from '$RELEASE_AGENT', or change [roles].release in agents.toml."
-  exit 1
-fi
-```
-
-**Stop rather than dispatch.** `docs/roles-and-agents.md` shows a release skill *shelling out* via
-`role-dispatch.sh invoke release`. That is right for a prompt-shaped hand-off; it is wrong here,
-because the procedure below performs irreversible acts (a merge, a pushed tag) and this file is
-the only place it is written down. Handing a paraphrase of it to another agent would be a worse
-outcome than telling the operator which agent to run. When another agent gains its own rendered
-copy of this procedure, revisit.
+`scripts/check-release-skill.sh` covers both halves and runs in `selfcheck` + CI.
 
 ## Steps
 
-### 1. Preflight — refuse a dirty or lagging start
+Run these in order. Each is a separate command; state carries in `.claude/state/release-run.env`,
+so an interrupted release is **resumable** and a failed tag push can simply be retried.
 
-```bash
-# ADB-SNIPPET: clean-start
-git fetch --prune origin >/dev/null 2>&1 || { echo "ERROR: fetch failed"; exit 1; }
-[ -z "$(git status --porcelain)" ] || { echo "ERROR: worktree is dirty — commit or stash first"; exit 1; }
-DEF="$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)"
-case "$DEF" in ''|null) echo "ERROR: cannot resolve the default branch"; exit 1 ;; esac
-git checkout "$DEF" >/dev/null 2>&1 || { echo "ERROR: cannot check out $DEF"; exit 1; }
-git merge --ff-only "origin/$DEF" >/dev/null 2>&1 || { echo "ERROR: local $DEF is not fast-forwardable to origin/$DEF"; exit 1; }
-# EQUALITY, not just fast-forwardable. `--ff-only` succeeds with "Already up to date" when local
-# is AHEAD of origin, so unpushed local commits would ride into the release branch and ship under
-# a changelog that never mentions them. The release commit must contain the stamp and nothing else.
-[ "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$DEF")" ] \
-  || { echo "ERROR: local $DEF is ahead of origin/$DEF — push or drop those commits first"; exit 1; }
-echo "preflight ok: on $DEF at $(git rev-parse --short HEAD)"
-```
+| # | Command | What it does / what you decide |
+|---|---|---|
+| 1 | `bash .claude/skills/release/release.sh preflight` | tools, **`[roles].release` guard**, `fetch --tags`, clean tree, and default branch **equal to** `origin` (not merely fast-forwardable) |
+| 2 | `… release.sh readiness` | resolves the roadmap artifact + release milestone, **pins their identities**, and refuses anything but `met` |
+| 3 | `… release.sh inventory` | prints every version already used and the previous release, plus the `###` sections in `[Unreleased]` — **you choose the version from this** |
+| 4 | `… release.sh version-guard vX.Y.Z` | refuses an empty release, a malformed/reused/non-increasing version; records it. **Exit 3 = RESUME** (a local-only tag from a failed push — skip to step 10) |
+| 5 | `… release.sh roll-preflight` | dry-runs the milestone rollover **before** anything irreversible |
+| 6 | *(you)* branch + edit `CHANGELOG.md`, then `… release.sh stamp-verify` | see *The stamp* below |
+| 7 | *(you)* `bash scripts/selfcheck.sh`, commit, push, open the PR, then `… release.sh record-pr <n>` | commit `chore(release): stamp CHANGELOG for <VERSION>`; PR body names the post-merge steps; `Refs #<roadmap>` — **never** a closing keyword |
+| 8 | `… release.sh await-review` | waits for the declared reviewer, then **settles** the reviewed head's check set and records it |
+| 9 | `… release.sh merge` → `… release.sh verify-merge` | re-verifies readiness against the pin, merges pinned to the reviewed head, then settles + health-checks the **merge commit** |
+| 10 | *(you)* write the tag message to a file, then `… release.sh tag --message-file <path>` | see *The tag message* below |
+| 11 | `… release.sh roll` | revalidates the pinned milestone, rolls it, clears the run state |
 
-### 2. Verify readiness — the cut is gated, not assumed
+### The version
 
-**Do not skip this because `/roadmap` already said `met`.** That was an earlier moment; readiness
-is mutable state (`base/practices/verify-before-asserting.md`).
+You pick it from step 3's output, by this repo's rule: a `### Removed` or any breaking change to
+the install contract → **major**; any `### Added` → **minor**; only non-breaking `### Fixed` /
+`### Changed` → **patch**. Confirm with the operator before step 4 — a pushed tag is permanent.
 
-The block below is **self-contained on purpose.** The equivalent in `base/workflows/roadmap.md` is
-a *build source* containing unsubstituted `{{ROADMAP_LIB}}` placeholders that only
-`scripts/build.sh` resolves — running it verbatim dies with `{{ROADMAP_LIB}}: command not found`
-before producing any verdict. Read that file for the reasoning; run **this** for the answer.
+### The stamp
 
-```bash
-# ADB-SNIPPET: readiness
-# Requires from above: $ROOT, $LIB, $SLUG, $DEF.
-RM="$LIB/roadmap-lib.sh"
-# EXACTLY ONE roadmap artifact. `head -n1` on this list would pick arbitrarily between two
-# `roadmap`-labelled issues and could authorise an immutable tag from the wrong milestone.
-# `base/workflows/roadmap.md` hard-stops on split brain; so does this.
-ROADMAP_LIST="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number')"
-NROADMAP="$(printf '%s\n' "$ROADMAP_LIST" | sed '/^$/d' | wc -l | tr -d ' ')"
-[ "$NROADMAP" = "1" ] || { echo "ERROR: expected exactly 1 open roadmap-labelled issue, found $NROADMAP ($(printf '%s' "$ROADMAP_LIST" | tr '\n' ' ')) — split brain, refusing to release"; exit 1; }
-ROADMAP_NUM="$(printf '%s\n' "$ROADMAP_LIST" | sed '/^$/d' | head -n1)"
-BODY="$(gh issue view "$ROADMAP_NUM" --json body --jq .body)" || { echo "ERROR: cannot read roadmap #$ROADMAP_NUM"; exit 1; }
-# Use the TESTED marker predicate, never a hand-rolled sed. `marker-title` returns EVERY distinct
-# title (a greedy `.*` keeps the last of two on one line; `head -n1` keeps the first across lines —
-# both silently resolve a milestone the reader never sees) and drops the schema placeholder `NAME`.
-# Requiring exactly one is the caller's half of that contract.
-MS_LIST="$(printf '%s' "$BODY" | bash "$RM" marker-title)" || { echo "ERROR: marker-title failed"; exit 1; }
-NMS="$(printf '%s\n' "$MS_LIST" | sed '/^$/d' | wc -l | tr -d ' ')"
-[ "$NMS" = "1" ] || { echo "ERROR: roadmap #$ROADMAP_NUM declares $NMS release-milestone titles ($(printf '%s' "$MS_LIST" | tr '\n' ' ')) — need exactly 1"; exit 1; }
-MS_NAME="$(printf '%s\n' "$MS_LIST" | sed '/^$/d' | head -n1)"
-# Read and parse SEPARATELY, and pipe to `jq` rather than gh's `--jq`: gh's flag takes exactly one
-# argument and has no `--arg`, so the milestone title cannot be passed safely through it.
-MS_JSON="$(gh api --paginate "repos/$SLUG/milestones?state=open&per_page=100")" \
-  || { echo "ERROR: could not list milestones"; exit 1; }
-M_NUM="$(printf '%s' "$MS_JSON" | jq -r -s --arg t "$MS_NAME" '[.[][] | select(.title == $t) | .number] | first // empty')"
-[ -n "$M_NUM" ] || { echo "ERROR: release-milestone '$MS_NAME' matched no open milestone"; exit 1; }
+On a `release-<VERSION>` branch, edit `CHANGELOG.md`:
 
-LABEL_EXISTS=0; gh api "repos/$SLUG/labels/release-blocker" >/dev/null 2>&1 && LABEL_EXISTS=1
-M_ISSUES="$(gh api --paginate "repos/$SLUG/issues?milestone=$M_NUM&state=all&per_page=100")" \
-  || { echo "ERROR: could not read milestone $M_NUM"; exit 1; }
-COUNTS="$(printf '%s' "$M_ISSUES" | bash "$RM" release-counts release-blocker "$ROADMAP_NUM")" \
-  || { echo "ERROR: could not tabulate milestone $M_NUM"; exit 1; }
-read -r ARMED M_BLOCKERS M_OPEN CANCELED <<EOF
-$(printf '%s\n' "$COUNTS" | sed -n '1p')
-EOF
+1. Insert `## [X.Y.Z] - YYYY-MM-DD` **immediately below** `## [Unreleased]`, leaving
+   `## [Unreleased]` in place and **empty**. Use today's date, resolved live.
+2. Add a 3–6 line paragraph under the new heading saying what the release *is* — the only prose a
+   reader of the tag will see.
+3. Repoint the link refs, descending: `[Unreleased]` → `compare/vX.Y.Z...HEAD`, plus a new
+   `[X.Y.Z]` → `compare/<previous>...vX.Y.Z`. Only the *first* tag ever uses `releases/tag/`.
 
-# Phase 1 asks with health `skipped` — the honest value for "not evaluated". Only a `met` here
-# means health can change the answer, so only then is CI read.
-HEALTH=skipped; HEALTH_WHY=""
-VERDICT="$(bash "$RM" release-ready "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH")" \
-  || { echo "ERROR: readiness predicate failed"; exit 1; }
-if [ "$VERDICT" = "met" ]; then
-  STATUS_JSON="$(gh api --paginate "repos/$SLUG/commits/$DEF/status?per_page=100")" || { echo "ERROR: status read failed"; exit 1; }
-  HEAD_SHA="$(printf '%s' "$STATUS_JSON" | jq -r -s '[.[].sha // empty] | first // empty')"
-  [ -n "$HEAD_SHA" ] || { echo "ERROR: $DEF has no resolvable HEAD"; exit 1; }
-  CHECKS_JSON="$(gh api --paginate "repos/$SLUG/commits/$HEAD_SHA/check-runs?per_page=100")" || { echo "ERROR: check-run read failed"; exit 1; }
-  HEALTH_IN="$(printf '%s\n%s\n' "$CHECKS_JSON" "$STATUS_JSON" \
-    | jq -s -c '{check_runs: ([.[].check_runs // []] | add // []), statuses: ([.[].statuses // []] | add // [])}')"
-  WF_COUNT=0
-  if [ "$(printf '%s' "$HEALTH_IN" | jq '[.check_runs[] | select((.app.slug // "") == "github-actions")] | length')" = "0" ]; then
-    WF_JSON="$(gh api --paginate "repos/$SLUG/actions/workflows?per_page=100")" || { echo "ERROR: workflow inventory read failed"; exit 1; }
-    WF_COUNT="$(printf '%s' "$WF_JSON" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')"
-  fi
-  HEALTH_OUT="$(printf '%s' "$HEALTH_IN" | bash "$RM" branch-health "$HEAD_SHA" "$WF_COUNT")" \
-    || { echo "ERROR: branch-health failed — an unreadable build is never green"; exit 1; }
-  { IFS= read -r HEALTH; IFS= read -r HEALTH_WHY; } <<EOF
-$HEALTH_OUT
-EOF
-  VERDICT="$(bash "$RM" release-ready "$LABEL_EXISTS" "$ARMED" "$M_BLOCKERS" "$M_OPEN" "$CANCELED" "$HEALTH")" \
-    || { echo "ERROR: readiness predicate failed"; exit 1; }
-fi
-echo "readiness: $VERDICT (milestone '$MS_NAME' #$M_NUM, health=$HEALTH ${HEALTH_WHY:+— $HEALTH_WHY})"
-[ "$VERDICT" = "met" ] || { echo "STOP: not releasable — $VERDICT"; exit 1; }
-```
+`stamp-verify` then asserts all of it whole-line and fixed-string.
 
-Stop on anything but `met`: `unarmed` (no requirements) · `unmet` (open blockers — run `/roadmap`)
-· `held` (a `release-blocker` closed `NOT_PLANNED`; owner decision) · `not-green` /
-`indeterminate` (**never cut** — a drained checklist is not a shippable build).
+### The tag message
 
-If the operator passed `--dry-run`, stop here and report.
+Write it to a file with the Write tool — version on line 1, blank line, the same paragraph used in
+`CHANGELOG.md`, then the provenance line. Pass that path to `release.sh tag --message-file`.
 
-### 3. Resolve the version — and refuse a reused or non-increasing one
+It is a **file, never an inline `-m`**: the paragraph is Markdown and routinely contains backticks,
+and inside a double-quoted `-m` the shell would run each backticked fragment as command
+substitution — executing changelog text and corrupting the message.
 
-```bash
-# ADB-SNIPPET: version
-LAST="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
-echo "last tag: ${LAST:-<none>}"
-awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f && /^### /' CHANGELOG.md | sort -u
-```
+## What this skill does NOT do
 
-The rule for this repo, stated so it does not get re-litigated each cut:
-
-- a `### Removed` section, or any entry describing a breaking change to the install contract or a
-  documented interface → **major**;
-- any `### Added` → **minor**;
-- only `### Fixed` / `### Changed` that are non-breaking → **patch**.
-
-If `--version` was not given, propose one by that rule and **confirm with the operator**. Then
-validate it — a reused version is not merely a typo, it stamps `main` for a release that then
-**cannot be tagged** (`git tag -a` refuses to overwrite; `-f` on a published tag is forbidden
-here), leaving the branch permanently claiming a release that was never cut:
-
-```bash
-# ADB-SNIPPET: version-guard
-# Format, reuse and ordering are ONE tested predicate — `release-lib.sh version-ok` — not three
-# hand-rolled shell tests. A glob like `v[0-9]*.[0-9]*.[0-9]*` is not a validator: `*` consumes
-# anything, so `v1.2.3-rc1`, `v1x.2.3` and `v1.2.3.4` all pass it, and `adb_version_ge` then
-# coerces the junk components to 0 and compares something the operator never typed.
-RLIB="$ROOT/.claude/skills/release/release-lib.sh"
-# The candidate set is every version this repo has ALREADY used, from both homes: git tags (local
-# and remote) and changelog headings. Reuse must be caught in any of them — a version present as a
-# heading but not yet tagged is the half-finished state a previous run can leave behind.
-{ git tag --list 'v*'
-  git ls-remote --tags origin 2>/dev/null | sed 's@.*refs/tags/@@; s/\^{}$//'
-  grep -o '^## \[[0-9][0-9.]*\]' CHANGELOG.md | tr -d '#[] '
-} | sort -u > "$TMPD/known-versions"
-BARE="$(bash "$RLIB" version-ok "$VERSION" < "$TMPD/known-versions")" || {
-  echo "STOP: version rejected (see reason above) — nothing has been changed"; exit 1; }
-echo "version ok: $VERSION (previous: ${LAST:-<none>})"
-```
-
-### 4. Stamp CHANGELOG.md on a branch
-
-```bash
-git checkout -b "release-$VERSION"
-```
-
-Then edit `CHANGELOG.md`:
-
-1. **Refuse an empty release.** If `## [Unreleased]` has no entries beneath it before the next
-   `## [` heading, stop — there is nothing to release.
-2. Insert a new `## [X.Y.Z] - YYYY-MM-DD` heading **immediately below** the existing
-   `## [Unreleased]` heading, leaving `## [Unreleased]` in place and **empty**. Do not delete or
-   rename it — an absent `[Unreleased]` breaks the next cut and the link ref below.
-   Use today's date, resolved live (`date +%F`), never a remembered one.
-3. Add a short paragraph under the new version heading saying what the release *is* — 3–6 lines,
-   matching the v1.0.0 and v1.1.0 entries. This is the only prose a reader of the tag will see.
-4. Repoint the link refs at the bottom, keeping them in **descending** version order:
-   - `[Unreleased]: <repo>/compare/vX.Y.Z...HEAD`
-   - add `[X.Y.Z]: <repo>/compare/<previous-tag>...vX.Y.Z`
-   - leave older refs untouched. Only the **first** tag uses the `releases/tag/` form; every
-     subsequent one is a `compare/` range.
-
-Verify the result mechanically before committing:
-
-```bash
-# ADB-SNIPPET: verify-stamp
-# One tested predicate, not a pile of inline greps. It asserts the heading, the date, that
-# [Unreleased] is EMPTY, and that BOTH link refs match WHOLE-LINE against URLs derived from
-# slug/last/version — so a ref comparing the wrong previous tag is caught, which a
-# "does `[1.1.0]: ` appear" test never is. Fixed-string throughout: `1.1.0` is all `.`
-# metacharacters and a plain grep accepts `1x1x0`.
-bash "$RLIB" changelog-verify "$VERSION" "$LAST" "$SLUG" "$(date +%F)" < CHANGELOG.md \
-  || { echo "STOP: changelog stamp is wrong (see reasons above)"; exit 1; }
-```
-
-### 5. Gate, commit, push, PR
-
-```bash
-bash scripts/selfcheck.sh || { echo "ERROR: selfcheck red — fix at the root, never bypass"; exit 1; }
-```
-
-Commit with a semantic subject and the co-author trailer this repo uses:
-
-```
-chore(release): stamp CHANGELOG for <VERSION>
-```
-
-Body: why the cut is happening (the readiness verdict and the SHA it was computed against), what
-changed in the file, and that versioning is by git tag per `CONTRIBUTING.md` → *Releases*.
-
-Push the branch and open a PR, capturing its number as `PR`. The PR body must name the post-merge
-steps (tag, then roll), so the work is recoverable if the session ends here. Use
-`Refs #<roadmap-issue>` — **never a closing keyword**, since a release PR resolves no issue.
-
-### 6. Wait for the declared reviewer — use `pr-watch`, not `pr-review gate`
-
-```bash
-# ADB-SNIPPET: review
-OUT="$(bash "$LIB/pr-watch.sh" wait --pr "$PR" --interval 30 --max-secs 1800)"; RC=$?
-REVIEWED_SHA="$(printf '%s\n' "$OUT" | tail -n1 | awk '{print $2}')"
-case "$RC" in
-  0)  [ -n "$REVIEWED_SHA" ] || { echo "ERROR: clean pass but no head SHA printed"; exit 1; } ;;
-  10) echo "STOP: reviewer found issues — run /resolve-pr-threads, then re-run this step"; exit 1 ;;
-  11) echo "STOP: reviewer still pending at the bound — hand off to a human"; exit 1 ;;
-  *)  echo "STOP: reviewer state unreadable (rc=$RC) — never merge on an unknown"; exit 1 ;;
-esac
-```
-
-**Deliberately not `pr-review.sh gate`.** That guard reads only the reviews surface, so a *clean*
-pass — which the Codex connector signals as a `+1` reaction with **no review object** — leaves it
-wedged at `16` forever. This is live on this repo: PR #187 was passed clean by the reviewer while
-`pr-review.sh gate` still reported *awaiting review*. Tracked as **#167**. Until that lands, this
-skill trusts `pr-watch`, which reads all three surfaces.
-
-### 7. Merge — pinned to the head that was reviewed
-
-```bash
-# ADB-SNIPPET: merge
-# RE-RUN READINESS FIRST — before the merge, not only before the tag. The merge is itself
-# irreversible in the way that matters: it stamps the version heading onto the default branch and
-# empties [Unreleased]. If a blocker was reopened during the review wait, a check that happens only
-# before the TAG would correctly refuse the tag — but `main` is already stamped for a release that
-# was never cut, AND the version guard now refuses to retry that version, so the repo is wedged
-# between two of this skill's own protections. Re-run step 2's readiness block here; keep the
-# pre-tag one for races that open after this point.
-# --- (re-run ADB-SNIPPET: readiness; require VERDICT=met) ---
-
-# Capture how many checks the REVIEWED head carried. GitHub registers jobs incrementally, so
-# "nothing is pending" is briefly true on a merge commit before its siblings appear. The reviewed
-# head ran the same CI config, so its count is the expected size of the settled set.
-EXPECTED_CHECKS="$(gh api --paginate "repos/$SLUG/commits/$REVIEWED_SHA/check-runs?per_page=100" \
-  | jq -s '[.[].check_runs[]?] | length')"
-[ "${EXPECTED_CHECKS:-0}" -gt 0 ] || { echo "ERROR: reviewed head $REVIEWED_SHA reports no checks"; exit 1; }
-
-FLAG="$(bash "$LIB/repo-settings.sh" merge-flag)" || FLAG="--squash"
-# --match-head-commit makes GitHub REJECT the merge if a commit landed after the reviewer passed,
-# rather than silently merging an unreviewed tip. Same guard base/workflows/implement-issue.md
-# uses at its arm step.
-gh pr merge "$PR" $FLAG --delete-branch --match-head-commit "$REVIEWED_SHA" \
-  || { echo "ERROR: merge refused — head moved since review, or merge blocked"; exit 1; }
-# The tag target is the PR's OWN merge commit, never `git rev-parse HEAD` on the default branch:
-# another PR merging in between would move HEAD, and tagging that ships commits the changelog
-# never mentions, under an empty [Unreleased].
-MERGE_SHA="$(gh pr view "$PR" --json mergeCommit --jq '.mergeCommit.oid')"
-[ -n "$MERGE_SHA" ] && [ "$MERGE_SHA" != "null" ] || { echo "ERROR: cannot resolve the merge commit"; exit 1; }
-echo "merged $PR -> $MERGE_SHA"
-```
-
-### 8. Re-verify — health at `MERGE_SHA`, and readiness once more
-
-The tag must land on a commit whose CI actually passed — not one that merely inherited a green
-parent. Wait for **that** commit's own checks:
-
-```bash
-# ADB-SNIPPET: post-merge-green
-# `checks-settled` is the tested predicate for "is this commit's check set DONE" — distinct from
-# `branch-health`, which answers "is it GREEN". It refuses BOTH failure shapes that tag an
-# unverified commit: an empty set (`none` — CI has not registered yet, which is not "complete"),
-# and a set smaller than expected (`short` — GitHub is still registering jobs, so a fast check
-# finishing first makes "nothing pending" briefly and dangerously true).
-SETTLED=""; i=0
-until [ "$i" -ge 60 ]; do
-  CK="$(gh api --paginate "repos/$SLUG/commits/$MERGE_SHA/check-runs?per_page=100")" || { sleep 20; i=$((i+1)); continue; }
-  OUT="$(printf '%s' "$CK" | bash "$RLIB" checks-settled "$EXPECTED_CHECKS")"; RC=$?
-  case "$RC" in
-    0) SETTLED="$OUT"; break ;;                       # settled
-    6|7|8) : ;;                                       # pending / none / short -> keep waiting
-    *) echo "ERROR: checks-settled failed ($OUT)"; exit 1 ;;
-  esac
-  sleep 20; i=$((i+1))
-done
-[ -n "$SETTLED" ] || { echo "ERROR: $MERGE_SHA never reached a settled check set of $EXPECTED_CHECKS — refusing to tag"; exit 1; }
-echo "checks $SETTLED on $MERGE_SHA"
-```
-
-Then run `branch-health` over the Checks API **and** the legacy commit-status API for
-`$MERGE_SHA` (same shape as step 2's phase 2, with `$MERGE_SHA` in place of `$HEAD_SHA`).
-**`green` or `no-ci` are the only values that may proceed.** `indeterminate` fails closed.
-
-**Then re-run step 2's readiness block.** This is not redundant: the review wait alone can be 30
-minutes, and readiness is mutable by construction. If a blocker was reopened or added meanwhile,
-the tag — which is *immutable* — would be cut from a milestone that is no longer ready, and step 9
-would then refuse to roll, leaving the repo in exactly the split state this skill exists to
-prevent. **The last read before an irreversible act is the one that counts.**
-
-### 9. Tag the verified merge commit
-
-```bash
-# ADB-SNIPPET: tag
-# EVERY mutation is guarded. Without `||`, a failed `git tag` or `git push` falls straight through
-# to the rollover and the run reports a release that was never published.
-git fetch --prune origin >/dev/null 2>&1 || { echo "ERROR: fetch failed"; exit 1; }
-git tag -a "$VERSION" "$MERGE_SHA" -m "$VERSION
-
-<the same short paragraph written into CHANGELOG.md>
-
-Cut per CONTRIBUTING.md -> Releases on a green $DEF ($MERGE_SHA, $SETTLED)." \
-  || { echo "ERROR: could not create tag $VERSION"; exit 1; }
-git push origin "$VERSION" || { echo "ERROR: could not push tag $VERSION"; exit 1; }
-# --exit-code is REQUIRED: plain `git ls-remote` exits 0 with EMPTY output when nothing matches,
-# so the "verification" would pass on a tag that was never published (git-ls-remote(1) documents
-# --exit-code as the flag that returns 2 for no-match).
-git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null \
-  || { echo "ERROR: $VERSION is NOT on origin after push — do not roll the milestone"; exit 1; }
-# The peeled ref must point at the commit we verified, not merely exist.
-REMOTE_SHA="$(git ls-remote --tags origin "refs/tags/$VERSION^{}" | awk '{print $1}')"
-[ "$REMOTE_SHA" = "$MERGE_SHA" ] || { echo "ERROR: origin's $VERSION points at ${REMOTE_SHA:-<none>}, not $MERGE_SHA"; exit 1; }
-echo "tagged: $VERSION -> $MERGE_SHA (verified on origin)"
-```
-
-Tag the **explicit `$MERGE_SHA`**, never an implicit `HEAD`. Annotated (`-a`), never lightweight:
-the tag message is the only release note this repo publishes. **Never move or delete a pushed
-tag** — if the wrong SHA got tagged, cut a new patch version.
-
-### 10. Roll the milestone — not optional
-
-```bash
-bash bin/baseline release roll --version "$VERSION" --dry-run   # read the plan first
-bash bin/baseline release roll --version "$VERSION"
-```
-
-This archives the release milestone under the version, opens a fresh empty one under the rolling
-title, and moves leftover non-blockers to `Backlog`. **Without it the milestone stays open with
-zero blockers, so `/roadmap`'s predicate returns `met` on every subsequent run and re-emits this
-same cut forever** — the terminating loop stops terminating. It is `gh`-only milestone bookkeeping
-and never touches the repo (`scripts/check-release-role.sh` enforces that boundary).
-
-### 11. Report
-
-```text
-✅ <VERSION> cut — tag pushed to <MERGE_SHA> on a green <DEF> (N/N checks).
-   PR #<n> merged · milestone <NAME> → <VERSION> (closed) · fresh <NAME> open · K issue(s) → Backlog
-Next: /roadmap
-```
-
-`/roadmap` will now report `unarmed` ("no requirements yet") until the next release set is slated
-and its must-haves are labelled `release-blocker`.
+- **It never decides readiness or health itself** — `roadmap-lib.sh` owns both, and the driver
+  refuses when they say no.
+- **It never force-pushes, never `--no-verify`, never pushes to the default branch.** The stamp
+  ships as an ordinary PR through the same gates as any other change.
+- **It never publishes a GitHub Release, a package, or a deploy.** This repo versions by git tag
+  only; v1.0.0 and v1.1.0 were both tag-only. Adding one is a decision change.
+- **It never consults `pr-review.sh gate`.** That guard reads one surface of three, so the Codex
+  connector's clean pass — a `+1` with no review object — wedges it at `16` forever (**#167**,
+  reproduced live on PR #187). It uses `pr-watch.sh`, which reads all three.
+- **It never moves or deletes a pushed tag.** If the wrong SHA got tagged, cut a new patch version.
 
 ## Failure recovery
 
-The steps are ordered so an interruption is always resumable, and none is destructive:
-
-| Interrupted after | State | Resume by |
-|---|---|---|
-| step 4 (stamp) | branch exists, no PR | re-run from step 5 |
-| step 5 (PR open) | PR open, unmerged | re-run from step 6 |
-| step 7 (merged) | `$DEF` stamped, no tag | re-derive `MERGE_SHA` via `gh pr view <PR> --json mergeCommit`, then steps 8–10 |
-| step 9 (tagged) | tag pushed, milestone stale | **run step 10** — this is the easy one to forget |
-
-A half-finished release is never left silently: step 10's absence is visible as `/roadmap`
-re-emitting the cut.
+| Interrupted after | Resume by |
+|---|---|
+| step 4 | re-run from step 6 |
+| step 6 | re-run from step 7 |
+| step 8 | re-run from step 9 |
+| step 9 (merged, untagged) | re-run `verify-merge`, then step 10 |
+| step 10 (tag created, push failed) | re-run `release.sh tag --message-file <path>` — it is idempotent, and `version-guard` exits **3** to route you here |
+| step 10 (tag pushed) | **run step 11** — the easy one to forget; without it `/roadmap` re-emits the cut forever |
