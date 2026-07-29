@@ -511,11 +511,12 @@ adb_link_into "$ihome/.claude/realfile" "$isrc"; no "$?" "link_into: a real file
 # --- adb_claude_hook_scripts / adb_claude_hook_regex (#36) -------------------
 # One enumeration feeds the manifest AND both settings filters. If they drift, a hook is either
 # linked-but-never-wired or wired-but-never-removed on uninstall.
-eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "3" "hook scripts: three wired hooks"
+eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "4" "hook scripts: four wired hooks"
 has "$(adb_claude_hook_scripts)" "session-currency.sh" "hook scripts: includes the currency hook"
+has "$(adb_claude_hook_scripts)" "state-claim-gate.sh" "hook scripts: includes the state-claim gate"
 hasnt "$(adb_claude_hook_scripts)" "statusline.sh" "hook scripts: excludes the non-hook statusline"
 eq "$(adb_claude_hook_regex /home/u)" \
-  '^/home/u/\.claude/scripts/(precommit-gate|implement-issue-gate|session-currency)\.sh$' \
+  '^/home/u/\.claude/scripts/(precommit-gate|implement-issue-gate|session-currency|state-claim-gate)\.sh$' \
   "hook regex: anchored to the EXACT installed paths, not a basename"
 # The ownership test must not claim a user's own script that merely shares a filename. A
 # basename-anchored pattern would, and because the filters walk EVERY hook event, uninstall

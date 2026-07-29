@@ -79,28 +79,54 @@ name the *observed* fact that implies it (an exit code, an action taken) instead
 | Is this branch merged? | `cleanup-lib.sh branch-verdict` (models squash/rebase, exact-head, containment) |
 | Is the branch green? | `roadmap-lib.sh branch-health` (Checks API + commit-status API, fail-closed) |
 
-## What this does *not* claim to enforce
+## What is enforced, and what is not
 
 Honesty about the boundary is part of the practice, so state it exactly rather than flatteringly.
 
 **`observe` makes a stated status correct; it cannot make anyone state one.** Nothing couples its
-exit code to an action. Compare the two nearest siblings: the pre-arm review guard's exit code
-gates an actual `gh pr merge --auto`, and `/cleanup`'s branch verdict decides whether a branch
-survives — those are *structural*, because a wrong answer stops the machine. This renders optional
-narration. So the honest line is not "defined status lines are enforced, free-form prose is not";
-it is that **both** depend on someone choosing to make the call. What the command removes is the
-*stale or paraphrased* sentence, not the *unsourced* one.
+exit code to an action, so on its own it renders optional narration. That gap was not theoretical:
+it was exercised on 2026-07-29, with this practice loaded in context and a correct reading already
+in hand — a cleanup report volunteered `(OPEN at 14:55:26Z)` for a PR that had merged fourteen
+minutes earlier. The read happened. Quoting a stale one as narrative was the defect, and no
+additional paragraph addresses an agent that read correctly and then wrote carelessly.
 
-Mechanical enforcement of free-form prose is a separate problem and is **not** solved here: a Stop
-hook fires only after the text has already streamed, so it could force a correction but never
-prevent the claim, and a deterministic shell classifier over arbitrary English — negation,
-quotation, hypotheticals, predictions — would be theatre beyond a small documented grammar. That
-work belongs to the portable enforcement-hooks layer, which should treat *nothing* below as
-already covered.
+So the rule is enforced by a **third structural guard**, alongside the two that already work
+because a wrong answer stops the machine:
 
-So the rule for prose remains a discipline, stated plainly: **do not volunteer a status you did not
-just read.** If it is worth saying, it is worth one `observe` call — and if that call fails, the
-honest output is silence.
+| Guard | What its exit code gates |
+|---|---|
+| `pr-review.sh gate` | an actual `gh pr merge --auto` |
+| `cleanup-lib.sh branch-verdict` | whether a branch is deleted |
+| **`state-claim-gate.sh`** (Stop hook) | **the end of the turn** |
+
+**The grammar it applies is small, and deliberately so** — a classifier over arbitrary English
+would be theatre. `state-assert.sh lint` enforces exactly one rule:
+
+> In prose, a STATUS word appearing in the same sentence as an issue/PR reference must itself be
+> introduced by `was observed`.
+
+The check is per **occurrence**, not per sentence, because the 2026-07-29 line carried a compliant
+`was observed MERGED` clause *and* a stale `(OPEN at …)` clause — a sentence-level test finds the
+template and passes the whole line. **Only prose declares** (the #117 rule, applied here): fenced
+blocks, HTML comments, blockquotes and inline code spans are stripped before scanning, so quoting a
+status or documenting this grammar never fires it. Ordinary English is carved out: `open a PR` and
+`merged the branch` are verbs, not claims.
+
+**What is still NOT enforced, stated plainly:**
+
+- **A Stop hook fires after the text has streamed.** It forces a correction; it can never prevent
+  the claim. The reader may see the wrong sentence before the gate replaces it.
+- **The grammar is small.** An unusual phrasing, a claim split across sentences, or a status
+  asserted without any `#N` nearby all pass. Missing a claim is the accepted cost of not crying
+  wolf — a gate that fires on ordinary prose gets worked around, and this one ships to every
+  adopting repo.
+- **It is Claude-side today.** The linter is agent-neutral shell; only the hook wiring is
+  Claude-specific. Codex/Gemini equivalents ride the enforcement-hooks epic.
+
+So the discipline still carries the rest, and it is the same sentence it always was: **do not
+volunteer a status you did not just read.** Most status narration is unrequested — deleting it is
+always correct and costs the reader nothing. If it is worth saying, it is worth one `observe` call,
+and if that call fails, the honest output is silence.
 
 ## Why
 

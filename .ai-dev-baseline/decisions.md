@@ -562,3 +562,54 @@ didn't already model, so any residual divergence stays visible and auditable.
              it is itself weakened until #112 lands, because `deps-from-body` still drops an edge
              written with markdown emphasis and the graph is what leverage is computed from.
 - baseline-issue: n/a (this repo IS the baseline; #80 is the tracking issue)
+
+## D16 — the state-claim rule becomes a gate, because as documentation it kept failing
+- date:      2026-07-29
+- category:  general
+- unknown:   `base/practices/verify-before-asserting.md` states the rule, and #138 built
+             `state-assert.sh observe` so a STATED status is correct by construction. Neither makes
+             an agent state one — `observe`'s exit code gates nothing, so it renders optional
+             narration, and the practice said so honestly rather than implying otherwise. What the
+             baseline had no home for was the remaining failure: an agent that reads correctly and
+             then writes a stale or unsourced sentence anyway.
+             Exercised again on 2026-07-29 with the practice loaded in context and the correct
+             reading in hand: a `/cleanup` report volunteered `(OPEN at 14:55:26Z)` for a PR that
+             had merged fourteen minutes earlier. The owner's response — that this has been
+             "resolved" across multiple closed issues and keeps recurring — is the accurate
+             diagnosis: every prior fix was documentation, and documentation cannot bind behavior
+             it only describes.
+- decision:  Add a THIRD structural guard, matching the only two that have ever worked here —
+             `pr-review.sh gate` (gates an actual merge) and `cleanup-lib.sh branch-verdict` (gates
+             a branch delete). Both work because a wrong answer stops the machine.
+             (1) `state-assert.sh lint` — the grammar, as a pure offline predicate. ONE rule: in
+                 prose, a status word in the same sentence as an issue/PR reference must itself be
+                 introduced by `was observed`.
+             (2) `state-claim-gate.sh` — a Stop hook whose exit code gates THE END OF THE TURN.
+             Three sub-decisions are worth pinning:
+             (a) PER-OCCURRENCE, NOT PER-SENTENCE. The sentence that shipped contained a compliant
+                 `was observed MERGED` clause AND a stale `(OPEN at …)` clause; a sentence-level
+                 test finds the template and passes the exact defect. It is the regression fixture.
+             (b) SMALL GRAMMAR, BIASED TOWARD PRECISION. The practice already ruled that a
+                 classifier over arbitrary English "would be theatre beyond a small documented
+                 grammar", so this is that much and no more: `#N` binding, `was observed`
+                 introduction, #117-style container stripping, and verb carve-outs so `open a PR`
+                 never fires. A gate that cries wolf gets worked around, and this ships to every
+                 adopting repo.
+             (c) NEVER WEDGES A SESSION. Missing jq, an unreadable transcript, a text-free turn and
+                 a missing linter are all no-ops — reported on stderr (#35), never blocking.
+                 Deliberately NOT fail-closed: this gates NARRATION, not an irreversible act, and a
+                 session wedged by a missing dependency is worse than the claim it would catch.
+- placement: `scripts/lib/state-assert.sh` (the predicate, beside `observe` — one home per entity
+             kind) + `agents/claude/scripts/state-claim-gate.sh` (the hook) +
+             `adb_claude_hook_scripts` (the ONE hook enumeration, so install and uninstall both
+             pick it up) + `scripts/check-state-assert.sh` (regression tests).
+- reason:    The repo's own evidence says prose does not bind an agent: the dependency-edge rule,
+             the release-readiness ladder and `/cleanup`'s predicates each stopped drifting only
+             when they became tested code. This rule had been through the same cycle twice and was
+             still prose. Making the turn itself the thing that fails is the smallest change that
+             moves it into the category that has actually held.
+- known-gap: A Stop hook fires AFTER the text streams — it forces a correction, it cannot prevent
+             the claim. The grammar is small, so unusual phrasings pass. And the wiring is
+             Claude-only today; the predicate is agent-neutral shell, so Codex/Gemini equivalents
+             ride the enforcement-hooks epic (#14/#25).
+- baseline-issue: #195

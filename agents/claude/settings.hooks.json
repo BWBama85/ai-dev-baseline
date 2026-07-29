@@ -13,6 +13,12 @@
           "command": "__ADB_HOME__/.claude/scripts/implement-issue-gate.sh",
           "timeout": 30,
           "statusMessage": "ai-dev-baseline: implement-issue completion gate"
+        },
+        {
+          "type": "command",
+          "command": "__ADB_HOME__/.claude/scripts/state-claim-gate.sh",
+          "timeout": 20,
+          "statusMessage": "ai-dev-baseline: state-claim gate"
         }
       ]
     }

@@ -9,6 +9,28 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **The state-claim rule is now a gate, not documentation** (#195, D16). An agent stating a
+  PR/issue/CI status in prose that is stale, paraphrased or never read had been "fixed" twice —
+  as a practice, and as `state-assert.sh observe` (#138) — and both fixes were advisory, because
+  neither gated anything. It recurred on 2026-07-29 *with the practice loaded and the correct
+  reading already in hand*: a `/cleanup` report volunteered `(OPEN at 14:55:26Z)` for a PR that had
+  merged fourteen minutes earlier.
+  - **`state-assert.sh lint`** — the grammar, as a pure offline predicate. One rule: in prose, a
+    status word in the same sentence as an issue/PR reference must itself be introduced by
+    `was observed`. Checked **per occurrence, not per sentence** — the shipped sentence carried a
+    compliant `was observed MERGED` clause *and* the stale one, so a sentence-level test passes the
+    exact defect. That sentence is the regression fixture.
+  - **`state-claim-gate.sh`** — a new **`Stop` hook** whose exit code gates the end of the turn,
+    joining `pr-review.sh gate` (gates a real merge) and `cleanup-lib.sh branch-verdict` (gates a
+    branch delete) as the third guard that works because a wrong answer stops the machine.
+  - Precision-first by design: fenced blocks, code spans (including multi-backtick), blockquotes
+    and HTML comments declare nothing; `open a PR` and `closed #195` are verbs. It never wedges a
+    session — missing `jq`, an unreadable transcript, a text-free turn or a broken linter install
+    are reported on stderr and allowed through.
+  - `verify-before-asserting.md`'s *"what this does not claim to enforce"* section is **rewritten,
+    not deleted**: a Stop hook forces a correction but cannot prevent the claim, the grammar is
+    small, and the wiring is Claude-only today.
+
 - **This repo now has its own `/release`** (`.claude/skills/release/SKILL.md`, D14). Decision
   **#3/D7** committed the baseline to shipping **no** generic release workflow and made `release`
   a permanently project-owned role — but this project never supplied its own copy, so the role was
