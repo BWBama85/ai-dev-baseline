@@ -80,9 +80,34 @@ real `$HOME`) into `~/.claude/settings.json`:
 | Event | Script | What it does |
 |---|---|---|
 | `Stop` | `precommit-gate.sh` | Blocks ending a turn while the repo's quality gates are red. |
-| `Stop` | `implement-issue-gate.sh` | Keeps an `/implement-issue` run going until its PR is open. |
+| `Stop` | `implement-issue-gate.sh` | Keeps an `/implement-issue` run going until its PR is open — for **that session's own** run; see [Run markers are session-owned](#run-markers-are-session-owned). |
 | `Stop` | `state-claim-gate.sh` | Blocks ending a turn that states a PR/issue/CI status the turn did not read. |
 | `SessionStart` (matcher `startup`) | `session-currency.sh` | Keeps the install-source clone current — see [Automatic currency](#automatic-currency-sessionstart). |
+
+### Run markers are session-owned
+
+`/implement-issue` records its in-flight run in `.claude/state/implement-issue-active.json`, and
+`implement-issue-gate.sh` reads that marker at every turn-end to decide whether the run still owes
+a PR. The marker carries an **`owner`** — the id of the session that started the run — and the
+hook compares it against its own session before treating the marker as its own.
+
+That comparison is what makes **more than one Claude session in a single clone** safe. A checkout
+is a working-tree property: every session sees the same current branch, so a marker matched on
+branch name alone matched *every* session in that clone. A session that had never run
+`/implement-issue` was once told to `gh pr create` on another session's branch that already had an
+open PR. A marker whose owner is another session is now left strictly alone — not acted on, not
+deleted, and never overwritten with a blocked file.
+
+Two properties are worth knowing because they are deliberate choices, not accidents:
+
+- **An unowned marker is still enforced.** A marker written before this field existed, or by an
+  agent whose harness exposes no session id, falls back to branch-name matching. Enforcement code
+  going quiet when it is unsure would silently switch the invariant off, which is worse than one
+  misdirected hint.
+- **It does not make two concurrent runs safe.** Both runs write the same fixed filenames, and a
+  new run's preflight clears them unconditionally, so a second `/implement-issue` in the same
+  clone can still delete the first one's marker. Ownership makes the *reader* safe, not the
+  *path* exclusive — see issue #202.
 
 ### The state-claim gate
 

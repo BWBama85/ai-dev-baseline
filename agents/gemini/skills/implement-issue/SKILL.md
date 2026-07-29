@@ -41,7 +41,7 @@ Two gitignored files under `.gemini/state/`:
   ```json
   { "branch": "issue-NN-slug", "issue": "NN",
     "phase": "branched|implemented|gates_green|committed|code_reviewed|triaged|pushed|pr_opened|complete",
-    "startedAt": "ISO-8601 UTC", "prUrl": "https://…/pull/N" }
+    "startedAt": "ISO-8601 UTC", "owner": "<session id>", "prUrl": "https://…/pull/N" }
   ```
   Written in step 5 (after the real branch exists — never before, or the gate's
   branch-mismatch guard silently disables the invariant). Each step updates
@@ -50,13 +50,64 @@ Two gitignored files under `.gemini/state/`:
 - **`implement-issue-blocked.json`** — written by *you* ONLY on a documented
   legitimate **post-branch** stop (gate escape clause; a **required review step that
   cannot complete** after retry + fallback, step 8; branch already exists on remote).
-  Shape: `{"reason","phase","branch","issue"}` — `branch`/`issue` REQUIRED and must
-  match the active marker (the Stop-hook gate no-ops unless a matching active marker
-  exists). A gap-analysis stop is *pre-branch* — no marker exists yet to pair with,
-  so surface it to the owner and stop cleanly (step 4); do **not** write this file.
+  Shape: `{"reason","phase","branch","issue","owner"}` — `branch`/`issue` REQUIRED and
+  must match the active marker (the Stop-hook gate no-ops unless a matching active marker
+  exists), and `owner` **copied from the active marker** rather than recomputed. A
+  gap-analysis stop is *pre-branch* — no marker exists yet to pair with, so surface it to
+  the owner and stop cleanly (step 4); do **not** write this file.
 
 Always stage marker writes inside `.gemini/state/` (`.marker.tmp` → `mv`) so the
 rename is atomic. Preflight unconditionally clears stale state files.
+
+### `owner` — which SESSION this run belongs to
+
+`owner` names the **session driving the run**, not the checkout. A checkout is a
+working-tree property: every session in one clone sees the same current branch, so a
+marker matched on branch name alone matches *every* session in that clone. That is not a
+tidiness point — a session that had never run this workflow was told to `gh pr create` on
+another session's branch that already had an open PR, and a second session's "write a
+blocked marker and stop" would end the first session's healthy run (#180).
+
+- **Write it when your harness exposes a session id, and omit it when it doesn't.**
+  Claude Code publishes one as `$CLAUDE_CODE_SESSION_ID` and repeats the same value as
+  `session_id` in every hook's stdin payload — that pairing is what lets the Stop hook
+  tell its own run's marker from a sibling's.
+- **Never substitute a pid.** The marker's writer is a tool-call shell and the hook is a
+  separate process; neither can derive the same pid, so a pid manufactures mismatches
+  instead of resolving them. No id available → no `owner` key.
+- **An absent `owner` means "unowned", and is enforced exactly as before this field
+  existed** — branch-name matching. Failing toward enforcement is deliberate: a marker
+  that goes inert silently switches the no-stop-until-PR invariant off, which is a worse
+  outcome than one misdirected hint.
+- **Ownership transfers to whoever is driving.** If you pick up an existing run — a
+  resumed session, or a new one continuing this branch — and the marker's `owner` is not
+  yours, **re-stamp it to yours on your next phase update**. Otherwise the marker stays
+  foreign to the session actually doing the work and the invariant goes unenforced for the
+  rest of the run.
+- **What `owner` does NOT fix:** two *real* runs in one checkout. Both write the same fixed
+  paths, and preflight clears them unconditionally — so session B can delete session A's live
+  marker before any ownership check gets to see it. Ownership makes the *reader* safe, not the
+  *path* exclusive. Tracked in #202; the scope here is one active run plus unrelated sessions.
+
+Every phase update therefore re-stamps `owner`, which is one command, not two:
+
+```bash
+jq --arg phase "<next phase>" --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
+   '.phase = $phase | (if $owner == "" then . else .owner = $owner end)' \
+   .gemini/state/implement-issue-active.json > .gemini/state/.marker.tmp \
+  && mv .gemini/state/.marker.tmp .gemini/state/implement-issue-active.json
+```
+
+And the blocked file **copies** the active marker's `owner` (it must pair with the run it
+is excusing, not with whoever happens to be writing it):
+
+```bash
+jq --arg reason "<why this is a legitimate stop>" \
+   '{reason:$reason, phase:.phase, branch:.branch, issue:.issue}
+    + (if .owner then {owner:.owner} else {} end)' \
+   .gemini/state/implement-issue-active.json > .gemini/state/.marker.tmp \
+  && mv .gemini/state/.marker.tmp .gemini/state/implement-issue-blocked.json
+```
 
 ## Roles (who does what)
 
@@ -392,9 +443,13 @@ Slug from the first issue's title (lowercase, ASCII, non-alnum → `-`, ≤40 ch
 ```bash
 BRANCH="issue-${ISSUE_DASH}-${SLUG}"
 git switch -c "$BRANCH"
+# `owner` is emitted only when the harness exposes a session id — an empty value writes NO key,
+# which the gate reads as "unowned" and enforces the pre-#180 way. See "owner" above.
 jq -n --arg branch "$BRANCH" --arg issue "$ISSUE_CSV" \
+      --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
       --arg startedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-      '{branch:$branch, issue:$issue, phase:"branched", startedAt:$startedAt}' \
+      '{branch:$branch, issue:$issue, phase:"branched", startedAt:$startedAt}
+       + (if $owner == "" then {} else {owner:$owner} end)' \
    > .gemini/state/.marker.tmp && mv .gemini/state/.marker.tmp .gemini/state/implement-issue-active.json
 
 # The marker now exists, so IT is this run's liveness signal — /cleanup keeps its state while the
@@ -406,7 +461,7 @@ rm -f .gemini/state/gap-analysis.lock
 ```
 
 If the branch already exists locally or on the remote, write the blocked marker
-(`reason:"branch already exists"`, with `branch`+`issue`) and stop. Never force-push.
+(`reason:"branch already exists"`, with `branch`+`issue`+`owner`) and stop. Never force-push.
 
 ### 6. Implement
 
@@ -433,7 +488,7 @@ phase order is a guideline, not a lock: `gates_green` and `committed` may interl
 gate only makes sense post-commit. This never means skipping the gate — it still must pass.
 
 **Escape clause:** if the *same* gate fails three consecutive times after fixes,
-write the blocked marker (`reason`, `branch`, `issue`) and stop.
+write the blocked marker (`reason`, `branch`, `issue`, `owner`) and stop.
 
 ### 7. First commit
 
@@ -490,8 +545,8 @@ that slot; document the substitution. A slot is **terminal** the moment its revi
 clean pass, not a failure; only a hung / errored / crashed-empty call is incomplete.
 If **any** required slot still cannot reach a terminal state after retry + fallback,
 the review step **failed** for that slot → write `implement-issue-blocked.json`
-(`reason` names the failed reviewer, `branch`/`issue` matching the marker) and leave
-`phase=committed`. Never reach step 10 (PR opened) with a required review incomplete.
+(`reason` names the failed reviewer, `branch`/`issue`/`owner` matching the marker) and
+leave `phase=committed`. Never reach step 10 (PR opened) with a required review incomplete.
 
 Once every slot is terminal, update `phase=code_reviewed`. **Completed findings are
 input to step 9, not a stopping point.**
@@ -508,7 +563,9 @@ again if anything changed. Update `phase=triaged`.
 ```bash
 BRANCH="$(jq -r .branch .gemini/state/implement-issue-active.json)"
 git push -u origin "$BRANCH"
-jq '.phase="pushed"' .gemini/state/implement-issue-active.json > .gemini/state/.marker.tmp \
+jq --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
+   '.phase = "pushed" | (if $owner == "" then . else .owner = $owner end)' \
+   .gemini/state/implement-issue-active.json > .gemini/state/.marker.tmp \
   && mv .gemini/state/.marker.tmp .gemini/state/implement-issue-active.json
 ```
 
@@ -562,8 +619,9 @@ case "$AM" in
 esac
 ```
 
-**Never arm auto-merge when** a `implement-issue-blocked.json` marker exists, or the
-PR is a draft (GitHub refuses it anyway). A non-zero guard code is **not** a failure
+**Never arm auto-merge when** a `implement-issue-blocked.json` marker **for this run**
+exists (matching `branch`/`issue`, and `owner` when both carry one — another session's
+give-up is not yours to act on), or the PR is a draft (GitHub refuses it anyway). A non-zero guard code is **not** a failure
 of this step — it is the guard doing its job: report the code and its meaning in
 step 11, leave the PR open, and let the owner merge.
 
@@ -681,3 +739,11 @@ parent (a comment that survives the parent closing) and the PR.
 - **Branch already exists on remote** → blocked marker; ask the user; never force-push.
 - **Stop hook keeps blocking** → you're trying to end before the PR is open; open it
   or write the blocked marker. Don't fight the hook.
+- **Stop hook nags about a run you never started** → it is reading a marker owned by
+  another session sharing this checkout. Do **not** obey it, and do **not** delete or
+  overwrite that marker — following it once sent a session to `gh pr create` against a
+  branch that already had an open PR (#180). Confirm with
+  `jq -r '.owner, .branch' .gemini/state/implement-issue-active.json`: an `owner` that
+  is not your session id means the marker is not yours. A gate that still nags after
+  that is running without an owner on either side (an install predating the field, or a
+  harness with no session id), which falls back to branch-name matching by design.
