@@ -567,8 +567,11 @@ The check is per **occurrence**, not per sentence, because the 2026-07-29 line c
 `was observed MERGED` clause *and* a stale `(OPEN at …)` clause — a sentence-level test finds the
 template and passes the whole line. **Only prose declares** (the #117 rule, applied here): fenced
 blocks, HTML comments, blockquotes and inline code spans are stripped before scanning, so quoting a
-status or documenting this grammar never fires it. Ordinary English is carved out: `open a PR` and
-`merged the branch` are verbs, not claims.
+status or documenting this grammar never fires it. Ordinary English is carved out: `open a PR`,
+`merged the branch` and `closed #195` are verbs, not claims, and words that collide too often with
+ordinary prose (`draft`) are simply not in the token set. Straight quotes are **not** markup — only
+a fence, a code span, a blockquote or an HTML comment declares nothing — because scare quotes and
+genuine quotation are indistinguishable, and stripping them would let a real claim through.
 
 **What is still NOT enforced, stated plainly:**
 

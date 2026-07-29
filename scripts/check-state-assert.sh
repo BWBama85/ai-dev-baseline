@@ -334,6 +334,27 @@ eq "$(lint_rc 'See ```PR #1 is still open``` inline.')" 0 "a triple-backtick spa
 eq "$(lint_rc 'Quoting ``PR #1 is still open`` but PR #2 is still open.')" 1 \
    "...while a real claim beside a quoted one is still caught"
 
+# --- 3b-j. `draft` is not a status token (live false positive, hours after shipping) ---------
+# It is an ordinary English noun and it collided with prose an agent genuinely writes. A gate that
+# fires on ordinary prose gets worked around, and then it protects nothing — so the word is out of
+# the set, which is the precision-over-recall trade stated in the header.
+eq "$(lint_rc 'My first draft of the summary for #196 was wrong.')" 0 \
+   "\"draft\" as an ordinary noun does not fire"
+eq "$(lint_rc 'A rough draft of #196 exists.')" 0 "...in any ordinary phrasing"
+# The cost is stated rather than hidden: a genuine draft-status claim is no longer caught.
+eq "$(lint_rc 'PR #196 is a draft.')" 0 \
+   "the accepted cost: a genuine draft-status claim is NOT caught"
+# ...and removing it must not have weakened anything else.
+eq "$(lint_rc 'PR #137 is still open.')" 1 "the load-bearing tokens still fire"
+eq "$(lint_rc 'CI is green on PR #194.')" 1 "...including CI"
+
+# --- 3b-k. straight quotes are PROSE, not markup ---------------------------------------------
+# Only markup declares nothing. Double quotes are ambiguous — scare quotes, emphasis, and genuine
+# quotation are indistinguishable — and stripping them would let `He said "PR #1 is still open"`
+# through, which is a real claim in a real sentence. Backticks are the way to quote a status.
+eq "$(lint_rc 'It fired on "CI on #196 is green".')" 1 "a double-quoted status is still a claim"
+eq "$(lint_rc 'It fired on `CI on #196 is green`.')" 0 "...while a backticked one is not"
+
 # --- 3b-f. determinism + hygiene ---------------------------------------------------------------
 eq "$(lint_out "$SHIPPED")" "$(lint_out "$SHIPPED")" "lint is deterministic"
 eq "$(printf '' | bash "$LIB" lint >/dev/null 2>&1; printf '%s' "$?")" 0 "empty input is clean"
