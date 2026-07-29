@@ -28,7 +28,7 @@ those. The rules below are specific to this repo's code.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs
    (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
    pr-review · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration ·
-   install-guard · fact-drift · practice-index · release-role · install dry-run). Fix red at the root — never push and
+   install-guard · fact-drift · practice-index · release-role · release-skill · install dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
 
    **One CI step is deliberately not mirrored** (#122, recorded as D13 in
@@ -66,7 +66,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/lib/pr-watch.sh` | The **async-reviewer status detector** (#49) — has the declared reviewer finished with this PR, and did it find anything? `observe` classifies once; `wait` polls until a terminal answer **in shell**, so a half-hour wait costs no model tokens. Reads the two disjoint terminal signals the Codex connector actually emits: a `+1` reaction on the PR post (clean, and it posts *no review*) or a review at the current head (findings). Powers `/resolve-pr-threads --watch`. Deliberately **not** part of `pr-review.sh`, whose header forbids it growing a wait (`scripts/check-pr-watch.sh`); installs beside `common.sh` |
 | `scripts/lib/pr-review.sh` | The **pre-arm review guard** (#134) — has every reviewer this repo declares (`[reviewers] bots`) reviewed the PR's *current head commit*? `/implement-issue` step 10 asks it before `gh pr merge --auto`, because GitHub gates on checks and a bot reviewer is not one. Deliberately **not** part of `repo-settings.sh`, whose charter is repo settings, not review (`scripts/check-pr-review.sh`); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
-| `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role) |
+| `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role · release-skill) |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |
 | `docs/` | design-principles · philosophy · installation · roles · overrides · adding-an-agent · release-goal-convention · repo-settings · roadmap-acceptance |
 

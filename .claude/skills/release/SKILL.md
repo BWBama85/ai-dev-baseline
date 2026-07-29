@@ -69,6 +69,8 @@ LIB="$ROOT/scripts/lib"
 # Deliberately NOT compared against a hardcoded `owner/name`: this skill ships INSIDE the repo, so
 # a fork carries it and should be able to cut its own release.
 SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+# Scratch goes to a temp dir, never into the repo — a release must not dirty the tree it stamps.
+TMPD="$(mktemp -d "${TMPDIR:-/tmp}/release.XXXXXX")" || { echo "ERROR: cannot create scratch dir"; exit 1; }
 ```
 
 ### Honour the configured release executor
@@ -79,16 +81,19 @@ entry would look effective and do nothing. Resolve it **before any mutation**:
 
 ```bash
 # ADB-SNIPPET: role
-RD="$HOME/.claude/scripts/lib/role-dispatch.sh"
-if [ -f "$RD" ]; then
-  # Exit non-zero on an invalid manifest — never let an unresolvable role fall through to a
-  # branch. `resolve` prints its own error.
-  RELEASE_AGENT="$(bash "$RD" resolve release)" || exit 1
-  if [ "$RELEASE_AGENT" != "claude" ]; then
-    echo "STOP: [roles].release = '$RELEASE_AGENT', not claude. This skill is Claude's executor."
-    echo "Run the release from '$RELEASE_AGENT', or change [roles].release in agents.toml."
-    exit 1
-  fi
+# The WORKING TREE's copy, not $HOME's. A clone without a complete install has no
+# ~/.claude/scripts/lib, and an `if [ -f ... ]` around this would then SKIP role resolution
+# silently — letting the release proceed even when agents.toml assigns it elsewhere, which is the
+# precise silent-ignore this guard exists to prevent. The tree always has it; fail closed if not.
+RD="$LIB/role-dispatch.sh"
+[ -f "$RD" ] || { echo "ERROR: $RD missing — cannot resolve [roles].release; refusing to release"; exit 1; }
+# Exit non-zero on an invalid manifest — never let an unresolvable role fall through to a branch.
+# `resolve` prints its own error.
+RELEASE_AGENT="$(bash "$RD" resolve release)" || exit 1
+if [ "$RELEASE_AGENT" != "claude" ]; then
+  echo "STOP: [roles].release = '$RELEASE_AGENT', not claude. This skill is Claude's executor."
+  echo "Run the release from '$RELEASE_AGENT', or change [roles].release in agents.toml."
+  exit 1
 fi
 ```
 
@@ -133,11 +138,22 @@ before producing any verdict. Read that file for the reasoning; run **this** for
 # ADB-SNIPPET: readiness
 # Requires from above: $ROOT, $LIB, $SLUG, $DEF.
 RM="$LIB/roadmap-lib.sh"
-ROADMAP_NUM="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number' | head -n1)"
-[ -n "$ROADMAP_NUM" ] || { echo "ERROR: no open roadmap-labelled issue"; exit 1; }
+# EXACTLY ONE roadmap artifact. `head -n1` on this list would pick arbitrarily between two
+# `roadmap`-labelled issues and could authorise an immutable tag from the wrong milestone.
+# `base/workflows/roadmap.md` hard-stops on split brain; so does this.
+ROADMAP_LIST="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number')"
+NROADMAP="$(printf '%s\n' "$ROADMAP_LIST" | sed '/^$/d' | wc -l | tr -d ' ')"
+[ "$NROADMAP" = "1" ] || { echo "ERROR: expected exactly 1 open roadmap-labelled issue, found $NROADMAP ($(printf '%s' "$ROADMAP_LIST" | tr '\n' ' ')) — split brain, refusing to release"; exit 1; }
+ROADMAP_NUM="$(printf '%s\n' "$ROADMAP_LIST" | sed '/^$/d' | head -n1)"
 BODY="$(gh issue view "$ROADMAP_NUM" --json body --jq .body)" || { echo "ERROR: cannot read roadmap #$ROADMAP_NUM"; exit 1; }
-MS_NAME="$(printf '%s' "$BODY" | sed -n 's/.*<!-- *release-milestone: *\([^>]*[^ >]\) *-->.*/\1/p' | head -n1)"
-[ -n "$MS_NAME" ] || { echo "ERROR: roadmap #$ROADMAP_NUM declares no release-milestone marker"; exit 1; }
+# Use the TESTED marker predicate, never a hand-rolled sed. `marker-title` returns EVERY distinct
+# title (a greedy `.*` keeps the last of two on one line; `head -n1` keeps the first across lines —
+# both silently resolve a milestone the reader never sees) and drops the schema placeholder `NAME`.
+# Requiring exactly one is the caller's half of that contract.
+MS_LIST="$(printf '%s' "$BODY" | bash "$RM" marker-title)" || { echo "ERROR: marker-title failed"; exit 1; }
+NMS="$(printf '%s\n' "$MS_LIST" | sed '/^$/d' | wc -l | tr -d ' ')"
+[ "$NMS" = "1" ] || { echo "ERROR: roadmap #$ROADMAP_NUM declares $NMS release-milestone titles ($(printf '%s' "$MS_LIST" | tr '\n' ' ')) — need exactly 1"; exit 1; }
+MS_NAME="$(printf '%s\n' "$MS_LIST" | sed '/^$/d' | head -n1)"
 # Read and parse SEPARATELY, and pipe to `jq` rather than gh's `--jq`: gh's flag takes exactly one
 # argument and has no `--arg`, so the milestone title cannot be passed safely through it.
 MS_JSON="$(gh api --paginate "repos/$SLUG/milestones?state=open&per_page=100")" \
@@ -212,20 +228,20 @@ here), leaving the branch permanently claiming a release that was never cut:
 
 ```bash
 # ADB-SNIPPET: version-guard
-. "$LIB/common.sh"                       # adb_version_ge
-case "$VERSION" in
-  v[0-9]*.[0-9]*.[0-9]*) : ;;
-  *) echo "ERROR: version must look like vX.Y.Z (got '$VERSION')"; exit 1 ;;
-esac
-BARE="${VERSION#v}"
-git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null && { echo "ERROR: tag $VERSION already exists locally"; exit 1; }
-[ -z "$(git ls-remote --tags origin "refs/tags/$VERSION")" ] || { echo "ERROR: tag $VERSION already exists on origin"; exit 1; }
-grep -Fq "## [$BARE]" CHANGELOG.md && { echo "ERROR: CHANGELOG already carries a [$BARE] heading"; exit 1; }
-if [ -n "$LAST" ]; then
-  # STRICTLY greater: >= and not equal. A lower version also breaks the changelog's descending order.
-  adb_version_ge "$BARE" "${LAST#v}" || { echo "ERROR: $VERSION is not newer than $LAST"; exit 1; }
-  [ "$BARE" != "${LAST#v}" ] || { echo "ERROR: $VERSION equals the last tag $LAST"; exit 1; }
-fi
+# Format, reuse and ordering are ONE tested predicate — `release-lib.sh version-ok` — not three
+# hand-rolled shell tests. A glob like `v[0-9]*.[0-9]*.[0-9]*` is not a validator: `*` consumes
+# anything, so `v1.2.3-rc1`, `v1x.2.3` and `v1.2.3.4` all pass it, and `adb_version_ge` then
+# coerces the junk components to 0 and compares something the operator never typed.
+RLIB="$ROOT/.claude/skills/release/release-lib.sh"
+# The candidate set is every version this repo has ALREADY used, from both homes: git tags (local
+# and remote) and changelog headings. Reuse must be caught in any of them — a version present as a
+# heading but not yet tagged is the half-finished state a previous run can leave behind.
+{ git tag --list 'v*'
+  git ls-remote --tags origin 2>/dev/null | sed 's@.*refs/tags/@@; s/\^{}$//'
+  grep -o '^## \[[0-9][0-9.]*\]' CHANGELOG.md | tr -d '#[] '
+} | sort -u > "$TMPD/known-versions"
+BARE="$(bash "$RLIB" version-ok "$VERSION" < "$TMPD/known-versions")" || {
+  echo "STOP: version rejected (see reason above) — nothing has been changed"; exit 1; }
 echo "version ok: $VERSION (previous: ${LAST:-<none>})"
 ```
 
@@ -255,30 +271,13 @@ Verify the result mechanically before committing:
 
 ```bash
 # ADB-SNIPPET: verify-stamp
-# Every pattern is matched with grep -F (FIXED strings), whole-line (-x) wherever the text allows.
-# A version like `1.1.0` is full of `.` metacharacters, and a plain `grep` would let `1x1x0`
-# satisfy the check — the assertions would pass on a file that is subtly wrong.
-TODAY="$(date +%F)"; BASE_URL="https://github.com/$SLUG"
-grep -Fxq '## [Unreleased]' CHANGELOG.md || { echo "ERROR: [Unreleased] heading missing"; exit 1; }
-grep -Fxq "## [$BARE] - $TODAY" CHANGELOG.md || { echo "ERROR: version heading missing or misdated"; exit 1; }
-# WHOLE-LINE link refs, derived from SLUG/LAST/VERSION. A bare "does [1.1.0]: appear" test passes
-# on a link comparing the WRONG previous tag, which is exactly the navigation this file exists for.
-grep -Fxq "[Unreleased]: $BASE_URL/compare/$VERSION...HEAD" CHANGELOG.md \
-  || { echo "ERROR: [Unreleased] ref is not exactly $BASE_URL/compare/$VERSION...HEAD"; exit 1; }
-if [ -n "$LAST" ]; then
-  grep -Fxq "[$BARE]: $BASE_URL/compare/$LAST...$VERSION" CHANGELOG.md \
-    || { echo "ERROR: [$BARE] ref is not exactly $BASE_URL/compare/$LAST...$VERSION"; exit 1; }
-else
-  grep -Fxq "[$BARE]: $BASE_URL/releases/tag/$VERSION" CHANGELOG.md \
-    || { echo "ERROR: first-release ref is not exactly $BASE_URL/releases/tag/$VERSION"; exit 1; }
-fi
-# The new heading must sit directly under [Unreleased], separated by exactly one blank line — i.e.
-# [Unreleased] is EMPTY. Compare line numbers in the shell rather than interpolating the version
-# into an awk regex, for the same metacharacter reason.
-NU="$(grep -Fxn '## [Unreleased]' CHANGELOG.md | cut -d: -f1 | head -n1)"
-NV="$(grep -Fxn "## [$BARE] - $TODAY" CHANGELOG.md | cut -d: -f1 | head -n1)"
-[ "$((NV - NU))" -eq 2 ] || { echo "ERROR: [Unreleased] is not empty (heading gap $((NV - NU)), expected 2)"; exit 1; }
-echo "changelog stamp verified"
+# One tested predicate, not a pile of inline greps. It asserts the heading, the date, that
+# [Unreleased] is EMPTY, and that BOTH link refs match WHOLE-LINE against URLs derived from
+# slug/last/version — so a ref comparing the wrong previous tag is caught, which a
+# "does `[1.1.0]: ` appear" test never is. Fixed-string throughout: `1.1.0` is all `.`
+# metacharacters and a plain grep accepts `1x1x0`.
+bash "$RLIB" changelog-verify "$VERSION" "$LAST" "$SLUG" "$(date +%F)" < CHANGELOG.md \
+  || { echo "STOP: changelog stamp is wrong (see reasons above)"; exit 1; }
 ```
 
 ### 5. Gate, commit, push, PR
@@ -324,6 +323,22 @@ skill trusts `pr-watch`, which reads all three surfaces.
 
 ```bash
 # ADB-SNIPPET: merge
+# RE-RUN READINESS FIRST — before the merge, not only before the tag. The merge is itself
+# irreversible in the way that matters: it stamps the version heading onto the default branch and
+# empties [Unreleased]. If a blocker was reopened during the review wait, a check that happens only
+# before the TAG would correctly refuse the tag — but `main` is already stamped for a release that
+# was never cut, AND the version guard now refuses to retry that version, so the repo is wedged
+# between two of this skill's own protections. Re-run step 2's readiness block here; keep the
+# pre-tag one for races that open after this point.
+# --- (re-run ADB-SNIPPET: readiness; require VERDICT=met) ---
+
+# Capture how many checks the REVIEWED head carried. GitHub registers jobs incrementally, so
+# "nothing is pending" is briefly true on a merge commit before its siblings appear. The reviewed
+# head ran the same CI config, so its count is the expected size of the settled set.
+EXPECTED_CHECKS="$(gh api --paginate "repos/$SLUG/commits/$REVIEWED_SHA/check-runs?per_page=100" \
+  | jq -s '[.[].check_runs[]?] | length')"
+[ "${EXPECTED_CHECKS:-0}" -gt 0 ] || { echo "ERROR: reviewed head $REVIEWED_SHA reports no checks"; exit 1; }
+
 FLAG="$(bash "$LIB/repo-settings.sh" merge-flag)" || FLAG="--squash"
 # --match-head-commit makes GitHub REJECT the merge if a commit landed after the reviewer passed,
 # rather than silently merging an unreviewed tip. Same guard base/workflows/implement-issue.md
@@ -345,19 +360,24 @@ parent. Wait for **that** commit's own checks:
 
 ```bash
 # ADB-SNIPPET: post-merge-green
-TOTAL=0; PENDING=1; i=0     # initialise: a loop that never completes a read must not read as done
+# `checks-settled` is the tested predicate for "is this commit's check set DONE" — distinct from
+# `branch-health`, which answers "is it GREEN". It refuses BOTH failure shapes that tag an
+# unverified commit: an empty set (`none` — CI has not registered yet, which is not "complete"),
+# and a set smaller than expected (`short` — GitHub is still registering jobs, so a fast check
+# finishing first makes "nothing pending" briefly and dangerously true).
+SETTLED=""; i=0
 until [ "$i" -ge 60 ]; do
   CK="$(gh api --paginate "repos/$SLUG/commits/$MERGE_SHA/check-runs?per_page=100")" || { sleep 20; i=$((i+1)); continue; }
-  TOTAL="$(printf '%s' "$CK" | jq -s '[.[].check_runs[]?] | length')"
-  PENDING="$(printf '%s' "$CK" | jq -s '[.[].check_runs[]? | select(.status != "completed")] | length')"
-  [ "$TOTAL" -gt 0 ] && [ "$PENDING" = "0" ] && break
+  OUT="$(printf '%s' "$CK" | bash "$RLIB" checks-settled "$EXPECTED_CHECKS")"; RC=$?
+  case "$RC" in
+    0) SETTLED="$OUT"; break ;;                       # settled
+    6|7|8) : ;;                                       # pending / none / short -> keep waiting
+    *) echo "ERROR: checks-settled failed ($OUT)"; exit 1 ;;
+  esac
   sleep 20; i=$((i+1))
 done
-# BOTH re-asserted after the loop, because exhausting the bound also exits it. TOTAL==0 means CI
-# has not registered on this commit — that is NOT "all checks complete", and tagging on it would
-# tag an unverified commit.
-[ "$TOTAL" -gt 0 ]   || { echo "ERROR: no check runs on $MERGE_SHA — refusing to tag"; exit 1; }
-[ "$PENDING" = "0" ] || { echo "ERROR: $PENDING check(s) still running on $MERGE_SHA — refusing to tag"; exit 1; }
+[ -n "$SETTLED" ] || { echo "ERROR: $MERGE_SHA never reached a settled check set of $EXPECTED_CHECKS — refusing to tag"; exit 1; }
+echo "checks $SETTLED on $MERGE_SHA"
 ```
 
 Then run `branch-health` over the Checks API **and** the legacy commit-status API for
@@ -374,14 +394,25 @@ prevent. **The last read before an irreversible act is the one that counts.**
 
 ```bash
 # ADB-SNIPPET: tag
-git fetch --prune origin >/dev/null 2>&1
+# EVERY mutation is guarded. Without `||`, a failed `git tag` or `git push` falls straight through
+# to the rollover and the run reports a release that was never published.
+git fetch --prune origin >/dev/null 2>&1 || { echo "ERROR: fetch failed"; exit 1; }
 git tag -a "$VERSION" "$MERGE_SHA" -m "$VERSION
 
 <the same short paragraph written into CHANGELOG.md>
 
-Cut per CONTRIBUTING.md -> Releases on a green $DEF ($MERGE_SHA, N/N checks successful)."
-git push origin "$VERSION"
-git ls-remote --tags origin "$VERSION"     # verify it landed; `^{}` is the peeled annotated ref
+Cut per CONTRIBUTING.md -> Releases on a green $DEF ($MERGE_SHA, $SETTLED)." \
+  || { echo "ERROR: could not create tag $VERSION"; exit 1; }
+git push origin "$VERSION" || { echo "ERROR: could not push tag $VERSION"; exit 1; }
+# --exit-code is REQUIRED: plain `git ls-remote` exits 0 with EMPTY output when nothing matches,
+# so the "verification" would pass on a tag that was never published (git-ls-remote(1) documents
+# --exit-code as the flag that returns 2 for no-match).
+git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null \
+  || { echo "ERROR: $VERSION is NOT on origin after push — do not roll the milestone"; exit 1; }
+# The peeled ref must point at the commit we verified, not merely exist.
+REMOTE_SHA="$(git ls-remote --tags origin "refs/tags/$VERSION^{}" | awk '{print $1}')"
+[ "$REMOTE_SHA" = "$MERGE_SHA" ] || { echo "ERROR: origin's $VERSION points at ${REMOTE_SHA:-<none>}, not $MERGE_SHA"; exit 1; }
+echo "tagged: $VERSION -> $MERGE_SHA (verified on origin)"
 ```
 
 Tag the **explicit `$MERGE_SHA`**, never an implicit `HEAD`. Annotated (`-a`), never lightweight:

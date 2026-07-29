@@ -75,6 +75,9 @@ gate fails loud, never silently no-ops, when its library is missing), **implemen
 **fact-drift** (canonical facts consistent across their consumer docs), **practice-index**
 (every practice listed once in `00-index.md`), **release-role** (release stays project-owned
 — no `/release` skill may ship, and `/new-release` still says it is not the release cutter),
+**release-skill** (this project's OWN release predicates — version validation, the changelog
+stamp, and the check-set settled test — plus the boundary invariants that keep them out of the
+installed `scripts/lib` and keep the skill delegating rather than re-deriving),
 and an **install→uninstall dry-run** (all three agents) into a throwaway `HOME`. Green
 locally ≈ green in CI.
 
@@ -88,10 +91,10 @@ locally ≈ green in CI.
 | `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) generated `skills/` + `scripts/` |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
-| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index · release-role) |
+| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index · release-role · release-skill) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent |
-| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index · release-role · install dry-run |
+| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · practice-index · release-role · release-skill · install dry-run |
 
 ## Adding a new agent
 

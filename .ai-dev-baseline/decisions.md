@@ -480,8 +480,30 @@ didn't already model, so any residual divergence stays visible and auditable.
              `/roadmap`'s terminating loop stop terminating at the last step. This is a
              project-delta and not a DEVIATION: writing the project's own copy is D7 being
              executed, not contradicted.
-- known-gap: The skill's inline snippets are NOT executed by any check. `base/workflows/roadmap.md`
-             has `scripts/check-roadmap-e2e.sh` running its snippets against a mocked `gh`; nothing
-             equivalent covers a project-scoped skill, so the CHANGELOG-stamp verifier is guarded
-             only by the assertions written into it. Filed as a follow-up rather than argued away.
+- amended:   2026-07-28, AFTER two review rounds found 17 defects in the prose-only first cut — one
+             FATAL (a `{{ROADMAP_LIB}}` build placeholder pasted into a runnable step, so every
+             release would have died with `command not found`), four more that could tag the wrong
+             commit, merge an unreviewed head, or stamp `main` for a release that could never be
+             tagged. The defects were not careless typing; they were the predictable cost of
+             putting DECISIONS in a medium no test can execute. `selfcheck` was GREEN for all 17,
+             because nothing in the harness reads `.claude/skills/`.
+             SO THE SHAPE CHANGED: every decision moved into
+             `.claude/skills/release/release-lib.sh` (`version-ok`, `changelog-verify`,
+             `checks-settled`), regression-tested by `scripts/check-release-skill.sh` and wired
+             into `selfcheck` + CI. SKILL.md is now orchestration prose that CALLS predicates,
+             which is the same move `cleanup-lib.sh` (#106/#84), `roadmap-lib.sh` (#69) and
+             `pr-review.sh` (#134) each made out of workflow prose. `/release` is the fourth, and
+             the only one holding an irreversible act.
+             The library sits BESIDE THE SKILL, not in `scripts/lib/`: `adb_agent_manifest`
+             (common.sh:175) links that whole directory into every install, so a release predicate
+             there would ship generic release machinery to every adopting repo — D7 reversed by
+             accident. The check asserts that boundary, so it cannot drift back.
+             The check also pins two lessons as executable invariants: no `{{PLACEHOLDER}}` inside
+             a fenced (runnable) block — scanned fence-aware, since a placeholder in PROSE is the
+             skill explaining the hazard, the #117 over-match — and the skill must still reference
+             the tested predicates it delegates to.
+- known-gap: The skill's remaining PROSE snippets are still not executed. The decisions are now
+             covered; the orchestration around them is not. The general fix — executing inline
+             snippets from any project-scoped skill, the way `check-roadmap-e2e.sh` does for
+             `base/workflows/` — is #190.
 - baseline-issue: n/a (this repo IS the baseline; #3/D7 is the standing decision, #188 the trigger)

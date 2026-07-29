@@ -37,6 +37,27 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     not the agent driving, rather than silently ignoring the manifest.
 - **`agents.toml` declares `release = "claude"` explicitly** instead of leaving it to the `primary`
   default, so the key that the new skill resolves is visible where a reader looks for it.
+- **The release skill's decisions live in a tested library, not in prose**
+  (`.claude/skills/release/release-lib.sh` + `scripts/check-release-skill.sh`, wired into
+  `selfcheck` and CI). The first cut put the whole procedure in SKILL.md with inline shell; two
+  review rounds found **17** defects in it, one fatal — and `selfcheck` was **green for all of
+  them**, because nothing in the harness reads `.claude/skills/`.
+  - `version-ok` — rejects a malformed version (a shell glob is not a validator: `v1.2.3-rc1`,
+    `v1x.2.3` and `v1.2.3.4` all pass one), a **reused** version, and one not strictly newer than
+    the latest already-used. Reuse matters more than it looks: the stamp merges first, so the
+    failure surfaces at `git tag`, leaving the branch claiming a release that was never cut.
+  - `changelog-verify` — asserts the heading, the date, that `[Unreleased]` is left **empty**, and
+    that **both** link refs match whole-line against URLs derived from slug/last/version, so a
+    compare against the *wrong previous tag* is caught. Fixed-string throughout, because `1.1.0`
+    is all `.` metacharacters and a plain `grep` accepts `1x1x0`.
+  - `checks-settled` — "are this commit's checks **done**", distinct from `branch-health`'s "are
+    they **green**". Refuses both shapes that tag an unverified commit: an empty set (CI has not
+    registered) and a set smaller than the reviewed head's (GitHub registers jobs incrementally,
+    so on a ~26-job repo one fast check finishing makes "nothing pending" briefly true).
+  - The library sits **beside the skill**, never in `scripts/lib/` — `adb_agent_manifest` links
+    that directory into every install, so a release predicate there would ship generic release
+    machinery to every adopting repo, reversing #3/D7 by accident. The check asserts that
+    boundary, and that no `{{PLACEHOLDER}}` appears inside a runnable fenced block.
 
 ## [1.1.0] - 2026-07-28
 
