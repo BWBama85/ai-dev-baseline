@@ -1076,8 +1076,8 @@ eq "$(deps '   > Depends on #5')" '' "...including one indented up to 3 spaces"
 eq "$(deps "see ${bt}Depends on #5${bt} here")" '' "a whole clause quoted in a span declares nothing"
 eq "$(deps "see ${bt}${bt} Depends on ${bt}#5${bt} ${bt}${bt} here")" '' \
    "...including a double-backtick span"
-eq "$(deps "Depends on ${bt}#5${bt}")" '' \
-   "a span around only the REFERENCE stays unresolved today — #112 owns making it an edge"
+eq "$(deps "Depends on ${bt}#5${bt}")" '5' \
+   "a span around only the REFERENCE resolves (what the targeted masking left room for; #112)"
 
 # Masking must not leak into the NEGATION rule: it stops a quoted keyword from DECLARING, and must
 # not also stop a real one from RETIRING. (Self-review find; see the lib's clause comment.)
@@ -1161,6 +1161,114 @@ eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \
    "a NEGATED mention quoted in a fence neither declares nor retires"
 eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7')" '5 6 7' \
    "a chain in prose still resolves with a fence present"
+
+# --- 6j. EMPHASIS between the keyword and the #N (#112) --------------------------------------
+# The UNDER-match mirror of #69, and the dangerous half of the family: an over-match blocks a
+# ready bundle (visible, annoying); an under-match marks a genuinely BLOCKED bundle `ready`, so
+# /roadmap emits work whose prerequisite is still open. Six real edges in this repo's own tracker
+# were being dropped — every one of them written in the most ordinary markdown an author reaches
+# for (`- **Blocked by** #155`).
+#
+# Each fixture below is labelled UNDER (the edge must appear) or OVER (it must not), because the
+# fix widens a match and the only thing keeping that safe is the second group. WHY the grammar is
+# what it is lives once, in the STEP block of scripts/lib/roadmap-lib.sh.
+
+# UNDER — every emphasis/code delimiter the acceptance list names.
+eq "$(deps 'Depends on **#52**')"   '52' "UNDER: bold around the reference"
+eq "$(deps 'Depends on __#52__')"   '52' "UNDER: __bold__ around the reference"
+eq "$(deps 'Depends on *#52*')"     '52' "UNDER: *italic* around the reference"
+eq "$(deps 'Depends on _#52_')"     '52' "UNDER: _italic_ around the reference"
+# (the single-backtick span is pinned in 6i, beside the code-span rule it constrains)
+eq "$(deps "Depends on ${bt}${bt}#52${bt}${bt}")" '52' "UNDER: a double-backtick span too"
+eq "$(deps 'Blocked by **#52**')"   '52' "UNDER: the blocked-by keyword takes it as well"
+eq "$(deps 'Depends on _**#5**_')"  '5'  "UNDER: nesting resolves at the INNERMOST pair"
+eq "$(deps 'Depends on *_#5_*')"    '5'  "UNDER: ...whose run is length 1, not 2 (the scan loop)"
+
+# UNDER — the closing run of emphasis that WRAPPED THE KEYWORD, which is what actually broke.
+# `- **Blocked by** #155` is the exact form six live edges were written in.
+eq "$(deps '- **Blocked by** #155')" '155' "UNDER: a bolded keyword's closer, the live shape"
+eq "$(deps '*Blocked by* #155')"     '155' "UNDER: ...italic"
+eq "$(deps '**Depends on:** #78')"   '78'  "UNDER: the colon INSIDE the emphasis"
+eq "$(deps '**Depends on**: #78')"   '78'  "UNDER: ...and outside it"
+eq "$(deps '__Depends on:__ #78')"   '78'  "UNDER: ...with __ delimiters"
+eq "$(deps '**Blocked by** **#78**')" '78' "UNDER: both halves formatted at once"
+
+# UNDER — the forms that already worked must not regress. `**Depends on: #78 only.**` is the one
+# that made this defect so easy to miss: the `**` never sits between the keyword and the number.
+eq "$(deps '**Depends on: #78 only.**')" '78' "UNDER: emphasis PRECEDING the keyword (worked before)"
+eq "$(deps '- Blocked by #155')"         '155' "UNDER: the unformatted list item (worked before)"
+eq "$(deps '- **Blocked by #155**')"     '155' "UNDER: the whole clause bolded (worked before)"
+eq "$(deps 'Depends on #5**')"           '5'   "UNDER: a stray trailing run does not invalidate a direct reference"
+
+# UNDER — chains and the numeric bound survive formatting.
+eq "$(deps "Depends on **#5**, **#6** and ${bt}#7${bt}")" '5 6 7' \
+   "UNDER: a formatted chain yields every member (the closer must not end the chain)"
+eq "$(deps 'Depends on **#5**, #6')"      '5 6' "UNDER: mixed formatted/plain chain"
+# ONE wrapper around a WHOLE chain. A first cut of this fix required an opener to reappear right
+# after the digits, which is false here — the closer follows the LAST member — so `#5` was dropped
+# and the scan resumed inside the text it had just rejected, yielding `6` alone. A partial set is
+# the worst outcome available: it reads as resolved while a real prerequisite has vanished.
+eq "$(deps 'Depends on **#5, #6**')"      '5 6' "UNDER: one wrapper around a whole chain"
+eq "$(deps 'Depends on **#5, #6, #7**')"  '5 6 7' "UNDER: ...of any length"
+eq "$(deps 'Depends on **#5 and #6**')"   '5 6' "UNDER: ...joined by 'and'"
+eq "$(deps 'Depends on __#5, #6__')"      '5 6' "UNDER: ...for every delimiter"
+eq "$(deps "Depends on ${bt}#5, #6${bt}")" '5 6' "UNDER: ...including a code span"
+# An UNBALANCED run is accepted on purpose: the author who typed it still declares the edge, and
+# refusing it is the under-match direction. See the PAIRING note in roadmap-lib.sh's STEP block.
+eq "$(deps 'Depends on **#5')"            '5'   "UNDER: an unclosed opener still declares"
+eq "$(deps "Depends on ${bt}#5 and more${bt}")" '5' \
+   "UNDER: a phrase-quoted reference still declares (the edge is real; markup is not content)"
+eq "$(deps 'Depends on **#73** and **#78**' 73)" '78' "UNDER: the self-edge is still dropped"
+eq "$(deps 'Depends on **#999999999**')"  '999999999' "UNDER: a formatted 9-digit reference resolves"
+
+# OVER — the guard that matters most: the tolerance must not become a blanket punctuation skip.
+# Each of these is one character away from a fixture above.
+eq "$(deps 'Depends on * #5')"   '' \
+   "OVER: a run floating in whitespace is not emphasis (cf. '*Blocked by* #5', which IS)"
+eq "$(deps 'Depends on ** #5 **')" '' "OVER: spaced asterisks are not emphasis in CommonMark either"
+eq "$(deps "Depends on ${bt}ignore #5${bt}")" '' \
+   "OVER: the run must reach '#' without crossing a word character"
+eq "$(deps 'Depends on **ignore #5**')"       '' "OVER: ...for every delimiter, not just backticks"
+# `~` is deliberately NOT in EMPH, and this is the one place widening the set later would be
+# actively WRONG rather than merely broader: struck-through text reads as RETRACTED, so honouring
+# `~~#5~~` would convert a retirement into a declaration — the #108 direction, inverted.
+eq "$(deps 'Depends on ~~#5~~')"   '' "OVER: strikethrough reads as retracted, so it declares nothing"
+eq "$(deps 'Depends on [#5](http://x)')"   '' "OVER: a markdown link is not a wrapped reference"
+eq "$(deps 'Depends on **[#5](http://x)**')" '' "OVER: ...nor a bolded one"
+
+# OVER — every #69/#108/#117 guarantee re-pinned WITH the newly accepted syntax, because a
+# widened match is exactly where an old guard silently loosens. The first three never reach the
+# widened grammar at all — they carry no `depend`/`blocked`, so the cheap bail discards the line
+# before STEP runs — which is precisely the guarantee they pin: formatting must not turn a
+# non-keyword into one. The rest DO exercise STEP.
+eq "$(deps 'Refs **#52**')"  '' "OVER: 'Refs' is still not a keyword, however formatted"
+eq "$(deps 'See **#52**')"   '' "OVER: ...nor 'See'"
+eq "$(deps '**#52**')"       '' "OVER: a bare formatted reference is still not an edge"
+eq "$(deps 'Depends on **acme/repo#5**')" '' "OVER: a bolded QUALIFIED reference is still not local"
+eq "$(deps 'Depends on acme/repo**#5**')" '' "OVER: ...nor one whose number alone is bolded"
+eq "$(deps 'No longer depends on **#25**')" '' "OVER: a formatted negation still RETIRES"
+eq "$(deps 'No longer **depends on:** #25')" '' "OVER: ...with the keyword formatted too"
+eq "$(deps "This is ${bt}not${bt} blocked by **#5**")" '' \
+   "OVER: a code-formatted negator still retires a formatted edge"
+eq "$(deps "${bt}Depends on${bt} **#5**")" '' \
+   "OVER: a quoted KEYWORD declares nothing even when the reference is real markup"
+eq "$(deps 'Depends on **#5** (the gate) and #6')" '5' \
+   "OVER: formatting does not defeat the conservative chain stop"
+eq "$(deps 'Depends on **#9999999999**')" '' \
+   "OVER: the 10-digit bound holds through formatting (leftmost-longest must not truncate to 9)"
+eq "$(deps 'Depends on **#99999999999999999999**, **#5**')" '5' \
+   "OVER: ...and the rest of a formatted chain still resolves"
+eq "$(deps 'Depends on **#0**')" '' "OVER: #0 is not an issue reference, formatted or not"
+
+# OVER — STRUCTURE still wins over the widened match. A formatted edge inside a fence, a comment
+# or a blockquote is still documentation (#117); this is the intersection the two rules share.
+eq "$(depsm "$q3" 'Depends on **#5**' "$q3" 'Depends on **#7**')" '7' \
+   "OVER: a formatted edge quoted in a fence declares nothing"
+eq "$(deps '<!-- Depends on **#5** --> Depends on **#7**')" '7' \
+   "OVER: ...nor one inside an HTML comment"
+eq "$(deps '> Depends on **#5**')" '' "OVER: ...nor a blockquoted one"
+eq "$(deps '* Depends on #5')" '5' \
+   "a bullet is still a LIST MARKER, not emphasis that swallows the line's prose"
 
 # ============================================================================================
 # 7. DECISIONS — the durable home that retires an owner question (#108)

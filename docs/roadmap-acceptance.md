@@ -398,6 +398,12 @@ gh issue create --title "Driver work" --body "Depends on #1 and #2"    # #8
       bundle `blocked`. A 4-space-**indented** block is deliberately *not* stripped (under a
       `- ` bullet, code needs six spaces, so treating four as code would delete continuation prose
       and silently drop a real blocker).
+- [ ] **Formatting is not content (#112).** File an issue whose body declares the edge in ordinary
+      markdown — `Depends on **#1**`, `**Depends on:** #1`, `` Depends on `#1` ``, and
+      `- **Blocked by** #1`. **Each** creates the edge; before this, all four were silently
+      dropped, which is the direction that marks a genuinely blocked bundle `ready`. The tolerance
+      stops at formatting: `Depends on * #1` and `` Depends on `ignore #1` `` still create none,
+      and neither does `Depends on **acme/repo#1**`.
 - [ ] Surface an owner question (e.g. put an `M` member's only prerequisite in `Backlog`). The
       printed line carries a **stable id** and names **where to record the answer**:
       `? dep-outside-release:#8 — … Record: #8 body or artifact ## Decisions.`

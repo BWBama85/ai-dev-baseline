@@ -160,7 +160,8 @@ can't: the order to build in, which issues share a branch, and the blocking edge
      #N`); `Refs #N` is not a dependency, and a NEGATED mention ("no longer depends on #25")
      retires an edge rather than creating one. ONLY PROSE DECLARES (#117): a mention inside a
      fenced code block, an HTML comment (including these), a blockquote, or a code span around
-     the keyword is documentation, not a declaration. -->
+     the keyword is documentation, not a declaration. Markdown emphasis between the keyword and
+     the number does NOT hide an edge (#112): `Depends on **#52**` declares. -->
 
 - #39 depends on #32
 
@@ -930,6 +931,21 @@ Reconciliation is deterministic — the same tracker state always produces the s
   4-space **indented** blocks are deliberately excluded — under a `- ` bullet, code needs six
   spaces, so treating four as code would delete ordinary continuation prose and silently drop a
   *real* blocker, which is the more dangerous direction.
+
+  **Formatting is not content (#112).** Markdown emphasis and code delimiters between the keyword
+  and the number — `Depends on **#52**`, `**Depends on:** #78`, `` Depends on `#52` ``,
+  `- **Blocked by** #155` — are stepped over, so an edge written in ordinary markdown is still an
+  edge. This is the **under-match** mirror of the family above, and the dangerous half of it: a
+  fabricated edge blocks a bundle that is ready (visible, annoying), while a **dropped** edge
+  marks a genuinely blocked bundle `ready` and this skill emits work whose prerequisite is still
+  open. When #112 was filed, a scan of the baseline repo's own 91 open issue bodies found six such
+  edges being dropped, four of them load-bearing. The tolerance is *not* a blanket
+  "skip punctuation" — each run must sit tight against the keyword, the separator or the `#`, and
+  the `#` must still be reached without crossing a **word** character. So `Depends on * #5`,
+  `` Depends on `ignore #5` `` and `Depends on **acme/repo#5**` still declare nothing, and every
+  guard above holds unchanged. Not covered, and still declaring nothing: emphasis *inside* the
+  keyword (`Depends **on** #5`), markdown links (`Depends on [#5](url)`), HTML emphasis, and a
+  bolded connective (`Depends on #5 **and** #6` yields `5` only).
 - **Persist the grouping.** Bundles are written back to the artifact so the grouping is
   stable and reproducible across runs — not re-inferred (and re-shuffled) every time.
 - **Never rewrite `## Decisions`.** Every other section of the artifact is reconcile's to own;
@@ -1155,7 +1171,8 @@ Apply these in order; every tie has a stable break so two runs agree:
    keywords only (`Depends on #N` / `Blocked by #N`) from an issue body or a `## Decisions` row.
    `Refs #N` is a cross-reference, **not** a dependency; a negated mention retires an edge; a
    mention inside a **fenced code block, HTML comment, blockquote or quoted span** is
-   documentation and declares nothing (#117); and an edge read out of the artifact's own
+   documentation and declares nothing (#117); **markdown emphasis between the keyword and the
+   number does not hide an edge** (#112); and an edge read out of the artifact's own
    `## Dependencies` section is **not** a source — that
    section is regenerated from the two live sources every run. If edges form a cycle, surface it
    (`cycle:#N`, the lowest-numbered member) and break the cycle at the lowest issue number,

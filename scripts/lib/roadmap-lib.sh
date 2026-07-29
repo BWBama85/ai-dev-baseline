@@ -717,6 +717,16 @@ AWKMD
 #     matched: another repo's issue number is meaningless as a local edge, and matching the
 #     trailing `#N` would fabricate an edge to whatever local issue shares that number (the
 #     cross-repo false-positive `pr-targets-issue` also refuses).
+#   - EMPHASIS IS NOT CONTENT (#112). Markdown emphasis and code delimiters (`*`, `**`, `_`,
+#     `__`, backtick runs) between the keyword and the `#N`, or wrapping the `#N`, are stepped
+#     over: `Depends on **#52**`, `**Depends on:** #78`, `` Depends on `#52` `` and
+#     `- **Blocked by** #155` all declare. This is the UNDER-match mirror of #69's over-match and
+#     the more dangerous half — a fabricated edge blocks a ready bundle where a dropped one marks
+#     a genuinely blocked bundle `ready`, and six real edges were being dropped in this repo.
+#     The tolerance is deliberately NOT a blanket "skip punctuation" — the STEP block in BEGIN
+#     states the grammar and the counterexamples it refuses. What it does NOT cover:
+#     emphasis INSIDE the keyword (`Depends **on** #5`), a markdown link (`Depends on [#5](url)`),
+#     and HTML emphasis (`<b>#5</b>`), all of which still declare nothing.
 #   - CHAINS. `Depends on #5, #6 and #7` yields all three: after the keyword the scan consumes
 #     `#N` runs separated only by `,` `;` `&` `+` `and` or spaces, and STOPS at the first other
 #     word. "Depends on #5 (the gate) and #6" therefore yields #5 only — conservative on purpose;
@@ -750,11 +760,10 @@ AWKMD
 #     swallowing every real edge after the list.
 #   - INLINE CODE SPANS, targeted rather than blanket. The KEYWORD must sit outside a span; the
 #     `#N` reference may sit inside one. So `` `**Depends on: #78**` `` (the whole clause quoted as
-#     an example) declares nothing, while `Depends on `#52`` leaves its reference intact in the
-#     scanned text. That form still yields NO edge today — `STEP` cannot reach past the backtick —
-#     and making it resolve is #112's job. The point is that blanket span-stripping would DELETE
-#     the reference outright, putting this rule in direct conflict with the issue that has to
-#     read it; masking only the keyword leaves #112 something to build on.
+#     an example) declares nothing, while `` Depends on `#52` `` leaves its reference intact in the
+#     scanned text and DOES declare (#112, which the targeting was built to leave room for).
+#     Blanket span-stripping would DELETE the reference outright and put this rule in direct
+#     conflict with that one; masking only the keyword lets both hold at once.
 # DELIBERATELY NOT HANDLED: 4-space INDENTED code blocks. Four spaces are not reliably code — under
 # a `- ` bullet, content starts at 2 and code needs 2+4=6, so a `^ {4}` skip deletes ordinary
 # continuation PROSE. That direction is the dangerous one: a dropped edge silently unblocks a
@@ -795,7 +804,8 @@ cmd_deps_from_body() {
     # so positions stay 1:1 with the unmasked line. Delimiters are equal-length backtick runs, per
     # CommonMark; an UNMATCHED run is literal text and is left alone. Only the KEYWORD scan reads
     # the masked copy — the reference scan reads the raw line, so a `#N` inside a span is left
-    # intact rather than deleted (see the INLINE CODE SPANS rule above; #112 owns resolving it).
+    # intact rather than deleted, which is what lets STEP resolve it (see the INLINE CODE SPANS
+    # and EMPHASIS IS NOT CONTENT rules above).
     # span_end(s, from, n) — where the run of EXACTLY n backticks that closes this span begins, or
     # 0 when the span is never closed. A LONGER run is not a closer: it is skipped whole, so
     # ``` inside a `` span stays content. (`close` is an awk builtin and cannot name this.)
@@ -835,9 +845,40 @@ cmd_deps_from_body() {
       NEG = "(^|[^a-z0-9_])(no|not|never|nor|longer|without|remove[sd]?|retire[sd]?"
       NEG = NEG "|drops?|dropped|cancels?|cancell?ed|supersede[sd]?|obsolete|n" apos "t)"
       NEG = NEG "([^a-z0-9_]|$)"
-      # A `#N` chain step: an optional separator, then the reference. `#` must be reached
-      # directly, so `acme/repo#5` (a qualified reference) never enters the chain.
-      STEP = "^[ \t]*(:|,|;|&|\\+|and)?[ \t]*#[0-9]+"
+      # The markdown emphasis / code characters, as a SET for index() and as a bracket expression
+      # for the regexes below. A bare backtick, because awk has no escape for one and needs none.
+      EMPH = "*_`"
+      EMR  = "[" EMPH "]*"                 # a run of them, possibly empty
+      # A `#N` chain step: an optional emphasis run, an optional separator, then the reference.
+      # `#` must still be reached without crossing a WORD character, so `acme/repo#5` (a qualified
+      # reference) never enters the chain.
+      #
+      # WHERE THE THREE EMR SLOTS MAY SIT, and why not simply "skip any punctuation" (#112). Each
+      # slot is TIGHT against the thing it belongs to, and that tightness is the whole guard:
+      #   1. `^EMR`      — a CLOSER of emphasis that opened before/around the keyword, so it is
+      #                    flush against the keyword: `**Depends on** #5` leaves `** #5`.
+      #   2. `SEP EMR`   — the same closer when the author put the `:` inside the emphasis:
+      #                    `**Depends on:** #5` leaves `:** #5`. Tight against the separator.
+      #   3. `EMR#`      — an OPENER wrapping the reference: `Depends on **#5**`. Tight against `#`.
+      # A run that floats in whitespace belongs to none of them and is REFUSED, which is what keeps
+      # `Depends on * #5` (a stray asterisk, or a bullet that wandered onto the keyword line) from
+      # reading as an edge while `*Blocked by* #5` — byte-identical except for that space — still
+      # does. A blanket "step over punctuation" cannot tell those two apart.
+      #
+      # PAIRING IS DELIBERATELY NOT CHECKED, and that is a decision, not an omission. A first cut
+      # required an opener to reappear after the digits, so `Depends on **#5` declared nothing. It
+      # was wrong twice over. It dropped `Depends on **#5, #6**` down to `6` — the closer follows
+      # the LAST chain member, not the first, so the opener went unmatched and the scan resumed
+      # INSIDE the text it had just rejected. And what it bought was refusing malformed markup
+      # whose edge is real anyway: an author who writes `Depends on **#5` does depend on #5.
+      # Under-match is the direction that marks a blocked bundle `ready`, so a rule that trades
+      # real edges for tidiness is on the wrong side of it. Balance is also not expressible in
+      # `STEP` at all — POSIX ERE has no backreference — so enforcing it means a second mechanism
+      # scanning the same bytes, which is what produced the chain bug. What actually keeps the
+      # widening safe is the tightness above: `#` must still be reached without crossing a WORD
+      # character, so `` Depends on `ignore #5` ``, `Depends on [#5](url)` and
+      # `Depends on **acme/repo#5**` all declare nothing.
+      STEP = "^" EMR "[ \t]*((:|,|;|&|\\+|and)" EMR ")?[ \t]*" EMR "#[0-9]+"
     }
     {
       # STRUCTURE FIRST, on the RAW line (#117) — a fence is recognized before lowercasing, dash

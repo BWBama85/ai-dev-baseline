@@ -82,6 +82,35 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     machinery to every adopting repo, reversing #3/D7 by accident. The check asserts that
     boundary, and that no `{{PLACEHOLDER}}` appears inside a runnable fenced block.
 
+### Fixed
+
+- **`/roadmap` no longer drops a dependency edge that carries markdown emphasis** (#112).
+  `roadmap-lib.sh deps-from-body` required the `#N` to sit directly after the keyword, so
+  `Depends on **#52**`, `**Depends on:** #78`, `` Depends on `#52` `` and `- **Blocked by** #155`
+  all declared **nothing** — while `- **Blocked by #155**` (the same bold, one character over)
+  worked, which is why it survived three releases. A corpus scan of this repo's 91 open issue
+  bodies found **six** real edges being dropped, four of them load-bearing.
+  - This is the **under-match** mirror of #69, and the dangerous half of that family: an
+    over-match blocks a bundle that is ready (visible, annoying), while a dropped edge marks a
+    genuinely **blocked** bundle `ready` — so the skill emits work whose prerequisite is open.
+  - The tolerance is not a blanket punctuation skip, which would trade one silent fabrication
+    for another. Each emphasis run must sit **tight** against the keyword, the separator, or the
+    `#`, and the `#` must still be reached without crossing a **word** character. So
+    `*Blocked by* #5` declares while `Depends on * #5` does not, and `` Depends on `#5` ``
+    declares while `` Depends on `ignore #5` `` and `Depends on **acme/repo#5**` do not.
+  - Delimiter **pairing is deliberately not checked**. A first cut required an opener to reappear
+    after the digits; it dropped `Depends on **#5, #6**` to `6` — the closer follows the *last*
+    chain member, so the scan resumed inside text it had just rejected — and all it bought was
+    refusing malformed markup whose edge is real anyway. A partial set is the worst outcome
+    available: it reads as resolved while a prerequisite has silently vanished.
+  - Every #69/#108/#117 guarantee is re-pinned **with** the new syntax: `Refs **#52**`, bare
+    `**#52**` and `Depends on **acme/repo#5**` are still not edges; `no longer depends on **#25**`
+    still retires; a formatted edge inside a fence, comment or blockquote still declares nothing.
+    53 new fixtures in `scripts/check-roadmap.sh`, each labelled UNDER or OVER.
+  - Still **not** covered, and stated so the next pass does not mistake them for regressions:
+    emphasis inside the keyword (`Depends **on** #5`), markdown links, HTML emphasis, and a
+    bolded connective (`Depends on #5 **and** #6` yields `5`). Tracked separately.
+
 ## [1.1.0] - 2026-07-28
 
 The loop closes on itself. v1.0.0 shipped the practices, the workflows and the gates;
