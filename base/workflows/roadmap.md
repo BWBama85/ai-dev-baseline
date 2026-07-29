@@ -507,14 +507,26 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
       # not. USER root is agent-specific and pre-quoted by the renderer ($HOME may contain spaces;
       # Codex honours CODEX_HOME) — Claude, Codex and Antigravity do not share a layout.
       GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
-      for d in "$GITROOT/{{SKILLS_SUBDIR}}" {{SKILLS_USER_ROOT}}; do
+      SUBDIR="{{SKILLS_SUBDIR}}"
+      # An EMPTY subdir means this agent has no established project-local skill discovery, so only
+      # the user root is searched. Certifying a command from a directory the agent never loads is
+      # the same failure as inventing one.
+      PROJECT_ROOT=""; [ -n "$SUBDIR" ] && PROJECT_ROOT="$GITROOT/$SUBDIR"
+      for d in ${PROJECT_ROOT:+"$PROJECT_ROOT"} {{SKILLS_USER_ROOT}}; do
         f="$d/$SKILL_NAME/SKILL.md"
         [ -f "$f" ] || continue
         # EXISTENCE IS NOT LOADABILITY. A SKILL.md without well-formed frontmatter is omitted from
         # the agent's registry, so `-f` alone would certify a command the agent cannot invoke.
         # Require the opening `---` and both keys every loader needs.
         head -n1 "$f" | grep -q '^---$' || continue
-        awk 'NR==1{next} $0=="---"{exit} /^name:[[:space:]]/{n=1} /^description:[[:space:]]/{d=1} END{exit !(n&&d)}' "$f" || continue
+        # The frontmatter must be CLOSED and both values NON-EMPTY. Reaching END without a second
+        # `---` means the block is unterminated — an incomplete edit — which the loader rejects
+        # while a keys-only test would happily certify it.
+        awk 'NR==1{next}
+             $0=="---"{closed=1; exit}
+             /^name:[[:space:]]*[^[:space:]]/{n=1}
+             /^description:[[:space:]]*[^[:space:]]/{d=1}
+             END{exit !(closed && n && d)}' "$f" || continue
         RESOLVES=1; break
       done
       ;;

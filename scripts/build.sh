@@ -112,10 +112,19 @@ render_agent_skill() {
   # runtime (a monorepo package invokes from a subdirectory), and the USER root must stay QUOTED —
   # `$HOME` can contain whitespace, and an unquoted rendering word-splits it and reports a valid
   # installed skill missing. Codex also honours CODEX_HOME, so its default is only a fallback.
+  # PROJECT-LOCAL discovery is agent-specific and is NOT assumed. Claude resolves a repo's own
+  # `.claude/skills/<name>/` ahead of the global one (docs/per-project-overrides.md, Override 2a).
+  # Codex does NOT auto-load repo-local skills — this repo's own surface map says so
+  # (base/workflows/new-release.md), so certifying a command from `.codex/skills` would emit a
+  # slash command Codex never registered: the exact fuzzy-match hazard #188 exists to prevent.
+  # Antigravity's project-local *skill* discovery is unestablished, so it is treated the same way.
+  # Empty subdir => the snippet searches the user root only. The asymmetry is deliberate: a false
+  # "resolves" emits an unrunnable command, a false "missing" just asks the owner to check the
+  # marker. Fail closed.
   case "$agent" in
-    gemini) skills_subdir=".gemini/config/skills"; skills_user_root="\"\$HOME/.gemini/config/skills\"" ;;
-    codex)  skills_subdir=".codex/skills";        skills_user_root="\"\${CODEX_HOME:-\$HOME/.codex}/skills\"" ;;
-    *)      skills_subdir=".$agent/skills";       skills_user_root="\"\$HOME/.$agent/skills\"" ;;
+    gemini) skills_subdir="";              skills_user_root="\"\$HOME/.gemini/config/skills\"" ;;
+    codex)  skills_subdir="";              skills_user_root="\"\${CODEX_HOME:-\$HOME/.codex}/skills\"" ;;
+    *)      skills_subdir=".$agent/skills"; skills_user_root="\"\$HOME/.$agent/skills\"" ;;
   esac
 
   name="$(basename "$src" .md)"

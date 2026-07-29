@@ -705,7 +705,7 @@ done
 # one silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
 rc_snip() {   # <CMD> <user-skills-root> [project-subdir] -> prints RESOLVES
   body="$(snippet release-command)"
-  body="${body//\{\{SKILLS_SUBDIR\}\}/${3:-no-project-skills}}"
+  body="${body//\{\{SKILLS_SUBDIR\}\}/${3-no-project-skills}}"
   body="${body//\{\{SKILLS_USER_ROOT\}\}/\"$2\"}"
   printf 'CMD=%s\n%s\nprintf %%s "$RESOLVES"\n' "$(printf '%q' "$1")" "$body" > "$work/rc.sh"
   ( cd "$work" && bash "$work/rc.sh" )
@@ -741,6 +741,18 @@ eq "$(rc_snip '/release' "$work/empty-sk" sk)"        1 "a project-root skill re
 # $HOME (or any user root) containing whitespace must not word-split.
 mkdir -p "$work/sp ace"; mk_skill "$work/sp ace/release"
 eq "$(rc_snip '/release' "$work/sp ace")"             1 "a user root containing a space still resolves"
+# An EMPTY project subdir (agents with no established project-local discovery, e.g. Codex) must
+# search the USER root only — and must not glob, word-split, or resolve from the git root.
+eq "$(rc_snip '/release' "$work/sk" '')"              1 "empty project subdir still resolves from the user root"
+eq "$(rc_snip '/release' "$work/empty-sk" '')"        0 "empty project subdir does not fall back to the git root"
+# Frontmatter must be CLOSED. An unterminated block is an incomplete edit the loader rejects.
+mkdir -p "$work/sk/unclosed"
+printf -- '---\nname: unclosed\ndescription: d\n' > "$work/sk/unclosed/SKILL.md"
+eq "$(rc_snip '/unclosed' "$work/sk" sk)"             0 "unterminated frontmatter does not resolve"
+# ...and the values must be non-empty.
+mkdir -p "$work/sk/emptyval"
+printf -- '---\nname:\ndescription:\n---\n' > "$work/sk/emptyval/SKILL.md"
+eq "$(rc_snip '/emptyval' "$work/sk" sk)"             0 "empty frontmatter values do not resolve"
 
 # ============================================================================================
 # 8. THE HARNESS GUARDS ITSELF

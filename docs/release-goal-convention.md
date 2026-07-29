@@ -93,12 +93,16 @@ In release-readiness mode, every run `/roadmap`:
 - **Emits accordingly:**
   - **Requirements unmet** (open `release-blocker`s remain) → the next unblocked
     `/implement-issue` bundle *from the release set*.
-  - **Requirements met and the default branch is green** (0 open `release-blocker`s in an armed
-    milestone) → `Next: <your declared release-command>` — **only if it resolves to an installed
-    skill**; otherwise `Next: none — …` (see *You must declare the release command* below), with `✅ Release requirements met (<milestone>: 0 open blockers, <branch> green) — cutting.` (If
-    non-blocker issues remain open in the milestone, the banner names them: they do not hold
+  - **Requirements met, the default branch is green, and the declared release command RESOLVES**
+    (0 open `release-blocker`s in an armed milestone) → `Next: <your declared release-command>`,
+    with `✅ Release requirements met (<milestone>: 0 open blockers, <branch> green) — cutting.`
+    (If non-blocker issues remain open in the milestone, the banner names them: they do not hold
     the release, and `baseline release roll` sends them to `Backlog` on the cut — re-slate
     them deliberately, like any other work.)
+  - **Requirements met but the release command is undeclared or does not resolve** → `Next: none —
+    …` naming what to add. The `— cutting.` banner and the rollover reminder are **withheld**: both
+    assert a cut is happening, and printing them above `Next: none` can lead an operator to roll
+    the milestone for a release that was never made. See *You must declare the release command*.
   - **Requirements met but the branch is not green** → **no cut.** `⛔ Requirements met, but
     <branch> is not green` naming the failing check. A drained checklist says the *requirements*
     are done; it says nothing about whether the code is **shippable**, and on a repo that deploys
