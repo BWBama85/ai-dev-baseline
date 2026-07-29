@@ -1178,11 +1178,11 @@ eq "$(deps 'Depends on **#52**')"   '52' "UNDER: bold around the reference"
 eq "$(deps 'Depends on __#52__')"   '52' "UNDER: __bold__ around the reference"
 eq "$(deps 'Depends on *#52*')"     '52' "UNDER: *italic* around the reference"
 eq "$(deps 'Depends on _#52_')"     '52' "UNDER: _italic_ around the reference"
-eq "$(deps "Depends on ${bt}#52${bt}")"     '52' "UNDER: a code span around the reference"
-eq "$(deps "Depends on ${bt}${bt}#52${bt}${bt}")" '52' "UNDER: ...a double-backtick span too"
+# (the single-backtick span is pinned in 6i, beside the code-span rule it constrains)
+eq "$(deps "Depends on ${bt}${bt}#52${bt}${bt}")" '52' "UNDER: a double-backtick span too"
 eq "$(deps 'Blocked by **#52**')"   '52' "UNDER: the blocked-by keyword takes it as well"
 eq "$(deps 'Depends on _**#5**_')"  '5'  "UNDER: nesting resolves at the INNERMOST pair"
-eq "$(deps 'Depends on *_#5_*')"    '5'  "UNDER: ...with mixed delimiters"
+eq "$(deps 'Depends on *_#5_*')"    '5'  "UNDER: ...whose run is length 1, not 2 (the scan loop)"
 
 # UNDER — the closing run of emphasis that WRAPPED THE KEYWORD, which is what actually broke.
 # `- **Blocked by** #155` is the exact form six live edges were written in.
@@ -1204,6 +1204,20 @@ eq "$(deps 'Depends on #5**')"           '5'   "UNDER: a stray trailing run does
 eq "$(deps "Depends on **#5**, **#6** and ${bt}#7${bt}")" '5 6 7' \
    "UNDER: a formatted chain yields every member (the closer must not end the chain)"
 eq "$(deps 'Depends on **#5**, #6')"      '5 6' "UNDER: mixed formatted/plain chain"
+# ONE wrapper around a WHOLE chain. A first cut of this fix required an opener to reappear right
+# after the digits, which is false here — the closer follows the LAST member — so `#5` was dropped
+# and the scan resumed inside the text it had just rejected, yielding `6` alone. A partial set is
+# the worst outcome available: it reads as resolved while a real prerequisite has vanished.
+eq "$(deps 'Depends on **#5, #6**')"      '5 6' "UNDER: one wrapper around a whole chain"
+eq "$(deps 'Depends on **#5, #6, #7**')"  '5 6 7' "UNDER: ...of any length"
+eq "$(deps 'Depends on **#5 and #6**')"   '5 6' "UNDER: ...joined by 'and'"
+eq "$(deps 'Depends on __#5, #6__')"      '5 6' "UNDER: ...for every delimiter"
+eq "$(deps "Depends on ${bt}#5, #6${bt}")" '5 6' "UNDER: ...including a code span"
+# An UNBALANCED run is accepted on purpose: the author who typed it still declares the edge, and
+# refusing it is the under-match direction. See the PAIRING note in roadmap-lib.sh's STEP block.
+eq "$(deps 'Depends on **#5')"            '5'   "UNDER: an unclosed opener still declares"
+eq "$(deps "Depends on ${bt}#5 and more${bt}")" '5' \
+   "UNDER: a phrase-quoted reference still declares (the edge is real; markup is not content)"
 eq "$(deps 'Depends on **#73** and **#78**' 73)" '78' "UNDER: the self-edge is still dropped"
 eq "$(deps 'Depends on **#999999999**')"  '999999999' "UNDER: a formatted 9-digit reference resolves"
 
@@ -1212,16 +1226,21 @@ eq "$(deps 'Depends on **#999999999**')"  '999999999' "UNDER: a formatted 9-digi
 eq "$(deps 'Depends on * #5')"   '' \
    "OVER: a run floating in whitespace is not emphasis (cf. '*Blocked by* #5', which IS)"
 eq "$(deps 'Depends on ** #5 **')" '' "OVER: spaced asterisks are not emphasis in CommonMark either"
-eq "$(deps 'Depends on **#5')"     '' "OVER: an opener with no closer declares nothing"
-eq "$(deps "Depends on ${bt}#5 and more${bt}")" '' \
-   "OVER: a quoted PHRASE that merely STARTS with a reference is not a wrapped reference"
-eq "$(deps "Depends on ${bt}ignore #5${bt}")"   '' "OVER: ...nor one that merely contains one"
-eq "$(deps 'Depends on ~~#5~~')"   '' "OVER: strikethrough is not emphasis (scope stays narrow)"
+eq "$(deps "Depends on ${bt}ignore #5${bt}")" '' \
+   "OVER: the run must reach '#' without crossing a word character"
+eq "$(deps 'Depends on **ignore #5**')"       '' "OVER: ...for every delimiter, not just backticks"
+# `~` is deliberately NOT in EMPH, and this is the one place widening the set later would be
+# actively WRONG rather than merely broader: struck-through text reads as RETRACTED, so honouring
+# `~~#5~~` would convert a retirement into a declaration — the #108 direction, inverted.
+eq "$(deps 'Depends on ~~#5~~')"   '' "OVER: strikethrough reads as retracted, so it declares nothing"
 eq "$(deps 'Depends on [#5](http://x)')"   '' "OVER: a markdown link is not a wrapped reference"
 eq "$(deps 'Depends on **[#5](http://x)**')" '' "OVER: ...nor a bolded one"
 
 # OVER — every #69/#108/#117 guarantee re-pinned WITH the newly accepted syntax, because a
-# widened match is exactly where an old guard silently loosens.
+# widened match is exactly where an old guard silently loosens. The first three never reach the
+# widened grammar at all — they carry no `depend`/`blocked`, so the cheap bail discards the line
+# before STEP runs — which is precisely the guarantee they pin: formatting must not turn a
+# non-keyword into one. The rest DO exercise STEP.
 eq "$(deps 'Refs **#52**')"  '' "OVER: 'Refs' is still not a keyword, however formatted"
 eq "$(deps 'See **#52**')"   '' "OVER: ...nor 'See'"
 eq "$(deps '**#52**')"       '' "OVER: a bare formatted reference is still not an edge"

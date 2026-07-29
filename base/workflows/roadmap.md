@@ -935,10 +935,14 @@ Reconciliation is deterministic — the same tracker state always produces the s
   edge. This is the **under-match** mirror of the family above, and the dangerous half of it: a
   fabricated edge blocks a bundle that is ready (visible, annoying), while a **dropped** edge
   marks a genuinely blocked bundle `ready` and this skill emits work whose prerequisite is still
-  open. Six real edges in this repo's own tracker were being dropped. The tolerance is *not* a
-  blanket "skip punctuation" — each run must sit tight against the keyword, the separator or the
-  `#`, and a run that opens before the reference must close after it — so `Depends on * #5` and
-  `` Depends on `#5 and more` `` still declare nothing, and every guard above holds unchanged.
+  open. When #112 was filed, a scan of the baseline repo's own 91 open issue bodies found six such
+  edges being dropped, four of them load-bearing. The tolerance is *not* a blanket
+  "skip punctuation" — each run must sit tight against the keyword, the separator or the `#`, and
+  the `#` must still be reached without crossing a **word** character. So `Depends on * #5`,
+  `` Depends on `ignore #5` `` and `Depends on **acme/repo#5**` still declare nothing, and every
+  guard above holds unchanged. Not covered, and still declaring nothing: emphasis *inside* the
+  keyword (`Depends **on** #5`), markdown links (`Depends on [#5](url)`), HTML emphasis, and a
+  bolded connective (`Depends on #5 **and** #6` yields `5` only).
 - **Persist the grouping.** Bundles are written back to the artifact so the grouping is
   stable and reproducible across runs — not re-inferred (and re-shuffled) every time.
 - **Never rewrite `## Decisions`.** Every other section of the artifact is reconcile's to own;

@@ -723,11 +723,10 @@ AWKMD
 #     `- **Blocked by** #155` all declare. This is the UNDER-match mirror of #69's over-match and
 #     the more dangerous half — a fabricated edge blocks a ready bundle where a dropped one marks
 #     a genuinely blocked bundle `ready`, and six real edges were being dropped in this repo.
-#     The tolerance is deliberately NOT a blanket "skip punctuation": each run must be tight
-#     against the keyword, the separator, or the `#` (see the STEP slots in BEGIN), and a run that
-#     OPENS before the reference must close after it. So `Depends on * #5` and
-#     `` Depends on `#5 and more` `` still declare nothing. Emphasis INSIDE the keyword
-#     (`Depends **on** #5`) is out of scope — that needs the real inline parser #136 carries.
+#     The tolerance is deliberately NOT a blanket "skip punctuation" — the STEP block in BEGIN
+#     states the grammar and the counterexamples it refuses. What it does NOT cover:
+#     emphasis INSIDE the keyword (`Depends **on** #5`), a markdown link (`Depends on [#5](url)`),
+#     and HTML emphasis (`<b>#5</b>`), all of which still declare nothing.
 #   - CHAINS. `Depends on #5, #6 and #7` yields all three: after the keyword the scan consumes
 #     `#N` runs separated only by `,` `;` `&` `+` `and` or spaces, and STOPS at the first other
 #     word. "Depends on #5 (the gate) and #6" therefore yields #5 only — conservative on purpose;
@@ -865,6 +864,20 @@ cmd_deps_from_body() {
       # `Depends on * #5` (a stray asterisk, or a bullet that wandered onto the keyword line) from
       # reading as an edge while `*Blocked by* #5` — byte-identical except for that space — still
       # does. A blanket "step over punctuation" cannot tell those two apart.
+      #
+      # PAIRING IS DELIBERATELY NOT CHECKED, and that is a decision, not an omission. A first cut
+      # required an opener to reappear after the digits, so `Depends on **#5` declared nothing. It
+      # was wrong twice over. It dropped `Depends on **#5, #6**` down to `6` — the closer follows
+      # the LAST chain member, not the first, so the opener went unmatched and the scan resumed
+      # INSIDE the text it had just rejected. And what it bought was refusing malformed markup
+      # whose edge is real anyway: an author who writes `Depends on **#5` does depend on #5.
+      # Under-match is the direction that marks a blocked bundle `ready`, so a rule that trades
+      # real edges for tidiness is on the wrong side of it. Balance is also not expressible in
+      # `STEP` at all — POSIX ERE has no backreference — so enforcing it means a second mechanism
+      # scanning the same bytes, which is what produced the chain bug. What actually keeps the
+      # widening safe is the tightness above: `#` must still be reached without crossing a WORD
+      # character, so `` Depends on `ignore #5` ``, `Depends on [#5](url)` and
+      # `Depends on **acme/repo#5**` all declare nothing.
       STEP = "^" EMR "[ \t]*((:|,|;|&|\\+|and)" EMR ")?[ \t]*" EMR "#[0-9]+"
     }
     {
@@ -909,30 +922,6 @@ cmd_deps_from_body() {
           step = substr(rest, RSTART, RLENGTH)
           eat(RSTART + RLENGTH)
           h = index(step, "#")
-          # WRAPPER BALANCE (#112). An emphasis run that OPENS immediately before the reference
-          # must reappear immediately after it. `Depends on **#5**` is a wrapped reference;
-          # ``Depends on `#5 and more` `` is a quoted PHRASE that merely starts with one, and
-          # without this the opener would be stepped over and the phrase mined for a number the
-          # author never declared. The run is same-character and maximal, so nesting resolves at
-          # its INNERMOST pair (`_**#5**_` checks the `**`) — matching an outer delimiter would
-          # need a real inline parser, which is #136, not this predicate.
-          #
-          # Only an OPENER is held to this. A run with no opener to match is left alone, because
-          # `Depends on #5**` already yielded 5 before this change and narrowing that would be the
-          # under-match direction this issue exists to close. By the same reasoning an UNCLOSED
-          # opener yields nothing: the balanced form is what authors actually write, and the rule
-          # has to be statable in one sentence or the next variant has somewhere to hide.
-          wrap = ""
-          if (h > 1) {
-            wc = substr(step, h - 1, 1)
-            if (index(EMPH, wc) > 0) {
-              j = h - 1
-              while (j >= 1 && substr(step, j, 1) == wc) j--
-              wrap = substr(step, j + 1, h - 1 - j)
-            }
-          }
-          # `rest` was already advanced past the digits, so it begins exactly where a closer would.
-          if (wrap != "" && substr(rest, 1, length(wrap)) != wrap) continue
           digits = substr(step, h + 1)
           # Bound the width BEFORE the numeric conversion. A run wider than an issue number is
           # not an issue reference, and converting it would leave awk holding a float that prints
