@@ -31,6 +31,7 @@
 # Usage:
 #   release-lib.sh version-ok <version>            # existing versions on stdin, one per line
 #   release-lib.sh changelog-verify <version> <last> <slug> <today>   # CHANGELOG on stdin
+#   release-lib.sh unreleased-entries              # PRE-STAMP CHANGELOG on stdin
 #   release-lib.sh checks-settled <expected>       # check-runs JSON on stdin
 #   release-lib.sh -h | --help
 #
@@ -38,6 +39,7 @@
 #   version-ok        0 ok · 2 malformed · 3 already used · 4 not newer than the latest known
 #   changelog-verify  0 ok · 5 a required assertion failed (reason on stderr)
 #   checks-settled    0 settled · 6 pending · 7 none registered · 8 short of expected
+#   unreleased-entries 0 has entries (count on stdout) · 9 nothing to release
 #   any               2 usage
 
 set -u
@@ -57,6 +59,14 @@ cmd_version_ok() {
   case "$v" in
     v*) bare="${v#v}" ;;
     *) printf 'version-ok: %s must start with `v`\n' "$v" >&2; exit 2 ;;
+  esac
+  # Reject a leading, trailing or doubled dot BEFORE the loop. The loop alone cannot see a TRAILING
+  # one: for `1.2.3.` it consumes 1, 2, 3, then `${rest#*.}` yields the empty string and it exits
+  # with n=3 — so `v1.2.3.` validated, was printed back as the bare version, and would have been
+  # written into the changelog and used as a permanent tag. (A leading or doubled dot does surface
+  # as an empty component inside the loop; they are folded in here so one guard covers the family.)
+  case "$bare" in
+    .*|*.|*..*) printf 'version-ok: %s has an empty component (leading, trailing or doubled dot)\n' "$v" >&2; exit 2 ;;
   esac
   # Exactly three dot-separated, all-digit components. Leading zeros are rejected too (`v1.02.3`
   # would tag differently than it reads).
@@ -83,31 +93,35 @@ cmd_version_ok() {
     [ -n "$line" ] || continue
     eb="${line#v}"
     [ "$eb" = "$bare" ] && { printf 'version-ok: %s is already used (matched "%s")\n' "$v" "$line" >&2; exit 3; }
-    if [ -z "$best" ] || _ver_ge "$eb" "$best"; then best="$eb"; fi
+    if [ -z "$best" ] || adb_version_ge "$eb" "$best"; then best="$eb"; fi
   done
   if [ -n "$best" ]; then
-    _ver_ge "$bare" "$best" || { printf 'version-ok: %s is not newer than %s\n' "$v" "$best" >&2; exit 4; }
+    adb_version_ge "$bare" "$best" || { printf 'version-ok: %s is not newer than %s\n' "$v" "$best" >&2; exit 4; }
   fi
   printf '%s\n' "$bare"
   return 0
 }
 
-# Local copy of the >= comparison so this file is runnable standalone in tests. Deliberately the
-# SAME semantics as `adb_version_ge` (common.sh): missing trailing components count as 0. The
-# skill sources common.sh and uses the shared one; this exists so the predicate can be tested
-# without dragging the whole install surface into the harness.
-_ver_ge() {
-  awk -v v="$1" -v min="$2" '
-    BEGIN {
-      nv = split(v, V, "."); nm = split(min, M, ".");
-      n = (nv > nm) ? nv : nm;
-      for (i = 1; i <= n; i++) {
-        a = (i <= nv) ? V[i] + 0 : 0; b = (i <= nm) ? M[i] + 0 : 0;
-        if (a > b) exit 0; if (a < b) exit 1;
-      }
-      exit 0;
-    }'
-}
+# SOURCE the shared comparator; never re-implement it. This file previously carried a local copy
+# with a comment claiming the skill used `adb_version_ge` — it did not, the copy WAS the active
+# comparator. That is CLAUDE.md Golden Rule 4 ("source the shared primitives, never copy them")
+# broken while quoting it, and the cost is real: a future fix to ordering semantics in common.sh
+# would leave release validation silently disagreeing with the rest of the framework.
+#
+# Resolved relative to this file first (the layout is fixed: .claude/skills/release/ -> repo root),
+# with a git-root fallback so the predicate still resolves when invoked through a symlink or from
+# an unusual working directory.
+_ADB_SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+_ADB_COMMON="$_ADB_SELF_DIR/../../../scripts/lib/common.sh"
+if [ ! -f "$_ADB_COMMON" ]; then
+  _ADB_ROOT="$(git -C "$_ADB_SELF_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  _ADB_COMMON="$_ADB_ROOT/scripts/lib/common.sh"
+fi
+[ -f "$_ADB_COMMON" ] || { printf 'release-lib: cannot locate scripts/lib/common.sh\n' >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$_ADB_COMMON"
+command -v adb_version_ge >/dev/null 2>&1 \
+  || { printf 'release-lib: common.sh did not provide adb_version_ge\n' >&2; exit 2; }
 
 # --- changelog-verify --------------------------------------------------------------------------
 # Asserts the stamp mechanically. Every comparison is FIXED-STRING and whole-line where the text
@@ -147,6 +161,38 @@ cmd_changelog_verify() {
   fi
   [ "$rc" -eq 0 ] && printf 'changelog ok: %s\n' "$ver"
   return "$rc"
+}
+
+# --- unreleased-entries ------------------------------------------------------------------------
+# "Is there anything to release?" — asked on the PRE-STAMP changelog, before the branch is cut.
+#
+# `changelog-verify` cannot answer this: it only ever sees the POST-edit file, where [Unreleased]
+# is empty BY CONSTRUCTION (that is what it asserts). So "refuse an empty release" was carried
+# only by a prose instruction — an agent that skipped the sentence would stamp a version heading
+# over nothing, push an irreversible tag, and all 37 assertions would stay green. This is the
+# executable half of that refusal.
+#
+# An "entry" is any non-blank, non-comment line between `## [Unreleased]` and the next `## [`
+# heading. A bare `### Added` with nothing under it is NOT an entry — an empty subsection is
+# exactly the shape a half-finished release leaves behind.
+cmd_unreleased_entries() {
+  [ "$#" -eq 0 ] || die "unreleased-entries: takes no arguments (CHANGELOG on stdin)"
+  count="$(awk '
+    /^## \[Unreleased\]/ { inblock = 1; next }
+    /^## \[/            { inblock = 0 }
+    inblock {
+      line = $0
+      sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+      if (line == "") next                 # blank
+      if (line ~ /^<!--/) next             # a comment line
+      if (line ~ /^###/) next              # a subsection heading is not itself an entry
+      n++
+    }
+    END { print n + 0 }
+  ')"
+  printf '%s\n' "$count"
+  [ "$count" -gt 0 ] || return 9
+  return 0
 }
 
 # --- checks-settled ----------------------------------------------------------------------------
@@ -192,6 +238,7 @@ main() {
   case "$sub" in
     version-ok)       cmd_version_ok "$@" ;;
     changelog-verify) cmd_changelog_verify "$@" ;;
+    unreleased-entries) cmd_unreleased_entries "$@" ;;
     checks-settled)   cmd_checks_settled "$@" ;;
     -h|--help)        usage ;;
     *) printf 'release-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;

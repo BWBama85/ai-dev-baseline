@@ -139,6 +139,137 @@ eq "$(printf '%s\n%s\n' "$(runs 13 0)" "$(runs 13 0)" | rc_of checks-settled 26)
 # A malformed body must be a usage error, never a silent 'settled'.
 eq "$(printf 'not json' | rc_of checks-settled 26)" 2 "malformed JSON is an error, not settled"
 
+# --- version-ok: the empty-component family ------------------------------------------------------
+# A TRAILING dot is the one the component loop cannot see: it consumes 1, 2, 3, then `${rest#*.}`
+# yields "" and the loop exits with n=3. `v1.2.3.` therefore validated and would have been written
+# into the changelog and used as a permanent tag.
+eq "$(printf '' | rc_of version-ok v1.2.3.)"  2 "trailing dot rejected"
+eq "$(printf '' | rc_of version-ok v.1.2.3)"  2 "leading dot rejected"
+eq "$(printf '' | rc_of version-ok v1..2.3)"  2 "doubled dot rejected"
+eq "$(printf '' | rc_of version-ok v1.2.3..)" 2 "doubled trailing dot rejected"
+# The success path must still print a version with NO trailing dot.
+eq "$(printf '' | run version-ok v1.2.3 2>/dev/null)" "1.2.3" "valid version echoes cleanly"
+
+# --- unreleased-entries: the pre-stamp emptiness refusal ------------------------------------------
+# `changelog-verify` cannot cover this — it only sees the POST-edit file, where [Unreleased] is
+# empty by construction. Before this predicate the refusal was prose only, so an agent that skipped
+# the sentence could stamp a version over nothing and push an irreversible tag with 37 green tests.
+ue() { printf '%s' "$1" | bash "$RL" unreleased-entries >/dev/null 2>&1; printf '%s' "$?"; }
+eq "$(ue '## [Unreleased]
+
+### Added
+
+- a real entry
+
+## [1.1.0] - 2026-07-28
+')" 0 "entries present -> ok"
+eq "$(ue '## [Unreleased]
+
+## [1.1.0] - 2026-07-28
+')" 9 "empty [Unreleased] -> nothing to release"
+eq "$(ue '## [Unreleased]
+
+### Added
+
+## [1.1.0] - 2026-07-28
+')" 9 "a bare subsection heading is not an entry"
+eq "$(ue '## [Unreleased]
+
+<!-- a comment is not an entry -->
+
+## [1.1.0] - 2026-07-28
+')" 9 "a comment is not an entry"
+eq "$(printf '## [Unreleased]\n\n- one\n- two\n\n## [1.0.0] - 2026-01-01\n' \
+      | run unreleased-entries 2>/dev/null)" "2" "counts entries"
+# Entries must be counted ONLY inside the [Unreleased] block, never from a released section.
+eq "$(ue '## [Unreleased]
+
+## [1.1.0] - 2026-07-28
+
+### Added
+
+- this belongs to a SHIPPED release
+')" 9 "entries in a released section do not count"
+
+# =================================================================================================
+# Block self-containment — the structural guard for the class that produced a P1.
+#
+# This repo has TWO opposite execution models for fenced blocks, and neither is discoverable from
+# the block itself: `base/workflows/roadmap.md` states its blocks "may be run as SEPARATE shell
+# invocations that share no variables", while `base/workflows/cleanup.md` states "THIS WORKFLOW IS
+# ONE SHELL". The first cut of this skill silently assumed cleanup's model while resembling
+# roadmap's — so `$LIB`, `$ROOT`, `$SLUG`, `$TMPD` and `$RLIB` were carried across blocks, and under
+# roadmap's model the very first use expands to empty and stops every release.
+#
+# Prose cannot fix that, because the assumption is invisible. This asserts it instead: every
+# variable a fenced block READS must be assigned in that SAME block (or be an environment/shell
+# name). It is what makes "self-contained" a checked property rather than an intention.
+# =================================================================================================
+# The awk program contains NO literal single quote: the quote is passed in with -v Q, and the
+# single-quoted-region regex is built from it. Embedding one directly inside this single-quoted
+# shell string requires '"'"'-style escaping, which broke the program's syntax — and a crashed awk
+# prints nothing, so SC_VIOLATIONS was empty and this check PASSED VACUOUSLY. That is the same
+# "green because nothing ran" failure the file exists to close, so the status is now fatal.
+SC_RC=0
+SC_VIOLATIONS="$(awk -v Q="'" '
+  BEGIN {
+    split("HOME PATH PWD TMPDIR SHELL USER LOGNAME EDITOR IFS OLDPWD RANDOM LINENO", a, " ")
+    for (i in a) allow[a[i]] = 1
+    SQ = Q "[^" Q "]*" Q
+  }
+  /^[[:space:]]*```bash/ { inblock = 1; blockstart = FNR; delete assigned; delete used; next }
+  /^[[:space:]]*```/ {
+    if (inblock) {
+      for (u in used) if (!(u in assigned) && !(u in allow)) printf "%d:%s\n", blockstart, u
+      inblock = 0
+    }
+    next
+  }
+  inblock {
+    line = $0
+    sub(/#.*$/, "", line)
+    # Drop SINGLE-QUOTED regions. Not a heuristic: the shell does not expand inside single quotes,
+    # so jq --arg t "$X" ... $t ... reads no shell variable named t.
+    while (match(line, SQ)) { line = substr(line, 1, RSTART - 1) " " substr(line, RSTART + RLENGTH) }
+    # Assignments anywhere a command can START: line head, or after ; & | ( ) { } do then else.
+    # A head-anchored match alone misses X="$(...)"; RC=$? and A=0; B=1; i=0.
+    rest2 = line
+    while (match(rest2, /(^[[:space:]]*|[;&|(){}][[:space:]]*|[[:space:]](do|then|else)[[:space:]]+)[A-Za-z_][A-Za-z0-9_]*=/)) {
+      seg = substr(rest2, RSTART, RLENGTH)
+      # Take the TRAILING identifier. A greedy sub of everything up to the last non-word char eats
+      # the name itself and registers nothing, so every assignment would look undefined.
+      nm = seg; sub(/=$/, "", nm)
+      if (match(nm, /[A-Za-z_][A-Za-z0-9_]*$/)) { assigned[substr(nm, RSTART, RLENGTH)] = 1 }
+      rest2 = substr(rest2, RSTART + RLENGTH)
+    }
+    if (line ~ /(^|[^A-Za-z0-9_])read([[:space:]]+-[A-Za-z]+)*[[:space:]]/) {
+      n = split(line, toks, /[^A-Za-z0-9_]+/)
+      for (i = 1; i <= n; i++) if (toks[i] ~ /^[A-Z][A-Z0-9_]*$/) assigned[toks[i]] = 1
+    }
+    if (line ~ /for[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+in/) {
+      m = line; sub(/^.*for[[:space:]]+/, "", m); sub(/[[:space:]]+in.*$/, "", m); assigned[m] = 1
+    }
+    s = line
+    while (match(s, /\$\{?[A-Za-z_][A-Za-z0-9_]*/)) {
+      nm = substr(s, RSTART, RLENGTH); sub(/^\$\{?/, "", nm); used[nm] = 1
+      s = substr(s, RSTART + RLENGTH)
+    }
+  }
+' "$SKILL")" || SC_RC=$?
+if [ "$SC_RC" -ne 0 ]; then
+  printf 'FAIL: the block self-containment scanner did not run (awk exit %s).\n' "$SC_RC" >&2
+  printf '  An extractor that crashes prints nothing, which would read as "no violations".\n' >&2
+  bad_quiet
+elif [ -n "$SC_VIOLATIONS" ]; then
+  printf 'FAIL: SKILL.md fenced blocks read variables they do not define:\n' >&2
+  printf '%s\n' "$SC_VIOLATIONS" | sed 's/^/  line /' >&2
+  printf '  Each ```bash block must re-resolve what it needs — the two workflow families in this\n' >&2
+  printf '  repo disagree about shell-session sharing, so carrying state across blocks is a bug.\n' >&2
+  bad_quiet
+else
+  ok
+fi
+
 # =================================================================================================
 # Boundary invariants — the library must not drift back into the baseline, and the skill must
 # keep delegating rather than re-deriving.
