@@ -7,6 +7,37 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **This repo now has its own `/release`** (`.claude/skills/release/SKILL.md`, D14). Decision
+  **#3/D7** committed the baseline to shipping **no** generic release workflow and made `release`
+  a permanently project-owned role — but this project never supplied its own copy, so the role was
+  named, `/roadmap` emitted it on a `met` readiness verdict, and nothing resolved it. The procedure
+  lived as three prose sentences in `CONTRIBUTING.md` → *Releases* and was hand-executed for both
+  v1.0.0 and v1.1.0.
+  - **#188 is what made the gap visible.** A slash command that does not exist does not fail loudly
+    in Claude Code — it fuzzy-matches the nearest built-in (`release-notes`). Verified against the
+    2.1.220 binary: there is **no** `/release` built-in, only `release-notes`, and `release` is not
+    among the 110 built-in command names. So a repo that *does* ship a `/release` skill was never
+    broken by this; a repo without one gets a silent wrong answer at the exact moment `/roadmap`
+    says "cutting."
+  - **Every decision is delegated to an already-tested predicate** — `release-ready` and
+    `branch-health` gate the cut, `pr-watch.sh wait` waits out the reviewer, `baseline release roll`
+    closes the loop. The skill is glue plus the two genuinely project-specific parts: the CHANGELOG
+    format and the tag convention.
+  - **It lives outside `base/` and `agents/*/skills/`**, the two paths `check-release-role.sh`
+    guards, so D7's negative invariant stays green — "the baseline ships no `/release`" and "this
+    project has one" are both true, which is what D7 intended.
+  - **Two SHAs are captured rather than re-derived**, because both guard a race against an
+    irreversible act: the reviewed head becomes `--match-head-commit` so a commit pushed after the
+    pass cannot merge unreviewed, and the PR's own `mergeCommit.oid` is what gets tagged — a second
+    PR merging in between moves the default branch's HEAD, and tagging that would ship commits the
+    changelog never mentions.
+  - **It resolves `[roles].release`** before any mutation and stops if the configured executor is
+    not the agent driving, rather than silently ignoring the manifest.
+- **`agents.toml` declares `release = "claude"` explicitly** instead of leaving it to the `primary`
+  default, so the key that the new skill resolves is visible where a reader looks for it.
+
 ## [1.1.0] - 2026-07-28
 
 The loop closes on itself. v1.0.0 shipped the practices, the workflows and the gates;
