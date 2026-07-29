@@ -46,6 +46,7 @@ tracked as follow-up issues. See each agent's README under `agents/<token>/`.
 | `agents/claude/skills/<name>/` (each skill dir) | `~/.claude/skills/<name>` |
 | `agents/claude/scripts/precommit-gate.sh` | `~/.claude/scripts/precommit-gate.sh` |
 | `agents/claude/scripts/implement-issue-gate.sh` | `~/.claude/scripts/implement-issue-gate.sh` |
+| `agents/claude/scripts/state-claim-gate.sh` | `~/.claude/scripts/state-claim-gate.sh` |
 | `agents/claude/scripts/session-currency.sh` | `~/.claude/scripts/session-currency.sh` |
 | `agents/claude/scripts/statusline.sh` | `~/.claude/scripts/statusline.sh` |
 | `scripts/lib/` (the shared shell library) | `~/.claude/scripts/lib` |
@@ -80,7 +81,29 @@ real `$HOME`) into `~/.claude/settings.json`:
 |---|---|---|
 | `Stop` | `precommit-gate.sh` | Blocks ending a turn while the repo's quality gates are red. |
 | `Stop` | `implement-issue-gate.sh` | Keeps an `/implement-issue` run going until its PR is open. |
+| `Stop` | `state-claim-gate.sh` | Blocks ending a turn that states a PR/issue/CI status the turn did not read. |
 | `SessionStart` (matcher `startup`) | `session-currency.sh` | Keeps the install-source clone current — see [Automatic currency](#automatic-currency-sessionstart). |
+
+### The state-claim gate
+
+`state-claim-gate.sh` lints the turn's final message for **volatile external status stated without
+a read in that turn** — the failure `base/practices/verify-before-asserting.md` describes. It
+applies one small, documented rule (`state-assert.sh lint`):
+
+> In prose, a status word appearing in the same sentence as an issue/PR reference must itself be
+> introduced by `was observed`.
+
+When it fires, it names the offending excerpt and the command that can answer that *kind* of claim
+(PR/issue state, CI, or branch-merged — they have different homes), and the turn does not end until
+the claim is re-read or removed.
+
+It is deliberately **precision-first**: quoting a status inside a fence, a code span, a blockquote
+or an HTML comment declares nothing, and `open a PR` / `closed #195` are treated as verbs. It also
+never wedges a session — a missing `jq`, an unreadable transcript, a text-free turn or a broken
+linter install are all reported on stderr and then allowed through.
+
+To turn it off, remove its entry from `~/.claude/settings.json`, or shadow it per-repo with your
+own `.claude/scripts/state-claim-gate.sh` (see [A repo's own gate always wins](#8-a-repos-own-gate-always-wins)).
 
 The merge is driven by that file's own top-level keys, so adding an event there
 is the only edit a new hook needs. For each event it drops any group whose command
@@ -179,7 +202,7 @@ use time.
 
 ## 8. A repo's own gate always wins
 
-Both `precommit-gate.sh` and `implement-issue-gate.sh` check, before doing
+`precommit-gate.sh`, `implement-issue-gate.sh` and `state-claim-gate.sh` each check, before doing
 anything else, whether the current repo ships its **own** copy of that same
 script at `.claude/scripts/<name>.sh`. If it does — and it isn't literally the
 same file as the one running (checked with `[ ... -ef ... ]`, i.e. same

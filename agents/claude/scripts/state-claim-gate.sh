@@ -76,21 +76,59 @@ text="$(jq -s -r '
     end' "$transcript" 2>/dev/null || true)"
 [ -n "$text" ] || exit 0
 
-violations="$(printf '%s\n' "$text" | bash "$lint_lib" lint 2>/dev/null)"
+# Capture stderr separately: the linter's exit-1 is AMBIGUOUS, and discarding the diagnostic is
+# what made that ambiguity silent. `state-assert.sh` exits 1 both for "violations found" and for
+# "broken install — common.sh missing", the latter before it can print a single row. Treating an
+# empty exit-1 as a clean turn disables this gate exactly when the install is damaged — the
+# opposite of the contract in this file's header.
+lint_err="$(mktemp "${TMPDIR:-/tmp}/state-claim.XXXXXX")" || exit 0
+violations="$(printf '%s\n' "$text" | bash "$lint_lib" lint 2>"$lint_err")"
 status=$?
-[ "$status" -eq 1 ] || exit 0        # 0 = clean; 2 = the linter itself failed -> never block
+err="$(cat "$lint_err" 2>/dev/null)"; rm -f "$lint_err"
+
+if [ "$status" -eq 1 ] && [ -z "$violations" ]; then
+  # Exit 1 with nothing to report is not a lint result. Say so (#35) and let the turn end.
+  printf 'state-claim-gate: the linter failed without producing findings — claims are NOT being checked this turn.\n' >&2
+  [ -n "$err" ] && printf '%s\n' "$err" >&2
+  exit 0
+fi
+if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+  printf 'state-claim-gate: the linter exited %s — claims are NOT being checked this turn.\n' "$status" >&2
+  [ -n "$err" ] && printf '%s\n' "$err" >&2
+  exit 0
+fi
+[ "$status" -eq 1 ] || exit 0        # 0 = clean
 [ -n "$violations" ] || exit 0
+
+# Each claim KIND has its own authoritative home, and only one of them is `observe`. Offering a
+# PR/issue command for a CI claim is advice that cannot be followed — `observe` answers
+# open/closed/merged and nothing else — which would leave "delete it" as the only real option even
+# when the status was explicitly asked for. The homes are the practice's own one-per-entity-kind
+# table; naming the right one per finding is the difference between a gate that teaches and a gate
+# that just blocks.
+claim_home() {
+  case "$1" in
+    green|red|passing|failing)
+      printf 'CI status -> bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" branch-health (Checks API + commit-status API, fail-closed)' ;;
+    unmerged)
+      printf 'branch merged? -> bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" branch-verdict (models squash/rebase and exact-head)' ;;
+    *)
+      printf 'PR/issue state -> bash "$HOME/.claude/scripts/lib/state-assert.sh" observe pr|issue <n>' ;;
+  esac
+}
 
 {
   printf 'STOP: this turn states volatile external status that was not read in this turn.\n\n'
   printf '%s\n' "$violations" | while IFS="$(printf '\t')" read -r ln word excerpt; do
-    printf '  [%s] "%s" — %s\n' "$word" "$excerpt" "line $ln"
+    printf '  [%s] "%s" — line %s\n' "$word" "$excerpt" "$ln"
+    printf '      %s\n' "$(claim_home "$word")"
   done
   printf '\n'
-  printf 'A PR/issue/CI status is only assertable from a read taken NOW. Do ONE of:\n'
-  printf '  1. Re-read and quote the rendered line verbatim:\n'
-  printf '       bash "$HOME/.claude/scripts/lib/state-assert.sh" observe pr|issue <n>\n'
-  printf '     Empty stdout means say NOTHING about that entity.\n'
+  printf 'A PR/issue/CI/branch status is only assertable from a read taken NOW. Do ONE of:\n'
+  printf '  1. Re-read with the command named above for that claim and quote its output\n'
+  printf '     verbatim. Empty output means say NOTHING about that entity.\n'
+  printf '     Note "merged" is ambiguous: a PR merging is `observe`; a BRANCH being merged\n'
+  printf '     is `branch-verdict`. Pick the one you actually mean.\n'
   printf '  2. Delete the claim. Most status narration is unrequested — dropping it is\n'
   printf '     always correct and costs the reader nothing.\n\n'
   printf 'Do not restate the status from memory or from an earlier read in this session:\n'

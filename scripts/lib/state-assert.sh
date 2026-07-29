@@ -270,6 +270,17 @@ cmd_lint() {
       gsub(/<!--.*-->/, " ", line)          # single-line HTML comment
       if (line ~ /<!--/) { htm = 1 }
       if (htm) { if (line ~ /-->/) { htm = 0 }; next }
+      # Inline code spans, INCLUDING multi-backtick delimiters. CommonMark lets a span be fenced
+      # by a run of N backticks (`` ``PR #1 is still open`` `` is a valid span), and a
+      # single-backtick-only stripper leaves that content exposed as prose — so quoting a status
+      # the way this very file documents it would block a turn. Collapsing every run of 2+
+      # backticks to one first makes the single-span rule cover them all.
+      #
+      # An approximation, and named as one: a multi-backtick span whose BODY contains a lone
+      # backtick strips only up to that inner tick. It can leave a fragment behind, never a whole
+      # unstripped span. The exact CommonMark rule belongs to the shared prose filter (#136), of
+      # which this is a declared consumer.
+      gsub(/``+/, "`", line)
       gsub(/`[^`]*`/, " ", line)            # inline code spans
     }
     {
@@ -293,11 +304,28 @@ cmd_lint() {
             after  = substr(low, at + length(w), 1)
             if (before ~ /[a-z0-9_]/) continue
             if (after  ~ /[a-z0-9_]/) continue
-            # COMPLIANT: introduced by the observe template.
+            # COMPLIANT: introduced IMMEDIATELY by the observe template.
+            #
+            # `was observed $` and nothing looser. An earlier draft allowed letters and spaces
+            # between the phrase and the word (`was observed [a-z ]*$`), which made
+            # "PR #1 was observed OPEN but is now CLOSED" pass in full: `CLOSED` found the
+            # EARLIER clause`s `was observed` and inherited its compliance. That is precisely the
+            # mixed compliant/stale sentence this check is per-occurrence in order to catch, so
+            # the loose form defeated the design`s whole purpose.
+            #
+            # The multi-word renderings still pass, because only the FIRST word after the phrase
+            # is a status token: `CLOSED without merging`, `CLOSED as completed`,
+            # `CLOSED as NOT_PLANNED` are all introduced by `was observed CLOSED`.
             pre = substr(low, 1, at - 1)
-            if (pre ~ /was observed [a-z ]*$/) continue
+            if (pre ~ /was observed $/) continue
             # Verb carve-outs.
             rest = substr(low, at + length(w))
+            # A status word taking an ENTITY as its object is a verb: "I closed #195",
+            # "reopened #5". These are reports of an action just performed, not assertions about
+            # current state, and blocking them makes the gate fire on ordinary mutation summaries.
+            # Checked BEFORE punctuation is stripped, because stripping `#` is exactly what left
+            # `nextw` empty and misread the object as absent.
+            if (rest ~ /^[[:space:]]*#[0-9]+/) continue
             sub(/^[^a-z0-9]+/, "", rest)
             nextw = rest; sub(/[^a-z0-9].*$/, "", nextw)
             skip = 0

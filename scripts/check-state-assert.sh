@@ -304,6 +304,36 @@ eq "$(lint_rc "$(printf '<!--\nPR #1 is still open\n-->')")" 0 "a multi-line HTM
 # ...but a real claim AFTER a closed fence is still caught.
 eq "$(lint_rc "$(printf '```\ncode\n```\nPR #1 is still open.')")" 1 "a claim after a fence is still a violation"
 
+# --- 3b-g. the observe phrase binds to ITS OWN word, not to a later one (review round 1) ------
+# `was observed [a-z ]*$` let a second status word inherit an earlier clause's compliance, so
+# "was observed OPEN but is now CLOSED" passed ENTIRELY — the mixed compliant/stale sentence this
+# check is per-occurrence in order to catch. Only an IMMEDIATE `was observed ` counts.
+eq "$(lint_rc 'PR #1 was observed OPEN but is now CLOSED.')" 1 \
+   "a later status word cannot inherit an earlier \"was observed\""
+has "$(lint_out 'PR #1 was observed OPEN but is now CLOSED.')" "closed" "...and the stale word is named"
+eq "$(lint_out 'PR #1 was observed OPEN but is now CLOSED.' | wc -l | tr -d ' ')" 1 \
+   "...while the genuinely-observed word is not also flagged"
+eq "$(lint_rc 'PR #1 was observed OPEN and I then merged the branch.')" 0 \
+   "a verb after a compliant clause is still a verb"
+
+# --- 3b-h. a status word taking an ENTITY object is a verb (review round 1) -------------------
+# "I closed #195" reports an action just performed; it is not an assertion about current state.
+# Stripping punctuation before the object test left `nextw` empty and misread these as claims.
+eq "$(lint_rc 'I closed #195.')" 0 "\"closed #195\" is a verb with an entity object"
+eq "$(lint_rc 'I reopened #5 after the revert.')" 0 "\"reopened #5\" likewise"
+eq "$(lint_rc 'Merged #194 and started the follow-up.')" 0 "\"Merged #194\" likewise"
+# ...but a genuine state assertion about the same entity still fires.
+eq "$(lint_rc 'Issue #195 is closed.')" 1 "a predicative claim about the same entity still fires"
+
+# --- 3b-i. multi-backtick code spans declare nothing (review round 1) -------------------------
+# CommonMark permits a run of N backticks; a single-backtick-only stripper left that content
+# exposed, so quoting a status the way this repo's own docs do would block a turn.
+eq "$(lint_rc 'The docs show ``PR #1 is still open`` as an example.')" 0 \
+   "a double-backtick span declares nothing"
+eq "$(lint_rc 'See ```PR #1 is still open``` inline.')" 0 "a triple-backtick span declares nothing"
+eq "$(lint_rc 'Quoting ``PR #1 is still open`` but PR #2 is still open.')" 1 \
+   "...while a real claim beside a quoted one is still caught"
+
 # --- 3b-f. determinism + hygiene ---------------------------------------------------------------
 eq "$(lint_out "$SHIPPED")" "$(lint_out "$SHIPPED")" "lint is deterministic"
 eq "$(printf '' | bash "$LIB" lint >/dev/null 2>&1; printf '%s' "$?")" 0 "empty input is clean"
@@ -361,6 +391,32 @@ HOOK_OUT="$(printf '%s' "$(transcript "$SHIPPED")" | bash "$HOOK" 2>&1)"; HOOK_R
 eq "$HOOK_RC" 0 "a missing linter does not block the session"
 has "$HOOK_OUT" "incomplete install" "...but says the claims are NOT being checked"
 mv "$tdir/lib/state-assert.sh.bak" "$tdir/lib/state-assert.sh"
+
+# --- A BROKEN LINTER DEPENDENCY IS NOT A CLEAN TURN (review round 1) -------------------------
+# state-assert.sh exits 1 BOTH for "violations found" and for "broken install — common.sh
+# missing", the latter before it can print a row. Reading an empty exit-1 as "no violations"
+# disables this gate exactly when the install is damaged, and discarding the linter's stderr hides
+# why. The gate must say so instead of passing silently.
+mv "$tdir/lib/common.sh" "$tdir/lib/common.sh.bak"
+HOOK_OUT="$(printf '%s' "$(transcript "$SHIPPED")" | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+eq "$HOOK_RC" 0 "a broken linter dependency does not wedge the session"
+has "$HOOK_OUT" "NOT being checked" "...but the gate reports that it is disabled"
+has "$HOOK_OUT" "common.sh" "...and surfaces the linter's own diagnostic"
+mv "$tdir/lib/common.sh.bak" "$tdir/lib/common.sh"
+
+# --- EVERY CLAIM KIND GETS A COMMAND THAT CAN ANSWER IT (review round 1) ---------------------
+# The grammar flags CI and branch status too, and `observe` answers neither. Offering it for a CI
+# claim is advice that cannot be followed, which leaves "delete it" as the only real option even
+# when the status was explicitly asked for.
+run_hook 'CI is green on PR #194.'
+eq "$HOOK_RC" 2 "an unsourced CI claim blocks"
+has "$HOOK_OUT" "branch-health" "...and is routed to the CI predicate, not to observe"
+run_hook 'The branch for #195 is unmerged.'
+eq "$HOOK_RC" 2 "an unsourced branch claim blocks"
+has "$HOOK_OUT" "branch-verdict" "...and is routed to the branch predicate"
+run_hook 'PR #137 is still open.'
+has "$HOOK_OUT" "state-assert.sh" "a PR-state claim is still routed to observe"
+has "$HOOK_OUT" "ambiguous" "...and the merged-PR vs merged-branch ambiguity is called out"
 
 # The hook must be in the ONE hook enumeration, or install wires it and uninstall never removes it.
 has "$(bash -c '. scripts/lib/common.sh; adb_claude_hook_scripts')" "state-claim-gate.sh" \
