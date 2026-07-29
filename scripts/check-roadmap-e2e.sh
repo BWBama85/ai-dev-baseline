@@ -698,11 +698,152 @@ for kind in milestones openissues; do
 done
 
 # ============================================================================================
+# 7b. release-command RESOLUTION (#188)
+# ============================================================================================
+# The met-emission must name a command that EXISTS. An unresolvable slash command does not fail
+# loudly — Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo without
+# one silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
+rc_snip() {   # <CMD> <user-root> [subdirs] [prefix] [extra-key] [probe] [cwd] -> prints RESOLVES
+  body="$(snippet release-command)"
+  body="${body//\{\{SKILLS_SUBDIRS\}\}/${3-no-project-skills}}"
+  body="${body//\{\{SKILL_REGISTRY_PROBE\}\}/${6-}}"
+  body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
+  body="${body//\{\{SKILLS_USER_ROOT\}\}/\"$2\"}"
+  body="${body//\{\{SKILL_PREFIX\}\}/${4:-/}}"
+  body="${body//\{\{SKILL_EXTRA_KEY\}\}/${5-}}"
+  printf 'ARTIFACT_BODY=%s\n%s\nprintf %%s "$RESOLVES"\n' \
+    "$(printf '%q' "<!-- release-command: $1 -->")" "$body" > "$work/rc.sh"
+  ( cd "${7:-$work}" && bash "$work/rc.sh" )
+}
+# A LOADABLE skill: opening `---` plus the two keys every registry needs. `printf x` is not one.
+mk_skill() { mkdir -p "$1"; printf -- '---\nname: %s\ndescription: d\nuser-invocable: true\n---\n' "$(basename "$1")" > "$1/SKILL.md"; }
+mkdir -p "$work/sk" "$work/empty-sk"
+mk_skill "$work/sk/release"; mk_skill "$work/sk/ship"
+
+eq "$(rc_snip '/release' "$work/sk")"                 1 "a declared command with a SKILL.md resolves"
+eq "$(rc_snip '/nope' "$work/sk")"                    0 "a declared command with no skill does NOT resolve"
+eq "$(rc_snip '' "$work/sk")"                         0 "an absent marker never resolves (no /release default)"
+# A marker may carry ARGUMENTS. Resolution must use the command name only, or a valid skill reads
+# as missing — skills take invocation arguments, so this is an ordinary marker, not an edge case.
+eq "$(rc_snip '/ship --channel production' "$work/sk")" 1 "arguments are stripped before resolution"
+eq "$(rc_snip '/ship --channel production' "$work/empty-sk")" 0 "still refuses when the named skill is absent"
+# A directory without a SKILL.md is not a skill.
+mkdir -p "$work/sk/hollow"
+eq "$(rc_snip '/hollow' "$work/sk")"                  0 "a directory without SKILL.md does not resolve"
+# EXISTENCE IS NOT LOADABILITY: a SKILL.md the agent's registry would reject must not certify a
+# command. Missing frontmatter, and present-but-incomplete frontmatter, both fail.
+mkdir -p "$work/sk/nofm"; printf 'just prose\n' > "$work/sk/nofm/SKILL.md"
+eq "$(rc_snip '/nofm' "$work/sk")"                    0 "SKILL.md without frontmatter does not resolve"
+mkdir -p "$work/sk/partialfm"; printf -- '---\nname: partialfm\n---\n' > "$work/sk/partialfm/SKILL.md"
+eq "$(rc_snip '/partialfm' "$work/sk")"               0 "SKILL.md missing description: does not resolve"
+# The marker must declare an INVOCATION. `release` resolves a directory but emits `Next: release`,
+# which is not a runnable command.
+eq "$(rc_snip '/' "$work/sk")"                        0 "a bare prefix with no name does not resolve"
+# The PROJECT root is searched too — and is anchored at the git toplevel, not $PWD, so /roadmap
+# invoked from a package subdirectory of a monorepo still finds the repo-root skills.
+eq "$(rc_snip '/release' "$work/empty-sk" sk)"        1 "a project-root skill resolves"
+# $HOME (or any user root) containing whitespace must not word-split.
+mkdir -p "$work/sp ace"; mk_skill "$work/sp ace/release"
+eq "$(rc_snip '/release' "$work/sp ace")"             1 "a user root containing a space still resolves"
+# An EMPTY project subdir (agents with no established project-local discovery, e.g. Codex) must
+# search the USER root only — and must not glob, word-split, or resolve from the git root.
+eq "$(rc_snip '/release' "$work/sk" '')"              1 "empty project subdir still resolves from the user root"
+eq "$(rc_snip '/release' "$work/empty-sk" '')"        0 "empty project subdir does not fall back to the git root"
+# The invocation prefix is RENDERED per agent: Codex uses `$skill`, not a slash command. With a
+# `$` prefix, `/release` must be REJECTED and `$release` accepted — the mirror of the Claude case.
+# The marker is stored AGENT-NEUTRAL: whatever prefix the author wrote is stripped, and each
+# agent's render re-attaches its own. So one artifact is correct on every agent — which is the
+# real fix for a Codex adopter copying `/release` out of the schema.
+eq "$(rc_snip '$release' "$work/sk" sk '$')"          1 "codex render resolves a \$-written marker"
+eq "$(rc_snip '/release' "$work/sk" sk '$')"          1 "codex render also resolves a /-written marker"
+eq "$(rc_snip '$release' "$work/sk" sk '/')"          1 "claude render resolves a \$-written marker"
+eq "$(rc_snip 'release'  "$work/sk" sk '/')"          1 "a bare name resolves (prefix is re-attached)"
+eq "$(rc_snip '/your-skill' "$work/sk" sk '/')"       0 "the schema placeholder never resolves"
+# `name: # TODO` parses as YAML null — the remainder is a comment, so the field is absent.
+mkdir -p "$work/sk/todofm"
+printf -- '---\nname: # TODO\ndescription: # TODO\n---\n' > "$work/sk/todofm/SKILL.md"
+eq "$(rc_snip '/todofm' "$work/sk" sk)"               0 "a commented-out frontmatter value does not resolve"
+# THE AGENT SKILLS NAME GRAMMAR: lowercase hyphen-case, <=64, no leading/trailing/consecutive
+# hyphens. A looser check certifies a directory the agent will not register.
+# NOT `Release`: macOS is case-insensitive, so that directory IS `release` and mk_skill would
+# overwrite the shared fixture's name field, breaking every later /release assertion.
+mk_skill "$work/sk/Upcase"
+eq "$(rc_snip '/Upcase' "$work/sk" sk '/' user-invocable)"      0 "an uppercase name does not resolve"
+mk_skill "$work/sk/trail-"
+eq "$(rc_snip '/trail-' "$work/sk" sk '/' user-invocable)"      0 "a trailing hyphen does not resolve"
+mk_skill "$work/sk/dou--ble"
+eq "$(rc_snip '/dou--ble' "$work/sk" sk '/' user-invocable)"    0 "consecutive hyphens do not resolve"
+mk_skill "$work/sk/under_score"
+eq "$(rc_snip '/under_score' "$work/sk" sk '/' user-invocable)" 0 "an underscore does not resolve"
+LONGNAME="$(printf 'a%.0s' $(seq 1 65))"
+mk_skill "$work/sk/$LONGNAME"
+eq "$(rc_snip "/$LONGNAME" "$work/sk" sk '/' user-invocable)"   0 "a name over 64 chars does not resolve"
+mk_skill "$work/sk/ok-name"
+eq "$(rc_snip '/ok-name' "$work/sk" sk '/' user-invocable)"     1 "valid hyphen-case resolves"
+# A TAB is a valid shell argument separator; splitting on a literal space alone leaves it in
+# the name and reports an installed skill as missing.
+eq "$(rc_snip "$(printf '/release\t--channel prod')" "$work/sk" sk '/' user-invocable)" 1 "tab-separated arguments still resolve"
+# A valid unquoted YAML value ends at an inline comment; the loader sees `release`.
+mkdir -p "$work/sk/inlinec"
+printf -- '---\nname: inlinec # the project cutter\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/inlinec/SKILL.md"
+eq "$(rc_snip '/inlinec' "$work/sk" sk '/' user-invocable)"  1 "an inline YAML comment after the name resolves"
+mkdir -p "$work/sk/quotedc"
+printf -- '---\nname: "quotedc" # note\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/quotedc/SKILL.md"
+eq "$(rc_snip '/quotedc' "$work/sk" sk '/' user-invocable)"  1 "a quoted name with a trailing comment resolves"
+# Structure never declares: a marker inside a fence, blockquote or code span is documentation.
+eq "$(printf '\140\140\140\n<!-- release-command: fenced -->\n\140\140\140\n' \
+      | bash "$RL" release-command | sed "/^$/d" | wc -l | tr -d " ")" 0 "a fenced marker declares nothing"
+eq "$(printf '> <!-- release-command: bq -->\n' \
+      | bash "$RL" release-command | sed "/^$/d" | wc -l | tr -d " ")" 0 "a blockquoted marker declares nothing"
+# `user-invocable: false` is an explicit statement that the operator cannot invoke the skill.
+mkdir -p "$work/sk/notinvocable"
+printf -- '---\nname: notinvocable\ndescription: d\nuser-invocable: false\n---\n' > "$work/sk/notinvocable/SKILL.md"
+eq "$(rc_snip '/notinvocable' "$work/sk" sk '/' user-invocable)" 0 "user-invocable: false does not resolve"
+# An untrusted name reaching grep as an OPTION exits 0 with no match, certifying a phantom skill.
+eq "$(rc_snip '/--help' "$work/sk" sk '/' user-invocable)"    0 "an option-shaped name does not resolve"
+eq "$(rc_snip '/../escape' "$work/sk" sk '/' user-invocable)" 0 "a path-traversal name does not resolve"
+# The LEGACY schema example every upgraded artifact carries must not read as a declaration.
+eq "$(printf 'Optionally `<!-- release-command: /release -->` overrides it.\n' \
+      | bash "$RL" release-command | sed "/^$/d" | wc -l | tr -d " ")" 0 "the backticked schema example declares nothing"
+eq "$(printf '<!-- release-command: release -->\n' \
+      | bash "$RL" release-command)" release "a top-level declaration is read"
+# A QUOTED YAML name is valid and registers fine; a raw compare would reject it.
+mkdir -p "$work/sk/quoted"
+printf -- '---\nname: "quoted"\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/quoted/SKILL.md"
+eq "$(rc_snip '/quoted' "$work/sk" sk '/' user-invocable)"    1 "a quoted YAML name resolves"
+# The FIRST line must be the opening `---`. A file whose frontmatter starts later is rejected by
+# the loader, but a scan that skips line 1 finds the later delimiter and calls it the close.
+mkdir -p "$work/sk/lateopen"
+printf 'stray prose\n---\nname: lateopen\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/lateopen/SKILL.md"
+eq "$(rc_snip '/lateopen' "$work/sk" sk '/' user-invocable)" 0 "frontmatter not starting at line 1 does not resolve"
+# A repo path containing SPACES must not word-split the project root.
+mkdir -p "$work/sp dir"; cp -R "$work/sk" "$work/sp dir/sk"
+( cd "$work/sp dir" && :; )
+eq "$(rc_snip '/release' "$work/empty-sk" sk '/' user-invocable '' "$work/sp dir")" 1 "a project root containing spaces still resolves"
+# The loader contract, per agent. `name` must EQUAL the directory (a mismatch is the
+# misidentified-skill case build.sh refuses), and Claude additionally requires `user-invocable`.
+mkdir -p "$work/sk/misnamed"
+printf -- '---\nname: something-else\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/misnamed/SKILL.md"
+eq "$(rc_snip '/misnamed' "$work/sk" sk '/' user-invocable)"  0 "name not matching the directory does not resolve"
+mkdir -p "$work/sk/noinvoke"
+printf -- '---\nname: noinvoke\ndescription: d\n---\n' > "$work/sk/noinvoke/SKILL.md"
+eq "$(rc_snip '/noinvoke' "$work/sk" sk '/' user-invocable)" 0 "Claude: missing user-invocable does not resolve"
+eq "$(rc_snip '/noinvoke' "$work/sk" sk '/' '')"            1 "Codex/Antigravity: name+description suffice"
+# Frontmatter must be CLOSED. An unterminated block is an incomplete edit the loader rejects.
+mkdir -p "$work/sk/unclosed"
+printf -- '---\nname: unclosed\ndescription: d\n' > "$work/sk/unclosed/SKILL.md"
+eq "$(rc_snip '/unclosed' "$work/sk" sk)"             0 "unterminated frontmatter does not resolve"
+# ...and the values must be non-empty.
+mkdir -p "$work/sk/emptyval"
+printf -- '---\nname:\ndescription:\n---\n' > "$work/sk/emptyval/SKILL.md"
+eq "$(rc_snip '/emptyval' "$work/sk" sk)"             0 "empty frontmatter values do not resolve"
+
+# ============================================================================================
 # 8. THE HARNESS GUARDS ITSELF
 # ============================================================================================
 # Every snippet this file claims to execute must still exist. Without this, renaming a marker
 # would make run_snippet quietly find nothing and the suite would go green on zero coverage.
-for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned; do
+for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do
   if [ -n "$(snippet "$s")" ]; then ok; else bad "workflow lost its '# ADB-SNIPPET: $s' marker"; fi
 done
 
@@ -710,18 +851,30 @@ done
 # the failing line. This is the cheapest guard in the file and it has already earned its place: an
 # apostrophe inside a `${VAR:?word}` message is a syntax error even within double quotes, and bash
 # then refuses the WHOLE snippet — a fail-loud guard that silently broke everything around it.
-for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned; do
+for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do
   body="$(snippet "$s")"
   [ -n "$body" ] || continue
-  printf '%s\n' "${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}" > "$work/parse-$s.sh"
+  body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
+  body="${body//\{\{SKILLS_SUBDIRS\}\}/.claude\/skills}"
+  body="${body//\{\{SKILL_REGISTRY_PROBE\}\}/}"
+  body="${body//\{\{SKILLS_USER_ROOT\}\}/\"\$HOME\/.claude\/skills\"}"
+  body="${body//\{\{SKILL_PREFIX\}\}/\/}"
+  body="${body//\{\{SKILL_EXTRA_KEY\}\}/user-invocable}"
+  printf '%s\n' "$body" > "$work/parse-$s.sh"
   if bash -n "$work/parse-$s.sh" 2>/dev/null; then ok; else
     bad "snippet '$s' is not valid bash: $(bash -n "$work/parse-$s.sh" 2>&1 | head -1)"
   fi
 done
 # A snippet body must not ship an unresolved placeholder: build.sh maps {{…}} per agent, so a
 # token added to a snippet without a mapping would reach a user as literal text.
-allsnips="$(for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned; do snippet "$s"; done)"
-hasnt "${allsnips//\{\{ROADMAP_LIB\}\}/}" '{{' \
+allsnips="$(for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do snippet "$s"; done)"
+allsnips="${allsnips//\{\{ROADMAP_LIB\}\}/}"
+allsnips="${allsnips//\{\{SKILLS_SUBDIRS\}\}/}"
+allsnips="${allsnips//\{\{SKILL_REGISTRY_PROBE\}\}/}"
+allsnips="${allsnips//\{\{SKILLS_USER_ROOT\}\}/}"
+allsnips="${allsnips//\{\{SKILL_PREFIX\}\}/}"
+allsnips="${allsnips//\{\{SKILL_EXTRA_KEY\}\}/}"
+hasnt "$allsnips" '{{' \
   "no executed snippet carries a placeholder outside the mapped vocabulary"
 
 check_summary "roadmap-e2e"

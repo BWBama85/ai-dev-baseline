@@ -471,6 +471,48 @@ cmd_release_counts() {
 # The carve-out drops an empty value and the literal `NAME` — the schema's own example token,
 # which bootstrap can copy verbatim (base/workflows/roadmap.md). Treating that placeholder as a
 # real milestone is the classic false activation this whole opt-in is designed to avoid.
+# `release-command` — the SAME discipline as marker-title, for the other required marker (#188).
+#
+# Why it needs a predicate rather than "assume CMD holds the right value": every bootstrapped
+# roadmap body carries the schema's own marker-shaped EXAMPLE, so a naive read cannot tell a real
+# declaration from documentation — and the no-marker branch and the declared-but-missing branch
+# then stop being deterministically distinguishable, which is the whole point of the emission
+# contract. Returns every distinct declared value so the caller can refuse an ambiguous artifact,
+# exactly as it must for the milestone marker.
+#
+# The carve-out drops the placeholder names the schema itself uses (`your-skill`,
+# `your-release-skill`, `CMD`), with or without a leading invocation prefix, so copying the example
+# verbatim reads as "not declared" rather than as a command that can never resolve.
+cmd_release_command() {
+  [ "$#" -eq 0 ] || die "release-command: takes no arguments (roadmap artifact body on stdin)"
+  # ONLY PROSE DECLARES (#117), applied to this marker. Structure is dropped BEFORE extraction:
+  # fenced blocks, blockquotes, and inline code spans.
+  #
+  # The shared `md_prose` filter cannot be reused here — it strips HTML COMMENTS, and this marker
+  # IS an HTML comment — so the same rule is applied with that half omitted.
+  #
+  # Why it is needed at all: the artifact schema documents the marker BY EXAMPLE, and every body
+  # bootstrapped by an earlier version carries `<!-- release-command: /release -->` in its OPTIONAL
+  # comment block. Its shape is identical to a real declaration, so no value-based carve-out can
+  # tell them apart — `release` is a perfectly legitimate thing to declare. What distinguishes them
+  # is MARKUP: the example sits in a code span or a fence; a declaration does not.
+  awk '
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    /^[[:space:]]*>/ { next }
+    { line = $0; gsub(/`[^`]*`/, "", line); print line }
+  ' \
+    | grep -o '<!--[[:space:]]*release-command:[[:space:]]*[^>]*-->' \
+    | sed 's/.*release-command:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
+    | grep -v '^[[:space:]]*$' \
+    | sed 's/^[/$]//' \
+    | grep -vx 'your-skill' \
+    | grep -vx 'your-release-skill' \
+    | grep -vx 'CMD' \
+    | sort -u
+  return 0
+}
+
 cmd_marker_title() {
   [ "$#" -eq 0 ] || die "marker-title: takes no arguments (roadmap artifact body on stdin)"
   # `grep -o` (one match per LINE OF OUTPUT), not `sed s///p` (one substitution per line of
@@ -972,6 +1014,7 @@ main() {
     release-ready)    cmd_release_ready "$@" ;;
     release-counts)   cmd_release_counts "$@" ;;
     marker-title)     cmd_marker_title "$@" ;;
+    release-command)  cmd_release_command "$@" ;;
     deps-from-body)   cmd_deps_from_body "$@" ;;
     decisions)        cmd_decisions "$@" ;;
     open-issues)      cmd_open_issues "$@" ;;

@@ -53,8 +53,12 @@ absent and never deletes or renames anything, so it is safe to re-run. It resolv
 project repo from your `gh` remote (not the install-source clone). It then **prints** the
 one activation step — the `release-milestone` marker (below) to add to your roadmap
 artifact — but never edits the artifact itself: `/roadmap` is its sole writer, so seeding
-it here would risk clobbering the one issue the whole loop depends on. Adding that single
-marker line is the last step of opting in. `baseline release status` reports which pieces
+it here would risk clobbering the one issue the whole loop depends on. It prints **two** markers,
+and both are required: `release-milestone` arms readiness, and `release-command` is what a met
+verdict emits — the latter has **no default** (see *You must declare the release command*), so a
+repo that adds only the first enters release-readiness mode with no way to cut and discovers it at
+`Next: none` when the release is finally ready. Adding those marker lines is the last step of
+opting in. `baseline release status` reports which pieces
 are present and whether the convention is active, changing nothing.
 
 Use a different release-milestone name with
@@ -93,12 +97,16 @@ In release-readiness mode, every run `/roadmap`:
 - **Emits accordingly:**
   - **Requirements unmet** (open `release-blocker`s remain) → the next unblocked
     `/implement-issue` bundle *from the release set*.
-  - **Requirements met and the default branch is green** (0 open `release-blocker`s in an armed
-    milestone) → `Next: /release`
-    with `✅ Release requirements met (<milestone>: 0 open blockers, <branch> green) — cutting.` (If
-    non-blocker issues remain open in the milestone, the banner names them: they do not hold
+  - **Requirements met, the default branch is green, and the declared release command RESOLVES**
+    (0 open `release-blocker`s in an armed milestone) → `Next: <your declared release-command>`,
+    with `✅ Release requirements met (<milestone>: 0 open blockers, <branch> green) — cutting.`
+    (If non-blocker issues remain open in the milestone, the banner names them: they do not hold
     the release, and `baseline release roll` sends them to `Backlog` on the cut — re-slate
     them deliberately, like any other work.)
+  - **Requirements met but the release command is undeclared or does not resolve** → `Next: none —
+    …` naming what to add. The `— cutting.` banner and the rollover reminder are **withheld**: both
+    assert a cut is happening, and printing them above `Next: none` can lead an operator to roll
+    the milestone for a release that was never made. See *You must declare the release command*.
   - **Requirements met but the branch is not green** → **no cut.** `⛔ Requirements met, but
     <branch> is not green` naming the failing check. A drained checklist says the *requirements*
     are done; it says nothing about whether the code is **shippable**, and on a repo that deploys
@@ -146,17 +154,43 @@ predicate, so a run can print it and still emit the cut.
   open`) is exactly the live distance to the cut. The destination-label is the *gauge*; the
   readiness predicate is the *trigger*.
 
-**The emitted command is advisory and configurable.** `/roadmap` never runs a command — it
-prints one. The default is `/release` — and the baseline ships **no `/release` skill**, by
-decision: it is the [project-owned release role](roles-and-agents.md#release-is-project-owned--the-baseline-ships-no-release),
-so a repo without one gets an unrunnable suggestion rather than an error. Write your own
-`/release`, or point the emission elsewhere with `<!-- release-command: <cmd> -->` on the
-artifact.
+**You must declare the release command, and it must resolve.** `/roadmap` never runs a command —
+it prints one — but it will only print one that **exists**. Name it on the artifact:
 
-**Configurable last mile (auto-cut).** By default the operator runs the emitted `/release`,
+```markdown
+<!-- release-command: release -->
+```
+
+The value is **agent-neutral**: any invocation prefix you write is stripped, and each agent's
+rendered workflow re-attaches its own (`/release` on Claude and Antigravity, `$release` on Codex).
+So one artifact is correct on every agent.
+
+There is **no default**, and that is deliberate (#188). An unresolvable slash command does not
+fail loudly: Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo that
+has no such skill silently opens the CLI's `release-notes` viewer — succeeding at something
+unrelated at the exact moment the roadmap says *cutting*. Verified against Claude Code 2.1.220:
+there is no `/release` built-in (`release-notes` is the only release-named command), so the hazard
+is the **miss**, not a name collision, and renaming the default would not fix it.
+
+So `/roadmap` resolves the declared command against the project and user skill directories before
+emitting it, and reports a terminal state instead of guessing when it cannot:
+
+| Artifact | Emission |
+|---|---|
+| marker present, skill exists | `Next: <cmd>` |
+| marker present, skill missing | `Next: none — release-command "<cmd>" is declared but no such skill exists` |
+| no marker | `Next: none — this repo declares no release command` |
+
+The last two are not failures — the release *is* ready; the missing piece is a declaration the
+owner owns. Write your own release skill (it is the
+[project-owned release role](roles-and-agents.md#release-is-project-owned--the-baseline-ships-no-release);
+the baseline ships none by decision) and point the marker at it. This repo's own copy lives at
+`.claude/skills/release/`, and its procedure is an executable driver rather than prose — see D14.
+
+**Configurable last mile (auto-cut).** By default the operator runs the emitted release command,
 exactly like running an emitted `/implement-issue` — the *determination* is fully automated,
 zero readiness-watching. A repo that never deploys on release (tag-only) may opt into a
-zero-touch driver that runs `/release` automatically when readiness flips true. Auto-cut is
+zero-touch driver that runs it automatically when readiness flips true. Auto-cut is
 **off by default and gated behind explicit repo opt-in** (generality + charge-safety); keep
 the confirm for repos that **deploy** on release. Its prescribed home is a project-scoped
 Stop-hook / driver-loop config (the enforcement-hooks layer, issues #14/#25), not `/roadmap`

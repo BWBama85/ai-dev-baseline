@@ -573,9 +573,15 @@ has "$wf" 'could not list open issues' \
   "workflow hard-stops when the open-issue read fails"
 
 # `continue` outside a loop: bash only warns and FALLS THROUGH (so a member closed since step 4
-# would still be emitted), while zsh aborts the block outright. The snippet must not use it.
-hasnt "$wf" '|| continue' \
-  "workflow's per-member check uses no loop-only 'continue' (bash falls through; zsh aborts)"
+# would still be emitted), while zsh aborts the block outright.
+#
+# Scoped to the `fresh-read` SNIPPET, not the whole workflow. The rule is about that block, whose
+# per-member check is a bare `if` with no enclosing loop — asserted file-wide it also fires on a
+# `continue` that IS inside a real `for`, which is ordinary shell (the release-command resolver
+# iterates skill roots). A guard that flags correct code trains readers to route around it.
+freshread_block="$(check_wf_snippet "$WF" fresh-read)"
+hasnt "$freshread_block" '|| continue' \
+  "the fresh-read snippet's per-member check uses no loop-only 'continue' (bash falls through; zsh aborts)"
 
 # Each fenced snippet must resolve "$REPO" itself: these steps can be run as separate shell
 # invocations that share no variables, so a slug hoisted into an earlier step arrives EMPTY and

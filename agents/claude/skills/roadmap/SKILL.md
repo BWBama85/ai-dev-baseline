@@ -108,8 +108,10 @@ parse, and rewrite it deterministically:
 <!-- OPTIONAL release-readiness mode (owner opt-in — the release-goal convention module, #27/#71):
      add `<!-- release-milestone: NAME -->` naming the active release milestone to make /roadmap
      compute release readiness live and emit the release command when the requirements are met (see
-     "Release-readiness mode" below). Optionally `<!-- release-command: /release -->` overrides the
-     emitted command (default `/release`). Bootstrap NEVER writes these; absent → classic
+     "Release-readiness mode" below). `<!-- release-command: your-skill -->` names the command a
+     met release emits — REQUIRED for a cut to be emitted, because there is no safe default: an
+     unresolvable slash command fuzzy-matches an unrelated built-in rather than failing (#188), and
+     #3/D7 guarantees the baseline ships no `/release` to fall back on. Absent → classic
      backlog-wide behavior, byte-identical to a repo that never adopted the convention. Set the
      value empty (`<!-- release-milestone: -->`) or delete the line to force classic mode. Stand the
      convention up with `baseline release init` — see docs/release-goal-convention.md. -->
@@ -471,17 +473,216 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   there is no batch to build, so the action is `/debug`, not `/implement-issue`.
 - **Met** (armed, predicate satisfied, no unacknowledged canceled blocker, **and the branch is
   green or the repo has no CI**) → emit
-  `Next: <release-command>` where `<release-command>` is the `<!-- release-command: CMD -->` marker
-  if present else `/release`, prefixed with the banner
+  `Next: <release-command>` — **but only a command that RESOLVES**, prefixed with the banner
   `✅ Release requirements met (NAME: 0 open blockers, <branch> green) — cutting.` When health was
   `no-ci`, say so instead of claiming green: `✅ Release requirements met (NAME: 0 open blockers;
   no CI configured — health check skipped) — cutting.` **Never report a branch as green when it was
   never checked.** If non-blocker issues are still
   open in `M`, append `(K non-blocker issue(s) still open — not holding the release; the roll sends
-  them to Backlog)`. `/roadmap` only **emits** this command; it never runs it. `/release` is the
-  **project-owned** release role — the baseline ships no such skill by decision (#3,
-  `base/roles.md`), so a repo without one gets an unrunnable suggestion, not an error.
-- **Always name the rollover on a met emission.** Emit the reminder
+  them to Backlog)`. `/roadmap` only **emits** this command; it never runs it.
+
+  **Resolve it before emitting it, and never invent one (#188).** An unresolvable slash command
+  does **not** fail loudly on every agent — Claude Code fuzzy-matches the nearest built-in, so a
+  bare `/release` on a repo that has no such skill silently opens the CLI's `release-notes` viewer.
+  That is worse than an error: it succeeds at something unrelated at the exact moment the roadmap
+  says "cutting". Verified against Claude Code 2.1.220 — there is **no** `/release` built-in
+  (`release-notes` is the only release-named command, and `release` is absent from its 110
+  built-in names), so the hazard is the *miss*, not a name collision, and no rename fixes it.
+
+  ```bash
+  # ADB-SNIPPET: release-command
+  # Self-contained, like every other block here. The marker is read by the TESTED predicate, never
+  # by eye: every bootstrapped roadmap body carries the schema's own marker-shaped EXAMPLE, so a
+  # naive read cannot tell a declaration from documentation — and the no-marker and
+  # declared-but-missing branches then stop being deterministically distinguishable.
+  # `release-command` drops the placeholder values and returns EVERY distinct declaration, so an
+  # ambiguous artifact is refused rather than silently resolved to one of them.
+  CMDS="$(printf '%s' "$ARTIFACT_BODY" | bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-command)" || { echo "ERROR: release-command extraction failed"; exit 1; }
+  NCMD="$(printf '%s\n' "$CMDS" | sed '/^$/d' | wc -l | tr -d ' ')"
+  [ "$NCMD" -le 1 ] || { echo "ERROR: roadmap declares $NCMD release-command values — need at most 1"; exit 1; }
+  BARE_CMD="$(printf '%s\n' "$CMDS" | sed '/^$/d' | head -n1)"
+  # The marker is stored AGENT-NEUTRAL: the predicate strips whatever invocation prefix the author
+  # wrote, and each agent's render re-attaches its own. So one artifact is correct on every agent —
+  # a Codex adopter who copied `/release` from the schema still gets a working `$release`.
+  #
+  # `${PFX}${BARE_CMD}`, never `"/$BARE_CMD"`: on the Codex render the latter
+  # becomes `"$$BARE_CMD"`, and `$$` is the SHELL PID.
+  PFX='/'
+  CMD=""; [ -n "$BARE_CMD" ] && CMD="${PFX}${BARE_CMD}"
+  RESOLVES=0
+  # The marker must declare an INVOCATION for THIS agent. `release` with no prefix resolves a
+  # directory just as happily but emits `Next: release`, which nobody can run — the resolver would
+  # certify something that cannot be invoked as advertised. The prefix is RENDERED per agent
+  # (/): Claude and Antigravity use a slash command, Codex uses `$skill`. Hardcoding
+  # `/` meant no marker value could both validate and invoke on Codex.
+  case "$CMD" in
+    "$PFX"?*)
+      # Resolve the COMMAND NAME only. A marker may carry arguments (`/ship --channel production`);
+      # searching for a directory with the arguments in its name reports a valid skill missing.
+      # The FULL value is still what gets emitted.
+      # Split at the first SHELL WHITESPACE, not a literal space: a tab is a valid separator, and
+      # `%% *` would leave it plus every argument inside the name, failing the grammar check and
+      # reporting an installed skill as missing.
+      SKILL_NAME="${CMD%%[[:space:]]*}"; SKILL_NAME="${SKILL_NAME#"$PFX"}"
+
+      # ONE frontmatter contract, used by both search roots below. It must satisfy THIS LOADER:
+      #   * the FIRST line is the opening `---`. A file whose frontmatter starts later is rejected
+      #     by the loader, but a scan that just skips line 1 finds a later `---` and calls it the
+      #     close — certifying a partially-edited file.
+      #   * CLOSED — reaching END with no second `---` is an unterminated block.
+      #   * NON-EMPTY values, and `#` excluded from the first character: `name: # TODO` parses as
+      #     YAML null, because the rest is a comment.
+      #   * `name` EQUALS the directory, after stripping surrounding quotes — `name: "release"` is
+      #     valid YAML that registers fine and a raw compare would reject it.
+      #   * user-invocable present when this agent requires one (Claude: `user-invocable`).
+      skill_frontmatter_ok() {
+        [ "$(head -n1 "$1")" = "---" ] || return 1
+        awk -v want="$2" -v extra='user-invocable' '
+             NR==1{next}
+             $0=="---"{closed=1; exit}
+             /^name:[[:space:]]*[^[:space:]#]/ {
+               v=$0; sub(/^name:[[:space:]]*/,"",v)
+               # A QUOTED value keeps everything inside the quotes; an UNQUOTED one ends at an
+               # inline comment. `name: release # project cutter` is valid YAML whose value is
+               # `release`, and a raw compare would reject the skill as misnamed.
+               if (v ~ /^["'"'"']/) { q = substr(v,1,1); sub(/^./,"",v); sub(q "[[:space:]]*(#.*)?$","",v) }
+               else { sub(/[[:space:]]+#.*$/,"",v) }
+               sub(/[[:space:]]+$/,"",v)
+               if (v == want) n=1
+             }
+             /^description:[[:space:]]*[^[:space:]#]/{d=1}
+             # The extra key must be TRUE, not merely PRESENT. `user-invocable: false` is an
+             # explicit statement that the operator cannot invoke this skill, so certifying it
+             # emits exactly the unrunnable command this gate exists to suppress.
+             {
+               if (extra != "" && index($0, extra ":") == 1) {
+                 ev=$0; sub(/^[^:]*:[[:space:]]*/,"",ev); sub(/[[:space:]]+$/,"",ev)
+                 gsub(/^["'"'"']|["'"'"']$/,"",ev)
+                 if (ev == "true") e=1
+               }
+             }
+             END{exit !(closed && n && d && (extra == "" || e))}' "$1"
+      }
+
+      # PREFER THE AGENT'S OWN REGISTRY. It is the ground truth and accounts for state no
+      # filesystem check can see — a skill disabled via config is omitted from the registry while
+      # its SKILL.md sits right there.  is empty for agents with no such
+      # command; then the frontmatter contract above is the fallback.
+      # The skill name must match the agents' shared name grammar BEFORE it reaches any command.
+      # An untrusted `--help` or `--version` reaching `grep -Fxq "$NAME"` is read as a grep OPTION,
+      # and both exit 0 with no match — certifying a command that does not exist.
+      # THE AGENT SKILLS NAME GRAMMAR: lowercase hyphen-case, <=64 chars, no leading, trailing or
+      # consecutive hyphens. A looser check certifies a directory the agent will not register —
+      # and it is also what keeps an untrusted `--help` from reaching a command as an OPTION.
+      # The class is ENUMERATED, not a range: under some locales `[a-z]` collates uppercase in too
+      # (verified on macOS — `Upcase` passed a `[!a-z0-9-]*` test), which would certify a name the
+      # agent will not register.
+      case "$SKILL_NAME" in
+        ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*|-*|*-|*--*) SKILL_NAME="" ;;
+      esac
+      [ "${#SKILL_NAME}" -le 64 ] || SKILL_NAME=""
+      PROBE=''
+      if [ -z "$SKILL_NAME" ]; then
+        : # not a legal skill name -> unresolvable, fall through with RESOLVES=0
+      elif [ -n "$PROBE" ] && command -v "${PROBE%% *}" >/dev/null 2>&1; then
+        # Match the ENTRY NAME, never the section text. Descriptions live in that section too, and
+        # this repo's own `new-release` and `roadmap` descriptions both contain the standalone word
+        # "release" — so a substring search certifies a `release` skill that does not exist.
+        # CAPTURE the probe, then validate it. A pipeline reports only its LAST command's status,
+        # so a failed `codex debug prompt-input` (subcommand missing, config invalid) would look
+        # exactly like an empty registry — reporting a present skill as nonexistent and blocking a
+        # ready release with the wrong remediation. A probe that cannot answer is not an answer:
+        # fall back to the filesystem contract rather than trusting its silence.
+        PROBE_OUT=""; PROBE_OK=0
+        if PROBE_OUT="$($PROBE 2>/dev/null)" \
+           && printf '%s\n' "$PROBE_OUT" | grep -q '^#* *Available skills'; then
+          PROBE_OK=1
+        fi
+        if [ "$PROBE_OK" -eq 1 ]; then
+          # `--` terminates options so an untrusted name is never read as one.
+          # BOUND the section and require an ENTRY SHAPE. Streaming to end-of-output and accepting
+          # any line that starts with a name character means unrelated prompt content after the
+          # section — an AGENTS or user line beginning "release …" — certifies a missing skill.
+          # Stop at the next heading or a blank line, and take only list entries (`- name`,
+          # `- name: desc`) or `name: desc` rows.
+          printf '%s\n' "$PROBE_OUT" \
+            | awk '
+                /^#* *Available skills/ { insec = 1; next }
+                insec && /^#/           { exit }
+                insec && /^[[:space:]]*$/ { exit }
+                insec {
+                  l = $0
+                  if (!sub(/^[[:space:]]*[-*][[:space:]]+/, "", l)) {
+                    if (l !~ /^[A-Za-z0-9_.-]+:/) next
+                  }
+                  if (match(l, /^[A-Za-z0-9_.-]+/)) print substr(l, 1, RLENGTH)
+                }' \
+            | grep -Fxq -- "$SKILL_NAME" && RESOLVES=1
+        else
+          PROBE=""   # unusable -> the filesystem branch below is the authority
+        fi
+      fi
+      # FILESYSTEM FALLBACK — reached when there is no usable probe. Also the authority when the
+      # probe existed but could not answer, which is why PROBE is cleared above rather than trusted.
+      if [ -n "$SKILL_NAME" ] && [ "$RESOLVES" -eq 0 ] && [ -z "$PROBE" ]; then
+        GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+        # Each root is joined and quoted INSIDE the loop. Serializing them into a space-delimited
+        # string and re-splitting destroys a repo path containing spaces — a supported layout —
+        # and reports a present skill as missing. .claude/skills is a LIST (Codex loads both
+        # `.codex/skills` and `.agents/skills`) and is EMPTY where project-local discovery is
+        # unestablished, in which case only the user root is searched.
+        for sub in .claude/skills; do
+          f="$GITROOT/$sub/$SKILL_NAME/SKILL.md"
+          [ -f "$f" ] || continue
+          skill_frontmatter_ok "$f" "$SKILL_NAME" || continue
+          RESOLVES=1; break
+        done
+        if [ "$RESOLVES" -eq 0 ]; then
+          for d in "$HOME/.claude/skills"; do
+            f="$d/$SKILL_NAME/SKILL.md"
+            [ -f "$f" ] || continue
+            skill_frontmatter_ok "$f" "$SKILL_NAME" || continue
+            RESOLVES=1; break
+          done
+        fi
+      fi
+      ;;
+  esac
+  ```
+
+  Branch on **`$CMD` and `$RESOLVES` only** — never on whether the value looks like a `/command`.
+  The marker is agent-neutral and the resolver already normalized it, so a slash-specific condition
+  here would emit `Next: none` on a Codex run whose snippet had just set `RESOLVES=1`:
+
+  - **`CMD` non-empty and `RESOLVES=1`** → emit the `✅ … — cutting.` banner, the `Then: baseline
+    release roll …` reminder, and `Next: <CMD>` (with this agent's prefix, arguments included).
+  - **`CMD` non-empty and `RESOLVES=0`** → emit
+    `Next: none — release-command "<CMD>" is declared but no such skill exists; fix the marker or add the skill.`
+  - **`CMD` empty** (no declaration, or only the schema's own backticked example) → do **not**
+    substitute `/release`. Emit
+    ``Next: none — requirements met, but this repo declares no release command. Add `<!-- release-command: your-skill -->` to the roadmap artifact, or follow the project's documented release procedure.``
+
+    **Wrap the marker in backticks**, exactly as shown. The action line is rendered as Markdown by
+    most clients, so a bare `<!-- … -->` is parsed as an HTML comment and **hidden** — leaving the
+    operator told to add something they cannot see.
+
+  **The banner and the rollover reminder belong to the FIRST branch only.** Both assert that a cut
+  is happening — "— cutting.", "AFTER the cut" — and printing them above `Next: none` produces a
+  self-contradicting report that can lead an operator to treat the milestone as cut, or to roll it
+  without having created the release. For the two non-resolving branches, report readiness plainly
+  instead: `✅ Release requirements met (NAME: 0 open blockers, <branch> green) — but no release
+  command is available.`
+
+  All three still end with a single action line, per the output contract. The last two are terminal
+  states, not failures: the release *is* ready, and the missing piece is a declaration the owner
+  owns. `/release` remains the **project-owned** release role — the baseline ships no such skill by
+  decision (#3, `base/roles.md`), which is exactly why a default that names it cannot be trusted to
+  exist.
+- **Always name the rollover on a CUT emission** — i.e. the resolving branch above, the only one
+  that emits a release command. When requirements are met but the command is undeclared or does not
+  resolve, the run emits `Next: none` and **no cut is happening**, so the reminder is withheld along
+  with the `— cutting.` banner. Telling an operator to roll a milestone for a release that was never
+  made is the unsafe outcome that branch exists to prevent. Emit the reminder
   `Then: baseline release roll --version <version>   # AFTER the cut — archive M, open a fresh NAME, leftovers → Backlog`
   **immediately above** the `Next:` line (the output contract reserves the last line for the
   action; `Then:` names what follows the cut, not what follows this run). This is not decoration:
@@ -489,8 +690,8 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   **every** subsequent run and `/roadmap` re-emits the same cut forever — the loop stops
   terminating. The roll is baseline-shipped bookkeeping (#74), unlike the cut itself; a project's
   own `/release` may run it as its last step, in which case the operator has nothing left to do.
-  Emit the reminder either way — `/roadmap` cannot know whether the project's release command
-  calls it. The full met emission is therefore:
+  On a cut emission, emit the reminder whether or not the project's release command rolls the
+  milestone itself — `/roadmap` cannot know which. The full met emission is therefore:
 
   ```text
   release-blocker: 0 blockers open — destination reached

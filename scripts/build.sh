@@ -104,6 +104,57 @@ render_agent_skill() {
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
   state_assert="bash \"\$HOME/.$agent/scripts/lib/state-assert.sh\""
   current_agent="$agent"
+  # Where THIS agent discovers skills — project-local first, then the user-global root. The two
+  # are not derivable from `.$agent/skills`: Antigravity/Gemini discovers under a `config/`
+  # customization root (see adb_agent_manifest in common.sh), so a workflow that resolved a skill
+  # by guessing the Claude layout reports every installed Codex/Gemini skill missing.
+  # Two tokens, not one joined list: the PROJECT root must be re-anchored to the git toplevel at
+  # runtime (a monorepo package invokes from a subdirectory), and the USER root must stay QUOTED —
+  # `$HOME` can contain whitespace, and an unquoted rendering word-splits it and reports a valid
+  # installed skill missing. Codex also honours CODEX_HOME, so its default is only a fallback.
+  # PROJECT-LOCAL discovery is agent-specific and is NOT assumed. A space-separated LIST, empty
+  # when this agent has no established project-local skill discovery.
+  #   * Claude resolves a repo's own `.claude/skills/<name>/` ahead of the global one
+  #     (docs/per-project-overrides.md, Override 2a).
+  #   * Codex loads `.codex/skills` AND `.agents/skills` from the repository — verified in review
+  #     against Codex CLI 0.144.0-alpha.4 via `codex debug prompt-input`, which listed skills from
+  #     both under "Available skills". That supersedes base/workflows/new-release.md's older claim
+  #     that Codex "does NOT auto-load repo-local settings/rules/skills", which described the
+  #     settings/rules mirror files, not skills.
+  #   * Antigravity's project-local SKILL discovery is still unestablished -> empty, fail closed.
+  case "$agent" in
+    gemini) skills_subdirs="";                            skills_user_root="\"\$HOME/.gemini/config/skills\"" ;;
+    codex)  skills_subdirs=".codex/skills .agents/skills"; skills_user_root="\"\${CODEX_HOME:-\$HOME/.codex}/skills\"" ;;
+    *)      skills_subdirs=".$agent/skills";              skills_user_root="\"\$HOME/.$agent/skills\"" ;;
+  esac
+  # An AGENT-NATIVE registry probe, when one exists: it is the ground truth, because it accounts
+  # for state the filesystem cannot show — a skill disabled via `[[skills.config]] enabled = false`
+  # is omitted from Codex's registry while its SKILL.md sits right there. Prints one skill name per
+  # line. Empty => no probe, fall back to the filesystem contract.
+  case "$agent" in
+    codex) skill_registry_probe="codex debug prompt-input" ;;
+    *)     skill_registry_probe="" ;;
+  esac
+  # How a skill is INVOKED on this agent. Claude and Antigravity use a slash command; Codex's own
+  # skill reference documents `$skill`. Rendering Claude's `/` into every agent means no marker
+  # value can both validate and invoke on Codex — `/release` passes the check but is not the
+  # invocation, and `$release` is rejected as undeclared.
+  #
+  # PROVENANCE: the Codex value comes from its bundled skill reference as cited in review, not from
+  # anything verifiable in this tree. If it is wrong, THIS LINE is the single place to correct it —
+  # which is the point of rendering it rather than hardcoding a prefix in the workflow body.
+  case "$agent" in
+    codex) skill_prefix='$' ;;
+    *)     skill_prefix='/' ;;
+  esac
+  # The EXTRA frontmatter key this agent's loader requires beyond name+description. Claude also
+  # needs `user-invocable` (see selfcheck's skill-frontmatter step); Codex and Antigravity honour
+  # only the two. A skill missing its loader's required key is not registered, so certifying it
+  # would emit an unrunnable command.
+  case "$agent" in
+    claude) skill_extra_key='user-invocable' ;;
+    *)      skill_extra_key='' ;;
+  esac
 
   name="$(basename "$src" .md)"
   out="$root/agents/$agent/skills/$name/SKILL.md"
@@ -163,7 +214,10 @@ render_agent_skill() {
       -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib" \
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
       -v pr_watch="$pr_watch" \
-      -v current_agent="$current_agent" -v subtask="$subtask" '
+      -v current_agent="$current_agent" -v subtask="$subtask" \
+      -v skills_subdirs="$skills_subdirs" -v skills_user_root="$skills_user_root" \
+      -v skill_prefix="$skill_prefix" -v skill_extra_key="$skill_extra_key" \
+      -v skill_registry_probe="$skill_registry_probe" '
     function lreplace(s, from, to,   out, p) {
       out = ""
       while ((p = index(s, from)) > 0) {
@@ -221,6 +275,11 @@ render_agent_skill() {
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
       line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
+      line = lreplace(line, "{{SKILLS_SUBDIRS}}",   skills_subdirs)
+      line = lreplace(line, "{{SKILLS_USER_ROOT}}", skills_user_root)
+      line = lreplace(line, "{{SKILL_PREFIX}}",     skill_prefix)
+      line = lreplace(line, "{{SKILL_EXTRA_KEY}}",  skill_extra_key)
+      line = lreplace(line, "{{SKILL_REGISTRY_PROBE}}", skill_registry_probe)
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line
     }
