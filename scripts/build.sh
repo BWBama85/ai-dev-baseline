@@ -108,9 +108,14 @@ render_agent_skill() {
   # are not derivable from `.$agent/skills`: Antigravity/Gemini discovers under a `config/`
   # customization root (see adb_agent_manifest in common.sh), so a workflow that resolved a skill
   # by guessing the Claude layout reports every installed Codex/Gemini skill missing.
+  # Two tokens, not one joined list: the PROJECT root must be re-anchored to the git toplevel at
+  # runtime (a monorepo package invokes from a subdirectory), and the USER root must stay QUOTED —
+  # `$HOME` can contain whitespace, and an unquoted rendering word-splits it and reports a valid
+  # installed skill missing. Codex also honours CODEX_HOME, so its default is only a fallback.
   case "$agent" in
-    gemini) skills_dirs=".gemini/config/skills \$HOME/.gemini/config/skills" ;;
-    *)      skills_dirs=".$agent/skills \$HOME/.$agent/skills" ;;
+    gemini) skills_subdir=".gemini/config/skills"; skills_user_root="\"\$HOME/.gemini/config/skills\"" ;;
+    codex)  skills_subdir=".codex/skills";        skills_user_root="\"\${CODEX_HOME:-\$HOME/.codex}/skills\"" ;;
+    *)      skills_subdir=".$agent/skills";       skills_user_root="\"\$HOME/.$agent/skills\"" ;;
   esac
 
   name="$(basename "$src" .md)"
@@ -172,7 +177,7 @@ render_agent_skill() {
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
       -v pr_watch="$pr_watch" \
       -v current_agent="$current_agent" -v subtask="$subtask" \
-      -v skills_dirs="$skills_dirs" '
+      -v skills_subdir="$skills_subdir" -v skills_user_root="$skills_user_root" '
     function lreplace(s, from, to,   out, p) {
       out = ""
       while ((p = index(s, from)) > 0) {
@@ -230,7 +235,8 @@ render_agent_skill() {
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
       line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
-      line = lreplace(line, "{{SKILLS_DIRS}}",      skills_dirs)
+      line = lreplace(line, "{{SKILLS_SUBDIR}}",    skills_subdir)
+      line = lreplace(line, "{{SKILLS_USER_ROOT}}", skills_user_root)
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line
     }

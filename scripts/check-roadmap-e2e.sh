@@ -703,15 +703,17 @@ done
 # The met-emission must name a command that EXISTS. An unresolvable slash command does not fail
 # loudly — Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo without
 # one silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
-rc_snip() {   # <CMD> <skills-root> -> prints RESOLVES
+rc_snip() {   # <CMD> <user-skills-root> [project-subdir] -> prints RESOLVES
   body="$(snippet release-command)"
-  body="${body//\{\{SKILLS_DIRS\}\}/$2}"
+  body="${body//\{\{SKILLS_SUBDIR\}\}/${3:-no-project-skills}}"
+  body="${body//\{\{SKILLS_USER_ROOT\}\}/\"$2\"}"
   printf 'CMD=%s\n%s\nprintf %%s "$RESOLVES"\n' "$(printf '%q' "$1")" "$body" > "$work/rc.sh"
   ( cd "$work" && bash "$work/rc.sh" )
 }
-mkdir -p "$work/sk/release" "$work/sk/ship"
-printf 'x\n' > "$work/sk/release/SKILL.md"
-printf 'x\n' > "$work/sk/ship/SKILL.md"
+# A LOADABLE skill: opening `---` plus the two keys every registry needs. `printf x` is not one.
+mk_skill() { mkdir -p "$1"; printf -- '---\nname: %s\ndescription: d\n---\n' "$(basename "$1")" > "$1/SKILL.md"; }
+mkdir -p "$work/sk" "$work/empty-sk"
+mk_skill "$work/sk/release"; mk_skill "$work/sk/ship"
 
 eq "$(rc_snip '/release' "$work/sk")"                 1 "a declared command with a SKILL.md resolves"
 eq "$(rc_snip '/nope' "$work/sk")"                    0 "a declared command with no skill does NOT resolve"
@@ -723,6 +725,22 @@ eq "$(rc_snip '/ship --channel production' "$work/empty-sk")" 0 "still refuses w
 # A directory without a SKILL.md is not a skill.
 mkdir -p "$work/sk/hollow"
 eq "$(rc_snip '/hollow' "$work/sk")"                  0 "a directory without SKILL.md does not resolve"
+# EXISTENCE IS NOT LOADABILITY: a SKILL.md the agent's registry would reject must not certify a
+# command. Missing frontmatter, and present-but-incomplete frontmatter, both fail.
+mkdir -p "$work/sk/nofm"; printf 'just prose\n' > "$work/sk/nofm/SKILL.md"
+eq "$(rc_snip '/nofm' "$work/sk")"                    0 "SKILL.md without frontmatter does not resolve"
+mkdir -p "$work/sk/partialfm"; printf -- '---\nname: partialfm\n---\n' > "$work/sk/partialfm/SKILL.md"
+eq "$(rc_snip '/partialfm' "$work/sk")"               0 "SKILL.md missing description: does not resolve"
+# The marker must declare an INVOCATION. `release` resolves a directory but emits `Next: release`,
+# which is not a runnable command.
+eq "$(rc_snip 'release' "$work/sk")"                  0 "a value without a leading / does not resolve"
+eq "$(rc_snip '/' "$work/sk")"                        0 "a bare slash does not resolve"
+# The PROJECT root is searched too — and is anchored at the git toplevel, not $PWD, so /roadmap
+# invoked from a package subdirectory of a monorepo still finds the repo-root skills.
+eq "$(rc_snip '/release' "$work/empty-sk" sk)"        1 "a project-root skill resolves"
+# $HOME (or any user root) containing whitespace must not word-split.
+mkdir -p "$work/sp ace"; mk_skill "$work/sp ace/release"
+eq "$(rc_snip '/release' "$work/sp ace")"             1 "a user root containing a space still resolves"
 
 # ============================================================================================
 # 8. THE HARNESS GUARDS ITSELF
@@ -741,7 +759,8 @@ for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilesto
   body="$(snippet "$s")"
   [ -n "$body" ] || continue
   body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
-  body="${body//\{\{SKILLS_DIRS\}\}/.claude\/skills \"\$HOME\/.claude\/skills\"}"
+  body="${body//\{\{SKILLS_SUBDIR\}\}/.claude\/skills}"
+  body="${body//\{\{SKILLS_USER_ROOT\}\}/\"\$HOME\/.claude\/skills\"}"
   printf '%s\n' "$body" > "$work/parse-$s.sh"
   if bash -n "$work/parse-$s.sh" 2>/dev/null; then ok; else
     bad "snippet '$s' is not valid bash: $(bash -n "$work/parse-$s.sh" 2>&1 | head -1)"
@@ -751,7 +770,8 @@ done
 # token added to a snippet without a mapping would reach a user as literal text.
 allsnips="$(for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do snippet "$s"; done)"
 allsnips="${allsnips//\{\{ROADMAP_LIB\}\}/}"
-allsnips="${allsnips//\{\{SKILLS_DIRS\}\}/}"
+allsnips="${allsnips//\{\{SKILLS_SUBDIR\}\}/}"
+allsnips="${allsnips//\{\{SKILLS_USER_ROOT\}\}/}"
 hasnt "$allsnips" '{{' \
   "no executed snippet carries a placeholder outside the mapped vocabulary"
 

@@ -94,8 +94,8 @@ In release-readiness mode, every run `/roadmap`:
   - **Requirements unmet** (open `release-blocker`s remain) → the next unblocked
     `/implement-issue` bundle *from the release set*.
   - **Requirements met and the default branch is green** (0 open `release-blocker`s in an armed
-    milestone) → `Next: /release`
-    with `✅ Release requirements met (<milestone>: 0 open blockers, <branch> green) — cutting.` (If
+    milestone) → `Next: <your declared release-command>` — **only if it resolves to an installed
+    skill**; otherwise `Next: none — …` (see *You must declare the release command* below), with `✅ Release requirements met (<milestone>: 0 open blockers, <branch> green) — cutting.` (If
     non-blocker issues remain open in the milestone, the banner names them: they do not hold
     the release, and `baseline release roll` sends them to `Backlog` on the cut — re-slate
     them deliberately, like any other work.)
@@ -175,10 +175,10 @@ owner owns. Write your own release skill (it is the
 the baseline ships none by decision) and point the marker at it. This repo's own copy lives at
 `.claude/skills/release/`, and its procedure is an executable driver rather than prose — see D14.
 
-**Configurable last mile (auto-cut).** By default the operator runs the emitted `/release`,
+**Configurable last mile (auto-cut).** By default the operator runs the emitted release command,
 exactly like running an emitted `/implement-issue` — the *determination* is fully automated,
 zero readiness-watching. A repo that never deploys on release (tag-only) may opt into a
-zero-touch driver that runs `/release` automatically when readiness flips true. Auto-cut is
+zero-touch driver that runs it automatically when readiness flips true. Auto-cut is
 **off by default and gated behind explicit repo opt-in** (generality + charge-safety); keep
 the confirm for repos that **deploy** on release. Its prescribed home is a project-scoped
 Stop-hook / driver-loop config (the enforcement-hooks layer, issues #14/#25), not `/roadmap`

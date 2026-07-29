@@ -111,12 +111,16 @@ fi
 Skip that lookup and the manifest entry is silently ignored — a common and
 confusing failure, because `agents.toml` *looks* like it is in force.
 
-**3. Let `/roadmap` call it.** In release-readiness mode `/roadmap` prints
-`Next: /release` once the active milestone's requirements are met — it
-**emits, never runs**. A repo with no release skill therefore gets an
-unrunnable suggestion, not an error. Point the emission at a different command
-with the roadmap artifact's `<!-- release-command: CMD -->` marker (see
-[release-goal-convention.md](release-goal-convention.md)).
+**3. Let `/roadmap` call it.** In release-readiness mode `/roadmap` prints your release
+command once the active milestone's requirements are met — it **emits, never runs**.
+
+Name it on the roadmap artifact with `` `<!-- release-command: /your-skill -->` `` (see
+[release-goal-convention.md](release-goal-convention.md)). There is **no default**, and
+`/roadmap` verifies the command **resolves to an installed skill** before emitting it: a repo
+with no release skill gets `Next: none — …` naming what to add, not a suggestion that cannot
+run. That is deliberate — an unresolvable slash command does not fail loudly, it fuzzy-matches
+the nearest built-in, so a bare `/release` on a repo without one silently opens an unrelated
+viewer at the moment the roadmap says *cutting* (#188).
 
 **4. End it with `baseline release roll`.** Milestone rollover is the one part
 of cutting that is *not* yours to invent: it has a single correct shape, on

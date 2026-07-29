@@ -492,27 +492,45 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   # the artifact carries none). A skill DIRECTORY holding a SKILL.md is the resolution test — that
   # is what makes a slash command exist for the agent reading this.
   CMD="${CMD:-}"
-  # Resolve the COMMAND NAME only. A marker may carry arguments (`/ship --channel production`);
-  # searching for a directory with the arguments embedded in its name would report a valid skill
-  # missing. The FULL value is still what gets emitted.
-  SKILL_NAME="${CMD%% *}"; SKILL_NAME="${SKILL_NAME#/}"
-  # {{SKILLS_DIRS}} is this agent's own discovery roots, project-local first — Claude, Codex and
-  # Antigravity do NOT share a layout (Antigravity discovers under a `config/` root), so hardcoding
-  # the Claude paths would report every installed skill on the other two as missing.
   RESOLVES=0
-  if [ -n "$SKILL_NAME" ]; then
-    for d in {{SKILLS_DIRS}}; do
-      [ -f "$d/$SKILL_NAME/SKILL.md" ] && RESOLVES=1 && break
-    done
-  fi
+  # The marker must declare an INVOCATION, i.e. start with `/`. `release` with no slash resolves a
+  # directory just as happily but emits `Next: release`, which is not a command anyone can run —
+  # the resolver would be certifying something that cannot be invoked as advertised.
+  case "$CMD" in
+    /?*)
+      # Resolve the COMMAND NAME only. A marker may carry arguments (`/ship --channel production`);
+      # searching for a directory with the arguments in its name reports a valid skill missing.
+      # The FULL value is still what gets emitted.
+      SKILL_NAME="${CMD%% *}"; SKILL_NAME="${SKILL_NAME#/}"
+      # PROJECT root is the GIT TOPLEVEL, not $PWD: /roadmap may run from a package subdirectory of
+      # a monorepo, where the agent still discovers the repo-root skills but a relative path would
+      # not. USER root is agent-specific and pre-quoted by the renderer ($HOME may contain spaces;
+      # Codex honours CODEX_HOME) — Claude, Codex and Antigravity do not share a layout.
+      GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+      for d in "$GITROOT/{{SKILLS_SUBDIR}}" {{SKILLS_USER_ROOT}}; do
+        f="$d/$SKILL_NAME/SKILL.md"
+        [ -f "$f" ] || continue
+        # EXISTENCE IS NOT LOADABILITY. A SKILL.md without well-formed frontmatter is omitted from
+        # the agent's registry, so `-f` alone would certify a command the agent cannot invoke.
+        # Require the opening `---` and both keys every loader needs.
+        head -n1 "$f" | grep -q '^---$' || continue
+        awk 'NR==1{next} $0=="---"{exit} /^name:[[:space:]]/{n=1} /^description:[[:space:]]/{d=1} END{exit !(n&&d)}' "$f" || continue
+        RESOLVES=1; break
+      done
+      ;;
+  esac
   ```
 
   - **Marker present and it resolves** → emit the `✅ … — cutting.` banner, the `Then: baseline
     release roll …` reminder, and `Next: <CMD>` (the **full** marker value, arguments included).
   - **Marker present but it does NOT resolve** → emit
     `Next: none — release-command "<CMD>" is declared but no such skill exists; fix the marker or add the skill.`
-  - **No marker** → do **not** substitute `/release`. Emit
-    `Next: none — requirements met, but this repo declares no release command. Add <!-- release-command: /your-skill --> to the roadmap artifact, or follow the project's documented release procedure.`
+  - **No marker, or a value that is not a `/command`** → do **not** substitute `/release`. Emit
+    ``Next: none — requirements met, but this repo declares no release command. Add `<!-- release-command: /your-skill -->` to the roadmap artifact, or follow the project's documented release procedure.``
+
+    **Wrap the marker in backticks**, exactly as shown. The action line is rendered as Markdown by
+    most clients, so a bare `<!-- … -->` is parsed as an HTML comment and **hidden** — leaving the
+    operator told to add something they cannot see.
 
   **The banner and the rollover reminder belong to the FIRST branch only.** Both assert that a cut
   is happening — "— cutting.", "AFTER the cut" — and printing them above `Next: none` produces a
