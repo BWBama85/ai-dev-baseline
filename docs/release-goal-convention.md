@@ -158,8 +158,12 @@ predicate, so a run can print it and still emit the cut.
 it prints one — but it will only print one that **exists**. Name it on the artifact:
 
 ```markdown
-<!-- release-command: /release -->
+<!-- release-command: release -->
 ```
+
+The value is **agent-neutral**: any invocation prefix you write is stripped, and each agent's
+rendered workflow re-attaches its own (`/release` on Claude and Antigravity, `$release` on Codex).
+So one artifact is correct on every agent.
 
 There is **no default**, and that is deliberate (#188). An unresolvable slash command does not
 fail loudly: Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo that

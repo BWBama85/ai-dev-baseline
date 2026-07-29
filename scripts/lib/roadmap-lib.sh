@@ -471,6 +471,31 @@ cmd_release_counts() {
 # The carve-out drops an empty value and the literal `NAME` — the schema's own example token,
 # which bootstrap can copy verbatim (base/workflows/roadmap.md). Treating that placeholder as a
 # real milestone is the classic false activation this whole opt-in is designed to avoid.
+# `release-command` — the SAME discipline as marker-title, for the other required marker (#188).
+#
+# Why it needs a predicate rather than "assume CMD holds the right value": every bootstrapped
+# roadmap body carries the schema's own marker-shaped EXAMPLE, so a naive read cannot tell a real
+# declaration from documentation — and the no-marker branch and the declared-but-missing branch
+# then stop being deterministically distinguishable, which is the whole point of the emission
+# contract. Returns every distinct declared value so the caller can refuse an ambiguous artifact,
+# exactly as it must for the milestone marker.
+#
+# The carve-out drops the placeholder names the schema itself uses (`your-skill`,
+# `your-release-skill`, `CMD`), with or without a leading invocation prefix, so copying the example
+# verbatim reads as "not declared" rather than as a command that can never resolve.
+cmd_release_command() {
+  [ "$#" -eq 0 ] || die "release-command: takes no arguments (roadmap artifact body on stdin)"
+  grep -o '<!--[[:space:]]*release-command:[[:space:]]*[^>]*-->' \
+    | sed 's/.*release-command:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
+    | grep -v '^[[:space:]]*$' \
+    | sed 's/^[/$]//' \
+    | grep -vx 'your-skill' \
+    | grep -vx 'your-release-skill' \
+    | grep -vx 'CMD' \
+    | sort -u
+  return 0
+}
+
 cmd_marker_title() {
   [ "$#" -eq 0 ] || die "marker-title: takes no arguments (roadmap artifact body on stdin)"
   # `grep -o` (one match per LINE OF OUTPUT), not `sed s///p` (one substitution per line of
@@ -972,6 +997,7 @@ main() {
     release-ready)    cmd_release_ready "$@" ;;
     release-counts)   cmd_release_counts "$@" ;;
     marker-title)     cmd_marker_title "$@" ;;
+    release-command)  cmd_release_command "$@" ;;
     deps-from-body)   cmd_deps_from_body "$@" ;;
     decisions)        cmd_decisions "$@" ;;
     open-issues)      cmd_open_issues "$@" ;;

@@ -703,13 +703,16 @@ done
 # The met-emission must name a command that EXISTS. An unresolvable slash command does not fail
 # loudly — Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo without
 # one silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
-rc_snip() {   # <CMD> <user-skills-root> [project-subdir] [prefix] [extra-key] -> prints RESOLVES
+rc_snip() {   # <CMD> <user-root> [subdirs] [prefix] [extra-key] [probe] -> prints RESOLVES
   body="$(snippet release-command)"
-  body="${body//\{\{SKILLS_SUBDIR\}\}/${3-no-project-skills}}"
+  body="${body//\{\{SKILLS_SUBDIRS\}\}/${3-no-project-skills}}"
+  body="${body//\{\{SKILL_REGISTRY_PROBE\}\}/${6-}}"
+  body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
   body="${body//\{\{SKILLS_USER_ROOT\}\}/\"$2\"}"
   body="${body//\{\{SKILL_PREFIX\}\}/${4:-/}}"
   body="${body//\{\{SKILL_EXTRA_KEY\}\}/${5-}}"
-  printf 'CMD=%s\n%s\nprintf %%s "$RESOLVES"\n' "$(printf '%q' "$1")" "$body" > "$work/rc.sh"
+  printf 'ARTIFACT_BODY=%s\n%s\nprintf %%s "$RESOLVES"\n' \
+    "$(printf '%q' "<!-- release-command: $1 -->")" "$body" > "$work/rc.sh"
   ( cd "$work" && bash "$work/rc.sh" )
 }
 # A LOADABLE skill: opening `---` plus the two keys every registry needs. `printf x` is not one.
@@ -735,8 +738,7 @@ mkdir -p "$work/sk/partialfm"; printf -- '---\nname: partialfm\n---\n' > "$work/
 eq "$(rc_snip '/partialfm' "$work/sk")"               0 "SKILL.md missing description: does not resolve"
 # The marker must declare an INVOCATION. `release` resolves a directory but emits `Next: release`,
 # which is not a runnable command.
-eq "$(rc_snip 'release' "$work/sk")"                  0 "a value without a leading / does not resolve"
-eq "$(rc_snip '/' "$work/sk")"                        0 "a bare slash does not resolve"
+eq "$(rc_snip '/' "$work/sk")"                        0 "a bare prefix with no name does not resolve"
 # The PROJECT root is searched too — and is anchored at the git toplevel, not $PWD, so /roadmap
 # invoked from a package subdirectory of a monorepo still finds the repo-root skills.
 eq "$(rc_snip '/release' "$work/empty-sk" sk)"        1 "a project-root skill resolves"
@@ -749,13 +751,22 @@ eq "$(rc_snip '/release' "$work/sk" '')"              1 "empty project subdir st
 eq "$(rc_snip '/release' "$work/empty-sk" '')"        0 "empty project subdir does not fall back to the git root"
 # The invocation prefix is RENDERED per agent: Codex uses `$skill`, not a slash command. With a
 # `$` prefix, `/release` must be REJECTED and `$release` accepted — the mirror of the Claude case.
-eq "$(rc_snip '$release' "$work/sk" sk '$')"          1 "codex prefix: \$release resolves"
-eq "$(rc_snip '/release' "$work/sk" sk '$')"          0 "codex prefix: /release is not an invocation"
-eq "$(rc_snip '$release' "$work/sk" sk '/')"          0 "claude prefix: \$release is not an invocation"
+# The marker is stored AGENT-NEUTRAL: whatever prefix the author wrote is stripped, and each
+# agent's render re-attaches its own. So one artifact is correct on every agent — which is the
+# real fix for a Codex adopter copying `/release` out of the schema.
+eq "$(rc_snip '$release' "$work/sk" sk '$')"          1 "codex render resolves a \$-written marker"
+eq "$(rc_snip '/release' "$work/sk" sk '$')"          1 "codex render also resolves a /-written marker"
+eq "$(rc_snip '$release' "$work/sk" sk '/')"          1 "claude render resolves a \$-written marker"
+eq "$(rc_snip 'release'  "$work/sk" sk '/')"          1 "a bare name resolves (prefix is re-attached)"
+eq "$(rc_snip '/your-skill' "$work/sk" sk '/')"       0 "the schema placeholder never resolves"
 # `name: # TODO` parses as YAML null — the remainder is a comment, so the field is absent.
 mkdir -p "$work/sk/todofm"
 printf -- '---\nname: # TODO\ndescription: # TODO\n---\n' > "$work/sk/todofm/SKILL.md"
 eq "$(rc_snip '/todofm' "$work/sk" sk)"               0 "a commented-out frontmatter value does not resolve"
+# A QUOTED YAML name is valid and registers fine; a raw compare would reject it.
+mkdir -p "$work/sk/quoted"
+printf -- '---\nname: "quoted"\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/quoted/SKILL.md"
+eq "$(rc_snip '/quoted' "$work/sk" sk '/' user-invocable)"    1 "a quoted YAML name resolves"
 # The loader contract, per agent. `name` must EQUAL the directory (a mismatch is the
 # misidentified-skill case build.sh refuses), and Claude additionally requires `user-invocable`.
 mkdir -p "$work/sk/misnamed"
@@ -791,7 +802,8 @@ for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilesto
   body="$(snippet "$s")"
   [ -n "$body" ] || continue
   body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
-  body="${body//\{\{SKILLS_SUBDIR\}\}/.claude\/skills}"
+  body="${body//\{\{SKILLS_SUBDIRS\}\}/.claude\/skills}"
+  body="${body//\{\{SKILL_REGISTRY_PROBE\}\}/}"
   body="${body//\{\{SKILLS_USER_ROOT\}\}/\"\$HOME\/.claude\/skills\"}"
   body="${body//\{\{SKILL_PREFIX\}\}/\/}"
   body="${body//\{\{SKILL_EXTRA_KEY\}\}/user-invocable}"
@@ -804,7 +816,8 @@ done
 # token added to a snippet without a mapping would reach a user as literal text.
 allsnips="$(for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do snippet "$s"; done)"
 allsnips="${allsnips//\{\{ROADMAP_LIB\}\}/}"
-allsnips="${allsnips//\{\{SKILLS_SUBDIR\}\}/}"
+allsnips="${allsnips//\{\{SKILLS_SUBDIRS\}\}/}"
+allsnips="${allsnips//\{\{SKILL_REGISTRY_PROBE\}\}/}"
 allsnips="${allsnips//\{\{SKILLS_USER_ROOT\}\}/}"
 allsnips="${allsnips//\{\{SKILL_PREFIX\}\}/}"
 allsnips="${allsnips//\{\{SKILL_EXTRA_KEY\}\}/}"

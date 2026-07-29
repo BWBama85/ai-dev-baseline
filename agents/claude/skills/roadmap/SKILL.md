@@ -108,7 +108,7 @@ parse, and rewrite it deterministically:
 <!-- OPTIONAL release-readiness mode (owner opt-in — the release-goal convention module, #27/#71):
      add `<!-- release-milestone: NAME -->` naming the active release milestone to make /roadmap
      compute release readiness live and emit the release command when the requirements are met (see
-     "Release-readiness mode" below). `<!-- release-command: /your-skill -->` names the command a
+     "Release-readiness mode" below). `<!-- release-command: your-skill -->` names the command a
      met release emits — REQUIRED for a cut to be emitted, because there is no safe default: an
      unresolvable slash command fuzzy-matches an unrelated built-in rather than failing (#188), and
      #3/D7 guarantees the baseline ships no `/release` to fall back on. Absent → classic
@@ -491,61 +491,81 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
 
   ```bash
   # ADB-SNIPPET: release-command
-  # Self-contained, like every other block here. CMD is the `release-command` marker value ("" if
-  # the artifact carries none). A skill DIRECTORY holding a SKILL.md is the resolution test — that
-  # is what makes a slash command exist for the agent reading this.
-  CMD="${CMD:-}"
+  # Self-contained, like every other block here. The marker is read by the TESTED predicate, never
+  # by eye: every bootstrapped roadmap body carries the schema's own marker-shaped EXAMPLE, so a
+  # naive read cannot tell a declaration from documentation — and the no-marker and
+  # declared-but-missing branches then stop being deterministically distinguishable.
+  # `release-command` drops the placeholder values and returns EVERY distinct declaration, so an
+  # ambiguous artifact is refused rather than silently resolved to one of them.
+  CMDS="$(printf '%s' "$ARTIFACT_BODY" | bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-command)" || { echo "ERROR: release-command extraction failed"; exit 1; }
+  NCMD="$(printf '%s\n' "$CMDS" | sed '/^$/d' | wc -l | tr -d ' ')"
+  [ "$NCMD" -le 1 ] || { echo "ERROR: roadmap declares $NCMD release-command values — need at most 1"; exit 1; }
+  BARE_CMD="$(printf '%s\n' "$CMDS" | sed '/^$/d' | head -n1)"
+  # The marker is stored AGENT-NEUTRAL: the predicate strips whatever invocation prefix the author
+  # wrote, and each agent's render re-attaches its own. So one artifact is correct on every agent —
+  # a Codex adopter who copied `/release` from the schema still gets a working `$release`.
+  #
+  # `${PFX}${BARE_CMD}`, never `"/$BARE_CMD"`: on the Codex render the latter
+  # becomes `"$$BARE_CMD"`, and `$$` is the SHELL PID.
+  PFX='/'
+  CMD=""; [ -n "$BARE_CMD" ] && CMD="${PFX}${BARE_CMD}"
   RESOLVES=0
   # The marker must declare an INVOCATION for THIS agent. `release` with no prefix resolves a
   # directory just as happily but emits `Next: release`, which nobody can run — the resolver would
   # certify something that cannot be invoked as advertised. The prefix is RENDERED per agent
   # (/): Claude and Antigravity use a slash command, Codex uses `$skill`. Hardcoding
   # `/` meant no marker value could both validate and invoke on Codex.
-  PFX='/'
   case "$CMD" in
     "$PFX"?*)
       # Resolve the COMMAND NAME only. A marker may carry arguments (`/ship --channel production`);
       # searching for a directory with the arguments in its name reports a valid skill missing.
       # The FULL value is still what gets emitted.
       SKILL_NAME="${CMD%% *}"; SKILL_NAME="${SKILL_NAME#"$PFX"}"
-      # PROJECT root is the GIT TOPLEVEL, not $PWD: /roadmap may run from a package subdirectory of
-      # a monorepo, where the agent still discovers the repo-root skills but a relative path would
-      # not. USER root is agent-specific and pre-quoted by the renderer ($HOME may contain spaces;
-      # Codex honours CODEX_HOME) — Claude, Codex and Antigravity do not share a layout.
-      GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
-      SUBDIR=".claude/skills"
-      # An EMPTY subdir means this agent has no established project-local skill discovery, so only
-      # the user root is searched. Certifying a command from a directory the agent never loads is
-      # the same failure as inventing one.
-      PROJECT_ROOT=""; [ -n "$SUBDIR" ] && PROJECT_ROOT="$GITROOT/$SUBDIR"
-      for d in ${PROJECT_ROOT:+"$PROJECT_ROOT"} "$HOME/.claude/skills"; do
-        f="$d/$SKILL_NAME/SKILL.md"
-        [ -f "$f" ] || continue
-        # EXISTENCE IS NOT LOADABILITY. A SKILL.md without well-formed frontmatter is omitted from
-        # the agent's registry, so `-f` alone would certify a command the agent cannot invoke.
-        # Require the opening `---` and both keys every loader needs.
-        head -n1 "$f" | grep -q '^---$' || continue
-        # The frontmatter must satisfy THIS LOADER'S contract, not merely exist:
-        #   * CLOSED — reaching END with no second `---` is an unterminated block the loader
-        #     rejects, which a keys-only test happily certifies.
-        #   * NON-EMPTY values — and `#` is excluded from the first character, because
-        #     `name: # TODO` parses as YAML null (the rest is a comment).
-        #   * `name` EQUALS THE DIRECTORY — that is what identifies the skill; a mismatch is the
-        #     misidentified-skill case scripts/build.sh refuses for generated skills.
-        #   * user-invocable present when this agent requires one (Claude needs
-        #     `user-invocable`; Codex and Antigravity honour only name+description).
-        awk -v want="$SKILL_NAME" -v extra='user-invocable' '
-             NR==1{next}
-             $0=="---"{closed=1; exit}
-             /^name:[[:space:]]*[^[:space:]#]/ {
-               v=$0; sub(/^name:[[:space:]]*/,"",v); sub(/[[:space:]]+$/,"",v)
-               if (v == want) n=1
-             }
-             /^description:[[:space:]]*[^[:space:]#]/{d=1}
-             { if (extra != "" && index($0, extra ":") == 1) e=1 }
-             END{exit !(closed && n && d && (extra == "" || e))}' "$f" || continue
-        RESOLVES=1; break
-      done
+
+      # PREFER THE AGENT'S OWN REGISTRY. It is the ground truth, and it accounts for state no
+      # filesystem check can see — a skill disabled via config is omitted from the registry while
+      # its SKILL.md sits right there, and a quoted YAML `name:` registers fine but would fail a
+      # naive string compare.  is empty for agents with no such command.
+      PROBE=''
+      if [ -n "$PROBE" ] && command -v "${PROBE%% *}" >/dev/null 2>&1; then
+        $PROBE 2>/dev/null \
+          | sed -n '/^#* *Available skills/,$p' \
+          | grep -Eq "(^|[^A-Za-z0-9_-])$SKILL_NAME([^A-Za-z0-9_-]|$)" && RESOLVES=1
+      else
+        # FILESYSTEM FALLBACK — the loader's contract, checked by hand.
+        GITROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+        # .claude/skills is a LIST (Codex loads both `.codex/skills` and `.agents/skills`) and
+        # is EMPTY for an agent whose project-local discovery is unestablished, in which case only
+        # the user root is searched. Certifying a command from a directory the agent never loads is
+        # the same failure as inventing one.
+        SEARCH=""
+        for sub in .claude/skills; do SEARCH="$SEARCH $GITROOT/$sub"; done
+        for d in $SEARCH "$HOME/.claude/skills"; do
+          f="$d/$SKILL_NAME/SKILL.md"
+          [ -f "$f" ] || continue
+          # The frontmatter must satisfy THIS LOADER'S contract, not merely exist:
+          #   * CLOSED — reaching END with no second `---` is an unterminated block the loader
+          #     rejects, which a keys-only test happily certifies.
+          #   * NON-EMPTY values — `#` is excluded from the first character, because
+          #     `name: # TODO` parses as YAML null (the rest is a comment).
+          #   * `name` EQUALS THE DIRECTORY, after stripping surrounding quotes: `name: "release"`
+          #     is valid YAML that registers fine, and a raw compare would reject it.
+          #   * user-invocable present when this agent requires one (Claude needs
+          #     `user-invocable`; Codex and Antigravity honour only name+description).
+          awk -v want="$SKILL_NAME" -v extra='user-invocable' '
+               NR==1{next}
+               $0=="---"{closed=1; exit}
+               /^name:[[:space:]]*[^[:space:]#]/ {
+                 v=$0; sub(/^name:[[:space:]]*/,"",v); sub(/[[:space:]]+$/,"",v)
+                 gsub(/^["'"'"']|["'"'"']$/,"",v)
+                 if (v == want) n=1
+               }
+               /^description:[[:space:]]*[^[:space:]#]/{d=1}
+               { if (extra != "" && index($0, extra ":") == 1) e=1 }
+               END{exit !(closed && n && d && (extra == "" || e))}' "$f" || continue
+          RESOLVES=1; break
+        done
+      fi
       ;;
   esac
   ```
@@ -555,7 +575,7 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   - **Marker present but it does NOT resolve** → emit
     `Next: none — release-command "<CMD>" is declared but no such skill exists; fix the marker or add the skill.`
   - **No marker, or a value that is not a `/command`** → do **not** substitute `/release`. Emit
-    ``Next: none — requirements met, but this repo declares no release command. Add `<!-- release-command: /your-skill -->` to the roadmap artifact, or follow the project's documented release procedure.``
+    ``Next: none — requirements met, but this repo declares no release command. Add `<!-- release-command: your-skill -->` to the roadmap artifact, or follow the project's documented release procedure.``
 
     **Wrap the marker in backticks**, exactly as shown. The action line is rendered as Markdown by
     most clients, so a bare `<!-- … -->` is parsed as an HTML comment and **hidden** — leaving the

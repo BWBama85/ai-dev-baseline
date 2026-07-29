@@ -169,9 +169,15 @@ announce_marker() {
   # #3/D7 guarantees the baseline ships no `/release` to fall back on. Announcing only the first
   # marker sends a project through the prescribed one-command setup into release-readiness mode
   # with no way to cut, discovering it only at `Next: none` when the release is finally ready.
-  adb_info "             <!-- release-command: /your-release-skill -->"
-  adb_info "  note     the release command is REQUIRED and has no default; /roadmap emits it only"
-  adb_info "           if it resolves to an installed skill. Release execution is project-owned."
+  # AGENT-NEUTRAL on purpose. This helper installs into every agent and cannot know which one will
+  # read the artifact, and the invocation prefix differs (Claude/Antigravity `/skill`, Codex
+  # `$skill`). Printing one agent's form would hand a Codex adopter the exact value its resolver
+  # rejects — the failure this marker exists to prevent, introduced by the initializer.
+  adb_info "             <!-- release-command: <your-release-skill> -->"
+  adb_info "  note     use YOUR agent's invocation syntax for the value (Claude/Antigravity"
+  adb_info "           /your-release-skill, Codex \$your-release-skill). The release command is"
+  adb_info "           REQUIRED and has no default; /roadmap emits it only if it resolves to an"
+  adb_info "           installed skill. Release execution is project-owned (#3)."
 }
 
 cmd_init() {
@@ -210,9 +216,32 @@ cmd_status() {
   adb_info "  label '$BLOCKER_LABEL': $(label_exists "$BLOCKER_LABEL" && echo present || echo ABSENT)"
   adb_info "  label '$POSTDEPLOY_LABEL': $(label_exists "$POSTDEPLOY_LABEL" && echo present || echo ABSENT)"
   adb_info ""
+  # BOTH markers are reported, because both are required to reach a cut. Reporting only the
+  # milestone let a user run the documented status check, see nothing missing, and discover the
+  # incomplete convention at `Next: none` when the release was finally ready (#188).
+  local rc_body rc_vals rc_n
+  rc_body=""; rc_vals=""; rc_n=0
+  if [ -n "$ROADMAP_NUM" ] || ROADMAP_NUM="$(roadmap_issue_nums | head -n1)"; then
+    [ -n "${ROADMAP_NUM:-}" ] && rc_body="$(gh issue view "$ROADMAP_NUM" --json body --jq .body 2>/dev/null || true)"
+  fi
+  if [ -n "$rc_body" ]; then
+    rc_vals="$(printf '%s' "$rc_body" | bash "$(dirname "${BASH_SOURCE[0]}")/roadmap-lib.sh" release-command 2>/dev/null || true)"
+    rc_n="$(printf '%s\n' "$rc_vals" | sed '/^$/d' | wc -l | tr -d ' ')"
+  fi
+  case "$rc_n" in
+    0) adb_info "  release-command marker: ABSENT — REQUIRED, and it has no default" ;;
+    1) adb_info "  release-command marker: declared ($(printf '%s\n' "$rc_vals" | head -n1))" ;;
+    *) adb_info "  release-command marker: AMBIGUOUS ($rc_n values declared — need exactly 1)" ;;
+  esac
+  adb_info ""
   if [ -n "$rnum" ]; then
     adb_info "Primitives present. /roadmap runs in release-readiness mode once its artifact carries"
     adb_info "the marker:  <!-- release-milestone: $RELEASE_MILESTONE -->"
+    if [ "$rc_n" != "1" ]; then
+      adb_info "It will still stop at 'Next: none' when the release is ready until the artifact also"
+      adb_info "declares:    <!-- release-command: <your-release-skill> -->"
+      adb_info "using YOUR agent's invocation syntax. /roadmap emits it only if it resolves."
+    fi
   else
     adb_info "Convention INACTIVE — /roadmap uses classic backlog-wide mode. Run 'init' to opt in."
   fi
