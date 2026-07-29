@@ -29,6 +29,7 @@ cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 RL="$ROOT/.claude/skills/release/release-lib.sh"
 SKILL="$ROOT/.claude/skills/release/SKILL.md"
+DRV="$ROOT/.claude/skills/release/release.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 
@@ -300,17 +301,50 @@ if [ -n "$PLACEHOLDER_HIT" ]; then
   check_note "review round 1 found; the check exists so it cannot come back."
   check_fail
 fi
-# Do not re-derive predicates that already have a tested home.
-req_fixed "$SKILL" 'marker-title'      skill-uses-marker-title-predicate
-req_fixed "$SKILL" 'release-ready'     skill-uses-readiness-predicate
-req_fixed "$SKILL" 'branch-health'     skill-uses-branch-health-predicate
-req_fixed "$SKILL" 'match-head-commit' skill-pins-the-merge-to-the-reviewed-head
-req_fixed "$SKILL" 'mergeCommit'       skill-tags-the-prs-own-merge-commit
+# The DRIVER is where the shell lives now, so the delegation invariants assert against it.
+req_fixed "$DRV" 'marker-title'      driver-uses-marker-title-predicate
+req_fixed "$DRV" 'release-ready'     driver-uses-readiness-predicate
+req_fixed "$DRV" 'branch-health'     driver-uses-branch-health-predicate
+req_fixed "$DRV" 'match-head-commit' driver-pins-the-merge-to-the-reviewed-head
+req_fixed "$DRV" 'mergeCommit'       driver-tags-the-prs-own-merge-commit
+req_fixed "$DRV" 'adb_version_ge'    driver-uses-the-shared-comparator
+req_fixed "$DRV" 'assert_role'       driver-keeps-the-release-role-guard
+req_fixed "$DRV" 'exit-code'         driver-verifies-the-remote-tag-with-exit-code
+# GNU-only tools are a portability failure this repo explicitly forbids (Golden Rule 4: macOS bash
+# 3.2 / BSD userland). `sort -V` does not exist on stock macOS, and inside a command substitution
+# without pipefail the failure is masked, leaving an EMPTY previous-version that reads as "first
+# release". Asserted against COMMENT-STRIPPED source so the file can explain the hazard.
+if sed 's/#.*//' "$DRV" | grep -q 'sort -V'; then
+  check_note "release.sh uses GNU-only 'sort -V' in live code — not available on stock macOS"
+  check_fail
+fi
 # BRIDGE THE TWO ACCOUNTINGS. `check_result` RETURNS non-zero; `check_summary` exits on its own
 # pass/fail counter. Leaving them unjoined made this script report the boundary failures and then
 # exit 0 — a gate that prints diagnostics and passes anyway, which is the exact "green tells you
 # nothing" failure this file was written to close. `bad_quiet` folds the boolean into the counter
 # without reprinting (check_note already emitted the detail).
 check_result "release skill delegates its decisions and stays out of the installed lib dir" || bad_quiet
+
+# =================================================================================================
+# The driver's argument surface. These are the exact classes round 3 produced: a fenced block
+# cannot receive positional arguments, so `${1:?}` aborted before doing anything. A real script
+# takes real arguments — and these assert that it does, and that it refuses bad ones.
+# =================================================================================================
+drv() { bash "$DRV" "$@" >/dev/null 2>&1; printf '%s' "$?"; }
+eq "$(drv --help)"                 0 "driver --help exits 0"
+eq "$(drv)"                        2 "no subcommand is a usage error"
+eq "$(drv not-a-subcommand)"       2 "unknown subcommand is a usage error"
+eq "$(drv version-guard)"          2 "version-guard requires an argument"
+eq "$(drv version-guard a b)"      2 "version-guard rejects extra arguments"
+eq "$(drv record-pr)"              2 "record-pr requires an argument"
+eq "$(drv record-pr not-a-number)" 1 "record-pr rejects a non-numeric PR"
+eq "$(drv tag)"                    2 "tag requires --message-file"
+eq "$(drv tag --message-file)"     2 "tag --message-file requires a path"
+eq "$(drv tag --message-file /nonexistent/nope)" 1 "tag refuses a missing message file"
+eq "$(drv tag --wrong-flag x)"     2 "tag rejects an unknown flag"
+# An EMPTY message file must be refused too — an empty annotated tag is the release's only note.
+: > /tmp/adb-empty-msg.$$
+eq "$(drv tag --message-file /tmp/adb-empty-msg.$$)" 1 "tag refuses an empty message file"
+rm -f /tmp/adb-empty-msg.$$
 
 check_summary "release-skill"

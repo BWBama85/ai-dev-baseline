@@ -177,14 +177,26 @@ cmd_changelog_verify() {
 # exactly the shape a half-finished release leaves behind.
 cmd_unreleased_entries() {
   [ "$#" -eq 0 ] || die "unreleased-entries: takes no arguments (CHANGELOG on stdin)"
+  # HTML-comment state is tracked ACROSS lines. Recognising only a single-line `<!-- … -->` skips
+  # the opening line of a MULTILINE comment and then counts its body as release entries — so a
+  # section holding nothing but a placeholder comment reported "has entries" and would have let an
+  # empty release through to a permanent tag, which is the one thing this predicate exists to stop.
   count="$(awk '
     /^## \[Unreleased\]/ { inblock = 1; next }
-    /^## \[/            { inblock = 0 }
+    /^## \[/             { inblock = 0 }
     inblock {
       line = $0
       sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
-      if (line == "") next                 # blank
-      if (line ~ /^<!--/) next             # a comment line
+      if (incomment) {
+        if (line ~ /-->/) { sub(/^.*-->/, "", line); incomment = 0 } else next
+        sub(/^[[:space:]]+/, "", line)
+        if (line == "") next
+      }
+      # Strip any number of complete single-line comments, then detect an unterminated opener.
+      while (line ~ /<!--.*-->/) { sub(/<!--.*?-->/, "", line) }
+      if (line ~ /<!--/) { sub(/<!--.*$/, "", line); incomment = 1 }
+      sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+      if (line == "") next                 # blank, or nothing left after comment removal
       if (line ~ /^###/) next              # a subsection heading is not itself an entry
       n++
     }
