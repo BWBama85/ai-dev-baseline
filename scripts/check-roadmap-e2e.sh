@@ -698,11 +698,38 @@ for kind in milestones openissues; do
 done
 
 # ============================================================================================
+# 7b. release-command RESOLUTION (#188)
+# ============================================================================================
+# The met-emission must name a command that EXISTS. An unresolvable slash command does not fail
+# loudly — Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo without
+# one silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
+rc_snip() {   # <CMD> <skills-root> -> prints RESOLVES
+  body="$(snippet release-command)"
+  body="${body//\{\{SKILLS_DIRS\}\}/$2}"
+  printf 'CMD=%s\n%s\nprintf %%s "$RESOLVES"\n' "$(printf '%q' "$1")" "$body" > "$work/rc.sh"
+  ( cd "$work" && bash "$work/rc.sh" )
+}
+mkdir -p "$work/sk/release" "$work/sk/ship"
+printf 'x\n' > "$work/sk/release/SKILL.md"
+printf 'x\n' > "$work/sk/ship/SKILL.md"
+
+eq "$(rc_snip '/release' "$work/sk")"                 1 "a declared command with a SKILL.md resolves"
+eq "$(rc_snip '/nope' "$work/sk")"                    0 "a declared command with no skill does NOT resolve"
+eq "$(rc_snip '' "$work/sk")"                         0 "an absent marker never resolves (no /release default)"
+# A marker may carry ARGUMENTS. Resolution must use the command name only, or a valid skill reads
+# as missing — skills take invocation arguments, so this is an ordinary marker, not an edge case.
+eq "$(rc_snip '/ship --channel production' "$work/sk")" 1 "arguments are stripped before resolution"
+eq "$(rc_snip '/ship --channel production' "$work/empty-sk")" 0 "still refuses when the named skill is absent"
+# A directory without a SKILL.md is not a skill.
+mkdir -p "$work/sk/hollow"
+eq "$(rc_snip '/hollow' "$work/sk")"                  0 "a directory without SKILL.md does not resolve"
+
+# ============================================================================================
 # 8. THE HARNESS GUARDS ITSELF
 # ============================================================================================
 # Every snippet this file claims to execute must still exist. Without this, renaming a marker
 # would make run_snippet quietly find nothing and the suite would go green on zero coverage.
-for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned; do
+for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do
   if [ -n "$(snippet "$s")" ]; then ok; else bad "workflow lost its '# ADB-SNIPPET: $s' marker"; fi
 done
 
@@ -710,18 +737,22 @@ done
 # the failing line. This is the cheapest guard in the file and it has already earned its place: an
 # apostrophe inside a `${VAR:?word}` message is a syntax error even within double quotes, and bash
 # then refuses the WHOLE snippet — a fail-loud guard that silently broke everything around it.
-for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned; do
+for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do
   body="$(snippet "$s")"
   [ -n "$body" ] || continue
-  printf '%s\n' "${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}" > "$work/parse-$s.sh"
+  body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
+  body="${body//\{\{SKILLS_DIRS\}\}/.claude\/skills \"\$HOME\/.claude\/skills\"}"
+  printf '%s\n' "$body" > "$work/parse-$s.sh"
   if bash -n "$work/parse-$s.sh" 2>/dev/null; then ok; else
     bad "snippet '$s' is not valid bash: $(bash -n "$work/parse-$s.sh" 2>&1 | head -1)"
   fi
 done
 # A snippet body must not ship an unresolved placeholder: build.sh maps {{…}} per agent, so a
 # token added to a snippet without a mapping would reach a user as literal text.
-allsnips="$(for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned; do snippet "$s"; done)"
-hasnt "${allsnips//\{\{ROADMAP_LIB\}\}/}" '{{' \
+allsnips="$(for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command; do snippet "$s"; done)"
+allsnips="${allsnips//\{\{ROADMAP_LIB\}\}/}"
+allsnips="${allsnips//\{\{SKILLS_DIRS\}\}/}"
+hasnt "$allsnips" '{{' \
   "no executed snippet carries a placeholder outside the mapped vocabulary"
 
 check_summary "roadmap-e2e"

@@ -104,6 +104,14 @@ render_agent_skill() {
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
   state_assert="bash \"\$HOME/.$agent/scripts/lib/state-assert.sh\""
   current_agent="$agent"
+  # Where THIS agent discovers skills — project-local first, then the user-global root. The two
+  # are not derivable from `.$agent/skills`: Antigravity/Gemini discovers under a `config/`
+  # customization root (see adb_agent_manifest in common.sh), so a workflow that resolved a skill
+  # by guessing the Claude layout reports every installed Codex/Gemini skill missing.
+  case "$agent" in
+    gemini) skills_dirs=".gemini/config/skills \$HOME/.gemini/config/skills" ;;
+    *)      skills_dirs=".$agent/skills \$HOME/.$agent/skills" ;;
+  esac
 
   name="$(basename "$src" .md)"
   out="$root/agents/$agent/skills/$name/SKILL.md"
@@ -163,7 +171,8 @@ render_agent_skill() {
       -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib" \
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
       -v pr_watch="$pr_watch" \
-      -v current_agent="$current_agent" -v subtask="$subtask" '
+      -v current_agent="$current_agent" -v subtask="$subtask" \
+      -v skills_dirs="$skills_dirs" '
     function lreplace(s, from, to,   out, p) {
       out = ""
       while ((p = index(s, from)) > 0) {
@@ -221,6 +230,7 @@ render_agent_skill() {
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
       line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
+      line = lreplace(line, "{{SKILLS_DIRS}}",      skills_dirs)
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line
     }

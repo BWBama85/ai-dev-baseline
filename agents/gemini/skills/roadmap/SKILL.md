@@ -490,23 +490,37 @@ answer (step 4). This is the exact prompt that reprinted verbatim on three conse
   ```bash
   # ADB-SNIPPET: release-command
   # Self-contained, like every other block here. CMD is the `release-command` marker value ("" if
-  # the artifact carries none). The skill DIRECTORY is the resolution test — that is what makes a
-  # slash command exist for the agent reading this.
+  # the artifact carries none). A skill DIRECTORY holding a SKILL.md is the resolution test — that
+  # is what makes a slash command exist for the agent reading this.
   CMD="${CMD:-}"
-  SKILL_NAME="${CMD#/}"
+  # Resolve the COMMAND NAME only. A marker may carry arguments (`/ship --channel production`);
+  # searching for a directory with the arguments embedded in its name would report a valid skill
+  # missing. The FULL value is still what gets emitted.
+  SKILL_NAME="${CMD%% *}"; SKILL_NAME="${SKILL_NAME#/}"
+  # .gemini/config/skills $HOME/.gemini/config/skills is this agent's own discovery roots, project-local first — Claude, Codex and
+  # Antigravity do NOT share a layout (Antigravity discovers under a `config/` root), so hardcoding
+  # the Claude paths would report every installed skill on the other two as missing.
   RESOLVES=0
   if [ -n "$SKILL_NAME" ]; then
-    for d in "$PWD/.claude/skills/$SKILL_NAME" "$HOME/.claude/skills/$SKILL_NAME"; do
-      [ -f "$d/SKILL.md" ] && RESOLVES=1 && break
+    for d in .gemini/config/skills $HOME/.gemini/config/skills; do
+      [ -f "$d/$SKILL_NAME/SKILL.md" ] && RESOLVES=1 && break
     done
   fi
   ```
 
-  - **Marker present and it resolves** → emit `Next: <CMD>`.
+  - **Marker present and it resolves** → emit the `✅ … — cutting.` banner, the `Then: baseline
+    release roll …` reminder, and `Next: <CMD>` (the **full** marker value, arguments included).
   - **Marker present but it does NOT resolve** → emit
     `Next: none — release-command "<CMD>" is declared but no such skill exists; fix the marker or add the skill.`
   - **No marker** → do **not** substitute `/release`. Emit
     `Next: none — requirements met, but this repo declares no release command. Add <!-- release-command: /your-skill --> to the roadmap artifact, or follow the project's documented release procedure.`
+
+  **The banner and the rollover reminder belong to the FIRST branch only.** Both assert that a cut
+  is happening — "— cutting.", "AFTER the cut" — and printing them above `Next: none` produces a
+  self-contradicting report that can lead an operator to treat the milestone as cut, or to roll it
+  without having created the release. For the two non-resolving branches, report readiness plainly
+  instead: `✅ Release requirements met (NAME: 0 open blockers, <branch> green) — but no release
+  command is available.`
 
   All three still end with a single action line, per the output contract. The last two are terminal
   states, not failures: the release *is* ready, and the missing piece is a declaration the owner

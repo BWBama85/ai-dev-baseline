@@ -286,11 +286,23 @@ Put one issue in `Next release` and leave others in `Backlog`, bundled together.
 
 - [ ] **Unmet** → emits the next ready bundle projected onto the milestone, exactly like classic
       mode but scoped.
-- [ ] **Met** → emits `✅ Release requirements met (Next release: 0 open blockers, main green) —
-      cutting.` followed by `Next: /release`. `/roadmap` only **prints** it; it never runs it.
-      When health was `no-ci` the banner says the check was **skipped** instead of claiming green —
-      a branch that was never checked is never reported as green.
-- [ ] A `<!-- release-command: /ship -->` marker overrides the emitted command.
+- [ ] **Met, and the declared release command RESOLVES** → emits `✅ Release requirements met
+      (Next release: 0 open blockers, main green) — cutting.` followed by `Next: <the declared
+      command>`. `/roadmap` only **prints** it; it never runs it. When health was `no-ci` the banner
+      says the check was **skipped** instead of claiming green — a branch that was never checked is
+      never reported as green.
+- [ ] A `<!-- release-command: /ship -->` marker sets the emitted command, and `/ship` resolves to
+      an installed skill in **this agent's** skill roots (Claude, Codex and Antigravity each have
+      their own — Antigravity's sit under a `config/` root).
+- [ ] A marker carrying **arguments** (`<!-- release-command: /ship --channel production -->`)
+      resolves on the command *name* and emits the **full** value.
+- [ ] **Met, but the declared command does NOT resolve** → `Next: none — release-command "<cmd>" is
+      declared but no such skill exists`. The `— cutting.` banner and the rollover reminder are
+      **withheld** (#188): printing them above `Next: none` is self-contradicting and can lead an
+      operator to roll a milestone for a release that was never cut.
+- [ ] **Met, but NO marker** → `Next: none — this repo declares no release command`, again without
+      the cutting banner or the reminder. There is deliberately **no `/release` default**: an
+      unresolvable slash command fuzzy-matches an unrelated built-in rather than failing.
 - [ ] With non-blocker issues still open in the milestone, the banner appends
       `(K non-blocker issue(s) still open — not holding the release; the roll sends them to Backlog)`.
 - [ ] A **met** emission also prints the rollover reminder
@@ -322,8 +334,10 @@ ends with its `Next:` line. What is verified here is that a **run** obeys it.)*
 
 - [ ] A normal advance prints **≤5 lines**, and its **last line is the command to run**
       (`Next: /implement-issue <ids>`). Nothing prints after it.
-- [ ] A cut-ready run's last line is the release command (`Next: /release`), with the
-      `Then: baseline release roll …` reminder **above** it.
+- [ ] A cut-ready run whose release command **resolves** ends with that command, with the
+      `Then: baseline release roll …` reminder **above** it. A cut-ready run whose command is
+      missing or undeclared ends with `Next: none — …` and prints **neither** the reminder nor the
+      `— cutting.` banner.
 - [ ] An all-blocked run, a "roadmap complete" run, an unarmed-milestone run, and a STOP condition
       each end with `Next: none — <state>` and no trailing prose.
 - [ ] **No** bundle table, "what changed since last run", per-issue reconcile narration, or
