@@ -516,6 +516,131 @@ eq "$(ps -eo command | grep -c '[q]qstub' | tr -d ' ')" "0" \
   "an outer termination reaps the dispatched agent instead of orphaning it for the full bound"
 pkill -f '[q]qstub' >/dev/null 2>&1 || true
 
+# ============================ available (capability probe, #211) ============================
+# `available` answers a THIRD question — is this agent's CLI on PATH here? — separate from
+# `resolve` (who is assigned) and an `invoke` rc (did the agent fail). Step 8 and `agent-init`
+# both branch on it, so it needs its own coverage AND a proof that it agrees with dispatch.
+#
+# A MINIMAL PATH is what makes an "absent" assertion mean anything: the fixture's normal PATH is
+# "$BIN:$PATH", so a contributor with a real claude/codex/agy installed would find the real binary
+# the moment a stub is removed and every absence test would silently pass for the wrong reason.
+# `rd_path <PATH> <args...>` runs the helper under an explicit PATH instead.
+rd_path() { local p="$1"; shift; ( cd "$REPO" && HOME="$GHOME" PATH="$p" bash "$RD" "$@" ); }
+BARE=/usr/bin:/bin
+# Assert the PRECONDITION rather than assuming it. If some machine ships an agent CLI in a system
+# directory, the absence cases below would be vacuous — better to fail loudly here than to pass.
+_leak=0
+for _t in claude codex agy; do PATH="$BARE" command -v "$_t" >/dev/null 2>&1 && _leak=1; done
+if [ "$_leak" -eq 0 ]; then ok; else bad "test precondition: no agent CLI may live in $BARE"; fi
+
+# Re-stub all three (earlier cases overwrote the codex stub with failing variants).
+for _t in codex claude agy; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/$_t"; chmod +x "$BIN/$_t"; done
+
+rd_path "$BIN:$BARE" available codex  >/dev/null 2>&1; yes $? "available: a stubbed codex reports 0"
+rd_path "$BIN:$BARE" available claude >/dev/null 2>&1; yes $? "available: a stubbed claude reports 0"
+rd_path "$BIN:$BARE" available gemini >/dev/null 2>&1; yes $? "available: a stubbed gemini reports 0 (its CLI is agy)"
+rd_path "$BARE" available codex  >/dev/null 2>&1; eq "$?" "1" "available: a known agent with no CLI reports 1"
+rd_path "$BARE" available gemini >/dev/null 2>&1; eq "$?" "1" "available: gemini with no agy reports 1"
+rd_path "$BIN:$BARE" available bogus  >/dev/null 2>&1; eq "$?" "2" "available: an unknown token reports 2 (not 1)"
+rd_path "$BIN:$BARE" available >/dev/null 2>&1; eq "$?" "2" "available with no agent argument is a usage error"
+# O3: rc alone cannot tell the usage guard from `adb_agent_cli ""` (both 2). Pin the DIAGNOSTIC too,
+# or removing the guard is invisible.
+has "$(rd_path "$BIN:$BARE" available 2>&1)" "usage:" "available with no argument prints a usage diagnostic"
+
+# SILENT: the exit code IS the answer. A ladder asking about several agents must not have to
+# filter this helper's chatter out of its own report.
+# BYTES, not `$(...)`. Command substitution strips trailing newlines, so a stray `printf '\n'`
+# on either path would satisfy an `eq "" ` assertion while plainly violating the silent contract.
+eq "$(rd_path "$BIN:$BARE" available codex 2>&1 | wc -c | tr -d ' ')" "0" "available emits ZERO bytes when the CLI is present"
+eq "$(rd_path "$BARE" available codex 2>&1 | wc -c | tr -d ' ')" "0" "available emits ZERO bytes when the CLI is absent"
+
+# --- THE PAIRING PROOF ---------------------------------------------------------------------
+# `adb_agent_cli` names the executable and `_adb_rd_invoke_agent` runs it. If those two ever
+# disagree, `available` reports an agent usable that dispatch cannot run (fail-open) or refuses one
+# that works. No single-file token pin can express "these two agree", so assert it directly: with
+# EXACTLY ONE agent's CLI on PATH, that agent must be the only one `available` accepts — which is
+# only true if the probe is looking for the same binary name dispatch would exec.
+for _pair in "codex codex" "claude claude" "gemini agy"; do
+  set -- $_pair; _tok="$1"; _bin="$2"
+  _only="$work/only-$_tok"; mkdir -p "$_only"
+  # The stub must survive a real `invoke`, not just a `command -v`: codex is dispatched with
+  # --output-last-message and a 0 exit that writes no final message is INCOMPLETE by design, so a
+  # bare `exit 0` stub would fail the dispatch half for reasons unrelated to pairing.
+  cat > "$_only/$_bin" <<'STUB'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do case "$prev" in --output-last-message) out="$a" ;; esac; prev="$a"; done
+cat >/dev/null 2>&1
+[ -n "$out" ] && printf 'ok\n' > "$out"
+exit 0
+STUB
+  chmod +x "$_only/$_bin"
+  rd_path "$_only:$BARE" available "$_tok" >/dev/null 2>&1
+  yes $? "pairing: $_tok reports available when only '$_bin' exists"
+  # ...AND DISPATCH MUST AGREE. The probe half alone proved nothing about pairing: mutating
+  # `_adb_rd_invoke_agent`'s executable while leaving `adb_agent_cli` alone kept this loop green,
+  # which is the exact fail-open the loop is named for. With ONLY `$_bin` on PATH, `invoke` can
+  # only succeed if dispatch execs that same binary — so run it and require success.
+  printf 'x' | rd_path "$_only:$BARE" invoke "$_tok" >/dev/null 2>&1
+  yes $? "pairing: invoke $_tok SUCCEEDS when only '$_bin' exists (dispatch execs what the probe found)"
+  # ...and every OTHER token must be absent under that same PATH, so a probe that fell back to a
+  # shared or hardcoded name would be caught rather than passing the positive half by luck.
+  _other_ok=1
+  for _o in claude codex gemini; do
+    [ "$_o" = "$_tok" ] && continue
+    rd_path "$_only:$BARE" available "$_o" >/dev/null 2>&1 && _other_ok=0
+  done
+  if [ "$_other_ok" -eq 1 ]; then ok; else bad "pairing: only '$_bin' exists, so only $_tok may report available"; fi
+done
+
+# ============================ review-rung (the ladder predicate, #211) ============================
+# One predicate answers "what will actually review a diff", and BOTH /implement-issue step 8 and
+# bin/agent-init consume it. Every arm is pinned here, including the three fail-opens the PR-227
+# review found: comparing against `primary` instead of the real driver, accepting a bot declaration
+# the merge guard rejects, and silently dropping unavailable slots.
+rung() { ( cd "$REPO" && HOME="$GHOME" PATH="$1" bash "$RD" review-rung "${2:-}" ) ; }
+RB="$work/rungbin"; mkdir -p "$RB"
+for _t in codex claude agy; do printf '#!/usr/bin/env bash\nexit 0\n' > "$RB/$_t"; chmod +x "$RB/$_t"; done
+clr_global
+
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]'
+eq "$(rung "$RB:$BARE")"          "independent codex" "rung: a usable non-primary reviewer is independent"
+# THE DRIVER ARGUMENT. Same manifest, run BY codex: the reviewer is now the model writing the diff,
+# so `independent` would be a false claim of an independent pass. Comparing against `primary` (the
+# manifest's guess at who writes) instead of the real driver is the fail-open this argument closes.
+eq "$(rung "$RB:$BARE" codex)"    "same-model codex"  "rung: driver=codex makes a codex reviewer same-model"
+eq "$(rung "$RB:$BARE" gemini)"   "independent codex" "rung: driver=gemini keeps a codex reviewer independent"
+rung "$RB:$BARE" notanagent >/dev/null 2>&1; eq "$?" "2" "rung: a bogus driver token is unknown, not ignored"
+has "$(rung "$RB:$BARE" notanagent)" "unknown" "rung: the bogus-driver line says unknown"
+
+set_repo '[roles]' 'primary = "claude"' 'review = ["claude"]'
+eq "$(rung "$RB:$BARE")" "same-model claude" "rung: review == primary is same-model"
+
+# MISSING SLOTS SURVIVE. An early return on the first available agent discarded the rest, so a
+# partially-installed list reported unqualified coverage while a configured slot ran nothing.
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex", "gemini"]'
+ONLYC="$work/onlyc"; mkdir -p "$ONLYC"; cp "$RB/codex" "$ONLYC/codex"
+eq "$(rung "$ONLYC:$BARE")" "independent codex missing=gemini" "rung: an unavailable slot is reported alongside the rung"
+eq "$(rung "$BARE")"        "none missing=codex,gemini"        "rung: every unavailable slot is listed"
+
+# THE DEFERRED ARM AGREES WITH THE MERGE GUARD. `--declared` accepts a syntactically valid array
+# whose entries no reviewer can match; `--comparable` (what pr-review.sh gate uses) rejects it 18.
+# Reporting `deferred` off the looser reader promises a hand-off the guard will refuse.
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]' '[reviewers]' 'bots = ["chatgpt-codex-connector"]'
+eq "$(rung "$BARE")" "deferred chatgpt-codex-connector missing=codex" "rung: a usable declared bot defers"
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]' '[reviewers]' 'bots = ["[bot]"]'
+rung "$BARE" >/dev/null 2>&1; eq "$?" "2" "rung: a declaration the merge guard rejects is unknown, not deferred"
+hasnt "$(rung "$BARE")" "deferred" "rung: an unmatchable bot login never reports deferred"
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]' '[reviewers]' 'bots = []'
+eq "$(rung "$BARE")" "none missing=codex" "rung: an explicit bots = [] is none, not deferred"
+
+# READER FAILURES ARE NEVER EMPTY CONFIG.
+set_repo '[roles]' 'primary = "claude"' 'review = ["bogus"]' '[reviewers]' 'bots = ["chatgpt-codex-connector"]'
+rung "$BARE" >/dev/null 2>&1; eq "$?" "2" "rung: an invalid review token is unknown, not deferred"
+set_repo '[roles]' 'primary = "notanagent"' 'review = ["codex"]'
+rung "$RB:$BARE" >/dev/null 2>&1; eq "$?" "2" "rung: an unresolvable primary is unknown, not independent"
+clr_repo
+
 # ============================ source guard ============================
 # Sourcing must define the functions but NOT run the CLI dispatch (no usage/exit).
 # shellcheck source=/dev/null

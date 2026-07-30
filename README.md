@@ -55,15 +55,19 @@ A repo drops an [`agents.toml`](templates/agents.toml) at its root:
 [roles]
 primary      = "claude"             # drives /implement-issue
 gap_analysis = "codex"              # adversarial pre-implementation pass
-review       = ["claude", "gemini"] # independent code review before merge
+review       = ["codex", "gemini"]  # independent code review before merge
 debug        = "claude"
 ```
+
+Note `review` names agents that are **not** `primary`. A reviewer that is the same model
+as the implementer is that model checking its own work — still run, but reported as *not
+independent*. A reviewer whose CLI isn't installed is reported too, never faked (#211).
 
 | Role | Job | Default |
 |---|---|---|
 | `primary` | Drives implementation end-to-end | required |
 | `gap_analysis` | Adversarial pre-implementation read of the issue | `codex` (or skip) |
-| `review` | Independent code review before merge | `["claude"]` |
+| `review` | Independent code review before merge | `["codex"]` *(shipped manifest; the resolver's fallback for an unset value is the primary)* |
 | `debug` | Root-cause investigations | primary |
 | `issue_author` / `release` | File issues / cut releases | primary |
 

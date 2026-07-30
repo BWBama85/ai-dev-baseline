@@ -100,8 +100,23 @@ mkdir -p .claude/state
 echo ""
 echo "Effective roles for this repo:"
 RD="$REPO/scripts/lib/role-dispatch.sh"
+# A role names an agent; it does not prove that agent can RUN here. `agent-init` is the one place
+# an operator sees the map before a workflow depends on it, so it is where "assigned but its CLI
+# is not installed" should surface — at setup, cheaply, rather than mid-run after a branch and a
+# commit (#211). Deliberately ANNOTATION, never a verdict: an absent CLI is not an error here, and
+# agent-init does not exit nonzero for one. It also claims no more than it checked — `available`
+# answers "on PATH", not authenticated, configured, or working.
+annotate_cli() {
+  local token="$1"
+  bash "$RD" available "$token" >/dev/null 2>&1
+  case "$?" in
+    0) printf '' ;;                       # installed: the normal case says nothing
+    1) printf ' [CLI not installed]' ;;
+    *) printf '' ;;                       # not an agent token — `resolve` already validated it
+  esac
+}
 show_role() {
-  local key="$1" v rc
+  local key="$1" v rc out t
   # `resolve` prints the token(s) (a `review` list is joined with commas); empty output with a
   # 0 status is a legitimate skip; a nonzero status is a manifest error (whose message it already
   # printed to stderr above).
@@ -111,7 +126,17 @@ show_role() {
   elif [ -z "$v" ]; then
     printf '  %-13s %s\n' "$key" "(unassigned — skipped)"
   else
-    printf '  %-13s %s\n' "$key" "$(printf '%s' "$v" | paste -sd, -)"
+    # Annotate PER TOKEN, not per role: a `review` list can be half-installed, and a single
+    # trailing note on the joined line could not say which half.
+    out=""
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      [ -z "$out" ] || out="$out, "
+      out="$out$t$(annotate_cli "$t")"
+    done <<EOF
+$v
+EOF
+    printf '  %-13s %s\n' "$key" "$out"
   fi
 }
 show_role primary
@@ -120,6 +145,67 @@ show_role review
 show_role debug
 show_role issue_author
 show_role release
+echo ""
+
+# --- which REVIEW RUNG is this project on? (#211) ----------------------------------------------
+# The role map above says who is ASSIGNED. This says what will actually REVIEW A DIFF, which is a
+# different question and the one an operator is really asking.
+#
+# THE LADDER IS NOT RE-DERIVED HERE. `role-dispatch.sh review-rung` owns it, and /implement-issue
+# step 8 asks the same predicate — because the alternative was tried and failed inside this very
+# change: both sides interpreted `resolve` + `available` + the bot allowlist themselves and
+# immediately disagreed about WHICH bot reader decides the deferred rung. This block therefore
+# formats an answer; it does not compute one.
+# NO DRIVER ARGUMENT, deliberately: `agent-init` reports the manifest's CONFIGURED shape, not a
+# live run, so the predicate compares against `primary`. The workflow passes its own agent token
+# instead, because "independent" means "not the model that actually wrote the diff".
+RUNG_LINE="$(bash "$RD" review-rung 2>/dev/null)" || true
+RUNG="${RUNG_LINE%% *}"
+RUNG_DETAIL=""
+case "$RUNG_LINE" in *' '*) RUNG_DETAIL="${RUNG_LINE#* }" ;; esac
+# `missing=<tokens>` is a trailing field on ANY rung — configured reviewer slots whose CLI is
+# absent. Split it off the detail so each is reported for what it is: the rung says what WILL
+# review the diff, `missing` says which configured slots silently will not.
+RUNG_MISSING=""
+case "$RUNG_DETAIL" in
+  missing=*)   RUNG_MISSING="${RUNG_DETAIL#missing=}"; RUNG_DETAIL="" ;;
+  *' missing='*) RUNG_MISSING="${RUNG_DETAIL##* missing=}"; RUNG_DETAIL="${RUNG_DETAIL% missing=*}" ;;
+esac
+printf 'Review rung: '
+case "$RUNG" in
+  independent)
+    echo "independent in-session review — \`$RUNG_DETAIL\` reviews, and it did not write the code." ;;
+  same-model)
+    echo "SAME-MODEL only — \`review\` names \`$RUNG_DETAIL\`, which also writes the code."
+    echo "             That is the implementer checking itself. Point \`review\` at a different agent,"
+    echo "             or declare an async reviewer under [reviewers] bots." ;;
+  deferred)
+    echo "no in-session reviewer is installed — review is DEFERRED to the PR layer."
+    echo "             Declared async reviewer(s): $RUNG_DETAIL."
+    # NARROW, on purpose. The declaration withholds /implement-issue's OWN \`--auto\` arm until the
+    # reviewer has seen the head commit. It is not branch protection, GitHub does not enforce it,
+    # and an owner can still arm or merge by hand — so saying "withholds auto-merge" unqualified
+    # would promise a gate that does not exist.
+    echo "             That withholds /implement-issue's own auto-merge arm until they see the head"
+    echo "             commit — not a manual merge, and not branch protection. Install a reviewer"
+    echo "             CLI for an in-session pass." ;;
+  none)
+    echo "NONE — no reviewer CLI is installed and no async reviewer is declared."
+    echo "             Nothing independent will review your diffs. Install a reviewer agent's CLI,"
+    echo "             or declare one under [reviewers] bots in agents.toml." ;;
+  *)
+    # UNKNOWN, or the predicate itself failed. Never resolved toward a rung: every reader here can
+    # fail, and each failure would otherwise land on the flattering answer (an invalid \`review\`
+    # list reading as "deferred", a malformed bot declaration reading as "none").
+    echo "unknown — a role or reviewer declaration could not be read (${RUNG_DETAIL:-no detail})."
+    echo "             Fix the manifest error above and re-run; until then, assume nothing"
+    echo "             independent reviews your diffs." ;;
+esac
+# Reported on EVERY rung, including `independent`: a partially-installed `review` list still gets an
+# independent pass, and saying only that would present unqualified coverage while a slot the
+# operator configured never ran.
+[ -z "$RUNG_MISSING" ] || \
+  echo "             Configured but NOT installed: $RUNG_MISSING — that slot reviews nothing."
 echo ""
 # Printing a resolved token without this caveat reads as "the baseline will do this for you."
 # Phrased as the durable rule (a role acts only where a workflow resolves it) rather than a list
