@@ -542,13 +542,17 @@ rd_path "$BIN:$BARE" available gemini >/dev/null 2>&1; yes $? "available: a stub
 rd_path "$BARE" available codex  >/dev/null 2>&1; eq "$?" "1" "available: a known agent with no CLI reports 1"
 rd_path "$BARE" available gemini >/dev/null 2>&1; eq "$?" "1" "available: gemini with no agy reports 1"
 rd_path "$BIN:$BARE" available bogus  >/dev/null 2>&1; eq "$?" "2" "available: an unknown token reports 2 (not 1)"
-rd >/dev/null 2>&1; no $? "usage still nonzero"   # guards the case arm below not swallowing it
 rd_path "$BIN:$BARE" available >/dev/null 2>&1; eq "$?" "2" "available with no agent argument is a usage error"
+# O3: rc alone cannot tell the usage guard from `adb_agent_cli ""` (both 2). Pin the DIAGNOSTIC too,
+# or removing the guard is invisible.
+has "$(rd_path "$BIN:$BARE" available 2>&1)" "usage:" "available with no argument prints a usage diagnostic"
 
 # SILENT: the exit code IS the answer. A ladder asking about several agents must not have to
 # filter this helper's chatter out of its own report.
-eq "$(rd_path "$BIN:$BARE" available codex 2>&1)" "" "available prints nothing on either stream"
-eq "$(rd_path "$BARE" available codex 2>&1)" "" "available prints nothing when the CLI is absent either"
+# BYTES, not `$(...)`. Command substitution strips trailing newlines, so a stray `printf '\n'`
+# on either path would satisfy an `eq "" ` assertion while plainly violating the silent contract.
+eq "$(rd_path "$BIN:$BARE" available codex 2>&1 | wc -c | tr -d ' ')" "0" "available emits ZERO bytes when the CLI is present"
+eq "$(rd_path "$BARE" available codex 2>&1 | wc -c | tr -d ' ')" "0" "available emits ZERO bytes when the CLI is absent"
 
 # --- THE PAIRING PROOF ---------------------------------------------------------------------
 # `adb_agent_cli` names the executable and `_adb_rd_invoke_agent` runs it. If those two ever
@@ -559,9 +563,26 @@ eq "$(rd_path "$BARE" available codex 2>&1)" "" "available prints nothing when t
 for _pair in "codex codex" "claude claude" "gemini agy"; do
   set -- $_pair; _tok="$1"; _bin="$2"
   _only="$work/only-$_tok"; mkdir -p "$_only"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$_only/$_bin"; chmod +x "$_only/$_bin"
+  # The stub must survive a real `invoke`, not just a `command -v`: codex is dispatched with
+  # --output-last-message and a 0 exit that writes no final message is INCOMPLETE by design, so a
+  # bare `exit 0` stub would fail the dispatch half for reasons unrelated to pairing.
+  cat > "$_only/$_bin" <<'STUB'
+#!/usr/bin/env bash
+out=""; prev=""
+for a in "$@"; do case "$prev" in --output-last-message) out="$a" ;; esac; prev="$a"; done
+cat >/dev/null 2>&1
+[ -n "$out" ] && printf 'ok\n' > "$out"
+exit 0
+STUB
+  chmod +x "$_only/$_bin"
   rd_path "$_only:$BARE" available "$_tok" >/dev/null 2>&1
-  yes $? "pairing: $_tok is available when only '$_bin' exists (probe and dispatch name one binary)"
+  yes $? "pairing: $_tok reports available when only '$_bin' exists"
+  # ...AND DISPATCH MUST AGREE. The probe half alone proved nothing about pairing: mutating
+  # `_adb_rd_invoke_agent`'s executable while leaving `adb_agent_cli` alone kept this loop green,
+  # which is the exact fail-open the loop is named for. With ONLY `$_bin` on PATH, `invoke` can
+  # only succeed if dispatch execs that same binary — so run it and require success.
+  printf 'x' | rd_path "$_only:$BARE" invoke "$_tok" >/dev/null 2>&1
+  yes $? "pairing: invoke $_tok SUCCEEDS when only '$_bin' exists (dispatch execs what the probe found)"
   # ...and every OTHER token must be absent under that same PATH, so a probe that fell back to a
   # shared or hardcoded name would be caught rather than passing the positive half by luck.
   _other_ok=1

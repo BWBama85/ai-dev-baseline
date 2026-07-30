@@ -7,7 +7,46 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Changed
+
+- **The in-session reviewer is now the model that did *not* write the diff** (#211, D21). The
+  shipped manifest paired `primary = "claude"` with `review = ["claude"]`, so the prescribed
+  review was Claude grading its own work. Both vendors' published guidance argues against that
+  from opposite ends — Anthropic's Opus 5 guidance asks that explicit verification scaffolding be
+  *removed* from Claude's instructions, while OpenAI's asks Codex for exactly the named-checklist,
+  required-vs-optional pass this slot runs.
+  - `templates/agents.toml` (and therefore the global manifest `install.sh` writes) now ships
+    **`review = ["codex"]`**. **The resolver's built-in fallback for an *unset* `review` is
+    unchanged** — still the primary's own pass — so a repo with no manifest behaves exactly as
+    before. These are two different "defaults" and only one moved.
+  - **Existing manifests are not migrated and do not need to be.** The `claude` review arm stays
+    supported: neither `install.sh` nor `agent-init` rewrites an existing `agents.toml`, and a
+    Codex-primary repo reviewing with Claude is the same split pointing the other way. What
+    changed is that a slot whose token equals `primary` is now *labelled* `same-model (not
+    independent)` rather than presented as an independent pass.
+
 ### Added
+
+- **`role-dispatch.sh available <agent>` and `role-dispatch.sh review-rung`** (#211, D21) — a
+  reviewer that is not installed is not a reviewer that failed.
+  - `available` answers "is this agent's CLI on PATH here?" (`0` available · `1` known agent whose
+    CLI is absent · `2` not a token), a third question distinct from `resolve` (who is assigned)
+    and an `invoke` status (did the agent fail). Without it, `codex exec` with no `codex` on PATH
+    exits **127**, which classifies quite correctly as "a real agent/CLI error" — accurate about
+    the exit, wrong about the cause, and arriving at step 8 with the branch, the commits and the
+    gates already paid for.
+  - `review-rung` decides the whole ladder once and prints `independent <agent>` ·
+    `same-model <agent>` · `deferred <logins>` · `none` · `unknown <why>`. `/implement-issue`
+    step 8 and `bin/agent-init` both *call* it instead of each interpreting the underlying readers,
+    because the two-interpretation version diverged immediately: one side read the bare `bots`,
+    whose unset default is eight built-in logins, and would have told a repo that declared nothing
+    that an async reviewer was coming.
+  - **An absent reviewer CLI no longer blocks a run** and never writes a blocked marker; a reviewer
+    that *ran* and did not return still does. `unknown` is never resolved past — an invalid
+    `review` token or a malformed `[reviewers] bots` reports `unknown` rather than the flattering
+    rung it would otherwise land on.
+  - `agent-init` prints the rung at setup time and annotates each role token whose CLI is missing,
+    so this is discoverable before a workflow depends on it rather than mid-run.
 
 - **The state-claim rule is now a gate, not documentation** (#195, D16). An agent stating a
   PR/issue/CI status in prose that is stale, paraphrased or never read had been "fixed" twice —

@@ -112,7 +112,8 @@ printf '\n[reviewers]\nbots = ["chatgpt-codex-connector"]\n' >> "$rr/agents.toml
 out="$(run_rung "$rr" "$BARE")"
 has "$out" "DEFERRED to the PR layer" "rung: a declared bot with no CLI reports deferred"
 has "$out" "chatgpt-codex-connector"  "rung: deferred names the reviewer it is deferring to"
-has "$out" "NOT block a manual merge" "rung: deferred states what it does NOT gate"
+has "$out" "not a manual merge" "rung: deferred states what it does NOT gate"
+has "$out" "not branch protection" "rung: deferred does not claim branch protection"
 
 # (d) the reviewer's CLI present and != primary -> independent.
 printf '#!/usr/bin/env bash\nexit 0\n' > "$RBIN/codex"; chmod +x "$RBIN/codex"
@@ -130,6 +131,14 @@ sed 's/^review .*/review       = ["codex", "gemini"]/' "$rr/agents.toml" > "$rr/
 out="$(run_rung "$rr" "$RBIN:$BARE")"
 has "$out" "gemini [CLI not installed]" "role map: annotates the absent token in a review LIST"
 hasnt "$out" "codex [CLI not installed]" "role map: says nothing about a token that IS installed"
+# ORDER-SENSITIVE, deliberately. The assertions above also pass for an implementation that joins the
+# list and appends ONE trailing note whenever any member is absent (`codex, gemini [CLI not
+# installed]`). Reversing the list breaks that mutation: the absent token now comes first, so a
+# trailing note would land on the INSTALLED one.
+sed 's/^review .*/review       = ["gemini", "codex"]/' "$rr/agents.toml" > "$rr/a.tmp" && mv "$rr/a.tmp" "$rr/agents.toml"
+out="$(run_rung "$rr" "$RBIN:$BARE")"
+has "$out" "gemini [CLI not installed], codex" "role map: annotates the ABSENT token even when it is first"
+hasnt "$out" "codex [CLI not installed]" "role map: a trailing aggregate note would mis-annotate the installed token"
 # An absent CLI is an annotation, never a verdict: agent-init must still exit 0.
 ( cd "$rr" && HOME="$FAKEHOME" PATH="$BARE" bash "$AGENT_INIT" >/dev/null 2>&1 )
 yes $? "rung: an absent reviewer CLI does not make agent-init fail"
@@ -141,5 +150,29 @@ sed 's/^primary .*/primary      = "notanagent"/' "$rr/agents.toml" > "$rr/a.tmp"
 out="$(run_rung "$rr" "$RBIN:$BARE")"
 has "$out" "Review rung: unknown" "rung: an unresolvable primary reports unknown, not independent"
 hasnt "$out" "independent in-session review" "rung: a broken manifest never claims independent review"
+
+# (h) READER FAILURES MUST NOT READ AS EMPTY CONFIG (#211 review). Every reader behind the rung can
+# fail, and each failure otherwise lands on the FLATTERING answer: an invalid `review` list would
+# report `deferred` (a declared bot is present), and a malformed `[reviewers] bots` would report
+# `none` ("no async reviewer is declared") while the operator has plainly declared something.
+# RESET `primary` FIRST. Case (g) left it invalid, which makes the rung `unknown` for a reason that
+# has nothing to do with the readers under test — these assertions passed with the guards MUTATED
+# OUT until this line existed. A test that cannot fail is the thing this repo files issues about.
+sed 's/^primary .*/primary      = "claude"/; s/^review .*/review       = ["bogus"]/' "$rr/agents.toml" > "$rr/a.tmp" && mv "$rr/a.tmp" "$rr/agents.toml"
+out="$(run_rung "$rr" "$BARE")"
+has "$out"  "Review rung: unknown" "rung: an INVALID review token reports unknown"
+hasnt "$out" "DEFERRED"            "rung: an invalid review token never reports deferred"
+
+sed 's/^review .*/review       = ["codex"]/; s/^bots = .*/bots = "notanarray"/' "$rr/agents.toml" > "$rr/a.tmp" && mv "$rr/a.tmp" "$rr/agents.toml"
+out="$(run_rung "$rr" "$BARE")"
+has "$out"  "Review rung: unknown" "rung: a MALFORMED bots declaration reports unknown"
+hasnt "$out" "NONE"                "rung: a malformed declaration never reports none"
+
+# (i) EXACTLY ONE rung line per run. Every case above asserts a rung is PRESENT; none would catch an
+# implementation that also emitted a second, contradicting one.
+for _cfg in 'review       = ["codex"]' 'review       = ["claude"]' 'review       = ["bogus"]'; do
+  sed "s/^primary .*/primary      = \"claude\"/; s/^review .*/$_cfg/; s/^bots = .*/bots = [\"chatgpt-codex-connector\"]/" "$rr/agents.toml" > "$rr/a.tmp" && mv "$rr/a.tmp" "$rr/agents.toml"
+  eq "$(run_rung "$rr" "$RBIN:$BARE" | grep -c '^Review rung:')" "1" "rung: exactly one rung line for $_cfg"
+done
 
 check_summary "agent-init"

@@ -521,31 +521,36 @@ installed is a **configuration** fact, knowable in advance — not a reviewer th
 
 ```bash
 bash "$HOME/.claude/scripts/lib/role-dispatch.sh" available <token>   # 0 = CLI on PATH · 1 = known agent, CLI absent · 2 = not a token
+bash "$HOME/.claude/scripts/lib/role-dispatch.sh" review-rung         # the whole ladder, decided once: <rung>[ <detail>]  (rc 2 = unknown)
 ```
 
 Asking first is what keeps an absent CLI from arriving as a **failure at step 8**, with
 the branch, the commits and the gates already paid for. `codex exec` with no `codex` on
 PATH exits **127**, which the dispatcher quite correctly classifies as "a real agent/CLI
 error" — accurate about the exit, wrong about the cause, and it lands at the worst
-possible moment. So resolve the rung first, then act:
+possible moment.
 
-| Rung | Condition | What step 8 does |
+**Do not re-derive the ladder here — ask `review-rung`.** It is one tested predicate over
+three readers (`resolve review`, `available`, `bots --declared`), and `bin/agent-init`
+reads the *same* one, so the setup report and this step cannot describe different rungs.
+That is not a hypothetical: when this step and `agent-init` each interpreted those readers
+in their own words, they immediately disagreed about which bot reader decides the deferred
+rung — the prose named the bare `bots`, whose unset default is eight built-in logins, so a
+repo that had declared **nothing** would have been told an async reviewer was coming.
+
+| `review-rung` prints | Meaning | What step 8 does |
 |---|---|---|
-| **1 — independent review** | the slot's CLI is available **and** its token ≠ the driving agent | dispatch it (below). This is the real thing. |
-| **2 — deferred to the PR layer** | no in-session slot is usable, **but** `bash "$HOME/.claude/scripts/lib/role-dispatch.sh" bots --declared` lists an async reviewer | mark the slot **deferred**, say so, and proceed to the PR. |
-| **3 — no independent review** | neither | proceed, and **say plainly that nothing independent reviewed this diff.** |
-
-**`--declared`, never the bare `bots`, decides rung 2.** The two readers differ on *unset*
-and only one can answer this question: bare `bots` substitutes the **built-in default set**
-of common review bots, so a repo with no `[reviewers]` block at all comes back with eight
-logins — and reading that surface would promote every such repo from rung 3 to rung 2,
-telling the operator an async reviewer will see the diff when none was ever declared.
-`--declared` is the tri-state the merge gate itself uses (empty/rc 3 = unset, rc 2 =
-malformed), which is the same honesty this branch needs.
+| `independent <token>` | a usable CLI that is **not** the driving agent | dispatch it (below). This is the real thing. |
+| `same-model <token>` | the only usable reviewer **is** the driving agent | dispatch it, and label the slot *not independent*. |
+| `deferred <logins>` | nothing usable in-session, but an async reviewer is **declared** | mark the slot **deferred**, say so, proceed to the PR. |
+| `none` | nothing in-session, nothing declared | proceed, and **say plainly that nothing independent reviewed this diff.** |
+| `unknown <why>` (rc 2) | a reader failed — an invalid `review` token, a malformed `[reviewers] bots`, an unresolvable `primary` | **fix the manifest.** Never guess past it: every one of those failures otherwise resolves to the flattering rung. |
 
 **Rung 2 is a real hand-off, and it is narrower than it sounds — do not overstate it.**
 The async reviewer gates **step 10's `--auto` arm** and nothing else: `pr-review.sh gate`
-withholds *this workflow's* arming until the declared reviewer has seen the head commit.
+withholds */implement-issue's own* arming until the declared reviewer has seen the head
+commit. GitHub does not enforce the declaration, so an owner can still arm auto-merge from
+the UI, or merge by hand, before the reviewer speaks.
 It does **not** block a manual merge, it is not branch protection, and it never resolves
 a thread. So rung 2 means *"an independent reviewer will see this before it can merge
 unattended"* — which is worth having and worth stating exactly — not *"the diff has been
@@ -593,10 +598,16 @@ reviewed the diff. Prefer a different agent, or an async reviewer in `[reviewers
 #### The review prompt — a named checklist, and ask for EVERYTHING
 
 Write the prompt as an **ordered checklist with named categories, an explicit
-required-vs-optional split, and a final check.** That shape is what the reviewing agent's
-own guidance asks for, and it is also what makes the reply triageable in step 9 rather
-than a wall of prose. Cover at least these four, which are the lenses that have actually
-caught defects in this repo's history:
+required-vs-optional split, and a final check.** That is the shape **Codex's** published
+guidance asks for — it is the shipped default reviewer — and it is independently what makes
+a reply triageable in step 9 rather than a wall of prose. Note the same prompt goes to
+whichever agent fills the slot: the shape is justified for Codex by its vendor's guidance
+and for the others by the triage argument alone. **Do not tell a reviewer that its own
+vendor asks for this** unless you have actually read that vendor saying so.
+
+Require a `file:line` on every finding and an explicit REQUIRED/OPTIONAL mark, so step 9
+triages a list rather than re-deriving one from prose. Cover at least these four lenses,
+which are the ones that have actually caught defects in this repo's history:
 
 1. **Correctness / edge cases** — empty, single, zero, negative, max, unicode; escaping
    wherever a value crosses a syntax boundary; off-by-one; idempotency; resource leaks.

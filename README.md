@@ -67,7 +67,7 @@ independent*. A reviewer whose CLI isn't installed is reported too, never faked 
 |---|---|---|
 | `primary` | Drives implementation end-to-end | required |
 | `gap_analysis` | Adversarial pre-implementation read of the issue | `codex` (or skip) |
-| `review` | Independent code review before merge | `["codex"]` |
+| `review` | Independent code review before merge | `["codex"]` *(shipped manifest; the resolver's fallback for an unset value is the primary)* |
 | `debug` | Root-cause investigations | primary |
 | `issue_author` / `release` | File issues / cut releases | primary |
 

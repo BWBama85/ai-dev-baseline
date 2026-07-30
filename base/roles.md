@@ -26,7 +26,10 @@ mandatory self-review (`base/practices/self-review.md`) is the *floor* and is al
 run; the `review` role is the **independent** pass layered on top. Left unset (or
 empty), `review` defaults to the primary running that independent pass with its own
 model-invokable tools — so an unconfigured repo still gets a completed review step,
-never a bare self-review.
+never a bare self-review. **Be precise about what that fallback is worth, though:** when
+`review` is unset the reviewer resolves to the primary, so the pass is *same-model* — the
+implementer's own model, running its independent-review tooling over its own diff. It is
+better than nothing and it is not independent, and the rung report says so.
 
 **Point `review` at an agent that is not `primary` (#211).** The role's job is the word
 in its own row — *independent* — and a reviewer that is the same model as the implementer

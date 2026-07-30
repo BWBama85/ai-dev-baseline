@@ -148,51 +148,48 @@ show_role release
 echo ""
 
 # --- which REVIEW RUNG is this project on? (#211) ----------------------------------------------
-# The role map above says who is ASSIGNED. This says what will actually review a diff, which is a
-# different question and the one an operator is really asking. Derived from the same two readers
-# /implement-issue step 8 uses — `resolve review` + `available`, and `bots` for the async layer —
-# so the setup report and the workflow can never disagree about the rung.
-REVIEW_TOKENS="$(bash "$RD" resolve review 2>/dev/null)" || REVIEW_TOKENS=""
-PRIMARY_TOKEN="$(bash "$RD" resolve primary 2>/dev/null)" || PRIMARY_TOKEN=""
-# `--declared`, NOT the bare `bots`. The two readers differ on UNSET and only one of them can
-# answer this question: bare `bots` substitutes the built-in default set of common review bots, so
-# an unset `[reviewers]` comes back as eight logins and this report would tell a repo that has
-# declared NOTHING that its review is "deferred to the PR layer" — the overclaim that turns a rung-3
-# project into a rung-2 one on paper. `--declared` is the tri-state the MERGE GATE uses (rc 3 =
-# unset/unknown, 2 = malformed), which is the same honesty this line needs.
-BOTS="$(bash "$RD" bots --declared 2>/dev/null)" || BOTS=""
-rung_independent=0; rung_samemodel=0
-while IFS= read -r t; do
-  [ -n "$t" ] || continue
-  bash "$RD" available "$t" >/dev/null 2>&1 || continue
-  if [ "$t" = "$PRIMARY_TOKEN" ]; then rung_samemodel=1; else rung_independent=1; fi
-done <<EOF
-$REVIEW_TOKENS
-EOF
+# The role map above says who is ASSIGNED. This says what will actually REVIEW A DIFF, which is a
+# different question and the one an operator is really asking.
+#
+# THE LADDER IS NOT RE-DERIVED HERE. `role-dispatch.sh review-rung` owns it, and /implement-issue
+# step 8 asks the same predicate — because the alternative was tried and failed inside this very
+# change: both sides interpreted `resolve` + `available` + the bot allowlist themselves and
+# immediately disagreed about WHICH bot reader decides the deferred rung. This block therefore
+# formats an answer; it does not compute one.
+RUNG_LINE="$(bash "$RD" review-rung 2>/dev/null)" || true
+RUNG="${RUNG_LINE%% *}"
+RUNG_DETAIL=""
+case "$RUNG_LINE" in *' '*) RUNG_DETAIL="${RUNG_LINE#* }" ;; esac
 printf 'Review rung: '
-if [ -z "$PRIMARY_TOKEN" ]; then
-  # `primary` is a required role, so an empty resolution means the manifest is broken (the role map
-  # above already said so). Without it "is this reviewer the implementer?" is unanswerable — and the
-  # unanswerable case must not fall through to `independent`, which is the flattering answer and the
-  # wrong direction to guess in.
-  echo "unknown — \`primary\` did not resolve, so same-model review cannot be ruled out."
-  echo "             Fix the manifest error above and re-run."
-elif [ "$rung_independent" -eq 1 ]; then
-  echo "independent in-session review is available."
-elif [ "$rung_samemodel" -eq 1 ]; then
-  echo "SAME-MODEL only — \`review\` names \`$PRIMARY_TOKEN\`, which also writes the code."
-  echo "             That is the implementer checking itself. Point \`review\` at a different agent,"
-  echo "             or declare an async reviewer under [reviewers] bots."
-elif [ -n "$BOTS" ]; then
-  echo "no in-session reviewer is installed — review is DEFERRED to the PR layer."
-  echo "             Declared async reviewer(s): $(printf '%s' "$BOTS" | paste -sd, -)."
-  echo "             That withholds unattended auto-merge until they see the head commit; it does"
-  echo "             NOT block a manual merge. Install a reviewer CLI for an in-session pass."
-else
-  echo "NONE — no reviewer CLI is installed and no async reviewer is declared."
-  echo "             Nothing independent will review your diffs. Install a reviewer agent's CLI,"
-  echo "             or declare one under [reviewers] bots in agents.toml."
-fi
+case "$RUNG" in
+  independent)
+    echo "independent in-session review — \`$RUNG_DETAIL\` reviews, and it did not write the code." ;;
+  same-model)
+    echo "SAME-MODEL only — \`review\` names \`$RUNG_DETAIL\`, which also writes the code."
+    echo "             That is the implementer checking itself. Point \`review\` at a different agent,"
+    echo "             or declare an async reviewer under [reviewers] bots." ;;
+  deferred)
+    echo "no in-session reviewer is installed — review is DEFERRED to the PR layer."
+    echo "             Declared async reviewer(s): $RUNG_DETAIL."
+    # NARROW, on purpose. The declaration withholds /implement-issue's OWN \`--auto\` arm until the
+    # reviewer has seen the head commit. It is not branch protection, GitHub does not enforce it,
+    # and an owner can still arm or merge by hand — so saying "withholds auto-merge" unqualified
+    # would promise a gate that does not exist.
+    echo "             That withholds /implement-issue's own auto-merge arm until they see the head"
+    echo "             commit — not a manual merge, and not branch protection. Install a reviewer"
+    echo "             CLI for an in-session pass." ;;
+  none)
+    echo "NONE — no reviewer CLI is installed and no async reviewer is declared."
+    echo "             Nothing independent will review your diffs. Install a reviewer agent's CLI,"
+    echo "             or declare one under [reviewers] bots in agents.toml." ;;
+  *)
+    # UNKNOWN, or the predicate itself failed. Never resolved toward a rung: every reader here can
+    # fail, and each failure would otherwise land on the flattering answer (an invalid \`review\`
+    # list reading as "deferred", a malformed bot declaration reading as "none").
+    echo "unknown — a role or reviewer declaration could not be read (${RUNG_DETAIL:-no detail})."
+    echo "             Fix the manifest error above and re-run; until then, assume nothing"
+    echo "             independent reviews your diffs." ;;
+esac
 echo ""
 # Printing a resolved token without this caveat reads as "the baseline will do this for you."
 # Phrased as the durable rule (a role acts only where a workflow resolves it) rather than a list

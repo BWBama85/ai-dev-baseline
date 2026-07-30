@@ -19,8 +19,10 @@ review       = ["codex"]    # code review before merge. 1+ agents; more = better
                             # slot, and says out loud that it is not independent.
                             # NO CODEX INSTALLED? Nothing breaks and nothing is faked: step 8
                             # reports the rung it is on and moves on. Declare `[reviewers] bots`
-                            # below and the PR-layer guard still withholds auto-merge until your
-                            # async reviewer has seen the head commit.
+                            # below and the PR-layer guard still withholds /implement-issue's OWN
+                            # auto-merge arm until your async reviewer has seen the head commit.
+                            # That is not branch protection: GitHub does not enforce the
+                            # declaration, so a manual merge is still a manual merge.
 debug        = "claude"     # owns root-cause investigations.
 # issue_author = "claude"   # defaults to `primary` if unset
 # release      = "claude"   # defaults to `primary` if unset. Names WHO cuts a release — it

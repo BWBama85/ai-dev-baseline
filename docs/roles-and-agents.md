@@ -275,9 +275,14 @@ workflow calls it instead of hand-writing the same lookup + CLI in each skill:
 ## Which review actually happens: the rungs
 
 A role names an agent; it cannot make that agent's CLI exist. `implement-issue` step 8
-therefore asks `available` **before** it dispatches, and reports which rung the project is
-on. `agent-init` prints the same rung at setup time from the same readers, so the two can
-never disagree:
+therefore asks **before** it dispatches, and reports which rung the project is on.
+
+**One predicate owns the ladder: `role-dispatch.sh review-rung`.** Step 8 and `agent-init`
+both *call* it rather than each interpreting `resolve` + `available` + the bot allowlist in
+their own words. That is not tidiness — the two-interpretation version was written and
+promptly diverged, with the workflow naming the bare `bots` (whose unset default is eight
+built-in logins) so a repo that had declared nothing would have been told an async reviewer
+was coming. It prints one line, `<rung>[ <detail>]`:
 
 | Rung | Condition | What happens |
 |---|---|---|
@@ -429,13 +434,14 @@ Running `/implement-issue 123` with Claude as the driving agent:
    back in. If codex cannot complete, Claude surfaces that — it does **not**
    quietly run the pass itself.
 3. Claude implements, runs gates, commits (all native — `primary` is Claude).
-4. **Step 8 (review)** resolves to `["claude", "gemini"]` → Claude runs its
-   own **in-process** review pass (`/simplify` for quality, then a
-   `general-purpose` Claude subagent for the adversarial bug review — it never
-   model-invokes the user-only `/code-review`), **and** separately shells out
-   `agy -p "<review prompt over the diff>"` for Gemini's independent pass. Each
+4. **Step 8 (review)** resolves to `["codex", "gemini"]` → neither token is the
+   driving agent, so `review-rung` reports `independent codex` and both slots
+   shell out: `codex exec --cd <repo> -` for Codex and `agy -p "<review prompt
+   over the diff>"` for Gemini, each under the 45-minute hang backstop. Each
    reviewer is a slot that must complete (retry → fallback → block on failure);
-   both sets of completed findings feed step 9's triage.
+   both sets of completed findings feed step 9's triage. Had either CLI been
+   absent, that slot would have been reported as a rung rather than failing the
+   run — see [the rungs](#which-review-actually-happens-the-rungs).
 5. Claude pushes, opens the PR, and files any deferred work as issues (step
    12) — all native, since `primary` is Claude throughout.
 
