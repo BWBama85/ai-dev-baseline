@@ -206,7 +206,7 @@ _ADB_PW_MAX_UNREADABLE=3
 # the `$(( deadline - SECONDS ))` arithmetic below, so `--max-secs 99999999999999999999` would pass
 # a digits-only check and then produce a nonsense (possibly negative) remaining time — a "bound"
 # that expires immediately or never. 18 digits is the same ceiling `roadmap-lib.sh`'s `is_uint`
-# documents for the same reason; the shared validator is #150.
+# documents for the same reason; the shared validator is #181 (which consolidated #150).
 require_uint() {
   case "$1" in
     ''|*[!0-9]*) echo "pr-watch: $2 must be a positive integer (got '$1')" >&2; return 1 ;;
@@ -552,7 +552,7 @@ cmd_wait() {
 #
 # Every value-taking option checks its ARITY and its VALUE separately, so `--pr ''` reports "must
 # not be empty" rather than the arity message for a flag that was in fact supplied. (The shared
-# validator for this is #150; spelled out here until it lands.)
+# validator for this is #181, which consolidated #150; spelled out here until it lands.)
 parse_opts() {
   while [ "$#" -gt 0 ]; do
     case "$1" in

@@ -371,6 +371,11 @@ adb_pr_number() {
     *) n="$v" ;;
   esac
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  # No LENGTH bound here, unlike `require_uint`/`is_uint` (18 digits), and the omission is deliberate
+  # rather than forgotten: a value wider than a shell integer makes this `[` fail with "integer
+  # expression expected", the `2>/dev/null` swallows the message and the `|| return 1` rejects the
+  # argument — the safe direction. A bounded validator with one home is #181's job (it consolidated
+  # #150 and lists `uint`); adding a fourth private spelling here is what that issue exists to stop.
   [ "$n" -gt 0 ] 2>/dev/null || return 1
   printf '%s' "$n"
 }
