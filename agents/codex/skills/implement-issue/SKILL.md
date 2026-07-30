@@ -523,8 +523,16 @@ installed is a **configuration** fact, knowable in advance — not a reviewer th
 
 ```bash
 bash "$HOME/.codex/scripts/lib/role-dispatch.sh" available <token>   # 0 = CLI on PATH · 1 = known agent, CLI absent · 2 = not a token
-bash "$HOME/.codex/scripts/lib/role-dispatch.sh" review-rung         # the whole ladder, decided once: <rung>[ <detail>]  (rc 2 = unknown)
+bash "$HOME/.codex/scripts/lib/role-dispatch.sh" review-rung codex   # the whole ladder, decided once (rc 2 = unknown)
+#   prints: <rung>[ <detail>][ missing=<tokens>]
 ```
+
+**Pass your own agent token, and do not omit it.** "Independent" means *not the model that wrote
+the diff*, and the manifest's `primary` is only a claim about who normally writes it. This skill
+renders user-invocable for **every** agent, so a run driven by an agent that is not `primary` —
+against a manifest that still names one — would otherwise be told `independent` about the very
+model doing the writing, and the close-out would report an independent pass that never happened.
+`bin/agent-init` omits the argument on purpose: it describes the configured shape, not a live run.
 
 Asking first is what keeps an absent CLI from arriving as a **failure at step 8**, with
 the branch, the commits and the gates already paid for. `codex exec` with no `codex` on
@@ -547,6 +555,17 @@ repo that had declared **nothing** would have been told an async reviewer was co
 | `deferred <logins>` | nothing usable in-session, but an async reviewer is **declared** | mark the slot **deferred**, say so, proceed to the PR. |
 | `none` | nothing in-session, nothing declared | proceed, and **say plainly that nothing independent reviewed this diff.** |
 | `unknown <why>` (rc 2) | a reader failed — an invalid `review` token, a malformed `[reviewers] bots`, an unresolvable `primary` | **fix the manifest.** Never guess past it: every one of those failures otherwise resolves to the flattering rung. |
+
+**A trailing `missing=<tokens>` can appear on ANY rung, and every token in it is a slot that did
+not run.** `review = ["codex","gemini"]` with only Codex installed yields
+`independent codex missing=gemini`: the diff *was* independently reviewed, **and** a reviewer the
+operator configured reviewed nothing. Report both — every configured reviewer is a slot that must
+reach a terminal state, and an unqualified "independent" would quietly drop one.
+
+**The deferred rung is decided by `bots --comparable`, the reader the merge guard itself uses.**
+Not `--declared`: that accepts a syntactically valid array whose entries no reviewer can ever match
+(`bots = ["[bot]"]`, or a login with embedded whitespace), so it would report a hand-off to a
+declaration `pr-review.sh gate` rejects outright. A deferred rung the guard will not honour is a lie.
 
 **Rung 2 is a real hand-off, and it is narrower than it sounds — do not overstate it.**
 The async reviewer gates **step 10's `--auto` arm** and nothing else: `pr-review.sh gate`

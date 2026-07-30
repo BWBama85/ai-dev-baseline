@@ -593,6 +593,54 @@ STUB
   if [ "$_other_ok" -eq 1 ]; then ok; else bad "pairing: only '$_bin' exists, so only $_tok may report available"; fi
 done
 
+# ============================ review-rung (the ladder predicate, #211) ============================
+# One predicate answers "what will actually review a diff", and BOTH /implement-issue step 8 and
+# bin/agent-init consume it. Every arm is pinned here, including the three fail-opens the PR-227
+# review found: comparing against `primary` instead of the real driver, accepting a bot declaration
+# the merge guard rejects, and silently dropping unavailable slots.
+rung() { ( cd "$REPO" && HOME="$GHOME" PATH="$1" bash "$RD" review-rung "${2:-}" ) ; }
+RB="$work/rungbin"; mkdir -p "$RB"
+for _t in codex claude agy; do printf '#!/usr/bin/env bash\nexit 0\n' > "$RB/$_t"; chmod +x "$RB/$_t"; done
+clr_global
+
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]'
+eq "$(rung "$RB:$BARE")"          "independent codex" "rung: a usable non-primary reviewer is independent"
+# THE DRIVER ARGUMENT. Same manifest, run BY codex: the reviewer is now the model writing the diff,
+# so `independent` would be a false claim of an independent pass. Comparing against `primary` (the
+# manifest's guess at who writes) instead of the real driver is the fail-open this argument closes.
+eq "$(rung "$RB:$BARE" codex)"    "same-model codex"  "rung: driver=codex makes a codex reviewer same-model"
+eq "$(rung "$RB:$BARE" gemini)"   "independent codex" "rung: driver=gemini keeps a codex reviewer independent"
+rung "$RB:$BARE" notanagent >/dev/null 2>&1; eq "$?" "2" "rung: a bogus driver token is unknown, not ignored"
+has "$(rung "$RB:$BARE" notanagent)" "unknown" "rung: the bogus-driver line says unknown"
+
+set_repo '[roles]' 'primary = "claude"' 'review = ["claude"]'
+eq "$(rung "$RB:$BARE")" "same-model claude" "rung: review == primary is same-model"
+
+# MISSING SLOTS SURVIVE. An early return on the first available agent discarded the rest, so a
+# partially-installed list reported unqualified coverage while a configured slot ran nothing.
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex", "gemini"]'
+ONLYC="$work/onlyc"; mkdir -p "$ONLYC"; cp "$RB/codex" "$ONLYC/codex"
+eq "$(rung "$ONLYC:$BARE")" "independent codex missing=gemini" "rung: an unavailable slot is reported alongside the rung"
+eq "$(rung "$BARE")"        "none missing=codex,gemini"        "rung: every unavailable slot is listed"
+
+# THE DEFERRED ARM AGREES WITH THE MERGE GUARD. `--declared` accepts a syntactically valid array
+# whose entries no reviewer can match; `--comparable` (what pr-review.sh gate uses) rejects it 18.
+# Reporting `deferred` off the looser reader promises a hand-off the guard will refuse.
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]' '[reviewers]' 'bots = ["chatgpt-codex-connector"]'
+eq "$(rung "$BARE")" "deferred chatgpt-codex-connector missing=codex" "rung: a usable declared bot defers"
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]' '[reviewers]' 'bots = ["[bot]"]'
+rung "$BARE" >/dev/null 2>&1; eq "$?" "2" "rung: a declaration the merge guard rejects is unknown, not deferred"
+hasnt "$(rung "$BARE")" "deferred" "rung: an unmatchable bot login never reports deferred"
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]' '[reviewers]' 'bots = []'
+eq "$(rung "$BARE")" "none missing=codex" "rung: an explicit bots = [] is none, not deferred"
+
+# READER FAILURES ARE NEVER EMPTY CONFIG.
+set_repo '[roles]' 'primary = "claude"' 'review = ["bogus"]' '[reviewers]' 'bots = ["chatgpt-codex-connector"]'
+rung "$BARE" >/dev/null 2>&1; eq "$?" "2" "rung: an invalid review token is unknown, not deferred"
+set_repo '[roles]' 'primary = "notanagent"' 'review = ["codex"]'
+rung "$RB:$BARE" >/dev/null 2>&1; eq "$?" "2" "rung: an unresolvable primary is unknown, not independent"
+clr_repo
+
 # ============================ source guard ============================
 # Sourcing must define the functions but NOT run the CLI dispatch (no usage/exit).
 # shellcheck source=/dev/null

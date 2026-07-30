@@ -156,10 +156,21 @@ echo ""
 # change: both sides interpreted `resolve` + `available` + the bot allowlist themselves and
 # immediately disagreed about WHICH bot reader decides the deferred rung. This block therefore
 # formats an answer; it does not compute one.
+# NO DRIVER ARGUMENT, deliberately: `agent-init` reports the manifest's CONFIGURED shape, not a
+# live run, so the predicate compares against `primary`. The workflow passes its own agent token
+# instead, because "independent" means "not the model that actually wrote the diff".
 RUNG_LINE="$(bash "$RD" review-rung 2>/dev/null)" || true
 RUNG="${RUNG_LINE%% *}"
 RUNG_DETAIL=""
 case "$RUNG_LINE" in *' '*) RUNG_DETAIL="${RUNG_LINE#* }" ;; esac
+# `missing=<tokens>` is a trailing field on ANY rung — configured reviewer slots whose CLI is
+# absent. Split it off the detail so each is reported for what it is: the rung says what WILL
+# review the diff, `missing` says which configured slots silently will not.
+RUNG_MISSING=""
+case "$RUNG_DETAIL" in
+  missing=*)   RUNG_MISSING="${RUNG_DETAIL#missing=}"; RUNG_DETAIL="" ;;
+  *' missing='*) RUNG_MISSING="${RUNG_DETAIL##* missing=}"; RUNG_DETAIL="${RUNG_DETAIL% missing=*}" ;;
+esac
 printf 'Review rung: '
 case "$RUNG" in
   independent)
@@ -190,6 +201,11 @@ case "$RUNG" in
     echo "             Fix the manifest error above and re-run; until then, assume nothing"
     echo "             independent reviews your diffs." ;;
 esac
+# Reported on EVERY rung, including `independent`: a partially-installed `review` list still gets an
+# independent pass, and saying only that would present unqualified coverage while a slot the
+# operator configured never ran.
+[ -z "$RUNG_MISSING" ] || \
+  echo "             Configured but NOT installed: $RUNG_MISSING — that slot reviews nothing."
 echo ""
 # Printing a resolved token without this caveat reads as "the baseline will do this for you."
 # Phrased as the durable rule (a role acts only where a workflow resolves it) rather than a list

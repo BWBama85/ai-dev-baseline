@@ -16,7 +16,7 @@
 #   role-dispatch.sh resolve <role>          # print the agent token(s), one per line (empty = skip)
 #   role-dispatch.sh invoke  <role|agent>    # prompt on STDIN → run that agent's CLI; clean stdout
 #   role-dispatch.sh available <agent>       # is that agent's CLI on PATH here? (silent; rc 0/1/2)
-#   role-dispatch.sh review-rung             # what will actually review a diff: independent|same-model|deferred|none|unknown
+#   role-dispatch.sh review-rung [<driver>]  # what will actually review a diff: independent|same-model|deferred|none|unknown
 #   role-dispatch.sh bots                    # print the configured async external-bot reviewer logins
 #   role-dispatch.sh bots --declared         # the same key as a TRI-STATE, no default (0/2/3)
 #   role-dispatch.sh bots --comparable       # the declared set normalized for matching (0/17/18)
@@ -474,20 +474,38 @@ adb_agent_available() {
 
 # WHAT WILL ACTUALLY REVIEW A DIFF — the review RUNG, computed once, here.
 #
-# This is a DERIVED answer over three readers (`resolve review`, `available`, `bots --declared`),
+# This is a DERIVED answer over three readers (`resolve review`, `available`, `bots --comparable`),
 # and it lives in one place because the alternative was tried and failed inside a single PR: the
-# workflow prose and `bin/agent-init` each interpreted those three readers themselves, and they
-# promptly disagreed about which bot reader decides the deferred rung — prose said the bare `bots`,
-# whose unset default is eight built-in logins, so a repo that had declared NOTHING would have been
-# told an async reviewer was coming. Two consumers, two interpretations, one fail-open. So the
-# ladder is a predicate, not a paragraph, and both consumers read it.
+# workflow prose and `bin/agent-init` each interpreted those readers themselves, and they promptly
+# disagreed about which bot reader decides the deferred rung — prose said the bare `bots`, whose
+# unset default is eight built-in logins, so a repo that had declared NOTHING would have been told
+# an async reviewer was coming. Two consumers, two interpretations, one fail-open. So the ladder is
+# a predicate, not a paragraph, and both consumers read it.
 #
-# Prints ONE line: `<rung>[ <detail>]`, and the FIRST FIELD is the whole contract:
-#   independent <token>   a usable CLI that is NOT the primary — a different model reviews the diff
-#   same-model  <token>   the only usable reviewer IS the primary: it runs, but reviews its own work
+# Usage: adb_review_rung [<driver-token>]
+#   <driver-token>  the agent ACTUALLY RUNNING the workflow. Defaults to `primary`.
+#
+# WHY THE DRIVER IS AN ARGUMENT AND NOT JUST `primary`. "Independent" means *not the model that
+# wrote the diff*, and the manifest's `primary` is only a claim about who normally writes it. The
+# workflow renders user-invocable for every agent, so a Codex operator can run it against a repo
+# whose manifest says `primary = "claude"` — and comparing the reviewer to `primary` there returns
+# `independent codex` while Codex reviews its own change, with the close-out reporting an
+# independent pass that did not happen. The caller that knows the truth is the workflow (it renders
+# its own agent token), so it passes it; `agent-init` omits it, because it reports the manifest's
+# configured shape rather than a live run.
+#
+# Prints ONE line: `<rung>[ <detail>][ missing=<tokens>]`, and the FIRST FIELD is the contract:
+#   independent <token>   a usable CLI that is NOT the driver — a different model reviews the diff
+#   same-model  <token>   the only usable reviewer IS the driver: it runs, but reviews its own work
 #   deferred    <logins>  no usable in-session reviewer, but an async reviewer is DECLARED
 #   none                  nothing in-session, nothing declared — no independent review exists
 #   unknown     <why>     a reader failed. NEVER guessed past: rc 2.
+#
+# `missing=` lists CONFIGURED slots whose CLI is absent, and it is present on every rung that has
+# any. Step 8's contract is that EVERY configured reviewer is a slot which must reach a terminal
+# state, so `review = ["codex","gemini"]` with only codex installed must not report a bare
+# `independent codex` — that silently drops a slot the operator asked for and lets the close-out
+# claim unqualified coverage.
 #
 # `unknown` is the load-bearing arm. Every reader here can fail (an unknown agent token, a
 # malformed `[reviewers] bots`, a manifest with no `primary`), and treating a failed read as an
@@ -497,32 +515,48 @@ adb_agent_available() {
 # makes the rung `unknown` rather than contributing nothing.
 #   0 = a determinate rung   2 = unknown
 adb_review_rung() {
-  local primary tokens bots rc t same=""
-  primary="$(adb_resolve_role primary 2>/dev/null)" || { printf 'unknown primary-role-unresolvable\n'; return 2; }
-  [ -n "$primary" ] || { printf 'unknown primary-role-empty\n'; return 2; }
+  local driver="${1:-}" tokens bots rc t indep="" same="" missing="" suffix=""
+  if [ -n "$driver" ]; then
+    _adb_rd_valid_token "$driver" || { printf 'unknown driver-not-an-agent-token\n'; return 2; }
+  else
+    driver="$(adb_resolve_role primary 2>/dev/null)" || { printf 'unknown primary-role-unresolvable\n'; return 2; }
+    [ -n "$driver" ] || { printf 'unknown primary-role-empty\n'; return 2; }
+  fi
   tokens="$(adb_resolve_role review 2>/dev/null)" || { printf 'unknown review-role-unresolvable\n'; return 2; }
 
+  # ONE pass that collects everything, rather than returning on the first independent hit: the
+  # early return was what discarded the still-unavailable slots behind it.
   while IFS= read -r t; do
     [ -n "$t" ] || continue
-    adb_agent_available "$t" || continue
-    # An independent reviewer WINS IMMEDIATELY over a same-model one: `review = ["claude","codex"]`
-    # under a claude primary really does get an independent pass, and reporting that as same-model
-    # because claude was listed first would understate the review the operator configured.
-    if [ "$t" != "$primary" ]; then printf 'independent %s\n' "$t"; return 0; fi
-    same="$t"
+    if ! adb_agent_available "$t"; then
+      missing="${missing:+$missing,}$t"
+      continue
+    fi
+    # An independent reviewer WINS over a same-model one: `review = ["claude","codex"]` under a
+    # claude driver really does get an independent pass, and reporting that as same-model because
+    # claude was listed first would understate the review the operator configured.
+    if [ "$t" != "$driver" ]; then [ -n "$indep" ] || indep="$t"
+    else [ -n "$same" ] || same="$t"; fi
   done <<EOF
 $tokens
 EOF
-  [ -z "$same" ] || { printf 'same-model %s\n' "$same"; return 0; }
+  [ -z "$missing" ] || suffix=" missing=$missing"
 
-  # No usable in-session reviewer. `--declared` is the TRI-STATE (0 declared · 2 malformed ·
-  # 3 unset), deliberately NOT the bare `bots`, whose unset default is the built-in allowlist.
-  bots="$(adb_dispatch_bots_declared 2>/dev/null)"; rc=$?
+  [ -z "$indep" ] || { printf 'independent %s%s\n' "$indep" "$suffix"; return 0; }
+  [ -z "$same" ]  || { printf 'same-model %s%s\n'  "$same"  "$suffix"; return 0; }
+
+  # No usable in-session reviewer. `--comparable` is the reader the MERGE GUARD itself uses
+  # (0 + set · 0 + empty for `bots = []` · 17 undeclared · 18 malformed-or-no-usable-login),
+  # deliberately NOT `--declared`: that one accepts a syntactically valid array whose entries no
+  # reviewer can ever match (`bots = ["[bot]"]`, embedded whitespace), so it would report a
+  # `deferred` handoff to a declaration the guard rejects with 18. Agreeing with the guard is the
+  # entire value of this arm — a deferred rung that the guard will not honour is a lie.
+  bots="$(adb_dispatch_bots_comparable 2>/dev/null)"; rc=$?
   case "$rc" in
-    0) if [ -n "$bots" ]; then printf 'deferred %s\n' "$(printf '%s' "$bots" | tr '\n' ',' | sed 's/,$//')"; return 0
-       else printf 'none\n'; return 0; fi ;;          # rc 0 + empty is an explicit `bots = []`
-    3) printf 'none\n'; return 0 ;;                    # never declared
-    *) printf 'unknown reviewers-bots-malformed\n'; return 2 ;;
+    0)  if [ -n "$bots" ]; then printf 'deferred %s%s\n' "$(printf '%s' "$bots" | tr '\n' ',' | sed 's/,$//')" "$suffix"; return 0
+        else printf 'none%s\n' "$suffix"; return 0; fi ;;   # rc 0 + empty is an explicit `bots = []`
+    17) printf 'none%s\n' "$suffix"; return 0 ;;             # never declared
+    *)  printf 'unknown reviewers-bots-malformed%s\n' "$suffix"; return 2 ;;
   esac
 }
 
@@ -620,7 +654,7 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     resolve) adb_resolve_role "${2:-}" ;;
     invoke)  [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh invoke <role|agent>" >&2; exit 2; }
              adb_dispatch_invoke "$2" ;;
-    review-rung) adb_review_rung ;;
+    review-rung) adb_review_rung "${2:-}" ;;
     available) [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh available <agent>" >&2; exit 2; }
              # SILENT — the exit code IS the answer. A caller asking about several agents in a
              # ladder would otherwise have to filter this helper's chatter out of its own report.
@@ -631,6 +665,6 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
                --comparable)  adb_dispatch_bots_comparable ;;
                *) echo "usage: role-dispatch.sh bots [--declared|--comparable]" >&2; exit 2 ;;
              esac ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung | bots [--declared|--comparable]]" >&2; exit 2 ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable]]" >&2; exit 2 ;;
   esac
 fi

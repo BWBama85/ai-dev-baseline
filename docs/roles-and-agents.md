@@ -282,7 +282,14 @@ both *call* it rather than each interpreting `resolve` + `available` + the bot a
 their own words. That is not tidiness — the two-interpretation version was written and
 promptly diverged, with the workflow naming the bare `bots` (whose unset default is eight
 built-in logins) so a repo that had declared nothing would have been told an async reviewer
-was coming. It prints one line, `<rung>[ <detail>]`:
+was coming. It prints one line, `<rung>[ <detail>][ missing=<tokens>]`, and takes the **driving agent** as an
+optional argument — `implement-issue` passes its own token (because "independent" means *not the
+model that wrote the diff*, and `primary` is only a claim about who normally writes it), while
+`agent-init` omits it to describe the configured shape. The `missing=` field lists configured
+reviewer slots whose CLI is absent, on any rung: `independent codex missing=gemini` means the diff
+was independently reviewed **and** a slot the operator configured reviewed nothing. The deferred
+rung is decided with `bots --comparable`, the same reader the merge guard uses, so a rung can never
+promise a hand-off the guard rejects:
 
 | Rung | Condition | What happens |
 |---|---|---|
