@@ -474,10 +474,18 @@ has "$OUT" "deleted fork" "#175: names the likely cause"
 # `a/..` is a valid pair and a path traversal, so the charset is pinned too.
 pr_fx "$HEAD_SHA" "open" "" "acme/widget" "acme/widget/extra"
 w observe --pr 1;  rc 20 "#175: a malformed head repository slug -> 20, never a path-injected read"
-for bad_slug in 'acme/..' '../widget' 'acme/wid get' 'acme/wid?et'; do
+for bad_slug in 'acme/..' '../widget' 'acme/.' 'acme/wid get' 'acme/wid?et'; do
   pr_fx "$HEAD_SHA" "open" "" "acme/widget" "$bad_slug"
   w observe --pr 1;  rc 20 "#175: head repository '$bad_slug' is refused before it reaches a URL"
 done
+# ...but a repository whose NAME merely contains dots is a name, not a traversal, and must still be
+# queryable. Over-rejecting it would make every date-scoped signal on that PR permanently 20 —
+# failure by availability rather than by safety, which is the kind that ships unnoticed.
+reset_fx; declare_bots "[\"$CODEX\"]"
+pr_fx "$HEAD_SHA" "open" "" "acme/widget" "acme/api..client"
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+wout observe --pr 1;  rc 0 "#175: a head repository named 'api..client' is queryable, not a traversal"
 
 # A MIXED-FORMAT activity response is rejected WHOLE, not just at the winner. Ordering first and
 # checking only the survivor is unsound — a lexically-later-but-chronologically-EARLIER record can
