@@ -534,8 +534,16 @@ possible moment. So resolve the rung first, then act:
 | Rung | Condition | What step 8 does |
 |---|---|---|
 | **1 — independent review** | the slot's CLI is available **and** its token ≠ the driving agent | dispatch it (below). This is the real thing. |
-| **2 — deferred to the PR layer** | no in-session slot is usable, **but** `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" bots` lists an async reviewer | mark the slot **deferred**, say so, and proceed to the PR. |
+| **2 — deferred to the PR layer** | no in-session slot is usable, **but** `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" bots --declared` lists an async reviewer | mark the slot **deferred**, say so, and proceed to the PR. |
 | **3 — no independent review** | neither | proceed, and **say plainly that nothing independent reviewed this diff.** |
+
+**`--declared`, never the bare `bots`, decides rung 2.** The two readers differ on *unset*
+and only one can answer this question: bare `bots` substitutes the **built-in default set**
+of common review bots, so a repo with no `[reviewers]` block at all comes back with eight
+logins — and reading that surface would promote every such repo from rung 3 to rung 2,
+telling the operator an async reviewer will see the diff when none was ever declared.
+`--declared` is the tri-state the merge gate itself uses (empty/rc 3 = unset, rc 2 =
+malformed), which is the same honesty this branch needs.
 
 **Rung 2 is a real hand-off, and it is narrower than it sounds — do not overstate it.**
 The async reviewer gates **step 10's `--auto` arm** and nothing else: `pr-review.sh gate`
