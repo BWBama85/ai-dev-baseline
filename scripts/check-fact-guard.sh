@@ -48,6 +48,10 @@ check_copy_worktree "$ROOT" "$PRISTINE" || { echo "check-fact-guard: could not c
 # corruption, since a case that fails for the wrong reason still fails.
 fresh() {
   local d
+  # Drop earlier case dirs first. Each case is self-contained and never revisits a previous one,
+  # and the tree is ~4 MB — without this, ~24 cases peak at ~100 MB of temp. Statelessly, by glob,
+  # because a counter could not survive the subshell either.
+  rm -rf "$work"/case.*
   d="$(mktemp -d "$work/case.XXXXXX")" || return 1
   check_copy_worktree "$PRISTINE" "$d" || return 1
   printf '%s' "$d"
@@ -124,6 +128,14 @@ RULE
 run "$d"
 eq "$RC" 1 "fires: on a positive rule is a usage error, not silently ignored"
 has "$OUT" "only meaningful on an absent: rule" "witness-on-positive: names the misuse"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact empty-witness 'absent:ZZQQ' 'fires:' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "an empty fires: value is refused (it would witness nothing)"
+has "$OUT" "empty fires: witness" "empty-witness: names the shape"
 
 d="$(fresh)"
 minimal "$d" <<'RULE'
