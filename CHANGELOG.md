@@ -84,6 +84,41 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **One home for the PR-argument and reviewer-identity primitives — and three fail-open bypasses
+  closed** (#173, D18, superseding #176). `pr-review.sh` (#134) and `pr-watch.sh` (#49) each carried
+  private copies of four primitives, and the copies had already **diverged into a live defect**: only
+  pr-watch's slug parser handled a scheme-less URL, so `pr-review.sh gate --pr
+  github.com/other/repo/pull/7` — an ordinary browser copy-paste — produced an *empty* wanted slug,
+  skipped the cross-repo refusal entirely, answered about **this** repo's #7, and printed a head SHA
+  that `/implement-issue` step 10 then armed `gh pr merge --auto` against. A guard whose entire job
+  is to refuse was authorizing an arm on a pull request the operator never named.
+  - **`adb_pr_number` / `adb_pr_slug` / `adb_pr_slug_check` / `adb_reviewer_match_jq`** now live once
+    in `common.sh`, taking the stronger spelling in every case. `adb_git_origin_slug` is promoted out
+    of `state-assert.sh`, which had the only copy. `check-fact-drift.sh` pins both directions — each
+    guard still calls each primitive, and no local copy has come back.
+  - **The cross-check fails closed.** It was guarded on a non-empty observed slug, so it *vanished*
+    on exactly the malformed responses it exists to catch (already fixed in pr-watch after the #178
+    review, never back-propagated). Missing, malformed, or non-`owner/repo` metadata is now
+    unreadable (20) and **outranks** a mismatched argument.
+  - **A bare PR number is no longer cross-repo redirectable.** Every read addresses
+    `repos/{owner}/{repo}`, which `gh` expands — and the documented `GH_REPO` variable overrides that
+    expansion (verified: `GH_REPO=cli/cli gh api 'repos/{owner}/{repo}'` answers `cli/cli` from a
+    directory that is not a repository). A bare number names no repository, so nothing in the
+    argument could catch it — and `/resolve-pr-threads --watch` passes exactly that form. Both guards
+    now anchor to git's `origin`, which no `gh` variable can move.
+  - **Reviewer identity is matched asymmetrically** (D18). Both modules stripped a trailing `[bot]`
+    from the API login *and* from the declaration, which meant `bots = ["foo[bot]"]` was satisfied by
+    a **human account literally named `foo`** — and reactions are publicly writable, so on the
+    clean-pass signal the bar was a login collision and nothing else (`gh api
+    users/gemini-code-assist` returns a real User account). The API login is now normalized *toward*
+    the declaration and never the reverse: bare `foo` matches `foo` or `foo[bot]` (portable, the
+    documented default), while `foo[bot]` matches only `foo[bot]`. A `user.type` filter cannot do
+    this — the reactions endpoint reports `type: "User"` for the Codex connector itself.
+  - Documented in `docs/roles-and-agents.md`, `base/roles.md` and `templates/agents.toml`, whose
+    examples move to the bare spelling. `resolve-pr-threads.md`'s claim that its allowlist "can
+    **never** match a human login" is corrected: an exact allowlist matches whatever account bears
+    that login, and two built-in defaults are bare (bounded to thread resolution, not merges; #207).
+
 - **The `/implement-issue` run marker is owned by a session, not by a checkout** (#180, D17).
   `implement-issue-gate.sh` decided whether the active-run marker was its own by comparing branch
   names — but a checkout is a **working-tree** property, so every session in one clone matched the

@@ -10,9 +10,17 @@
 #      earlier head survives new commits, so reading it naively reports `clean` for code nobody
 #      reviewed. The timestamp rule (`+1` must postdate the head commit) is pinned in BOTH
 #      directions, including the boundary where they are equal.
-#   2. IDENTITY. The same bot has two spellings — reactions report `chatgpt-codex-connector`,
-#      reviews report `chatgpt-codex-connector[bot]` — and a declaration may use either. Both are
-#      pinned on both signals, plus a WRONG bot, which must satisfy neither.
+#   2. IDENTITY, ASYMMETRICALLY. The same App is spelled two ways depending on which API answered,
+#      and a declaration may use either — but the normalization runs ONE WAY ONLY (#173): the API
+#      login is normalized toward the declaration, never the reverse. Stripping both sides let a
+#      declared `foo[bot]` be satisfied by a HUMAN account named `foo`, and reactions are publicly
+#      writable, so on that signal the bar was a login collision and nothing else. Pinned on all
+#      THREE signals, because the rule had three inline copies here and one shared predicate has to
+#      be proved on each — plus a WRONG bot, which must satisfy none of them.
+#   2b. REPOSITORY IDENTITY. Every read addresses `repos/{owner}/{repo}`, so the detector can be
+#      pointed at another project by a URL argument naming one, or — when the argument is the bare
+#      number `/resolve-pr-threads --watch` passes — by `GH_REPO` redirecting gh's own expansion.
+#      Both are refused, and the anchor is git's `origin`, which no gh variable can move.
 #   3. THERE ARE THREE SURFACES, AND THEY ARE ORDERED. The connector has two operating modes and
 #      the repo does not pick which it gets: WITHOUT a Codex Cloud environment it posts a review
 #      object (+ inline threads) for findings and a bare `+1` reaction for a clean pass; WITH one it
@@ -53,7 +61,14 @@ REPO="$work/repo"; GHOME="$work/home"; SBIN="$work/sbin"; S="$work/stub"
 mkdir -p "$REPO" "$GHOME/.config/ai-dev-baseline" "$SBIN" "$S"
 # A git repo so the helper's repo-root resolution is deterministically $REPO, whatever ambient git
 # repo sits above the temp dir.
+#
+# WITH AN `origin` REMOTE, and it is load-bearing rather than set dressing (#173): the detector
+# anchors every read to the checkout's git origin, because a bare `--pr 7` names no repository and
+# the documented `GH_REPO` variable silently redirects gh's `repos/{owner}/{repo}` expansion —
+# `/resolve-pr-threads --watch` passes exactly that bare form. It must agree with the
+# `base.repo.full_name` the PR fixture reports, or every scenario below fails closed.
 git init -q "$REPO"
+git -C "$REPO" remote add origin https://github.com/acme/widget.git
 
 HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -238,15 +253,42 @@ reaction_fx "$CODEX" "+1" "$AFTER_AT"
 wout observe --pr 1;  rc 0 "clean: +1 after the head commit -> 0"
 eq "$OUT" "clean $HEAD_SHA" "clean: stdout is '<verdict> <sha>'"
 
-# The REST spelling of the same bot must work too — the declaration may carry either form.
+# The REST spelling of the same bot must work too — a bare declaration accepts either form.
 reaction_fx "${CODEX}[bot]" "+1" "$AFTER_AT"
 wout observe --pr 1;  rc 0 "clean: '[bot]'-suffixed reaction login still matches a bare declaration"
 
-# ...and the reverse: a declaration carrying the suffix must match the bare API spelling.
+# ...but NOT the reverse. The match is ASYMMETRIC (#173, superseding #176): the API login is
+# normalized toward the declaration, never the declaration toward the API. Stripping both sides let a
+# declared `foo[bot]` be satisfied by a HUMAN account literally named `foo` — and REACTIONS ARE
+# PUBLICLY WRITABLE, so on this signal the bar was a login collision and nothing else. `gh api
+# users/gemini-code-assist` returns a real User account (id 200291788), i.e. the collision space is
+# populated by the kind of account that reviews pull requests. A `user.type` filter cannot rescue it:
+# verified live, this endpoint reports `type: "User"` for the Codex connector itself.
 declare_bots "[\"${CODEX}[bot]\"]"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
-wout observe --pr 1;  rc 0 "clean: bare reaction login still matches a '[bot]'-suffixed declaration"
-declare_bots "[\"$CODEX\"]"
+w observe --pr 1;  rc 11 "identity: a HUMAN '+1' does not satisfy a '[bot]' declaration (the #176 fail-open)"
+# ...while the strict declaration still matches the spelling REST actually reports.
+reaction_fx "${CODEX}[bot]" "+1" "$AFTER_AT"
+wout observe --pr 1;  rc 0 "identity: a '[bot]' declaration matches the REST '[bot]' reaction login"
+# A doubled suffix must not satisfy the strict form through the same one-suffix rule it denies.
+reaction_fx "${CODEX}[bot][bot]" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 11 "identity: a DOUBLED '[bot]' suffix does not satisfy a '[bot]' declaration"
+
+# THE SAME RULE ON ALL THREE SIGNALS. The matcher had three inline copies here — reviews, issue
+# comments, reactions — so one shared predicate has to be proved on each, not just on the one that
+# happens to be checked first. A human login satisfying a declared App on ANY surface is the defect.
+reset_fx; declare_bots "[\"${CODEX}[bot]\"]"
+review_fx "$CODEX" "COMMENTED" "$HEAD_SHA"
+w observe --pr 1;  rc 11 "identity: a HUMAN review does not satisfy a '[bot]' declaration"
+review_fx "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
+w observe --pr 1;  rc 10 "identity: the suffixed review login does satisfy it"
+reset_fx; declare_bots "[\"${CODEX}[bot]\"]"
+comment_fx "$CODEX" "$AFTER_AT"
+w observe --pr 1;  rc 11 "identity: a HUMAN issue comment does not satisfy a '[bot]' declaration"
+comment_fx "${CODEX}[bot]" "$AFTER_AT"
+w observe --pr 1;  rc 10 "identity: the suffixed comment login does satisfy it"
+
+reset_fx; declare_bots "[\"$CODEX\"]"
 
 # ============================ 2. staleness — the dangerous direction ============================
 # A reaction is NOT commit-scoped. A `+1` left on an earlier head is still sitting there after new
@@ -438,6 +480,13 @@ has "$OUT" "unidentifiable repository" "unreadable: names the missing base repo"
 w observe --pr "https://github.com/other/repo/pull/7";  rc 20 "unreadable: a missing base repo cannot silently skip the cross-repo refusal"
 pr_fx_raw "{\"head\":{\"sha\":\"$HEAD_SHA\"},\"state\":\"open\",\"base\":{\"repo\":null}}"
 w observe --pr 1;  rc 20 "unreadable: an explicitly null base repo -> 20"
+# A slug that ARRIVES but is not an owner/repo PAIR is a broken response and must be reported as one.
+# Comparing it instead would call a malformed read "a different repository" — a confident answer about
+# the wrong question.
+for bad in '"acme"' '"acme/widget/extra"' '"/widget"' '"acme/"'; do
+  pr_fx_raw "{\"head\":{\"sha\":\"$HEAD_SHA\"},\"state\":\"open\",\"base\":{\"repo\":{\"full_name\":$bad}}}"
+  w observe --pr 1;  rc 20 "unreadable: a base repo slug of $bad is malformed, not a repo mismatch"
+done
 pr_fx_raw '{ not json at all'
 w observe --pr 1;  rc 20 "unreadable: an unparseable PR object -> 20"
 
@@ -459,6 +508,27 @@ reaction_fx "$CODEX" "+1" "$AFTER_AT"
 wout observe --pr "https://github.com/acme/widget/pull/7";  rc 0 "slug: a URL naming THIS repo is accepted"
 eq "$OUT" "clean $HEAD_SHA" "slug: a URL argument yields the same contract as a bare number"
 wout observe --pr "acme/widget/pull/7";  rc 0 "slug: a scheme-less URL naming THIS repo is still accepted"
+
+# An argument that is neither a bare number nor a URL naming a repository cannot be answered at all:
+# taking the digits after `pull/` alone reduces these to `7`, which is then answered about whichever
+# repository the reads happen to address — the cross-repo answer reached from a different input.
+w observe --pr "pull/7";                     rc 2 "slug: a PR-ish argument naming no repository is rejected"
+w observe --pr "https://github.com/pull/7";  rc 2 "slug: a URL with no owner/repo is rejected"
+
+# A BARE NUMBER NAMES NO REPOSITORY, so nothing in the argument can catch a redirected read — and
+# `/resolve-pr-threads --watch` passes exactly that form. Every read addresses `repos/{owner}/{repo}`,
+# which gh expands, and the documented GH_REPO variable overrides that expansion (verified live:
+# `GH_REPO=cli/cli gh api 'repos/{owner}/{repo}'` answers `cli/cli` from a directory that is not a
+# repository at all). The anchor is therefore the CHECKOUT's git origin, which no gh variable can
+# move. Simulated the only way a stub can: the reads answer for a repository that is not this one.
+reset_fx; declare_bots "[\"$CODEX\"]"
+pr_fx "$HEAD_SHA" "open" "" "other/project"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 2 "slug: a bare number whose reads answered for ANOTHER repo is refused (GH_REPO class)"
+has "$OUT" "GH_REPO" "slug: the refusal names the likely cause"
+wout observe --pr 1
+eq "$OUT" "" "slug: a redirected read prints no verdict line"
+reset_fx; declare_bots "[\"$CODEX\"]"
 
 # stdout is "<verdict> <sha>" or NOTHING — never a bare newline. `wait`'s terminal arm prints the
 # captured line, and a slug mismatch produces a code with no line, so an unguarded print would emit

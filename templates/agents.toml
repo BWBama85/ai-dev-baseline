@@ -33,10 +33,14 @@ debug        = "claude"     # owns root-cause investigations.
 #   []       → this repo has NO async reviewer; keep unattended auto-merge
 #   unset    → UNKNOWN, so the guard fails closed and does not arm. If nothing reviews your PRs,
 #              set `bots = []` to get unattended merging back.
-# Either login spelling works — the guard strips a trailing `[bot]`, because GitHub's GraphQL and
-# REST APIs report the same bot differently.
+# SPELLING: prefer the BARE login. GitHub reports the same App as `foo` (GraphQL) or `foo[bot]`
+# (REST), and the guard normalizes that suffix ONE WAY — the API login toward your declaration:
+#   `foo`      matches `foo` OR `foo[bot]`  — portable across both APIs; recommended
+#   `foo[bot]` matches `foo[bot]` ONLY      — that App exactly, so a human named `foo` cannot
+#                                             satisfy it (the reason the match is asymmetric)
+# See docs/roles-and-agents.md.
 # [reviewers]
-# bots = ["chatgpt-codex-connector", "gemini-code-assist[bot]", "copilot[bot]"]
+# bots = ["chatgpt-codex-connector", "gemini-code-assist", "copilot"]
 
 # Optional: override the auto-detected quality gates for this repo. The gate
 # runner auto-detects pnpm/npm/yarn/bun, cargo, go, and python projects; set

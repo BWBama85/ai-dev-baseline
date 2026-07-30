@@ -45,6 +45,13 @@
 # Every uncertainty above therefore resolves to a non-zero code, and there is no path where a
 # failed read degrades into "no reviewers pending".
 #
+# REVIEWER IDENTITY IS NOT SPELLED HERE. The same GitHub App is reported as `foo` by GraphQL and
+# `foo[bot]` by REST, and this module reads REST. The matching rule — asymmetric, so a declared
+# `foo[bot]` is never satisfied by a human account named `foo` — lives once in common.sh as
+# `adb_reviewer_match_jq`, and the declaration is normalized once by `role-dispatch.sh bots
+# --comparable` (#173, superseding #176). Both were duplicated here and in pr-watch.sh, and the
+# duplicate stripped the DECLARATION as well as the API login, which is the fail-open that removed.
+#
 # What this file must never grow: it does not wait, poll, retry, resolve threads, or merge. A PR
 # watch that waits for the review and then arms is issue #49; this is the cheap guard that stops
 # the bleeding until that lands.
@@ -72,95 +79,47 @@ usage() { adb_usage "$0"; }
 
 OPT_PR=""
 
-# --- helpers ---------------------------------------------------------------------------------
-
-# parse_pr_arg <value> — the PR NUMBER from a bare integer or a GitHub PR URL.
-#
-# Step 10 has a `prUrl` in its marker, not a number, so accepting both removes a caller-side sed.
-# Only the NUMBER is taken from a URL: every read below addresses `repos/{owner}/{repo}/...`,
-# which gh expands from the LOCAL remote. Trusting a URL's own slug instead would let the guard
-# be pointed at another repository entirely; parse_pr_slug below verifies the two agree rather
-# than silently answering about a different PR of the same number.
-parse_pr_arg() {
-  local n="$1"
-  case "$n" in *pull/*) n="${n##*pull/}"; n="${n%%[!0-9]*}" ;; esac
-  case "$n" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$n" -gt 0 ] 2>/dev/null || return 1
-  printf '%s' "$n"
-}
-
-# parse_pr_slug <value> — the `owner/repo` of a PR URL, or nothing for a bare number.
-# Used only to CROSS-CHECK the URL against the repo the reads actually address. A bare number
-# carries no slug and needs no check.
-parse_pr_slug() {
-  local v="$1" rest
-  case "$v" in
-    *://*/*/*/pull/*) rest="${v#*://}"; rest="${rest#*/}" ;;   # host/ -> owner/repo/pull/N
-    *) return 0 ;;
-  esac
-  printf '%s' "${rest%%/pull/*}"
-}
+# The PR-argument and repository-identity primitives this file used to carry privately —
+# `parse_pr_arg`, `parse_pr_slug`, and the URL-slug cross-check — now live in common.sh as
+# `adb_pr_number`, `adb_pr_slug` and `adb_pr_slug_check` (#173). They were duplicated in pr-watch.sh
+# and had already DIVERGED: this file's slug parser handled only `scheme://…`, so a scheme-less
+# `github.com/other/repo/pull/7` produced an empty slug, skipped the cross-repo refusal, and let this
+# guard authorize an arm against a pull request the operator never named. Do not re-inline them.
 
 # --- the guard -------------------------------------------------------------------------------
 
 cmd_gate() {
-  local n declared drc want head pjson pfields reviews rjson kinds wantslug gotslug pending="" rejected=""
+  local n drc want head pjson pfields reviews rjson kinds gotslug src pending="" rejected=""
 
   [ -n "$OPT_PR" ] || { echo "pr-review: gate requires --pr <number|url>" >&2; return 2; }
-  n="$(parse_pr_arg "$OPT_PR")" \
-    || { echo "pr-review: '--pr $OPT_PR' is not a PR number or a GitHub PR URL" >&2; return 2; }
+  n="$(adb_pr_number "$OPT_PR")" \
+    || { echo "pr-review: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
 
   # Read the DECLARED reviewers first, before any network call: the `bots = []` and undeclared
   # answers need no API access at all, and an unauthenticated repo should not be told "unreadable"
   # when the real answer is "you have not declared reviewers".
+  #
+  # `--comparable` returns the set already normalized for matching, and returns this module's own
+  # 17/18 for why it could not be — the mapping, the normalization and the "declared something
+  # unusable" rejection all live once in role-dispatch.sh, which owns the `[reviewers]` key (#173).
+  #
   # `bash <path>`, never `<path>` directly: scripts/lib/*.sh are sourced-or-run libraries and are
   # not guaranteed to carry the execute bit (a direct call returns 126, which this function would
   # then have to disambiguate from a real read failure). Every other caller in the baseline —
-  # including all three rendered workflows — spells it the same way.
+  # including all three rendered workflows — spells it the same way. Shelling out rather than
+  # sourcing also keeps role-dispatch's globals and shell options out of this file.
+  #
   # stderr is deliberately NOT suppressed: on a malformed declaration the reader names the exact
   # problem ("not closed on one line", "no usable entries"), and that diagnosis is the whole value
   # of code 18. Swallowing it would leave the operator with a generic "malformed" and a file that
   # looks fine.
-  declared="$(bash "$_ADB_PR_ROLE_DISPATCH" bots --declared)"; drc=$?
+  want="$(bash "$_ADB_PR_ROLE_DISPATCH" bots --comparable)"; drc=$?
   case "$drc" in
-    0) ;;
-    3) echo "pr-review: this repo declares no '[reviewers] bots' — cannot know whether a reviewer is coming." >&2
-       echo "pr-review: declare the async reviewer logins in agents.toml, or 'bots = []' if there are none." >&2
-       return 17 ;;
-    2) echo "pr-review: '[reviewers] bots' is unusable (see above) — fix agents.toml; use [] for none" >&2
-       return 18 ;;
-    *) echo "pr-review: could not read '[reviewers] bots' (broken install) — refusing to arm" >&2
-       return 20 ;;
+    0)     ;;
+    17|18) return "$drc" ;;
+    *)     echo "pr-review: could not read '[reviewers] bots' (broken install) — refusing to arm" >&2
+           return 20 ;;
   esac
-
-  # Normalize and de-duplicate the declaration in ONE pass, so the comparison form is built the
-  # same way no matter how many reviewers are declared.
-  #
-  # The normalization is load-bearing, not cosmetic: the SAME bot has two spellings depending on
-  # which API answered —
-  #   GraphQL  author.login -> chatgpt-codex-connector        (what /resolve-pr-threads matches)
-  #   REST     user.login   -> chatgpt-codex-connector[bot]   (what THIS module reads)
-  # both verified live against PR #133. The built-in allowlist carries the bare form for the Codex
-  # connector, so an anchored exact match against a REST login would silently never fire — and "no
-  # declared reviewer matched" looks exactly like "the reviewer has not reviewed yet", wedging the
-  # guard at 16 forever even after the review landed. Normalizing BOTH sides (here, and in the jq
-  # select below) makes either spelling work in agents.toml.
-  #
-  # Lowercase BEFORE stripping, so `[BOT]` is stripped too; drop blanks AFTER, so an entry that is
-  # only `[bot]` becomes empty and is dropped rather than becoming a reviewer that can never match.
-  want="$(printf '%s\n' "$declared" \
-          | tr '[:upper:]' '[:lower:]' \
-          | sed -e 's/\[bot\]$//' -e '/^[[:space:]]*$/d' \
-          | LC_ALL=C sort -u)"
-
-  # A declaration that survived the manifest reader but normalizes to NOTHING (`bots = ["[bot]"]`)
-  # is malformed, not "no reviewers". The operator declared something; treating it as the `[]`
-  # disable would arm auto-merge off the back of a typo — the fail-open direction, from the one
-  # input that looks most like a real declaration.
-  if [ -n "$declared" ] && [ -z "$want" ]; then
-    echo "pr-review: '[reviewers] bots' has no usable reviewer logins — fix agents.toml (use [] for none)" >&2
-    return 18
-  fi
 
   adb_require_gh jq || return 20
 
@@ -188,14 +147,21 @@ EOF
   [ -n "$head" ] \
     || { echo "pr-review: could not resolve the head SHA of PR #$n — refusing to arm" >&2; return 20; }
 
-  # If the caller passed a URL, prove it names the repo these reads actually addressed. Without
-  # this, `--pr https://github.com/other/repo/pull/7` would faithfully report on THIS repo's #7 —
-  # a confidently wrong answer, which is the one thing a guard must never produce.
-  wantslug="$(parse_pr_slug "$OPT_PR" | tr '[:upper:]' '[:lower:]')"
-  if [ -n "$wantslug" ] && [ -n "$gotslug" ] && [ "$wantslug" != "$gotslug" ]; then
-    echo "pr-review: --pr names '$wantslug' but this repo is '$gotslug' — refusing to answer about a different repository" >&2
-    return 2
-  fi
+  # Prove these reads addressed the repository the caller meant — the argument's own slug when it
+  # carried one, and this checkout's git `origin` always, since a bare number names no repository and
+  # `GH_REPO` silently redirects the placeholder expansion above. Without it,
+  # `--pr https://github.com/other/repo/pull/7` would faithfully report on THIS repo's #7 — a
+  # confidently wrong answer, which is the one thing a guard must never produce.
+  #
+  # The old check was guarded on `[ -n "$gotslug" ]`, so it VANISHED on exactly the malformed
+  # responses it exists to catch. Unreadable metadata now fails closed at 20 and outranks a
+  # mismatched argument; see adb_pr_slug_check.
+  adb_pr_slug_check pr-review "$n" "$OPT_PR" "$gotslug"; src=$?
+  case "$src" in
+    0) ;;
+    2) return 2 ;;
+    *) return 20 ;;
+  esac
 
   # `bots = []` — an explicit declaration that this repo has NO async reviewer. Nothing to wait
   # for, so arming is safe. The head SHA is still emitted: --match-head-commit is about the
@@ -225,10 +191,11 @@ EOF
   # reviewed b302fa0e and three further commits landed afterwards.
   while IFS= read -r login; do
     [ -n "$login" ] || continue
-    kinds="$(printf '%s' "$reviews" | jq -r --arg sha "$head" --arg who "$login" '
+    kinds="$(printf '%s' "$reviews" | jq -r --arg sha "$head" --arg who "$login" \
+        "$(adb_reviewer_match_jq)"'
         [ .[]
           | select((.commit_id // "") == $sha)
-          | select(((.user.login // "") | ascii_downcase | sub("\\[bot\\]$"; "")) == $who)
+          | select((.user.login // "") | adb_declared_reviewer([$who]))
           | (.state // "") ] | .[]' 2>/dev/null)" \
       || { echo "pr-review: could not evaluate reviews for '$login' — refusing to arm" >&2; return 20; }
 

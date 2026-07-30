@@ -187,6 +187,54 @@ eq "$?" "2" "malformed [reviewers].bots is 2 under --declared (never confused wi
 
 rd bots --bogus >/dev/null 2>&1; eq "$?" "2" "an unknown bots flag is rejected"
 
+# ---- bots --comparable : the same key normalized for MATCHING (#173) --------------------------
+# pr-review.sh and pr-watch.sh each carried this normalization, the status mapping, and the
+# "declared something unusable" rejection — ~13 duplicated lines whose whole job is to decide who
+# must review before a merge is armed. One home, here, beside the manifest reader it wraps.
+clr_repo; clr_global
+set_repo '[reviewers]' 'bots = ["Chatgpt-Codex-Connector", "MY-BOT[BOT]", "chatgpt-codex-connector"]'
+out="$(rd bots --comparable)"; rc=$?
+yes "$rc" "bots --comparable is a 0 status for a usable declaration"
+eq "$(printf '%s' "$out" | tr '\n' ',')" "chatgpt-codex-connector,my-bot[bot]" \
+   "bots --comparable lowercases and de-duplicates"
+
+# THE SUFFIX IS NO LONGER STRIPPED FROM THE DECLARATION, and that is the #176 fix: stripping it meant
+# `bots = ["foo[bot]"]` was satisfied by a HUMAN account named `foo`. The suffix now survives into the
+# comparison form, where the asymmetric matcher (common.sh) treats it as "this App, exactly".
+set_repo '[reviewers]' 'bots = ["foo[bot]"]'
+eq "$(rd bots --comparable)" "foo[bot]" "bots --comparable PRESERVES a declared '[bot]' suffix"
+
+set_repo '[reviewers]' 'bots = []'
+out="$(rd bots --comparable)"; rc=$?
+eq "$out" "" "bots --comparable: [] is the empty set, not an error"
+yes "$rc" "declared [] is a 0 status under --comparable too"
+
+clr_repo; clr_global
+rd bots --comparable >/dev/null 2>&1
+eq "$?" "17" "UNDECLARED is 17 under --comparable (the two guards' shared 'fail closed' code)"
+
+set_repo '[reviewers]' 'bots = "my-bot[bot]"'
+rd bots --comparable >/dev/null 2>&1
+eq "$?" "18" "a malformed declaration is 18 under --comparable (a config remedy, not a retry)"
+
+# A declaration that survives the reader but normalizes to NOTHING is malformed, not the `[]` disable.
+# The operator declared SOMETHING, and downgrading that to "no reviewers" would arm auto-merge off the
+# back of a typo — the fail-open direction, from the input that looks most like a real declaration.
+set_repo '[reviewers]' 'bots = ["[bot]"]'
+rd bots --comparable >/dev/null 2>&1
+eq "$?" "18" "a declaration that normalizes to nothing is 18, never the [] disable"
+
+# THE TRI-STATE READER'S OWN CONTRACT MUST NOT MOVE. `adb_dispatch_bots` treats status 2 as malformed
+# and ANY OTHER non-zero as "unset — emit the built-in default allowlist", so teaching the reader to
+# return 18 would turn a malformed [reviewers] bots into the PERMISSIVE default set for
+# /resolve-pr-threads. That is why --comparable is a wrapper rather than a flag on the reader.
+set_repo '[reviewers]' 'bots = "my-bot[bot]"'
+rd bots --declared >/dev/null 2>&1
+eq "$?" "2" "--comparable's 17/18 did not leak into --declared's 0/2/3 contract"
+rd bots >/dev/null 2>&1
+eq "$?" "2" "a malformed declaration is still REJECTED by the plain reader, not defaulted"
+clr_repo; clr_global
+
 # ============================ invoke (PATH-stubbed agents) ============================
 # codex stub: capture the prompt from stdin and REFLECT it into --output-last-message (so the
 # test proves the prompt actually reached codex — the watchdog-stdin bug), while streaming noise

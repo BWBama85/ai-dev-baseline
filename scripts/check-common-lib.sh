@@ -659,10 +659,161 @@ eq "$(adb_actions_app_slug)" "github-actions" "adb_actions_app_slug is the real 
 # `(.app.slug // "")`, so an empty expected value matches exactly the check runs whose app could
 # NOT be identified — counting unknown provenance as Actions, fail-open, in the predicate that
 # gates a release cut. Callers guard on this; so does the value itself.
-no "$([ -z "$(adb_actions_app_slug)" ]; echo $?)" "adb_actions_app_slug is never empty"
+# Spelled with ok/bad rather than `no "$([ … ]; echo $?)"`: a `$?` taken straight from a `[ … ]`
+# condition is what shellcheck's SC2319 warns about, and the direct form says the same thing without
+# routing a status through a subshell.
+if [ -n "$(adb_actions_app_slug)" ]; then ok; else bad "adb_actions_app_slug is never empty"; fi
 
 # Cross-file pinning of this value ("both consumers call the accessor, neither keeps a copy") is
 # NOT here: `scripts/check-fact-drift.sh` is the declared home for a fact restated across files,
 # and it already pins branch-health and required-drift. See the `actions-slug-*` facts there.
+
+# ============ the PR-argument and repository-identity primitives (#173) ============
+# Promoted out of pr-review.sh and pr-watch.sh, which each carried private copies that had already
+# DIVERGED into a live fail-open. They are covered here, at their one home, rather than only through
+# the two guards' harnesses: a shared primitive with two callers needs its own tests, and the
+# divergence is precisely what per-caller coverage cannot see.
+
+# --- adb_is_repo_slug: the owner/repo shape test -----------------------------------------------
+for good in "acme/widget" "a/b" "acme.foo/widget-1"; do
+  if adb_is_repo_slug "$good"; then ok; else bad "adb_is_repo_slug accepts '$good'"; fi
+done
+# Each rejection is a real input that reached one of the three callers: a bare host, a deeper URL
+# path, the leading-slash form `https://github.com/pull/7` parses to, and an empty half.
+for bad in "" "acme" "acme/widget/extra" "/widget" "acme/" "/" "a//b"; do
+  if adb_is_repo_slug "$bad"; then bad "adb_is_repo_slug rejects '$bad'"; else ok; fi
+done
+
+# --- adb_pr_slug: three URL forms, case-folded, shape-checked ----------------------------------
+# THE SCHEME IS OPTIONAL, and that is the whole defect #173 closed: pr-review.sh matched only
+# `scheme://…`, so a scheme-less browser copy-paste produced an empty slug, skipped the cross-repo
+# refusal, and let the arming guard authorize a merge on a PR nobody named.
+eq "$(adb_pr_slug 'https://github.com/acme/widget/pull/7')" "acme/widget" "adb_pr_slug: scheme://host/owner/repo/pull/N"
+eq "$(adb_pr_slug 'github.com/acme/widget/pull/7')"         "acme/widget" "adb_pr_slug: host/owner/repo/pull/N (no scheme)"
+eq "$(adb_pr_slug 'acme/widget/pull/7')"                    "acme/widget" "adb_pr_slug: bare owner/repo/pull/N"
+eq "$(adb_pr_slug 'https://github.com/acme/widget/pull/7/files')" "acme/widget" "adb_pr_slug: a sub-page URL"
+# Case-folded HERE, not in each caller: a caller that forgets the `tr` compares a mixed-case argument
+# against a lower-cased observed slug and sees a mismatch that is not one.
+eq "$(adb_pr_slug 'https://github.com/Acme/Widget/pull/7')" "acme/widget" "adb_pr_slug case-folds in one home"
+# A bare number carries no slug and needs no check — empty is the correct answer, not a failure.
+eq "$(adb_pr_slug '7')" "" "adb_pr_slug: a bare number yields no slug"
+eq "$(adb_pr_slug 'https://github.com/acme/widget/issues/7')" "" "adb_pr_slug: a non-PR URL yields no slug"
+# Shell globs do not treat `/` as special, so the patterns constrain the NUMBER of slashes, not the
+# segments: `https://github.com/pull/7` parses to `/github.com` before the shape check rejects it.
+# Trusting that would make the argument look like it named a repository.
+eq "$(adb_pr_slug 'https://github.com/pull/7')" "" "adb_pr_slug: a URL with no owner/repo yields nothing"
+eq "$(adb_pr_slug 'pull/7')" "" "adb_pr_slug: a bare 'pull/N' yields nothing"
+eq "$(adb_pr_slug 'https://ghe.example.com/a/b/c/pull/7')" "" "adb_pr_slug: a deeper path is not an owner/repo pair"
+
+# --- adb_pr_number -----------------------------------------------------------------------------
+eq "$(adb_pr_number '7')" "7" "adb_pr_number: a bare integer"
+eq "$(adb_pr_number 'https://github.com/acme/widget/pull/7')" "7" "adb_pr_number: from a full URL"
+eq "$(adb_pr_number 'github.com/other/repo/pull/7')" "7" "adb_pr_number: from a scheme-less URL"
+eq "$(adb_pr_number 'https://github.com/acme/widget/pull/7/files')" "7" "adb_pr_number: from a sub-page URL"
+eq "$(adb_pr_number '12345')" "12345" "adb_pr_number: a multi-digit number"
+# A NON-INTEGER ARGUMENT MUST NAME A REPOSITORY. Taking the digits after `pull/` and nothing else
+# accepts these, which carry no owner/repo — so they reduce to a bare `7` and get answered about
+# whichever repository the caller's reads happen to address.
+for bad in "" "0" "-3" "abc" "pull/7" "https://github.com/pull/7" \
+           "https://github.com/acme/widget/issues/7" "7abc" "--pr"; do
+  out="$(adb_pr_number "$bad" 2>/dev/null)"; rc=$?
+  no "$rc" "adb_pr_number rejects '$bad'"
+  eq "$out" "" "adb_pr_number prints nothing for '$bad'"
+done
+
+# --- adb_git_origin_slug: the anchor no gh variable can move ------------------------------------
+# `gh api repos/{owner}/{repo}/…` expands through gh, and the documented GH_REPO override moves that
+# expansion — verified live: `GH_REPO=cli/cli gh api 'repos/{owner}/{repo}'` answers `cli/cli` from a
+# directory that is not a repository. An identity call made THROUGH gh honors the same override and
+# would agree with itself, so git is the only honest anchor. Promoted here from state-assert.sh, which
+# had the only copy.
+oslug="$work/oslug"; mkdir -p "$oslug"; git init -q "$oslug"
+mk_origin() { git -C "$oslug" remote remove origin 2>/dev/null; git -C "$oslug" remote add origin "$1"; }
+# The three URL shapes git emits, each with and without `.git`.
+for u in "https://github.com/acme/widget.git" "https://github.com/acme/widget" \
+         "git@github.com:acme/widget.git"     "git@github.com:acme/widget" \
+         "ssh://git@github.com/acme/widget.git"; do
+  mk_origin "$u"
+  eq "$(cd "$oslug" && adb_git_origin_slug)" "acme/widget" "adb_git_origin_slug parses '$u'"
+done
+# GH_REPO must not influence it — that is the entire reason it asks git.
+mk_origin "https://github.com/acme/widget.git"
+eq "$(cd "$oslug" && GH_REPO=other/project adb_git_origin_slug)" "acme/widget" \
+   "adb_git_origin_slug ignores GH_REPO (the override it exists to defeat)"
+# A trailing slash is tolerated; anything that does not resolve to a PAIR fails closed.
+mk_origin "https://github.com/acme/widget/"
+eq "$(cd "$oslug" && adb_git_origin_slug)" "acme/widget" "adb_git_origin_slug tolerates a trailing slash"
+for u in "https://github.com/widget" "https://github.com/a/b/c" "not-a-url"; do
+  mk_origin "$u"
+  out="$(cd "$oslug" && adb_git_origin_slug 2>/dev/null)"; rc=$?
+  no "$rc" "adb_git_origin_slug fails closed on '$u'"
+  eq "$out" "" "adb_git_origin_slug prints nothing for '$u'"
+done
+# No origin at all -> non-zero and silent, which every caller maps to its own "unreadable".
+git -C "$oslug" remote remove origin 2>/dev/null
+out="$(cd "$oslug" && adb_git_origin_slug 2>/dev/null)"; rc=$?
+no "$rc" "adb_git_origin_slug fails closed with no origin remote"
+eq "$out" "" "adb_git_origin_slug prints nothing with no origin remote"
+
+# --- adb_pr_slug_check: the cross-check, and its ORDER -----------------------------------------
+mk_origin "https://github.com/acme/widget.git"
+sc() { ( cd "$oslug" && adb_pr_slug_check test 7 "$1" "$2" >/dev/null 2>&1; echo $? ); }
+eq "$(sc '7' 'acme/widget')" "0" "slug-check: a bare number against the matching checkout verifies"
+eq "$(sc 'https://github.com/acme/widget/pull/7' 'acme/widget')" "0" "slug-check: an agreeing URL verifies"
+eq "$(sc 'https://github.com/Acme/Widget/pull/7' 'ACME/WIDGET')" "0" "slug-check: comparison is case-insensitive on both sides"
+eq "$(sc 'https://github.com/other/project/pull/7' 'acme/widget')" "2" "slug-check: a URL naming another repo is refused"
+eq "$(sc 'github.com/other/project/pull/7' 'acme/widget')" "2" "slug-check: the SCHEME-LESS form is refused too (#173)"
+# The GH_REPO class: a bare number names no repository, so only the checkout anchor catches a
+# redirected read.
+eq "$(sc '7' 'other/project')" "2" "slug-check: reads that answered for another repo are refused even for a bare number"
+# UNREADABLE OUTRANKS MISMATCHED, and that order is part of the contract. The old check was guarded on
+# a non-empty observed slug, so it silently VANISHED on exactly these responses — and a foreign URL
+# was then answered about this repo. Each must report 1 (the caller's 20), never 2 and never 0.
+for got in "" "acme" "acme/widget/extra" "/widget" "acme/"; do
+  eq "$(sc '7' "$got")" "1" "slug-check: an observed slug of '$got' is unreadable (1), not a mismatch"
+  eq "$(sc 'https://github.com/other/project/pull/7' "$got")" "1" \
+     "slug-check: unreadable metadata outranks a foreign URL ('$got')"
+done
+# An unresolvable checkout is also unverifiable rather than a mismatch — fail closed, both codes distinct.
+git -C "$oslug" remote remove origin 2>/dev/null
+eq "$(sc '7' 'acme/widget')" "1" "slug-check: no origin remote -> unverifiable (1), never verified"
+# Diagnostics go to stderr under the caller's label, and stdout stays empty (callers print SHAs there).
+mk_origin "https://github.com/acme/widget.git"
+_scout="$( cd "$oslug" && adb_pr_slug_check mylabel 7 'https://github.com/other/project/pull/7' 'acme/widget' 2>/dev/null )"
+eq "$_scout" "" "slug-check prints nothing on stdout"
+_scerr="$( cd "$oslug" && adb_pr_slug_check mylabel 7 'https://github.com/other/project/pull/7' 'acme/widget' 2>&1 >/dev/null )"
+has "$_scerr" "mylabel:" "slug-check labels its diagnostic with the caller's name"
+has "$_scerr" "different repository" "slug-check says why it refused"
+
+# --- adb_reviewer_match_jq: the ASYMMETRIC identity predicate ----------------------------------
+# The rule four filters across the two guards ask, so all four must ask it the same way. Exercised
+# here as the full matrix rather than through one guard's scenario.
+#
+# THE DIRECTION IS THE POINT. The API login is normalized TOWARD the declaration: a bare declaration
+# accepts either spelling (portable across the GraphQL/REST split), a `[bot]` declaration accepts only
+# the suffixed one. Stripping the DECLARATION too — what both modules used to do — meant `foo[bot]` was
+# satisfied by a HUMAN account literally named `foo`, and `gh api users/gemini-code-assist` returns a
+# real User account (id 200291788), so that collision space is populated.
+rmatch() {   # <api-login> <declared…> -> "true"/"false"
+  local api="$1"; shift
+  jq -n -r --arg a "$api" --argjson who "$(printf '%s\n' "$@" | jq -R -s -c 'split("\n")|map(select(length>0))')" \
+    "$(adb_reviewer_match_jq) \$a | adb_declared_reviewer(\$who)" 2>/dev/null
+}
+eq "$(rmatch 'foo' 'foo')"                "true"  "identity: bare declared, bare login -> match"
+eq "$(rmatch 'foo[bot]' 'foo')"           "true"  "identity: bare declared, '[bot]' login -> match (the REST spelling)"
+eq "$(rmatch 'FOO[BOT]' 'foo')"           "true"  "identity: matching is case-insensitive"
+eq "$(rmatch 'foo[bot]' 'foo[bot]')"      "true"  "identity: '[bot]' declared, '[bot]' login -> match"
+eq "$(rmatch 'foo' 'foo[bot]')"           "false" "identity: '[bot]' declared, HUMAN login -> NO match (#176's fail-open)"
+eq "$(rmatch 'foo[bot][bot]' 'foo[bot]')" "false" "identity: a DOUBLED suffix does not satisfy '[bot]' declared"
+eq "$(rmatch 'bar' 'foo')"                "false" "identity: an unrelated login does not match"
+eq "$(rmatch 'bar[bot]' 'foo')"           "false" "identity: an unrelated BOT does not match (an allowlist, not a heuristic)"
+eq "$(rmatch 'foobar' 'foo')"             "false" "identity: the match is anchored, not a prefix test"
+eq "$(rmatch 'foo' 'foo' 'foo')"          "true"  "identity: a duplicated declaration still matches"
+eq "$(rmatch 'baz[bot]' 'foo' 'baz[bot]')" "true" "identity: any ONE of several declarations may match"
+eq "$(rmatch 'foo' 'bar[bot]' 'foo')"     "true"  "identity: a bare entry beside a suffixed one still matches"
+eq "$(rmatch 'foo')"                      "false" "identity: an EMPTY declaration set matches nothing"
+# An entry that is only the suffix must not become a reviewer that matches everything suffixed. The
+# declaration reader drops it (and then rejects the declaration); the predicate must not rescue it.
+eq "$(rmatch 'anything[bot]' '[bot]')"    "false" "identity: a bare '[bot]' entry does not match every App"
 
 check_summary "common-lib"

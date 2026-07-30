@@ -33,10 +33,19 @@ default set covers the common GitHub review bots:
 
 > **Note:** matching is an **exact, anchored, case-insensitive allowlist** built from those logins
 > (`(?i)^(login1|login2|…)$`, with `[`/`]` regex-escaped) — **not** a `[bot]`-suffix heuristic. So
-> it resolves *only* threads from a configured bot and can **never** match a human login (nor an
-> unlisted `[bot]` account). Add a reviewer by listing it in `[reviewers] bots`, not by editing
-> this skill — and the same allowlist drives both classification (step 3) and the remaining-count
-> sanity check (step 6), so the two can't diverge.
+> it resolves *only* threads whose author login is listed, never an unlisted `[bot]` account, and
+> never a login that merely resembles one. Add a reviewer by listing it in `[reviewers] bots`, not
+> by editing this skill — and the same allowlist drives both classification (step 3) and the
+> remaining-count sanity check (step 6), so the two can't diverge.
+>
+> **Stated exactly, because the stronger claim was wrong:** an exact allowlist matches *whatever
+> account bears that login*, which for a **bare** entry may be a human rather than an App. Two of
+> the built-in defaults are bare (`gemini-code-assist`, and `chatgpt-codex-connector`, whose App
+> genuinely has no suffix), and `gh api users/gemini-code-assist` returns a real **User** account —
+> so "can never match a human login" was false as written. The exposure is bounded (an unwanted
+> *thread resolution*, not a merge) and it is not this workflow's to fix: whether the bare defaults
+> should be dropped is tracked in #207. The arming guards are separate and stricter — see
+> `base/roles.md` on `foo` vs `foo[bot]` (#173).
 
 **Out of scope:** threads authored by humans (the repo owner or any other user). Never auto-resolve those — they require human-to-human discussion. If the only unresolved threads are human-authored, this skill reports them and exits without action.
 

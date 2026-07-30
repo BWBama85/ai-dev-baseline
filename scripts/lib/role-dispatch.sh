@@ -16,6 +16,8 @@
 #   role-dispatch.sh resolve <role>          # print the agent token(s), one per line (empty = skip)
 #   role-dispatch.sh invoke  <role|agent>    # prompt on STDIN → run that agent's CLI; clean stdout
 #   role-dispatch.sh bots                    # print the configured async external-bot reviewer logins
+#   role-dispatch.sh bots --declared         # the same key as a TRI-STATE, no default (0/2/3)
+#   role-dispatch.sh bots --comparable       # the declared set normalized for matching (0/17/18)
 # The `bots` surface makes this the one runtime reader of the agents.toml manifest (roles AND the
 # `[reviewers]` bot allowlist), rather than standing up a second helper + install seam for it.
 # Sourced use: `. role-dispatch.sh` then call `adb_resolve_role <role>` / `adb_dispatch_bots`
@@ -309,6 +311,62 @@ adb_dispatch_bots_declared() {
   return 0
 }
 
+# adb_dispatch_bots_comparable — the declared set NORMALIZED into the form the two PR guards match
+# against, plus their shared vocabulary for why it could not be read (#173). One home for what had
+# been ~13 duplicated lines in `pr-review.sh` and `pr-watch.sh`: the status mapping, the
+# normalization pipeline, and the "declared something that normalizes to nothing" rejection.
+#
+#   0  + the set  the comparison form, one login per line. EMPTY with status 0 is the `bots = []`
+#                 answer — this repo has no async reviewer — and is not an error.
+#   17 undeclared anywhere. The caller must fail closed; it cannot know whether a reviewer is coming.
+#   18 malformed, or declared but with no usable login.
+#
+# WHY THIS IS A SEPARATE FUNCTION AND NOT A FLAG ON adb_dispatch_bots_declared. That reader's 0/2/3
+# contract is consumed by `adb_dispatch_bots` above, which treats status 2 as malformed and ANY OTHER
+# non-zero as "unset — emit the built-in default allowlist". Returning 18 from the reader itself would
+# therefore turn a malformed `[reviewers] bots` into the permissive default set for
+# `/resolve-pr-threads` — a fail-open manufactured by tidying up. So the tri-state reader keeps its
+# contract untouched and this wrapper maps it for the guards.
+#
+# NORMALIZATION, and what it deliberately no longer does. Lowercase (logins are case-insensitive) and
+# de-duplicate, so the comparison form is built one way regardless of how many reviewers are declared.
+# It does NOT strip a trailing `[bot]` any more: stripping the DECLARATION is what let a human account
+# named `foo` satisfy `bots = ["foo[bot]"]`. The suffix is now handled on the API side only — see
+# `adb_reviewer_match_jq` in common.sh for the asymmetric rule and what a bare login means.
+#
+# An entry that is ONLY `[bot]` is dropped, which then trips the rejection below rather than becoming
+# a reviewer that can never match. `adb_toml_array` has already trimmed whitespace and dropped empty
+# elements, so the blank-line arm is defence in depth rather than the working case.
+adb_dispatch_bots_comparable() {
+  local declared drc want
+  declared="$(adb_dispatch_bots_declared)"; drc=$?
+  case "$drc" in
+    0) ;;
+    3) printf 'role-dispatch: this repo declares no '\''[reviewers] bots'\'' — cannot know whether a reviewer is coming.\n' >&2
+       printf 'role-dispatch: declare the async reviewer logins in agents.toml, or '\''bots = []'\'' if there are none.\n' >&2
+       return 17 ;;
+    2) printf 'role-dispatch: '\''[reviewers] bots'\'' is unusable (see above) — fix agents.toml; use [] for none\n' >&2
+       return 18 ;;
+    *) return "$drc" ;;     # nothing else is reachable; a caller maps the unknown to its own "unreadable"
+  esac
+
+  want="$(printf '%s\n' "$declared" \
+          | tr '[:upper:]' '[:lower:]' \
+          | sed -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*\[bot\][[:space:]]*$/d' \
+          | LC_ALL=C sort -u)"
+
+  # A declaration that survived the manifest reader but normalizes to NOTHING (`bots = ["[bot]"]`) is
+  # malformed, not "no reviewers". The operator declared SOMETHING, and silently downgrading that to
+  # the `[]` disable would arm auto-merge — or report a clean pass — off the back of a typo, from the
+  # one input that looks most like a real declaration.
+  if [ -n "$declared" ] && [ -z "$want" ]; then
+    printf 'role-dispatch: '\''[reviewers] bots'\'' has no usable reviewer logins — fix agents.toml (use [] for none)\n' >&2
+    return 18
+  fi
+  [ -z "$want" ] || printf '%s\n' "$want"
+  return 0
+}
+
 # --- invocation --------------------------------------------------------------------------------
 
 # Run <argv> with the hang backstop. THE mechanism lives once in common.sh as `adb_run_bounded`
@@ -432,10 +490,11 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     invoke)  [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh invoke <role|agent>" >&2; exit 2; }
              adb_dispatch_invoke "$2" ;;
     bots)    case "${2:-}" in
-               '')          adb_dispatch_bots ;;
-               --declared)  adb_dispatch_bots_declared ;;
-               *) echo "usage: role-dispatch.sh bots [--declared]" >&2; exit 2 ;;
+               '')            adb_dispatch_bots ;;
+               --declared)    adb_dispatch_bots_declared ;;
+               --comparable)  adb_dispatch_bots_comparable ;;
+               *) echo "usage: role-dispatch.sh bots [--declared|--comparable]" >&2; exit 2 ;;
              esac ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | bots [--declared]]" >&2; exit 2 ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | bots [--declared|--comparable]]" >&2; exit 2 ;;
   esac
 fi
