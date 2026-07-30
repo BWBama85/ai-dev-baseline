@@ -802,6 +802,14 @@ rmatch() {   # <api-login> <declared…> -> "true"/"false"
 eq "$(rmatch 'foo' 'foo')"                "true"  "identity: bare declared, bare login -> match"
 eq "$(rmatch 'foo[bot]' 'foo')"           "true"  "identity: bare declared, '[bot]' login -> match (the REST spelling)"
 eq "$(rmatch 'FOO[BOT]' 'foo')"           "true"  "identity: matching is case-insensitive"
+eq "$(rmatch 'FOO[BOT]' 'foo[bot]')"      "true"  "identity: case-insensitive for a suffixed declaration too"
+# CASE IS FOLDED ON BOTH SIDES. The production path lower-cases the declaration before it gets here,
+# so this asserts the primitive is correct STANDALONE — a future consumer passing a raw declaration
+# must not silently match nothing, because "matches nothing" wedges a guard at "awaiting review"
+# forever, which is the safe and therefore silent direction.
+eq "$(rmatch 'foo' 'FOO[BOT]')"           "false" "identity: a RAW uppercase '[bot]' declaration still rejects a human"
+eq "$(rmatch 'foo[bot]' 'FOO[BOT]')"      "true"  "identity: a RAW uppercase declaration still matches its App"
+eq "$(rmatch 'foo' 'FOO')"                "true"  "identity: a RAW uppercase bare declaration matches"
 eq "$(rmatch 'foo[bot]' 'foo[bot]')"      "true"  "identity: '[bot]' declared, '[bot]' login -> match"
 eq "$(rmatch 'foo' 'foo[bot]')"           "false" "identity: '[bot]' declared, HUMAN login -> NO match (#176's fail-open)"
 eq "$(rmatch 'foo[bot][bot]' 'foo[bot]')" "false" "identity: a DOUBLED suffix does not satisfy '[bot]' declared"

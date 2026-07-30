@@ -494,11 +494,19 @@ adb_pr_slug_check() {
 # split. The `[bot]` form is the STRICT one, and its strictness is against the observed API
 # spelling: a reader that switches surfaces stops satisfying it. That fails safe (the guard withholds
 # the arm) but it is real, and closing it needs a stable App identity rather than a login string.
+# CASE IS FOLDED ON BOTH SIDES, and that is not the same concession as folding the suffix. GitHub
+# logins are case-insensitive, so `FOO[BOT]` and `foo[bot]` are one account and comparing them
+# case-sensitively is simply wrong; the ASYMMETRY is about the `[bot]` SUFFIX, which carries the
+# App-vs-human meaning. Folding here rather than trusting the caller is deliberate: the production
+# path already lower-cases the declaration in `bots --comparable`, so this looks redundant — but a
+# future consumer passing a raw declaration would then match NOTHING, and "matches nothing" wedges a
+# guard at "awaiting review" forever. That is the safe direction and therefore the silent one, which
+# makes it exactly the hidden precondition a shared primitive must not carry.
 adb_reviewer_match_jq() {
   cat <<'JQ'
 def adb_declared_reviewer($who):
   (ascii_downcase) as $a
-  | any($who[]; . as $d
+  | any($who[]; ascii_downcase as $d
       | ($a == $d)
         or ((($d | endswith("[bot]")) | not) and ($a == $d + "[bot]")));
 JQ
