@@ -684,6 +684,39 @@ for v in "" "acme" "acme/widget/extra" "/widget" "acme/" "/" "a//b"; do
   if adb_is_repo_slug "$v"; then bad "adb_is_repo_slug rejects '$v'"; else ok; fi
 done
 
+# --- adb_is_path_safe_repo_slug: the same shape, PLUS safe to build a request path from ---------
+# The shape test alone is not enough once a slug is CONCATENATED INTO a `repos/<slug>/...` path, and
+# the gap is easy to miss because the shape test looks like it covers it: `a/..` is a well-formed
+# pair AND a path traversal. #175's `pr-watch.sh head_anchor` is the first caller — it builds that
+# path out of `head.repo.full_name`, a value read from an API response rather than constructed
+# locally, which is the position where "well-formed" and "safe" stop being the same question.
+for good in "acme/widget" "a/b" "acme.foo/widget-1" "My_Org/repo.js"; do
+  if adb_is_path_safe_repo_slug "$good"; then ok; else bad "adb_is_path_safe_repo_slug accepts '$good'"; fi
+done
+# DOTS ARE ORDINARY IN REPOSITORY NAMES, and over-rejecting them costs availability rather than
+# safety — which is exactly why it ships unnoticed. A substring test for `..` also rejects
+# `api..client`, and the caller's failure mode is then code 20 on every date-scoped signal for that
+# PR: permanently unreadable, for a name that was never dangerous. `.github` is GitHub's own
+# convention and must pass; a LEADING dot is not traversal either.
+for good in "acme/api..client" "acme/.github" "acme/..github" "a.b.c/d..e"; do
+  if adb_is_path_safe_repo_slug "$good"; then ok; else bad "adb_is_path_safe_repo_slug accepts dotted name '$good'"; fi
+done
+# It must still reject everything the shape test rejects...
+for v in "" "acme" "acme/widget/extra" "/widget" "acme/"; do
+  if adb_is_path_safe_repo_slug "$v"; then bad "adb_is_path_safe_repo_slug rejects '$v'"; else ok; fi
+done
+# ...and the traversal / injection forms the shape test alone lets through. `acme/..` is the one
+# that matters: adb_is_repo_slug ACCEPTS it, so this line is the whole reason the sibling exists.
+# A segment that IS `.` or `..` is traversal — on EITHER side of the slash — while a segment that
+# merely contains dots is a name (pinned above).
+for v in "acme/.." "../widget" "acme/." "./widget" "../.." "acme/../../x" \
+         "acme/wid get" "acme/wid?et" "acme/wid&et" "acme/w%2Fx"; do
+  if adb_is_path_safe_repo_slug "$v"; then bad "adb_is_path_safe_repo_slug rejects '$v'"; else ok; fi
+done
+# Pin the DIFFERENCE itself, not just the two behaviours: if a future edit folded the strict rule
+# into adb_is_repo_slug, these two would agree and the sibling would be pointless indirection.
+if adb_is_repo_slug "acme/.."; then ok; else bad "adb_is_repo_slug is the SHAPE test and still accepts 'acme/..'"; fi
+
 # --- adb_pr_slug: three URL forms, case-folded, shape-checked ----------------------------------
 # THE SCHEME IS OPTIONAL, and that is the whole defect #173 closed: pr-review.sh matched only
 # `scheme://…`, so a scheme-less browser copy-paste produced an empty slug, skipped the cross-repo

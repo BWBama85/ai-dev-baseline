@@ -8,8 +8,16 @@
 #
 #   1. STALENESS. A review carries `commit_id`; a REACTION CARRIES NO COMMIT. A `+1` left on an
 #      earlier head survives new commits, so reading it naively reports `clean` for code nobody
-#      reviewed. The timestamp rule (`+1` must postdate the head commit) is pinned in BOTH
-#      directions, including the boundary where they are equal.
+#      reviewed. The timestamp rule is pinned in BOTH directions, including the boundary where they
+#      are equal.
+#   1b. AND ITS LOWER BOUND IS SERVER-ASSIGNED (#175). That rule used to compare against the head
+#      commit's COMMITTER DATE, which GitHub echoes back verbatim from the committing machine — so a
+#      past-dated head made a stale `+1` look fresh, a false `clean`, with no attacker required. The
+#      anchor is now the repository ACTIVITY record for the head REF, and the tests pin three things
+#      a weaker anchor would get wrong: the same SHA arriving on ANOTHER ref must not date this one
+#      (which is exactly why a check-suite anchor was rejected); the LATEST record decides, so a
+#      reverse force-push is caught; and an anchor that cannot be established is `pending` on BOTH
+#      date-scoped signals. The committer date is asserted to be NEVER FETCHED, not merely outvoted.
 #   2. IDENTITY, ASYMMETRICALLY. The same App is spelled two ways depending on which API answered,
 #      and a declaration may use either — but the normalization runs ONE WAY ONLY (#173): the API
 #      login is normalized toward the declaration, never the reverse. Stripping both sides let a
@@ -74,11 +82,18 @@ git -C "$REPO" remote add origin https://github.com/acme/widget.git
 HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 CODEX="chatgpt-codex-connector"
-# The head commit's date. Every reaction fixture is expressed relative to it so the staleness rule
-# is read at a glance rather than by comparing two opaque strings.
-COMMIT_AT="2026-07-25T04:42:15Z"
+HEAD_REF="feature"
+# WHEN THE HEAD REF BECAME THE HEAD SHA, as the repository activity API recorded it (#175) — NOT the
+# head commit's committer date, which is client-supplied and which this module no longer reads at
+# all. Every reaction/comment fixture is expressed relative to it so the staleness rule is read at a
+# glance rather than by comparing two opaque strings.
+ARRIVED_AT="2026-07-25T04:42:15Z"
 AFTER_AT="2026-07-25T04:45:23Z"    # 3m08s later — the real gap observed on PR #88
 BEFORE_AT="2026-07-25T04:40:00Z"
+# A committer date deliberately EARLIER than every reaction below. Under the pre-#175 rule this
+# alone produced `clean`; it is served by the stub's (now unused) commit route purely so the tests
+# can prove the module never asks for it.
+FORGED_COMMIT_AT="2026-07-25T00:00:00Z"
 
 # ============================ the recording gh stub ============================
 # ORDERING IS LOAD-BEARING, and it is the trap a broad `repos/*` arm sets: the reviews URL is ALSO
@@ -96,7 +111,8 @@ cat > "$SBIN/gh" <<'STUB'
 #   STUB_FAIL_REVIEWS=1    -> the reviews read fails
 #   STUB_FAIL_REACTIONS=1  -> the reactions read fails
 #   STUB_FAIL_COMMENTS=1   -> the issue-comments read fails
-#   STUB_FAIL_COMMIT=1     -> the head-commit read fails
+#   STUB_FAIL_ACTIVITY=1   -> the ref-activity read fails
+#   STUB_EMPTY_ACTIVITY=1  -> the ref-activity read SUCCEEDS with an empty body (not `[]`)
 [ "${STUB_AUTH_FAIL:-0}" = "1" ] && [ "${1:-} ${2:-}" = "auth status" ] && exit 1
 case "${1:-}" in
   auth) exit 0 ;;
@@ -107,6 +123,11 @@ url=""
 for a in "$@"; do
   case "$a" in repos/*) [ -z "$url" ] && url="$a" ;; esac
 done
+# EVERY api call is recorded, which is how the suite proves a NEGATIVE: #175's whole claim is that
+# the client-supplied committer date is out of the decision, and the only way to show that is that
+# the head-commit endpoint is never asked. An assertion on the verdict alone would still pass if the
+# module read the date and happened to weight it differently.
+printf '%s\n' "$url" >> "$S/calls"
 # fx <base> : echo the per-poll fixture if present, else the default one. The poll number comes
 # from the counter file the `pulls/N` arm below bumps once per classification — NOT from an
 # environment variable, which cannot survive between the separate `gh` processes one poll makes.
@@ -135,8 +156,25 @@ case "$url" in
     fx reactions
     [ -f "$S/reactions2.json" ] && cat "$S/reactions2.json"
     exit 0 ;;
+  */activity*)
+    [ "${STUB_FAIL_ACTIVITY:-0}" = "1" ] && exit 1
+    # A SUCCESSFUL read with an empty body — distinct from `[]`, and the reason the module reads and
+    # parses in two steps. Collapsing them would turn this into "no matching activity" (11) when it
+    # is really "the call produced no document" (20).
+    [ "${STUB_EMPTY_ACTIVITY:-0}" = "1" ] && exit 0
+    fx activity
+    exit 0 ;;
   */commits/*)
-    [ "${STUB_FAIL_COMMIT:-0}" = "1" ] && exit 1
+    # RETIRED BY #175 and kept deliberately — as a BAITED route, not as a working dependency. It
+    # still answers, with a committer date old enough to have produced a false `clean` under the old
+    # rule, so a future edit that reaches for the head commit again gets a TEMPTING wrong answer
+    # rather than nothing.
+    #
+    # It is not what makes the negative assertion work: `called '/commits/'` reads the unconditional
+    # recorder above, and would fail with this arm deleted too (an unmatched `repos/…` falls to the
+    # catch-all below and exits 0 with empty stdout — the suite never 404s either way). Kept because
+    # a regression should fail on "the head commit was read", which names the defect, rather than on
+    # whatever an empty body happens to do three steps later.
     cat "$S/commit.json"; exit 0 ;;
   */pulls/*)
     [ "${STUB_FAIL_PR:-0}" = "1" ] && exit 1
@@ -171,22 +209,50 @@ chmod +x "$SBIN/sleep"
 
 # ---- fixtures --------------------------------------------------------------------------------
 reset_fx() {
-  rm -f "$S/reviews2.json" "$S/reactions2.json" "$S/comments2.json" "$S/polls" "$S/slept"
-  rm -f "$S"/pr.[0-9]*.json "$S"/reviews.[0-9]*.json "$S"/reactions.[0-9]*.json "$S"/comments.[0-9]*.json
+  rm -f "$S/reviews2.json" "$S/reactions2.json" "$S/comments2.json" "$S/polls" "$S/slept" "$S/calls"
+  rm -f "$S"/pr.[0-9]*.json "$S"/reviews.[0-9]*.json "$S"/reactions.[0-9]*.json \
+        "$S"/comments.[0-9]*.json "$S"/activity.[0-9]*.json
   printf '[]\n' > "$S/reviews.json"
   printf '[]\n' > "$S/reactions.json"
   printf '[]\n' > "$S/comments.json"
   pr_fx
   commit_fx
+  activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"
 }
-# pr_fx [sha] [state] [merged_at] [slug]
+# pr_fx [sha] [state] [merged_at] [base-slug] [head-slug] [head-ref]
+# The last two are what the staleness anchor is looked up by. `${5-}` not `${5:-}` on purpose: an
+# EXPLICIT empty string means "this PR has no head repository any more" (a deleted fork), which is a
+# state the anchor must degrade on, while an OMITTED argument takes the default.
 pr_fx() {
   jq -n --arg sha "${1:-$HEAD_SHA}" --arg st "${2:-open}" --arg m "${3:-}" --arg slug "${4:-acme/widget}" \
-    '{head:{sha:$sha}, state:$st, merged_at:(if $m == "" then null else $m end), base:{repo:{full_name:$slug}}}' \
+        --arg hslug "${5-acme/widget}" --arg href "${6-$HEAD_REF}" \
+    '{head:{sha:$sha, ref:$href, repo:(if $hslug == "" then null else {full_name:$hslug} end)},
+      state:$st, merged_at:(if $m == "" then null else $m end), base:{repo:{full_name:$slug}}}' \
     > "$S/pr.json"
 }
 pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
-commit_fx()  { jq -n --arg d "${1:-$COMMIT_AT}" '{commit:{committer:{date:$d}, author:{date:$d}}}' > "$S/commit.json"; }
+# The committer date the module MUST NOT consult. Defaulted to a value old enough that reading it
+# would flip every staleness assertion below from `pending` to `clean`.
+commit_fx()  { jq -n --arg d "${1:-$FORGED_COMMIT_AT}" '{commit:{committer:{date:$d}, author:{date:$d}}}' > "$S/commit.json"; }
+# activity_fx <after-sha> <ref> <timestamp> [...] — one repository-activity record per triple, in the
+# newest-first order the API returns them.
+#
+# Written flat, unlike the `_*_into` siblings above: those take an `out` parameter because each has
+# 2-3 callers writing page-two and per-poll fixtures, and this one has exactly one destination. The
+# indirection is theirs to earn, not a house style to copy.
+activity_fx() {
+  local acc="[]"
+  while [ "$#" -ge 3 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg sha "$1" --arg ref "$2" --arg at "$3" \
+            '. + [{activity_type:"push", ref:$ref, before:"0000000000000000000000000000000000000000",
+                   after:$sha, timestamp:$at}]')"
+    shift 3
+  done
+  printf '%s\n' "$acc" > "$S/activity.json"
+}
+activity_fx_raw() { printf '%s\n' "$1" > "$S/activity.json"; }
+# called <substring> — did any gh api call this scenario made address <substring>?
+called() { [ -f "$S/calls" ] && grep -q -- "$1" "$S/calls"; }
 # review_fx <login> <state> <sha> [...] — one review per triple, into the DEFAULT fixture.
 review_fx() { _reviews_into "$S/reviews.json" "$@"; }
 _reviews_into() {
@@ -234,7 +300,8 @@ _w() {
     STUB_AUTH_FAIL="${STUB_AUTH_FAIL:-0}" STUB_FAIL_PR="${STUB_FAIL_PR:-0}" \
     STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" STUB_FAIL_REACTIONS="${STUB_FAIL_REACTIONS:-0}" \
     STUB_FAIL_COMMENTS="${STUB_FAIL_COMMENTS:-0}" \
-    STUB_FAIL_COMMIT="${STUB_FAIL_COMMIT:-0}" \
+    STUB_FAIL_ACTIVITY="${STUB_FAIL_ACTIVITY:-0}" \
+    STUB_EMPTY_ACTIVITY="${STUB_EMPTY_ACTIVITY:-0}" \
     bash "$PW" "$@" )
 }
 # w : stdout AND stderr, for asserting diagnostics.
@@ -299,10 +366,10 @@ reaction_fx "$CODEX" "+1" "$BEFORE_AT"
 w observe --pr 1;  rc 11 "stale: a '+1' predating the head commit is NOT clean"
 has "$OUT" "predates this head" "stale: says WHY it was rejected"
 
-# The boundary. Equal timestamps mean the reaction cannot be proven to postdate the commit, so it
-# must fall to pending — the safe side. A `>=` here would be the fail-open spelling.
-reaction_fx "$CODEX" "+1" "$COMMIT_AT"
-w observe --pr 1;  rc 11 "stale: a '+1' EQUAL to the head commit date is not proof of a pass"
+# The boundary. Equal timestamps mean the reaction cannot be proven to postdate the head's arrival,
+# so it must fall to pending — the safe side. A `>=` here would be the fail-open spelling.
+reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
+w observe --pr 1;  rc 11 "stale: a '+1' EQUAL to this head's arrival is not proof of a pass"
 
 # A reaction from a bot we do not declare proves nothing.
 reaction_fx "some-other-bot[bot]" "+1" "$AFTER_AT"
@@ -318,6 +385,161 @@ w observe --pr 1;  rc 11 "content: a '-1' reaction is not a pass"
 # The newest `+1` decides. An old stale one must not veto a fresh one that followed a re-review.
 reaction_fx "$CODEX" "+1" "$BEFORE_AT" "$CODEX" "+1" "$AFTER_AT"
 wout observe --pr 1;  rc 0 "staleness uses the NEWEST '+1', not the first one found"
+
+# ============ 2b. the anchor is SERVER-assigned and REF-scoped (#175) ============
+# The staleness proof used to rest on the head commit's committer date, which GitHub echoes back
+# verbatim from the committing machine. A past-dated head therefore made a STALE `+1` look fresh —
+# a false `clean`, the one verdict this module must never produce. Reachable with no attacker: a
+# date-preserving rebase, or a clock that is behind by more than the review latency.
+
+# THE ISSUE'S EXACT SCENARIO. The head arrived AFTER the reaction, while the head commit CLAIMS a
+# committer date long before it. The old rule read `clean` here; the anchor must read `pending`.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT"       # this head arrived at 04:45
+reaction_fx "$CODEX" "+1" "$ARRIVED_AT"                          # the `+1` is from 04:42
+commit_fx "$FORGED_COMMIT_AT"                                    # ...and the commit claims 00:00
+w observe --pr 1;  rc 11 "#175: a '+1' predating this head's ARRIVAL is not clean, whatever the commit claims"
+
+# ...and the proof that it is not merely outweighed: the committer date is never even fetched. This
+# is the assertion that would fail if a future edit re-introduced the client-supplied input as a
+# tie-breaker, a fallback, or a `max()` term.
+if called '/commits/'; then bad "#175: the head-commit endpoint must never be read"; else ok; fi
+
+# THE CASE THAT RULES OUT A CHECK-SUITE ANCHOR, which is the obvious server-assigned candidate and
+# the one the issue proposed first. Check suites are scoped to the SHA, not to the REF: a commit
+# that already ran CI on another branch carries its ORIGINAL timestamp, so an ordinary fast-forward
+# onto it keeps the fail-open with no force-push anywhere in the story. Modelled here as an activity
+# record for the SAME SHA on a DIFFERENT ref — which must not be allowed to date this ref.
+#
+# THE FOREIGN RECORD IS THE NEWER ONE, and that is what makes this assertion able to FAIL. With the
+# foreign record older, dropping `select(.ref == $ref)` cannot change the verdict — the code takes
+# the LATEST match, so a superset containing only older records yields the same answer and the test
+# passes against a module that has no ref filter at all. Ordered this way, dropping the filter picks
+# the foreign 04:45 record, the 04:42 `+1` reads fresh against it, and the verdict flips to `clean`.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx "$HEAD_SHA" "refs/heads/somewhere-else" "$AFTER_AT" \
+            "$HEAD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT"
+reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
+wout observe --pr 1;  rc 0 "#175: this ref's OWN record dates it, even when a newer one names another ref"
+# ...and the ordinary direction: a record for this ref that postdates the signal is stale.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT" \
+            "$HEAD_SHA" "refs/heads/somewhere-else" "$BEFORE_AT"
+reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
+w observe --pr 1;  rc 11 "#175: a '+1' predating this ref's own arrival record is not clean"
+
+# THE `after` FILTER, pinned on its own. Every "no anchor" case above uses an EMPTY activity list,
+# which returns 11 whether or not the SHA is matched — so none of them can catch a module that
+# dropped `select(.after == $sha)`. Here the ref HAS activity and none of it names the current head:
+# the honest answer is "this head's arrival is unrecorded" (11), while an unfiltered read would date
+# it from a push of a DIFFERENT commit and report `clean`.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx "$OLD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 11 "#175: activity for a DIFFERENT SHA on this ref does not date this head"
+
+# A REVERSE FORCE-PUSH: the ref went A -> B -> A, so two records carry the same `after`. Only the
+# LATER one says when the head is A *now* — taking the earliest would date the current head from a
+# push that was superseded and then undone, which is the force-push path the issue names.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT" \
+            "$HEAD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT"
+reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
+w observe --pr 1;  rc 11 "#175: the LATEST record for this SHA decides, so a reverse force-push is caught"
+has "$OUT" "predates this head" "#175: says WHY the reaction was rejected"
+
+# AN UNESTABLISHED ANCHOR IS `pending`, NEVER `clean` — on BOTH date-scoped signals. One rule over
+# both is what keeps the forgeable input out of the file entirely; the findings side pays for it by
+# waiting, which is the safe direction.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx                                   # a well-formed EMPTY list: nothing puts this SHA here
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 11 "#175: no activity record for this head -> pending, not clean"
+has "$OUT" "could not be established" "#175: names the unestablished anchor rather than 'no signal yet'"
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx
+comment_fx "${CODEX}[bot]" "$AFTER_AT"
+w observe --pr 1;  rc 11 "#175: the comment path degrades the same way — one rule over both signals"
+
+# A DELETED HEAD REPOSITORY is a real state, not a broken response: the PR reads fine, there is
+# simply nowhere left to ask. That is an unestablished anchor (11), not an unreadable one (20).
+reset_fx; declare_bots "[\"$CODEX\"]"
+pr_fx "$HEAD_SHA" "open" "" "acme/widget" ""
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 11 "#175: a deleted head repository -> pending"
+has "$OUT" "deleted fork" "#175: names the likely cause"
+# ...but a head repository that is present and MALFORMED is a broken response, and it is about to be
+# interpolated into a URL PATH — a position no other slug in this family occupies (the base slug is
+# only ever COMPARED). Being a well-formed `owner/repo` pair is necessary and NOT sufficient:
+# `a/..` is a valid pair and a path traversal, so the charset is pinned too.
+pr_fx "$HEAD_SHA" "open" "" "acme/widget" "acme/widget/extra"
+w observe --pr 1;  rc 20 "#175: a malformed head repository slug -> 20, never a path-injected read"
+for bad_slug in 'acme/..' '../widget' 'acme/.' 'acme/wid get' 'acme/wid?et'; do
+  pr_fx "$HEAD_SHA" "open" "" "acme/widget" "$bad_slug"
+  w observe --pr 1;  rc 20 "#175: head repository '$bad_slug' is refused before it reaches a URL"
+done
+# ...but a repository whose NAME merely contains dots is a name, not a traversal, and must still be
+# queryable. Over-rejecting it would make every date-scoped signal on that PR permanently 20 —
+# failure by availability rather than by safety, which is the kind that ships unnoticed.
+reset_fx; declare_bots "[\"$CODEX\"]"
+pr_fx "$HEAD_SHA" "open" "" "acme/widget" "acme/api..client"
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+wout observe --pr 1;  rc 0 "#175: a head repository named 'api..client' is queryable, not a traversal"
+
+# A MIXED-FORMAT activity response is rejected WHOLE, not just at the winner. Ordering first and
+# checking only the survivor is unsound — a lexically-later-but-chronologically-EARLIER record can
+# win, and an anchor earlier than the truth is the permissive direction.
+#
+# Read the two values before assuming which one wins: `2026-07-25T04:40:00Z` and
+# `2026-07-25T00:42:15-04:00` diverge at index 12 (`4` vs `0`), so the well-formed `…Z` record sorts
+# LAST and would be the survivor. A winner-only check would therefore pass this fixture happily,
+# which is exactly why it pins the rule: reaching 20 requires validating the record that LOST.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT" \
+            "$HEAD_SHA" "refs/heads/$HEAD_REF" "2026-07-25T00:42:15-04:00"
+reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
+w observe --pr 1;  rc 20 "#175: ONE unorderable timestamp rejects the whole activity read"
+
+# THE SIGNAL THAT NEEDS NO ANCHOR MUST STILL WORK. A review is commit-scoped, so an unestablished
+# anchor must not wedge it — otherwise #175 would have traded one fail-open for a total wedge on any
+# repo whose activity is unreadable.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx
+review_fx "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
+w observe --pr 1;  rc 10 "#175: a review at head is SHA-scoped and needs no anchor at all"
+
+# TIMESTAMP FORMAT. A lexicographic compare is chronological ONLY for identical-width `...Z` UTC.
+# `2026-07-25T09:00:00-04:00` sorts before `...T05:00:00Z` as a string and after it as an instant,
+# and sub-second precision loses to a whole second on a prefix compare. Reject, never normalize.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "2026-07-25T00:42:15-04:00"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 20 "#175: an OFFSET anchor timestamp is rejected, not string-compared"
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "2026-07-25T04:42:15.123Z"
+w observe --pr 1;  rc 20 "#175: a SUB-SECOND anchor timestamp is rejected"
+# The candidate side too: a comparison is only as sound as its weaker operand.
+reset_fx; declare_bots "[\"$CODEX\"]"
+reaction_fx "$CODEX" "+1" "2026-07-25T00:45:23-04:00"
+w observe --pr 1;  rc 20 "#175: an OFFSET reaction timestamp is rejected"
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx "${CODEX}[bot]" "not-a-timestamp"
+w observe --pr 1;  rc 20 "#175: a junk comment timestamp is rejected, not sorted"
+
+# EVERY MALFORMED ANCHOR RESPONSE -> 20. A wrapped error object must not iterate to zero matches and
+# read as the much weaker "no anchor here".
+reset_fx; declare_bots "[\"$CODEX\"]"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+activity_fx_raw '{"message":"Not Found"}'
+w observe --pr 1;  rc 20 "#175: an activity response that is not an array -> 20, not 'no anchor'"
+# The fixture above reaches 20 even WITHOUT the `type != "array"` guard — `.[]` over it yields a
+# string and the next `select` dies indexing it — so on its own it names a property it does not
+# test. This one is an object whose VALUES are well-formed records: without the guard `.[]` walks
+# them happily and manufactures an anchor out of a response that was never a list.
+activity_fx_raw "{\"a\":{\"after\":\"$HEAD_SHA\",\"ref\":\"refs/heads/$HEAD_REF\",\"timestamp\":\"$BEFORE_AT\"}}"
+w observe --pr 1;  rc 20 "#175: an OBJECT of well-formed records is still not an array -> 20"
+activity_fx_raw '{ not json at all'
+w observe --pr 1;  rc 20 "#175: an unparseable activity response -> 20"
 
 # ============================ 3. the findings signal ============================
 reset_fx; declare_bots "[\"$CODEX\"]"
@@ -361,8 +583,8 @@ has "$OUT" "READ THE COMMENT" "task mode: tells the caller there may be no threa
 # a summary from a previous head would keep re-triggering the resolve flow after every push.
 comment_fx "${CODEX}[bot]" "$BEFORE_AT"
 w observe --pr 1;  rc 11 "task mode: a comment predating this head is stale, not findings"
-comment_fx "${CODEX}[bot]" "$COMMIT_AT"
-w observe --pr 1;  rc 11 "task mode: a comment EQUAL to the head commit date is not proof"
+comment_fx "${CODEX}[bot]" "$ARRIVED_AT"
+w observe --pr 1;  rc 11 "task mode: a comment EQUAL to this head's arrival is not proof"
 
 # Ordinary human chatter on the PR is not a reviewer signal.
 comment_fx "somebody" "$AFTER_AT"
@@ -461,9 +683,12 @@ STUB_FAIL_PR=1       w observe --pr 1; rc 20 "unreadable: a failed PR read -> 20
 STUB_FAIL_REVIEWS=1  w observe --pr 1; rc 20 "unreadable: a failed reviews read -> 20"; STUB_FAIL_REVIEWS=0
 STUB_FAIL_REACTIONS=1 w observe --pr 1; rc 20 "unreadable: a failed reactions read -> 20"; STUB_FAIL_REACTIONS=0
 
-# The head-commit read happens ONLY on the clean branch, so it needs a `+1` present to reach it.
+# The anchor read happens ONLY when a date-scoped signal exists, so it needs a `+1` to reach it.
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
-STUB_FAIL_COMMIT=1   w observe --pr 1; rc 20 "unreadable: a failed head-commit read -> 20 (never clean)"; STUB_FAIL_COMMIT=0
+STUB_FAIL_ACTIVITY=1 w observe --pr 1; rc 20 "unreadable: a failed ref-activity read -> 20 (never clean)"; STUB_FAIL_ACTIVITY=0
+# A SUCCESSFUL call that produced no document is not an empty list. Collapsing the two would report
+# 11 ("no matching activity") for a broken read, which a caller may sit on rather than escalate.
+STUB_EMPTY_ACTIVITY=1 w observe --pr 1; rc 20 "unreadable: an EMPTY activity body is not an empty list -> 20"; STUB_EMPTY_ACTIVITY=0
 
 # A PR object that arrives fine but carries no head SHA is not a network failure — and must still
 # not be classified. This is why the read and the parse are separate steps.
@@ -617,10 +842,10 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 jq -n --arg sha "$OLD_SHA"  '{head:{sha:$sha}, state:"open", merged_at:null, base:{repo:{full_name:"acme/widget"}}}' > "$S/pr.1.json"
 jq -n --arg sha "$HEAD_SHA" '{head:{sha:$sha}, state:"open", merged_at:null, base:{repo:{full_name:"acme/widget"}}}' > "$S/pr.2.json"
 jq -n --arg sha "$HEAD_SHA" '{head:{sha:$sha}, state:"open", merged_at:null, base:{repo:{full_name:"acme/widget"}}}' > "$S/pr.3.json"
-# The commit fixture is the NEW head's date, which postdates the reaction — so the reaction that
-# was valid for the old head is stale for this one.
-commit_fx "$AFTER_AT"
-reaction_fx "$CODEX" "+1" "$COMMIT_AT"
+# The activity fixture dates the NEW head's arrival after the reaction — so the reaction that was
+# valid for the old head is stale for this one.
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT"
+reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
 w wait --pr 1 --interval 1 --max-secs 3;  rc 11 "wait: a signal for the PREVIOUS head does not satisfy the new one"
 has "$OUT" "head moved" "wait: reports that the head moved under it"
 
@@ -634,5 +859,10 @@ absent 'gh pr merge'        "the detector must never arm or perform a merge"
 absent 'git push'           "the detector must never push"
 absent 'resolveReviewThread' "the detector must never resolve threads"
 absent 'git switch'         "the detector must never move the working tree"
+# ...and the retired anchor stays retired (#175). Pinned as the JQ PATH and the ENDPOINT rather than
+# as prose, so the header may go on explaining WHY the committer date was rejected — which it must,
+# or the next reader reaches for the same obvious lower bound — without tripping this rule.
+absent 'commit\.committer\.date' "the staleness proof must never return to the client-supplied committer date"
+absent 'commits/\$head'          "the head-commit endpoint must not come back as an anchor read"
 
 check_summary "pr-watch"

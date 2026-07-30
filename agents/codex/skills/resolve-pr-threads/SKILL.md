@@ -116,8 +116,8 @@ answer this skill reports and exits on, because there is nothing to resolve:
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
 | `10` | the declared reviewer reviewed **this head** and left findings | **continue to step 1** |
-| `0`  | the reviewer signalled a clean pass (a `+1` on the PR post newer than the head commit), **or** the repo declares `bots = []` | report "reviewed clean — nothing to resolve" and **exit 0** |
-| `11` | the bound expired with no terminal signal | report that the wait timed out and hand back to the operator; **exit** |
+| `0`  | the reviewer signalled a clean pass (a `+1` on the PR post newer than the moment the head ref became this SHA), **or** the repo declares `bots = []` | report "reviewed clean — nothing to resolve" and **exit 0** |
+| `11` | the bound expired with no terminal signal — see the note below on a second way to reach it | report that the wait timed out and hand back to the operator; **exit** |
 | `12` | the PR is no longer OPEN (merged or closed) | report it and **exit** |
 | `17` | the repo declares no `[reviewers] bots` | it cannot be known whether a reviewer is coming — tell the operator to declare them (or `bots = []`); **exit** |
 | `18` | `[reviewers] bots` is malformed | tell the operator to fix `agents.toml`; **exit** |
@@ -127,6 +127,15 @@ answer this skill reports and exits on, because there is nothing to resolve:
 **A killed call is not a verdict.** If the shell tool times out mid-wait, you get no code and no
 answer — do not treat that as "clean" or as "no findings". Report that the wait was cut short and
 either re-run with a smaller `--max-secs` or run the library directly in a terminal.
+
+**`11` has a second cause worth reading the stderr for (#175).** A `+1` and a task-mode comment carry
+no commit, so their freshness is proved against GitHub's own record of *when the head ref became this
+SHA* — the head commit's own date is client-supplied and was a live fail-open. When that record
+cannot be established (nothing in the ref's recent activity puts this SHA there; the head repository
+was deleted), the verdict is `11` rather than `clean`. It reads the same as a timeout in the table
+above, but the diagnostic line says which, and the remedy differs: a timeout means *wait longer*,
+an unestablished anchor means *this signal will never be provable* — merge by hand, or push a commit
+so the head arrives with a record.
 
 **Why a clean pass is a distinct answer, not "no threads found".** A clean Codex pass produces **no
 review object at all** — only a `+1` reaction. Running the ordinary flow against such a PR would
