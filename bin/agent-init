@@ -170,7 +170,14 @@ done <<EOF
 $REVIEW_TOKENS
 EOF
 printf 'Review rung: '
-if [ "$rung_independent" -eq 1 ]; then
+if [ -z "$PRIMARY_TOKEN" ]; then
+  # `primary` is a required role, so an empty resolution means the manifest is broken (the role map
+  # above already said so). Without it "is this reviewer the implementer?" is unanswerable — and the
+  # unanswerable case must not fall through to `independent`, which is the flattering answer and the
+  # wrong direction to guess in.
+  echo "unknown — \`primary\` did not resolve, so same-model review cannot be ruled out."
+  echo "             Fix the manifest error above and re-run."
+elif [ "$rung_independent" -eq 1 ]; then
   echo "independent in-session review is available."
 elif [ "$rung_samemodel" -eq 1 ]; then
   echo "SAME-MODEL only — \`review\` names \`$PRIMARY_TOKEN\`, which also writes the code."

@@ -134,4 +134,12 @@ hasnt "$out" "codex [CLI not installed]" "role map: says nothing about a token t
 ( cd "$rr" && HOME="$FAKEHOME" PATH="$BARE" bash "$AGENT_INIT" >/dev/null 2>&1 )
 yes $? "rung: an absent reviewer CLI does not make agent-init fail"
 
+# (g) an INVALID manifest must not read as independent. `primary` is required, so an empty
+# resolution means the manifest is broken and "is this reviewer the implementer?" is unanswerable.
+# Guessing `independent` there is the flattering answer and the wrong direction to guess in.
+sed 's/^primary .*/primary      = "notanagent"/' "$rr/agents.toml" > "$rr/a.tmp" && mv "$rr/a.tmp" "$rr/agents.toml"
+out="$(run_rung "$rr" "$RBIN:$BARE")"
+has "$out" "Review rung: unknown" "rung: an unresolvable primary reports unknown, not independent"
+hasnt "$out" "independent in-session review" "rung: a broken manifest never claims independent review"
+
 check_summary "agent-init"
