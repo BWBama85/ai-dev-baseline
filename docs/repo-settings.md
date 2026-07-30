@@ -286,8 +286,8 @@ pr-review.sh gate --pr <number|url>    # prints the witnessed head SHA on 0
 
 | Code | Meaning |
 |---|---|
-| `0` | every **declared** reviewer has reviewed the current head SHA — or `bots = []` (no async reviewer). STDOUT is the head SHA |
-| `16` | a declared reviewer has **not** reviewed this head SHA — do not arm; the operator merges after review |
+| `0` | every **declared** reviewer signalled a **clean pass** for the current head SHA — an `APPROVED` review at this SHA, or a `+1` proved newer than the moment this head arrived — or `bots = []` (no async reviewer). STDOUT is the head SHA |
+| `16` | a declared reviewer has **not spoken** about this head SHA yet — do not arm; the operator merges after review. Note this is *silence*, not *dissatisfaction*: a reviewer that reviewed and was unhappy is `19` or `21` |
 | `17` | the repo declares no `[reviewers] bots` — unknowable, **fail closed**. Declare them, or `bots = []` |
 | `18` | `[reviewers] bots` is present but malformed — fix `agents.toml` |
 | `19` | a declared reviewer left **`CHANGES_REQUESTED`** on this head SHA — address it and push |
@@ -327,9 +327,19 @@ Three properties are doing the real work:
   repo has is configuration, and its home is `[reviewers] bots` (see `docs/roles-and-agents.md`),
   not a guess from PR history.
 
-**On a bot-reviewed repo this guard skips arming, every time, by design.** Step 10 runs seconds
-after `gh pr create`, so a reviewer that takes minutes has not reviewed yet. A repo with no async
-reviewer sets `bots = []` and is unaffected.
+**On a bot-reviewed repo this guard skips arming when `/implement-issue` asks it, by design.**
+Step 10 runs seconds after `gh pr create`, so a reviewer that takes minutes has not spoken yet and
+the answer is `16`. A repo with no async reviewer sets `bots = []` and is unaffected.
+
+That is a statement about **when the question is asked**, not about the guard's ceiling — and the
+distinction became load-bearing with #167. Asked *later*, on a head the reviewer has since passed
+cleanly, the same guard returns `0` and the arm is safe. Three of its answers now mean the reviewer
+**did** review: `0` clean, `19` changes requested, `21` reviewed-and-not-satisfied. Only `16` means
+nobody has spoken.
+
+What has **not** changed is that nothing re-asks: `/implement-issue` calls the guard exactly once
+and no path re-arms afterwards (#168). So on a bot-reviewed repo an unattended run still ends with
+the PR unarmed — the operator merges, or re-runs the guard once the review has landed.
 
 **The waiting half shipped with #49; the arming half did not.** `/resolve-pr-threads <PR#> --watch`
 (`scripts/lib/pr-watch.sh`) waits for the reviewer in a shell poll loop and resolves any findings,

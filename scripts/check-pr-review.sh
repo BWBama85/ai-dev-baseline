@@ -574,6 +574,48 @@ for bad_json in 'not json at all' '{"message":"Not Found"}'; do
   reset_fx; printf '%s\n' "$bad_json" > "$S/reactions.json"
   g gate --pr 7; eq "$RC_" "20" "an unparseable/wrapped reactions response -> 20 ($bad_json)"
 done
+# A NON-ARRAY DOCUMENT ON A SIGNAL SURFACE IS NOT AN EMPTY LIST — the empty-body bug's twin, and it
+# reaches the same false arm. Iterating a non-array does not fail: `{}` flattens to `[]`, i.e.
+# exactly "this surface carried no records". So a malformed reviews document discards a standing
+# rejection and lets a fresh `+1` fold to `clean`. Reported by the codex reviewer on PR #219.
+reset_fx; declare_bots '["chatgpt-codex-connector"]'
+review_fx   "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+g gate --pr 7; eq "$RC_" "19" "control: the rejection is seen when the reviews document is an array"
+for doc in '{}' '{"a":[]}' '{"message":"Not Found"}'; do
+  reset_fx
+  reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+  printf '%s\n' "$doc" > "$S/reviews.json"
+  g gate --pr 7
+  eq "$RC_" "20" "a NON-ARRAY reviews document -> 20, never 'no reviews here' ($doc)"
+  gout gate --pr 7
+  eq "$OUT" "" "...and prints NO head SHA ($doc)"
+done
+reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+printf '%s\n' '{}' > "$S/comments.json"
+g gate --pr 7; eq "$RC_" "20" "a NON-ARRAY comments document -> 20"
+reset_fx; printf '%s\n' '{}' > "$S/reactions.json"
+g gate --pr 7; eq "$RC_" "20" "a NON-ARRAY reactions document -> 20"
+
+# A REVIEW THAT CANNOT BE TIED TO A COMMIT is unknown, not absent — end to end, on the arming path.
+# The commit filter used to run before the reviewer match, so this rejection vanished and the `+1`
+# armed the merge.
+reset_fx
+printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector[bot]"},"state":"CHANGES_REQUESTED"}]' > "$S/reviews.json"
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+g gate --pr 7
+eq "$RC_" "20" "a declared reviewer review with NO commit_id -> 20, not outvoted by a fresh '+1'"
+gout gate --pr 7
+eq "$OUT" "" "...and prints NO head SHA"
+has "$(_g gate --pr 7 2>&1)" "no usable commit_id" "the undatable review is named"
+
+# AN IMPOSSIBLE TIMESTAMP must not read as fresh. `9999-99-99T99:99:99Z` passes a character-class
+# glob and sorts above every real anchor INCLUDING the no-anchor sentinel, so it defeated the
+# fail-closed default outright.
+reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "9999-99-99T99:99:99Z"
+g gate --pr 7; eq "$RC_" "20" "an out-of-range timestamp -> 20, never a clean pass"
+gout gate --pr 7; eq "$OUT" "" "...and prints NO head SHA"
+
 # The activity endpoint answering a NON-ARRAY must surface rather than iterate to zero matches and
 # read as a clean "no anchor".
 reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"

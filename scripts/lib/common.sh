@@ -660,11 +660,35 @@ adb_reviewer_match_jq() {
 # Rejecting rather than normalizing is deliberate: parsing an offset back to UTC in portable shell
 # means `date -d` vs `date -j` (the exact GNU/BSD split these files avoid everywhere else), and a
 # format this code has never seen is a reason to stop, not to improvise a conversion.
+#
+# THE LAYOUT CHECK IS NECESSARY AND NOT SUFFICIENT, so the COMPONENT RANGES are checked too. A glob
+# over character classes accepts `9999-99-99T99:99:99Z`, and that is not a harmless curiosity: it
+# sorts ABOVE every real timestamp AND above `ADB_NO_ANCHOR` itself, so a single malformed
+# `created_at` would read as fresh against any anchor — including the far-future sentinel whose
+# entire job is to make an unestablished anchor fail closed. One bad field would have defeated the
+# fail-closed default outright and classified the reviewer `clean`, which on the arming guard prints
+# a head SHA. Reported by the codex reviewer on this module's own PR (#219).
+#
+# Ranges are tested with `case` GLOBS rather than arithmetic, deliberately: these fields are
+# zero-padded, and `[ "08" -gt 0 ]` puts a leading-zero value into arithmetic context where it reads
+# as octal. A glob has no numeric interpretation to get wrong.
+#
+# Day-of-month is bounded at 31 WITHOUT month/leap-year cross-checking. That is the honest boundary:
+# the purpose here is to reject values that break the ORDERING, and `2026-02-31` still orders
+# correctly between `02-28` and `03-01`. Calendar validation would need a date library this file
+# deliberately does not reach for (`date -d` vs `date -j` is the GNU/BSD split it avoids elsewhere).
+# Second is allowed to reach 60 for a leap second, which UTC genuinely emits.
 adb_is_utc_instant() {
   case "$1" in
-    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) return 0 ;;
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
     *) return 1 ;;
   esac
+  case "${1:5:2}"  in 0[1-9]|1[0-2]) ;; *) return 1 ;; esac          # month  01-12
+  case "${1:8:2}"  in 0[1-9]|[12][0-9]|3[01]) ;; *) return 1 ;; esac # day    01-31
+  case "${1:11:2}" in [01][0-9]|2[0-3]) ;; *) return 1 ;; esac       # hour   00-23
+  case "${1:14:2}" in [0-5][0-9]) ;; *) return 1 ;; esac             # minute 00-59
+  case "${1:17:2}" in [0-5][0-9]|60) ;; *) return 1 ;; esac          # second 00-60 (leap second)
+  return 0
 }
 
 # The "no anchor could be established" sentinel — a far-future instant no real timestamp can beat.
@@ -833,8 +857,16 @@ adb_paginated_list() {
   [ -n "$raw" ] \
     || { echo "$label: could not read $what for PR #$pr (empty response body)" >&2; return 2; }
   # --paginate concatenates one JSON document per page; -s flattens them into a single array.
-  flat="$(printf '%s' "$raw" | jq -s -c '[.[][]]' 2>/dev/null)" \
-    || { echo "$label: could not parse the $what of PR #$pr" >&2; return 2; }
+  #
+  # EVERY PAGE IS TYPE-CHECKED BEFORE IT IS FLATTENED, and the bare `[.[][]]` this replaces was the
+  # empty-body bug's twin. Iterating a non-array does not fail — `{}` flattens to `[]`, i.e. exactly
+  # "this surface carried no records" — so a malformed document from the reviews read would discard
+  # a standing CHANGES_REQUESTED and let a fresh `+1` on another surface fold to `clean`. Same
+  # false-arm, different malformation. `adb_head_anchor` has always guarded its own read this way
+  # (`if type != "array" then error`), which is the inconsistency that made this reachable.
+  flat="$(printf '%s' "$raw" \
+          | jq -s -c '[ .[] | if type != "array" then error("page is not a JSON array") else . end | .[] ]' 2>/dev/null)" \
+    || { echo "$label: could not parse the $what of PR #$pr (not a JSON array)" >&2; return 2; }
   # Kept as belt to the braces above: it cannot fire for an empty body any more, but it still catches
   # a jq that succeeds while producing nothing.
   [ -n "$flat" ] \
@@ -886,9 +918,21 @@ adb_reviewer_evidence() {
       "$match"'
       ($who | split("\n") | map(select(length > 0)))[] as $w
       | ( $reviews[]
-          | select((.commit_id // "") == $sha)
+          # THE REVIEWER IS MATCHED FIRST, THE COMMIT SECOND. That order is the fix, not a style
+          # choice: filtering on commit_id == $sha first DISCARDS a review whose commit_id is missing
+          # or is not a string, before anything looks at who wrote it or what it said. So a declared
+          # reviewer CHANGES_REQUESTED with a malformed commit_id vanished silently, and a fresh +1
+          # on another surface became the only evidence left: clean, and an armed merge. A review
+          # that cannot be attributed to a commit is UNKNOWN (fail closed), never absent. Scoped to
+          # DECLARED reviewers so a stray malformed review from anyone else cannot wedge the guard.
+          # NOTE: no apostrophes in this block. It sits inside a shell single-quoted jq program.
           | select((.user.login // "") | adb_declared_reviewer([$w]))
-          | "\($w)\treview\t\((.state // "") | ascii_upcase)" ),
+          | (.commit_id // null) as $cid
+          | if ($cid | type) != "string" or ($cid | length) == 0 then
+              "\($w)\tbadreview\t\($cid | tostring)"
+            elif $cid == $sha then
+              "\($w)\treview\t\((.state // "") | ascii_upcase)"
+            else empty end ),
         ( $comments[]
           | select((.user.login // "") | adb_declared_reviewer([$w]))
           | "\($w)\tcomment\t\(.created_at // "")" ),
@@ -960,6 +1004,12 @@ adb_reviewer_classes() {
             *) cls="unknown"
                echo "$label: unrecognized review state '$val' from '$w'" >&2 ;;
           esac ;;
+        # A review this declared reviewer left that carries no usable commit_id. It cannot be tied to
+        # a commit, so it can be neither honoured (it may be about an older head) nor dismissed (it
+        # may be a rejection of THIS one) — which is precisely what `unknown` is for.
+        badreview)
+          cls="unknown"
+          echo "$label: a review from '$w' carries no usable commit_id ('$val') — cannot tell which commit it reviewed" >&2 ;;
         comment|plus1)
           if [ -z "$val" ]; then
             cls="unknown"

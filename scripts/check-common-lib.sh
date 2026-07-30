@@ -971,6 +971,24 @@ for v in "" "2026-07-25T04:42:15-04:00" "2026-07-25T04:42:15.500Z" "2026-07-25 0
          "2026-07-25T04:42:15" "26-07-25T04:42:15Z" "not-a-date" "2026-07-25T04:42:15z"; do
   if adb_is_utc_instant "$v"; then bad "adb_is_utc_instant rejects '$v'"; else ok; fi
 done
+# THE LAYOUT CHECK ALONE IS NOT ENOUGH, and the gap was not academic: a character-class glob accepts
+# `9999-99-99T99:99:99Z`, which sorts above every real timestamp AND above ADB_NO_ANCHOR itself — so
+# ONE malformed `created_at` read as fresh against any anchor, including the far-future sentinel
+# whose whole job is to make an unestablished anchor fail closed, and classified the reviewer
+# `clean`. Reported by the codex reviewer on PR #219.
+for v in "9999-99-99T99:99:99Z" "2026-13-25T04:42:15Z" "2026-00-25T04:42:15Z" "2026-07-00T04:42:15Z" \
+         "2026-07-32T04:42:15Z" "2026-07-25T24:42:15Z" "2026-07-25T04:60:15Z" "2026-07-25T04:42:61Z"; do
+  if adb_is_utc_instant "$v"; then bad "adb_is_utc_instant range-rejects '$v'"; else ok; fi
+done
+# ...and the sentinel must still be an orderable instant under the tighter rule, or every date-scoped
+# signal would fail validation the moment no anchor could be established.
+if adb_is_utc_instant "$ADB_NO_ANCHOR"; then ok; else bad "ADB_NO_ANCHOR must pass the range check"; fi
+# Boundaries that must still be ACCEPTED. A leap second is real UTC; day-of-month is bounded at 31
+# without calendar validation, which is deliberate — `2026-02-31` still ORDERS correctly, and
+# calendar checking would need the date library this file avoids for GNU/BSD portability.
+for v in "2026-01-01T00:00:00Z" "2026-12-31T23:59:59Z" "2026-06-30T23:59:60Z" "2026-02-31T12:00:00Z"; do
+  if adb_is_utc_instant "$v"; then ok; else bad "adb_is_utc_instant still accepts '$v'"; fi
+done
 
 # --- the classifier, end to end -----------------------------------------------------------------
 SHA="aaaa"; ANCH="2026-07-25T04:42:15Z"
@@ -996,12 +1014,27 @@ eq "$(cls a "$(rv a PENDING)"           "$N" "$N")" "none"      "classify: an un
 eq "$(cls a "$(rv a DISMISSED)"         "$N" "$N")" "none"      "classify: a DISMISSED review is not evidence"
 eq "$(cls a "$(rv a WHAT_IS_THIS)"      "$N" "$N")" "unknown"   "classify: an unrecognized state -> unknown (fails closed)"
 eq "$(cls a "$(rv a APPROVED bbbb)"     "$N" "$N")" "none"      "classify: a review of ANOTHER commit is not evidence about this head"
-eq "$(cls a "$N" "$(cm a "$FRESH")" "$N")"          "attention" "classify: a FRESH issue comment -> attention (task mode)"
-eq "$(cls a "$N" "$(cm a "$STALE")" "$N")"          "none"      "classify: a STALE issue comment is not evidence about this head"
-eq "$(cls a "$N" "$N" "$(rx a +1 "$FRESH")")"       "clean"     "classify: a FRESH '+1' -> clean"
-eq "$(cls a "$N" "$N" "$(rx a +1 "$STALE")")"       "none"      "classify: a STALE '+1' is not a pass"
-eq "$(cls a "$N" "$N" "$(rx a heart "$FRESH")")"    "none"      "classify: a non-'+1' reaction is not a clean signal"
-eq "$(cls a "$N" "$N" "$(rx nobody +1 "$FRESH")")"  "none"      "classify: an UNDECLARED login's '+1' is not evidence"
+# A REVIEW THAT CANNOT BE TIED TO A COMMIT IS `unknown`, NOT ABSENT. The commit filter used to run
+# BEFORE the reviewer match, so a declared reviewer CHANGES_REQUESTED whose commit_id was missing or
+# non-string was discarded before anything read who wrote it — and a fresh `+1` on another surface
+# then became the only evidence left, folding to `clean` and arming the merge. Reported by the codex
+# reviewer on PR #219; the fourth assertion below is the one that was `clean` before the fix.
+NO_CID='[{"user":{"login":"a"},"state":"CHANGES_REQUESTED"}]'
+NULL_CID='[{"user":{"login":"a"},"state":"CHANGES_REQUESTED","commit_id":null}]'
+NUM_CID='[{"user":{"login":"a"},"state":"CHANGES_REQUESTED","commit_id":12345}]'
+FOREIGN_NO_CID='[{"user":{"login":"nobody"},"state":"CHANGES_REQUESTED"}]'
+eq "$(cls a "$NO_CID" "$N" "$N")" "unknown" \
+   "classify: a declared reviewer review with NO commit_id -> unknown, never absent"
+eq "$(cls a "$NULL_CID" "$N" "$N")" "unknown" \
+   "classify: ...an explicitly null commit_id likewise"
+eq "$(cls a "$NUM_CID" "$N" "$N")" "unknown" \
+   "classify: ...and a NON-STRING commit_id, which the equality test silently dropped"
+eq "$(cls a "$NO_CID" "$N" "$(rx a +1 "$FRESH")")" "unknown" \
+   "classify: an undatable rejection is NOT outvoted by a fresh +1 (the false-arm)"
+# ...but an UNDECLARED login with the same malformation must not wedge the guard: only declared
+# reviewers are classified, so a stray malformed review from anyone else is simply not evidence.
+eq "$(cls a "$FOREIGN_NO_CID" "$N" "$(rx a +1 "$FRESH")")" "clean" \
+   "classify: an UNDECLARED login with no commit_id does not wedge the guard"
 
 # THE WITHIN-REVIEWER ORDER: rejected > attention > unknown > clean > none.
 eq "$(cls a "$(rv a APPROVED)" "$(cm a "$FRESH")" "$N")" "attention" \
