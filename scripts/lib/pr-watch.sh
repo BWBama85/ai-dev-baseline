@@ -51,15 +51,21 @@
 # watch, or a late start — exactly the cases an unattended watcher must survive. Polling for the
 # TERMINAL signals instead is restart-safe, idempotent, and needs no memory of what came before.
 #
-# PRECEDENCE: findings outrank clean, and within findings a review at the head SHA outranks a
-# comment. A reviewer that left a stale `+1` from an earlier pass AND has now commented has
-# something to say about this head.
+# PRECEDENCE, AND WHERE IT IS DECIDED. Findings outrank clean, and a reviewer that left a stale `+1`
+# from an earlier pass AND has now commented has something to say about this head. The rule itself is
+# NOT spelled in this file: it is the shared per-reviewer classifier in common.sh
+# (`adb_reviewer_evidence` + `adb_reviewer_classes`), which both this module and `pr-review.sh gate`
+# fold — so the two can no longer disagree about what a signal MEANS (#167) or about how many
+# reviewers must have produced one (#185). This module maps `rejected`/`attention` to `findings`,
+# `clean` to a pass, and requires EVERY declared reviewer to be clean before reporting one.
 #
-# WHAT THIS COSTS THE CALLER. `pr-review.sh gate` reads only `pulls/N/reviews`, so a CLEAN Codex
-# pass — which posts no review — never satisfies it: it returns 16 ("awaiting review") forever, and
-# unattended arming stays off on precisely the PRs that are cleanest. This module reports that case
-# correctly as `clean`. Teaching the ARMING guard to accept a reaction is a change to when merges
-# happen and is deliberately left to its own issue, not folded in here.
+# WHAT THIS ONCE COST THE CALLER, AND NO LONGER DOES. `pr-review.sh gate` used to read only
+# `pulls/N/reviews`, so a CLEAN Codex pass — which posts no review — never satisfied it: 16
+# ("awaiting review") forever, with unattended arming off on precisely the PRs that were cleanest,
+# and 16 on EVERY PR for a repo whose connector runs in task mode. #167 taught that guard to read
+# all three surfaces through the same classifier, so the asymmetry this paragraph used to describe
+# is gone. What #167 did NOT do is re-arm automatically — `/implement-issue` still asks the gate
+# once, seconds after the PR opens, when no async reviewer has responded (#168).
 #
 # ------------------------------------------------------------------------------------------------
 # STALENESS: A REACTION IS NOT COMMIT-SCOPED, SO THE PROOF MUST BE SERVER-ASSIGNED
@@ -120,7 +126,7 @@
 # `findings`, so a caller runs its resolve flow and finds nothing; one that signals in some third
 # way never converges and the caller stops at the `wait` bound. Neither can produce a false
 # `clean`. A per-reviewer signal profile keyed off the same manifest entry is the natural
-# generalization and is tracked as #170.
+# generalization and is tracked as #186 (#170 was folded into #167 and closed).
 #
 # Exit codes are a stable machine contract for the workflow step that consumes them. They are
 # deliberately DISJOINT from pr-review.sh's 16–20 where the meanings differ, and identical where
@@ -310,12 +316,7 @@ read_declared_bots() {
 # the next pass without any stored state to reset (base/practices/verify-before-asserting.md).
 classify() {
   local n="$1" want="$2" pjson pfields head state merged gotslug src headslug headref
-  local reviews reacts comments arc whojson evidence classes verdict
-
-  # The declared set as a JSON array, built ONCE and handed to the shared classifier, which tests
-  # membership against it on all three surfaces in a single jq pass.
-  whojson="$(printf '%s' "$want" | jq -R -s -c 'split("\n") | map(select(length > 0))' 2>/dev/null)" \
-    || { echo "pr-watch: could not build the reviewer set" >&2; return 20; }
+  local classes verdict
 
   # THE IDENTITY PREDICATE IS NO LONGER APPLIED HERE. `adb_reviewer_match_jq` used to be hoisted into
   # a local and pasted in front of three separate jq passes in this function; all three now happen
@@ -382,56 +383,13 @@ EOF
     return 0
   fi
 
-  # --- read ALL THREE SURFACES, then classify ---------------------------------------------------
-  # NO SHORT-CIRCUIT ON THE FIRST SURFACE, and that is a change from the shape this file used to
-  # have (#167/#185). It used to return `findings` the moment ANY declared login had reviewed this
-  # head, before the comments and reactions were read at all. Two things make that wrong now:
-  #
-  #   * the verdict is a property of the WHOLE declared set, not of whichever reviewer answered
-  #     first — `clean` is all-or-nothing (#185), so every reviewer's evidence must be in hand
-  #     before anything is decided; and
-  #   * a failed read of a surface nobody has looked at yet is `20` UNIFORMLY, rather than being
-  #     invisible on whichever paths happened to return early. Which of two fail-closed answers you
-  #     get should not depend on control-flow accident.
-  #
-  # It costs two extra reads on the terminal poll of a watch and nothing in the steady state, where
-  # a pending poll already read all three.
-  #
-  # --paginate on each, so a busy PR cannot silently drop the page carrying the signal that matters.
-  # A pull request IS an issue as far as comments and reactions go, so those two live under
-  # `issues/N/...`, not `pulls/N/...`. The reactions read is deliberately NOT filtered server-side
-  # with `-f content=+1`: passing `-f` makes `gh api` switch to POST, which would ADD a reaction
-  # rather than list them. Filtering happens in jq, inside the shared classifier.
-  reviews="$(adb_paginated_list pr-watch "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" reviews "$n")" || return 20
-  comments="$(adb_paginated_list pr-watch "repos/{owner}/{repo}/issues/$n/comments?per_page=100" comments "$n")" || return 20
-  reacts="$(adb_paginated_list pr-watch "repos/{owner}/{repo}/issues/$n/reactions?per_page=100" reactions "$n")" || return 20
-
-  # SELECTION ONLY — no dating yet, so the anchor read below stays conditional.
-  evidence="$(adb_reviewer_evidence "$whojson" "$reviews" "$comments" "$reacts" "$head")" \
-    || { echo "pr-watch: could not evaluate the reviewer signals of PR #$n" >&2; return 20; }
-
-  # Neither a comment nor a reaction carries a commit, so both are proved against the SERVER's
-  # record of when this ref became this head (#175/D19). Read ONCE, and ONLY when a date-scoped
-  # candidate actually exists — a poll with neither signal present is the common case and must not
-  # pay the fifth request for it.
-  #
-  # THE SENTINEL IS THE DEFAULT, not the empty string: see ADB_NO_ANCHOR in common.sh. An
-  # unestablished anchor leaves every date-scoped signal unprovable, which the classifier renders as
-  # `none` — the SAFE direction — while leaving commit-scoped review evidence untouched, because a
-  # review carries its own `commit_id` and needs no anchor at all (D19).
-  local anchor="$ADB_NO_ANCHOR" unestablished=0
-  case "$evidence" in
-    *" comment "*|*" plus1 "*)
-      anchor="$(adb_head_anchor pr-watch "$n" "$headslug" "$headref" "$head")"; arc=$?
-      case "$arc" in
-        0) ;;
-        1) anchor="$ADB_NO_ANCHOR"; unestablished=1 ;;
-        *) return 20 ;;
-      esac ;;
-  esac
-
-  classes="$(adb_reviewer_classes pr-watch "$want" "$evidence" "$anchor")" \
-    || { echo "pr-watch: PR #$n — refusing to guess at a signal it cannot date" >&2; return 20; }
+  # The whole read-and-classify pipeline is ONE shared call (#167): three surface reads, evidence
+  # selection, the conditional head-arrival anchor, and the per-reviewer classification. Both this
+  # module and the arming guard used to open-code those six steps identically, differing only in a
+  # label — including the decision about when to fetch the anchor, which was a pattern match against
+  # a record format common.sh owns. What stays here is the mapping below: this module's own verdicts.
+  classes="$(adb_reviewer_classes_for_pr pr-watch "$n" "$want" "$head" "$headslug" "$headref")" \
+    || { echo "pr-watch: PR #$n — could not read the review state" >&2; return 20; }
   verdict="$(adb_fold_reviewer_classes "$classes")"
 
   # --- map the shared classification onto THIS module's vocabulary ------------------------------
@@ -440,12 +398,7 @@ EOF
   case "$verdict" in
     rejected|attention)
       printf 'findings %s\n' "$head"
-      # Both classes are reported by one line, and the two lists are joined rather than printed with
-      # a separator between them: `adb_reviewers_in_class` returns EMPTY for a class nobody is in,
-      # and a bare "$a $b" would then render a stray double space in the ordinary single-class case.
-      local spoke
-      spoke="$(adb_reviewers_in_class "$classes" rejected) $(adb_reviewers_in_class "$classes" attention)"
-      echo "pr-watch: PR #$n at $head — reviewed with findings by:$(printf ' %s' "$spoke" | tr -s ' ')" >&2
+      echo "pr-watch: PR #$n at $head — reviewed with findings by: $(adb_reviewers_in_class "$classes" rejected attention)" >&2
       echo "pr-watch: inline threads may not exist at all (a task-mode signal creates none), so READ THE COMMENT or review body" >&2
       return 10 ;;
     unknown)
@@ -457,11 +410,12 @@ EOF
       return 0 ;;
     *)
       printf 'pending %s\n' "$head"
-      if [ "$unestablished" -eq 1 ]; then
-        echo "pr-watch: PR #$n at $head — a reviewer signal exists but the arrival of this head could not be established, so it cannot be proved fresh; refusing to report a pass" >&2
-      else
-        echo "pr-watch: PR #$n at $head — no terminal signal yet from: $(adb_reviewers_in_class "$classes" none)" >&2
-      fi
+      # No flag distinguishing "nobody has spoken" from "somebody spoke unprovably": when the anchor
+      # could not be established `adb_head_anchor` has ALREADY said so on stderr, and in more precise
+      # words than a re-statement here could ("no recorded activity puts <sha> on refs/heads/<ref>",
+      # or "no head repository/ref … deleted fork?"). Carrying a boolean to paraphrase a line that
+      # was already printed is state that can only go out of date.
+      echo "pr-watch: PR #$n at $head — no terminal signal yet from: $(adb_reviewers_in_class "$classes" none)" >&2
       return 11 ;;
   esac
 }

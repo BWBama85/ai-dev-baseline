@@ -161,52 +161,14 @@ pr_fx() {
       base:{repo:{full_name:$slug}}}' > "$S/pr.json"
 }
 pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
-# review_fx <login> <state> <sha> [...] — one review per triple.
-review_fx() {
-  rm -f "$S/reviews2.json"
-  : > "$S/reviews.json"
-  local acc="[]"
-  while [ "$#" -ge 3 ]; do
-    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg st "$2" --arg sha "$3" \
-            '. + [{user:{login:$l,type:"Bot"},state:$st,commit_id:$sha}]')"
-    shift 3
-  done
-  printf '%s\n' "$acc" > "$S/reviews.json"
-}
-# comment_fx <login> <created_at> [...] — one ISSUE COMMENT per pair (Codex "task mode" output).
-comment_fx() {
-  local acc="[]"
-  while [ "$#" -ge 2 ]; do
-    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg at "$2" \
-            '. + [{user:{login:$l},created_at:$at,body:"### Summary"}]')"
-    shift 2
-  done
-  printf '%s\n' "$acc" > "$S/comments.json"
-}
-# reaction_fx <login> <content> <created_at> [...] — one reaction per triple.
-reaction_fx() {
-  local acc="[]"
-  while [ "$#" -ge 3 ]; do
-    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg c "$2" --arg at "$3" \
-            '. + [{user:{login:$l},content:$c,created_at:$at}]')"
-    shift 3
-  done
-  printf '%s\n' "$acc" > "$S/reactions.json"
-}
-# activity_fx <after-sha> <ref> <timestamp> [...] — one repository-activity record per triple, in
-# the newest-first order the API returns them.
-activity_fx() {
-  local acc="[]"
-  while [ "$#" -ge 3 ]; do
-    acc="$(printf '%s' "$acc" | jq -c --arg sha "$1" --arg ref "$2" --arg at "$3" \
-            '. + [{activity_type:"push", ref:$ref, before:"0000000000000000000000000000000000000000",
-                   after:$sha, timestamp:$at}]')"
-    shift 3
-  done
-  printf '%s\n' "$acc" > "$S/activity.json"
-}
-# called <substring> — did any gh api call this scenario made address <substring>?
-called() { [ -f "$S/calls" ] && grep -q -- "$1" "$S/calls"; }
+# The four payload builders and the call recorder live in check-lib.sh (#167): both PR-guard suites
+# now exercise ONE shared classifier, so the response SHAPES must have one home or a change to them
+# has nowhere single to be made. What stays local is the PR object and the reset, which differ.
+review_fx()   { check_pr_reviews_json   "$S/reviews.json"   "$@"; rm -f "$S/reviews2.json"; }
+comment_fx()  { check_pr_comments_json  "$S/comments.json"  "$@"; }
+reaction_fx() { check_pr_reactions_json "$S/reactions.json" "$@"; }
+activity_fx() { check_pr_activity_json  "$S/activity.json"  "$@"; }
+called()      { check_pr_called "$S/calls" "$1"; }
 # reset_fx — every surface back to "nothing here", with the anchor dating this head. Needed because
 # the guard now reads THREE signal surfaces: a fixture left over from a previous scenario would
 # otherwise leak a signal into the next one.

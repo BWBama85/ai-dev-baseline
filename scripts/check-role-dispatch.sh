@@ -241,6 +241,23 @@ set_repo '[reviewers]' 'bots = ["[bot]"]'
 rd bots --comparable >/dev/null 2>&1
 eq "$?" "18" "a declaration that normalizes to nothing is 18, never the [] disable"
 
+# AN ENTRY WITH EMBEDDED WHITESPACE IS REJECTED WHOLESALE, NOT DROPPED. A GitHub login is
+# alphanumerics and hyphens (plus an optional `[bot]` suffix), so `"foo bar"` can never name a real
+# account. DROPPING just the bad entry is the fail-OPEN choice: with two declared, discarding one
+# SHRINKS the set every consumer must satisfy, and the guards would then arm — or report a clean
+# pass — on the remaining reviewer alone. It also protects the `<login> <class>` line grammar the
+# reviewer-evidence classifier emits (#167), which a space would split across.
+set_repo '[reviewers]' 'bots = ["foo bar"]'
+rd bots --comparable >/dev/null 2>&1
+eq "$?" "18" "an entry with embedded whitespace is 18 (a config remedy)"
+set_repo '[reviewers]' 'bots = ["good-bot", "foo bar"]'
+rd bots --comparable >/dev/null 2>&1
+eq "$?" "18" "...and it rejects the WHOLE declaration rather than silently shrinking the set"
+# ...while an ordinary declaration is untouched by the new check.
+set_repo '[reviewers]' 'bots = ["good-bot", "other-bot[bot]"]'
+eq "$(rd bots --comparable 2>/dev/null | tr '\n' ' ')" "good-bot other-bot[bot] " \
+   "a well-formed multi-entry declaration still passes through unchanged"
+
 # THE TRI-STATE READER'S OWN CONTRACT MUST NOT MOVE. `adb_dispatch_bots` maps the reader's statuses,
 # so teaching the reader to return 18 would change what the DEFAULT reader does — and that reader
 # decides which threads /resolve-pr-threads may auto-resolve. That is why --comparable is a wrapper

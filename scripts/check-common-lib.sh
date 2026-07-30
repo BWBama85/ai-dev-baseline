@@ -978,7 +978,7 @@ FRESH="2026-07-25T04:45:23Z"; STALE="2026-07-25T04:40:00Z"
 # cls <who-csv> <reviews> <comments> <reactions> [anchor] -> the FOLDED class across the set
 cls() {
   local who="$1" ev
-  ev="$(adb_reviewer_evidence "$(printf '%s' "$who" | jq -R -c 'split(",")')" "$2" "$3" "$4" "$SHA")" || { printf 'ERR'; return; }
+  ev="$(adb_reviewer_evidence "$(printf '%s' "$who" | tr ',' '\n')" "$2" "$3" "$4" "$SHA")" || { printf 'ERR'; return; }
   local c; c="$(adb_reviewer_classes t "$(printf '%s' "$who" | tr ',' '\n')" "$ev" "${5:-$ANCH}" 2>/dev/null)" \
     || { printf 'RC2'; return; }
   adb_fold_reviewer_classes "$c"
@@ -1050,9 +1050,31 @@ if adb_is_utc_instant "$ADB_NO_ANCHOR"; then ok; else bad "ADB_NO_ANCHOR must it
 
 # The fold's identity: no reviewer classified at all is `none`, never `clean`.
 eq "$(adb_fold_reviewer_classes "")" "none" "fold: an EMPTY class list is none, never clean"
-eq "$(adb_reviewers_in_class "$(printf 'a none\nb clean\nc none')" none)" "a c" \
+eq "$(adb_reviewers_in_class "$(printf 'a\tnone\nb\tclean\nc\tnone')" none)" "a c" \
    "adb_reviewers_in_class names exactly the logins in that class"
-eq "$(adb_reviewers_in_class "$(printf 'a clean')" none)" "" \
+eq "$(adb_reviewers_in_class "$(printf 'a\tclean')" none)" "" \
    "adb_reviewers_in_class is empty when nobody is in the class"
+# SEVERAL classes at once — pr-watch reports `rejected` and `attention` as one outcome, and joining
+# two separately-fetched lists (either of which may be empty) is what produced a stray double space.
+eq "$(adb_reviewers_in_class "$(printf 'a\trejected\nb\tnone\nc\tattention')" rejected attention)" "a c" \
+   "adb_reviewers_in_class accepts several classes and preserves order"
+eq "$(adb_reviewers_in_class "$(printf 'a\trejected\nb\tnone')" rejected attention)" "a" \
+   "...with no stray separator when only one of the named classes is populated"
+
+# THE `<login> <class>` GRAMMAR IS PARSED FROM THE RIGHT. A login carrying whitespace can never name
+# a real GitHub account and `role-dispatch bots --comparable` rejects the whole declaration for it
+# (18, fail-closed — dropping just the bad entry would SHRINK the set every consumer must satisfy).
+# These pin the belt to that braces: parsed from the LEFT, `foo bar none` yields the non-class
+# "bar none", which ranks as none by accident rather than by rule and makes the diagnostic garbage.
+eq "$(adb_fold_reviewer_classes "$(printf 'foo bar\tnone')")" "none" \
+   "fold: a whitespace-bearing login still yields a REAL class, not a garbled one"
+eq "$(adb_fold_reviewer_classes "$(printf 'foo bar\tclean')")" "clean" \
+   "fold: ...and the TAB split is total, so a clean class is not lost"
+eq "$(adb_reviewers_in_class "$(printf 'foo bar\tnone\nb\tclean')" none)" "foo bar" \
+   "adb_reviewers_in_class recovers the whole login, not its first word"
+# ...and the same login round-trips through the CLASSIFIER, which the space grammar could not do:
+# it split `foo bar` at the delimiter, so the reviewer never matched its own evidence.
+eq "$(cls "foo bar" "$N" "$N" "$(printf '[{"user":{"login":"foo bar"},"content":"+1","created_at":"%s"}]' "$FRESH")")" "clean" \
+   "classify: a whitespace-bearing login matches its OWN evidence under the TAB grammar"
 
 check_summary "common-lib"

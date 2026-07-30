@@ -368,6 +368,24 @@ adb_dispatch_bots_comparable() {
     *) return "$drc" ;;     # nothing else is reachable; a caller maps the unknown to its own "unreadable"
   esac
 
+  # AN ENTRY WITH INTERNAL WHITESPACE IS MALFORMED, AND IT IS REJECTED RATHER THAN DROPPED.
+  # A GitHub login is alphanumerics and hyphens (plus an optional `[bot]` suffix), so `"foo bar"`
+  # can never name a real account. Dropping it would be the FAIL-OPEN choice: with two entries
+  # declared, silently discarding one SHRINKS the set every consumer must satisfy, and the guards
+  # would then arm — or report a clean pass — on the strength of the remaining reviewer alone.
+  # Rejecting the whole declaration is fail-closed and hands the operator the right remedy.
+  #
+  # It also protects the downstream `<login> <class>` line grammar the reviewer-evidence classifier
+  # emits (#167): a login carrying a space would split across that boundary, so the class parsed
+  # back out would be garbage and the reviewer would silently never match its own evidence.
+  case "$declared" in
+    *[[:space:]]*)
+      if printf '%s\n' "$declared" | grep -q '[^[:space:]][[:space:]][^[:space:]]'; then
+        printf 'role-dispatch: '\''[reviewers] bots'\'' contains an entry with embedded whitespace — not a valid GitHub login; fix agents.toml\n' >&2
+        return 18
+      fi ;;
+  esac
+
   want="$(printf '%s\n' "$declared" \
           | tr '[:upper:]' '[:lower:]' \
           | sed -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*\[bot\][[:space:]]*$/d' \

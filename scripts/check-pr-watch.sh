@@ -251,44 +251,18 @@ activity_fx() {
   printf '%s\n' "$acc" > "$S/activity.json"
 }
 activity_fx_raw() { printf '%s\n' "$1" > "$S/activity.json"; }
-# called <substring> — did any gh api call this scenario made address <substring>?
-called() { [ -f "$S/calls" ] && grep -q -- "$1" "$S/calls"; }
-# review_fx <login> <state> <sha> [...] — one review per triple, into the DEFAULT fixture.
-review_fx() { _reviews_into "$S/reviews.json" "$@"; }
-_reviews_into() {
-  local out="$1"; shift
-  local acc="[]"
-  while [ "$#" -ge 3 ]; do
-    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg st "$2" --arg sha "$3" \
-            '. + [{user:{login:$l,type:"Bot"},state:$st,commit_id:$sha}]')"
-    shift 3
-  done
-  printf '%s\n' "$acc" > "$out"
-}
-# comment_fx <login> <created_at> [...] — one ISSUE COMMENT per pair (Codex "task mode" output).
-comment_fx() { _comments_into "$S/comments.json" "$@"; }
-_comments_into() {
-  local out="$1"; shift
-  local acc="[]"
-  while [ "$#" -ge 2 ]; do
-    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg at "$2" \
-            '. + [{user:{login:$l},created_at:$at,body:"### Summary"}]')"
-    shift 2
-  done
-  printf '%s\n' "$acc" > "$out"
-}
-# reaction_fx <login> <content> <created_at> [...] — one reaction per triple.
-reaction_fx() { _reactions_into "$S/reactions.json" "$@"; }
-_reactions_into() {
-  local out="$1"; shift
-  local acc="[]"
-  while [ "$#" -ge 3 ]; do
-    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg c "$2" --arg at "$3" \
-            '. + [{user:{login:$l},content:$c,created_at:$at}]')"
-    shift 3
-  done
-  printf '%s\n' "$acc" > "$out"
-}
+# The four payload builders and the call recorder live in check-lib.sh (#167): both PR-guard suites
+# now exercise ONE shared classifier, so the response SHAPES must have one home. The `_*_into` seam
+# stays because this suite writes page-two and per-poll fixtures as well as the default one.
+called()          { check_pr_called "$S/calls" "$1"; }
+review_fx()       { check_pr_reviews_json   "$S/reviews.json"   "$@"; }
+_reviews_into()   { check_pr_reviews_json   "$@"; }
+comment_fx()      { check_pr_comments_json  "$S/comments.json"  "$@"; }
+_comments_into()  { check_pr_comments_json  "$@"; }
+reaction_fx()     { check_pr_reactions_json "$S/reactions.json" "$@"; }
+_reactions_into() { check_pr_reactions_json "$@"; }
+activity_fx()     { check_pr_activity_json  "$S/activity.json"  "$@"; }
+activity_fx_raw() { printf '%s\n' "$1" > "$S/activity.json"; }
 declare_bots() { printf '%s\n' '[reviewers]' "bots = $1" > "$REPO/agents.toml"; }
 undeclare()    { rm -f "$REPO/agents.toml" "$GHOME/.config/ai-dev-baseline/agents.toml"; }
 
@@ -455,7 +429,10 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 activity_fx                                   # a well-formed EMPTY list: nothing puts this SHA here
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 w observe --pr 1;  rc 11 "#175: no activity record for this head -> pending, not clean"
-has "$OUT" "could not be established" "#175: names the unestablished anchor rather than 'no signal yet'"
+# The diagnostic comes from `adb_head_anchor` itself, and names the ref and SHA it could not date —
+# more precise than the paraphrase `classify` used to re-emit from a boolean it carried for the
+# purpose. Asserted on the helper's own wording so the message has ONE author.
+has "$OUT" "cannot be proved fresh" "#175: names the unestablished anchor rather than 'no signal yet'"
 reset_fx; declare_bots "[\"$CODEX\"]"
 activity_fx
 comment_fx "${CODEX}[bot]" "$AFTER_AT"

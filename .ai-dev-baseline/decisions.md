@@ -792,10 +792,23 @@ didn't already model, so any residual divergence stays visible and auditable.
              guard also read only ONE of the three surfaces a reviewer can speak on, so a clean
              Codex pass (a `+1`, no review object) and a task-mode result (one issue comment, no
              review) were invisible to it — 16 forever, and on a task-mode repo 16 on EVERY PR.
-- decision:  ONE neutral per-reviewer CLASSIFIER, shared; NOT a shared verdict and NOT shared exit
-             codes. The two modules ask different final questions ("may I arm the merge?" vs "is
-             the reviewer done?"), so sharing a verdict is the trap; each maps the classification
-             to its own vocabulary. The rule, stated once:
+- decision:  ONE neutral per-reviewer CLASSIFIER, shared; NOT shared exit codes. State the reason
+             PRECISELY, because the loose version is the dangerous one to leave in a decision log:
+             the two modules do NOT apply different decision FUNCTIONS. Put the two mapping tables
+             side by side and every class produces the same decision in both — withhold on
+             rejected/attention/unknown/none, pass only on clean. There is no class where one guard
+             proceeds and the other does not, and there must never be one.
+
+             What differs is REPORTING GRANULARITY. `pr-watch` collapses {rejected, attention} into
+             one code because its consumer's next action is identical either way; `pr-review` splits
+             them 19/21 because its consumer's next action differs (address a rejection vs read a
+             comment). That is a real difference and it does justify per-module mappings — but it is
+             a much narrower claim than "they ask different questions", and the narrower claim is
+             the stronger mandate: the two guards may differ in how finely they REPORT, never in
+             what they DECIDE. A future reader who believes they ask different questions will
+             conclude they may legitimately diverge in logic, which is exactly what #185 was.
+
+             The rule, stated once:
 
                CHANGES_REQUESTED at this head               -> rejected
                COMMENTED at this head, or a FRESH comment   -> attention
@@ -853,8 +866,31 @@ didn't already model, so any residual divergence stays visible and auditable.
                  NOT addressed when no such signal is present.
 - placement: `scripts/lib/common.sh` — `adb_reviewer_evidence` (selection), `adb_reviewer_classes`
              (dating + the within-reviewer fold), `adb_fold_reviewer_classes` (the across-set fold),
-             `adb_reviewers_in_class` (diagnostics), plus `adb_head_anchor` / `adb_is_utc_instant` /
-             `adb_paginated_list` PROMOTED out of pr-watch.sh. D19's `second-consumer` field
+             `adb_reviewers_in_class` (diagnostics), `adb_reviewer_classes_for_pr` (the whole
+             read-and-classify pipeline), plus `adb_head_anchor` / `adb_is_utc_instant` /
+             `adb_paginated_list` PROMOTED out of pr-watch.sh.
+
+             THE PIPELINE IS SHARED TOO, not just the classifier, and that was a correction made
+             during review. Sharing only the classifier left both guards open-coding the same six
+             steps — three surface reads, evidence selection, the anchor decision, classification —
+             differing by a label. Worst of it: each decided whether to fetch the anchor by
+             PATTERN-MATCHING the evidence record format, which common.sh owns. Change the delimiter
+             (as the move to TAB below did) and both guards silently stop fetching the anchor, every
+             date-scoped signal degrades to `none`, and both wedge at once with no error anywhere.
+             The record grammar is TAB-separated for the same class of reason: a login is the one
+             field this code does not control, and under a space delimiter one carrying a space
+             splits across the boundary, so the reviewer never matches its own evidence. TAB makes
+             the split total by construction; `role-dispatch.sh` independently rejects such a
+             declaration (18, fail-closed — dropping the entry alone would SHRINK the set every
+             consumer must satisfy), and neither guard is load-bearing alone.
+
+             NOT split into its own `scripts/lib/pr-evidence.sh`, though a review pass argued for it
+             on volume (the PR-domain blocks are now ~45% of common.sh). Two reasons: #167 §7
+             prescribes `common.sh` following #179's precedent, and the strongest argument offered
+             for splitting — that this introduces the first network I/O into a library sourced by
+             `install.sh` — is FALSE: `adb_require_gh` (`gh auth status`) and `adb_repo_slug`
+             (`gh repo view`) already shelled out to `gh` before this change. The volume argument
+             survives on its own and is filed rather than acted on here. D19's `second-consumer` field
              required that promotion as #167's first step rather than a copy, and #167 §6 named
              `read_list` as the third thing a naive implementation would duplicate. Thin consumer
              mappings in `scripts/lib/pr-review.sh` and `scripts/lib/pr-watch.sh`; direct tests in

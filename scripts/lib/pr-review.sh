@@ -131,7 +131,7 @@ OPT_PR=""
 
 cmd_gate() {
   local n drc want head pjson pfields gotslug src headslug headref
-  local reviews comments reacts evidence classes verdict arc
+  local classes verdict
 
   [ -n "$OPT_PR" ] || { echo "pr-review: gate requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
@@ -221,50 +221,12 @@ EOF
     return 0
   fi
 
-  # --- read ALL THREE SURFACES a reviewer may speak on (#167) -----------------------------------
-  # `_gate_read_list` paginates, parses, and fails closed on each — reading and PARSING separately,
-  # because a pipeline reports only its LAST command's status, so `gh api … | jq` returns 0 on a
-  # failed read and the parser then sees empty stdin, which is indistinguishable from a legitimately
-  # empty list. Reported as 16 that direction is merely annoying; the same mistake on the clean path
-  # would be a false 0.
-  #
-  # A pull request IS an issue as far as comments and reactions go, so those two live under
-  # `issues/N/...`. The reactions read is deliberately NOT filtered server-side with `-f content=+1`:
-  # a bare `-f` makes `gh api` switch to POST, which would ADD a reaction rather than list them.
-  reviews="$(adb_paginated_list pr-review "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" reviews "$n")" || return 20
-  comments="$(adb_paginated_list pr-review "repos/{owner}/{repo}/issues/$n/comments?per_page=100" comments "$n")" || return 20
-  reacts="$(adb_paginated_list pr-review "repos/{owner}/{repo}/issues/$n/reactions?per_page=100" reactions "$n")" || return 20
-
-  # SELECTION ONLY — the shared jq pass, which also applies the shared identity predicate. Reviews
-  # are matched by the CURRENT head SHA: a review of an earlier commit is not a review of this one,
-  # observed live on PR #145 where the bot reviewed b302fa0e and three further commits landed after.
-  evidence="$(adb_reviewer_evidence "$(printf '%s' "$want" | jq -R -s -c 'split("\n") | map(select(length > 0))')" \
-                                    "$reviews" "$comments" "$reacts" "$head")" \
-    || { echo "pr-review: could not evaluate the reviewer signals of PR #$n — refusing to arm" >&2; return 20; }
-
-  # A comment and a reaction carry no commit, so both are proved against the SERVER's record of when
-  # this ref became this head (#175/D19). THIS MATTERS MORE HERE THAN IN THE WATCHER: a date-scoped
-  # signal this guard accepts authorizes an ARMED MERGE, which is exactly why D19 required the
-  # anchor be promoted to a shared primitive rather than copied.
-  #
-  # Read ONCE, and only when a date-scoped candidate exists — a PR whose reviewer has said nothing
-  # must not pay the fifth request. The sentinel is the default: an unestablished anchor leaves
-  # date-scoped signals unprovable (classified `none` → 16, "still waiting"), while leaving
-  # commit-scoped review evidence untouched, because a review carries its own `commit_id`.
-  local anchor="$ADB_NO_ANCHOR"
-  case "$evidence" in
-    *" comment "*|*" plus1 "*)
-      anchor="$(adb_head_anchor pr-review "$n" "$headslug" "$headref" "$head")"; arc=$?
-      case "$arc" in
-        0) ;;
-        1) anchor="$ADB_NO_ANCHOR" ;;
-        *) echo "pr-review: PR #$n — refusing to arm on a signal whose freshness cannot be read" >&2
-           return 20 ;;
-      esac ;;
-  esac
-
-  classes="$(adb_reviewer_classes pr-review "$want" "$evidence" "$anchor")" \
-    || { echo "pr-review: PR #$n — refusing to arm on a signal it cannot date" >&2; return 20; }
+  # The whole read-and-classify pipeline is ONE shared call (#167): three surface reads, evidence
+  # selection, the conditional head-arrival anchor, and the per-reviewer classification. What stays
+  # here is the mapping below — this guard's own exit codes, which are the thing that must NOT be
+  # shared with the watcher.
+  classes="$(adb_reviewer_classes_for_pr pr-review "$n" "$want" "$head" "$headslug" "$headref")" \
+    || { echo "pr-review: PR #$n — refusing to arm on review state it could not read" >&2; return 20; }
   verdict="$(adb_fold_reviewer_classes "$classes")"
 
   # --- map the shared classification onto THIS module's exit codes ------------------------------

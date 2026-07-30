@@ -823,16 +823,26 @@ adb_paginated_list() {
   printf '%s' "$flat"
 }
 
-# adb_reviewer_evidence <who-json> <reviews-json> <comments-json> <reactions-json> <head-sha> —
-# SELECTION ONLY, no dating and no verdict. Prints one `<login> <kind> <value>` line per piece of
-# evidence a declared reviewer left, where <kind> is `review` (value = the upper-cased state),
-# `comment` or `plus1` (value = the raw `created_at`, possibly empty). Returns 2 if jq fails.
+# adb_reviewer_evidence <who-list> <reviews-json> <comments-json> <reactions-json> <head-sha> —
+# SELECTION ONLY, no dating and no verdict. Prints one TAB-separated `<login>\t<kind>\t<value>` line
+# per piece of evidence a declared reviewer left, where <kind> is `review` (value = the upper-cased
+# state), `comment` or `plus1` (value = the raw `created_at`, possibly empty). Returns 2 if jq fails.
+#
+# TAB-SEPARATED, following this file's own record convention (`adb_repo_shape` + `adb_shape_val`,
+# and `cleanup-lib.sh`'s outcome records) rather than a space. Not cosmetic: a login is the one
+# field whose content this code does not control, and with a space delimiter a login carrying one
+# splits across the field boundary — so the reviewer silently never matches its own evidence and the
+# parsed-back class is garbage. A tab makes the split total by construction, which is what lets both
+# this grammar and the `<login>\t<class>` one below be read the same way from either end.
+# (`role-dispatch.sh` independently rejects such a declaration, on its own merits; that is the
+# belt, this is the braces, and neither is load-bearing alone.)
 #
 # SPLIT FROM THE DATING STEP ON PURPOSE, for two reasons that both bite.
 #
 # First, COST: the head-arrival anchor is a fifth API read, and a poll where no declared reviewer
-# left a date-scoped signal must not pay for it. Selection tells the caller whether any `comment`
-# or `plus1` line exists, so the anchor is fetched only when something actually depends on it.
+# left a date-scoped signal must not pay for it. `adb_reviewer_classes_for_pr` inspects this output
+# to decide, so the anchor is fetched only when something actually depends on it — and that
+# inspection lives HERE, beside the emitter, rather than as a pattern match in each consumer.
 #
 # Second, SOUNDNESS: every candidate timestamp must be format-checked BEFORE any of them is ordered
 # (see adb_head_anchor), so this emits EVERY match rather than jq's `max`. The volume is bounded by
@@ -846,22 +856,27 @@ adb_paginated_list() {
 adb_reviewer_evidence() {
   local who="$1" reviews="$2" comments="$3" reactions="$4" sha="$5" match out
   match="$(adb_reviewer_match_jq)"
+  # The declared set arrives as the NEWLINE LIST every other consumer already holds, and is split
+  # inside this one jq program. It used to be a JSON array the caller built with its own `jq -R -s`
+  # pass — which meant every caller carried that fork, its own status check, and a comment
+  # explaining the status check, and it left the two shared functions disagreeing about how a
+  # reviewer set is spelled (`adb_reviewer_classes` has always taken the list).
   out="$(jq -r -n \
-      --argjson who "$who" --argjson reviews "$reviews" --argjson comments "$comments" \
+      --arg who "$who" --argjson reviews "$reviews" --argjson comments "$comments" \
       --argjson reactions "$reactions" --arg sha "$sha" \
       "$match"'
-      $who[] as $w
+      ($who | split("\n") | map(select(length > 0)))[] as $w
       | ( $reviews[]
           | select((.commit_id // "") == $sha)
           | select((.user.login // "") | adb_declared_reviewer([$w]))
-          | "\($w) review \((.state // "") | ascii_upcase)" ),
+          | "\($w)\treview\t\((.state // "") | ascii_upcase)" ),
         ( $comments[]
           | select((.user.login // "") | adb_declared_reviewer([$w]))
-          | "\($w) comment \(.created_at // "")" ),
+          | "\($w)\tcomment\t\(.created_at // "")" ),
         ( $reactions[]
           | select((.content // "") == "+1")
           | select((.user.login // "") | adb_declared_reviewer([$w]))
-          | "\($w) plus1 \(.created_at // "")" )' 2>/dev/null)" \
+          | "\($w)\tplus1\t\(.created_at // "")" )' 2>/dev/null)" \
     || return 2
   printf '%s' "$out"
 }
@@ -896,17 +911,20 @@ adb_reviewer_evidence() {
 # Reusing one order for both is precisely the bug — it makes a single fast `+1` speak for the set.
 adb_reviewer_classes() {
   local label="$1" who="$2" evidence="$3" anchor="$4"
-  local w line lw kind val cls best
+  local w lw kind val cls best bestrank rank tab staled
+  tab="$(printf '\t')"
   # One pass per declared reviewer over the evidence. The set is small (a repo declares a handful of
   # bots) and so is the evidence, so the readable shape wins over a single-pass associative array —
   # which bash 3.2, this repo's floor, does not have.
   while IFS= read -r w; do
     [ -n "$w" ] || continue
-    best="none"
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      lw="${line%% *}"; [ "$lw" = "$w" ] || continue
-      kind="${line#* }"; val="${kind#* }"; kind="${kind%% *}"
+    best="none"; bestrank=0; staled=0
+    # `read` does the field splitting on the tab, rather than three parameter expansions unpicking a
+    # space-delimited line by hand. `val` absorbs the remainder, so a value containing a tab (which
+    # none of the three kinds can produce) degrades to an unrecognized one rather than a shifted field.
+    while IFS="$tab" read -r lw kind val; do
+      [ -n "$lw" ] || continue
+      [ "$lw" = "$w" ] || continue
       cls=""
       case "$kind" in
         review)
@@ -939,25 +957,91 @@ adb_reviewer_classes() {
             # non-empty string) while creating a file named after the anchor, so EVERY signal would
             # read as fresh and the staleness rule would be gone with no error anywhere.
             if [ "$kind" = "comment" ]; then cls="attention"; else cls="clean"; fi
-          else
+          elif [ "$staled" -eq 0 ]; then
             # The signal predates this head's arrival: it reviewed an earlier commit, so it is not
             # evidence about THIS one — `none`, never `clean`. Said out loud rather than dropped
             # silently, because "a `+1` is sitting right there and the guard still says pending" is
             # otherwise the most confusing state this family produces.
+            #
+            # ONCE PER REVIEWER, not once per stale record. Every match is emitted for ordering
+            # soundness, so a PR carrying several old bot comments would otherwise repeat this line
+            # on every poll of a half-hour watch — hundreds of lines saying one thing.
+            staled=1
             echo "$label: a $kind from '$w' at $val predates this head's arrival ($anchor) — it reviewed an earlier commit" >&2
           fi
           ;;
       esac
       [ -n "$cls" ] || continue
-      # Keep the stronger of the two, by the total order documented above.
-      [ "$(_adb_class_rank "$cls")" -gt "$(_adb_class_rank "$best")" ] && best="$cls"
+      # Keep the stronger of the two, by the total order documented above. The incumbent's rank is
+      # CARRIED rather than re-derived: `$best`'s rank was known when it was assigned, so ranking it
+      # again every iteration forks a subshell to recompute a value already in hand.
+      rank="$(_adb_class_rank "$cls")"
+      if [ "$rank" -gt "$bestrank" ]; then best="$cls"; bestrank="$rank"; fi
     done <<EOF
 $evidence
 EOF
-    printf '%s %s\n' "$w" "$best"
+    printf '%s\t%s\n' "$w" "$best"
   done <<EOF
 $who
 EOF
+}
+
+# adb_reviewer_classes_for_pr <label> <pr-number> <who-list> <head-sha> <head-repo-slug> <head-ref>
+# — the whole read-and-classify pipeline for one pull request. Prints the `<login>\t<class>` lines;
+# returns 0, or 2 if anything could not be read or dated (the caller maps that to its own code).
+#
+# THE LAST THING BOTH GUARDS WERE STILL DOING SEPARATELY. After the classifier was shared, each one
+# still open-coded the same six steps — three `adb_paginated_list` calls with the same URLs in the
+# same order, `adb_reviewer_evidence`, the decision about whether to fetch the anchor, and
+# `adb_reviewer_classes` — differing only in a label. That is the same "one question, two places"
+# shape #167 exists to remove, one altitude up from the place it removed it.
+#
+# THE ANCHOR CONDITION IS THE PART THAT REALLY HAD TO MOVE. Both callers used to decide it by
+# pattern-matching `adb_reviewer_evidence`'s output for the literals `" comment "` / `" plus1 "` —
+# a caller-side string match against a record format this file owns, asserted by nothing. Change the
+# emitter's delimiter (as the move to TAB just did) and both guards silently stop fetching the
+# anchor, every date-scoped signal degrades to `none`, and the gate wedges at "awaiting" while the
+# watcher polls to its deadline: a false-negative wedge, on both guards at once, with no error
+# anywhere. The decision now lives beside the emitter, where a format change is one edit.
+#
+# WHAT IS DELIBERATELY *NOT* SHARED is the verdict and the exit codes. This returns the neutral
+# per-reviewer classes; folding them and mapping the result to 0/16/19/20/21 or 0/10/11/20 stays in
+# each guard, because "may I arm the merge?" and "is the reviewer done?" report at different
+# granularity (D20). Sharing the mapping is the trap; sharing the reading never was.
+adb_reviewer_classes_for_pr() {
+  local label="$1" n="$2" who="$3" head="$4" headslug="$5" headref="$6"
+  local reviews comments reacts evidence anchor arc tab
+  # A pull request IS an issue as far as comments and reactions go, so those two live under
+  # `issues/N/...`. The reactions read is deliberately NOT filtered server-side with `-f content=+1`:
+  # a bare `-f` makes `gh api` switch to POST, which would ADD a reaction rather than list them.
+  #
+  # ALL THREE ARE READ BEFORE ANYTHING IS CLASSIFIED. The verdict is a property of the whole declared
+  # set, so every reviewer's evidence must be in hand; and a failed read is then reported uniformly
+  # rather than being invisible on whichever path happened to return early.
+  reviews="$(adb_paginated_list "$label" "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" reviews "$n")" || return 2
+  comments="$(adb_paginated_list "$label" "repos/{owner}/{repo}/issues/$n/comments?per_page=100" comments "$n")" || return 2
+  reacts="$(adb_paginated_list "$label" "repos/{owner}/{repo}/issues/$n/reactions?per_page=100" reactions "$n")" || return 2
+
+  evidence="$(adb_reviewer_evidence "$who" "$reviews" "$comments" "$reacts" "$head")" \
+    || { echo "$label: could not evaluate the reviewer signals of PR #$n" >&2; return 2; }
+
+  # The anchor is a FIFTH request, paid for only when a date-scoped signal actually needs dating.
+  # The sentinel is the default: an unestablished anchor leaves those signals unprovable (classified
+  # `none` — the safe direction) while leaving commit-scoped review evidence untouched, because a
+  # review carries its own `commit_id` and needs no anchor at all (D19).
+  anchor="$ADB_NO_ANCHOR"
+  tab="$(printf '\t')"
+  case "$evidence" in
+    *"${tab}comment${tab}"*|*"${tab}plus1${tab}"*)
+      anchor="$(adb_head_anchor "$label" "$n" "$headslug" "$headref" "$head")"; arc=$?
+      case "$arc" in
+        0) ;;
+        1) anchor="$ADB_NO_ANCHOR" ;;   # unestablished: adb_head_anchor already said why, on stderr
+        *) return 2 ;;
+      esac ;;
+  esac
+
+  adb_reviewer_classes "$label" "$who" "$evidence" "$anchor" || return 2
 }
 
 # The WITHIN-reviewer order, in its one home: the strongest evidence this one reviewer produced.
@@ -998,14 +1082,13 @@ _adb_class_rank_across() {
 # them. Both now fold here, so they cannot disagree about HOW MANY reviewers must have produced a
 # signal — the orthogonal axis to #167's "what does a signal mean".
 adb_fold_reviewer_classes() {
-  local classes="$1" line cls best="" seen=0
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    cls="${line#* }"
+  local classes="$1" lw cls best="none" bestrank=-1 rank seen=0 tab
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r lw cls; do
+    [ -n "$lw" ] || continue
     seen=1
-    if [ -z "$best" ] || [ "$(_adb_class_rank_across "$cls")" -gt "$(_adb_class_rank_across "$best")" ]; then
-      best="$cls"
-    fi
+    rank="$(_adb_class_rank_across "$cls")"
+    if [ "$rank" -gt "$bestrank" ]; then best="$cls"; bestrank="$rank"; fi
   done <<EOF
 $classes
 EOF
@@ -1016,14 +1099,23 @@ EOF
   printf '%s' "$best"
 }
 
-# adb_reviewers_in_class <classes> <class> — the logins that landed in <class>, space-separated, so
-# a caller's diagnostic can NAME them ("awaiting review from: …") rather than reporting a bare code.
+# adb_reviewers_in_class <classes> <class>... — the logins that landed in ANY of the named classes,
+# space-separated, so a caller's diagnostic can NAME them ("awaiting review from: …") rather than
+# reporting a bare code.
+#
+# SEVERAL classes, because a caller that reports two of them as one outcome (pr-watch renders both
+# `rejected` and `attention` as `findings`) would otherwise call this twice and join the results —
+# and joining two lists either of which may be EMPTY reintroduces the stray/double space that
+# formatting workaround existed to scrub.
 adb_reviewers_in_class() {
-  local classes="$1" want="$2" line out=""
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    [ "${line#* }" = "$want" ] || continue
-    out="${out:+$out }${line%% *}"
+  local classes="$1" lw cls want out="" tab
+  shift
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r lw cls; do
+    [ -n "$lw" ] || continue
+    for want in "$@"; do
+      if [ "$cls" = "$want" ]; then out="${out:+$out }$lw"; break; fi
+    done
   done <<EOF
 $classes
 EOF
