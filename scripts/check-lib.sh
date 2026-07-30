@@ -10,6 +10,8 @@
 #   3. git fixture helpers (§ further down) — check_git + check_make_repo_pair: the throwaway
 #      identity wrapper and the local+bare-origin scaffold, accounting-neutral so either family
 #      can guard them.
+#   4. PR reviewer-signal payload builders (§ further down) — check_pr_reviews_json and friends:
+#      the four GitHub response SHAPES both PR-guard suites stub.
 #
 # Sourced, never executed. Lives OUTSIDE scripts/lib/ on purpose: install.sh symlinks the whole
 # scripts/lib dir into ~/.<agent>/scripts/lib, and check/test code must not ship into a user's
@@ -177,3 +179,77 @@ check_make_repo_pair() {
   git -C "$1" config commit.gpgsign false || return 1
   git -C "$1" remote add origin "$2" || return 1
 }
+
+# --- PR reviewer-signal payload builders (#167) ------------------------------------------------
+# The four GitHub response shapes the two PR-guard suites stub. They live here rather than in each
+# suite because BOTH now exercise ONE shared classifier (`adb_reviewer_evidence` /
+# `adb_reviewer_classes` / `adb_head_anchor` in common.sh): with a copy per suite, a change to the
+# record shape has no single place to be made, and one suite can stay green against a payload the
+# other no longer produces. That is the same two-copies-diverge failure #167 and #173 were filed to
+# fix — which makes duplicating it in the tests of the fix a poor trade.
+#
+# Each takes the destination path first, so a suite can write a default fixture, a page-two fixture
+# or a per-poll fixture with the same builder. What stays per-suite is everything genuinely local:
+# the `gh` stub's routing and knobs, the PR object (whose fields differ — pr-watch needs state and
+# merged_at), the poll counter, and the timestamp constants each suite reads its own scenarios by.
+
+# check_pr_reviews_json <out> <login> <state> <sha> [...] — one review object per triple.
+check_pr_reviews_json() {
+  local out="$1"; shift
+  local acc="[]"
+  while [ "$#" -ge 3 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg st "$2" --arg sha "$3" \
+            '. + [{user:{login:$l,type:"Bot"},state:$st,commit_id:$sha}]')"
+    shift 3
+  done
+  printf '%s\n' "$acc" > "$out"
+}
+
+# check_pr_comments_json <out> <login> <created_at> [...] — one ISSUE COMMENT per pair. This is the
+# Codex connector's "task mode" output: a single comment, no review object, no inline threads.
+check_pr_comments_json() {
+  local out="$1"; shift
+  local acc="[]"
+  while [ "$#" -ge 2 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg at "$2" \
+            '. + [{user:{login:$l},created_at:$at,body:"### Summary"}]')"
+    shift 2
+  done
+  printf '%s\n' "$acc" > "$out"
+}
+
+# check_pr_reactions_json <out> <login> <content> <created_at> [...] — one reaction per triple.
+# NOTE the reactions endpoint reports `type: "User"` for the Codex connector while reviews report
+# `type: "Bot"` for the same App, which is why no builder here sets a discriminating type on it.
+check_pr_reactions_json() {
+  local out="$1"; shift
+  local acc="[]"
+  while [ "$#" -ge 3 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg c "$2" --arg at "$3" \
+            '. + [{user:{login:$l},content:$c,created_at:$at}]')"
+    shift 3
+  done
+  printf '%s\n' "$acc" > "$out"
+}
+
+# check_pr_activity_json <out> <after-sha> <ref> <timestamp> [...] — one repository-activity record
+# per triple, in the newest-first order the API returns them. This is the SERVER-ASSIGNED anchor
+# #175/D19 replaced the client-supplied committer date with, so its shape is the one most worth
+# having in a single place: `adb_head_anchor` selects on `.after`, `.ref` and `.timestamp`.
+check_pr_activity_json() {
+  local out="$1"; shift
+  local acc="[]"
+  while [ "$#" -ge 3 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg sha "$1" --arg ref "$2" --arg at "$3" \
+            '. + [{activity_type:"push", ref:$ref, before:"0000000000000000000000000000000000000000",
+                   after:$sha, timestamp:$at}]')"
+    shift 3
+  done
+  printf '%s\n' "$acc" > "$out"
+}
+
+# check_pr_called <calls-file> <substring> — did any recorded `gh api` call address <substring>?
+# Both suites record every call so they can prove NEGATIVES: that the head-commit endpoint is never
+# read (the client-supplied date #175 removed), and that the ref-activity read is not paid for when
+# no date-scoped signal needs dating.
+check_pr_called() { [ -f "$1" ] && grep -q -- "$2" "$1"; }

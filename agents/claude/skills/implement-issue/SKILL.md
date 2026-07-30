@@ -602,10 +602,16 @@ case "$AM" in
           # its own pair of API calls — no point paying for them to discard the answer.
           FLAG="$(bash "$HOME/.claude/scripts/lib/repo-settings.sh" merge-flag)" || FLAG=""
           [ -n "$FLAG" ] && gh pr merge "$PR" --auto "$FLAG" --match-head-commit "$HEAD_SHA" ;;
-      16) : ;;  # a DECLARED reviewer has not reviewed this head SHA -> do NOT arm; owner merges
+      16) : ;;  # a DECLARED reviewer has not spoken about this head SHA -> do NOT arm; owner merges
       17) : ;;  # repo declares no `[reviewers] bots` -> unknowable; declare it (or `bots = []`)
       18) : ;;  # `[reviewers] bots` is malformed     -> fix agents.toml
       19) : ;;  # a reviewer requested CHANGES on this head SHA -> address them, push, re-run
+      21) : ;;  # REVIEW COMPLETE, ATTENTION REQUIRED: a reviewer left a COMMENTED review or a fresh
+                # issue comment (#167). It HAS reviewed this head and is NOT satisfied, so the arm
+                # is withheld. There may be NO inline threads at all — a task-mode comment creates
+                # none — so /resolve-pr-threads has nothing to resolve: READ THE COMMENT yourself.
+                # Needs its own arm: folded into `*)` it would be reported as "unreadable, retry"
+                # for a PR whose review is sitting right there.
       *)  : ;;  # 20/unknown -> review state unreadable, merge by hand
     esac ;;
   10) : ;;  # allow_auto_merge off       -> report: run 'baseline repo apply'
@@ -629,6 +635,19 @@ reviewed yet. On such a repo auto-merge is therefore **not armed by this workflo
 that is the intended trade (#134): unattended *arming* is suspended until the review
 lands. A repo with no async reviewer keeps unattended arming today by declaring
 `bots = []`.
+
+**The gate now reads every surface a reviewer can speak on (#167), which changes which
+code you get — not whether the arm is withheld.** It used to read only `pulls/N/reviews`,
+so a *clean* Codex pass (a `+1` reaction and **no review object**) and a *task-mode*
+result (one issue comment, no review) were both invisible, and it returned 16 forever —
+on a task-mode repo, for **every** PR. Two consequences worth stating:
+
+- A clean pass proved fresh against this head now returns **0**, so a re-run after the
+  reviewer has finished can arm.
+- A `COMMENTED` review no longer counts as satisfied. It returns the new **21**, because
+  "the reviewer has spoken" is not "the reviewer is satisfied" — a reviewer can put
+  actionable findings in a review **body** and create no inline threads at all, which
+  nothing else catches.
 
 **Arming is still suspended — the watch does not lift it.** #49 shipped the *waiting*
 half (`/resolve-pr-threads <PR#> --watch`), which waits for the reviewer and resolves
@@ -662,12 +681,18 @@ Review → Ship → Close-out, plus a **Needs attention** block for anything not
 
 State the **auto-merge disposition explicitly** — armed, or skipped naming **which**
 guard skipped it and its code (`automerge-ok` 10–14/20, or the review gate
-16/17/18/19/20).
+16/17/18/19/**21**/20).
 An armed PR that is silently waiting on something is the one outcome the operator
 cannot see: say what it is waiting on and what clears it. On code 16 the PR is **not
 armed at all** and is waiting on a *reviewer* — not the same as an armed PR waiting on
 threads. End with the `/resolve-pr-threads <PR#>` resume hint. Do **not** poll for bot
 reviews *here* — this step reports the state and ends.
+
+**Code 21 is not code 16, and reporting it as "waiting" is wrong.** On 21 the reviewer
+has **finished** and left something to read; nobody is being waited for. Say that, and
+point at the review body or issue comment — there may be **no inline threads**, so
+`/resolve-pr-threads` may find nothing to resolve and `--watch` would wait for a
+reviewer that has already spoken.
 
 **On code 16, offer the waiting form of that hint.** `/resolve-pr-threads <PR#> --watch` waits for
 the reviewer in a shell poll loop and only then resolves, so the wait itself costs **no model

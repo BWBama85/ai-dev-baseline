@@ -113,9 +113,9 @@ answer this skill reports and exits on, because there is nothing to resolve:
 
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
-| `10` | the declared reviewer reviewed **this head** and left findings | **continue to step 1** |
-| `0`  | the reviewer signalled a clean pass (a `+1` on the PR post newer than the moment the head ref became this SHA), **or** the repo declares `bots = []` | report "reviewed clean — nothing to resolve" and **exit 0** |
-| `11` | the bound expired with no terminal signal — see the note below on a second way to reach it | report that the wait timed out and hand back to the operator; **exit** |
+| `10` | a declared reviewer reviewed **this head** and is **not satisfied** — a `CHANGES_REQUESTED` or `COMMENTED` review, or a fresh issue comment | **continue to step 1** (but note there may be **no threads**: a task-mode comment creates none, so read the comment) |
+| `0`  | **every** declared reviewer signalled a clean pass — an `APPROVED` review at this head, or a `+1` on the PR post newer than the moment the head ref became this SHA — **or** the repo declares `bots = []` | report "reviewed clean — nothing to resolve" and **exit 0** |
+| `11` | the bound expired with **at least one** declared reviewer still silent — see the note below on a second way to reach it | report that the wait timed out and hand back to the operator; **exit** |
 | `12` | the PR is no longer OPEN (merged or closed) | report it and **exit** |
 | `17` | the repo declares no `[reviewers] bots` | it cannot be known whether a reviewer is coming — tell the operator to declare them (or `bots = []`); **exit** |
 | `18` | `[reviewers] bots` is malformed | tell the operator to fix `agents.toml`; **exit** |

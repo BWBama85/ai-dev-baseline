@@ -954,4 +954,160 @@ eq "$(rmatch 'foo')"                      "false" "identity: an EMPTY declaratio
 # declaration reader drops it (and then rejects the declaration); the predicate must not rescue it.
 eq "$(rmatch 'anything[bot]' '[bot]')"    "false" "identity: a bare '[bot]' entry does not match every App"
 
+# ============ the reviewer-evidence classifier and its folds (#167) ============
+# The ONE answer to "given everything a declared reviewer emitted, has this head been reviewed, and
+# was it clean?", exercised HERE as a matrix rather than only through either guard's scenarios —
+# both consumers map it to different exit codes, so a bug in the shared rule would otherwise have to
+# be diagnosed twice from two different vocabularies.
+#
+# --- adb_is_utc_instant: the grammar that makes a lexicographic compare a chronological one -------
+# NOT defensive padding. The equivalence holds only while every operand is the same width, precision
+# and zone: `2026-07-25T09:00:00-04:00` sorts BEFORE `2026-07-25T05:00:00Z` as a string and AFTER it
+# as an instant, and `…:00.123Z` loses to `…:01Z` on a prefix compare.
+for good in "2026-07-25T04:42:15Z" "1999-01-01T00:00:00Z" "9999-12-31T23:59:59Z"; do
+  if adb_is_utc_instant "$good"; then ok; else bad "adb_is_utc_instant accepts '$good'"; fi
+done
+for v in "" "2026-07-25T04:42:15-04:00" "2026-07-25T04:42:15.500Z" "2026-07-25 04:42:15Z" \
+         "2026-07-25T04:42:15" "26-07-25T04:42:15Z" "not-a-date" "2026-07-25T04:42:15z"; do
+  if adb_is_utc_instant "$v"; then bad "adb_is_utc_instant rejects '$v'"; else ok; fi
+done
+# THE LAYOUT CHECK ALONE IS NOT ENOUGH, and the gap was not academic: a character-class glob accepts
+# `9999-99-99T99:99:99Z`, which sorts above every real timestamp AND above ADB_NO_ANCHOR itself — so
+# ONE malformed `created_at` read as fresh against any anchor, including the far-future sentinel
+# whose whole job is to make an unestablished anchor fail closed, and classified the reviewer
+# `clean`. Reported by the codex reviewer on PR #219.
+for v in "9999-99-99T99:99:99Z" "2026-13-25T04:42:15Z" "2026-00-25T04:42:15Z" "2026-07-00T04:42:15Z" \
+         "2026-07-32T04:42:15Z" "2026-07-25T24:42:15Z" "2026-07-25T04:60:15Z" "2026-07-25T04:42:61Z"; do
+  if adb_is_utc_instant "$v"; then bad "adb_is_utc_instant range-rejects '$v'"; else ok; fi
+done
+# ...and the sentinel must still be an orderable instant under the tighter rule, or every date-scoped
+# signal would fail validation the moment no anchor could be established.
+if adb_is_utc_instant "$ADB_NO_ANCHOR"; then ok; else bad "ADB_NO_ANCHOR must pass the range check"; fi
+# Boundaries that must still be ACCEPTED. A leap second is real UTC; day-of-month is bounded at 31
+# without calendar validation, which is deliberate — `2026-02-31` still ORDERS correctly, and
+# calendar checking would need the date library this file avoids for GNU/BSD portability.
+for v in "2026-01-01T00:00:00Z" "2026-12-31T23:59:59Z" "2026-06-30T23:59:60Z" "2026-02-31T12:00:00Z"; do
+  if adb_is_utc_instant "$v"; then ok; else bad "adb_is_utc_instant still accepts '$v'"; fi
+done
+
+# --- the classifier, end to end -----------------------------------------------------------------
+SHA="aaaa"; ANCH="2026-07-25T04:42:15Z"
+FRESH="2026-07-25T04:45:23Z"; STALE="2026-07-25T04:40:00Z"
+# cls <who-csv> <reviews> <comments> <reactions> [anchor] -> the FOLDED class across the set
+cls() {
+  local who="$1" ev
+  ev="$(adb_reviewer_evidence "$(printf '%s' "$who" | tr ',' '\n')" "$2" "$3" "$4" "$SHA")" || { printf 'ERR'; return; }
+  local c; c="$(adb_reviewer_classes t "$(printf '%s' "$who" | tr ',' '\n')" "$ev" "${5:-$ANCH}" 2>/dev/null)" \
+    || { printf 'RC2'; return; }
+  adb_fold_reviewer_classes "$c"
+}
+rv()  { printf '[{"user":{"login":"%s"},"state":"%s","commit_id":"%s"}]' "$1" "$2" "${3:-$SHA}"; }
+cm()  { printf '[{"user":{"login":"%s"},"created_at":"%s"}]' "$1" "$2"; }
+rx()  { printf '[{"user":{"login":"%s"},"content":"%s","created_at":"%s"}]' "$1" "${2:-+1}" "$3"; }
+N='[]'
+
+# THE TABLE (#167 §4), one row at a time.
+eq "$(cls a "$(rv a CHANGES_REQUESTED)" "$N" "$N")" "rejected"  "classify: CHANGES_REQUESTED at head -> rejected"
+eq "$(cls a "$(rv a COMMENTED)"         "$N" "$N")" "attention" "classify: COMMENTED at head -> attention"
+eq "$(cls a "$(rv a APPROVED)"          "$N" "$N")" "clean"     "classify: APPROVED at head -> clean"
+eq "$(cls a "$(rv a PENDING)"           "$N" "$N")" "none"      "classify: an unsubmitted PENDING draft is not evidence"
+eq "$(cls a "$(rv a DISMISSED)"         "$N" "$N")" "none"      "classify: a DISMISSED review is not evidence"
+eq "$(cls a "$(rv a WHAT_IS_THIS)"      "$N" "$N")" "unknown"   "classify: an unrecognized state -> unknown (fails closed)"
+eq "$(cls a "$(rv a APPROVED bbbb)"     "$N" "$N")" "none"      "classify: a review of ANOTHER commit is not evidence about this head"
+# A REVIEW THAT CANNOT BE TIED TO A COMMIT IS `unknown`, NOT ABSENT. The commit filter used to run
+# BEFORE the reviewer match, so a declared reviewer CHANGES_REQUESTED whose commit_id was missing or
+# non-string was discarded before anything read who wrote it — and a fresh `+1` on another surface
+# then became the only evidence left, folding to `clean` and arming the merge. Reported by the codex
+# reviewer on PR #219; the fourth assertion below is the one that was `clean` before the fix.
+NO_CID='[{"user":{"login":"a"},"state":"CHANGES_REQUESTED"}]'
+NULL_CID='[{"user":{"login":"a"},"state":"CHANGES_REQUESTED","commit_id":null}]'
+NUM_CID='[{"user":{"login":"a"},"state":"CHANGES_REQUESTED","commit_id":12345}]'
+FOREIGN_NO_CID='[{"user":{"login":"nobody"},"state":"CHANGES_REQUESTED"}]'
+eq "$(cls a "$NO_CID" "$N" "$N")" "unknown" \
+   "classify: a declared reviewer review with NO commit_id -> unknown, never absent"
+eq "$(cls a "$NULL_CID" "$N" "$N")" "unknown" \
+   "classify: ...an explicitly null commit_id likewise"
+eq "$(cls a "$NUM_CID" "$N" "$N")" "unknown" \
+   "classify: ...and a NON-STRING commit_id, which the equality test silently dropped"
+eq "$(cls a "$NO_CID" "$N" "$(rx a +1 "$FRESH")")" "unknown" \
+   "classify: an undatable rejection is NOT outvoted by a fresh +1 (the false-arm)"
+# ...but an UNDECLARED login with the same malformation must not wedge the guard: only declared
+# reviewers are classified, so a stray malformed review from anyone else is simply not evidence.
+eq "$(cls a "$FOREIGN_NO_CID" "$N" "$(rx a +1 "$FRESH")")" "clean" \
+   "classify: an UNDECLARED login with no commit_id does not wedge the guard"
+
+# THE WITHIN-REVIEWER ORDER: rejected > attention > unknown > clean > none.
+eq "$(cls a "$(rv a APPROVED)" "$(cm a "$FRESH")" "$N")" "attention" \
+   "within-reviewer: a fresh comment outranks that reviewer's APPROVED"
+eq "$(cls a "$(printf '[{"user":{"login":"a"},"state":"COMMENTED","commit_id":"%s"},{"user":{"login":"a"},"state":"CHANGES_REQUESTED","commit_id":"%s"}]' "$SHA" "$SHA")" "$N" "$N")" "rejected" \
+   "within-reviewer: a standing CHANGES_REQUESTED outranks a COMMENTED on the same commit"
+eq "$(cls a "$(printf '[{"user":{"login":"a"},"state":"WEIRD","commit_id":"%s"},{"user":{"login":"a"},"state":"APPROVED","commit_id":"%s"}]' "$SHA" "$SHA")" "$N" "$N")" "unknown" \
+   "within-reviewer: UNKNOWN outranks clean — an uninterpretable state is never outvoted into a pass"
+eq "$(cls a "$(rv a APPROVED)" "$N" "$(rx a +1 "$STALE")")" "clean" \
+   "within-reviewer: a STALE '+1' beside that reviewer's APPROVED is still clean"
+
+# THE ACROSS-REVIEWER ORDER IS NOT THE SAME ORDER, and the swapped pair IS #185: `none` outranks
+# `clean`, so a pass requires EVERY declared reviewer. Reusing the within-reviewer order here is
+# exactly the shipped bug — one fast `+1` reporting a clean pass for a set that had not looked.
+eq "$(cls a,b "$N" "$N" "$(rx a +1 "$FRESH")")" "none" \
+   "#185: one fresh '+1' of two declared reviewers folds to none, NOT clean"
+eq "$(cls a,b "$N" "$N" "$(printf '[{"user":{"login":"a"},"content":"+1","created_at":"%s"},{"user":{"login":"b"},"content":"+1","created_at":"%s"}]' "$FRESH" "$FRESH")")" "clean" \
+   "#185: BOTH declared reviewers clean -> clean"
+eq "$(cls a,b "$(rv a CHANGES_REQUESTED)" "$N" "$N")" "rejected" \
+   "#185: a rejection from one wins outright over another's silence"
+eq "$(cls a,b "$(rv b WEIRD)" "$N" "$(rx a +1 "$FRESH")")" "unknown" \
+   "#185: unknown outranks a sibling's clean — fail closed, never arm"
+eq "$(cls a,b "$(rv b APPROVED)" "$N" "$(rx a +1 "$FRESH")")" "clean" \
+   "#185: mixed evidence across surfaces still satisfies the whole set"
+
+# UNDATABLE AND UNORDERABLE RECORDS. A declared reviewer's signal with no `created_at` is malformed,
+# and dropping it would silently read as "that reviewer said nothing" — which on the clean path is a
+# false pass. An unrecognized FORMAT is rejected outright (rc 2) rather than normalized.
+eq "$(cls a "$N" '[{"user":{"login":"a"},"body":"x"}]' "$N")" "unknown" \
+   "classify: a declared reviewer's comment with NO timestamp -> unknown"
+eq "$(cls a "$N" "$N" '[{"user":{"login":"a"},"content":"+1"}]')" "unknown" \
+   "classify: a declared reviewer's '+1' with NO timestamp -> unknown"
+eq "$(cls a "$N" "$(cm a '2026-07-25T04:45:23-04:00')" "$N")" "RC2" \
+   "classify: an unorderable timestamp FORMAT returns rc 2, never a guessed ordering"
+eq "$(cls a "$N" '[{"user":{"login":"nobody"},"body":"x"}]' "$N")" "none" \
+   "classify: an UNDECLARED login's undatable record is ignored, not fatal"
+
+# THE SENTINEL. `ADB_NO_ANCHOR` is what an unestablished anchor degrades to, and it must make every
+# date-scoped signal read as stale while leaving commit-scoped review evidence untouched. An EMPTY
+# anchor would be the fail-open spelling exactly — every non-empty string is `\>` the empty one.
+eq "$(cls a "$N" "$N" "$(rx a +1 "$FRESH")" "$ADB_NO_ANCHOR")" "none" \
+   "sentinel: an unestablished anchor makes a fresh '+1' unprovable -> none, never clean"
+eq "$(cls a "$(rv a APPROVED)" "$N" "$N" "$ADB_NO_ANCHOR")" "clean" \
+   "sentinel: commit-scoped review evidence is unaffected by an unestablished anchor"
+if adb_is_utc_instant "$ADB_NO_ANCHOR"; then ok; else bad "ADB_NO_ANCHOR must itself be an orderable instant"; fi
+
+# The fold's identity: no reviewer classified at all is `none`, never `clean`.
+eq "$(adb_fold_reviewer_classes "")" "none" "fold: an EMPTY class list is none, never clean"
+eq "$(adb_reviewers_in_class "$(printf 'a\tnone\nb\tclean\nc\tnone')" none)" "a c" \
+   "adb_reviewers_in_class names exactly the logins in that class"
+eq "$(adb_reviewers_in_class "$(printf 'a\tclean')" none)" "" \
+   "adb_reviewers_in_class is empty when nobody is in the class"
+# SEVERAL classes at once — pr-watch reports `rejected` and `attention` as one outcome, and joining
+# two separately-fetched lists (either of which may be empty) is what produced a stray double space.
+eq "$(adb_reviewers_in_class "$(printf 'a\trejected\nb\tnone\nc\tattention')" rejected attention)" "a c" \
+   "adb_reviewers_in_class accepts several classes and preserves order"
+eq "$(adb_reviewers_in_class "$(printf 'a\trejected\nb\tnone')" rejected attention)" "a" \
+   "...with no stray separator when only one of the named classes is populated"
+
+# THE `<login> <class>` GRAMMAR IS PARSED FROM THE RIGHT. A login carrying whitespace can never name
+# a real GitHub account and `role-dispatch bots --comparable` rejects the whole declaration for it
+# (18, fail-closed — dropping just the bad entry would SHRINK the set every consumer must satisfy).
+# These pin the belt to that braces: parsed from the LEFT, `foo bar none` yields the non-class
+# "bar none", which ranks as none by accident rather than by rule and makes the diagnostic garbage.
+eq "$(adb_fold_reviewer_classes "$(printf 'foo bar\tnone')")" "none" \
+   "fold: a whitespace-bearing login still yields a REAL class, not a garbled one"
+eq "$(adb_fold_reviewer_classes "$(printf 'foo bar\tclean')")" "clean" \
+   "fold: ...and the TAB split is total, so a clean class is not lost"
+eq "$(adb_reviewers_in_class "$(printf 'foo bar\tnone\nb\tclean')" none)" "foo bar" \
+   "adb_reviewers_in_class recovers the whole login, not its first word"
+# ...and the same login round-trips through the CLASSIFIER, which the space grammar could not do:
+# it split `foo bar` at the delimiter, so the reviewer never matched its own evidence.
+eq "$(cls "foo bar" "$N" "$N" "$(printf '[{"user":{"login":"foo bar"},"content":"+1","created_at":"%s"}]' "$FRESH")")" "clean" \
+   "classify: a whitespace-bearing login matches its OWN evidence under the TAB grammar"
+
 check_summary "common-lib"
