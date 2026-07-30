@@ -204,6 +204,23 @@ eq "$(printf '%s' "$out" | tr '\n' ',')" "chatgpt-codex-connector,my-bot[bot]" \
 set_repo '[reviewers]' 'bots = ["foo[bot]"]'
 eq "$(rd bots --comparable)" "foo[bot]" "bots --comparable PRESERVES a declared '[bot]' suffix"
 
+# BOTH SPELLINGS OF ONE ACCOUNT ARE ONE REVIEWER. The arming guard requires EVERY declared login to
+# have reviewed, so keeping both would make one account two independent requirements — and because a
+# bare `foo` matches either spelling while `foo[bot]` matches only the suffixed one, an account
+# reported bare could never satisfy both and the guard would wedge at "awaiting review" for good.
+# Declaring both used to be harmless and the old docs suggested it, so real manifests carry it.
+set_repo '[reviewers]' 'bots = ["foo", "foo[bot]"]'
+eq "$(rd bots --comparable | tr '\n' ',')" "foo," \
+   "bots --comparable: a declared 'foo[bot]' is subsumed by a declared 'foo'"
+# ...and the suffixed entry survives on its own, where it is the operator's strict choice.
+set_repo '[reviewers]' 'bots = ["foo[bot]", "bar"]'
+eq "$(rd bots --comparable | tr '\n' ',')" "bar,foo[bot]," \
+   "bots --comparable: an unpaired '[bot]' entry is preserved"
+# Subsumption is per-account, not global — an unrelated suffixed login is untouched.
+set_repo '[reviewers]' 'bots = ["foo", "foo[bot]", "baz[bot]"]'
+eq "$(rd bots --comparable | tr '\n' ',')" "baz[bot],foo," \
+   "bots --comparable: subsumption applies only to the matching bare login"
+
 set_repo '[reviewers]' 'bots = []'
 out="$(rd bots --comparable)"; rc=$?
 eq "$out" "" "bots --comparable: [] is the empty set, not an error"

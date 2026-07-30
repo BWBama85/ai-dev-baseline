@@ -363,9 +363,12 @@ for _fn in adb_pr_number adb_pr_slug_check adb_reviewer_match_jq; do
   fact pr-primitives-shared "fixed:$_fn" -- $_prguards
 done
 # The declaration normalizer is reached through role-dispatch's CLI, so the pinned token is the
-# subcommand rather than the function name.
+# subcommand rather than the function name. The two docs that name WHICH reader the merge gate uses are
+# pinned with it: they described `--declared` (the tri-state reader this one wraps) for a while after
+# the guards had moved, and a doc naming the wrong reader is exactly the drift this lint exists for.
 # shellcheck disable=SC2086
-fact pr-primitives-shared fixed:'bots --comparable' -- $_prguards scripts/lib/role-dispatch.sh
+fact pr-primitives-shared fixed:'bots --comparable' -- \
+  $_prguards scripts/lib/role-dispatch.sh base/roles.md docs/roles-and-agents.md
 # The git-origin anchor. state-assert.sh (#138) had the only copy until the guards needed the same
 # defence against the same `GH_REPO` override; the guards reach it through adb_pr_slug_check, so its
 # consumers are the library that defines it and the module that calls it directly.

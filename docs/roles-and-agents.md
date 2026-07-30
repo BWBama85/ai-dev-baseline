@@ -291,7 +291,7 @@ own job:
 | Reader | Question | Unset means |
 |---|---|---|
 | `role-dispatch.sh bots` (`/resolve-pr-threads`) | *whose threads may I auto-resolve?* | the built-in allowlist |
-| `role-dispatch.sh bots --declared` (`pr-review.sh gate`) | *whose review must I wait for?* | **undeclared — fail closed** |
+| `role-dispatch.sh bots --comparable` (`pr-review.sh gate`, `pr-watch.sh`) — wraps `bots --declared` | *whose review must I wait for?* | **undeclared — fail closed** |
 
 An over-broad default is harmless when resolving threads; as a *merge* gate it is exactly wrong.
 Defaulting to the built-in set would make every repo wait for eight bots it does not have.

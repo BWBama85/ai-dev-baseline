@@ -347,6 +347,14 @@ adb_dispatch_bots_declared() {
 # An entry that is ONLY `[bot]` is dropped, which then trips the rejection below rather than becoming
 # a reviewer that can never match. `adb_toml_array` has already trimmed whitespace and dropped empty
 # elements, so the blank-line arm is defence in depth rather than the working case.
+#
+# `foo[bot]` IS SUBSUMED BY `foo` when both are declared, and dropping it is not merely tidiness. The
+# arming guard requires EVERY declared login to have reviewed, so two spellings of one account would
+# become two independent requirements — and since a bare `foo` already matches either spelling while
+# `foo[bot]` matches only the suffixed one, an account reported bare could never satisfy both and the
+# guard would wedge at "awaiting review" permanently. Declaring both spellings used to be harmless
+# (the old normalizer collapsed them) and the old docs actively suggested it, so a repo may well carry
+# such a declaration; keeping the WEAKER entry preserves exactly what the operator asked for.
 adb_dispatch_bots_comparable() {
   local declared drc want
   declared="$(adb_dispatch_bots_declared)"; drc=$?
@@ -363,7 +371,12 @@ adb_dispatch_bots_comparable() {
   want="$(printf '%s\n' "$declared" \
           | tr '[:upper:]' '[:lower:]' \
           | sed -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*\[bot\][[:space:]]*$/d' \
-          | LC_ALL=C sort -u)"
+          | LC_ALL=C sort -u \
+          | awk '{ e[NR] = $0; seen[$0] = 1 }
+                 END { for (i = 1; i <= NR; i++) {
+                         b = e[i]; sub(/\[bot\]$/, "", b)
+                         if (b != e[i] && (b in seen)) continue   # `foo[bot]` is subsumed by `foo`
+                         print e[i] } }')"
 
   # A declaration that survived the manifest reader but normalizes to NOTHING (`bots = ["[bot]"]`) is
   # malformed, not "no reviewers". The operator declared SOMETHING, and silently downgrading that to

@@ -361,7 +361,12 @@ adb_pr_number() {
   case "$v" in
     ''|*[!0-9]*)
       [ -n "$(adb_pr_slug "$v")" ] || return 1
-      case "$v" in *pull/*) n="${v##*pull/}"; n="${n%%[!0-9]*}" ;; *) return 1 ;; esac
+      # The FIRST `/pull/`, matching `adb_pr_slug`'s `%%/pull/*` — the two halves of one parse must
+      # agree on which segment is authoritative. With `##` (the LAST one) they did not:
+      # `.../acme/widget/pull/7?x=/pull/9` yielded the slug `acme/widget` and the number `9`, so the
+      # guard would gate a DIFFERENT pull request in the repository the URL correctly names — which
+      # the cross-repo refusal cannot catch, because the repository is right.
+      case "$v" in *pull/*) n="${v#*pull/}"; n="${n%%[!0-9]*}" ;; *) return 1 ;; esac
       ;;
     *) n="$v" ;;
   esac
@@ -485,7 +490,12 @@ adb_pr_slug_check() {
       "$label" >&2
     return 1
   }
-  if ! printf '%s\n' "$local_slug" | grep -qxF "$got"; then
+  # `--` is load-bearing: without it an observed slug beginning with `-` is parsed as grep OPTIONS,
+  # so grep aborts with a usage dump and the comparison never happens — and the code below then
+  # reports a repository MISMATCH for a test that did not run. Unreachable from the API (a GitHub
+  # owner cannot start with `-`), but this is a shared primitive whose own contract is "validate the
+  # shape, do not trust it", and the harness calls it directly with arbitrary values.
+  if ! printf '%s\n' "$local_slug" | grep -qxF -- "$got"; then
     printf '%s: the reads answered for '\''%s'\'' but this checkout tracks %s — refusing (is GH_REPO set?)\n' \
       "$label" "$got" "$(printf '%s' "$local_slug" | tr '\n' ' ')" >&2
     return 2

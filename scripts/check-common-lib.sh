@@ -711,6 +711,17 @@ eq "$(adb_pr_number 'https://github.com/acme/widget/pull/7')" "7" "adb_pr_number
 eq "$(adb_pr_number 'github.com/other/repo/pull/7')" "7" "adb_pr_number: from a scheme-less URL"
 eq "$(adb_pr_number 'https://github.com/acme/widget/pull/7/files')" "7" "adb_pr_number: from a sub-page URL"
 eq "$(adb_pr_number '12345')" "12345" "adb_pr_number: a multi-digit number"
+# THE TWO HALVES OF ONE PARSE MUST AGREE ON WHICH `/pull/` IS AUTHORITATIVE. `adb_pr_slug` takes the
+# slug before the FIRST one, so the number must come from the first one too. Taking the last instead
+# yielded slug `acme/widget` + number `9` here — the guard would gate a DIFFERENT pull request in the
+# repository the URL correctly names, which the cross-repo refusal cannot catch because the repository
+# is right. Not reachable from a real github.com URL; it is the internal inconsistency that matters.
+eq "$(adb_pr_slug   'https://github.com/acme/widget/pull/7?w=1&x=/pull/9')" "acme/widget" \
+   "adb_pr_slug: a second 'pull/' in a query does not move the slug"
+eq "$(adb_pr_number 'https://github.com/acme/widget/pull/7?w=1&x=/pull/9')" "7" \
+   "adb_pr_number: takes the FIRST 'pull/' segment, agreeing with adb_pr_slug"
+eq "$(adb_pr_number 'https://github.com/a/b/pull/7/pull/8')" "7" \
+   "adb_pr_number: a repeated 'pull/' path does not move the number either"
 # A NON-INTEGER ARGUMENT MUST NAME A REPOSITORY. Taking the digits after `pull/` and nothing else
 # accepts these, which carry no owner/repo — so they reduce to a bare `7` and get answered about
 # whichever repository the caller's reads happen to address.
@@ -827,6 +838,14 @@ for got in "" "acme" "acme/widget/extra" "/widget" "acme/"; do
   eq "$(sc 'https://github.com/other/project/pull/7' "$got")" "1" \
      "slug-check: unreadable metadata outranks a foreign URL ('$got')"
 done
+# A slug beginning with `-` must be COMPARED, not handed to grep as options. Without `--` grep aborted
+# with a usage dump and the comparison never ran, and the code then reported a repository mismatch for
+# a test that had not happened. Unreachable from the API, but the harness calls this primitive directly.
+_dashout="$( cd "$oslug" && adb_pr_slug_check test 7 '' '-x/y' 2>&1 >/dev/null )"
+eq "$(sc '7' '-x/y')" "2" "slug-check: a leading-dash slug is refused as a mismatch"
+hasnt "$_dashout" "invalid option" "slug-check: grep never sees a slug as its own options"
+hasnt "$_dashout" "Usage" "slug-check: no raw grep usage dump reaches the operator"
+
 # An unresolvable checkout is also unverifiable rather than a mismatch — fail closed, both codes
 # distinct. Every remote goes, not just origin: with any remote left the checkout still has an
 # identity, so the honest answer would be 2 (a mismatch) rather than 1 (no anchor at all).

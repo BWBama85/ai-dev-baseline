@@ -208,8 +208,9 @@ matches only `foo[bot]` — so a human account named `foo` can never satisfy a d
 directions matter, and normalizing the *declaration* too was a real fail-open (#173, superseding
 #176). See `docs/roles-and-agents.md`.
 
-**The same key also gates auto-merge (#134).** `role-dispatch.sh bots --declared` reads it as a
-**tri-state with no default** — declared logins / explicit `[]` / undeclared — and
+**The same key also gates auto-merge (#134).** `role-dispatch.sh bots --comparable` reads it — through the
+`--declared` tri-state reader it wraps — as **declared logins / explicit `[]` / undeclared, with no
+default** — declared logins / explicit `[]` / undeclared — and
 `/implement-issue` step 10 refuses to arm `gh pr merge --auto` until every declared reviewer has
 reviewed the PR's **current head commit**. The two readers differ only on *unset*, deliberately:
 a permissive default is harmless when deciding which threads to resolve and is exactly wrong as a
