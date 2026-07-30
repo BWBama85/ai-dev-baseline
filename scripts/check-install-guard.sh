@@ -19,11 +19,10 @@ ROOT="$(pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# Copy the working tree (contents of cwd, dotfiles included) then drop .git for speed. `cp -R .`
-# is portable across macOS/BSD and GNU and copies the current, uncommitted sources.
-repo="$work/repo"; mkdir -p "$repo"
-( cd "$ROOT" && cp -R . "$repo" )
-rm -rf "$repo/.git"
+# Copy the working tree (contents of cwd, dotfiles included) then drop .git for speed — through
+# the shared helper, so the three suites that need a throwaway tree copy cannot drift apart.
+repo="$work/repo"
+check_copy_worktree "$ROOT" "$repo" || { echo "check-install-guard: could not copy the tree" >&2; exit 1; }
 
 # Delete ONE manifest source to simulate a bad/renamed entry: the runtime script statusline.sh.
 # install.sh's manifest still emits it (a fixed entry), so adb_link's guard must fire.

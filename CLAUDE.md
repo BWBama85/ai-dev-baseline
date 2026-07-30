@@ -28,7 +28,7 @@ those. The rules below are specific to this repo's code.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs
    (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
    pr-review · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration ·
-   install-guard · fact-drift · practice-index · release-role · release-skill · install dry-run). Fix red at the root — never push and
+   install-guard · fact-drift · fact-mutation · fact-guard · practice-index · release-role · release-skill · install dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
 
    **One CI step is deliberately not mirrored** (#122, recorded as D13 in
@@ -67,6 +67,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/lib/pr-review.sh` | The **pre-arm review guard** (#134) — has every reviewer this repo declares (`[reviewers] bots`) *signalled a clean pass* for the PR's **current head commit**? `/implement-issue` step 10 asks it before `gh pr merge --auto`, because GitHub gates on checks and a bot reviewer is not one. Reads the same three surfaces and the same shared classifier as `pr-watch.sh`, so the two can no longer disagree about what a signal means; `COMMENTED` is **21** ("review complete, attention required"), not a satisfied review (#167). Deliberately **not** part of `repo-settings.sh`, whose charter is repo settings, not review (`scripts/check-pr-review.sh`); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role · release-skill) |
+| `scripts/check-fact-drift.sh --mutation` · `scripts/check-fact-guard.sh` | The negative half of the anti-drift lint, **proven able to fail** (#213). A `absent:` rule declares the real superseded spellings it catches (`fires:<witness>`); `--mutation` injects each into a **copy** of every pinned file and requires the lint to come back red; `check-fact-guard.sh` drives both against deliberately broken rules so the guard rails are themselves observed failing. Never mutates the working tree |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |
 | `docs/` | design-principles · philosophy · installation · roles · overrides · adding-an-agent · release-goal-convention · repo-settings · roadmap-acceptance |
 

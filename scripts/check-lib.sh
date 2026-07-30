@@ -121,6 +121,24 @@ check_summary() {
 # same "bare origin + local repo wired to it" scaffold. Centralize only the BOILERPLATE; each
 # test keeps its own topology (branch names, origin/HEAD form, merge shape, push sequence).
 
+# check_copy_worktree <src> <dest> — copy a whole working tree (dotfiles included) into <dest>,
+# creating it, then drop the copied `.git`. The ONE home for the throwaway-tree-copy move, now that
+# three suites need it: the installer fail-loud test, the fact-drift mutation mode, and its guard
+# suite. A fourth open-coded copy is how the "faithful copier" details drift — `cp -R .` from
+# inside <src> is deliberate (it takes the CONTENTS, dotfiles included, and preserves symlinks and
+# modes on both BSD and GNU), and `git ls-files | cp` is deliberately NOT used: it needs `-z`,
+# per-file `mkdir -p`, and a policy for tracked-but-deleted paths, and it silently misses anything
+# uncommitted — which is the whole reason these suites copy the tree instead of cloning HEAD.
+#
+# Dropping `.git` is for speed (this repo's is ~27 MB), and it means the copy is NOT a git repo:
+# code under test that shells out to git must tolerate that. Returns non-zero WITHOUT exiting so a
+# `set -u` caller can guard it.
+check_copy_worktree() {
+  mkdir -p "$2" || return 1
+  ( cd "$1" && cp -R . "$2" ) || return 1
+  rm -rf "$2/.git"
+}
+
 # check_git <dir> <git-args...> — run git in <dir> with a fixed throwaway identity and signing
 # OFF, so a contributor whose global config sets commit.gpgsign=true still gets clean, unsigned
 # fixture commits. Use for EVERY commit-producing fixture git call (this is what closes the

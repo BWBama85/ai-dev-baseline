@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# ai-dev-baseline — negative tests for the fact-drift lint's own guard rails (#213).
+#
+# WHY THIS EXISTS. #213 shipped two things whose entire job is to stop a check from passing while
+# checking nothing: the `fires:` witness contract inside `fact()`, and `--mutation`, which injects
+# each witness into a copy of every pinned file and requires the real lint to come back red. Both
+# are guards. A guard's failure mode is SILENCE — it reports exactly what a clean run reports —
+# so shipping them without watching them fail would reproduce, one level up, the defect they were
+# written to remove. `base/practices/self-review.md` states the rule: a new guard is not done
+# until it has been observed failing.
+#
+# HOW IT TESTS. Every case runs against a THROWAWAY COPY of the working tree; the live tree is
+# never touched. That is the other half of #213 — negative-testing the last pin by editing
+# `scripts/lib/pr-review.sh` in place and "restoring" it with `git checkout` destroyed ~40 minutes
+# of uncommitted work, which no reflog could recover. The method is in the same practice file.
+#
+# Most cases replace the real 68-rule set with ONE synthetic rule (between the file's own
+# `# --- FACT:` and `# --- what was actually evaluated` markers). That keeps each case readable —
+# the rule under test is right there in the case — and keeps `--mutation` cases to a single
+# sub-lint instead of 22. The real rule set is exercised for real by `check-fact-drift.sh` and
+# `check-fact-drift.sh --mutation` in selfcheck; this suite is about the machinery around it.
+#
+# The headline case is `historic-bot-pin`: the EXACT pattern that shipped unable to fire
+# (`absent:\[bot\]\$`) against the EXACT idiom it was meant to catch. It must be reported
+# UNFIRABLE, and its corrected form must be accepted — the regression test for #213 itself.
+#
+# Usage: bash scripts/check-fact-guard.sh   (exit 0 = all pass, 1 = a failure)
+
+set -u
+cd "$(dirname "$0")/.." || exit 1
+ROOT="$(pwd)"
+# shellcheck source=/dev/null
+. scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
+
+work="$(mktemp -d)" || { echo "check-fact-guard: cannot create a temp dir" >&2; exit 1; }
+trap 'rm -rf "$work"' EXIT
+
+# ONE copy of the working tree, cloned per case, through check-lib.sh's shared copier. It copies
+# UNCOMMITTED sources — so this suite tests the lint you just edited, not the one at HEAD.
+PRISTINE="$work/pristine"
+check_copy_worktree "$ROOT" "$PRISTINE" || { echo "check-fact-guard: could not copy the tree" >&2; exit 1; }
+
+# fresh — print the path of a brand-new copy of the pristine tree.
+#
+# The unique name comes from `mktemp -d`, NOT from a counter: every call site is `d="$(fresh)"`,
+# which runs this in a SUBSHELL, so an incremented counter never reaches the parent. Every case
+# would then reuse one directory and inherit the previous case's sabotage — which is a silent
+# corruption, since a case that fails for the wrong reason still fails.
+fresh() {
+  local d
+  d="$(mktemp -d "$work/case.XXXXXX")" || return 1
+  check_copy_worktree "$PRISTINE" "$d" || return 1
+  printf '%s' "$d"
+}
+
+# minimal <dir>  (synthetic rule text on stdin) — swap the copy's whole rule set for the text
+# given. Sliced by the file's own section markers with head/tail rather than sed or `awk -v`:
+# every rule under test is dense with backslashes and single quotes, and both of those tools
+# would eat them on the way in.
+minimal() {
+  local d="$1" f synth start end
+  f="$d/scripts/check-fact-drift.sh"
+  synth="$(cat)"
+  start="$(grep -n '^# --- FACT: ' "$f" | head -n1 | cut -d: -f1)"
+  end="$(grep -n '^# --- what was actually evaluated' "$f" | head -n1 | cut -d: -f1)"
+  if [ -z "$start" ] || [ -z "$end" ]; then
+    bad "minimal(): section markers not found in check-fact-drift.sh — this suite's slicing is stale"
+    return 1
+  fi
+  { head -n "$((start - 1))" "$f"; printf '%s\n' "$synth"; tail -n "+$end" "$f"; } > "$f.tmp" \
+    && mv "$f.tmp" "$f"
+}
+
+# run <dir> [args…] — run the copy's lint, capturing merged output in OUT and status in RC.
+OUT=""; RC=0
+run() {
+  local d="$1"; shift
+  OUT="$( cd "$d" && bash scripts/check-fact-drift.sh "$@" 2>&1 )"; RC=$?
+}
+
+# =============================== the control ===================================
+# An untouched copy must pass both modes. Without this, every "it failed" below could be the copy
+# being broken rather than the case under test.
+d="$(fresh)"
+run "$d"
+eq "$RC" 0 "control: a pristine copy passes the lint"
+has "$OUT" "absent rules" "control: the run reports what it evaluated"
+
+# =================== #213's actual defect, both directions ====================
+# The pattern as originally shipped, against the real shell idiom. `\[bot\]\$` asks for a
+# contiguous `[bot]$`; the idiom always backslash-escapes the bracket, so it matched nothing at
+# all and the check was green forever.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact historic-bot-pin 'absent:\[bot\]\$' 'fires:s/\[bot\]$//' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "historic-bot-pin: the pattern that shipped unfirable is rejected"
+has "$OUT" "UNFIRABLE PIN" "historic-bot-pin: named as unfirable, not as generic drift"
+
+# ...and its correction accepted, against BOTH real spellings — the shell form (one backslash)
+# and the jq form (two). A pin witnessed by only one of them would have re-created the defect one
+# spelling narrower.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact fixed-bot-pin 'absent:bot\\*\]\$' 'fires:s/\[bot\]$//' 'fires:sub("\\[bot\\]$"; "")' -- README.md
+RULE
+run "$d"
+eq "$RC" 0 "fixed-bot-pin: the corrected pattern matches both real idioms"
+
+# =========================== the witness contract =============================
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact no-witness 'absent:ZZQQ-superseded' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "an absent: rule with no fires: witness is refused"
+has "$OUT" "declares no fires: witness" "no-witness: says which contract was broken"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact witness-on-positive 'fixed:ai-dev-baseline' 'fires:ai-dev-baseline' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "fires: on a positive rule is a usage error, not silently ignored"
+has "$OUT" "only meaningful on an absent: rule" "witness-on-positive: names the misuse"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact multiline-witness 'absent:ZZQQ' 'fires:one
+two' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "a witness spanning lines is refused (grep is line-oriented)"
+has "$OUT" "witness spans lines" "multiline-witness: names the reason"
+
+# ======================== the degenerate-rule shapes ==========================
+# Each of these is a way a rule asserts NOTHING while looking like a rule.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact empty-needle 'absent:' 'fires:anything' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "an empty pattern is refused (it matches every line of every file)"
+has "$OUT" "empty absent pattern" "empty-needle: names the shape"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact empty-fixed-needle 'fixed:' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "an empty fixed: token is refused too"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact no-separator 'fixed:ai-dev-baseline'
+RULE
+run "$d"
+eq "$RC" 1 "a rule with no '--' is refused"
+has "$OUT" "missing '--'" "no-separator: names the missing separator"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact no-files 'fixed:ai-dev-baseline' --
+RULE
+run "$d"
+eq "$RC" 1 "a rule with no files is refused (it can never fail)"
+has "$OUT" "no files" "no-files: names the shape"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact bad-kind 'bogus:ai-dev-baseline' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "an unknown spec kind is refused"
+has "$OUT" "unknown spec kind" "bad-kind: names the kind"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact no-colon 'ai-dev-baseline' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "a spec with no kind prefix is refused"
+has "$OUT" "malformed spec" "no-colon: names the shape"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact stray-arg 'fixed:ai-dev-baseline' README.md -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "an argument that is neither fires: nor '--' is refused"
+
+# ======================== the empty rule set ==================================
+# The quietest possible green: a truncated file, a sourcing accident, an early exit. Every
+# individual assertion still passes, because there are none.
+d="$(fresh)"
+minimal "$d" </dev/null
+run "$d"
+eq "$RC" 1 "a lint that evaluated no rules at all fails instead of passing"
+has "$OUT" "no rules were evaluated" "empty rule set: says so in as many words"
+
+# Positive rules only — the negative half of the lint silently deleted.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact positives-only 'fixed:ai-dev-baseline' -- README.md
+RULE
+run "$d"
+eq "$RC" 1 "a lint with no absent: rules left fails"
+has "$OUT" "superseded-value half of this lint is gone" "positives-only: names what vanished"
+
+# ============================ the mutation mode ===============================
+# Its control: one synthetic rule, injected and observed going red end to end.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact mutation-control 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+run "$d" --mutation
+eq "$RC" 0 "mutation control: a firable pin is observed going red"
+has "$OUT" "witnesses injected" "mutation control: reports what it injected"
+# The live tree is never the thing mutated. If it were, README.md would now carry the witness.
+hasnt "$(cat "$ROOT/README.md")" "ZZQQ-superseded token" "mutation ran against a COPY, not the working tree"
+
+# A rule whose predicate cannot fire: `req_absent` neutered in the copy. Normal mode still passes
+# (nothing asserts), which is precisely the silence this mode exists to break.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact mutation-dead-predicate 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+printf '\nreq_absent() { :; }\n' >> "$d/scripts/check-lib.sh"
+run "$d"
+eq "$RC" 0 "dead predicate: normal mode cannot see it (this is the silence)"
+run "$d" --mutation
+eq "$RC" 1 "dead predicate: --mutation catches a pin that cannot fire"
+has "$OUT" "cannot fire" "dead predicate: names it as an unfirable pin, not as a crash"
+hasnt "$OUT" "a crash or broken copy" "dead predicate: a green lint is NOT reported as a crash"
+
+# A lint that goes non-zero for a reason that is NOT a drift verdict (a crash, a missing
+# dependency, a corrupt copy). "Any non-zero" would accept it and prove nothing.
+# The sabotage edits the copy's lint, so the OUTER --mutation run inherits the same `exit 3`;
+# what is under test is the message, and that the run does not come back green.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact mutation-wrong-rc 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+printf '\n_guard_rc=$?\n[ "$_guard_rc" -eq 0 ] || exit 3\nexit 0\n' >> "$d/scripts/check-fact-drift.sh"
+run "$d" --mutation
+no "$RC" "--mutation requires exactly rc 1, not merely non-zero"
+has "$OUT" "not a drift verdict" "wrong rc: distinguishes a crash from a verdict"
+
+# A file pinned ONLY by an absent: rule and missing from the tree. `req_absent` is vacuously true
+# on a missing file by design, so normal mode passes; the mutation cannot proceed and says so.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact mutation-missing-file 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- docs/does-not-exist.md
+RULE
+run "$d"
+eq "$RC" 0 "missing pinned file: normal mode is vacuously green (documented behavior)"
+run "$d" --mutation
+eq "$RC" 1 "missing pinned file: --mutation refuses to claim a proof it cannot make"
+has "$OUT" "missing from the tree copy" "missing file: names the path problem"
+
+# A tree that is ALREADY red must not be mutated: every injection would "fail the lint" for a
+# reason having nothing to do with the witness, and the mode would report success.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact mutation-dirty-baseline 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+printf '\nZZQQ-superseded token\n' >> "$d/README.md"
+run "$d" --mutation
+eq "$RC" 1 "--mutation refuses to run against a tree that is already drifting"
+has "$OUT" "PRISTINE tree copy does not pass" "dirty baseline: names why it stopped"
+
+# ===================== the req_absent call-site invariant =====================
+# The witness contract lives in fact(); a direct caller bypasses it entirely.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact callsite-invariant 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+printf '\nreq_absent scripts/check-lib.sh "ZZQQ" stray-caller\n' >> "$d/scripts/check-cleanup.sh"
+run "$d" --mutation
+eq "$RC" 1 "a req_absent caller outside fact() is refused"
+has "$OUT" "called outside fact()" "call-site invariant: names the bypass"
+
+# A MENTION in a comment is not a call — two suites legitimately discuss the helper in prose.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact callsite-comment 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+printf '\n# req_absent is deliberately not used here\n' >> "$d/scripts/check-cleanup.sh"
+run "$d" --mutation
+eq "$RC" 0 "a commented mention of req_absent is not a call site"
+
+# ============================== argument handling =============================
+d="$(fresh)"
+run "$d" --bogus
+eq "$RC" 2 "an unknown mode argument exits 2 rather than silently running normally"
+d="$(fresh)"
+run "$d" --mutation extra
+eq "$RC" 2 "a surplus argument exits 2"
+
+check_summary "check-fact-guard"
