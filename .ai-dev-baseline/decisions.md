@@ -670,7 +670,7 @@ didn't already model, so any residual divergence stays visible and auditable.
 - baseline-issue: #180
 
 ## D18 — a declared reviewer login is matched asymmetrically, and a bare login means "either"
-- date:      2026-07-30
+- date:      2026-07-29
 - category:  project-delta
 - unknown:   `[reviewers] bots` declares reviewer LOGINS, but GitHub reports the same App two ways
              depending on which API answered — GraphQL `foo`, REST `foo[bot]` — and the baseline had
@@ -710,5 +710,5 @@ didn't already model, so any residual divergence stays visible and auditable.
              `foo[bot]`. That fails SAFE (the guard withholds the arm rather than merging) but it is
              real, and the documented examples were changed to the bare form so no shipped default
              depends on it. Closing it needs an identity that is not a login string (an App/account
-             id); tracked in #206.
+             id); tracked in #207.
 - baseline-issue: #173

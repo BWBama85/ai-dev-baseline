@@ -325,7 +325,7 @@ reading API returns, which is why the built-in allowlist and this repo's own man
 **`foo[bot]` is the strict spelling**, and its strictness is against the *observed API spelling*
 rather than a stable App identity: a guard that later reads a different API surface would stop
 satisfying it. That fails safe — the guard withholds the arm rather than merging — but it is real,
-and closing it needs an identity that is not a login string (tracked in #206).
+and closing it needs an identity that is not a login string (tracked in #207).
 
 > **Why not normalize both sides?** Because that is lossy in the dangerous direction. Stripping
 > `[bot]` from your *declaration* too meant `bots = ["foo[bot]"]` was also satisfied by a **human

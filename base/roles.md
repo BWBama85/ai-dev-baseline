@@ -193,7 +193,7 @@ is cleared by `/resolve-pr-threads` — so it has its own manifest home, `[revie
 # /resolve-pr-threads auto-resolves ONLY threads whose author login is in this allowlist.
 #   unset → the built-in default set of common review bots
 #   []    → disable bot-thread auto-resolution entirely
-bots = ["chatgpt-codex-connector", "gemini-code-assist[bot]", "copilot[bot]"]
+bots = ["chatgpt-codex-connector", "gemini-code-assist", "copilot"]
 ```
 
 `role-dispatch.sh bots` reads this (repo → global → the built-in default allowlist) and

@@ -680,8 +680,8 @@ for good in "acme/widget" "a/b" "acme.foo/widget-1"; do
 done
 # Each rejection is a real input that reached one of the three callers: a bare host, a deeper URL
 # path, the leading-slash form `https://github.com/pull/7` parses to, and an empty half.
-for bad in "" "acme" "acme/widget/extra" "/widget" "acme/" "/" "a//b"; do
-  if adb_is_repo_slug "$bad"; then bad "adb_is_repo_slug rejects '$bad'"; else ok; fi
+for v in "" "acme" "acme/widget/extra" "/widget" "acme/" "/" "a//b"; do
+  if adb_is_repo_slug "$v"; then bad "adb_is_repo_slug rejects '$v'"; else ok; fi
 done
 
 # --- adb_pr_slug: three URL forms, case-folded, shape-checked ----------------------------------
@@ -714,11 +714,11 @@ eq "$(adb_pr_number '12345')" "12345" "adb_pr_number: a multi-digit number"
 # A NON-INTEGER ARGUMENT MUST NAME A REPOSITORY. Taking the digits after `pull/` and nothing else
 # accepts these, which carry no owner/repo — so they reduce to a bare `7` and get answered about
 # whichever repository the caller's reads happen to address.
-for bad in "" "0" "-3" "abc" "pull/7" "https://github.com/pull/7" \
-           "https://github.com/acme/widget/issues/7" "7abc" "--pr"; do
-  out="$(adb_pr_number "$bad" 2>/dev/null)"; rc=$?
-  no "$rc" "adb_pr_number rejects '$bad'"
-  eq "$out" "" "adb_pr_number prints nothing for '$bad'"
+for v in "" "0" "-3" "abc" "pull/7" "https://github.com/pull/7" \
+         "https://github.com/acme/widget/issues/7" "7abc" "--pr"; do
+  out="$(adb_pr_number "$v" 2>/dev/null)"; rc=$?
+  no "$rc" "adb_pr_number rejects '$v'"
+  eq "$out" "" "adb_pr_number prints nothing for '$v'"
 done
 
 # --- adb_git_origin_slug: the anchor no gh variable can move ------------------------------------
@@ -749,11 +749,64 @@ for u in "https://github.com/widget" "https://github.com/a/b/c" "not-a-url"; do
   no "$rc" "adb_git_origin_slug fails closed on '$u'"
   eq "$out" "" "adb_git_origin_slug prints nothing for '$u'"
 done
-# No origin at all -> non-zero and silent, which every caller maps to its own "unreadable".
+# No remote at all -> non-zero and silent, which every caller maps to its own "unreadable".
 git -C "$oslug" remote remove origin 2>/dev/null
 out="$(cd "$oslug" && adb_git_origin_slug 2>/dev/null)"; rc=$?
-no "$rc" "adb_git_origin_slug fails closed with no origin remote"
-eq "$out" "" "adb_git_origin_slug prints nothing with no origin remote"
+no "$rc" "adb_git_origin_slug fails closed with no remotes"
+eq "$out" "" "adb_git_origin_slug prints nothing with no remotes"
+# A single remote under ANOTHER name still identifies the checkout — `origin` is a convention, not a
+# requirement, and a clone that only has `upstream` is an ordinary layout.
+git -C "$oslug" remote add upstream https://github.com/junegunn/fzf.git
+eq "$(cd "$oslug" && adb_git_origin_slug)" "junegunn/fzf" \
+   "adb_git_origin_slug falls back to the SOLE remote when there is no origin"
+# ...but with several remotes and no origin there is no single answer, and picking one is a guess.
+git -C "$oslug" remote add fork https://github.com/me/fzf.git
+out="$(cd "$oslug" && adb_git_origin_slug 2>/dev/null)"; rc=$?
+no "$rc" "adb_git_origin_slug refuses to pick among several remotes with no origin"
+eq "$out" "" "adb_git_origin_slug prints nothing when the single answer is ambiguous"
+
+# --- adb_git_repo_slugs: the anchor SET, which is what a cross-check needs ----------------------
+# Reading only `origin` was a real regression, verified against both ordinary layouts below: in a FORK
+# clone the pull request being gated lives on `upstream`, so an origin-only anchor returns a
+# confidently readable, confidently WRONG slug and the guard emits a FALSE refusal. Membership in the
+# remote set is the honest question, and it still refuses a repository the checkout does not track.
+fslug="$work/forkslug"; mkdir -p "$fslug"; git init -q "$fslug"
+git -C "$fslug" remote add origin   https://github.com/me/fzf.git
+git -C "$fslug" remote add upstream git@github.com:junegunn/fzf.git
+eq "$(cd "$fslug" && adb_git_repo_slugs | tr '\n' ',')" "junegunn/fzf,me/fzf," \
+   "adb_git_repo_slugs lists every remote's slug, sorted and de-duplicated"
+# `origin` still wins for the single-slug accessor — a caller passing `gh --repo` wants one answer.
+eq "$(cd "$fslug" && adb_git_origin_slug)" "me/fzf" "adb_git_origin_slug still prefers origin"
+# Duplicates collapse (a `push`/`fetch` pair naming one repo is not two repos).
+git -C "$fslug" remote add mirror https://github.com/ME/FZF.git
+eq "$(cd "$fslug" && adb_git_repo_slugs | tr '\n' ',')" "junegunn/fzf,me/fzf," \
+   "adb_git_repo_slugs de-duplicates case-insensitively"
+# A remote that does not resolve to a PAIR contributes nothing rather than a junk slug.
+git -C "$fslug" remote add weird "file:///tmp"
+eq "$(cd "$fslug" && adb_git_repo_slugs | tr '\n' ',')" "junegunn/fzf,me/fzf," \
+   "adb_git_repo_slugs skips a remote that is not an owner/repo pair"
+# NOT host-filtered, and that is deliberate rather than an oversight: GHES lives on arbitrary
+# hostnames, so "is this host GitHub?" has no local answer. A path-shaped remote that happens to look
+# like `a/b` therefore DOES land in the set — harmlessly, because the value it is compared against is
+# `base.repo.full_name` from the GitHub API, which can only ever name a real GitHub repository.
+git -C "$fslug" remote add pathy "../sibling"
+eq "$(cd "$fslug" && adb_git_repo_slugs | grep -c .)" "3" \
+   "adb_git_repo_slugs keeps a path-shaped pair (host-filtering is not locally decidable)"
+git -C "$fslug" remote remove pathy; git -C "$fslug" remote remove weird
+
+# --- the fork and upstream-only layouts, through the cross-check --------------------------------
+# THE REGRESSION, pinned. Both of these worked before the anchor existed and must work now.
+fsc() { ( cd "$1" && adb_pr_slug_check test 7 "$2" "$3" >/dev/null 2>&1; echo $? ); }
+eq "$(fsc "$fslug" 7 'junegunn/fzf')" "0" \
+   "fork clone: a PR on UPSTREAM verifies (an origin-only anchor called this a different repository)"
+eq "$(fsc "$fslug" 7 'me/fzf')" "0" "fork clone: a PR on the fork itself also verifies"
+# ...and the hole the anchor exists for is still closed: GH_REPO names a repo in NOBODY's remote set.
+eq "$(fsc "$fslug" 7 'cli/cli')" "2" "fork clone: a read that answered for an UNTRACKED repo is still refused"
+uslug="$work/upstreamonly"; mkdir -p "$uslug"; git init -q "$uslug"
+git -C "$uslug" remote add upstream https://github.com/junegunn/fzf.git
+eq "$(fsc "$uslug" 7 'junegunn/fzf')" "0" \
+   "upstream-only clone: verifies (an origin-only anchor had no anchor at all here)"
+eq "$(fsc "$uslug" 7 'cli/cli')" "2" "upstream-only clone: an untracked repo is still refused"
 
 # --- adb_pr_slug_check: the cross-check, and its ORDER -----------------------------------------
 mk_origin "https://github.com/acme/widget.git"
@@ -774,9 +827,11 @@ for got in "" "acme" "acme/widget/extra" "/widget" "acme/"; do
   eq "$(sc 'https://github.com/other/project/pull/7' "$got")" "1" \
      "slug-check: unreadable metadata outranks a foreign URL ('$got')"
 done
-# An unresolvable checkout is also unverifiable rather than a mismatch — fail closed, both codes distinct.
-git -C "$oslug" remote remove origin 2>/dev/null
-eq "$(sc '7' 'acme/widget')" "1" "slug-check: no origin remote -> unverifiable (1), never verified"
+# An unresolvable checkout is also unverifiable rather than a mismatch — fail closed, both codes
+# distinct. Every remote goes, not just origin: with any remote left the checkout still has an
+# identity, so the honest answer would be 2 (a mismatch) rather than 1 (no anchor at all).
+for r in $(git -C "$oslug" remote); do git -C "$oslug" remote remove "$r"; done
+eq "$(sc '7' 'acme/widget')" "1" "slug-check: no remotes at all -> unverifiable (1), never verified"
 # Diagnostics go to stderr under the caller's label, and stdout stays empty (callers print SHAs there).
 mk_origin "https://github.com/acme/widget.git"
 _scout="$( cd "$oslug" && adb_pr_slug_check mylabel 7 'https://github.com/other/project/pull/7' 'acme/widget' 2>/dev/null )"

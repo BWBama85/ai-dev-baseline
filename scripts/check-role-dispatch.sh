@@ -224,15 +224,32 @@ set_repo '[reviewers]' 'bots = ["[bot]"]'
 rd bots --comparable >/dev/null 2>&1
 eq "$?" "18" "a declaration that normalizes to nothing is 18, never the [] disable"
 
-# THE TRI-STATE READER'S OWN CONTRACT MUST NOT MOVE. `adb_dispatch_bots` treats status 2 as malformed
-# and ANY OTHER non-zero as "unset — emit the built-in default allowlist", so teaching the reader to
-# return 18 would turn a malformed [reviewers] bots into the PERMISSIVE default set for
-# /resolve-pr-threads. That is why --comparable is a wrapper rather than a flag on the reader.
+# THE TRI-STATE READER'S OWN CONTRACT MUST NOT MOVE. `adb_dispatch_bots` maps the reader's statuses,
+# so teaching the reader to return 18 would change what the DEFAULT reader does — and that reader
+# decides which threads /resolve-pr-threads may auto-resolve. That is why --comparable is a wrapper
+# rather than a flag on the reader.
 set_repo '[reviewers]' 'bots = "my-bot[bot]"'
 rd bots --declared >/dev/null 2>&1
 eq "$?" "2" "--comparable's 17/18 did not leak into --declared's 0/2/3 contract"
 rd bots >/dev/null 2>&1
 eq "$?" "2" "a malformed declaration is still REJECTED by the plain reader, not defaulted"
+
+# ...and the mapping is EXHAUSTIVE, which it was not. It read "2 is malformed, 0 is authoritative,
+# anything else means unset — emit the defaults", so ANY future status from the reader would have
+# silently become the permissive built-in allowlist. Only 3 means "not declared anywhere". Asserted by
+# sourcing the library and overriding the reader, because no manifest can produce an unexpected status
+# — which is exactly why the arm was easy to get wrong and impossible to notice.
+clr_repo; clr_global
+_unexpected="$( cd "$REPO" && HOME="$GHOME" bash -c '
+  . "$1" 2>/dev/null
+  adb_dispatch_bots_declared() { return 9; }
+  adb_dispatch_bots >/dev/null 2>&1; echo $?' _ "$RD" )"
+eq "$_unexpected" "9" "an UNEXPECTED reader status is refused, never defaulted to the built-in allowlist"
+_undeclared="$( cd "$REPO" && HOME="$GHOME" bash -c '
+  . "$1" 2>/dev/null
+  adb_dispatch_bots_declared() { return 3; }
+  adb_dispatch_bots 2>/dev/null | grep -c .' _ "$RD" )"
+if [ "$_undeclared" -gt 0 ]; then ok; else bad "status 3 (undeclared) must still yield the default allowlist"; fi
 clr_repo; clr_global
 
 # ============================ invoke (PATH-stubbed agents) ============================

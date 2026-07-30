@@ -411,10 +411,10 @@ pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":{"repo":null}}'
 g gate --pr 7;    eq "$RC_" "20" "an explicitly null base repo -> 20"
 # A slug that arrives but is not an owner/repo PAIR is a broken response, and must be reported as
 # one — comparing it would call a malformed read "a different repository".
-for bad in '"acme"' '"acme/widget/extra"' '"/widget"' '"acme/"'; do
-  pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":{"repo":{"full_name":'"$bad"'}}}'
+for v in '"acme"' '"acme/widget/extra"' '"/widget"' '"acme/"'; do
+  pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":{"repo":{"full_name":'"$v"'}}}'
   g gate --pr 7
-  eq "$RC_" "20" "a base repo slug of $bad is unreadable, not a repo mismatch"
+  eq "$RC_" "20" "a base repo slug of $v is unreadable, not a repo mismatch"
 done
 pr_fx
 
@@ -424,7 +424,7 @@ pr_fx
 # `cli/cli` from a directory that is not a repository at all). The anchor is therefore the CHECKOUT's
 # git origin, which no gh variable can move. Simulated here the only way a stub can: the reads answer
 # for a repository that is not this checkout's.
-pr_fx "$HEAD_SHA" ; printf '%s\n' '{"head":{"sha":"'"$HEAD_SHA"'"},"base":{"repo":{"full_name":"other/project"}}}' > "$S/pr.json"
+pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":{"repo":{"full_name":"other/project"}}}'
 review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "2" "a bare number whose reads answered for ANOTHER repo is refused (the GH_REPO class)"

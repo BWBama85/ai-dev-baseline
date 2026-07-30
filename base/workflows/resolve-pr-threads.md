@@ -44,7 +44,7 @@ default set covers the common GitHub review bots:
 > genuinely has no suffix), and `gh api users/gemini-code-assist` returns a real **User** account —
 > so "can never match a human login" was false as written. The exposure is bounded (an unwanted
 > *thread resolution*, not a merge) and it is not this workflow's to fix: whether the bare defaults
-> should be dropped is tracked in #207. The arming guards are separate and stricter — see
+> should be dropped is tracked in #208. The arming guards are separate and stricter — see
 > `base/roles.md` on `foo` vs `foo[bot]` (#173).
 
 **Out of scope:** threads authored by humans (the repo owner or any other user). Never auto-resolve those — they require human-to-human discussion. If the only unresolved threads are human-authored, this skill reports them and exits without action.

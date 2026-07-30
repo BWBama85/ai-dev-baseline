@@ -105,7 +105,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     expansion (verified: `GH_REPO=cli/cli gh api 'repos/{owner}/{repo}'` answers `cli/cli` from a
     directory that is not a repository). A bare number names no repository, so nothing in the
     argument could catch it — and `/resolve-pr-threads --watch` passes exactly that form. Both guards
-    now anchor to git's `origin`, which no `gh` variable can move.
+    now anchor to the set of repositories the checkout's **git remotes** name, which no `gh`
+    variable can move. Membership rather than equality with `origin`: in a fork clone the pull
+    request lives on `upstream`, so an origin-only anchor manufactures a *false* refusal — and a
+    clone whose only GitHub remote is named `upstream` had no anchor at all. Both are ordinary
+    layouts, and `docs/design-principles.md` §2 rules out hardcoding a remote *name* in a primitive
+    shipped into projects the baseline has never seen.
   - **Reviewer identity is matched asymmetrically** (D18). Both modules stripped a trailing `[bot]`
     from the API login *and* from the declaration, which meant `bots = ["foo[bot]"]` was satisfied by
     a **human account literally named `foo`** — and reactions are publicly writable, so on the
@@ -117,7 +122,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - Documented in `docs/roles-and-agents.md`, `base/roles.md` and `templates/agents.toml`, whose
     examples move to the bare spelling. `resolve-pr-threads.md`'s claim that its allowlist "can
     **never** match a human login" is corrected: an exact allowlist matches whatever account bears
-    that login, and two built-in defaults are bare (bounded to thread resolution, not merges; #207).
+    that login, and two built-in defaults are bare (bounded to thread resolution, not merges; #208).
 
 - **The `/implement-issue` run marker is owned by a session, not by a checkout** (#180, D17).
   `implement-issue-gate.sh` decided whether the active-run marker was its own by comparing branch

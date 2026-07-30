@@ -232,14 +232,24 @@ EOF
 # Defined in terms of the tri-state reader below, so "the two differ ONLY on unset" is true by
 # construction rather than by two copies of the parse agreeing. One home for what a valid
 # `[reviewers] bots` is — and for the message that rejects an invalid one.
+# The status handling is EXHAUSTIVE on purpose (#173). It used to read "2 is malformed, 0 is
+# authoritative, anything else means unset — emit the defaults", so any future status from the reader
+# would have silently become the permissive built-in allowlist, in the code that decides which threads
+# may be auto-resolved. Only 3 means "not declared anywhere"; an unrecognized status is refused rather
+# than defaulted. This is also why `--comparable` below is a WRAPPER rather than a flag on the reader:
+# the reader's 0/2/3 contract has to stay exactly that.
 adb_dispatch_bots() {
   local out rc
   out="$(adb_dispatch_bots_declared)"; rc=$?
-  [ "$rc" -ne 2 ] || return 2            # malformed: already reported by the reader
-  if [ "$rc" -eq 0 ]; then               # declared — even as [] — is authoritative
-    [ -z "$out" ] || printf '%s\n' "$out"
-    return 0
-  fi
+  case "$rc" in
+    0) [ -z "$out" ] || printf '%s\n' "$out"   # declared — even as [] — is authoritative
+       return 0 ;;
+    2) return 2 ;;                              # malformed: already reported by the reader
+    3) ;;                                       # not declared anywhere -> the default set below
+    *) printf 'role-dispatch: unexpected status %s from the [reviewers] bots reader — refusing to fall back to the default allowlist\n' \
+         "$rc" >&2
+       return "$rc" ;;
+  esac
   printf '%s\n' \
     'chatgpt-codex-connector' \
     'gemini-code-assist[bot]' 'gemini-code-assist' \

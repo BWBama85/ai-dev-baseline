@@ -370,25 +370,12 @@ adb_pr_number() {
   printf '%s' "$n"
 }
 
-# adb_git_origin_slug — this checkout's `owner/repo`, derived from GIT's own remote so no gh
-# environment override can move it. Handles the three URL shapes git emits: scp-style
-# `git@host:owner/repo`, `https://host/owner/repo`, and `ssh://git@host/owner/repo`, each with an
-# optional `.git`. Returns non-zero (printing nothing) when there is no parseable `origin` — which
-# fails closed at every caller.
-#
-# ASKING GIT IS THE POINT. `gh api repos/{owner}/{repo}/...` expands its placeholders through gh,
-# and the documented `GH_REPO` environment variable overrides that expansion: verified live,
-# `GH_REPO=cli/cli gh api 'repos/{owner}/{repo}'` answers `cli/cli` from a directory that is not a
-# repository at all. An identity call made through gh (`adb_repo_slug`, `gh repo view`) honors the
-# same override and would simply agree with itself, so it can never be the anchor. Git cannot be
-# redirected by a gh variable, and costs no network round trip.
-#
-# Only `origin` is read. A checkout whose GitHub remote is named something else has no anchor here
-# and its callers refuse rather than guess — the safe direction, and the same rule state-assert.sh
-# has shipped since #138 (this function is that one, promoted out of it).
-adb_git_origin_slug() {
-  local url
-  url="$(git remote get-url origin 2>/dev/null)" || return 1
+# _adb_remote_url_slug <git-remote-url> — the `owner/repo` a git remote URL names, case-folded, or
+# nothing. Handles the three URL shapes git emits: scp-style `git@host:owner/repo`,
+# `https://host/owner/repo`, and `ssh://git@host/owner/repo`, each with an optional `.git` and an
+# optional trailing slash. The host is discarded, so a GHES URL yields the same pair as github.com.
+_adb_remote_url_slug() {
+  local url="${1:-}"
   [ -n "$url" ] || return 1
   url="${url%.git}"; url="${url%/}"
   case "$url" in
@@ -396,7 +383,62 @@ adb_git_origin_slug() {
     *:*)   url="${url#*:}" ;;
   esac
   adb_is_repo_slug "$url" || return 1
-  printf '%s' "$url"
+  printf '%s' "$url" | tr '[:upper:]' '[:lower:]'
+}
+
+# adb_git_repo_slugs — EVERY `owner/repo` this checkout's git remotes name, case-folded, one per
+# line, de-duplicated. Non-zero (printing nothing) when no remote resolves to a pair.
+#
+# ASKING GIT IS THE POINT. `gh api repos/{owner}/{repo}/...` expands its placeholders through gh, and
+# the documented `GH_REPO` environment variable overrides that expansion: verified live,
+# `GH_REPO=cli/cli gh api 'repos/{owner}/{repo}'` answers `cli/cli` from a directory that is not a
+# repository at all. An identity call made through gh (`adb_repo_slug`, `gh repo view`) honors the
+# same override and would simply agree with itself, so it can never be the anchor. Git config cannot
+# be redirected by a gh variable, and costs no network round trip.
+#
+# THE SET, NOT `origin`, IS THE RIGHT ANCHOR for "was this read about a repository I am working on?",
+# and reading only `origin` was a real regression: in a FORK clone (`origin` = your fork, `upstream` =
+# the project) the pull request being gated lives on `upstream`, so an origin-only anchor returns a
+# confidently readable, confidently WRONG slug and the guard emits a false refusal. A checkout whose
+# only GitHub remote is named `upstream` failed even harder — no anchor at all. Both layouts are
+# ordinary, both worked before the anchor existed, and `docs/design-principles.md` §2 is explicit that
+# a mechanism must work for a project the baseline has never seen: a remote NAME is exactly the
+# known-layout hardcode that rules out.
+#
+# Membership still closes the hole it was added for. `GH_REPO=other/project` names a repository that
+# is in nobody's remote set, so it is refused; what is accepted is only a repository this checkout
+# actually tracks.
+#
+# Deliberately NOT consulted: `gh repo set-default` records `remote.<name>.gh-resolved`, but its
+# common value is the literal `base`, which names that remote's PARENT — a repository git cannot
+# resolve without the network. Reading it would therefore either add the round trip this function
+# exists to avoid, or silently resolve a fork to itself.
+adb_git_repo_slugs() {
+  local line url slug out=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    url="${line#* }"                       # `remote.<name>.url <url>` -> <url>
+    slug="$(_adb_remote_url_slug "$url")" || continue
+    out="$out$slug
+"
+  done <<EOF
+$(git config --get-regexp '^remote\..*\.url$' 2>/dev/null)
+EOF
+  [ -n "$out" ] || return 1
+  printf '%s' "$out" | LC_ALL=C sort -u
+}
+
+# adb_git_origin_slug — ONE `owner/repo` for this checkout, for a caller that must name a single
+# repository (`gh --repo <slug>`). `origin` when it resolves, else the sole GitHub remote when there
+# is exactly one; non-zero when neither holds, because picking arbitrarily from several is a guess.
+# Same git-only anchor as the set above — see there for why gh cannot answer this.
+adb_git_origin_slug() {
+  local slug slugs
+  slug="$(_adb_remote_url_slug "$(git remote get-url origin 2>/dev/null)")" \
+    && { printf '%s' "$slug"; return 0; }
+  slugs="$(adb_git_repo_slugs)" || return 1
+  [ "$(printf '%s\n' "$slugs" | grep -c .)" -eq 1 ] || return 1
+  printf '%s' "$slugs"
 }
 
 # adb_pr_slug_check <label> <pr-number> <pr-argument> <observed-slug> — prove that a caller's reads
@@ -434,15 +476,18 @@ adb_pr_slug_check() {
   # carries no slug and so skips every comparison below — is redirected wholesale by `GH_REPO`, and
   # the guard reports on another project's #7 with no way to tell. `/resolve-pr-threads --watch`
   # passes exactly that bare form.
-  local_slug="$(adb_git_origin_slug)" || {
-    printf '%s: cannot resolve this checkout'\''s GitHub repository from git remote '\''origin'\'' — refusing to answer\n' \
+  #
+  # The test is MEMBERSHIP in the checkout's remote set, not equality with `origin`: in a fork clone
+  # the pull request lives on `upstream`, so an origin-only anchor manufactures a false refusal. See
+  # adb_git_repo_slugs.
+  local_slug="$(adb_git_repo_slugs)" || {
+    printf '%s: cannot resolve this checkout'\''s GitHub repository from any git remote — refusing to answer\n' \
       "$label" >&2
     return 1
   }
-  local_slug="$(printf '%s' "$local_slug" | tr '[:upper:]' '[:lower:]')"
-  if [ "$got" != "$local_slug" ]; then
-    printf '%s: the reads answered for '\''%s'\'' but this checkout is '\''%s'\'' — refusing (is GH_REPO set?)\n' \
-      "$label" "$got" "$local_slug" >&2
+  if ! printf '%s\n' "$local_slug" | grep -qxF "$got"; then
+    printf '%s: the reads answered for '\''%s'\'' but this checkout tracks %s — refusing (is GH_REPO set?)\n' \
+      "$label" "$got" "$(printf '%s' "$local_slug" | tr '\n' ' ')" >&2
     return 2
   fi
 
@@ -464,9 +509,17 @@ adb_pr_slug_check() {
 #
 # A jq `def` rather than a shell function because every caller asks it INSIDE a filter over an
 # array: a shell predicate would fork once per review. It is a constant string — declarations reach
-# jq through `--argjson`, never concatenated into the program source. (The scalar-accessor argument
-# `adb_actions_app_slug` makes does not apply: its third consumer is workflow prose that can receive
-# a value but never source a library. Both consumers here are shell libraries beside this file.)
+# jq through `--argjson`, never concatenated into the program source.
+#
+# HOW THIS DIFFERS FROM `adb_actions_app_slug`, whose header argues for a scalar accessor OVER a
+# shared jq predicate: both of THIS function's callers are shell libraries beside this file, so a
+# `def` reaches them. But the distinction is narrower than "there is no prose consumer", and stating
+# it loosely would be wrong: `base/workflows/resolve-pr-threads.md` asks a related question about the
+# SAME manifest key, in agent-pasted prose, and builds its own anchored-alternation regex to do it. It
+# is not blocked by "cannot source a library" — it already shells out to role-dispatch — so the form
+# that would serve all three consumers is a REGEX, not a `def`. That unification is deliberately not
+# done here because it would CHANGE what that workflow auto-resolves (a bare login would start
+# matching the suffixed spelling), which is a behavioural decision rather than a refactor: #208.
 #
 # THE MATCH IS ASYMMETRIC, AND THAT IS THE WHOLE POINT (#173, superseding #176). The same GitHub App
 # is spelled two ways depending on which API answered — GraphQL reports `foo`, REST reports
@@ -488,7 +541,7 @@ adb_pr_slug_check() {
 # makes it strictly asymmetric: stripping would let `foo[bot][bot]` satisfy a declared `foo[bot]`
 # through the same one-suffix rule the strict form exists to deny.
 #
-# WHAT A BARE DECLARATION MEANS IS THEREFORE "EITHER", DELIBERATELY (recorded as D17). Bare is the
+# WHAT A BARE DECLARATION MEANS IS THEREFORE "EITHER", DELIBERATELY (recorded as D18). Bare is the
 # portable spelling — it matches whichever form the reading API returns — and it is what this repo
 # and the built-in allowlist already declare, so the two guards keep working across the GraphQL/REST
 # split. The `[bot]` form is the STRICT one, and its strictness is against the observed API
@@ -502,14 +555,16 @@ adb_pr_slug_check() {
 # future consumer passing a raw declaration would then match NOTHING, and "matches nothing" wedges a
 # guard at "awaiting review" forever. That is the safe direction and therefore the silent one, which
 # makes it exactly the hidden precondition a shared primitive must not carry.
+# `printf` rather than a `cat` heredoc: the program is a compile-time constant, and bash 3.2 backs a
+# heredoc with a real temp file plus a `cat` exec. This is called per declared reviewer in one caller,
+# so it is the per-element class rather than the per-poll class.
 adb_reviewer_match_jq() {
-  cat <<'JQ'
-def adb_declared_reviewer($who):
-  (ascii_downcase) as $a
-  | any($who[]; ascii_downcase as $d
-      | ($a == $d)
-        or ((($d | endswith("[bot]")) | not) and ($a == $d + "[bot]")));
-JQ
+  printf '%s\n' \
+    'def adb_declared_reviewer($who):' \
+    '  (ascii_downcase) as $a' \
+    '  | any($who[]; ascii_downcase as $d' \
+    '      | ($a == $d)' \
+    '        or ((($d | endswith("[bot]")) | not) and ($a == $d + "[bot]")));'
 }
 
 # --- git ---------------------------------------------------------------------

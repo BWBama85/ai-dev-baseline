@@ -20,7 +20,8 @@
 #   2b. REPOSITORY IDENTITY. Every read addresses `repos/{owner}/{repo}`, so the detector can be
 #      pointed at another project by a URL argument naming one, or — when the argument is the bare
 #      number `/resolve-pr-threads --watch` passes — by `GH_REPO` redirecting gh's own expansion.
-#      Both are refused, and the anchor is git's `origin`, which no gh variable can move.
+#      Both are refused, and the anchor is the set of repositories the checkout's git remotes name —
+#      which no gh variable can move, and which accepts a fork or upstream-only layout.
 #   3. THERE ARE THREE SURFACES, AND THEY ARE ORDERED. The connector has two operating modes and
 #      the repo does not pick which it gets: WITHOUT a Codex Cloud environment it posts a review
 #      object (+ inline threads) for findings and a bare `+1` reaction for a clean pass; WITH one it
@@ -483,9 +484,9 @@ w observe --pr 1;  rc 20 "unreadable: an explicitly null base repo -> 20"
 # A slug that ARRIVES but is not an owner/repo PAIR is a broken response and must be reported as one.
 # Comparing it instead would call a malformed read "a different repository" — a confident answer about
 # the wrong question.
-for bad in '"acme"' '"acme/widget/extra"' '"/widget"' '"acme/"'; do
-  pr_fx_raw "{\"head\":{\"sha\":\"$HEAD_SHA\"},\"state\":\"open\",\"base\":{\"repo\":{\"full_name\":$bad}}}"
-  w observe --pr 1;  rc 20 "unreadable: a base repo slug of $bad is malformed, not a repo mismatch"
+for v in '"acme"' '"acme/widget/extra"' '"/widget"' '"acme/"'; do
+  pr_fx_raw "{\"head\":{\"sha\":\"$HEAD_SHA\"},\"state\":\"open\",\"base\":{\"repo\":{\"full_name\":$v}}}"
+  w observe --pr 1;  rc 20 "unreadable: a base repo slug of $v is malformed, not a repo mismatch"
 done
 pr_fx_raw '{ not json at all'
 w observe --pr 1;  rc 20 "unreadable: an unparseable PR object -> 20"

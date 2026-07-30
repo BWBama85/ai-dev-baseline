@@ -50,7 +50,8 @@
 # `foo[bot]` is never satisfied by a human account named `foo` — lives once in common.sh as
 # `adb_reviewer_match_jq`, and the declaration is normalized once by `role-dispatch.sh bots
 # --comparable` (#173, superseding #176). Both were duplicated here and in pr-watch.sh, and the
-# duplicate stripped the DECLARATION as well as the API login, which is the fail-open that removed.
+# duplicate stripped the DECLARATION as well as the API login, which is the fail-open that removed
+# a human account's inability to satisfy a declared App.
 #
 # What this file must never grow: it does not wait, poll, retry, resolve threads, or merge. A PR
 # watch that waits for the review and then arms is issue #49; this is the cheap guard that stops
@@ -89,7 +90,7 @@ OPT_PR=""
 # --- the guard -------------------------------------------------------------------------------
 
 cmd_gate() {
-  local n drc want head pjson pfields reviews rjson kinds gotslug src pending="" rejected=""
+  local n drc want head pjson pfields reviews rjson kinds gotslug src match pending="" rejected=""
 
   [ -n "$OPT_PR" ] || { echo "pr-review: gate requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
@@ -130,8 +131,9 @@ cmd_gate() {
   # `gh … | jq` pipeline from reporting the parser's success for the reader's failure.
   pjson="$(gh api "repos/{owner}/{repo}/pulls/$n" 2>/dev/null)" \
     || { echo "pr-review: could not read PR #$n — refusing to arm" >&2; return 20; }
-  # One jq pass for both fields this object is read for. The slug is case-folded inside it, so the
-  # comparison below needs no second `tr` over the same value.
+  # One jq pass for both fields this object is read for. The slug is case-folded inside it; the
+  # shared cross-check folds it again rather than trusting that, because a primitive with two callers
+  # must not carry a precondition one of them could quietly stop meeting.
   #
   # CAPTURE FIRST, then split, and CHECK THE STATUS. jq emits `.head.sha` before it evaluates the
   # second expression, so a jq that errors partway still writes a usable-looking first line: `head`
@@ -189,10 +191,13 @@ EOF
   # For each declared reviewer, ask ONLY about reviews attached to the current head SHA. A review
   # of an earlier commit is not a review of this one — observed live on PR #145, where the bot
   # reviewed b302fa0e and three further commits landed afterwards.
+  # The shared identity predicate, read ONCE rather than per declared reviewer — the loop below runs
+  # per reviewer, and pr-watch.sh hoists it the same way for the same reason.
+  match="$(adb_reviewer_match_jq)"
   while IFS= read -r login; do
     [ -n "$login" ] || continue
     kinds="$(printf '%s' "$reviews" | jq -r --arg sha "$head" --arg who "$login" \
-        "$(adb_reviewer_match_jq)"'
+        "$match"'
         [ .[]
           | select((.commit_id // "") == $sha)
           | select((.user.login // "") | adb_declared_reviewer([$who]))
