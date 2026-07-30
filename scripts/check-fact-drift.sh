@@ -345,4 +345,56 @@ fact marker-owner-field fixed:'.owner // ""' -- agents/claude/scripts/implement-
 # blocklist" this lint's header warns against. `scripts/check-implement-gate.sh` cases N and O
 # assert it against the real gate, which is the stronger guard.
 
+# --- FACT: the PR-argument and reviewer-identity primitives have ONE home (#173) -------------
+# The two PR guards each carried private copies of four primitives, and the copies DIVERGED into a
+# live fail-open: pr-review.sh's slug parser handled only `scheme://…`, so a scheme-less
+# `github.com/other/repo/pull/7` produced an empty slug, skipped the cross-repo refusal, and let the
+# arming guard print a head SHA for a pull request the operator never named.
+#
+# Both directions are pinned, because neither half is sufficient. The POSITIVE rules prove each guard
+# still routes through the shared primitive — a library can be perfectly correct while a caller quietly
+# stops calling it, which is the state #134 itself described. The `absent:` rules prove no copy came
+# back; presence alone cannot catch a file that calls the shared function AND keeps a local definition
+# beside it, which is exactly how the divergence above survived. This is the narrow, superseded-value
+# use `absent:` exists for, not a general prose blocklist.
+_prguards="scripts/lib/pr-review.sh scripts/lib/pr-watch.sh"
+# shellcheck disable=SC2086  # deliberate word-split of the space-separated file list
+for _fn in adb_pr_number adb_pr_slug_check adb_reviewer_match_jq; do
+  fact pr-primitives-shared "fixed:$_fn" -- $_prguards
+done
+# The declaration normalizer is reached through role-dispatch's CLI, so the pinned token is the
+# subcommand rather than the function name. The two docs that name WHICH reader the merge gate uses are
+# pinned with it: they described `--declared` (the tri-state reader this one wraps) for a while after
+# the guards had moved, and a doc naming the wrong reader is exactly the drift this lint exists for.
+# shellcheck disable=SC2086
+fact pr-primitives-shared fixed:'bots --comparable' -- \
+  $_prguards scripts/lib/role-dispatch.sh base/roles.md docs/roles-and-agents.md
+# The git-origin anchor. state-assert.sh (#138) had the only copy until the guards needed the same
+# defence against the same `GH_REPO` override; the guards reach it through adb_pr_slug_check, so its
+# consumers are the library that defines it and the module that calls it directly.
+fact pr-primitives-shared fixed:'adb_git_origin_slug' -- \
+  scripts/lib/common.sh scripts/lib/state-assert.sh
+# NO COPY SURVIVES. Pinned as the DEFINITION form (`^name()`), so the pointer comments in each guard
+# that name the retired primitives — telling the next reader where they went and not to re-inline
+# them — are not themselves the drift this rule hunts.
+# shellcheck disable=SC2086  # deliberate word-split of the space-separated file list
+for _gone in '^parse_pr_arg\(\)' '^parse_pr_slug\(\)'; do
+  fact pr-primitives-no-copies "absent:$_gone" -- $_prguards
+done
+# The reviewer-identity half, pinned as the STRIP IDIOM rather than a function name: the suffix is
+# now handled only on the API side, inside common.sh's shared jq def, so an ANCHORED `[bot]` match
+# anywhere in a guard means the rule has been re-inlined. The DIRECTION of such a copy is the entire
+# defect (#176): stripping the declaration too let a human account named `foo` satisfy a declared
+# `foo[bot]`.
+#
+# The `\\*` is load-bearing and this rule was WRONG without it, which a negative test caught: the two
+# real idioms are `sed 's/\[bot\]$//'` and jq's `sub("\\[bot\\]$"; "")`, so the bracket is always
+# BACKSLASH-ESCAPED and a pattern for a contiguous `[bot]$` matches neither. It passed by matching
+# nothing at all — a pin that cannot fire, which is worse than no pin. `bot\\*\]\$` accepts any number
+# of escaping backslashes before the closing bracket and so catches both spellings.
+# shellcheck disable=SC2086
+fact pr-primitives-no-copies 'absent:bot\\*\]\$' -- $_prguards
+# ...and the private anchor is gone from its old home rather than shadowing the promoted one.
+fact pr-primitives-no-copies 'absent:^_sa_local_slug\(\)' -- scripts/lib/state-assert.sh
+
 check_result "canonical facts consistent across their consumers"

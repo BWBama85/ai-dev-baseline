@@ -129,20 +129,23 @@
 # actually passed this head. Every uncertainty above therefore resolves to `pending` or a non-zero
 # unknown, and there is no path where a failed read degrades into "clean".
 #
-# TWO KNOWN NARROW EXCEPTIONS, stated because a guarantee with unlisted holes is worse than an
-# honest one. Both are filed; neither is reachable by an ordinary repo:
+# ONE KNOWN NARROW EXCEPTION, stated because a guarantee with unlisted holes is worse than an honest
+# one. It is filed, and it is not reachable by an ordinary repo:
 #
 #   * The staleness comparison's lower bound is CLIENT-SUPPLIED (#175). See the section above: a
 #     head commit whose committer date is in the PAST relative to a stale `+1` — a force-push back
 #     to an older commit, a date-rewriting rebase, or a machine clock behind by more than the
 #     review latency — makes that reaction look fresh. Closing it needs a server-assigned "when did
 #     this head arrive" anchor, which is a design change rather than a tweak.
-#   * The `[bot]`-suffix normalization is BIDIRECTIONAL (#176), so a declaration of `foo[bot]` is
-#     also satisfied by a human account literally named `foo`. Reactions are publicly writable, so
-#     the bar is a login collision rather than any privilege. Note for whoever fixes it: `user.type`
-#     does NOT discriminate here — verified live, the reactions endpoint reports `type: "User"` for
-#     the Codex connector while the reviews endpoint reports `type: "Bot"` for the same App, so a
-#     type filter would reject the real signal.
+#
+# The second exception this header used to carry — a BIDIRECTIONAL `[bot]` normalization, under which
+# a declaration of `foo[bot]` was also satisfied by a human account literally named `foo` — is CLOSED
+# (#173, superseding #176). The match is now asymmetric: the API login is normalized toward the
+# declaration and never the reverse. The rule, and what a bare declaration means, live in common.sh's
+# `adb_reviewer_match_jq`. Note for anyone tempted to reach for a type filter instead: `user.type`
+# does NOT discriminate — verified live, the reactions endpoint reports `type: "User"` for the Codex
+# connector while the reviews endpoint reports `type: "Bot"` for the same App, so it would reject the
+# real signal.
 #
 # What this file must never grow: it does not resolve threads, edit code, push, or merge. It
 # observes and it waits. Acting on a `findings` verdict is the resolver's job; arming a merge is
@@ -188,35 +191,12 @@ _ADB_PW_MAX_UNREADABLE=3
 
 # --- helpers ---------------------------------------------------------------------------------
 
-# parse_pr_arg <value> — the PR NUMBER from a bare integer or a GitHub PR URL. Same contract as
-# pr-review.sh's: the caller's marker holds a `prUrl`, so accepting both removes a caller-side sed.
-parse_pr_arg() {
-  local n="$1"
-  case "$n" in *pull/*) n="${n##*pull/}"; n="${n%%[!0-9]*}" ;; esac
-  case "$n" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$n" -gt 0 ] 2>/dev/null || return 1
-  printf '%s' "$n"
-}
-
-# parse_pr_slug <value> — the `owner/repo` of a PR URL, or nothing for a bare number. Used only to
-# CROSS-CHECK the URL against the repo the reads actually address: every read below addresses
-# `repos/{owner}/{repo}/...`, which gh expands from the LOCAL remote, so a URL naming another
-# repository would otherwise be answered about THIS one.
-#
-# The SCHEME IS OPTIONAL. Matching only `*://*` would let `github.com/other/repo/pull/7` — which
-# `parse_pr_arg` happily reduces to `7` — arrive with an empty slug, skipping the cross-repo
-# refusal entirely and confidently answering about THIS repo's #7. A copy-pasted URL loses its
-# scheme often enough that this is a realistic input, not a contrived one.
-parse_pr_slug() {
-  local v="$1" rest
-  case "$v" in
-    *://*/*/*/pull/*) rest="${v#*://}"; rest="${rest#*/}" ;;   # scheme://host/owner/repo/pull/N
-    */*/*/pull/*)     rest="${v#*/}" ;;                        # host/owner/repo/pull/N
-    */*/pull/*)       rest="$v" ;;                             # owner/repo/pull/N
-    *) return 0 ;;
-  esac
-  printf '%s' "${rest%%/pull/*}"
-}
+# The PR-argument and repository-identity primitives this file used to carry privately —
+# `parse_pr_arg`, `parse_pr_slug`, and the URL-slug cross-check — now live in common.sh as
+# `adb_pr_number`, `adb_pr_slug` and `adb_pr_slug_check` (#173). pr-review.sh carried its own copies
+# of the same three, and they had already diverged: this file's three-form slug parser was the
+# stronger one, so its sibling let a scheme-less cross-repo URL through. One home, so a fix to either
+# reaches both. Do not re-inline them.
 
 # require_uint <value> <option-name> — a positive integer, or usage. Rejects the empty string, a
 # sign, and any non-digit; a zero interval would spin the poll loop as a busy-wait and a zero bound
@@ -226,7 +206,7 @@ parse_pr_slug() {
 # the `$(( deadline - SECONDS ))` arithmetic below, so `--max-secs 99999999999999999999` would pass
 # a digits-only check and then produce a nonsense (possibly negative) remaining time — a "bound"
 # that expires immediately or never. 18 digits is the same ceiling `roadmap-lib.sh`'s `is_uint`
-# documents for the same reason; the shared validator is #150.
+# documents for the same reason; the shared validator is #181 (which consolidated #150).
 require_uint() {
   case "$1" in
     ''|*[!0-9]*) echo "pr-watch: $2 must be a positive integer (got '$1')" >&2; return 1 ;;
@@ -260,43 +240,28 @@ read_list() {
   printf '%s' "$flat"
 }
 
-# read_declared_bots — normalize `[reviewers] bots` into the comparison form, or return this
-# module's code for why it could not. Prints the normalized, de-duplicated login set on stdout.
+# read_declared_bots — the declared reviewer set in the comparison form, or this module's code for
+# why it could not be read. Prints the normalized, de-duplicated login set on stdout.
 #
-# The normalization is load-bearing and not cosmetic: the SAME bot has two spellings depending on
-# which API answered — GraphQL reports the bare `chatgpt-codex-connector` while BOTH REST endpoints
-# read here report `chatgpt-codex-connector[bot]` (verified live on this repo's PRs #88 and #166).
-# A declaration may use either form, so both sides are normalized (here
-# and in the jq below) so either spelling works in agents.toml. Lowercase BEFORE stripping so
-# `[BOT]` is stripped too; drop blanks AFTER so an entry that is only `[bot]` disappears rather
-# than becoming a reviewer that can never match.
+# The work is done by `role-dispatch.sh bots --comparable`, which owns the `[reviewers]` key: the
+# status mapping, the normalization, and the "declared something unusable" rejection were duplicated
+# here and in pr-review.sh and now live there once (#173). What stays here is this module's own
+# wording for a broken install — the one line of the four that genuinely differs between the two
+# guards ("refusing to guess" vs "refusing to arm").
+#
+# `bash <path>` rather than sourcing: role-dispatch.sh supports sourced use, but shelling out keeps
+# its globals and shell options out of this file and preserves the process boundary both harnesses
+# exercise. Its stderr is deliberately NOT suppressed — on a malformed declaration it names the exact
+# problem, which is the whole value of code 18.
 read_declared_bots() {
-  local declared drc want
-  declared="$(bash "$_ADB_PW_ROLE_DISPATCH" bots --declared)"; drc=$?
+  local want drc
+  want="$(bash "$_ADB_PW_ROLE_DISPATCH" bots --comparable)"; drc=$?
   case "$drc" in
-    0) ;;
-    3) echo "pr-watch: this repo declares no '[reviewers] bots' — cannot know whether a reviewer is coming." >&2
-       echo "pr-watch: declare the async reviewer logins in agents.toml, or 'bots = []' if there are none." >&2
-       return 17 ;;
-    2) echo "pr-watch: '[reviewers] bots' is unusable (see above) — fix agents.toml; use [] for none" >&2
-       return 18 ;;
-    *) echo "pr-watch: could not read '[reviewers] bots' (broken install) — refusing to guess" >&2
-       return 20 ;;
+    0)     ;;
+    17|18) return "$drc" ;;
+    *)     echo "pr-watch: could not read '[reviewers] bots' (broken install) — refusing to guess" >&2
+           return 20 ;;
   esac
-
-  want="$(printf '%s\n' "$declared" \
-          | tr '[:upper:]' '[:lower:]' \
-          | sed -e 's/\[bot\]$//' -e '/^[[:space:]]*$/d' \
-          | LC_ALL=C sort -u)"
-
-  # A declaration that survived the manifest reader but normalizes to NOTHING (`bots = ["[bot]"]`)
-  # is malformed, not "no reviewers". Treating it as the `[]` disable would report `clean` off the
-  # back of a typo — the fail-open direction, from the input that looks most like a real
-  # declaration.
-  if [ -n "$declared" ] && [ -z "$want" ]; then
-    echo "pr-watch: '[reviewers] bots' has no usable reviewer logins — fix agents.toml (use [] for none)" >&2
-    return 18
-  fi
   printf '%s' "$want"
 }
 
@@ -307,13 +272,19 @@ read_declared_bots() {
 # Every read is fresh: this is called once per poll, so a head that moves mid-watch is picked up on
 # the next pass without any stored state to reset (base/practices/verify-before-asserting.md).
 classify() {
-  local n="$1" want="$2" pjson pfields head state merged gotslug wantslug
-  local reviews hits reacts cjson commitdate whojson comments commented
+  local n="$1" want="$2" pjson pfields head state merged gotslug src
+  local reviews hits reacts cjson commitdate whojson comments commented match
 
-  # The declared set as a JSON array, built ONCE: both jq passes below test membership against it,
-  # and re-deriving it per pass would fork a second jq for the same value.
+  # The declared set as a JSON array, built ONCE: all three jq passes below test membership against
+  # it, and re-deriving it per pass would fork a second jq for the same value.
   whojson="$(printf '%s' "$want" | jq -R -s -c 'split("\n") | map(select(length > 0))' 2>/dev/null)" \
     || { echo "pr-watch: could not build the reviewer set" >&2; return 20; }
+
+  # The identity predicate, as a jq prelude prepended to each of those three passes. Read ONCE into a
+  # variable rather than substituted three times, so all three provably ask the SAME question — three
+  # inline copies of the rule is exactly what this issue removed (#173). It is a constant program;
+  # the declarations reach jq through --argjson, never concatenated into the source.
+  match="$(adb_reviewer_match_jq)"
 
   # Read, then parse — two steps, deliberately. Folding the extraction into `gh --jq` makes one
   # status cover both the network read and the shape of what came back, so a PR object that
@@ -332,23 +303,20 @@ $pfields
 EOF
   [ -n "$head" ] \
     || { echo "pr-watch: could not resolve the head SHA of PR #$n" >&2; return 20; }
-  # The base repo's slug is the ONLY evidence that these reads addressed the repository the caller
-  # meant, so a response without it is unreadable — not "no slug to compare". Guarding the
-  # comparison on `[ -n "$gotslug" ]` instead would make the check SILENTLY VANISH exactly when the
-  # metadata is malformed, and a `--pr <other-repo-url>` would then be answered about THIS repo:
-  # the confidently-wrong answer the refusal below exists to prevent. Same failure shape as a guard
-  # that no-ops on a missing input rather than failing closed. (Reported by the reviewer on #178.)
-  [ -n "$gotslug" ] \
-    || { echo "pr-watch: PR #$n carries no base repository — refusing to answer about an unidentifiable repository" >&2; return 20; }
 
-  # If the caller passed a URL, prove it names the repo these reads actually addressed. Without
-  # this, `--pr https://github.com/other/repo/pull/7` would faithfully report on THIS repo's #7 —
-  # a confidently wrong answer, which is the one thing a detector must never produce.
-  wantslug="$(parse_pr_slug "$OPT_PR" | tr '[:upper:]' '[:lower:]')"
-  if [ -n "$wantslug" ] && [ "$wantslug" != "$gotslug" ]; then
-    echo "pr-watch: --pr names '$wantslug' but this repo is '$gotslug' — refusing to answer about a different repository" >&2
-    return 2
-  fi
+  # Prove these reads addressed the repository the caller meant. The base repo's slug is the ONLY
+  # evidence of that, so a response without a well-formed one is unreadable — not "no slug to
+  # compare"; guarding the comparison on its presence would make the check SILENTLY VANISH exactly
+  # when the metadata is malformed. And this checkout's git `origin` is checked even for a bare
+  # number, because a bare number names no repository while `GH_REPO` silently redirects the
+  # placeholder expansion above — and `/resolve-pr-threads --watch` passes exactly that bare form.
+  # Both rules, and the precedence between them, live in adb_pr_slug_check (#173).
+  adb_pr_slug_check pr-watch "$n" "$OPT_PR" "$gotslug"; src=$?
+  case "$src" in
+    0) ;;
+    2) return 2 ;;
+    *) return 20 ;;
+  esac
 
   # A PR that has merged or closed is terminal whatever the reviewer did. Checked BEFORE the
   # signal reads so a watch on a PR the operator merged by hand stops promptly instead of polling
@@ -382,12 +350,13 @@ EOF
   # One pass over the whole document emitting the declared reviewers that submitted a REAL review
   # of this exact head. PENDING is an unsubmitted draft nobody can see; DISMISSED was explicitly
   # revoked. Neither is the reviewer having spoken, so neither counts as findings.
-  hits="$(printf '%s' "$reviews" | jq -r --arg sha "$head" --argjson who "$whojson" '
+  hits="$(printf '%s' "$reviews" | jq -r --arg sha "$head" --argjson who "$whojson" \
+      "$match"'
       [ .[]
         | select((.commit_id // "") == $sha)
         | select(((.state // "") | ascii_upcase) as $st | $st != "PENDING" and $st != "DISMISSED")
-        | ((.user.login // "") | ascii_downcase | sub("\\[bot\\]$"; ""))
-        | select(. as $l | $who | index($l)) ] | unique | .[]' 2>/dev/null)" \
+        | ((.user.login // "") | ascii_downcase)
+        | select(adb_declared_reviewer($who)) ] | unique | .[]' 2>/dev/null)" \
     || { echo "pr-watch: could not evaluate the reviews of PR #$n" >&2; return 20; }
 
   if [ -n "$hits" ]; then
@@ -413,9 +382,10 @@ EOF
   # A comment is NOT commit-scoped, so it gets the reaction's staleness rule rather than the
   # review's SHA equality — see below.
   comments="$(read_list "repos/{owner}/{repo}/issues/$n/comments?per_page=100" comments "$n")" || return 20
-  commented="$(printf '%s' "$comments" | jq -r --argjson who "$whojson" '
+  commented="$(printf '%s' "$comments" | jq -r --argjson who "$whojson" \
+      "$match"'
       [ .[]
-        | select((((.user.login // "") | ascii_downcase | sub("\\[bot\\]$"; ""))) as $l | $who | index($l))
+        | select((.user.login // "") | adb_declared_reviewer($who))
         | (.created_at // "") | select(length > 0) ] | sort | last // ""' 2>/dev/null)" \
     || { echo "pr-watch: could not evaluate the comments of PR #$n" >&2; return 20; }
 
@@ -431,10 +401,11 @@ EOF
 
   # The newest `+1` from any declared reviewer, as an ISO-8601 timestamp (empty if none).
   local plus1at
-  plus1at="$(printf '%s' "$reacts" | jq -r --argjson who "$whojson" '
+  plus1at="$(printf '%s' "$reacts" | jq -r --argjson who "$whojson" \
+      "$match"'
       [ .[]
         | select((.content // "") == "+1")
-        | select((((.user.login // "") | ascii_downcase | sub("\\[bot\\]$"; ""))) as $l | $who | index($l))
+        | select((.user.login // "") | adb_declared_reviewer($who))
         | (.created_at // "") | select(length > 0) ] | sort | last // ""' 2>/dev/null)" \
     || { echo "pr-watch: could not evaluate the reactions of PR #$n" >&2; return 20; }
 
@@ -488,8 +459,8 @@ EOF
 cmd_observe() {
   local n want wrc
   [ -n "$OPT_PR" ] || { echo "pr-watch: observe requires --pr <number|url>" >&2; return 2; }
-  n="$(parse_pr_arg "$OPT_PR")" \
-    || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL" >&2; return 2; }
+  n="$(adb_pr_number "$OPT_PR")" \
+    || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
   want="$(read_declared_bots)"; wrc=$?
   [ "$wrc" -eq 0 ] || return "$wrc"
   adb_require_gh jq || return 20
@@ -500,8 +471,8 @@ cmd_wait() {
   local n want wrc rc out deadline remaining nap unreadable=0 lasthead="" head
 
   [ -n "$OPT_PR" ] || { echo "pr-watch: wait requires --pr <number|url>" >&2; return 2; }
-  n="$(parse_pr_arg "$OPT_PR")" \
-    || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL" >&2; return 2; }
+  n="$(adb_pr_number "$OPT_PR")" \
+    || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
   require_uint "$OPT_INTERVAL" --interval || return 2
   require_uint "$OPT_MAX_SECS" --max-secs || return 2
 
@@ -581,7 +552,7 @@ cmd_wait() {
 #
 # Every value-taking option checks its ARITY and its VALUE separately, so `--pr ''` reports "must
 # not be empty" rather than the arity message for a flag that was in fact supplied. (The shared
-# validator for this is #150; spelled out here until it lands.)
+# validator for this is #181, which consolidated #150; spelled out here until it lands.)
 parse_opts() {
   while [ "$#" -gt 0 ]; do
     case "$1" in

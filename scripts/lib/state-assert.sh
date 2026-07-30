@@ -74,27 +74,11 @@ _sa_unverifiable() {
   exit 3
 }
 
-# _sa_local_slug — the checkout's `owner/repo`, derived from git's own remote so no gh environment
-# override can move it. Handles the three URL shapes git emits: scp-style `git@host:owner/repo`,
-# `https://host/owner/repo`, and `ssh://git@host/owner/repo`, each with an optional `.git`.
-# Returns non-zero (printing nothing) when there is no parseable remote — which fails closed.
-_sa_local_slug() {
-  local url
-  url="$(git remote get-url origin 2>/dev/null)" || return 1
-  [ -n "$url" ] || return 1
-  url="${url%.git}"; url="${url%/}"
-  case "$url" in
-    *://*) url="${url#*://}"; url="${url#*@}"; url="${url#*/}" ;;
-    *:*)   url="${url#*:}" ;;
-  esac
-  # Exactly one slash, both halves non-empty — anything else is not an owner/repo pair.
-  case "$url" in
-    */*/*|/*|*/) return 1 ;;
-    */*) : ;;
-    *) return 1 ;;
-  esac
-  printf '%s' "$url"
-}
+# The checkout's `owner/repo` — derived from git's own remote so no gh environment override can move
+# it — now lives in common.sh as `adb_git_origin_slug` (#173). It was private here until the PR
+# guards needed the same anchor for the same reason, and a second copy of it is exactly the drift
+# this file's own discipline argues against. The reasoning for asking git rather than gh is stated
+# at that function.
 
 # _sa_read <kind> <number> — the half that is identical for both entity kinds, written ONCE.
 # Sets SA_STATE, SA_EXTRA (mergedAt for a PR, stateReason for an issue) and SA_AT. Exits 3 on any
@@ -133,7 +117,7 @@ _sa_read() {
   adb_require_gh jq || _sa_unverifiable "gh/jq unavailable or gh not authenticated"
 
   local slug
-  slug="$(_sa_local_slug)" || _sa_unverifiable "cannot resolve this checkout's GitHub repository"
+  slug="$(adb_git_origin_slug)" || _sa_unverifiable "cannot resolve this checkout's GitHub repository"
 
   # Read and parse as SEPARATE steps. A pipeline reports only its LAST command's status, so
   # `gh ... | jq` returns 0 on a failed read and the parser sees empty stdin — indistinguishable

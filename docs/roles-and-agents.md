@@ -291,7 +291,7 @@ own job:
 | Reader | Question | Unset means |
 |---|---|---|
 | `role-dispatch.sh bots` (`/resolve-pr-threads`) | *whose threads may I auto-resolve?* | the built-in allowlist |
-| `role-dispatch.sh bots --declared` (`pr-review.sh gate`) | *whose review must I wait for?* | **undeclared — fail closed** |
+| `role-dispatch.sh bots --comparable` (`pr-review.sh gate`, `pr-watch.sh`) — wraps `bots --declared` | *whose review must I wait for?* | **undeclared — fail closed** |
 
 An over-broad default is harmless when resolving threads; as a *merge* gate it is exactly wrong.
 Defaulting to the built-in set would make every repo wait for eight bots it does not have.
@@ -306,9 +306,35 @@ bugs. So the merge gate never defaults; it reads the key as a tri-state:
 - **undeclared** → unknowable, so the guard fails closed and reports what to add.
 
 **A repo with no bot reviewer should declare `bots = []`** — one line that keeps `gh pr merge
---auto` working. A repo that *is* bot-reviewed should list its reviewers. Either spelling of a
-login works (`chatgpt-codex-connector` or `chatgpt-codex-connector[bot]`): the guard normalizes
-the `[bot]` suffix, because GitHub's GraphQL and REST APIs report the same bot differently.
+--auto` working. A repo that *is* bot-reviewed should list its reviewers.
+
+### How a declared login is matched (#173)
+
+GitHub reports the same App two ways — GraphQL says `chatgpt-codex-connector`, REST says
+`chatgpt-codex-connector[bot]` — so the guards normalize the `[bot]` suffix. They normalize it
+**one way only: the API login toward your declaration, never your declaration toward the API.**
+
+| You declare | It is satisfied by | Meaning |
+|---|---|---|
+| `foo` (bare) | API login `foo` **or** `foo[bot]` | **either** — the App, or a human account named `foo` |
+| `foo[bot]` | API login `foo[bot]` only | **that App, exactly** — a human named `foo` never satisfies it |
+
+**Bare is the portable spelling and the recommended default.** It matches whichever form the
+reading API returns, which is why the built-in allowlist and this repo's own manifest use it.
+
+**`foo[bot]` is the strict spelling**, and its strictness is against the *observed API spelling*
+rather than a stable App identity: a guard that later reads a different API surface would stop
+satisfying it. That fails safe — the guard withholds the arm rather than merging — but it is real,
+and closing it needs an identity that is not a login string (tracked in #207).
+
+> **Why not normalize both sides?** Because that is lossy in the dangerous direction. Stripping
+> `[bot]` from your *declaration* too meant `bots = ["foo[bot]"]` was also satisfied by a **human
+> account literally named `foo`** — and reactions are publicly writable, so on the clean-pass
+> signal the bar was a login collision and nothing else. Not hypothetical: `gh api
+> users/gemini-code-assist` returns a real **User** account, so the collision space is populated by
+> exactly the kind of account that reviews pull requests. A `user.type` filter cannot rescue it —
+> the reactions endpoint reports `type: "User"` for the Codex connector itself, so filtering on
+> type would reject the real signal.
 
 > **Prefer declaring it per repo.** The key layers repo → global like every other manifest key,
 > so a declaration in `~/.config/ai-dev-baseline/agents.toml` applies to **every** repo on the

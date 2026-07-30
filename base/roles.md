@@ -193,16 +193,24 @@ is cleared by `/resolve-pr-threads` — so it has its own manifest home, `[revie
 # /resolve-pr-threads auto-resolves ONLY threads whose author login is in this allowlist.
 #   unset → the built-in default set of common review bots
 #   []    → disable bot-thread auto-resolution entirely
-bots = ["chatgpt-codex-connector", "gemini-code-assist[bot]", "copilot[bot]"]
+bots = ["chatgpt-codex-connector", "gemini-code-assist", "copilot"]
 ```
 
 `role-dispatch.sh bots` reads this (repo → global → the built-in default allowlist) and
 `/resolve-pr-threads` derives the logins it may resolve from that **one** source. It is an
-**exact** login allowlist (never a `[bot]`-suffix heuristic), so it can never match — and never
-auto-resolve — a human-authored thread.
+**exact** login allowlist, never a `[bot]`-suffix heuristic, so an unlisted account is never
+auto-resolved.
 
-**The same key also gates auto-merge (#134).** `role-dispatch.sh bots --declared` reads it as a
-**tri-state with no default** — declared logins / explicit `[]` / undeclared — and
+**Login spelling — prefer the bare form.** GitHub reports the same App as `foo` (GraphQL) or
+`foo[bot]` (REST). The merge guards normalize that suffix **one way only**, the API login toward
+your declaration: a bare `foo` matches either spelling (portable, recommended), while `foo[bot]`
+matches only `foo[bot]` — so a human account named `foo` can never satisfy a declared App. Both
+directions matter, and normalizing the *declaration* too was a real fail-open (#173, superseding
+#176). See `docs/roles-and-agents.md`.
+
+**The same key also gates auto-merge (#134).** `role-dispatch.sh bots --comparable` reads it — through the
+`--declared` tri-state reader it wraps — as **declared logins / explicit `[]` / undeclared, with no
+default** — declared logins / explicit `[]` / undeclared — and
 `/implement-issue` step 10 refuses to arm `gh pr merge --auto` until every declared reviewer has
 reviewed the PR's **current head commit**. The two readers differ only on *unset*, deliberately:
 a permissive default is harmless when deciding which threads to resolve and is exactly wrong as a

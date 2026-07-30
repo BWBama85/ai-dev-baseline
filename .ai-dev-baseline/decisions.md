@@ -668,3 +668,47 @@ didn't already model, so any residual divergence stays visible and auditable.
              files collide. #202's likely resolution is therefore "refuse to start a second run"
              (which wants #159's liveness read), not per-session filenames.
 - baseline-issue: #180
+
+## D18 — a declared reviewer login is matched asymmetrically, and a bare login means "either"
+- date:      2026-07-29
+- category:  project-delta
+- unknown:   `[reviewers] bots` declares reviewer LOGINS, but GitHub reports the same App two ways
+             depending on which API answered — GraphQL `foo`, REST `foo[bot]` — and the baseline had
+             never decided what a given declaration MEANS. Both PR guards resolved the ambiguity the
+             same lossy way: strip a trailing `[bot]` from the declaration AND from the API login,
+             then compare. Nothing recorded that as a choice, so nothing flagged that it made
+             `bots = ["foo[bot]"]` satisfiable by a **human account literally named `foo`** — and
+             reactions are publicly writable, so on the clean-pass signal the bar was a login
+             collision and nothing else. `gh api users/gemini-code-assist` returns a real User
+             account, so the collision space is populated by the kind of account that reviews PRs.
+- decision:  Normalize the API login TOWARD the declaration, never the reverse — and by APPENDING
+             the suffix to a bare declaration rather than stripping it from the API login, so the
+             rule is strictly one-directional:
+             (a) declared `foo` (bare) matches API `foo` OR `foo[bot]` — **either**, App or human.
+                 This is the PORTABLE spelling and the documented default: it matches whichever form
+                 the reading API returns, which is what keeps the guards working across the
+                 GraphQL/REST split, and it is what the built-in allowlist and this repo already
+                 declare. Choosing "App only" here would have silently wedged every existing
+                 declaration at "awaiting review" forever.
+             (b) declared `foo[bot]` matches API `foo[bot]` ONLY — **that App, exactly**. A human
+                 named `foo` can never satisfy it. This is the strict spelling, available by
+                 choosing it.
+             A `user.type` filter was rejected as the discriminator: verified live, the reactions
+             endpoint reports `type: "User"` for the Codex connector while the reviews endpoint
+             reports `type: "Bot"` for the same App, so a type filter would reject the real signal.
+- placement: `scripts/lib/common.sh` (`adb_reviewer_match_jq` — the one jq def all four filters in
+             the two guards share) + `scripts/lib/role-dispatch.sh` (`bots --comparable`, which owns
+             the declaration side and no longer strips the suffix) + `docs/roles-and-agents.md` and
+             `templates/agents.toml` (the operator-facing spelling table).
+- reason:    The issue required the implementation to DECIDE what a bare login means, because it was
+             ambiguous in both directions. "Either" is the only choice that is simultaneously
+             back-compatible, portable across the two APIs, and honest — and it costs nothing that
+             the strict spelling does not recover for an operator who wants it.
+- known-gap: (b)'s strictness is against the OBSERVED API SPELLING, not a stable App identity. A
+             guard that later reads a different API surface — #174 proposes collapsing these reads
+             into one GraphQL query, which reports the bare form — would stop satisfying a declared
+             `foo[bot]`. That fails SAFE (the guard withholds the arm rather than merging) but it is
+             real, and the documented examples were changed to the bare form so no shipped default
+             depends on it. Closing it needs an identity that is not a login string (an App/account
+             id); tracked in #207.
+- baseline-issue: #173

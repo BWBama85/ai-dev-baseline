@@ -6,11 +6,19 @@
 # Every case below is chosen because it is a way that could happen, or a way the guard could wedge
 # at non-zero forever and quietly disable auto-merge for good:
 #
-#   1. IDENTITY. The same bot has two spellings — GraphQL says `chatgpt-codex-connector`, REST
-#      says `chatgpt-codex-connector[bot]` — and the shipped allowlist carries the bare form. An
-#      anchored exact match would never fire, so the guard would sit at 16 even after the review
-#      landed. Both spellings are pinned, in both directions, plus a WRONG bot (an unrelated
-#      `[bot]` account must NOT satisfy a declared reviewer).
+#   1. IDENTITY, ASYMMETRICALLY. The same bot has two spellings — GraphQL says
+#      `chatgpt-codex-connector`, REST says `chatgpt-codex-connector[bot]` — and the shipped
+#      allowlist carries the bare form, so an anchored exact match would never fire and the guard
+#      would sit at 16 even after the review landed. The API login is therefore normalized TOWARD
+#      the declaration, never the reverse (#173): a bare declaration accepts either spelling, a
+#      `[bot]` declaration accepts only the suffixed one. Pinned in both directions, plus a WRONG
+#      bot, plus the fail-open this replaced — stripping the DECLARATION too, which let a HUMAN
+#      account named `foo` satisfy `bots = ["foo[bot]"]`.
+#   1b. REPOSITORY IDENTITY. Every read addresses `repos/{owner}/{repo}`, so the guard can be
+#      pointed at another project two ways: a URL argument naming one (including the scheme-less
+#      form this module used to let through with an empty slug), or `GH_REPO` redirecting gh's own
+#      expansion when the argument is a bare number. Both are refused, and neither may print a head
+#      SHA — printing it is what authorized the arm.
 #   2. THE SHA. A review of an earlier commit is not a review of this one. Observed live on
 #      PR #145: the bot reviewed b302fa0e, three commits landed after it.
 #   3. THE DECLARATION TRI-STATE. `bots = []` (no reviewer -> arm) and undeclared (unknowable ->
@@ -37,7 +45,13 @@ REPO="$work/repo"; GHOME="$work/home"; SBIN="$work/sbin"; S="$work/stub"
 mkdir -p "$REPO" "$GHOME/.config/ai-dev-baseline" "$SBIN" "$S"
 # A git repo so the helper's repo-root resolution is deterministically $REPO, whatever ambient
 # git repo sits above the temp dir.
+#
+# WITH AN `origin` REMOTE, and it is load-bearing rather than set dressing (#173): the guard anchors
+# every read to the checkout's git origin, because a bare `--pr 7` names no repository and the
+# documented `GH_REPO` variable silently redirects gh's `repos/{owner}/{repo}` expansion. It must
+# agree with the `base.repo.full_name` the PR fixture reports, or every scenario below fails closed.
 git init -q "$REPO"
+git -C "$REPO" remote add origin https://github.com/acme/widget.git
 
 HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -175,17 +189,37 @@ eq "$RC_" "0" "a genuine bots = [] still arms (the fixes above did not over-reje
 eq "$OUT" "$HEAD_SHA" "the genuine [] case still emits the head SHA"
 
 # ============================ identity matching ============================
-# The REST/GraphQL spelling split. Both directions, because agents.toml may carry either form.
+# The REST/GraphQL spelling split. The match is ASYMMETRIC (#173, superseding #176): the API login is
+# normalized TOWARD the declaration and never the reverse, so a bare declaration accepts either
+# spelling while a `[bot]` declaration accepts only the suffixed one.
 declare_bots '["chatgpt-codex-connector"]'; pr_fx
 review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
 gout gate --pr 7
 eq "$RC_" "0" "bare login declared + REST '[bot]' login observed -> matched"
 eq "$OUT" "$HEAD_SHA" "a satisfied gate prints ONLY the head SHA on stdout"
 
+# THE FAIL-OPEN THIS REPLACED. Stripping `[bot]` from the DECLARATION as well as from the API login
+# meant `bots = ["foo[bot]"]` was satisfied by a HUMAN account literally named `foo`. Not
+# theoretical: `gh api users/gemini-code-assist` returns a real User account (id 200291788), so the
+# collision space is populated by exactly the kind of account that reviews pull requests. A declared
+# App must never be satisfied by the human who happens to hold the un-suffixed login.
 declare_bots '["chatgpt-codex-connector[bot]"]'
 review_fx "chatgpt-codex-connector" "COMMENTED" "$HEAD_SHA"
 g gate --pr 7
-eq "$RC_" "0" "'[bot]'-suffixed declaration + bare observed login -> matched (symmetric)"
+eq "$RC_" "16" "a HUMAN login does not satisfy a '[bot]'-suffixed declaration (the #176 fail-open)"
+
+# ...while the suffixed declaration still matches the spelling REST actually reports, so declaring
+# the strict form is not a way to wedge the guard forever.
+review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "0" "a '[bot]'-suffixed declaration matches the REST '[bot]' login"
+
+# A doubled suffix must not satisfy the strict form through the same one-suffix rule it exists to
+# deny — which is why the suffix is APPENDED to a bare declaration rather than stripped from the API
+# login. Unreachable from GitHub, but it is the difference between "asymmetric" and "nearly".
+review_fx "chatgpt-codex-connector[bot][bot]" "COMMENTED" "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "16" "a DOUBLED '[bot]' suffix does not satisfy a '[bot]' declaration"
 
 declare_bots '["Chatgpt-Codex-Connector"]'
 review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
@@ -335,6 +369,27 @@ g gate --pr "https://github.com/other/project/pull/7"
 eq "$RC_" "2" "a PR URL naming a different repository is refused"
 has "$OUT" "refusing to answer about a different repository" "the repo mismatch is named"
 
+# THE ACCEPTANCE CRITERION OF #173. This module's slug parser handled only `scheme://…`, while
+# pr-watch.sh's handled three forms — so a scheme-less URL, an ordinary browser copy-paste, produced
+# an EMPTY wanted slug here, skipped the refusal above entirely, answered about THIS repo's #7, and
+# printed a head SHA that `/implement-issue` step 10 then armed `gh pr merge --auto` against. The
+# stdout assertion is not decoration: printing the SHA is what authorized the arm, so "refuses" has
+# to mean "and says nothing a caller could arm on".
+for u in "github.com/other/project/pull/7" "other/project/pull/7"; do
+  g gate --pr "$u"
+  eq "$RC_" "2" "a scheme-less URL naming a different repository is refused ($u)"
+  gout gate --pr "$u"
+  eq "$OUT" "" "a refused cross-repo argument prints NO head SHA ($u)"
+done
+
+# An argument that is neither a bare number nor a URL naming a repository cannot be answered at all:
+# taking the digits after `pull/` alone reduces these to `7`, which would then be answered about
+# whichever repository the reads happen to address — the same wrong answer from a different input.
+for u in "pull/7" "https://github.com/pull/7"; do
+  g gate --pr "$u"
+  eq "$RC_" "2" "a PR-ish argument that names no repository is rejected ($u)"
+done
+
 # jq emits `.head.sha` BEFORE it evaluates the slug expression, so a PR object whose `base` has an
 # unexpected shape makes jq error only partway: the head SHA still arrives and the slug does not.
 # Discarding jq's status there would set `head`, leave `gotslug` empty, and skip the cross-repo
@@ -342,6 +397,40 @@ has "$OUT" "refusing to answer about a different repository" "the repo mismatch 
 pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":"acme/widget"}'
 g gate --pr "https://github.com/other/project/pull/7"
 eq "$RC_" "20" "a PR object that breaks jq PARTWAY fails closed (does not skip the repo check)"
+
+# MALFORMED OR ABSENT METADATA IS UNREADABLE, NOT "NOTHING TO COMPARE". The old check was guarded on
+# `[ -n "$gotslug" ]`, so it silently VANISHED on exactly these responses and a foreign URL was then
+# answered about this repo. Unreadable outranks mismatched: the foreign-URL cases below must report
+# 20 rather than 2, and none of them may print a SHA.
+pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"}}'
+g gate --pr 7;    eq "$RC_" "20" "a PR with no base repository -> 20, never classified"
+has "$OUT" "unidentifiable repository" "the missing base repo is named"
+g gate --pr "https://github.com/other/project/pull/7"
+eq "$RC_" "20" "a missing base repo cannot silently skip the cross-repo refusal"
+pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":{"repo":null}}'
+g gate --pr 7;    eq "$RC_" "20" "an explicitly null base repo -> 20"
+# A slug that arrives but is not an owner/repo PAIR is a broken response, and must be reported as
+# one — comparing it would call a malformed read "a different repository".
+for v in '"acme"' '"acme/widget/extra"' '"/widget"' '"acme/"'; do
+  pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":{"repo":{"full_name":'"$v"'}}}'
+  g gate --pr 7
+  eq "$RC_" "20" "a base repo slug of $v is unreadable, not a repo mismatch"
+done
+pr_fx
+
+# A BARE NUMBER NAMES NO REPOSITORY, so nothing in the argument can catch a redirected read. Every
+# read addresses `repos/{owner}/{repo}`, which gh expands — and the documented GH_REPO variable
+# overrides that expansion (verified live: `GH_REPO=cli/cli gh api 'repos/{owner}/{repo}'` answers
+# `cli/cli` from a directory that is not a repository at all). The anchor is therefore the CHECKOUT's
+# git origin, which no gh variable can move. Simulated here the only way a stub can: the reads answer
+# for a repository that is not this checkout's.
+pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":{"repo":{"full_name":"other/project"}}}'
+review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "2" "a bare number whose reads answered for ANOTHER repo is refused (the GH_REPO class)"
+has "$OUT" "GH_REPO" "the refusal names the likely cause"
+gout gate --pr 7
+eq "$OUT" "" "a redirected read prints NO head SHA"
 pr_fx
 
 # ============================ workflow drift pins ============================
