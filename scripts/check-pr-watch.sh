@@ -448,9 +448,26 @@ reaction_fx "$CODEX" "+1" "$AFTER_AT"
 w observe --pr 1;  rc 11 "#175: a deleted head repository -> pending"
 has "$OUT" "deleted fork" "#175: names the likely cause"
 # ...but a head repository that is present and MALFORMED is a broken response, and it is about to be
-# interpolated into a URL path. 20, and no request made with it.
+# interpolated into a URL PATH — a position no other slug in this family occupies (the base slug is
+# only ever COMPARED). Being a well-formed `owner/repo` pair is necessary and NOT sufficient:
+# `a/..` is a valid pair and a path traversal, so the charset is pinned too.
 pr_fx "$HEAD_SHA" "open" "" "acme/widget" "acme/widget/extra"
 w observe --pr 1;  rc 20 "#175: a malformed head repository slug -> 20, never a path-injected read"
+for bad_slug in 'acme/..' '../widget' 'acme/wid get' 'acme/wid?et'; do
+  pr_fx "$HEAD_SHA" "open" "" "acme/widget" "$bad_slug"
+  w observe --pr 1;  rc 20 "#175: head repository '$bad_slug' is refused before it reaches a URL"
+done
+
+# A MIXED-FORMAT activity response is rejected WHOLE, not just at the winner. `sort` runs before any
+# validation could, so a lexically-later-but-chronologically-EARLIER record could win and then pass
+# a check applied only to the survivor — and an anchor earlier than the truth is the permissive
+# direction. Here the offset record sorts last; if only the winner were checked this would be 20 by
+# luck, so the assertion below is the one where BOTH records match the ref and SHA.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT" \
+            "$HEAD_SHA" "refs/heads/$HEAD_REF" "2026-07-25T00:42:15-04:00"
+reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
+w observe --pr 1;  rc 20 "#175: ONE unorderable timestamp rejects the whole activity read"
 
 # THE SIGNAL THAT NEEDS NO ANCHOR MUST STILL WORK. A review is commit-scoped, so an unestablished
 # anchor must not wedge it — otherwise #175 would have traded one fail-open for a total wedge on any

@@ -321,9 +321,18 @@ head_anchor() {
   [ -n "$slug" ] && [ -n "$ref" ] \
     || { echo "pr-watch: PR #$n — no head repository/ref to date the head against (deleted fork?)" >&2
          return 11; }
-  # Interpolated into a URL PATH, so it must be a well-formed pair before it goes anywhere near one.
+  # THIS SLUG GOES INTO A URL PATH, which is a stronger requirement than every other slug in this
+  # family faces — the base slug is only ever COMPARED. `adb_is_repo_slug` proves it is an
+  # `owner/repo` PAIR, which is necessary and not sufficient here: `a/..` is a well-formed pair and
+  # a path traversal, so the charset is checked too. Only reachable through a malformed API
+  # response, and that is exactly the input the guard exists for — the alternative is trusting a
+  # value this module did not construct to be safe in a position the rest of the file never puts one.
   adb_is_repo_slug "$slug" \
     || { echo "pr-watch: PR #$n reports a malformed head repository ('$slug')" >&2; return 20; }
+  case "$slug" in
+    *..*|*[!A-Za-z0-9._/-]*)
+      echo "pr-watch: PR #$n reports an unusable head repository ('$slug')" >&2; return 20 ;;
+  esac
 
   # `--method GET` with `-f` is REQUIRED, and the reason is the same trap the reactions read
   # documents: a bare `-f` makes `gh api` switch to POST. Here that would POST to the activity
@@ -344,14 +353,23 @@ head_anchor() {
     || { echo "pr-watch: could not read the ref activity of PR #$n" >&2; return 20; }
   # Fail loudly on a shape that is not the documented array — `error` here surfaces as rc 20 rather
   # than letting a wrapped error object iterate to zero matches and read as a clean "no anchor".
+  #
+  # EVERY MATCH IS FORMAT-CHECKED, NOT JUST THE WINNER, and the order matters: `sort` runs BEFORE
+  # any validation could, so a response mixing formats could hand `last` a lexically-later but
+  # chronologically-EARLIER record, and checking only the survivor would pass it — an anchor earlier
+  # than the truth is the permissive direction. Rejecting the whole read instead keeps `sort | last`
+  # sound by construction. (`is_utc_instant` re-checks the survivor in shell; that is belt and
+  # braces, this is the part that makes the comparison meaningful.)
   at="$(printf '%s' "$raw" | jq -r --arg sha "$head" --arg ref "refs/heads/$ref" '
       if type != "array" then error("activity response is not a JSON array") else . end
       | [ .[]
           | select((.after // "") == $sha)
           | select((.ref // "") == $ref)
           | (.timestamp // "") | select(length > 0) ]
+      | if any(.[]; test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") | not)
+        then error("activity carries a timestamp this module cannot order") else . end
       | sort | last // ""' 2>/dev/null)" \
-    || { echo "pr-watch: could not parse the ref activity of PR #$n" >&2; return 20; }
+    || { echo "pr-watch: could not parse the ref activity of PR #$n (or it carries an unorderable timestamp)" >&2; return 20; }
 
   # The ref match is belt AND braces on purpose: `ref=` is applied server-side, but a filter that is
   # ignored (a param renamed, an endpoint that stops honouring it) would silently widen this read to
@@ -550,6 +568,12 @@ EOF
   # right trade anyway: one rule over both date-scoped signals is checkable, whereas keeping the
   # client-supplied date "just for comments" would leave the forgeable input in the file for a path
   # whose output feeds the same callers.
+  #
+  # `anchor` IS DELIBERATELY LEFT UNSET UNTIL THIS BLOCK RUNS — do not "fix" that by initializing it
+  # to "". Every comparison below is `[ "$candidate" \> "$anchor" ]`, and every non-empty string is
+  # `\>` the empty one, so an empty default is precisely the fail-open spelling: it would report
+  # `clean` for any signal at all the moment a future edit let one of these comparisons run without
+  # an anchor. Unset means `set -u` aborts instead, which is the loud, correct failure.
   if [ -n "$commented" ] || [ -n "$plus1at" ]; then
     # Validate the CANDIDATES too, not only the anchor: a comparison is only as sound as its
     # weaker operand, and these are the values an unrecognized format would arrive in.
