@@ -255,8 +255,20 @@ EOF
 # The marker as it stands RIGHT NOW, versus what we parsed. Everything below acts on a read that
 # is already seconds old — old enough for two `gh` round-trips, and therefore old enough for the
 # owning session to open its PR, clear the marker, and for a NEXT run to write a different one in
-# its place. Re-ask before every irreversible act (emitting a hint, deleting the file) so the gate
-# can never speak for, or delete, a marker that is no longer the one it read.
+# its place. Re-ask before every irreversible act (emitting a hint, deleting the file).
+#
+# WHAT THIS DOES AND DOES NOT GUARANTEE. It closes the wide window — the seconds spanning the `gh`
+# calls, which is the one that actually fired. It is still check-then-act: a successor marker
+# written between this returning true and the `rm -f` on the next line would be deleted, because
+# `rm` resolves the PATH and not the file this compared. Shrinking the window from a network
+# round-trip to a few instructions is the whole of the improvement; it is not atomicity, and the
+# residual race is real rather than theoretical-in-principle.
+#
+# Not fixed here because the fix is not local: `cleanup-lib.sh marker-identity` re-captures at the
+# moment of deletion for the same file under the same assumption, so the correct shape is ONE
+# shared atomic release (claim by rename, verify, then delete or hand back) used by both consumers
+# — and a claim file in the state dir also owes `/cleanup`'s `state-scan` a classification. Tracked
+# in #206.
 #
 # Deliberately a raw byte compare rather than cleanup-lib.sh's `marker-identity` digest, which
 # models this same re-verify-at-the-moment-you-act rule for this same file. That one compares
