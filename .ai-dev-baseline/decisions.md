@@ -613,3 +613,58 @@ didn't already model, so any residual divergence stays visible and auditable.
              Claude-only today; the predicate is agent-neutral shell, so Codex/Gemini equivalents
              ride the enforcement-hooks epic (#14/#25).
 - baseline-issue: #195
+
+## D17 — run-marker ownership is a session id, and every absence fails toward enforcement
+- date:      2026-07-29
+- category:  project-delta
+- unknown:   The baseline had no model for **which session** a piece of run state belongs to. Every
+             workflow keyed its state to the checkout (a branch name), and the Stop hook read it
+             the same way — so in a clone with two Claude sessions, both matched the same marker.
+             That is not a hypothetical: a tracker-only session was instructed to `gh pr create`
+             against another session's branch that already had an open PR.
+- decision:  The `/implement-issue` run marker (and its blocked file) carry an `owner` — the id of
+             the SESSION that wrote them — and `implement-issue-gate.sh` compares it against its
+             own session before treating the marker as its own. Four sub-decisions are the load-
+             bearing ones, because each picks a failure DIRECTION and the wrong pick is silent:
+             (a) ABSENT OWNER FAILS TOWARD ENFORCEMENT, NOT INERT. A marker with no `owner` (an
+                 install predating the field, or an agent whose harness exposes no session id), or
+                 a hook that cannot identify its own session, falls back to the branch-name
+                 behaviour this gate always had. A false "mine" costs one misdirected hint; a false
+                 "not mine" silently switches the no-stop-until-PR invariant off. Enforcement code
+                 must not go quiet when it is unsure what it is looking at.
+             (b) NO PID FALLBACK, despite the filing issue suggesting `session_id` "falling back to
+                 pid". The writer is a tool-call shell and the hook is a separate process; neither
+                 derives the same pid, so a pid manufactures mismatches rather than resolving them.
+                 No id available → no `owner` key → (a).
+             (c) OWNERSHIP IS TRANSFERABLE. A resumed or successor session re-stamps `owner` on its
+                 next phase update. Without that, any session-id change would strand a live run's
+                 marker as permanently foreign — fail-open for the rest of the run, which is (a)'s
+                 failure by another route.
+             (d) THE BLOCKED FILE DEGRADES PERMISSIVE. Owners are compared only when BOTH files
+                 carry one; a mixed-vintage pair falls back to branch/issue. The directions are not
+                 symmetric here: a wrongly-REFUSED escape is an unstoppable turn, while a wrongly-
+                 granted one merely ends a turn early. This inverts (a) on purpose, because the
+                 blocked file is the escape hatch rather than the enforcement.
+             Identity is read env-first (`CLAUDE_CODE_SESSION_ID`) with the hook's stdin
+             `session_id` payload as fallback, and the payload read is BOUNDED — an open-but-silent
+             pipe would otherwise burn the hook's 30s budget, and a hook killed by its timeout
+             enforces nothing.
+- placement: `base/workflows/implement-issue.md` (the schema + writers, rendered to all three
+             agents) + `agents/claude/scripts/implement-issue-gate.sh` (the reader) +
+             `scripts/check-implement-gate.sh` (regression tests).
+- reason:    A checkout is a working-tree property and a run is a session property; keying one to
+             the other is the whole defect. The field is Claude-consumed today because the Stop
+             hook is, which puts it squarely in the "enforcement references stay agent-literal
+             until #14/#25" carve-out `base/workflows/README.md` already documents — so it needed
+             no new `{{PLACEHOLDER}}` and no new config surface.
+- known-gap: Ownership makes the READER safe, not the PATH exclusive. Two real runs in one
+             checkout still collide on the fixed state filenames, and preflight's unconditional
+             clear can delete a live foreign marker before any ownership check sees it. Tracked in
+             #202. The reason to defer is NOT that a crashed run's marker would become uncleanable
+             — `cleanup-lib.sh state-verdict marker` reaps a stale marker from PR state and branch
+             refs, with no session liveness involved, so `/cleanup` is a second cleaner. It is that
+             per-run state paths would be solving the wrong problem: two `/implement-issue` runs in
+             one checkout share ONE HEAD, so they fight over the branch whether or not their state
+             files collide. #202's likely resolution is therefore "refuse to start a second run"
+             (which wants #159's liveness read), not per-session filenames.
+- baseline-issue: #180

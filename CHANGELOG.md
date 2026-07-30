@@ -84,6 +84,63 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The `/implement-issue` run marker is owned by a session, not by a checkout** (#180, D17).
+  `implement-issue-gate.sh` decided whether the active-run marker was its own by comparing branch
+  names — but a checkout is a **working-tree** property, so every session in one clone matched the
+  **same** marker. Two live reproductions, an hour apart: a tracker-only session that had never run
+  `/implement-issue` was instructed to `gh pr create` against another session's branch that
+  *already had an open PR*, and the blocked-marker escape at the same keying meant one session's
+  give-up would have ended another session's healthy run.
+  - The marker and its blocked file now carry an **`owner`** — the id of the session that wrote
+    them — and the gate compares it against its own session before reading the marker as its own.
+    A foreign marker is left strictly alone: not acted on, not deleted, never overwritten. Identity
+    is read env-first (`CLAUDE_CODE_SESSION_ID`) with the Stop-hook stdin payload's `session_id` as
+    fallback, and that read is **bounded** — an open-but-silent pipe would otherwise burn the
+    hook's 30s budget, and a hook killed by its timeout enforces nothing.
+  - **Every absence picks a failure direction on purpose**, because the wrong pick is silent. An
+    unowned marker (an install predating the field, or an agent whose harness has no session id),
+    or a hook that cannot identify itself, falls back to the branch-name behaviour the gate always
+    had: going inert would switch the no-stop-until-PR invariant **off** for those runs, and a
+    false "mine" costs one misdirected hint where a false "not mine" costs the invariant. The
+    **blocked file inverts this** and degrades *permissive* (owners compared only when both carry
+    one) — a wrongly refused escape is an **unstoppable turn**. Ownership also **transfers**, so a
+    resumed session reclaims its run at the next phase update instead of being locked out of it.
+  - **No pid fallback**, despite the issue proposing `session_id` "falling back to pid": the writer
+    is a tool-call shell and the hook a separate process, so neither derives the same pid and a pid
+    would manufacture mismatches rather than resolve them. No id available → no `owner` key.
+  - Also closes the **staleness** half. The marker is read **once** into a snapshot instead of
+    through four separate `jq` calls (a concurrent delete used to hand back a half-read marker that
+    still looked well-formed enough to nag about), and that snapshot is re-verified immediately
+    before the hook speaks **and** before every `rm -f`. A marker that vanished or was replaced
+    mid-hook now produces **silence**, and a replacement marker is never deleted. A failed branch
+    lookup now reports that it *could not check* rather than asserting no PR exists
+    (`verify-before-asserting.md` — #44 covered the completion direction, never this one).
+  - **Hardened the marker parse, because the ownership decision is decoded by position.** The five
+    fields arrive as newline-separated `jq` output and `owner` is **last**, so one embedded newline
+    re-aims the ownership test: a `prUrl` carrying a warning line above the URL made a run's own
+    marker look foreign (invariant off), and a newline in `branch` pushed `owner` off the end so a
+    foreign marker read as unowned — the original defect, returning. A newline in a field that
+    gates a decision now refuses the marker; one in `prUrl` (which gates nothing — the live lookup
+    is authoritative) is dropped to empty so enforcement continues. The same pass restores the
+    non-object rejection that folding `jq -e .` into the extract had silently dropped: a `null` or
+    whitespace-only marker used to yield five empty fields, skip both the owner check and the branch
+    guard, and nag about issue `#` on branch `` in **every** session in the checkout.
+  - `live_pr` is keyed on `gh`'s **exit status**, not on whether it wrote to stderr. Keying on
+    stderr looked equivalent and was not: a silent `gh` failure — and, worse, a temp file that could
+    not be created, which made the `2>` redirection fail so `gh` never ran at all — both produced
+    the confident "has not opened a PR yet". Its stderr capture also moved out of the repo into
+    `TMPDIR`, since the repo directory is not guaranteed writable.
+  - 48 new fixtures in `scripts/check-implement-gate.sh`, each mutation-verified against a
+    deliberately broken gate. Every invocation is fed an explicit stdin and an explicit session
+    identity, so the suite can neither block on an inherited terminal nor pass because of whoever
+    happened to run it — and two properties that three prose passages claimed are now asserted: that
+    the env var **wins** over a conflicting stdin payload, and that an stdin pipe which never closes
+    cannot hang the hook past its bound.
+  - **Scope is one active run plus unrelated sessions.** Two *concurrent* runs in one checkout
+    still collide on the fixed state filenames before ownership can help — separating a live
+    foreign marker from a dead one is liveness detection, and an owner-aware preflight without it
+    would leave a crashed run's marker uncleanable. Tracked in #202.
+
 - **`/roadmap` no longer drops a dependency edge that carries markdown emphasis** (#112).
   `roadmap-lib.sh deps-from-body` required the `#N` to sit directly after the keyword, so
   `Depends on **#52**`, `**Depends on:** #78`, `` Depends on `#52` `` and `- **Blocked by** #155`

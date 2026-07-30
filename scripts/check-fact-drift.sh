@@ -320,4 +320,29 @@ done
 fact currency-outcomes regex:'updated\|repaired\)' -- agents/claude/scripts/session-currency.sh
 fact currency-outcomes regex:'busy\|offline\)'     -- agents/claude/scripts/session-currency.sh
 
+# --- FACT: run-marker ownership (#180) ---------------------------------------
+# The marker's `owner` only works because the WRITER and the READER name the same session id. The
+# writer is prose an agent executes (`base/workflows/implement-issue.md`); the reader is the Stop
+# hook. Nothing else couples them: rename the variable on one side and the field keeps being
+# written, keeps being read as empty, and the gate silently reverts to matching every session in
+# the checkout — the exact defect this shipped to fix, back with no test failing. The rendered
+# skills are pinned too, so a render that drops the writer fails loudly rather than quietly
+# shipping an agent that never stamps an owner.
+#
+# EXPECTED TO CHANGE at #14/#25. Pinning a Claude env-var name in the Codex/Gemini renders is only
+# right while `owner` has no reader outside Claude; once those agents get their own enforcement
+# hook the writer becomes a placeholder and this rule must narrow to the Claude render. A failure
+# here at that point is this tripwire working — see base/workflows/README.md's carve-out list.
+_own_all="base/workflows/implement-issue.md agents/claude/scripts/implement-issue-gate.sh"
+for _a in claude codex gemini; do _own_all="$_own_all agents/$_a/skills/implement-issue/SKILL.md"; done
+# shellcheck disable=SC2086  # deliberate word-split of the space-separated file list
+fact marker-owner-env fixed:'CLAUDE_CODE_SESSION_ID' -- $_own_all
+# The field NAME, pinned at the read. Renaming `owner` in the workflow while the hook keeps
+# reading `.owner` leaves both halves working and the comparison permanently empty.
+fact marker-owner-field fixed:'.owner // ""' -- agents/claude/scripts/implement-issue-gate.sh
+# Deliberately NOT pinned here: the absent-owner direction (fall back to enforcement, never inert).
+# It is a DIRECTION, not a token, and a word-presence rule over prose is the "general prose
+# blocklist" this lint's header warns against. `scripts/check-implement-gate.sh` cases N and O
+# assert it against the real gate, which is the stronger guard.
+
 check_result "canonical facts consistent across their consumers"

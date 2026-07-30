@@ -115,6 +115,15 @@ renderer/enforcement follow-ups, not this pass:
   the tool under review, not the workflow's own mechanics. *(The "run the configured review
   agent" primitive is now neutral — workflows resolve + shell out via `{{ROLE_DISPATCH}}`, the
   runtime role-dispatch helper, #15.)*
+- A Claude-specific **environment variable read inside a bash block every agent runs** — today
+  just `$CLAUDE_CODE_SESSION_ID`, which `/implement-issue` stamps into its run marker as `owner`
+  so the Claude Stop hook can tell its own run's marker from a sibling session's (#180). This is
+  a different kind from the entries above (they are prose an agent *reads* or a path it
+  *inspects*; this one *executes*), and it is only tolerable because it degrades correctly: an
+  agent whose harness does not set it writes no `owner` key, and the field has no reader outside
+  Claude until #14/#25 gives the other agents a hook. **`scripts/check-fact-drift.sh` pins the
+  literal name in all three rendered skills**, so neutralizing this is expected to change that
+  rule — the lint failing at that point is the tripwire working, not a regression.
 
 ### Step headings are project-override anchors
 

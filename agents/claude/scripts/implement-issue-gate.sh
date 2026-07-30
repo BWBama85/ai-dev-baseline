@@ -14,11 +14,22 @@
 #   `claude --version` (which reports the newest INSTALLED build).
 #
 # No-op (exit 0) when: not in a git repo; the repo ships its own copy of this
-# gate; there is no active marker; the marker is malformed; the marker's branch
-# isn't the checked-out branch; a matching blocked file exists; the run's PR is
+# gate; there is no active marker; the marker is malformed; the marker belongs to
+# ANOTHER session sharing this checkout (#180); the marker's branch isn't the
+# checked-out branch; the marker vanished or was replaced while this hook was
+# running (#180); a matching blocked file exists; the run's PR is
 # confirmed LIVE (this run's PR, still OPEN or MERGED — a stored prUrl is re-verified
 # with gh, never trusted on its own, #44); or there are uncommitted changes (defer to
 # precommit-gate so the two hooks never stack contradictory messages).
+#
+# OWNERSHIP (#180). A checkout is a working-tree property, not a session property: every
+# session in one clone sees the same `git branch --show-current`, so matching a marker on
+# branch name alone made EVERY session match the SAME marker. That is not hypothetical —
+# a tracker-only session that had never run /implement-issue was told to `gh pr create`
+# on another session's branch that already had an open PR. The marker therefore carries
+# an `owner` (the writing session's id) and this gate compares it against its own session
+# before reading the marker as its own. A marker that is not ours is left strictly alone:
+# not acted on, not deleted, and never overwritten with a blocked file.
 #
 # State files (written by the implement-issue skill), both gitignored:
 #   .claude/state/implement-issue-active.json    — in-flight run marker
@@ -70,6 +81,61 @@ stop_hook_additional_context_supported() {
   adb_version_ge "$ver" "2.1.163"
 }
 
+# Identify the session this hook is firing for (#180). Claude Code publishes the session id two
+# ways — as CLAUDE_CODE_SESSION_ID in every subprocess it spawns, and as `.session_id` in the JSON
+# payload it pipes to a hook's stdin (the same value that names the transcript). Prefer the ENV
+# var: it is free, and unlike the payload it does not consume stdin. The payload is the fallback
+# for a host that supplies only that, and the read is BOUNDED — a pipe that is open but never
+# closed would otherwise burn this hook's whole 30s budget, and a hook killed by its timeout
+# enforces nothing. `[ -t 0 ]` alone does not cover that case, which is why the bound is here too.
+#
+# Prints the id, or NOTHING when this host offers neither. Empty is a real answer meaning "I
+# cannot identify myself" — never a mismatch. See marker_is_mine.
+this_session() {
+  local payload=""
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    printf '%s\n' "$CLAUDE_CODE_SESSION_ID"
+    return 0
+  fi
+  [ -t 0 ] && return 0
+  # `-d ''` reads to EOF (the payload carries no NUL); the non-zero status on EOF is expected and
+  # the variable holds what arrived. On TIMEOUT, though, bash 3.2 — the macOS system bash this repo
+  # targets — DISCARDS the partial input, where bash >= 4.2 keeps it. So a pipe that stays open
+  # yields nothing here rather than a truncated id, and the caller correctly reads that as "cannot
+  # identify myself" (branch-name matching) instead of comparing against half a session id. The
+  # bound's job is to keep the hook alive, not to salvage the read. jq is guaranteed — the caller
+  # runs only after this script's own jq check.
+  IFS= read -r -d '' -t 5 payload || true
+  [ -n "$payload" ] || return 0
+  printf '%s' "$payload" | jq -r '.session_id // ""' 2>/dev/null || true
+}
+
+# Do two session ids permit acting? Usage: owners_compatible <id-a> <id-b>
+#
+# Returns 1 ONLY when BOTH ids are known and they differ — the one case that proves two different
+# sessions are involved. Every other combination returns 0 (go ahead), and that direction is
+# deliberate:
+#
+#   - An id is absent. Either the file predates #180 or the driving agent's harness exposes no
+#     session id. Fall back to the branch-name behavior this gate has always had.
+#   - This host cannot identify its own session. Same fallback, same reason.
+#
+# Failing toward ENFORCEMENT rather than toward inert is the whole point: a false "mine" costs one
+# misdirected hint, while a false "not mine" silently switches the no-stop-until-PR invariant off
+# for a run that still needs it. Note there is deliberately no pid fallback — the marker's writer
+# (a tool-call shell) and this hook cannot derive the same pid, so a pid would manufacture
+# mismatches rather than resolve them.
+#
+# Two callers, one rule: "is the active marker mine?" and "was this blocked file written by the
+# session that owns the marker?". Both are the same question about two ids, so they share it
+# rather than each spelling out the three-way comparison.
+owners_compatible() {
+  local a="$1" b="$2"
+  [ -n "$a" ] || return 0
+  [ -n "$b" ] || return 0
+  [ "$a" = "$b" ]
+}
+
 # Verify a STORED PR reference against LIVE GitHub state (verify-before-asserting.md, #44):
 # a recorded prUrl proves a PR was OPENED, not that it still stands. Echoes exactly one word:
 #   satisfied  — the stored PR is this run's PR (this repo + this branch) AND is OPEN or MERGED
@@ -96,6 +162,9 @@ pr_stored_state() {
   rm -f "$err"
   # One jq pass emits the four fields, one per line (an empty field stays an empty line, so an
   # absent mergedAt can't shift the others) — 1 jq spawn instead of 4 on every gated turn-end.
+  # Pre-initialised for the reason spelled out at the marker parse below (trailing-newline
+  # stripping + `set -u`).
+  state=""; merged=""; head=""; pr_url=""
   { read -r state; read -r merged; read -r head; read -r pr_url; } <<EOF
 $(printf '%s' "$pr_json" | jq -r '.state // "", .mergedAt // "", .headRefName // "", .url // ""')
 EOF
@@ -118,15 +187,110 @@ if ! command -v jq >/dev/null 2>&1; then
   printf 'implement-issue-gate: jq not on PATH; cannot parse %s — passing\n' "$marker" >&2
   exit 0
 fi
-if ! jq -e . "$marker" >/dev/null 2>&1; then
-  printf 'implement-issue-gate: %s is not valid JSON — passing; delete it if stale\n' "$marker" >&2
+
+# Read the marker ONCE, into a snapshot (#180). Four separate `jq … "$marker"` reads meant a
+# concurrent delete could hand back a mix of populated and empty fields — a half-read marker that
+# still looked well-formed enough to nag about. One read makes the parse atomic with respect to
+# the file, and keeping the raw bytes gives every later step something to re-verify against.
+# An absent or empty read is SILENCE, never a nag: the file vanishing between `-f` and here means
+# the owning run just finished, which is the opposite of a run that needs pushing along.
+#
+# `$(<file)` not `$(cat file)`: a builtin read costs no fork, and this runs at EVERY turn-end.
+# The braces carry the redirection because bash reports a missing file itself; the result is
+# empty either way, which is the case the line below wants.
+{ marker_snap="$(<"$marker")"; } 2>/dev/null
+[ -n "$marker_snap" ] || exit 0
+
+# ONE jq pass validates AND extracts, and it has to do three jobs that a bare
+# `.branch // "", …` list does not:
+#
+#   1. REJECT A NON-OBJECT. `jq -r` exits 0 on a top-level `null` (`null.branch` is `null`), on a
+#      bare number and on whitespace-only input (zero values read, so the program never runs). Each
+#      would yield five empty fields, and empty fields skip both the owner check and the
+#      branch-match guard below — so a `null` marker used to emit a keep-going hint naming issue
+#      `#` on branch `` in EVERY session and on every branch in the checkout. `jq -e .` used to
+#      catch this; folding validation into the extract silently dropped it.
+#   2. REJECT A NEWLINE IN A DECISION FIELD. The five values are decoded BY POSITION from
+#      newline-separated output, so one embedded newline shifts every later field — and `owner` is
+#      last. A `prUrl` carrying a warning line above the URL therefore made `owner` read as the URL
+#      and the run's OWN marker look foreign (invariant silently off); a newline in `branch` shifted
+#      `owner` off the end entirely and made a FOREIGN marker read as unowned, which is the #180
+#      defect returning. Neither is hypothetical: nothing validates what the run writes there.
+#   3. TOLERATE A NEWLINE IN `prUrl` SPECIFICALLY, by dropping it to empty rather than failing the
+#      whole marker. `prUrl` gates no comparison — the live branch lookup below is authoritative —
+#      so a malformed one costs nothing, and rejecting the marker over it would switch enforcement
+#      off for a run that is otherwise perfectly readable.
+#
+# `s` coerces null to "" and keeps a numeric `issue` as its digits (a hand-written marker may write
+# `"issue": 180` unquoted), so the coercion cannot itself become a silent field change.
+_marker_jq='
+  def s: if . == null then "" elif type == "string" then . else tostring end;
+  if type != "object" then error("not an object") else . end
+  | { b: (.branch|s), i: (.issue|s), p: (.phase|s), u: (.prUrl|s), o: (.owner|s) }
+  | if ([.b, .i, .p, .o] | map(test("\n")) | any) then error("newline in a decision field") else . end
+  | [ .b, .i, (if .p == "" then "unknown" else .p end),
+      (if (.u | test("\n")) then "" else .u end), .o ]
+  | .[]'
+marker_fields="$(printf '%s' "$marker_snap" | jq -r "$_marker_jq" 2>/dev/null)" || marker_fields=""
+if [ -z "$marker_fields" ]; then
+  printf 'implement-issue-gate: %s is not a usable marker (malformed JSON, not an object, or a newline in branch/issue/phase/owner) — passing; delete it if stale\n' "$marker" >&2
   exit 0
 fi
 
-marker_branch="$(jq -r '.branch // ""' "$marker")"
-marker_issue="$(jq -r '.issue // ""' "$marker")"
-marker_phase="$(jq -r '.phase // "unknown"' "$marker")"
-marker_pr_url="$(jq -r '.prUrl // ""' "$marker")"
+# Pre-initialised because `$(…)` strips TRAILING newlines: with an empty prUrl and owner the
+# substitution yields three lines, the last two `read`s hit EOF, and under `set -u` the first
+# reference to an unset var would abort the hook — i.e. an ordinary ownerless marker would crash
+# the gate rather than enforce it. Seeding the names makes a short read mean "empty", which is
+# exactly what jq emitted, and keeps the block safe against a future field reorder.
+#
+# `IFS=` on every read so a value is taken byte-exact: under the default IFS, `"owner": "abc "`
+# would be trimmed to `abc` and compare EQUAL to session `abc`. That direction happens to favour
+# enforcement, but an ownership test that quietly ignores bytes is not one worth reasoning about.
+marker_branch=""; marker_issue=""; marker_phase="unknown"; marker_pr_url=""; marker_owner=""
+{ IFS= read -r marker_branch; IFS= read -r marker_issue; IFS= read -r marker_phase
+  IFS= read -r marker_pr_url; IFS= read -r marker_owner; } <<EOF
+$marker_fields
+EOF
+
+# The marker as it stands RIGHT NOW, versus what we parsed. Everything below acts on a read that
+# is already seconds old — old enough for two `gh` round-trips, and therefore old enough for the
+# owning session to open its PR, clear the marker, and for a NEXT run to write a different one in
+# its place. Re-ask before every irreversible act (emitting a hint, deleting the file).
+#
+# WHAT THIS DOES AND DOES NOT GUARANTEE. It closes the wide window — the seconds spanning the `gh`
+# calls, which is the one that actually fired. It is still check-then-act: a successor marker
+# written between this returning true and the `rm -f` on the next line would be deleted, because
+# `rm` resolves the PATH and not the file this compared. Shrinking the window from a network
+# round-trip to a few instructions is the whole of the improvement; it is not atomicity, and the
+# residual race is real rather than theoretical-in-principle.
+#
+# Not fixed here because the fix is not local: `cleanup-lib.sh marker-identity` re-captures at the
+# moment of deletion for the same file under the same assumption, so the correct shape is ONE
+# shared atomic release (claim by rename, verify, then delete or hand back) used by both consumers
+# — and a claim file in the state dir also owes `/cleanup`'s `state-scan` a classification. Tracked
+# in #206.
+#
+# Deliberately a raw byte compare rather than cleanup-lib.sh's `marker-identity` digest, which
+# models this same re-verify-at-the-moment-you-act rule for this same file. That one compares
+# across two PROCESSES and so needs a portable digest; both comparison points here are in one
+# process holding the bytes already, so comparing them is stronger than a 32-bit checksum, needs
+# no subprocess, and keeps this hook working when `lib/` is missing. If you change the rule in
+# one place, the twin is `cleanup-lib.sh`'s `cmd_marker_identity`.
+marker_unchanged() {
+  local now=""
+  { now="$(<"$marker")"; } 2>/dev/null
+  [ -n "$now" ] && [ "$now" = "$marker_snap" ]
+}
+
+# Whose marker is this? The id is only consulted when the marker actually claims an owner, so an
+# ownerless marker never pays for the lookup — and, on the stdin-fallback path, never risks the
+# bounded read's worst case.
+this_sid=""
+[ -n "$marker_owner" ] && this_sid="$(this_session)"
+if ! owners_compatible "$marker_owner" "$this_sid"; then
+  exit 0
+fi
+
 current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
 
 # Unrelated turn — leave the marker so the original run can resume on its branch.
@@ -134,20 +298,48 @@ if [ -n "$marker_branch" ] && [ "$marker_branch" != "$current_branch" ]; then
   exit 0
 fi
 
+# From here on the marker is ours AND its branch is the checked-out one, so the two names are
+# interchangeable. Use the marker's own branch for the live lookups anyway: it is the RUN's
+# branch, which is what the PR question is actually about, and it keeps the lookups correct if
+# the guard above is ever relaxed.
+run_branch="${marker_branch:-$current_branch}"
+
 # Legitimate stop — but only if the blocked file references THIS run (a stale
 # blocked file from an aborted prior run must not grant a free pass).
+#
+# Owner-aware too (#180): the blocked escape was keyed to branch/issue alone, so in a shared
+# checkout ONE session's give-up handed EVERY session a free pass — one agent's "I'm stuck"
+# silently switched off another agent's healthy run. `owners_compatible` compares them only when
+# BOTH files carry an owner, so a mixed-vintage pair (one written before this field existed, one
+# after) falls back to branch/issue rather than being rejected. That INVERTS the direction chosen
+# for the active marker, on purpose: this is the escape hatch, not the enforcement, and the
+# failure modes are not symmetric — a wrongly-REFUSED escape is an UNSTOPPABLE turn, while a
+# wrongly-granted one merely ends a turn early.
+#
+# Read once, for the same reason the marker is: the file can be replaced between the validity
+# check and the field reads.
 if [ -f "$blocked" ]; then
-  blocked_legit="no"
-  if jq -e . "$blocked" >/dev/null 2>&1; then
-    blocked_branch="$(jq -r '.branch // ""' "$blocked")"
-    blocked_issue="$(jq -r '.issue // ""' "$blocked")"
-    if { [ -n "$blocked_branch" ] && [ "$blocked_branch" = "$marker_branch" ]; } \
-       || { [ -n "$blocked_issue" ] && [ "$blocked_issue" = "$marker_issue" ]; }; then
-      blocked_legit="yes"
+  blocked_why="unreadable, empty, or not a JSON object"
+  blocked_snap=""
+  { blocked_snap="$(<"$blocked")"; } 2>/dev/null
+  # Same non-object / empty-output guard as the marker: `jq -r` exits 0 on `null` and on
+  # whitespace-only input, so status alone would report an unreadable file as a branch mismatch.
+  blocked_fields="$(printf '%s' "$blocked_snap" | jq -r 'if type != "object" then error("not an object") else . end | .branch // "", .issue // "", .owner // ""' 2>/dev/null)" || blocked_fields=""
+  if [ -n "$blocked_fields" ]; then
+    blocked_branch=""; blocked_issue=""; blocked_owner=""
+    { IFS= read -r blocked_branch; IFS= read -r blocked_issue; IFS= read -r blocked_owner; } <<EOF
+$blocked_fields
+EOF
+    if ! owners_compatible "$blocked_owner" "$marker_owner"; then
+      blocked_why="written by another session"
+    elif { [ -n "$blocked_branch" ] && [ "$blocked_branch" = "$marker_branch" ]; } \
+      || { [ -n "$blocked_issue" ] && [ "$blocked_issue" = "$marker_issue" ]; }; then
+      exit 0
+    else
+      blocked_why="branch/issue does not match marker"
     fi
   fi
-  if [ "$blocked_legit" = "yes" ]; then exit 0; fi
-  printf 'implement-issue-gate: ignoring stale %s (branch/issue does not match marker)\n' "$blocked" >&2
+  printf 'implement-issue-gate: ignoring stale %s (%s)\n' "$blocked" "$blocked_why" >&2
 fi
 
 # A recorded prUrl (or phase=complete) means the run BELIEVES a PR was opened — but that is
@@ -158,10 +350,15 @@ fi
 # keep-going hint. `stored_pr` records what we observed so the hint can name it. phase=complete
 # is NO LONGER trusted on its own: it must be backed by a live-verified PR, or the run keeps
 # going (a "complete" marker over a closed-without-merge PR is exactly the #44 failure).
+#
+# The satisfied path CLEARS the marker, so it re-verifies the snapshot first (#180): the `gh`
+# round-trip above is long enough for this run to finish and the NEXT run to write its own marker
+# here, and deleting that one would silently disarm a run that never even started when we read.
+# A changed marker is somebody else's business — leave it and stop quietly.
 stored_pr="none"
 if [ -n "$marker_pr_url" ]; then
-  case "$(pr_stored_state "$current_branch" "$marker_pr_url")" in
-    satisfied) rm -f "$marker" 2>/dev/null || true; exit 0 ;;
+  case "$(pr_stored_state "$run_branch" "$marker_pr_url")" in
+    satisfied) marker_unchanged && { rm -f "$marker" 2>/dev/null || true; }; exit 0 ;;
     closed)    stored_pr="closed" ;;
     *)         stored_pr="unverified" ;;
   esac
@@ -172,21 +369,48 @@ fi
 # the stored one was closed. Authoritative source, queried at the moment of use. Only OPEN is
 # accepted here (a merged PR for a reused branch name must not falsely satisfy — the stored-URL
 # path above already credits a legitimately merged PR for THIS run).
+#
+# `live_pr` records whether this lookup actually RAN, which the hint below needs. Absent `gh`, or
+# a lookup that errored, is "I could not check" — not "there is no PR". Reporting the second from
+# the first is precisely the unsourced status claim verify-before-asserting.md forbids.
+#
+# Keyed on gh's EXIT STATUS, never on whether it wrote to stderr. Keying on stderr looked
+# equivalent and was not: a `gh` that failed silently, and — worse — a temp file that could not be
+# created at all (a read-only `.claude/state`, which made the `2>` redirection fail so gh NEVER
+# RAN), both left `live_pr=none` and produced the confident "has not opened a PR yet". The stderr
+# capture is now only ever a diagnostic; the temp file lives in TMPDIR because the repo directory
+# is not guaranteed writable, and losing it must not cost us the lookup.
+live_pr="none"
+
+# Filter to SAME-REPO PRs (isCrossRepository==false): --head matches by branch NAME only, so in a
+# fork-accepting repo an unrelated fork PR with the same branch name would otherwise be taken as
+# this run's replacement PR and wrongly satisfy the invariant. This mirrors the this-repo check the
+# stored-URL path enforces. Wrapped in a function so the fallback path below can reuse it verbatim
+# rather than restating the query. Status is gh's own.
+gh_open_pr_url() {  # <branch> <stderr-path>
+  gh pr list --head "$1" --state open --json url,isCrossRepository \
+    --jq '[.[] | select(.isCrossRepository==false)][0].url // ""' 2>"$2"
+}
+
 if command -v gh >/dev/null 2>&1; then
-  gh_err="$(mktemp .claude/state/gh-err.XXXXXX 2>/dev/null || echo ".claude/state/gh-err.$$")"
-  # Filter to SAME-REPO PRs (isCrossRepository==false): --head matches by branch NAME only, so
-  # in a fork-accepting repo an unrelated fork PR with the same branch name would otherwise be
-  # taken as this run's replacement PR and wrongly satisfy the invariant. This mirrors the
-  # this-repo check the stored-URL path enforces.
-  pr_url="$(gh pr list --head "$current_branch" --state open --json url,isCrossRepository --jq '[.[] | select(.isCrossRepository==false)][0].url // ""' 2>"$gh_err" || true)"
-  if [ -n "$pr_url" ]; then
-    rm -f "$marker" "$gh_err" 2>/dev/null || true
+  gh_err="$(mktemp "${TMPDIR:-/tmp}/adb-gh-err.XXXXXX" 2>/dev/null)" || gh_err=""
+  if [ -n "$gh_err" ]; then
+    pr_url="$(gh_open_pr_url "$run_branch" "$gh_err")" || live_pr="unchecked"
+    if [ -s "$gh_err" ]; then
+      printf 'implement-issue-gate: gh branch lookup failed: %s\n' "$(head -c 500 "$gh_err")" >&2
+      live_pr="unchecked"
+    fi
+    rm -f "$gh_err" 2>/dev/null || true
+  else
+    pr_url="$(gh_open_pr_url "$run_branch" /dev/null)" || live_pr="unchecked"
+  fi
+  if [ -n "$pr_url" ] && [ "$live_pr" != "unchecked" ]; then
+    marker_unchanged && { rm -f "$marker" 2>/dev/null || true; }
     exit 0
   fi
-  if [ -s "$gh_err" ]; then
-    printf 'implement-issue-gate: gh branch lookup failed: %s\n' "$(head -c 500 "$gh_err")" >&2
-  fi
-  rm -f "$gh_err" 2>/dev/null || true
+else
+  printf 'implement-issue-gate: gh not on PATH — cannot confirm whether a PR exists for %s\n' "$run_branch" >&2
+  live_pr="unchecked"
 fi
 
 # Defer to precommit-gate when there are uncommitted changes AND no PR was ever recorded —
@@ -200,18 +424,36 @@ if [ "$stored_pr" = "none" ] && [ -n "$(git status --porcelain 2>/dev/null)" ]; 
   exit 0
 fi
 
+# LAST look before speaking (#180). Everything above is derived from a marker read before two `gh`
+# round-trips, and in a shared checkout the owning session can finish inside that window. Gone or
+# replaced → say NOTHING. Silence is the correct failure here: a run that needs pushing along will
+# still have its marker at the next turn-end, so the only thing lost is one turn of enforcement,
+# whereas a wrong instruction is acted on immediately.
+if ! marker_unchanged; then
+  exit 0
+fi
+
 # Invariant unmet: no PR, not blocked, tree clean. Emit the resume hint. Built as
 # a function (not inline command-substitution) to dodge macOS bash 3.2's heredoc
 # apostrophe-parsing bug.
 emit_resume_hint() {
-  local lead
+  local lead unchecked=""
+  # Every arm below has to survive a FAILED replacement lookup, not just the no-stored-PR one: the
+  # closed/unverified arms tell the agent to open a replacement PR, and if the branch lookup errored
+  # we have no idea whether one already exists. Saying so is the difference between a hint and an
+  # unsourced claim.
+  [ "$live_pr" = "unchecked" ] && unchecked=" NOTE: the live check for an existing PR on this branch could not be run (gh missing, offline, or the lookup errored), so nothing here proves one does not already exist — confirm with 'gh pr list --head ${marker_branch}' before opening anything."
   case "$stored_pr" in
     closed)
-      lead="the implement-issue run for #${marker_issue} on branch ${marker_branch} recorded a PR that is now CLOSED without merging — the run is NOT complete. Reopen it or open a replacement PR; do not stop here." ;;
+      lead="the implement-issue run for #${marker_issue} on branch ${marker_branch} recorded a PR that is now CLOSED without merging — the run is NOT complete. Reopen it or open a replacement PR; do not stop here.${unchecked}" ;;
     unverified)
-      lead="the implement-issue run for #${marker_issue} on branch ${marker_branch} recorded a PR whose live state could not be verified (gh offline/error, PR not found, or it isn't this run's PR) — not proven complete, so do not stop here. Verify with 'gh pr view' or open a PR. Only a genuine, prolonged GitHub outage is a legitimate stop: retry, then write .claude/state/implement-issue-blocked.json." ;;
+      lead="the implement-issue run for #${marker_issue} on branch ${marker_branch} recorded a PR whose live state could not be verified (gh offline/error, PR not found, or it isn't this run's PR) — not proven complete, so do not stop here. Verify with 'gh pr view' or open a PR. Only a genuine, prolonged GitHub outage is a legitimate stop: retry, then write .claude/state/implement-issue-blocked.json.${unchecked}" ;;
     *)
-      lead="the implement-issue run for #${marker_issue} on branch ${marker_branch} has not opened a PR yet — keep going, don't stop here." ;;
+      if [ "$live_pr" = "unchecked" ]; then
+        lead="the implement-issue run for #${marker_issue} on branch ${marker_branch} could not be checked for an open PR (gh missing, offline, or the lookup errored) — that is NOT proof no PR exists, so do not stop on it. Confirm with 'gh pr list --head ${marker_branch}' before deciding, and open the PR if there really isn't one."
+      else
+        lead="the implement-issue run for #${marker_issue} on branch ${marker_branch} has not opened a PR yet — keep going, don't stop here."
+      fi ;;
   esac
   cat <<EOF
 implement-issue-gate: ${lead}
