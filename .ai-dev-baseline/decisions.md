@@ -914,3 +914,74 @@ didn't already model, so any residual divergence stays visible and auditable.
              any automatic arming. Automatic re-arming is #168, an open owner decision, and
              per-reviewer signal profiles are #186.
 - baseline-issue: #167, #185
+
+## D21 — the in-session reviewer is the model that did NOT write the diff, and an absent CLI is a rung, not a failure
+- date:      2026-07-30
+- category:  project-delta
+- unknown:   `agents.toml` shipped `primary = "claude"` alongside `review = ["claude"]`, so the
+             prescribed in-session review was Claude checking Claude — the implementer grading its
+             own work. Both vendors' published prompting guidance argues against that arrangement
+             from opposite ends: Anthropic's Opus 5 guidance asks that explicit verification
+             scaffolding be REMOVED from Claude's instructions (it self-corrects natively and
+             over-verifies when told to), while OpenAI's asks Codex for exactly the named-checklist,
+             required-vs-optional pass this slot runs. Read together they are not a conflict but an
+             assignment. What the baseline did not model was the consequence: pointing `review` at
+             an agent whose CLI may not be installed, in a step that runs AFTER the branch, the
+             commits and the gates.
+- decision:  Three things, and the second is the one that makes the first safe.
+
+             (1) THE SHIPPED MANIFEST DEFAULT MOVES to `review = ["codex"]`
+             (`templates/agents.toml`, this repo's `agents.toml`, and the global manifest
+             `install.sh` copies from the template). The RESOLVER's built-in fallback for an unset
+             `review` is deliberately UNCHANGED — still the primary's own pass — so a repo with no
+             manifest at all is untouched. These are two different "defaults" and only one moved.
+
+             (2) CAPABILITY BECOMES A THIRD QUESTION, asked before dispatch.
+             `role-dispatch.sh available <agent>` answers "is this agent's CLI on PATH here?"
+             (0/1/2), separate from `resolve` ("who is assigned") and from an `invoke` rc ("did the
+             agent fail"). Step 8 asks it FIRST and reports a rung — independent · same-model ·
+             deferred to the PR layer · none — instead of discovering the answer as a 127 that
+             classify_rc quite correctly calls "a real agent/CLI error": accurate about the exit,
+             wrong about the cause, and arriving at the most expensive possible moment. An absent
+             CLI therefore never writes a blocked marker. A reviewer that RAN and did not return
+             still does; the two are different facts and the step names which one happened.
+
+             (3) A SAME-AGENT SLOT IS LABELLED, NOT DELETED. The `claude` review arm stays
+             implemented and supported, because removing it would strand every installed project
+             that still carries `review = ["claude"]` (neither `install.sh` nor `agent-init`
+             rewrites an existing manifest) AND the legitimate Codex-primary-reviews-with-Claude
+             case, which is this same split pointing the other way. The anti-pattern is
+             `review` token == `primary` token — an agent-neutral property — not "Claude reviews".
+             Such a slot runs and is reported *same-model (not independent)*.
+- placement: `scripts/lib/role-dispatch.sh` (`adb_agent_cli` + `adb_agent_available`, paired with
+             `_adb_rd_invoke_agent` and proven paired by `scripts/check-role-dispatch.sh`);
+             `base/workflows/implement-issue.md` step 8 (the rung table, the review-prompt shape)
+             and step 11 (the rung is reported, never rendered as a ✅); `bin/agent-init` (the same
+             rung at setup time, from the same readers); `base/roles.md` + `docs/roles-and-agents.md`
+             (the law and the operator doc); `templates/agents.toml` + `agents.toml` (the manifests).
+- reason:    The narrower fix — flip the default and delete the Claude arm, as #211 §1 literally
+             asked — breaks two supported configurations and blocks the run at the worst point for
+             every adopter without `codex`. Making CAPABILITY a first-class question is what lets
+             the default move without either consequence, and it generalizes: it is about any agent
+             whose CLI may be absent, not about Codex.
+
+             The rung ladder is also deliberately HONEST about its weakest rung. "Deferred to the PR
+             layer" gates step 10's `--auto` arm and nothing else — not a manual merge, not branch
+             protection, and it resolves no threads — so it is reported as *deferred*, never as a
+             completed review. `agent-init` reads the DECLARED allowlist (`bots --declared`) rather
+             than the bare `bots`, whose unset default is a built-in set of eight common review
+             bots and would otherwise promote a project that has declared nothing from *none* to
+             *deferred*.
+- what-this-does-NOT-do: strip the verification scaffolding from Claude's own instructions
+             (#211 §2) or build the per-agent instruction-density mechanism (#211 §3). Those two
+             cannot be separated from each other — `base/practices/self-review.md` renders into ALL
+             THREE root docs, so rewriting it also removes verification guidance from Codex, the
+             agent whose guidance asks for it — and `build.sh` has no home for a per-agent block
+             today: the practices `render()` takes no agent parameter at all (it concatenates), and
+             the workflow substitution is line-based literal token replacement, so the
+             `{{VERIFICATION_GUIDANCE}}` block named in the issue is not the cheap candidate it
+             looks like. §3's invariant ("a rendered skill must never differ in WHAT it does") also
+             conflicts with §2 as written, since the self-review pass produces named findings that
+             step 9 triages and the PR body reports. That is an owner-facing design question, so it
+             ships as one atomic follow-up rather than being guessed at here.
+- baseline-issue: #211

@@ -41,6 +41,16 @@ different models catch more than one model reviewing twice (this is also why
 `implement-issue`'s step 8 always runs the primary's own self-review pass in
 addition to whichever `review` agent(s) are configured).
 
+**Prefer a `review` token that is not `primary` (#211).** The role's job is the word in
+its own row — *independent* — and a reviewer that is the same model as the implementer
+cannot supply it. Both vendors' published prompting guidance points at the same split
+from opposite ends: Anthropic's Opus 5 guidance asks that Claude **not** be given
+explicit verification scaffolding (it self-corrects natively, and over-verifies when told
+to), while OpenAI's asks Codex for exactly the named-checklist, required-vs-optional pass
+step 8 sends. Hence the shipped manifest pairs `primary = "claude"` with
+`review = ["codex"]`. A same-agent slot still runs — see [the review rungs](#which-review-actually-happens-the-rungs)
+for how it is reported.
+
 ## `release` is project-owned — the baseline ships no `/release`
 
 The baseline **names** the `release` role and resolves it like any other. It
@@ -167,7 +177,8 @@ A project drops its own copy of `templates/agents.toml` at its repo root
 [roles]
 primary      = "claude"     # drives /implement-issue. Exactly one agent.
 gap_analysis = "codex"      # pre-implementation adversarial pass. "" to skip.
-review       = ["claude"]   # code review before merge. 1+ agents; more = better.
+review       = ["codex"]    # code review before merge. 1+ agents; more = better.
+                            # Prefer a token that is NOT `primary` — see below.
 debug        = "claude"     # owns root-cause investigations.
 # issue_author = "claude"   # defaults to `primary` if unset
 # release      = "claude"   # defaults to `primary` if unset
@@ -202,7 +213,7 @@ So a repo with no `agents.toml` at all still works — it inherits your global
 default manifest. Two layers are easy to conflate, so name them precisely:
 
 - **The global default manifest** `install.sh` writes sets `primary = claude`,
-  `gap_analysis = codex`, `review = ["claude"]`, `debug = claude`. This is what
+  `gap_analysis = codex`, `review = ["codex"]`, `debug = claude`. This is what
   most machines actually resolve against.
 - **The built-in fallback** — used only when even the global manifest is absent —
   is the "Default if unset" column of the role table above: `primary = claude`,
@@ -258,7 +269,45 @@ workflow calls it instead of hand-writing the same lookup + CLI in each skill:
 |---|---|
 | `role-dispatch.sh resolve <role>` | Print the resolved agent token(s), one per line. Empty output = a legitimate skip (only `gap_analysis`). Validates the manifest — an unknown token or an explicit `review = []` is a hard error, never a silent fall-through. |
 | `role-dispatch.sh invoke <role\|agent>` | Prompt on stdin → run one agent's CLI with the documented flags + the 45-min hang backstop; stdout is that agent's **clean final message** (for `codex`, captured via `--output-last-message`, so exploration-stream noise never leaks in). A non-zero exit prints one **classified** line to stderr (our backstop 124 / outer SIGTERM 143 / real agent error). A multi-agent `review` role is refused — use `resolve` + a per-slot `invoke <token>` loop so same-agent slots stay in-process. |
+| `role-dispatch.sh available <agent>` | Is that agent's CLI on PATH **here**? Silent — the exit code is the answer (`0` available · `1` known agent whose CLI is absent · `2` not an agent token). A third question, deliberately separate from *which agent is assigned* (`resolve`) and *did the agent fail* (an `invoke` rc): an absent CLI is a configuration fact knowable in advance, not a reviewer that broke. It answers "on PATH" and claims no more — not authenticated, not configured, not working. |
 | `role-dispatch.sh bots` | Print the configured async external-bot reviewer logins (see below). |
+
+## Which review actually happens: the rungs
+
+A role names an agent; it cannot make that agent's CLI exist. `implement-issue` step 8
+therefore asks `available` **before** it dispatches, and reports which rung the project is
+on. `agent-init` prints the same rung at setup time from the same readers, so the two can
+never disagree:
+
+| Rung | Condition | What happens |
+|---|---|---|
+| **independent** | a `review` slot's CLI is available and its token ≠ the driving agent | the real thing: an independent model reviews the diff |
+| **same-model** | the only usable slot is the driving agent itself | the slot **runs**, and is labelled *not independent* |
+| **deferred** | no usable in-session slot, but `[reviewers] bots` **declares** an async reviewer | the PR opens; the declared reviewer gates step 10's auto-arm |
+| **none** | neither | the run proceeds and says plainly that nothing independent reviewed the diff |
+
+Three properties of this ladder are load-bearing:
+
+- **An absent CLI never blocks the run, and never writes a blocked marker.** It is not a
+  reviewer that failed. A reviewer that *ran* and did not return still blocks, exactly as
+  before — the two are different facts and step 8 names which one happened. Collapsing
+  them would block most first runs (the CLI is usually the thing missing) or ship a diff
+  nobody reviewed.
+- **The gap is never filled with a same-model stand-in.** A second opinion from the model
+  that wrote the diff is not a second opinion, and manufacturing one is worse than the
+  honest gap because it reads as coverage in the close-out.
+- **"Deferred" is narrower than it sounds.** The async reviewer gates
+  `implement-issue`'s `--auto` arm and nothing else: `pr-review.sh gate` withholds
+  *unattended arming* until the declared reviewer has seen the head commit. It does not
+  block a manual merge, it is not branch protection, and it resolves no threads. The
+  honest reading is *"an independent reviewer will see this before it can merge
+  unattended"* — not *"the diff has been reviewed."*
+
+The **declared** allowlist is what decides the deferred rung, read through
+`bots --declared` rather than the bare `bots`. The two differ on *unset*: bare `bots`
+substitutes the built-in default set of common review bots, so an unset `[reviewers]`
+would otherwise report eight logins and promote a project that has declared nothing from
+*none* to *deferred*.
 
 `bin/agent-init` sources it to print the full effective role map (repo → global → built-in),
 and `/implement-issue` / `/resolve-pr-threads` call it for gap-analysis, review, and the
@@ -360,13 +409,13 @@ expecting it to arm. That contradiction is #168, tracked rather than resolved by
 > vocabulary. The baseline hands every project the same resolvable roles; it does not replace a
 > project's own orchestrator.
 
-## Worked example (a): Claude primary + Codex gap-analysis + Claude & Gemini review
+## Worked example (a): Claude primary + Codex gap-analysis + Codex & Gemini review
 
 ```toml
 [roles]
 primary      = "claude"
 gap_analysis = "codex"
-review       = ["claude", "gemini"]
+review       = ["codex", "gemini"]
 debug        = "claude"
 ```
 

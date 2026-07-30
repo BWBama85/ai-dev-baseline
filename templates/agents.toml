@@ -9,7 +9,18 @@
 [roles]
 primary      = "claude"     # drives /implement-issue. Exactly one agent.
 gap_analysis = "codex"      # pre-implementation adversarial pass. "" to skip.
-review       = ["claude"]   # code review before merge. 1+ agents; more = better.
+review       = ["codex"]    # code review before merge. 1+ agents; more = better.
+                            # PREFER AN AGENT THAT IS NOT `primary`. A reviewer that is the same
+                            # model as the implementer is that model checking its own work, which
+                            # is the weakest review a manifest can express — and Anthropic's Opus 5
+                            # guidance asks explicitly that Claude not be told to double-check
+                            # itself, while OpenAI's asks Codex for exactly the named-checklist
+                            # pass this slot runs (#211). /implement-issue still runs a same-agent
+                            # slot, and says out loud that it is not independent.
+                            # NO CODEX INSTALLED? Nothing breaks and nothing is faked: step 8
+                            # reports the rung it is on and moves on. Declare `[reviewers] bots`
+                            # below and the PR-layer guard still withholds auto-merge until your
+                            # async reviewer has seen the head commit.
 debug        = "claude"     # owns root-cause investigations.
 # issue_author = "claude"   # defaults to `primary` if unset
 # release      = "claude"   # defaults to `primary` if unset. Names WHO cuts a release — it

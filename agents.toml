@@ -9,7 +9,16 @@
 [roles]
 primary      = "claude"     # drives /implement-issue. Exactly one agent.
 gap_analysis = "codex"      # pre-implementation adversarial pass. "" to skip.
-review       = ["claude"]   # code review before merge. 1+ agents; more = better.
+review       = ["codex"]    # code review before merge. 1+ agents; more = better.
+                            # CODEX, NOT CLAUDE, AND NOT BY TASTE (#211). `primary` is claude, so
+                            # `["claude"]` here was Claude reviewing Claude — five subagent passes
+                            # of the model that wrote the diff. Both vendors' published guidance
+                            # points the same way: Opus 5's asks that Claude NOT be given explicit
+                            # verification scaffolding (it self-corrects natively), and Codex's
+                            # asks to be handed exactly the named-checklist, required-vs-optional
+                            # pass step 8 now sends it. Measured on the #173 run: the codex pass
+                            # found two real defects the driving agent had not; the 22-minute
+                            # Claude bug review returned three LOW findings and nothing higher.
 debug        = "claude"     # owns root-cause investigations.
 # issue_author = "claude"   # defaults to `primary` if unset
 release      = "claude"     # Names WHO cuts a release. Declared explicitly (not left to default)

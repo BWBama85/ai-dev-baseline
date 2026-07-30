@@ -80,4 +80,58 @@ has "$out" "not inside a git repo" "non-git: explains the refusal"
 if [ ! -f "$plain/agents.toml" ]; then ok; else bad "non-git: writes nothing (no agents.toml)"; fi
 if [ ! -f "$plain/.gitignore" ]; then ok; else bad "non-git: writes nothing (no .gitignore)"; fi
 
+# --- (6) the REVIEW RUNG report (#211) ---------------------------------------
+# agent-init is where an operator learns what will actually review a diff, BEFORE a workflow
+# depends on it. The rung is derived from `resolve review` + `available` + `bots --declared`, the
+# same readers /implement-issue step 8 uses, so these cases also guard the two from disagreeing.
+#
+# PATH is the fixture here: the rung turns on whether an agent's CLI exists, so each case runs
+# under an explicit PATH rather than the contributor's (who may well have all three installed).
+RBIN="$work/rbin"; mkdir -p "$RBIN"
+BARE=/usr/bin:/bin
+_leak=0
+for _t in claude codex agy; do PATH="$BARE" command -v "$_t" >/dev/null 2>&1 && _leak=1; done
+if [ "$_leak" -eq 0 ]; then ok; else bad "rung precondition: no agent CLI may live in $BARE"; fi
+run_rung() { ( cd "$1" && HOME="$FAKEHOME" PATH="$2" bash "$AGENT_INIT" 2>&1 ); }
+
+rr="$work/rung"; mkdir -p "$rr"; git init -q "$rr"
+run_init "$rr" >/dev/null 2>&1      # seed agents.toml from the template (review = ["codex"])
+
+# (a) no reviewer CLI, nothing declared -> NONE. The honest floor.
+out="$(run_rung "$rr" "$BARE")"
+has "$out" "Review rung: NONE" "rung: no CLI + no declaration reports NONE"
+has "$out" "Nothing independent will review" "rung: NONE says plainly what that means"
+
+# (b) UNSET [reviewers] must NOT read as declared. `bots` (bare) substitutes a built-in default
+# set of eight logins, so reading that surface instead of `--declared` would promote this exact
+# repo from NONE to "deferred" and tell an operator they have an async reviewer they never set up.
+hasnt "$out" "DEFERRED" "rung: an UNSET [reviewers] never reports deferred (bare \`bots\` would)"
+
+# (c) an async reviewer DECLARED, still no CLI -> deferred, and honest about its narrowness.
+printf '\n[reviewers]\nbots = ["chatgpt-codex-connector"]\n' >> "$rr/agents.toml"
+out="$(run_rung "$rr" "$BARE")"
+has "$out" "DEFERRED to the PR layer" "rung: a declared bot with no CLI reports deferred"
+has "$out" "chatgpt-codex-connector"  "rung: deferred names the reviewer it is deferring to"
+has "$out" "NOT block a manual merge" "rung: deferred states what it does NOT gate"
+
+# (d) the reviewer's CLI present and != primary -> independent.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$RBIN/codex"; chmod +x "$RBIN/codex"
+out="$(run_rung "$rr" "$RBIN:$BARE")"
+has "$out" "independent in-session review" "rung: an available non-primary reviewer is independent"
+
+# (e) review == primary -> SAME-MODEL, even though its CLI is present and it will really run.
+sed 's/^review .*/review       = ["claude"]/' "$rr/agents.toml" > "$rr/a.tmp" && mv "$rr/a.tmp" "$rr/agents.toml"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$RBIN/claude"; chmod +x "$RBIN/claude"
+out="$(run_rung "$rr" "$RBIN:$BARE")"
+has "$out" "SAME-MODEL only" "rung: a reviewer equal to primary reports same-model, not independent"
+
+# (f) the per-token CLI annotation on the role map marks which half of a list is missing.
+sed 's/^review .*/review       = ["codex", "gemini"]/' "$rr/agents.toml" > "$rr/a.tmp" && mv "$rr/a.tmp" "$rr/agents.toml"
+out="$(run_rung "$rr" "$RBIN:$BARE")"
+has "$out" "gemini [CLI not installed]" "role map: annotates the absent token in a review LIST"
+hasnt "$out" "codex [CLI not installed]" "role map: says nothing about a token that IS installed"
+# An absent CLI is an annotation, never a verdict: agent-init must still exit 0.
+( cd "$rr" && HOME="$FAKEHOME" PATH="$BARE" bash "$AGENT_INIT" >/dev/null 2>&1 )
+yes $? "rung: an absent reviewer CLI does not make agent-init fail"
+
 check_summary "agent-init"

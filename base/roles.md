@@ -28,6 +28,34 @@ empty), `review` defaults to the primary running that independent pass with its 
 model-invokable tools — so an unconfigured repo still gets a completed review step,
 never a bare self-review.
 
+**Point `review` at an agent that is not `primary` (#211).** The role's job is the word
+in its own row — *independent* — and a reviewer that is the same model as the implementer
+cannot supply it: that is the model checking its own work, which is the weakest review a
+manifest can express. The two vendors' published guidance happens to agree on the split
+from opposite directions: Anthropic's Opus 5 guidance asks that Claude **not** be given
+explicit verification scaffolding (it self-corrects natively and over-verifies when told
+to), while OpenAI's asks Codex for exactly the named-checklist, required-vs-optional pass
+`implement-issue` step 8 sends a reviewer. So `templates/agents.toml` ships
+`review = ["codex"]` beside `primary = "claude"`.
+
+A same-agent slot is still **run**, not refused — a manifest may legitimately name one,
+and a Codex-primary repo reviewing with Claude is the same split pointing the other way.
+It is **labelled** *same-model (not independent)* in the close-out instead, so the
+operator is never misled about what looked at the diff. Note this changes the shipped
+**manifest** default only; the **resolver's** built-in fallback for an unset `review` is
+unchanged (still the primary's own pass), so a repo with no manifest behaves as before.
+
+**A reviewer that is not installed is not a reviewer that failed.** `review` names an
+agent; it cannot make that agent's CLI exist. `role-dispatch.sh available <agent>` answers
+that separately (0 = on PATH, 1 = known agent whose CLI is absent, 2 = not a token), and
+`implement-issue` step 8 asks it **before** dispatching, so an absent CLI surfaces as the
+configuration fact it is rather than as a 127 that arrives after the branch, the commits
+and the gates. The step then reports which **rung** the project is on — independent
+in-session review · deferred to the PR layer (an async reviewer in `[reviewers] bots`
+gates the auto-arm) · none — and proceeds. It never fabricates a reviewer to fill the gap:
+a second opinion from the model that wrote the diff is not a second opinion. `agent-init`
+prints the same rung at setup time, from the same two readers.
+
 ### `release` is a project-owned role — the baseline ships no `/release`
 
 The baseline **names** `release` and resolves it like any other role, but deliberately
@@ -172,7 +200,7 @@ silently skipped down to the next layer.
 [roles]
 primary      = "claude"
 gap_analysis = "codex"
-review       = ["claude"]
+review       = ["codex"]
 debug        = "claude"
 ```
 

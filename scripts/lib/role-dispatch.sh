@@ -15,6 +15,7 @@
 # Surfaces:
 #   role-dispatch.sh resolve <role>          # print the agent token(s), one per line (empty = skip)
 #   role-dispatch.sh invoke  <role|agent>    # prompt on STDIN → run that agent's CLI; clean stdout
+#   role-dispatch.sh available <agent>       # is that agent's CLI on PATH here? (silent; rc 0/1/2)
 #   role-dispatch.sh bots                    # print the configured async external-bot reviewer logins
 #   role-dispatch.sh bots --declared         # the same key as a TRI-STATE, no default (0/2/3)
 #   role-dispatch.sh bots --comparable       # the declared set normalized for matching (0/17/18)
@@ -436,6 +437,40 @@ adb_dispatch_classify_rc() {
   esac
 }
 
+# The CLI EXECUTABLE each agent token dispatches to. PAIRED WITH `_adb_rd_invoke_agent` BELOW:
+# every token with an arm there has a name here and vice versa, because a probe that disagrees
+# with dispatch is worse than no probe — it would report an agent usable that cannot run (the
+# fail-open direction), or refuse one that works. The pairing is proven by a direct test in
+# scripts/check-role-dispatch.sh rather than a lint, since the assertion is "these two agree",
+# which no single-file token pin can express. The full invocations stay literal in the arms below
+# (base/roles.md's table is their canonical home, pinned by check-fact-drift's invocation-* facts).
+adb_agent_cli() {
+  case "$1" in
+    claude) printf 'claude' ;;
+    codex)  printf 'codex' ;;
+    gemini) printf 'agy' ;;
+    *) return 2 ;;
+  esac
+}
+
+# Is this agent's CLI actually runnable HERE? A CAPABILITY question, and it is deliberately a
+# THIRD thing — distinct from "which agent is assigned" (`resolve`) and from "did the agent fail"
+# (a dispatch rc). Collapsing capability into either one is what makes an absent CLI look like an
+# agent that broke: `codex exec` with no codex on PATH exits 127, which classify_rc quite
+# correctly calls "a real agent/CLI error" — accurate about the exit, wrong about the cause, and
+# it arrives at step 8 with the branch, the commits and the gates already done.
+#
+# Asking FIRST turns that into a fact a caller can act on before it spends anything. It is not a
+# guarantee the CLI works (it may be unauthenticated, or wedged); it only answers the one question
+# whose "no" is knowable in advance and is a configuration problem rather than a failure.
+#   0 = the CLI is on PATH   1 = a known agent whose CLI is absent   2 = not an agent token
+adb_agent_available() {
+  local cli
+  cli="$(adb_agent_cli "$1")" || return 2
+  command -v "$cli" >/dev/null 2>&1 || return 1
+  return 0
+}
+
 # Invoke ONE concrete agent's CLI with the prompt from file $2; the agent's clean FINAL message
 # goes to this function's stdout, its exploration/log stream to stderr. Returns the CLI's status
 # (124 on timeout); for codex, a 0 exit that produced no final message is treated as incomplete
@@ -530,12 +565,16 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     resolve) adb_resolve_role "${2:-}" ;;
     invoke)  [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh invoke <role|agent>" >&2; exit 2; }
              adb_dispatch_invoke "$2" ;;
+    available) [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh available <agent>" >&2; exit 2; }
+             # SILENT — the exit code IS the answer. A caller asking about several agents in a
+             # ladder would otherwise have to filter this helper's chatter out of its own report.
+             adb_agent_available "$2" ;;
     bots)    case "${2:-}" in
                '')            adb_dispatch_bots ;;
                --declared)    adb_dispatch_bots_declared ;;
                --comparable)  adb_dispatch_bots_comparable ;;
                *) echo "usage: role-dispatch.sh bots [--declared|--comparable]" >&2; exit 2 ;;
              esac ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | bots [--declared|--comparable]]" >&2; exit 2 ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | bots [--declared|--comparable]]" >&2; exit 2 ;;
   esac
 fi

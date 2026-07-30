@@ -516,6 +516,62 @@ eq "$(ps -eo command | grep -c '[q]qstub' | tr -d ' ')" "0" \
   "an outer termination reaps the dispatched agent instead of orphaning it for the full bound"
 pkill -f '[q]qstub' >/dev/null 2>&1 || true
 
+# ============================ available (capability probe, #211) ============================
+# `available` answers a THIRD question — is this agent's CLI on PATH here? — separate from
+# `resolve` (who is assigned) and an `invoke` rc (did the agent fail). Step 8 and `agent-init`
+# both branch on it, so it needs its own coverage AND a proof that it agrees with dispatch.
+#
+# A MINIMAL PATH is what makes an "absent" assertion mean anything: the fixture's normal PATH is
+# "$BIN:$PATH", so a contributor with a real claude/codex/agy installed would find the real binary
+# the moment a stub is removed and every absence test would silently pass for the wrong reason.
+# `rd_path <PATH> <args...>` runs the helper under an explicit PATH instead.
+rd_path() { local p="$1"; shift; ( cd "$REPO" && HOME="$GHOME" PATH="$p" bash "$RD" "$@" ); }
+BARE=/usr/bin:/bin
+# Assert the PRECONDITION rather than assuming it. If some machine ships an agent CLI in a system
+# directory, the absence cases below would be vacuous — better to fail loudly here than to pass.
+_leak=0
+for _t in claude codex agy; do PATH="$BARE" command -v "$_t" >/dev/null 2>&1 && _leak=1; done
+if [ "$_leak" -eq 0 ]; then ok; else bad "test precondition: no agent CLI may live in $BARE"; fi
+
+# Re-stub all three (earlier cases overwrote the codex stub with failing variants).
+for _t in codex claude agy; do printf '#!/usr/bin/env bash\nexit 0\n' > "$BIN/$_t"; chmod +x "$BIN/$_t"; done
+
+rd_path "$BIN:$BARE" available codex  >/dev/null 2>&1; yes $? "available: a stubbed codex reports 0"
+rd_path "$BIN:$BARE" available claude >/dev/null 2>&1; yes $? "available: a stubbed claude reports 0"
+rd_path "$BIN:$BARE" available gemini >/dev/null 2>&1; yes $? "available: a stubbed gemini reports 0 (its CLI is agy)"
+rd_path "$BARE" available codex  >/dev/null 2>&1; eq "$?" "1" "available: a known agent with no CLI reports 1"
+rd_path "$BARE" available gemini >/dev/null 2>&1; eq "$?" "1" "available: gemini with no agy reports 1"
+rd_path "$BIN:$BARE" available bogus  >/dev/null 2>&1; eq "$?" "2" "available: an unknown token reports 2 (not 1)"
+rd >/dev/null 2>&1; no $? "usage still nonzero"   # guards the case arm below not swallowing it
+rd_path "$BIN:$BARE" available >/dev/null 2>&1; eq "$?" "2" "available with no agent argument is a usage error"
+
+# SILENT: the exit code IS the answer. A ladder asking about several agents must not have to
+# filter this helper's chatter out of its own report.
+eq "$(rd_path "$BIN:$BARE" available codex 2>&1)" "" "available prints nothing on either stream"
+eq "$(rd_path "$BARE" available codex 2>&1)" "" "available prints nothing when the CLI is absent either"
+
+# --- THE PAIRING PROOF ---------------------------------------------------------------------
+# `adb_agent_cli` names the executable and `_adb_rd_invoke_agent` runs it. If those two ever
+# disagree, `available` reports an agent usable that dispatch cannot run (fail-open) or refuses one
+# that works. No single-file token pin can express "these two agree", so assert it directly: with
+# EXACTLY ONE agent's CLI on PATH, that agent must be the only one `available` accepts — which is
+# only true if the probe is looking for the same binary name dispatch would exec.
+for _pair in "codex codex" "claude claude" "gemini agy"; do
+  set -- $_pair; _tok="$1"; _bin="$2"
+  _only="$work/only-$_tok"; mkdir -p "$_only"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$_only/$_bin"; chmod +x "$_only/$_bin"
+  rd_path "$_only:$BARE" available "$_tok" >/dev/null 2>&1
+  yes $? "pairing: $_tok is available when only '$_bin' exists (probe and dispatch name one binary)"
+  # ...and every OTHER token must be absent under that same PATH, so a probe that fell back to a
+  # shared or hardcoded name would be caught rather than passing the positive half by luck.
+  _other_ok=1
+  for _o in claude codex gemini; do
+    [ "$_o" = "$_tok" ] && continue
+    rd_path "$_only:$BARE" available "$_o" >/dev/null 2>&1 && _other_ok=0
+  done
+  if [ "$_other_ok" -eq 1 ]; then ok; else bad "pairing: only '$_bin' exists, so only $_tok may report available"; fi
+done
+
 # ============================ source guard ============================
 # Sourcing must define the functions but NOT run the CLI dispatch (no usage/exit).
 # shellcheck source=/dev/null

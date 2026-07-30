@@ -116,8 +116,14 @@ default at `~/.config/ai-dev-baseline/agents.toml`, then to built-in defaults):
 
 - **`gap_analysis`** (default `codex`, or `""` to skip) — the pre-implementation
   adversarial pass in step 3.
-- **`review`** (default `["claude"]`) — the code-review agents in step 8. Always
-  ALSO do your own self-review (`base/practices/self-review.md`).
+- **`review`** (shipped default `["codex"]`) — the code-review agents in step 8. Always
+  ALSO do your own self-review (`base/practices/self-review.md`). **Prefer a token that
+  is not `primary`**: a reviewer that is the same model as the implementer is that model
+  checking its own work, and step 8 labels such a slot *not independent* rather than
+  pretending otherwise. Note the two "defaults" are different things and only one moved:
+  the **manifest** template now ships `["codex"]`, while the **resolver's** built-in
+  fallback for an unset `review` is still the primary's own pass (`bash "$HOME/.codex/scripts/lib/role-dispatch.sh"
+  resolve review`) — so a repo with no manifest at all is unchanged by #211.
 
 Resolve tokens to invocations via `base/roles.md`. The runtime helper
 `bash "$HOME/.codex/scripts/lib/role-dispatch.sh"` (`scripts/lib/role-dispatch.sh`) does the resolution + cross-agent
@@ -507,14 +513,62 @@ Then run each configured `review` agent. Resolve the slots with
 `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" resolve review` — it prints one token per slot. **Do not**
 `invoke review` as one call (a multi-agent role is refused on purpose); **loop the
 tokens**, because each slot has its own retry/fallback and a same-agent slot must stay
-native. For each resolved token: if it equals `codex` (the agent driving
-this run) run that agent's review **in-process** (below); otherwise shell it out with
-`bash "$HOME/.codex/scripts/lib/role-dispatch.sh" invoke <token>` over the diff. **Every configured reviewer is a
-slot** — each must reach a terminal state (completed, or explicitly replaced by a
-documented fallback) before you set `phase=code_reviewed`. A fallback stands in for the
-*one* slot it replaced; it does not silently satisfy a different reviewer's slot.
+native. **Every configured reviewer is a slot** — each must reach a terminal state
+(completed, deferred, or explicitly replaced by a documented fallback) before you set
+`phase=code_reviewed`. A fallback stands in for the *one* slot it replaced; it does not
+silently satisfy a different reviewer's slot.
 
-- `claude` (Claude driving) → an **in-process, two-part** pass, both model-invokable:
+**Ask whether the agent is even here BEFORE you dispatch it.** A slot whose CLI is not
+installed is a **configuration** fact, knowable in advance — not a reviewer that failed:
+
+```bash
+bash "$HOME/.codex/scripts/lib/role-dispatch.sh" available <token>   # 0 = CLI on PATH · 1 = known agent, CLI absent · 2 = not a token
+```
+
+Asking first is what keeps an absent CLI from arriving as a **failure at step 8**, with
+the branch, the commits and the gates already paid for. `codex exec` with no `codex` on
+PATH exits **127**, which the dispatcher quite correctly classifies as "a real agent/CLI
+error" — accurate about the exit, wrong about the cause, and it lands at the worst
+possible moment. So resolve the rung first, then act:
+
+| Rung | Condition | What step 8 does |
+|---|---|---|
+| **1 — independent review** | the slot's CLI is available **and** its token ≠ the driving agent | dispatch it (below). This is the real thing. |
+| **2 — deferred to the PR layer** | no in-session slot is usable, **but** `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" bots` lists an async reviewer | mark the slot **deferred**, say so, and proceed to the PR. |
+| **3 — no independent review** | neither | proceed, and **say plainly that nothing independent reviewed this diff.** |
+
+**Rung 2 is a real hand-off, and it is narrower than it sounds — do not overstate it.**
+The async reviewer gates **step 10's `--auto` arm** and nothing else: `pr-review.sh gate`
+withholds *this workflow's* arming until the declared reviewer has seen the head commit.
+It does **not** block a manual merge, it is not branch protection, and it never resolves
+a thread. So rung 2 means *"an independent reviewer will see this before it can merge
+unattended"* — which is worth having and worth stating exactly — not *"the diff has been
+reviewed."* Report it as deferred, name the reviewer, and never call the slot completed.
+
+**Rung 3 proceeds; it does not block, and it does not fake a reviewer.** Do **not**
+substitute a same-model subagent to fill the empty slot — a second opinion from the model
+that wrote the diff is not a second opinion, and manufacturing one is worse than the
+honest gap because it reads as coverage in the close-out. The honest report is *"you have
+one model's opinion"*. This is the one terminal state that is **not** a completed review,
+and it is deliberately distinct from a reviewer that **ran and failed** — that is still a
+blocked run (see the completion contract below). "Nobody was available" and "somebody
+broke" are different facts and must not collapse into one outcome.
+
+**A slot whose token equals the driving agent is not independent — run it, and say so.**
+`review` naming the same agent as `primary` is that model checking its own work. It is
+still a slot and still runs, but it is rung 1 in mechanism only: label it
+*same-model (not independent)* in the close-out so the operator is never misled about what
+reviewed the diff. Prefer a different agent, or an async reviewer in `[reviewers] bots`.
+
+- `codex` (the shipped default) → `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" invoke codex` over the review prompt
+  below (it runs `codex exec` with the 45-min hang backstop and the clean
+  `--output-last-message` capture — dispatch it in the **background**, for the same reason
+  as step 3: a review pass at high reasoning effort routinely outruns a foreground cap).
+- `gemini` → `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" invoke gemini` over the same prompt (it runs `agy -p`).
+- `claude` (Claude driving) → an **in-process, two-part** pass, both model-invokable.
+  **This is no longer the prescribed default** — it remains supported because a manifest
+  may legitimately name it (a project that has not re-pointed `review`, or a **Codex-primary**
+  repo where Claude *is* the independent reviewer), and dropping it would strand both:
   1. **`/simplify` first** — the quality / reuse / simplification pass. It may edit
      code; if it does, **re-run gates and refresh the diff** before step 2, or the
      bug review inspects stale code. **Never let it hand-edit a generated file** —
@@ -529,24 +583,58 @@ documented fallback) before you set `phase=code_reviewed`. A fallback stands in 
 
   **Never model-invoke `/code-review`** (user-only, `disable-model-invocation`) — it
   is an optional step the owner runs after the PR, not part of this slot.
-- `codex` → `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" invoke codex` over a review prompt on the diff (it runs
-  `codex exec` with the 45-min hang backstop and the clean `--output-last-message`
-  capture — dispatch it in the background too, for the same reason as step 3).
-- `gemini` → `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" invoke gemini` over the diff (it runs `agy -p`).
+
+#### The review prompt — a named checklist, and ask for EVERYTHING
+
+Write the prompt as an **ordered checklist with named categories, an explicit
+required-vs-optional split, and a final check.** That shape is what the reviewing agent's
+own guidance asks for, and it is also what makes the reply triageable in step 9 rather
+than a wall of prose. Cover at least these four, which are the lenses that have actually
+caught defects in this repo's history:
+
+1. **Correctness / edge cases** — empty, single, zero, negative, max, unicode; escaping
+   wherever a value crosses a syntax boundary; off-by-one; idempotency; resource leaks.
+2. **Reuse** — does this re-implement a primitive that already exists? Name the existing
+   home if so. (This repo's law is *source the shared primitive, never copy it.*)
+3. **Altitude** — is the fix at the right depth, or a bandaid on shared infrastructure?
+   *This lens caught a real shipped regression*, so it is not optional garnish.
+4. **Can a new guard actually fail?** — a check added by this diff must be shown capable
+   of going red. A gate that cannot answer wrong is worse than no gate.
+
+**Ask it to report everything it finds and to filter nothing.** Do **not** write "only
+report high-severity issues", "be conservative", "do not pad the list", or "a false
+positive costs more than a miss" — asked to be conservative, a model reports *less*, and
+the misses are silent. Severity filtering already has a home: **step 9 triages**. A finding
+you discard costs one line of reading; a finding the reviewer withheld costs a defect.
+
+Give it the diff and the issue's acceptance criteria, and end with the final check —
+e.g. *"before finishing, confirm every acceptance criterion is either satisfied by this
+diff or named as unmet, and that each finding is marked REQUIRED or OPTIONAL."*
 
 **Completion contract (per the Roles section).** Run each cross-agent reviewer
 (`codex` / `gemini`) and the subagent bug review as a single bounded call and **wait
 for it to return** — never poll output to guess liveness. On timeout / error, abandon
 the call (a Bash timeout kills a `codex exec` / `agy -p` process; an Agent subagent
-just returns its error), **retry once**, then **fall back** to a `general-purpose`
-Claude subagent bug review (model-invokable whenever Claude drives) standing in for
-that slot; document the substitution. A slot is **terminal** the moment its reviewer
-(or its fallback) **returns a result** — a completed review that finds *nothing* is a
-clean pass, not a failure; only a hung / errored / crashed-empty call is incomplete.
+just returns its error), **retry once**, then **fall back** — preferring another agent
+the role lists **whose CLI `available` reports usable**, and only then a
+`general-purpose` Claude subagent bug review (model-invokable whenever Claude drives)
+standing in for that slot; document the substitution, and when the stand-in is the same
+model that wrote the diff, label it *same-model (not independent)* exactly as a
+same-agent slot is labelled. A slot is **terminal** the moment its reviewer (or its
+fallback) **returns a result** — a completed review that finds *nothing* is a clean
+pass, not a failure; only a hung / errored / crashed-empty call is incomplete.
 If **any** required slot still cannot reach a terminal state after retry + fallback,
 the review step **failed** for that slot → write `implement-issue-blocked.json`
 (`reason` names the failed reviewer, `branch`/`issue`/`owner` matching the marker) and
 leave `phase=committed`. Never reach step 10 (PR opened) with a required review incomplete.
+
+**A reviewer that never existed is not a reviewer that failed.** The paragraph above
+governs a slot whose agent **ran** and did not return — that still blocks the run. A slot
+whose CLI `available` reported **absent** never ran at all: that is rung 2 or rung 3
+above, it is reported rather than retried, and it does **not** write a blocked marker.
+Collapsing the two would block every install that simply does not have the reviewer's CLI
+— which is most first runs — and treating a genuine failure as a missing CLI would ship a
+diff nobody reviewed. Keep them separate and name which one happened.
 
 Once every slot is terminal, update `phase=code_reviewed`. **Completed findings are
 input to step 9, not a stopping point.**
@@ -680,6 +768,15 @@ emit a self-attested completion checklist rendering each required step's real st
 (✅ / ⚠️ / ❌ — never silently drop a skipped item), grouped Setup → Implementation →
 Review → Ship → Close-out, plus a **Needs attention** block for anything not ✅ and a
 **Follow-up issues filed** block (each with its milestone + one-line rationale).
+
+**State the review rung explicitly, in the reviewer's own words, not as a ✅.** The
+close-out is where an operator learns what actually looked at this diff, so name the rung
+step 8 reached: *independent* (which agent), *same-model (not independent)* (a slot whose
+token is the driving agent, or a same-model fallback), *deferred to the PR layer* (naming
+the async reviewer, and that it gates only the auto-arm), or *none — no independent review
+exists*. A rung-2 or rung-3 run is **not** a failure and must not be reported as one; it is
+also **not** a ✅ review, and rendering it as one is the single most misleading thing this
+step can do.
 
 State the **auto-merge disposition explicitly** — armed, or skipped naming **which**
 guard skipped it and its code (`automerge-ok` 10–14/20, or the review gate
