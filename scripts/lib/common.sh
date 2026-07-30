@@ -314,11 +314,34 @@ adb_actions_app_slug() { printf 'github-actions'; }
 #   * adb_pr_slug_check — an observed `acme` or `acme/widget/extra` compares unequal to every real
 #                       slug, so a BROKEN response would be reported as "a different repository".
 #   * adb_git_origin_slug — a remote URL that does not resolve to a pair must fail closed.
+#
+# NOT SUFFICIENT WHEN THE SLUG IS BUILT INTO A URL PATH — use `adb_is_path_safe_repo_slug` below.
 adb_is_repo_slug() {
   case "${1:-}" in
     */*/*|/*|*/) return 1 ;;
     */*) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+# adb_is_path_safe_repo_slug <value> — true iff <value> is a well-formed `owner/repo` pair that is
+# also safe to interpolate into an API PATH (`repos/<slug>/...`).
+#
+# The stricter sibling, because the shape test alone is not enough for that position: `a/..` is a
+# perfectly well-formed pair AND a path traversal, so a caller that only asks `adb_is_repo_slug`
+# will happily build `repos/a/../activity`. Every check above compares a slug or parses one; the
+# moment a slug is CONCATENATED INTO A REQUEST the requirement changes, and the difference is easy
+# to miss precisely because the shape test looks like it already covers it.
+#
+# The charset is GitHub's own for owner and repository names — alphanumerics, `.`, `_`, `-` — so a
+# real slug always passes and anything carrying a path, query or scheme character never does. This
+# matters most for a slug the local code did not construct: `pr-watch.sh` reads `head.repo.full_name`
+# out of an API response and builds a path from it, which is exactly the untrusted-position case.
+adb_is_path_safe_repo_slug() {
+  adb_is_repo_slug "${1:-}" || return 1
+  case "${1:-}" in
+    *..*|*[!A-Za-z0-9._/-]*) return 1 ;;
+    *) return 0 ;;
   esac
 }
 

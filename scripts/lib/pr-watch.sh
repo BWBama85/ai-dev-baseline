@@ -88,26 +88,23 @@
 # the question directly ("when did this ref become this SHA") instead of approximating it, and it
 # covers ordinary pushes, force-pushes and branch creation alike.
 #
-# THE THREE ANCHORS THAT WERE REJECTED, because each is wrong in a way that is not obvious, and the
-# next person to read this will otherwise reach for one of them:
-#
-#   * the earliest CHECK-SUITE `created_at` for the head SHA is server-assigned, but it is scoped to
-#     the SHA, not to the REF. A commit that already ran CI elsewhere carries its ORIGINAL
-#     timestamp, so an ordinary fast-forward onto it PRESERVES the fail-open: suite for C at 09:00,
-#     a stale `+1` at 10:00, an ordinary `B → C` at 11:00 → 10:00 > 09:00 → `clean`, still false.
-#     No force-push happens there, so pairing it with a force-push term does not rescue it. Commit
-#     STATUSES have exactly the same flaw, and both also need the repo to HAVE ci.
-#   * the PR TIMELINE's `head_ref_force_pushed` events are server-assigned and ref-scoped, but they
-#     exist only for FORCE pushes — an ordinary push appears nowhere in them.
-#   * `head.repo.pushed_at` is server-assigned, ref-agnostic and free (it is already in the PR
-#     object read above), and it is SOUND: it can only ever be too LATE, i.e. a false `pending`,
-#     never a false `clean`. It is rejected for LIVENESS, not for safety — it is REPO-scoped, so a
-#     push to any unrelated branch after the reaction re-opens a settled verdict, and on an active
-#     repo a watch would run to its bound instead of converging.
+# Three other server-assigned anchors were considered and rejected, each wrong in a way that is not
+# obvious; the argument is kept with the code (see WHY NOT THE OBVIOUS ANCHORS, below the dispatch
+# preamble) rather than here, because this block is `--help` and an operator does not need an essay
+# about designs that were not built.
 #
 # WHEN THE ANCHOR CANNOT BE ESTABLISHED — a head SHA absent from the ref's recent activity, a head
 # repository that no longer exists — the verdict is `pending`. Never `clean`: an unproven signal is
 # not a pass. Note that none of this needs CI to exist, so a repo without any keeps the clean signal.
+#
+# ONE THING THIS MOVED, WORTH KNOWING BEFORE YOU DEBUG IT: the anchor is read from the HEAD
+# repository (`head.repo.full_name`), not the base one every other read here addresses — a ref's
+# history lives where the ref lives. On a same-repo pull request, which is what `/implement-issue`
+# creates, those are the same place. On a FORK pull request they are not: a public fork reads fine,
+# but one the caller cannot read answers 403, which is an unreadable read (20) rather than `pending`
+# — so `wait` gives up after its unreadable-poll streak instead of running to the bound. Both are
+# safe (neither is `clean`) and both hand off to a human, but they hand off differently, and "20 on
+# a fork PR" is otherwise a confusing thing to meet.
 #
 # ------------------------------------------------------------------------------------------------
 # Usage:
@@ -133,8 +130,11 @@
 #                   declared `[reviewers] bots = []` (nothing is coming). STDOUT: "clean <sha>".
 #   10 findings   — a declared reviewer submitted a review attached to the CURRENT head SHA. The
 #                   caller should run the resolve flow. STDOUT: "findings <sha>".
-#   11 pending    — no terminal signal yet. From `wait`, the bound expired while still pending:
-#                   hand off to a human. STDOUT: "pending <sha>".
+#   11 pending    — no terminal signal yet, OR a signal exists whose freshness cannot be PROVED
+#                   because the head's arrival could not be established (#175). Those two share a
+#                   code but not a remedy — the first means wait longer, the second means this
+#                   signal will never be provable — so the stderr line says which. From `wait`, the
+#                   bound expired while still pending: hand off to a human. STDOUT: "pending <sha>".
 #   12 gone       — the PR is no longer OPEN (merged or closed). Stop watching.
 #   17 undeclared — the repo declares no `[reviewers] bots`, so it cannot be known whether a
 #                   reviewer is coming. FAIL CLOSED. Declare them, or `bots = []` if there are none.
@@ -194,6 +194,30 @@ fi
 # shellcheck source=/dev/null
 . "$_adb_pw_common"
 
+# ------------------------------------------------------------------------------------------------
+# WHY NOT THE OBVIOUS ANCHORS (#175). Below `set`/`source` on purpose: `adb_usage` stops at the first
+# non-comment line, so this stays next to the code without turning `--help` into a design essay.
+#
+# The staleness rule needs a server-assigned "when did this head arrive". Three candidates look
+# right and are not, and the next person to touch `head_anchor` will reach for one of them:
+#
+#   * the earliest CHECK-SUITE `created_at` for the head SHA is server-assigned, but it is scoped to
+#     the SHA, not to the REF. A commit that already ran CI elsewhere carries its ORIGINAL
+#     timestamp, so an ordinary fast-forward onto it PRESERVES the fail-open: suite for C at 09:00,
+#     a stale `+1` at 10:00, an ordinary `B → C` at 11:00 → 10:00 > 09:00 → `clean`, still false.
+#     No force-push happens there, so pairing it with a force-push term does not rescue it. Commit
+#     STATUSES have exactly the same flaw, and both also need the repo to HAVE ci. This case is
+#     pinned as a regression test, because it is the one that reads as safe and is not.
+#   * the PR TIMELINE's `head_ref_force_pushed` events are server-assigned and ref-scoped, but they
+#     exist only for FORCE pushes — an ordinary push appears nowhere in them.
+#   * `head.repo.pushed_at` is server-assigned, ref-agnostic and free (it is already in the PR
+#     object `classify` reads), and it is SOUND: being repo-wide it can only ever be too LATE, i.e.
+#     a false `pending`, never a false `clean`. It is rejected for LIVENESS, not for safety — a push
+#     to any unrelated branch after the reaction re-opens a settled verdict, so on an active repo a
+#     watch would run to its bound instead of converging. Worth stating plainly, because "rejected"
+#     usually means "unsafe" and here it does not.
+# ------------------------------------------------------------------------------------------------
+
 # role-dispatch.sh owns the `[reviewers]` manifest key; this module asks it rather than re-reading
 # agents.toml, so the repo→global layering can never drift between the consumers. Same seam
 # pr-review.sh uses, for the same reason.
@@ -209,9 +233,16 @@ OPT_PR=""
 # COST OF A POLL: FOUR reads — the PR, its reviews, its issue comments, its reactions — plus a
 # FIFTH, the head ref's activity, only on the branch where a date-scoped signal was actually found.
 # (This comment said "three" for as long as the comments read has existed; a budget nobody
-# recomputes is how a poll loop quietly doubles.) A full 30-minute watch at 30s is therefore ~240
-# requests against an authenticated limit of 5000/hour: comfortable, but not free, which is why the
-# interval is tunable and why the clean/findings checks short-circuit the moment either lands.
+# recomputes is how a poll loop quietly doubles.)
+#
+# A full 30-minute watch at 30s is ~240 requests with no signal present — but price the OTHER regime
+# too, because it is the common one and pricing the exception as the rule is how this comment went
+# stale the first time. A `+1` or task-mode comment from a PREVIOUS head PERSISTS on the PR, so it
+# satisfies the anchor's guard on EVERY poll until it is proved fresh or the watch expires. That is
+# the ordinary state of a PR that got a clean pass and was then pushed to — exactly what `--watch`
+# is for — and it costs the fifth read every poll: ~300 requests, +25%. Against an authenticated
+# limit of 5000/hour both are comfortable but neither is free, which is why the interval is tunable
+# and why the clean/findings checks short-circuit the moment either lands.
 #
 # The anchor read is ONE request and is deliberately NOT `--paginate`d: activity comes back newest-
 # first, filtered server-side to the head ref, so the answer is on page one or the head is old
@@ -253,7 +284,7 @@ require_uint() {
 
 # read_list <api-path> <label> <pr-number> — a paginated GET, flattened to one JSON array.
 #
-# Both signal reads have the same shape, and factoring them together is about the FAIL-CLOSED
+# All three signal reads have the same shape, and factoring them together is about the FAIL-CLOSED
 # guards rather than the line count: each read needs three of them (the fetch, the parse, and the
 # empty-result check), and if a later edit dropped one on a single path that signal would classify
 # an unreadable response as "nothing found yet" — `pending` instead of `20`. `pending` looks
@@ -314,25 +345,21 @@ is_utc_instant() {
 # *now*. Taking the earliest would date the current head from a push that was superseded and then
 # undone — precisely the "force-push back to an older commit" path this issue names.
 head_anchor() {
-  local n="$1" slug="$2" ref="$3" head="$4" raw at
+  local n="$1" slug="$2" ref="$3" head="$4" raw at matches line
   # A head repository that no longer exists (the fork was deleted) is a REAL state, not a broken
   # response: the PR still reads fine, there is simply nowhere left to ask. That is an unestablished
   # anchor (11), not an unreadable one (20) — the distinction the whole module is built on.
   [ -n "$slug" ] && [ -n "$ref" ] \
     || { echo "pr-watch: PR #$n — no head repository/ref to date the head against (deleted fork?)" >&2
          return 11; }
-  # THIS SLUG GOES INTO A URL PATH, which is a stronger requirement than every other slug in this
-  # family faces — the base slug is only ever COMPARED. `adb_is_repo_slug` proves it is an
-  # `owner/repo` PAIR, which is necessary and not sufficient here: `a/..` is a well-formed pair and
-  # a path traversal, so the charset is checked too. Only reachable through a malformed API
-  # response, and that is exactly the input the guard exists for — the alternative is trusting a
-  # value this module did not construct to be safe in a position the rest of the file never puts one.
-  adb_is_repo_slug "$slug" \
+  # THIS SLUG GOES INTO A URL PATH, a stronger requirement than any other slug in this family faces
+  # — the base slug is only ever COMPARED — and it is a value this module did not construct but read
+  # out of an API response. `adb_is_repo_slug` alone is necessary and NOT sufficient there (`a/..` is
+  # a well-formed pair and a path traversal), so the path-safe form is its own shared primitive
+  # rather than a local glob: this is the first caller to need it, #167 and #174 add more, and a
+  # rule that lives at one call site is a rule the next call site forgets.
+  adb_is_path_safe_repo_slug "$slug" \
     || { echo "pr-watch: PR #$n reports a malformed head repository ('$slug')" >&2; return 20; }
-  case "$slug" in
-    *..*|*[!A-Za-z0-9._/-]*)
-      echo "pr-watch: PR #$n reports an unusable head repository ('$slug')" >&2; return 20 ;;
-  esac
 
   # `--method GET` with `-f` is REQUIRED, and the reason is the same trap the reactions read
   # documents: a bare `-f` makes `gh api` switch to POST. Here that would POST to the activity
@@ -354,33 +381,45 @@ head_anchor() {
   # Fail loudly on a shape that is not the documented array — `error` here surfaces as rc 20 rather
   # than letting a wrapped error object iterate to zero matches and read as a clean "no anchor".
   #
-  # EVERY MATCH IS FORMAT-CHECKED, NOT JUST THE WINNER, and the order matters: `sort` runs BEFORE
-  # any validation could, so a response mixing formats could hand `last` a lexically-later but
-  # chronologically-EARLIER record, and checking only the survivor would pass it — an anchor earlier
-  # than the truth is the permissive direction. Rejecting the whole read instead keeps `sort | last`
-  # sound by construction. (`is_utc_instant` re-checks the survivor in shell; that is belt and
-  # braces, this is the part that makes the comparison meaningful.)
-  at="$(printf '%s' "$raw" | jq -r --arg sha "$head" --arg ref "refs/heads/$ref" '
-      if type != "array" then error("activity response is not a JSON array") else . end
-      | [ .[]
-          | select((.after // "") == $sha)
-          | select((.ref // "") == $ref)
-          | (.timestamp // "") | select(length > 0) ]
-      | if any(.[]; test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") | not)
-        then error("activity carries a timestamp this module cannot order") else . end
-      | sort | last // ""' 2>/dev/null)" \
-    || { echo "pr-watch: could not parse the ref activity of PR #$n (or it carries an unorderable timestamp)" >&2; return 20; }
-
-  # The ref match is belt AND braces on purpose: `ref=` is applied server-side, but a filter that is
-  # ignored (a param renamed, an endpoint that stops honouring it) would silently widen this read to
-  # the whole repository, and an `after` SHA is unique enough that the widened read would still
+  # jq SELECTS, the shell VALIDATES AND ORDERS — deliberately, for two reasons that reinforce.
+  #
+  # First, EVERY match must be format-checked BEFORE any of them is ordered. Ordering first and
+  # checking only the winner is unsound: a response mixing formats can hand the comparison a
+  # lexically-later but chronologically-EARLIER record, and an anchor earlier than the truth is the
+  # permissive direction.
+  #
+  # Second, doing the check here rather than inside jq keeps `is_utc_instant` the ONE HOME for the
+  # accepted grammar. Written twice — a shell glob and a jq regex — the same rule could be loosened
+  # on one side and not the other, and both spellings would still look right in review.
+  #
+  # The `ref` match is belt AND braces on purpose: `ref=` is applied server-side, but a filter that
+  # is ignored (a param renamed, an endpoint that stops honouring it) would silently widen this read
+  # to the whole repository, and an `after` SHA is unique enough that the widened read would still
   # usually match — dating this PR's head from a push to some other branch.
+  matches="$(printf '%s' "$raw" | jq -r --arg sha "$head" --arg ref "refs/heads/$ref" '
+      if type != "array" then error("activity response is not a JSON array") else . end
+      | .[]
+      | select((.after // "") == $sha)
+      | select((.ref // "") == $ref)
+      | (.timestamp // "") | select(length > 0)' 2>/dev/null)" \
+    || { echo "pr-watch: could not parse the ref activity of PR #$n" >&2; return 20; }
+
+  # A here-doc, NOT a pipe: a piped `while` runs in a subshell and `at` would be discarded at the
+  # loop's end, silently yielding "no anchor" — i.e. `pending` — for every PR.
+  at=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    is_utc_instant "$line" \
+      || { echo "pr-watch: PR #$n — ref activity reported a timestamp this module cannot order ('$line')" >&2
+           return 20; }
+    if [ -z "$at" ] || [ "$line" \> "$at" ]; then at="$line"; fi
+  done <<EOF
+$matches
+EOF
+
   [ -n "$at" ] \
     || { echo "pr-watch: PR #$n — no recorded activity puts $head on refs/heads/$ref, so a date-scoped signal cannot be proved fresh" >&2
          return 11; }
-  is_utc_instant "$at" \
-    || { echo "pr-watch: PR #$n — ref activity reported an unrecognized timestamp format ('$at')" >&2
-         return 20; }
   printf '%s' "$at"
 }
 
@@ -417,7 +456,7 @@ read_declared_bots() {
 # the next pass without any stored state to reset (base/practices/verify-before-asserting.md).
 classify() {
   local n="$1" want="$2" pjson pfields head state merged gotslug src headslug headref
-  local reviews hits reacts anchor arc at whojson comments commented match
+  local reviews hits reacts arc at whojson comments commented match
 
   # The declared set as a JSON array, built ONCE: all three jq passes below test membership against
   # it, and re-deriving it per pass would fork a second jq for the same value.
@@ -515,7 +554,7 @@ EOF
     return 10
   fi
 
-  # --- findings? an ISSUE COMMENT from a declared reviewer, newer than the head commit ----------
+  # --- findings? an ISSUE COMMENT from a declared reviewer, newer than this head's arrival -------
   # The connector has TWO output shapes and which one you get depends on how it is configured:
   #
   #   without a Codex Cloud environment → a lightweight review: a `COMMENTED` review object plus
@@ -539,7 +578,7 @@ EOF
         | (.created_at // "") | select(length > 0) ] | sort | last // ""' 2>/dev/null)" \
     || { echo "pr-watch: could not evaluate the comments of PR #$n" >&2; return 20; }
 
-  # --- clean? a `+1` on the PR's opening post, NEWER than the head commit -----------------------
+  # --- clean? a `+1` on the PR's opening post, NEWER than this head's arrival -------------------
   # A pull request IS an issue as far as reactions go, so the opening post's reactions live at
   # `issues/N/reactions`, not `pulls/N/...`. --paginate because a busy PR can push the bot's
   # reaction off the first page behind human reactions, and a missed `+1` would keep a finished
@@ -569,11 +608,24 @@ EOF
   # client-supplied date "just for comments" would leave the forgeable input in the file for a path
   # whose output feeds the same callers.
   #
-  # `anchor` IS DELIBERATELY LEFT UNSET UNTIL THIS BLOCK RUNS — do not "fix" that by initializing it
-  # to "". Every comparison below is `[ "$candidate" \> "$anchor" ]`, and every non-empty string is
-  # `\>` the empty one, so an empty default is precisely the fail-open spelling: it would report
-  # `clean` for any signal at all the moment a future edit let one of these comparisons run without
-  # an anchor. Unset means `set -u` aborts instead, which is the loud, correct failure.
+  # `anchor` STARTS AT A SENTINEL NO REAL TIMESTAMP CAN BEAT, and that is load-bearing rather than
+  # tidy. Every comparison below is `[ "$candidate" \> "$anchor" ]`, so an EMPTY default would be
+  # the fail-open spelling exactly: every non-empty string is `\>` the empty one, and any future
+  # edit that let a comparison run without an anchor would report `clean` for any signal at all.
+  # `9999-…` inverts that — an anchor nobody set makes every signal look stale, so the failure mode
+  # of forgetting to set it is `pending`.
+  #
+  # It is a far-future TIMESTAMP rather than a `~` or a flag because the comparison is lexicographic
+  # under the shell's collation: keeping the sentinel in the same character class as the values it
+  # is compared against means no locale can order it differently than digits are ordered. And it is
+  # deliberately conspicuous — a `9999` in a diagnostic line is unmistakably a bug, where an empty
+  # string reads like a missing field.
+  #
+  # This replaces an earlier comment here claiming `local anchor` left the variable UNSET so `set -u`
+  # would abort. It does not: on bash 3.2 — macOS's default, and this repo's floor — `local anchor`
+  # creates it EMPTY, `declare -p` shows `anchor=""`, and the comparison runs happily. The claim was
+  # wrong on the very platform it named, and an imagined backstop is worse than none.
+  local anchor="9999-12-31T23:59:59Z"
   if [ -n "$commented" ] || [ -n "$plus1at" ]; then
     # Validate the CANDIDATES too, not only the anchor: a comparison is only as sound as its
     # weaker operand, and these are the values an unrecognized format would arrive in.
@@ -607,7 +659,7 @@ EOF
     #
     # THE BACKSLASH IN `\>` IS LOAD-BEARING — do not "clean it up". Unescaped, `>` inside `[ ]` is
     # a REDIRECTION: the test would silently become `[ "$plus1at" ]` (true for any non-empty
-    # string) while creating a file named after the commit date, so EVERY `+1` would read as fresh
+    # string) while creating a file named after the anchor, so EVERY `+1` would read as fresh
     # and the staleness rule — the one direction this module must never be wrong in — would be
     # gone with no error anywhere. Note also that `[ a \> b ]` is a bash string comparison, not a
     # POSIX `test` one; this file is bash by shebang and every caller invokes it as `bash <path>`,

@@ -754,10 +754,25 @@ didn't already model, so any residual divergence stays visible and auditable.
              callers, and one rule over both signals is checkable where two are not. A REVIEW is
              commit-scoped and needs no anchor, so it is unaffected — and because the anchor needs
              no CI, a repo without any keeps the clean signal.
-- placement: `scripts/lib/pr-watch.sh` (`head_anchor` + `is_utc_instant`) with the rejected-anchor
-             reasoning in the module header, since `adb_usage` renders it as `--help`;
-             regression tests in `scripts/check-pr-watch.sh`; operator-facing consequence in
+- placement: `scripts/lib/pr-watch.sh` (`head_anchor` + `is_utc_instant`), with the rejected-anchor
+             reasoning kept BELOW the dispatch preamble rather than in the leading comment block,
+             because `adb_usage` renders that block as `--help` and an operator does not need an
+             essay on designs that were not built. The path-safe slug test went the other way — it
+             is a GENERIC primitive, so it landed in `common.sh` as `adb_is_path_safe_repo_slug`
+             beside the shape test it strengthens, with its own tests in `check-common-lib.sh`.
+             Regression tests in `scripts/check-pr-watch.sh`; operator-facing consequence in
              `base/workflows/resolve-pr-threads.md` (rendered into all three agents' skills).
+- second-consumer: `head_anchor` stays PRIVATE to pr-watch.sh for now, and this is a deliberate
+             choice rather than an oversight, because #167 will give it a second consumer:
+             `pr-review.sh gate` returning 0 on a reaction is an ARMED MERGE, so it needs exactly
+             this predicate at higher stakes. It is not promoted TODAY because the neutral-code
+             shape a shared version needs (0 anchor / 1 unestablished / 2 unreadable, mapped by
+             each caller to its own vocabulary — the `adb_pr_slug_check` pattern) should be
+             designed against a real second caller, not guessed at with one. The risk this accepts
+             is named honestly: #173 exists because two private copies DIVERGED into a live
+             fail-open, so promoting late is how that happens again. The mitigation is that #167
+             must promote it as its first step rather than copy it — recorded on that issue, not
+             left to memory.
 - reason:    The staleness rule is the one place this module can be wrong in the dangerous
              direction, so its lower bound is a design decision rather than an implementation
              detail — and the next person to touch it will reach for check suites, which is the

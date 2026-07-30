@@ -111,7 +111,6 @@ cat > "$SBIN/gh" <<'STUB'
 #   STUB_FAIL_REVIEWS=1    -> the reviews read fails
 #   STUB_FAIL_REACTIONS=1  -> the reactions read fails
 #   STUB_FAIL_COMMENTS=1   -> the issue-comments read fails
-#   STUB_FAIL_COMMIT=1     -> the head-commit read fails (the route #175 retired)
 #   STUB_FAIL_ACTIVITY=1   -> the ref-activity read fails
 #   STUB_EMPTY_ACTIVITY=1  -> the ref-activity read SUCCEEDS with an empty body (not `[]`)
 [ "${STUB_AUTH_FAIL:-0}" = "1" ] && [ "${1:-} ${2:-}" = "auth status" ] && exit 1
@@ -166,10 +165,16 @@ case "$url" in
     fx activity
     exit 0 ;;
   */commits/*)
-    # RETIRED BY #175 and kept deliberately: it still answers, with a committer date old enough to
-    # have produced a false `clean` under the old rule. If a future edit reaches for it again, the
-    # "never reads the head commit" assertions below fail rather than the suite silently 404ing.
-    [ "${STUB_FAIL_COMMIT:-0}" = "1" ] && exit 1
+    # RETIRED BY #175 and kept deliberately — as a BAITED route, not as a working dependency. It
+    # still answers, with a committer date old enough to have produced a false `clean` under the old
+    # rule, so a future edit that reaches for the head commit again gets a TEMPTING wrong answer
+    # rather than nothing.
+    #
+    # It is not what makes the negative assertion work: `called '/commits/'` reads the unconditional
+    # recorder above, and would fail with this arm deleted too (an unmatched `repos/…` falls to the
+    # catch-all below and exits 0 with empty stdout — the suite never 404s either way). Kept because
+    # a regression should fail on "the head commit was read", which names the defect, rather than on
+    # whatever an empty body happens to do three steps later.
     cat "$S/commit.json"; exit 0 ;;
   */pulls/*)
     [ "${STUB_FAIL_PR:-0}" = "1" ] && exit 1
@@ -231,9 +236,11 @@ pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
 commit_fx()  { jq -n --arg d "${1:-$FORGED_COMMIT_AT}" '{commit:{committer:{date:$d}, author:{date:$d}}}' > "$S/commit.json"; }
 # activity_fx <after-sha> <ref> <timestamp> [...] — one repository-activity record per triple, in the
 # newest-first order the API returns them.
-activity_fx() { _activity_into "$S/activity.json" "$@"; }
-_activity_into() {
-  local out="$1"; shift
+#
+# Written flat, unlike the `_*_into` siblings above: those take an `out` parameter because each has
+# 2-3 callers writing page-two and per-poll fixtures, and this one has exactly one destination. The
+# indirection is theirs to earn, not a house style to copy.
+activity_fx() {
   local acc="[]"
   while [ "$#" -ge 3 ]; do
     acc="$(printf '%s' "$acc" | jq -c --arg sha "$1" --arg ref "$2" --arg at "$3" \
@@ -241,7 +248,7 @@ _activity_into() {
                    after:$sha, timestamp:$at}]')"
     shift 3
   done
-  printf '%s\n' "$acc" > "$out"
+  printf '%s\n' "$acc" > "$S/activity.json"
 }
 activity_fx_raw() { printf '%s\n' "$1" > "$S/activity.json"; }
 # called <substring> — did any gh api call this scenario made address <substring>?
@@ -293,7 +300,6 @@ _w() {
     STUB_AUTH_FAIL="${STUB_AUTH_FAIL:-0}" STUB_FAIL_PR="${STUB_FAIL_PR:-0}" \
     STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" STUB_FAIL_REACTIONS="${STUB_FAIL_REACTIONS:-0}" \
     STUB_FAIL_COMMENTS="${STUB_FAIL_COMMENTS:-0}" \
-    STUB_FAIL_COMMIT="${STUB_FAIL_COMMIT:-0}" \
     STUB_FAIL_ACTIVITY="${STUB_FAIL_ACTIVITY:-0}" \
     STUB_EMPTY_ACTIVITY="${STUB_EMPTY_ACTIVITY:-0}" \
     bash "$PW" "$@" )
@@ -402,20 +408,35 @@ if called '/commits/'; then bad "#175: the head-commit endpoint must never be re
 # THE CASE THAT RULES OUT A CHECK-SUITE ANCHOR, which is the obvious server-assigned candidate and
 # the one the issue proposed first. Check suites are scoped to the SHA, not to the REF: a commit
 # that already ran CI on another branch carries its ORIGINAL timestamp, so an ordinary fast-forward
-# onto it keeps the fail-open with no force-push anywhere in the story. Modelled here as an older
-# activity record for the SAME SHA on a DIFFERENT ref — which must not be allowed to date this ref.
+# onto it keeps the fail-open with no force-push anywhere in the story. Modelled here as an activity
+# record for the SAME SHA on a DIFFERENT ref — which must not be allowed to date this ref.
+#
+# THE FOREIGN RECORD IS THE NEWER ONE, and that is what makes this assertion able to FAIL. With the
+# foreign record older, dropping `select(.ref == $ref)` cannot change the verdict — the code takes
+# the LATEST match, so a superset containing only older records yields the same answer and the test
+# passes against a module that has no ref filter at all. Ordered this way, dropping the filter picks
+# the foreign 04:45 record, the 04:42 `+1` reads fresh against it, and the verdict flips to `clean`.
+reset_fx; declare_bots "[\"$CODEX\"]"
+activity_fx "$HEAD_SHA" "refs/heads/somewhere-else" "$AFTER_AT" \
+            "$HEAD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT"
+reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
+wout observe --pr 1;  rc 0 "#175: this ref's OWN record dates it, even when a newer one names another ref"
+# ...and the ordinary direction: a record for this ref that postdates the signal is stale.
 reset_fx; declare_bots "[\"$CODEX\"]"
 activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT" \
             "$HEAD_SHA" "refs/heads/somewhere-else" "$BEFORE_AT"
 reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
-w observe --pr 1;  rc 11 "#175: this SHA's arrival on ANOTHER ref does not date it on this one"
+w observe --pr 1;  rc 11 "#175: a '+1' predating this ref's own arrival record is not clean"
 
-# The same fixture the other way round proves the ref filter is not simply rejecting everything.
+# THE `after` FILTER, pinned on its own. Every "no anchor" case above uses an EMPTY activity list,
+# which returns 11 whether or not the SHA is matched — so none of them can catch a module that
+# dropped `select(.after == $sha)`. Here the ref HAS activity and none of it names the current head:
+# the honest answer is "this head's arrival is unrecorded" (11), while an unfiltered read would date
+# it from a push of a DIFFERENT commit and report `clean`.
 reset_fx; declare_bots "[\"$CODEX\"]"
-activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT" \
-            "$HEAD_SHA" "refs/heads/somewhere-else" "$AFTER_AT"
-reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
-wout observe --pr 1;  rc 0 "#175: a '+1' after this ref's own arrival record IS clean"
+activity_fx "$OLD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 11 "#175: activity for a DIFFERENT SHA on this ref does not date this head"
 
 # A REVERSE FORCE-PUSH: the ref went A -> B -> A, so two records carry the same `after`. Only the
 # LATER one says when the head is A *now* — taking the earliest would date the current head from a
@@ -458,11 +479,14 @@ for bad_slug in 'acme/..' '../widget' 'acme/wid get' 'acme/wid?et'; do
   w observe --pr 1;  rc 20 "#175: head repository '$bad_slug' is refused before it reaches a URL"
 done
 
-# A MIXED-FORMAT activity response is rejected WHOLE, not just at the winner. `sort` runs before any
-# validation could, so a lexically-later-but-chronologically-EARLIER record could win and then pass
-# a check applied only to the survivor — and an anchor earlier than the truth is the permissive
-# direction. Here the offset record sorts last; if only the winner were checked this would be 20 by
-# luck, so the assertion below is the one where BOTH records match the ref and SHA.
+# A MIXED-FORMAT activity response is rejected WHOLE, not just at the winner. Ordering first and
+# checking only the survivor is unsound — a lexically-later-but-chronologically-EARLIER record can
+# win, and an anchor earlier than the truth is the permissive direction.
+#
+# Read the two values before assuming which one wins: `2026-07-25T04:40:00Z` and
+# `2026-07-25T00:42:15-04:00` diverge at index 12 (`4` vs `0`), so the well-formed `…Z` record sorts
+# LAST and would be the survivor. A winner-only check would therefore pass this fixture happily,
+# which is exactly why it pins the rule: reaching 20 requires validating the record that LOST.
 reset_fx; declare_bots "[\"$CODEX\"]"
 activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT" \
             "$HEAD_SHA" "refs/heads/$HEAD_REF" "2026-07-25T00:42:15-04:00"
@@ -500,6 +524,12 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 activity_fx_raw '{"message":"Not Found"}'
 w observe --pr 1;  rc 20 "#175: an activity response that is not an array -> 20, not 'no anchor'"
+# The fixture above reaches 20 even WITHOUT the `type != "array"` guard — `.[]` over it yields a
+# string and the next `select` dies indexing it — so on its own it names a property it does not
+# test. This one is an object whose VALUES are well-formed records: without the guard `.[]` walks
+# them happily and manufactures an anchor out of a response that was never a list.
+activity_fx_raw "{\"a\":{\"after\":\"$HEAD_SHA\",\"ref\":\"refs/heads/$HEAD_REF\",\"timestamp\":\"$BEFORE_AT\"}}"
+w observe --pr 1;  rc 20 "#175: an OBJECT of well-formed records is still not an array -> 20"
 activity_fx_raw '{ not json at all'
 w observe --pr 1;  rc 20 "#175: an unparseable activity response -> 20"
 
