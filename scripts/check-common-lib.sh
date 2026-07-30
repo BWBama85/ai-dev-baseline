@@ -722,6 +722,18 @@ eq "$(adb_pr_number 'https://github.com/acme/widget/pull/7?w=1&x=/pull/9')" "7" 
    "adb_pr_number: takes the FIRST 'pull/' segment, agreeing with adb_pr_slug"
 eq "$(adb_pr_number 'https://github.com/a/b/pull/7/pull/8')" "7" \
    "adb_pr_number: a repeated 'pull/' path does not move the number either"
+# THE MATCH IS ANCHORED ON THE LEADING SLASH, and both spellings that lack that anchor were shipped
+# and wrong. An owner or repo whose name ENDS IN `pull` contains `pull/` without containing `/pull/`,
+# so an unanchored match consumed the name instead of the route: `acme/git-pull/pull/8` left `pull/8`,
+# reduced to an empty number, and REJECTED a perfectly valid URL — which meant the guards refused the
+# workflow's own `prUrl` and auto-merge could never be armed on such a repository. Real names hit this
+# (`git-pull`, `docker-pull`). Reported by the reviewer on PR #210.
+eq "$(adb_pr_slug   'https://github.com/acme/git-pull/pull/8')" "acme/git-pull" \
+   "adb_pr_slug: a repo NAME ending in 'pull' is not mistaken for the route segment"
+eq "$(adb_pr_number 'https://github.com/acme/git-pull/pull/8')" "8" \
+   "adb_pr_number: a repo NAME ending in 'pull' still yields the route's number"
+eq "$(adb_pr_number 'https://github.com/git-pull/git-pull/pull/12')" "12" \
+   "adb_pr_number: BOTH owner and repo ending in 'pull' still resolves"
 # A NON-INTEGER ARGUMENT MUST NAME A REPOSITORY. Taking the digits after `pull/` and nothing else
 # accepts these, which carry no owner/repo — so they reduce to a bare `7` and get answered about
 # whichever repository the caller's reads happen to address.
@@ -754,6 +766,17 @@ eq "$(cd "$oslug" && GH_REPO=other/project adb_git_origin_slug)" "acme/widget" \
 # A trailing slash is tolerated; anything that does not resolve to a PAIR fails closed.
 mk_origin "https://github.com/acme/widget/"
 eq "$(cd "$oslug" && adb_git_origin_slug)" "acme/widget" "adb_git_origin_slug tolerates a trailing slash"
+# ...and the COMBINED form, which is where the strip order was wrong: with `.git` stripped first, a
+# trailing slash is still last so the suffix survives, leaving `acme/widget.git` — a slug matching no
+# real repository, which made the anchor disagree with the API and refused both guards. Every
+# combination must reduce to the same pair. Reported by the reviewer on PR #210.
+for u in "https://github.com/acme/widget.git/" "git@github.com:acme/widget.git/" \
+         "ssh://git@github.com/acme/widget.git/" "https://github.com/acme/widget.git" \
+         "https://github.com/acme/widget/" "https://github.com/acme/widget"; do
+  mk_origin "$u"
+  eq "$(cd "$oslug" && adb_git_origin_slug)" "acme/widget" \
+     "adb_git_origin_slug normalizes '$u' to the same pair"
+done
 for u in "https://github.com/widget" "https://github.com/a/b/c" "not-a-url"; do
   mk_origin "$u"
   out="$(cd "$oslug" && adb_git_origin_slug 2>/dev/null)"; rc=$?

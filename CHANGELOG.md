@@ -120,9 +120,16 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     documented default), while `foo[bot]` matches only `foo[bot]`. A `user.type` filter cannot do
     this — the reactions endpoint reports `type: "User"` for the Codex connector itself.
   - Documented in `docs/roles-and-agents.md`, `base/roles.md` and `templates/agents.toml`, whose
-    examples move to the bare spelling. `resolve-pr-threads.md`'s claim that its allowlist "can
-    **never** match a human login" is corrected: an exact allowlist matches whatever account bears
-    that login, and two built-in defaults are bare (bounded to thread resolution, not merges; #208).
+    examples move to the bare spelling **for arming** — while stating plainly that the two consumers of
+    this key do not share a safety property: `/resolve-pr-threads` matches the login *exactly*, so a
+    bare entry resolves threads from whatever account bears it, human included. Its claim that the
+    allowlist "can **never** match a human login" is corrected accordingly (two built-in defaults are
+    bare; bounded to thread resolution, not merges; #208).
+  - **A trailing slash hid the `.git` suffix from the repo-slug strip.** `owner/repo.git/` — a valid
+    remote URL — reduced to `owner/repo.git`, a slug matching no real repository, so the shared anchor
+    disagreed with the API's `owner/repo`. Pre-existing in `state-assert.sh`'s private copy since #138
+    and inherited by the promotion, which is the argument for having one home: fixed once, for every
+    caller.
 
 - **The `/implement-issue` run marker is owned by a session, not by a checkout** (#180, D17).
   `implement-issue-gate.sh` decided whether the active-run marker was its own by comparing branch

@@ -361,12 +361,20 @@ adb_pr_number() {
   case "$v" in
     ''|*[!0-9]*)
       [ -n "$(adb_pr_slug "$v")" ] || return 1
-      # The FIRST `/pull/`, matching `adb_pr_slug`'s `%%/pull/*` — the two halves of one parse must
-      # agree on which segment is authoritative. With `##` (the LAST one) they did not:
-      # `.../acme/widget/pull/7?x=/pull/9` yielded the slug `acme/widget` and the number `9`, so the
-      # guard would gate a DIFFERENT pull request in the repository the URL correctly names — which
-      # the cross-repo refusal cannot catch, because the repository is right.
-      case "$v" in *pull/*) n="${v#*pull/}"; n="${n%%[!0-9]*}" ;; *) return 1 ;; esac
+      # The first `/pull/` — ANCHORED ON THE LEADING SLASH, and matching `adb_pr_slug`'s
+      # `%%/pull/*` so the two halves of one parse agree on which segment is authoritative.
+      #
+      # Both halves of that sentence are load-bearing, and each was wrong in turn:
+      #   * `##*pull/` (the LAST occurrence) disagreed with the slug: `.../widget/pull/7?x=/pull/9`
+      #     gave slug `acme/widget` and number `9`, gating a DIFFERENT pull request in the repository
+      #     the URL correctly names — which the cross-repo refusal cannot catch, because the
+      #     repository IS right.
+      #   * `#*pull/` (the first UNANCHORED match) then broke every repository whose owner or name
+      #     ends in `pull`: `https://github.com/acme/git-pull/pull/8` matches inside `git-pull/`,
+      #     leaving `pull/8`, which reduces to an empty number and rejects a perfectly valid URL —
+      #     so the guards refused the workflow's own `prUrl` and auto-merge could never be armed
+      #     there. `git-pull` has `-pull`, not `/pull`, so requiring the slash fixes it exactly.
+      case "$v" in */pull/*) n="${v#*/pull/}"; n="${n%%[!0-9]*}" ;; *) return 1 ;; esac
       ;;
     *) n="$v" ;;
   esac
@@ -387,7 +395,12 @@ adb_pr_number() {
 _adb_remote_url_slug() {
   local url="${1:-}"
   [ -n "$url" ] || return 1
-  url="${url%.git}"; url="${url%/}"
+  # ORDER MATTERS, and this order is the corrected one. Stripping `.git` FIRST is a no-op when a
+  # trailing slash is still last, so the valid combined form `owner/repo.git/` survived as
+  # `owner/repo.git` — a slug that matches no real repository, which made the shared anchor DISAGREE
+  # with the API's `owner/repo` and refused both PR guards. Slash, then suffix, then slash again, so
+  # `repo.git/`, `repo/`, `repo.git` and `repo` all reduce to `repo`.
+  url="${url%/}"; url="${url%.git}"; url="${url%/}"
   case "$url" in
     *://*) url="${url#*://}"; url="${url#*@}"; url="${url#*/}" ;;
     *:*)   url="${url#*:}" ;;

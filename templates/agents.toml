@@ -19,7 +19,19 @@ debug        = "claude"     # owns root-cause investigations.
 # Optional: async external-bot reviewers — GitHub App logins that post review threads AFTER
 # the PR opens (distinct from the in-session `review` role above). `/resolve-pr-threads`
 # auto-resolves ONLY threads authored by a login in this allowlist — an EXACT login match,
-# never a `[bot]`-suffix heuristic, so it can never touch a human-authored thread.
+# never a `[bot]`-suffix heuristic, so an unlisted account is never touched.
+#
+# THE TWO CONSUMERS OF THIS KEY DO NOT HAVE THE SAME SAFETY PROPERTY, so pick a spelling with the
+# one you care about in mind:
+#   * the MERGE GUARDS match asymmetrically — a bare `foo` accepts `foo` or `foo[bot]` (portable
+#     across GitHub's two spellings), `foo[bot]` accepts only the suffixed form;
+#   * `/resolve-pr-threads` matches the login EXACTLY, so a BARE entry resolves threads from
+#     whatever account bears that login — including a human. That is not hypothetical: `gh api
+#     users/gemini-code-assist` returns a real User account. Whether the bare defaults should be
+#     dropped is tracked in #208.
+# So: bare is the portable spelling for arming, and the `[bot]` form is the safer one for
+# auto-resolution. Declaring both spellings of one account is fine — the guards treat them as one
+# reviewer.
 #   unset → the built-in default set of common review bots (Codex connector, Gemini, Copilot,
 #           github-actions, Claude) — see base/roles.md
 #   []    → disable bot-thread auto-resolution entirely
