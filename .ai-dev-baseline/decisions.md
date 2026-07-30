@@ -779,3 +779,102 @@ didn't already model, so any residual divergence stays visible and auditable.
              candidate that looks right and is not. Recording WHY each alternative fails is the
              point of the entry.
 - baseline-issue: #175
+
+## D20 — one reviewer-evidence classifier for both PR guards, and the two folds that are NOT the same order
+- date:      2026-07-30
+- category:  project-delta
+- unknown:   `pr-review.sh gate` and `pr-watch.sh` were both answering one underlying question —
+             *given everything a declared reviewer emitted, has this head been reviewed, and was it
+             clean?* — in two places, and the two answers had already diverged in both dimensions
+             the question has. WHAT a signal means: `APPROVED` was `findings` in the watcher and
+             `satisfied` in the arming guard. HOW MANY reviewers must produce one: the guard
+             required all of them, the watcher pooled the set and answered on any one (#185). The
+             guard also read only ONE of the three surfaces a reviewer can speak on, so a clean
+             Codex pass (a `+1`, no review object) and a task-mode result (one issue comment, no
+             review) were invisible to it — 16 forever, and on a task-mode repo 16 on EVERY PR.
+- decision:  ONE neutral per-reviewer CLASSIFIER, shared; NOT a shared verdict and NOT shared exit
+             codes. The two modules ask different final questions ("may I arm the merge?" vs "is
+             the reviewer done?"), so sharing a verdict is the trap; each maps the classification
+             to its own vocabulary. The rule, stated once:
+
+               CHANGES_REQUESTED at this head               -> rejected
+               COMMENTED at this head, or a FRESH comment   -> attention
+               APPROVED at this head, or a FRESH `+1`       -> clean
+               stale / PENDING / DISMISSED / nothing        -> none
+               unrecognized state, or an undatable record   -> unknown
+
+             THE TWO FOLDS ARE DELIBERATELY DIFFERENT ORDERS, and this is the entry's real content
+             because reusing one for both IS the #185 bug:
+
+               within a reviewer:  rejected > attention > unknown > clean > none
+               across the set:     rejected > attention > unknown > none  > clean
+
+             Within a reviewer, take the strongest thing that reviewer produced — a stale `+1`
+             beside a fresh `APPROVED` is `clean`. Across the set, `clean` is the WEAKEST class, so
+             a pass requires EVERY declared reviewer: one silent reviewer beside one clean reviewer
+             is NOT a pass. Two other positions are load-bearing in both orders. `unknown` outranks
+             `clean`, which REVERSES the older "an accepted review outweighs an unknown-state one" —
+             a state nobody could interpret must never be outvoted into a merge authorization, and
+             that rule was the one place a fresh unrecognized state was silently discarded.
+             `rejected`/`attention` outrank `unknown` because both already withhold the arm AND name
+             concrete work, where `unknown` only says "retry".
+
+             MAPPINGS: pr-watch renders rejected/attention as `findings` (10), unknown as 20, none
+             as `pending` (11), clean as 0. pr-review renders rejected as 19, attention as a NEW
+             code **21**, unknown as 20, none as 16, clean as 0.
+
+             **21 = "review complete, attention required"** is the correction #167 §3 makes to its
+             own original acceptance criterion, which asked for 0 and was UNSAFE. A fresh issue
+             comment is the task-mode FINDINGS shape (PR #178's sole Codex comment reported
+             unresolved selfcheck warnings), so 0 would have authorized auto-merging code the
+             reviewer had just flagged — the exact fail-open #134 exists to prevent, reintroduced
+             through the fix for its sibling. It is distinct from 19 (nothing was formally rejected)
+             and from 16 (nobody is being waited for), because the operator action differs: read
+             what the reviewer said, rather than wait or address a rejection.
+
+             THREE SUB-DECISIONS that were left to control-flow accident before and are now stated:
+
+             (a) THE ANCHOR IS PER-SIGNAL, NOT GLOBAL. A date-scoped signal that cannot be proved
+                 fresh degrades to `none` for THAT reviewer; it never poisons the fold and never
+                 suppresses commit-scoped review evidence, which carries its own `commit_id` and
+                 needs no anchor (D19). An unestablished anchor resolves to the far-future sentinel
+                 `ADB_NO_ANCHOR` rather than the empty string — every freshness test is
+                 `[ "$candidate" \> "$anchor" ]`, so an empty default is the fail-open spelling
+                 exactly, and the sentinel inverts it so forgetting to set an anchor yields
+                 pending/awaiting rather than clean.
+             (b) NO SHORT-CIRCUIT ON THE FIRST SURFACE. Both modules now read all three surfaces
+                 before classifying anything. The verdict is a property of the whole declared set,
+                 so every reviewer's evidence must be in hand; and a failed read is 20 UNIFORMLY
+                 rather than invisible on whichever path happened to return early. Which of two
+                 fail-closed answers an operator gets must not depend on read order. Costs two
+                 extra reads on a watch's terminal poll and nothing in the steady state.
+             (c) THE ANCHOR READ STAYS CONDITIONAL. It is a fifth request, paid for only when a
+                 date-scoped candidate actually exists. Pinned by a test asserting the endpoint is
+                 NOT addressed when no such signal is present.
+- placement: `scripts/lib/common.sh` — `adb_reviewer_evidence` (selection), `adb_reviewer_classes`
+             (dating + the within-reviewer fold), `adb_fold_reviewer_classes` (the across-set fold),
+             `adb_reviewers_in_class` (diagnostics), plus `adb_head_anchor` / `adb_is_utc_instant` /
+             `adb_paginated_list` PROMOTED out of pr-watch.sh. D19's `second-consumer` field
+             required that promotion as #167's first step rather than a copy, and #167 §6 named
+             `read_list` as the third thing a naive implementation would duplicate. Thin consumer
+             mappings in `scripts/lib/pr-review.sh` and `scripts/lib/pr-watch.sh`; direct tests in
+             `scripts/check-common-lib.sh`; consumer-level mapping tests in `scripts/check-pr-review.sh`
+             and `scripts/check-pr-watch.sh`; `pr-classifier-shared` / `pr-classifier-no-copies` pins
+             in `scripts/check-fact-drift.sh` proving both consumers call the shared helpers and keep
+             no local copy (including the sentinel literal, whose failure mode is silent). Operator
+             surfaces: `docs/repo-settings.md`, `base/workflows/implement-issue.md` step 10 (an
+             explicit `21)` arm — folded into `*)` it reports "unreadable, retry" for a PR whose
+             review is sitting right there) and `base/workflows/resolve-pr-threads.md`.
+- reason:    Answering one question in two places is how the two libraries disagreed, and the
+             disagreement was invisible because each module's tests only ever exercised its own
+             vocabulary — `check-pr-watch.sh` declared exactly ONE reviewer in all ~35 scenarios,
+             which is precisely why #185 shipped. A shared classifier with per-module mappings keeps
+             the two guards' different FINAL questions intact while making the underlying rule
+             checkable in one place, at one altitude, with one set of direct tests.
+- what-this-does-NOT-do: restore unattended arming. `/implement-issue` asks the gate exactly once,
+             seconds after `gh pr create`, when an async reviewer has definitionally not responded,
+             and no path re-arms afterwards. #167 delivers a gate that returns the RIGHT ANSWER when
+             asked — which matters for a re-run, a manual invocation, and as the precondition for
+             any automatic arming. Automatic re-arming is #168, an open owner decision, and
+             per-reviewer signal profiles are #186.
+- baseline-issue: #167, #185

@@ -24,9 +24,29 @@
 #   3. THE DECLARATION TRI-STATE. `bots = []` (no reviewer -> arm) and undeclared (unknowable ->
 #      fail closed) must never collapse into each other; that collapse IS #134.
 #   4. EVERY UNREADABLE PATH -> 20. A failed read must never look like "nobody is pending".
+#   5. THERE ARE THREE SURFACES, AND THEY ARE ORDERED (#167). This guard read only
+#      `pulls/N/reviews`, so the connector's other two output shapes were invisible: a clean pass
+#      posts a `+1` reaction and NO review object (16 forever), and in task mode it posts ONE issue
+#      comment and no review at all (16 on EVERY PR — unattended arming silently dead, disabled by
+#      a vendor-side setting nobody in the repo changed). Both shapes are live on this repo and are
+#      disjoint. The order is rejected > attention > unknown > clean > none, and the two positions
+#      that carry weight are pinned: a COMMENTED review or a fresh issue comment is `attention`
+#      (21) and NOT a satisfied review — "the reviewer has spoken" is not "the reviewer is
+#      satisfied" — and an UNKNOWN state is no longer outweighed by an accepted one.
+#   5b. AND A DATE-SCOPED SIGNAL NEEDS A SERVER-ASSIGNED LOWER BOUND (#175/D19). A reaction carries
+#      no commit, so a `+1` from an earlier head still sits there after new commits land; accepting
+#      it would ARM A MERGE on unreviewed code. The anchor is the ref-activity record, never the
+#      client-supplied committer date — asserted as a NEGATIVE (the endpoint is never addressed),
+#      because a verdict assertion alone would pass against a module that read it and weighted it
+#      differently. An unestablished anchor is 16, never 0.
+#   6. THE SET IS ALL-OR-NOTHING (#185). One declared reviewer's `+1` must not speak for the whole
+#      declared set — on the two new surfaces as much as on reviews.
 #
 # What genuinely CANNOT be tested here (needs a live run): that GitHub delivers the App's review,
-# that `--match-head-commit` actually rejects a moved head, and real 403/404 bodies.
+# that `--match-head-commit` actually rejects a moved head, and real 403/404 bodies. A stub can
+# prove the PARSING and the DECISION; it can never prove which SHAPE the connector emits, since
+# that is decided by vendor-side configuration rather than by anything in the repo — which is
+# exactly why the guard reads all three surfaces instead of the one the vendor documents.
 #
 # Lives OUTSIDE scripts/lib/ on purpose (install.sh symlinks that dir into a user's runtime).
 # Usage: bash scripts/check-pr-review.sh   (exit 0 = all pass, 1 = a failure)
@@ -62,10 +82,14 @@ OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 # one and every scenario silently reads the wrong fixture. Most specific first, always.
 cat > "$SBIN/gh" <<'STUB'
 #!/usr/bin/env bash
-# Answers the two reads the guard makes, from $S fixtures. Knobs:
-#   STUB_AUTH_FAIL=1     -> `gh auth status` fails (unauthenticated)
-#   STUB_FAIL_PR=1       -> the PR read fails
-#   STUB_FAIL_REVIEWS=1  -> the reviews read fails
+# Answers the FIVE reads the guard can make, from $S fixtures. Knobs:
+#   STUB_AUTH_FAIL=1       -> `gh auth status` fails (unauthenticated)
+#   STUB_FAIL_PR=1         -> the PR read fails
+#   STUB_FAIL_REVIEWS=1    -> the reviews read fails
+#   STUB_FAIL_COMMENTS=1   -> the issue-comments read fails
+#   STUB_FAIL_REACTIONS=1  -> the reactions read fails
+#   STUB_FAIL_ACTIVITY=1   -> the ref-activity read fails
+#   STUB_EMPTY_ACTIVITY=1  -> the ref-activity read SUCCEEDS with an empty body (not `[]`)
 [ "${STUB_AUTH_FAIL:-0}" = "1" ] && [ "${1:-} ${2:-}" = "auth status" ] && exit 1
 case "${1:-}" in
   auth) exit 0 ;;
@@ -76,13 +100,36 @@ url=""
 for a in "$@"; do
   case "$a" in repos/*) [ -z "$url" ] && url="$a" ;; esac
 done
+# EVERY api call is recorded, which is how the suite proves NEGATIVES — that the head-commit
+# endpoint is never read (the client-supplied date #175 removed), and that the ref-activity read is
+# NOT paid for on a PR with no date-scoped signal.
+printf '%s\n' "$url" >> "$S/calls"
 case "$url" in
   */reviews*)
     [ "${STUB_FAIL_REVIEWS:-0}" = "1" ] && exit 1
-    # --paginate concatenates ONE JSON DOCUMENT PER PAGE; reviews2.json exists only in the
-    # pagination scenario, so the default case still emits a single well-formed page.
+    # --paginate concatenates ONE JSON DOCUMENT PER PAGE; page 2 exists only in the pagination
+    # scenario, so the default case still emits a single well-formed page.
     cat "$S/reviews.json"
     [ -f "$S/reviews2.json" ] && cat "$S/reviews2.json"
+    exit 0 ;;
+  */issues/*/comments*)
+    [ "${STUB_FAIL_COMMENTS:-0}" = "1" ] && exit 1
+    cat "$S/comments.json" 2>/dev/null
+    [ -f "$S/comments2.json" ] && cat "$S/comments2.json"
+    exit 0 ;;
+  */reactions*)
+    [ "${STUB_FAIL_REACTIONS:-0}" = "1" ] && exit 1
+    cat "$S/reactions.json" 2>/dev/null
+    [ -f "$S/reactions2.json" ] && cat "$S/reactions2.json"
+    exit 0 ;;
+  */activity*)
+    [ "${STUB_FAIL_ACTIVITY:-0}" = "1" ] && exit 1
+    # A SUCCESSFUL read with an empty body — distinct from `[]`, and the reason the module reads and
+    # parses in two steps. Collapsing them would turn this into "no matching activity" (an
+    # unestablished anchor, which the gate sits on as 16) when it is really "the call produced no
+    # document" (20).
+    [ "${STUB_EMPTY_ACTIVITY:-0}" = "1" ] && exit 0
+    cat "$S/activity.json" 2>/dev/null
     exit 0 ;;
   */pulls/*)
     [ "${STUB_FAIL_PR:-0}" = "1" ] && exit 1
@@ -95,7 +142,24 @@ STUB
 chmod +x "$SBIN/gh"
 
 # ---- fixtures --------------------------------------------------------------------------------
-pr_fx()      { printf '{"head":{"sha":"%s"},"base":{"repo":{"full_name":"acme/widget"}}}\n' "${1:-$HEAD_SHA}" > "$S/pr.json"; }
+# WHEN THE HEAD REF BECAME THE HEAD SHA, as the repository activity API recorded it (#175/D19) —
+# NOT the head commit's committer date, which is client-supplied and which the guard never reads.
+# Every reaction/comment fixture is expressed relative to it so the staleness rule reads at a glance.
+HEAD_REF="feature"
+ARRIVED_AT="2026-07-25T04:42:15Z"
+AFTER_AT="2026-07-25T04:45:23Z"    # 3m08s later — the real gap observed on PR #88
+BEFORE_AT="2026-07-25T04:40:00Z"
+
+# pr_fx [sha] [base-slug] [head-slug] [head-ref]
+# The last two are what the staleness anchor is looked up by. `${3-}` not `${3:-}` on purpose: an
+# EXPLICIT empty string means "this PR has no head repository any more" (a deleted fork), which the
+# anchor must degrade on, while an OMITTED argument takes the default.
+pr_fx() {
+  jq -n --arg sha "${1:-$HEAD_SHA}" --arg slug "${2:-acme/widget}" \
+        --arg hslug "${3-acme/widget}" --arg href "${4-$HEAD_REF}" \
+    '{head:{sha:$sha, ref:$href, repo:(if $hslug == "" then null else {full_name:$hslug} end)},
+      base:{repo:{full_name:$slug}}}' > "$S/pr.json"
+}
 pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
 # review_fx <login> <state> <sha> [...] — one review per triple.
 review_fx() {
@@ -109,21 +173,68 @@ review_fx() {
   done
   printf '%s\n' "$acc" > "$S/reviews.json"
 }
+# comment_fx <login> <created_at> [...] — one ISSUE COMMENT per pair (Codex "task mode" output).
+comment_fx() {
+  local acc="[]"
+  while [ "$#" -ge 2 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg at "$2" \
+            '. + [{user:{login:$l},created_at:$at,body:"### Summary"}]')"
+    shift 2
+  done
+  printf '%s\n' "$acc" > "$S/comments.json"
+}
+# reaction_fx <login> <content> <created_at> [...] — one reaction per triple.
+reaction_fx() {
+  local acc="[]"
+  while [ "$#" -ge 3 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg l "$1" --arg c "$2" --arg at "$3" \
+            '. + [{user:{login:$l},content:$c,created_at:$at}]')"
+    shift 3
+  done
+  printf '%s\n' "$acc" > "$S/reactions.json"
+}
+# activity_fx <after-sha> <ref> <timestamp> [...] — one repository-activity record per triple, in
+# the newest-first order the API returns them.
+activity_fx() {
+  local acc="[]"
+  while [ "$#" -ge 3 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg sha "$1" --arg ref "$2" --arg at "$3" \
+            '. + [{activity_type:"push", ref:$ref, before:"0000000000000000000000000000000000000000",
+                   after:$sha, timestamp:$at}]')"
+    shift 3
+  done
+  printf '%s\n' "$acc" > "$S/activity.json"
+}
+# called <substring> — did any gh api call this scenario made address <substring>?
+called() { [ -f "$S/calls" ] && grep -q -- "$1" "$S/calls"; }
+# reset_fx — every surface back to "nothing here", with the anchor dating this head. Needed because
+# the guard now reads THREE signal surfaces: a fixture left over from a previous scenario would
+# otherwise leak a signal into the next one.
+reset_fx() {
+  rm -f "$S/reviews2.json" "$S/comments2.json" "$S/reactions2.json" "$S/calls"
+  printf '[]\n' > "$S/reviews.json"
+  printf '[]\n' > "$S/comments.json"
+  printf '[]\n' > "$S/reactions.json"
+  pr_fx
+  activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"
+}
 declare_bots() { printf '%s\n' '[reviewers]' "bots = $1" > "$REPO/agents.toml"; }
 undeclare()    { rm -f "$REPO/agents.toml"; rm -f "$GHOME/.config/ai-dev-baseline/agents.toml"; }
 
 # g <args...> : run the guard as the driving agent would — from $REPO, throwaway HOME, stub gh.
-g() {
-  OUT="$( cd "$REPO" && HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" \
-          STUB_AUTH_FAIL="${STUB_AUTH_FAIL:-0}" STUB_FAIL_PR="${STUB_FAIL_PR:-0}" \
-          STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" \
-          bash "$PR" "$@" 2>&1 )"; RC_=$?
+# ONE home for the environment so a new STUB_* knob is wired in a single place; the two wrappers
+# below differ only in what they do with stderr, and the redirect composes onto this subshell.
+_g() {
+  ( cd "$REPO" && HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" \
+    STUB_AUTH_FAIL="${STUB_AUTH_FAIL:-0}" STUB_FAIL_PR="${STUB_FAIL_PR:-0}" \
+    STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" STUB_FAIL_COMMENTS="${STUB_FAIL_COMMENTS:-0}" \
+    STUB_FAIL_REACTIONS="${STUB_FAIL_REACTIONS:-0}" STUB_FAIL_ACTIVITY="${STUB_FAIL_ACTIVITY:-0}" \
+    STUB_EMPTY_ACTIVITY="${STUB_EMPTY_ACTIVITY:-0}" \
+    bash "$PR" "$@" )
 }
+g() { OUT="$(_g "$@" 2>&1)"; RC_=$?; }
 # gout : stdout ONLY (the witnessed SHA contract) — stderr is diagnostics and must not pollute it.
-gout() {
-  OUT="$( cd "$REPO" && HOME="$GHOME" PATH="$SBIN:$PATH" S="$S" \
-          bash "$PR" "$@" 2>/dev/null )"; RC_=$?
-}
+gout() { OUT="$(_g "$@" 2>/dev/null)"; RC_=$?; }
 
 # ============================ usage / dispatch ============================
 g -h;      yes "$RC_" "-h exits 0";  has "$OUT" "the pre-arm review guard" "-h prints the usage header"
@@ -193,7 +304,7 @@ eq "$OUT" "$HEAD_SHA" "the genuine [] case still emits the head SHA"
 # normalized TOWARD the declaration and never the reverse, so a bare declaration accepts either
 # spelling while a `[bot]` declaration accepts only the suffixed one.
 declare_bots '["chatgpt-codex-connector"]'; pr_fx
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 gout gate --pr 7
 eq "$RC_" "0" "bare login declared + REST '[bot]' login observed -> matched"
 eq "$OUT" "$HEAD_SHA" "a satisfied gate prints ONLY the head SHA on stdout"
@@ -204,25 +315,25 @@ eq "$OUT" "$HEAD_SHA" "a satisfied gate prints ONLY the head SHA on stdout"
 # collision space is populated by exactly the kind of account that reviews pull requests. A declared
 # App must never be satisfied by the human who happens to hold the un-suffixed login.
 declare_bots '["chatgpt-codex-connector[bot]"]'
-review_fx "chatgpt-codex-connector" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector" "APPROVED" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "16" "a HUMAN login does not satisfy a '[bot]'-suffixed declaration (the #176 fail-open)"
 
 # ...while the suffixed declaration still matches the spelling REST actually reports, so declaring
 # the strict form is not a way to wedge the guard forever.
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "0" "a '[bot]'-suffixed declaration matches the REST '[bot]' login"
 
 # A doubled suffix must not satisfy the strict form through the same one-suffix rule it exists to
 # deny — which is why the suffix is APPENDED to a bare declaration rather than stripped from the API
 # login. Unreachable from GitHub, but it is the difference between "asymmetric" and "nearly".
-review_fx "chatgpt-codex-connector[bot][bot]" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector[bot][bot]" "APPROVED" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "16" "a DOUBLED '[bot]' suffix does not satisfy a '[bot]' declaration"
 
 declare_bots '["Chatgpt-Codex-Connector"]'
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "0" "login comparison is case-insensitive"
 
@@ -236,26 +347,41 @@ has "$OUT" "awaiting review from: chatgpt-codex-connector" "16 names who is stil
 
 # ============================ the head SHA ============================
 declare_bots '["chatgpt-codex-connector"]'; pr_fx "$HEAD_SHA"
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$OLD_SHA"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$OLD_SHA"
 g gate --pr 7
 eq "$RC_" "16" "a review of an EARLIER commit does not satisfy the current head (live: PR #145)"
 
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$OLD_SHA" \
-          "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$OLD_SHA" \
+          "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "0" "a stale review PLUS a current one is satisfied"
 
 # ============================ review states ============================
 declare_bots '["chatgpt-codex-connector"]'; pr_fx
-# APPROVED and COMMENTED are the two "reviewer is satisfied" states. COMMENTED must count: it is
-# what the Codex connector posts even on a clean pass, and holding out for an APPROVED that a
-# comment-only bot never sends would deadlock the guard permanently. CHANGES_REQUESTED is handled
-# below — it is submitted, but it is not satisfied.
-for st in APPROVED COMMENTED; do
-  review_fx "chatgpt-codex-connector[bot]" "$st" "$HEAD_SHA"
-  g gate --pr 7
-  eq "$RC_" "0" "review state $st counts as a satisfied review"
-done
+# APPROVED is the ONLY review state that satisfies this guard.
+#
+# THIS TEST USED TO ASSERT THE OPPOSITE FOR `COMMENTED`, AND ITS STATED PREMISE WAS FACTUALLY WRONG
+# (#167 §2). The old comment argued that COMMENTED "is what the Codex connector posts even on a
+# clean pass", so holding out for an APPROVED would deadlock the guard permanently. It does not:
+# on a clean pass the connector posts NO REVIEW OBJECT AT ALL — only a `+1` reaction (PRs
+# #53/#54/#66/#83/#88, live). The deadlock the old rule was defending against never existed, and
+# the branch it justified let a reviewer put actionable findings in a review BODY, create no inline
+# threads, and have this guard call it satisfied — with `required_approving_review_count: 0` and
+# `required_conversation_resolution` unable to block on a thread that does not exist, nothing else
+# would have caught it. Raised by the codex reviewer on PR #146; folded into #167 because the fix
+# is the same one rule.
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "0" "review state APPROVED counts as a satisfied review"
+
+# COMMENTED is now `attention` (21): the reviewer HAS spoken and is NOT satisfied.
+review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "21" "COMMENTED is 'review complete, attention required' (21), NOT a satisfied review"
+has "$OUT" "attention required" "21 says the reviewer spoke and is not satisfied"
+has "$OUT" "read the review body" "21 points at where the findings actually are"
+gout gate --pr 7
+eq "$OUT" "" "21 prints NO head SHA — printing it is what authorizes the arm"
 for st in PENDING DISMISSED; do
   review_fx "chatgpt-codex-connector[bot]" "$st" "$HEAD_SHA"
   g gate --pr 7
@@ -288,7 +414,7 @@ eq "$RC_" "19" "CHANGES_REQUESTED then COMMENTED on one commit -> still rejected
 # ...but a rejection of an EARLIER commit does not block the current one: pushing a fix moves the
 # head, which is exactly how a 19 is meant to clear.
 review_fx "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$OLD_SHA" \
-          "chatgpt-codex-connector[bot]" "COMMENTED"         "$HEAD_SHA"
+          "chatgpt-codex-connector[bot]" "APPROVED"          "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "0" "a rejection of an EARLIER commit does not block the reviewed current head"
 
@@ -304,24 +430,233 @@ review_fx "chatgpt-codex-connector[bot]" "SOME_NEW_STATE" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "20" "an unrecognized review state -> 20 (fail closed, and it is reported)"
 has "$OUT" "unrecognized review state 'SOME_NEW_STATE'" "the unknown state is named"
-# ...but a recognized ACCEPTED review alongside an unknown one is still a pass: the reviewer
-# demonstrably spoke about this commit.
+# ...AND AN ACCEPTED REVIEW NO LONGER OUTWEIGHS IT. This assertion is REVERSED by #167 §8 ("every
+# unreadable path still fails closed"), and the reversal is the point rather than a side effect:
+# `unknown` now outranks `clean` in the classifier's order, so a state nobody could interpret can
+# never be outvoted into a merge authorization by a second signal that happened to look clean. The
+# old rule was the one place a fresh unrecognized state was silently discarded — and an
+# unrecognized state is exactly what a future GitHub review verdict arrives as.
 review_fx "chatgpt-codex-connector[bot]" "SOME_NEW_STATE" "$HEAD_SHA" \
           "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 g gate --pr 7
-eq "$RC_" "0" "an accepted review outweighs an unknown-state one from the same reviewer"
+eq "$RC_" "20" "an UNKNOWN state is not outweighed by an accepted review (#167: unknown > clean)"
+gout gate --pr 7
+eq "$OUT" "" "the unclassifiable case prints NO head SHA"
+
+# ============ THE THREE SURFACES: the wedge #167 exists to remove ============
+# This guard read ONLY `pulls/N/reviews`, and both of the connector's other output shapes were
+# therefore invisible to it:
+#
+#   clean pass (lightweight mode) -> a `+1` reaction, NO review object   -> 16 forever
+#   any result  (task mode)       -> ONE issue comment, NO review object -> 16 on EVERY PR
+#
+# The second is the wider one: a repo that gains a Codex Cloud environment silently loses unattended
+# arming entirely, disabled by a vendor-side setting nobody in the repo changed. PR #184 reproduced
+# the first end-to-end (a `+1` at 21:33:47Z, zero reviews; `pr-watch observe` said clean, this guard
+# said 16, merged by hand).
+reset_fx; declare_bots '["chatgpt-codex-connector"]'
+
+# #167'S HEADLINE ACCEPTANCE CRITERION. A `+1` newer than this head's arrival is a clean pass.
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+gout gate --pr 7
+eq "$RC_" "0" "#167: a fresh '+1' with NO review object -> 0 (was 16 forever)"
+eq "$OUT" "$HEAD_SHA" "#167: the reaction path still emits the witnessed head SHA"
+
+# ...and the REST spelling of the same App satisfies a bare declaration, on this surface too.
+reset_fx; reaction_fx "chatgpt-codex-connector[bot]" "+1" "$AFTER_AT"
+gout gate --pr 7;  eq "$RC_" "0" "#167: a '[bot]'-suffixed reaction login matches a bare declaration"
+
+# A NON-`+1` REACTION IS NOT A PASS. The connector's contract names 👍 specifically; anything else
+# is somebody reacting to the PR, and reactions are publicly writable.
+reset_fx; reaction_fx "chatgpt-codex-connector" "heart" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "16" "#167: a non-'+1' reaction is not a clean signal"
+
+# ...and neither is an UNDECLARED account's `+1`. Reactions being publicly writable is exactly why
+# the identity check has to hold on this surface: without it, anyone could arm a merge.
+reset_fx; reaction_fx "some-passerby" "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "16" "#167: a '+1' from an UNDECLARED account never arms the merge"
+
+# #167 §3's CORRECTED CRITERION, and the one the issue explicitly says must NOT be implemented as
+# originally written. A task-mode issue comment is the FINDINGS shape — PR #178's sole Codex comment
+# reported unresolved selfcheck warnings — so mapping it to 0 would auto-merge code the reviewer had
+# just flagged. It moves the guard off 16 (the reviewer HAS spoken) without authorizing the arm.
+reset_fx; comment_fx "chatgpt-codex-connector[bot]" "$AFTER_AT"
+g gate --pr 7
+eq "$RC_" "21" "#167 §3: a fresh task-mode COMMENT -> 21 attention, NOT 0 and NOT 16"
+has "$OUT" "attention required" "21 names the outcome"
+gout gate --pr 7
+eq "$OUT" "" "#167 §3: the comment path prints NO head SHA — it must not authorize an arm"
+
+# A COMMENT OUTRANKS A `+1` from the same reviewer: it has something to say about this head.
+reset_fx
+comment_fx  "chatgpt-codex-connector[bot]" "$AFTER_AT"
+reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "21" "#167: a fresh comment outranks a fresh '+1' (attention > clean)"
+
+# A REVIEW AT THE HEAD OUTRANKS A REACTION, and a rejection outranks everything.
+reset_fx
+review_fx   "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
+reaction_fx "chatgpt-codex-connector"      "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "19" "#167: a rejection at the head outranks a fresh '+1'"
+
+# ---- STALENESS ON THE ARMING PATH (#175/D19), which is where it matters most --------------------
+# A reaction carries no commit, so a `+1` left on an EARLIER head still sits there after new commits
+# land. Accepting it would arm a merge on code nobody reviewed — the one direction this guard must
+# never be wrong in. The lower bound is the SERVER's record of when the ref became this SHA.
+reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$BEFORE_AT"
+g gate --pr 7
+eq "$RC_" "16" "#175: a '+1' PREDATING this head's arrival does not arm the merge"
+has "$OUT" "predates this head" "#175: says WHY the reaction was rejected"
+gout gate --pr 7;  eq "$OUT" "" "#175: a stale '+1' prints no head SHA"
+
+# The head-COMMIT date is client-supplied and must never be consulted. Proven as a NEGATIVE: the
+# endpoint is never addressed at all.
+reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+gout gate --pr 7
+if called '/commits/'; then bad "#175: the arming guard must never read the head commit's date"; else ok; fi
+
+# THE SAME SHA ARRIVING ON ANOTHER REF must not date this one — the case that rules out a
+# check-suite anchor, which is scoped to the SHA rather than to the ref.
+reset_fx
+activity_fx "$HEAD_SHA" "refs/heads/somewhere-else" "$AFTER_AT" \
+            "$HEAD_SHA" "refs/heads/$HEAD_REF"      "$BEFORE_AT"
+reaction_fx "chatgpt-codex-connector" "+1" "$ARRIVED_AT"
+gout gate --pr 7;  eq "$RC_" "0" "#175: this ref's OWN record dates it, even when a newer one names another ref"
+
+# A REVERSE FORCE-PUSH (A -> B -> A) leaves two records for this SHA; only the LATER one says when
+# it is A *now*.
+reset_fx
+activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT" \
+            "$HEAD_SHA" "refs/heads/$HEAD_REF" "$BEFORE_AT"
+reaction_fx "chatgpt-codex-connector" "+1" "$ARRIVED_AT"
+g gate --pr 7;  eq "$RC_" "16" "#175: the LATEST record decides, so a reverse force-push is caught"
+
+# AN UNESTABLISHED ANCHOR IS 16, NEVER 0 — an unproven signal is not a pass. Distinct from 20:
+# nothing failed to read, there is simply no record putting this SHA on this ref.
+reset_fx; activity_fx    # a well-formed EMPTY list
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "16" "#175: no activity record for this head -> 16, never an arm"
+reset_fx; activity_fx
+comment_fx "chatgpt-codex-connector[bot]" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "16" "#175: the comment path degrades the same way — one rule over both"
+
+# A DELETED HEAD REPOSITORY is a real state, not a broken response.
+reset_fx; pr_fx "$HEAD_SHA" "acme/widget" ""
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "16" "#175: a deleted head repository -> 16"
+has "$OUT" "deleted fork" "#175: names the likely cause"
+
+# A COMMIT-SCOPED REVIEW NEEDS NO ANCHOR, so an unestablished one must NOT suppress it. This is the
+# per-signal anchor state the fold depends on: erasing it globally would mask real evidence.
+reset_fx; activity_fx
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
+gout gate --pr 7;  eq "$RC_" "0" "an APPROVED review is unaffected by an unestablished anchor"
+
+# ---- THE ANCHOR READ IS CONDITIONAL (cost) -----------------------------------------------------
+# It is a FIFTH request, and a PR whose reviewer has said nothing must not pay for it.
+reset_fx
+gout gate --pr 7
+if called '/activity'; then bad "the ref-activity read must not happen with no date-scoped signal"; else ok; fi
+reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+gout gate --pr 7
+if called '/activity'; then ok; else bad "the ref-activity read MUST happen when a '+1' needs dating"; fi
+
+# ---- every NEW surface fails closed ------------------------------------------------------------
+reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+STUB_FAIL_COMMENTS=1  g gate --pr 7; eq "$RC_" "20" "a failed issue-comments read -> 20"; STUB_FAIL_COMMENTS=0
+STUB_FAIL_REACTIONS=1 g gate --pr 7; eq "$RC_" "20" "a failed reactions read -> 20"; STUB_FAIL_REACTIONS=0
+STUB_FAIL_ACTIVITY=1  g gate --pr 7; eq "$RC_" "20" "a failed ref-activity read -> 20 (never an arm)"; STUB_FAIL_ACTIVITY=0
+STUB_EMPTY_ACTIVITY=1 g gate --pr 7; eq "$RC_" "20" "an EMPTY activity body is not an empty list -> 20"; STUB_EMPTY_ACTIVITY=0
+for bad_json in 'not json at all' '{"message":"Not Found"}'; do
+  reset_fx; printf '%s\n' "$bad_json" > "$S/comments.json"
+  g gate --pr 7; eq "$RC_" "20" "an unparseable/wrapped comments response -> 20 ($bad_json)"
+  reset_fx; printf '%s\n' "$bad_json" > "$S/reactions.json"
+  g gate --pr 7; eq "$RC_" "20" "an unparseable/wrapped reactions response -> 20 ($bad_json)"
+done
+# The activity endpoint answering a NON-ARRAY must surface rather than iterate to zero matches and
+# read as a clean "no anchor".
+reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+printf '%s\n' '{"message":"Not Found"}' > "$S/activity.json"
+g gate --pr 7; eq "$RC_" "20" "a non-array activity response -> 20, not a silent 'no anchor'"
+
+# ---- object shapes: a record that cannot be DATED is not a record that says nothing -------------
+# A declared reviewer's signal with no `created_at` is a malformed response. Treating it as absent
+# would silently drop a reviewer's comment — and on the clean path that is a false pass.
+reset_fx
+printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"content":"+1"}]' > "$S/reactions.json"
+g gate --pr 7; eq "$RC_" "20" "a '+1' with NO timestamp -> 20 (undatable, not absent)"
+reset_fx
+printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"body":"x"}]' > "$S/comments.json"
+g gate --pr 7; eq "$RC_" "20" "a comment with NO timestamp -> 20"
+# An unorderable FORMAT is rejected rather than normalized: a lexicographic compare is only a
+# chronological one while every operand is the same width, precision and zone.
+for ts in "2026-07-25T04:45:23-04:00" "2026-07-25T04:45:23.500Z" "not-a-date"; do
+  reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$ts"
+  g gate --pr 7; eq "$RC_" "20" "an unorderable timestamp format -> 20 ($ts)"
+done
+# A record from an UNDECLARED login with a broken shape is ignored, not fatal — only the declared
+# reviewers' evidence is classified, so a human's malformed comment cannot wedge the guard.
+reset_fx
+printf '%s\n' '[{"user":{"login":"a-human"},"body":"x"}]' > "$S/comments.json"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
+gout gate --pr 7; eq "$RC_" "0" "an UNDECLARED login's undatable comment is ignored, not fatal"
+
+# ---- pagination on the two new surfaces --------------------------------------------------------
+# A busy PR pushes the bot's reaction off page 1 behind human reactions; a missed `+1` wedges the
+# guard at 16 on a PR that was in fact reviewed clean.
+reset_fx
+printf '%s\n' '[{"user":{"login":"a-human"},"content":"heart","created_at":"'"$AFTER_AT"'"}]' > "$S/reactions.json"
+printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"content":"+1","created_at":"'"$AFTER_AT"'"}]' > "$S/reactions2.json"
+gout gate --pr 7;  eq "$RC_" "0" "a '+1' on the SECOND page is found (paginated read)"
+reset_fx
+printf '%s\n' '[{"user":{"login":"a-human"},"created_at":"'"$AFTER_AT"'"}]' > "$S/comments.json"
+printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"created_at":"'"$AFTER_AT"'"}]' > "$S/comments2.json"
+g gate --pr 7;  eq "$RC_" "21" "a comment on the SECOND page is found (paginated read)"
+reset_fx
 
 # ============================ multiple declared reviewers (ALL, not ANY) ============================
 declare_bots '["chatgpt-codex-connector", "gemini-code-assist[bot]"]'; pr_fx
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "16" "ALL declared reviewers must review — one pending still holds the arm"
 has "$OUT" "gemini-code-assist" "the pending reviewer is named, the satisfied one is not"
 hasnt "$OUT" "awaiting review from: chatgpt-codex-connector" "a satisfied reviewer is not listed as pending"
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA" \
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA" \
           "gemini-code-assist[bot]"      "APPROVED"  "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "0" "every declared reviewer reviewed -> 0"
+
+# #185's THIRD ACCEPTANCE CRITERION: this guard's all-must-speak behaviour is UNCHANGED — and it now
+# has to hold on the two surfaces it just learned to read, which is where the sibling module's
+# pooled aggregation went wrong. A `+1` from one declared bot must not speak for the set.
+reset_fx; declare_bots '["chatgpt-codex-connector", "gemini-code-assist[bot]"]'
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+g gate --pr 7
+eq "$RC_" "16" "#185: a fresh '+1' from ONE of two declared reviewers does not arm the merge"
+has "$OUT" "gemini-code-assist" "#185: the silent reviewer is named"
+gout gate --pr 7;  eq "$OUT" "" "#185: a partial set prints no head SHA"
+
+# ...and the control: both spoke, by DIFFERENT mechanisms, so the set is satisfied.
+reset_fx; declare_bots '["chatgpt-codex-connector", "gemini-code-assist[bot]"]'
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+review_fx   "gemini-code-assist[bot]" "APPROVED" "$HEAD_SHA"
+gout gate --pr 7
+eq "$RC_" "0" "#185: a '+1' from one and an APPROVED from the other -> 0"
+eq "$OUT" "$HEAD_SHA" "#185: the all-clean set emits the witnessed head SHA"
+
+# ATTENTION from one outranks SILENCE from the other: there is something to read now, and reporting
+# "still waiting" would bury it. Both withhold the arm, so the ordering is about which remedy the
+# operator is handed first.
+reset_fx; declare_bots '["chatgpt-codex-connector", "gemini-code-assist[bot]"]'
+comment_fx "chatgpt-codex-connector[bot]" "$AFTER_AT"
+g gate --pr 7;  eq "$RC_" "21" "#167: attention from one reviewer outranks another's silence"
+
+# ...and a clean reviewer alongside an UNCLASSIFIABLE one fails closed rather than arming.
+reset_fx; declare_bots '["chatgpt-codex-connector", "gemini-code-assist[bot]"]'
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+review_fx   "gemini-code-assist[bot]" "SOME_NEW_STATE" "$HEAD_SHA"
+g gate --pr 7;  eq "$RC_" "20" "a clean reviewer alongside an unclassifiable one -> 20, never 0"
+reset_fx; declare_bots '["chatgpt-codex-connector"]'
 
 # ============================ pagination ============================
 # The satisfying review sits on the SECOND page. Without --paginate (or with a per-page cap) the
@@ -329,7 +664,7 @@ eq "$RC_" "0" "every declared reviewer reviewed -> 0"
 declare_bots '["chatgpt-codex-connector"]'; pr_fx
 review_fx "dependabot[bot]" "APPROVED" "$HEAD_SHA"
 jq -c -n --arg sha "$HEAD_SHA" \
-  '[{user:{login:"chatgpt-codex-connector[bot]",type:"Bot"},state:"COMMENTED",commit_id:$sha}]' \
+  '[{user:{login:"chatgpt-codex-connector[bot]",type:"Bot"},state:"APPROVED",commit_id:$sha}]' \
   > "$S/reviews2.json"
 g gate --pr 7
 eq "$RC_" "0" "a review on the SECOND page is found (paginated read)"
@@ -337,7 +672,7 @@ rm -f "$S/reviews2.json"
 
 # ============================ every unreadable path fails closed ============================
 declare_bots '["chatgpt-codex-connector"]'; pr_fx
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 
 STUB_AUTH_FAIL=1 g gate --pr 7;    eq "$RC_" "20" "unauthenticated gh -> 20"; STUB_AUTH_FAIL=0
 STUB_FAIL_PR=1 g gate --pr 7;      eq "$RC_" "20" "a failed PR read -> 20 (never 'not reviewed')"; STUB_FAIL_PR=0
@@ -352,7 +687,7 @@ g gate --pr 7; eq "$RC_" "20" "unparseable reviews JSON -> 20"
 
 # ============================ the --pr URL form ============================
 declare_bots '["chatgpt-codex-connector"]'; pr_fx
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 gout gate --pr "https://github.com/acme/widget/pull/7"
 eq "$RC_" "0" "a full PR URL is accepted"
 eq "$OUT" "$HEAD_SHA" "the URL form yields the same witnessed SHA"
@@ -425,7 +760,7 @@ pr_fx
 # git origin, which no gh variable can move. Simulated here the only way a stub can: the reads answer
 # for a repository that is not this checkout's.
 pr_fx_raw '{"head":{"sha":"'"$HEAD_SHA"'"},"base":{"repo":{"full_name":"other/project"}}}'
-review_fx "chatgpt-codex-connector[bot]" "COMMENTED" "$HEAD_SHA"
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "2" "a bare number whose reads answered for ANOTHER repo is refused (the GH_REPO class)"
 has "$OUT" "GH_REPO" "the refusal names the likely cause"

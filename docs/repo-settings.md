@@ -291,17 +291,30 @@ pr-review.sh gate --pr <number|url>    # prints the witnessed head SHA on 0
 | `17` | the repo declares no `[reviewers] bots` — unknowable, **fail closed**. Declare them, or `bots = []` |
 | `18` | `[reviewers] bots` is present but malformed — fix `agents.toml` |
 | `19` | a declared reviewer left **`CHANGES_REQUESTED`** on this head SHA — address it and push |
+| `21` | **review complete, attention required** — a declared reviewer left a `COMMENTED` review at this head, or a fresh issue comment. It has reviewed and is **not satisfied**; read what it said. There may be **no inline threads at all** |
 | `20` | live state unreadable — **fail closed**, never assume reviewed |
 
 Three properties are doing the real work:
 
-- **"Submitted" is not "satisfied."** `APPROVED` and `COMMENTED` count — `COMMENTED` is what the
-  Codex connector posts even on a clean pass, and holding out for an `APPROVED` a comment-only bot
-  never sends would deadlock the gate. **`CHANGES_REQUESTED` does not count** (`19`). Nothing else
-  catches it: with `required_approving_review_count: 0` GitHub will merge a PR whose only review
+- **"Submitted" is not "satisfied."** Only `APPROVED` — or a `+1` reaction proved newer than the
+  moment this head arrived — counts as satisfied. **`CHANGES_REQUESTED` is `19`** and **`COMMENTED`
+  is `21`**: both mean the reviewer spoke without being satisfied, and neither may arm. Nothing else
+  catches this: with `required_approving_review_count: 0` GitHub will merge a PR whose only review
   says *do not merge*, and `required_conversation_resolution` gates on threads rather than on the
-  verdict. It is not a deadlock either — addressing the feedback pushes a commit, which moves the
-  head SHA and gets re-reviewed.
+  verdict — so a reviewer that puts its findings in a review **body**, creating no inline threads,
+  is invisible to every other guard. It is not a deadlock either: addressing the feedback pushes a
+  commit, which moves the head SHA and gets re-reviewed.
+
+  > **`COMMENTED` used to count, on a premise that was simply false (#167 §2).** The argument was
+  > that the connector posts `COMMENTED` even on a clean pass, so waiting for `APPROVED` would
+  > deadlock. It does not — on a clean pass it posts **no review object at all**, only a `+1`
+  > (PRs #53/#54/#66/#83/#88, live). The deadlock never existed, and the branch it justified let
+  > body-only findings authorize an auto-merge.
+
+- **It reads every surface a reviewer can speak on, not just reviews.** Reviews are matched by head
+  SHA; issue comments and `+1` reactions are matched by timestamp against the **server's** record of
+  when the head ref became this SHA (the repository activity API — never the head commit's
+  committer date, which is client-supplied). An unprovable signal is `16`, never `0`.
 
 - **It is anchored to a commit, not to the PR.** A review of an earlier push is not a review of
   what is about to merge. On a 0 the caller passes the witnessed SHA to `gh pr merge
@@ -322,12 +335,26 @@ reviewer sets `bots = []` and is unaffected.
 (`scripts/lib/pr-watch.sh`) waits for the reviewer in a shell poll loop and resolves any findings,
 but does not arm auto-merge afterwards — so unattended arming remains suspended on such repos.
 
-> **A clean Codex pass does not satisfy this guard, and will not until that is fixed.** The
-> connector signals "reviewed, nothing found" with a `+1` reaction on the PR post and posts **no
-> review object at all**. `gate` reads only `pulls/N/reviews`, so on such a PR it returns `16`
-> ("awaiting review") indefinitely — auto-merge stays unarmed on precisely the PRs that are
-> cleanest. `pr-watch.sh` reads the reaction and reports that case correctly as `clean`; teaching
-> *this* guard to accept it changes when merges happen, so it is **#167** rather than folded in.
+> **This guard used to read one surface of three, and wedged at `16` forever on two of them —
+> fixed by #167.** The connector signals "reviewed, nothing found" with a `+1` reaction and posts
+> **no review object at all**, so a clean pass never satisfied a guard that read only
+> `pulls/N/reviews`: auto-merge stayed unarmed on precisely the PRs that were cleanest.
+>
+> **The wider shape was worse than "clean passes only".** With a Codex Cloud environment the
+> connector runs as a *task* and posts a **single issue comment** — no review, no threads, no
+> reaction — so on a repo configured that way the guard returned `16` on **every** PR, and #87/#134's
+> unattended arming was silently dead, disabled by a vendor-side setting nobody in the repo changed.
+> Both shapes were observed live on this repo within one day (PR #166 at 08:01 vs PR #178 at 19:30).
+>
+> `gate` now reads reviews, issue comments **and** reactions, and shares one per-reviewer evidence
+> classifier with `pr-watch.sh` so the two can no longer disagree about what a signal means (#167)
+> or about how many reviewers must have produced one (#185).
+>
+> **This did not restore unattended arming, and nothing here claims it did.** `/implement-issue`
+> asks the gate exactly **once**, seconds after `gh pr create`, when an async reviewer has
+> definitionally not responded — and no path re-arms afterwards. What changed is that the gate now
+> returns the **right answer when asked**: a re-run, or a manual invocation, after the reviewer has
+> finished can arm. Automatic re-arming is **#168**, an open owner decision.
 
 ## Operating notes
 

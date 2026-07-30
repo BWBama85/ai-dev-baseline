@@ -20,15 +20,43 @@
 # than respect it. `automerge-ok` keeps answering "will the CHECKS gate this?"; this module
 # answers "has REVIEW happened?"; step 10 composes the two.
 #
+# ------------------------------------------------------------------------------------------------
+# THREE SURFACES, NOT ONE (#167) — WHY THIS GUARD USED TO WEDGE AT 16 FOREVER
+#
+# This module read ONLY `pulls/N/reviews`. The Codex connector states its own contract in every
+# lightweight review body it posts — "If Codex has suggestions, it will comment; otherwise it will
+# react with 👍" — so on a CLEAN pass it posts NO REVIEW OBJECT AT ALL, only a `+1` reaction on the
+# PR's opening post. The review had happened; this guard could not see it, classified the reviewer
+# `pending`, and returned 16 forever. Unattended arming was off on precisely the cleanest PRs.
+#
+# And there is a wider shape. With a Codex Cloud environment the connector runs as a TASK and posts
+# a SINGLE ISSUE COMMENT — no review, no threads, no reaction. On a repo configured that way this
+# guard returned 16 on EVERY PR, so #87/#134's unattended arming was silently dead, disabled by a
+# vendor-side setting nobody in the repo changed.
+#
+# Both shapes were observed live on this repo, and they are disjoint: PRs #53/#54/#66/#83/#88 carry
+# a `+1` and zero reviews; #127/#137/#145/#146/#154/#166 carry a review and zero reactions; PR #184
+# reproduced the wedge end-to-end (a connector `+1` at 21:33:47Z, zero reviews, `pr-watch observe`
+# reporting clean while this guard returned 16, merged by hand). So all three surfaces are read.
+#
+# WHAT IS SHARED WITH pr-watch.sh IS A CLASSIFIER, NOT A VERDICT. The two modules ask different
+# FINAL questions — "may I arm the merge now?" vs "is the reviewer done?" — so sharing one binary
+# verdict is the trap. What they share is `adb_reviewer_evidence` + `adb_reviewer_classes` in
+# common.sh: one neutral per-reviewer classification, which each module maps to its OWN exit codes.
+# Answering it separately is how the two libraries already disagreed about what `APPROVED` means and
+# about how many reviewers must have spoken (#185).
+#
+# ------------------------------------------------------------------------------------------------
 # Usage:
 #   pr-review.sh gate --pr <number|url>   # the pre-arm guard; prints the witnessed head SHA on 0
 #   pr-review.sh -h | --help
 #
 # `gate` exit codes are a stable machine contract for the workflow step:
-#   0  safe    — every declared reviewer has reviewed the CURRENT head SHA, or the repo declared
-#                `[reviewers] bots = []` (no async reviewer). STDOUT is the witnessed head SHA,
-#                which the caller MUST pass to `gh pr merge --match-head-commit`.
-#   16 wait    — a declared reviewer has NOT reviewed this head SHA yet. Do not arm; the operator
+#   0  safe    — every declared reviewer signalled a CLEAN pass for the CURRENT head — an APPROVED
+#                review at this SHA, or a `+1` proved newer than the moment this head arrived — or
+#                the repo declared `[reviewers] bots = []` (no async reviewer). STDOUT is the
+#                witnessed head SHA, which the caller MUST pass to `gh pr merge --match-head-commit`.
+#   16 wait    — a declared reviewer has NOT spoken about this head SHA yet. Do not arm; the operator
 #                merges after the review lands (or /resolve-pr-threads then a re-run).
 #   17 unknown — the repo declares no `[reviewers] bots` at all, so whether a reviewer is coming
 #                cannot be known. FAIL CLOSED. Declare the reviewers, or `bots = []` if there are
@@ -37,8 +65,20 @@
 #                agents.toml", not "retry", so it is not folded into 20.
 #   19 rejected — a declared reviewer left CHANGES_REQUESTED on this head SHA. Distinct from 16:
 #                the work exists and is described, rather than being waited for.
-#   20 unknown — live state unreadable (API failure, no head SHA, an unrecognized review state).
-#                FAIL CLOSED, never assume reviewed.
+#   21 attention — REVIEW COMPLETE, ATTENTION REQUIRED (#167 §3). A declared reviewer left a
+#                `COMMENTED` review at this head, or a fresh issue comment. The reviewer HAS spoken
+#                and is NOT satisfied, so the arm is withheld and the operator reads what it said.
+#                THIS IS DELIBERATELY NOT 0, and the distinction is the whole point: "the reviewer
+#                has spoken" is not the same claim as "the reviewer is satisfied", and only the
+#                second one makes arming safe. A fresh issue comment is the task-mode FINDINGS
+#                shape — PR #178's sole Codex comment reported unresolved selfcheck warnings — so
+#                mapping it to 0 would authorize auto-merging code the reviewer had just flagged:
+#                the exact fail-open #134 exists to prevent, reintroduced through the fix for its
+#                sibling. Distinct from 19 (nothing was formally rejected) and from 16 (nobody is
+#                being waited for). NOTE FOR CALLERS: it is a NEW code — a `*)` arm that lumps it
+#                in with 20 reports "unreadable, retry" for a PR whose review is sitting right there.
+#   20 unknown — live state unreadable (API failure, no head SHA, an unrecognized review state, a
+#                reviewer signal that cannot be dated). FAIL CLOSED, never assume reviewed.
 #   2  usage   — bad or missing arguments.
 #
 # THE ONE DIRECTION THIS MUST NEVER BE WRONG IN is returning 0 when a reviewer is still coming.
@@ -90,7 +130,8 @@ OPT_PR=""
 # --- the guard -------------------------------------------------------------------------------
 
 cmd_gate() {
-  local n drc want head pjson pfields reviews rjson kinds gotslug src match pending="" rejected=""
+  local n drc want head pjson pfields gotslug src headslug headref
+  local reviews comments reacts evidence classes verdict arc
 
   [ -n "$OPT_PR" ] || { echo "pr-review: gate requires --pr <number|url>" >&2; return 2; }
   n="$(adb_pr_number "$OPT_PR")" \
@@ -140,10 +181,16 @@ cmd_gate() {
   # ends up set and `gotslug` empty, which would skip the different-repository refusal below
   # entirely. Putting the substitution straight into the heredoc would discard the very status that
   # distinguishes that from a clean read.
+  #
+  # `.head.repo.full_name` and `.head.ref` are read HERE rather than in a second call, because they
+  # are the coordinates the staleness anchor is looked up by and they belong to the same snapshot as
+  # the head SHA they describe. NOT case-folded, unlike the base slug: that one exists to be
+  # COMPARED against the local remote (where case must not decide the answer), while these two are
+  # interpolated into a URL and a ref name, both of which GitHub treats as case-sensitive.
   pfields="$(printf '%s' "$pjson" \
-             | jq -r '(.head.sha // ""), (.base.repo.full_name // "" | ascii_downcase)' 2>/dev/null)" \
+             | jq -r '(.head.sha // ""), (.base.repo.full_name // "" | ascii_downcase), (.head.repo.full_name // ""), (.head.ref // "")' 2>/dev/null)" \
     || { echo "pr-review: could not parse PR #$n — refusing to arm" >&2; return 20; }
-  { IFS= read -r head; IFS= read -r gotslug; } <<EOF
+  { IFS= read -r head; IFS= read -r gotslug; IFS= read -r headslug; IFS= read -r headref; } <<EOF
 $pfields
 EOF
   [ -n "$head" ] \
@@ -174,105 +221,89 @@ EOF
     return 0
   fi
 
-  # --paginate so a PR with many reviews cannot silently drop the page carrying the one that
-  # matters. Read and PARSE separately: a pipeline reports only its last command's status, so
-  # `gh api … | jq` would return 0 on a failed read, the parser would see empty stdin — a
-  # legitimately unreviewed PR — and the guard would report 16 for a repo it could not read. That
-  # direction is merely annoying; the same mistake in the opposite branch would be a false 0.
-  rjson="$(gh api --paginate "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" 2>/dev/null)" \
-    || { echo "pr-review: could not read reviews for PR #$n — refusing to arm" >&2; return 20; }
+  # --- read ALL THREE SURFACES a reviewer may speak on (#167) -----------------------------------
+  # `_gate_read_list` paginates, parses, and fails closed on each — reading and PARSING separately,
+  # because a pipeline reports only its LAST command's status, so `gh api … | jq` returns 0 on a
+  # failed read and the parser then sees empty stdin, which is indistinguishable from a legitimately
+  # empty list. Reported as 16 that direction is merely annoying; the same mistake on the clean path
+  # would be a false 0.
+  #
+  # A pull request IS an issue as far as comments and reactions go, so those two live under
+  # `issues/N/...`. The reactions read is deliberately NOT filtered server-side with `-f content=+1`:
+  # a bare `-f` makes `gh api` switch to POST, which would ADD a reaction rather than list them.
+  reviews="$(adb_paginated_list pr-review "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" reviews "$n")" || return 20
+  comments="$(adb_paginated_list pr-review "repos/{owner}/{repo}/issues/$n/comments?per_page=100" comments "$n")" || return 20
+  reacts="$(adb_paginated_list pr-review "repos/{owner}/{repo}/issues/$n/reactions?per_page=100" reactions "$n")" || return 20
 
-  # --paginate concatenates one JSON document per page; -s flattens them into one array.
-  reviews="$(printf '%s' "$rjson" | jq -s -c '[.[][]]' 2>/dev/null)" \
-    || { echo "pr-review: could not parse the reviews of PR #$n — refusing to arm" >&2; return 20; }
-  [ -n "$reviews" ] \
-    || { echo "pr-review: could not parse the reviews of PR #$n — refusing to arm" >&2; return 20; }
+  # SELECTION ONLY — the shared jq pass, which also applies the shared identity predicate. Reviews
+  # are matched by the CURRENT head SHA: a review of an earlier commit is not a review of this one,
+  # observed live on PR #145 where the bot reviewed b302fa0e and three further commits landed after.
+  evidence="$(adb_reviewer_evidence "$(printf '%s' "$want" | jq -R -s -c 'split("\n") | map(select(length > 0))')" \
+                                    "$reviews" "$comments" "$reacts" "$head")" \
+    || { echo "pr-review: could not evaluate the reviewer signals of PR #$n — refusing to arm" >&2; return 20; }
 
-  # For each declared reviewer, ask ONLY about reviews attached to the current head SHA. A review
-  # of an earlier commit is not a review of this one — observed live on PR #145, where the bot
-  # reviewed b302fa0e and three further commits landed afterwards.
-  # The shared identity predicate, read ONCE rather than per declared reviewer — the loop below runs
-  # per reviewer, and pr-watch.sh hoists it the same way for the same reason.
-  match="$(adb_reviewer_match_jq)"
-  while IFS= read -r login; do
-    [ -n "$login" ] || continue
-    kinds="$(printf '%s' "$reviews" | jq -r --arg sha "$head" --arg who "$login" \
-        "$match"'
-        [ .[]
-          | select((.commit_id // "") == $sha)
-          | select((.user.login // "") | adb_declared_reviewer([$who]))
-          | (.state // "") ] | .[]' 2>/dev/null)" \
-      || { echo "pr-review: could not evaluate reviews for '$login' — refusing to arm" >&2; return 20; }
+  # A comment and a reaction carry no commit, so both are proved against the SERVER's record of when
+  # this ref became this head (#175/D19). THIS MATTERS MORE HERE THAN IN THE WATCHER: a date-scoped
+  # signal this guard accepts authorizes an ARMED MERGE, which is exactly why D19 required the
+  # anchor be promoted to a shared primitive rather than copied.
+  #
+  # Read ONCE, and only when a date-scoped candidate exists — a PR whose reviewer has said nothing
+  # must not pay the fifth request. The sentinel is the default: an unestablished anchor leaves
+  # date-scoped signals unprovable (classified `none` → 16, "still waiting"), while leaving
+  # commit-scoped review evidence untouched, because a review carries its own `commit_id`.
+  local anchor="$ADB_NO_ANCHOR"
+  case "$evidence" in
+    *" comment "*|*" plus1 "*)
+      anchor="$(adb_head_anchor pr-review "$n" "$headslug" "$headref" "$head")"; arc=$?
+      case "$arc" in
+        0) ;;
+        1) anchor="$ADB_NO_ANCHOR" ;;
+        *) echo "pr-review: PR #$n — refusing to arm on a signal whose freshness cannot be read" >&2
+           return 20 ;;
+      esac ;;
+  esac
 
-    # The state taxonomy, in its one home.
-    #
-    # COMMENTED counts. It is what the Codex connector posts even on a clean pass, and waiting for
-    # an APPROVED that a comment-only bot never sends would deadlock the guard permanently.
-    #
-    # CHANGES_REQUESTED does NOT count, and this is not symmetry for its own sake. "The reviewer
-    # has spoken" is not the same claim as "the reviewer is satisfied", and only the second one
-    # makes arming safe. Nothing else catches it: this repo's branch protection carries
+  classes="$(adb_reviewer_classes pr-review "$want" "$evidence" "$anchor")" \
+    || { echo "pr-review: PR #$n — refusing to arm on a signal it cannot date" >&2; return 20; }
+  verdict="$(adb_fold_reviewer_classes "$classes")"
+
+  # --- map the shared classification onto THIS module's exit codes ------------------------------
+  # The fold is ALL-OR-NOTHING on `clean` (#185) — `adb_fold_reviewer_classes` ranks `none` above
+  # `clean` for exactly that reason, so one fast bot can never release code before the reviewer the
+  # owner actually cares about. The order below is the fold's, spelled out as remedies.
+  case "$verdict" in
+    # A rejection is reported BEFORE anything else: it names work that already exists to be done.
+    # Nothing else catches it — this repo's branch protection carries
     # `required_approving_review_count: 0` (verified live), so GitHub will happily merge a PR whose
     # only review says "do not merge this", and `required_conversation_resolution` gates on threads
-    # rather than on the verdict. Treating a rejection as a green light would be the exact
-    # fail-open this module exists to prevent — reported by the reviewer on this module's own PR.
-    #
-    # It is also not a deadlock: addressing the feedback pushes a commit, which moves the head SHA,
-    # and the next review is evaluated against that. Disagreeing is the ordinary manual-merge path.
-    #
-    # PENDING is an unsubmitted draft nobody can see; DISMISSED was explicitly revoked. Anything
-    # else is a state this module does not recognize: it must surface (20), never be quietly read
-    # as "not reviewed", because a future GitHub state that means "reviewed" would wedge it at 16.
-    local satisfied=0 sawunknown=0 changes=0 st
-    while IFS= read -r st; do
-      case "$st" in
-        '') continue ;;
-        APPROVED|COMMENTED) satisfied=1 ;;
-        CHANGES_REQUESTED)  changes=1 ;;
-        PENDING|DISMISSED) ;;
-        *) sawunknown=1; echo "pr-review: PR #$n — unrecognized review state '$st' from '$login'" >&2 ;;
-      esac
-    done <<EOF
-$kinds
-EOF
-
-    if [ "$satisfied" -eq 0 ] && [ "$changes" -eq 0 ] && [ "$sawunknown" -eq 1 ]; then
-      echo "pr-review: cannot classify '$login''s review of $head — refusing to arm" >&2
-      return 20
-    fi
-    # A standing CHANGES_REQUESTED outranks any other review this reviewer left on the SAME commit.
-    # GitHub keeps such a review blocking until it is dismissed or superseded by a later review, and
-    # "any accepted state wins" would let an earlier COMMENTED cancel a later rejection.
-    if [ "$changes" -eq 1 ]; then
-      rejected="${rejected:+$rejected }$login"
-    elif [ "$satisfied" -eq 0 ]; then
-      pending="${pending:+$pending }$login"
-    fi
-  done <<EOF
-$want
-EOF
-
-  # A rejection is reported BEFORE a missing review: both withhold the arm, but this one names work
-  # that already exists to be done, rather than something to wait for.
-  if [ -n "$rejected" ]; then
-    echo "pr-review: PR #$n at $head — changes requested by: $rejected" >&2
-    echo "pr-review: not arming auto-merge; a submitted review is not a satisfied one, and branch protection does not block on the verdict." >&2
-    echo "pr-review: address the feedback and push (which moves the head, and is re-reviewed), or merge by hand if you disagree." >&2
-    return 19
-  fi
-
-  # ALL declared reviewers must have reviewed, not any one of them. The set is DECLARED rather
-  # than defaulted, so it lists exactly the bots this repo actually has — under "any", a fast
-  # second bot would release code before the reviewer the owner actually cares about.
-  if [ -n "$pending" ]; then
-    echo "pr-review: PR #$n at $head — awaiting review from: $pending" >&2
-    echo "pr-review: not arming auto-merge; GitHub gates on checks and on threads that already exist, neither of which waits for a reviewer." >&2
-    return 16
-  fi
-
-  printf '%s\n' "$head"
-  echo "pr-review: PR #$n — every declared reviewer has reviewed $head" >&2
-  return 0
+    # rather than on the verdict. It is not a deadlock either: addressing the feedback pushes a
+    # commit, which moves the head SHA, and the next review is evaluated against that.
+    rejected)
+      echo "pr-review: PR #$n at $head — changes requested by: $(adb_reviewers_in_class "$classes" rejected)" >&2
+      echo "pr-review: not arming auto-merge; a submitted review is not a satisfied one, and branch protection does not block on the verdict." >&2
+      echo "pr-review: address the feedback and push (which moves the head, and is re-reviewed), or merge by hand if you disagree." >&2
+      return 19 ;;
+    # REVIEW COMPLETE, ATTENTION REQUIRED. The reviewer spoke and is not satisfied. This used to be
+    # a silent 0: `COMMENTED` was treated as "satisfied" on the argument that a comment-only bot
+    # never sends APPROVED. That premise was disproved — on a clean pass the connector posts NO
+    # review object at all — so the deadlock it feared does not exist, and the branch it justified
+    # let a reviewer's body-only findings authorize a merge.
+    attention)
+      echo "pr-review: PR #$n at $head — review complete, attention required from: $(adb_reviewers_in_class "$classes" attention)" >&2
+      echo "pr-review: not arming auto-merge; the reviewer HAS spoken and is not satisfied — there may be NO inline threads, so read the review body or the issue comment." >&2
+      return 21 ;;
+    unknown)
+      echo "pr-review: PR #$n at $head — cannot classify the signal from: $(adb_reviewers_in_class "$classes" unknown) — refusing to arm" >&2
+      return 20 ;;
+    clean)
+      printf '%s\n' "$head"
+      echo "pr-review: PR #$n — every declared reviewer signalled a clean pass for $head" >&2
+      return 0 ;;
+    *)
+      echo "pr-review: PR #$n at $head — awaiting review from: $(adb_reviewers_in_class "$classes" none)" >&2
+      echo "pr-review: not arming auto-merge; GitHub gates on checks and on threads that already exist, neither of which waits for a reviewer." >&2
+      return 16 ;;
+  esac
 }
 
 # --- arg parsing -----------------------------------------------------------------------------

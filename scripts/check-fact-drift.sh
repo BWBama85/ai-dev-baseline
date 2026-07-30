@@ -359,9 +359,49 @@ fact marker-owner-field fixed:'.owner // ""' -- agents/claude/scripts/implement-
 # use `absent:` exists for, not a general prose blocklist.
 _prguards="scripts/lib/pr-review.sh scripts/lib/pr-watch.sh"
 # shellcheck disable=SC2086  # deliberate word-split of the space-separated file list
-for _fn in adb_pr_number adb_pr_slug_check adb_reviewer_match_jq; do
+for _fn in adb_pr_number adb_pr_slug_check; do
   fact pr-primitives-shared "fixed:$_fn" -- $_prguards
 done
+# `adb_reviewer_match_jq` is now reached TRANSITIVELY: both guards stopped pasting the identity
+# predicate in front of their own jq passes when #167 moved evidence SELECTION into
+# `adb_reviewer_evidence`, which prepends it once. Pinning it at the guards would now demand a call
+# that correctly no longer exists, so it is pinned at its definition and at its single caller.
+fact pr-primitives-shared fixed:adb_reviewer_match_jq -- scripts/lib/common.sh
+
+# --- FACT: ONE reviewer-evidence classifier and ONE head anchor, for BOTH guards (#167) ----------
+# The two guards answer different FINAL questions, so they must not share a verdict — but they were
+# answering the SAME underlying question ("given everything this reviewer emitted, has this head
+# been reviewed, and was it clean?") in two places, and the two answers had already diverged:
+# `APPROVED` meant *findings* in the watcher and *satisfied* in the arming guard, and the watcher
+# pooled the declared set where the guard required all of it (#185).
+#
+# Both directions are pinned, because neither half is sufficient. The POSITIVE rules prove each
+# guard still routes through the shared primitives — a library can be perfectly correct while a
+# caller quietly stops calling it. The `absent:` rules prove no copy came back; presence alone
+# cannot catch a file that calls the shared function AND keeps a local definition beside it, which
+# is exactly how the #173 divergence survived.
+# shellcheck disable=SC2086  # deliberate word-split of the space-separated file list
+for _fn in adb_reviewer_evidence adb_reviewer_classes adb_fold_reviewer_classes adb_paginated_list; do
+  fact pr-classifier-shared "fixed:$_fn" -- $_prguards
+done
+# The anchor was PRIVATE to pr-watch.sh, and D19 recorded its promotion as #167's first step rather
+# than something to copy — precisely because `gate` returning 0 on a date-scoped signal is an armed
+# merge, i.e. the same predicate at higher stakes.
+# shellcheck disable=SC2086
+fact pr-classifier-shared fixed:adb_head_anchor -- $_prguards
+# NO COPY SURVIVES, pinned as the DEFINITION form (`^name()`) so the pointer comments each guard
+# keeps — telling the next reader where these went and not to re-inline them — are not themselves
+# the drift this rule hunts.
+# shellcheck disable=SC2086
+for _gone in '^head_anchor\(\)' '^is_utc_instant\(\)' '^read_list\(\)'; do
+  fact pr-classifier-no-copies "absent:$_gone" -- $_prguards
+done
+# The far-future staleness sentinel has ONE spelling, in common.sh. A guard that re-inlines the
+# literal is a guard that can be given a DIFFERENT one — and the failure mode of a wrong sentinel is
+# silent: an empty or low value makes every signal read as fresh, which is the false-clean/false-arm
+# direction this whole family exists to prevent.
+# shellcheck disable=SC2086
+fact pr-classifier-no-copies 'absent:9999-12-31' -- $_prguards
 # The declaration normalizer is reached through role-dispatch's CLI, so the pinned token is the
 # subcommand rather than the function name. The two docs that name WHICH reader the merge gate uses are
 # pinned with it: they described `--declared` (the tri-state reader this one wraps) for a while after

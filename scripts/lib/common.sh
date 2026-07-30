@@ -631,6 +631,405 @@ adb_reviewer_match_jq() {
     '        or ((($d | endswith("[bot]")) | not) and ($a == $d + "[bot]")));'
 }
 
+# ====== the reviewer-evidence classifier, and the head anchor it dates signals against (#167) ===
+#
+# ONE answer to one question, for BOTH guards: *given everything a declared reviewer emitted, has
+# this head been reviewed, and was it clean?* `pr-review.sh gate` and `pr-watch.sh` ask different
+# FINAL questions — "may I arm the merge?" vs "is the reviewer done?" — so they must NOT share a
+# verdict or an exit code. What they share is this neutral classification; each maps it to its own
+# vocabulary. Sharing the verdict instead is the trap #167 names, and answering it twice is how the
+# two modules already disagreed (#185).
+#
+# adb_is_utc_instant / adb_head_anchor were PRIVATE to pr-watch.sh until now. D19 recorded that
+# promotion as this issue's FIRST step rather than a thing to copy — #173 exists because two private
+# copies diverged into a live fail-open, and `gate` returning 0 on a date-scoped signal is an ARMED
+# MERGE, i.e. the same predicate at strictly higher stakes.
+
+# adb_is_utc_instant <value> — exactly `YYYY-MM-DDTHH:MM:SSZ`, the one format the comparisons below
+# are allowed to see.
+#
+# THIS IS NOT DEFENSIVE PADDING, it is what makes a LEXICOGRAPHIC compare a CHRONOLOGICAL one. That
+# equivalence holds only while every operand is the same width, precision and zone:
+# `2026-07-25T09:00:00-04:00` sorts BEFORE `2026-07-25T05:00:00Z` as a string and AFTER it as an
+# instant, and sub-second precision (`…:00.123Z`) silently loses to `…:01Z` on a prefix compare.
+# GitHub returns plain `…Z` on every endpoint the guards read — verified live on reactions, issue
+# comments and repository activity — but "verified today on four endpoints" is weaker than a check,
+# and the documented example payload for the check-suite anchor that was REJECTED (D19) carries a
+# `-04:00` offset, so the format is demonstrably not uniform across the API as a whole.
+#
+# Rejecting rather than normalizing is deliberate: parsing an offset back to UTC in portable shell
+# means `date -d` vs `date -j` (the exact GNU/BSD split these files avoid everywhere else), and a
+# format this code has never seen is a reason to stop, not to improvise a conversion.
+adb_is_utc_instant() {
+  case "$1" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The "no anchor could be established" sentinel — a far-future instant no real timestamp can beat.
+#
+# LOAD-BEARING, NOT TIDY. Every freshness test is `[ "$candidate" \> "$anchor" ]`, so an EMPTY
+# default would be the fail-open spelling exactly: every non-empty string is `\>` the empty one, so
+# any path that reached a comparison without setting an anchor would call every signal fresh. This
+# inverts that — an anchor nobody set makes every date-scoped signal look stale, so the failure mode
+# of forgetting to set it is `pending`/`awaiting`, never `clean`.
+#
+# It is a far-future TIMESTAMP rather than a `~` or a flag because the comparison is lexicographic
+# under the shell's collation: keeping the sentinel in the same character class as the values it is
+# compared against means no locale can order it differently than digits are ordered. And it is
+# deliberately conspicuous — a `9999` in a diagnostic line is unmistakably a bug, where an empty
+# string reads like a missing field.
+# shellcheck disable=SC2034  # read by the two PR guards that source this library, not by it
+ADB_NO_ANCHOR="9999-12-31T23:59:59Z"
+
+# adb_head_anchor <label> <pr-number> <head-repo-slug> <head-ref> <head-sha> — the SERVER-ASSIGNED
+# instant at which the head ref became the current head SHA. Prints it on stdout.
+#
+# NEUTRAL CODES, mapped by each caller to its own vocabulary (the adb_pr_slug_check pattern):
+#   0 → the anchor is on stdout, validated
+#   1 → no anchor could be established; the caller MUST fall to its "cannot prove freshness" verdict
+#       (pr-watch `pending`, pr-review `awaiting`), NEVER to clean/arm
+#   2 → the read failed, or what came back could not be parsed (caller → its unreadable code)
+#
+# WHY THE ACTIVITY API AND NOT THE COMMIT (#175/D19): the head commit's committer date is
+# CLIENT-SUPPLIED — git records `GIT_COMMITTER_DATE` verbatim and GitHub echoes back whatever the
+# committing machine claimed — while a reaction's timestamp is GitHub-assigned. That comparison was
+# ASYMMETRIC IN ITS TRUST, and a past-dated head made a STALE `+1` read as FRESH. No attacker is
+# needed: a date-preserving rebase or a slow clock produces it. The activity record's `timestamp` is
+# stamped by GitHub when the ref moved, so it answers the question directly.
+#
+# THE LATEST MATCH, NOT THE EARLIEST, and that choice IS the force-push defence: a ref that went
+# A → B → A carries two activities whose `after` is A, and only the later one says when it is A
+# *now*. Taking the earliest would date the current head from a push that was superseded and undone.
+#
+# WHY NOT THE OBVIOUS ANCHORS. Three candidates look right and are not, and the next person to touch
+# this will reach for one of them (the argument is kept with the code, not only in D19):
+#
+#   * the earliest CHECK-SUITE `created_at` for the head SHA is server-assigned, but it is scoped to
+#     the SHA, not to the REF. A commit that already ran CI elsewhere carries its ORIGINAL
+#     timestamp, so an ordinary fast-forward onto it PRESERVES the fail-open: suite for C at 09:00,
+#     a stale `+1` at 10:00, an ordinary `B → C` at 11:00 → 10:00 > 09:00 → clean, still false.
+#     No force-push happens there, so pairing it with a force-push term does not rescue it. Commit
+#     STATUSES have exactly the same flaw, and both also need the repo to HAVE ci. This case is
+#     pinned as a regression test, because it is the one that reads as safe and is not.
+#   * the PR TIMELINE's `head_ref_force_pushed` events are server-assigned and ref-scoped, but they
+#     exist only for FORCE pushes — an ordinary push appears nowhere in them.
+#   * `head.repo.pushed_at` is server-assigned, ref-agnostic and free (it is already in the PR
+#     object the callers read), and it is SOUND: being repo-wide it can only ever be too LATE, i.e.
+#     a false pending, never a false clean. It is rejected for LIVENESS, not for safety — a push to
+#     any unrelated branch after the reaction re-opens a settled verdict, so on an active repo a
+#     watch would run to its bound instead of converging. Worth stating plainly, because "rejected"
+#     usually means "unsafe" and here it does not.
+adb_head_anchor() {
+  local label="$1" n="$2" slug="$3" ref="$4" head="$5" raw at matches line
+  # A head repository that no longer exists (the fork was deleted) is a REAL state, not a broken
+  # response: the PR still reads fine, there is simply nowhere left to ask. That is an unestablished
+  # anchor (1), not an unreadable one (2) — the distinction this whole family is built on.
+  [ -n "$slug" ] && [ -n "$ref" ] \
+    || { echo "$label: PR #$n — no head repository/ref to date the head against (deleted fork?)" >&2
+         return 1; }
+  # THIS SLUG GOES INTO A URL PATH, a stronger requirement than any other slug in this family faces
+  # — the base slug is only ever COMPARED — and it is a value the caller did not construct but read
+  # out of an API response. `adb_is_repo_slug` alone is necessary and NOT sufficient there (`a/..` is
+  # a well-formed pair and a path traversal).
+  adb_is_path_safe_repo_slug "$slug" \
+    || { echo "$label: PR #$n reports a malformed head repository ('$slug')" >&2; return 2; }
+
+  # `--method GET` with `-f` is REQUIRED: a bare `-f` makes `gh api` switch to POST, which here would
+  # POST to the activity endpoint rather than read it. `-f` also URL-ENCODES the value, which a
+  # hand-built query string would not — and a ref name may legally contain `&` or `%`, either of
+  # which silently truncates or corrupts an unencoded query.
+  #
+  # `direction=desc` is explicit rather than inherited: the whole point of one un-paginated page is
+  # that the newest activity is ON it.
+  raw="$(gh api --method GET "repos/$slug/activity" \
+           -f ref="refs/heads/$ref" -f direction=desc -f per_page=100 2>/dev/null)" \
+    || { echo "$label: could not read the ref activity of PR #$n" >&2; return 2; }
+  # Read, then parse — the same split every other read in this family uses. An empty body is NOT an
+  # empty list: a successful read of a ref with no activity returns `[]`, so nothing at all means the
+  # call produced no document and must not be mistaken for "no matching activity" (which is 1, a much
+  # weaker statement than 2 and one a caller may sit on).
+  [ -n "$raw" ] \
+    || { echo "$label: could not read the ref activity of PR #$n" >&2; return 2; }
+  # jq SELECTS, the shell VALIDATES AND ORDERS — deliberately, for two reinforcing reasons.
+  #
+  # First, EVERY match must be format-checked BEFORE any of them is ordered. Ordering first and
+  # checking only the winner is unsound: a response mixing formats can hand the comparison a
+  # lexically-later but chronologically-EARLIER record, and an anchor earlier than the truth is the
+  # permissive direction.
+  #
+  # Second, doing the check here rather than inside jq keeps `adb_is_utc_instant` the ONE HOME for
+  # the accepted grammar. Written twice — a shell glob and a jq regex — the same rule could be
+  # loosened on one side and not the other, and both spellings would still look right in review.
+  #
+  # The `ref` match is belt AND braces on purpose: `ref=` is applied server-side, but a filter that
+  # is ignored (a param renamed, an endpoint that stops honouring it) would silently widen this read
+  # to the whole repository, and an `after` SHA is unique enough that the widened read would still
+  # usually match — dating this PR's head from a push to some other branch.
+  matches="$(printf '%s' "$raw" | jq -r --arg sha "$head" --arg ref "refs/heads/$ref" '
+      if type != "array" then error("activity response is not a JSON array") else . end
+      | .[]
+      | select((.after // "") == $sha)
+      | select((.ref // "") == $ref)
+      | (.timestamp // "") | select(length > 0)' 2>/dev/null)" \
+    || { echo "$label: could not parse the ref activity of PR #$n" >&2; return 2; }
+
+  # A here-doc, NOT a pipe: a piped `while` runs in a subshell on bash 3.2 and `at` would be
+  # discarded at the loop's end, silently yielding "no anchor" — i.e. pending — for every PR.
+  at=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    adb_is_utc_instant "$line" \
+      || { echo "$label: PR #$n — ref activity reported a timestamp this module cannot order ('$line')" >&2
+           return 2; }
+    if [ -z "$at" ] || [ "$line" \> "$at" ]; then at="$line"; fi
+  done <<EOF
+$matches
+EOF
+
+  [ -n "$at" ] \
+    || { echo "$label: PR #$n — no recorded activity puts $head on refs/heads/$ref, so a date-scoped signal cannot be proved fresh" >&2
+         return 1; }
+  printf '%s' "$at"
+}
+
+# adb_paginated_list <label> <api-path> <what> <pr-number> — a paginated GET, flattened to one JSON
+# array on stdout. Returns 2 on any failure (the caller maps it to its own unreadable code).
+#
+# ALL FIVE signal reads across the two guards have this shape, and factoring them together is about
+# the FAIL-CLOSED guards rather than the line count: each read needs three of them (the fetch, the
+# parse, and the empty-result check), and if a later edit dropped one on a single path that signal
+# would classify an unreadable response as "nothing found yet" — a withhold that looks harmless,
+# which is what makes it the dangerous one: the watcher would poll a broken API to its deadline and
+# report a timeout instead of the failure.
+#
+# PROMOTED FROM pr-watch.sh BY #167, whose §6 names it explicitly as one of the three things "a
+# naive implementation WOULD duplicate a third time" when the arming guard grew the same two extra
+# surfaces. One home, so a fix to either guard's read reaches both.
+#
+# Read and PARSE separately: a pipeline reports only its LAST command's status, so `gh api … | jq`
+# returns 0 on a failed read and the parser then sees empty stdin — indistinguishable from a
+# legitimately empty list.
+adb_paginated_list() {
+  local label="$1" url="$2" what="$3" pr="$4" raw flat
+  raw="$(gh api --paginate "$url" 2>/dev/null)" \
+    || { echo "$label: could not read $what for PR #$pr" >&2; return 2; }
+  # --paginate concatenates one JSON document per page; -s flattens them into a single array.
+  flat="$(printf '%s' "$raw" | jq -s -c '[.[][]]' 2>/dev/null)" \
+    || { echo "$label: could not parse the $what of PR #$pr" >&2; return 2; }
+  [ -n "$flat" ] \
+    || { echo "$label: could not parse the $what of PR #$pr" >&2; return 2; }
+  printf '%s' "$flat"
+}
+
+# adb_reviewer_evidence <who-json> <reviews-json> <comments-json> <reactions-json> <head-sha> —
+# SELECTION ONLY, no dating and no verdict. Prints one `<login> <kind> <value>` line per piece of
+# evidence a declared reviewer left, where <kind> is `review` (value = the upper-cased state),
+# `comment` or `plus1` (value = the raw `created_at`, possibly empty). Returns 2 if jq fails.
+#
+# SPLIT FROM THE DATING STEP ON PURPOSE, for two reasons that both bite.
+#
+# First, COST: the head-arrival anchor is a fifth API read, and a poll where no declared reviewer
+# left a date-scoped signal must not pay for it. Selection tells the caller whether any `comment`
+# or `plus1` line exists, so the anchor is fetched only when something actually depends on it.
+#
+# Second, SOUNDNESS: every candidate timestamp must be format-checked BEFORE any of them is ordered
+# (see adb_head_anchor), so this emits EVERY match rather than jq's `max`. The volume is bounded by
+# what DECLARED reviewers posted, which is a handful.
+#
+# Empty `created_at` is emitted rather than filtered away: a matching record from a declared
+# reviewer that carries no usable timestamp is a MALFORMED response, and the fold below classifies
+# it `unknown` (fail closed). Dropping it would silently read as "that reviewer said nothing",
+# which on the clean path is the dangerous direction — a reviewer who commented would be reported
+# as having passed.
+adb_reviewer_evidence() {
+  local who="$1" reviews="$2" comments="$3" reactions="$4" sha="$5" match out
+  match="$(adb_reviewer_match_jq)"
+  out="$(jq -r -n \
+      --argjson who "$who" --argjson reviews "$reviews" --argjson comments "$comments" \
+      --argjson reactions "$reactions" --arg sha "$sha" \
+      "$match"'
+      $who[] as $w
+      | ( $reviews[]
+          | select((.commit_id // "") == $sha)
+          | select((.user.login // "") | adb_declared_reviewer([$w]))
+          | "\($w) review \((.state // "") | ascii_upcase)" ),
+        ( $comments[]
+          | select((.user.login // "") | adb_declared_reviewer([$w]))
+          | "\($w) comment \(.created_at // "")" ),
+        ( $reactions[]
+          | select((.content // "") == "+1")
+          | select((.user.login // "") | adb_declared_reviewer([$w]))
+          | "\($w) plus1 \(.created_at // "")" )' 2>/dev/null)" \
+    || return 2
+  printf '%s' "$out"
+}
+
+# adb_reviewer_classes <label> <who-newline-list> <evidence> <anchor> — fold the evidence above into
+# exactly ONE class per declared reviewer. Prints `<login> <class>` lines; returns 2 when a
+# timestamp's format is unrecognized (the caller maps that to its unreadable code).
+#
+# THE CLASSIFICATION (#167 §4), and it is deliberately neutral — no exit codes, no verdict:
+#
+#   CHANGES_REQUESTED at this head              → rejected
+#   COMMENTED at this head, or a FRESH comment   → attention
+#   APPROVED at this head, or a FRESH `+1`       → clean
+#   stale / PENDING / DISMISSED / nothing        → none
+#   unrecognized state, or an undatable record   → unknown
+#
+# THE WITHIN-REVIEWER ORDER IS `rejected > attention > unknown > clean > none` — the STRONGEST
+# thing this one reviewer produced. Two positions in it are load-bearing:
+#
+#   * `unknown` OUTRANKS `clean`, so a signal nobody could classify can never be outvoted into a
+#     merge authorization by a second signal that happened to look clean. This REVERSES the older
+#     rule that "an accepted review outweighs an unknown-state one" — #167 §8 requires every
+#     unreadable path to fail closed, and that rule was the one place a fresh unknown was silently
+#     discarded.
+#   * `rejected`/`attention` OUTRANK `unknown`, because both already withhold the arm AND name
+#     concrete work, where `unknown` only says "retry". Reporting the weaker remedy first is what
+#     the modules' own precedence (a rejection ahead of a missing review) already does.
+#
+# THE ACROSS-REVIEWER ORDER IS DELIBERATELY DIFFERENT, and the difference IS #185: there,
+# `none` OUTRANKS `clean`. See adb_fold_reviewer_classes. Within one reviewer a stale `+1` beside a
+# fresh `APPROVED` is `clean`; across the set, one silent reviewer beside one clean reviewer is NOT.
+# Reusing one order for both is precisely the bug — it makes a single fast `+1` speak for the set.
+adb_reviewer_classes() {
+  local label="$1" who="$2" evidence="$3" anchor="$4"
+  local w line lw kind val cls best
+  # One pass per declared reviewer over the evidence. The set is small (a repo declares a handful of
+  # bots) and so is the evidence, so the readable shape wins over a single-pass associative array —
+  # which bash 3.2, this repo's floor, does not have.
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    best="none"
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      lw="${line%% *}"; [ "$lw" = "$w" ] || continue
+      kind="${line#* }"; val="${kind#* }"; kind="${kind%% *}"
+      cls=""
+      case "$kind" in
+        review)
+          case "$val" in
+            CHANGES_REQUESTED) cls="rejected" ;;
+            COMMENTED)         cls="attention" ;;
+            APPROVED)          cls="clean" ;;
+            # An unsubmitted draft nobody can see, and one that was explicitly revoked, are not the
+            # reviewer having spoken. Not evidence, and not a problem either.
+            PENDING|DISMISSED) cls="" ;;
+            # A state this family does not recognize must SURFACE, never be quietly read as "not
+            # reviewed": a future GitHub state meaning "reviewed" would otherwise wedge the gate at
+            # "awaiting" forever, and one meaning "rejected" would be ignored outright.
+            *) cls="unknown"
+               echo "$label: unrecognized review state '$val' from '$w'" >&2 ;;
+          esac ;;
+        comment|plus1)
+          if [ -z "$val" ]; then
+            cls="unknown"
+            echo "$label: a $kind from '$w' carries no timestamp — cannot prove when it was left" >&2
+          elif ! adb_is_utc_instant "$val"; then
+            # A format this family has never seen is a reason to stop, not to improvise a
+            # conversion — and ordering it against the anchor would be comparing two different
+            # grammars as if they were one.
+            echo "$label: a reviewer signal carries an unrecognized timestamp format ('$val')" >&2
+            return 2
+          elif [ "$val" \> "$anchor" ]; then
+            # THE BACKSLASH IN `\>` IS LOAD-BEARING — do not "clean it up". Unescaped, `>` inside
+            # `[ ]` is a REDIRECTION: the test would silently become `[ "$val" ]` (true for any
+            # non-empty string) while creating a file named after the anchor, so EVERY signal would
+            # read as fresh and the staleness rule would be gone with no error anywhere.
+            if [ "$kind" = "comment" ]; then cls="attention"; else cls="clean"; fi
+          else
+            # The signal predates this head's arrival: it reviewed an earlier commit, so it is not
+            # evidence about THIS one — `none`, never `clean`. Said out loud rather than dropped
+            # silently, because "a `+1` is sitting right there and the guard still says pending" is
+            # otherwise the most confusing state this family produces.
+            echo "$label: a $kind from '$w' at $val predates this head's arrival ($anchor) — it reviewed an earlier commit" >&2
+          fi
+          ;;
+      esac
+      [ -n "$cls" ] || continue
+      # Keep the stronger of the two, by the total order documented above.
+      [ "$(_adb_class_rank "$cls")" -gt "$(_adb_class_rank "$best")" ] && best="$cls"
+    done <<EOF
+$evidence
+EOF
+    printf '%s %s\n' "$w" "$best"
+  done <<EOF
+$who
+EOF
+}
+
+# The WITHIN-reviewer order, in its one home: the strongest evidence this one reviewer produced.
+_adb_class_rank() {
+  case "$1" in
+    rejected)  printf '4' ;;
+    attention) printf '3' ;;
+    unknown)   printf '2' ;;
+    clean)     printf '1' ;;
+    *)         printf '0' ;;   # none
+  esac
+}
+
+# The ACROSS-reviewer order. IT IS NOT THE SAME ORDER, and the single swapped pair is the whole of
+# #185: `none` (0) now outranks `clean` (-1), so `clean` can only win when EVERY declared reviewer
+# is clean. Under the within-reviewer order a set of {clean, none} folds to `clean`, which is
+# exactly the shipped bug — one fast `+1` from any one bot reported a pass while the others had not
+# looked at the PR at all.
+#
+# `clean` is therefore the WEAKEST class here, not the second-strongest. Every other position is
+# unchanged, which is why #185's own summary notes the findings path was already correct: a
+# rejection or an attention signal from any one reviewer still wins outright.
+_adb_class_rank_across() {
+  case "$1" in
+    rejected)  printf '4' ;;
+    attention) printf '3' ;;
+    unknown)   printf '2' ;;
+    clean)     printf '0' ;;
+    *)         printf '1' ;;   # none — outranks clean, so a silent reviewer holds the pass back
+  esac
+}
+
+# adb_fold_reviewer_classes <classes> — the winning class across the whole declared set. Prints it
+# on stdout. An EMPTY class list yields `none`, which every caller maps to a withhold, never a pass.
+#
+# The ONE home for the all-or-nothing rule (#185): `pr-review.sh gate` already required every
+# declared reviewer to have spoken, while `pr-watch.sh` pooled the set and answered on any one of
+# them. Both now fold here, so they cannot disagree about HOW MANY reviewers must have produced a
+# signal — the orthogonal axis to #167's "what does a signal mean".
+adb_fold_reviewer_classes() {
+  local classes="$1" line cls best="" seen=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    cls="${line#* }"
+    seen=1
+    if [ -z "$best" ] || [ "$(_adb_class_rank_across "$cls")" -gt "$(_adb_class_rank_across "$best")" ]; then
+      best="$cls"
+    fi
+  done <<EOF
+$classes
+EOF
+  # No declared reviewer at all is `none`, never `clean`. A caller that declared `bots = []` answers
+  # that case BEFORE reaching here — an empty set is "nothing is coming", which is a different claim
+  # from "nobody has spoken" and only the caller knows which one it is holding.
+  [ "$seen" -eq 1 ] || best="none"
+  printf '%s' "$best"
+}
+
+# adb_reviewers_in_class <classes> <class> — the logins that landed in <class>, space-separated, so
+# a caller's diagnostic can NAME them ("awaiting review from: …") rather than reporting a bare code.
+adb_reviewers_in_class() {
+  local classes="$1" want="$2" line out=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "${line#* }" = "$want" ] || continue
+    out="${out:+$out }${line%% *}"
+  done <<EOF
+$classes
+EOF
+  printf '%s' "$out"
+}
+
 # --- git ---------------------------------------------------------------------
 
 # Resolve a repo's default branch: origin/HEAD → a local main/master → "main".

@@ -552,11 +552,20 @@ eq "$OUT" "findings $HEAD_SHA" "findings: stdout is '<verdict> <sha>'"
 review_fx "${CODEX}[bot]" "COMMENTED" "$OLD_SHA"
 w observe --pr 1;  rc 11 "findings: a review of an OLDER commit does not count"
 
-# CHANGES_REQUESTED and APPROVED are both the reviewer having spoken about this head.
+# CHANGES_REQUESTED is the reviewer having spoken AND not being satisfied — findings.
 review_fx "${CODEX}[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
 w observe --pr 1;  rc 10 "findings: CHANGES_REQUESTED at head counts"
+
+# APPROVED IS `clean`, NOT `findings` — CORRECTED BY #167, and it is a real behaviour change rather
+# than a test tidy-up. This module used to treat ANY non-PENDING/DISMISSED review at the head as
+# findings, so an explicit approval sent `/resolve-pr-threads --watch` off to resolve threads that a
+# satisfied reviewer had, by definition, not created. The shared classifier gives one meaning to one
+# piece of evidence for BOTH guards (#167 §4): `APPROVED` means the reviewer is satisfied, which is
+# exactly what `pr-review.sh gate` has always read it as. The two modules disagreeing about this
+# single word is the concrete form of the drift #167 exists to close.
 review_fx "${CODEX}[bot]" "APPROVED" "$HEAD_SHA"
-w observe --pr 1;  rc 10 "findings: APPROVED at head counts"
+wout observe --pr 1;  rc 0 "findings: APPROVED at head is CLEAN, not findings (#167: one meaning per signal)"
+eq "$OUT" "clean $HEAD_SHA" "an APPROVED review reports the clean verdict"
 
 # ...but a draft nobody can see, and one that was explicitly revoked, are not.
 review_fx "${CODEX}[bot]" "PENDING" "$HEAD_SHA"
@@ -630,6 +639,79 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 review_fx "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 wout observe --pr 1;  rc 10 "precedence: findings at head outrank a fresh '+1'"
+
+# ============ 4b. THE DECLARED SET IS AGGREGATED ALL-OR-NOTHING (#185) ============
+# THE BUG THIS SECTION EXISTS FOR: every scenario above declares exactly ONE reviewer, and that is
+# precisely why #185 shipped unnoticed. This module used to POOL the declared logins on all three
+# surfaces — each selector filtered "login is in the declared set" and then reduced across the whole
+# set — so ONE fast `+1` from ANY single bot reported `clean` while the others had not looked at the
+# PR at all. `pr-review.sh gate` required all of them; the two guards disagreed about HOW MANY
+# reviewers must speak, which is orthogonal to #167's "what does a signal MEAN".
+#
+# Fail-OPEN in the direction that matters: `/resolve-pr-threads --watch` exited reporting a clean
+# pass and the operator reasonably concluded review was finished.
+#
+# The fold is now: any attention/rejection wins outright -> findings; else any unknown -> 20; else
+# any reviewer with no signal -> pending; ONLY all-clean -> clean. Note the findings path was
+# already correct under "any wins"; it is the CLEAN path that had to become all-or-nothing.
+BOT2="gemini-code-assist[bot]"
+
+# #185's FIRST ACCEPTANCE CRITERION, and the one that fails against the shipped code.
+reset_fx; declare_bots "[\"$CODEX\", \"$BOT2\"]"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 11 "#185: two declared, a fresh '+1' from only ONE -> pending, NOT clean"
+has "$OUT" "gemini-code-assist" "#185: pending names the reviewer that has not spoken"
+hasnt "$OUT" "clean pass" "#185: a partial set is never reported as a pass"
+
+# ...and the control. If this ever fails, the rule above has become "nothing is ever clean".
+reset_fx; declare_bots "[\"$CODEX\", \"$BOT2\"]"
+reaction_fx "$CODEX" "+1" "$AFTER_AT" "$BOT2" "+1" "$AFTER_AT"
+wout observe --pr 1;  rc 0 "#185: two declared, BOTH signalled clean -> clean"
+eq "$OUT" "clean $HEAD_SHA" "#185: the all-clean verdict still prints '<verdict> <sha>'"
+
+# #185's SECOND ACCEPTANCE CRITERION: findings still win outright and IMMEDIATELY. A reviewer with
+# something to say must not be held back waiting for a silent sibling — that direction is safe
+# (there is work to do either way) and waiting would make the watch useless on a multi-bot repo.
+reset_fx; declare_bots "[\"$CODEX\", \"$BOT2\"]"
+review_fx "${CODEX}[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
+w observe --pr 1;  rc 10 "#185: one reviewer with findings + one silent -> findings, immediately"
+
+# MIXED EVIDENCE ACROSS SURFACES still folds to all-clean: the classes are per-reviewer, so one
+# reviewer's `APPROVED` and another's fresh `+1` are both `clean` and the set is satisfied.
+reset_fx; declare_bots "[\"$CODEX\", \"$BOT2\"]"
+review_fx "$BOT2" "APPROVED" "$HEAD_SHA"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+wout observe --pr 1;  rc 0 "#185: an APPROVED from one and a fresh '+1' from the other -> clean"
+
+# ONE FRESH, ONE STALE. The stale reviewer's `+1` reviewed an EARLIER commit, so that reviewer has
+# said nothing about this head — the set is incomplete and the verdict is pending. This is the case
+# a naive `sort | last` over the pooled set gets wrong in the most dangerous way: it would take the
+# FRESH timestamp, from a different reviewer entirely, and call the whole set clean.
+reset_fx; declare_bots "[\"$CODEX\", \"$BOT2\"]"
+reaction_fx "$CODEX" "+1" "$AFTER_AT" "$BOT2" "+1" "$BEFORE_AT"
+w observe --pr 1;  rc 11 "#185: one fresh '+1' and one STALE -> pending (a pooled max would say clean)"
+has "$OUT" "predates this head" "#185: the stale reviewer's signal is named as stale"
+
+# CLEAN + UNKNOWN -> fail closed. An unreadable signal must not be outvoted into a pass by a sibling
+# that happened to look clean; `unknown` outranks `clean` in the fold for exactly this reason.
+reset_fx; declare_bots "[\"$CODEX\", \"$BOT2\"]"
+review_fx "$BOT2" "SOME_NEW_STATE" "$HEAD_SHA"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1;  rc 20 "#185: a clean reviewer alongside an UNCLASSIFIABLE one -> 20, never clean"
+
+# ATTENTION + PENDING -> findings. Attention outranks a missing signal: there is work to read now,
+# and reporting "still waiting" would bury it.
+reset_fx; declare_bots "[\"$CODEX\", \"$BOT2\"]"
+comment_fx "${CODEX}[bot]" "$AFTER_AT"
+w observe --pr 1;  rc 10 "#185: a task-mode comment from one + silence from the other -> findings"
+
+# THE SAME REVIEWER ON TWO SURFACES folds WITHIN that reviewer first: a stale `+1` beside a fresh
+# APPROVED is that one reviewer being satisfied, so with the set complete the verdict is clean.
+# The within-reviewer order and the across-reviewer order differ on exactly this pair.
+reset_fx; declare_bots "[\"$CODEX\", \"$BOT2\"]"
+review_fx "${CODEX}[bot]" "APPROVED" "$HEAD_SHA" "$BOT2" "APPROVED" "$HEAD_SHA"
+reaction_fx "$CODEX" "+1" "$BEFORE_AT"
+wout observe --pr 1;  rc 0 "#185: a STALE '+1' beside that same reviewer's APPROVED is still clean"
 
 # ============================ 5. pagination ============================
 # A busy PR can push the bot's reaction off page 1 behind human reactions. A missed `+1` keeps a
