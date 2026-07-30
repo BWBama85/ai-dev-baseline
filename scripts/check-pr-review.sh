@@ -90,6 +90,7 @@ cat > "$SBIN/gh" <<'STUB'
 #   STUB_FAIL_REACTIONS=1  -> the reactions read fails
 #   STUB_FAIL_ACTIVITY=1   -> the ref-activity read fails
 #   STUB_EMPTY_ACTIVITY=1  -> the ref-activity read SUCCEEDS with an empty body (not `[]`)
+#   STUB_EMPTY_<SURFACE>=1 -> that signal read SUCCEEDS with an empty body (REVIEWS/COMMENTS/REACTIONS)
 [ "${STUB_AUTH_FAIL:-0}" = "1" ] && [ "${1:-} ${2:-}" = "auth status" ] && exit 1
 case "${1:-}" in
   auth) exit 0 ;;
@@ -104,22 +105,31 @@ done
 # endpoint is never read (the client-supplied date #175 removed), and that the ref-activity read is
 # NOT paid for on a PR with no date-scoped signal.
 printf '%s\n' "$url" >> "$S/calls"
+# emit <file> : the fixture, or `[]` when the scenario wrote none. AN ABSENT FIXTURE MEANS "no
+# records", which the real API spells `[]` — it NEVER answers a bare empty body for an empty list.
+# Modelling it as an empty body would make every scenario that does not write comments/reactions
+# exercise the unreadable path instead of the one it is testing; the deliberate empty-body case has
+# its own STUB_EMPTY_* knob.
+emit() { if [ -f "$1" ]; then cat "$1"; else printf '[]\n'; fi; }
 case "$url" in
   */reviews*)
     [ "${STUB_FAIL_REVIEWS:-0}" = "1" ] && exit 1
+    [ "${STUB_EMPTY_REVIEWS:-0}" = "1" ] && exit 0
     # --paginate concatenates ONE JSON DOCUMENT PER PAGE; page 2 exists only in the pagination
     # scenario, so the default case still emits a single well-formed page.
-    cat "$S/reviews.json"
+    emit "$S/reviews.json"
     [ -f "$S/reviews2.json" ] && cat "$S/reviews2.json"
     exit 0 ;;
   */issues/*/comments*)
     [ "${STUB_FAIL_COMMENTS:-0}" = "1" ] && exit 1
-    cat "$S/comments.json" 2>/dev/null
+    [ "${STUB_EMPTY_COMMENTS:-0}" = "1" ] && exit 0
+    emit "$S/comments.json"
     [ -f "$S/comments2.json" ] && cat "$S/comments2.json"
     exit 0 ;;
   */reactions*)
     [ "${STUB_FAIL_REACTIONS:-0}" = "1" ] && exit 1
-    cat "$S/reactions.json" 2>/dev/null
+    [ "${STUB_EMPTY_REACTIONS:-0}" = "1" ] && exit 0
+    emit "$S/reactions.json"
     [ -f "$S/reactions2.json" ] && cat "$S/reactions2.json"
     exit 0 ;;
   */activity*)
@@ -129,7 +139,7 @@ case "$url" in
     # unestablished anchor, which the gate sits on as 16) when it is really "the call produced no
     # document" (20).
     [ "${STUB_EMPTY_ACTIVITY:-0}" = "1" ] && exit 0
-    cat "$S/activity.json" 2>/dev/null
+    emit "$S/activity.json"
     exit 0 ;;
   */pulls/*)
     [ "${STUB_FAIL_PR:-0}" = "1" ] && exit 1
@@ -192,6 +202,8 @@ _g() {
     STUB_FAIL_REVIEWS="${STUB_FAIL_REVIEWS:-0}" STUB_FAIL_COMMENTS="${STUB_FAIL_COMMENTS:-0}" \
     STUB_FAIL_REACTIONS="${STUB_FAIL_REACTIONS:-0}" STUB_FAIL_ACTIVITY="${STUB_FAIL_ACTIVITY:-0}" \
     STUB_EMPTY_ACTIVITY="${STUB_EMPTY_ACTIVITY:-0}" \
+    STUB_EMPTY_REVIEWS="${STUB_EMPTY_REVIEWS:-0}" STUB_EMPTY_COMMENTS="${STUB_EMPTY_COMMENTS:-0}" \
+    STUB_EMPTY_REACTIONS="${STUB_EMPTY_REACTIONS:-0}" \
     bash "$PR" "$@" )
 }
 g() { OUT="$(_g "$@" 2>&1)"; RC_=$?; }
@@ -529,6 +541,33 @@ STUB_FAIL_COMMENTS=1  g gate --pr 7; eq "$RC_" "20" "a failed issue-comments rea
 STUB_FAIL_REACTIONS=1 g gate --pr 7; eq "$RC_" "20" "a failed reactions read -> 20"; STUB_FAIL_REACTIONS=0
 STUB_FAIL_ACTIVITY=1  g gate --pr 7; eq "$RC_" "20" "a failed ref-activity read -> 20 (never an arm)"; STUB_FAIL_ACTIVITY=0
 STUB_EMPTY_ACTIVITY=1 g gate --pr 7; eq "$RC_" "20" "an EMPTY activity body is not an empty list -> 20"; STUB_EMPTY_ACTIVITY=0
+
+# AN EMPTY RESPONSE BODY ON A SIGNAL SURFACE IS NOT AN EMPTY LIST — and getting this wrong ARMED AN
+# UNREVIEWED MERGE. `adb_paginated_list` tested the PARSED value, but `printf '' | jq -s '[.[][]]'`
+# emits `[]`, so the check could never fire and a 200-with-no-document read as "that surface carried
+# no records". Harmless while the gate read one surface (no reviews -> withhold anyway); a false 0
+# once three surfaces are folded, because the emptied surface's evidence simply vanishes and
+# whatever is left decides. The scenario below is the reproduction, and it must never return 0.
+reset_fx; declare_bots '["chatgpt-codex-connector"]'
+review_fx   "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+g gate --pr 7; eq "$RC_" "19" "control: the rejection is seen when the reviews surface reads normally"
+STUB_EMPTY_REVIEWS=1 g gate --pr 7
+eq "$RC_" "20" "an EMPTY reviews body -> 20; it must NOT let a fresh '+1' arm over a hidden rejection"
+STUB_EMPTY_REVIEWS=1 gout gate --pr 7
+eq "$OUT" "" "...and prints NO head SHA — printing it is what authorizes the arm"
+STUB_EMPTY_REVIEWS=0
+# The same hole on the other two surfaces, where an emptied read hides an ATTENTION signal instead.
+reset_fx; comment_fx "chatgpt-codex-connector[bot]" "$AFTER_AT"
+reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+g gate --pr 7; eq "$RC_" "21" "control: the task-mode comment is seen when the comments surface reads normally"
+STUB_EMPTY_COMMENTS=1 g gate --pr 7
+eq "$RC_" "20" "an EMPTY comments body -> 20; it must not let a '+1' arm over a hidden comment"
+STUB_EMPTY_COMMENTS=0
+reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+STUB_EMPTY_REACTIONS=1 g gate --pr 7
+eq "$RC_" "20" "an EMPTY reactions body -> 20, not 'no reaction here'"
+STUB_EMPTY_REACTIONS=0
 for bad_json in 'not json at all' '{"message":"Not Found"}'; do
   reset_fx; printf '%s\n' "$bad_json" > "$S/comments.json"
   g gate --pr 7; eq "$RC_" "20" "an unparseable/wrapped comments response -> 20 ($bad_json)"

@@ -113,6 +113,7 @@ cat > "$SBIN/gh" <<'STUB'
 #   STUB_FAIL_COMMENTS=1   -> the issue-comments read fails
 #   STUB_FAIL_ACTIVITY=1   -> the ref-activity read fails
 #   STUB_EMPTY_ACTIVITY=1  -> the ref-activity read SUCCEEDS with an empty body (not `[]`)
+#   STUB_EMPTY_REVIEWS/COMMENTS/REACTIONS=1 -> that signal read SUCCEEDS with an empty body
 [ "${STUB_AUTH_FAIL:-0}" = "1" ] && [ "${1:-} ${2:-}" = "auth status" ] && exit 1
 case "${1:-}" in
   auth) exit 0 ;;
@@ -141,6 +142,7 @@ fx() {
 case "$url" in
   */reviews*)
     [ "${STUB_FAIL_REVIEWS:-0}" = "1" ] && exit 1
+    [ "${STUB_EMPTY_REVIEWS:-0}" = "1" ] && exit 0
     fx reviews
     # --paginate concatenates ONE JSON DOCUMENT PER PAGE; page 2 exists only in the pagination
     # scenario, so the default case still emits a single well-formed page.
@@ -148,11 +150,13 @@ case "$url" in
     exit 0 ;;
   */issues/*/comments*)
     [ "${STUB_FAIL_COMMENTS:-0}" = "1" ] && exit 1
+    [ "${STUB_EMPTY_COMMENTS:-0}" = "1" ] && exit 0
     fx comments
     [ -f "$S/comments2.json" ] && cat "$S/comments2.json"
     exit 0 ;;
   */reactions*)
     [ "${STUB_FAIL_REACTIONS:-0}" = "1" ] && exit 1
+    [ "${STUB_EMPTY_REACTIONS:-0}" = "1" ] && exit 0
     fx reactions
     [ -f "$S/reactions2.json" ] && cat "$S/reactions2.json"
     exit 0 ;;
@@ -276,6 +280,8 @@ _w() {
     STUB_FAIL_COMMENTS="${STUB_FAIL_COMMENTS:-0}" \
     STUB_FAIL_ACTIVITY="${STUB_FAIL_ACTIVITY:-0}" \
     STUB_EMPTY_ACTIVITY="${STUB_EMPTY_ACTIVITY:-0}" \
+    STUB_EMPTY_REVIEWS="${STUB_EMPTY_REVIEWS:-0}" STUB_EMPTY_COMMENTS="${STUB_EMPTY_COMMENTS:-0}" \
+    STUB_EMPTY_REACTIONS="${STUB_EMPTY_REACTIONS:-0}" \
     bash "$PW" "$@" )
 }
 # w : stdout AND stderr, for asserting diagnostics.
@@ -748,6 +754,31 @@ STUB_FAIL_ACTIVITY=1 w observe --pr 1; rc 20 "unreadable: a failed ref-activity 
 # A SUCCESSFUL call that produced no document is not an empty list. Collapsing the two would report
 # 11 ("no matching activity") for a broken read, which a caller may sit on rather than escalate.
 STUB_EMPTY_ACTIVITY=1 w observe --pr 1; rc 20 "unreadable: an EMPTY activity body is not an empty list -> 20"; STUB_EMPTY_ACTIVITY=0
+
+# ...AND THE SAME ON EVERY SIGNAL SURFACE. `adb_paginated_list` tested its PARSED output, but
+# `printf '' | jq -s '[.[][]]'` emits `[]` — so a 200-with-no-document read as "that surface carried
+# no records" and the check written to catch it could never fire. Here that hides a reviewer's
+# findings and lets a fresh `+1` report a clean pass; on the arming guard the same hole returned 0
+# and printed a head SHA. Both directions are the one thing this family must never be wrong about.
+reset_fx; declare_bots "[\"$CODEX\"]"
+review_fx   "${CODEX}[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1; rc 10 "control: the findings are seen when the reviews surface reads normally"
+STUB_EMPTY_REVIEWS=1 w observe --pr 1
+rc 20 "an EMPTY reviews body -> 20; it must NOT let a fresh '+1' report a clean pass"
+STUB_EMPTY_REVIEWS=0
+reset_fx; declare_bots "[\"$CODEX\"]"
+comment_fx  "${CODEX}[bot]" "$AFTER_AT"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+w observe --pr 1; rc 10 "control: the task-mode comment is seen when the comments surface reads normally"
+STUB_EMPTY_COMMENTS=1 w observe --pr 1
+rc 20 "an EMPTY comments body -> 20, not 'that reviewer said nothing'"
+STUB_EMPTY_COMMENTS=0
+reset_fx; declare_bots "[\"$CODEX\"]"
+reaction_fx "$CODEX" "+1" "$AFTER_AT"
+STUB_EMPTY_REACTIONS=1 w observe --pr 1
+rc 20 "an EMPTY reactions body -> 20, not 'no reaction here'"
+STUB_EMPTY_REACTIONS=0
 
 # A PR object that arrives fine but carries no head SHA is not a network failure — and must still
 # not be classified. This is why the read and the parse are separate steps.

@@ -815,9 +815,28 @@ adb_paginated_list() {
   local label="$1" url="$2" what="$3" pr="$4" raw flat
   raw="$(gh api --paginate "$url" 2>/dev/null)" \
     || { echo "$label: could not read $what for PR #$pr" >&2; return 2; }
+  # AN EMPTY BODY IS NOT AN EMPTY LIST, and this check is the one that enforces it. A successful read
+  # of a PR with no reviews returns `[]`; NOTHING AT ALL means the call produced no document, which
+  # must never be read as "that surface carried no records".
+  #
+  # THIS GUARD USED TO BE ONE LINE FURTHER DOWN, ON `$flat`, WHERE IT COULD NEVER FIRE:
+  # `printf '%s' "" | jq -s -c '[.[][]]'` emits `[]`, so the empty-body case sailed past a check
+  # written to catch it and the header's claim of three fail-closed guards was really two. Its
+  # sibling `adb_head_anchor` has always tested `$raw` for exactly this reason.
+  #
+  # Harmless while `gate` read ONE surface — an empty reviews body meant "nobody reviewed" and it
+  # withheld the arm anyway. NOT harmless once three surfaces are folded: with reviews silently
+  # emptied, a reviewer's standing CHANGES_REQUESTED disappears and a fresh `+1` on another surface
+  # is the only evidence left, so the fold returns `clean` and the gate returns 0 AND PRINTS THE HEAD
+  # SHA — which `/implement-issue` step 10 hands to `gh pr merge --auto --match-head-commit`.
+  # Reproduced end-to-end before this line was added.
+  [ -n "$raw" ] \
+    || { echo "$label: could not read $what for PR #$pr (empty response body)" >&2; return 2; }
   # --paginate concatenates one JSON document per page; -s flattens them into a single array.
   flat="$(printf '%s' "$raw" | jq -s -c '[.[][]]' 2>/dev/null)" \
     || { echo "$label: could not parse the $what of PR #$pr" >&2; return 2; }
+  # Kept as belt to the braces above: it cannot fire for an empty body any more, but it still catches
+  # a jq that succeeds while producing nothing.
   [ -n "$flat" ] \
     || { echo "$label: could not parse the $what of PR #$pr" >&2; return 2; }
   printf '%s' "$flat"
