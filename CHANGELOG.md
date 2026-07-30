@@ -84,6 +84,47 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`pr-watch`'s staleness proof no longer rests on a timestamp the committing machine chose**
+  (#175, D19). A review carries `commit_id`, so "did the reviewer review THIS head?" was a field
+  comparison — but a **reaction carries no commit at all**, only `created_at`, and neither does a
+  task-mode issue comment. Their freshness was proved against the head commit's **committer date**,
+  which git records from `GIT_COMMITTER_DATE` verbatim and GitHub echoes back unmodified. The
+  reaction's timestamp is GitHub-assigned and the commit's was not, so the comparison was
+  **asymmetric in its trust** and only one direction was safe: a future-dated commit made a genuine
+  `+1` look stale (`pending` — waits longer), while a **past**-dated one made a **stale `+1` look
+  fresh** and returned **`clean` for a head no reviewer had passed**. No attacker was needed — a
+  date-preserving rebase (`--committer-date-is-author-date`, `filter-repo`) or a machine whose clock
+  is behind by more than the review latency produces it.
+  - **The anchor is now the repository activity API** — the latest activity on the head **ref**
+    whose `after` SHA is the current head. GitHub stamps that `timestamp` when the ref moved, so it
+    answers the question directly ("when did this ref become this SHA") instead of approximating it,
+    and it covers ordinary pushes, force-pushes and branch creation alike. **Taking the latest
+    matching record, not the earliest, is what catches a reverse force-push**: a ref that went
+    `A → B → A` carries two records for `A`, and only the later one says when it is `A` *now*.
+  - **The three obvious candidates were rejected, and the reasons are in the module header** so the
+    next reader does not re-derive them. Check suites are **SHA-scoped, not ref-scoped**: a commit
+    that already ran CI elsewhere carries its *original* timestamp, so an ordinary fast-forward onto
+    it keeps the fail-open with no force-push in the story at all — that case is now a regression
+    test. Commit statuses share the flaw exactly, and both also require the repo to *have* CI.
+    Timeline `head_ref_force_pushed` events are ref-scoped but exist only for **force** pushes.
+    `head.repo.pushed_at` is free and genuinely **sound** — it can only ever be too late — but it is
+    repo-scoped, so any unrelated push re-opens a settled verdict and an active repo's watch would
+    run to its bound instead of converging.
+  - **An unestablished anchor is `pending`, on both date-scoped signals.** That costs the findings
+    side a wait, and it is still the right trade: one rule over both is what keeps the forgeable
+    input out of the file rather than leaving it in "just for comments". A **review** at the head is
+    commit-scoped and needs no anchor, so it keeps working regardless — pinned by a test. Because
+    the anchor needs no CI, a repo without any **keeps** the clean signal.
+  - **Timestamps are validated, not assumed.** Lexicographic comparison is chronological only for
+    identical-width `…Z` UTC; `2026-07-25T09:00:00-04:00` sorts *before* `…T05:00:00Z` as a string
+    and *after* it as an instant. Every anchor and candidate is checked and anything else is `20` —
+    mutation-testing showed that without it an offset timestamp compares straight to `clean`.
+  - The header's per-poll request budget said **three** reads for as long as the issue-comments read
+    has existed; it is four, plus the anchor on the branch where a signal was found.
+  - Two remaining exceptions are now **stated** rather than implied, and filed: a verdict is true of
+    the SHA printed beside it, which may no longer be the head (#215), and a retargeted base changes
+    the reviewed diff without changing the head SHA (#216).
+
 - **One home for the PR-argument and reviewer-identity primitives — and three fail-open bypasses
   closed** (#173, D18, superseding #176). `pr-review.sh` (#134) and `pr-watch.sh` (#49) each carried
   private copies of four primitives, and the copies had already **diverged into a live defect**: only

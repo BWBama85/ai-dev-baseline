@@ -712,3 +712,55 @@ didn't already model, so any residual divergence stays visible and auditable.
              depends on it. Closing it needs an identity that is not a login string (an App/account
              id); tracked in #207.
 - baseline-issue: #173
+
+## D19 — a reviewer signal's freshness is proved against a server-assigned ref-change record
+- date:      2026-07-30
+- category:  project-delta
+- unknown:   `pr-watch.sh` must decide whether a date-scoped reviewer signal (a `+1` reaction, a
+             task-mode issue comment) applies to the CURRENT head. Neither carries a commit, so the
+             proof is a timestamp comparison — and the baseline had never decided WHAT the lower
+             bound of that comparison should be. The obvious choice, the head commit's committer
+             date, is CLIENT-SUPPLIED: git records `GIT_COMMITTER_DATE` verbatim and GitHub echoes
+             it back unmodified, so the comparison was asymmetric in its trust. A past-dated head
+             made a stale `+1` look fresh and returned `clean` for a head nobody had reviewed —
+             reachable with no attacker, via a date-preserving rebase or a slow clock. #167 raises
+             the stakes: it lets a `+1` authorize `pr-review.sh gate` returning 0, i.e. an
+             automatic merge.
+- decision:  Prove freshness against the REPOSITORY ACTIVITY record for the head REF — the LATEST
+             activity whose `after` SHA is the current head — and drop the commit read entirely.
+             Four properties decided it, and the three rejected candidates each fail one:
+             (a) SERVER-ASSIGNED. GitHub stamps the timestamp when the ref moved. The committer
+                 date fails this and is the whole defect.
+             (b) REF-SCOPED, not SHA-scoped. This is the property that is easy to miss, and it is
+                 why the CHECK-SUITE anchor the issue proposed first was rejected: a suite belongs
+                 to the SHA, so a commit that already ran CI elsewhere carries its ORIGINAL
+                 timestamp and an ordinary fast-forward onto it PRESERVES the fail-open — with no
+                 force-push anywhere, so pairing it with a force-push term does not rescue it.
+                 Commit statuses have the identical flaw.
+             (c) COVERS ORDINARY PUSHES. Timeline `head_ref_force_pushed` events are server-assigned
+                 AND ref-scoped, but exist only for FORCE pushes.
+             (d) DOES NOT DESTROY LIVENESS. `head.repo.pushed_at` satisfies (a)–(c) and is free (it
+                 is already in the PR object). It was rejected on liveness ALONE, and it is worth
+                 recording that it is genuinely SOUND — being repo-wide it can only ever be too
+                 LATE, i.e. a false `pending`, never a false `clean`. But a push to any unrelated
+                 branch re-opens a settled verdict, so on an active repo a watch would run to its
+                 bound instead of converging. Safety was not the axis; usefulness was.
+             Taking the LATEST matching record rather than the earliest is deliberate and is the
+             force-push defence: a ref that went A -> B -> A carries two records for A, and only
+             the later one says when it is A *now*.
+             An anchor that cannot be established yields `pending` for BOTH date-scoped signals,
+             never `clean`. Keeping the client-supplied date "just for the comment path" was
+             rejected: it would leave the forgeable input in the file for a path feeding the same
+             callers, and one rule over both signals is checkable where two are not. A REVIEW is
+             commit-scoped and needs no anchor, so it is unaffected — and because the anchor needs
+             no CI, a repo without any keeps the clean signal.
+- placement: `scripts/lib/pr-watch.sh` (`head_anchor` + `is_utc_instant`) with the rejected-anchor
+             reasoning in the module header, since `adb_usage` renders it as `--help`;
+             regression tests in `scripts/check-pr-watch.sh`; operator-facing consequence in
+             `base/workflows/resolve-pr-threads.md` (rendered into all three agents' skills).
+- reason:    The staleness rule is the one place this module can be wrong in the dangerous
+             direction, so its lower bound is a design decision rather than an implementation
+             detail — and the next person to touch it will reach for check suites, which is the
+             candidate that looks right and is not. Recording WHY each alternative fails is the
+             point of the entry.
+- baseline-issue: #175
