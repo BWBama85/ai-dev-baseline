@@ -132,6 +132,31 @@ adb_installed_agents() {
 # maintained. Keeping the name means existing callers read the stricter answer for free.
 adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" = "wired" ]; }
 
+# Report a PARTIAL hook set — and never repair it. Removing one hook's entry from settings.json is
+# the DOCUMENTED way to turn that hook off (docs/installation.md: "To turn it off, remove its entry
+# from ~/.claude/settings.json"), so re-wiring would destroy a supported configuration, and would
+# do it repeatedly: the SessionStart currency hook survives a per-hook removal, so the next session
+# would silently undo the operator's choice.
+#
+# #242 was never "repair a partial set" — it was that a partial set read as `--no-hooks` SILENTLY,
+# so nobody could see the state or its consequence. Visibility is the fix; overruling is not, and
+# this issue's own scope said so before the first attempt did the opposite.
+#
+# The residue is stated rather than hidden: while the set is partial, `--no-hooks` still suppresses
+# hook wiring wholesale, so a NEWLY shipped hook will not arrive either. Wiring a subset would need
+# install.sh to write per-hook rather than all-or-nothing, which is separate work.
+# Usage: adb_report_partial_hooks <src>      (prints nothing unless the set is partial)
+adb_report_partial_hooks() {
+  local src="$1" settings="$HOME/.claude/settings.json"
+  adb_link_into "$HOME/.claude/CLAUDE.md" "$src" || return 0
+  [ "$(adb_claude_hooks_state "$settings")" = partial ] || return 0
+  printf 'baseline: NOTE — the hook set is PARTIAL; not wired: %s\n' \
+    "$(adb_claude_hooks_missing "$settings" | tr '\n' ' ')" >&2
+  printf 'baseline:        Treating that as a deliberate per-hook opt-out and leaving it alone.\n' >&2
+  printf 'baseline:        While partial, a newly shipped hook is not wired either — re-run ./install.sh to restore the full set.\n' >&2
+  return 0
+}
+
 # Scan the ACTUAL installed symlinks that point INTO <src>, across ONLY the namespaces where a
 # rename can leave an orphan: each agent's skills/* and scripts/* trees (Claude, Codex, and
 # Antigravity/Gemini — whose skills live under ~/.gemini/config/). Unlike the manifest (what
@@ -233,20 +258,19 @@ EOF
     echo "baseline: no installed agents detected — nothing to self-heal." >&2
     return 1
   fi
-  # Preserve a prior --no-hooks: only when Claude is installed FROM THIS src but its gates aren't
-  # wired (a root doc pointing elsewhere is not ours to re-wire). THREE states, not two (#242):
-  # `none` is the opt-out and is honoured; `partial` is an edit to SOME hooks and must not be read
-  # as intent about all of them, or removing one silently orphans the rest.
+  # Preserve a prior hook opt-out: only when Claude is installed FROM THIS src (a root doc pointing
+  # elsewhere is not ours to re-wire). THREE states, not two (#242) — but `none` and `partial` take
+  # the SAME action and differ only in what they SAY.
+  #
+  # Both suppress wiring, because removing a hook's entry is the documented way to disable it
+  # (docs/installation.md) whether you remove one or all. Re-wiring on `partial` would undo a
+  # supported choice, and the SessionStart currency hook survives a per-hook removal, so it would
+  # undo it again on the next session. #242's defect was that `partial` was INDISTINGUISHABLE from
+  # `none` and reported nothing — not that it went unrepaired.
   if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
     case "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" in
-      none) args+=(--no-hooks) ;;
-      partial)
-        # Re-wire, and SAY SO — the whole defect was that this degraded invisibly. An operator who
-        # wants no gates removes them all, which is `none` above and still honoured.
-        printf 'baseline: NOTE — the ai-dev-baseline hook set is PARTIAL; missing: %s\n' \
-          "$(adb_claude_hooks_missing "$HOME/.claude/settings.json" | tr '\n' ' ')" >&2
-        printf 'baseline:        re-wiring the shipped set. To opt out, remove ALL of them (see docs/installation.md --no-hooks).\n' >&2
-        ;;
+      none)    args+=(--no-hooks) ;;
+      partial) adb_report_partial_hooks "$SRC"; args+=(--no-hooks) ;;
       *) : ;;   # wired — nothing to preserve, nothing to say
     esac
   fi
@@ -459,21 +483,12 @@ case "$STATUS" in
     # all), and `wired` has nothing to do. The Claude-installed-from-THIS-src guard mirrors
     # adb_self_heal's: a root doc pointing at another clone is not ours to re-wire.
     LINKS_OK=0; adb_verify_links "$SRC" && LINKS_OK=1
-    HOOKS_STATE=wired
-    if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
-      HOOKS_STATE="$(adb_claude_hooks_state "$HOME/.claude/settings.json")"
-    fi
-    if [ "$LINKS_OK" -eq 1 ] && [ "$HOOKS_STATE" != partial ]; then
+    adb_report_partial_hooks "$SRC"
+    if [ "$LINKS_OK" -eq 1 ]; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
     fi
-    if [ "$LINKS_OK" -eq 1 ]; then
-      printf 'baseline: links resolve, but the hook set is PARTIAL; missing: %s\n' \
-        "$(adb_claude_hooks_missing "$HOME/.claude/settings.json" | tr '\n' ' ')"
-      echo "baseline: re-wiring the shipped hooks — to opt out, remove ALL of them (see docs/installation.md --no-hooks)."
-    else
-      echo "baseline: an installed path is broken though up to date — repairing …"
-    fi
+    echo "baseline: an installed path is broken though up to date — repairing …"
     adb_self_heal && adb_verify_links "$SRC" || { echo "baseline: repair failed — see above." >&2; exit 1; }
     echo "baseline: repaired."
     # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that

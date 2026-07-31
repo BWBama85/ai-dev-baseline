@@ -277,26 +277,29 @@ reset_src; : > "$work/install.log"; hook_settings wired
 eq "$(run_update "$src/bin/baseline" "$fh")" "0" "hooks wired → nothing to do (exit 0)"
 eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks wired → the installer is not re-run"
 
-# `none` is the OPT-OUT and must be honoured: repairing here would overrule an operator who
-# deliberately removed every gate, which is worse than the bug this check exists to fix.
+# `none` is the opt-out and must be honoured.
 reset_src; : > "$work/install.log"; hook_settings none
 eq "$(run_update "$src/bin/baseline" "$fh")" "0" "hooks none (opt-out) → nothing to do (exit 0)"
 eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks none → the opt-out is not overruled"
 
-# The regression: one hook removed, every link healthy, install-source current.
+# PARTIAL is REPORTED, never repaired. Removing one hook's entry is the DOCUMENTED way to disable
+# that hook (docs/installation.md), so re-wiring would destroy a supported configuration — and the
+# SessionStart currency hook survives a per-hook removal, so it would be destroyed again next
+# session. #242 was that `partial` was indistinguishable from `none` and silent, not unrepaired.
 reset_src; : > "$work/install.log"; hook_settings partial
-eq "$(run_update "$src/bin/baseline" "$fh")" "6" "hooks PARTIAL → repaired, exit 6 (not 'nothing to do')"
-if grep -q '^install:' "$work/install.log"; then ok "hooks partial → the installer IS re-run"; else
-  bad "hooks partial → the installer was never re-run, so nothing was re-wired"; fi
-if grep -q -- '--no-hooks' "$work/install.log"; then
-  bad "hooks partial → --no-hooks was passed; a partial set must NOT read as opting out"; else
-  ok "hooks partial → the installer runs WITHOUT --no-hooks"; fi
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "hooks PARTIAL → reported, still exit 0 (no false repair)"
+eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks PARTIAL → the installer is NOT re-run"
+# NOT asserted here: that settings.json still lacks the hook. The fixture's install.sh is a stub
+# that only logs its argv — it cannot wire anything — so such a check could never fail and would
+# be a guard that reports safety it never verified. "The installer is not re-run" above is the
+# real proof: nothing else in this path can rewrite settings.json.
 
-# The report must name what was missing — a state nobody can see is why #242 went unnoticed.
+# Visibility IS the fix, so assert the operator can see it — including the residue.
 reset_src; hook_settings partial
 out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
 has "$out" "PARTIAL" "hooks partial → the run says so out loud"
-has "$out" "precommit-gate.sh" "hooks partial → the run names the missing hook"
+has "$out" "precommit-gate.sh" "hooks partial → the run names the hook that is not wired"
+has "$out" "newly shipped hook is not wired" "hooks partial → the run states the residue, not just the state"
 rm -f "$fh/.claude/settings.json"
 
 
