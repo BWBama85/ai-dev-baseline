@@ -1145,3 +1145,63 @@ The Codex connector found two more instances of the same shape, both in code add
 Three rounds of "prove it can fail" — author, independent review, async review — each found
 something the previous round did not. That is the argument for the discipline, and also its honest
 limit: none of them is sufficient alone.
+
+## D24 — a claim lint that only proves RESOLUTION, and the check that was measured and dropped
+- date:      2026-07-30
+- category:  project-delta
+- unknown:   #212 asked for one `check-claims.sh` covering four claim classes, "run in
+             `selfcheck.sh` and as a pre-commit gate", degrading offline by skipping locally and
+             failing closed in CI. Three parts of that had no home in the baseline as written: a
+             network-dependent step inside a mirror D13 promises is hermetic; a check whose one
+             prescribed home (`scripts/check-*.sh` vs the installed `scripts/lib/`) decides whether
+             every adopting project inherits it; and a path-claim rule that turned out to be a
+             natural-language classifier, which this repo has twice refused to build.
+- decision:  Ship three of the four checks, in two halves, and drop the fourth on measurement.
+             * `scripts/check-claims.sh` scans the ADDED lines of a range and asserts every `#N`
+               resolves / is the kind it is cited as / is not closed `NOT_PLANNED`; every `D<N>`
+               resolves to a `## D<N> — ` heading; every added `- date:` in the decision log is
+               within a day of the commit that introduced it.
+             * The OFFLINE half (decisions, dates) runs in `selfcheck.sh`. The LIVE half (`--live`,
+               the `#N` reads) is CI-only and fails closed with exit 3 — it never degrades to a
+               pass. `selfcheck` reports how many references it left unverified, so the gap is
+               stated rather than silent.
+             * An audited per-line `adb-claim-ok: <reason>` escape exists because prose ABOUT an
+               abandoned issue is legitimate; a blanket `NOT_PLANNED` rejection is semantically
+               wrong, and a gate with no way to say so gets worked around.
+             * `scripts/check-claims-guard.sh` drives every rule to RED offline against fixtures in
+               a throwaway repo with a stubbed gh, asserting the DESIGNATED exit code and
+               diagnostic, and pins the active invocation sites in `selfcheck.sh` and `ci.yml`.
+             * The PATH-CLAIM check is NOT in the lint. It moved to a fifth review lens in
+               `base/workflows/implement-issue.md` step 8; the controlled-syntax version is #234.
+- placement: `scripts/check-claims.sh` + `scripts/check-claims-guard.sh` beside
+             `check-fact-drift.sh` / `check-fact-guard.sh` — the prescribed home for a repo lint
+             that must NOT ship into a user's runtime (`install.sh` symlinks all of `scripts/lib/`
+             into every agent home; `scripts/check-*.sh` never installs). Wired as a `selfcheck`
+             step and as steps of the existing `fact-drift` CI job — a NEW job would be a new check
+             context branch protection does not require, which is the drift `required-drift`
+             exists to flag. Generalizing it into an installed primitive is #233.
+- reason:    Two of the three hard calls were forced by existing law rather than chosen.
+             D13 says `selfcheck` stays hermetic so a local green is a DETERMINISTIC predictor of
+             CI, and names the ONE live assertion it deliberately does not mirror. A second
+             network-dependent step inside `selfcheck` would break that promise for every other
+             step too — so the split is what D13 already prescribes, and this is NOT a deviation
+             from it. `handling-the-unknown`'s table then forces the placement: a check that must
+             not reach a user's runtime has exactly one home, and the "would many projects want
+             this?" half earns a filed issue rather than a local guess.
+
+             The third call was decided by measurement, against the issue's own stated priority.
+             #212 calls the path-claim check "the highest-value" of the four. It is not, and the
+             argument for it does not hold: the sentence it cites as its witness named
+             `base/roles.md`, and `git show --name-only 9e61dfd` lists that file — the path WAS in
+             the diff, and what was false was the KIND of change claimed of it, which no
+             "is this path in the diff?" predicate can see. Built and run over the last five
+             merges it scored SEVEN false positives and ZERO true positives, in the verb-free form
+             and the change-verb form alike, because a changelog is a HISTORICAL document: a
+             commit that reflows an older entry re-adds prose making true claims about a different
+             commit. This repo's own law says a gate that fires on ordinary prose gets worked
+             around and then protects nothing, so shipping it would have cost precision and bought
+             no coverage. #212's own follow-up comment already assigns judgement-heavy claim
+             validation to the review step, which is where it went.
+- baseline-issue: #233 (ship it as an installed primitive), #234 (controlled path-claim syntax),
+             #235 (PR bodies are not tracked files), #236 (prove file-then-cite by `createdAt`),
+             #237 (audit the pre-existing `NOT_PLANNED` citations)

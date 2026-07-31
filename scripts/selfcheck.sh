@@ -268,6 +268,26 @@ step "fact-guard"
 # exact `absent:\[bot\]\$` pattern that could not match either real idiom.
 if bash scripts/check-fact-guard.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "claims"
+# The OFFLINE half of the claim lint (#212): every D<N> an added line cites resolves to a heading in
+# the decision log, and every added decision date is within a day of the commit that introduced it.
+#
+# The issue/PR-reference half is NOT run here, and that is deliberate rather than an omission. It
+# needs the network, and D13 keeps selfcheck hermetic precisely so a local green is a DETERMINISTIC
+# predictor of CI — a step whose verdict depends on network, auth and externally-mutable issue state
+# would break that promise for every other step too. It rides CI instead, exactly as the one other
+# live assertion (`repo-settings.sh required-drift`) does. The check SAYS which half it skipped and
+# how many references went unverified, so the gap is visible rather than silent.
+if bash scripts/check-claims.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "claims-guard"
+# ...and the lint above is a guard, so it gets the treatment guards get here (D22): every rule is
+# driven to RED against fixtures in a throwaway repo with a stubbed gh, asserting the DESIGNATED
+# exit code and diagnostic rather than "some non-zero". This suite has already earned its place
+# twice — it caught a markdown stripper that made one rule structurally unable to fire, and an
+# unresolvable --range that silently turned the whole check into a no-op reporting PASS.
+if bash scripts/check-claims-guard.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "practice-index"
 # Every base/practices/*.md is listed in 00-index.md exactly once (no missing/stale rows).
 if bash scripts/check-practice-index.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi

@@ -181,6 +181,17 @@ Return the issue URL and a one-line summary of what was filed.
 
 If any axis in Step 3 surfaced a sibling bug or out-of-scope concern worth filing separately, offer to file those as a second `/create-issue` call. Do not silently fold sibling bugs into the primary issue's body — they deserve their own tracking. This is the "deferred work → tracked issue" rule of `base/practices/issues-and-scope.md`: anything scoped out here is owed its own open issue, not just a mention in the parent's body.
 
+**A number you have not filed is a number you must not write.** The `## Related` block invites cross-references, and the temptation is to write the sibling's number into the primary's body while both are still drafts. That number does not exist yet, and a reference that resolves to nothing reads exactly like tracked work — which is how it stops being filed at all.
+
+The dependency here is genuinely circular (the primary wants to name its children; the children want to name their parent), so it is resolved by **sequence, not by guessing a number**:
+
+1. Get approval for the whole set at once — the primary and the siblings — since `gh issue create` is an always-ask action either way.
+2. File the **primary** first, and leave its `## Related` block free of any not-yet-filed number.
+3. File each **sibling**, citing the primary's now-real number.
+4. **Edit the primary** to add the sibling links.
+
+Step 4 is one `gh issue edit` and it is the step that gets skipped; skipping it leaves the children orphaned from the parent, which is the same lost-tracking failure by a quieter route. And whatever the order, every `#N` you write must already resolve — see the anti-pattern below.
+
 ## Anti-patterns
 
 - **Stopping at the first coherent narrative.** The first story you form is almost never the full scope. Force the axes.

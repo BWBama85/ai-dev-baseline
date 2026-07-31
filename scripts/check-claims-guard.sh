@@ -388,4 +388,39 @@ cc --range "$BASE..$BASE"
 eq "$RC_" 0 "an empty range exits 0"
 has "$OUT" "added-lines=0" "an empty range REPORTS zero rather than hiding it"
 
+# =============================== the wiring is pinned ==========================================
+# A perfectly correct lint that nothing invokes is a lint that checks nothing, and it fails exactly
+# the way this whole file exists to prevent: silently. So the ACTIVE invocation sites are asserted,
+# not merely the presence of the filename somewhere in the tree — commenting a call out must break
+# a test. D22 records the same lesson for the other enforcement wiring.
+SELFCHECK="$ROOT/scripts/selfcheck.sh"
+CI="$ROOT/.github/workflows/ci.yml"
+
+if grep -qE '^if bash scripts/check-claims\.sh; then' "$SELFCHECK"; then ok; else
+  bad "selfcheck.sh does not ACTIVELY invoke check-claims.sh"; fi
+if grep -qE '^if bash scripts/check-claims-guard\.sh; then' "$SELFCHECK"; then ok; else
+  bad "selfcheck.sh does not ACTIVELY invoke check-claims-guard.sh"; fi
+
+# The local mirror must NOT run the live half: D13 keeps selfcheck hermetic, and a network-dependent
+# step there would make a local green stop predicting CI for every other step too.
+if grep -qE '^[^#]*check-claims\.sh[^#]*--live' "$SELFCHECK"; then
+  bad "selfcheck.sh runs the LIVE claim half — that breaks the hermetic-mirror promise (D13)"
+else ok; fi
+
+if grep -qE '^ *run: bash scripts/check-claims\.sh --range ' "$CI"; then ok; else
+  bad "ci.yml does not run the offline claim lint over a range"; fi
+if grep -qE '^ *run: bash scripts/check-claims\.sh --live --range ' "$CI"; then ok; else
+  bad "ci.yml does not run the LIVE claim half — the network half would then run NOWHERE"; fi
+if grep -qE '^ *run: bash scripts/check-claims-guard\.sh' "$CI"; then ok; else
+  bad "ci.yml does not run the claim lint's guard suite"; fi
+
+# The live step needs a token and issue/PR read scope; without either it exits 3 on every run, which
+# is a red build rather than a silent pass — but a red build nobody can fix from the diff.
+if grep -q 'issues: read' "$CI"; then ok; else
+  bad "ci.yml grants no 'issues: read' — the live claim half cannot resolve anything"; fi
+if grep -q 'pull-requests: read' "$CI"; then ok; else
+  bad "ci.yml grants no 'pull-requests: read' — the live claim half cannot resolve a PR number"; fi
+if grep -q 'fetch-depth: 0' "$CI"; then ok; else
+  bad "ci.yml has no full-history checkout — base..head cannot resolve on a shallow clone"; fi
+
 check_summary "check-claims-guard"
