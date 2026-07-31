@@ -40,9 +40,11 @@
 #   3  --live was requested and the live half could NOT be run (fail closed — never a pass)
 #
 # KNOWN LIMIT OF THE REFERENCE GRAMMAR: a six-digit CSS colour is shaped exactly like an issue
-# number, so `#123456` in a stylesheet would be looked up. This repo tracks no such file, and the
-# grammar is left permissive rather than guessing at file types — but it is a real edge for the
-# generalization tracked in #233, and is named here rather than discovered there.
+# number, so a value such as #123456 in a stylesheet would be looked up.  adb-claim-ok: that is a
+# colour literal, not a citation — and the lint flagging this very sentence when it was first
+# written is the limit demonstrating itself. This repo tracks no stylesheet, and the grammar is
+# left permissive rather than guessing at file types, but it is a real edge for the generalization
+# tracked in #233 and is named here rather than discovered there.
 #
 # WHAT THIS GUARANTEES, STATED NARROWLY. It checks that a reference RESOLVES; it does not and
 # cannot check that a reference is APT. That an issue exists is provable; that it is the issue you
