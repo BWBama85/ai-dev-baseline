@@ -539,6 +539,37 @@ done <<EOF
 $(adb_claude_hook_scripts)
 EOF
 
+# --- adb_claude_hooks_state / adb_claude_hooks_missing (#242) ----------------
+# The defect this replaces inferred intent about the WHOLE hook payload from ONE member, so the
+# case that matters most is `partial` — removing one hook must NOT read as opting out of all.
+hs_dir="$work/hookstate"; mkdir -p "$hs_dir"
+hs_all="$hs_dir/all.json"; hs_none="$hs_dir/none.json"; hs_part="$hs_dir/partial.json"
+: > "$hs_all"; while IFS= read -r hs; do [ -n "$hs" ] && printf '%s\n' "$hs" >> "$hs_all"; done <<EOF
+$(adb_claude_hook_scripts)
+EOF
+printf '{"hooks":{}}\n' > "$hs_none"
+# every shipped hook EXCEPT precommit-gate.sh — the exact edit that triggered #242
+grep -v 'precommit-gate\.sh' "$hs_all" > "$hs_part"
+
+eq "$(adb_claude_hooks_state "$hs_all")"  "wired"   "hooks-state: all shipped hooks present → wired"
+eq "$(adb_claude_hooks_state "$hs_none")" "none"    "hooks-state: no shipped hooks present → none (the opt-out)"
+eq "$(adb_claude_hooks_state "$hs_part")" "partial" "hooks-state: one hook removed → partial, NOT none (#242)"
+eq "$(adb_claude_hooks_state "$hs_dir/missing.json")" "none" "hooks-state: absent settings.json → none"
+
+eq "$(adb_claude_hooks_missing "$hs_all"  | wc -l | tr -d ' ')" "0" "hooks-missing: fully wired names nothing"
+eq "$(adb_claude_hooks_missing "$hs_part" | tr -d ' \n')" "precommit-gate.sh" "hooks-missing: names the removed hook"
+eq "$(adb_claude_hooks_missing "$hs_none" | wc -l | tr -d ' ')" "4" "hooks-missing: none → every shipped hook"
+
+# Each shipped hook must independently produce `partial` when it alone is removed. Without this,
+# the predicate could key on one filename again and still pass the cases above.
+while IFS= read -r hs; do
+  [ -n "$hs" ] || continue
+  grep -vF "$hs" "$hs_all" > "$hs_dir/drop.json"
+  eq "$(adb_claude_hooks_state "$hs_dir/drop.json")" "partial" "hooks-state: dropping $hs alone → partial"
+done <<EOF
+$(adb_claude_hook_scripts)
+EOF
+
 # --- adb_require_gh / adb_repo_slug (#87) ------------------------------------
 # Both are sourced by release-convention.sh AND repo-settings.sh, so a regression here breaks two
 # gh-backed modules at once. The contract that matters: they RETURN non-zero (never `exit`, which

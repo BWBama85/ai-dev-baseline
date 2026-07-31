@@ -30,10 +30,22 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -z "$repo_root" ] && exit 0
 cd "$repo_root" || exit 0
 
-# Defer to a project-local gate if one exists and it isn't this very file.
+# Defer to a project-local gate if one exists and it isn't this very file — by RUNNING it, not by
+# stepping aside. `exit 0` here was enforcement silently OFF (#240): nothing else invokes a project
+# gate. No project-level Stop hook is wired by install.sh, the adapter, or bin/baseline, so a repo
+# that followed the documented escape hatch ("ship a full replacement script at that exact path")
+# ended up with a gate script nothing ran AND the global gate standing down — strictly worse than
+# before, and the exact fail-silent class #35 made this file fail loud about.
+#
+# `exec` is what makes the project's script genuinely BE the gate: it inherits stdin (the hook
+# payload), and its exit status becomes this hook's, so a project gate can still block a stop with
+# 2. The `-ef` inode test above is what keeps this from re-entering itself when the global copy IS
+# the project copy. A non-executable script is run via bash rather than failing the hook, since
+# `chmod +x` is easy to forget in a repo that ships one.
 proj_gate="$repo_root/.claude/scripts/precommit-gate.sh"
 if [ -e "$proj_gate" ] && [ ! "$proj_gate" -ef "$0" ]; then
-  exit 0
+  [ -x "$proj_gate" ] && exec "$proj_gate" "$@"
+  exec bash "$proj_gate" "$@"
 fi
 
 # --- fail-loud dependency loading (#35) --------------------------------------

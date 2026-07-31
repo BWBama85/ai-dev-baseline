@@ -83,12 +83,41 @@ set_libs noproject; on_feature_change; run_gate
 eq "$RC" "2" "project-gates.sh missing + would-gate → exit 2 (fail loud)"
 if is_fatal; then ok; else bad "project-gates.sh missing → message must be FATAL (loud), got: $OUT"; fi
 
-# 8. project-local gate present → defer (exit 0), never touch the global gate's libs.
+# 8. project-local gate present → the global gate RUNS it, never touching its own libs.
+#
+# The old version of this case shipped a project gate that just `exit 0`d, so it passed whether the
+# global gate EXECUTED that script or merely stepped aside — the two outcomes are identical at the
+# exit code, and stepping aside means enforcement silently off (#240). Every case below is
+# therefore written so that "it ran" is observable.
 set_libs none; on_feature_change
 mkdir -p "$repo/.claude/scripts"
-printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/.claude/scripts/precommit-gate.sh"
+marker="$repo/.claude/ran"
+
+# 8a. it actually runs — proven by a side effect, not by an exit code it shares with not-running.
+rm -f "$marker"
+printf '#!/usr/bin/env bash\n: > "%s"\nexit 0\n' "$marker" > "$repo/.claude/scripts/precommit-gate.sh"
+chmod +x "$repo/.claude/scripts/precommit-gate.sh"
 run_gate
-eq "$RC" "0" "project-local gate present → defer (exit 0)"
+eq "$RC" "0" "project-local gate → global gate exits with the project gate's status (0)"
+if [ -f "$marker" ]; then ok "project-local gate is EXECUTED, not merely deferred to"; else
+  bad "project-local gate was never run — the global gate stepped aside and nothing gated"; fi
+
+# 8b. a project gate that BLOCKS must still block. If the global gate only stepped aside, a repo
+# whose own gate says "do not stop" would end its turn anyway — enforcement inverted.
+printf '#!/usr/bin/env bash\nexit 2\n' > "$repo/.claude/scripts/precommit-gate.sh"
+chmod +x "$repo/.claude/scripts/precommit-gate.sh"
+run_gate
+eq "$RC" "2" "a blocking project gate still blocks the stop (status propagates)"
+
+# 8c. a project gate that is not executable is still run (chmod +x is easy to forget).
+rm -f "$marker"
+printf '#!/usr/bin/env bash\n: > "%s"\nexit 0\n' "$marker" > "$repo/.claude/scripts/precommit-gate.sh"
+chmod -x "$repo/.claude/scripts/precommit-gate.sh"
+run_gate
+eq "$RC" "0" "a non-executable project gate does not fail the hook"
+if [ -f "$marker" ]; then ok "a non-executable project gate is still run (via bash)"; else
+  bad "a non-executable project gate was skipped — gating silently off"; fi
+
 rm -rf "$repo/.claude"
 
 check_summary "precommit-gate"

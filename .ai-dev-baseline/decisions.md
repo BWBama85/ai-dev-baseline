@@ -1216,3 +1216,36 @@ limit: none of them is sufficient alone.
 - baseline-issue: #233 (ship it as an installed primitive), #234 (controlled path-claim syntax),
              #235 (PR bodies are not tracked files), #236 (prove file-then-cite by `createdAt`),
              #237 (audit the pre-existing `NOT_PLANNED` citations)
+
+## D25 — this repo owns its Stop-hook gate, because its `[gates] test` is its own CI mirror
+- date:      2026-07-31
+- category:  project-delta
+- unknown:   The baseline's Stop-hook gate runs whatever `agents.toml [gates]` declares, once per
+             TURN. This repo declares `test = "bash scripts/selfcheck.sh"` — its entire ~28-suite
+             offline CI mirror — which is correct for the job golden rule 3 gives it (before every
+             push) and ruinous at turn-end. One measured Stop-hook run took **18m55s** during a
+             session that edited no code at all. Nothing in `project-gates.sh` models a gate being
+             too expensive for a given cadence, and `[gates.scope]` cannot express it either:
+             selfcheck validates repo-wide invariants, so almost any change legitimately matches.
+- decision:  Ship this repo's own `.claude/scripts/precommit-gate.sh` running the FAST subset that
+             catches what a turn actually breaks — changed-file shellcheck, generated-file drift,
+             workflow-render, practice-index, fact-drift. Measured at **3s** against 18m55s. The
+             full mirror stays exactly where CLAUDE.md golden rule 3 puts it: before a push. The
+             gate prints a per-check PASS/FAIL with timing, so a slow or red check is attributable
+             without a stopwatch, and it says out loud that it is a smoke test and NOT a CI
+             predictor — a green here must not be mistaken for "CI will pass".
+- placement: `.claude/scripts/precommit-gate.sh` — the prescribed home for custom gate POLICY in
+             the handling-the-unknown table, and the surface `docs/per-project-overrides.md` §3b
+             documents.
+- reason:    The general half of this is #240 and stays open: `[gates]` cannot express cadence, and
+             every adopting repo with an expensive suite hits it. This entry records only the
+             LOCAL stopgap, which is what the protocol prescribes for a general gap — use the
+             supported surface now, fix the shared capability in the tracker.
+
+             Applying the stopgap surfaced a defect in the surface itself, fixed in the same
+             branch rather than filed: the global gate `exit 0`d when it found a project gate and
+             never `exec`d it, while nothing else wired one. A repo following the documented
+             escape hatch therefore lost gating entirely instead of replacing it — enforcement
+             silently OFF, the class #35 made this gate fail loud about. The global gate now runs
+             the project's script, which is what its own docs already claimed.
+- baseline-issue: #240
