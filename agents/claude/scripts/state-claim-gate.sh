@@ -30,13 +30,16 @@
 
 set -u
 
-# Defer to a project-local copy if one exists and isn't this file (same contract as the sibling
-# gates, so a repo can override the policy without editing the install).
+# Defer to a project-local copy by RUNNING it, not by stepping aside (#240) — same contract as the
+# sibling gates, so a repo can override the policy without editing the install. `exit 0` here was
+# enforcement silently OFF: nothing else invokes a project gate, so a repo that shipped its own
+# copy got neither. `exec` inherits stdin and propagates the status; `-ef` prevents re-entry.
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -n "$repo_root" ]; then
   proj_gate="$repo_root/.claude/scripts/state-claim-gate.sh"
   if [ -e "$proj_gate" ] && [ ! "$proj_gate" -ef "$0" ]; then
-    exit 0
+    [ -x "$proj_gate" ] && exec "$proj_gate" "$@"
+    exec bash "$proj_gate" "$@"
   fi
 fi
 

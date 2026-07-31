@@ -232,11 +232,18 @@ use time.
 anything else, whether the current repo ships its **own** copy of that same
 script at `.claude/scripts/<name>.sh`. If it does — and it isn't literally the
 same file as the one running (checked with `[ ... -ef ... ]`, i.e. same
-inode) — the global gate exits `0` immediately and defers entirely to the
-project's version. This means installing the global baseline is always safe
-to layer on top of a repo that has already built its own gate: nothing
-double-runs. See [per-project-overrides.md](per-project-overrides.md) for how
-a project uses this deliberately.
+inode) — the global gate **`exec`s the project's copy**, which then *is* the
+gate: it inherits stdin (the hook payload) and its exit status becomes the
+hook's, so a project gate can still block a stop with `2`. This means
+installing the global baseline is always safe to layer on top of a repo that
+has already built its own gate: nothing double-runs, and the project's policy
+wins. See [per-project-overrides.md](per-project-overrides.md) for how a
+project uses this deliberately.
+
+It `exec`s rather than exiting `0` because **nothing else invokes a project
+gate** — the install wires only the global paths (#240). Stepping aside left
+a repo with a gate script nothing ran and the global gate stood down, i.e.
+enforcement silently off.
 
 ## Keeping the install current
 
