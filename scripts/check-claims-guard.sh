@@ -302,7 +302,23 @@ printf 'See issue %s for the rationale.\n' "$REF_PR" > "$REPO/notes.md"
 commit "kind mismatch"
 cc --range "$BASE..probe" --live
 eq "$RC_" 1 "C1: an issue-cited number resolving to a PULL REQUEST exits 1"
-has "$OUT" "cited as an issue but resolves to a pull request" "C1: the kind mismatch is named"
+has "$OUT" "resolves to a pull request" "C1: the kind mismatch is named"
+has "$OUT" "notes.md:1" "C1: the kind mismatch names the offending SITE"
+
+# BLAME IS PER SITE. A number cited correctly on one line and incorrectly on another must flag only
+# the incorrect line. The first draft aggregated every site of a mismatched number, so a correctly
+# written `PR #<n>` was accused of a neighbour's error — observed on check-claims.sh's own header.
+: > "$GH_CALLS"
+reset_branch
+{
+  printf 'Landed in PR %s, which is correct.\n' "$REF_PR"
+  printf 'But see issue %s, which is not.\n'    "$REF_PR"
+} > "$REPO/notes.md"
+commit "one number, one good site and one bad"
+cc --range "$BASE..probe" --live
+eq "$RC_" 1 "C1: a per-site mismatch still exits 1"
+has  "$OUT" "notes.md:2" "C1: blame lands on the INCORRECT line"
+hasnt "$OUT" "notes.md:1" "C1: the correctly-written line is NOT accused"
 
 # A bare number that resolves to a PR is fine — PRs are legitimate references.
 : > "$GH_CALLS"

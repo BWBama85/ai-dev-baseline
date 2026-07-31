@@ -370,13 +370,28 @@ if [ "$LIVE" -eq 1 ]; then
       continue
     fi
     # A citation that DECLARES its kind must match it. `gh issue view` answers for a PR number too,
-    # so "issue #210" naming a pull request is a wrong claim that bare existence waves through.
-    for hint in $(awk -F'\t' -v k="$n" '$1==k{print $3}' "$REFS" | sort -u); do
-      case "$hint" in
-        issue) [ "$kind" = "issue" ] || cc_violation "#$n is cited as an issue but resolves to a pull request (at: $sites)" ;;
-        pull)  [ "$kind" = "pull" ]  || cc_violation "#$n is cited as a PR but resolves to an issue (at: $sites)" ;;
+    # so naming a pull request as an issue is a wrong claim that bare existence waves through.
+    # adb-claim-ok: the comment above describes the rule; it is not itself a citation.
+    #
+    # Blame is per SITE, not per number. An earlier draft reported every site of a number whose
+    # hint mismatched anywhere, which accused correctly-written lines of a neighbour's error — it
+    # flagged this file's own `(PR #210)` because a DIFFERENT line quoted the wrong spelling as an
+    # example. A diagnostic that names an innocent line is one the reader learns to distrust.
+    awk -F'\t' -v k="$n" '$1==k && $3!="bare" {print $3 "\t" $2}' "$REFS" | sort -u \
+      | while IFS="$(printf '\t')" read -r hint site; do
+          [ "$hint" = "$kind" ] && continue
+          case "$hint" in
+            issue) printf 'ISSUE\t%s\n' "$site" ;;
+            pull)  printf 'PULL\t%s\n'  "$site" ;;
+          esac
+        done > "$WORK/kindbad"
+  while IFS="$(printf '\t')" read -r want site; do
+      [ -n "$site" ] || continue
+      case "$want" in
+        ISSUE) cc_violation "#$n is cited as an issue at $site, but it resolves to a pull request" ;;
+        PULL)  cc_violation "#$n is cited as a PR at $site, but it resolves to an issue" ;;
       esac
-    done
+    done < "$WORK/kindbad"
     # NOT_PLANNED means the work was ABANDONED. Citing it as tracking reads a cancelled requirement
     # as a satisfied one. Legitimate historical prose about such an issue carries the audited
     # marker instead of being silently allowed.
