@@ -51,8 +51,11 @@ those. The rules below are specific to this repo's code.
    (see `docs/design-principles.md`).
 5. **Skills are self-contained.** A Claude `SKILL.md` loads whole — keep it complete.
    Keep shared content agent-neutral so adapters can render it.
-6. **Feature branch + PR + green CI.** No direct pushes to `main`. File a tracked
-   GitHub issue for anything deferred (this repo lives by its own rules).
+6. **Feature branch + PR + green CI.** No direct pushes to `main`. Deferred work earns a
+   tracked issue **only when it clears the bar** in `base/practices/issues-and-scope.md` —
+   name who does it and what breaks if nobody ever does; either unanswerable, file nothing.
+   This repo lives by its own rules, and it is the repo whose backlog proved the old
+   file-by-default rule diverges (191 filed in 14 days, 36% of all closures `NOT_PLANNED`).
 
 ## Where things live
 

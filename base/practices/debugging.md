@@ -23,8 +23,11 @@ is a coin flip.
    - Is a stale fixture, cache, or local migration masking the real behavior?
 5. **Fix the cause, add the regression test, ship via the normal PR + gates path.**
    The test that reproduced the bug in step 2 is now the test that guards it.
-6. **File follow-ups.** If the investigation surfaces a broader class or a
-   systemic gap, file a tracked issue (see `issues-and-scope.md`).
+6. **File follow-ups that clear the bar.** If the investigation surfaces a broader
+   class or a systemic gap, run it through `issues-and-scope.md` — who does it, and
+   what breaks if nobody ever does. A sibling you **confirmed** carries the same bug
+   answers both and is filable (or fix it here). A sibling that *might* share the
+   shape answers neither: go look, then file the bug or nothing.
 
 ## Why
 

@@ -116,8 +116,9 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
 - **Markdown practices/skills:** concise, imperative, agent-neutral where the content
   is shared; include a short "Why" only where it earns its place.
 - **Commits/PRs:** semantic subject, feature branch + PR, green CI. Never push to
-  `main`. File a tracked issue for anything deferred or out of scope (the framework's
-  own `issues-and-scope` practice).
+  `main`. File a tracked issue for deferred work **that clears the bar** — name who does
+  it and what breaks if nobody ever does; either unanswerable, file nothing (the
+  framework's own `issues-and-scope` practice).
 
 ## Releases
 

@@ -438,8 +438,11 @@ bound problem, not as a silent agent swap.
   ```bash
   rm -f .claude/state/gap-analysis.lock
   ```
-- **Epic/slice or anything declared out of scope** becomes a tracked issue in step
-  12 — including the parent's own "Out of scope" list. Not a PR-body note.
+- **Epic/slice or anything declared out of scope** becomes a tracked issue **if it clears the
+  bar** (`issues-and-scope.md`) — including the parent's own "Out of scope" list, whose entries
+  are candidates, not obligations. What passes is filed at the moment of deferral (step 9);
+  step 12 sweeps what is left. What fails the bar is recorded in the close-out, not filed, and
+  never becomes a PR-body note pretending to be tracking.
 
 ### 5. Branch + write the active marker
 
@@ -689,9 +692,9 @@ input to step 9, not a stopping point.**
 ### 9. Triage + fix — and file what you defer, BEFORE anything cites it
 
 Per finding (from self-review AND each reviewer): CRITICAL/HIGH → fix always;
-MEDIUM → fix unless clearly out of scope (**then defer — and file it HERE, now**); LOW →
-fix if cheap else document; disagree → document the reasoning. Re-run gates. Commit
-again if anything changed. Update `phase=triaged`.
+MEDIUM → fix unless clearly out of scope (**then defer — and if the deferral clears the bar,
+file it HERE, now**); LOW → fix if cheap else document; disagree → document the reasoning.
+Re-run gates. Commit again if anything changed. Update `phase=triaged`.
 
 **A number you have not filed is a number you must not write.** Filing used to happen only
 in step 12, *after* step 10 had already written a PR body citing the follow-ups — so the
@@ -704,13 +707,22 @@ So the order is inverted, and it is inverted in the only way that actually works
 phases, because follow-ups are discovered at two different times**:
 
 - **Discovered before or during implementation** (a gap-analysis SHOULD-CLARIFY you are not
-  taking, a slice you cut, the parent's own "Out of scope" list): file it as soon as you
+  taking, a slice you cut, the parent's own "Out of scope" list): decide it as soon as you
   decide to defer it — you may file at any point from step 4 onward.
-- **Discovered in review** (this step): file it **now, before step 10**, so the PR body can
+- **Discovered in review** (this step): decide it **now, before step 10**, so the PR body can
   cite a real number.
 
-Use step 12's placement rules (milestone, dedupe search, both-way linking) — they are the
-same rules, just applied at the moment of deferral. The one thing step 12 does that this
+**"Decide", not "file", because the bar applies at the moment of deferral — here, not only in
+step 12.** Run each candidate through `base/practices/issues-and-scope.md`: *who does this*, and
+*what breaks if nobody ever does*. Both answerable → file it now. Either unanswerable → **file
+nothing and record the disposition** for the close-out. Applying the filter only in step 12
+would be too late by construction: whatever these earlier phases filed is already an issue by
+then, so a sweep can never produce a lower count than the sites feeding it. A review finding is
+not automatically filable — a MEDIUM that names a *shape* (a helper that could live elsewhere, a
+check that could be broader) fails the bar exactly as it would anywhere else.
+
+Use step 12's placement rules (milestone, dedupe search, both-way linking) for the ones that pass
+— they are the same rules, just applied at the moment of deferral. The one thing step 12 does that this
 step cannot is link the new issue **from the PR**, which does not exist yet; leave that to
 step 12's sweep.
 

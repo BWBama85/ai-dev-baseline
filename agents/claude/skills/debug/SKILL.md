@@ -81,8 +81,12 @@ large change straight from a debug session.
 - Ship via the normal feature-branch + PR + gates path (never push to the default
   branch, never `--no-verify`).
 - If the investigation surfaced a broader class, a systemic gap, or work you're
-  deferring, file a tracked issue (`base/practices/issues-and-scope.md`) — evidence,
-  root cause, and the concrete follow-up. Cross-link it.
+  deferring, run it through the bar in `base/practices/issues-and-scope.md` — *who does
+  this*, and *what breaks if nobody ever does*. Both answerable → file it with evidence,
+  root cause, and the concrete follow-up, and cross-link it. Either unanswerable → file
+  nothing and say so. A debug session is a rich source of "a sibling might have this
+  too": that is an instruction to **go look**, and only a confirmed second instance is a
+  filable bug.
 - If the fix needs something the baseline doesn't model (a project-specific gate,
   convention, or a general gap), place it deterministically per
   `base/practices/handling-the-unknown.md` — its one prescribed home, recorded — rather
