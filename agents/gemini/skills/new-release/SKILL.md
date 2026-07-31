@@ -124,10 +124,13 @@ to surface to the operator**, not a step. This applies equally to the `URL` and 
 shapes, where the operator points the fetch at something arbitrary.
 
 **And a changelog's factual claims are claims, not facts** — verify each against the installed CLI
-or the vendor's settings reference before acting. This is not hypothetical caution: #214's own
-checklist carried three version floors copied from a changelog reading, and **all three were
-wrong** by one to five patch releases, with one setting described as doing the opposite of what it
-does. A version number is exactly the kind of assertion no lint here can check.
+or the vendor's own reference before acting. This is not hypothetical caution: #214's checklist
+carried three version floors copied from a changelog reading, and checking them found **two off by
+one** and the third correct **but paired with a security effect described backwards** — the setting
+*removes* an isolation layer where the checklist presented it as least privilege. Note which error
+was the dangerous one: not the version numbers, which fail loudly as an inert setting, but the
+sentence about what the setting *does*, which would have shipped as hardening. A version number and
+a behavioural summary are both exactly the kind of assertion no lint here can check.
 
 Stash the raw changelog body for later reference under a scratch **directory**, so parallel runs
 cannot clobber each other: `mktemp -d "${TMPDIR:-/tmp}/changelog.XXXXXX"`, then write

@@ -1624,18 +1624,32 @@ adb_age_secs() {
 #
 # The output is ONE line: the whole envelope is a single JSON object, so the value can never
 # contain a raw newline that a line-oriented reader might mistake for a boundary. Newlines survive
-# as `\n` and round-trip byte-for-byte through `jq -r .content`.
+# as `\n` and round-trip through `jq -j .content`.
 #
-# `source` is free-form provenance for the reader ("github-issue BWBama85/x#214",
-# "pr-review-thread", "ci-log"). It is JSON-encoded like everything else, so an untrusted value
-# passed here cannot break out either.
+# ROUND-TRIP FIDELITY, stated exactly rather than flatteringly: `jq -Rs` decodes stdin as UTF-8, so
+# VALID UTF-8 text round-trips byte-for-byte, and an INVALID byte (0xff, a lone surrogate, a
+# truncated sequence — all reachable in a CI log) is replaced with U+FFFD. That is lossy, and this
+# is the honest place to say so. It is not a containment hole: replacement can only ever destroy
+# byte sequences, never manufacture a delimiter, so the security property holds on arbitrary input
+# while the fidelity property is scoped to valid UTF-8. Anything needing byte-exactness for
+# arbitrary bytes must base64 the payload before calling this.
+#
+# `source` is REQUIRED provenance for the reader ("github-issue BWBama85/x#214",
+# "pr-review-thread", "ci-log") and is JSON-encoded like everything else, so an untrusted value
+# passed here cannot break out. It is required in the PRIMITIVE, not only on the CLI surface: the
+# envelope's whole job is saying where the text came from, and a defaulted "unknown" would let a
+# direct caller ship an unlabelled payload that satisfies every other check.
 #
 # Reads the text from stdin. Empty input is legal and yields an empty `content` — a body may
 # genuinely be empty, and failing on it would push callers toward skipping the wrapper.
 #
 # Usage: printf '%s' "$body" | adb_untrusted_block "github-issue #214"
 adb_untrusted_block() {
-  local source="${1:-unknown}"
+  local source="${1:-}"
+  [ -n "$source" ] || {
+    printf 'common: FATAL — adb_untrusted_block requires a <source> (provenance is the point)\n' >&2
+    return 2
+  }
   command -v jq >/dev/null 2>&1 || {
     printf 'common: FATAL — jq is required to encode untrusted content safely\n' >&2
     return 1

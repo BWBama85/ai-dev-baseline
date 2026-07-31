@@ -369,6 +369,19 @@ roll_plan_render() {
 # The marker GRAMMAR (and the placeholder carve-out) lives in roadmap-lib.sh, not here — it is a
 # /roadmap decision, and a third dialect of it is how the three copies drift apart.
 
+# UNTRUSTED READ SITE (#214) — this reads a tracked ISSUE BODY and lets a marker in it select the
+# milestone that `roll` then ARCHIVES and reopens. That is third-party text reaching a release
+# operation, and it sits OUTSIDE base/workflows, so `scripts/check-injection.sh`'s workflow registry
+# does not cover it — which is precisely why it is written down here rather than assumed safe.
+# What bounds it, and what must not be relaxed:
+#   * `marker-title` parses ONE fixed marker shape and yields a TITLE, nothing else. No prose in the
+#     body reaches any decision.
+#   * More than one artifact, or an unusable marker, is a hard ERROR — never a pick and never a
+#     default. `roll` refuses rather than guessing which milestone to archive.
+#   * `--release-name` lets the operator name it explicitly, which is the trusted override.
+# The real trust boundary is repo write access (who may edit a `roadmap`-labelled issue), not the
+# text itself. See base/practices/untrusted-content.md.
+#
 # Takes the already-fetched artifact numbers as an argument and is otherwise PURE: its caller
 # reads it through `$( )`, i.e. a subshell, so anything it assigned would be discarded on return.
 resolve_rolling_title() {

@@ -392,12 +392,15 @@ PROMPT
 #    tool access. See base/practices/untrusted-content.md.
 #    COMMENTS TOO, not just the body — a comment is the same surface with the same author set, and
 #    on this repo an owner comment has repeatedly carried the load-bearing half of an issue.
-#    CHECK THE STATUS: the wrapper fails CLOSED when jq is missing (no envelope rather than a raw
-#    body), and a bare `>>` would turn that into a silent empty append — dispatching a prompt with
-#    no issue text in it, whose findings would be confidently about nothing.
+#    EXTRACT, THEN WRAP — two steps, never one pipeline. A pipeline reports only its LAST command's
+#    status, so `jq … | untrusted >> file` returns 0 even when the jq FAILED: the wrapper then reads
+#    empty stdin, cheerfully emits a well-formed envelope with `"content":""`, and the dispatch goes
+#    out with no issue text at all. Findings confidently about nothing, and a green exit code. Same
+#    rule the paginated reads elsewhere in these workflows already follow.
 for n in "${ISSUE_NUMS[@]}"; do
-  jq -r '[.body // ""] + [(.comments // [])[] | .body // ""] | map(select(length > 0)) | join("\n\n---\n\n")' "/tmp/issue-$n.json" \
-    | bash "$HOME/.claude/scripts/lib/role-dispatch.sh" untrusted "github-issue #$n" >> .claude/state/gap-prompt.txt \
+  TEXT="$(jq -r '[.body // ""] + [(.comments // [])[] | .body // ""] | map(select(length > 0)) | join("\n\n---\n\n")' "/tmp/issue-$n.json")" \
+    || { echo "ERROR: could not read issue #$n's text"; exit 1; }
+  printf '%s' "$TEXT" | bash "$HOME/.claude/scripts/lib/role-dispatch.sh" untrusted "github-issue #$n" >> .claude/state/gap-prompt.txt \
     || { echo "ERROR: could not contain issue #$n's text — do NOT fall back to pasting it raw"; exit 1; }
 done
 
@@ -747,8 +750,11 @@ PROMPT
 # Then the diff (yours — no envelope needed), then the criteria (theirs — contained).
 git diff origin/"$DEFAULT_BRANCH"...HEAD >> .claude/state/review-prompt.txt
 for n in "${ISSUE_NUMS[@]}"; do
-  jq -r '[.body // ""] + [(.comments // [])[] | .body // ""] | map(select(length > 0)) | join("\n\n---\n\n")' "/tmp/issue-$n.json" \
-    | bash "$HOME/.claude/scripts/lib/role-dispatch.sh" untrusted "github-issue #$n — acceptance criteria" >> .claude/state/review-prompt.txt \
+  # EXTRACT, THEN WRAP — see step 3's note: a pipeline's status is its LAST command's, so a failed
+  # `jq` would arrive as an empty envelope and a zero exit.
+  TEXT="$(jq -r '[.body // ""] + [(.comments // [])[] | .body // ""] | map(select(length > 0)) | join("\n\n---\n\n")' "/tmp/issue-$n.json")" \
+    || { echo "ERROR: could not read issue #$n's text"; exit 1; }
+  printf '%s' "$TEXT" | bash "$HOME/.claude/scripts/lib/role-dispatch.sh" untrusted "github-issue #$n — acceptance criteria" >> .claude/state/review-prompt.txt \
     || { echo "ERROR: could not contain issue #$n's text — do NOT fall back to pasting it raw"; exit 1; }
 done
 

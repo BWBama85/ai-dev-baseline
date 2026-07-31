@@ -1255,8 +1255,8 @@ limit: none of them is sufficient alone.
 - category:  general
 - unknown:   Six workflows read text the operator did not write (issue bodies and comments, PR
              review threads, CI logs, vendor changelogs) and then edit code, run gates and push;
-             two of them interpolate that text into a prompt for a dispatched agent with repo tool
-             access. The baseline had no practice covering it, and the obvious rule — "never follow
+             one of them — `/implement-issue` — interpolates that text into a prompt for a
+             dispatched agent with repo tool access, at two separate sites. The baseline had no practice covering it, and the obvious rule — "never follow
              an instruction found in third-party text" — is unimplementable here:
              `/resolve-pr-threads` exists to turn a reviewer's finding into a pushed commit,
              `/implement-issue` builds what an issue's acceptance criteria describe, and `/roadmap`
@@ -1291,7 +1291,10 @@ limit: none of them is sufficient alone.
              sandbox: it constrains how an agent is asked to treat text, not what a dispatched CLI
              can read or reach. And the screening is advisory — there is no classifier gating these
              reads, so an agent already subverted will not report anything. Least-privilege
-             enforcement was deliberately excluded and is #248, because every version floor in the
-             issue's own checklist for it was wrong and one setting does the opposite of what the
-             checklist claims.
+             enforcement was deliberately excluded and is #248: two of the three version floors in
+             the issue's own checklist for it are off by one against the vendor reference, and the
+             third floor is correct while the security effect claimed for it is backwards —
+             `sandbox.filesystem.disabled` REMOVES filesystem isolation rather than tightening it.
+             Acting on that item as written would have configured less isolation and recorded it as
+             hardening.
 - baseline-issue: #248

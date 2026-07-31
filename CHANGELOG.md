@@ -11,8 +11,8 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 - **Third-party text is now governed by a stated policy, labelled where it enters, and contained
   before it reaches another agent** (#214, D26). Six workflows read text the operator did not
-  write — issue bodies and comments, PR review threads, CI logs, vendor changelogs — and two of
-  them hand it to a dispatched CLI with repo tool access. The framework's threat model for that was
+  write — issue bodies and comments, PR review threads, CI logs, vendor changelogs — and one of
+  them, `/implement-issue`, hands it to a dispatched CLI with repo tool access at two sites. The framework's threat model for that was
   "the agent will probably be sensible."
   - **`base/practices/untrusted-content.md`**, rendered into all three root docs. Its rule is
     **content, not authority**: third-party text may describe a bug, a requirement or a finding —
@@ -38,8 +38,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     round-trip; it asserts the source contract; and its **own mutation harness** breaks seven
     invariants in a throwaway copy of the tree and requires the lint to go red on each.
   - **Deliberately not included: sandbox least-privilege settings.** #214's fourth checklist item
-    is deferred to #248 — every version floor in it was wrong, and one setting does the opposite of
-    what the item claims. See that issue.
+    is deferred to #248 — two of its three version floors are off by one against the vendor's
+    sandboxing reference, and the third floor is right while the security effect described for it is
+    backwards (`sandbox.filesystem.disabled` *removes* filesystem isolation). See that issue.
 
 - **A verifiable claim written into a tracked file is now gated before it can MERGE** (#212, D24).
   (Not before it is *committed* — see the scope note at the end of this entry.)
