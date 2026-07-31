@@ -58,7 +58,7 @@ req_regex() {
 # it satisfies req_regex and still misinforms every reader (#93). A missing file is NOT a failure
 # here: absence-in-a-nonexistent-file is vacuously true, and the positive rules already fail loudly
 # on a bad path, so duplicating that would double-report one typo.
-req_absent() {
+req_absent() {   # adb-allow: req_absent
   [ -f "$1" ] || return 0
   if grep -Eq -- "$2" "$1"; then
     check_note "[$3] superseded pattern /$2/ still present in $1:"
@@ -112,6 +112,16 @@ hasnt() { case "$1" in *"$2"*) bad "$3: [$1] unexpectedly contains [$2]" ;; *) o
 # $pass/$fail (which would trip SC2154, since ShellCheck does not follow the sourced file).
 check_summary() {
   printf '\n%s: %d passed, %d failed\n' "$1" "$pass" "$fail"
+  # ZERO ASSERTIONS IS NOT A PASS (#213). `fail -eq 0` alone reports PASS for a suite that ran
+  # nothing at all — a file truncated by a bad merge, an early `exit` or `return`, a case block
+  # sliced away by an edit — and it reports it in exactly the words a real pass uses. That is the
+  # silent-guard failure this repo keeps paying for, one level up: the suites are what prove the
+  # guards can go red, so a suite that quietly stops running is a guard that quietly stops being
+  # checked. Every suite here runs dozens of assertions; none can legitimately reach zero.
+  if [ "$((pass + fail))" -eq 0 ]; then
+    printf '%s: FAIL — zero assertions ran, which is not a pass. The suite executed nothing.\n' "$1" >&2
+    exit 1
+  fi
   [ "$fail" -eq 0 ] || exit 1
   echo "$1: PASS"
 }

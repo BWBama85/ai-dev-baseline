@@ -63,6 +63,10 @@ fresh() {
 # would eat them on the way in.
 minimal() {
   local d="$1" f synth start end
+  if [ -z "$d" ]; then
+    bad "minimal(): empty fixture dir — 'fresh' failed; refusing to slice a path outside the fixture"
+    return 1
+  fi
   f="$d/scripts/check-fact-drift.sh"
   synth="$(cat)"
   start="$(grep -n '^# --- FACT: ' "$f" | head -n1 | cut -d: -f1)"
@@ -76,15 +80,25 @@ minimal() {
 }
 
 # run <dir> [args…] — run the copy's lint, capturing merged output in OUT and status in RC.
-OUT=""; RC=0
+# Set RUN_PATH to override PATH for one case (used to stub out `find`).
+#
+# An EMPTY <dir> is fatal rather than ignored: `fresh` can fail, its callers assign in a command
+# substitution that cannot propagate a status, and `cd "" && …` succeeds — which would silently
+# aim the whole case at the REAL repo root instead of the fixture.
+OUT=""; RC=0; RUN_PATH=""
 run() {
   local d="$1"; shift
-  OUT="$( cd "$d" && bash scripts/check-fact-drift.sh "$@" 2>&1 )"; RC=$?
+  if [ -z "$d" ]; then
+    bad "run(): empty fixture dir — 'fresh' failed and the case would have run against the real repo"
+    OUT=""; RC=-1; return
+  fi
+  OUT="$( cd "$d" && PATH="${RUN_PATH:-$PATH}" bash scripts/check-fact-drift.sh "$@" 2>&1 )"; RC=$?
 }
 
 # =============================== the control ===================================
-# An untouched copy must pass both modes. Without this, every "it failed" below could be the copy
-# being broken rather than the case under test.
+# An untouched copy must pass NORMAL mode. Without this, every "it failed" below could be the copy
+# being broken rather than the case under test. (`--mutation` gets its own control further down,
+# on a one-rule fixture; running it here would re-do all 22 sub-lints selfcheck already runs.)
 d="$(fresh)"
 run "$d"
 eq "$RC" 0 "control: a pristine copy passes the lint"
@@ -202,6 +216,17 @@ RULE
 run "$d"
 eq "$RC" 1 "an argument that is neither fires: nor '--' is refused"
 
+# A file listed twice asserts nothing new — and under --mutation the second injection would
+# overwrite the first's backup, so the restore would put back an already-mutated file and one
+# witness would leak into the next.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact duplicate-file 'absent:ZZQQ' 'fires:ZZQQ' -- README.md README.md
+RULE
+run "$d"
+eq "$RC" 1 "a file listed twice in one rule is refused"
+has "$OUT" "listed more than once" "duplicate-file: names the shape"
+
 # ======================== the empty rule set ==================================
 # The quietest possible green: a truncated file, a sourcing accident, an early exit. Every
 # individual assertion still passes, because there are none.
@@ -238,7 +263,7 @@ d="$(fresh)"
 minimal "$d" <<'RULE'
 fact mutation-dead-predicate 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
 RULE
-printf '\nreq_absent() { :; }\n' >> "$d/scripts/check-lib.sh"
+printf '\nreq_absent() { :; }\n' >> "$d/scripts/check-lib.sh"   # adb-allow: req_absent
 run "$d"
 eq "$RC" 0 "dead predicate: normal mode cannot see it (this is the silence)"
 run "$d" --mutation
@@ -260,16 +285,39 @@ no "$RC" "--mutation requires exactly rc 1, not merely non-zero"
 has "$OUT" "not a drift verdict" "wrong rc: distinguishes a crash from a verdict"
 
 # A file pinned ONLY by an absent: rule and missing from the tree. `req_absent` is vacuously true
-# on a missing file by design, so normal mode passes; the mutation cannot proceed and says so.
+# on a missing path, so this used to be a SILENT pass that the totals then reported as "scanned".
 d="$(fresh)"
 minimal "$d" <<'RULE'
 fact mutation-missing-file 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- docs/does-not-exist.md
 RULE
 run "$d"
-eq "$RC" 0 "missing pinned file: normal mode is vacuously green (documented behavior)"
+eq "$RC" 1 "a pinned file that does not exist fails — the rule asserts nothing about it"
+has "$OUT" "pinned file does not exist" "missing file: names the path"
+has "$OUT" "0 files scanned" "missing file: is NOT counted as scanned"
 run "$d" --mutation
-eq "$RC" 1 "missing pinned file: --mutation refuses to claim a proof it cannot make"
-has "$OUT" "missing from the tree copy" "missing file: names the path problem"
+eq "$RC" 1 "missing pinned file: --mutation stops at the pristine baseline"
+has "$OUT" "PRISTINE tree copy does not pass" "missing file under mutation: names why it stopped"
+
+# The per-file diagnostic match. An UNRELATED failure returns rc 1 too, and accepting that would
+# let a neighbouring rule's red satisfy this rule's proof while the pin stayed unfirable. Here
+# `req_absent` fires — so the lint goes red — but reports someone else's label.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact mutation-wrong-diagnostic 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+cat >> "$d/scripts/check-lib.sh" <<'STUB'
+req_absent() {   # adb-allow: req_absent
+  if grep -Eq -- "$2" "$1"; then
+    check_note "[some-other-rule] superseded pattern /decoy/ still present in nowhere.md:"
+    check_fail
+  fi
+}
+STUB
+run "$d"
+eq "$RC" 0 "wrong diagnostic: the pristine baseline is still clean"
+run "$d" --mutation
+eq "$RC" 1 "an unrelated rule going red does NOT satisfy this rule's proof"
+has "$OUT" "did NOT trip the rule" "wrong diagnostic: names the per-file miss"
 
 # A tree that is ALREADY red must not be mutated: every injection would "fail the lint" for a
 # reason having nothing to do with the witness, and the mode would report success.
@@ -288,19 +336,66 @@ d="$(fresh)"
 minimal "$d" <<'RULE'
 fact callsite-invariant 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
 RULE
-printf '\nreq_absent scripts/check-lib.sh "ZZQQ" stray-caller\n' >> "$d/scripts/check-cleanup.sh"
+printf '\nreq_absent scripts/check-lib.sh "ZZQQ" stray-caller\n' >> "$d/scripts/check-cleanup.sh"   # adb-allow: req_absent
 run "$d" --mutation
-eq "$RC" 1 "a req_absent caller outside fact() is refused"
+eq "$RC" 1 "an unmarked caller outside fact() is refused"
 has "$OUT" "called outside fact()" "call-site invariant: names the bypass"
 
-# A MENTION in a comment is not a call — two suites legitimately discuss the helper in prose.
+# A MENTION in a comment is not a call — suites legitimately discuss the helper in prose.
 d="$(fresh)"
 minimal "$d" <<'RULE'
 fact callsite-comment 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
 RULE
-printf '\n# req_absent is deliberately not used here\n' >> "$d/scripts/check-cleanup.sh"
+printf '\n# req_absent is deliberately not used here\n' >> "$d/scripts/check-cleanup.sh"   # adb-allow: req_absent
 run "$d" --mutation
-eq "$RC" 0 "a commented mention of req_absent is not a call site"
+eq "$RC" 0 "a commented mention of the helper is not a call site"
+
+# THE EXEMPTION IS PER LINE, NOT PER FILE. A whole-file exclusion made this invariant false: a real
+# direct call added to one of the three files that legitimately name the helper would pass
+# undetected. A sanctioned line carries a marker; an unmarked one is caught wherever it lives.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact callsite-in-exempt-file 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+printf '\nreq_absent scripts/check-lib.sh "ZZQQ" sneaky\n' >> "$d/scripts/check-fact-guard.sh"   # adb-allow: req_absent
+run "$d" --mutation
+eq "$RC" 1 "an unmarked call inside a file that legitimately names the helper is still caught"
+has "$OUT" "check-fact-guard.sh" "exempt-file call: names the file it found it in"
+
+# ...and the marker is what makes a line sanctioned, so a marked line is accepted anywhere.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact callsite-marked 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+printf '\nreq_absent a b c   # adb-allow: req_absent\n' >> "$d/scripts/check-cleanup.sh"
+run "$d" --mutation
+eq "$RC" 0 "a line carrying the sanctioned marker is accepted"
+
+# EXTENSIONLESS shell programs are scanned too. `bin/agent-init` and `bin/baseline` have no `.sh`,
+# and a `*.sh`-only enumeration left them — and any future extensionless script — invisible.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact callsite-extensionless 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+printf '\nreq_absent scripts/check-lib.sh "ZZQQ" from-bin\n' >> "$d/bin/agent-init"   # adb-allow: req_absent
+run "$d" --mutation
+eq "$RC" 1 "a call in an extensionless shell program (bin/agent-init) is caught"
+has "$OUT" "bin/agent-init" "extensionless: names the file"
+
+# The enumeration's own zero-file branch. A scan that returns nothing is a BROKEN scan, not a clean
+# tree — the silent-inert shape this whole commit is about. Driven with a `find` that finds nothing.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact callsite-zero-files 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+mkdir -p "$d/stubbin"
+printf '#!/bin/sh\nexit 0\n' > "$d/stubbin/find"
+chmod +x "$d/stubbin/find"
+RUN_PATH="$d/stubbin:$PATH"
+run "$d" --mutation
+RUN_PATH=""
+eq "$RC" 1 "an enumeration that finds no shell files fails instead of passing"
+has "$OUT" "enumeration is broken" "zero files: names the broken scan"
 
 # ============================== argument handling =============================
 d="$(fresh)"

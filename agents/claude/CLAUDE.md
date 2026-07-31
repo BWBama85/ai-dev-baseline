@@ -114,24 +114,29 @@ back. These do not, and they are the ones most likely to be typed casually — a
 "cleanup" after a test, or to undo an edit:
 
 - **`git checkout -- <path>`** and **`git checkout <tree-ish> -- <path>`**
-- **`git restore <path>`** (and `--staged` / `--worktree` / `-SW`, which widen it
-  to the index as well)
+- **`git restore <path>`** — worktree by default. `--staged` rewrites the *index*
+  instead (leaving your working file alone); `--staged --worktree` / `-SW` does
+  **both**. All three destroy something you can't get back.
 
-  These overwrite the file **in place** from the index or a commit. Uncommitted
-  edits were never turned into git objects, so there is no reflog entry, no
-  dangling blob, and nothing for `git fsck` to find — the work is simply gone.
-  One of these discarded ~40 minutes of unsaved work during a routine test.
+  These overwrite the target **in place**. An edit you never staged was never
+  turned into a git object at all, so there is no reflog entry, no dangling blob,
+  and nothing for `git fsck` to find — that work is simply gone. (Content you had
+  `git add`ed does exist as a blob, so a staged snapshot is *sometimes*
+  recoverable via `git fsck --unreachable`; don't rely on it.) One of these
+  discarded ~40 minutes of unsaved work during a routine test.
 
 - **`git stash drop`** / **`git stash clear`**
 
-  Weaker but still bad: a stash entry *is* committed objects, so the dropped SHA
-  is recoverable from the command's own output or `git fsck --unreachable`
+  Weaker but still bad: a stash entry *is* commit objects, so the dropped SHA is
+  recoverable from the command's own output or `git fsck --unreachable`
   **until gc prunes it**. Recovery is possible, not guaranteed — treat it as loss.
 
 **Prefer the non-destructive move.** `git stash push -- <path>` parks the change
-instead of deleting it, and `git diff > /tmp/x.patch` keeps a copy. And when the
-goal is to test something rather than to discard it, don't touch the tracked file
-at all — see the negative-testing method in `self-review.md`.
+instead of deleting it, and `git diff HEAD > /tmp/x.patch` keeps a copy —
+`HEAD`, because a bare `git diff` captures only *unstaged* differences and would
+silently omit the staged snapshot you are about to overwrite. And when the goal is
+to test something rather than to discard it, don't touch the tracked file at all —
+see the negative-testing method in `self-review.md`.
 
 ## PR body hygiene
 

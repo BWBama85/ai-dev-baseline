@@ -33,40 +33,6 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     under a C locale, so `3–7 min` could not be caught there at all — a pin that fired on a UTF-8
     dev box and silently did not on a C-locale runner. Both are now literal alternations.
 
-### Changed
-
-- **`git checkout -- <path>`, `git restore <path>` and `git stash drop` joined the destructive-git
-  list** (#213), in `base/practices/git-and-prs.md` and therefore in every agent's root doc. The
-  list held `reset --hard`, `push --force`, `clean -fd` and branch/tag deletion — all of which
-  mostly move *committed* history, where the reflog usually recovers it. The three added here
-  destroy work that was never committed, so there is no reflog entry and nothing for `git fsck` to
-  find. One of them discarded ~40 minutes of unsaved work while "restoring" a file after a test.
-  The entry is precise about the difference rather than lumping them together: a dropped stash
-  *is* commit objects and is sometimes recoverable until gc prunes it; an overwritten worktree
-  file is not.
-- **`base/practices/self-review.md` gained two rules** (#213): *a new guard is not done until it
-  has been observed failing* — not "test your code", but specifically prove the check can go red,
-  on the real superseded input — and *negative-test against a copy, never the live tree*, which is
-  the method that avoids the `git checkout` above entirely.
-
-- **The in-session reviewer is now the model that did *not* write the diff** (#211, D21). The
-  shipped manifest paired `primary = "claude"` with `review = ["claude"]`, so the prescribed
-  review was Claude grading its own work. Both vendors' published guidance argues against that
-  from opposite ends — Anthropic's Opus 5 guidance asks that explicit verification scaffolding be
-  *removed* from Claude's instructions, while OpenAI's asks Codex for exactly the named-checklist,
-  required-vs-optional pass this slot runs.
-  - `templates/agents.toml` (and therefore the global manifest `install.sh` writes) now ships
-    **`review = ["codex"]`**. **The resolver's built-in fallback for an *unset* `review` is
-    unchanged** — still the primary's own pass — so a repo with no manifest behaves exactly as
-    before. These are two different "defaults" and only one moved.
-  - **Existing manifests are not migrated and do not need to be.** The `claude` review arm stays
-    supported: neither `install.sh` nor `agent-init` rewrites an existing `agents.toml`, and a
-    Codex-primary repo reviewing with Claude is the same split pointing the other way. What
-    changed is that a slot whose token equals `primary` is now *labelled* `same-model (not
-    independent)` rather than presented as an independent pass.
-
-### Added
-
 - **`role-dispatch.sh available <agent>` and `role-dispatch.sh review-rung`** (#211, D21) — a
   reviewer that is not installed is not a reviewer that failed.
   - `available` answers "is this agent's CLI on PATH here?" (`0` available · `1` known agent whose
@@ -160,6 +126,39 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     that directory into every install, so a release predicate there would ship generic release
     machinery to every adopting repo, reversing #3/D7 by accident. The check asserts that
     boundary, and that no `{{PLACEHOLDER}}` appears inside a runnable fenced block.
+
+### Changed
+
+- **`git checkout -- <path>`, `git restore <path>` and `git stash drop` joined the destructive-git
+  list** (#213), in `base/practices/git-and-prs.md` and therefore in every agent's root doc. The
+  list held `reset --hard`, `push --force`, `clean -fd` and branch/tag deletion — all of which
+  mostly move *committed* history, where the reflog usually recovers it. One of the three added
+  here discarded ~40 minutes of unsaved work while "restoring" a file after a test.
+  The entry is precise about recoverability rather than lumping them together: an edit that was
+  never staged was never turned into a git object, so nothing recovers it; a staged snapshot does
+  exist as a blob and a dropped stash *is* commit objects, both sometimes salvageable via
+  `git fsck --unreachable` until gc prunes them. It is also precise about `git restore`, whose
+  `--staged` form rewrites the index and leaves the working file alone.
+- **`base/practices/self-review.md` gained two rules** (#213): *a new guard is not done until it
+  has been observed failing* — not "test your code", but specifically prove the check can go red,
+  on the real superseded input — and *negative-test against a copy, never the live tree*, which is
+  the method that avoids the `git checkout` above entirely.
+
+- **The in-session reviewer is now the model that did *not* write the diff** (#211, D21). The
+  shipped manifest paired `primary = "claude"` with `review = ["claude"]`, so the prescribed
+  review was Claude grading its own work. Both vendors' published guidance argues against that
+  from opposite ends — Anthropic's Opus 5 guidance asks that explicit verification scaffolding be
+  *removed* from Claude's instructions, while OpenAI's asks Codex for exactly the named-checklist,
+  required-vs-optional pass this slot runs.
+  - `templates/agents.toml` (and therefore the global manifest `install.sh` writes) now ships
+    **`review = ["codex"]`**. **The resolver's built-in fallback for an *unset* `review` is
+    unchanged** — still the primary's own pass — so a repo with no manifest behaves exactly as
+    before. These are two different "defaults" and only one moved.
+  - **Existing manifests are not migrated and do not need to be.** The `claude` review arm stays
+    supported: neither `install.sh` nor `agent-init` rewrites an existing `agents.toml`, and a
+    Codex-primary repo reviewing with Claude is the same split pointing the other way. What
+    changed is that a slot whose token equals `primary` is now *labelled* `same-model (not
+    independent)` rather than presented as an independent pass.
 
 ### Fixed
 

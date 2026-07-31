@@ -85,7 +85,7 @@ MUT_ROOT=""; MUT_BAK=""
 # empty needle (which matches every line of every file), a missing `--`, an empty file list, an
 # `absent:` rule with no witness, and a `fires:` on a rule that is not `absent:`.
 fact() {
-  local label spec kind needle wits nwit w f
+  local label spec kind needle wits nwit w f g dupes nfiles
   if [ "$#" -lt 2 ]; then
     check_note "[fact] usage: fact <label> <spec> [fires:<witness> …] -- <file> […]"; check_fail; return
   fi
@@ -134,6 +134,18 @@ fact() {
   if [ "$#" -eq 0 ]; then
     check_note "[$label] no files — a rule that scans nothing can never fail"; check_fail; return
   fi
+  # A file listed twice asserts nothing new, and under `--mutation` it breaks the backup/restore
+  # isolation outright: the second injection overwrites the backup, so the restore puts back an
+  # ALREADY-MUTATED file and one witness leaks into the next one's run.
+  for f in "$@"; do
+    dupes=0
+    for g in "$@"; do
+      if [ "$g" = "$f" ]; then dupes=$((dupes + 1)); fi
+    done
+    if [ "$dupes" -gt 1 ]; then
+      check_note "[$label] file listed more than once: $f"; check_fail; return
+    fi
+  done
 
   if [ "$kind" = absent ]; then
     if [ "$nwit" -eq 0 ]; then
@@ -152,8 +164,22 @@ fact() {
     done <<EOF
 $wits
 EOF
+    # A pinned file that does not EXIST is a rule asserting nothing about it: `req_absent` is
+    # vacuously true on a missing path by design, and the rationale for that (the positive rules
+    # report a bad path, so double-reporting one typo helps nobody) only holds for a file some
+    # positive rule also pins. A path pinned ONLY here is a silent pass, and counting it as
+    # "scanned" turns the totals below into a false claim — the exact thing they exist to prevent.
+    nfiles=0
+    for f in "$@"; do
+      if [ -f "$f" ]; then
+        nfiles=$((nfiles + 1))
+      else
+        check_note "[$label] pinned file does not exist: $f — this rule asserts nothing about it"
+        check_fail
+      fi
+    done
     FACT_ABSENT_RULES=$((FACT_ABSENT_RULES + 1))
-    FACT_ABSENT_FILES=$((FACT_ABSENT_FILES + $#))
+    FACT_ABSENT_FILES=$((FACT_ABSENT_FILES + nfiles))
   elif [ "$nwit" -ne 0 ]; then
     check_note "[$label] fires: is only meaningful on an absent: rule"; check_fail; return
   fi
@@ -170,7 +196,7 @@ EOF
     case "$kind" in
       fixed)  req_fixed  "$f" "$needle" "$label" ;;
       regex)  req_regex  "$f" "$needle" "$label" ;;
-      absent) req_absent "$f" "$needle" "$label" ;;
+      absent) req_absent "$f" "$needle" "$label" ;;   # adb-allow: req_absent
     esac
   done
 }
@@ -187,17 +213,19 @@ _fact_mutate() {
   local w f out rc want
   while IFS= read -r w; do
     [ -n "$w" ] || continue
+    # TWO passes: back every file up FIRST, then inject. One pass would leave earlier files
+    # mutated when a later one turns out to be missing or unreadable, and the leftovers would
+    # contaminate every diagnostic after it.
     for f in "$@"; do
       if [ ! -f "$MUT_ROOT/$f" ]; then
-        # `req_absent` is vacuously true on a missing file by design (the positive rules report a
-        # bad path, and double-reporting one typo helps nobody) — but that makes a path this rule
-        # ALONE pins a silent pass. The mutation cannot proceed without the file, so say so here.
         check_note "[$label] pinned file is missing from the tree copy: $f"; check_fail; return
       fi
       mkdir -p "$MUT_BAK/$(dirname "$f")"
       if ! cp "$MUT_ROOT/$f" "$MUT_BAK/$f"; then
         check_note "[$label] could not stage a restore copy of $f"; check_fail; return
       fi
+    done
+    for f in "$@"; do
       # The LEADING newline is load-bearing: a file whose final line carries no terminator would
       # otherwise splice the witness onto it, and every `^`-anchored pattern would miss — the
       # harness would then report a broken pin that is in fact fine.
@@ -694,6 +722,16 @@ fact pr-primitives-no-copies 'absent:bot\\*\]\$' \
 fact pr-primitives-no-copies 'absent:^_sa_local_slug\(\)' \
   'fires:_sa_local_slug() {' -- scripts/lib/state-assert.sh
 
+# --- FACT: the negative-test wiring, pinned against silent removal (#213) ----
+# Same contract shape as `required-drift-wired` above, and the same silent failure: deleting
+# either invocation from selfcheck.sh or ci.yml removes the protection while the `fact-drift`
+# CHECK CONTEXT stays green, so branch protection notices nothing and no other check greps for
+# them. A guard that can be un-wired invisibly is the guard this whole file is about.
+fact fact-mutation-wired "fixed:check-fact-drift.sh --mutation" -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
+fact fact-guard-wired "fixed:check-fact-guard.sh" -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
+
 # --- what was actually evaluated ---------------------------------------------
 # A rule that scans nothing is already a hard failure inside fact(); these totals are the other
 # half of the same idea, and the half that survives a future edit fact() does not model. Zero rules
@@ -715,42 +753,57 @@ if [ "$MODE" = mutation ]; then
   # mode is silence, and `git ls-files` fails outright wherever there is no `.git` — a tarball
   # export, an unpacked release, or any tree copy. It would then produce an empty list, find no
   # stray caller, and pass: a check that goes inert exactly where nobody would notice.
+  #
+  # PER-LINE exemption, never per-file. Excluding whole files (check-lib.sh defines the helper,
+  # this file dispatches to it, check-fact-guard.sh writes stray callers into fixtures) made the
+  # invariant FALSE: a real direct call added to any of those three would pass undetected, which
+  # a reviewer reproduced. A sanctioned line instead carries the marker below, so every occurrence
+  # is deliberate and reviewable, and a NEW call anywhere — including in these three files — has
+  # to be marked before it is accepted.
+  #
+  # `*.sh` is not the file set either: `bin/agent-init` and `bin/baseline` are shell programs with
+  # no extension, and a direct call in one of them was likewise invisible. Anything with a shell
+  # shebang counts, which also covers scripts nobody has written yet.
+  #
   # Accumulated in the CURRENT shell rather than a `$(… | while …)` pipeline: a `case` arm's
   # closing `)` inside a command substitution is read as the substitution's own, which bash
   # reports as a syntax error twenty lines away from the cause.
+  # The token and its marker are named ONCE here — where the marker itself sits — so the scanning
+  # line below does not spell the token and therefore does not need its own exemption. A marker
+  # cannot ride a line-continuation anyway: the check is per LINE, and a trailing `#` comment on
+  # the first half of a `\`-continued pipeline is a syntax error.
+  _ra='req_absent'; _allow="adb-allow: $_ra"   # adb-allow: req_absent
   _stray=""; _sf=""; _hit=""; _nscanned=0
   while IFS= read -r _sf; do
     [ -n "$_sf" ] || continue
     _sf="${_sf#./}"
-    # THREE files may name the helper, and each for a structural reason: check-lib.sh DEFINES it,
-    # this file is the one sanctioned caller (through fact()), and check-fact-guard.sh must write
-    # a stray caller into a tree copy to prove this very rule fires. That last exclusion does not
-    # disable the rule — the suite injects its stray caller into check-cleanup.sh and asserts the
-    # failure, so the rule is proven live against a file that is NOT exempt.
-    case "$_sf" in
-      scripts/check-lib.sh|scripts/check-fact-drift.sh|scripts/check-fact-guard.sh) continue ;;
-    esac
     [ -f "$_sf" ] || continue
+    case "$_sf" in
+      *.sh) ;;
+      *) head -n1 "$_sf" 2>/dev/null | grep -Eq '^#!.*(ba)?sh' || continue ;;
+    esac
     _nscanned=$((_nscanned + 1))
-    # TWO greps, not one clever pattern. `^[[:space:]]*[^#[:space:]].*req_absent` looks like it
-    # excludes comments, but `[^#[:space:]]` CONSUMES the line's first non-blank character, so
-    # `.*req_absent` then has to match a SECOND occurrence — and a line that begins with the call
-    # (the ordinary way a stray caller is written) matches nothing at all. That is the same
-    # match-nothing defect this whole check exists to prevent; it shipped here first and was
-    # caught by check-fact-guard.sh's stray-caller case. Find the token, then drop comment lines.
-    _hit="$(grep -n 'req_absent' "$_sf" | grep -Ev '^[0-9]+:[[:space:]]*#')" || continue
+    # THREE greps, and none of them is a clever single pattern.
+    #   1. find the token — `^[[:space:]]*[^#[:space:]].*req_absent` LOOKS like it also excludes
+    #      comments, but `[^#[:space:]]` CONSUMES the line's first non-blank character, so a line
+    #      that BEGINS with the call (the ordinary way a stray caller is written) matches nothing
+    #      at all. That match-nothing defect shipped here first and was caught by
+    #      check-fact-guard.sh's stray-caller case.
+    #   2. drop comment lines — suites legitimately discuss the helper in prose.
+    #   3. drop lines carrying the sanctioned marker.
+    _hit="$(grep -n "$_ra" "$_sf" | grep -Ev '^[0-9]+:[[:space:]]*#' | grep -Fv "$_allow")" || continue
     [ -n "$_hit" ] || continue
     _stray="${_stray}$(printf '%s\n' "$_hit" | sed "s@^@$_sf:@")${_FACT_NL}"
   done <<EOF
-$(find . -name '*.sh' ! -path './.git/*')
+$(find . -type f ! -path './.git/*')
 EOF
   # Zero files scanned means the enumeration broke, not that the tree is clean.
   if [ "$_nscanned" -eq 0 ]; then
-    check_note "the req_absent call-site scan found no shell files at all — the enumeration is broken"
+    check_note "the call-site scan found no shell files at all — the enumeration is broken"  # adb-allow: req_absent
     check_fail
   fi
   if [ -n "$_stray" ]; then
-    check_note "req_absent is called outside fact(), which bypasses the fires: witness contract:"
+    check_note "the helper is called outside fact(), which bypasses the fires: witness contract:"
     printf '%s\n' "$_stray" | sed 's/^/    /' >&2
     check_fail
   fi

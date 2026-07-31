@@ -1055,7 +1055,7 @@ didn't already model, so any residual divergence stays visible and auditable.
 
 ## D23 — the destructive-git rules ship as practice text; the MECHANISM is a separate design
 - date:      2026-07-30
-- category:  project-delta
+- category:  general
 - unknown:   #213's second half asked the reader to *"consider a hook"* — a Claude `PreToolUse` hook
              refusing `git checkout`/`git restore` against a path with unstaged modifications. The
              baseline models Stop and SessionStart hooks; it had never modelled a hook that BLOCKS
@@ -1088,4 +1088,40 @@ didn't already model, so any residual divergence stays visible and auditable.
              no parser but impose global policy through an install surface `install.sh` does not
              write today), the fail-open/fail-closed posture question, and the full integration
              debt a fourth hook owes.
+
+             A third candidate surfaced in review and is recorded so #228 does not re-derive it:
+             a hook entry can carry an `if` PERMISSION-RULE filter (e.g. `if: "Bash(git restore *)"`),
+             so the harness decides which commands reach the hook at all — its own parser rather
+             than ours. That removes the classification problem from our code but not the design
+             work: the hook still has to decide the TARGET STATE question (does this path actually
+             hold unstaged work?) and the OWNER-AUTHORIZATION question (what is the escape hatch
+             that the agent cannot take for itself?), which are the two that make this a design
+             rather than a patch. Classified `general` rather than `project-delta` for the same
+             reason the issue was filed at all: the hook would ship to every adopting project.
 - baseline-issue: #228
+
+### D22 — amendment after independent review (2026-07-30)
+
+The independent Codex pass reproduced three holes in the layer-3 machinery, and each is the same
+shape the decision is about — a guard that is green because it never looked:
+
+- **`check_summary` reported PASS for a suite that ran ZERO assertions.** The suites are what prove
+  the guards can go red, so a suite that quietly stops running is a guard that quietly stops being
+  checked. `pass + fail == 0` is now a failure, in the shared primitive, for every suite in the repo.
+- **The `req_absent` call-site invariant excluded three whole FILES**, so a real direct call added
+  to any of them passed undetected — the invariant was simply false. Exemption is now PER LINE via
+  an `adb-allow: req_absent` marker, which makes every sanctioned occurrence deliberate and
+  reviewable and catches a new one wherever it lives.
+- **It scanned `*.sh` only**, so `bin/agent-init` and `bin/baseline` — real shell programs with no
+  extension — were invisible. It now scans anything with a shell shebang.
+
+Two further corrections in the same pass: `--mutation`'s "files scanned" counted path ARGUMENTS,
+so a pinned file that did not exist was reported as scanned (an `absent:`-only path is now a
+failure, not a vacuous pass, and only real files are counted); and the new wiring in `selfcheck.sh`
+and `ci.yml` was unpinned, so deleting either invocation would have removed the protection while
+the `fact-drift` check context stayed green — now pinned by `fact-mutation-wired` and
+`fact-guard-wired`.
+
+Recorded rather than silently folded in because it is the decision's own evidence: three layers of
+"prove it can fail" still shipped three checks that could not, and an independent reviewer — not
+the author — is what found them.
