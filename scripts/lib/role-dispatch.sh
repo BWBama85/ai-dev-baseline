@@ -21,6 +21,11 @@
 #   role-dispatch.sh bots                    # print the configured async external-bot reviewer logins
 #   role-dispatch.sh bots --declared         # the same key as a TRI-STATE, no default (0/2/3)
 #   role-dispatch.sh bots --comparable       # the declared set normalized for matching (0/17/18)
+#   role-dispatch.sh untrusted <source>      # stdin = third-party text → a containment-safe JSON envelope
+# `untrusted` belongs to THIS helper rather than a new one because its only callers are the sites
+# that build a prompt for a dispatched agent, which is precisely what this file exists to stop
+# every skill from hand-writing (#214). The envelope itself is `adb_untrusted_block` in common.sh —
+# the ONE home for the primitive, as with the reviewer-evidence classifier.
 # The `bots` surface makes this the one runtime reader of the agents.toml manifest (roles AND the
 # `[reviewers]` bot allowlist), rather than standing up a second helper + install seam for it.
 # Sourced use: `. role-dispatch.sh` then call `adb_resolve_role <role>` / `adb_dispatch_bots`
@@ -771,6 +776,11 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
                --comparable)  adb_dispatch_bots_comparable ;;
                *) echo "usage: role-dispatch.sh bots [--declared|--comparable]" >&2; exit 2 ;;
              esac ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable]]" >&2; exit 2 ;;
+    untrusted) [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh untrusted <source>   # text on stdin" >&2; exit 2; }
+             # A REQUIRED <source>: the envelope's whole job is telling the reader where the text
+             # came from, and a defaulted "unknown" would silently ship an unlabelled payload from
+             # a caller that simply forgot the argument.
+             adb_untrusted_block "$2" ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable] | untrusted <source>]" >&2; exit 2 ;;
   esac
 fi

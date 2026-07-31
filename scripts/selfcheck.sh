@@ -120,6 +120,15 @@ step "workflow-shell"
 # that reads as a directive and fails the parse.)
 if bash scripts/check-workflow-shell.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
+step "injection"
+# Third-party text (issue bodies, review threads, CI logs, vendor changelogs) drives these
+# workflows, and two of them hand it to a second agent with repo tool access (#214). Two halves:
+# a red-team over the containment envelope (a body carrying a closing tag, a quote or a newline
+# must round-trip as one JSON value and cannot break out), and a source contract asserting every
+# workflow that reads such text labels the read and that every workflow is classified. Its own
+# mutation harness proves the lint can go red rather than matching nothing.
+if bash scripts/check-injection.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
 step "gate-detector"
 # The empty-ecosystem no-op (detect on a dir with no toolchain and no agents.toml emits
 # nothing) is covered generically by check-gates.sh — run in the "gates" step below — so it

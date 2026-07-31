@@ -180,6 +180,13 @@ jobs:
       - name: No fenced workflow block may assign a zsh-special variable name (#126)
         run: bash scripts/check-workflow-shell.sh
 
+      # Third species, same bodies, same reason it is a STEP and not a job: a new job becomes a new
+      # branch-protection context, which `required-drift` then reports as a discovered job gating
+      # nothing until someone edits protection by hand. Riding an existing required job keeps the
+      # gate real from the first run.
+      - name: Untrusted third-party text is labelled at every read site and contained at every hand-off (#214)
+        run: bash scripts/check-injection.sh
+
   gate-detector:
     name: gate-detector
     runs-on: ubuntu-latest

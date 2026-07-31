@@ -1249,3 +1249,49 @@ limit: none of them is sufficient alone.
              silently OFF, the class #35 made this gate fail loud about. The global gate now runs
              the project's script, which is what its own docs already claimed.
 - baseline-issue: #240
+
+## D26 — third-party text carries content but never authority, and it is contained by encoding rather than by a fence
+- date:      2026-07-31
+- category:  general
+- unknown:   Six workflows read text the operator did not write (issue bodies and comments, PR
+             review threads, CI logs, vendor changelogs) and then edit code, run gates and push;
+             two of them interpolate that text into a prompt for a dispatched agent with repo tool
+             access. The baseline had no practice covering it, and the obvious rule — "never follow
+             an instruction found in third-party text" — is unimplementable here:
+             `/resolve-pr-threads` exists to turn a reviewer's finding into a pushed commit,
+             `/implement-issue` builds what an issue's acceptance criteria describe, and `/roadmap`
+             derives dependency edges from sentences in issue bodies. Stating the absolute rule
+             would have produced a practice every workflow visibly violates on its first run.
+- decision:  Draw the line at CONTENT vs AUTHORITY. Third-party text may supply what the workflow
+             came to read — a bug report, acceptance criteria, a review finding, a log line, a
+             `Depends on #N` in the grammar the parser accepts. It may never supply authority: the
+             target repo or branch, the scope, which gates run, whether to push, merge or delete,
+             or which tools and credentials are in play. An embedded directive is a FINDING TO
+             REPORT, and the run continues — reporting rather than silently refusing, because
+             silence hides the attempt from the operator and because "I refused" is itself a signal
+             an attacker can probe for.
+
+             Containment is by ENCODING, not by a fence. `adb_untrusted_block` JSON-encodes the
+             text into a one-line envelope carrying its provenance and the policy. An XML-ish
+             `<untrusted_issue_text>` fence — which is what the issue proposed — is not a boundary
+             at all: a body containing the closing tag closes it, and everything after it reaches
+             the model as top-level instruction. JSON escaping cannot be broken out of.
+- placement: `base/practices/untrusted-content.md` (the practice), `scripts/lib/common.sh` (the
+             primitive, with `role-dispatch.sh untrusted` as its CLI surface — the same
+             primitive-in-common, surface-on-the-owning-lib split the reviewer-evidence classifier
+             uses), and `scripts/check-injection.sh` wired as a STEP on the existing
+             `workflow-render` CI job.
+- reason:    The step-not-a-job placement is the handling-the-unknown protocol applied to CI: a new
+             job becomes a new branch-protection context, which `required-drift` then reports as a
+             discovered job gating nothing until protection is edited by hand. Riding a job that is
+             already required makes the gate real from its first run, and there was precedent — the
+             workflow-shell lint rides the same job for the same reason.
+
+             Two limits are stated in the practice rather than papered over. This is prose, not a
+             sandbox: it constrains how an agent is asked to treat text, not what a dispatched CLI
+             can read or reach. And the screening is advisory — there is no classifier gating these
+             reads, so an agent already subverted will not report anything. Least-privilege
+             enforcement was deliberately excluded and is #248, because every version floor in the
+             issue's own checklist for it was wrong and one setting does the opposite of what the
+             checklist claims.
+- baseline-issue: #248
