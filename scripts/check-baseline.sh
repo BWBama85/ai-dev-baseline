@@ -245,6 +245,63 @@ eq "$rc" "3" "no-install exits 3"
 reset_src
 eq "$(run_update "$src/bin/baseline" "$fh")" "0" "update current + healthy links exits 0"
 
+# --- hook state is the OTHER half of "is the installed surface right?" (#242) ------------------
+# `current` + healthy links used to exit 0 without ever consulting the hook wiring, so a PARTIAL
+# set — the state an operator lands in by removing one expensive hook — was never reported and
+# never repaired. The three-state classifier was correct and unreachable on this path.
+# The shipped hook list comes from the manifest in common.sh, never a hand-written copy here: a
+# list re-typed in the test would keep passing after a hook is added to the real set, which is the
+# same drift #242 is about. (Sourced only for this helper; every assertion still runs bin/baseline
+# as a subprocess with its own environment.)
+# shellcheck source=/dev/null
+. "$ROOT/scripts/lib/common.sh"
+
+hook_settings() {   # hook_settings <state>: write a settings.json in the fixture HOME
+  local state="$1" s out=""
+  case "$state" in
+    none) printf '{"hooks":{}}\n' > "$fh/.claude/settings.json"; return ;;
+  esac
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    # `partial` omits precommit-gate.sh — the exact edit that motivated #242.
+    [ "$state" = partial ] && [ "$s" = "precommit-gate.sh" ] && continue
+    out="${out}$fh/.claude/scripts/$s
+"
+  done <<HS
+$(adb_claude_hook_scripts)
+HS
+  printf '%s' "$out" > "$fh/.claude/settings.json"
+}
+
+reset_src; : > "$work/install.log"; hook_settings wired
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "hooks wired → nothing to do (exit 0)"
+eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks wired → the installer is not re-run"
+
+# `none` is the opt-out and must be honoured.
+reset_src; : > "$work/install.log"; hook_settings none
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "hooks none (opt-out) → nothing to do (exit 0)"
+eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks none → the opt-out is not overruled"
+
+# PARTIAL is REPORTED, never repaired. Removing one hook's entry is the DOCUMENTED way to disable
+# that hook (docs/installation.md), so re-wiring would destroy a supported configuration — and the
+# SessionStart currency hook survives a per-hook removal, so it would be destroyed again next
+# session. #242 was that `partial` was indistinguishable from `none` and silent, not unrepaired.
+reset_src; : > "$work/install.log"; hook_settings partial
+eq "$(run_update "$src/bin/baseline" "$fh")" "0" "hooks PARTIAL → reported, still exit 0 (no false repair)"
+eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks PARTIAL → the installer is NOT re-run"
+# NOT asserted here: that settings.json still lacks the hook. The fixture's install.sh is a stub
+# that only logs its argv — it cannot wire anything — so such a check could never fail and would
+# be a guard that reports safety it never verified. "The installer is not re-run" above is the
+# real proof: nothing else in this path can rewrite settings.json.
+
+# Visibility IS the fix, so assert the operator can see it — including the residue.
+reset_src; hook_settings partial
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
+has "$out" "PARTIAL" "hooks partial → the run says so out loud"
+has "$out" "precommit-gate.sh" "hooks partial → the run names the hook that is not wired"
+has "$out" "newly shipped hook is not wired" "hooks partial → the run states the residue, not just the state"
+rm -f "$fh/.claude/settings.json"
+
 
 # update with a renamed-away ORPHAN (a dangling link into src, no manifest entry) must be
 # PRUNED, not fatal: baseline removes the ownership-scoped dead link and completes (exit 0),
