@@ -65,7 +65,8 @@ BASE="$(git -C "$REPO" rev-parse HEAD)"
 # A recording gh stub. It answers `gh issue view <n> --repo <slug> --json …` from a table, so every
 # entity SHAPE the live rule must distinguish is reproducible offline:
 #   4242 -> unresolvable        150 -> issue CLOSED/NOT_PLANNED
-#   7    -> issue OPEN          210 -> PULL REQUEST (the shared number space)
+#   7,21 -> issue OPEN          210 -> PULL REQUEST (the shared number space; 21 is a
+#                                     deliberate PREFIX of 210, for the hint-boundary test)
 #   9    -> issue CLOSED/COMPLETED
 # ---------------------------------------------------------------------------------------------
 BIN="$work/bin"; mkdir -p "$BIN"
@@ -78,6 +79,7 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
   printf '%s\n' "$*" >> "$GH_CALLS"
   case "$n" in
     7)    echo '{"state":"OPEN","stateReason":"","url":"https://github.com/acme/widget/issues/7"}' ;;
+    21)   echo '{"state":"OPEN","stateReason":"","url":"https://github.com/acme/widget/issues/21"}' ;;
     9)    echo '{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/acme/widget/issues/9"}' ;;
     150)  echo '{"state":"CLOSED","stateReason":"NOT_PLANNED","url":"https://github.com/acme/widget/issues/150"}' ;;
     210)  echo '{"state":"MERGED","stateReason":"","url":"https://github.com/acme/widget/pull/210"}' ;;
@@ -276,6 +278,7 @@ REF_PR="#""210"
 REF_OPEN="#""7"
 REF_DONE="#""9"
 REF_ZERO="#""0"
+REF_PREFIX="#""21"      # a genuine prefix of REF_PR (210)
 
 # =============================== C1 — live issue/PR references =================================
 : > "$GH_CALLS"
@@ -387,6 +390,50 @@ has "$OUT" "files=1" "the file count is reported"
 cc --range "$BASE..$BASE"
 eq "$RC_" 0 "an empty range exits 0"
 has "$OUT" "added-lines=0" "an empty range REPORTS zero rather than hiding it"
+
+# =============================== the commit walk must not stray onto the base ==================
+# `A...B` means two DIFFERENT things to the two git commands this lint uses: to `git diff` it is
+# "from the merge base to B", but to `git rev-list` it is the SYMMETRIC DIFFERENCE — which drags in
+# the BASE branch's commits. The date rule walks commits, so a three-dot range once made it report
+# on history the branch is not asserting anything about.
+#
+# The fixture diverges for real: a bad date lands on the BASE branch, and the probe branch is clean.
+# A three-dot scan of the probe must stay green.
+git -C "$REPO" checkout -q -B probe "$BASE"
+printf 'clean\n' > "$REPO/notes.md"
+GIT_COMMITTER_DATE="2026-05-01T12:00:00Z" git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-05-01T12:00:00Z" git -C "$REPO" commit -q -m "clean probe" --date="2026-05-01T12:00:00Z"
+PROBE="$(git -C "$REPO" rev-parse HEAD)"
+
+git -C "$REPO" checkout -q -B basework "$BASE"
+cat >> "$REPO/.ai-dev-baseline/decisions.md" <<'EOF'
+
+## D3 — a badly dated entry that lives on the BASE branch
+- date:      2026-09-09
+EOF
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-05-01T12:00:00Z" git -C "$REPO" commit -q -m "bad date on base" --date="2026-05-01T12:00:00Z"
+git -C "$REPO" checkout -q probe
+
+cc --range "basework...$PROBE"
+eq "$RC_" 0 "range: a three-dot scan does NOT walk the BASE branch's commits"
+hasnt "$OUT" "2026-09-09" "range: the base branch's bad date is not reported"
+
+# ...and the same bad commit IS caught when it is genuinely in the scanned range.
+cc --range "$BASE..basework"
+eq "$RC_" 1 "range: the same bad date IS caught when the range really contains it"
+has "$OUT" "2026-09-09" "range: the in-range bad date is named"
+git -C "$REPO" checkout -q -B probe "$BASE"
+
+# =============================== a kind hint needs a digit boundary ============================
+# `PR #21` must not be found inside `PR #212`. The glob form matched the prefix and handed the
+# shorter number the longer one's hint, reporting a correct citation as a kind mismatch.
+: > "$GH_CALLS"
+reset_branch
+printf 'Landed in PR %s, and also see %s.\n' "$REF_PR" "$REF_PREFIX" > "$REPO/notes.md"
+commit "prefix hint"
+cc --range "$BASE..probe" --live
+eq "$RC_" 0 "hint: #21 beside `PR #210` is not given #210's hint (digit boundary)"
 
 # =============================== the wiring is pinned ==========================================
 # A perfectly correct lint that nothing invokes is a lint that checks nothing, and it fails exactly

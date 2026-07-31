@@ -123,6 +123,25 @@ done
 git diff --name-only "$RANGE" >/dev/null 2>&1 \
   || { echo "check-claims: git cannot diff range '$RANGE'" >&2; exit 2; }
 
+# THE COMMIT WALK NEEDS ITS OWN RANGE, because `A...B` means two different things to the two
+# commands this script uses. To `git diff` it is "from the merge base to B" — the branch's own
+# added lines, which is what every line-scanning rule wants. To `git rev-list` it is the SYMMETRIC
+# DIFFERENCE: commits reachable from A or B but not both, i.e. the BASE branch's commits as well.
+# Verified on a diverged fixture — `rev-list main...feature` returns both "on feature" and "on main
+# only", while `main..feature` returns just the one.
+#
+# Left as-is, the date rule walked commits on the base branch and reported on history this branch
+# is not asserting anything about, which is precisely the whole-tree behaviour the added-lines
+# scoping exists to avoid.
+case "$RANGE" in
+  *...*)
+    CC_MB="$(git merge-base "$BASEREV" "$HEADREV" 2>/dev/null)" \
+      || { echo "check-claims: no merge base for '$RANGE'" >&2; exit 2; }
+    [ -n "$CC_MB" ] || { echo "check-claims: no merge base for '$RANGE'" >&2; exit 2; }
+    REVRANGE="$CC_MB..$HEADREV" ;;
+  *) REVRANGE="$BASEREV..$HEADREV" ;;
+esac
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 CACHE="$WORK/gh"; mkdir -p "$CACHE"
@@ -303,11 +322,17 @@ while IFS= read -r f; do
     # validate the wrong entity. `[1-9][0-9]*` excludes `#0`.
     for n in $(printf '%s\n' "$text" | grep -oE '(^|[^A-Za-z0-9_/#])#[1-9][0-9]*' | grep -oE '[0-9]+$'); do
       N_REF_OCC=$((N_REF_OCC + 1))
+      # The kind hint needs a DIGIT BOUNDARY after the number, which a glob cannot express.
+      # `case "$text" in *"PR #$n"*` matched a prefix: on a line citing `PR #212`, the number 21
+      # (if also present) was handed the hint "pull" from inside the longer token, and a correct
+      # citation was then reported as a kind mismatch. Numbers are safe to interpolate here — the
+      # extraction above guarantees `$n` is digits only.
       hint="bare"
-      case "$text" in
-        *"PR #$n"*|*"PR#$n"*|*"pull request #$n"*) hint="pull" ;;
-        *"issue #$n"*|*"Issue #$n"*)               hint="issue" ;;
-      esac
+      if printf '%s' "$text" | grep -qE "(PR|pull request) ?#$n([^0-9]|$)"; then
+        hint="pull"
+      elif printf '%s' "$text" | grep -qiE "issue #$n([^0-9]|$)"; then
+        hint="issue"
+      fi
       printf '%s\t%s:%s\t%s\n' "$n" "$f" "$lno" "$hint" >> "$REFS"
     done
 
@@ -329,7 +354,7 @@ done < "$SCANLIST"
 # repeated `- date:` string belongs to. The branch tip is the wrong anchor on a multi-commit branch
 # — and the #173 entry was stamped a day in the FUTURE relative to its own commit, which is exactly
 # the defect and is invisible against a later tip.
-for c in $(git rev-list --no-merges "$RANGE" -- "$DECISIONS" 2>/dev/null); do
+for c in $(git rev-list --no-merges "$REVRANGE" -- "$DECISIONS" 2>/dev/null); do
   cday="$(git log -1 --format='%cI' "$c" 2>/dev/null)"; cday="${cday%%T*}"
   [ -n "$cday" ] || continue
   cnum="$(cc_daynum "$cday")"
