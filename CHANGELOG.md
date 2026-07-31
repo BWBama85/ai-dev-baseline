@@ -182,6 +182,24 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Changed
 
+- **Reasoning effort is declared per role instead of inherited** (`Refs #225`). `role-dispatch.sh`
+  passed no effort override, so every cross-agent dispatch ran at whatever the agent's own config
+  said. A workstation carrying `model_reasoning_effort = "xhigh"` in `~/.codex/config.toml` applied
+  it to `gap_analysis` and `review` alike; one measured review took **37m57s of a 2h28m run**.
+  - **New `[roles.effort]` table in `agents.toml`**, resolved repo → global → built-in. **Only
+    `review` has a built-in default (`medium`)** — every other role passes no flag, so nothing
+    changes for them until someone declares one. Unset, or an explicit `""`, means inherit.
+  - **BEHAVIOUR CHANGE ON UPGRADE:** a repo that declares nothing now runs its `review` dispatch at
+    `medium` rather than at the workstation's setting. Installs are symlinks, so this arrives on
+    the next `git pull`. Declare `[roles.effort] review = "…"` to keep a different level.
+  - `codex exec` receives `-c model_reasoning_effort=…`; `agy` has no equivalent, so the setting is
+    accepted and ignored for `gemini` slots rather than pretending to bound them.
+  - Values are validated against the CLI's own catalog (`codex debug models --bundled`):
+    `low|medium|high|xhigh|max|ultra`. Validation exists **because the CLI does not have it** —
+    `codex exec -c model_reasoning_effort=<nonsense>` prints the value and runs anyway.
+  - **Effort is not a time cap.** The 45-minute hang backstop is unchanged and still exists only to
+    stop a wedged process.
+
 - **Deferred work is tracked when it clears a bar, not by default.** `issues-and-scope.md` used to
   read *"File by default; do not ask."* That rule stopped silent scope loss, but it is a generator
   with no sink and nothing else in the baseline pushed the other way. Measured on this repo on

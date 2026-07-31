@@ -534,8 +534,8 @@ eq "$(rd effort review)" "low" "repo [roles.effort] wins over the built-in defau
 clr_repo; set_global '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "high"'
 eq "$(rd effort review)" "high" "global [roles.effort] applies when the repo declares none"
 
-set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "minimal"'
-eq "$(rd effort review)" "minimal" "repo beats global"
+set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "ultra"'
+eq "$(rd effort review)" "ultra" "repo beats global"
 
 # An explicit "" is the documented escape hatch: inherit, do NOT fall through to the built-in.
 set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = ""'
@@ -547,6 +547,17 @@ eq "$out" "" 'explicit "" means inherit'; eq "$rc" "1" 'explicit "" is rc 1, not
 set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "vigorous"'
 out="$(rd effort review 2>/dev/null)"; rc=$?
 eq "$rc" "2" "an invalid declared effort is rc 2"
+
+# The allowlist must track the CLI's own catalog, not a hand-written subset. `max` and `ultra` are
+# real levels on the frontier models and were wrongly rejected; `minimal` is in NO bundled model's
+# supported_reasoning_levels and was wrongly accepted. Both directions are pinned here so a future
+# edit cannot quietly reintroduce either.
+for lvl in low medium high xhigh max ultra; do
+  set_repo '[roles]' 'primary = "claude"' '[roles.effort]' "review = \"$lvl\""
+  eq "$(rd effort review)" "$lvl" "the CLI's catalog level '$lvl' is accepted"
+done
+set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "minimal"'
+rd effort review >/dev/null 2>&1; eq "$?" "2" "'minimal' is rejected — no bundled model supports it"
 eq "$out" "" "an invalid declared effort prints no value"
 has "$(rd effort review 2>&1 >/dev/null)" "invalid [roles.effort]" "and says so on stderr"
 

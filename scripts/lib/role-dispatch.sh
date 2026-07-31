@@ -58,12 +58,28 @@ fi
 # (docs/adding-an-agent.md) means adding its token here so the validator accepts it.
 _ADB_RD_KNOWN="claude codex gemini"
 
-# The reasoning-effort values this helper will pass through to an agent CLI. Validated rather
-# than forwarded blind: a typo'd effort is either rejected opaquely by the CLI mid-dispatch (after
-# the branch and gates are already paid for) or silently ignored, and "silently ignored" is
-# indistinguishable from "the bound worked" — the failure mode base/practices/self-review.md
-# names. `xhigh` is included because it is a real accepted value, not because it is advisable.
-_ADB_RD_KNOWN_EFFORT="minimal low medium high xhigh"
+# The reasoning-effort values this helper will pass through to an agent CLI.
+#
+# WHY VALIDATE AT ALL — the CLI does not. Measured on codex-cli 0.145.0: `codex exec -c
+# model_reasoning_effort=definitelynotalevel` prints "reasoning effort: definitelynotalevel" and
+# runs anyway. So an unvalidated typo does not fail; it silently runs at whatever the model falls
+# back to while the manifest claims a bound. Silently-ignored is indistinguishable from
+# it-worked, which is the failure mode base/practices/self-review.md exists to name.
+#
+# WHERE THE LIST COMES FROM — the CLI's own catalog, not a subset invented here. It is the union
+# of `supported_reasoning_levels` across `codex debug models --bundled` (codex-cli 0.145.0):
+#   gpt-5.6-sol/terra  low medium high xhigh max ultra
+#   gpt-5.6-luna       low medium high xhigh max
+#   gpt-5.5 / 5.4 / 5.4-mini / 5.2 / codex-auto-review   low medium high xhigh
+# An earlier hand-written list rejected `max` and `ultra` — valid on the frontier models — while
+# permitting `minimal`, which NO bundled model supports. Both directions were wrong.
+#
+# WHAT THIS CANNOT DO, stated plainly: levels are per-MODEL, and this helper does not know which
+# model a given call will select. A union therefore accepts `ultra` even when the selected model
+# tops out at `xhigh`. That is a deliberately weaker check than "valid for this model" — owning a
+# model catalog is not this framework's job — and it is still strictly better than forwarding
+# anything at all, because the CLI catches neither case.
+_ADB_RD_KNOWN_EFFORT="low medium high xhigh max ultra"
 
 # The repo manifest is resolved relative to the repo the caller is in (git top-level, else CWD,
 # via the shared adb_repo_root), so the helper works the same whether run from a skill mid-task or

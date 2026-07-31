@@ -601,12 +601,23 @@ reviewed the diff. Prefer a different agent, or an async reviewer in `[reviewers
 never reach the dispatch it exists to bound:
 
 ```bash
-EFFORT="$(bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" effort review)" || EFFORT=""   # empty = inherit the CLI's own config
+EFFORT="$(bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" effort review)"; rc=$?
+case "$rc" in
+  0) : ;;                                   # a declared/default effort — pass it to every slot
+  1) EFFORT="" ;;                           # nothing declares one — inherit the CLI's own config
+  *) echo "ERROR: [roles.effort] review is invalid — fix agents.toml before reviewing"; exit 1 ;;
+esac
 ```
 
-Empty is a legitimate answer, not a failure: it means nothing declares an effort for this role and
-the agent's own configuration governs, exactly as before #225. Pass `--effort "$EFFORT"` only when
-it is non-empty.
+**Branch on the exit code; do not collapse it with `|| EFFORT=""`.** Two different answers hide
+behind a non-zero status here. rc **1** means *nothing declares an effort*, which is legitimate —
+the agent's own configuration governs, exactly as before #225. rc **2** means the manifest declares
+an **invalid** one, and mapping that to `""` would dispatch the review at the workstation's setting
+while `agents.toml` claims a bound — the precise failure this step exists to remove, reintroduced
+one line below the fix. Slots are dispatched by token and that path never re-reads the role, so
+nothing downstream would catch it.
+
+Pass `--effort "$EFFORT"` only when it is non-empty.
 
 - `codex` (the shipped default) → `bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" invoke codex --effort "$EFFORT"` over the
   review prompt below (it runs `codex exec` with the 45-min hang backstop and the clean
