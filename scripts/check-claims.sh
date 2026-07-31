@@ -18,10 +18,13 @@
 # instead of an instruction.
 #
 # SCOPED TO THE ADDED LINES OF A RANGE, never the whole tree. That is not an optimization, it is
-# what makes the check adoptable: this tree carries 2450 numeric references over 157 distinct
-# numbers, of which 11 cite issues legitimately closed NOT_PLANNED and 39 are not issues at all
-# (pull-request numbers, plus deliberate fixtures for 0 and 999999999). A whole-tree run would be
-# red forever on history nobody is asserting anything about today.
+# what makes the check adoptable. Measured on `origin/main` at the time this landed, the tree
+# carried 2450 numeric references over 157 distinct numbers, of which 11 cite issues legitimately
+# closed NOT_PLANNED and 39 are not issues at all (pull-request numbers, plus deliberate fixtures
+# for 0 and 999999999). The figures are a dated baseline, not a live property of the checkout —
+# they drift the moment anyone writes a reference, and quoting them as current would be the same
+# stale-claim defect this file exists to catch. A whole-tree run would be red forever on history
+# nobody is asserting anything about today.
 #
 # Usage:
 #   bash scripts/check-claims.sh [--range <base>..<head>] [--live]
@@ -199,6 +202,31 @@ while IFS= read -r p; do
   printf '%s\n' "$p" >> "$SCANLIST"
 done < "$CHANGED"
 
+# --- every added line in the range, mapped to its file, in ONE diff ------------------------------
+# ONE unrestricted diff rather than one per file, and that is a CORRECTNESS requirement rather than
+# a speed one. Restricting a diff with a pathspec DESTROYS rename detection: asked only about the
+# destination path, git cannot see where the content came from and reports the whole file as newly
+# added. A pure `git mv` then re-presented every historical line as this branch's own work, and the
+# lint re-litigated references it had no business judging — the exact whole-tree behaviour the
+# added-lines scoping exists to prevent. Verified against a fixture: the unrestricted diff prints
+# `rename from/to` with no hunks, the pathspec-restricted one prints `new file` and the entire body.
+#
+# core.quotePath=false so the paths here are the same bytes as the ones in $CHANGED and $TREEFILES.
+ADDEDMAP="$WORK/added"
+git -c core.quotePath=false diff --unified=0 "$RANGE" 2>/dev/null | awk '
+  /^\+\+\+ / {
+    line = $0; sub(/^\+\+\+ /, "", line)
+    if (line == "/dev/null") { p = ""; next }
+    sub(/^b\//, "", line)
+    p = line; next
+  }
+  /^@@/ && p != "" {
+    m = $3; sub(/^\+/, "", m)
+    n = split(m, P, ",")
+    start = P[1] + 0; cnt = (n > 1 ? P[2] + 0 : 1)
+    for (i = 0; i < cnt; i++) printf "%s\t%d\n", p, start + i
+  }' > "$ADDEDMAP"
+
 # --- day arithmetic, without depending on GNU vs BSD `date` flags -------------------------------
 # days_from_civil (Hinnant): a calendar date to a day number, so two dates can be compared by
 # subtraction. `date -d` is GNU-only and `date -v` is BSD-only, so neither is portable here.
@@ -269,24 +297,22 @@ cc_entity() {
 #     the "(recorded as D17)" defect was itself in a shell comment in scripts/lib/common.sh, so a
 #     rule that discarded comments would have been green on one of the four claims it exists for.
 #
-# This emits the RAW line and lets each rule strip what IT should not see, because the two needs
-# are opposite and collapsing them silently disables a rule. C1/C2 must not see inside a code span
-# (quoting a number while documenting a grammar is not a citation); C3 looks for a BACKTICKED path
-# and so must see spans intact. An earlier draft stripped spans here, in one place, for everyone —
-# which deleted exactly the tokens C3 searches for and made it structurally incapable of firing.
-# It reported `path-claims=0` on a commit carrying nine of them, and no assertion anywhere was red.
+# This emits the RAW line and lets each rule strip what IT should not see. The reference and
+# decision rules must not see inside a code span (quoting a number while documenting a grammar is
+# not a citation), while the exemption marker must be read from the raw line because it is
+# normally written as a trailing comment.
+#
+# The separation is kept even though the rule that most needed it — the path check, which looked
+# for BACKTICKED paths — no longer ships. A single shared stripper is how that rule was silently
+# disabled: it deleted exactly the tokens the rule searched for, reported `path-claims=0` on a
+# commit carrying nine of them, and no assertion anywhere went red. Collapsing these two views
+# again would re-create that failure for whichever rule needs the raw text next.
 #
 # Content comes from the range's HEAD revision, never the working tree, so an explicit --range
 # scans what it names rather than whatever happens to be checked out.
 cc_scan_file() {   # <file> -> "<lineno>\t<raw text>" per scannable added line
   local f="$1" lines="$WORK/ln" is_md=0
-  git diff --unified=0 "$RANGE" -- "$f" 2>/dev/null | awk '
-    /^@@/ {
-      m = $3; sub(/^\+/, "", m)
-      n = split(m, P, ",")
-      start = P[1] + 0; cnt = (n > 1 ? P[2] + 0 : 1)
-      for (i = 0; i < cnt; i++) print start + i
-    }' | sort -n -u > "$lines"
+  awk -F'\t' -v want="$f" '$1 == want { print $2 }' "$ADDEDMAP" | sort -n -u > "$lines"
   [ -s "$lines" ] || return 0
   case "$f" in *.md) is_md=1 ;; esac
   git show "$HEADREV:$f" 2>/dev/null | awk -v want="$lines" -v md="$is_md" '
@@ -294,7 +320,9 @@ cc_scan_file() {   # <file> -> "<lineno>\t<raw text>" per scannable added line
     {
       # Fenced blocks are dropped for markdown regardless of rule: nothing inside one declares.
       if (md) {
-        if ($0 ~ /^[[:space:]]*(```|~~~)/) { fence = !fence; next }
+        # Up to THREE spaces of indent is a fence; four or more is an indented code block and
+        # must NOT toggle. A whole-file toggle on an indented ``` hid every following line.
+        if ($0 ~ /^ {0,3}(\140\140\140|~~~)/) { fence = !fence; next }
         if (fence) next
       }
       if (!(NR in W)) next
@@ -302,11 +330,24 @@ cc_scan_file() {   # <file> -> "<lineno>\t<raw text>" per scannable added line
     }'
 }
 
-# cc_prose <raw> — the view C1 and C2 get: inline code spans and single-line HTML comments removed.
-# Multi-backtick spans are collapsed onto the single-tick rule first, so a `` `#5` ``-style span is
-# stripped too. C3 deliberately does NOT use this.
+# cc_prose <raw> — the view the reference rules get: inline code spans and HTML comments removed.
+#
+# NON-GREEDY, deliberately. `s/<!--.*-->/ /` is greedy, so a line carrying TWO comments had
+# everything between them deleted as well — including any real citation sitting in that prose. That
+# direction is the dangerous one: it hides a claim rather than inventing one. `[^-]` is not a
+# faithful "not `-->`" either, so the comment body is matched as "anything that is not the start of
+# the terminator", repeated.
+#
+# THIS IS AN APPROXIMATION AND IS NAMED AS ONE. A multi-line HTML comment, a multi-backtick span
+# whose body contains a lone backtick, and an indented-code-block fence are all modelled loosely.
+# The exact CommonMark rule belongs to the shared paragraph-aware prose filter that issue #136
+# exists to single-source, of which this is a declared consumer — the same position
+# state-assert.sh's grammar takes, rather than growing a second private parser here.
 cc_prose() {
-  printf '%s\n' "$1" | sed -e 's/<!--.*-->/ /g' -e 's/``*/`/g' -e 's/`[^`]*`/ /g'
+  printf '%s\n' "$1" \
+    | sed -E -e 's/<!--([^-]|-[^-]|--[^>])*-->/ /g' \
+             -e 's/``+/`/g' \
+             -e 's/`[^`]*`/ /g'
 }
 
 # The audited escape. A line carrying this token is exempt from every rule below — greppable, so

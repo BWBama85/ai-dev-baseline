@@ -9,7 +9,8 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
-- **A verifiable claim written into a tracked file is now gated before it is committed** (#212, D24).
+- **A verifiable claim written into a tracked file is now gated before it can MERGE** (#212, D24).
+  (Not before it is *committed* — see the scope note at the end of this entry.)
   The #173 run committed four factual claims nothing checked, and three were wrong: a `#206`
   citation that tracked something else, a `#207` citation for an issue that **did not exist** —
   rendered into all three agents' skills — and "(recorded as D17)" for a decision that is D18. The
@@ -37,6 +38,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     breaks a test. It earned its place immediately: it caught a markdown stripper that made one
     rule structurally unable to fire, and an unresolvable `--range` that silently turned the whole
     check into a no-op reporting PASS.
+  - **Where the gate actually sits, stated exactly.** It reads COMMITTED revisions, so it runs in
+    `selfcheck` (pre-push) and in CI (pre-merge) — there is no pre-commit hook and nothing scans the
+    index or working tree. #212 asked for "a pre-commit gate" and that half is **unmet**: activation
+    is the open question tracked in #233, because only one agent currently has Stop-hook wiring. The
+    distinction matters because "before it is committed" would promise a guarantee nothing delivers.
+
 - **The path-claim check asked for by #212 was built, measured, and deliberately not shipped**
   (#234). Over the last five merges it scored **seven false positives and zero true positives**, in
   the verb-free form and the change-verb form alike, because a changelog is a *historical* document:

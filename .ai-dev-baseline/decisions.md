@@ -406,7 +406,7 @@ didn't already model, so any residual divergence stays visible and auditable.
                 rather than guessed at.
 - baseline-issue: n/a (this repo IS the baseline; #134 is the tracking issue)
 
-## D13 — `selfcheck` stays hermetic; the one live assertion is CI-only
+## D13 — `selfcheck` stays hermetic; live assertions are CI-only
 - date:      2026-07-28
 - category:  project-delta
 - unknown:   #122 needs required-check drift caught on the PR that introduces the job, and only a
@@ -443,6 +443,12 @@ didn't already model, so any residual divergence stays visible and auditable.
              endpoint rather than the admin-only `/protection` one, because `administration` is
              not a grantable `GITHUB_TOKEN` permission; the two return the same contexts.
 - baseline-issue: n/a (this repo IS the baseline; #122 is the tracking issue)
+- amended:   2026-07-30 by D24 (#212). This entry said "the ONE live assertion", and a second
+             one now exists: the live half of the claim lint. The PRINCIPLE is unchanged and was
+             applied rather than bent — `selfcheck` stays hermetic and the network-dependent half
+             rides CI — but the COUNT in this entry's title and in `CLAUDE.md` was a factual claim
+             that had gone stale, which is precisely the class #212 exists to catch. Corrected in
+             both places rather than left to drift.
 
 ## D14 — this repo supplies its own `/release`, and it calls the working tree, not the install
 - date:      2026-07-28
@@ -1173,6 +1179,11 @@ limit: none of them is sufficient alone.
                diagnostic, and pins the active invocation sites in `selfcheck.sh` and `ci.yml`.
              * The PATH-CLAIM check is NOT in the lint. It moved to a fifth review lens in
                `base/workflows/implement-issue.md` step 8; the controlled-syntax version is #234.
+- unmet:     #212's "run it as a pre-commit gate" is NOT delivered, and is named here rather than
+             implied away. The lint reads committed revisions, so it runs pre-push (`selfcheck`) and
+             pre-merge (CI); nothing scans the index or the working tree and no pre-commit hook
+             invokes it. Activation is the genuinely open problem — only Claude has Stop-hook wiring
+             today — and it is #233's subject, not something to fake with a claim.
 - placement: `scripts/check-claims.sh` + `scripts/check-claims-guard.sh` beside
              `check-fact-drift.sh` / `check-fact-guard.sh` — the prescribed home for a repo lint
              that must NOT ship into a user's runtime (`install.sh` symlinks all of `scripts/lib/`

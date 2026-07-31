@@ -27,6 +27,7 @@ ROOT="$(pwd)"
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary + check_exit_guard
 
 work="$(mktemp -d)"
+WORK_JOB="$work/ci-job"
 check_exit_guard "check-claims-guard" "rm -rf \"$work\""
 
 # ---------------------------------------------------------------------------------------------
@@ -417,6 +418,126 @@ cc --range "$BASE..$BASE"
 eq "$RC_" 0 "an empty range exits 0"
 has "$OUT" "added-lines=0" "an empty range REPORTS zero rather than hiding it"
 
+# =============================== C4: the field must be a REAL date ==============================
+# `- date: TBD` used to be skipped by a `[ -n "$d" ] || continue`, so a decision with no date at all
+# passed with `dates=0` — a rule reporting that it checked nothing, in the words of a clean run.
+reset_branch
+cat >> "$REPO/.ai-dev-baseline/decisions.md" <<'EOF'
+
+## D3 — no date at all
+- date:      TBD
+EOF
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-05-01T12:00:00Z" git -C "$REPO" commit -q -m "no date" --date="2026-05-01T12:00:00Z"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "C4: a date: field with no YYYY-MM-DD value exits 1"
+has "$OUT" "carries no YYYY-MM-DD" "C4: the diagnostic says the field has no date"
+hasnt "$OUT" "dates=0" "C4: the unparseable field is COUNTED, not silently skipped"
+
+# An impossible date matches the pattern and is normalized by the civil-day arithmetic: 2026-02-30
+# becomes March 2 and would pass against a March commit. It must be rejected as a date, not scored.
+reset_branch
+cat >> "$REPO/.ai-dev-baseline/decisions.md" <<'EOF'
+
+## D3 — impossible date
+- date:      2026-02-30
+EOF
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-03-02T12:00:00Z" git -C "$REPO" commit -q -m "impossible" --date="2026-03-02T12:00:00Z"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "C4: an impossible calendar date exits 1 even when normalization would pass it"
+has "$OUT" "not a real calendar date" "C4: the diagnostic names the impossibility"
+
+# =============================== C4: a MERGE commit can introduce a line =======================
+# --no-merges looks obviously right and is wrong: this project merges the default branch INTO a
+# feature branch, and a conflict resolution inside that merge can introduce a date line present in
+# no parent. Skipping merges left it checked by nothing.
+git -C "$REPO" checkout -q -B mergeside "$BASE"
+printf 'side\n' > "$REPO/side.md"
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-06-01T12:00:00Z" git -C "$REPO" commit -q -m "side" --date="2026-06-01T12:00:00Z"
+git -C "$REPO" checkout -q -B probe "$BASE"
+printf 'trunk\n' > "$REPO/trunk.md"
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-06-01T12:00:00Z" git -C "$REPO" commit -q -m "trunk" --date="2026-06-01T12:00:00Z"
+git -C "$REPO" merge -q --no-ff --no-commit mergeside >/dev/null 2>&1 || true
+cat >> "$REPO/.ai-dev-baseline/decisions.md" <<'EOF'
+
+## D3 — introduced by the merge itself
+- date:      2026-12-25
+EOF
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-06-01T12:00:00Z" git -C "$REPO" commit -q -m "merge" --date="2026-06-01T12:00:00Z"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "C4: a date introduced BY a merge commit is still checked"
+has "$OUT" "2026-12-25" "C4: the merge-introduced date is named"
+git -C "$REPO" checkout -q -B probe "$BASE"
+
+# =============================== a non-ASCII filename must be SCANNED ==========================
+# git quotes a non-ASCII path by default while the diff yields raw bytes, so the membership test
+# failed and the file was skipped WITHOUT a word — a file the lint never looked at, reported clean.
+reset_branch
+# A REAL non-ASCII name. An earlier version wrote "na\xc3\xafve.md" inside double quotes, which bash
+# does not interpret — the file was named with literal backslashes and the test exercised nothing.
+printf 'This cites %s from a non-ASCII filename.\n' "$D_MISSING" > "$REPO/naïve.md"
+commit "non-ascii filename"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "path: a non-ASCII filename is SCANNED, not silently skipped"
+hasnt "$OUT" "files=0" "path: the non-ASCII file is counted as scanned"
+
+# =============================== a pure rename re-litigates nothing ============================
+# --no-renames turned a move into a whole-file addition, so every historical line in the moved file
+# was re-checked as new — contradicting the promise never to re-litigate history.
+reset_branch
+printf 'This cites %s and has always done so.\n' "$D_MISSING" > "$REPO/old-name.md"
+GIT_COMMITTER_DATE="2026-04-01T12:00:00Z" git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-04-01T12:00:00Z" git -C "$REPO" commit -q -m "pre-existing bad ref" --date="2026-04-01T12:00:00Z"
+RENBASE="$(git -C "$REPO" rev-parse HEAD)"
+git -C "$REPO" mv old-name.md new-name.md
+commit "pure rename"
+cc --range "$RENBASE..probe"
+eq "$RC_" 0 "rename: a pure rename adds no lines, so old references are not re-litigated"
+git -C "$REPO" checkout -q -B probe "$BASE"
+
+# =============================== the escape must carry a REASON ================================
+# A bare mention of the token waived every rule on the line, so a typo — or prose ABOUT the escape —
+# silently disabled checks it was never meant to touch. D24 states the contract; this enforces it.
+reset_branch
+printf 'This cites %s. adb-claim-ok\n' "$D_MISSING" > "$REPO/notes.md"
+commit "escape without a reason"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "escape: a bare marker with no reason does NOT waive the rule"
+
+reset_branch
+printf 'This cites %s. adb-claim-ok: a stated reason.\n' "$D_MISSING" > "$REPO/notes.md"
+commit "escape with a reason"
+cc --range "$BASE..probe"
+eq "$RC_" 0 "escape: the marker WITH a reason does waive it"
+
+# =============================== markdown stripping edges ======================================
+# A greedy HTML-comment strip deleted the prose BETWEEN two comments — hiding a real citation, the
+# dangerous direction. And a 4-space-indented fence is an indented code block, not a fence: toggling
+# on it hid every following line of the file.
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf '<!-- a --> this cites %s <!-- b -->\n' "$D_MISSING"
+} > "$REPO/notes.md"
+commit "two comments on one line"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "md: prose BETWEEN two HTML comments is still scanned (non-greedy strip)"
+
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf '    ```\n'
+  printf '\n'
+  printf 'This cites %s in ordinary prose after an INDENTED code block.\n' "$D_MISSING"
+} > "$REPO/notes.md"
+commit "indented fence"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "md: a 4-space-indented fence does not toggle fence state and hide the rest"
+
 # =============================== the commit walk must not stray onto the base ==================
 # `A...B` means two DIFFERENT things to the two git commands this lint uses: to `git diff` it is
 # "from the merge base to B", but to `git rev-list` it is the SYMMETRIC DIFFERENCE — which drags in
@@ -488,20 +609,34 @@ if grep -qE '^[^#]*check-claims\.sh[^#]*--live' "$SELFCHECK"; then
   bad "selfcheck.sh runs the LIVE claim half — that breaks the hermetic-mirror promise (D13)"
 else ok; fi
 
-if grep -qE '^ *run: bash scripts/check-claims\.sh --range ' "$CI"; then ok; else
-  bad "ci.yml does not run the offline claim lint over a range"; fi
-if grep -qE '^ *run: bash scripts/check-claims\.sh --live --range ' "$CI"; then ok; else
-  bad "ci.yml does not run the LIVE claim half — the network half would then run NOWHERE"; fi
-if grep -qE '^ *run: bash scripts/check-claims-guard\.sh' "$CI"; then ok; else
-  bad "ci.yml does not run the claim lint's guard suite"; fi
+# THE CI ASSERTIONS ARE SCOPED TO ONE JOB, not to the file. A whole-file `grep` for
+# `fetch-depth: 0` was VACUOUS: another job (install-migration) already carries one, so deleting it
+# from the job that actually runs the claim lint would have left this guard green while the lint
+# failed on every shallow clone. The same argument applies to the permissions and the token — they
+# only mean anything if they belong to the SAME job as the run steps.
+CI_JOB="$WORK_JOB"
+awk '/^  [a-z][a-z0-9_-]*:/ { injob = ($0 ~ /^  fact-drift:/) } injob { print }' "$CI" > "$CI_JOB"
+
+if [ -s "$CI_JOB" ]; then ok; else bad "ci.yml has no fact-drift job — the claim wiring has no home"; fi
+if grep -qE '^ *run: bash scripts/check-claims\.sh --range ' "$CI_JOB"; then ok; else
+  bad "the claim-lint job does not run the offline claim lint over a range"; fi
+if grep -qE '^ *run: bash scripts/check-claims\.sh --live --range ' "$CI_JOB"; then ok; else
+  bad "the claim-lint job does not run the LIVE half — the network half would run NOWHERE"; fi
+if grep -qE '^ *run: bash scripts/check-claims-guard\.sh' "$CI_JOB"; then ok; else
+  bad "the claim-lint job does not run the guard suite"; fi
 
 # The live step needs a token and issue/PR read scope; without either it exits 3 on every run, which
 # is a red build rather than a silent pass — but a red build nobody can fix from the diff.
-if grep -q 'issues: read' "$CI"; then ok; else
-  bad "ci.yml grants no 'issues: read' — the live claim half cannot resolve anything"; fi
-if grep -q 'pull-requests: read' "$CI"; then ok; else
-  bad "ci.yml grants no 'pull-requests: read' — the live claim half cannot resolve a PR number"; fi
-if grep -q 'fetch-depth: 0' "$CI"; then ok; else
-  bad "ci.yml has no full-history checkout — base..head cannot resolve on a shallow clone"; fi
+# Anchored to the real YAML key. A bare substring grep also matched the COMMENT that mentions
+# the setting, so deleting the setting itself left the guard green — a pin made vacuous by the
+# very prose written to explain it.
+if grep -qE '^ +issues: read$' "$CI_JOB"; then ok; else
+  bad "the claim-lint job grants no 'issues: read' — the live half cannot resolve anything"; fi
+if grep -qE '^ +pull-requests: read$' "$CI_JOB"; then ok; else
+  bad "the claim-lint job grants no 'pull-requests: read' — a PR number cannot resolve"; fi
+if grep -qE '^ +GH_TOKEN:' "$CI_JOB"; then ok; else
+  bad "the claim-lint job passes no GH_TOKEN — the live half would exit 3 on every run"; fi
+if grep -qE '^ +fetch-depth: 0$' "$CI_JOB"; then ok; else
+  bad "the claim-lint job has no full-history checkout — base..head cannot resolve when shallow"; fi
 
 check_summary "check-claims-guard"

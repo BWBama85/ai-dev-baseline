@@ -94,10 +94,10 @@ locally ≈ green in CI.
 | `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) generated `skills/` + `scripts/` |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
-| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · fact-mutation · fact-guard · practice-index · release-role · release-skill) |
+| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent |
-| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · fact-mutation · fact-guard · practice-index · release-role · release-skill · install dry-run |
+| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · fact-mutation · fact-guard · claims · claims-guard · claims-live (CI-only) · practice-index · release-role · release-skill · install dry-run |
 
 ## Adding a new agent
 
