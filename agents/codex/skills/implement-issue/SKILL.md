@@ -596,11 +596,31 @@ still a slot and still runs, but it is rung 1 in mechanism only: label it
 *same-model (not independent)* in the close-out so the operator is never misled about what
 reviewed the diff. Prefer a different agent, or an async reviewer in `[reviewers] bots`.
 
-- `codex` (the shipped default) → `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" invoke codex` over the review prompt
-  below (it runs `codex exec` with the 45-min hang backstop and the clean
+**Resolve the review effort ONCE, then pass it to every slot** (#225). Slots are dispatched by
+**token**, and a bare token carries no role — so without this the role's declared effort would
+never reach the dispatch it exists to bound:
+
+```bash
+EFFORT="$(bash "$HOME/.codex/scripts/lib/role-dispatch.sh" effort review)" || EFFORT=""   # empty = inherit the CLI's own config
+```
+
+Empty is a legitimate answer, not a failure: it means nothing declares an effort for this role and
+the agent's own configuration governs, exactly as before #225. Pass `--effort "$EFFORT"` only when
+it is non-empty.
+
+- `codex` (the shipped default) → `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" invoke codex --effort "$EFFORT"` over the
+  review prompt below (it runs `codex exec` with the 45-min hang backstop and the clean
   `--output-last-message` capture — dispatch it in the **background**, for the same reason
-  as step 3: a review pass at high reasoning effort routinely outruns a foreground cap).
-- `gemini` → `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" invoke gemini` over the same prompt (it runs `agy -p`).
+  as step 3: a review pass can outrun a foreground cap).
+
+  **The backstop is not the budget, and effort is not a time cap.** The 45-min bound still exists
+  to stop a wedged process. `[roles.effort]` changes how deeply the model reasons, which is the
+  variable that actually drove cost: a workstation carrying `model_reasoning_effort = "xhigh"`
+  applied it to every dispatched role, and one measured review took **37m57s of a 2h28m run**. The
+  shipped default for `review` is `medium`; raise it per-repo if your reviews are missing things.
+- `gemini` → `bash "$HOME/.codex/scripts/lib/role-dispatch.sh" invoke gemini` over the same prompt (it runs `agy -p`). Effort is
+  **not** plumbed for `agy` — it takes no equivalent override, so the flag is accepted and ignored
+  for this slot rather than silently pretending to bound it.
 - `claude` (Claude driving) → an **in-process, two-part** pass, both model-invokable.
   **This is no longer the prescribed default** — it remains supported because a manifest
   may legitimately name it (a project that has not re-pointed `review`, or a **Codex-primary**

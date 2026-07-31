@@ -24,6 +24,28 @@ review       = ["codex"]    # code review before merge. 1+ agents; more = better
                             # That is not branch protection: GitHub does not enforce the
                             # declaration, so a manual merge is still a manual merge.
 debug        = "claude"     # owns root-cause investigations.
+
+# Optional: reasoning effort per dispatched role (#225). DECLARED, not inherited.
+#
+# Without this, every cross-agent dispatch runs at whatever the agent's own config says — so a
+# workstation carrying `model_reasoning_effort = "xhigh"` in ~/.codex/config.toml silently applied
+# it to gap-analysis and review alike. One measured review took 37m57s of a 2h28m run. A value the
+# operator never chose for THIS workflow should not govern a step the workflow blocks on.
+#
+# Values: "minimal" | "low" | "medium" | "high" | "xhigh" (an invalid one is a hard error, never a
+# silent fall-through). Unset → the agent's own config governs, exactly as before.
+# An explicit "" also means inherit, matching how [gates] spells "leave this alone".
+#
+# Only `review` has a built-in default (`medium`): its job is a named-checklist pass over a diff
+# that is already written, which is not the shape that needs the deepest setting — and a reviewer
+# nobody waits for is a reviewer that gets deleted. Raise it if your reviews start missing things.
+#
+# Codex honours this via `codex exec -c model_reasoning_effort=…`. The Antigravity CLI has no
+# equivalent override, so the setting is accepted and ignored for `gemini` slots rather than
+# pretending to bound them.
+# [roles.effort]
+# review       = "medium"
+# gap_analysis = "high"
 # issue_author = "claude"   # defaults to `primary` if unset
 # release      = "claude"   # defaults to `primary` if unset. Names WHO cuts a release — it
 #                           # installs no release skill; write your own project-scoped

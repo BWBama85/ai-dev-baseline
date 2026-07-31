@@ -516,6 +516,82 @@ eq "$(ps -eo command | grep -c '[q]qstub' | tr -d ' ')" "0" \
   "an outer termination reaps the dispatched agent instead of orphaning it for the full bound"
 pkill -f '[q]qstub' >/dev/null 2>&1 || true
 
+# ============================ effort (declared, not inherited — #225) ============================
+# Two halves, and the second is the one that matters: the RESOLVER can return "medium" while the
+# flag never reaches the CLI, and a bound that is not passed is indistinguishable from a bound that
+# worked. So every resolver case is paired with an assertion over the agent's RECORDED ARGV.
+
+# --- resolver -------------------------------------------------------------------------------
+clr_repo; clr_global
+eq "$(rd effort review)" "medium" "built-in review effort is medium"
+out="$(rd effort gap_analysis)"; rc=$?
+eq "$out" "" "gap_analysis has no built-in effort (inherit)"; eq "$rc" "1" "inherit is rc 1, not 0"
+out="$(rd effort debug)"; rc=$?; eq "$rc" "1" "a role with no default inherits"
+
+set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "low"'
+eq "$(rd effort review)" "low" "repo [roles.effort] wins over the built-in default"
+
+clr_repo; set_global '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "high"'
+eq "$(rd effort review)" "high" "global [roles.effort] applies when the repo declares none"
+
+set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "minimal"'
+eq "$(rd effort review)" "minimal" "repo beats global"
+
+# An explicit "" is the documented escape hatch: inherit, do NOT fall through to the built-in.
+set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = ""'
+out="$(rd effort review)"; rc=$?
+eq "$out" "" 'explicit "" means inherit'; eq "$rc" "1" 'explicit "" is rc 1, not the medium default'
+
+# An invalid value must SURFACE. Falling back to the default here would mean a typo'd manifest
+# runs at a setting the operator never chose while believing it is bounded.
+set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "vigorous"'
+out="$(rd effort review 2>/dev/null)"; rc=$?
+eq "$rc" "2" "an invalid declared effort is rc 2"
+eq "$out" "" "an invalid declared effort prints no value"
+has "$(rd effort review 2>&1 >/dev/null)" "invalid [roles.effort]" "and says so on stderr"
+
+# --- does the flag actually reach the CLI? ----------------------------------------------------
+BIN3="$work/bin3"; mkdir -p "$BIN3"
+ARGV="$work/effort-argv.log"
+cat > "$BIN3/codex" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$ADB_ARGV_LOG"
+out=""; prev=""
+for a in "$@"; do case "$prev" in --output-last-message) out="$a" ;; esac; prev="$a"; done
+cat >/dev/null
+[ -n "$out" ] && printf 'VERDICT: proceed\n' > "$out"
+exit 0
+EOF
+chmod +x "$BIN3/codex"
+rd3() { ( cd "$REPO" && HOME="$GHOME" PATH="$BIN3:$PATH" ADB_ARGV_LOG="$ARGV" bash "$RD" "$@" ); }
+
+# `review` must RESOLVE to codex for this to exercise anything: the built-in default falls back to
+# `primary` (claude), so a bare clr_repo here would dispatch a claude slot and record no argv at
+# all — which the resolver tests above cannot detect.
+set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]'
+clr_global; : > "$ARGV"
+printf 'x' | rd3 invoke review >/dev/null 2>&1
+has "$(cat "$ARGV")" "model_reasoning_effort=medium" \
+  "invoking the review ROLE passes the resolved effort to codex exec"
+
+: > "$ARGV"; printf 'x' | rd3 invoke codex --effort high >/dev/null 2>&1
+has "$(cat "$ARGV")" "model_reasoning_effort=high" \
+  "a per-SLOT token dispatch honours an explicit --effort (the path step 8 actually uses)"
+
+# The negative that protects every role nobody has declared an effort for: NO flag at all, so the
+# agent's own config still governs and #225 changes nothing for them.
+set_repo '[roles]' 'primary = "claude"' 'gap_analysis = "codex"'
+: > "$ARGV"; printf 'x' | rd3 invoke gap_analysis >/dev/null 2>&1
+hasnt "$(cat "$ARGV")" "model_reasoning_effort" \
+  "a role with no declared effort passes NO override (pre-#225 behaviour preserved)"
+
+# An invalid --effort must be rejected BEFORE dispatch, not discovered by the CLI mid-run.
+: > "$ARGV"; rc=0; printf 'x' | rd3 invoke codex --effort bogus >/dev/null 2>&1 || rc=$?
+eq "$rc" "2" "an invalid --effort exits 2"
+eq "$(wc -l < "$ARGV" | tr -d ' ')" "0" "and the agent is never invoked"
+
+clr_repo; clr_global
+
 # ============================ available (capability probe, #211) ============================
 # `available` answers a THIRD question — is this agent's CLI on PATH here? — separate from
 # `resolve` (who is assigned) and an `invoke` rc (did the agent fail). Step 8 and `agent-init`
