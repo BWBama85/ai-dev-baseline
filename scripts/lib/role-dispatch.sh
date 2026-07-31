@@ -14,7 +14,8 @@
 #
 # Surfaces:
 #   role-dispatch.sh resolve <role>          # print the agent token(s), one per line (empty = skip)
-#   role-dispatch.sh invoke  <role|agent>    # prompt on STDIN → run that agent's CLI; clean stdout
+#   role-dispatch.sh invoke  <role|agent> [--effort <v>]  # prompt on STDIN → run that CLI; clean stdout
+#   role-dispatch.sh effort  <role>          # the reasoning effort for that role (empty+rc1 = inherit)
 #   role-dispatch.sh available <agent>       # is that agent's CLI on PATH here? (silent; rc 0/1/2)
 #   role-dispatch.sh review-rung [<driver>]  # what will actually review a diff: independent|same-model|deferred|none|unknown
 #   role-dispatch.sh bots                    # print the configured async external-bot reviewer logins
@@ -56,6 +57,29 @@ fi
 # The known agent tokens. Kept in sync with base/roles.md's "Agent tokens" list; adding an agent
 # (docs/adding-an-agent.md) means adding its token here so the validator accepts it.
 _ADB_RD_KNOWN="claude codex gemini"
+
+# The reasoning-effort values this helper will pass through to an agent CLI.
+#
+# WHY VALIDATE AT ALL — the CLI does not. Measured on codex-cli 0.145.0: `codex exec -c
+# model_reasoning_effort=definitelynotalevel` prints "reasoning effort: definitelynotalevel" and
+# runs anyway. So an unvalidated typo does not fail; it silently runs at whatever the model falls
+# back to while the manifest claims a bound. Silently-ignored is indistinguishable from
+# it-worked, which is the failure mode base/practices/self-review.md exists to name.
+#
+# WHERE THE LIST COMES FROM — the CLI's own catalog, not a subset invented here. It is the union
+# of `supported_reasoning_levels` across `codex debug models --bundled` (codex-cli 0.145.0):
+#   gpt-5.6-sol/terra  low medium high xhigh max ultra
+#   gpt-5.6-luna       low medium high xhigh max
+#   gpt-5.5 / 5.4 / 5.4-mini / 5.2 / codex-auto-review   low medium high xhigh
+# An earlier hand-written list rejected `max` and `ultra` — valid on the frontier models — while
+# permitting `minimal`, which NO bundled model supports. Both directions were wrong.
+#
+# WHAT THIS CANNOT DO, stated plainly: levels are per-MODEL, and this helper does not know which
+# model a given call will select. A union therefore accepts `ultra` even when the selected model
+# tops out at `xhigh`. That is a deliberately weaker check than "valid for this model" — owning a
+# model catalog is not this framework's job — and it is still strictly better than forwarding
+# anything at all, because the CLI catches neither case.
+_ADB_RD_KNOWN_EFFORT="low medium high xhigh max ultra"
 
 # The repo manifest is resolved relative to the repo the caller is in (git top-level, else CWD,
 # via the shared adb_repo_root), so the helper works the same whether run from a skill mid-task or
@@ -131,6 +155,45 @@ _adb_rd_role_default() {
     gap_analysis) return 0 ;;
     *)            adb_resolve_primary; return $? ;;
   esac
+}
+
+# The built-in reasoning effort for a role whose effort nothing declares (#225). Printing nothing
+# and returning 1 means "inherit whatever the agent's own config says" — the pre-#225 behaviour,
+# and still the default for every role but one.
+#
+# `review` defaults to `medium` because effort was the actual cost driver, not the pass itself. A
+# workstation carrying `model_reasoning_effort = "xhigh"` in ~/.codex/config.toml silently applied
+# it to every dispatched role: one measured review took 37m57s of a 2h28m run. The review's job is
+# a named-checklist pass over a diff that is already written, which is not the shape that needs the
+# deepest setting — and a reviewer nobody waits for is a reviewer that gets deleted. Declare, do
+# not inherit: a value the operator never chose should not govern a step the workflow blocks on.
+_adb_rd_effort_default() {
+  case "$1" in
+    review) printf 'medium' ;;
+    *)      return 1 ;;
+  esac
+}
+
+# Resolve the reasoning effort for ROLE: repo manifest `[roles.effort]` → global manifest → the
+# built-in default above. Prints the value and returns 0; prints nothing and returns 1 when
+# nothing declares one (inherit); returns 2 on an invalid declared value.
+#
+# An explicitly EMPTY value (`review = ""`) is a documented escape hatch meaning "inherit" — the
+# same shape `[gates]` already uses for "disabled", so the manifest reads consistently.
+# Usage: adb_role_effort <role>
+adb_role_effort() {
+  local role="$1" raw val
+  [ -n "$role" ] || return 1
+  if raw="$(_adb_rd_layered_get roles.effort "$role")"; then
+    val="$(adb_toml_unquote "$raw")"
+    [ -n "$val" ] || return 1
+    case " $_ADB_RD_KNOWN_EFFORT " in
+      *" $val "*) printf '%s' "$val"; return 0 ;;
+      *) printf 'role-dispatch: invalid [roles.effort] %s = "%s" (known: %s)\n' \
+           "$role" "$val" "$_ADB_RD_KNOWN_EFFORT" >&2; return 2 ;;
+    esac
+  fi
+  _adb_rd_effort_default "$role"
 }
 
 # Resolve `primary` to exactly one concrete, validated agent token. The built-in default is
@@ -565,7 +628,7 @@ EOF
 # (124 on timeout); for codex, a 0 exit that produced no final message is treated as incomplete
 # (return 1) rather than a clean empty pass.
 _adb_rd_invoke_agent() {
-  local token="$1" pf="$2" repo rc last
+  local token="$1" pf="$2" effort="${3:-}" repo rc last
   case "$token" in
     claude)
       _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" claude -p "$(cat "$pf")"
@@ -582,8 +645,19 @@ _adb_rd_invoke_agent() {
       last="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/adb-rd-last-$$")"; : > "$last"
       # Route codex's live stream to stderr (visible for debugging, NOT mixed into our stdout);
       # --output-last-message captures only the final agent message (#8).
-      _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" \
-        codex exec --cd "$repo" --output-last-message "$last" - < "$pf" >&2
+      #
+      # `-c model_reasoning_effort=<effort>` is passed ONLY when an effort was resolved (#225).
+      # Omitting it entirely — rather than passing some "default" — is what preserves the
+      # pre-#225 behaviour for every role that declares nothing: the CLI's own config governs,
+      # exactly as before. `-c` is `codex exec`'s documented key=value override.
+      if [ -n "$effort" ]; then
+        _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" \
+          codex exec --cd "$repo" -c model_reasoning_effort="$effort" \
+                     --output-last-message "$last" - < "$pf" >&2
+      else
+        _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" \
+          codex exec --cd "$repo" --output-last-message "$last" - < "$pf" >&2
+      fi
       rc=$?
       if [ "$rc" -ne 0 ]; then rm -f "$last"; return "$rc"; fi
       if [ ! -s "$last" ]; then
@@ -624,13 +698,24 @@ _adb_rd_report() {
 # returns 3 (distinct from a completed empty result), so a caller never mistakes "skipped" for
 # "ran and found nothing".
 adb_dispatch_invoke() {
-  local target="$1" pf tokens count rc
+  local target="$1" effort="${2:-}" pf tokens count rc
   pf="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/adb-rd-prompt-$$")"
   cat > "$pf"
 
+  # A bare TOKEN carries no role, so it has no declared effort of its own — the caller supplies
+  # one explicitly. That is not a corner case: step 8 dispatches a multi-agent `review` per SLOT
+  # by token, so role-keyed resolution alone would never reach the very role whose effort this
+  # exists to bound. The workflow asks `effort review` once and passes it per slot.
   if _adb_rd_valid_token "$target"; then
-    _adb_rd_invoke_agent "$target" "$pf"; rc=$?; rm -f "$pf"
+    _adb_rd_invoke_agent "$target" "$pf" "$effort"; rc=$?; rm -f "$pf"
     _adb_rd_report "$target" "$target" "$rc"; return "$rc"
+  fi
+
+  # Invoked by ROLE: resolve its effort unless the caller overrode it. rc 2 is an invalid declared
+  # value — surface it instead of dispatching, or a typo'd manifest silently runs at the CLI's
+  # setting while the operator believes it is bounded.
+  if [ -z "$effort" ]; then
+    effort="$(adb_role_effort "$target")" || { [ "$?" -eq 2 ] && { rm -f "$pf"; return 2; }; effort=""; }
   fi
 
   if ! tokens="$(adb_resolve_role "$target")"; then rm -f "$pf"; return 2; fi
@@ -644,7 +729,7 @@ adb_dispatch_invoke() {
       "$target" "$(printf '%s' "$tokens" | tr '\n' ' ')" "$target" >&2
     rm -f "$pf"; return 2
   fi
-  _adb_rd_invoke_agent "$tokens" "$pf"; rc=$?; rm -f "$pf"
+  _adb_rd_invoke_agent "$tokens" "$pf" "$effort"; rc=$?; rm -f "$pf"
   _adb_rd_report "$target" "$tokens" "$rc"; return "$rc"
 }
 
@@ -652,8 +737,29 @@ adb_dispatch_invoke() {
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
   case "${1:-}" in
     resolve) adb_resolve_role "${2:-}" ;;
-    invoke)  [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh invoke <role|agent>" >&2; exit 2; }
-             adb_dispatch_invoke "$2" ;;
+    invoke)  [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh invoke <role|agent> [--effort <value>]" >&2; exit 2; }
+             _rd_target="$2"; shift 2; _rd_effort=""
+             while [ "$#" -gt 0 ]; do
+               case "$1" in
+                 --effort) [ "$#" -ge 2 ] || { echo "role-dispatch: --effort needs a value" >&2; exit 2; }
+                           _rd_effort="$2"; shift 2 ;;
+                 *) echo "role-dispatch: unknown argument \"$1\"" >&2; exit 2 ;;
+               esac
+             done
+             # Validate a caller-supplied effort HERE, not at the CLI. An unvalidated value would
+             # otherwise reach `codex exec -c` mid-dispatch and fail opaquely, or be ignored — and
+             # an ignored bound reads exactly like a bound that worked.
+             if [ -n "$_rd_effort" ]; then
+               case " $_ADB_RD_KNOWN_EFFORT " in
+                 *" $_rd_effort "*) ;;
+                 *) printf 'role-dispatch: invalid --effort "%s" (known: %s)\n' "$_rd_effort" "$_ADB_RD_KNOWN_EFFORT" >&2; exit 2 ;;
+               esac
+             fi
+             adb_dispatch_invoke "$_rd_target" "$_rd_effort" ;;
+    effort)  [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh effort <role>" >&2; exit 2; }
+             # Prints the resolved effort, or NOTHING with rc 1 when nothing declares one (the
+             # agent's own config governs). rc 2 = an invalid declared value.
+             adb_role_effort "$2" ;;
     review-rung) adb_review_rung "${2:-}" ;;
     available) [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh available <agent>" >&2; exit 2; }
              # SILENT — the exit code IS the answer. A caller asking about several agents in a

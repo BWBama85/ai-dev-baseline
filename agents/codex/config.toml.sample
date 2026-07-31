@@ -14,12 +14,26 @@
 
 # --- Reasoning effort ---------------------------------------------------------
 # How much the model reasons before responding. Trades latency/cost for depth.
-# Typical values: "minimal" | "low" | "medium" | "high" (exact set depends on
-# the pinned model). Cross-agent codex exec calls from this framework budget
-# generously for slow, thorough runs (base/roles.md's 45-minute hang backstop),
-# so a HIGH effort is the intended choice when Codex is doing gap-analysis or
-# review work rather than quick edits — the bound exists to stop a wedged
-# process, not to rush a thorough one.
+# Typical values: "minimal" | "low" | "medium" | "high" | "xhigh" (exact set
+# depends on the pinned model).
+#
+# THIS SETTING NO LONGER GOVERNS ROLES THE FRAMEWORK DISPATCHES (#225). When a
+# role declares an effort in agents.toml `[roles.effort]`, role-dispatch.sh
+# passes it explicitly as `codex exec -c model_reasoning_effort=…` and this
+# value is overridden for that call. `review` ships a built-in default of
+# "medium"; roles that declare nothing still inherit whatever you set here.
+#
+# That split is deliberate. This file is per-workstation and governs YOUR
+# interactive codex use; a workflow step the framework blocks on should not
+# silently cost what a machine-wide preference happens to say. An "xhigh" set
+# here for interactive work was applied to every dispatched role, and one
+# measured review took 37m57s of a 2h28m run.
+#
+# EFFORT IS NOT A TIME LIMIT, and neither setting replaces the other. Every
+# cross-agent codex exec call from this framework is separately wrapped in a
+# 45-minute hang backstop (base/roles.md) — that bound exists to stop a wedged
+# process, never to rush a thorough one, and it is unchanged by any effort you
+# set here or in [roles.effort].
 # model_reasoning_effort = "high"
 
 # --- Approval policy ------------------------------------------------------
