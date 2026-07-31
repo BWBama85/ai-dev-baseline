@@ -449,11 +449,31 @@ case "$STATUS" in
     # Prune renamed-away orphans first (a prior manual `git pull` may have left one), THEN verify
     # the manifest — so a leftover from a rename doesn't force a needless "broken" repair (#48).
     adb_prune_orphans "$SRC"
-    if adb_verify_links "$SRC"; then
+    # TWO questions, not one — "is the installed surface what it should be?" has a symlink half
+    # and a hook-wiring half, and this path used to ask only the first (#242). A hook missing from
+    # settings.json is not a broken link, so `partial` sailed past `adb_verify_links` and exited
+    # "nothing to do" without ever consulting it. That made the three-state classifier correct and
+    # unreachable on the common path: install current, links fine, hook set partial.
+    #
+    # Only `partial` triggers repair. `none` is the honoured opt-out (the operator removed them
+    # all), and `wired` has nothing to do. The Claude-installed-from-THIS-src guard mirrors
+    # adb_self_heal's: a root doc pointing at another clone is not ours to re-wire.
+    LINKS_OK=0; adb_verify_links "$SRC" && LINKS_OK=1
+    HOOKS_STATE=wired
+    if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
+      HOOKS_STATE="$(adb_claude_hooks_state "$HOME/.claude/settings.json")"
+    fi
+    if [ "$LINKS_OK" -eq 1 ] && [ "$HOOKS_STATE" != partial ]; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
     fi
-    echo "baseline: an installed path is broken though up to date — repairing …"
+    if [ "$LINKS_OK" -eq 1 ]; then
+      printf 'baseline: links resolve, but the hook set is PARTIAL; missing: %s\n' \
+        "$(adb_claude_hooks_missing "$HOME/.claude/settings.json" | tr '\n' ' ')"
+      echo "baseline: re-wiring the shipped hooks — to opt out, remove ALL of them (see docs/installation.md --no-hooks)."
+    else
+      echo "baseline: an installed path is broken though up to date — repairing …"
+    fi
     adb_self_heal && adb_verify_links "$SRC" || { echo "baseline: repair failed — see above." >&2; exit 1; }
     echo "baseline: repaired."
     # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that
