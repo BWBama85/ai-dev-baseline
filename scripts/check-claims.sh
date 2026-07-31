@@ -399,8 +399,13 @@ while IFS= read -r f; do
       # can carry a correct citation and an incorrect one for the SAME number, and an if/elif gave
       # them a single verdict — so the wrong half was covered by the right half and passed.
       # Emitting one record per spelling lets the resolver flag exactly the spelling that is wrong.
+      #
+      # BOTH hints are matched CASE-INSENSITIVELY, and the asymmetry that existed here was a real
+      # hole rather than a cosmetic one: the issue hint used -i and the pull hint did not, so
+      # `Pull request #N` and `pr #N` were recorded as `bare`. A bare reference is only checked for
+      # EXISTENCE, so a sentence explicitly naming the wrong entity kind passed the live check.
       got=0
-      if printf '%s' "$text" | grep -qE "(PR|pull request) ?#$n([^0-9]|$)"; then
+      if printf '%s' "$text" | grep -qiE "(PR|pull request) ?#$n([^0-9]|$)"; then
         printf '%s\t%s:%s\tpull\n' "$n" "$f" "$lno" >> "$REFS"; got=1
       fi
       if printf '%s' "$text" | grep -qiE "issue #$n([^0-9]|$)"; then
@@ -451,6 +456,34 @@ cc_valid_day() {   # <YYYY-MM-DD> -> 0 if it is a real Gregorian date
       exit 0 }'
 }
 
+# cc_added_dates <commit> — the `- date:` lines THIS commit introduced, with the diff marker
+# stripped. For a merge that means lines added relative to EVERY parent, which is a distinction
+# `git show -m` cannot make: -m diffs the merge against each parent in turn, so a line that came
+# from ONE parent appears as an addition relative to the other. On a feature branch that merges the
+# default branch and resolves a conflict in the decision log, every decision the default branch had
+# accumulated was therefore re-attributed to the merge commit and compared against the merge's own
+# date — a guaranteed red build on an entry that was dated correctly when it was written, and that
+# does not even appear in the branch's own `main...feature` diff.
+#
+# `--cc` is exactly the right tool: it shows only hunks that differ from ALL parents, which is the
+# definition of "introduced by the merge itself" (a conflict resolution). Its output carries one
+# +/- column PER PARENT, so a line the merge introduced has a `+` in every column — hence the
+# parent count rather than a hardcoded `++`.
+cc_added_dates() {
+  local c="$1" np
+  np="$(git rev-list --parents -n1 "$c" 2>/dev/null | wc -w | tr -d ' ')"
+  np=$((np - 1))
+  if [ "$np" -gt 1 ]; then
+    git show --cc --format='' --unified=0 "$c" -- "$DECISIONS" 2>/dev/null \
+      | grep -E "^\+{$np}[[:space:]]*-[[:space:]]*date:" \
+      | sed -E "s/^\+{$np}//"
+  else
+    git show --format='' --unified=0 "$c" -- "$DECISIONS" 2>/dev/null \
+      | grep -E '^\+[[:space:]]*-[[:space:]]*date:' \
+      | sed 's/^+//'
+  fi
+}
+
 for c in $(git rev-list "$REVRANGE" -- "$DECISIONS" 2>/dev/null); do
   cday="$(git log -1 --format='%cI' "$c" 2>/dev/null)"; cday="${cday%%T*}"
   [ -n "$cday" ] || continue
@@ -460,9 +493,20 @@ for c in $(git rev-list "$REVRANGE" -- "$DECISIONS" 2>/dev/null); do
       N_EXEMPT=$((N_EXEMPT + 1)); continue
     fi
     N_DATE=$((N_DATE + 1))
-    d="$(printf '%s\n' "$dl" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -n1)"
+    # THE FIELD'S VALUE, not the first date-shaped substring anywhere on the line. Scanning the
+    # whole line let trailing prose satisfy the rule: `- date: TBD # expected around 2026-07-31`
+    # passed on 2026-07-31 while the field itself carried no date at all — the rule reporting a
+    # pass on an input it exists to reject. Take what follows `date:` up to the first whitespace,
+    # and require THAT to be the date.
+    d="$(printf '%s\n' "$dl" \
+          | sed -nE 's/^.*[[:space:]]*-[[:space:]]*date:[[:space:]]*([^[:space:]]*).*$/\1/p' \
+          | head -n1)"
+    case "$d" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+      *) d="" ;;
+    esac
     if [ -z "$d" ]; then
-      cc_violation "$DECISIONS ($c): a 'date:' field carries no YYYY-MM-DD value: ${dl#+}"
+      cc_violation "$DECISIONS ($c): a 'date:' field carries no YYYY-MM-DD value: $dl"
       continue
     fi
     if ! cc_valid_day "$d"; then
@@ -475,8 +519,7 @@ for c in $(git rev-list "$REVRANGE" -- "$DECISIONS" 2>/dev/null); do
     # stale one is; the #173 entry was a day ahead, not behind.
     [ "$diff" -le 1 ] \
       || cc_violation "$DECISIONS ($c): 'date: $d' is $diff days from its commit date ($cday)"
-  done < <(git show -m --format='' --unified=0 "$c" -- "$DECISIONS" 2>/dev/null \
-             | grep '^+' | grep -E '^\+[[:space:]]*-[[:space:]]*date:' | sort -u)
+  done < <(cc_added_dates "$c")
 done
 
 # --- C1, resolved in one deduplicated pass ------------------------------------------------------

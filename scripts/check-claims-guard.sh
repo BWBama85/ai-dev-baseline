@@ -87,7 +87,8 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
     9)    echo '{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/acme/widget/issues/9"}' ;;
     150)  echo '{"state":"CLOSED","stateReason":"NOT_PLANNED","url":"https://github.com/acme/widget/issues/150"}' ;;
     210)  echo '{"state":"MERGED","stateReason":"","url":"https://github.com/acme/widget/pull/210"}' ;;
-    *)    exit 1 ;;
+    *)    echo 'GraphQL: Could not resolve to an issue or pull request with the number of '"$n"'. (repository.issue)' >&2
+          exit 1 ;;
   esac
   exit 0
 fi
@@ -127,6 +128,21 @@ exit 1
 STUB
 chmod +x "$GONE/gh"
 cc_gone() { OUT="$(cd "$REPO" && PATH="$GONE:$PATH" bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
+
+# A gh that authenticates, whose REPOSITORY read succeeds, and whose ENTITY read fails for a
+# query-specific reason (insufficient issue permissions, a transient GraphQL error, an unsupported
+# field). Repository reachability proves connectivity and nothing more, so this must NOT be read as
+# "the number does not exist".
+DENIED="$work/denied"; mkdir -p "$DENIED"
+cat > "$DENIED/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "auth" ] && exit 0
+if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then echo '{"name":"widget"}'; exit 0; fi
+echo 'error: Resource not accessible by integration' >&2
+exit 1
+STUB
+chmod +x "$DENIED/gh"
+cc_denied() { OUT="$(cd "$REPO" && PATH="$DENIED:$PATH" bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
 
 # cc <args…> — run the lint inside the fixture repo, capturing stdout+stderr and the real status.
 cc() { OUT="$(cd "$REPO" && PATH="$BIN:$PATH" bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
@@ -589,6 +605,91 @@ cc --range "$BASE..probe" --live
 # suite still passed (stdin was /dev/null); under selfcheck, whose stdin is an open pipe, it hung
 # for ten minutes. A test label is a value crossing a syntax boundary like any other.
 eq "$RC_" 0 "hint: a bare 21 beside a PR 210 citation is not given the PR hint (digit boundary)"
+
+# ============ review #239: a query-specific failure is UNREADABLE, not "does not exist" ========
+# An earlier version asked whether the REPOSITORY was reachable and treated success as proof the
+# number was absent. Every query-specific failure with a readable repo then became a confident
+# "does not resolve" — a tool built to stop fabricated references, fabricating them.
+: > "$GH_CALLS"
+reset_branch
+printf 'Tracked in %s.\n' "$REF_OPEN" > "$REPO/notes.md"
+commit "entity denied, repo readable"
+cc_denied --range "$BASE..probe" --live
+eq "$RC_" 3 "C1: a query-specific read failure with a READABLE repo exits 3, not 1"
+hasnt "$OUT" "does not resolve" "C1: a permissions/transient failure is never called a missing issue"
+
+# ============ review #239: the pull hint is CASE-INSENSITIVE ===================================
+# The issue hint used -i and the pull hint did not, so `Pull request #N` and `pr #N` were recorded
+# as `bare` — and a bare reference is only existence-checked, so a sentence naming the wrong entity
+# kind passed the live check outright.
+for spelling in "Pull request" "pull request" "pr" "PR"; do
+  : > "$GH_CALLS"
+  reset_branch
+  printf 'See %s %s for context.\n' "$spelling" "$REF_OPEN" > "$REPO/notes.md"
+  commit "hint spelling $spelling"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "C1: '$spelling' is recognized as a pull-request hint (and 7 is an issue)"
+done
+
+# ============ review #239: the date must come from the FIELD ==================================
+# The extractor took the first date-shaped substring anywhere on the line, so trailing prose
+# satisfied the rule while the field itself carried no date.
+reset_branch
+cat >> "$REPO/.ai-dev-baseline/decisions.md" <<'EOF'
+
+## D3 — a date only in the trailing prose
+- date:      TBD # expected around 2026-03-03
+EOF
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-03-03T12:00:00Z" git -C "$REPO" commit -q -m "date in prose" --date="2026-03-03T12:00:00Z"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "C4: a date in trailing prose does NOT satisfy a field whose value is TBD"
+has "$OUT" "carries no YYYY-MM-DD" "C4: the diagnostic says the FIELD has no date"
+
+# ============ review #239: a merge must not inherit its parents' dates ========================
+# `git show -m` diffs a merge against EACH parent, so a line from ONE parent reads as an addition
+# relative to the other. A feature branch that merges the default branch and resolves a conflict in
+# the decision log therefore re-attributed every accumulated decision to the merge commit and
+# compared it against the merge's own date — a guaranteed red build on correctly-dated entries.
+git -C "$REPO" checkout -q -B trunkside "$BASE"
+cat >> "$REPO/.ai-dev-baseline/decisions.md" <<'EOF'
+
+## D9 — written long ago, on the default branch
+- date:      2026-01-01
+EOF
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-01-01T12:00:00Z" git -C "$REPO" commit -q -m "old decision on trunk" --date="2026-01-01T12:00:00Z"
+git -C "$REPO" checkout -q -B probe "$BASE"
+cat >> "$REPO/.ai-dev-baseline/decisions.md" <<'EOF'
+
+## D8 — written on the feature branch
+- date:      2026-01-20
+EOF
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-01-20T12:00:00Z" git -C "$REPO" commit -q -m "feature decision" --date="2026-01-20T12:00:00Z"
+git -C "$REPO" merge --no-ff -q trunkside >/dev/null 2>&1 || true
+# Resolve the conflict the way a human would: keep both entries, unchanged.
+cat > "$REPO/.ai-dev-baseline/decisions.md" <<'EOF'
+# Decision log
+
+## D1 — the first decision
+- date:      2026-01-01
+
+## D2 — the second decision
+- date:      2026-01-02
+
+## D8 — written on the feature branch
+- date:      2026-01-20
+
+## D9 — written long ago, on the default branch
+- date:      2026-01-01
+EOF
+git -C "$REPO" add -A
+GIT_COMMITTER_DATE="2026-01-21T12:00:00Z" git -C "$REPO" commit -q -m "merge trunk" --date="2026-01-21T12:00:00Z"
+cc --range "$BASE..probe"
+eq "$RC_" 0 "C4: a merge does NOT inherit its parents' dates as its own additions"
+hasnt "$OUT" "2026-01-01" "C4: the default branch's old date is not re-attributed to the merge"
+git -C "$REPO" checkout -q -B probe "$BASE"
 
 # =============================== the wiring is pinned ==========================================
 # A perfectly correct lint that nothing invokes is a lint that checks nothing, and it fails exactly

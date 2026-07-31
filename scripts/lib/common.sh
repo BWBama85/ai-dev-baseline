@@ -539,14 +539,27 @@ adb_gh_entity() {
   # Read and parse as SEPARATE steps: a pipeline reports only its LAST command's status, so
   # `gh … | jq` returns 0 on a failed read and the parser sees empty stdin — indistinguishable from
   # a legitimately empty answer.
-  json="$(gh "$sub" view "$n" --repo "$slug" --json "state,$extra,url" 2>/dev/null)"; rc=$?
+  local err
+  err="$(mktemp)" || return 2
+  json="$(gh "$sub" view "$n" --repo "$slug" --json "state,$extra,url" 2>"$err")"; rc=$?
   if [ "$rc" -ne 0 ]; then
-    # gh exits non-zero both for "no such number" and for "the network is gone". Ask whether the
-    # REPOSITORY is reachable to tell them apart; if that read also fails, the honest answer is
-    # UNREADABLE rather than a confident "this issue does not exist".
-    gh repo view "$slug" --json name >/dev/null 2>&1 || return 2
-    return 1
+    # ABSENCE IS CLASSIFIED FROM THE ENTITY RESPONSE ITSELF, never inferred from something else
+    # being readable. An earlier version asked whether the REPOSITORY was reachable and treated a
+    # successful repo read as proof the number did not exist — but repo reachability proves
+    # connectivity and nothing more. Every query-specific failure with a readable repo then became
+    # a confident "does not resolve": insufficient issue permissions, a transient GraphQL error, or
+    # simply an unsupported field (`--json mergedAt` on an issue really does fail this way). A tool
+    # built to stop fabricated references would have been fabricating them.
+    #
+    # So only GitHub's own definite negative counts. Anything else — including an unrecognized
+    # error — is UNREADABLE, which is the conservative answer: it stops the run instead of
+    # accusing a real reference.
+    if grep -qi 'Could not resolve to an\|Could not resolve to a PullRequest\|no issues found' "$err"; then
+      rm -f "$err"; return 1
+    fi
+    rm -f "$err"; return 2
   fi
+  rm -f "$err"
   [ -n "$json" ] || return 2
   fields="$(printf '%s' "$json" | jq -r '.state // "", (.'"$extra"' // ""), (.url // "")' 2>/dev/null)" \
     || return 2
