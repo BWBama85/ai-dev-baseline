@@ -17,7 +17,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   is the same argument D16 already made for turning a rule into an exit code.
   - **`scripts/check-claims.sh`** scans the **added lines of a range** and asserts three things:
     every `#N` resolves, is the kind it is cited as (`gh issue view` answers for a PR number too,
-    so "issue #210" naming a pull request is a wrong claim bare existence waves through), and is
+    so `issue #210` naming a pull request is a wrong claim bare existence waves through), and is
     not closed `NOT_PLANNED`; every `D<N>` resolves to a `## D<N> — ` heading in the decision log;
     and every added `- date:` there is within a day of the commit that introduced it — in **both**
     directions, because the #173 entry was stamped a day *ahead*.
