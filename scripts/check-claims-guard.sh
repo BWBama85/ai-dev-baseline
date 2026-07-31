@@ -124,29 +124,47 @@ cc --range;         eq  "$RC_" 2 "--range without a value exits 2"
 cc --range HEAD;    eq  "$RC_" 2 "a range with no .. exits 2"
 cc --range "deadbeefdeadbeef..HEAD"; eq "$RC_" 2 "an unresolvable head revision exits 2"
 
+# ---------------------------------------------------------------------------------------------
+# THE DANGLING TOKENS ARE BUILT, NEVER WRITTEN LITERALLY — and this file is the reason the rule
+# exists. check-claims.sh scans the added lines of tracked files, and this suite IS a tracked file,
+# so a literal dangling `D`+`99` in a fixture below is a dangling reference in the repository and
+# the lint rightly fails its own introducing commit. That is the bootstrap hazard, and it has
+# exactly one correct fix.
+#
+# The obvious one is wrong: putting the `adb-claim-ok` marker on the fixture line would ALSO put it
+# into the fixture file the line writes, exempting the very line under test and turning the
+# assertion green while checking nothing. Broadly excluding this file is worse — it would blind the
+# lint to every real claim the suite ever grows.
+#
+# So the token is assembled from halves. `"D""99"` reads as D-99 to a human and matches nothing:
+# the grammar needs a digit immediately after the D, and here a quote sits there. The fixtures are
+# then written with printf rather than a quoted heredoc, which is what lets the value expand.
+# ---------------------------------------------------------------------------------------------
+D_MISSING="D""99"
+D_MISSING2="D""77"
+D_MISSING3="D""98"
+
 # =============================== C2 — decision references ======================================
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-This paragraph cites D99, which has no heading anywhere.
-EOF
+printf 'This paragraph cites %s, which has no heading anywhere.\n' "$D_MISSING" > "$REPO/notes.md"
 commit "cite a missing decision"
 cc --range "$BASE..probe"
 eq "$RC_" 1 "C2: a dangling D-reference exits 1 (the designated violation code)"
-has "$OUT" "cites D99" "C2: the diagnostic names the dangling decision"
+has "$OUT" "cites $D_MISSING" "C2: the diagnostic names the dangling decision"
 has "$OUT" "notes.md:1" "C2: the diagnostic names file:line"
 
 # ...and the SAME defect in a SHELL COMMENT, which is where the real one was. A rule that discarded
 # comments would be green here, and that is one of the four claims this lint exists for.
 reset_branch
-cat > "$REPO/lib.sh" <<'EOF'
-#!/usr/bin/env bash
-# The reviewer-identity rule (recorded as D77) is applied here.
-echo hi
-EOF
+{
+  printf '#!/usr/bin/env bash\n'
+  printf '# The reviewer-identity rule (recorded as %s) is applied here.\n' "$D_MISSING2"
+  printf 'echo hi\n'
+} > "$REPO/lib.sh"
 commit "cite a missing decision in a shell comment"
 cc --range "$BASE..probe"
 eq "$RC_" 1 "C2: a dangling D-reference inside a SHELL COMMENT still exits 1"
-has "$OUT" "cites D77" "C2: the shell-comment diagnostic names the decision"
+has "$OUT" "cites $D_MISSING2" "C2: the shell-comment diagnostic names the decision"
 
 # A decision ADDED BY THE SAME RANGE resolves: the candidate tree is the authority, not the base.
 reset_branch
@@ -174,24 +192,21 @@ eq "$RC_" 1 "C2: D18 is not satisfied by the existing D1 heading"
 
 # =============================== C2 precision — only prose declares ============================
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-Inside a fence, nothing declares:
-
-```
-D99 appears here and must not be checked.
-```
-
-And `D98` in a code span must not be checked either.
-EOF
+{
+  printf 'Inside a fence, nothing declares:\n\n'
+  printf '```\n'
+  printf '%s appears here and must not be checked.\n' "$D_MISSING"
+  printf '```\n\n'
+  printf 'And `%s` in a code span must not be checked either.\n' "$D_MISSING3"
+} > "$REPO/notes.md"
 commit "fenced and code-span D-refs"
 cc --range "$BASE..probe"
 eq "$RC_" 0 "C2: a D-reference inside a fence or a code span does not fire"
 
 # =============================== the audited escape ============================================
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-This cites D99 deliberately. adb-claim-ok: documenting a decision id that does not exist.
-EOF
+printf 'This cites %s deliberately. adb-claim-ok: a decision id that does not exist.\n' \
+  "$D_MISSING" > "$REPO/notes.md"
 commit "exempt line"
 cc --range "$BASE..probe"
 eq "$RC_" 0 "escape: a line carrying the marker is exempt"
@@ -252,23 +267,29 @@ cc --range "$BASE..probe"
 eq "$RC_" 0 "C4: 2026-02-28 is one day before 2026-03-01, not 27 (month-boundary arithmetic)"
 hasnt "$OUT" "days from its commit date" "C4: no violation is reported across the month boundary"
 
+# The SAME construction as the D-tokens above, for the same reason: these numbers are meaningful in
+# THIS repository too (150 really is closed NOT_PLANNED here, 210 really is a pull request), so a
+# literal fixture would make the live half fail on its own suite. Split so no digit follows the `#`.
+REF_GONE="#""4242"
+REF_NP="#""150"
+REF_PR="#""210"
+REF_OPEN="#""7"
+REF_DONE="#""9"
+REF_ZERO="#""0"
+
 # =============================== C1 — live issue/PR references =================================
 : > "$GH_CALLS"
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-Tracked in #4242, which does not exist.
-EOF
+printf 'Tracked in %s, which does not exist.\n' "$REF_GONE" > "$REPO/notes.md"
 commit "nonexistent reference"
 cc --range "$BASE..probe" --live
 eq "$RC_" 1 "C1: a reference that does not resolve exits 1"
-has "$OUT" "#4242 does not resolve" "C1: the diagnostic names the dangling number"
+has "$OUT" "$REF_GONE does not resolve" "C1: the diagnostic names the dangling number"
 has "$OUT" "acme/widget" "C1: the diagnostic names the repo the read was pinned to"
 
 : > "$GH_CALLS"
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-Superseded by #150, which tracks this work.
-EOF
+printf 'Superseded by %s, which tracks this work.\n' "$REF_NP" > "$REPO/notes.md"
 commit "not-planned reference"
 cc --range "$BASE..probe" --live
 eq "$RC_" 1 "C1: a NOT_PLANNED reference exits 1"
@@ -277,20 +298,16 @@ has "$OUT" "adb-claim-ok" "C1: the diagnostic names the escape, so the remedy is
 
 : > "$GH_CALLS"
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-See issue #210 for the rationale.
-EOF
+printf 'See issue %s for the rationale.\n' "$REF_PR" > "$REPO/notes.md"
 commit "kind mismatch"
 cc --range "$BASE..probe" --live
-eq "$RC_" 1 "C1: 'issue #210' resolving to a PULL REQUEST exits 1"
+eq "$RC_" 1 "C1: an issue-cited number resolving to a PULL REQUEST exits 1"
 has "$OUT" "cited as an issue but resolves to a pull request" "C1: the kind mismatch is named"
 
 # A bare number that resolves to a PR is fine — PRs are legitimate references.
 : > "$GH_CALLS"
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-Landed in #210 and tracked by #7, and #9 is done.
-EOF
+printf 'Landed in %s and tracked by %s, and %s is done.\n' "$REF_PR" "$REF_OPEN" "$REF_DONE" > "$REPO/notes.md"
 commit "legitimate references"
 cc --range "$BASE..probe" --live
 eq "$RC_" 0 "C1: bare PR, open issue and COMPLETED issue references all pass"
@@ -299,9 +316,7 @@ has "$OUT" "live-lookups=3" "C1: three distinct numbers cost exactly three looku
 # Deduplication: the same number many times is ONE network call.
 : > "$GH_CALLS"
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-#7 and #7 and #7 again, plus #7 once more.
-EOF
+printf '%s and %s and %s again, plus %s once more.\n' "$REF_OPEN" "$REF_OPEN" "$REF_OPEN" "$REF_OPEN" > "$REPO/notes.md"
 commit "repeated reference"
 cc --range "$BASE..probe" --live
 eq "$RC_" 0 "C1: repeated references pass"
@@ -311,17 +326,15 @@ eq "$(grep -c 'issue view' "$GH_CALLS" | tr -d ' ')" 1 "C1: the stub recorded ex
 # =============================== C1 precision ==================================================
 : > "$GH_CALLS"
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-A fenced block declares nothing:
-
-```
-Tracked in #4242.
-```
-
-Nor does `#4242` in a code span.
-A cross-repo reference acme/other#4242 belongs to a different number space.
-Neither #0 nor SC1091 is an entity reference.
-EOF
+{
+  printf 'A fenced block declares nothing:\n\n'
+  printf '```\n'
+  printf 'Tracked in %s.\n' "$REF_GONE"
+  printf '```\n\n'
+  printf 'Nor does `%s` in a code span.\n' "$REF_GONE"
+  printf 'A cross-repo reference acme/other%s belongs to a different number space.\n' "$REF_GONE"
+  printf 'Neither %s nor SC1091 is an entity reference.\n' "$REF_ZERO"
+} > "$REPO/notes.md"
 commit "precision corpus"
 cc --range "$BASE..probe" --live
 eq "$RC_" 0 "C1: fences, code spans, cross-repo forms and #0 are all excluded"
@@ -329,9 +342,7 @@ eq "$(grep -c 'issue view' "$GH_CALLS" | tr -d ' ')" 0 "C1: nothing in the preci
 
 # =============================== fail closed ===================================================
 reset_branch
-cat > "$REPO/notes.md" <<'EOF'
-Tracked in #7.
-EOF
+printf 'Tracked in %s.\n' "$REF_OPEN" > "$REPO/notes.md"
 commit "live without gh"
 cc_noauth --range "$BASE..probe" --live
 eq "$RC_" 3 "--live with an unauthenticated gh exits 3 (fail closed), NOT 0"

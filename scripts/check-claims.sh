@@ -5,8 +5,11 @@
 # committing it. That is one class, and the #173 run (PR #210) shipped four of them, three wrong:
 # a `#206` citation that tracked something else, a `#207` citation for an issue that DID NOT EXIST
 # (rendered into all three agents' skills), "(recorded as D17)" for a decision that is D18, and a
-# CHANGELOG sentence describing an edit that had not been made. Two pre-existing `#150` citations
-# pointed at an issue closed NOT_PLANNED — abandoned work, reading as delivered.
+# CHANGELOG sentence describing an edit that had not been made. Two pre-existing citations pointed
+# at issue #150, closed NOT_PLANNED — abandoned work reading as delivered.  adb-claim-ok: that
+# citation is deliberately historical, and the marker must sit on the SAME line as the reference
+# because the exemption is per-line. This is the escape's first real use, on the very example the
+# lint exists for.
 #
 # base/practices/verify-before-asserting.md already forbids exactly this for PR/issue STATUS, and
 # D16 is the precedent for why it is a gate rather than another paragraph: the prose version failed
