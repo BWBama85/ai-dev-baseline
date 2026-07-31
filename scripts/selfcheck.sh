@@ -122,7 +122,8 @@ if bash scripts/check-workflow-shell.sh; then echo "PASS"; else echo "FAIL"; fai
 
 step "injection"
 # Third-party text (issue bodies, review threads, CI logs, vendor changelogs) drives these
-# workflows, and two of them hand it to a second agent with repo tool access (#214). Two halves:
+# workflows, and one of them hands it to a second agent with repo tool access at two sites
+# (#214 — /implement-issue steps 3 and 8). Two halves:
 # a red-team over the containment envelope (a body carrying a closing tag, a quote or a newline
 # must round-trip as one JSON value and cannot break out), and a source contract asserting every
 # workflow that reads such text labels the read and that every workflow is classified. Its own
