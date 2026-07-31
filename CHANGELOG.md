@@ -27,7 +27,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     never a pass). The offline run reports how many references it left unverified.
   - **An audited per-line `adb-claim-ok: <reason>` escape**, because prose *about* an abandoned
     issue is legitimate — a blanket `NOT_PLANNED` rejection is semantically wrong, and a gate with
-    no way to say so gets worked around. Its first use is this lint's own header, citing #150.
+    no way to say so gets worked around. Its first use is this lint's own header, citing
+    #150. <!-- adb-claim-ok: cited BECAUSE it is closed NOT_PLANNED — the cautionary case. In
+    markdown the marker rides an HTML comment so it does not render; the exemption is per-line,
+    so it must sit on the same physical line as the reference. -->
   - **`scripts/check-claims-guard.sh`** drives every rule to RED offline against fixtures in a
     throwaway repo with a stubbed `gh`, asserting the **designated** exit code and diagnostic
     rather than "some non-zero", and pins the active invocation sites so commenting a call out
