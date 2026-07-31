@@ -163,8 +163,9 @@ many. Full contract: `base/roles.md`.
 
 - **Verify repo scope first** (`repo-scope.md`) — confirm every issue belongs to
   THIS repo before touching code.
-- **Out-of-scope work always becomes a tracked issue** (`issues-and-scope.md`),
-  filed before close-out — never just a PR-body note, never ask first.
+- **Deferred work that clears the bar becomes a tracked issue** (`issues-and-scope.md`) —
+  name who does it and what breaks if nobody does; both answerable → file before close-out,
+  never just a PR-body note. Either unanswerable → file nothing, and say so.
 - **Self-review is mandatory** (`self-review.md`) before the PR.
 - **Handle the unknown deterministically** (`handling-the-unknown.md`) — when the repo
   needs something the baseline doesn't model (a gate, convention, role setup, or a
@@ -884,11 +885,18 @@ filed** — step 9 files each deferral at the moment it is decided, so that the 
 in step 10 can only ever cite numbers that already exist. What remains here is everything
 that ordering cannot cover:
 
-- **Anything still unfiled.** For every item not shipped in this PR that someone might need
-  later — slices you cut, the parent's own "Out of scope" list, gap-analysis / review items
-  you deferred, knowingly-skipped test/infra gaps — create a tracked issue if one doesn't
-  already exist. **File by default; never ask.** A PR body is not a tracker.
-  `gh issue list --search …` first to avoid dupes.
+- **Anything still unfiled that clears the bar.** For every item not shipped in this PR —
+  slices you cut, the parent's own "Out of scope" list, gap-analysis / review items you
+  deferred, knowingly-skipped test/infra gaps — apply the bar in
+  `base/practices/issues-and-scope.md`: **can you name who does it, and what breaks if
+  nobody ever does?** Both answerable → file it (a PR body is not a tracker). Either one
+  unanswerable → **file nothing and say so** in the close-out.
+
+  This step is a filter, not a quota. A gap-analysis pass and a code review are *designed*
+  to surface more than is worth doing; most of what they raise is a shape, not a defect, and
+  the honest close-out for a clean run is "3 deferrals, 1 filed" — not three issues to prove
+  the step ran. `gh issue list --search …` first, both to avoid dupes and because a duplicate
+  is worse than a gap.
 - **The PR-side link**, which step 9 structurally could not add: the PR did not exist yet.
   Link each issue filed during this run from the PR.
 - **A dedupe pass.** Two phases filing into one tracker can file the same thing twice — a

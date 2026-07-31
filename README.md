@@ -83,7 +83,8 @@ concern per file, rendered into every agent's root doc:
 - **Git & PRs** — feature-branch-only, no destructive git, and a real branch
   cleanup sweep (all merged branches, named explicitly).
 - **CI discipline** — diagnose before you re-run; never gamble on a flaky green.
-- **Issues & scope** — deferred/out-of-scope work always becomes a tracked issue.
+- **Issues & scope** — deferred work is tracked when it clears the bar: who does it,
+  and what breaks if nobody does.
 - **Repo scope** — confirm work belongs to *this* repo before starting.
 - **Debugging** — evidence-backed root cause, not guesses.
 - **Self-review** — a mandatory pre-PR pass that catches real bugs.

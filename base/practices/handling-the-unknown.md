@@ -14,11 +14,16 @@ regardless of which agent is driving.
 
 Classify the unknown into **exactly one** bucket, then act as that bucket prescribes:
 
-1. **General** — many projects would hit or want this. → **File a baseline issue** so it
-   becomes a shared capability, and as a *stopgap* use the relevant supported config
-   surface if one fits (e.g. a missing gate command → `agents.toml [gates]`). Never a
-   bespoke local fix others can't inherit. If no supported surface fits the gap, escalate
-   (bucket 4) rather than inventing a new home.
+1. **General** — many projects would hit or want this. → Use the relevant supported
+   config surface if one fits (e.g. a missing gate command → `agents.toml [gates]`).
+   Never a bespoke local fix others can't inherit. If no supported surface fits the gap,
+   escalate (bucket 4) rather than inventing a new home.
+
+   **File a baseline issue only if the gap clears the bar in `issues-and-scope.md`** —
+   you can name who does it and what breaks if nobody ever does. "Many projects *would*
+   want this" is a hypothesis about absent users, not an answer to either question; a gap
+   *you* just worked around with a stopgap that holds is, by demonstration, not breaking
+   anything. A config surface that covered the case is the fix, not a placeholder for one.
 2. **Project-specific delta** — legitimately unique to this repo. → Record it in the
    **prescribed home for its category** (table below), never scattered or ad-hoc.
 3. **Deviation** — the project deliberately contradicts a baseline rule. → Allowed, but
@@ -42,7 +47,7 @@ yet is itself an escalation (bucket 4) — say so and ask, don't invent a home.
 | Custom gate *policy* (order, conditional) | the repo's own `.claude/scripts/precommit-gate.sh` |
 | Workflow that genuinely diverges | a project-scoped skill shadowing the global one |
 | Deviation from a baseline rule | a `DEVIATION` entry in the decision log |
-| General gap (would help many projects) | a **baseline issue** + supported stopgap surface |
+| General gap (would help many projects) | the supported stopgap surface; a baseline issue **only if it clears the bar** |
 
 See `docs/per-project-overrides.md` for the override surfaces and
 `docs/roles-and-agents.md` for `agents.toml`.
@@ -83,8 +88,10 @@ A **deviation** adds the fields that make it a deliberate, reviewable fork — n
   Anything living elsewhere is drift.
 - **Never invent a new home to avoid asking.** A category with no prescribed home is
   bucket 4 (escalate), not license to improvise.
-- **A general gap always earns a filed issue** (`issues-and-scope.md`), not just a local
-  stopgap — the stopgap is temporary; the issue is how everyone eventually inherits the fix.
+- **A general gap earns a filed issue only when it clears the bar** (`issues-and-scope.md`).
+  A stopgap that holds is a fix, not a debt: if nothing breaks while it stands, the second
+  question has no answer and there is nothing to file. Record the decision either way — the
+  decision log, not the tracker, is what makes a divergence visible.
 - **Record before you move on.** An unrecorded decision is an invisible divergence.
 
 ## Why

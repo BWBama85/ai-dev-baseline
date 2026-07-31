@@ -180,7 +180,11 @@ Return the issue URL and a one-line summary of what was filed.
 
 ### 7. Offer follow-up handoff (optional)
 
-If any axis in Step 3 surfaced a sibling bug or out-of-scope concern worth filing separately, offer to file those as a second `/create-issue` call. Do not silently fold sibling bugs into the primary issue's body — they deserve their own tracking. This is the "deferred work → tracked issue" rule of `base/practices/issues-and-scope.md`: anything scoped out here is owed its own open issue, not just a mention in the parent's body.
+The 11 axes are a *scope-finding* instrument, and they will surface more than is worth tracking — that is what a thorough adversarial pass does. **Run each candidate through the bar in `base/practices/issues-and-scope.md` before offering it:** can you name who does it, and what breaks if nobody ever does?
+
+Most axis output fails that test, and should. An axis that says "a sibling helper might have this shape" is an instruction to **go look** — if the sibling is broken, that is one bug with two sites in the issue you are already writing; if it isn't, there is nothing to file. Only a genuine second **defect**, with its own answers to both questions, earns its own issue; offer those as a second `/create-issue` call rather than folding them into this body.
+
+If nothing clears the bar, say so and file nothing. A step that surfaces zero follow-ups is a normal outcome, not a skipped step.
 
 **A number you have not filed is a number you must not write.** The `## Related` block invites cross-references, and the temptation is to write the sibling's number into the primary's body while both are still drafts. That number does not exist yet, and a reference that resolves to nothing reads exactly like tracked work — which is how it stops being filed at all.
 

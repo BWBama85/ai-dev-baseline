@@ -12,7 +12,7 @@ Each file covers exactly one concern:
 | `shell.md` | Shell portability and command hygiene |
 | `git-and-prs.md` | Branching, PRs, destructive-git rules, branch cleanup |
 | `ci-discipline.md` | Diagnose-before-rerun; no flaky-CI gambling |
-| `issues-and-scope.md` | Out-of-scope work always becomes a tracked issue |
+| `issues-and-scope.md` | Track deferred work that matters — and nothing else |
 | `handling-the-unknown.md` | Classify → place → record → escalate the unknown; no improvised one-offs |
 | `repo-scope.md` | Confirm work belongs to *this* repo before starting |
 | `debugging.md` | Evidence-backed root cause, not guesses |

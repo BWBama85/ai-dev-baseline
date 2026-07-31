@@ -98,11 +98,11 @@ happened and was expensive enough to codify a rule against:
   *before* the fix, and rule out your own stale state (a deployed build
   lagging the default branch behind a release gate is not a platform bug)
   before blaming the platform.
-- **Out-of-scope → tracked issue** (`issues-and-scope.md`) — anything
-  deferred, punted, or listed as a parent issue's own "Out of scope" section
-  evaporates the moment that issue closes on merge. A PR-body note is not
-  tracking. The rule: file a real GitHub issue, automatically, before calling
-  the work done — never ask first.
+- **Track what matters, and nothing else** (`issues-and-scope.md`) — deferred work
+  that lives only in prose gets lost, and a PR-body note is not tracking; but a
+  backlog filed indiscriminately is lost too. The bar: name who does it and what
+  breaks if nobody ever does. Both answerable → file it before calling the work
+  done. Either unanswerable → the work was not real enough to track.
 - **Logging and secrets** (`logging-and-secrets.md`) — structured,
   correlated logs by default; never log API keys, tokens, JWTs, credential-
   bearing headers, or full bodies that might carry them.
