@@ -124,7 +124,10 @@ bash "$ROOT/scripts/lib/role-dispatch.sh" untrusted >/dev/null 2>&1; eq "$?" "2"
 #   implement-issue  3 — the issue JSON (step 2), the gap-analysis prompt (step 3), the review
 #                        prompt (step 8). The last is the one an implementer forgets, because by
 #                        step 8 the body feels like something they wrote.
-#   resolve-pr-threads 1 — thread bodies + the task-mode issue comment, one site.
+#   resolve-pr-threads 2 — the task-mode issue comment (step 0) and the thread bodies (step 3).
+#                        TWO, not one: the two reads are ~140 lines apart, and a single label at
+#                        the later one is not "in the same breath as the read" — which is the
+#                        practice's own wording, and the property that makes provenance useful.
 #   roadmap          1 — open issue bodies and the artifact body.
 #   debug            1 — CI/app logs and the incident text in the arguments.
 #   new-release      1 — the fetched vendor changelog.
@@ -133,7 +136,7 @@ bash "$ROOT/scripts/lib/role-dispatch.sh" untrusted >/dev/null 2>&1; eq "$?" "2"
 #                        or a comment. Recorded as zero rather than omitted, so "cleanup is absent
 #                        from the list" can never be mistaken for "nobody has looked at cleanup".
 REGISTRY='implement-issue 3
-resolve-pr-threads 1
+resolve-pr-threads 2
 roadmap 1
 debug 1
 new-release 1
