@@ -126,7 +126,11 @@ adb_installed_agents() {
 
 # True when the Claude Stop-hook gates are wired into settings.json. Used to preserve a
 # prior `--no-hooks` choice across a self-heal (re-install would otherwise re-add them).
-adb_hooks_wired() { grep -q 'precommit-gate\.sh' "$HOME/.claude/settings.json" 2>/dev/null; }
+# True only when EVERY shipped hook is wired. Delegates to the manifest-derived predicate in
+# common.sh (#242) — this used to grep for `precommit-gate.sh` alone, so removing that one hook
+# read as "the operator chose --no-hooks" and silently stopped the other three from being
+# maintained. Keeping the name means existing callers read the stricter answer for free.
+adb_hooks_wired() { [ "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" = "wired" ]; }
 
 # Scan the ACTUAL installed symlinks that point INTO <src>, across ONLY the namespaces where a
 # rename can leave an orphan: each agent's skills/* and scripts/* trees (Claude, Codex, and
@@ -229,10 +233,22 @@ EOF
     echo "baseline: no installed agents detected — nothing to self-heal." >&2
     return 1
   fi
-  # Preserve a prior --no-hooks: only when Claude is installed FROM THIS src but its
-  # gates aren't wired (a root doc pointing elsewhere is not ours to re-wire).
-  if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC" && ! adb_hooks_wired; then
-    args+=(--no-hooks)
+  # Preserve a prior --no-hooks: only when Claude is installed FROM THIS src but its gates aren't
+  # wired (a root doc pointing elsewhere is not ours to re-wire). THREE states, not two (#242):
+  # `none` is the opt-out and is honoured; `partial` is an edit to SOME hooks and must not be read
+  # as intent about all of them, or removing one silently orphans the rest.
+  if adb_link_into "$HOME/.claude/CLAUDE.md" "$SRC"; then
+    case "$(adb_claude_hooks_state "$HOME/.claude/settings.json")" in
+      none) args+=(--no-hooks) ;;
+      partial)
+        # Re-wire, and SAY SO — the whole defect was that this degraded invisibly. An operator who
+        # wants no gates removes them all, which is `none` above and still honoured.
+        printf 'baseline: NOTE — the ai-dev-baseline hook set is PARTIAL; missing: %s\n' \
+          "$(adb_claude_hooks_missing "$HOME/.claude/settings.json" | tr '\n' ' ')" >&2
+        printf 'baseline:        re-wiring the shipped set. To opt out, remove ALL of them (see docs/installation.md --no-hooks).\n' >&2
+        ;;
+      *) : ;;   # wired — nothing to preserve, nothing to say
+    esac
   fi
   echo "baseline: self-healing installed links → ./install.sh ${args[*]}"
   ( cd "$SRC" && ./install.sh "${args[@]}" ) || {

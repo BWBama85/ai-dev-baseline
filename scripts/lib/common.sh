@@ -143,6 +143,61 @@ adb_claude_hook_scripts() {
 # PreToolUse. That directly contradicts the promise that a user's own hooks survive. A command at
 # any other path is by definition not ours, so the exact path we install is the ownership test.
 # Usage: adb_claude_hook_regex <home>
+# Classify how the SHIPPED Claude hook payload is wired into a settings.json (#242).
+# Prints exactly one of: wired | none | partial      Usage: adb_claude_hooks_state <settings.json>
+#
+# Three states, not two, because the two-state version inferred the operator's intent about the
+# WHOLE payload from ONE member: `bin/baseline` used to answer this with a bare
+# `grep -q 'precommit-gate\.sh'`. An operator who removed only the expensive hook — a reasonable,
+# documented-adjacent choice — was then read as having chosen `--no-hooks`, and every later
+# self-heal skipped wiring ALL of them. Nothing reported it. Removing one hook silently stopped
+# the other three from ever being installed, updated, or repaired.
+#
+# `partial` is the state that was missing, and it is the one that must NOT be read as opting out:
+# an operator who wanted none removes all of them, which is `none` and still honoured.
+#
+# MATCH THE INSTALLED PATH, NOT THE BASENAME. A bare `precommit-gate.sh` search also matches a
+# command the operator wrote themselves — `/custom/precommit-gate.sh` in a deliberately
+# `--no-hooks` install — which would read as `partial` and make the next self-heal wire the whole
+# baseline set the operator had opted out of. Every other ownership test in this file compares the
+# exact `<home>/.claude/scripts/<name>.sh` path for the same reason; this one must too.
+#
+# grep -F on that full path, never a pattern: it comes from a manifest plus $HOME, and neither is
+# a regex. Absent/unreadable settings is `none` — the ordinary state of a machine that never ran
+# install.sh, which is exactly what --no-hooks would produce anyway.
+# Usage: adb_claude_hooks_state <settings.json> [home]      (home defaults to $HOME)
+adb_claude_hooks_state() {
+  local settings="$1" home="${2:-${HOME:-/root}}" s present=0 absent=0
+  [ -f "$settings" ] || { printf 'none'; return 0; }
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    if grep -qF "$home/.claude/scripts/$s" "$settings" 2>/dev/null
+    then present=$(( present + 1 )); else absent=$(( absent + 1 )); fi
+  done <<EOF
+$(adb_claude_hook_scripts)
+EOF
+  if   [ "$absent"  -eq 0 ]; then printf 'wired'
+  elif [ "$present" -eq 0 ]; then printf 'none'
+  else                            printf 'partial'
+  fi
+}
+
+# The shipped hook scripts NOT wired in <settings.json>, one per line (empty when fully wired).
+# Exists so a `partial` verdict can name what is missing rather than just asserting a delta —
+# a state nobody can see is the reason #242 went unnoticed. Matches the same installed path as
+# adb_claude_hooks_state, so the two can never disagree about what "present" means.
+# Usage: adb_claude_hooks_missing <settings.json> [home]
+adb_claude_hooks_missing() {
+  local settings="$1" home="${2:-${HOME:-/root}}" s
+  [ -f "$settings" ] || { adb_claude_hook_scripts; return 0; }
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    grep -qF "$home/.claude/scripts/$s" "$settings" 2>/dev/null || printf '%s\n' "$s"
+  done <<EOF
+$(adb_claude_hook_scripts)
+EOF
+}
+
 adb_claude_hook_regex() {
   local home="$1" s alt="" esc
   while IFS= read -r s; do

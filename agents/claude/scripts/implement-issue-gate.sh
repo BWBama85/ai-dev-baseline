@@ -41,10 +41,16 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -z "$repo_root" ] && exit 0
 cd "$repo_root" || exit 0
 
-# Defer to a project-local copy of this gate if one exists and isn't this file.
+# Defer to a project-local copy of this gate by RUNNING it, not by stepping aside (#240). `exit 0`
+# here was enforcement silently OFF: nothing else invokes a project gate — no project-level Stop
+# hook is wired by install.sh, the adapter, or bin/baseline — so a repo that shipped its own copy
+# ended up with a script nothing ran AND this gate standing down. `exec` inherits stdin (the hook
+# payload) and propagates the status, so a project gate can still block with 2; the `-ef` inode
+# test is what stops this re-entering itself.
 proj_gate="$repo_root/.claude/scripts/implement-issue-gate.sh"
 if [ -e "$proj_gate" ] && [ ! "$proj_gate" -ef "$0" ]; then
-  exit 0
+  [ -x "$proj_gate" ] && exec "$proj_gate" "$@"
+  exec bash "$proj_gate" "$@"
 fi
 
 # Shared shell primitives live in the sibling lib/ (installed as ~/.claude/scripts/lib).

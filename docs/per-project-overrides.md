@@ -222,23 +222,33 @@ unconditionally (fail-safe).
 
 ### 3b. Shipping the repo's own gate script
 
-Both Stop-hook gates check, before doing anything else, whether the repo
-ships its **own** copy of that exact script at
-`.claude/scripts/precommit-gate.sh` or
-`.claude/scripts/implement-issue-gate.sh`. If that file exists and is not
-literally the same file as the one currently running (compared with the
-`-ef` test, i.e. same inode — this is what lets the *global* copy detect that
-it's running as itself vs. as a project's copy without an infinite-defer
-loop), the global gate exits `0` immediately and the project's version runs
-instead:
+Every Stop-hook gate checks, before doing anything else, whether the repo
+ships its **own** copy of that exact script at `.claude/scripts/<name>.sh`.
+If that file exists and is not literally the same file as the one currently
+running (compared with the `-ef` test, i.e. same inode — this is what lets
+the *global* copy detect that it's running as itself vs. as a project's copy
+without an infinite-defer loop), the global gate **`exec`s the project's
+copy**, which becomes the gate:
 
 ```bash
 # precommit-gate.sh, abbreviated
 proj_gate="$repo_root/.claude/scripts/precommit-gate.sh"
 if [ -e "$proj_gate" ] && [ ! "$proj_gate" -ef "$0" ]; then
-  exit 0
+  [ -x "$proj_gate" ] && exec "$proj_gate" "$@"
+  exec bash "$proj_gate" "$@"
 fi
 ```
+
+`exec` — not `exit 0` — is load-bearing (#240). Until this was fixed the
+global gate merely stepped aside, and **nothing else invokes a project
+gate**: `install.sh`, the adapter and `bin/baseline` wire only the global
+paths, so no project-level Stop hook exists to pick it up. A repo that
+followed this section therefore ended up with a gate script nothing ran *and*
+the global gate standing down — enforcement silently **off**, which is worse
+than the gate it replaced. Because the project's copy is `exec`ed it inherits
+stdin (the hook payload) and its exit status becomes the hook's, so a project
+gate can still block a stop with `2`. A copy that isn't executable is run via
+`bash` rather than failing the hook.
 
 This is the escape hatch for a project whose gating needs are too custom for
 `agents.toml [gates]` alone — e.g. gates that must run in a specific order,
