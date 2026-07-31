@@ -182,6 +182,30 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Changed
 
+- **Deferred work is tracked when it clears a bar, not by default.** `issues-and-scope.md` used to
+  read *"File by default; do not ask."* That rule stopped silent scope loss, but it is a generator
+  with no sink and nothing else in the baseline pushed the other way. Measured on this repo on
+  2026-07-31: **191 issues filed in 14 days against 98 closed — and 35 of those 98 closed
+  `NOT_PLANNED`.** More than a third of everything ever tracked turned out not to be worth doing,
+  filing outran completion roughly 3:1, and the backlog diverged rather than converged; a triage the
+  same day closed 59 of 93 open issues in one pass, almost all of them shapes rather than defects.
+  - **The bar:** file only if both questions have concrete answers — *who does this*, and *what
+    breaks if nobody ever does*. Either unanswerable → don't file.
+  - **Named non-reasons**, because these produced most of the closed set: the same rule stated
+    twice, a helper that would live better elsewhere, a check that could be more thorough, a sibling
+    that *might* share a bug (go look — a real one is filable, a hypothetical one is not), a feature
+    that could be generalized, an edge case nothing has hit. Only a defect *caused by* one of those
+    is filable, and then you file the defect.
+  - **The second generator is bounded too:** `handling-the-unknown.md`'s "a general gap always earns
+    a filed issue" now defers to the same bar — a stopgap that holds is a fix, not a debt, and
+    "many projects *would* want this" is a hypothesis about absent users, not an answer.
+  - **The workflows follow the practice rather than restating a stricter version.**
+    `/implement-issue` step 12 applies the bar and reports "3 deferrals, 1 filed" as a normal
+    outcome instead of treating a filing count as proof the step ran; `/create-issue` step 7 now
+    treats its 11 axes as a scope-*finding* instrument whose output must clear the bar before being
+    offered, and filing nothing is an expected result. `docs/philosophy.md` and `README.md` carried
+    the old absolute wording and are corrected.
+
 - **Follow-up issues are filed before anything cites them** (#212). `/implement-issue` used to file
   deferred work in step 12, *after* step 10 had already written a PR body citing it — so the
   citation was committed before the thing it cited existed. Step 9 now files each deferral at the

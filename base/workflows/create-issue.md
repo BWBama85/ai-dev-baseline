@@ -78,9 +78,9 @@ For each axis below, answer explicitly. If an axis is N/A, say so with one sente
    - Sibling helpers / mirror files (`AGENTS.md`, `.codex/`, etc.)
    - Permission / allowlist configs (`.claude/settings.json`, `.vscode/`, etc.)
 
-**6. Sibling bugs with the same vector.** If the issue fixes a bug in helper A, grep for every other helper doing similar work. If the bug is "reads PATH and picks stale binary," every binary resolver in the repo has it. Either scope them in or explicitly file as follow-ups (and link them).
+**6. Sibling bugs with the same vector.** If the issue fixes a bug in helper A, grep for every other helper doing similar work. If the bug is "reads PATH and picks stale binary," every binary resolver in the repo has it. **Confirm each candidate before deciding anything** — a sibling you verified is broken is scoped in or filed as a real follow-up; a sibling that merely *resembles* the pattern is not a finding at all, and filing it is the hypothetical-shape case the bar rejects.
 
-**7. Windows + macOS + Linux parity.** Any change that touches paths, processes, filesystem layout, or external binaries needs a platform audit. If the fix is POSIX-only, that is a **scope decision** that must be explicit in the body — either add a Windows branch or file a Windows follow-up. Silence on platform coverage is a gap.
+**7. Windows + macOS + Linux parity.** Any change that touches paths, processes, filesystem layout, or external binaries needs a platform audit. If the fix is POSIX-only, that is a **scope decision** that must be explicit in the body — add a Windows branch, state the limitation, or file a follow-up **if the project actually targets Windows**. Silence on platform coverage is a gap; a follow-up for a platform nobody ships to answers neither question in the bar, and *stating* the scope is what closes this axis.
 
 **8. Test strategy.** How does this get a regression test? If no existing test file touches the surface, name the pattern you would follow. "No test needed because it is a bash helper" is rarely true — shell helpers get tested via stub fixtures in a temp dir. A blank test plan is a red flag. Spec the test at the level "feed X, assert Y."
 
@@ -88,7 +88,7 @@ For each axis below, answer explicitly. If an axis is N/A, say so with one sente
 
 **10. Dependency ordering vs sibling issues.** If the fix depends on another open issue landing first, say so in the body and link it. If the fix can land independently but a sibling issue needs to rebase on it, note the ordering. Filing a follow-up that says "resolve once #X lands" is fine; filing one without the link is a gap.
 
-**11. Prompt-injection class (for anything involving LLM skill scripts).** Any file that embeds a model prompt as a HEREDOC or string literal is a cross-session injection vector when other agents read the codebase. If the issue touches one skill reading the wrong prompt, enumerate every other skill script with the same embedding pattern (`grep -l "You are performing\|You are reviewing\|<<PROMPT"`) and either scope them in or file a follow-up.
+**11. Prompt-injection class (for anything involving LLM skill scripts).** Any file that embeds a model prompt as a HEREDOC or string literal is a cross-session injection vector when other agents read the codebase. If the issue touches one skill reading the wrong prompt, enumerate every other skill script with the same embedding pattern (`grep -l "You are performing\|You are reviewing\|<<PROMPT"`) and **check whether each is actually exploitable the same way** — scope in or file the ones that are. An enumeration is evidence, not a finding; "shares the pattern" is a shape, and the bar rejects it.
 
 ### 4. Draft the issue body
 
@@ -177,7 +177,11 @@ Return the issue URL and a one-line summary of what was filed.
 
 ### 7. Offer follow-up handoff (optional)
 
-If any axis in Step 3 surfaced a sibling bug or out-of-scope concern worth filing separately, offer to file those as a second `/create-issue` call. Do not silently fold sibling bugs into the primary issue's body — they deserve their own tracking. This is the "deferred work → tracked issue" rule of `base/practices/issues-and-scope.md`: anything scoped out here is owed its own open issue, not just a mention in the parent's body.
+The 11 axes are a *scope-finding* instrument, and they will surface more than is worth tracking — that is what a thorough adversarial pass does. **Run each candidate through the bar in `base/practices/issues-and-scope.md` before offering it:** can you name who does it, and what breaks if nobody ever does?
+
+Most axis output fails that test, and should. An axis that says "a sibling helper might have this shape" is an instruction to **go look** — if the sibling is broken, that is one bug with two sites in the issue you are already writing; if it isn't, there is nothing to file. Only a genuine second **defect**, with its own answers to both questions, earns its own issue; offer those as a second `/create-issue` call rather than folding them into this body.
+
+If nothing clears the bar, say so and file nothing. A step that surfaces zero follow-ups is a normal outcome, not a skipped step.
 
 **A number you have not filed is a number you must not write.** The `## Related` block invites cross-references, and the temptation is to write the sibling's number into the primary's body while both are still drafts. That number does not exist yet, and a reference that resolves to nothing reads exactly like tracked work — which is how it stops being filed at all.
 
@@ -199,7 +203,7 @@ And whatever the order, every `#N` you write must already resolve — see the an
 - **Stopping at the first coherent narrative.** The first story you form is almost never the full scope. Force the axes.
 - **Pattern-matching from memory.** If you are asserting a behavior, grep to confirm it. A memory-based claim in an issue is a hallucination in a public artifact.
 - **Writing "fail with a clear error" without naming the error.** Vague sentinels produce implementations that fail unclearly.
-- **Filing one issue per instance when a class exists.** If the same vector is in four files, say so — either fix all four in this issue or explicitly file three follow-ups.
+- **Filing one issue per instance when a class exists.** If you have **confirmed** the same vector in four files, say so — fix all four in this issue, or file follow-ups for the confirmed ones. Four confirmed instances are one class with four sites, not four hypotheses; and an unconfirmed fifth is not a fourth follow-up.
 - **Silent platform scope.** If the fix is POSIX-only or macOS-only or Windows-only, make the scope explicit. Silence reads as "it works everywhere" and is rarely true.
 - **Copy-pasting `#N` references without verifying they exist.** `gh issue view N` is cheap; a dead link in a public issue is not.
 - **Filing the issue, then immediately `/review-issue`-ing it.** If you need to run `/review-issue` to know whether your own issue is complete, you did not run this skill's Step 3. Fix it in-place instead.

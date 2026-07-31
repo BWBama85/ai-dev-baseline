@@ -13,4 +13,6 @@ non-negotiables:
   `required-drift` read, #122), so a local green does not predict that one. See Golden Rule
   #3 in [`CLAUDE.md`](CLAUDE.md) and D13 in `.ai-dev-baseline/decisions.md`.
 - **Portable, shellcheck-clean shell** (macOS bash 3.2 safe); **feature branch + PR
-  only**; **file a tracked issue for anything deferred**.
+  only**; **file a tracked issue for deferred work that clears the bar** — name who does
+  it and what breaks if nobody does (`base/practices/issues-and-scope.md`); either
+  unanswerable, file nothing.

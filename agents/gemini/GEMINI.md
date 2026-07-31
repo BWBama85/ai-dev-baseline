@@ -73,8 +73,11 @@ is a coin flip.
    - Is a stale fixture, cache, or local migration masking the real behavior?
 5. **Fix the cause, add the regression test, ship via the normal PR + gates path.**
    The test that reproduced the bug in step 2 is now the test that guards it.
-6. **File follow-ups.** If the investigation surfaces a broader class or a
-   systemic gap, file a tracked issue (see `issues-and-scope.md`).
+6. **File follow-ups that clear the bar.** If the investigation surfaces a broader
+   class or a systemic gap, run it through `issues-and-scope.md` — who does it, and
+   what breaks if nobody ever does. A sibling you **confirmed** carries the same bug
+   answers both and is filable (or fix it here). A sibling that *might* share the
+   shape answers neither: go look, then file the bug or nothing.
 
 ## Why
 
@@ -188,11 +191,16 @@ regardless of which agent is driving.
 
 Classify the unknown into **exactly one** bucket, then act as that bucket prescribes:
 
-1. **General** — many projects would hit or want this. → **File a baseline issue** so it
-   becomes a shared capability, and as a *stopgap* use the relevant supported config
-   surface if one fits (e.g. a missing gate command → `agents.toml [gates]`). Never a
-   bespoke local fix others can't inherit. If no supported surface fits the gap, escalate
-   (bucket 4) rather than inventing a new home.
+1. **General** — many projects would hit or want this. → Use the relevant supported
+   config surface if one fits (e.g. a missing gate command → `agents.toml [gates]`).
+   Never a bespoke local fix others can't inherit. If no supported surface fits the gap,
+   escalate (bucket 4) rather than inventing a new home.
+
+   **File a baseline issue only if the gap clears the bar in `issues-and-scope.md`** —
+   you can name who does it and what breaks if nobody ever does. "Many projects *would*
+   want this" is a hypothesis about absent users, not an answer to either question; a gap
+   *you* just worked around with a stopgap that holds is, by demonstration, not breaking
+   anything. A config surface that covered the case is the fix, not a placeholder for one.
 2. **Project-specific delta** — legitimately unique to this repo. → Record it in the
    **prescribed home for its category** (table below), never scattered or ad-hoc.
 3. **Deviation** — the project deliberately contradicts a baseline rule. → Allowed, but
@@ -216,7 +224,7 @@ yet is itself an escalation (bucket 4) — say so and ask, don't invent a home.
 | Custom gate *policy* (order, conditional) | the repo's own `.claude/scripts/precommit-gate.sh` |
 | Workflow that genuinely diverges | a project-scoped skill shadowing the global one |
 | Deviation from a baseline rule | a `DEVIATION` entry in the decision log |
-| General gap (would help many projects) | a **baseline issue** + supported stopgap surface |
+| General gap (would help many projects) | the supported stopgap surface; a baseline issue **only if it clears the bar** |
 
 See `docs/per-project-overrides.md` for the override surfaces and
 `docs/roles-and-agents.md` for `agents.toml`.
@@ -257,8 +265,10 @@ A **deviation** adds the fields that make it a deliberate, reviewable fork — n
   Anything living elsewhere is drift.
 - **Never invent a new home to avoid asking.** A category with no prescribed home is
   bucket 4 (escalate), not license to improvise.
-- **A general gap always earns a filed issue** (`issues-and-scope.md`), not just a local
-  stopgap — the stopgap is temporary; the issue is how everyone eventually inherits the fix.
+- **A general gap earns a filed issue only when it clears the bar** (`issues-and-scope.md`).
+  A stopgap that holds is a fix, not a debt: if nothing breaks while it stands, the second
+  question has no answer and there is nothing to file. Record the decision either way — the
+  decision log, not the tracker, is what makes a divergence visible.
 - **Record before you move on.** An unrecorded decision is an invisible divergence.
 
 ## Why
@@ -272,43 +282,100 @@ ambiguous cases surface to the owner instead of silently forking two projects ap
 
 ---
 
-# Out-of-scope work always becomes a tracked issue
+# Track deferred work that matters — and nothing else
 
-The moment **anything** is deferred, declared out of scope, or punted "for later"
-during a task, it is owed a tracked issue in the same run — filed **before** you
-call the work done.
+Deferred work that lives only in prose gets lost. Deferred work filed
+indiscriminately gets lost too, in a backlog nobody can read. Both failures are
+real; only the first one used to be written down here.
 
-This includes, without exception:
+**A tracked issue is a claim that someone will do this.** Filing something nobody
+will do is not tracking — it is a to-do list pretending to be a plan, and it costs
+every future reader the time to re-triage it.
 
-- Slices you cut because the work was too large for one PR.
-- A parent issue's own **"Out of scope" / "Future" / "Deferred"** list. That list
-  evaporates into a *closed* issue when the PR merges, so it must be re-homed into
-  open issues. The parent listing its non-goals is **not** tracking.
-- Anything a reviewer (human or bot) or a gap-analysis pass flagged and you
-  resolved by **deferring** rather than fixing.
-- Test/infra gaps you knowingly left.
+## The bar
 
-## Rules
+**File only if both questions have concrete answers:**
+
+1. **Who does this?** A person, a role, or a release it belongs to. "Someone,
+   eventually" is not an answer.
+2. **What breaks if nobody ever does?** A behavior that stays wrong, a promise the
+   project stops keeping, a defect that reaches users.
+
+If either answer is *"unclear"* or *"nothing concrete"* — **don't file.** The work
+was not real enough to track, and writing it down does not make it real.
+
+### Specifically not filing reasons
+
+None of these is a defect. Each describes a *shape* you dislike, not a behavior
+that is wrong:
+
+- the same rule is stated in two places;
+- a helper would live better in another home;
+- a check could be more thorough, or cover one more case;
+- a sibling *might* have the same bug (go look — if it does, that is one filable
+  bug with two sites; if it doesn't, there is nothing to file);
+- a feature could be extended, generalized, or made pluggable;
+- an edge case exists that nothing has ever hit.
+
+**Only a defect *caused by* one of those is filable**, and then you file the
+defect, not the shape.
+
+### Check the tracker first
+
+Search open issues before filing. A duplicate is worse than a gap: it splits
+context and doubles triage.
+
+If the tracker is too large to check, that is itself the bug — fix it by closing,
+not by filing around it.
+
+## What is still owed an issue
+
+The bar is a filter, not an excuse. When both questions *do* have answers, file —
+and file it in the same run, before you call the work done:
+
+- Slices you deliberately cut because the work was too large for one PR. (Who: you.
+  What breaks: the feature ships half-built.)
+- A parent issue's own **"Out of scope"** list, *where those items meet the bar*.
+  The list evaporates into a closed issue on merge, so anything real in it must be
+  re-homed. Anything not real in it should never have been listed.
+- A defect a reviewer found that you resolved by **deferring rather than fixing** —
+  the behavior is still wrong, so the second question is already answered.
+- A test gap that leaves a *specific* known-reachable path unguarded.
+
+## Rules for the ones you do file
 
 - **A PR-body note is not tracking.** It falls out of view the moment the issue
   closes on merge. Only an open issue tracks deferred work.
-- **File by default; do not ask.** Filing is the default action, then inform the
-  owner what you filed. (If the owner explicitly says "don't file X," honor that.)
 - **Link both ways.** Comment the new issue on the parent (the link survives after
   the parent closes) and reference it from the PR.
-- **Place it correctly.** If the project has a release-goal / milestone
-  convention, follow it: newly *discovered* work defaults to the **backlog** — never
-  the active release milestone; only a deliberate current-release requirement enters
-  it. Freezing the release set that way is what keeps "done" reachable: an
-  ever-growing set never converges. Detect the convention live rather than assuming
-  it. Otherwise default to the project's backlog. Never leave a new issue
+- **Place it correctly.** If the project has a release-goal / milestone convention,
+  follow it: newly *discovered* work defaults to the **backlog** — never the active
+  release milestone; only a deliberate current-release requirement enters it.
+  Freezing the release set that way is what keeps "done" reachable: an ever-growing
+  set never converges. Detect the convention live rather than assuming it.
+  Otherwise default to the project's backlog. Never leave a new issue
   milestone-less if the project uses milestones.
 
 ## Why
 
-Deferred work that lives only in prose is deferred work that gets lost. Filing it
-as a tracked issue — automatically, every time — is the single most-missed
-discipline and the one that most reliably prevents silent scope loss.
+This practice used to read **"File by default; do not ask."** That rule was written
+to stop silent scope loss, and it did — but it is a generator with no sink, and
+nothing else in the baseline pushes the other way.
+
+Measured on this project on 2026-07-31: **191 issues filed in 14 days, 98 closed —
+and 35 of those 98 closed `NOT_PLANNED`.** More than a third of everything ever
+tracked turned out, on inspection, not to be worth doing. Filing ran ahead of
+completion roughly 3:1, so the backlog did not grow slowly, it *diverged* — no
+amount of work reached zero. A triage the same day closed 59 of 93 open issues in
+one pass, almost all of them shapes rather than defects.
+
+That is the cost of a filing bar set at zero: not a tidy record of good intentions,
+but a tracker nobody can read, a roadmap that cannot be trusted, and real defects
+sitting alongside sixty things nobody was ever going to do.
+
+The bar above is the sink. That `NOT_PLANNED` closures were happening at all proves
+the judgment was always available — it was just being applied after the issue
+existed instead of before.
 
 
 ---
