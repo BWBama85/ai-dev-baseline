@@ -502,6 +502,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install jq
+        # The claim lint parses gh JSON with jq and exits 3 without it. Installed explicitly rather
+        # than leaning on runner-image contents, matching every other job here that needs it.
+        run: sudo apt-get install -y jq
+
       - name: Canonical facts must be consistent across their consumer docs
         run: bash scripts/check-fact-drift.sh
 

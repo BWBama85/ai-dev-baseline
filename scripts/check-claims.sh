@@ -39,6 +39,11 @@
 #   2  usage error
 #   3  --live was requested and the live half could NOT be run (fail closed — never a pass)
 #
+# KNOWN LIMIT OF THE REFERENCE GRAMMAR: a six-digit CSS colour is shaped exactly like an issue
+# number, so `#123456` in a stylesheet would be looked up. This repo tracks no such file, and the
+# grammar is left permissive rather than guessing at file types — but it is a real edge for the
+# generalization tracked in #233, and is named here rather than discovered there.
+#
 # WHAT THIS GUARANTEES, STATED NARROWLY. It checks that a reference RESOLVES; it does not and
 # cannot check that a reference is APT. That an issue exists is provable; that it is the issue you
 # meant is not — that judgement is the review step's, and claiming otherwise here would be the same

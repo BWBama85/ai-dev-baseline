@@ -183,12 +183,16 @@ If any axis in Step 3 surfaced a sibling bug or out-of-scope concern worth filin
 
 The dependency here is genuinely circular (the primary wants to name its children; the children want to name their parent), so it is resolved by **sequence, not by guessing a number**:
 
-1. Get approval for the whole set at once — the primary and the siblings — since `gh issue create` is an always-ask action either way.
+1. Get approval for the whole set at once — the primary and the siblings — since `gh issue create` is an always-ask action either way. **Say that the approval covers step 4**, so it is granted knowingly rather than assumed later.
 2. File the **primary** first, and leave its `## Related` block free of any not-yet-filed number.
 3. File each **sibling**, citing the primary's now-real number.
 4. **Edit the primary** to add the sibling links.
 
-Step 4 is one `gh issue edit` and it is the step that gets skipped; skipping it leaves the children orphaned from the parent, which is the same lost-tracking failure by a quieter route. And whatever the order, every `#N` you write must already resolve — see the anti-pattern below.
+Step 4 is one `gh issue edit` and it is the step that gets skipped; skipping it leaves the children orphaned from the parent, which is the same lost-tracking failure by a quieter route.
+
+**On the authority for step 4, which the table below would otherwise forbid.** "Closing or editing existing issues from within this flow" always needs approval, and step 4 edits an issue that now exists. The distinction is that this edit is the *back-link half of the filing the owner just approved* — the sequence is only split into two `gh` calls because a number cannot be cited before it exists. So it is covered by the step-1 approval **provided step 1 actually said so**, and it is confined to adding links to the issues just filed. Any other edit to the primary — rewording, re-scoping, relabelling — is a separate ask.
+
+And whatever the order, every `#N` you write must already resolve — see the anti-pattern below.
 
 ## Anti-patterns
 

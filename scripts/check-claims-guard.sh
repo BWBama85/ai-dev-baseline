@@ -140,7 +140,7 @@ cc --help;          yes "$RC_" "--help exits 0";      has "$OUT" "claim lint" "-
 cc --bogus;         eq  "$RC_" 2 "unknown option exits 2"
 cc --range;         eq  "$RC_" 2 "--range without a value exits 2"
 cc --range HEAD;    eq  "$RC_" 2 "a range with no .. exits 2"
-cc --range "deadbeefdeadbeef..HEAD"; eq "$RC_" 2 "an unresolvable head revision exits 2"
+cc --range "deadbeefdeadbeef..HEAD"; eq "$RC_" 2 "an unresolvable BASE revision exits 2"
 
 # ---------------------------------------------------------------------------------------------
 # THE DANGLING TOKENS ARE BUILT, NEVER WRITTEN LITERALLY — and this file is the reason the rule
@@ -199,7 +199,7 @@ GIT_COMMITTER_DATE="2026-01-03T12:00:00Z" git -C "$REPO" commit -q --amend --no-
 cc --range "$BASE..probe"
 eq "$RC_" 0 "C2: a decision added by the same range resolves (exit 0)"
 
-# Whole-token matching: D1 must not be satisfied by D18, nor D3 by a bare 'D3X'.
+# Whole-token matching: an existing D1 heading must not satisfy a citation of D18.
 reset_branch
 cat > "$REPO/notes.md" <<'EOF'
 This cites D18 while only D1 and D2 exist.
