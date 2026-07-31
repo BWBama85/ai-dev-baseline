@@ -74,6 +74,9 @@ cat > "$BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 # `auth status` must succeed or adb_require_gh refuses before any read happens.
 [ "${1:-}" = "auth" ] && exit 0
+# The repository IS reachable. adb_gh_entity asks this to tell "no such issue" apart from "the
+# network is gone", so a stub that failed here would make every absent number look unreadable.
+if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then echo '{"name":"widget"}'; exit 0; fi
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
   n="$3"
   printf '%s\n' "$*" >> "$GH_CALLS"
@@ -111,6 +114,18 @@ cat > "$NOAUTH/gh" <<'STUB'
 exit 1
 STUB
 chmod +x "$NOAUTH/gh"
+
+# A gh that authenticates but whose READS all fail — a transport failure mid-run. The distinction
+# matters: collapsing it into "this issue does not exist" would make a network blip accuse a real
+# issue of being fabricated, which is a wrong claim produced by the tool built to stop wrong claims.
+GONE="$work/gone"; mkdir -p "$GONE"
+cat > "$GONE/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "auth" ] && exit 0
+exit 1
+STUB
+chmod +x "$GONE/gh"
+cc_gone() { OUT="$(cd "$REPO" && PATH="$GONE:$PATH" bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
 
 # cc <args…> — run the lint inside the fixture repo, capturing stdout+stderr and the real status.
 cc() { OUT="$(cd "$REPO" && PATH="$BIN:$PATH" bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
@@ -359,6 +374,17 @@ cc --range "$BASE..probe" --live
 eq "$RC_" 0 "C1: fences, code spans, cross-repo forms and #0 are all excluded"
 eq "$(grep -c 'issue view' "$GH_CALLS" | tr -d ' ')" 0 "C1: nothing in the precision corpus reached the network"
 
+# A TRANSPORT FAILURE IS NOT A MISSING ISSUE. Same fixture, same number, different gh: the entity
+# read fails AND the repository read fails, so the honest answer is "unreadable" (3), never a
+# violation claiming the reference is fabricated.
+: > "$GH_CALLS"
+reset_branch
+printf 'Tracked in %s.\n' "$REF_OPEN" > "$REPO/notes.md"
+commit "transport failure"
+cc_gone --range "$BASE..probe" --live
+eq "$RC_" 3 "C1: a transport failure exits 3 (unreadable), NOT 1 (does not resolve)"
+hasnt "$OUT" "does not resolve" "C1: a transport failure is never reported as a fabricated number"
+
 # =============================== fail closed ===================================================
 reset_branch
 printf 'Tracked in %s.\n' "$REF_OPEN" > "$REPO/notes.md"
@@ -426,14 +452,22 @@ has "$OUT" "2026-09-09" "range: the in-range bad date is named"
 git -C "$REPO" checkout -q -B probe "$BASE"
 
 # =============================== a kind hint needs a digit boundary ============================
-# `PR #21` must not be found inside `PR #212`. The glob form matched the prefix and handed the
-# shorter number the longer one's hint, reporting a correct citation as a kind mismatch.
+# A short number must not be found INSIDE a longer one: with a pull-request citation for 210 on
+# the line, a bare 21 was handed 210's hint and a correct citation was reported as a kind
+# mismatch. Written with placeholders rather than a literal citation on purpose — this file is
+# scanned by the very lint it tests, so spelling the example out would BE a claim about 21.
 : > "$GH_CALLS"
 reset_branch
 printf 'Landed in PR %s, and also see %s.\n' "$REF_PR" "$REF_PREFIX" > "$REPO/notes.md"
 commit "prefix hint"
 cc --range "$BASE..probe" --live
-eq "$RC_" 0 "hint: #21 beside `PR #210` is not given #210's hint (digit boundary)"
+# NOTE the quoting: this label must not contain backticks. An earlier version read
+# a label naming both numbers with backticks around one of them, inside a double-quoted string,
+# which bash expands as
+# COMMAND SUBSTITUTION — it ran a command named PR and then blocked reading stdin. Standalone the
+# suite still passed (stdin was /dev/null); under selfcheck, whose stdin is an open pipe, it hung
+# for ten minutes. A test label is a value crossing a syntax boundary like any other.
+eq "$RC_" 0 "hint: a bare 21 beside a PR 210 citation is not given the PR hint (digit boundary)"
 
 # =============================== the wiring is pinned ==========================================
 # A perfectly correct lint that nothing invokes is a lint that checks nothing, and it fails exactly

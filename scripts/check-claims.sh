@@ -146,12 +146,13 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 CACHE="$WORK/gh"; mkdir -p "$CACHE"
 DECISIONS=".ai-dev-baseline/decisions.md"
+_CC_NL=$'\n'
 
 # What the run actually evaluated, REPORTED rather than inferred. A guard's failure mode is
 # silence: a checker wired to an empty range scans nothing and prints exactly what a clean run
 # prints. D22 is this repo paying for that once already, so every axis carries a count and a zero
 # is visible in the log.
-N_FILES=0; N_ADDED=0; N_SKIP_BIN=0
+N_FILES=0; N_ADDED=0; N_SKIP_BIN=0; N_SKIP_PATH=0
 N_REF_OCC=0; N_REF_DISTINCT=0; N_REF_LOOKUPS=0
 N_DREF=0; N_DATE=0; N_EXEMPT=0
 
@@ -162,13 +163,25 @@ cc_violation() { check_note "$1"; check_fail; }
 # claim about this diff. -z because a tracked path may carry a space or a non-ASCII byte, which git
 # would otherwise quote into a different string than the one the prose names.
 CHANGED="$WORK/changed"; : > "$CHANGED"
+N_SKIP_PATH=0
 while IFS= read -r -d '' p; do
-  [ -n "$p" ] && printf '%s\n' "$p" >> "$CHANGED"
-done < <(git diff --name-only --no-renames -z --diff-filter=ACMRD "$RANGE" 2>/dev/null)
+  [ -n "$p" ] || continue
+  # A path containing a NEWLINE cannot survive the newline-delimited storage below, and silently
+  # dropping it would be a file this lint never scanned while reporting a clean run. Counted and
+  # reported instead. (No such path exists here; the point is that a zero is EARNED, not assumed.)
+  case "$p" in *"$_CC_NL"*) N_SKIP_PATH=$((N_SKIP_PATH + 1)); continue ;; esac
+  printf '%s\n' "$p" >> "$CHANGED"
+done < <(git diff --name-only -z --diff-filter=ACMRD "$RANGE" 2>/dev/null)
 
 # The candidate tree's file list and decision log, read once rather than per-reference.
+#
+# `core.quotePath=false` is load-bearing, not cosmetic. git QUOTES a non-ASCII path by default
+# (`"na\303\257ve.md"`), while the diff above yields the raw bytes — so the membership test below
+# failed for every such file and it was skipped WITHOUT a word. A fixture named `naïve.md` reported
+# `files=0`, which is the silent-guard shape: a file the lint never looked at, reported as clean.
 TREEFILES="$WORK/treefiles"
-git ls-tree -r --name-only "$HEADREV" > "$TREEFILES" 2>/dev/null || : > "$TREEFILES"
+git -c core.quotePath=false ls-tree -r --name-only "$HEADREV" > "$TREEFILES" 2>/dev/null \
+  || : > "$TREEFILES"
 DECFILE="$WORK/decisions"
 git show "$HEADREV:$DECISIONS" > "$DECFILE" 2>/dev/null || : > "$DECFILE"
 
@@ -217,31 +230,34 @@ cc_live_init() {
   [ -n "$CC_SLUG" ] || return 1
 }
 
-# cc_entity <n> — populates $CACHE/<n> with "<kind>\t<state>\t<reason>"; kind is issue|pull|empty.
-# Writes a file rather than printing so the lookup counter is incremented in THIS shell: a
-# command substitution runs in a subshell, where the increment would be discarded and the reported
-# count would be a permanent zero.
+# cc_entity <n> — populates $CACHE/<n> with "<kind>\t<state>\t<extra>\t<number>", or one of the two
+# sentinels `MISSING` / `UNREADABLE`. Writes a file rather than printing so the lookup counter is
+# incremented in THIS shell: a command substitution runs in a subshell, where the increment would
+# be discarded and the reported count would be a permanent zero.
+#
+# THE READ ITSELF IS NOT HERE. It is `adb_gh_entity` in common.sh, shared with state-assert.sh —
+# this file's first draft carried its own copy and had already drifted from it in three ways a
+# reviewer could name: a transport failure was reported as "does not resolve", a malformed payload
+# was flattened into a nonexistent entity, and the returned URL's number was never checked against
+# the number asked for. That is precisely the copy-instead-of-source failure this repo treats as a
+# blocking review finding, so the primitive was generalized rather than the copy patched.
 cc_entity() {
-  local n="$1" f="$CACHE/$1" json fields st rs url seg
+  local n="$1" f="$CACHE/$1" rec rc
   [ -f "$f" ] && return 0
   N_REF_LOOKUPS=$((N_REF_LOOKUPS + 1))
-  json="$(gh issue view "$n" --repo "$CC_SLUG" --json state,stateReason,url 2>/dev/null)" || json=""
-  if [ -z "$json" ]; then printf '\t\t\n' > "$f"; return 0; fi
-  # Read and parse as SEPARATE steps: a pipeline reports only its last command's status, so a
-  # failed read would reach the parser as empty stdin, indistinguishable from an empty answer.
-  fields="$(printf '%s' "$json" | jq -r '.state // "", (.stateReason // ""), (.url // "")' 2>/dev/null)" || fields=""
-  { IFS= read -r st; IFS= read -r rs; IFS= read -r url; } <<EOF
-$fields
-EOF
-  # Pull requests and issues share ONE number space, and `gh issue view <PR number>` answers with
-  # the pull request, so only the URL's path segment discriminates them. Compared EXACTLY at its
-  # known position, never searched for anywhere in the URL: a repository literally named `issues`
-  # exists in the wild, and a substring test would read its PR URLs as issues.
-  seg="${url%/*}"; seg="${seg##*/}"
-  case "$seg" in
-    pull)   printf 'pull\t%s\t%s\n'  "$st" "$rs" > "$f" ;;
-    issues) printf 'issue\t%s\t%s\n' "$st" "$rs" > "$f" ;;
-    *)      printf '\t\t\n' > "$f" ;;
+  rec="$(adb_gh_entity "$CC_SLUG" "$n" issue stateReason)"; rc=$?
+  case "$rc" in
+    0)
+      # The response must be ABOUT the number that was asked for. Real gh always is, so this only
+      # fires on a misbehaving or redirected read — but reporting on #9 from a payload describing
+      # #146 is a wrong answer, and a wrong answer is worse than no answer.
+      if [ "$(printf '%s' "$rec" | cut -f4)" -ne "$n" ] 2>/dev/null; then
+        printf 'UNREADABLE\n' > "$f"
+      else
+        printf '%s\n' "$rec" > "$f"
+      fi ;;
+    1) printf 'MISSING\n'    > "$f" ;;
+    *) printf 'UNREADABLE\n' > "$f" ;;
   esac
 }
 
@@ -264,7 +280,7 @@ EOF
 # scans what it names rather than whatever happens to be checked out.
 cc_scan_file() {   # <file> -> "<lineno>\t<raw text>" per scannable added line
   local f="$1" lines="$WORK/ln" is_md=0
-  git diff --unified=0 --no-renames "$RANGE" -- "$f" 2>/dev/null | awk '
+  git diff --unified=0 "$RANGE" -- "$f" 2>/dev/null | awk '
     /^@@/ {
       m = $3; sub(/^\+/, "", m)
       n = split(m, P, ",")
@@ -297,7 +313,10 @@ cc_prose() {
 # "what did we wave through?" is one command. It exists because a blanket NOT_PLANNED rejection is
 # semantically wrong: this repo legitimately writes prose ABOUT abandoned issues, and a gate with
 # no way to say so gets worked around instead of obeyed.
-CC_EXEMPT='adb-claim-ok'
+# The contract is `adb-claim-ok: <reason>`, and it is ENFORCED rather than described. A bare
+# mention of the token waived every rule on the line, so a typo — or the word appearing in prose
+# about the escape — silently disabled the checks it was never meant to touch.
+CC_EXEMPT_RE='adb-claim-ok:[[:space:]]*[^[:space:]]'
 
 # ================================ scan ==========================================================
 REFS="$WORK/refs"; : > "$REFS"    # "<n>\t<file>:<line>\t<kind-hint>"
@@ -310,7 +329,9 @@ while IFS= read -r f; do
     N_ADDED=$((N_ADDED + 1))
     # The exemption is read from the RAW line: the marker is normally written as a trailing
     # comment, which for a markdown file may well sit inside a code span.
-    case "$raw" in *"$CC_EXEMPT"*) N_EXEMPT=$((N_EXEMPT + 1)); continue ;; esac
+    if printf '%s' "$raw" | grep -qE "$CC_EXEMPT_RE"; then
+      N_EXEMPT=$((N_EXEMPT + 1)); continue
+    fi
     case "$f" in
       *.md) text="$(cc_prose "$raw")" ;;
       *)    text="$raw" ;;
@@ -322,18 +343,22 @@ while IFS= read -r f; do
     # validate the wrong entity. `[1-9][0-9]*` excludes `#0`.
     for n in $(printf '%s\n' "$text" | grep -oE '(^|[^A-Za-z0-9_/#])#[1-9][0-9]*' | grep -oE '[0-9]+$'); do
       N_REF_OCC=$((N_REF_OCC + 1))
-      # The kind hint needs a DIGIT BOUNDARY after the number, which a glob cannot express.
-      # `case "$text" in *"PR #$n"*` matched a prefix: on a line citing `PR #212`, the number 21
-      # (if also present) was handed the hint "pull" from inside the longer token, and a correct
-      # citation was then reported as a kind mismatch. Numbers are safe to interpolate here — the
-      # extraction above guarantees `$n` is digits only.
-      hint="bare"
+      # The kind hint needs a DIGIT BOUNDARY after the number, which a glob cannot express: a glob
+      # found the shorter number inside the longer one and handed it the wrong hint. Numbers are
+      # safe to interpolate into the pattern — the extraction above guarantees digits only.
+      #
+      # BOTH spellings are recorded when both appear, rather than the first one winning. One line
+      # can carry a correct citation and an incorrect one for the SAME number, and an if/elif gave
+      # them a single verdict — so the wrong half was covered by the right half and passed.
+      # Emitting one record per spelling lets the resolver flag exactly the spelling that is wrong.
+      got=0
       if printf '%s' "$text" | grep -qE "(PR|pull request) ?#$n([^0-9]|$)"; then
-        hint="pull"
-      elif printf '%s' "$text" | grep -qiE "issue #$n([^0-9]|$)"; then
-        hint="issue"
+        printf '%s\t%s:%s\tpull\n' "$n" "$f" "$lno" >> "$REFS"; got=1
       fi
-      printf '%s\t%s:%s\t%s\n' "$n" "$f" "$lno" "$hint" >> "$REFS"
+      if printf '%s' "$text" | grep -qiE "issue #$n([^0-9]|$)"; then
+        printf '%s\t%s:%s\tissue\n' "$n" "$f" "$lno" >> "$REFS"; got=1
+      fi
+      [ "$got" -eq 1 ] || printf '%s\t%s:%s\tbare\n' "$n" "$f" "$lno" >> "$REFS"
     done
 
     # --- C2: a decision reference must resolve to a heading in the decision log -----------------
@@ -354,28 +379,63 @@ done < "$SCANLIST"
 # repeated `- date:` string belongs to. The branch tip is the wrong anchor on a multi-commit branch
 # — and the #173 entry was stamped a day in the FUTURE relative to its own commit, which is exactly
 # the defect and is invisible against a later tip.
-for c in $(git rev-list --no-merges "$REVRANGE" -- "$DECISIONS" 2>/dev/null); do
+#
+# MERGE COMMITS ARE WALKED TOO. `--no-merges` looks obviously right (a merge introduces nothing of
+# its own) and is wrong here: this project merges the default branch INTO a feature branch to
+# refresh it, and a conflict resolution inside that merge really can introduce a `date:` line that
+# exists in no parent. Skipping merges left that line checked by nothing. `git show -m` diffs a
+# merge against each parent, and `--first-parent`-style double counting is harmless because the
+# same line simply gets the same verdict twice.
+#
+# The date field is VALIDATED, not merely pattern-matched. `- date: TBD` used to be skipped by the
+# `[ -n "$d" ] || continue` below, so a decision with no date at all sailed through with `dates=0`
+# — a rule reporting that it checked nothing, in the same words a clean run uses. And a date that
+# matches the pattern can still be impossible: the civil-day conversion happily normalizes
+# `2026-02-30` into March 2, so it would pass against a March commit.
+cc_valid_day() {   # <YYYY-MM-DD> -> 0 if it is a real Gregorian date
+  printf '%s\n' "$1" | awk -F- '
+    { y = $1 + 0; m = $2 + 0; d = $3 + 0
+      if (m < 1 || m > 12 || d < 1) { exit 1 }
+      split("31 28 31 30 31 30 31 31 30 31 30 31", L, " ")
+      max = L[m] + 0
+      if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) { max = 29 }
+      if (d > max) { exit 1 }
+      exit 0 }'
+}
+
+for c in $(git rev-list "$REVRANGE" -- "$DECISIONS" 2>/dev/null); do
   cday="$(git log -1 --format='%cI' "$c" 2>/dev/null)"; cday="${cday%%T*}"
   [ -n "$cday" ] || continue
   cnum="$(cc_daynum "$cday")"
   while IFS= read -r dl; do
-    case "$dl" in *"$CC_EXEMPT"*) N_EXEMPT=$((N_EXEMPT + 1)); continue ;; esac
-    d="$(printf '%s\n' "$dl" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -n1)"
-    [ -n "$d" ] || continue
+    if printf '%s' "$dl" | grep -qE "$CC_EXEMPT_RE"; then
+      N_EXEMPT=$((N_EXEMPT + 1)); continue
+    fi
     N_DATE=$((N_DATE + 1))
+    d="$(printf '%s\n' "$dl" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -n1)"
+    if [ -z "$d" ]; then
+      cc_violation "$DECISIONS ($c): a 'date:' field carries no YYYY-MM-DD value: ${dl#+}"
+      continue
+    fi
+    if ! cc_valid_day "$d"; then
+      cc_violation "$DECISIONS ($c): 'date: $d' is not a real calendar date"
+      continue
+    fi
     dnum="$(cc_daynum "$d")"
     diff=$((dnum - cnum)); [ "$diff" -lt 0 ] && diff=$((-diff))
     # Absolute one-day tolerance, BOTH directions. A future stamp is a violation exactly as a
     # stale one is; the #173 entry was a day ahead, not behind.
     [ "$diff" -le 1 ] \
       || cc_violation "$DECISIONS ($c): 'date: $d' is $diff days from its commit date ($cday)"
-  done < <(git show --format='' --unified=0 "$c" -- "$DECISIONS" 2>/dev/null \
-             | grep '^+' | grep -E '^\+[[:space:]]*-[[:space:]]*date:')
+  done < <(git show -m --format='' --unified=0 "$c" -- "$DECISIONS" 2>/dev/null \
+             | grep '^+' | grep -E '^\+[[:space:]]*-[[:space:]]*date:' | sort -u)
 done
 
 # --- C1, resolved in one deduplicated pass ------------------------------------------------------
 N_REF_DISTINCT="$(awk -F'\t' '{print $1}' "$REFS" 2>/dev/null | sort -u | grep -c . || true)"
-if [ "$LIVE" -eq 1 ]; then
+if [ "$LIVE" -eq 1 ] && [ "$N_REF_DISTINCT" -eq 0 ]; then
+  check_note "NOTE: --live had no references to resolve in this range."
+elif [ "$LIVE" -eq 1 ]; then
   if ! cc_live_init; then
     # FAIL CLOSED. --live was asked for and could not be delivered; reporting a pass here would be
     # the silent no-op that design-principles separates from a legitimate degrade.
@@ -390,18 +450,28 @@ if [ "$LIVE" -eq 1 ]; then
     st="$(printf '%s' "$ent" | cut -f2)"
     rs="$(printf '%s' "$ent" | cut -f3)"
     sites="$(awk -F'\t' -v k="$n" '$1==k{print $2}' "$REFS" | sort -u | tr '\n' ' ')"
-    if [ -z "$kind" ]; then
-      cc_violation "#$n does not resolve in $CC_SLUG (cited at: $sites)"
-      continue
-    fi
+    # "DOES NOT EXIST" AND "COULD NOT BE READ" ARE DIFFERENT ANSWERS and are reported as such. The
+    # first draft collapsed them, so a transport failure mid-run accused a perfectly real issue of
+    # being fabricated — a wrong claim produced by the tool built to stop wrong claims. Unreadable
+    # is fatal (exit 3) rather than a violation, because the honest state is "I could not tell".
+    case "$ent" in
+      UNREADABLE)
+        echo "check-claims: FATAL — #$n could not be read from $CC_SLUG (transport, auth or a" >&2
+        echo "              malformed response). This is NOT a pass, and NOT a missing issue." >&2
+        exit 3 ;;
+      MISSING)
+        cc_violation "#$n does not resolve in $CC_SLUG (cited at: $sites)"
+        continue ;;
+    esac
     # A citation that DECLARES its kind must match it. `gh issue view` answers for a PR number too,
     # so naming a pull request as an issue is a wrong claim that bare existence waves through.
     # adb-claim-ok: the comment above describes the rule; it is not itself a citation.
     #
     # Blame is per SITE, not per number. An earlier draft reported every site of a number whose
     # hint mismatched anywhere, which accused correctly-written lines of a neighbour's error — it
-    # flagged this file's own `(PR #210)` because a DIFFERENT line quoted the wrong spelling as an
-    # example. A diagnostic that names an innocent line is one the reader learns to distrust.
+    # flagged this file's own correctly-written pull-request citation because a DIFFERENT line
+    # quoted the wrong spelling as an example. A diagnostic that names an innocent line is one
+    # the reader learns to distrust.
     awk -F'\t' -v k="$n" '$1==k && $3!="bare" {print $3 "\t" $2}' "$REFS" | sort -u \
       | while IFS="$(printf '\t')" read -r hint site; do
           [ "$hint" = "$kind" ] && continue
@@ -421,7 +491,7 @@ if [ "$LIVE" -eq 1 ]; then
     # as a satisfied one. Legitimate historical prose about such an issue carries the audited
     # marker instead of being silently allowed.
     if [ "$kind" = "issue" ] && [ "$st" = "CLOSED" ] && [ "$rs" = "NOT_PLANNED" ]; then
-      cc_violation "#$n was closed NOT_PLANNED — it tracks nothing (at: $sites). If the reference is deliberately historical, mark the line '$CC_EXEMPT: <reason>'."
+      cc_violation "#$n was closed NOT_PLANNED — it tracks nothing (at: $sites). If the reference is deliberately historical, mark the line 'adb-claim-ok: <reason>'."
     fi
   done
 else
@@ -431,8 +501,8 @@ else
 fi
 
 # --- what this run actually evaluated -----------------------------------------------------------
-printf 'check-claims: range=%s files=%d added-lines=%d refs=%s/%d live-lookups=%d d-refs=%d dates=%d exempt=%d binary-skipped=%d\n' \
+printf 'check-claims: range=%s files=%d added-lines=%d refs=%s/%d live-lookups=%d d-refs=%d dates=%d exempt=%d binary-skipped=%d path-skipped=%d\n' \
   "$RANGE" "$N_FILES" "$N_ADDED" "$N_REF_DISTINCT" "$N_REF_OCC" "$N_REF_LOOKUPS" \
-  "$N_DREF" "$N_DATE" "$N_EXEMPT" "$N_SKIP_BIN"
+  "$N_DREF" "$N_DATE" "$N_EXEMPT" "$N_SKIP_BIN" "$N_SKIP_PATH"
 
 check_result "no unverified claims in the range"

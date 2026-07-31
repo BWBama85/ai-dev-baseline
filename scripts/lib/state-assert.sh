@@ -107,10 +107,10 @@ _sa_unverifiable() {
 # clean sentence. That is precisely the wrong-sentence outcome this file exists to make impossible,
 # and the repo name silently disarmed the one guard against it.
 _sa_read() {
-  local kind="$1" n="$2" subcmd extra_field want_seg json url
+  local kind="$1" n="$2" subcmd extra_field want_seg want_seg_kind
   case "$kind" in
-    pr)    subcmd="pr";    extra_field="mergedAt";    want_seg="pull" ;;
-    issue) subcmd="issue"; extra_field="stateReason"; want_seg="issues" ;;
+    pr)    subcmd="pr";    extra_field="mergedAt";    want_seg="pull";   want_seg_kind="pull" ;;
+    issue) subcmd="issue"; extra_field="stateReason"; want_seg="issues"; want_seg_kind="issue" ;;
     *) usage >&2; exit 2 ;;
   esac
 
@@ -119,12 +119,22 @@ _sa_read() {
   local slug
   slug="$(adb_git_origin_slug)" || _sa_unverifiable "cannot resolve this checkout's GitHub repository"
 
-  # Read and parse as SEPARATE steps. A pipeline reports only its LAST command's status, so
-  # `gh ... | jq` returns 0 on a failed read and the parser sees empty stdin — indistinguishable
-  # from a legitimately empty answer, and a sentence would be rendered from nothing.
-  json="$(gh "$subcmd" view "$n" --repo "$slug" --json "state,$extra_field,url" 2>/dev/null)" \
-    || _sa_unverifiable "gh could not read $kind #$n"
-  [ -n "$json" ] || _sa_unverifiable "empty response for $kind #$n"
+  # THE READ ITSELF LIVES IN common.sh as `adb_gh_entity`, shared with scripts/check-claims.sh.
+  # It was private here until a second consumer needed the same four steps — read, parse, classify
+  # the kind by URL segment, prove the answer is about the number asked for — and a second copy is
+  # precisely the drift this file's own discipline argues against (the #212 review named three ways
+  # the copy had already diverged). What stays here is what is genuinely this file's: the
+  # exit-3-and-say-nothing contract, and the observation timestamp.
+  #
+  # `gh issue view` answers for a pull-request number too, which is why one reader serves both
+  # kinds and the URL segment — not the subcommand — is what discriminates them.
+  local rec rc got_kind
+  rec="$(adb_gh_entity "$slug" "$n" "$subcmd" "$extra_field")"; rc=$?
+  case "$rc" in
+    1) _sa_unverifiable "gh could not read $kind #$n" ;;
+    0) : ;;
+    *) _sa_unverifiable "unreadable or malformed response for $kind #$n" ;;
+  esac
 
   # Stamped AFTER the read returns, never before it starts. An earlier draft stamped first, on the
   # reasoning that erring older is conservative for a freshness claim. That reasoning is wrong: if
@@ -134,32 +144,21 @@ _sa_read() {
   # have been true, so that is what "observed at" must mean.
   SA_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  # One jq pass, one field per line. An absent field stays an EMPTY LINE rather than collapsing,
-  # so a missing mergedAt cannot shift url into state's position. Capture first, then split: the
-  # substitution's own failure must be visible rather than read back as empty fields.
-  local fields
-  fields="$(printf '%s' "$json" | jq -r --arg x "$extra_field" '.state // "", (.[$x] // ""), .url // ""' 2>/dev/null)" \
-    || _sa_unverifiable "malformed response for $kind #$n"
-  { IFS= read -r SA_STATE; IFS= read -r SA_EXTRA; IFS= read -r url; } <<EOF
-$fields
-EOF
+  local url_num
+  got_kind="$(printf '%s' "$rec" | cut -f1)"
+  SA_STATE="$(printf '%s' "$rec" | cut -f2)"
+  SA_EXTRA="$(printf '%s' "$rec" | cut -f3)"
+  url_num="$(printf '%s' "$rec" | cut -f4)"
   [ -n "$SA_STATE" ] || _sa_unverifiable "malformed response for $kind #$n"
 
-  # Take the segment immediately before the trailing /<number>. `tail` is a deliberate name: `path`
-  # is a zsh special bound to $PATH, and assigning it in any snippet an agent may execute empties
-  # the search path (the #126 regression).
-  local tail url_num
-  tail="${url%/*}"
-  case "${tail##*/}" in
-    "$want_seg") : ;;
-    *) _sa_unverifiable "#$n is not of kind '$kind' — its URL is not a /$want_seg/ reference" ;;
-  esac
+  # PRs and issues share ONE number space, so the caller's declared kind must match what came back.
+  [ "$got_kind" = "$want_seg_kind" ] \
+    || _sa_unverifiable "#$n is not of kind '$kind' — its URL is not a /$want_seg/ reference"
   # The response must also be ABOUT the entity that was asked for. Real gh always returns the URL
   # for the number requested, so this only fires on a misbehaving or spoofed read — but rendering
   # "PR #9" from a payload describing #146 is a wrong sentence, and this file's whole contract is
   # that a wrong sentence is worse than no sentence. `-eq` compares numerically, so a zero-padded
   # argument (`observe pr 007`) still matches its own `/pull/7` URL rather than failing spuriously.
-  url_num="${url##*/}"
   case "$url_num" in
     ''|*[!0-9]*) _sa_unverifiable "unparseable entity number in the URL for $kind #$n" ;;
   esac
