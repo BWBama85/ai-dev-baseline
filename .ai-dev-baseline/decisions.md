@@ -1125,3 +1125,23 @@ the `fact-drift` check context stayed green — now pinned by `fact-mutation-wir
 Recorded rather than silently folded in because it is the decision's own evidence: three layers of
 "prove it can fail" still shipped three checks that could not, and an independent reviewer — not
 the author — is what found them.
+
+### D22 — second amendment, after the async bot review of PR #230 (2026-07-30)
+
+The Codex connector found two more instances of the same shape, both in code added by the fix:
+
+- **A suite could exit 0 without ever running `check_summary`.** The exit status is the last
+  command's, and nothing but `check_summary` consults the `fail` counter — so a truncating edit or
+  a stray early `exit` prints `FAIL:` lines and is still reported as passing by selfcheck and CI.
+  `check_exit_guard` now installs one EXIT trap that fails closed unless the summary ran, and takes
+  the suite's cleanup as an argument so a second `trap … EXIT` can never silently replace it. Wired
+  into `check-fact-guard.sh` here; the sweep across the other 22 suites is #231.
+- **The new wiring pins were `fixed:` on the command text**, so commenting out the selfcheck line
+  and the workflow step would leave both tokens present and both guards un-run — the silent
+  unwiring the pins exist to catch, recreated by the pins. They now anchor on `^[^#]*`: an ACTIVE
+  invocation. Deliberately not `^[[:space:]]*[^#[:space:]].*TOKEN`, the shape that has now failed
+  twice in this file by consuming the first character.
+
+Three rounds of "prove it can fail" — author, independent review, async review — each found
+something the previous round did not. That is the argument for the discipline, and also its honest
+limit: none of them is sufficient alone.

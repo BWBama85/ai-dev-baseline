@@ -28,6 +28,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **The lint now reports what it evaluated** — rules, rule-file assertions, absent rules, files
     scanned, witnesses verified — so "checked and clean" and "matched nothing" are no longer the
     same log line. Zero rules, zero files, an empty pattern and a missing `--` are all failures.
+  - **`check_exit_guard`** (in `check-lib.sh`) — a suite's exit status is its LAST COMMAND's, and
+    only `check_summary` consults the `fail` counter, so a suite that loses that final line prints
+    its `FAIL:` diagnostics and still exits 0. It installs one EXIT trap that fails closed unless
+    the summary ran, then runs the cleanup it was given. Wired into `check-fact-guard.sh` here;
+    the sweep across the other 22 suites is #231.
+  - The wiring pins anchor on `^[^#]*`, an **active** invocation rather than the raw token: a
+    `fixed:` pin is satisfied by a commented-out command, which would have left both guards
+    un-run with both tokens present — the silent unwiring the pins exist to catch, reproduced by
+    the pins themselves.
   - Two latent defects were found by writing the witnesses. `backstop-stale-7min` used
     `[≥>]` and `3[–-]7`; a bracket expression holding a multibyte character is matched **bytewise**
     under a C locale, so `3–7 min` could not be caught there at all — a pin that fired on a UTF-8

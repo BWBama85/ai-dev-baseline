@@ -87,6 +87,12 @@ check_result() {
 # and ShellCheck sees no SC2154 across the source boundary.
 pass=0
 fail=0
+# Set by check_summary as its FIRST action, so a suite can prove its summary actually ran. Without
+# that proof a suite fails OPEN: the script's exit status is its last command's, `bad` only records
+# into `fail`, and `fail` is only ever consulted inside check_summary — so a file truncated before
+# its final line, or an early `exit 0`/`return`, prints `FAIL:` lines and still exits 0. selfcheck
+# and CI then report the step as passing. See check_exit_guard below (#213).
+CHECK_SUMMARY_RAN=0
 
 # Count one passing assertion.
 ok()   { pass=$((pass + 1)); }
@@ -111,6 +117,7 @@ hasnt() { case "$1" in *"$2"*) bad "$3: [$1] unexpectedly contains [$2]" ;; *) o
 # assertion failed, else print "<name>: PASS". Callers end with this instead of re-reading
 # $pass/$fail (which would trip SC2154, since ShellCheck does not follow the sourced file).
 check_summary() {
+  CHECK_SUMMARY_RAN=1
   printf '\n%s: %d passed, %d failed\n' "$1" "$pass" "$fail"
   # ZERO ASSERTIONS IS NOT A PASS (#213). `fail -eq 0` alone reports PASS for a suite that ran
   # nothing at all — a file truncated by a bad merge, an early `exit` or `return`, a case block
@@ -124,6 +131,38 @@ check_summary() {
   fi
   [ "$fail" -eq 0 ] || exit 1
   echo "$1: PASS"
+}
+
+# check_exit_guard <name> [cleanup-command] — install an EXIT trap that FAILS CLOSED unless
+# check_summary actually ran, then runs <cleanup-command> (typically `rm -rf "$work"`).
+#
+# The hole it closes: a suite's exit status is its LAST COMMAND's, and the only thing that ever
+# consults the `fail` counter is check_summary. Lose that final line — a truncating edit, a
+# misplaced `exit 0`, an early `return` — and the suite prints its `FAIL:` diagnostics, exits 0,
+# and is reported as PASSING by both selfcheck and CI. The assertions ran and their verdict was
+# discarded, which is exactly the silent-guard failure this repo keeps paying for.
+#
+# It must be INSTALLED per suite rather than armed automatically when this file is sourced,
+# because a suite that later installs its own `trap … EXIT` would silently REPLACE ours — a guard
+# that goes inert in the one place it is needed. So the cleanup it would have installed is passed
+# to this instead, keeping one EXIT trap per suite. Usage, before the first assertion:
+#     work="$(mktemp -d)"; check_exit_guard "check-thing" "rm -rf \"$work\""
+check_exit_guard() {
+  local name="$1" cleanup="${2:-}"
+  # Single-quoted so $? is read when the trap FIRES, not when it is installed; $name/$cleanup are
+  # interpolated now, which is what makes the message and the cleanup suite-specific.
+  # shellcheck disable=SC2064  # deliberate: name/cleanup are expanded at install time
+  trap "_check_exit_guard \"$name\" \"\$?\"; ${cleanup:-:}" EXIT
+}
+
+# The trap body. Separate so the trap string stays short and quoting stays legible.
+_check_exit_guard() {
+  [ "$CHECK_SUMMARY_RAN" -eq 1 ] && return 0
+  printf '%s: FAIL — the suite ended without running check_summary, so its assertions were never\n' "$1" >&2
+  printf '%s:        counted. Exiting non-zero: a suite that skips its own verdict must never be\n' "$1" >&2
+  printf '%s:        reported as passing (exit status was %s).\n' "$1" "$2" >&2
+  # `exit` inside an EXIT trap sets the final status without re-entering the trap.
+  exit 1
 }
 
 # --- git fixture helpers (identity wrapper + local+bare-origin pair) --------------------------

@@ -33,7 +33,12 @@ ROOT="$(pwd)"
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 
 work="$(mktemp -d)" || { echo "check-fact-guard: cannot create a temp dir" >&2; exit 1; }
-trap 'rm -rf "$work"' EXIT
+# ONE exit trap, doing both jobs: fail closed if this suite ends without running its summary, then
+# clean up. Without the first half the suite fails OPEN — its exit status is its last command's,
+# and only check_summary ever consults the `fail` counter, so a truncating edit or a stray early
+# `exit` prints FAIL lines and still exits 0, and selfcheck and CI report the step as passing.
+# A suite whose entire job is proving guards can fail must not be able to skip its own verdict.
+check_exit_guard "check-fact-guard" "rm -rf \"$work\""
 
 # ONE copy of the working tree, cloned per case, through check-lib.sh's shared copier. It copies
 # UNCOMMITTED sources — so this suite tests the lint you just edited, not the one at HEAD.
@@ -396,6 +401,100 @@ run "$d" --mutation
 RUN_PATH=""
 eq "$RC" 1 "an enumeration that finds no shell files fails instead of passing"
 has "$OUT" "enumeration is broken" "zero files: names the broken scan"
+
+# ================= an ACTIVE invocation, not the raw token ====================
+# A `fixed:` pin on a command is satisfied by a COMMENTED-OUT command, so commenting out the
+# selfcheck line and the workflow step would leave both tokens present and both guards un-run.
+# The wiring rules therefore anchor on `^[^#]*`; prove it both ways on a fixture file.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact active-invocation 'regex:^[^#]*check-fact-drift\.sh --mutation' -- README.md
+fact keeps-a-negative 'absent:ZZQQ-never-present' 'fires:ZZQQ-never-present' -- README.md
+RULE
+printf '\n# bash scripts/check-fact-drift.sh --mutation\n' >> "$d/README.md"
+run "$d"
+eq "$RC" 1 "a COMMENTED-OUT invocation does not satisfy the wiring pin"
+has "$OUT" "canonical pattern" "commented invocation: reported as a missing pattern"
+
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact active-invocation 'regex:^[^#]*check-fact-drift\.sh --mutation' -- README.md
+fact keeps-a-negative 'absent:ZZQQ-never-present' 'fires:ZZQQ-never-present' -- README.md
+RULE
+printf '\nif bash scripts/check-fact-drift.sh --mutation; then :; fi\n' >> "$d/README.md"
+run "$d"
+eq "$RC" 0 "an ACTIVE invocation satisfies it"
+
+# ...and it must not depend on something preceding the token, which is the trap the earlier
+# `[^#[:space:]]`-consuming anchor fell into twice.
+d="$(fresh)"
+minimal "$d" <<'RULE'
+fact active-invocation 'regex:^[^#]*check-fact-drift\.sh --mutation' -- README.md
+fact keeps-a-negative 'absent:ZZQQ-never-present' 'fires:ZZQQ-never-present' -- README.md
+RULE
+printf '\nbash scripts/check-fact-drift.sh --mutation\n' >> "$d/README.md"
+run "$d"
+eq "$RC" 0 "an invocation at the START of a line satisfies it too"
+
+# ================== the suite's own verdict cannot be skipped =================
+# A suite's exit status is its LAST COMMAND's, and only check_summary consults the `fail` counter.
+# Lose that final line and the suite prints FAIL diagnostics, exits 0, and is reported as passing.
+# Exercised against a COPY of this very file — the one suite for which failing open is worst.
+guard_self="$work/selftest"
+mkdir -p "$guard_self/scripts"
+cp scripts/check-lib.sh "$guard_self/scripts/"
+# A tiny suite that records a FAILING assertion and then ends without its summary.
+cat > "$guard_self/scripts/truncated.sh" <<'SUITE'
+set -u
+cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_exit_guard "truncated-suite"
+bad "a deliberate failure that nothing will ever count"
+SUITE
+( cd "$guard_self" && bash scripts/truncated.sh ) >/dev/null 2>&1
+eq "$?" 1 "a suite that ends without check_summary fails closed"
+
+# ...and the guard does not fire when the summary DID run.
+cat > "$guard_self/scripts/complete.sh" <<'SUITE'
+set -u
+cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_exit_guard "complete-suite"
+ok
+check_summary "complete-suite"
+SUITE
+( cd "$guard_self" && bash scripts/complete.sh ) >/dev/null 2>&1
+eq "$?" 0 "a suite that runs its summary is unaffected by the guard"
+
+# ...and a real failure still exits 1 through the guard rather than being masked by it.
+cat > "$guard_self/scripts/failing.sh" <<'SUITE'
+set -u
+cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_exit_guard "failing-suite"
+bad "a real, counted failure"
+check_summary "failing-suite"
+SUITE
+( cd "$guard_self" && bash scripts/failing.sh ) >/dev/null 2>&1
+eq "$?" 1 "a counted failure still exits 1"
+
+# ...and the cleanup argument still runs.
+cleanup_probe="$work/cleanup-probe"
+: > "$cleanup_probe"
+cat > "$guard_self/scripts/cleanup.sh" <<SUITE
+set -u
+cd "\$(dirname "\$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_exit_guard "cleanup-suite" "rm -f '$cleanup_probe'"
+ok
+check_summary "cleanup-suite"
+SUITE
+( cd "$guard_self" && bash scripts/cleanup.sh ) >/dev/null 2>&1
+if [ -e "$cleanup_probe" ]; then bad "check_exit_guard did not run its cleanup command"; else ok; fi
 
 # ============================== argument handling =============================
 d="$(fresh)"

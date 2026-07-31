@@ -727,9 +727,23 @@ fact pr-primitives-no-copies 'absent:^_sa_local_slug\(\)' \
 # either invocation from selfcheck.sh or ci.yml removes the protection while the `fact-drift`
 # CHECK CONTEXT stays green, so branch protection notices nothing and no other check greps for
 # them. A guard that can be un-wired invisibly is the guard this whole file is about.
-fact fact-mutation-wired "fixed:check-fact-drift.sh --mutation" -- \
+#
+# `^[^#]*` — an ACTIVE invocation, not the raw token. A plain `fixed:` rule is satisfied by a
+# COMMENTED-OUT command, so `# bash scripts/check-fact-drift.sh --mutation` in selfcheck plus a
+# commented `run:` step in the workflow would leave both tokens present and both guards un-run:
+# precisely the silent unwiring these rules exist to catch, reproduced by the pin meant to prevent
+# it (bot review, PR #230).
+#
+# The anchor is deliberately NOT `^[[:space:]]*[^#[:space:]].*TOKEN`, which is the shape that has
+# now failed twice in this file: `[^#[:space:]]` CONSUMES the first non-blank character, so a line
+# that STARTS with the invocation matches nothing. `^[^#]*` says "no `#` before the token" without
+# consuming anything, and holds whether the line begins with `if`, with `run:`, or with `bash`.
+#
+# What it does NOT do: prove the surrounding YAML still parses, or that the step belongs to a job
+# that runs. That needs a real workflow parser — tracked in #229.
+fact fact-mutation-wired 'regex:^[^#]*check-fact-drift\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
-fact fact-guard-wired "fixed:check-fact-guard.sh" -- \
+fact fact-guard-wired 'regex:^[^#]*check-fact-guard\.sh' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
 
 # --- what was actually evaluated ---------------------------------------------
