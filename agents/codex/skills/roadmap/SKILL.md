@@ -174,7 +174,14 @@ can't: the order to build in, which issues share a branch, and the blocking edge
                     #25"); the row is read by the same `deps-from-body` predicate.
        `Recorded` — where the decision also lives (an issue body / PR), or `—` if only here.
      Prefer recording a decision in the ISSUE BODY as well: the body is what every other reader
-     sees. This table is the durable fallback for a decision no single issue owns. -->
+     sees. This table is the durable fallback for a decision no single issue owns.
+
+     A NUMBER WRITTEN HERE MUST ALREADY RESOLVE (#212). This skill files no issues, so it has no
+     file-then-cite ordering to invert — but it is a WRITER of cross-references, and this table
+     is the one part of the artifact a run never rewrites. So a wrong number here is permanent:
+     it survives every future reconcile, and `deps-from-body` will keep deriving an edge from
+     it. Confirm each `#N` with `gh issue view <n>` before the row is written, and prefer the
+     number the owner actually named over one inferred from context. -->
 
 | Question                | Decision                                                   | Recorded |
 | ----------------------- | ---------------------------------------------------------- | -------- |

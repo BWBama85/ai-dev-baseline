@@ -28,16 +28,21 @@ those. The rules below are specific to this repo's code.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs
    (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
    pr-review · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration ·
-   install-guard · fact-drift · fact-mutation · fact-guard · practice-index · release-role · release-skill · install dry-run). Fix red at the root — never push and
+   install-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill · install dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
 
-   **One CI step is deliberately not mirrored** (#122, recorded as D13 in
-   `.ai-dev-baseline/decisions.md`): the `repo-settings` job's `required-drift` step reads this
-   repo's **live** branch protection to catch a newly added CI job that stayed non-required.
-   `selfcheck` is kept hermetic — a deterministic predictor of CI — and a step whose verdict
-   depends on network, auth and externally-mutable settings would break that. It keeps the offline
-   half (`check-repo-settings.sh` drives the predicate through a `gh` stub), so the only thing a
-   local green cannot predict is the one check whose input is external mutable state.
+   **Two CI steps are deliberately not mirrored** (D13, extended by D24), and both are the same
+   shape — a verdict that depends on network, auth and externally-mutable state:
+
+   - the `repo-settings` job's `required-drift` step (#122), which reads this repo's **live**
+     branch protection to catch a newly added CI job that stayed non-required;
+   - the `fact-drift` job's **live claim** step (#212), which resolves every `#N` an added line
+     cites against the live tracker.
+
+   `selfcheck` is kept hermetic — a deterministic predictor of CI — so both keep their offline half
+   locally (`check-repo-settings.sh` drives its predicate through a `gh` stub; `check-claims.sh`
+   runs the decision and date rules and **reports how many references it left unverified**). What a
+   local green cannot predict is exactly these two, and nothing else.
 4. **Shell code must be portable and shellcheck-clean.** `bash`/POSIX, safe on macOS
    bash 3.2 (no `mapfile`, no `readlink -f`), passing
    `shellcheck --severity=warning -e SC1091`. The install runs on a stock Mac and on
@@ -68,6 +73,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role · release-skill) |
 | `scripts/check-fact-drift.sh --mutation` · `scripts/check-fact-guard.sh` | The negative half of the anti-drift lint, **proven able to fail** (#213). A `absent:` rule declares the real superseded spellings it catches (`fires:<witness>`); `--mutation` injects each into a **copy** of every pinned file and requires the lint to come back red; `check-fact-guard.sh` drives both against deliberately broken rules so the guard rails are themselves observed failing. Never mutates the working tree |
+| `scripts/check-claims.sh` · `scripts/check-claims-guard.sh` | The claim lint (#212): every `#N` an added line cites resolves and is the kind it is cited as, every `D<N>` resolves to a decision heading, every added decision date is within a day of its commit. The `#N` half needs the network, so it is **CI-only** and `selfcheck` runs the rest (D13/D24). The guard suite drives every rule to RED against a stubbed `gh` and pins the invocation sites |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |
 | `docs/` | design-principles · philosophy · installation · roles · overrides · adding-an-agent · release-goal-convention · repo-settings · roadmap-acceptance |
 

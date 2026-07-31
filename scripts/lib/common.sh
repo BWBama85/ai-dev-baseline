@@ -500,6 +500,82 @@ adb_git_origin_slug() {
   printf '%s' "$slugs"
 }
 
+# adb_gh_entity <slug> <number> [subcommand] [extra-field] — read ONE issue-or-pull-request and
+# report what it is. The single home for "resolve #N against a repository", because there are now
+# two consumers and a second copy is exactly the drift this file exists to prevent (#212 review).
+#
+# THE SUBCOMMAND IS A PARAMETER, and that is not gratuitous generality — it is a correctness
+# requirement discovered by check-state-assert.sh. `gh issue view` answers for a pull-request
+# number, which makes it the right reader when the caller does not yet know the kind. But it does
+# NOT accept every pull-request field: `gh issue view <n> --json mergedAt` fails outright with
+# "Unknown JSON field". state-assert.sh keys MERGED off `mergedAt` precisely because GitHub reports
+# a merged PR's state as CLOSED, so hard-coding `issue` here would have made every merged PR render
+# as "CLOSED without merging" — the wrong-direction error #44 exists to prevent. Callers that know
+# they hold a PR pass `pr`; callers classifying an unknown number pass `issue`.
+#
+# Prints one TAB-delimited record on stdout: "<kind>\t<state>\t<extra>\t<number>"
+#   kind    `issue` | `pull`   — never guessed; see the URL-segment rule below
+#   state   OPEN | CLOSED | MERGED
+#   extra   the optional third field's value (stateReason for an issue, mergedAt for a PR)
+#   number  the number the RESPONSE is about, so a caller can prove it got what it asked for
+#
+# Exit codes distinguish the two failures that must never be conflated:
+#   0  read and understood
+#   1  the entity does not exist (a definite negative — gh resolved the repo and said no)
+#   2  UNREADABLE — transport failure, auth loss, malformed payload, unrecognizable URL. NOT the
+#      same as "does not exist", and collapsing them is a real defect: a network blip would
+#      otherwise be reported to a user as a fabricated issue number.
+#
+# `gh issue view` is used for BOTH kinds deliberately: it answers for a pull-request number too, so
+# one call classifies either. Only the URL's path segment discriminates them, compared EXACTLY at
+# its known position and never searched for anywhere in the URL — a repository literally named
+# `issues` exists in the wild, and a substring test would read its PR URLs as issues.
+adb_gh_entity() {
+  local slug="$1" n="$2" sub="${3:-issue}" extra="${4:-stateReason}"
+  local json fields st ex url seg num rc
+  case "$sub" in issue|pr) ;; *) return 2 ;; esac
+  command -v gh >/dev/null 2>&1 || return 2
+  command -v jq >/dev/null 2>&1 || return 2
+  # Read and parse as SEPARATE steps: a pipeline reports only its LAST command's status, so
+  # `gh … | jq` returns 0 on a failed read and the parser sees empty stdin — indistinguishable from
+  # a legitimately empty answer.
+  local err
+  err="$(mktemp)" || return 2
+  json="$(gh "$sub" view "$n" --repo "$slug" --json "state,$extra,url" 2>"$err")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # ABSENCE IS CLASSIFIED FROM THE ENTITY RESPONSE ITSELF, never inferred from something else
+    # being readable. An earlier version asked whether the REPOSITORY was reachable and treated a
+    # successful repo read as proof the number did not exist — but repo reachability proves
+    # connectivity and nothing more. Every query-specific failure with a readable repo then became
+    # a confident "does not resolve": insufficient issue permissions, a transient GraphQL error, or
+    # simply an unsupported field (`--json mergedAt` on an issue really does fail this way). A tool
+    # built to stop fabricated references would have been fabricating them.
+    #
+    # So only GitHub's own definite negative counts. Anything else — including an unrecognized
+    # error — is UNREADABLE, which is the conservative answer: it stops the run instead of
+    # accusing a real reference.
+    if grep -qi 'Could not resolve to an\|Could not resolve to a PullRequest\|no issues found' "$err"; then
+      rm -f "$err"; return 1
+    fi
+    rm -f "$err"; return 2
+  fi
+  rm -f "$err"
+  [ -n "$json" ] || return 2
+  fields="$(printf '%s' "$json" | jq -r '.state // "", (.'"$extra"' // ""), (.url // "")' 2>/dev/null)" \
+    || return 2
+  { IFS= read -r st; IFS= read -r ex; IFS= read -r url; } <<EOF
+$fields
+EOF
+  [ -n "$st" ] || return 2
+  seg="${url%/*}"; num="${url##*/}"; seg="${seg##*/}"
+  case "$num" in ''|*[!0-9]*) return 2 ;; esac
+  case "$seg" in
+    pull)   printf 'pull\t%s\t%s\t%s\n'  "$st" "$ex" "$num" ;;
+    issues) printf 'issue\t%s\t%s\t%s\n' "$st" "$ex" "$num" ;;
+    *) return 2 ;;
+  esac
+}
+
 # adb_pr_slug_check <label> <pr-number> <pr-argument> <observed-slug> — prove that a caller's reads
 # addressed the repository the caller meant, before any verdict is derived from them. Diagnostics go
 # to stderr under <label>; nothing is printed on success.

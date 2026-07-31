@@ -9,6 +9,50 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **A verifiable claim written into a tracked file is now gated before it can MERGE** (#212, D24).
+  (Not before it is *committed* — see the scope note at the end of this entry.)
+  The #173 run committed four factual claims nothing checked, and three were wrong: a `#206`
+  citation that tracked something else, a `#207` citation for an issue that **did not exist** —
+  rendered into all three agents' skills — and "(recorded as D17)" for a decision that is D18. The
+  practice forbidding exactly this for PR/issue *status* was loaded in context the whole time, which
+  is the same argument D16 already made for turning a rule into an exit code.
+  - **`scripts/check-claims.sh`** scans the **added lines of a range** and asserts three things:
+    every `#N` resolves, is the kind it is cited as (`gh issue view` answers for a PR number too,
+    so `issue #210` naming a pull request is a wrong claim bare existence waves through), and is
+    not closed `NOT_PLANNED`; every `D<N>` resolves to a `## D<N> — ` heading in the decision log;
+    and every added `- date:` there is within a day of the commit that introduced it — in **both**
+    directions, because the #173 entry was stamped a day *ahead*.
+  - **The live half is CI-only, and that is D13 rather than an omission.** `selfcheck` stays
+    hermetic so a local green keeps predicting CI; the `#N` reads ride CI exactly as
+    `required-drift` does, and **fail closed** (exit 3 on an unavailable or unauthenticated `gh`,
+    never a pass). The offline run reports how many references it left unverified.
+  - **An audited per-line `adb-claim-ok: <reason>` escape**, because prose *about* an abandoned
+    issue is legitimate — a blanket `NOT_PLANNED` rejection is semantically wrong, and a gate with
+    no way to say so gets worked around. Its first use is this lint's own header, citing
+    #150. <!-- adb-claim-ok: cited BECAUSE it is closed NOT_PLANNED — the cautionary case. In
+    markdown the marker rides an HTML comment so it does not render; the exemption is per-line,
+    so it must sit on the same physical line as the reference. -->
+  - **`scripts/check-claims-guard.sh`** drives every rule to RED offline against fixtures in a
+    throwaway repo with a stubbed `gh`, asserting the **designated** exit code and diagnostic
+    rather than "some non-zero", and pins the active invocation sites so commenting a call out
+    breaks a test. It earned its place immediately: it caught a markdown stripper that made one
+    rule structurally unable to fire, and an unresolvable `--range` that silently turned the whole
+    check into a no-op reporting PASS.
+  - **Where the gate actually sits, stated exactly.** It reads COMMITTED revisions, so it runs in
+    `selfcheck` (pre-push) and in CI (pre-merge) — there is no pre-commit hook and nothing scans the
+    index or working tree. #212 asked for "a pre-commit gate" and that half is **unmet**: activation
+    is the open question tracked in #233, because only one agent currently has Stop-hook wiring. The
+    distinction matters because "before it is committed" would promise a guarantee nothing delivers.
+
+- **The path-claim check asked for by #212 was built, measured, and deliberately not shipped**
+  (#234). Over the last five merges it scored **seven false positives and zero true positives**, in
+  the verb-free form and the change-verb form alike, because a changelog is a *historical* document:
+  a commit that reflows an older entry re-adds prose making true claims about a different commit. It
+  also cannot catch the defect #212 cites as its justification — that sentence named `base/roles.md`,
+  which **was** in the diff; what was false was the *kind* of change claimed of it. The judgement
+  half moved to a fifth **Claim integrity** lens in `/implement-issue`'s review prompt, which is
+  where #212's own follow-up comment puts it.
+
 - **Every negative pin in the anti-drift lint now has to prove it can go red** (#213, D22). An
   `absent:` rule's failure mode is silence: `absent:\[bot\]\$` asked for a contiguous `[bot]$`,
   the two real idioms are `sed 's/\[bot\]$//'` and `sub("\\[bot\\]$"; "")` where the bracket is
@@ -137,6 +181,16 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     boundary, and that no `{{PLACEHOLDER}}` appears inside a runnable fenced block.
 
 ### Changed
+
+- **Follow-up issues are filed before anything cites them** (#212). `/implement-issue` used to file
+  deferred work in step 12, *after* step 10 had already written a PR body citing it — so the
+  citation was committed before the thing it cited existed. Step 9 now files each deferral at the
+  moment it is decided, step 10 may only cite numbers that already resolve, and step 12 becomes a
+  reconcile sweep that adds the PR-side link (which step 9 structurally cannot) and dedupes two
+  phases filing into one tracker. `/create-issue` gains the sequence that resolves its genuine
+  parent/child ordering cycle — file the primary, file the siblings citing it, then edit the primary
+  to add the links — and `/roadmap`, which files nothing, gains the narrower rule that a number
+  written into its never-rewritten `## Decisions` table must already resolve.
 
 - **`git checkout -- <path>`, `git restore <path>` and `git stash drop` joined the destructive-git
   list** (#213), in `base/practices/git-and-prs.md` and therefore in every agent's root doc. The

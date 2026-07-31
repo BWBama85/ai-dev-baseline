@@ -487,12 +487,57 @@ jobs:
     name: fact-drift
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The claim lint's LIVE half reads issues and pull requests, which the workflow-level
+    # `contents: read` does not grant. Scoped to this job rather than widened at the top of the
+    # file, so no other job gains a permission it has no use for.
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
     steps:
       - name: Checkout
+        # fetch-depth: 0 for the claim lint (#212): it diffs base..head, and a shallow clone has
+        # neither SHA. The other steps in this job are indifferent to depth.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install jq
+        # The claim lint parses gh JSON with jq and exits 3 without it. Installed explicitly rather
+        # than leaning on runner-image contents, matching every other job here that needs it.
+        run: sudo apt-get install -y jq
 
       - name: Canonical facts must be consistent across their consumer docs
         run: bash scripts/check-fact-drift.sh
+
+      # The claim lint's own guard suite (#212). Needs no range and no network, so it runs on every
+      # event. Rides THIS job rather than taking its own for the reason stated below on the mutation
+      # steps: a new job is a new check context that branch protection would not require, which is
+      # exactly the drift `repo-settings.sh required-drift` exists to flag.
+      - name: The claim lint must be observed going RED on every rule it owns (#212)
+        run: bash scripts/check-claims-guard.sh
+
+      # Both range-taking steps are PULL-REQUEST ONLY, and that is a correctness bound rather than
+      # thrift. The obvious push-event fallback, `github.event.before`, is forty zeros on the first
+      # push of a branch and a vanished SHA after a force-push — either way the range does not
+      # resolve, and the lint exits 2 on principle rather than scanning nothing and reporting a
+      # clean PASS. Every change here reaches the default branch through a pull request anyway, so
+      # the gate loses no coverage; `base.sha...head.sha` is three-dot, i.e. the merge base, so it
+      # sees exactly the lines this PR adds.
+      - name: A claim added to a tracked file must resolve — decisions and dates (#212)
+        if: github.event_name == 'pull_request'
+        run: bash scripts/check-claims.sh --range "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
+
+      # THE LIVE HALF, and the second step in this file that talks to the API (see repo-settings).
+      # `selfcheck` deliberately does not mirror it — D13 keeps the local mirror hermetic, so the
+      # one thing a local green cannot predict stays the one thing whose input is external mutable
+      # state. It FAILS CLOSED: an unavailable or unauthenticated gh exits 3, never a pass. A fork
+      # PR's read-only token still carries the reads this needs.
+      - name: Every issue/PR reference an added line cites must resolve, live (#212)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-claims.sh --live --range "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
 
       # The negative half of that lint fails SILENTLY: an `absent:` pattern matching nothing passes
       # forever while checking nothing (#173, #213). Inject each rule's declared `fires:` witnesses

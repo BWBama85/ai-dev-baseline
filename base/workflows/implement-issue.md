@@ -622,7 +622,7 @@ and for the others by the triage argument alone. **Do not tell a reviewer that i
 vendor asks for this** unless you have actually read that vendor saying so.
 
 Require a `file:line` on every finding and an explicit REQUIRED/OPTIONAL mark, so step 9
-triages a list rather than re-deriving one from prose. Cover at least these four lenses,
+triages a list rather than re-deriving one from prose. Cover at least these five lenses,
 which are the ones that have actually caught defects in this repo's history:
 
 1. **Correctness / edge cases** — empty, single, zero, negative, max, unicode; escaping
@@ -633,6 +633,16 @@ which are the ones that have actually caught defects in this repo's history:
    *This lens caught a real shipped regression*, so it is not optional garnish.
 4. **Can a new guard actually fail?** — a check added by this diff must be shown capable
    of going red. A gate that cannot answer wrong is worse than no gate.
+5. **Claim integrity** — does every factual assertion this diff *adds* hold? Check the
+   changelog entry, the decision entry and the commit messages against the diff itself:
+   a sentence saying a file changed in some way must match what the diff did to that
+   file, and a cited identifier must be the thing it is claimed to be. **This lens is
+   here because it is the half a lint cannot do.** A claim lint can prove `#N` and
+   `D<N>` *resolve*; it cannot prove a reference is *apt*, and it cannot judge whether
+   "`base/roles.md`'s examples move to the bare spelling" is true of a diff that touched
+   `base/roles.md` for other reasons — which is precisely the claim that shipped wrong.
+   Reading the diff is what settles that, so it is asked of the reviewer, not of a
+   grammar.
 
 **Ask it to report everything it finds and to filter nothing.** Do **not** write "only
 report high-severity issues", "be conservative", "do not pad the list", or "a false
@@ -672,12 +682,38 @@ diff nobody reviewed. Keep them separate and name which one happened.
 Once every slot is terminal, update `phase=code_reviewed`. **Completed findings are
 input to step 9, not a stopping point.**
 
-### 9. Triage + fix
+### 9. Triage + fix — and file what you defer, BEFORE anything cites it
 
 Per finding (from self-review AND each reviewer): CRITICAL/HIGH → fix always;
-MEDIUM → fix unless clearly out of scope (then defer + file in step 12); LOW → fix
-if cheap else document; disagree → document the reasoning. Re-run gates. Commit
+MEDIUM → fix unless clearly out of scope (**then defer — and file it HERE, now**); LOW →
+fix if cheap else document; disagree → document the reasoning. Re-run gates. Commit
 again if anything changed. Update `phase=triaged`.
+
+**A number you have not filed is a number you must not write.** Filing used to happen only
+in step 12, *after* step 10 had already written a PR body citing the follow-ups — so the
+citation was committed before the thing it cited existed. That is not a hypothetical
+ordering nicety: a run cited `#207` in a workflow source and a changelog, the render carried
+it into all three agents' skills, and the issue **did not exist**. A reference that resolves
+to nothing looks exactly like tracked work, so nobody files it.
+
+So the order is inverted, and it is inverted in the only way that actually works — **in two
+phases, because follow-ups are discovered at two different times**:
+
+- **Discovered before or during implementation** (a gap-analysis SHOULD-CLARIFY you are not
+  taking, a slice you cut, the parent's own "Out of scope" list): file it as soon as you
+  decide to defer it — you may file at any point from step 4 onward.
+- **Discovered in review** (this step): file it **now, before step 10**, so the PR body can
+  cite a real number.
+
+Use step 12's placement rules (milestone, dedupe search, both-way linking) — they are the
+same rules, just applied at the moment of deferral. The one thing step 12 does that this
+step cannot is link the new issue **from the PR**, which does not exist yet; leave that to
+step 12's sweep.
+
+**Then re-read what you are about to write.** Every `#N` and every decision id in a commit
+message, a changelog entry or a decision entry must name something that exists *now*. Where
+the project has a claim lint, run it; where it does not, `gh issue view <n>` is one command
+and a dead reference in a tracked file outlives the PR that introduced it.
 
 ### 10. Push + open PR
 
@@ -694,6 +730,11 @@ PR body: summary; gap-analysis gaps + how addressed; self-review + reviewer find
 + dispositions (table); test plan. One `Closes #N` per fully-resolved issue (each on
 its own line), `Refs #N` for any sliced. After `gh pr create`, write `prUrl` and
 `phase=pr_opened` into the marker.
+
+**Every number in that body must already exist** — step 9 filed the deferrals precisely so
+this step has real numbers to cite. Do not write a follow-up's number here and file it in
+step 12; that is the ordering that put a nonexistent `#207` into three agents' shipped
+skills.
 
 **Then hand the merge to GitHub — but never arm it blind.** Ask **two** guards, in
 order; both re-read live state and both **fail closed**, so a repo that is not in the
@@ -831,13 +872,23 @@ the reviewer in a shell poll loop and only then resolves, so the wait itself cos
 tokens**; it exits quietly when the reviewer signals a clean pass. It is a **foreground** wait in a
 session the operator keeps, so suggest it rather than starting one — this step still ends here.
 
-### 12. File issues for ALL deferred / out-of-scope work (mandatory)
+### 12. Reconcile every deferred / out-of-scope item (mandatory)
 
-Always runs; gated by step 11. For every item not shipped in this PR that someone
-might need later — slices you cut, the parent's own "Out of scope" list, gap-analysis
-/ review items you deferred, knowingly-skipped test/infra gaps — create a tracked
-issue if one doesn't already exist. **File by default; never ask.** A PR body is not
-a tracker. `gh issue list --search …` first to avoid dupes.
+Always runs; gated by step 11. **This is now a SWEEP, not the first time anything gets
+filed** — step 9 files each deferral at the moment it is decided, so that the PR body written
+in step 10 can only ever cite numbers that already exist. What remains here is everything
+that ordering cannot cover:
+
+- **Anything still unfiled.** For every item not shipped in this PR that someone might need
+  later — slices you cut, the parent's own "Out of scope" list, gap-analysis / review items
+  you deferred, knowingly-skipped test/infra gaps — create a tracked issue if one doesn't
+  already exist. **File by default; never ask.** A PR body is not a tracker.
+  `gh issue list --search …` first to avoid dupes.
+- **The PR-side link**, which step 9 structurally could not add: the PR did not exist yet.
+  Link each issue filed during this run from the PR.
+- **A dedupe pass.** Two phases filing into one tracker can file the same thing twice — a
+  gap-analysis deferral and a reviewer finding are often the same item seen from two sides.
+  Merge or close the duplicate rather than leaving both open.
 
 Placement: if the repo uses a release-goal/milestone convention — detected the same opt-in
 way `/roadmap` activates (the `roadmap` artifact's `release-milestone` marker, **not**
