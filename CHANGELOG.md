@@ -7,25 +7,40 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
-### Changed
-
-- **The in-session reviewer is now the model that did *not* write the diff** (#211, D21). The
-  shipped manifest paired `primary = "claude"` with `review = ["claude"]`, so the prescribed
-  review was Claude grading its own work. Both vendors' published guidance argues against that
-  from opposite ends — Anthropic's Opus 5 guidance asks that explicit verification scaffolding be
-  *removed* from Claude's instructions, while OpenAI's asks Codex for exactly the named-checklist,
-  required-vs-optional pass this slot runs.
-  - `templates/agents.toml` (and therefore the global manifest `install.sh` writes) now ships
-    **`review = ["codex"]`**. **The resolver's built-in fallback for an *unset* `review` is
-    unchanged** — still the primary's own pass — so a repo with no manifest behaves exactly as
-    before. These are two different "defaults" and only one moved.
-  - **Existing manifests are not migrated and do not need to be.** The `claude` review arm stays
-    supported: neither `install.sh` nor `agent-init` rewrites an existing `agents.toml`, and a
-    Codex-primary repo reviewing with Claude is the same split pointing the other way. What
-    changed is that a slot whose token equals `primary` is now *labelled* `same-model (not
-    independent)` rather than presented as an independent pass.
-
 ### Added
+
+- **Every negative pin in the anti-drift lint now has to prove it can go red** (#213, D22). An
+  `absent:` rule's failure mode is silence: `absent:\[bot\]\$` asked for a contiguous `[bot]$`,
+  the two real idioms are `sed 's/\[bot\]$//'` and `sub("\\[bot\\]$"; "")` where the bracket is
+  always backslash-escaped, so the pin matched **neither** and shipped green while checking
+  nothing. Nothing could have caught it: every assertion still passed.
+  - **`fires:<witness>` is now mandatory on every `absent:` rule.** Each witness is a real
+    superseded spelling, and `check-fact-drift.sh` fails if a pattern does not match its own
+    witness — the unfirable-pin check, run on every invocation. Multi-spelling pins carry one
+    witness per spelling, because a pattern that catches three of four is green on the fourth.
+  - **`check-fact-drift.sh --mutation`** injects each witness into a **copy** of every file the
+    rule pins, re-runs the real lint there, and requires the drift verdict naming that rule and
+    that file. It refuses to run against an already-red tree, and distinguishes "the lint stayed
+    green" (an unfirable pin) from "the lint crashed" (a broken harness).
+  - **`scripts/check-fact-guard.sh`** applies the same rule to the two guards above — they are
+    driven against deliberately broken rules and observed failing. It carries the direct
+    regression test for the original defect.
+  - **The lint now reports what it evaluated** — rules, rule-file assertions, absent rules, files
+    scanned, witnesses verified — so "checked and clean" and "matched nothing" are no longer the
+    same log line. Zero rules, zero files, an empty pattern and a missing `--` are all failures.
+  - **`check_exit_guard`** (in `check-lib.sh`) — a suite's exit status is its LAST COMMAND's, and
+    only `check_summary` consults the `fail` counter, so a suite that loses that final line prints
+    its `FAIL:` diagnostics and still exits 0. It installs one EXIT trap that fails closed unless
+    the summary ran, then runs the cleanup it was given. Wired into `check-fact-guard.sh` here;
+    the sweep across the other 22 suites is #231.
+  - The wiring pins anchor on `^[^#]*`, an **active** invocation rather than the raw token: a
+    `fixed:` pin is satisfied by a commented-out command, which would have left both guards
+    un-run with both tokens present — the silent unwiring the pins exist to catch, reproduced by
+    the pins themselves.
+  - Two latent defects were found by writing the witnesses. `backstop-stale-7min` used
+    `[≥>]` and `3[–-]7`; a bracket expression holding a multibyte character is matched **bytewise**
+    under a C locale, so `3–7 min` could not be caught there at all — a pin that fired on a UTF-8
+    dev box and silently did not on a C-locale runner. Both are now literal alternations.
 
 - **`role-dispatch.sh available <agent>` and `role-dispatch.sh review-rung`** (#211, D21) — a
   reviewer that is not installed is not a reviewer that failed.
@@ -120,6 +135,39 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     that directory into every install, so a release predicate there would ship generic release
     machinery to every adopting repo, reversing #3/D7 by accident. The check asserts that
     boundary, and that no `{{PLACEHOLDER}}` appears inside a runnable fenced block.
+
+### Changed
+
+- **`git checkout -- <path>`, `git restore <path>` and `git stash drop` joined the destructive-git
+  list** (#213), in `base/practices/git-and-prs.md` and therefore in every agent's root doc. The
+  list held `reset --hard`, `push --force`, `clean -fd` and branch/tag deletion — all of which
+  mostly move *committed* history, where the reflog usually recovers it. One of the three added
+  here discarded ~40 minutes of unsaved work while "restoring" a file after a test.
+  The entry is precise about recoverability rather than lumping them together: an edit that was
+  never staged was never turned into a git object, so nothing recovers it; a staged snapshot does
+  exist as a blob and a dropped stash *is* commit objects, both sometimes salvageable via
+  `git fsck --unreachable` until gc prunes them. It is also precise about `git restore`, whose
+  `--staged` form rewrites the index and leaves the working file alone.
+- **`base/practices/self-review.md` gained two rules** (#213): *a new guard is not done until it
+  has been observed failing* — not "test your code", but specifically prove the check can go red,
+  on the real superseded input — and *negative-test against a copy, never the live tree*, which is
+  the method that avoids the `git checkout` above entirely.
+
+- **The in-session reviewer is now the model that did *not* write the diff** (#211, D21). The
+  shipped manifest paired `primary = "claude"` with `review = ["claude"]`, so the prescribed
+  review was Claude grading its own work. Both vendors' published guidance argues against that
+  from opposite ends — Anthropic's Opus 5 guidance asks that explicit verification scaffolding be
+  *removed* from Claude's instructions, while OpenAI's asks Codex for exactly the named-checklist,
+  required-vs-optional pass this slot runs.
+  - `templates/agents.toml` (and therefore the global manifest `install.sh` writes) now ships
+    **`review = ["codex"]`**. **The resolver's built-in fallback for an *unset* `review` is
+    unchanged** — still the primary's own pass — so a repo with no manifest behaves exactly as
+    before. These are two different "defaults" and only one moved.
+  - **Existing manifests are not migrated and do not need to be.** The `claude` review arm stays
+    supported: neither `install.sh` nor `agent-init` rewrites an existing `agents.toml`, and a
+    Codex-primary repo reviewing with Claude is the same split pointing the other way. What
+    changed is that a slot whose token equals `primary` is now *labelled* `same-model (not
+    independent)` rather than presented as an independent pass.
 
 ### Fixed
 

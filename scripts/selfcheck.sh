@@ -4,8 +4,8 @@
 # Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter, workflow-render,
 # gate-detector/gates, common-lib, agent-init, cleanup-enum, repo-settings, baseline,
 # session-currency, precommit-gate, implement-gate, install-migration, install-guard,
-# fact-drift, practice-index, release-role, release-skill, and an install→uninstall dry-run into a
-# throwaway HOME.
+# fact-drift, fact-mutation, fact-guard, practice-index, release-role, release-skill, and an
+# install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 
@@ -252,6 +252,21 @@ step "fact-drift"
 # Canonical facts (gate axes, cross-agent invocations, codex timeout, resolution order)
 # must stay consistent across their consumer docs.
 if bash scripts/check-fact-drift.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "fact-mutation"
+# The negative half of that lint has a failure mode the positive half does not: SILENCE. An
+# `absent:` pattern that matches nothing passes forever while checking nothing — which is exactly
+# what shipped in #173 and is why #213 exists. Each rule's declared `fires:` witnesses are injected
+# into a COPY of every file it pins and the real lint must come back red. Runs ~22 sub-lints
+# against a throwaway tree; the working tree is never touched.
+if bash scripts/check-fact-drift.sh --mutation; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "fact-guard"
+# ...and the guard rails above are themselves guards, so they get the same treatment (#213): the
+# witness contract and the mutation harness are each driven against deliberately broken rules in a
+# tree copy and must be seen going red. Carries the direct regression test for #173's defect — the
+# exact `absent:\[bot\]\$` pattern that could not match either real idiom.
+if bash scripts/check-fact-guard.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "practice-index"
 # Every base/practices/*.md is listed in 00-index.md exactly once (no missing/stale rows).

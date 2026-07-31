@@ -985,3 +985,163 @@ didn't already model, so any residual divergence stays visible and auditable.
              step 9 triages and the PR body reports. That is an owner-facing design question, so it
              ships as one atomic follow-up rather than being guessed at here.
 - baseline-issue: #211
+
+## D22 — a negative pin must declare the spellings it retires, and be watched failing on each
+- date:      2026-07-30
+- category:  general
+- unknown:   The baseline says a gate must be able to answer wrong (`base/roles.md`'s review lens 4,
+             `docs/design-principles.md`). What it did not model is how to ENFORCE that for a check
+             whose failure mode is silence. A positive assertion that breaks goes red; a NEGATIVE
+             one that breaks goes green, reports exactly what a clean run reports, and is invisible
+             to every existing test because every assertion still passes. `absent:\[bot\]\$` shipped
+             matching neither real idiom — the bracket is always backslash-escaped — and was caught
+             only because the agent chose to negative-test. Nothing required it.
+- decision:  Three layers, each one the negative test of the layer above it.
+
+             (1) A DECLARATION, checked on every run. Every `absent:` rule must carry one or more
+             `fires:<witness>` arguments naming the real superseded spellings it exists to catch,
+             and `fact()` fails if a pattern does not match its own witness. One witness PER
+             SPELLING, because a pattern that catches three of four is green on the fourth — which
+             is precisely the shape of the original defect, one spelling wider.
+
+             (2) AN EXECUTION, `check-fact-drift.sh --mutation`. Each witness is injected into a
+             COPY of every file the rule pins and the real lint is re-run there; it must return
+             the drift verdict naming that rule and that file. Exactly rc 1 — "any non-zero" would
+             accept a crash — and rc 0 is reported as *this pin cannot fire*, distinct from a
+             broken harness, because rc 0 is the failure the mode exists for. It refuses to run
+             against an already-red tree, where every injection would "fail" for the wrong reason.
+
+             (3) THE GUARDS' OWN NEGATIVE TEST, `scripts/check-fact-guard.sh`. (1) and (2) are
+             themselves guards, so they get the same rule: both are driven against deliberately
+             broken rules in a tree copy and must be seen going red. It stops at three layers
+             honestly — layer 3's assertions fail LOUDLY (a normal unit test), so it is not itself
+             a silent-failure guard and does not owe a layer 4.
+
+             The enumeration is never serialized. `--mutation` is a MODE of the lint, so `fact()`
+             stays the single enumeration of rules; a TSV side-channel would have been lossy
+             (tabs, newlines, backslashes) and its labels are not even unique — four patterns share
+             `pr-classifier-no-copies`.
+- placement: `scripts/check-fact-drift.sh` (grammar, witnesses, `--mutation`, counters, and the
+             `req_absent` call-site invariant); `scripts/check-fact-guard.sh` (the guards' negative
+             tests); `scripts/selfcheck.sh` + `.github/workflows/ci.yml` (wired as STEPS of the
+             existing `fact-drift` job, never a new job — a new job is a new check context branch
+             protection would not require, which `required-drift` exists to flag);
+             `base/practices/self-review.md` (the two rules, rendered into all three root docs).
+- reason:    Prose had already failed: the rule "a gate must be able to fail" was written down and
+             the unfirable pin shipped anyway. The three mechanisms this repo has that actually
+             stick all work because a wrong answer stops the machine, so this one is wired the same
+             way — the witness contract fails the lint, and the mutation step fails CI.
+
+             Two latent defects surfaced while writing the witnesses, which is the argument for the
+             approach in miniature. `backstop-stale-7min` used `[≥>]` and `3[–-]7`: a bracket
+             expression holding a multibyte character is matched BYTEWISE under a C locale, so
+             `3–7 min` could not be caught there — a pin that fired on a UTF-8 dev box and silently
+             did not on a C-locale runner. And the new call-site invariant shipped with the exact
+             match-nothing defect it polices (`[^#[:space:]]` consumed the first character, so a
+             line STARTING with the call never matched), caught by layer 3.
+- baseline-issue: #213
+- what-this-does-NOT-do: mechanize "any future gate whose failure mode is silence" (#213's second
+             bullet). Where a guard's rules are ENUMERABLE the harness is generic — `fact()` names
+             every rule, so present and future `absent:` pins are covered without anyone
+             remembering. Where the set is OPEN, an arbitrary future gate has no enumeration to
+             drive and no declared rejectable input, so it stays a DISCIPLINE stated in
+             `self-review.md`, not a mechanism. Saying that plainly is the point: implying
+             coverage that does not exist is the same failure one level up. The `req_absent`
+             family specifically IS closed, and is closed by asserting there is no caller outside
+             `fact()`.
+
+             It also does not ship the `PreToolUse` hook #213 asks the reader to *consider*; see
+             D23 for why that is a separately designed piece of work.
+
+## D23 — the destructive-git rules ship as practice text; the MECHANISM is a separate design
+- date:      2026-07-30
+- category:  general
+- unknown:   #213's second half asked the reader to *"consider a hook"* — a Claude `PreToolUse` hook
+             refusing `git checkout`/`git restore` against a path with unstaged modifications. The
+             baseline models Stop and SessionStart hooks; it had never modelled a hook that BLOCKS
+             AN ARBITRARY SHELL COMMAND, which is a different problem from the three shipped gates:
+             those read state the repo owns, this one has to understand a raw command string.
+- decision:  Ship the practice text in this PR (`git-and-prs.md`'s destructive list, with the
+             per-command recoverability distinction, and `self-review.md`'s copy-don't-mutate
+             method) and file the mechanism as its own issue rather than guessing at it.
+
+             The `PreToolUse` CONTRACT was verified live, not assumed — `matcher: "Bash"`, stdin
+             `cwd` + `tool_input.command`, exit 2 blocks with stderr fed back, plus a JSON
+             `permissionDecision` alternative. The contract is not the problem. Hand-splitting a
+             raw shell string on `;`/`&&`/`||`/`|` cannot recover the command or its argv, and the
+             naive guard fails in BOTH directions at once: it blocks `git checkout -b`,
+             `git restore --staged` (which preserves the worktree) and the words inside a heredoc,
+             while missing `git -C`, aliases, `eval`, everything inside a script (`PreToolUse` sees
+             `bash foo.sh`, never what it runs), and the staged data a `git diff --name-only`
+             predicate never looks at. The draft's in-command escape hatch was worse: a literal
+             token the agent can type itself is not authorization.
+- placement: `base/practices/git-and-prs.md` + `base/practices/self-review.md` (the rules, rendered
+             into all three root docs); issue #228 (the mechanism, in `Backlog`).
+- reason:    A guard that blocks safe work gets disabled, and one that misses the destructive case
+             is theatre — this design manages both, which makes shipping it worse than the honest
+             gap. #213's own wording is *consider*, and its release-blocking argument rests on the
+             rule being written down where every adopting project inherits it.
+
+             Saying which half shipped is part of the decision: this is documentation, and
+             documentation is what already failed once here. #228 carries the two candidate
+             mechanisms (a real command parse vs declarative `permissions.deny` rules, which need
+             no parser but impose global policy through an install surface `install.sh` does not
+             write today), the fail-open/fail-closed posture question, and the full integration
+             debt a fourth hook owes.
+
+             A third candidate surfaced in review and is recorded so #228 does not re-derive it:
+             a hook entry can carry an `if` PERMISSION-RULE filter (e.g. `if: "Bash(git restore *)"`),
+             so the harness decides which commands reach the hook at all — its own parser rather
+             than ours. That removes the classification problem from our code but not the design
+             work: the hook still has to decide the TARGET STATE question (does this path actually
+             hold unstaged work?) and the OWNER-AUTHORIZATION question (what is the escape hatch
+             that the agent cannot take for itself?), which are the two that make this a design
+             rather than a patch. Classified `general` rather than `project-delta` for the same
+             reason the issue was filed at all: the hook would ship to every adopting project.
+- baseline-issue: #228
+
+### D22 — amendment after independent review (2026-07-30)
+
+The independent Codex pass reproduced three holes in the layer-3 machinery, and each is the same
+shape the decision is about — a guard that is green because it never looked:
+
+- **`check_summary` reported PASS for a suite that ran ZERO assertions.** The suites are what prove
+  the guards can go red, so a suite that quietly stops running is a guard that quietly stops being
+  checked. `pass + fail == 0` is now a failure, in the shared primitive, for every suite in the repo.
+- **The `req_absent` call-site invariant excluded three whole FILES**, so a real direct call added
+  to any of them passed undetected — the invariant was simply false. Exemption is now PER LINE via
+  an `adb-allow: req_absent` marker, which makes every sanctioned occurrence deliberate and
+  reviewable and catches a new one wherever it lives.
+- **It scanned `*.sh` only**, so `bin/agent-init` and `bin/baseline` — real shell programs with no
+  extension — were invisible. It now scans anything with a shell shebang.
+
+Two further corrections in the same pass: `--mutation`'s "files scanned" counted path ARGUMENTS,
+so a pinned file that did not exist was reported as scanned (an `absent:`-only path is now a
+failure, not a vacuous pass, and only real files are counted); and the new wiring in `selfcheck.sh`
+and `ci.yml` was unpinned, so deleting either invocation would have removed the protection while
+the `fact-drift` check context stayed green — now pinned by `fact-mutation-wired` and
+`fact-guard-wired`.
+
+Recorded rather than silently folded in because it is the decision's own evidence: three layers of
+"prove it can fail" still shipped three checks that could not, and an independent reviewer — not
+the author — is what found them.
+
+### D22 — second amendment, after the async bot review of PR #230 (2026-07-30)
+
+The Codex connector found two more instances of the same shape, both in code added by the fix:
+
+- **A suite could exit 0 without ever running `check_summary`.** The exit status is the last
+  command's, and nothing but `check_summary` consults the `fail` counter — so a truncating edit or
+  a stray early `exit` prints `FAIL:` lines and is still reported as passing by selfcheck and CI.
+  `check_exit_guard` now installs one EXIT trap that fails closed unless the summary ran, and takes
+  the suite's cleanup as an argument so a second `trap … EXIT` can never silently replace it. Wired
+  into `check-fact-guard.sh` here; the sweep across the other 22 suites is #231.
+- **The new wiring pins were `fixed:` on the command text**, so commenting out the selfcheck line
+  and the workflow step would leave both tokens present and both guards un-run — the silent
+  unwiring the pins exist to catch, recreated by the pins. They now anchor on `^[^#]*`: an ACTIVE
+  invocation. Deliberately not `^[[:space:]]*[^#[:space:]].*TOKEN`, the shape that has now failed
+  twice in this file by consuming the first character.
+
+Three rounds of "prove it can fail" — author, independent review, async review — each found
+something the previous round did not. That is the argument for the discipline, and also its honest
+limit: none of them is sufficient alone.

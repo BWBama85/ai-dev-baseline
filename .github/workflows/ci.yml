@@ -494,6 +494,19 @@ jobs:
       - name: Canonical facts must be consistent across their consumer docs
         run: bash scripts/check-fact-drift.sh
 
+      # The negative half of that lint fails SILENTLY: an `absent:` pattern matching nothing passes
+      # forever while checking nothing (#173, #213). Inject each rule's declared `fires:` witnesses
+      # into a COPY of every file it pins and require the real lint to come back red. Steps of the
+      # SAME job rather than new jobs on purpose — a new job is a new check context that branch
+      # protection would not require, which `repo-settings.sh required-drift` exists to flag.
+      # NOTE the quoting on both names: an unquoted YAML scalar containing `: ` is a parse error,
+      # and a workflow that does not parse runs NO jobs at all.
+      - name: "Every absent: pin must be observed FAILING under its own superseded spellings (#213)"
+        run: bash scripts/check-fact-drift.sh --mutation
+
+      - name: "...and the witness/mutation guard rails must themselves be observed failing (#213)"
+        run: bash scripts/check-fact-guard.sh
+
       # Same species as the step above (an allowlisted positive-presence lint over the same doc
       # set, ~50ms), so it rides this job rather than spending a whole runner + checkout on a
       # 21st parallel job.

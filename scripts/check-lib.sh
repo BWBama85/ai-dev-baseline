@@ -58,7 +58,7 @@ req_regex() {
 # it satisfies req_regex and still misinforms every reader (#93). A missing file is NOT a failure
 # here: absence-in-a-nonexistent-file is vacuously true, and the positive rules already fail loudly
 # on a bad path, so duplicating that would double-report one typo.
-req_absent() {
+req_absent() {   # adb-allow: req_absent
   [ -f "$1" ] || return 0
   if grep -Eq -- "$2" "$1"; then
     check_note "[$3] superseded pattern /$2/ still present in $1:"
@@ -87,6 +87,12 @@ check_result() {
 # and ShellCheck sees no SC2154 across the source boundary.
 pass=0
 fail=0
+# Set by check_summary as its FIRST action, so a suite can prove its summary actually ran. Without
+# that proof a suite fails OPEN: the script's exit status is its last command's, `bad` only records
+# into `fail`, and `fail` is only ever consulted inside check_summary — so a file truncated before
+# its final line, or an early `exit 0`/`return`, prints `FAIL:` lines and still exits 0. selfcheck
+# and CI then report the step as passing. See check_exit_guard below (#213).
+CHECK_SUMMARY_RAN=0
 
 # Count one passing assertion.
 ok()   { pass=$((pass + 1)); }
@@ -111,15 +117,76 @@ hasnt() { case "$1" in *"$2"*) bad "$3: [$1] unexpectedly contains [$2]" ;; *) o
 # assertion failed, else print "<name>: PASS". Callers end with this instead of re-reading
 # $pass/$fail (which would trip SC2154, since ShellCheck does not follow the sourced file).
 check_summary() {
+  CHECK_SUMMARY_RAN=1
   printf '\n%s: %d passed, %d failed\n' "$1" "$pass" "$fail"
+  # ZERO ASSERTIONS IS NOT A PASS (#213). `fail -eq 0` alone reports PASS for a suite that ran
+  # nothing at all — a file truncated by a bad merge, an early `exit` or `return`, a case block
+  # sliced away by an edit — and it reports it in exactly the words a real pass uses. That is the
+  # silent-guard failure this repo keeps paying for, one level up: the suites are what prove the
+  # guards can go red, so a suite that quietly stops running is a guard that quietly stops being
+  # checked. Every suite here runs dozens of assertions; none can legitimately reach zero.
+  if [ "$((pass + fail))" -eq 0 ]; then
+    printf '%s: FAIL — zero assertions ran, which is not a pass. The suite executed nothing.\n' "$1" >&2
+    exit 1
+  fi
   [ "$fail" -eq 0 ] || exit 1
   echo "$1: PASS"
+}
+
+# check_exit_guard <name> [cleanup-command] — install an EXIT trap that FAILS CLOSED unless
+# check_summary actually ran, then runs <cleanup-command> (typically `rm -rf "$work"`).
+#
+# The hole it closes: a suite's exit status is its LAST COMMAND's, and the only thing that ever
+# consults the `fail` counter is check_summary. Lose that final line — a truncating edit, a
+# misplaced `exit 0`, an early `return` — and the suite prints its `FAIL:` diagnostics, exits 0,
+# and is reported as PASSING by both selfcheck and CI. The assertions ran and their verdict was
+# discarded, which is exactly the silent-guard failure this repo keeps paying for.
+#
+# It must be INSTALLED per suite rather than armed automatically when this file is sourced,
+# because a suite that later installs its own `trap … EXIT` would silently REPLACE ours — a guard
+# that goes inert in the one place it is needed. So the cleanup it would have installed is passed
+# to this instead, keeping one EXIT trap per suite. Usage, before the first assertion:
+#     work="$(mktemp -d)"; check_exit_guard "check-thing" "rm -rf \"$work\""
+check_exit_guard() {
+  local name="$1" cleanup="${2:-}"
+  # Single-quoted so $? is read when the trap FIRES, not when it is installed; $name/$cleanup are
+  # interpolated now, which is what makes the message and the cleanup suite-specific.
+  # shellcheck disable=SC2064  # deliberate: name/cleanup are expanded at install time
+  trap "_check_exit_guard \"$name\" \"\$?\"; ${cleanup:-:}" EXIT
+}
+
+# The trap body. Separate so the trap string stays short and quoting stays legible.
+_check_exit_guard() {
+  [ "$CHECK_SUMMARY_RAN" -eq 1 ] && return 0
+  printf '%s: FAIL — the suite ended without running check_summary, so its assertions were never\n' "$1" >&2
+  printf '%s:        counted. Exiting non-zero: a suite that skips its own verdict must never be\n' "$1" >&2
+  printf '%s:        reported as passing (exit status was %s).\n' "$1" "$2" >&2
+  # `exit` inside an EXIT trap sets the final status without re-entering the trap.
+  exit 1
 }
 
 # --- git fixture helpers (identity wrapper + local+bare-origin pair) --------------------------
 # The check-*.sh tests each hand-rolled the same "git with a throwaway identity" wrapper and the
 # same "bare origin + local repo wired to it" scaffold. Centralize only the BOILERPLATE; each
 # test keeps its own topology (branch names, origin/HEAD form, merge shape, push sequence).
+
+# check_copy_worktree <src> <dest> — copy a whole working tree (dotfiles included) into <dest>,
+# creating it, then drop the copied `.git`. The ONE home for the throwaway-tree-copy move, now that
+# three suites need it: the installer fail-loud test, the fact-drift mutation mode, and its guard
+# suite. A fourth open-coded copy is how the "faithful copier" details drift — `cp -R .` from
+# inside <src> is deliberate (it takes the CONTENTS, dotfiles included, and preserves symlinks and
+# modes on both BSD and GNU), and `git ls-files | cp` is deliberately NOT used: it needs `-z`,
+# per-file `mkdir -p`, and a policy for tracked-but-deleted paths, and it silently misses anything
+# uncommitted — which is the whole reason these suites copy the tree instead of cloning HEAD.
+#
+# Dropping `.git` is for speed (this repo's is ~27 MB), and it means the copy is NOT a git repo:
+# code under test that shells out to git must tolerate that. Returns non-zero WITHOUT exiting so a
+# `set -u` caller can guard it.
+check_copy_worktree() {
+  mkdir -p "$2" || return 1
+  ( cd "$1" && cp -R . "$2" ) || return 1
+  rm -rf "$2/.git"
+}
 
 # check_git <dir> <git-args...> — run git in <dir> with a fixed throwaway identity and signing
 # OFF, so a contributor whose global config sets commit.gpgsign=true still gets clean, unsigned
