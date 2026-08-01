@@ -145,8 +145,20 @@ cmd_pr_targets_issue() {
   # The LINKED-ISSUE half below is untouched, because it is genuinely GitHub's own computed set and
   # has no markdown in it. Only `.body` is replaced.
   local cnt idx body prose
-  cnt="$(printf '%s' "$json" | jq 'if type != "array" then error("not an array") else length end' 2>/dev/null)" \
-    || die "pr-targets-issue: could not parse PR JSON (malformed input or not a JSON array)"
+  # SHAPE-VALIDATE EVERY MEMBER, not just the top level. `jq -r '.[$i].body'` stringifies a number
+  # or an object without complaining, and `any(...)` over a non-array `closingIssuesReferences`
+  # yields an empty generator rather than raising — so a malformed PR object answered a clean
+  # "not targeted" (1) instead of "cannot answer" (2). That is the fail-open this predicate exists
+  # to prevent, reached by a different door than the malformed-JSON one.
+  cnt="$(printf '%s' "$json" | jq '
+      if type != "array" then error("not an array") else . end
+      | if any(.[]; type != "object") then error("member is not an object") else . end
+      | if any(.[]; .body != null and (.body | type) != "string") then error("body is not a string") else . end
+      | if any(.[]; .closingIssuesReferences != null and (.closingIssuesReferences | type) != "array")
+        then error("closingIssuesReferences is not an array") else . end
+      | if any(.[]; (.closingIssuesReferences // [])[] | type != "object") then error("reference is not an object") else . end
+      | length' 2>/dev/null)" \
+    || die "pr-targets-issue: could not parse PR JSON (malformed input, not a JSON array, or a malformed PR object)"
   idx=0
   while [ "$idx" -lt "$cnt" ]; do
     body="$(printf '%s' "$json" | jq -r --argjson i "$idx" '.[$i].body // ""' 2>/dev/null)" \
@@ -544,6 +556,10 @@ cmd_release_command() {
   # tell them apart — `release` is a perfectly legitimate thing to declare. What distinguishes them
   # is MARKUP: the example sits in a code span or a fence; a declaration does not.
   #
+  # TWO VALUE FILTERS BELOW, and they answer different questions. The mask-byte one drops a value a
+  # SPAN swallowed from outside the comment. The backtick one drops a value carrying backticks of
+  # its own — a skill can never be named that, and before the shared filter existed the blanket
+  # span-deletion emptied such a value, so this keeps that verdict rather than newly admitting one.
   # `--keep-comments` is the whole reason the shared filter takes that flag (#136). This marker IS
   # an HTML comment, so the filter's comment-stripping half has to be off — which used to be stated
   # here as "the shared filter cannot be reused", above a fourth private fence detector that knew
@@ -562,6 +578,7 @@ cmd_release_command() {
     | sed 's/.*release-command:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \
     | LC_ALL=C grep -v "$_ADB_MD_MASKC" \
+    | LC_ALL=C grep -v '`' \
     | sed 's/^[/$]//' \
     | grep -vx 'your-skill' \
     | grep -vx 'your-release-skill' \
@@ -594,7 +611,7 @@ cmd_marker_title() {
 }
 
 # --- markdown structure: this library's use of the ONE shared filter (#136, was #117) ---------
-# The filter itself lives in common.sh (`_ADB_MD_AWK`) — see its header for the model, the three
+# The filter itself lives in common.sh (`_ADB_MD_AWK`) — see its header for the model, the two
 # views, and why it buffers. This note records only what THIS library asks of it.
 #
 # Every body-reading subcommand here goes through it, and that is the point of #136: this repo kept
@@ -608,7 +625,7 @@ cmd_marker_title() {
 #   - `decisions`       a `| … |` row inside one is not a recorded owner decision, and a `#` line
 #                       inside one does not end the section. That second case is #108 exactly — a
 #                       real decision going unseen means the question re-asks on every run.
-#   - `release-command` and `marker-title` — MD_NOSPAN with comments KEPT, because for these two the
+#   - `release-command` and `marker-title` — the MASK view with comments KEPT, because for these two the
 #                       declaration IS an HTML comment and what separates it from the schema's own
 #                       documented example is markup, never the value.
 #   - `pr-targets-issue` sanitizes each PR body before the closing-keyword scan (#130). It used to  # adb-claim-ok: #130 is closed NOT_PLANNED, superseded by #136
@@ -860,7 +877,7 @@ cmd_decisions() {
     # answered, and a `#` line quoted in one would end the section early — hiding every real
     # decision after it, which is #108 returning by another route.
     #
-    # MD_TEXT, never MD_NOSPAN: a question id is routinely written as `` `q-1` `` by hand, and the
+    # MD_TEXT, never MD_MASK: a question id is routinely written as `` `q-1` `` by hand, and the
     # cell strips its own backticks below. Deleting span CONTENT here would erase the id itself.
     { MDL[++MDN] = $0 }
     END {

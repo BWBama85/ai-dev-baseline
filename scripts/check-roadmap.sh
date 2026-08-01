@@ -291,6 +291,17 @@ eq "$(printf '%s' "$(arr "$(pr 100 "$(jb 'Closes #42')" '[]')")" \
        | PATH="$sc_stub:$PATH" bash "$RL" pr-targets-issue 42 "$SLUG" >/dev/null 2>&1; printf '%s' "$?")" 2 \
    "a TRUNCATED filter run is an ERROR (2) too — a short clean-looking body is the fail-open"
 rm -rf "$sc_stub"
+# MALFORMED FIELD SHAPES reach the same fail-closed band (review round 1). `jq -r '.[$i].body'`
+# stringifies a number without complaining, and `any(...)` over a non-array reference set yields an
+# empty generator rather than raising — so a malformed PR object answered a clean "not targeted".
+eq "$(targets 42 '[{"body":42,"closingIssuesReferences":[]}]')" 2 \
+   "a non-string body is an ERROR (2), never a clean negative"
+eq "$(targets 42 '[{"body":"","closingIssuesReferences":{}}]')" 2 \
+   "a non-array closingIssuesReferences is an ERROR (2)"
+eq "$(targets 42 '["a string member"]')" 2 \
+   "an array member that is not an object is an ERROR (2)"
+eq "$(targets 42 '[{"body":null,"closingIssuesReferences":null}]')" 1 \
+   "...while explicit nulls stay a clean negative — absent is not malformed"
 
 # --- 1h. jq-metacharacter safety in the slug (no injection into the filter) -----------------
 # The slug is passed as a typed --arg, never interpolated into the program text.
@@ -1124,9 +1135,9 @@ eq "$(depsm "~~~a${bt}b" 'Depends on #5' '~~~')" '' "...but a tilde fence's info
 # acceptance list named this fixture as the one that must FLIP, and it cannot — the flip is in the
 # reason, and in the §5-repro fixtures further down. See D27.)
 eq "$(depsm "    $q3" 'Depends on #5' "    $q3")" '5' \
-   "a non-indented line ENDS an indented code block, so the prose between two indented runs declares"
+   "UNDER: a non-indented line ENDS an indented code block, so the prose between two runs declares"
 eq "$(depsm "    $q3" '    Depends on #5' "    $q3")" '' \
-   "...while a line INSIDE the block declares nothing (this is the #129 exclusion, gone)"  # adb-claim-ok: #129 is closed NOT_PLANNED, superseded by #136
+   "OVER: ...while a line INSIDE the block declares nothing (this is the #129 exclusion, gone)"  # adb-claim-ok: #129 is closed NOT_PLANNED, superseded by #136
 # An unterminated fence must swallow to end-of-body rather than leak its contents back to prose.
 eq "$(depsm 'Depends on #9' "$q3" 'Depends on #5')" '9' "an unterminated fence swallows to EOF"
 eq "$(depsm "$q3" 'Depends on #9' "$q3" 'Depends on #5')" '5' "prose AFTER a closed fence is scanned"
@@ -1264,6 +1275,38 @@ eq "$(deps "A real one: <!-- ${bt} --> Depends on #5")" '5' \
    "UNDER: a backtick INSIDE a real comment is consumed with it (the comment opened first)"
 eq "$(depsm '<!-- x' "Depends on ${bt}#5${bt}" '-->' 'Depends on #7')" '7' \
    "OVER: ...and a real comment still swallows a span, because it opened first"
+
+# AN HTML COMMENT THAT STARTS A LINE IS A BLOCK (review round 1). The inline pass runs a whole
+# paragraph BEHIND the block pass, so structure written INSIDE a multi-line comment used to mutate
+# block state before anything knew a comment was open. Both directions of that were live, and both
+# are UNDER-match: a fence opened and never closed, and a blockquote-shaped closer was skipped so
+# the comment never closed at all. Either swallowed every edge after it.
+eq "$(depsm '<!--' "$q3" '-->' 'Depends on #5')" '5' \
+   "UNDER: a fence delimiter INSIDE a multi-line comment opens no fence"
+eq "$(depsm '<!--' '> -->' 'Depends on #5')" '5' \
+   "UNDER: ...and a blockquote-shaped closer still closes the comment"
+eq "$(depsm '<!--' '    indented' '-->' 'Depends on #5')" '5' \
+   "UNDER: ...and an indented line inside one opens no code block"
+eq "$(depsm '<!--' 'Depends on #9' '-->' 'Depends on #5')" '5' \
+   "OVER: ...while the comment still swallows its own contents"
+eq "$(deps '<!-- Depends on #5 --> Depends on #7')" '7' \
+   "UNDER: a comment CLOSED on its own line stays inline, so the prose after it is still scanned"
+eq "$(depsm '- <!--' 'Depends on #9' '-->' 'Depends on #5')" '5' \
+   "OVER: a comment block opens at the CONTAINER content column too"
+
+# A LIST MARKER STARTS A NEW BLOCK (review round 1). Two adjacent items were buffered as one
+# paragraph, so their backticks paired across the item boundary and masked a real edge away.
+eq "$(depsm "- ${bt}Depends on #5" "- another ${bt} item")" '5' \
+   "UNDER: backticks in two DIFFERENT list items do not pair"
+eq "$(depsm "- ${bt}Depends on #5" "  still item one ${bt}")" '' \
+   "OVER: ...but a CONTINUATION line is the same paragraph, so a span across it still resolves"
+
+# AN ESCAPED BACKTICK IS LITERAL (review round 1), so it opens no span. Without the parity check a
+# phantom opener pairs with a real tick later in the paragraph and masks everything between.
+eq "$(depsm "\\${bt}Depends on #5" "later ${bt}")" '5' \
+   "UNDER: a backslash-escaped backtick is not a span opener"
+eq "$(depsm "\\\\${bt}Depends on #5" "later ${bt}")" '' \
+   "OVER: ...but TWO backslashes leave a real one (only odd parity escapes)"
 
 # The point of the whole family: prose still declares, and a quoted negation is not a retirement.
 eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \
@@ -1480,22 +1523,29 @@ eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n| b:#2 | y | — |\n")" 'a:#1 b:#2' \
 # `marker-title`, none whatever).
 rcmd() { printf '%b' "$1" | run_rl release-command; }
 mtit() { printf '%b' "$1" | run_rl marker-title; }
-eq "$(rcmd '<!-- release-command: release -->\n')" 'release' "a top-level release-command declares"
+eq "$(rcmd '<!-- release-command: release -->\n')" 'release' "UNDER: a top-level release-command declares"
 eq "$(rcmd "${q3}\n<!-- release-command: fenced -->\n${q3}\n")" '' "OVER: ...but a fenced one does not"
 eq "$(rcmd '> <!-- release-command: bq -->\n')" '' "OVER: ...nor a blockquoted one"
-eq "$(rcmd 'See \`<!-- release-command: spanned -->\` above.\n')" '' "OVER: ...nor one inside a code span"
+eq "$(rcmd "See ${bt}<!-- release-command: spanned -->${bt} above.\n")" '' "OVER: ...nor one inside a code span"
 eq "$(rcmd '    <!-- release-command: indented -->\n')" '' "OVER: ...nor one in an indented block (D27)"
-eq "$(rcmd '<!-- release-command: \`quoted\` -->\n')" '' \
-   "OVER: a value that is itself partly quoted is not a declaration (it would resolve to mask bytes)"
-eq "$(mtit '<!-- release-milestone: Next release -->\n')" 'Next release' "a top-level marker-title declares"
+eq "$(rcmd "<!-- release-command: ${bt}quoted${bt} -->\n")" '' \
+   "OVER: a value carrying backticks is not a declaration — a skill can never be named that"
+eq "$(mtit '<!-- release-milestone: Next release -->\n')" 'Next release' "UNDER: a top-level marker-title declares"
 eq "$(mtit "${q3}\n<!-- release-milestone: Fake -->\n${q3}\n<!-- release-milestone: Real -->\n")" 'Real' \
    "OVER: a FENCED example is not a second title — two titles make the artifact ambiguous and refuse it"
-eq "$(mtit 'Docs: \`<!-- release-milestone: Fake -->\`\n<!-- release-milestone: Real -->\n')" 'Real' \
+eq "$(mtit "Docs: ${bt}<!-- release-milestone: Fake -->${bt}\n<!-- release-milestone: Real -->\n")" 'Real' \
    "OVER: ...nor is a code-spanned one"
 eq "$(mtit '> <!-- release-milestone: Quoted -->\n<!-- release-milestone: Real -->\n')" 'Real' \
    "OVER: ...nor a blockquoted one"
 eq "$(mtit '<!-- release-milestone: A -->\n<!-- release-milestone: B -->\n')" 'A B' \
    "UNDER: two REAL markers still both surface, so the caller can refuse an ambiguous artifact"
+# A BACKTICK INSIDE A COMMENT IS COMMENT DATA, NOT A SPAN DELIMITER (review round 1). With comment
+# detection skipped in keep-comments mode, two comments paired their ticks ACROSS the declaration
+# between them and masked it away — a real marker returning nothing, with exit 0.
+eq "$(mtit "<!-- note ${bt} -->\n<!-- release-milestone: Real -->\n<!-- ${bt} note -->\n")" 'Real' \
+   "UNDER: backticks in two separate comments do not pair across a real marker between them"
+eq "$(rcmd "<!-- note ${bt} -->\n<!-- release-command: real -->\n<!-- ${bt} note -->\n")" 'real' \
+   "UNDER: ...and the same for release-command"
 bash "$RL" decisions extra-arg >/dev/null 2>&1
 eq "$?" 2 "decisions takes no arguments"
 

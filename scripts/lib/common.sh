@@ -1991,6 +1991,11 @@ adb_version_ge() {
 #       }
 #     }
 #
+# A BLOCK, for the purpose of span pairing, ends at: a blank line, a fence delimiter or its
+# contents, a blockquote, an indented code block, an HTML comment block, an ATX heading, a thematic
+# break, and a LIST MARKER. That last one is not decoration — two adjacent list items are separate
+# containers, and buffering them together paired their backticks across the boundary.
+#
 # WHY IT BUFFERS, when the thing it replaced was a deliberately single-pass streaming sanitizer.
 # CommonMark inline code spans may cross a line ending inside a paragraph, so `` `Depends on #5 ``
 # / `` still example` `` renders entirely as code and declares nothing — while a line-at-a-time
@@ -2041,8 +2046,14 @@ adb_version_ge() {
 # WHAT IS NOT MODELLED, stated plainly rather than implied:
 #   - A leading TAB is not counted as indentation. CommonMark expands tabs to 4-column stops; this
 #     counts spaces only. The error is toward SCANNING (over-match), never toward deleting prose.
-#   - Setext headings need lookahead past the line and are not detected. `- - -` and `* * *` read
-#     as list items rather than thematic breaks, for the same conservative reason.
+#   - Setext headings need lookahead past the line and are not detected — the ONE unrecognized
+#     block boundary, and therefore the one place a span can still pair across text CommonMark
+#     would have separated. `- - -` and `* * *` read as list items rather than thematic breaks,
+#     for the same conservative reason.
+#   - A comment opened MID-LINE (not at the content column) is inline, so the block pass does not
+#     know it is open. A fence or blockquote written inside such a comment is still misread. A
+#     comment that STARTS a line — every real occurrence, including this repo's own schema
+#     comments — is a block and is handled.
 #   - HTML blocks other than comments are ordinary prose.
 #
 # Assigned via `read -r -d ''` (not `$(cat <<…)`): the program contains backticks, which command
@@ -2164,7 +2175,15 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     # fence NEVER closes, and every edge in the rest of the body silently disappears.
     function adb_md_block(line,   at, lead) {
       if (substr(line, length(line), 1) == MD_CR) line = substr(line, 1, length(line) - 1)
-      MD_LINE = line; MD_ALONE = 0
+      MD_LINE = line; MD_ALONE = 0; MD_NEWPARA = 0
+      # An HTML COMMENT THAT STARTS A LINE is a BLOCK, not an inline (CommonMark HTML block type 2):
+      # it runs to the line carrying `-->`, and nothing inside it is parsed for fences, blockquotes
+      # or spans. Deciding that HERE is not tidiness — the inline pass runs a whole paragraph
+      # BEHIND the block pass, so a fence or a blockquote written inside such a comment used to
+      # mutate block state before anything knew a comment was open. `<!--` / ```` ``` ```` / `-->`
+      # opened a fence that never closed, and `<!--` / `> -->` skipped its own closer as a
+      # blockquote: both swallowed every edge after them, the under-match direction.
+      if (md_html) { if (index(line, "-->")) md_html = 0; md_para = 0; return 1 }
       if (md_fence_len) { adb_md_fence_delim(line); md_para = 0; return 1 }
       # An INDENTED CODE BLOCK, once open, runs over blank lines and every line indented >= 4, and
       # ends at the first non-blank line indented <= 3 (D27).
@@ -2189,7 +2208,24 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       # A list container suppresses indented-code detection until a column-0 line that is not
       # itself a marker closes it. Erring toward "still open" errs toward SCANNING, never toward
       # deleting prose.
-      if (at > lead) md_list = 1
+      # A comment whose `-->` is on the SAME line is NOT a block: it stays inline, so the prose
+      # after it is still scanned. That is the one place this deliberately parts from CommonMark
+      # (which makes the whole line HTML), because `<!-- x --> Depends on #7` declaring #7 is
+      # long-standing behaviour these consumers rely on.
+      # The closer is searched from the opener's THIRD character, not past its fourth: `<!-->` and
+      # `<!--->` share dashes between opener and closer, so a search that starts after `<!--` calls
+      # a CLOSED empty comment an unterminated block and swallows the rest of the body.
+      if (substr(line, at + 1, 4) == "<!--" && index(substr(line, at + 3), "-->") == 0) {
+        md_html = 1; md_para = 0; return 1
+      }
+      if (at > lead) {
+        md_list = 1
+        # A LIST MARKER STARTS A NEW BLOCK. Without this, two adjacent items are one buffer and
+        # their backticks pair across the boundary — `- \`Depends on #5` / `- another \` item`
+        # masked a real edge out of existence. Each item is its own container in CommonMark; only
+        # its CONTINUATION lines belong to the same paragraph.
+        MD_NEWPARA = 1
+      }
       else if (lead == 0) md_list = 0
       if (adb_md_fence_delim(line)) { md_para = 0; return 1 }
       # A blockquote nested under a list marker (`- > …`) is still quoted material (#135), so this
@@ -2230,17 +2266,23 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
         if (md_incomment) {
           q = index(s, "-->")
           if (q == 0) {                            # the comment swallows the rest of this block
-            seg = adb_md_nl_only(s)
+            seg = md_keep_comments ? s : adb_md_nl_only(s)
             text = text seg; mask = mask seg; s = ""
             continue
           }
-          seg = adb_md_nl_only(substr(s, 1, q - 1))
+          seg = substr(s, 1, q + 2)                # the body AND its closer
+          if (!md_keep_comments) seg = adb_md_nl_only(seg)
           text = text seg; mask = mask seg
           s = substr(s, q + 3); md_incomment = 0
           continue
         }
         p = index(s, "`")
-        q = md_keep_comments ? 0 : index(s, "<!--")
+        # A comment is DETECTED in both modes. `md_keep_comments` decides only whether its bytes
+        # are EMITTED — never whether it is seen. Skipping detection let two comments pair their
+        # backticks ACROSS a real declaration sitting between them, masking it away: three lines of
+        # `<!-- note ` -->` / `<!-- release-milestone: Real -->` / `<!-- ` note -->` returned no
+        # title at all. A backtick inside a comment is comment data, not a span delimiter.
+        q = index(s, "<!--")
         if (p == 0 && q == 0) { text = text s; mask = mask s; s = ""; continue }
         if (p > 0 && (q == 0 || p < q)) cut = p; else cut = q
         if (cut > 1) {
@@ -2250,6 +2292,17 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
         }
         if (substr(s, 1, 1) == "`") {
           n = adb_md_runlen(s, 1, "`")
+          # `\\\`` is an ESCAPED backtick: CommonMark strips its markdown meaning, so it opens no
+          # span. Same odd-parity rule as the comment opener below — and the same consequence for
+          # getting it wrong, since a phantom opener pairs with a real tick later in the paragraph
+          # and masks everything between them.
+          nbs = 0; k = length(text)
+          while (k >= 1 && substr(text, k, 1) == "\\") { nbs++; k-- }
+          if (nbs % 2 == 1) {
+            seg = substr(s, 1, n)
+            text = text seg; mask = mask seg; s = substr(s, n + 1)
+            continue
+          }
           e = adb_md_span_end(s, 1 + n, n)
           if (e == 0) {                            # unmatched: literal text, copied as a SLICE
             seg = substr(s, 1, n)
@@ -2271,12 +2324,21 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
           text = text "<!--"; mask = mask "<!--"
           s = substr(s, 5); continue
         }
+        if (md_keep_comments) { text = text "<!--"; mask = mask "<!--" }
         s = substr(s, 5); md_incomment = 1
         # `<!-->` and `<!--->` are EMPTY comments in CommonMark: the opener and closer share their
         # dashes. Searching for `-->` strictly after the opener would miss them and arm the
         # cross-line state, swallowing the rest of the body — the edge-dropping direction.
-        if (substr(s, 1, 1) == ">")  { md_incomment = 0; s = substr(s, 2); continue }
-        if (substr(s, 1, 2) == "->") { md_incomment = 0; s = substr(s, 3); continue }
+        if (substr(s, 1, 1) == ">") {
+          md_incomment = 0
+          if (md_keep_comments) { text = text ">"; mask = mask ">" }
+          s = substr(s, 2); continue
+        }
+        if (substr(s, 1, 2) == "->") {
+          md_incomment = 0
+          if (md_keep_comments) { text = text "->"; mask = mask "->" }
+          s = substr(s, 3); continue
+        }
       }
       MD_O_TEXT = text; MD_O_MASK = mask
     }
@@ -2302,7 +2364,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
           continue
         }
         MD_SKIP[i] = 0
-        if (first && MD_ALONE) { adb_md_flush(first, i - 1, para); para = ""; first = 0 }
+        if (first && (MD_ALONE || MD_NEWPARA)) { adb_md_flush(first, i - 1, para); para = ""; first = 0 }
         if (!first) { first = i; para = MD_LINE } else para = para "\n" MD_LINE
         if (MD_ALONE) { adb_md_flush(first, i, para); para = ""; first = 0 }
       }
@@ -2313,8 +2375,8 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       MD_CR = sprintf("%c", 13)
       MD_MASKC = sprintf("%c", 1)   # a byte no body carries; never printed, only matched against
       md_fence_ch = ""; md_fence_len = 0; md_fence_at = 0
-      md_incomment = 0; md_icode = 0; md_para = 0; md_list = 0
-      MDN = 0; MD_ALONE = 0
+      md_incomment = 0; md_icode = 0; md_para = 0; md_list = 0; md_html = 0
+      MDN = 0; MD_ALONE = 0; MD_NEWPARA = 0
     }
 AWKMD
 
@@ -2336,6 +2398,11 @@ _ADB_MD_MASKC="$(printf '\001')"
 # TRUNCATED body as a clean "no" — the exact fail-open a structure filter is supposed to remove. So
 # the awk program prints a completion trailer, and this checks for it: a killed, truncated, or
 # half-written run is a nonzero return here, never a short clean-looking result.
+#
+# THE TRAILER CARRIES A PER-INVOCATION NONCE, because a FIXED one proves less than it appears to.
+# Any output that happens to end in a constant marker satisfies a constant check — a stub emitting
+# only the marker, or a body whose own last line is that text, both read as a complete run. The
+# nonce is generated here and passed in, so only THIS invocation of the program can emit it.
 adb_md_prose() {
   local mode="${1:-text}" keep=0 mark out rc
   case "$mode" in
@@ -2347,13 +2414,13 @@ adb_md_prose() {
     --keep-comments) keep=1 ;;
     *) printf 'common: FATAL — adb_md_prose: unknown option %s\n' "$2" >&2; return 2 ;;
   esac
-  mark="$(printf '\001ADB_MD_OK')"
-  out="$(LC_ALL=C awk -v emit="$mode" -v md_keep_comments="$keep" "$_ADB_MD_AWK"'
+  mark="$(printf '\001ADB_MD_OK-%s-%s-%s' "$$" "${RANDOM:-0}" "${RANDOM:-0}")"
+  out="$(LC_ALL=C awk -v emit="$mode" -v md_keep_comments="$keep" -v ok="$mark" "$_ADB_MD_AWK"'
     { MDL[++MDN] = $0 }
     END {
       adb_md_run()
       for (i = 1; i <= MDN; i++) print (emit == "mask") ? MD_MASK[i] : MD_TEXT[i]
-      printf "%c%s\n", 1, "ADB_MD_OK"
+      printf "%s\n", ok
     }
   ')"; rc=$?
   [ "$rc" -eq 0 ] || return 1

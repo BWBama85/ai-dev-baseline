@@ -1300,7 +1300,7 @@ limit: none of them is sufficient alone.
 - baseline-issue: #248
 
 ## D27 — indented code blocks are recognized at top level only, and the acceptance fixture that "must flip" cannot correctly flip
-- date:      2026-08-01
+- date:      2026-07-31
 - category:  general
 - unknown:   #136 §5 names the one fork the rewrite could not decide for itself: are 4-space
              INDENTED code blocks structure (so a `Depends on #N` inside one declares nothing), or
@@ -1355,4 +1355,11 @@ limit: none of them is sufficient alone.
              The evidence that this is safe is empirical, not argued. The rewritten filter was run
              over all 193 issue bodies in this tracker and produced a byte-identical edge set, and
              over the whole existing 122-fixture § 6 suite with no expectation changed.
+
+             ORDERING, stated exactly rather than flatteringly. The acceptance list asks for this
+             entry "before implementation", and it was written before the code — but it lands in
+             the SAME commit, so the diff cannot evidence that and nobody should read it as
+             evidenced. What history does show is the substitute that actually matters: the new
+             fixtures fail against the parent commit. A future decision of this kind should be
+             committed on its own first, which is the only form of the claim a reviewer can check.
 - baseline-issue: #136

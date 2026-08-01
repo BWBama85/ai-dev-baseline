@@ -1160,7 +1160,9 @@ mdp() { printf '%b' "$2" | adb_md_prose "$1"; }
 
 # The three views, on one line that has all three shapes in it.
 SPANLINE='keep `a span` and <!-- a comment --> too\n'
-eq "$(mdp text "$SPANLINE")"   'keep `a span` and  too' "text: comments go, spans stay"
+# DIRECTION, on every fixture in this block: an OVER-match means the filter left something a
+# consumer will scan as a declaration; an UNDER-match means it removed text that was never markup.
+eq "$(mdp text "$SPANLINE")"   'keep `a span` and  too' "OVER/UNDER: text — comments go, spans stay"
 eq "$(mdp mask "$SPANLINE" | tr -d '\001')" 'keep  and  too' "mask: span contents become \\x01 (shown here with the mask bytes stripped)"
 eq "$(mdp mask "$SPANLINE" | wc -c | tr -d ' ')" "$(mdp text "$SPANLINE" | wc -c | tr -d ' ')" \
    "mask is byte-for-byte the SAME LENGTH as text — the 1:1 invariant every offset-pairing consumer needs"
@@ -1177,18 +1179,19 @@ eq "$(mdp mask 'clo`x`ses #42\n' | grep -c 'closes')" 0 \
 
 # LINE COUNT AND ORDER ARE PRESERVED. Every consumer indexes results by line, so a structural line
 # must yield an EMPTY line at its own position, never a deletion that renumbers what follows.
-eq "$(mdp text 'a\n```\nb\n```\nc\n' | wc -l | tr -d ' ')" 5 "line count survives a fenced block"
-eq "$(mdp text 'a\n```\nb\n```\nc\n' | sed -n '3p')" '' "...and the fenced line is empty at its own index"
-eq "$(mdp text 'a\n```\nb\n```\nc\n' | sed -n '5p')" 'c' "...so the line after it keeps its number"
+eq "$(mdp text 'a\n```\nb\n```\nc\n' | wc -l | tr -d ' ')" 5 \
+   "UNDER: line count survives a fenced block — a deletion would renumber every consumer's index"
+eq "$(mdp text 'a\n```\nb\n```\nc\n' | sed -n '3p')" '' "OVER: ...and the fenced line is empty at its own index"
+eq "$(mdp text 'a\n```\nb\n```\nc\n' | sed -n '5p')" 'c' "UNDER: ...so the line after it keeps its number"
 
 # STRUCTURE, one kind at a time. Each is empty output because the whole body is structure.
-eq "$(mdp text '```\nx\n```\n')" '' "a fenced block is structure"
-eq "$(mdp text '~~~\nx\n~~~\n')" '' "...both delimiters"
-eq "$(mdp text '> quoted\n')" ''    "a blockquote is structure"
-eq "$(mdp text '<!--\nx\n-->\n')" '' "a multi-line HTML comment is removed"
-eq "$(mdp text '    indented\n')" '' "a top-level indented block is structure (D27)"
+eq "$(mdp text '```\nx\n```\n')" '' "OVER: a fenced block is structure"
+eq "$(mdp text '~~~\nx\n~~~\n')" '' "OVER: ...both delimiters"
+eq "$(mdp text '> quoted\n')" ''    "OVER: a blockquote is structure"
+eq "$(mdp text '<!--\nx\n-->\n')" '' "OVER: a multi-line HTML comment is removed"
+eq "$(mdp text '    indented\n')" '' "OVER: a top-level indented block is structure (D27)"
 eq "$(mdp text '- item\n    continued\n')" '- item
-    continued' "...but an indented line under a list marker is prose (D27, the under-match guard)"
+    continued' "UNDER: ...but an indented line under a list marker is prose (D27)"
 
 # MULTI-LINE SPANS — the reason the filter buffers at all (#136 §1).
 # Asserted with `wc -l`, not against a literal: `$( … )` strips trailing newlines, so comparing
@@ -1204,8 +1207,8 @@ b' "an UNMATCHED run is literal text, so a stray backtick swallows nothing"
 # honors a quoted opener and swallows the body; spans-first pairs a backtick inside a real comment
 # with one in later prose. One left-to-right pass is the only rule that gets both right.
 eq "$(mdp text 'the opener is `<!--` here\nkept\n')" 'the opener is `<!--` here
-kept' "a <!-- inside a code span opens no comment"
-eq "$(mdp text 'real <!-- ` --> kept\n')" 'real  kept' "a backtick inside a real comment goes with it"
+kept' "UNDER: a <!-- inside a code span opens no comment"
+eq "$(mdp text 'real <!-- ` --> kept\n')" 'real  kept' "OVER: a backtick inside a real comment goes with it"
 
 # ARGUMENT VALIDATION and the FAIL-CLOSED completion marker. A truncated filter run must never look
 # like a clean short result — that is the fail-open `pr-targets-issue` maps to rc 2.
@@ -1219,6 +1222,14 @@ printf '#!/bin/sh\nprintf "half\\n"\nexit 0\n' > "$mdstub/awk"; chmod +x "$mdstu
 printf '#!/bin/sh\nexit 9\n' > "$mdstub/awk"
 ( PATH="$mdstub:$PATH"; printf 'x\n' | adb_md_prose text >/dev/null 2>&1 ); eq "$?" 1 \
    "...and so is a hard awk failure"
+# THE MARKER MUST NOT BE FORGEABLE, or the guard proves less than it claims. A stub that emits a
+# CONSTANT trailer would satisfy a constant check, and so would a body whose own last line happened
+# to be that text — so the trailer carries a per-invocation nonce. This stub emits the fixed prefix
+# and is still rejected. (Review finding: without this case the negative test covered only the
+# easy non-collision half.)
+printf '#!/bin/sh\nprintf "\\001ADB_MD_OK\\n"\nexit 0\n' > "$mdstub/awk"
+( PATH="$mdstub:$PATH"; printf 'x\n' | adb_md_prose text >/dev/null 2>&1 ); eq "$?" 1 \
+   "a stub emitting the FIXED marker text is rejected — the trailer is nonced per invocation"
 rm -rf "$mdstub"
 
 check_summary "common-lib"

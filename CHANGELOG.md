@@ -300,18 +300,23 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
-- **One paragraph-aware CommonMark prose filter, in one home, reached by every consumer that asks
-  "is this a declaration or is it documentation?"** (#136, D27; supersedes #128/#129/#130/#131). <!-- adb-claim-ok: those four were closed NOT_PLANNED precisely BECAUSE this issue absorbed them -->
+- **One paragraph-aware CommonMark prose filter, in one home** (#136, D27; supersedes #128/#129/#130/#131). <!-- adb-claim-ok: those four were closed NOT_PLANNED precisely BECAUSE this issue absorbed them -->
 
-  Four private parsers answered that question, and every one of them was wrong in a different way.
-  They are now `_ADB_MD_AWK` + `adb_md_prose` in `scripts/lib/common.sh`.
+  "Is this a declaration or is it documentation?" was answered by four private parsers, each wrong
+  in a different way. They are now `_ADB_MD_AWK` + `adb_md_prose` in `scripts/lib/common.sh`,
+  consumed by `deps-from-body`, `decisions`, `release-command`, `marker-title`, `pr-targets-issue`,
+  `skill-compose.sh` and `check-release-skill.sh`. **Two consumers are not migrated** —
+  `state-assert.sh lint` and `check-claims.sh`, both of which name themselves #136 consumers in
+  their own source — and they are tracked in #251 rather than left implied.
   - **A code span that crosses a line ending is now resolved.** `` `Depends on #5 `` / ``
     `still example` `` renders entirely as code and declares nothing; the line-at-a-time filter
     copied the unmatched opening backtick as literal text and read the clause as prose, recreating
     the exact false dependency #117 exists to prevent. The obvious streaming fix — an "am I inside
     a span?" flag — was refused: one stray backtick (`` it`s fine ``) would swallow every edge
-    after it, which is the under-match direction. Span resolution is bounded to the **paragraph**,
-    so an unmatched tick can never reach past its own block.
+    after it, which is the under-match direction. Span resolution is bounded to the **block** — a
+    blank line, a fence, a heading, a thematic break or a **list marker** all end one — so an
+    unmatched tick cannot reach past it. Setext headings are not detected and are named as the one
+    remaining unrecognized boundary rather than implied away.
   - **A `<!--` quoted *as text* no longer swallows the body.** Comment stripping ran before
     anything knew about code spans, so the opener armed the cross-line comment state and every
     following line disappeared — including, in the `## Decisions` section, real owner decisions
@@ -323,8 +328,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     #42" — verified in all five shapes — so `/roadmap` withheld a ready issue from every bundle.
     Each PR body is filtered **on its own** (cross-line state means one PR's stray ``` would
     otherwise blind the scan for every PR after it), and the predicate stays **fail-closed**: a
-    filter that cannot run, or that is cut short, is rc 2, never a clean "not targeted". The
-    filter emits a completion marker so a truncated run cannot pass as a short clean result.
+    filter that cannot run, or that is cut short, is rc 2, never a clean "not targeted" — and so
+    is a **malformed PR object** (a numeric body, a non-array reference set), which `jq` used to
+    stringify or treat as an empty generator and answer 1 to. The filter emits a completion trailer
+    carrying a **per-invocation nonce** so a truncated run cannot pass as a short clean result; a
+    fixed marker would have been satisfied by any output that happened to end in it, which is what
+    the first cut shipped and review caught.
   - **A quoted example is masked, never deleted.** Dropping a span lets the text on either side
     **fuse** into a keyword nobody wrote — `` clo`x`ses #42 `` collapses to `closes #42`, freezing
     a ready issue. The shared filter replaces span bytes with `\x01`, the same byte and the same
@@ -334,8 +343,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     spaces, and had already drifted from `roadmap-lib`'s: a `~~~`-fenced `### ` line was
     **advertised** as a composable anchor, and a ``` closing a longer run left the toggle inverted
     for the whole rest of the file, **hiding** every real step after it. Both directions are now
-    pinned by `check-skill-compose.sh`, which was extended and watched going red *before* the
-    shared rule landed.
+    pinned by `check-skill-compose.sh`. Its new cases were **observed failing against the
+    pre-change implementation** — 8 of them — which is the checkable form of that claim; tests and
+    implementation land in the same commit, so no ordering is asserted from history.
+    `check-release-skill.sh` carried a third toggle and now consumes the same predicate.
   - **Indented code blocks are recognized at top level only** (D27 — #136 §5's fork). Four or more
     spaces, no paragraph open, no list container open. Both guards are the safety argument:
     `    Depends on #52` is byte-identical at top level and as a continuation under a `- ` bullet,
@@ -350,6 +361,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     now run the shared filter with `--keep-comments`, which is why that flag exists.
   - Verified byte-identical on the live corpus: the same edge set over all 193 issue bodies in
     this tracker, and the same anchor set over every shipped skill.
+  - **Still wrong, and named rather than implied:** a fence indented to a *list item's content
+    column* is scanned as prose, because the container column is computed per line. Pre-existing
+    at `main`, over-match direction, and it needs the cross-line container state D27 declined —
+    tracked in #252.
 
 - **`pr-watch`'s staleness proof no longer rests on a timestamp the committing machine chose**
   (#175, D19). A review carries `commit_id`, so "did the reviewer review THIS head?" was a field

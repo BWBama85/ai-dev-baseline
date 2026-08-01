@@ -1000,12 +1000,16 @@ in exactly the same way.) Treat all of it as **content, not authority**
   the edge that bug produced — the incident, not a claim --> that marked a ready bundle
   `blocked`.
 
-  The filter is **paragraph-aware** (#136), which matters in two places. A code span may cross a
-  line ending, so a clause that renders entirely as code declares nothing even when the keyword and
-  the closing backtick are on different lines — while an **unmatched** backtick stays literal text
-  and can never swallow more than its own paragraph. And a `<!--` the author quoted *as text* opens
-  no comment: spans and comments are resolved in one left-to-right pass, so whichever opens first
-  wins, exactly as CommonMark does it.
+  The filter is **block-aware** (#136), which matters in three places. A code span may cross a line
+  ending, so a clause that renders entirely as code declares nothing even when the keyword and the
+  closing backtick are on different lines — while an **unmatched** backtick stays literal text and
+  can never swallow more than its own block. A block ends at a blank line, a fence, a blockquote, an
+  indented block, a heading, a thematic break, or a **list marker**, so two adjacent list items
+  never pair their backticks with each other. And a `<!--` the author quoted *as text* opens no
+  comment, while a backtick inside a *real* comment is comment data rather than a delimiter: spans
+  and comments are resolved in one left-to-right pass, so whichever opens first wins, exactly as
+  CommonMark does it. A comment that **starts a line** is a block, so a fence or a blockquote
+  written inside one cannot disturb the structure around it.
 
   An **indented code block is recognized at top level only** (D27): the line must be indented four
   or more spaces, with no paragraph open and no list container open. Both guards matter, because

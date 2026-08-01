@@ -32,6 +32,8 @@ SKILL="$ROOT/.claude/skills/release/SKILL.md"
 DRV="$ROOT/.claude/skills/release/release.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
+# shellcheck source=/dev/null
+. scripts/lib/common.sh  # _ADB_MD_AWK — the ONE fence rule (#136); this file used to carry a copy
 
 [ -f "$RL" ] || { printf 'FAIL: %s missing\n' "$RL" >&2; exit 1; }
 
@@ -289,9 +291,16 @@ fi
 # why the placeholder is dangerous — documentation, not an assertion. Flagging that is the #117
 # over-match this repo has now fixed three times (#69 bare mention, #108 negated, #117 fenced), and
 # the first version of this very check reproduced it: it failed on the paragraph describing the bug.
-PLACEHOLDER_HIT="$(awk '
-  /^[[:space:]]*```/ { infence = !infence; next }
-  infence && /\{\{[A-Z_]+\}\}/ { print FILENAME ":" FNR ": " $0 }
+#
+# The fence rule is SOURCED, not restated (#136). The toggle this replaced fired on any ``` after
+# 0-3 spaces: it ignored the delimiter character, the run length, a trailing closer, and container
+# columns — so a `~~~` block was invisible to it and a short closer inverted the flag for the rest
+# of the file. This check's polarity is INVERTED from the roadmap consumers (it wants what is
+# inside a fence, not what is outside one), which is exactly why the shared primitive is a
+# `adb_md_fence_delim` predicate plus the `md_fence_len` flag rather than a whole sanitizer.
+PLACEHOLDER_HIT="$(LC_ALL=C awk "$_ADB_MD_AWK"'
+  { if (adb_md_fence_delim($0)) next }
+  md_fence_len && /\{\{[A-Z_]+\}\}/ { print FILENAME ":" FNR ": " $0 }
 ' "$SKILL" 2>/dev/null)"
 if [ -n "$PLACEHOLDER_HIT" ]; then
   check_note "a {{PLACEHOLDER}} appears inside a RUNNABLE fenced block:"
