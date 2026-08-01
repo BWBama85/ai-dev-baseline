@@ -150,7 +150,7 @@ bash "$ROOT/scripts/lib/role-dispatch.sh" untrusted >/dev/null 2>&1; eq "$?" "2"
 #                        from the list" can never be mistaken for "nobody has looked at cleanup".
 REGISTRY='implement-issue 3
 resolve-pr-threads 2
-roadmap 1
+roadmap 3
 debug 1
 new-release 1
 create-issue 1
@@ -338,9 +338,19 @@ m_raw_paste()     { awk '
 m_cleanup_reads() { printf '\n```bash\ngh pr view "$1" --json body --jq .body\n```\n' >> "$1/base/workflows/cleanup.md"; }
 m_partial_label() { awk -v m="$MARK" 'index($0, m) && !done { done = 1; next } { print }' \
                       "$1/base/workflows/implement-issue.md" > "$1/x" && mv "$1/x" "$1/base/workflows/implement-issue.md"; }
+# ONE label removed from roadmap, by ORDINAL — so each of its three sites is proven independently
+# rather than trusting that "at least one marker survives somewhere" still fails. Raised in review:
+# with the registry set to 1, removing two of the three left the count passing and the discovery
+# pass satisfied by the survivor, so CI stopped enforcing the contract it advertises.
+m_roadmap_nth()   { awk -v m="$MARK" -v want="$NTH" 'index($0, m) { n++; if (n == want) next } { print }' \
+                      "$1/base/workflows/roadmap.md" > "$1/x" && mv "$1/x" "$1/base/workflows/roadmap.md"; }
 
 mutate_must_fail "strip a workflow's only label"         m_strip_label    "workflow debug"
 mutate_must_fail "remove ONE of implement-issue's three" m_partial_label  "workflow implement-issue"
+# Each roadmap site, one at a time. `NTH` is read by the mutator above.
+for NTH in 1 2 3; do
+  mutate_must_fail "remove roadmap label #$NTH of 3"     m_roadmap_nth    "workflow roadmap"
+done
 mutate_must_fail "delete both contained hand-offs"       m_uncontain      "contained hand-off"
 mutate_must_fail "RAW paste beside a surviving wrapper"  m_raw_paste      "WITHOUT the containment wrapper"
 mutate_must_fail "a new third-party read in cleanup (0)" m_cleanup_reads  "carries NO labelled read site"
