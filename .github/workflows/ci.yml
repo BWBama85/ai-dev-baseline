@@ -946,8 +946,8 @@ jobs:
   selfcheck-macos:
     name: selfcheck-macos
     runs-on: macos-latest
-    # Generous next to the Linux jobs' 10: this one runs the WHOLE offline suite serially (250s on
-    # the maintainer's machine) on a runner that also has a Homebrew install to do first.
+    # Generous next to the Linux jobs' 10: this one runs the WHOLE offline suite serially (~250s on
+    # the maintainer's machine, ~5min on this runner) plus a Homebrew install first.
     timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -957,7 +957,14 @@ jobs:
         run: bash --version
 
       - name: Checkout
+        # fetch-depth: 0 because this job runs the WHOLE suite, and selfcheck's `claims` step diffs
+        # against the default-branch base — which a shallow clone does not have, so it exits
+        # "cannot resolve a default-branch base" rather than silently scanning nothing. The Linux
+        # `fact-drift` and `install-migration` jobs already carry this for the same reason; running
+        # the aggregate suite inherits every one of their history requirements at once.
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Runs on Apple's /bin/bash 3.2.57, because that is all there is until the next line finishes.
       # `brew --prefix bash` is the keg's own prefix rather than $(brew --prefix), so the PATH entry
