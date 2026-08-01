@@ -1527,17 +1527,17 @@ eq "$(amb 'Depends on #5 and blocked by #6')" '' \
    "SILENT: the window ends at the NEXT keyword, which is about to claim that reference"
 eq "$(deps 'Depends on #5 and blocked by #6')" '5 6' "...and both edges still resolve"
 eq "$(amb 'Depends on #78; it is not blocked by #25')" '' \
-   "SILENT: a NEGATED occurrence is a confident answer, not an ambiguity"
-eq "$(amb 'No longer depends on #25')" '' "SILENT: ...whether or not anything else declares"
+   "SILENT: a NEGATED occurrence is a confident answer, not an ambiguity"  # adb-claim-ok: fixture prose reusing this suite's long-standing #25/#78 example numbers, not a citation
+eq "$(amb 'No longer depends on #25')" '' "SILENT: ...whether or not anything else declares"  # adb-claim-ok: fixture prose, not a citation
 eq "$(amb 'The #25 prerequisite was dropped; blocked by #78')" '' \
-   "SILENT: a reference BEFORE the keyword is in no window"
+   "SILENT: a reference BEFORE the keyword is in no window"  # adb-claim-ok: fixture prose, not a citation
 
 # SILENT — the clause boundary. Measured, not assumed: without it this fired 13 times on this
 # repo's own 37 open bodies and every one was of this shape — commentary after the declaration.
 eq "$(amb '- #81 depends on #79 — **satisfied**, #79 closed COMPLETED (PR #111).')" '' \
    "SILENT: an em-dash ends the declaration, so the restatement and the PR number are commentary"
 eq "$(amb '**Why it is blocked on this issue.** #123 rejects the approach')" '' \
-   "SILENT: a full stop ends it too, so the next sentence is not a dropped edge"
+   "SILENT: a full stop ends it too, so the next sentence is not a dropped edge"  # adb-claim-ok: quotes #141's body verbatim as the measured witness; the incident, not a citation
 eq "$(amb 'Depends on #5; see #6 for context')" '' "SILENT: ...and a semicolon"
 
 # SILENT — ordinary prose. `Depends on 2 things` is English; `issue <N>` is the ONLY hash-less
@@ -1546,7 +1546,7 @@ eq "$(amb 'Depends on 2 things')"          '' "SILENT: a bare number is not an a
 eq "$(amb 'Depends on the design decision')" '' "SILENT: no reference of any shape"
 eq "$(amb 'Refs #69')"                     '' "SILENT: no keyword, so no site at all"
 eq "$(amb 'Depends on #5, #6 and #7')"     '' "SILENT: a chain that fully resolves"
-eq "$(amb 'Depends on **#52**')"           '' "SILENT: a form #112 made resolve is no longer ambiguous"
+eq "$(amb 'Depends on **#52**')"           '' "SILENT: a form #112 made resolve is no longer ambiguous"  # adb-claim-ok: #52 is #112's own example number, quoted
 eq "$(amb "Depends on ${bt}#5${bt}")"      '' "SILENT: ...nor a span around only the reference"
 eq "$(amb '')"                             '' "SILENT: an empty body"
 
@@ -1556,10 +1556,10 @@ eq "$(amb '')"                             '' "SILENT: an empty body"
 # absence of a report without exercising the guard that produces it. (Both shapes are kept — the
 # first is the one a mutation can break; the others pin the ordinary path — but only after a
 # mutation run showed the ordinary pair passing with the guard deliberately removed.)
-eq "$(amb 'Depends on * #73' 73)"        '' "SILENT: an UNPARSED self reference is not an ambiguity"
+eq "$(amb 'Depends on * #73' 73)"        '' "SILENT: an UNPARSED self reference is not an ambiguity"  # adb-claim-ok: #73 is this suite's standing self-edge fixture number
 eq "$(amb 'Depends on issue 73' 73)"     '' "SILENT: ...nor a hash-less one"
-eq "$(amb 'Depends on #73' 73)"          '' "SILENT: a body depending only on itself"
-eq "$(amb 'Depends on #73 and #78' 73)"  '' "SILENT: ...alongside a real edge"
+eq "$(amb 'Depends on #73' 73)"          '' "SILENT: a body depending only on itself"  # adb-claim-ok: fixture self-edge number
+eq "$(amb 'Depends on #73 and #78' 73)"  '' "SILENT: ...alongside a real edge"  # adb-claim-ok: fixture self-edge number
 
 # SILENT — STRUCTURE wins here exactly as it does for edges. The report runs on the SAME resolved
 # MD_TEXT/MD_MASK views, so a documented example cannot become an ambiguity report either — which

@@ -709,7 +709,7 @@ cmd_marker_title() {
 #     Blanket span-stripping would DELETE the reference outright and put this rule in direct
 #     conflict with that one; masking only the keyword lets both hold at once.
 #   - INDENTED CODE, AT TOP LEVEL ONLY (D27). A line indented >= 4 spaces opens a code block only
-#     when no paragraph and no list container is open. Both guards matter: `    Depends on #52` is
+#     when no paragraph and no list container is open. Both guards matter: `    Depends on #52` is  # adb-claim-ok: D27/#136s own repro spelling, quoted
 #     byte-identical at top level and as a continuation under a `- ` bullet, where CommonMark puts
 #     content at column 2 and code therefore needs six. A stateless `^ {4}` skip would delete
 #     ordinary continuation PROSE, and that direction is the dangerous one — a dropped edge
@@ -753,7 +753,7 @@ cmd_marker_title() {
 # THE WINDOW is per keyword occurrence and stops at the NEXT keyword on the line. Without it the
 # two commonest real lines both false-fire: `Depends on #5 and blocked by #6` would report 6 as
 # dropped when the second keyword is about to claim it, and `Depends on #78; it is not blocked by
-# #25` would report 25 when the author explicitly retired it. A negated occurrence is skipped
+# #25` would report 25 when the author explicitly retired it. A negated occurrence is skipped  # adb-claim-ok: illustrative clause reusing this librarys standing #25 negation example
 # whole — negation is a CONFIDENT answer, not an ambiguity.
 #
 # THE REPORT CARRIES NO BODY TEXT, and that is a containment decision, not brevity. Issue bodies
@@ -953,7 +953,7 @@ _adb_deps_scan() {
           # dropped edge. Measured, not assumed: without this the report fired 13 times on this
           # repo and ALL THIRTEEN were of that shape — `- #81 depends on #79 — **satisfied**, #79
           # closed COMPLETED (PR #111)` reported both the edge it had just declared and a PR
-          # number, and `**Why it is blocked on this issue.** #123 rejects...` reported the first
+          # number, and `**Why it is blocked on this issue.** #123 rejects...` reported the first  # adb-claim-ok: quotes #141s body verbatim as the measured witness
           # word of the next sentence. With it, the corpus is silent.
           wcut = 0
           for (wi = 1; wi <= length(window); wi++) {
