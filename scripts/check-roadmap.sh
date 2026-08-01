@@ -1526,18 +1526,18 @@ eq "$(amb 'Depends on **acme/repo#5**')"    '' "SILENT: ...formatted"
 eq "$(amb 'Depends on #5 and blocked by #6')" '' \
    "SILENT: the window ends at the NEXT keyword, which is about to claim that reference"
 eq "$(deps 'Depends on #5 and blocked by #6')" '5 6' "...and both edges still resolve"
-eq "$(amb 'Depends on #78; it is not blocked by #25')" '' \
-   "SILENT: a NEGATED occurrence is a confident answer, not an ambiguity"  # adb-claim-ok: fixture prose reusing this suite's long-standing #25/#78 example numbers, not a citation
+neg_fx='Depends on #78; it is not blocked by #25'  # adb-claim-ok: fixture prose reusing this suite's standing #25/#78 example numbers, not a citation
+eq "$(amb "$neg_fx")" '' "SILENT: a NEGATED occurrence is a confident answer, not an ambiguity"
 eq "$(amb 'No longer depends on #25')" '' "SILENT: ...whether or not anything else declares"  # adb-claim-ok: fixture prose, not a citation
-eq "$(amb 'The #25 prerequisite was dropped; blocked by #78')" '' \
-   "SILENT: a reference BEFORE the keyword is in no window"  # adb-claim-ok: fixture prose, not a citation
+pre_fx='The #25 prerequisite was dropped; blocked by #78'  # adb-claim-ok: fixture prose, not a citation
+eq "$(amb "$pre_fx")" '' "SILENT: a reference BEFORE the keyword is in no window"
 
 # SILENT — the clause boundary. Measured, not assumed: without it this fired 13 times on this
 # repo's own 37 open bodies and every one was of this shape — commentary after the declaration.
 eq "$(amb '- #81 depends on #79 — **satisfied**, #79 closed COMPLETED (PR #111).')" '' \
    "SILENT: an em-dash ends the declaration, so the restatement and the PR number are commentary"
-eq "$(amb '**Why it is blocked on this issue.** #123 rejects the approach')" '' \
-   "SILENT: a full stop ends it too, so the next sentence is not a dropped edge"  # adb-claim-ok: quotes #141's body verbatim as the measured witness; the incident, not a citation
+stop_fx='**Why it is blocked on this issue.** #123 rejects the approach'  # adb-claim-ok: quotes #141's body verbatim as the measured witness; the incident, not a citation
+eq "$(amb "$stop_fx")" '' "SILENT: a full stop ends it too, so the next sentence is not a dropped edge"
 eq "$(amb 'Depends on #5; see #6 for context')" '' "SILENT: ...and a semicolon"
 
 # SILENT — ordinary prose. `Depends on 2 things` is English; `issue <N>` is the ONLY hash-less
