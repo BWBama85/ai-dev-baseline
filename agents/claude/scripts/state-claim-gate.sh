@@ -34,14 +34,20 @@ set -u
 # contract rather than a preference: this gate deliberately refuses to wedge a session over
 # infrastructure absence (#35), reporting once on stderr instead. Hard-failing here would make a
 # sub-floor host look BROKEN rather than out of date, which is exactly the trade this file already
-# declined. It still takes the re-exec, which is silent and strictly better; it just never dies of
-# the floor.
+# declined.
 #
-# `|| :` because the diagnostic already went to stderr and a non-zero status here must not reach
-# a `set -e` or become this process's exit code.
+# ADVISORY MEANS "STOP QUIETLY", NOT "CARRY ON REGARDLESS". The re-exec is attempted first and is
+# silent when it works. When it cannot, this takes the same no-op-exit-0 path it already takes for
+# a missing jq or an unreadable transcript — it does NOT scan a turn's final message under a
+# sub-floor interpreter. Review caught the first cut continuing; once #258/#259 land 5.3-only
+# syntax, continuing means failing deep inside a Stop hook, which is the failure the floor exists
+# to prevent. The diagnostic has already gone to stderr, so the absence is reported, not swallowed.
 if [ -f "$(dirname "$0")/lib/common.sh" ]; then
   # shellcheck source=/dev/null
-  . "$(dirname "$0")/lib/common.sh" && adb_require_bash_advisory "$@" || :
+  . "$(dirname "$0")/lib/common.sh" 2>/dev/null
+  if command -v adb_require_bash_advisory >/dev/null 2>&1; then
+    adb_require_bash_advisory "$@" || exit 0
+  fi
 fi
 
 # Defer to a project-local copy by RUNNING it, not by stepping aside (#240) — same contract as the

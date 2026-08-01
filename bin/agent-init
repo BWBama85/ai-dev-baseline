@@ -18,7 +18,17 @@ set -uo pipefail
 # Locate the installed baseline repo (this script lives in <repo>/bin/agent-init;
 # when symlinked onto PATH, resolve through the link).
 self="${BASH_SOURCE[0]}"
-while [ -L "$self" ]; do self="$(readlink "$self")"; done
+# A RELATIVE symlink target resolves against the LINK's directory, not the cwd. `readlink` returns
+# the raw target, so replacing `self` with it wholesale breaks for a relative link — the shape a
+# PATH manager like GNU Stow creates. bin/baseline already had this right; the two now match, and
+# the bash floor gate below depends on it to find scripts/lib/common.sh.
+while [ -L "$self" ]; do
+  link="$(readlink "$self")"
+  case "$link" in
+    /*) self="$link" ;;
+    *)  self="$(dirname "$self")/$link" ;;
+  esac
+done
 REPO="$(cd "$(dirname "$self")/.." && pwd)"
 # Shared shell primitives (adb_toml_get) — the ONE home, sourced not copied.
 # shellcheck source=/dev/null

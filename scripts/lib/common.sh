@@ -1116,7 +1116,8 @@ adb_reviewer_classes() {
   tab="$(printf '\t')"
   # One pass per declared reviewer over the evidence. The set is small (a repo declares a handful of
   # bots) and so is the evidence, so the readable shape wins over a single-pass associative array —
-  # which bash 3.2, this repo's floor, does not have.
+  # which bash 3.2 does not have. (This repo's floor is 5.3 — but THIS file is the bootstrap
+  # that enforces it and must stay parseable below it, so it keeps writing 3.2-safe shell; D30.)
   while IFS= read -r w; do
     [ -n "$w" ] || continue
     best="none"; bestrank=0; staled=0
@@ -1681,7 +1682,8 @@ adb_untrusted_block() {
 # for a git fetch have nothing in common but the mechanism.
 #
 # Prefers a real timeout binary (GNU `timeout` on Linux CI, `gtimeout` from coreutils on macOS);
-# when neither exists (a stock Mac) it falls back to a bash-3.2-safe background watchdog. Returns
+# when neither exists (a stock Mac) it falls back to a background watchdog written in shell this
+# bootstrap file can run below the floor (D30). Returns
 # the child's status, or 124 when the bound fired (matching GNU timeout's convention).
 # stdin/stdout/stderr are whatever the caller redirected.
 # ADB_NO_TIMEOUT_BIN=1 (or the legacy ADB_DISPATCH_NO_TIMEOUT_BIN=1) forces the watchdog path,
@@ -1961,7 +1963,50 @@ adb_toml_array() {
 # Compare dot-separated numeric versions. Returns 0 iff have >= want. Missing trailing
 # components count as 0 (so 2.1 >= 2.1.0). Non-numeric junk in a component sorts as 0.
 # Usage: adb_version_ge <have> <want>
+#
+# TWO PATHS, ONE SEMANTICS. The awk program below is the definition; the shell loop above it is a
+# fork-free shortcut taken only when both operands are strictly dotted digits, which is the case
+# every caller in this repo actually passes. It exists because #256 made this the FIRST thing every
+# entry point does — ~60 times per selfcheck run, and once inside every hook invocation — and two
+# costs follow from forking there:
+#
+#   - 60 processes to settle a comparison a shell loop already settles;
+#   - and worse, the version check starts LYING when `awk` is the broken thing. check-roadmap.sh
+#     stubs `awk` to exit 7 to prove roadmap-lib.sh answers "do not trust this answer" (rc 2); with
+#     a forking floor check that run died at rc 1 saying `bash >= 5.3 is required`, blaming the
+#     interpreter for an awk fault. The thing that decides whether this shell is usable must not
+#     need a second program to decide it.
+#
+# The shortcut is INSIDE the canonical primitive rather than beside it, and that placement is the
+# point. An earlier cut put it in a separate `adb_bash_ge_floor` helper, which independent review
+# correctly called a second comparator: for the real floor and a normal BASH_VERSINFO it returned
+# the final answer, so `adb_version_ge` was reached only for shapes nobody passes — the operational
+# path had no reuse in it at all, whatever the changelog said. One function, one contract, both
+# paths tested by the same assertions.
+#
+# The guard is deliberately strict: ANY character outside [0-9.] in EITHER operand falls through to
+# awk. That keeps the awk quirks exactly where they were — `V[i] + 0` reads "x" as 0 but "5abc" as
+# 5, and reproducing that in shell is how the two paths would drift apart.
 adb_version_ge() {
+  case "$1$2" in
+    *[!0-9.]*) ;;
+    '') ;;
+    *)
+      # Pure shell: walk both component lists, missing components as 0.
+      local _vg_a="$1" _vg_b="$2" _vg_x _vg_y
+      while [ -n "$_vg_a" ] || [ -n "$_vg_b" ]; do
+        _vg_x="${_vg_a%%.*}"; _vg_y="${_vg_b%%.*}"
+        [ -n "$_vg_x" ] || _vg_x=0
+        [ -n "$_vg_y" ] || _vg_y=0
+        # A run of digits can still be too long for shell arithmetic; hand those to awk.
+        case "$_vg_x$_vg_y" in ??????????*) break ;; esac
+        [ "$_vg_x" -gt "$_vg_y" ] && return 0
+        [ "$_vg_x" -lt "$_vg_y" ] && return 1
+        case "$_vg_a" in *.*) _vg_a="${_vg_a#*.}" ;; *) _vg_a="" ;; esac
+        case "$_vg_b" in *.*) _vg_b="${_vg_b#*.}" ;; *) _vg_b="" ;; esac
+      done
+      [ -n "$_vg_a" ] || [ -n "$_vg_b" ] || return 0 ;;
+  esac
   awk -v v="$1" -v min="$2" '
     BEGIN {
       nv = split(v, V, "."); nm = split(min, M, ".");
@@ -1980,8 +2025,11 @@ adb_version_ge() {
 # entry point that got the wrong one either FIX itself or STOP, on a contributor's machine as
 # well as on a runner.
 #
-# THE PROBLEM IS RESOLUTION, NOT COMPARISON. On macOS bash 5.3 is never /bin/bash — SIP pins that
-# at 3.2.57 permanently — so Homebrew's 5.3 is reachable only through PATH, and every one of this
+# THE PROBLEM IS RESOLUTION, NOT COMPARISON. On macOS /bin/bash is 3.2.57 — observed, and still so
+# on macOS 26 per the runner inventory in docs/ci-runners.md — so a 5.3 lives somewhere else on the
+# filesystem and is reachable only through PATH. (Why Apple has not shipped a newer one is usually
+# put down to bash's GPLv3 move; that is an expectation, not something this comment asserts, and
+# docs/ci-runners.md draws the same line.) Every one of this
 # repo's `#!/usr/bin/env bash` shebangs therefore resolves whatever PATH happens to hold. The
 # shells most likely to lack the Homebrew prefix are exactly the ones with no human watching:
 # Stop hooks, gate scripts, another agent's CLI. Reported live on the owner's machine (#256): a
@@ -1999,67 +2047,22 @@ adb_version_ge() {
 # the top of this file, and D30.
 ADB_BASH_FLOOR_DEFAULT="5.3"
 
-# adb_bash_ge_floor <major> <minor> — is that version at or above the floor?
-#   0 = yes · 1 = no · 2 = this path cannot answer, ask adb_version_ge.
-#
-# FORK-FREE, and that is a correctness property rather than a micro-optimization. `adb_version_ge`
-# is an `awk` program, and the floor question is asked at the top of EVERY entry point — ~60 times
-# in one selfcheck run, plus once inside every hook invocation. Two costs follow, and the second is
-# the serious one:
-#
-#   - 60 processes spawned to settle a comparison two integers already settle;
-#   - the gate starts LYING when `awk` is the thing that is broken. Observed via check-roadmap.sh,
-#     which stubs `awk` to exit 7 to prove roadmap-lib.sh answers "do not trust this answer" (rc 2).
-#     With a forking floor check that run died at rc 1 saying `bash >= 5.3 is required` — blaming
-#     the interpreter for an awk fault, at the exact moment the operator needs pointing at awk.
-#     And it was not confined to a test: on any macOS box whose PATH resolves 3.2 first — the
-#     normal case this whole issue exists for — the candidate probe forked awk too, so selfcheck
-#     itself would have failed there.
-#
-# The thing that decides whether this shell is usable should not need a second program to decide
-# it. `adb_version_ge` stays the ONE home for version comparison generally; this answers the one
-# question it is asked, in the one shape it is asked in (`<major>.<minor>`, which is what the floor
-# constant is and what BASH_VERSINFO reports natively), and returns 2 — never a guess — for
-# anything else, so the caller falls back to the shared comparator.
-adb_bash_ge_floor() {
-  local maj min
-  # A floor carrying a patch component cannot be answered on major.minor alone: dropping it would
-  # make 5.3.0 clear a 5.3.1 floor. Anything non-numeric is likewise not this path's to judge.
-  case "$ADB_BASH_FLOOR_DEFAULT" in
-    *.*.*|*[!0-9.]*|.*|*.|'') return 2 ;;
-  esac
-  maj="${ADB_BASH_FLOOR_DEFAULT%%.*}"; min="${ADB_BASH_FLOOR_DEFAULT#*.}"
-  [ -n "$maj" ] && [ -n "$min" ] || return 2
-  case "${1:-}${2:-}" in ''|*[!0-9]*) return 2 ;; esac
-  [ "$1" -gt "$maj" ] && return 0
-  [ "$1" -lt "$maj" ] && return 1
-  [ "$2" -ge "$min" ]
-}
-
 # Is the RUNNING interpreter at or above the floor? Returns 0/1.
+#
+# Straight through the canonical comparator — there is no second one. `adb_version_ge` carries the
+# fork-free path itself (see its header), so this costs no process and stays honest when `awk` is
+# the broken thing.
 adb_bash_self_ok() {
-  adb_bash_ge_floor "${BASH_VERSINFO[0]:-0}" "${BASH_VERSINFO[1]:-0}"
-  case "$?" in
-    0) return 0 ;;
-    1) return 1 ;;
-  esac
   adb_version_ge \
     "${BASH_VERSINFO[0]:-0}.${BASH_VERSINFO[1]:-0}.${BASH_VERSINFO[2]:-0}" \
     "$ADB_BASH_FLOOR_DEFAULT"
 }
 
-# Does the bash at $1 clear the floor? Returns 0/1. Same fork-free path, so a broken `awk` cannot
-# make a perfectly good interpreter look unusable.
+# Does the bash at $1 clear the floor? Returns 0/1.
 adb_bash_candidate_ok() {
-  local v maj rest min
+  local v
   v="$(adb_bash_version_at "$1" 2>/dev/null || true)"
   [ -n "$v" ] || return 1
-  maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
-  adb_bash_ge_floor "$maj" "$min"
-  case "$?" in
-    0) return 0 ;;
-    1) return 1 ;;
-  esac
   adb_version_ge "$v" "$ADB_BASH_FLOOR_DEFAULT"
 }
 
@@ -2090,7 +2093,7 @@ adb_bash_install_hint() {
   case "$(uname -s 2>/dev/null || echo unknown)" in
     Darwin)
       printf '  macOS: brew install bash\n'
-      printf '         Homebrew installs alongside Apple'"'"'s /bin/bash (3.2.57, pinned forever), so\n'
+      printf '         Homebrew installs alongside Apple'"'"'s /bin/bash (3.2.57), not over it, so\n'
       printf '         make sure its prefix precedes /usr/bin and /bin in PATH.\n'
       ;;
     Linux)
@@ -2109,7 +2112,15 @@ adb_bash_install_hint() {
           printf '  Debian/Ubuntu: there is NO bash 5.3 package on Ubuntu <= 25.10 or Debian stable.\n'
           printf '                 Upgrade to Ubuntu 26.04 (ships 5.3), use a backport, or build from source.\n'
           ;;
-        fedora|rhel|centos|rocky|almalinux) printf '  Fedora/RHEL: sudo dnf install bash\n' ;;
+        fedora) printf '  Fedora: sudo dnf install bash\n' ;;
+        # RHEL AND ITS REBUILDS ARE NOT FEDORA, and grouping them was a real defect: RHEL 9 ships
+        # bash 5.1.8, so `dnf install bash` there leaves the user BELOW the floor while telling
+        # them the problem is solved. An instruction that cannot work is worse than none.
+        rhel|centos|rocky|almalinux)
+          printf '  RHEL/CentOS/Rocky/Alma: the distribution bash is below the floor on current\n'
+          printf '                          releases, and `dnf install bash` will not change that.\n'
+          printf '                          Build from source, or use a backport/third-party build.\n'
+          ;;
         arch|manjaro|endeavouros)           printf '  Arch: sudo pacman -S bash\n' ;;
         alpine)                             printf '  Alpine: apk add bash\n' ;;
         *) printf '  Linux: install bash >= %s from your distribution, a backport, or source.\n' "$ADB_BASH_FLOOR_DEFAULT" ;;
@@ -2151,6 +2162,14 @@ adb_linux_id() {
 # for both shapes is the same — there is no file to re-run, the old interpreter has already
 # buffered the source, and the honest outcome is to fail closed rather than exec something that is
 # not this script.
+#
+# WHAT IT DOES NOT DETECT, said plainly because the first version of this comment implied more: a
+# LIBRARY sourced by an ordinary executed script. There `$0` is the parent — a real, readable file
+# that differs from `$BASH` — so this returns true and the re-exec restarts the PARENT. That is
+# usually the right thing (the parent is the entry point) but it is not something this predicate
+# reasoned about. Every dual-use module in this repo guards its own call with
+# `[ "${BASH_SOURCE[0]:-$0}" = "$0" ]`, so the case does not arise today; a future call site that
+# omits that guard is the hazard, which is why it is written down rather than assumed away.
 adb_bash_reexecable() {
   [ -f "$0" ] && [ -r "$0" ] || return 1
   [ "$0" != "${BASH:-}" ] || return 1
@@ -2239,17 +2258,20 @@ adb_require_bash_advisory() {
                done)"
     if [ -n "$_rb_win" ]; then
       export _ADB_BASH_REEXEC=1
+      # shellcheck disable=SC2093  # the following line IS reachable, under a caller's `shopt -s execfail`
       exec "$_rb_win" "$0" "$@"
-      # NOTHING BELOW THIS LINE RUNS, and that is bash's rule rather than an assumption: when
-      # `exec` cannot execute its target, a NON-INTERACTIVE shell exits — it does not resume —
-      # unless `shopt -s execfail` is set, which this library will not do (its contract is to set
-      # no shell options in its caller). Verified: a candidate that probes >= floor but cannot be
-      # exec'd (it vanished, lost its exec bit, or is a directory) exits **126** with bash's own
-      # message naming the path, and the script body never runs.
+      # NORMALLY NOTHING BELOW THIS LINE RUNS: when `exec` cannot execute its target, a
+      # non-interactive shell exits rather than resuming. Verified — a candidate that probes >=
+      # floor but cannot be exec'd (vanished, lost its exec bit, is a directory) exits **126** with
+      # bash's own message naming the path, and the script body never runs.
       #
-      # So the failure stays CLOSED, which is what matters — it is simply closed one frame earlier
-      # and with bash's diagnostic instead of the platform hint below. Saying "this falls through"
-      # would be a comment describing a control flow that does not exist.
+      # THE EXCEPTION IS `shopt -s execfail`, which a CALLER may have enabled — this library does
+      # not set shell options, but it does not control the shell it is sourced into either. Under
+      # that option execution resumes here, so the sentinel is cleared before falling through to
+      # the diagnostic: leaving it exported would mark this process as "already re-exec'd" and
+      # every child it spawns would refuse to repair itself, which is the leak the clearing on the
+      # success path exists to prevent. Review raised it; it costs one line to be right either way.
+      unset _ADB_BASH_REEXEC
     fi
   fi
 
@@ -2287,20 +2309,37 @@ adb_require_bash_advisory() {
 # ending in CR. A `\r` ESCAPE in source (`printf '\r'`) is two characters, not a CR byte, so it
 # does not false-positive — verified against this repo's own `printf '\r'` sites.
 adb_crlf_scan() {
-  local dir="${1:-.}" cr found=0
+  local dir="${1:-.}" cr found=0 listing=""
   [ -d "$dir" ] || { printf 'adb_crlf_scan: not a directory: %s\n' "$dir" >&2; return 2; }
   cr="$(printf '\r')"
-  # Extensionless entry points count: `bin/agent-init` and `bin/baseline` are shell scripts with
-  # no `.sh`, and a scan that only knows `*.sh` reports a clean tree while two commands are
-  # corrupt. Selected by shebang rather than by name so the rule cannot go stale.
+  # FAIL CLOSED ON A FAILED WALK. A preflight whose `find` errored and whose output was discarded
+  # reports a clean tree — the silence-as-success failure mode this repo writes guards against.
+  listing="$(find "$dir" -name .git -prune -o -type f -print 2>/dev/null)" || {
+    printf 'adb_crlf_scan: could not walk %s — refusing to report it clean\n' "$dir" >&2
+    return 2
+  }
+  # TWO WAYS IN, because either alone has a blind spot:
+  #   - a shell SHEBANG catches the extensionless commands (`bin/agent-init`, `bin/baseline`),
+  #     which a `*.sh` rule silently exempts — and they are the two files a user runs first;
+  #   - a `.sh` EXTENSION catches the SOURCED libraries, which have no shebang at all. That gap
+  #     was not cosmetic: `scripts/lib/common.sh` is a sourced library, so a shebang-only scan
+  #     declared a tree clean while the one file every entry point loads was CRLF-corrupt.
+  #     Independent review reproduced it.
   while IFS= read -r f; do
-    head -n 1 "$f" 2>/dev/null | grep -q '^#!.*\(bash\|sh\)' || continue
-    if LC_ALL=C grep -lq -- "$cr\$" "$f" 2>/dev/null; then
-      printf '%s\n' "$f"
-      found=1
-    fi
+    case "$f" in
+      *.sh) ;;
+      *) head -n 1 "$f" 2>/dev/null | grep -q '^#!.*\(bash\|sh\)' || continue ;;
+    esac
+    # An UNREADABLE file is not a clean file. grep exits 2 on a read error, and treating that as
+    # "no match" is the same fail-open as a failed walk.
+    LC_ALL=C grep -lq -- "$cr\$" "$f" 2>/dev/null
+    case "$?" in
+      0) printf '%s\n' "$f"; found=1 ;;
+      1) ;;
+      *) printf '%s (unreadable — not verified)\n' "$f"; found=1 ;;
+    esac
   done <<EOF
-$(find "$dir" -name .git -prune -o -type f -print 2>/dev/null)
+$listing
 EOF
   [ "$found" -eq 0 ]
 }

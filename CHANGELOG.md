@@ -17,7 +17,8 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     only then fails — with the running version, the floor, and the **platform's** install command
     (macOS `brew install bash`; Fedora/Arch/Alpine's package; and for Debian/Ubuntu <= 25.10 the
     honest answer that *no 5.3 package exists*, so "install bash" would be unfollowable advice).
-  - **Re-exec is the mechanism, not belt-and-braces.** On macOS `/bin/bash` is 3.2.57 permanently,
+  - **Re-exec is the mechanism, not belt-and-braces.** On macOS `/bin/bash` is 3.2.57 and has been
+    for the whole bash-4-and-later era,
     so 5.3 is reachable only through `PATH` — and `PATH` is exactly what a Stop hook, a gate script
     or another agent's CLI does not reliably carry. Reported live on the owner's machine: a
     defensive `~/.zshrc` line ordering `/usr/bin:/bin` ahead of `/opt/homebrew/bin` left `env bash`
@@ -44,6 +45,25 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     uncommitted work. The WSL smoke CI job is sliced out — a `schedule`/`workflow_dispatch`
     workflow cannot run until it is on the default branch, so "seen green" is unreachable from the
     PR that introduces it.
+  - **`adb_version_ge` grew the fork-free path itself**, rather than a floor-specific helper beside
+    it. A separate comparator would have answered the real floor outright, leaving the canonical one
+    reached only for shapes nobody passes — reuse in name only. The two paths are differentially
+    tested against each other over 144 operand pairs in `check-common-lib.sh`, and awk's documented
+    quirks (`5abc` reads as 5, `x` as 0) stay awk's, because any strictly-non-numeric operand falls
+    through to it.
+  - **Independent review found 12 more, all fixed.** The ones worth naming: the three **advisory**
+    entry points *continued* under a sub-floor interpreter instead of taking their documented no-op
+    — the exact deep failure the floor exists to prevent; `session-currency.sh`'s always-exit-0 trap
+    was installed *after* the library source it was supposed to protect; both **release** scripts
+    defined functions before the gate, so 5.3-only grammar in any of them would fail to *parse*
+    under 3.2 before the gate could rescue it; the CRLF preflight could not protect `install.sh`
+    from a CRLF `common.sh`, because the source runs first and the scanner selected files by
+    shebang, which a sourced library has none of; the entry-point lint accepted a token inside a
+    `printf`, an assignment or a heredoc, and its lateness rule knew only `cd`, missing the whole
+    `read`/`mapfile`/`dd` family; and three assertions passed for the wrong reason (one searched
+    output for a version string the fixture never printed, one used a fixture the scanner skipped).
+    Platform facts were corrected too — **RHEL was grouped with Fedora**, so its `dnf install bash`
+    advice could not reach the floor.
   - **Found by the guard harness, before review:** the loop sentinel `_ADB_BASH_REEXEC` is
     exported, so a re-exec'd parent handed it to every child and a child starting on the old
     interpreter failed closed instead of repairing itself. `selfcheck.sh` is exactly that shape —

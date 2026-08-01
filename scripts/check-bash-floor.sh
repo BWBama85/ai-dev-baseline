@@ -362,8 +362,32 @@ scan_entrypoints() {
 # lets the position rule below cite a usable line. The trailing pattern requires whitespace before
 # the `#` so a `${0##*/}` expansion is not mistaken for a comment.
 first_code_line() {
-  sed 's/[[:space:]]#.*$//; s/^[[:space:]]*#.*$//' "$1" 2>/dev/null \
-    | grep -nE "$2" | head -n 1 | cut -d: -f1
+  ADB_BF_PAT="$2" awk '
+    BEGIN { pat = ENVIRON["ADB_BF_PAT"] }
+    # HEREDOC BODIES ARE DATA. `cat <<EOF … adb_require_bash "$@" … EOF` is text this script
+    # PRINTS, not a call it makes, and a line-at-a-time matcher reads the two identically — the
+    # same species as the printf and quoted-assignment bypasses, and the one that survived the
+    # first tightening. Tracking the region needs state, which is why this is awk and not sed.
+    hd != "" {
+      probe = $0; sub(/^[[:space:]]+/, "", probe)   # <<- allows an indented terminator
+      if (probe == hd) hd = ""
+      next
+    }
+    {
+      line = $0
+      sub(/[[:space:]]#.*$/, "", line)      # a trailing comment
+      sub(/^[[:space:]]*#.*$/, "", line)    # a whole-line comment
+      if (line ~ pat) { print NR; exit }
+      # Open a heredoc only AFTER testing this line: the redirection line is itself code, and a
+      # gate call could legitimately share it. `<<<` is a herestring, not a heredoc — excluded, or
+      # its first word would be mistaken for a terminator and swallow the rest of the file.
+      if (line !~ /<<</ && match(line, /<<-?[[:space:]]*["\x27]?[A-Za-z_][A-Za-z0-9_]*/)) {
+        w = substr(line, RSTART, RLENGTH)
+        sub(/^<<-?[^A-Za-z_]*/, "", w)      # eat the operator, spaces and any opening quote
+        hd = w
+      }
+    }
+  ' "$1" 2>/dev/null
 }
 
 entrypoint_lint() {
@@ -391,8 +415,15 @@ $EXEMPT_ENTRYPOINTS" in *"
 $rel
 "*) kind=exempt ;; esac
 
-    call_gate="$(first_code_line "$f" '(^|[^_[:alnum:]])adb_require_bash "\$@"')"
-    call_adv="$(first_code_line "$f" 'adb_require_bash_advisory "\$@"')"
+    # COMMAND POSITION, not "appears somewhere". A bare token search accepts the call inside a
+    # string — a fixture whose only content was `printf 'adb_require_bash "$@"'` was classified
+    # compliant, which is the whole lint failing open. So the token must be preceded only by start
+    # of line, or by a shell operator that actually begins a command: `;`, `&&`, `||`, `|`, `&`, or
+    # a `then`/`do`/`else` keyword. `printf '` does not qualify; the three real stanza shapes do
+    # (bare, `&& adb_require_bash_advisory`, and `; then adb_require_bash`).
+    _CMDPOS='(^|[;&|]|[[:space:]](then|do|else))[[:space:]]*'
+    call_gate="$(first_code_line "$f" "${_CMDPOS}adb_require_bash \"\\\$@\"")"
+    call_adv="$(first_code_line "$f" "${_CMDPOS}adb_require_bash_advisory \"\\\$@\"")"
 
     if [ "$kind" = exempt ]; then
       exempts=$((exempts + 1))
@@ -435,7 +466,12 @@ $rel
     # at invocation and is relative when invoked relatively, so a script that has already `cd`'d may
     # be unable to name itself for the re-exec; and a hook that has already drained its payload from
     # stdin loses it, because the re-exec restarts the script from the top with that fd inherited.
-    late="$(first_code_line "$f" '^[[:space:]]*cd |\$\(cat\)|^[[:space:]]*input="\$\(cat\)"')"
+    # The stdin-consumer set is the `read` FAMILY, not just `$(cat)`. `IFS= read -r payload` before
+    # the gate drained a hook's payload and passed the first version of this rule — same defect as
+    # the narrow `cd` test, found by review. `mapfile`/`readarray` are bash 4+ spellings of the
+    # same thing, and `dd`/`</dev/stdin` are the two other ways a prologue eats the payload.
+    late="$(first_code_line "$f" \
+      '(^|[;&|]|[[:space:]](then|do|else))[[:space:]]*(cd|read|mapfile|readarray|dd)([[:space:]]|$)|\$\(cat\)|<[[:space:]]*/dev/stdin|(^|[[:space:]])(IFS=[^[:space:]]*[[:space:]]+)?read[[:space:]]+-')"
     if [ -n "$late" ] && [ "$late" -lt "$call" ]; then
       check_note "$rel calls the floor gate at line $call, AFTER a cd or a stdin read at line $late — move it earlier (\$0 may no longer resolve, and a consumed stdin is not restored by the re-exec)"
       check_fail

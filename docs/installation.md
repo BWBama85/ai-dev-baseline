@@ -224,13 +224,18 @@ command. There is no flag to lower it.
 
 | Platform | How to get bash >= 5.3 |
 |---|---|
-| **macOS** | `brew install bash`. `/bin/bash` is **3.2.57** and Apple keeps it there permanently, so Homebrew's is the only modern one. See the `PATH` note below. |
-| **Ubuntu 26.04+** | Ships `5.3` — nothing to do. |
-| **Ubuntu <= 25.10, Debian stable** | **No 5.3 package exists.** Upgrade the release, use a backport, or build from source. Ubuntu 24.04 ships `5.2.21` and Debian stable `5.2.p15` — both below the floor. |
-| **Fedora / RHEL** | `sudo dnf install bash` |
+| **macOS** | `brew install bash`. `/bin/bash` is **3.2.57** and has been for the whole bash-4-and-later era; Apple has shown no sign of shipping a newer one. Homebrew is the usual route (MacPorts, Nix or a source build work too). See the `PATH` note below. |
+| **Ubuntu 26.04+** | Ships 5.3 — nothing to do. |
+| **Ubuntu 24.04 / <= 25.10** | Below the floor (24.04 ships 5.2.x). Upgrade the release, use a backport, or build from source. |
+| **Debian stable** | Below the floor (5.2.x). Same three options. |
+| **Fedora** | `sudo dnf install bash` |
+| **RHEL / CentOS / Rocky / Alma** | **`dnf install bash` will not clear the floor** — RHEL 9's bash is 5.1.x. Build from source, or use a backport / third-party build. |
 | **Arch** | `sudo pacman -S bash` |
 | **Alpine** | `apk add bash` |
 | **Windows** | **WSL2 only** — see below. |
+
+Exact patch levels move; check your own distribution's package index rather than
+trusting a version pinned in this table. The floor itself does not move: **5.3**.
 
 **macOS: it is a `PATH` problem, not an install problem.** Homebrew installs
 5.3 *alongside* Apple's 3.2.57 rather than replacing it, so which one a
@@ -249,7 +254,7 @@ Windows is supported **through WSL2 and nothing else**. WSL2 *is* Linux — same
 interpreter, same userland, same symlinks — so there is no separate Windows port
 to install. Git Bash / MSYS2 and Cygwin are **not** supported: MSYS2 is a
 different userland that has had no portability pass here, and Cygwin's bash
-(`5.2.p21`) is below the floor regardless.
+(5.2.x at the time of writing) is below the floor regardless.
 
 Two things to get right:
 

@@ -801,12 +801,27 @@ fact bash-entrypoint-lint-wired 'regex:^[^#]*check-bash-floor\.sh[[:space:]]*(;|
 # carried it, and nowhere else. Both witnesses are the exact strings that were in the tree before
 # this change (CLAUDE.md's "safe on macOS bash 3.2" and CONTRIBUTING.md/AGENTS.md's "macOS bash 3.2
 # safe"), so `--mutation` reintroducing either must make this lint go red.
+# The spelling set is WIDER than the four documents' headline sentences, because review found the
+# same declaration living in ordinary code comments too — `bash 3.2, this repo's floor`,
+# `bash-3.2-safe`, `bash-3.2 safe`. A rule that pinned only the headline spellings passed its own
+# mutation test while the acceptance criterion ("no doc, comment, or adapter header states a 3.2
+# floor") stayed violated in three files it did not list.
+#
+# The file list is correspondingly wider, and deliberately EXCLUDES the places a 3.2 mention is
+# legitimate history rather than a live declaration: CHANGELOG.md, .ai-dev-baseline/decisions.md,
+# docs/ci-runners.md, the guard suites that build 3.2 fixtures, and this file's own witnesses.
+# That is the line #261 asked for and the line a tree-wide ban would have crossed.
 fact bash-floor-stale-decl \
-  'absent:(safe on macOS bash 3\.2|macOS bash 3\.2 safe|Portable to macOS bash 3\.2)' \
+  'absent:(safe on macOS bash 3\.2|macOS bash 3\.2 safe|Portable to macOS bash 3\.2|bash 3\.2, this repo|bash-3\.2[- ]safe)' \
   'fires:Shell code must be portable and shellcheck-clean. bash/POSIX, safe on macOS bash 3.2' \
   'fires:**Shell:** `bash`/POSIX, macOS bash 3.2 safe (no `mapfile`, no `readlink -f`),' \
   'fires:# Portable to macOS bash 3.2: no `readlink -f`, no `mapfile`, no associative' \
-  -- CLAUDE.md CONTRIBUTING.md AGENTS.md agents/codex/adapter.sh agents/gemini/adapter.sh
+  'fires:  # which bash 3.2, this repo'"'"'s floor, does not have.' \
+  'fires:# falls back to a bash-3.2-safe background watchdog' \
+  'fires:  # A `case` glob does this with no subshell (bash-3.2 safe).' \
+  -- CLAUDE.md CONTRIBUTING.md AGENTS.md agents/codex/adapter.sh agents/gemini/adapter.sh \
+     scripts/lib/common.sh scripts/lib/roadmap-lib.sh scripts/lib/skill-compose.sh \
+     scripts/lib/pr-watch.sh docs/installation.md
 
 # The two carve-outs are the part most likely to be "cleaned up" by a later modernization pass that
 # does not know why they exist, so both are pinned where they are explained.

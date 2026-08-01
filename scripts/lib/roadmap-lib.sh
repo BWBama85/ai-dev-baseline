@@ -124,7 +124,8 @@ cmd_pr_targets_issue() {
   json="$(cat)"
   # An empty read is the "no open PRs" case, not a malformed one — `gh pr list` on an empty
   # set prints `[]`, but a caller piping from an empty capture is treated identically.
-  # A `case` glob does this with no subshell and no bash-4 expansion (bash-3.2 safe).
+  # A `case` glob does this with no subshell and no fork. (Written this way historically for the
+  # old 3.2 floor; kept because it is simply the cheaper form, not because the floor requires it.)
   case "$json" in *[![:space:]]*) : ;; *) return 1 ;; esac
 
   # --- ONLY PROSE TARGETS (#130/#136) ---------------------------------  # adb-claim-ok: #130 is closed NOT_PLANNED, superseded by #136

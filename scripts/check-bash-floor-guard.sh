@@ -377,10 +377,21 @@ make_entry() {
     printf '. "%s"\n' "$COMMON"
     [ -n "${3:-}" ] && printf '%s\n' "$3"
     printf '%s "$@"\n' "$2"
-    printf 'printf "RAN under %%s\\n" "$BASH"\n'
+    # Report the VERSION, not just the path. The first cut printed "$BASH" — a path like
+    # /bin/bash — and the negative assertion then searched the output for "3.2.57", a string the
+    # fixture never emitted. It would have passed even if the old interpreter had run the body,
+    # which is precisely the regression it was named for. Review caught it; this prints
+    # BASH_VERSINFO so the assertions can compare against the real floor.
+    printf 'printf "RAN under %%s version %%s.%%s.%%s\\n" "$BASH" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "${BASH_VERSINFO[2]}"\n'
     printf 'printf "ARG[%%s]\\n" "$@"\n'
   } > "$1"
   chmod +x "$1"
+}
+
+# The version the fixture reported, or empty. Parsed from its own output so an assertion can say
+# "at or above the floor" instead of pattern-matching a string nobody printed.
+fixture_version() {
+  printf '%s\n' "$1" | sed -n 's/^RAN under .* version \([0-9][0-9.]*\)$/\1/p' | head -n 1
 }
 
 # A stub interpreter that CLAIMS version $2 when probed. $3 controls what it does when actually
@@ -413,7 +424,17 @@ sysv="$("$SYS_BASH" -c 'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]
 if [ -x "$SYS_BASH" ] && [ "$sysv" = "3.2" ]; then
   out="$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$SYS_BASH" "$d/ok.sh" alpha 2>&1)"; rc=$?
   eq "$rc" "0" "re-exec: a real 3.2 with PATH shadowing Homebrew still reaches a >= floor interpreter"
-  hasnt "$out" "3.2.57" "re-exec: the script did not end up running on the 2006 interpreter"
+  # ASSERT THE VERSION IT LANDED ON, not the absence of a string. `hasnt "$out" "3.2.57"` was the
+  # first cut and it proved nothing: the fixture printed only a PATH, so the assertion passed
+  # whether or not the re-exec happened. This reads the version the fixture reported and compares
+  # it against the real floor through the real comparator.
+  got="$(fixture_version "$out")"
+  if [ -n "$got" ]; then
+    adb_version_ge "$got" "$ADB_BASH_FLOOR_DEFAULT"
+    yes $? "re-exec: the interpreter it LANDED on ($got) is at or above the $ADB_BASH_FLOOR_DEFAULT floor"
+  else
+    bad "re-exec: the fixture reported no version at all — the assertion cannot be made"
+  fi
 
   # ARGUMENT BYTES, not just argument count. exec is the one place a quoted empty string, an
   # embedded space or a glob character can be silently reshaped, and every entry point that gates
@@ -564,15 +585,17 @@ if [ "$sysv" = "3.2" ]; then
   eq "$rc" "0" "floor compare: the re-exec still finds a candidate with awk broken"
   has "$out" "ARG[alpha]" "floor compare: and the script runs"
 fi
-# The integer path answers only the shape it is asked in, and says 2 — never a guess — otherwise,
-# so the caller falls back to the shared comparator rather than getting a wrong answer cheaply.
+# The floor question itself, against the ONE comparator. An earlier cut answered it in a separate
+# `adb_bash_ge_floor` helper; review correctly called that a second implementation, since for the
+# real floor and a normal BASH_VERSINFO it returned the final answer and `adb_version_ge` was never
+# reached on the operational path. The shortcut moved INSIDE adb_version_ge, and the two paths are
+# differentially tested against each other in check-common-lib.sh.
 out="$("$BASH" -c '. "'"$COMMON"'"
-                   for pair in "5 3" "5 2" "6 0" "4 9" "  " "x y"; do
-                     # shellcheck disable=SC2086  # deliberate split: the pair IS two arguments
-                     adb_bash_ge_floor $pair; printf "%s " "$?"
+                   for v in 5.3 5.3.15 5.2.21 3.2.57 6.0; do
+                     adb_version_ge "$v" "$ADB_BASH_FLOOR_DEFAULT"; printf "%s " "$?"
                    done' 2>/dev/null)"
 out="${out% }"
-eq "$out" "0 1 0 1 2 2" "floor compare: 5.3 ok · 5.2 no · 6.0 ok · 4.9 no · empty and non-numeric defer (2)"
+eq "$out" "0 0 1 1 0" "floor compare: 5.3/5.3.15/6.0 clear it; 5.2.21 and 3.2.57 do not"
 
 # --- the ENTRY-POINT LINT, rule by rule -------------------------------------------------------------
 # Its failure mode is the usual one: a classifier that stops recognizing files reports the same clean
@@ -678,7 +701,11 @@ crlf_scan() { CLOUT="$(bash -c '. "'"$COMMON"'"; adb_crlf_scan "$1"' _ "$1" 2>&1
 d="$work/crlf"; mkdir -p "$d/bin" "$d/scripts"
 printf '#!/usr/bin/env bash\necho ok\n' > "$d/scripts/fine.sh"
 printf '#!/usr/bin/env bash\necho ok\n' > "$d/bin/agent-init"
-printf 'echo "an escaped \\r is two characters, not a CR byte"\n' > "$d/scripts/escaped.sh"
+# WITH a shebang, deliberately. Without one the scanner skips this file before it ever looks at its
+# bytes, so the assertion below proved only that shebang filtering works — not the thing it is
+# named for. Review caught it: a fixture excluded from the scan cannot demonstrate how the scan
+# treats its contents.
+printf '#!/usr/bin/env bash\necho "an escaped \\r is two characters, not a CR byte"\n' > "$d/scripts/escaped.sh"
 crlf_scan "$d"
 eq "$CLRC" "0" "crlf: a clean tree passes"
 hasnt "$CLOUT" "escaped.sh" "crlf: a \\r ESCAPE in source is not mistaken for a CR byte"
@@ -708,6 +735,40 @@ if check_copy_worktree "$PWD" "$crlf_repo/repo"; then
   has "$out" "Re-clone INSIDE the WSL filesystem" "install: and hands over the non-destructive remedy"
   # Nothing was linked: a preflight that fails after doing half the install is worse than none.
   [ -e "$crlf_repo/home/.claude/CLAUDE.md" ] && bad "install: the refused install still created links" || ok
+fi
+
+# A SOURCED LIBRARY has no shebang, and common.sh is the one every entry point loads. A
+# shebang-only scan called such a tree clean while the load-bearing file was corrupt — review
+# reproduced it, and it is why the scanner now selects on `*.sh` OR a shebang.
+d2="$work/crlf-lib"; mkdir -p "$d2/scripts/lib"
+printf '#!/usr/bin/env bash\necho ok\n' > "$d2/scripts/entry.sh"
+printf 'adb_thing() { :; }\n' > "$d2/scripts/lib/common.sh"          # no shebang: a sourced library
+crlf_scan "$d2"
+eq "$CLRC" "0" "crlf: a clean tree with a sourced library passes"
+printf 'adb_thing() { :; }\r\n' > "$d2/scripts/lib/common.sh"
+crlf_scan "$d2"
+eq "$CLRC" "1" "crlf: a CRLF SOURCED LIBRARY is caught — it has no shebang to select it by"
+has "$CLOUT" "common.sh" "crlf: the corrupted library is named"
+
+# ...and install.sh must refuse BEFORE it sources that library, or the diagnostic never arrives.
+# Its own scanner cannot cover this step: the source is what breaks.
+crlf_boot="$work/crlf-boot"; mkdir -p "$crlf_boot"
+if check_copy_worktree "$PWD" "$crlf_boot/repo"; then
+  perl -pi -e 's/\n/\r\n/' "$crlf_boot/repo/scripts/lib/common.sh" 2>/dev/null \
+    || python3 -c 'import sys;p=sys.argv[1];d=open(p,"rb").read();open(p,"wb").write(d.replace(b"\n",b"\r\n"))' "$crlf_boot/repo/scripts/lib/common.sh"
+  mkdir -p "$crlf_boot/home"
+  out="$(HOME="$crlf_boot/home" bash "$crlf_boot/repo/install.sh" --agent claude --no-hooks 2>&1)"; rc=$?
+  eq "$rc" "1" "install: a CRLF common.sh is refused BEFORE it is sourced"
+  has "$out" "has CRLF line endings" "install: with a diagnostic naming the cause"
+  # The diagnostic must LEAD. Asserting the absence of "command not found" would be wrong — the
+  # message itself quotes that string to explain the symptom — so assert the ordering instead:
+  # the first line is ours, which is only true if the refusal came before the source.
+  # `$(printf '\n')` is NOT usable as the pattern here — command substitution strips trailing
+  # newlines, so it expands to empty and `${out%%*}` eats the whole string. head(1) is the honest
+  # way to take a first line.
+  eq "$(printf '%s\n' "$out" | head -n 1)" \
+     "install.sh: FATAL — scripts/lib/common.sh has CRLF line endings, so nothing here can load." \
+     "install: and it is the FIRST line, i.e. the refusal preceded the source"
 fi
 
 # The remedy must not hand the user a command that destroys uncommitted work. `git checkout .` is

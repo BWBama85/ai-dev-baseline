@@ -1653,16 +1653,31 @@ limit: none of them is sufficient alone.
              The CRLF preflight ships with its boundary stated rather than implied: a **fully**
              CRLF-corrupted checkout cannot run it, because `./install.sh` dies on its own `bash\r`
              shebang first. `.gitattributes` is the guarantee for a fresh clone; the preflight
-             catches the already-cloned and partially-repaired cases; `docs/installation.md` names
+             catches the already-cloned and partially-corrupted cases; `docs/installation.md` names
              the `bash: $'\r'` symptom so the unrunnable case stays diagnosable by a human.
+
+             **Review narrowed that boundary once already, and the correction is the interesting
+             part.** The first cut could not protect the very file it depends on: `install.sh`
+             sources `common.sh` BEFORE the scanner runs, and the scanner selected files by
+             SHEBANG — which a sourced library does not have. A checkout with only `common.sh`
+             converted therefore emitted raw `$'\r': command not found` from inside a library the
+             user has never heard of, while a direct scan afterwards reported the tree clean. Both
+             halves are fixed: a nine-line CR check on `common.sh` runs BEFORE the source (the one
+             place a standalone snippet is unavoidable, because it guards the loading of all shared
+             code), and the scanner now selects on `*.sh` OR a shebang, so sourced libraries and
+             extensionless commands are both in scope.
 
              Two details corrected against the issue text. Its suggested repair, `git checkout .`,
              is one of the commands `base/practices/git-and-prs.md` names as destroying uncommitted
              work with no reflog to recover it — the remedy leads with re-cloning inside WSL
              instead. And the `/mnt/` warning matches the Windows **drive** shape
-             (`/mnt/<letter>/`) under WSL only, not a bare `/mnt/` prefix: `/mnt/data` is an
-             ordinary Linux mountpoint and warning on it would be noise for people who have never
-             touched Windows.
+             (`/mnt/<letter>/`) under WSL only, not a bare `/mnt/` prefix.
+
+             **That second one is a DEVIATION from the issue's literal acceptance criterion, and is
+             recorded as one rather than quietly satisfied:** #2 says a `/mnt/` path warns.
+             `/mnt/data` and `/mnt/nfs` are ordinary Linux mountpoints on machines that have never
+             seen Windows, and warning there is the kind of noise that teaches people to ignore the
+             real warning. The criterion is met in spirit, not to the letter.
 - baseline-issue: n/a. The CI leg is tracked by **#2 itself, which stays OPEN** — the PR `Refs` it
              rather than closing it. No child issue was filed on purpose: #2's remaining scope is
              exactly this one item, so a second issue would be the duplicate

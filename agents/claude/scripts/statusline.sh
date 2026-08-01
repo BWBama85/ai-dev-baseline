@@ -10,15 +10,20 @@ set -euo pipefail
 # bash 5.3 runtime floor (#256) — the ADVISORY form, and the distinction is this file's own
 # contract rather than a preference: a statusLine renders one cosmetic string, on every render,
 # and must never print an error into the UI. Hard-failing here would make a sub-floor host look
-# BROKEN rather than out of date — a worse outcome than a stale statusline, and the opposite of
-# what this file already promises. It still takes the re-exec, which is silent and strictly
-# better; it just never dies of the floor.
+# BROKEN rather than out of date — a worse outcome than a plain statusline.
 #
-# `|| :` because the diagnostic already went to stderr and a non-zero status here must not reach
-# a `set -e` or become this process's exit code.
+# ADVISORY MEANS "STOP QUIETLY", NOT "CARRY ON REGARDLESS". The re-exec is attempted first and is
+# silent when it works. When it cannot, this falls back to the same bare `claude-code` line it
+# already prints for a missing jq or empty input, and exits 0 — it does NOT render the rest of the
+# body under a sub-floor interpreter, which is what the first cut did and what review caught. Once
+# #258/#259 land 5.3-only syntax that body would fail deep, which is the failure the floor exists
+# to prevent.
 if [ -f "$(dirname "$0")/lib/common.sh" ]; then
   # shellcheck source=/dev/null
-  . "$(dirname "$0")/lib/common.sh" && adb_require_bash_advisory "$@" || :
+  . "$(dirname "$0")/lib/common.sh" 2>/dev/null
+  if command -v adb_require_bash_advisory >/dev/null 2>&1; then
+    adb_require_bash_advisory "$@" 2>/dev/null || { printf 'claude-code\n'; exit 0; }
+  fi
 fi
 
 if ! command -v jq >/dev/null 2>&1; then

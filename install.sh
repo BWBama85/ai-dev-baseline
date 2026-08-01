@@ -19,6 +19,26 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# CRLF BOOTSTRAP CHECK — before the source, because the source is what it protects (#2).
+#
+# The full scanner lives in common.sh (adb_crlf_scan) and runs below. It cannot cover THIS step:
+# a CRLF-corrupted `common.sh` breaks the `.` on the next line, so the diagnostic would arrive as
+# a pile of `$'\r': command not found` from inside a library the user has never heard of. Review
+# reproduced exactly that — a checkout with only `common.sh` converted returned shell noise, and a
+# direct scan afterwards reported clean because the shebang-only filter skipped the file.
+#
+# Deliberately NOT `adb_link`-style shared code: it must run before any shared code exists. Nine
+# lines with a stated reason, checking one file, is the smallest thing that can close a bootstrap
+# gap — and the full scanner still checks this file among all the others a moment later.
+if [ -r "$REPO/scripts/lib/common.sh" ] && LC_ALL=C grep -q "$(printf '\r')\$" "$REPO/scripts/lib/common.sh" 2>/dev/null; then
+  echo "install.sh: FATAL — scripts/lib/common.sh has CRLF line endings, so nothing here can load." >&2
+  echo "  Under WSL this surfaces as: bash: \$'\\r': command not found" >&2
+  echo "  Re-clone INSIDE the WSL filesystem (not under /mnt/c):" >&2
+  echo "      git clone <url> ~/Code/ai-dev-baseline" >&2
+  exit 1
+fi
+
 # Shared shell primitives (adb_info / adb_link / …) — the ONE home, sourced not copied.
 # shellcheck source=/dev/null
 . "$REPO/scripts/lib/common.sh"

@@ -126,6 +126,43 @@ adb_version_ge 2.2     2.1.163; yes $? "shorter-but-higher minor >="
 adb_version_ge 1.9.9   2.0.0;   no  $? "lower major not >="
 adb_version_ge 2.0     2.0.0;   yes $? "missing trailing component is 0"
 
+# TWO PATHS, ONE SEMANTICS (#256). adb_version_ge grew a fork-free shell path for strictly-numeric
+# operands, because the bash floor gate calls it at the top of every entry point and forking `awk`
+# there made a BROKEN awk report itself as a bash-version failure. A shortcut inside a primitive is
+# only safe while it agrees with the definition it shortcuts, and "agrees" is not something a
+# handful of hand-picked cases establishes — so this compares the two implementations directly,
+# over every combination of a corpus chosen to sit on the boundaries (equal, shorter, longer,
+# leading zeros, multi-digit components that sort differently as strings, and empty).
+_vg_awk() {
+  awk -v v="$1" -v min="$2" '
+    BEGIN {
+      nv = split(v, V, "."); nm = split(min, M, ".");
+      n = (nv > nm) ? nv : nm;
+      for (i = 1; i <= n; i++) {
+        a = (i <= nv) ? V[i] + 0 : 0; b = (i <= nm) ? M[i] + 0 : 0;
+        if (a > b) exit 0; if (a < b) exit 1;
+      }
+      exit 0;
+    }'
+}
+_vg_mismatch=0; _vg_pairs=0
+for _vg_a in 5.3 5.3.15 5.2.21 3.2.57 2.1 2.1.0 2.1.163 6.0 0 0.0 10.2 1.10 1.9 "" 5.3.0 99 000.1 5.03; do
+  for _vg_b in 5.3 2.1.163 0 "" 5.3.0 1.10 3.2.57 99.99; do
+    _vg_awk "$_vg_a" "$_vg_b"; _vg_x=$?
+    adb_version_ge "$_vg_a" "$_vg_b"; _vg_y=$?
+    _vg_pairs=$((_vg_pairs + 1))
+    [ "$_vg_x" = "$_vg_y" ] || { _vg_mismatch=$((_vg_mismatch + 1)); bad "version_ge paths disagree on [$_vg_a] vs [$_vg_b]: awk=$_vg_x shell=$_vg_y"; }
+  done
+done
+[ "$_vg_mismatch" -eq 0 ] && ok
+eq "$_vg_pairs" "144" "version_ge differential covered every pair (a zero-pair loop would pass vacuously)"
+
+# The awk quirks are the CONTRACT, not an accident, so the shortcut must decline these rather than
+# reproduce them differently: awk's `+ 0` reads "x" as 0 but "5abc" as 5.
+adb_version_ge 5abc 5;  yes $? "non-numeric junk keeps awk's numeric-prefix reading (5abc -> 5)"
+adb_version_ge x 0;     yes $? "wholly non-numeric sorts as 0, as documented"
+adb_version_ge 0 1;     no  $? "and the shortcut still answers the ordinary case"
+
 # --- adb_link ----------------------------------------------------------------
 src="$work/src.txt"; echo original > "$src"
 backup="$work/backup"
