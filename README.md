@@ -140,7 +140,9 @@ doc today; deeper per-agent workflow parity is tracked as issues. See
 Dev guide: [CONTRIBUTING.md](CONTRIBUTING.md) (agents working on the repo start at
 [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md)). The one rule to remember: edit
 `base/practices/*.md`, **never** the generated `agents/*/…` root docs, and run
-`scripts/selfcheck.sh` before pushing — it mirrors CI.
+`scripts/selfcheck.sh` before pushing — it mirrors CI's offline half on your platform.
+(CI runs that suite on both `ubuntu-26.04` and `macos-latest`, each proving bash ≥ 5.3 —
+[docs/ci-runners.md](docs/ci-runners.md).)
 
 ## License
 

@@ -10,15 +10,18 @@ permissions:
 jobs:
   shellcheck:
     name: shellcheck
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
+
       - name: Install shellcheck
-        # Preinstalled on ubuntu-latest, but install explicitly so this job
-        # doesn't silently depend on runner-image contents.
+        # Preinstalled on ubuntu-26.04 (0.11.0-2), but install explicitly so this
+        # job doesn't silently depend on runner-image contents.
         run: sudo apt-get install -y shellcheck
 
       - name: Run shellcheck over every tracked shell file
@@ -48,11 +51,14 @@ jobs:
 
   build-drift:
     name: build-drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Rebuild generated root docs and skills
         run: bash scripts/build.sh
@@ -115,11 +121,14 @@ jobs:
 
   skill-frontmatter:
     name: skill-frontmatter
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Lint SKILL.md frontmatter
         run: |
@@ -166,11 +175,14 @@ jobs:
 
   workflow-render:
     name: workflow-render
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Workflow body placeholders map to Claude tokens, body-only, fail-loud on unmapped (#16)
         run: bash scripts/check-workflow-render.sh
@@ -189,11 +201,14 @@ jobs:
 
   gate-detector:
     name: gate-detector
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: repo-root detection surfaces the committed agents.toml gate
         run: |
@@ -230,88 +245,112 @@ jobs:
 
   common-lib:
     name: common-lib
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Unit-test the shared shell primitives (incl. adb_repo_shape, #23)
         run: bash scripts/check-common-lib.sh
 
   agent-init:
     name: agent-init
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: agent-init repo-shape tolerance — subdir, untracked parent, nested, non-git (#23)
         run: bash scripts/check-agent-init.sh
 
   role-dispatch:
     name: role-dispatch
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Unit-test the runtime role-dispatch helper (#15)
         run: bash scripts/check-role-dispatch.sh
 
   pr-review:
     name: pr-review
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Unit-test the pre-arm review guard (#134)
         run: bash scripts/check-pr-review.sh
 
   pr-watch:
     name: pr-watch
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Unit-test the async-reviewer status detector (#49)
         run: bash scripts/check-pr-watch.sh
 
   state-assert:
     name: state-assert
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Unit-test the observe-and-render state helper (#138)
         run: bash scripts/check-state-assert.sh
 
   skill-compose:
     name: skill-compose
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Partial skill override composer — ops, inherit-on-recompose, currency, guards (#22)
         run: bash scripts/check-skill-compose.sh
 
   cleanup-enum:
     name: cleanup-enum
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: /cleanup remote enumeration must exclude the origin/HEAD symref (#38)
         run: bash scripts/check-cleanup-enum.sh
@@ -326,11 +365,14 @@ jobs:
 
   roadmap:
     name: roadmap
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Install jq
         # roadmap-lib.sh parses the gh PR JSON with jq; install it explicitly rather than
@@ -342,11 +384,14 @@ jobs:
 
   roadmap-e2e:
     name: roadmap-e2e
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Install jq
         # The stub gh applies the workflow's own --jq filters with real jq, so a snippet whose
@@ -358,22 +403,28 @@ jobs:
 
   release-convention:
     name: release-convention
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Release-goal convention helper — dispatch, arg-parsing, fail-loud gh guard (#27)
         run: bash scripts/check-release-convention.sh
 
   repo-settings:
     name: repo-settings
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Install jq
         # repo-settings.sh builds its protection bodies with jq, and the stub-backed tests read
@@ -382,6 +433,21 @@ jobs:
 
       - name: Repo settings — check discovery + write ordering + the automerge-ok table (#87)
         run: bash scripts/check-repo-settings.sh
+
+      # The STATIC half of the bash floor (#257), riding this job for the reason every other lint
+      # here rides one: a new job is a newly added non-required context, which is the drift
+      # `required-drift` below exists to flag. This job is also the natural host — it is already
+      # the one that parses .github/workflows, for the neighbouring question of which contexts it
+      # reports. Every OTHER job proves the bash it got; this step proves no job can be added
+      # without doing so.
+      - name: Every CI job stays on a proven bash >= 5.3 runner and wires the floor guard (#257)
+        run: bash scripts/check-bash-floor.sh
+
+      # ...and the lint above is a guard, so it gets the treatment guards get here: every rule
+      # driven to RED against throwaway fixtures, because a scanner that quietly stops recognizing
+      # job keys reports exactly what a clean repo reports.
+      - name: The bash-floor lint must be observed going RED on every rule it owns (#257)
+        run: bash scripts/check-bash-floor-guard.sh
 
       # The LIVE half of #122, and the only step in this file that talks to the API. Why it rides
       # this job rather than taking its own, and why it reads the ordinary branch endpoint rather
@@ -414,22 +480,28 @@ jobs:
 
   baseline:
     name: baseline
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: End-to-end test bin/baseline currency classification
         run: bash scripts/check-baseline.sh
 
   session-currency:
     name: session-currency
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Install jq
         # The hook emits its one line as structured JSON, and the test asserts on it.
@@ -440,22 +512,28 @@ jobs:
 
   precommit-gate:
     name: precommit-gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Stop-hook quality gate must fail loud on a missing library (#35)
         run: bash scripts/check-precommit-gate.sh
 
   implement-gate:
     name: implement-gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Install jq
         # The implement-issue gate parses gh JSON with jq; install it explicitly.
@@ -466,7 +544,7 @@ jobs:
 
   install-migration:
     name: install-migration
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -476,23 +554,29 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
+
       - name: A plain `git pull` must never dangle an installed symlink (#35)
         run: bash scripts/check-install-migration.sh
 
   install-guard:
     name: install-guard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: A missing manifest source must make install.sh fail loud (#48)
         run: bash scripts/check-install-guard.sh
 
   fact-drift:
     name: fact-drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     # The claim lint's LIVE half reads issues and pull requests, which the workflow-level
     # `contents: read` does not grant. Scoped to this job rather than widened at the top of the
@@ -508,6 +592,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Install jq
         # The claim lint parses gh JSON with jq and exits 3 without it. Installed explicitly rather
@@ -576,22 +663,28 @@ jobs:
 
   practice-index:
     name: practice-index
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Every practice must be indexed exactly once in 00-index.md
         run: bash scripts/check-practice-index.sh
 
   install-dry-run:
     name: install-dry-run
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
 
       - name: Point HOME at a fresh temp dir
         # install.sh/uninstall.sh write into $HOME; overriding it keeps the
@@ -604,7 +697,7 @@ jobs:
           echo "HOME=$tmp_home" >> "$GITHUB_ENV"
 
       - name: Install jq
-        # Preinstalled on ubuntu-latest, but install explicitly (install.sh's
+        # Preinstalled on ubuntu-26.04 (1.8.1), but install explicitly (install.sh's
         # hook-wiring step requires it) so this job doesn't silently depend on
         # runner-image contents.
         run: sudo apt-get install -y jq
@@ -674,3 +767,57 @@ jobs:
               exit 1
             fi
           done
+
+  # The second platform, and the whole reason #257 exists. macOS is where the 5.3 floor is hardest
+  # to reach: Apple pins /bin/bash at 3.2.57 permanently (GPLv3), so 5.3 is reachable ONLY through
+  # PATH — exactly the surface base/practices/shell-discipline.md warns is absent in the
+  # non-interactive shells that hooks and gate scripts run in.
+  #
+  # ONE aggregate job, not 26 mirrored ones, and that is a design choice with two reasons:
+  #
+  #   1. `scripts/selfcheck.sh` IS the full offline suite by construction — it is this repo's CI
+  #      mirror, kept in lockstep with the jobs above by CLAUDE.md golden rule 3. Mirroring the
+  #      jobs individually would need a 27th hand-added job every time a check-*.sh lands, and the
+  #      one that got forgotten would be invisible.
+  #   2. A `strategy.matrix` is NOT an option here: repo-settings.sh discovery skips matrix jobs
+  #      because their check-run names gain a matrix suffix (docs/repo-settings.md). Converting the
+  #      jobs above would leave 26 required contexts reporting nothing — a repo-wide merge
+  #      deadlock — while the suffixed replacements stayed undiscoverable.
+  #
+  # The two CI-only steps above are deliberately NOT duplicated here: `required-drift` and the live
+  # claim lint assert facts about this repo's settings and tracker, which are platform-independent
+  # and would only add API cost and a second failure surface.
+  selfcheck-macos:
+    name: selfcheck-macos
+    runs-on: macos-latest
+    # Generous next to the Linux jobs' 10: this one runs the WHOLE offline suite serially (250s on
+    # the maintainer's machine) on a runner that also has a Homebrew install to do first.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Runs on Apple's /bin/bash 3.2.57, because that is all there is until the next line finishes.
+      # `brew --prefix bash` is the keg's own prefix rather than $(brew --prefix), so the PATH entry
+      # is the one that actually carries this formula's binary. GITHUB_PATH PREPENDS, and applies to
+      # SUBSEQUENT steps only — which is why the proof is a separate step below and not this one.
+      - name: Install bash 5.3 and shellcheck from Homebrew, and put bash first on PATH
+        run: |
+          set -uo pipefail
+          brew install bash shellcheck || exit 1
+          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
+
+      # THE step this whole job exists for. It asserts — not merely prints — that the interpreter
+      # is >= 5.3, and it asserts on $BASH (what is executing) as well as on the PATH-resolved
+      # bash (what every '#!/usr/bin/env bash' entry point below will get). Those two diverge on
+      # exactly this platform: under /bin/bash 3.2 with Homebrew first on PATH, `command -v bash`
+      # reports the 5.3 while the code runs on the 3.2, so a guard reading only PATH passes while
+      # running on the 2006 interpreter.
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
+
+      # The full offline suite. shellcheck is installed above for a reason: selfcheck SKIPs that
+      # step when the binary is absent, so without it "the full suite on macOS" would be false in
+      # precisely the silent way this repo keeps writing guards against.
+      - name: The full offline suite, on Homebrew bash
+        run: bash scripts/selfcheck.sh

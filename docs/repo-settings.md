@@ -174,7 +174,7 @@ Its home is a CI step, which runs as `GITHUB_TOKEN` — and `administration` is 
 workflow permission, so the admin-only `/branches/{branch}/protection` endpoint the other
 subcommands use would `403` on every run. The ordinary `repos/{slug}/branches/{branch}` endpoint
 needs only `contents: read` and carries the same `required_status_checks.contexts` (verified equal
-against the admin endpoint over this repo's 25 contexts). Its error model is also cleaner here: a
+against the admin endpoint over this repo's full context set). Its error model is also cleaner here: a
 `404` means "no such branch", with none of the "no protection *or* no permission" ambiguity that
 forces `read_protection` to probe `.permissions.admin`.
 
@@ -235,13 +235,17 @@ would itself be a newly added, non-required context: the fix would commit the ve
 detects, and would gate nothing until someone ran `apply`. Riding an already-required job means it
 enforces from the first merge.
 
-This is the one place where `scripts/selfcheck.sh` does **not** mirror CI: the local gate runs the
-offline stub coverage in `scripts/check-repo-settings.sh`, and the *live* assertion is CI-only.
-`selfcheck` is kept hermetic — its value is being a deterministic predictor of CI, and a step whose
-verdict depends on network, auth and settings someone else can change would break that. Recorded as
-D13 in `.ai-dev-baseline/decisions.md`, which also records what that reasoning does *not* claim: a
-local `20 → SKIP` arm is possible and would catch drift before the push. It is a preference for a
-hermetic gate, not an impossibility.
+This is one of the places where `scripts/selfcheck.sh` does **not** mirror CI: the local gate runs
+the offline stub coverage in `scripts/check-repo-settings.sh`, and the *live* assertion is CI-only.
+`selfcheck` is kept hermetic — its value is being a deterministic predictor of CI's *offline* half,
+and a step whose verdict depends on network, auth and settings someone else can change would break
+that. Recorded as D13 in `.ai-dev-baseline/decisions.md`, which also records what that reasoning
+does *not* claim: a local `20 → SKIP` arm is possible and would catch drift before the push. It is a
+preference for a hermetic gate, not an impossibility.
+
+Since #257 there is a second, different reason a local green cannot stand in for CI, and it is not
+about hermeticity at all: CI runs the offline suite on **two** hosted platforms (`ubuntu-26.04` and
+`macos-latest`) and a workstation is one of them. See `docs/ci-runners.md` (D29).
 
 ### When it fails
 
