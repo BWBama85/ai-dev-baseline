@@ -9,6 +9,63 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **An edge `/roadmap` could not parse is now SAID, instead of silently dropped** (#132, D28).
+  Every fix in this family (#69, #108, #112, #117, #136) resolved an ambiguity by picking a side
+  silently, so "this body declares no edge" and "this body declares an edge I could not parse"
+  produced byte-identical output — opposite facts, one answer. `Depends on #5 (the gate) and #6`
+  yielded `5` and dropped `6` without a word; `Depends on issue 5` was indistinguishable from
+  `Refs #5`.
+  - **`roadmap-lib.sh deps-ambiguous`** is the second view of the *same* awk scan, selected by a
+    mode flag. Sharing it is the load-bearing part, not an optimization: a report computed by a
+    second parser drifts from the grammar it reports on at the first change to either. It emits
+    TSV — `partial` (a chain declared an edge and dropped a later reference), `unparsed` (a
+    reference in the clause, no edge out), or `no-hash` (`issue <N>` written without a `#`).
+  - **A sibling subcommand, because the issue's own constraints eliminate the alternatives.** A
+    `?`-prefixed line corrupts a stdout every consumer reads as bare numbers; a non-zero exit
+    collides with "every caller treats non-zero as a hard stop"; stderr is outside the output
+    contract. This is purely additive — `deps-from-body`'s output is byte-identical, verified over
+    all 37 open bodies in this tracker.
+  - **It warns; it does not gate.** A report renders as a `dep-ambiguous` Reconcile-flags row and a
+    retirable `dep-ambiguous:#N` question — the posture #78 chose when it picked `WARN:` over
+    `HOLD`. Blocking on *uncertainty* would let one false positive stall a ready bundle forever.
+  - **The false-positive budget was measured, not argued.** A first cut reported 13 sites across
+    those 37 bodies and all 13 were one shape: a reference past a clause boundary — commentary, not
+    a dropped edge (`- #81 depends on #79 — **satisfied**, #79 closed COMPLETED (PR #111)` reported
+    both the edge it had just declared and a PR number). Bounding the window at the clause
+    boundaries the negation scoping already used took the corpus to **zero** reports with both
+    documented witnesses still firing. A qualified `owner/repo#5` stays silent on purpose: that is
+    a confident answer, and reporting confident answers is what makes noise.
+  - **No author-controlled byte reaches the artifact.** All three fields come from closed sets — a
+    kind, a line number, an issue number — so a third-party body cannot push markup, a table
+    delimiter or a directive into a tracked document, even though describing author text is the
+    whole job.
+  - **Observed failing before being called done.** Eight mutations against a throwaway copy of the
+    tree each turned exactly the fixtures written for them red. One run earned its keep at once:
+    the two self-reference fixtures passed with the guard *removed*, because a resolvable self
+    reference is consumed by the chain and never reaches the window — they were vacuous, and only
+    the mutation said so.
+
+### Fixed
+
+- **A crashed edge scan answered "this body declares no edges"** (found while implementing #132).
+  `deps-from-body` ran `awk | sort`, and a pipeline reports only its last command, so a broken scan
+  exited **0 with empty output** — indistinguishable from a clean negative, and the direction that
+  silently unblocks a bundle that is genuinely blocked. The library header has promised
+  `EXIT STATUS IS FAIL-CLOSED` the whole time; nothing checked it, because a check that cannot
+  answer wrong looks exactly like a check that found nothing wrong. Both subcommands now capture
+  the scan and exit 2. Demonstrated against `origin/main` (rc 0) and pinned by a fixture that
+  breaks a **copy** of the library, never the tracked file.
+- **`/roadmap`'s release composition discarded that status from the other side.** Both edge-derivation
+  call sites used `for d in $(… deps-from-body …)`, which throws away the substitution's exit code,
+  so a failed extraction arrived as an empty prerequisite list and the issue was promoted anyway —
+  arming the milestone with a blocker nothing can close, the exact failure that block exists to
+  prevent. Both now capture and hard-stop. The `## Decisions` row loop was additionally fed by a
+  pipe, so its hard-stop `exit` would have left only the subshell; it now reads from a file.
+- **Two stale claims about D27.** `roadmap-lib.sh`'s STRUCTURE block still said 4-space indented
+  code blocks were `DELIBERATELY NOT HANDLED … Tracked separately`, and `docs/roadmap-acceptance.md`
+  still told a reader they are "deliberately *not* stripped" — both describe the behavior #136
+  replaced. They are stripped at top level only, which is what D27 decided and what the code does.
+
 - **Third-party text is now governed by a stated policy, labelled where it enters, and contained
   before it reaches another agent** (#214, D26). Six workflows read text the operator did not
   write — issue bodies and comments, PR review threads, CI logs, vendor changelogs — and one of

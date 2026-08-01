@@ -32,6 +32,7 @@
 #   roadmap-lib.sh release-counts <blocker-label> [roadmap-issue-number]   # milestone JSON on stdin
 #   roadmap-lib.sh marker-title                                   # roadmap artifact body on stdin
 #   roadmap-lib.sh deps-from-body [self-issue-number]             # issue/decision body on stdin
+#   roadmap-lib.sh deps-ambiguous [self-issue-number]             # issue/decision body on stdin
 #   roadmap-lib.sh decisions                                      # roadmap artifact body on stdin
 #   roadmap-lib.sh open-issues                                    # paginated issues JSON on stdin
 #   roadmap-lib.sh read-complete <read-count> <expected-total>
@@ -707,28 +708,81 @@ cmd_marker_title() {
 #     scanned text and DOES declare (#112, which the targeting was built to leave room for).
 #     Blanket span-stripping would DELETE the reference outright and put this rule in direct
 #     conflict with that one; masking only the keyword lets both hold at once.
-# DELIBERATELY NOT HANDLED: 4-space INDENTED code blocks. Four spaces are not reliably code — under
-# a `- ` bullet, content starts at 2 and code needs 2+4=6, so a `^ {4}` skip deletes ordinary
-# continuation PROSE. That direction is the dangerous one: a dropped edge silently unblocks a
-# bundle that is genuinely blocked. Tracked separately rather than guessed at here.
+#   - INDENTED CODE, AT TOP LEVEL ONLY (D27). A line indented >= 4 spaces opens a code block only
+#     when no paragraph and no list container is open. Both guards matter: `    Depends on #52` is
+#     byte-identical at top level and as a continuation under a `- ` bullet, where CommonMark puts
+#     content at column 2 and code therefore needs six. A stateless `^ {4}` skip would delete
+#     ordinary continuation PROSE, and that direction is the dangerous one — a dropped edge
+#     silently unblocks a bundle that is genuinely blocked. A leading TAB is not indentation here,
+#     for the same reason.
 #
 # The artifact's `## Decisions` rows are fed through this SAME subcommand, so an owner decision
 # declares (or retires) an edge with exactly the vocabulary an issue body uses — one rule, one
 # implementation, one test. This is the ONLY edge extractor; `pr-targets-issue` answers a
 # different question (GitHub CLOSING keywords in a PR body) and deliberately does not share it.
-cmd_deps_from_body() {
-  case "$#" in
-    0|1) : ;;
-    *) die "deps-from-body: takes at most one argument: [self-issue-number] (body on stdin)" ;;
-  esac
-  local self="${1:-0}"
-  [ -n "$self" ] || self=0
-  is_uint "$self" || die "deps-from-body: <self-issue-number> must be a non-negative integer (got '$1')"
+#
+# --- deps-ambiguous: the SAME scan, reporting what it REFUSED (#132) ---------------------------
+# Every fix in this family resolved an ambiguity by picking a side SILENTLY, so /roadmap could not
+# tell "this body declares no edge" from "this body declares an edge I could not parse". The two
+# are opposite facts and they produced identical output. `deps-ambiguous` is the second view of
+# this one scan, and the sharing is the point: a report computed by a SECOND parser would drift
+# from the grammar it is reporting on at the first change to either.
+#
+# WHY A SIBLING SUBCOMMAND, and not the three alternatives the issue lists. Its own constraints
+# eliminate them: stdout must stay a bare list of numbers, so a `?`-prefixed line would corrupt
+# every numeric consumer; every caller treats non-zero as a hard stop, so an exit code would turn
+# a parse note into a run-ending error; and stderr is outside the workflow output contract and is
+# where this library already puts real failures. What is left is a second subcommand over the same
+# body — additive, so no existing caller changes at all. Recorded as D28.
+#
+# WHAT IS AMBIGUOUS, exactly — the closed grammar, which is the whole false-positive budget.
+# Report what the grammar REFUSED; never what it RECOGNIZED and correctly excluded. A report on
+# every body that merely mentions an issue number is noise, and noise gets ignored, which is worse
+# than silence. So a site is reported only when a DECLARING (non-negated) keyword occurrence is
+# present in prose, and then:
+#   - `partial`  — that occurrence declared >= 1 edge, and an UNQUALIFIED `#M` was left unconsumed
+#                  in its window. `Depends on #5 (the gate) and #6` yields 5 and drops 6.
+#   - `unparsed` — that occurrence declared NO edge, and an unqualified `#M` sits in its window.
+#                  `Depends on [#5](url)`, `Depends on * #5`, `Depends on the gate and #6`.
+#   - `no-hash`  — no edge, no `#M` at all, but the author wrote `issue <N>`. That is the ONLY
+#                  hash-less shape reported: `Depends on 2 things` is English, not a reference.
+# A QUALIFIED reference is silent on purpose. `Depends on acme/repo#5` is not a failure to parse —
+# the "reach `#` without crossing a word character" rule IS the cross-repo guard, and it answered
+# correctly. Reporting a confident answer as an ambiguity is what turns this into noise.
+#
+# THE WINDOW is per keyword occurrence and stops at the NEXT keyword on the line. Without it the
+# two commonest real lines both false-fire: `Depends on #5 and blocked by #6` would report 6 as
+# dropped when the second keyword is about to claim it, and `Depends on #78; it is not blocked by
+# #25` would report 25 when the author explicitly retired it. A negated occurrence is skipped
+# whole — negation is a CONFIDENT answer, not an ambiguity.
+#
+# THE REPORT CARRIES NO BODY TEXT, and that is a containment decision, not brevity. Issue bodies
+# are third-party (`base/practices/untrusted-content.md`) and this output is rendered into the
+# roadmap artifact, so echoing a source line would carry arbitrary markup — table delimiters,
+# directives, credential-shaped strings — into a tracked document. All three fields come from
+# closed sets instead: a kind from the three above, a line NUMBER, and an issue NUMBER. There is
+# no byte of author-controlled text in the output at all, so there is nothing to sanitize.
+#
+# IT WARNS; IT DOES NOT GATE. Nothing here feeds a bundle status: /roadmap renders a report as a
+# Reconcile-flags row and a retirable `dep-ambiguous:#N` owner question, exactly as #78 renders an
+# unmilestoned release-blocker as a `WARN:` rather than a `HOLD`. Blocking on uncertainty would let
+# one false positive stall a ready bundle indefinitely, and the reversal — should the owner want a
+# hold — is a status rule in the workflow, not a change to this contract.
+#
+# NOT A PARSER WIDENING. None of these shapes becomes an edge. `deps-from-body`s stdout is
+# byte-identical before and after this change, which is what lets the report be added without
+# re-testing every consumer.
 
+# _adb_deps_scan <mode> <self> — the one scan; <mode> is `edges` or `ambiguous`. Body on stdin.
+# Callers CAPTURE it rather than piping it, so awk failing is a non-zero status they can see. A
+# `awk | sort` pipeline reports only sort, which is how a crashed scan would arrive as a clean
+# empty result — the exact fail-open this library exists to refuse (header, "EXIT STATUS IS
+# FAIL-CLOSED").
+_adb_deps_scan() {
   # LC_ALL=C keeps the byte-wise scan below predictable on a body containing multibyte text; the
   # two dash characters are normalized by literal string replacement rather than a bracket
   # expression, which is exactly what a byte-oriented locale cannot express safely.
-  LC_ALL=C awk -v self="$self" "$_ADB_MD_AWK"'
+  LC_ALL=C awk -v self="$2" -v mode="$1" "$_ADB_MD_AWK"'
     # Literal (never regex) replace-all, so a dash normalization cannot be re-interpreted.
     function lreplace(s, from, to,   out, p) {
       out = ""
@@ -753,6 +807,45 @@ cmd_deps_from_body() {
     # in one index the other, so consuming them is a single operation with one home — not a
     # convention two call sites have to remember.
     function eat(at) { rest = substr(rest, at); masked = substr(masked, at) }
+    # emit <kind> <line> <issue> — one ambiguity record, deduped, in scan order (line ascending,
+    # then keyword occurrence, then reference order). Deterministic by construction, so no sort is
+    # needed and none is applied; a sort would have to know the field types anyway.
+    function emit(kind, ln, n,   key) {
+      key = kind "\t" ln "\t" n
+      if (key in SEEN) return
+      SEEN[key] = 1
+      print key
+    }
+    # report <line> <edges-declared-here> <window> — classify what this keyword occurrence left
+    # behind. See the WHAT IS AMBIGUOUS block in the shell comment above for why each shape is in
+    # or out; this function is only the mechanism.
+    function report(ln, nemit, win,   at, len, pre, num, n2, seg, found) {
+      found = 0
+      # UNQUALIFIED references left in the window. `#` preceded by a WORD character is a qualified
+      # reference (acme/repo#5) — recognized and correctly excluded, so never reported.
+      while (match(win, /#[0-9]+/)) {
+        at = RSTART; len = RLENGTH
+        pre = (at > 1) ? substr(win, at - 1, 1) : " "
+        num = substr(win, at + 1, len - 1)
+        win = substr(win, at + len)
+        if (pre ~ /[a-z0-9_]/) continue
+        if (length(num) > 9) continue          # same width bound the edge scan applies
+        n2 = num + 0
+        if (n2 <= 0 || n2 == self) continue
+        emit((nemit > 0) ? "partial" : "unparsed", ln, n2)
+        found = 1
+      }
+      if (found || nemit > 0) return
+      # The one hash-less shape that is reported: the author wrote out `issue <N>`. Anything
+      # looser turns "Depends on 2 things" into a finding.
+      if (!match(win, /(^|[^a-z0-9_])issues?[ \t]+[0-9]+/)) return
+      seg = substr(win, RSTART, RLENGTH)
+      if (!match(seg, /[0-9]+$/)) return
+      num = substr(seg, RSTART, RLENGTH)
+      if (length(num) > 9) return
+      n2 = num + 0
+      if (n2 > 0 && n2 != self) emit("no-hash", ln, n2)
+    }
     BEGIN {
       apos = sprintf("%c", 39)   # a literal apostrophe; this program is single-quoted in shell
       KW  = "(depends?|dependent|dependant)[ \t]+(on|upon)|blocked[ \t]+(by|on)"
@@ -834,6 +927,7 @@ cmd_deps_from_body() {
           clause = substr(clause, cut + 1)
           eat(kstart + klen)
           if (clause ~ NEG) continue            # negated: this retires an edge, never declares one
+          nemit = 0
           while (match(rest, STEP)) {
             step = substr(rest, RSTART, RLENGTH)
             eat(RSTART + RLENGTH)
@@ -844,13 +938,78 @@ cmd_deps_from_body() {
             # in exponent/rounded form — emitting a fabricated "issue number" no tracker can have.
             if (length(digits) > 9) continue
             n = digits + 0
-            if (n > 0 && n != self) print n
+            if (n > 0 && n != self) { nemit++; if (mode == "edges") print n }
           }
+          if (mode != "ambiguous") continue
+          # THE WINDOW ends at the NEXT keyword on this line, so a reference the next keyword is
+          # about to claim is never reported as dropped. `masked` and `rest` stay 1:1, which is
+          # what lets an offset found in one slice the other; the outer loop re-matches anyway,
+          # so consuming RSTART here costs nothing.
+          window = rest
+          if (match(masked, KW)) window = substr(rest, 1, RSTART - 1)
+          # ...and at the first CLAUSE BOUNDARY, the same set the negation scoping above uses (with
+          # em/en dashes already normalized to one). A declaration cannot cross a sentence boundary
+          # and the chain grammar already refuses to, so a reference past one is commentary, not a
+          # dropped edge. Measured, not assumed: without this the report fired 13 times on this
+          # repo and ALL THIRTEEN were of that shape — `- #81 depends on #79 — **satisfied**, #79
+          # closed COMPLETED (PR #111)` reported both the edge it had just declared and a PR
+          # number, and `**Why it is blocked on this issue.** #123 rejects...` reported the first
+          # word of the next sentence. With it, the corpus is silent.
+          wcut = 0
+          for (wi = 1; wi <= length(window); wi++) {
+            wc = substr(window, wi, 1)
+            if (wc == "." || wc == ";" || wc == ":" || wc == "!" || wc == "?") { wcut = wi; break }
+          }
+          if (wcut > 0) window = substr(window, 1, wcut - 1)
+          report(ln, nemit, window)
         }
       }
     }
-  ' | sort -n -u
-  return 0
+  '
+}
+
+cmd_deps_from_body() {
+  case "$#" in
+    0|1) : ;;
+    *) die "deps-from-body: takes at most one argument: [self-issue-number] (body on stdin)" ;;
+  esac
+  local self="${1:-0}" out
+  [ -n "$self" ] || self=0
+  is_uint "$self" || die "deps-from-body: <self-issue-number> must be a non-negative integer (got '$1')"
+
+  # CAPTURE, then sort. `awk | sort` reports only sort, so a crashed scan would arrive as a clean
+  # empty result — which for this predicate means "this body declares no edges" and silently
+  # unblocks a bundle that is genuinely blocked.
+  out="$(_adb_deps_scan edges "$self")" || die "deps-from-body: the markdown scan failed"
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out" | sort -n -u
+}
+
+# --- deps-ambiguous ---------------------------------------------------------------------------
+# Print one record per site where a body PLAUSIBLY ATTEMPTED a declaration that `deps-from-body`
+# could not confidently attribute (#132). TSV, `<kind>\t<line>\t<issue-number>`; empty output means
+# nothing was ambiguous, which is the ordinary result and never an error.
+#
+# The rules, the closed kind vocabulary, the window, the qualified-reference carve-out and the
+# no-body-text containment decision are documented ONCE above `_adb_deps_scan` — this is the same
+# scan under a different mode, so restating them here is the drift the sharing exists to prevent.
+#
+# EXIT STATUS matches `deps-from-body` deliberately: 0 with empty output for "nothing to report",
+# 2 for a broken input. It is NOT the 0/1/2 predicate shape, because every caller of the sibling
+# subcommand treats non-zero as a hard stop, and a 1 meaning "no ambiguity" would hard-stop a run
+# on its most common outcome.
+cmd_deps_ambiguous() {
+  case "$#" in
+    0|1) : ;;
+    *) die "deps-ambiguous: takes at most one argument: [self-issue-number] (body on stdin)" ;;
+  esac
+  local self="${1:-0}" out
+  [ -n "$self" ] || self=0
+  is_uint "$self" || die "deps-ambiguous: <self-issue-number> must be a non-negative integer (got '$1')"
+
+  out="$(_adb_deps_scan ambiguous "$self")" || die "deps-ambiguous: the markdown scan failed"
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out"
 }
 
 # --- decisions --------------------------------------------------------------------------------
@@ -1146,6 +1305,7 @@ main() {
     marker-title)     cmd_marker_title "$@" ;;
     release-command)  cmd_release_command "$@" ;;
     deps-from-body)   cmd_deps_from_body "$@" ;;
+    deps-ambiguous)   cmd_deps_ambiguous "$@" ;;
     decisions)        cmd_decisions "$@" ;;
     open-issues)      cmd_open_issues "$@" ;;
     read-complete)    cmd_read_complete "$@" ;;

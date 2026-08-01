@@ -395,15 +395,28 @@ gh issue create --title "Driver work" --body "Depends on #1 and #2"    # #8
       `<!-- … -->` comment, inside a `> ` blockquote, and inside a `` `Depends on #2` `` span.
       **None** of the four creates an edge, while a plain `Depends on #1` in the same body still
       does. This was live: #112's repro blocks fabricated a `#112 → #52` edge that marked a ready
-      bundle `blocked`. A 4-space-**indented** block is deliberately *not* stripped (under a
-      `- ` bullet, code needs six spaces, so treating four as code would delete continuation prose
-      and silently drop a real blocker).
+      bundle `blocked`. A 4-space-**indented** block is stripped at **top level only** (D27): it
+      must be indented four or more spaces with no paragraph and no list container open, because
+      under a `- ` bullet content starts at column 2 and code needs six — so stripping four
+      blindly would delete continuation prose and silently drop a real blocker.
 - [ ] **Formatting is not content (#112).** File an issue whose body declares the edge in ordinary
       markdown — `Depends on **#1**`, `**Depends on:** #1`, `` Depends on `#1` ``, and
       `- **Blocked by** #1`. **Each** creates the edge; before this, all four were silently
       dropped, which is the direction that marks a genuinely blocked bundle `ready`. The tolerance
       stops at formatting: `Depends on * #1` and `` Depends on `ignore #1` `` still create none,
       and neither does `Depends on **acme/repo#1**`.
+- [ ] **An edge the grammar refused is REPORTED, not dropped (#132, D28).** **[auto]** File an issue
+      whose body reads `Depends on #1 (the gate) and #2` → the edge set is `#1` alone (unchanged),
+      **and** the run surfaces `dep-ambiguous:#N` naming the dropped `#2`. Same for
+      `Depends on issue 1`, which declares no edge and previously looked identical to `Refs #1`.
+      Then verify the SILENT half, which is the false-positive budget: `Depends on acme/repo#1`
+      (a confident non-edge), `Depends on #1 and blocked by #2` (the next keyword claims it),
+      `Depends on #1; it is not blocked by #2` (negation is an answer) and
+      `- #5 depends on #6 — satisfied, #6 closed (PR #7)` (past a clause boundary) report
+      **nothing**. Measured on this repo at the time it shipped: zero reports across 37 open bodies.
+- [ ] The ambiguity row **does not hold the issue out of emission** — it warns, exactly as an
+      unmilestoned `release-blocker` warns (#78). A bundle whose member reported one is still
+      emitted, and the question retires from a `## Decisions` row like any other `dep-*` id.
 - [ ] Surface an owner question (e.g. put an `M` member's only prerequisite in `Backlog`). The
       printed line carries a **stable id** and names **where to record the answer**:
       `? dep-outside-release:#8 — … Record: #8 body or artifact ## Decisions.`
