@@ -1587,8 +1587,10 @@ limit: none of them is sufficient alone.
              renders an error notice on every session start; `statusline.sh` renders one cosmetic
              string on every render; `state-claim-gate.sh` deliberately refuses to wedge a session
              over infrastructure absence (#35). A fourth, `check-bash-floor.sh`, is #257's
-             *observer* — and `check-bash-floor-guard.sh:294` runs it under an old `/bin/bash` and
-             asserts it reports red, so wiring the gate into it would silently un-test that.
+             *observer* — and `check-bash-floor-guard.sh` runs it under an old `/bin/bash` and
+             asserts it reports red (the assertion named *"the $BASH rule fires ALONE"*), so wiring
+             the gate into it would silently un-test that. Cited by assertion name rather than by
+             line: this very entry named a line number that the same PR then moved 22 lines down.
              The issue's own call-site list omits all four; nothing said what to do about them.
 - decision:  Three classes, forced and enumerated in `scripts/check-bash-floor.sh`:
              **gate** (`adb_require_bash` — re-exec, else exit non-zero; the default, 55 files),
