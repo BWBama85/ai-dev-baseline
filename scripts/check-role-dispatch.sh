@@ -463,7 +463,17 @@ printf '#!/usr/bin/env bash\nsleep 300\n' > "$work/qqstub"; chmod +x "$work/qqst
 { printf '. "%s"\n' "$RD"; printf '_adb_rd_bounded 2700 "%s/qqstub"\n' "$work"; } > "$work/probe.sh"
 
 esc_w="$(mktemp)"; esc_t="$(mktemp)"; esc_0="$(mktemp)"; start=$SECONDS
-( timeout 2 bash "$work/probe.sh" >/dev/null 2>&1 ) &
+# A BARE `timeout` is GNU-only. On a stock Mac it is absent, the subshell exits 127, the bare `wait`
+# below discards that status, and the zero-process assertion then passes because nothing was ever
+# STARTED — a probe reporting a clean run while exercising nothing. Invisible until #257 first ran
+# this suite on macOS. Line 484 below already resolves timeout-or-gtimeout; this now agrees with it,
+# and says so out loud when neither exists rather than silently proving nothing.
+OUTER_TIMEOUT="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
+if [ -n "$OUTER_TIMEOUT" ]; then
+  ( "$OUTER_TIMEOUT" 2 bash "$work/probe.sh" >/dev/null 2>&1 ) &
+else
+  echo "check-role-dispatch: NOTE — no timeout/gtimeout binary; outer-termination probe not exercised" >&2
+fi
 ( rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 \
     bash "$RD" invoke gap_analysis >/dev/null 2>&1 || rc=$?; printf '%s' "$rc" > "$esc_w" ) &
 ( rc=0; printf 'x' | rd_env ADB_DISPATCH_TIMEOUT_SECS=1 ADB_DISPATCH_KILL_GRACE_SECS=1 \
@@ -512,8 +522,17 @@ eq "$(pgrep -f 'sleep 31337' 2>/dev/null | grep -c . | tr -d ' ')" "0" \
 # minutes of agent work after the run was cancelled. Verified pre-fix to leak the `timeout` process
 # AND the agent under it (bot review, PR #105). The stub name is written into a FILE, never a live
 # command line, so the `ps` probe cannot match the test harness's own argv and self-report.
-eq "$(ps -eo command | grep -c '[q]qstub' | tr -d ' ')" "0" \
-  "an outer termination reaps the dispatched agent instead of orphaning it for the full bound"
+#
+# GATED ON THE PROBE HAVING RUN. With no timeout binary the probe above never starts, and "zero
+# qqstub processes" is then trivially true — a green assertion for a scenario that was never
+# staged. Counting that as a pass is the silent-guard failure this repo keeps paying for, so it is
+# reported as not-exercised instead.
+if [ -n "$OUTER_TIMEOUT" ]; then
+  eq "$(ps -eo command | grep -c '[q]qstub' | tr -d ' ')" "0" \
+    "an outer termination reaps the dispatched agent instead of orphaning it for the full bound"
+else
+  echo "check-role-dispatch: NOTE — outer-termination reaping not asserted (no timeout binary)" >&2
+fi
 pkill -f '[q]qstub' >/dev/null 2>&1 || true
 
 # ============================ effort (declared, not inherited — #225) ============================

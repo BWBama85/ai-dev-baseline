@@ -80,9 +80,19 @@ the mutation harness themselves driven against broken rules and observed failing
 — no `/release` skill may ship, and `/new-release` still says it is not the release cutter),
 **release-skill** (this project's OWN release predicates — version validation, the changelog
 stamp, and the check-set settled test — plus the boundary invariants that keep them out of the
-installed `scripts/lib` and keep the skill delegating rather than re-deriving),
-and an **install→uninstall dry-run** (all three agents) into a throwaway `HOME`. Green
-locally ≈ green in CI.
+installed `scripts/lib` and keep the skill delegating rather than re-deriving), **bash-floor** +
+**bash-floor-guard** (every CI job sits on a runner proven to carry bash ≥ 5.3 and wires the
+runtime guard that says which interpreter it got — and that lint is itself observed going red on
+every rule it owns), and an **install→uninstall dry-run** (all three agents) into a throwaway
+`HOME`.
+
+Green locally ≈ green in CI, with two honest qualifications since #257. CI runs this offline suite
+on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
+them, so a local green speaks for the OS you are sitting at, not for the other runner's image or
+its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 27 CI
+jobs — is omitted locally on purpose: pinning a local gate to the 5.3 floor is #256's enforcement
+to introduce with install instructions, not this one's to impose sideways. Its **static** half does
+run here. See [`docs/ci-runners.md`](docs/ci-runners.md).
 
 ## Repository map
 
@@ -94,10 +104,10 @@ locally ≈ green in CI.
 | `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) generated `skills/` + `scripts/` |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
-| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill) |
+| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
-| `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent |
-| `.github/workflows/ci.yml` | shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · fact-drift · fact-mutation · fact-guard · claims · claims-guard · claims-live (CI-only) · practice-index · release-role · release-skill · install dry-run |
+| `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent · ci-runners |
+| `.github/workflows/ci.yml` | 26 Linux jobs on `ubuntu-26.04` + one aggregate `selfcheck-macos` job (shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · claims-live (CI-only) · practice-index · release-role · release-skill · install dry-run). Every job proves its own bash ≥ 5.3 — [`docs/ci-runners.md`](docs/ci-runners.md) |
 
 ## Adding a new agent
 

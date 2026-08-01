@@ -8,10 +8,14 @@ non-negotiables:
   `agents/claude/CLAUDE.md`, `agents/gemini/GEMINI.md` are generated from
   `base/practices/*.md`. Edit the practices, then run `bash scripts/build.sh`.
   (This repo-root `AGENTS.md` is hand-written and is not one of the generated docs.)
-- **Run `bash scripts/selfcheck.sh` before pushing** — it mirrors every *offline* check CI
-  runs. One CI step is deliberately not mirrored (the `repo-settings` job's live
-  `required-drift` read, #122), so a local green does not predict that one. See Golden Rule
-  #3 in [`CLAUDE.md`](CLAUDE.md) and D13 in `.ai-dev-baseline/decisions.md`.
+- **Run `bash scripts/selfcheck.sh` before pushing** — it mirrors most of CI's *offline* checks.
+  Three things a local green does **not** predict: the two **live** steps (the `repo-settings`
+  job's `required-drift` read, #122, and the claim lint's `--live` half, #212); the **other
+  platform** (CI runs the offline suite on `ubuntu-26.04` *and* `macos-latest`, #257); and
+  `check-bash-floor.sh --runtime`, which is offline and runs in every CI job but is omitted
+  locally on purpose — pinning a local gate to the 5.3 floor is #256's to introduce, with install
+  instructions. See Golden Rule #3 in [`CLAUDE.md`](CLAUDE.md), D13/D24/D29 in
+  `.ai-dev-baseline/decisions.md`, and [`docs/ci-runners.md`](docs/ci-runners.md).
 - **Portable, shellcheck-clean shell** (macOS bash 3.2 safe); **feature branch + PR
   only**; **file a tracked issue for deferred work that clears the bar** — name who does
   it and what breaks if nobody does (`base/practices/issues-and-scope.md`); either

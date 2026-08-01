@@ -1,0 +1,314 @@
+#!/usr/bin/env bash
+# ai-dev-baseline — the bash 5.3 runtime floor, proven on every CI job (#257).
+#
+# Two halves, one home:
+#
+#   --runtime            Assert the interpreter RUNNING THIS SCRIPT clears the floor, and SAY what
+#                        it checked. Every CI job calls this immediately after checkout, so a
+#                        runner image that quietly changes its bash — or a job left behind on an
+#                        older runner label — surfaces as a named failure here instead of as a
+#                        mystery syntax error twenty steps later.
+#
+#   (default)            Static lint over .github/workflows/*.yml, offline: every job runs on a
+#   --workflow-dir DIR   runner label PROVEN to carry bash >= the floor, every job wires the
+#                        runtime half, no step escapes the guard through a `shell:` override, and
+#                        both platforms the floor must hold on are actually represented.
+#
+# Usage: bash scripts/check-bash-floor.sh [--runtime | --workflow-dir DIR]
+#        exit 0 = clear · 1 = below the floor / workflow drift · 2 = usage
+#
+# WHY A LINT AND NOT JUST 26 EDITS: the edits are today; the lint is job 27. Nothing else in this
+# repo reads .github/workflows/ci.yml for runner labels (check-fact-drift.sh pins invocation TEXT
+# and says outright that it cannot prove a step belongs to a runnable job), so a new job added on
+# `ubuntu-latest` would run the whole suite on bash 5.2.21 and report green.
+#
+# ADB_BASH_FLOOR overrides the floor (default 5.3). It exists so the negative half of this guard
+# can be OBSERVED failing on a runner that is ABOVE the floor — see check-bash-floor-guard.sh —
+# and so the runtime half stays testable on any interpreter without preempting #256, which owns
+# making an old bash fail at the entry points. Every run PRINTS the floor it enforced, so a
+# lowered floor is visible in the log rather than a silent bypass (base/practices/self-review.md:
+# make the guard say what it checked, not merely whether it passed).
+
+set -u
+cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+# common.sh owns adb_version_ge — this repo's law is to source the shared primitive, never copy
+# it, and a hand-rolled comparison here is exactly the drift that law exists to stop.
+# shellcheck source=/dev/null
+. scripts/lib/common.sh >/dev/null 2>&1 || {
+  echo "bash-floor: FATAL — scripts/lib/common.sh is unavailable, so adb_version_ge cannot be reached" >&2
+  exit 1
+}
+check_init "bash-floor"
+
+FLOOR_DEFAULT="5.3"
+FLOOR="${ADB_BASH_FLOOR:-$FLOOR_DEFAULT}"
+
+# VALIDATE THE SEAM. `adb_version_ge` reads a non-numeric component as 0, so an unvalidated override
+# is a bypass wearing a typo's clothes: `ADB_BASH_FLOOR=x`, `-1` and the Arabic-Indic `٥.٣` each
+# compare as 0 and wave bash 3.2.57 straight through. All three were reproduced by review. A test
+# seam that can silently disable the assertion is worse than no seam, so anything that is not a
+# dotted run of ASCII digits is a hard error rather than a floor.
+case "$FLOOR" in
+  ''|*[!0-9.]*|.*|*.|*..*)
+    echo "bash-floor: FATAL — ADB_BASH_FLOOR='$FLOOR' is not a dotted numeric version (e.g. 5.3)" >&2
+    exit 2 ;;
+esac
+
+# Runner labels this repo has PROVEN carry bash >= 5.3, with the evidence recorded in
+# docs/ci-runners.md. Deliberately an allowlist, not a denylist of known-old labels: `ubuntu-latest`
+# is the trap (it is ubuntu-24.04 / bash 5.2.21 today and silently becomes something else later),
+# and a denylist waves through every label nobody thought to name.
+APPROVED_LINUX="ubuntu-26.04"
+APPROVED_MACOS="macos-latest"
+APPROVED_RUNNERS="$APPROVED_LINUX $APPROVED_MACOS"
+
+# --- runtime half ------------------------------------------------------------------------------
+
+# Print "<major>.<minor>.<patch>" for the bash at $1, or nothing if it cannot be run.
+bash_version_at() {
+  [ -x "$1" ] || return 1
+  "$1" -c 'printf "%s.%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "${BASH_VERSINFO[2]}"' 2>/dev/null
+}
+
+runtime_check() {
+  # TWO interpreters are in play and they are NOT always the same one, which is the whole trap this
+  # half exists to catch:
+  #
+  #   $BASH           — the interpreter executing THIS script.
+  #   command -v bash — what the next `bash foo.sh` resolves from PATH, and therefore what every
+  #                     `#!/usr/bin/env bash` entry point in this repo runs under, selfcheck included.
+  #
+  # On macOS they diverge exactly when it matters. Run this under /bin/bash 3.2 with Homebrew's 5.3
+  # first on PATH and `command -v bash` reports /opt/homebrew/bin/bash: a guard asserting only on
+  # that passes while executing on the 2006 interpreter. Verified locally — same script, two
+  # invocations, `command -v bash` identical, `$BASH` 3.2.57 vs 5.3.15. So assert BOTH.
+  self_v="${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}.${BASH_VERSINFO[2]}"
+  self_p="${BASH:-<unknown>}"
+  path_p="$(command -v bash 2>/dev/null || true)"
+  path_v=""
+  [ -n "$path_p" ] && path_v="$(bash_version_at "$path_p" || true)"
+
+  printf 'bash-floor: floor enforced      %s\n' "$FLOOR"
+  printf 'bash-floor: running interpreter %s (%s)\n' "$self_p" "$self_v"
+  printf 'bash-floor: PATH-resolved bash  %s (%s)\n' "${path_p:-<none>}" "${path_v:-unknown}"
+  # The literal `bash --version` line #257 asks every job to log, taken from the interpreter the
+  # suite will actually run under rather than from whatever happens to be executing this guard.
+  [ -n "$path_p" ] && "$path_p" --version 2>/dev/null | head -n 1
+
+  # Name the system bash wherever one exists. On macOS this is the 3.2.57 Apple pins at /bin/bash
+  # permanently for GPLv3 reasons, and printing it beside the two lines above is what makes "this
+  # job is running Homebrew's bash, not /bin/bash" READABLE in the log instead of inferred from a
+  # version number the reader has to know the significance of.
+  if [ -x /bin/bash ]; then
+    sys_v="$(bash_version_at /bin/bash || echo unknown)"
+    if [ "$self_p" = "/bin/bash" ]; then
+      printf 'bash-floor: system bash         /bin/bash (%s) — IN USE\n' "$sys_v"
+    else
+      printf 'bash-floor: system bash         /bin/bash (%s) — not used\n' "$sys_v"
+    fi
+  fi
+
+  if ! adb_version_ge "$self_v" "$FLOOR"; then
+    check_note "the interpreter running this guard is $self_v at $self_p — below the $FLOOR floor"
+    check_fail
+  fi
+  if [ -z "$path_p" ] || [ -z "$path_v" ]; then
+    check_note "no usable bash on PATH — every '#!/usr/bin/env bash' entry point in this repo would fail"
+    check_fail
+  elif ! adb_version_ge "$path_v" "$FLOOR"; then
+    check_note "PATH resolves bash to $path_p ($path_v) — below the $FLOOR floor, and the suite runs on THAT one"
+    check_fail
+  fi
+}
+
+# --- static half -------------------------------------------------------------------------------
+
+# Emit "<job>\t<runs-on>\t<wires-guard 0|1>" for every job in the workflow file at $1.
+#
+# Deliberately NOT repo-settings.sh's discovery, which reads the same file. That one exists to emit
+# provable check CONTEXTS and therefore SKIPS jobs on purpose — matrix, `if:`, an interpolated
+# `name:`. A floor lint must see every job precisely INCLUDING the ones discovery declines to
+# require: a matrix job left on ubuntu-latest is still a job running below the floor. Same file,
+# opposite requirement, so this is a second reader rather than a copy of the first.
+scan_jobs() {
+  awk '
+    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function unquote(s) {
+      if (s ~ /^".*"$/ || s ~ /^'"'"'.*'"'"'$/) s = substr(s, 2, length(s) - 2)
+      return s
+    }
+    # A plain YAML scalar as GitHub reads it. QUOTE FIRST, THEN COMMENT — the order is the whole
+    # point. Stripping `#` first turns `runs-on: "ubuntu-26.04 # not-the-label"` into the approved
+    # label `ubuntu-26.04`, accepting a job whose real label is the entire quoted string and which
+    # would never run. Same semantics as yaml_scalar in scripts/lib/repo-settings.sh; that the two
+    # had DIFFERENT semantics until review caught it is the argument for the shared enumerator
+    # follow-up, not an argument that this file may guess.
+    function yaml_scalar(s) {
+      s = trim(s)
+      if (s ~ /^"/)  { sub(/^"/,  "", s); sub(/".*$/,  "", s); return s }
+      if (s ~ /^'"'"'/) { sub(/^'"'"'/, "", s); sub(/'"'"'.*$/, "", s); return s }
+      sub(/[[:space:]]+#.*$/, "", s)
+      return trim(s)
+    }
+    function flush() {
+      if (job != "") printf "%s\t%s\t%s\t%s\n", job, (runson == "" ? "<none>" : runson), guard, firstlog
+    }
+    # Job keys sit at exactly two spaces under `jobs:`. `on:` puts push/pull_request at that SAME
+    # indent, so track whether we are inside the jobs: block rather than scanning the whole file —
+    # the trap docs/repo-settings.md records this repo'"'"'s own ci.yml falling into.
+    /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
+    /^[^[:space:]#]/      { in_jobs = 0 }
+    !in_jobs { next }
+    /^[[:space:]]*#/ { next }
+    # ANY two-space key inside jobs: is a job — including `hidden: {runs-on: …, steps: […]}`, the
+    # inline flow mapping that a `:[[:space:]]*$` anchor renders INVISIBLE. Invisible is the one
+    # outcome a floor lint may never produce, so an inline job is captured with its raw value as
+    # the label: it matches no approved label and fails LOUDLY rather than silently not existing.
+    # QUOTED job IDs count too. YAML permits `"hidden":`, and a key rule accepting only bare
+    # [A-Za-z0-9_-] skips straight past it — every line of that job then reads as belonging to the
+    # PREVIOUS one, so it is not merely unchecked, it does not exist. With a compliant Linux and
+    # macOS job elsewhere in the file the aggregate rules are satisfied and the lint reports PASS.
+    /^  ("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z0-9_-]+):/ {
+      flush()
+      job = $0; sub(/^  /, "", job); sub(/:.*$/, "", job); job = unquote(job)
+      rest = $0; sub(/^  ("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z0-9_-]+):/, "", rest); rest = trim(rest)
+      runson = ""; guard = 0; firstlog = 0; step = 0
+      if (rest != "" && rest !~ /^#/) runson = "<inline mapping: " rest ">"
+      next
+    }
+    job == "" { next }
+    /^    runs-on:/ { v = $0; sub(/^    runs-on:[[:space:]]*/, "", v); runson = yaml_scalar(v); next }
+    # Step boundaries, so "the FIRST step" is a question this can answer at all.
+    /^      - / { step++ }
+    # `bash --version` must be logged by the job'"'"'s FIRST step (#257 acceptance criterion 2), before
+    # checkout or any bootstrap — so a runner image that quietly changed its bash is visible in the
+    # log even when a later step is what fails.
+    step == 1 && /run:.*bash --version/ { firstlog = 1 }
+    # EXECUTING, not merely APPEARING. The invocation must be the WHOLE run value — `run: bash
+    # scripts/check-bash-floor.sh --runtime` and nothing else on the line. Anything looser passes
+    # for a step that only talks about it: an `env:` value, a step `name:`, and (the one that
+    # survived the first tightening) `run: echo '"'"'bash scripts/check-bash-floor.sh --runtime'"'"'`,
+    # which runs the guard exactly zero times while satisfying a substring test.
+    # A `run: |` BLOCK carrying it on a later line is not recognized either, and reports unguarded:
+    # fail-closed, and no job here uses that form.
+    /^[[:space:]]*run:[[:space:]]*bash[[:space:]]+scripts\/check-bash-floor\.sh[[:space:]]+--runtime[[:space:]]*$/ { guard = 1 }
+    END { flush() }
+  ' "$1"
+}
+
+static_lint() {
+  dir="$1"
+  files=0 jobs=0 linux_jobs=0 macos_jobs=0
+
+  for wf in "$dir"/*.yml "$dir"/*.yaml; do
+    [ -f "$wf" ] || continue
+    files=$((files + 1))
+
+    # No step may pick its own interpreter. The runtime guard proves the bash a `run:` step gets by
+    # default; a `shell:` override routes around it silently, and nothing in this bash-only repo
+    # needs one. DELIBERATELY UNANCHORED: `defaults: {run: {shell: sh}}` on one line routes EVERY
+    # step in the workflow around bash, and a `^[[:space:]]*shell:` anchor never sees it. The cost
+    # is that an action input legitimately named `shell` under `with:` would also trip this — which
+    # is a loud, one-line fix to this lint, where the anchored version's cost was silence.
+    # The QUOTED spelling counts: `defaults: {run: {"shell": sh}}` is the same override in valid
+    # YAML, and a pattern that only knows the bare key waves it through while every `run:` step in
+    # the workflow is routed via sh.
+    if grep -Eq '(^|[[:space:]{,])"?'"'"'?shell'"'"'?"?[[:space:]]*:' "$wf"; then
+      check_note "$wf names a 'shell' key, which can route steps around the floor guard:"
+      grep -En '(^|[[:space:]{,])"?'"'"'?shell'"'"'?"?[[:space:]]*:' "$wf" | sed 's/^/    /' >&2
+      check_fail
+    fi
+
+    # The floor override is a TEST seam (see the header). A workflow that sets it — at workflow, job
+    # or step level — turns every runtime assertion in that scope into a formality while this lint
+    # stays green, which is the one bypass the validation above cannot see from inside the guard.
+    if grep -q 'ADB_BASH_FLOOR' "$wf"; then
+      check_note "$wf sets ADB_BASH_FLOOR, which overrides the floor every runtime guard enforces:"
+      grep -n 'ADB_BASH_FLOOR' "$wf" | sed 's/^/    /' >&2
+      check_fail
+    fi
+
+    # Capture the scan BEFORE consuming it, and check its status. Piping or here-doc'ing a command
+    # substitution straight into the loop discards awk's exit code, so a CRASHED scan reads as "this
+    # file declares no jobs" — and a file contributing zero jobs is invisible as long as some OTHER
+    # file contributed some. That is the same fail-open shape D28 fixed in the roadmap library.
+    scanned="$(scan_jobs "$wf")" || {
+      check_note "$wf: the job scanner failed outright — refusing to report a clean scan"
+      check_fail
+      continue
+    }
+
+    file_jobs=0
+    while IFS="$(printf '\t')" read -r job runson guard firstlog; do
+      [ -n "$job" ] || continue
+      jobs=$((jobs + 1))
+      file_jobs=$((file_jobs + 1))
+      case " $APPROVED_RUNNERS " in
+        *" $runson "*) ;;
+        *) check_note "$wf: job '$job' runs on '$runson' — not a runner this repo has proven carries bash >= $FLOOR (allowed: $APPROVED_RUNNERS; see docs/ci-runners.md)"
+           check_fail ;;
+      esac
+      case " $APPROVED_LINUX " in *" $runson "*) linux_jobs=$((linux_jobs + 1)) ;; esac
+      case " $APPROVED_MACOS " in *" $runson "*) macos_jobs=$((macos_jobs + 1)) ;; esac
+      if [ "$guard" != "1" ]; then
+        check_note "$wf: job '$job' has no 'run:' step invoking 'scripts/check-bash-floor.sh --runtime', so nothing proves the bash it actually got"
+        check_fail
+      fi
+      if [ "$firstlog" != "1" ]; then
+        check_note "$wf: job '$job' does not log 'bash --version' in its FIRST step — a runner image that changed its bash must be visible in the log even when a later step is what fails (#257)"
+        check_fail
+      fi
+    done <<EOF
+$scanned
+EOF
+
+    # PER FILE, not just in total. A workflow file with no jobs is malformed, and checking only the
+    # grand total lets a second file go blind for free the moment a first one still parses.
+    if [ "$file_jobs" -eq 0 ]; then
+      check_note "$wf declares no jobs the scanner can see — malformed, or the scanner has gone blind on it"
+      check_fail
+    fi
+  done
+
+  if [ "$files" -eq 0 ]; then
+    check_note "no workflow files under $dir — this lint scanned nothing, which is not a pass"
+    check_fail
+    return
+  fi
+  # No grand-total zero-jobs check: the per-file rule above already implies it whenever files > 0,
+  # and a second assertion that can only fire when the first one already has is a test that passes
+  # for the wrong reason. Review caught exactly that — the harness's zero-total fixture stayed green
+  # with this block's predecessor deleted, because the per-file rule was catching it.
+  [ "$jobs" -gt 0 ] || return
+
+  # #257's first acceptance criterion is that the suite runs on BOTH platforms. Without this, the
+  # macOS job can be deleted and every remaining rule still passes: the floor would be proven on
+  # the one platform where it was never in doubt.
+  [ "$linux_jobs" -gt 0 ] || { check_note "no job runs on a proven Linux runner ($APPROVED_LINUX) — the floor is unproven on Linux"; check_fail; }
+  [ "$macos_jobs" -gt 0 ] || { check_note "no job runs on a proven macOS runner ($APPROVED_MACOS) — the floor is unproven on the platform where it is hardest to reach"; check_fail; }
+
+  printf 'bash-floor: %d job(s) across %d file(s) — %d Linux, %d macOS, floor %s\n' \
+    "$jobs" "$files" "$linux_jobs" "$macos_jobs" "$FLOOR"
+}
+
+case "${1:-}" in
+  --runtime)
+    runtime_check
+    check_result "interpreter clears the $FLOOR floor"
+    ;;
+  --workflow-dir)
+    [ "$#" -ge 2 ] && [ -n "${2:-}" ] || { echo "usage: bash scripts/check-bash-floor.sh --workflow-dir DIR" >&2; exit 2; }
+    static_lint "$2"
+    check_result "every CI job is on a proven bash >= $FLOOR runner and wires the runtime guard"
+    ;;
+  "")
+    static_lint ".github/workflows"
+    check_result "every CI job is on a proven bash >= $FLOOR runner and wires the runtime guard"
+    ;;
+  *)
+    echo "usage: bash scripts/check-bash-floor.sh [--runtime | --workflow-dir DIR]" >&2
+    exit 2
+    ;;
+esac

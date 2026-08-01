@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — local CI mirror. Run before every push.
 #
-# Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter, workflow-render,
-# gate-detector/gates, common-lib, agent-init, cleanup-enum, repo-settings, baseline,
-# session-currency, precommit-gate, implement-gate, install-migration, install-guard,
-# fact-drift, fact-mutation, fact-guard, practice-index, release-role, release-skill, and an
-# install→uninstall dry-run into a throwaway HOME.
+# Runs the checks CI runs, with the two documented exceptions below: shellcheck, build-drift,
+# skill-frontmatter, workflow-render,
+# gate-detector/gates, common-lib, agent-init, cleanup-enum, repo-settings, bash-floor,
+# bash-floor-guard, baseline, session-currency, precommit-gate, implement-gate, install-migration,
+# install-guard, fact-drift, fact-mutation, fact-guard, practice-index, release-role,
+# release-skill, and an install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
+#
+# WHAT A GREEN HERE DOES NOT COVER — three things, stated so the promise is the true one (#257):
+#
+#   1. The two LIVE CI steps (`required-drift`, the claim lint's `--live` half). Deliberate: D13/D24
+#      keep this gate hermetic, so a verdict depending on network and auth stays CI-only.
+#   2. The OTHER PLATFORM. CI runs this same offline suite on ubuntu-26.04 AND macos-latest, and a
+#      workstation is one of them. Nothing here speaks for the other runner's image or its Homebrew
+#      bootstrap.
+#   3. `check-bash-floor.sh --runtime` — which IS offline, and runs in all 27 CI jobs. It is omitted
+#      here on purpose: its verdict is about the machine, and pinning a local gate to the real floor
+#      would fail a contributor still on 5.2. That is #256's enforcement to introduce, with install
+#      instructions, rather than this gate's to impose sideways. The STATIC half does run below.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
@@ -226,6 +239,21 @@ step "repo-settings"
 # checks strictly before allow_auto_merge), the narrow-vs-destructive endpoint choice, and the
 # automerge-ok exit-code table the workflow's step 10 consumes.
 if bash scripts/check-repo-settings.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "bash-floor"
+# Every CI job must sit on a runner PROVEN to carry bash >= 5.3 and must wire the runtime guard
+# that says which interpreter it actually got (#257). Rides beside repo-settings here because it
+# rides that job in CI, and for the same reason: it is the other lint that reads
+# .github/workflows/ci.yml. The RUNTIME half is deliberately not run here — its verdict is about
+# the machine, and pinning selfcheck to the real floor would fail on a contributor still at 5.2,
+# which is #256's enforcement to introduce (with install instructions), not this lint's.
+if bash scripts/check-bash-floor.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
+
+step "bash-floor-guard"
+# ...and that lint is a guard, so it gets the treatment guards get here: every rule driven to RED
+# against throwaway fixtures. A workflow scanner that quietly stops recognizing job keys reports
+# exactly what a clean repo reports, and no other check in this suite would notice.
+if bash scripts/check-bash-floor-guard.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "baseline"
 # End-to-end tests for bin/baseline's currency classification (safety-critical: it

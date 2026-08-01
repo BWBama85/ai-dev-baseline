@@ -1447,3 +1447,96 @@ limit: none of them is sufficient alone.
              file. The two composition call sites had the same hole from the other side (`for d in
              $(…)` discards the substitution status) and are now captured.
 - baseline-issue: #132
+
+## D29 — the CI runner is chosen for its bash, and every job proves which one it got
+- date:      2026-08-01
+- category:  project-delta
+- unknown:   The baseline models gates, roles and overrides, but has nothing to say about *which
+             runner image* a project's CI must use, or how a repo proves at runtime that the
+             interpreter it got is the one it requires. #255 made bash 5.3 this framework's runtime
+             floor; CI was 26 jobs on `ubuntu-latest`, which is `ubuntu-24.04`, which is bash
+             **5.2.21** — below the floor it would be proving. There was no macOS job at all, and
+             macOS is where the floor is hardest to reach, because Apple pins `/bin/bash` at
+             3.2.57 — still 3.2.57 on macOS 26 per the runner inventory — and 5.3 is reachable only
+             through `PATH`.
+- decision:  Pin every Linux job to `ubuntu-26.04` (bash 5.3.9, verified from the runner-image
+             inventory), add ONE aggregate `selfcheck-macos` job on `macos-latest` that installs
+             Homebrew bash + ShellCheck and runs the full offline suite, and give every job a
+             `scripts/check-bash-floor.sh --runtime` step that ASSERTS >= 5.3 and prints which
+             interpreter it judged, preceded by a bare `bash --version` as the job's FIRST step.
+             A static half of the same script lints the workflow so job 27 cannot be added below the
+             floor, and `check-bash-floor-guard.sh` drives each of its nine static and three runtime
+             rules to red — isolating each where isolation is possible, since a fixture that only
+             goes red through some OTHER rule proves nothing about the one it is named for.
+- placement: `.github/workflows/ci.yml` (the jobs), `scripts/check-bash-floor.sh` +
+             `scripts/check-bash-floor-guard.sh` (the one home for the rule and its negative),
+             `docs/ci-runners.md` (the choice, the evidence, and the fallback threshold).
+- reason:    Four things forced the shape rather than being chosen freely:
+
+             **No `strategy.matrix`.** `repo-settings.sh` discovery skips matrix jobs because their
+             check-run names gain a suffix (`docs/repo-settings.md`). A two-platform matrix would
+             leave all 26 required contexts reporting nothing while the 52 suffixed replacements
+             stayed undiscoverable — required-but-never-reported, which is the phantom deadlock
+             `automerge-ok` code 13 names and which needs an admin token to clear.
+
+             **One macOS job, not 26.** `scripts/selfcheck.sh` IS the full offline suite by
+             construction (golden rule 3 keeps it in lockstep). Mirroring the jobs individually
+             would need a hand-added job every time a `check-*.sh` lands, and the forgotten one
+             would be invisible. The two CI-only steps — `required-drift` and the live claim lint —
+             assert facts about settings and the tracker, which are platform-independent.
+
+             **The guard asserts `$BASH`, not just `command -v bash`.** On macOS those diverge
+             exactly when it matters: under `/bin/bash` 3.2 with Homebrew first on `PATH`,
+             `command -v bash` reports the 5.3 while the code runs on the 3.2. Verified locally —
+             same script, two invocations, `command -v bash` identical, `$BASH` 3.2.57 vs 5.3.15.
+             A guard reading only `PATH` would have passed on the 2006 interpreter.
+
+             **ShellCheck is installed on the macOS job on purpose.** selfcheck SKIPs that step
+             when the binary is absent and the macOS image ships none, so without it "the full
+             suite runs on macOS" would be false in exactly the silent way this repo writes guards
+             against.
+
+             The runtime half is deliberately NOT run by `selfcheck`: pinning a local gate to the
+             real floor would fail a contributor still on 5.2, which is #256's enforcement to
+             introduce with install instructions — not this lint's. Its negative test drives
+             `ADB_BASH_FLOOR` instead, so it holds identically on 3.2 and 5.3.
+
+             `ubuntu-26.04` is a public-preview image, accepted knowingly as the only hosted Linux
+             label that clears the floor. The fallback threshold is written down rather than left
+             to taste: fall back for image/provisioning failures, never for a reproducible test
+             failure caused by the newer toolchain — that is a real finding, and
+             `base/practices/debugging.md` applies.
+- review:    An independent pass found SIX fail-opens in the first cut of the lint, every one of
+             them the same species this repo keeps paying for — a guard reporting a clean run while
+             checking less than it claimed. Recorded because the fixes are the design, not polish:
+
+             * `ADB_BASH_FLOOR` was an unvalidated bypass. `adb_version_ge` reads a non-numeric
+               component as 0, so `x`, `-1` and the Arabic-Indic `٥.٣` each let bash 3.2.57 pass —
+               all three reproduced. Now a malformed floor is a hard error, and a workflow that sets
+               the variable at all is itself a lint failure (the only place the bypass could be
+               applied at scale, and the one the guard cannot see from inside itself).
+             * An INLINE flow-mapping job (`hidden: {runs-on: …, steps: […]}`) was invisible: the
+               job-key rule required the key alone on its line, and a per-file zero-jobs rule cannot
+               see PARTIAL blindness. Any two-space key under `jobs:` is now a job.
+             * `runs-on: "ubuntu-26.04 # not-the-label"` was truncated to an approved label by
+               stripping comments BEFORE quotes. This is the concrete cost of the second YAML
+               reader: `repo-settings.sh`'s `yaml_scalar` already had the order right, and the two
+               had drifted before either shipped.
+             * `defaults: {run: {shell: sh}}` routes every step around bash and a line-anchored
+               `^shell:` grep never saw it.
+             * The guard invocation in an `env:` value satisfied a bare substring test while
+               executing nothing; it is now anchored to a `run:` line.
+             * Two harness assertions did not isolate their rules — the zero-total-jobs fixture went
+               red through the per-file rule, and the 99.0 runtime fixture failed BOTH comparisons at
+               once. The redundant rule is deleted and the runtime rules are now isolated with an old
+               `/bin/bash` at the real floor and a stale-bash-on-PATH stub respectively, each proven
+               by deleting its target rule and watching only its own assertions fail.
+- consequence: `selfcheck` is no longer an unqualified predictor of CI, and the claim was narrowed
+             wherever it appears rather than left standing. It predicts the OFFLINE checks on ONE
+             platform; CI now runs them on two. That does not change D13/D24's hermetic-gate rule —
+             the set of things a local green cannot predict simply grew, and the honest statement
+             of it is in `scripts/selfcheck.sh`'s header, `CLAUDE.md`, `CONTRIBUTING.md` and
+             `docs/repo-settings.md`.
+- baseline-issue: n/a — this is how THIS repo proves its own floor. The general question (should
+             the baseline model a runner/interpreter floor for adopting projects?) is #255's to
+             answer once #256 and #261 have settled what the floor demands of an installed repo.
