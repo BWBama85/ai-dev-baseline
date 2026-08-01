@@ -2240,9 +2240,16 @@ adb_require_bash_advisory() {
     if [ -n "$_rb_win" ]; then
       export _ADB_BASH_REEXEC=1
       exec "$_rb_win" "$0" "$@"
-      # Reached only if exec itself failed (the file vanished, or lost its exec bit between the
-      # probe and now). Falling through to the diagnostic below is correct; returning 0 here would
-      # hand the caller a shell that never got upgraded.
+      # NOTHING BELOW THIS LINE RUNS, and that is bash's rule rather than an assumption: when
+      # `exec` cannot execute its target, a NON-INTERACTIVE shell exits — it does not resume —
+      # unless `shopt -s execfail` is set, which this library will not do (its contract is to set
+      # no shell options in its caller). Verified: a candidate that probes >= floor but cannot be
+      # exec'd (it vanished, lost its exec bit, or is a directory) exits **126** with bash's own
+      # message naming the path, and the script body never runs.
+      #
+      # So the failure stays CLOSED, which is what matters — it is simply closed one frame earlier
+      # and with bash's diagnostic instead of the platform hint below. Saying "this falls through"
+      # would be a comment describing a control flow that does not exist.
     fi
   fi
 
@@ -2293,7 +2300,7 @@ adb_crlf_scan() {
       found=1
     fi
   done <<EOF
-$(find "$dir" -type f -not -path '*/.git/*' -print 2>/dev/null)
+$(find "$dir" -name .git -prune -o -type f -print 2>/dev/null)
 EOF
   [ "$found" -eq 0 ]
 }

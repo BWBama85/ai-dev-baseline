@@ -492,6 +492,28 @@ if [ "$sysv" = "3.2" ]; then
   hasnt "$out" "CHILD FAILED" "sentinel: the child did not inherit 'already attempted' from its parent"
 fi
 
+# --- exec itself fails after a successful probe -----------------------------------------------------
+# A candidate can pass the version probe and still be unexecutable a moment later: it vanished, lost
+# its exec bit, or was never a binary. bash's rule is that a failed `exec` EXITS a non-interactive
+# shell rather than resuming it, so the gate's own diagnostic is never reached — the failure is
+# closed one frame earlier, at 126, with bash naming the path. Pinned because the first version of
+# the comment beside that `exec` claimed the opposite, and a comment describing control flow that
+# does not exist is the kind of thing the next reader builds on.
+if [ "$sysv" = "3.2" ]; then
+  mkdir -p "$work/notabin"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'set -u\n'
+    printf '. "%s"\n' "$COMMON"
+    printf 'adb_bash_candidates() { printf "%%s\\n" "%s/notabin"; }\n' "$work"
+    printf 'adb_bash_version_at() { printf "5.3.9"; }\n'
+    printf 'adb_require_bash "$@"\n'
+    printf 'printf "RAN\\n"\n'
+  } > "$d/execfail.sh"
+  out="$("$SYS_BASH" "$d/execfail.sh" 2>&1)"; rc=$?
+  eq "$rc" "126" "exec failure: a probe-passing but unexecutable candidate exits 126, fail-closed"
+  hasnt "$out" "RAN" "exec failure: the script body never runs"
+fi
+
 # --- $0 is not a re-runnable script: sourced, piped, `bash -c` --------------------------------------
 # Found in self-review, and it was a live bug rather than a hypothetical: for `… | bash -s` and for
 # `bash -c`, bash sets $0 to the INTERPRETER — a perfectly readable file — so a `[ -r "$0" ]` test
@@ -581,6 +603,16 @@ ep_lint "$d"
 eq "$EPRC" "1" "entrypoints: a COMMENTED call does not count as calling it"
 has "$EPOUT" "commented.sh" "entrypoints: the commented file is named"
 
+# A TRAILING comment must not count either, and this one is not hypothetical: the first cut of this
+# lint stripped only whole-line comments, so `x=1  # TODO: adb_require_bash "$@"` reported an
+# entirely ungated entry point as compliant. Same species as the `env:`-mention and echoed-guard
+# fail-opens above — a note about doing the thing read as the thing.
+d="$work/ep-trailing"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\nx=1   # TODO: adb_require_bash "$@"\ncd /tmp\n' > "$d/scripts/trailing.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a TRAILING comment mentioning the gate does not count as calling it"
+has "$EPOUT" "trailing.sh" "entrypoints: the trailing-comment file is named"
+
 d="$work/ep-late"; ep_tree "$d"
 printf '#!/usr/bin/env bash\nset -u\ncd /tmp\nadb_require_bash "$@"\n' > "$d/scripts/late.sh"
 ep_lint "$d"
@@ -627,6 +659,19 @@ ep_lint "$d"
 eq "$EPRC" "1" "entrypoints: a tree with no entry points is a failure, not a clean run"
 has "$EPOUT" "scanned nothing" "entrypoints: it says it scanned nothing"
 
+# TRACKED files in a real repo, so selfcheck predicts CI. CI checks out tracked files only, so a
+# scan that also swept untracked ones could go RED locally on a contributor's scratch script while
+# CI stayed green — a local failure CI cannot reproduce, which is how a check gets ignored.
+# Asserted against the REAL repo (read-only: it creates one untracked file and removes it).
+scratch="scratch-bash-floor-guard-probe.sh"
+if [ ! -e "$scratch" ] && git rev-parse --show-toplevel >/dev/null 2>&1; then
+  printf '#!/usr/bin/env bash\necho untracked\n' > "$scratch"
+  EPOUT="$(bash "$LINT" --entrypoints . 2>&1)"; EPRC=$?
+  rm -f "$scratch"
+  eq "$EPRC" "0" "entrypoints: an UNTRACKED scratch script does not fail the repo lint (selfcheck must predict CI)"
+  hasnt "$EPOUT" "$scratch" "entrypoints: and it is not even reported"
+fi
+
 # --- CRLF and DrvFs (#2) ----------------------------------------------------------------------------
 crlf_scan() { CLOUT="$(bash -c '. "'"$COMMON"'"; adb_crlf_scan "$1"' _ "$1" 2>&1)"; CLRC=$?; }
 
@@ -648,6 +693,22 @@ printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$d/bin/agent-init"
 crlf_scan "$d"
 eq "$CLRC" "1" "crlf: an EXTENSIONLESS entry point is caught too — a *.sh-only scan would miss bin/"
 has "$CLOUT" "agent-init" "crlf: the extensionless file is named"
+
+# END TO END, against the REAL installer, because the pieces passing individually is not the claim
+# being made — the claim is that a CRLF clone cannot be installed. A throwaway tree COPY with one
+# corrupted file, per base/practices/self-review.md: the live tree is never touched, and the file
+# chosen is an extensionless one so this also proves the *.sh-only blind spot stays closed.
+crlf_repo="$work/crlf-install"; mkdir -p "$crlf_repo"
+if check_copy_worktree "$PWD" "$crlf_repo/repo"; then
+  printf '#!/usr/bin/env bash\r\necho x\r\n' > "$crlf_repo/repo/bin/agent-init"
+  mkdir -p "$crlf_repo/home"
+  out="$(HOME="$crlf_repo/home" bash "$crlf_repo/repo/install.sh" --agent claude --no-hooks 2>&1)"; rc=$?
+  eq "$rc" "1" "install: a CRLF-corrupted clone is REFUSED, not installed"
+  has "$out" "agent-init" "install: the refusal names the corrupted file"
+  has "$out" "Re-clone INSIDE the WSL filesystem" "install: and hands over the non-destructive remedy"
+  # Nothing was linked: a preflight that fails after doing half the install is worse than none.
+  [ -e "$crlf_repo/home/.claude/CLAUDE.md" ] && bad "install: the refused install still created links" || ok
+fi
 
 # The remedy must not hand the user a command that destroys uncommitted work. `git checkout .` is
 # named in base/practices/git-and-prs.md as unrecoverable, and #2's own body suggested it.

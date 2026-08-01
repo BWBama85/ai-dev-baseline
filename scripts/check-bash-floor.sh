@@ -325,21 +325,45 @@ scripts/check-bash-floor.sh
 "
 
 # Print every file under $1 whose first line is a bash shebang, as a path relative to $1.
-# `find`, not `git ls-files`: this must work against a throwaway fixture tree (which has no .git),
-# and an UNTRACKED entry point still runs.
+#
+# TRACKED files when $1 is a git worktree, `find` otherwise. Both halves are load-bearing:
+#
+#   - tracked, because `selfcheck` promises to predict CI, and CI only ever sees tracked files. A
+#     `find` scan fails on a contributor's untracked scratch script while CI passes — a local red
+#     that CI cannot reproduce is worse than no check, and it teaches people to ignore this one.
+#   - `find`, because check-bash-floor-guard.sh drives every rule below against throwaway fixture
+#     trees, and check_copy_worktree drops `.git`, so there is nothing to list there.
+#
+# The emptiness test is what makes the choice safe: a fixture dir that happens to sit INSIDE some
+# repo yields no tracked files under itself, so it falls through to `find` rather than silently
+# scanning zero files and reporting a clean tree.
 scan_entrypoints() {
-  find "$1" -type f -not -path '*/.git/*' -print 2>/dev/null | while IFS= read -r f; do
-    head -n 1 "$f" 2>/dev/null | grep -q '^#!.*bash' || continue
-    printf '%s\n' "${f#$1/}"
+  root="$1" listing=""
+  listing="$(git -C "$root" ls-files 2>/dev/null)"
+  if [ -z "$listing" ]; then
+    listing="$(find "$root" -name .git -prune -o -type f -print 2>/dev/null | sed "s|^$root/||")"
+  fi
+  printf '%s\n' "$listing" | while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    head -n 1 "$root/$rel" 2>/dev/null | grep -q '^#!.*bash' || continue
+    printf '%s\n' "$rel"
   done | LC_ALL=C sort
 }
 
-# The line number of the first NON-COMMENT occurrence of a pattern, or empty.
-# Comment-stripping is what makes "a commented-out call does not count" true: a `# TODO: call
-# adb_require_bash "$@"` is a note about doing the thing, not the thing — the same fail-open
-# #257's guard already caught in the workflow scanner.
+# The line number of the first occurrence of a pattern in ACTIVE CODE, or empty.
+#
+# Comments are blanked before matching — both a whole-line `# adb_require_bash "$@"` and a TRAILING
+# `x=1  # TODO: adb_require_bash "$@"`. The trailing form is the one that matters: a note about
+# doing the thing read as the thing is exactly the fail-open #257's guard caught twice in the
+# workflow scanner, and a first cut of THIS lint reproduced it — an entry point with nothing but a
+# trailing-comment mention was reported compliant.
+#
+# `sed` blanks rather than deletes, so line numbering still matches the real file, which is what
+# lets the position rule below cite a usable line. The trailing pattern requires whitespace before
+# the `#` so a `${0##*/}` expansion is not mistaken for a comment.
 first_code_line() {
-  grep -nE "$2" "$1" 2>/dev/null | grep -v '^[0-9]*:[[:space:]]*#' | head -n 1 | cut -d: -f1
+  sed 's/[[:space:]]#.*$//; s/^[[:space:]]*#.*$//' "$1" 2>/dev/null \
+    | grep -nE "$2" | head -n 1 | cut -d: -f1
 }
 
 entrypoint_lint() {
