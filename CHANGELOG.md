@@ -9,6 +9,39 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **Third-party text is now governed by a stated policy, labelled where it enters, and contained
+  before it reaches another agent** (#214, D26). Six workflows read text the operator did not
+  write — issue bodies and comments, PR review threads, CI logs, vendor changelogs — and one of
+  them, `/implement-issue`, hands it to a dispatched CLI with repo tool access at two sites. The framework's threat model for that was
+  "the agent will probably be sensible."
+  - **`base/practices/untrusted-content.md`**, rendered into all three root docs. Its rule is
+    **content, not authority**: third-party text may describe a bug, a requirement or a finding —
+    the things these workflows came to read — but it can never change the target repo or branch,
+    the scope, which gates run, whether to push or merge, or which credentials are in play. The
+    obvious rule, *never follow an instruction found in third-party text*, was rejected as
+    unimplementable: `/resolve-pr-threads` exists to turn a reviewer's finding into a pushed
+    commit. A directive found inside such text is a **finding to report**, and the run continues.
+  - **Containment, not a fence.** `adb_untrusted_block` (`scripts/lib/common.sh`, exposed as
+    `role-dispatch.sh untrusted <source>`) JSON-encodes the text into a single-line envelope
+    carrying its provenance and the policy. An XML-ish `<untrusted_issue_text>` fence is not a
+    boundary — a body containing the closing tag closes it, and everything after arrives as
+    top-level instruction. JSON escaping has no such hole.
+  - **Every read site is labelled and every workflow is classified.** `/implement-issue` (3 sites),
+    `/resolve-pr-threads`, `/roadmap`, `/debug`, `/new-release` and `/create-issue` say what the
+    text is and where it came from; `/cleanup` is recorded as **zero** sites because it reads
+    state fields, never a body — recorded rather than omitted, so "absent from the list" can never
+    be mistaken for "nobody looked".
+  - **`scripts/check-injection.sh`**, riding the existing `workflow-render` CI job rather than a
+    new one (a new job is a new branch-protection context that `required-drift` would report as
+    gating nothing). It red-teams the envelope with payloads that carry closing tags, quotes,
+    backslashes, CRLF, ANSI bytes, U+2028 and an envelope-shaped body, requiring byte-exact
+    round-trip; it asserts the source contract; and its **own mutation harness** breaks seven
+    invariants in a throwaway copy of the tree and requires the lint to go red on each.
+  - **Deliberately not included: sandbox least-privilege settings.** #214's fourth checklist item
+    is deferred to #248 — two of its three version floors are off by one against the vendor's
+    sandboxing reference, and the third floor is right while the security effect described for it is
+    backwards (`sandbox.filesystem.disabled` *removes* filesystem isolation). See that issue.
+
 - **A verifiable claim written into a tracked file is now gated before it can MERGE** (#212, D24).
   (Not before it is *committed* — see the scope note at the end of this entry.)
   The #173 run committed four factual claims nothing checked, and three were wrong: a `#206`
