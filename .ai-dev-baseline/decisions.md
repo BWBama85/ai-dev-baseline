@@ -1663,5 +1663,9 @@ limit: none of them is sufficient alone.
              (`/mnt/<letter>/`) under WSL only, not a bare `/mnt/` prefix: `/mnt/data` is an
              ordinary Linux mountpoint and warning on it would be noise for people who have never
              touched Windows.
-- baseline-issue: n/a — the CI leg is a slice of #2, filed as its own issue rather than left as a
-             PR-body note (`base/practices/issues-and-scope.md`).
+- baseline-issue: n/a. The CI leg is tracked by **#2 itself, which stays OPEN** — the PR `Refs` it
+             rather than closing it. No child issue was filed on purpose: #2's remaining scope is
+             exactly this one item, so a second issue would be the duplicate
+             `base/practices/issues-and-scope.md` calls worse than a gap ("it splits context and
+             doubles triage"). The requirement that practice actually imposes is that deferred work
+             live in an OPEN ISSUE rather than a PR-body note, and #2 satisfies it.
