@@ -1363,3 +1363,87 @@ limit: none of them is sufficient alone.
              fixtures fail against the parent commit. A future decision of this kind should be
              committed on its own first, which is the only form of the claim a reviewer can check.
 - baseline-issue: #136
+
+## D28 — an edge the grammar refused is REPORTED, on a sibling subcommand that shares the one scan
+- date:      2026-08-01
+- category:  general
+- unknown:   #132 asks for a decision before code, and names the fork itself: "Where does an
+             ambiguity surface — a second output stream, a `?`-prefixed line, a non-zero exit, or a
+             separate subcommand?" Three further questions ride on it: does an ambiguity merely warn
+             or make the dependent ineligible; what closed grammar counts as "plausibly attempts a
+             declaration"; and how is a report attributed and retired. The gap-analysis pass ran all
+             four as BLOCKING.
+- decision:  A SIBLING SUBCOMMAND, `deps-ambiguous`, sharing ONE awk scan with `deps-from-body`
+             through a mode flag. Output is TSV, `<kind>\t<line>\t<issue>`; empty output and exit 0
+             mean nothing was ambiguous.
+
+             The other three options are eliminated by constraints the issue itself states, not by
+             taste. A `?`-prefixed line corrupts a stdout every consumer reads as bare numbers. A
+             non-zero exit collides head-on with the callers that DO preserve the status — it would
+             turn a parse note into a run-ending error on the predicate's most common input. stderr
+             is outside the workflow output contract and is already where this library puts real
+             failures.
+
+             STATED EXACTLY, because the issue's own framing is not quite right and repeating it
+             would be a false claim: it says "every current caller treats non-zero as a hard stop",
+             and gap analysis showed two do NOT — the composition sites discard it in a
+             `for d in $(…)`. That makes the argument stronger, not weaker (a status-based design
+             would have to repair those first), and both are repaired here regardless. What is
+             purely additive is the STDOUT CONTRACT: `deps-from-body`s output is byte-identical,
+             verified over all 37 open bodies in this tracker, so no caller changes on account of
+             the new subcommand.
+
+             SHARING THE SCAN IS THE LOAD-BEARING PART, not an optimization. A report computed by a
+             second parser drifts from the grammar it reports on at the first change to either, and
+             this is a family (#69, #108, #112, #117, #136) whose entire history is one rule being
+             fixed in one consumer at a time.
+
+             IT WARNS; IT DOES NOT GATE. A report renders as a `dep-ambiguous` Reconcile-flags row
+             and a retirable `dep-ambiguous:#N` question; nothing feeds a bundle status. Blocking on
+             UNCERTAINTY is different from blocking on a known-unsatisfiable edge (`dep-canceled`):
+             one false positive would stall a ready bundle indefinitely. This is the trade #78 made
+             when it chose `WARN:` over `HOLD`, and the reversal is a status rule in the workflow,
+             not a change to this contract — which is why it is safe to ship the smaller half first.
+
+             THE CLOSED GRAMMAR: report what the scan REFUSED, never what it RECOGNIZED and
+             correctly excluded. `partial` (a chain declared an edge and dropped a later reference),
+             `unparsed` (a reference in the clause, no edge out), `no-hash` (the author wrote
+             `issue <N>`). A qualified `owner/repo#5` stays SILENT — the "reach `#` without crossing
+             a word character" rule IS the cross-repo guard and it answered correctly; reporting a
+             confident answer is what turns a signal into noise. So do a negated clause, a reference
+             the next keyword is about to claim, and anything past a clause boundary.
+
+             THE RECORD CARRIES NO BODY TEXT. All three fields come from closed sets — a kind, a
+             line number, an issue number. Issue bodies are third-party and this output is rendered
+             into a tracked artifact, so echoing a source line would carry arbitrary markup, table
+             delimiters or credential-shaped strings into it. There is nothing to sanitize because
+             there is no author-controlled byte to begin with.
+- placement: `scripts/lib/roadmap-lib.sh` (`_adb_deps_scan`, `cmd_deps_ambiguous`), the rendering
+             and question vocabulary in `base/workflows/roadmap.md` (rendered into all three
+             agents' skills), fixtures in `scripts/check-roadmap.sh` § 6k.
+- reason:    The false-positive budget is the whole design, and it was MEASURED rather than argued.
+             A first cut reported 13 sites across this repo's 37 open bodies, and inspecting all 13
+             showed a single shape: a reference sitting past a clause boundary — commentary, not a
+             dropped edge. `- #81 depends on #79 — **satisfied**, #79 closed COMPLETED (PR #111)`
+             reported both the edge it had just declared and a PR number. Bounding the window at the
+             same clause boundaries the negation scoping already uses took the corpus to ZERO
+             reports while both documented witnesses still fire. That is the number the issue asks
+             for when it says noise gets ignored, which is worse than silence.
+
+             The guard was observed failing before it was called done. Eight mutations against a
+             throwaway copy of the tree — dropping the clause boundary, the window bound, the
+             qualified-reference guard, the self guard on each of its two paths, the partial/
+             unparsed split, the negation skip, and the no-hash tightening — each turned exactly the
+             fixtures written for it red. One of those runs earned its keep immediately: the two
+             self-reference fixtures passed with the guard REMOVED, because a resolvable self
+             reference is consumed by the chain and never reaches the window at all. They were
+             vacuous, and only the mutation run said so.
+
+             A fail-open in the existing code was fixed in the same change, because the new report
+             inherits it otherwise: `awk | sort` reports only sort, so a CRASHED scan answered exit
+             0 with no output — which for this predicate means "this body declares no edges" and
+             silently unblocks a bundle that is genuinely blocked. Demonstrated against `origin/main`
+             (rc 0) and pinned by a fixture that breaks a COPY of the library rather than the tracked
+             file. The two composition call sites had the same hole from the other side (`for d in
+             $(…)` discards the substitution status) and are now captured.
+- baseline-issue: #132

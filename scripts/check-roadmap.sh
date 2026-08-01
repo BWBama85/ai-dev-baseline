@@ -779,6 +779,21 @@ has "$wf" '{{ROADMAP_LIB}} pr-targets-issue' \
   "workflow delegates in-flight targeting to the shared predicate"
 has "$wf" '{{ROADMAP_LIB}} release-ready' \
   "workflow delegates release readiness to the shared predicate"
+# #132 — the ambiguity report is worth nothing if the workflow never asks for it, and "the library
+# can be perfect while the skill quietly reverts" is exactly what this section exists to catch.
+has "$wf" '{{ROADMAP_LIB}} deps-ambiguous' \
+  "workflow asks the shared predicate what it could not parse (#132)"
+has "$wf" 'ambiguity scan failed' \
+  "...and hard-stops the run when that scan fails (fail-closed, like every other read)"
+# Pin the id in the VOCABULARY LIST, not merely somewhere in the file: `dep-ambiguous:#N` also
+# appears in the surrounding prose and in the retirement paragraph, so a bare search stays green
+# after the id is deleted from the list that actually fixes it. (Independent-review find.)
+has "$wf" '`dep-canceled:#N` · `dep-ambiguous:#N`' \
+  "workflow gives the ambiguity question a stable id IN the dep-* vocabulary list"
+# The two composition call sites discarded the extractor's exit status (`for d in $(…)`), so a
+# failed extraction read as "no prerequisites" and promoted an issue whose blocker stays behind.
+hasnt "$wf" 'for d in $(printf' \
+  "composition captures the edge extraction instead of discarding its status in a for-substitution"
 # #78 — the health gate must stay delegated and stay anchored to a commit.
 has "$wf" '{{ROADMAP_LIB}} branch-health' \
   "workflow delegates branch health to the shared predicate"
@@ -1453,6 +1468,213 @@ eq "$(deps '<!-- Depends on **#5** --> Depends on **#7**')" '7' \
 eq "$(deps '> Depends on **#5**')" '' "OVER: ...nor a blockquoted one"
 eq "$(deps '* Depends on #5')" '5' \
    "a bullet is still a LIST MARKER, not emphasis that swallows the line's prose"
+
+# --- 6k. DEPS-AMBIGUOUS — what the grammar REFUSED, reported instead of dropped (#132) -------
+# Every fix in this family (#69, #108, #112, #117, #136) resolved an ambiguity by picking a side
+# SILENTLY, so /roadmap could not tell "this body declares no edge" from "this body declares an
+# edge I could not parse" — opposite facts with identical output. The reporting contract is D28.
+#
+# Each fixture is labelled REPORT (the site must surface) or SILENT (it must not). The SILENT
+# group is the false-positive budget, and it is the half that decides whether this is useful or
+# noise: a report on every body that merely mentions an issue number gets ignored, which is worse
+# than the silence it replaced.
+
+# amb <body> [self] -> the records, `kind:line:issue` space-separated ('' when none).
+amb() {
+  printf '%s' "$1" | run_rl deps-ambiguous ${2:+"$2"} \
+    | tr ' ' '\n' | awk -F'\t' 'NF==3 {printf "%s%s:%s:%s", (n++?" ":""), $1, $2, $3}'
+}
+# ambm <line>... — the same, for a MULTI-LINE body (cf. depsm).
+ambm() {
+  printf '%s\n' "$@" | run_rl deps-ambiguous \
+    | tr ' ' '\n' | awk -F'\t' 'NF==3 {printf "%s%s:%s:%s", (n++?" ":""), $1, $2, $3}'
+}
+
+# REPORT — the two witnesses the issue names, verified still ambiguous in the owner's own comment.
+eq "$(amb 'Depends on #5 (the gate) and #6')" 'partial:1:6' \
+   "REPORT: an interrupted chain names the reference it dropped"
+eq "$(deps 'Depends on #5 (the gate) and #6')" '5' \
+   "...while the EDGE output is unchanged (this is a report, never a parser widening)"
+eq "$(amb 'Depends on issue 5')" 'no-hash:1:5' \
+   "REPORT: a reference written without a '#' is surfaced, not silently empty"
+eq "$(deps 'Depends on issue 5')" '' "...and still declares no edge"
+
+# REPORT — the shapes #112 deliberately refuses. Each is one character from a form that DECLARES,
+# which is exactly why a silent refusal was indistinguishable from no declaration at all.
+eq "$(amb 'Depends on [#5](http://x)')" 'unparsed:1:5' "REPORT: a markdown link"
+eq "$(amb 'Depends on * #5')"           'unparsed:1:5' "REPORT: a run floating in whitespace"
+eq "$(amb "Depends on ${bt}ignore #5${bt}")" 'unparsed:1:5' \
+   "REPORT: a reference the span could not reach without crossing a word"
+eq "$(amb 'Depends on ~~#5~~')"         'unparsed:1:5' "REPORT: strikethrough (retracted, but visibly so)"
+eq "$(amb 'Depends on the gate and #6')" 'unparsed:1:6' "REPORT: prose between the keyword and the reference"
+eq "$(amb 'Depends on #5, #6 and the gate and #7')" 'partial:1:7' \
+   "REPORT: a chain that resolves two members and drops the third"
+eq "$(deps 'Depends on #5, #6 and the gate and #7')" '5 6' "...and the two that resolved still do"
+
+# REPORT — the SYNTAX COLON of `Depends on:` is not a clause boundary. STEP eats it as a separator
+# only when a `#N` follows, so on exactly the paths this subcommand exists for it was still sitting
+# at the head of the window and the boundary scan cut the window to nothing. Three ordinary
+# spellings went silent. (Independent-review find.)
+eq "$(amb 'Depends on: issue 5')"    'no-hash:1:5'  "REPORT: the colon form of the hash-less witness"
+eq "$(amb 'Depends on: [#5](url)')"  'unparsed:1:5' "REPORT: ...of a markdown link"
+eq "$(amb 'Depends on: * #5')"       'unparsed:1:5' "REPORT: ...and of a floating run"
+eq "$(deps 'Depends on: #5')" '5' "...while the colon form that RESOLVES still declares its edge"
+eq "$(amb 'Depends on: #5')"  ''   "...and reports nothing"
+# A colon AFTER a resolved reference is ordinary punctuation and still ends the clause — the strip
+# is gated on the chain having consumed nothing, so these two cannot collapse into one rule.
+eq "$(amb 'Depends on #5: see #6 for context')" '' "SILENT: a colon after a resolved reference still bounds"
+
+# REPORT — a hash-less reference is surfaced even when the SAME occurrence already declared an edge,
+# and every match is named rather than the first. Gating this on "declared nothing" hid a partially
+# parsed chain, which is the precise thing this subcommand exists to say. (Independent-review find.)
+eq "$(amb 'Depends on #5 and issue 6')" 'partial:1:6' \
+   "REPORT: a hash-less reference dropped from a chain that DID declare"
+eq "$(deps 'Depends on #5 and issue 6')" '5' "...and the edge it did declare is unchanged"
+eq "$(amb 'Depends on issue 5 and issue 6')" 'no-hash:1:5 no-hash:1:6' \
+   "REPORT: every hash-less reference, not just the first"
+eq "$(amb 'Depends on * #5 and issue 6')" 'unparsed:1:5 no-hash:1:6' \
+   "REPORT: the two scans are independent — neither shape subsumes the other"
+
+# REPORT — multiple sites, deduped, in scan order (line ascending). Determinism comes from the
+# scan order itself, so no sort is applied and none is needed.
+eq "$(ambm 'Depends on * #5' 'Blocked by [#6](u)')" 'unparsed:1:5 unparsed:2:6' \
+   "REPORT: one record per site, line-ordered"
+eq "$(amb 'Depends on * #5 and blocked by * #5')" 'unparsed:1:5' \
+   "REPORT: an identical record from two keyword occurrences collapses"
+
+# SILENT — a QUALIFIED reference is RECOGNIZED and correctly excluded, never "unparsed". The
+# word-character guard IS the cross-repo rule; reporting a confident answer is what makes noise.
+eq "$(amb 'Depends on acme/repo#5')"        '' "SILENT: a qualified reference is a confident non-edge"
+eq "$(amb 'Depends on #5 and other/repo#7')" '' "SILENT: ...including one that ends a chain"
+eq "$(amb 'Depends on **acme/repo#5**')"    '' "SILENT: ...formatted"
+
+# SILENT — the two false-positive traps a naive "keyword present, reference unconsumed" rule hits.
+# Both were live shapes before the window and the negation skip were added.
+eq "$(amb 'Depends on #5 and blocked by #6')" '' \
+   "SILENT: the window ends at the NEXT keyword, which is about to claim that reference"
+eq "$(deps 'Depends on #5 and blocked by #6')" '5 6' "...and both edges still resolve"
+neg_fx='Depends on #78; it is not blocked by #25'  # adb-claim-ok: fixture prose reusing this suite's standing #25/#78 example numbers, not a citation
+eq "$(amb "$neg_fx")" '' "SILENT: a NEGATED occurrence is a confident answer, not an ambiguity"
+# PAIRED with the edge assertion, because the ambiguity fixture alone is VACUOUS here: remove the
+# negation skip and the reference is consumed as an ordinary edge, so the report stays empty either
+# way. The edge output is what actually moves. (Independent-review find, the same class as the
+# self-reference pair below.)
+eq "$(deps "$neg_fx")" '78' "...and the negated reference is not an edge either"
+eq "$(amb 'No longer depends on #25')" '' "SILENT: ...whether or not anything else declares"  # adb-claim-ok: fixture prose, not a citation
+eq "$(deps 'No longer depends on #25')" '' "...and declares no edge, which is the half a mutation moves"  # adb-claim-ok: fixture prose, not a citation
+pre_fx='The #25 prerequisite was dropped; blocked by #78'  # adb-claim-ok: fixture prose, not a citation
+eq "$(amb "$pre_fx")" '' "SILENT: a reference BEFORE the keyword is in no window"
+
+# SILENT — the clause boundary. Measured, not assumed: without it this fired 13 times on this
+# repo's own 37 open bodies and every one was of this shape — commentary after the declaration.
+eq "$(amb '- #81 depends on #79 — **satisfied**, #79 closed COMPLETED (PR #111).')" '' \
+   "SILENT: an em-dash ends the declaration, so the restatement and the PR number are commentary"
+stop_fx='**Why it is blocked on this issue.** #123 rejects the approach'  # adb-claim-ok: quotes #141's body verbatim as the measured witness; the incident, not a citation
+eq "$(amb "$stop_fx")" '' "SILENT: a full stop ends it too, so the next sentence is not a dropped edge"
+eq "$(amb 'Depends on #5; see #6 for context')" '' "SILENT: ...and a semicolon"
+# ...and the same sentence WITHOUT the punctuation reports, which is the boundary being deliberate
+# rather than incidental. An author who meant `and #6` writes almost exactly this, so the clause is
+# genuinely ambiguous; punctuation is how a body says "the declaration ended here".
+eq "$(amb 'Depends on #5 and see #6 for context')" 'partial:1:6' \
+   "REPORT: no clause boundary means the reference is still inside the declaration"
+
+# The numeric width bound applies to the REPORT too — a run wider than an issue number would print
+# rounded or in exponent form, fabricating an issue number no tracker can have (cf. § 6f).
+eq "$(amb 'Depends on * #999999999')"  'unparsed:1:999999999' "a 9-digit reference still reports"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "$(amb 'Depends on * #9999999999')" '' "...and a 10-digit one is not a reference at all"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "$(amb 'Depends on issue 9999999999')" '' "...on the no-hash path either"
+# Two unconsumed references in ONE window are both named; a report that stopped at the first would
+# under-state what the line lost.
+eq "$(amb 'Depends on * #5 and see #6 for context')" 'unparsed:1:5 unparsed:1:6' \
+   "REPORT: every unconsumed reference in the window, not just the first"
+
+# SILENT — ordinary prose. `Depends on 2 things` is English; `issue <N>` is the ONLY hash-less
+# shape reported, and widening past it is what turns this into noise.
+eq "$(amb 'Depends on 2 things')"          '' "SILENT: a bare number is not an attempted reference"
+eq "$(amb 'Depends on the design decision')" '' "SILENT: no reference of any shape"
+eq "$(amb 'Refs #69')"                     '' "SILENT: no keyword, so no site at all"
+eq "$(amb 'Depends on #5, #6 and #7')"     '' "SILENT: a chain that fully resolves"
+eq "$(amb 'Depends on **#52**')"           '' "SILENT: a form #112 made resolve is no longer ambiguous"  # adb-claim-ok: #52 is #112's own example number, quoted
+eq "$(amb "Depends on ${bt}#5${bt}")"      '' "SILENT: ...nor a span around only the reference"
+eq "$(amb '')"                             '' "SILENT: an empty body"
+
+# SILENT — a SELF reference is dropped by the edge scan on purpose, so it must not resurface here
+# as an ambiguity. The load-bearing case is an UNPARSED self reference: a resolvable one is
+# consumed by the chain and never reaches the window at all, so the two fixtures below it pin the
+# absence of a report without exercising the guard that produces it. (Both shapes are kept — the
+# first is the one a mutation can break; the others pin the ordinary path — but only after a
+# mutation run showed the ordinary pair passing with the guard deliberately removed.)
+eq "$(amb 'Depends on * #73' 73)"        '' "SILENT: an UNPARSED self reference is not an ambiguity"  # adb-claim-ok: #73 is this suite's standing self-edge fixture number
+eq "$(amb 'Depends on issue 73' 73)"     '' "SILENT: ...nor a hash-less one"
+eq "$(amb 'Depends on #73' 73)"          '' "SILENT: a body depending only on itself"  # adb-claim-ok: fixture self-edge number
+eq "$(amb 'Depends on #73 and #78' 73)"  '' "SILENT: ...alongside a real edge"  # adb-claim-ok: fixture self-edge number
+
+# SILENT — STRUCTURE wins here exactly as it does for edges. The report runs on the SAME resolved
+# MD_TEXT/MD_MASK views, so a documented example cannot become an ambiguity report either — which
+# is the whole reason this is one scan in two modes rather than a second parser.
+eq "$(ambm "$q3" 'Depends on * #5' "$q3")" '' "SILENT: a fenced example reports nothing"
+eq "$(amb '<!-- Depends on * #5 -->')"     '' "SILENT: ...nor an HTML comment"
+eq "$(amb '> Depends on * #5')"            '' "SILENT: ...nor a blockquote"
+eq "$(amb "see ${bt}Depends on * #5${bt} here")" '' "SILENT: ...nor a quoted clause"
+eq "$(ambm 'para' '' '    Depends on * #5')" '' "SILENT: ...nor a top-level indented block (D27)"
+
+# ARGUMENT VALIDATION — fail-closed, matching every other subcommand.
+printf 'x' | bash "$RL" deps-ambiguous notanumber >/dev/null 2>&1
+eq "$?" 2 "a non-numeric self-issue-number is an ERROR"
+printf 'x' | bash "$RL" deps-ambiguous 1 2 >/dev/null 2>&1
+eq "$?" 2 "deps-ambiguous rejects extra arguments"
+printf 'Depends on * #5' | bash "$RL" deps-ambiguous >/dev/null 2>&1
+eq "$?" 0 "a REPORT still exits 0 — non-zero is a caller hard-stop, so it cannot mean 'found one'"
+printf 'nothing here' | bash "$RL" deps-ambiguous >/dev/null 2>&1
+eq "$?" 0 "...and so does the ordinary empty result"
+
+# DETERMINISM (#45).
+afx='Depends on * #5 and blocked by [#6](u)'
+eq "$(amb "$afx")" "$(amb "$afx")" "deps-ambiguous is deterministic"
+
+# --- 6k-bis. A CRASHED SCAN IS AN ERROR, NEVER A CLEAN EMPTY ---------------------------------
+# `awk | sort` reports only sort, so before this both subcommands answered a BROKEN scan with
+# exit 0 and no output — which for `deps-from-body` means "this body declares no edges" and
+# silently unblocks a bundle that is genuinely blocked. The library header promises the opposite
+# ("EXIT STATUS IS FAIL-CLOSED"), and nothing was checking it, because a check that cannot answer
+# wrong looks exactly like a check that found nothing wrong.
+#
+# Negative-testing needs a REJECTABLE input, and the input here is a broken library. Build it in a
+# TEMP DIR and break the copy — never the tracked file (base/practices/self-review.md: editing a
+# tracked file to test a check that reads tracked files ends in a `git checkout -- <path>` that
+# has cost this project unsaved work).
+crashdir="$(mktemp -d "${TMPDIR:-/tmp}/rl-crash.XXXXXX")"
+if [ -d "$crashdir" ]; then
+  cp "$ROOT/scripts/lib/common.sh" "$crashdir/common.sh"
+  # A syntax error inside the awk program: the scan cannot run, so any answer it gives is a lie.
+  #
+  # `sed`, not `perl`. Perl is NOT a declared prerequisite of this repo (AGENTS.md asks for portable
+  # POSIX-safe shell that passes the linter, and this was the only perl call in the checks tree) — on a
+  # minimal Linux or macOS box it would exit 127, leave the copy UNBROKEN, and fail the two
+  # assertions below against a perfectly valid library, taking the required `selfcheck` red with it.
+  # A test whose failure mode is "the environment lacked a tool nobody promised" is worse than no
+  # test. (Bot-review find on PR #254.)
+  sed 's/function eat(at)/function eat(at) THIS IS NOT AWK/' "$RL" > "$crashdir/roadmap-lib.sh"
+  # ASSERT THE MUTATION LANDED. A substitution that matched nothing leaves a VALID library, and
+  # then these assertions would be testing the opposite of what they claim — the same vacuity the
+  # unbroken-copy check below guards from the other side.
+  if cmp -s "$RL" "$crashdir/roadmap-lib.sh"; then
+    bad "the crashed-scan fixture did not break its copy (the anchor text moved?) — assertions would be vacuous"
+  else
+    printf 'Depends on #5' | bash "$crashdir/roadmap-lib.sh" deps-from-body >/dev/null 2>&1
+    eq "$?" 2 "a crashed scan makes deps-from-body an ERROR, not an empty edge set"
+    printf 'Depends on * #5' | bash "$crashdir/roadmap-lib.sh" deps-ambiguous >/dev/null 2>&1
+    eq "$?" 2 "...and deps-ambiguous too"
+  fi
+  # Prove the fixture can distinguish: the SAME copy, unbroken, still answers normally. Without
+  # this the two assertions above would also pass against a library that always exited 2.
+  cp "$RL" "$crashdir/roadmap-lib.sh"
+  eq "$(printf 'Depends on #5' | bash "$crashdir/roadmap-lib.sh" deps-from-body)" '5' \
+     "...while the same copy UNBROKEN still resolves the edge (the fixture is not vacuous)"
+  rm -rf "$crashdir"
+else
+  bad "could not create a temp dir for the crashed-scan fixture"
+fi
 
 # ============================================================================================
 # 7. DECISIONS — the durable home that retires an owner question (#108)
