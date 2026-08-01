@@ -611,7 +611,7 @@ cmd_marker_title() {
 #   - `release-command` and `marker-title` — MD_NOSPAN with comments KEPT, because for these two the
 #                       declaration IS an HTML comment and what separates it from the schema's own
 #                       documented example is markup, never the value.
-#   - `pr-targets-issue` sanitizes each PR body before the closing-keyword scan (#130). It used to
+#   - `pr-targets-issue` sanitizes each PR body before the closing-keyword scan (#130). It used to  # adb-claim-ok: #130 is closed NOT_PLANNED, superseded by #136
 #                       be the deliberate exception ("jq over GitHub's own link set, a different
 #                       language"), and that exception was the bug: a `Closes #42` inside a fence,
 #                       comment, blockquote, span or indented block froze a ready issue.

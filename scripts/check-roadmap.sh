@@ -270,7 +270,10 @@ eq "$(targets 42 "$(arr "$(pr 100 "$(jb "$BT3" 'unterminated')" '[]')" "$(pr 101
    "UNDER: an unterminated fence in one PR body does not blind the next PR's scan"
 # The LINKED-ISSUE half is GitHub's own computed set and is never filtered — a PR whose body only
 # documents the syntax still targets when the link is real.
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb "$BT3" 'Closes #99' "$BT3")" "$(arr "$(ref 42)")")")")" 0 \
+# The body documents a DIFFERENT number from the linked one, so a pass here cannot come from the
+# body scan. Built on its own line because the escape below is per-line and this fixture wraps.
+doc_only_body="$(jb "$BT3" 'Closes #99' "$BT3")"   # adb-claim-ok: fixture DATA — a number the body documents, never a citation
+eq "$(targets 42 "$(arr "$(pr 100 "$doc_only_body" "$(arr "$(ref 42)")")")")" 0 \
    "UNDER: the closingIssuesReferences link targets regardless of what the body's markup says"
 
 # --- 1j. FAIL-CLOSED on a FILTER failure, not just a JSON one (#136) ------------------------
@@ -1276,7 +1279,7 @@ eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7')" '5 6 7' \
 # OVER-match here means scanning quoted code and fabricating an edge (a ready bundle sits blocked —
 # visible). UNDER-match means deleting ordinary prose and losing a real edge (a blocked bundle is
 # marked `ready` — invisible, and the reason a stateless `^ {4}` rule was refused).
-# The issue's §5 repro is written with `#52`; these use `#5` like every other fixture in § 6i.
+# The issue's §5 repro is written with `#52`; these use `#5` like every other fixture in § 6i.  # adb-claim-ok: quoting the repro's number, not citing it
 # The number is fixture DATA — what is under test is the indentation rule, not the reference.
 eq "$(deps '    Depends on #5')" '' \
    "OVER: a top-level 4-space-indented line is code and declares nothing (the §5 repro)"
