@@ -805,7 +805,17 @@ jobs:
         run: |
           set -uo pipefail
           brew install bash shellcheck || exit 1
-          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
+
+          # NOT `echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"`. A failed substitution there
+          # expands to the empty string and writes a bare "/bin" — PREPENDING the one directory
+          # that holds Apple's 3.2.57, i.e. the exact interpreter this job exists to avoid. The
+          # floor guard would still catch it, but as a baffling failure rather than this one.
+          prefix="$(brew --prefix bash)" || { echo "::error::brew --prefix bash failed"; exit 1; }
+          if [ -z "$prefix" ] || [ ! -x "$prefix/bin/bash" ]; then
+            echo "::error::no executable bash at '$prefix/bin/bash' after 'brew install bash'"
+            exit 1
+          fi
+          echo "$prefix/bin" >> "$GITHUB_PATH"
 
       # THE step this whole job exists for. It asserts — not merely prints — that the interpreter
       # is >= 5.3, and it asserts on $BASH (what is executing) as well as on the PATH-resolved

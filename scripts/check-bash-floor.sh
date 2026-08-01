@@ -139,7 +139,10 @@ scan_jobs() {
       v = $0; sub(/^    runs-on:[[:space:]]*/, "", v); sub(/[[:space:]]+#.*$/, "", v)
       gsub(/^["'"'"']|["'"'"']$/, "", v); runson = v; next
     }
-    /check-bash-floor\.sh --runtime/ { guard = 1 }
+    # A COMMENT mentioning the invocation must not count as wiring it. Without this exclusion a
+    # job could carry `# TODO: add check-bash-floor.sh --runtime` and be recorded as guarded —
+    # a lint that reads a note about doing the thing as the thing.
+    /check-bash-floor\.sh --runtime/ { if ($0 !~ /^[[:space:]]*#/) guard = 1 }
     END { if (job != "") printf "%s\t%s\t%s\n", job, (runson == "" ? "<none>" : runson), guard }
   ' "$1"
 }
@@ -161,9 +164,21 @@ static_lint() {
       check_fail
     fi
 
+    # Capture the scan BEFORE consuming it, and check its status. Piping or here-doc'ing a command
+    # substitution straight into the loop discards awk's exit code, so a CRASHED scan reads as "this
+    # file declares no jobs" — and a file contributing zero jobs is invisible as long as some OTHER
+    # file contributed some. That is the same fail-open shape D28 fixed in the roadmap library.
+    scanned="$(scan_jobs "$wf")" || {
+      check_note "$wf: the job scanner failed outright — refusing to report a clean scan"
+      check_fail
+      continue
+    }
+
+    file_jobs=0
     while IFS="$(printf '\t')" read -r job runson guard; do
       [ -n "$job" ] || continue
       jobs=$((jobs + 1))
+      file_jobs=$((file_jobs + 1))
       case " $APPROVED_RUNNERS " in
         *" $runson "*) ;;
         *) check_note "$wf: job '$job' runs on '$runson' — not a runner this repo has proven carries bash >= $FLOOR (allowed: $APPROVED_RUNNERS; see docs/ci-runners.md)"
@@ -176,8 +191,15 @@ static_lint() {
         check_fail
       fi
     done <<EOF
-$(scan_jobs "$wf")
+$scanned
 EOF
+
+    # PER FILE, not just in total. A workflow file with no jobs is malformed, and checking only the
+    # grand total lets a second file go blind for free the moment a first one still parses.
+    if [ "$file_jobs" -eq 0 ]; then
+      check_note "$wf declares no jobs the scanner can see — malformed, or the scanner has gone blind on it"
+      check_fail
+    fi
   done
 
   if [ "$files" -eq 0 ]; then

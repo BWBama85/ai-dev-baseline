@@ -100,6 +100,17 @@ eq "$RC" "1" "rule 2: a job with no --runtime step is rejected"
 has "$OUT" "macos-job" "rule 2 names the unguarded job"
 has "$OUT" "nothing proves the bash it actually got" "rule 2 says what is unproven"
 
+# A COMMENT mentioning the invocation must not satisfy rule 2. Caught in self-review: the scanner
+# matched the string anywhere in the job, so a `# TODO: add check-bash-floor.sh --runtime` would
+# have registered as wiring it — a lint reading a note about doing the thing as the thing.
+d="$work/commentonly"; f="$(new_wf "$d")"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 0
+printf '      # TODO: add bash scripts/check-bash-floor.sh --runtime here\n' >> "$f"
+run_lint "$d"
+eq "$RC" "1" "rule 2: a COMMENT naming the guard does not count as wiring it"
+has "$OUT" "macos-job" "rule 2 still names the job whose only mention was a comment"
+
 # --- rule 3: a shell: override, which routes around the guard -------------------------------------
 d="$work/shellover"; f="$(new_wf "$d")"
 emit_job "$f" linux-job ubuntu-26.04 1
@@ -115,6 +126,17 @@ printf 'name: CI\non:\n  pull_request:\n' > "$d/ci.yml"
 run_lint "$d"
 eq "$RC" "1" "rule 4: zero jobs is a failure, not a clean run"
 has "$OUT" "gone blind" "rule 4 names the silent-scanner failure mode"
+
+# PER FILE, not just in total. Caught in self-review: a grand-total check lets a second workflow
+# file go blind for free the moment a first one still parses, which is the fail-open this whole
+# family of checks exists to close.
+d="$work/onegood-oneblind"; f="$(new_wf "$d")"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+printf 'name: Other\non:\n  pull_request:\n' > "$d/other.yml"     # parses, declares nothing
+run_lint "$d"
+eq "$RC" "1" "rule 4: a jobless SECOND file is caught even though the first file parsed fine"
+has "$OUT" "other.yml" "rule 4 names WHICH file declared no jobs"
 
 # --- rule 5: no workflow files at all --------------------------------------------------------------
 d="$work/empty"; mkdir -p "$d"
