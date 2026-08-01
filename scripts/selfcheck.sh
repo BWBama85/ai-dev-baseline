@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — local CI mirror. Run before every push.
 #
-# Runs the exact checks CI runs: shellcheck, build-drift, skill-frontmatter, workflow-render,
+# Runs the checks CI runs, with the two documented exceptions below: shellcheck, build-drift,
+# skill-frontmatter, workflow-render,
 # gate-detector/gates, common-lib, agent-init, cleanup-enum, repo-settings, bash-floor,
 # bash-floor-guard, baseline, session-currency, precommit-gate, implement-gate, install-migration,
 # install-guard, fact-drift, fact-mutation, fact-guard, practice-index, release-role,
@@ -9,11 +10,17 @@
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 #
-# THE OFFLINE HALF OF ONE PLATFORM, which is a narrower promise than it used to be (#257). CI now
-# runs this same suite on TWO hosted platforms — ubuntu-26.04 and macos-latest — so a green here
-# predicts the offline checks on the OS you are sitting at, and cannot speak for the other one's
-# runner image, its Homebrew bootstrap, or preview-runner availability. Nothing about the
-# hermetic-gate rule (D13/D24) changed; the set of things a local green cannot predict grew.
+# WHAT A GREEN HERE DOES NOT COVER — three things, stated so the promise is the true one (#257):
+#
+#   1. The two LIVE CI steps (`required-drift`, the claim lint's `--live` half). Deliberate: D13/D24
+#      keep this gate hermetic, so a verdict depending on network and auth stays CI-only.
+#   2. The OTHER PLATFORM. CI runs this same offline suite on ubuntu-26.04 AND macos-latest, and a
+#      workstation is one of them. Nothing here speaks for the other runner's image or its Homebrew
+#      bootstrap.
+#   3. `check-bash-floor.sh --runtime` — which IS offline, and runs in all 27 CI jobs. It is omitted
+#      here on purpose: its verdict is about the machine, and pinning a local gate to the real floor
+#      would fail a contributor still on 5.2. That is #256's enforcement to introduce, with install
+#      instructions, rather than this gate's to impose sideways. The STATIC half does run below.
 
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1

@@ -33,8 +33,10 @@ Rejected, and why it matters that it is written down:
 ## `ubuntu-26.04` is a public-preview image
 
 GitHub ships it as **public preview**: supplied as-is, no SLA, and longer queue times than a GA
-image. That is a real cost and it is accepted deliberately — it is the only GitHub-hosted Linux
-label that clears the floor, and #255 chose the floor knowing this.
+image. That is a real cost and it is accepted deliberately — it is the only **x64** GitHub-hosted
+Linux label that clears the floor, and #255 chose the floor knowing this. (`ubuntu-26.04-arm` is the
+same release on arm64 and clears it too; it is preview on the same terms, and this repo has no
+reason to prefer arm64 — every job here is architecture-independent shell.)
 
 **The fallback threshold, so "if it proves unstable" is not left to taste.** Fall back only for
 **image or provisioning** failures — queue times that block merges, image pulls that fail, a
@@ -54,7 +56,12 @@ it is per-job, not once):
           set -uo pipefail
           brew=/home/linuxbrew/.linuxbrew/bin/brew    # present on the 24.04 image, off PATH
           "$brew" install bash || exit 1
-          echo "$("$brew" --prefix bash)/bin" >> "$GITHUB_PATH"
+          # Capture and validate BEFORE writing, exactly as the macOS job does. Inlining the
+          # substitution writes a bare "/bin" on failure — prepending the directory that holds the
+          # OLD interpreter, which is the opposite of the intent.
+          prefix="$("$brew" --prefix bash)" || exit 1
+          [ -n "$prefix" ] && [ -x "$prefix/bin/bash" ] || exit 1
+          echo "$prefix/bin" >> "$GITHUB_PATH"
 ```
 
 That is 26 Homebrew installs per CI run, which is why it is the fallback and not the design. If it
@@ -63,12 +70,15 @@ is the thing that has to agree, and it will fail loudly until it does.
 
 ## macOS: the floor is reachable only through `PATH`
 
-Apple pins `/bin/bash` at **3.2.57** — a 2006 release — permanently, for GPLv3 reasons, and system
-integrity protection keeps it there. Homebrew installs 5.3 alongside it at
-`$(brew --prefix bash)/bin/bash`, so **every** macOS install of this framework resolves its
-interpreter through `PATH`. That is exactly the surface `base/practices/shell-discipline.md` warns
-is absent in non-interactive shells — the shells that hooks and gate scripts run in — which is why
-macOS is the platform worth spending a CI job on, and why #256 exists.
+macOS ships `/bin/bash` **3.2.57** — a 2006 release — and has for the whole bash-4-and-later era;
+the runner inventory above confirms it is still 3.2.57 on macOS 26 today. (The reason usually given
+is bash's move to GPLv3, and #255 records the expectation that Apple will not ship a newer one. That
+expectation is what the floor is *planned* around; the **observed** fact, and all this document
+asserts, is the version above.) Homebrew installs 5.3 alongside it, so **every** macOS install of
+this framework resolves its interpreter through `PATH`. That is exactly the surface
+`base/practices/shell-discipline.md` warns is absent in non-interactive shells — the shells that
+hooks and gate scripts run in — which is why macOS is the platform worth spending a CI job on, and
+why #256 exists.
 
 The job therefore does three things in order:
 
@@ -124,10 +134,30 @@ lint assert facts about this repo's *settings and tracker*, which are platform-i
 - runs `bash scripts/check-bash-floor.sh --runtime` as a step;
 - sets no `shell:` override, which would route around that guard.
 
-It also requires at least one job on each platform, so the macOS job cannot be quietly deleted.
-`scripts/check-bash-floor-guard.sh` drives every one of those rules to red against throwaway
-fixtures, because a workflow scanner that stops recognizing job keys reports exactly what a clean
-repo reports.
+It also requires at least one job on each platform, so the macOS job cannot be quietly deleted, and
+that the job's **first** step logs `bash --version` — before checkout or any bootstrap, so an image
+that changed its bash is readable in the log even when a later step is what fails.
+
+`scripts/check-bash-floor-guard.sh` drives each of those rules to red against throwaway fixtures,
+because a workflow scanner that stops recognizing job keys reports exactly what a clean repo
+reports. Where a rule can be **isolated** it is: a fixture that only goes red through some *other*
+rule proves nothing about the one it is named for.
+
+**Reusable-workflow jobs (`uses:` at job level) are not supported here, and fail closed.** Such a
+job has no `runs-on` and no caller steps, so it trips both the label and the guard rules. That is
+deliberate rather than an oversight — the callee owns its runners, and this lint cannot see them.
+If one is ever needed, the callee has to carry its own floor guard and this lint has to learn how to
+say so.
+
+### The one dependency this accepts knowingly
+
+Ten Linux jobs run `sudo apt-get install -y <pkg>` with **no preceding `apt-get update`**, relying
+on the image's baked package index. Both packages (jq, ShellCheck) are already preinstalled on
+`ubuntu-26.04`, so these are confirmations rather than real installs — but on image churn a cached
+index can reference a replaced artifact and the install fails. Accepted as-is: it predates this
+change, it fails loudly rather than silently, and adding `apt-get update` to ten jobs to guard a
+no-op is the worse trade. If it starts firing, that is a real diagnosis (`base/practices/ci-discipline.md`),
+not a retry.
 
 **And then run `baseline repo apply`.** A new job is a new check context that branch protection
 does not require until someone with an admin token says so — see `docs/repo-settings.md`, including
