@@ -1987,7 +1987,7 @@ adb_version_ge() {
 #       adb_md_run()
 #       for (i = 1; i <= MDN; i++) {
 #         if (MD_SKIP[i]) continue
-#         ... MD_TEXT[i] / MD_MASK[i] / MD_NOSPAN[i] ...
+#         ... MD_TEXT[i] / MD_MASK[i] ...
 #       }
 #     }
 #
@@ -2001,18 +2001,23 @@ adb_version_ge() {
 # resolution to the PARAGRAPH keeps both: the multi-line span resolves, and the stray tick can
 # only ever reach the end of its own paragraph.
 #
-# THREE VIEWS, because one sanitized string cannot serve these consumers and pretending otherwise
-# is how the last collapse silently disabled a rule:
+# TWO VIEWS, because one sanitized string cannot serve these consumers and pretending otherwise is
+# how the last collapse silently disabled a rule:
 #   MD_TEXT[i]   prose with HTML comments removed; inline spans left INTACT.
 #   MD_MASK[i]   the same line, byte-for-byte the same LENGTH, with every byte of a resolved span
 #                replaced by \x01. The 1:1 length invariant is what lets an offset found in one
 #                index the other. `deps-from-body` needs exactly this pair: the KEYWORD must sit
 #                outside a span, while the `#N` may sit inside one, so `` `Depends on #5` ``
 #                declares nothing and `` Depends on `#5` `` still declares (#112).
-#   MD_NOSPAN[i] prose with span contents DELETED. What a consumer wants when a quoted example
-#                must simply vanish — `pr-targets-issue`, `release-command`, `marker-title`.
-# All three preserve LINE COUNT and line order: a structural line yields an empty string at its
-# own index, never a deletion that renumbers what follows.
+# Both preserve LINE COUNT and line order: a structural line yields an empty string at its own
+# index, never a deletion that renumbers what follows.
+#
+# A QUOTED EXAMPLE IS MASKED, NEVER DELETED, and that is not a detail — it is why \x01 exists here
+# instead of a simpler "drop the span". Deletion lets the text on either side FUSE into a keyword
+# nobody wrote: `` clo`x`ses #42 `` collapses to `closes #42`, and a PR that merely documented a
+# syntax would freeze a ready issue. \x01 is a byte no body carries and no keyword pattern can
+# cross, so every consumer that scans for a word gets the protection `deps-from-body` was already
+# built with, rather than each one rediscovering the hazard.
 #
 # ORDER OF OPERATIONS, which is the part every previous attempt got wrong in one direction or the
 # other:
@@ -2217,28 +2222,28 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     # ONE left-to-right pass over a paragraph: at each step the next code-span opener and the next
     # `<!--` compete, and whichever comes first wins. Comment state carries ACROSS paragraphs (a
     # comment may span a blank line); span state does not (a span may not).
-    function adb_md_inline(s,   text, mask, nospan, p, q, cut, seg, n, e, nbs, k) {
-      text = ""; mask = ""; nospan = ""
+    function adb_md_inline(s,   text, mask, p, q, cut, seg, n, e, nbs, k) {
+      text = ""; mask = ""
       while (length(s) > 0) {
         if (md_incomment) {
           q = index(s, "-->")
           if (q == 0) {                            # the comment swallows the rest of this block
             seg = adb_md_nl_only(s)
-            text = text seg; mask = mask seg; nospan = nospan seg; s = ""
+            text = text seg; mask = mask seg; s = ""
             continue
           }
           seg = adb_md_nl_only(substr(s, 1, q - 1))
-          text = text seg; mask = mask seg; nospan = nospan seg
+          text = text seg; mask = mask seg
           s = substr(s, q + 3); md_incomment = 0
           continue
         }
         p = index(s, "`")
         q = md_keep_comments ? 0 : index(s, "<!--")
-        if (p == 0 && q == 0) { text = text s; mask = mask s; nospan = nospan s; s = ""; continue }
+        if (p == 0 && q == 0) { text = text s; mask = mask s; s = ""; continue }
         if (p > 0 && (q == 0 || p < q)) cut = p; else cut = q
         if (cut > 1) {
           seg = substr(s, 1, cut - 1)
-          text = text seg; mask = mask seg; nospan = nospan seg
+          text = text seg; mask = mask seg
           s = substr(s, cut)
         }
         if (substr(s, 1, 1) == "`") {
@@ -2246,11 +2251,11 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
           e = adb_md_span_end(s, 1 + n, n)
           if (e == 0) {                            # unmatched: literal text, copied as a SLICE
             seg = substr(s, 1, n)
-            text = text seg; mask = mask seg; nospan = nospan seg; s = substr(s, n + 1)
+            text = text seg; mask = mask seg; s = substr(s, n + 1)
             continue
           }
           seg = substr(s, 1, e + n - 1)
-          text = text seg; mask = mask adb_md_maskify(seg); nospan = nospan adb_md_nl_only(seg)
+          text = text seg; mask = mask adb_md_maskify(seg)
           s = substr(s, e + n)
           continue
         }
@@ -2261,7 +2266,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
         nbs = 0; k = length(text)
         while (k >= 1 && substr(text, k, 1) == "\\") { nbs++; k-- }
         if (nbs % 2 == 1) {
-          text = text "<!--"; mask = mask "<!--"; nospan = nospan "<!--"
+          text = text "<!--"; mask = mask "<!--"
           s = substr(s, 5); continue
         }
         s = substr(s, 5); md_incomment = 1
@@ -2271,25 +2276,26 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
         if (substr(s, 1, 1) == ">")  { md_incomment = 0; s = substr(s, 2); continue }
         if (substr(s, 1, 2) == "->") { md_incomment = 0; s = substr(s, 3); continue }
       }
-      MD_O_TEXT = text; MD_O_MASK = mask; MD_O_NOSPAN = nospan
+      MD_O_TEXT = text; MD_O_MASK = mask
     }
     function adb_md_flush(from, to, para,   i) {
       adb_md_inline(para)
-      split(MD_O_TEXT,   _md_t, "\n")
-      split(MD_O_MASK,   _md_m, "\n")
-      split(MD_O_NOSPAN, _md_n, "\n")
+      # `split` CLEARS its target array first (POSIX), so a shorter paragraph can never inherit a
+      # longer one's leftover elements. An index past the end reads as "", which is exactly what a
+      # line emptied by comment removal should be.
+      split(MD_O_TEXT, _md_t, "\n")
+      split(MD_O_MASK, _md_m, "\n")
       for (i = from; i <= to; i++) {
-        MD_TEXT[i]   = _md_t[i - from + 1]
-        MD_MASK[i]   = _md_m[i - from + 1]
-        MD_NOSPAN[i] = _md_n[i - from + 1]
+        MD_TEXT[i] = _md_t[i - from + 1]
+        MD_MASK[i] = _md_m[i - from + 1]
       }
     }
-    # Resolve MDL[1..MDN] into MD_SKIP / MD_TEXT / MD_MASK / MD_NOSPAN. Call once, from END.
+    # Resolve MDL[1..MDN] into MD_SKIP / MD_TEXT / MD_MASK. Call once, from END.
     function adb_md_run(   i, para, first) {
       para = ""; first = 0
       for (i = 1; i <= MDN; i++) {
         if (adb_md_block(MDL[i])) {
-          MD_SKIP[i] = 1; MD_TEXT[i] = ""; MD_MASK[i] = ""; MD_NOSPAN[i] = ""
+          MD_SKIP[i] = 1; MD_TEXT[i] = ""; MD_MASK[i] = ""
           if (first) { adb_md_flush(first, i - 1, para); para = ""; first = 0 }
           continue
         }
@@ -2310,11 +2316,18 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     }
 AWKMD
 
+# The mask byte, as a shell string, so a consumer of `mask` output can recognize it without
+# re-deriving the constant. `release-command` and `marker-title` use it to drop a marker value that
+# was itself partly quoted — a half-masked value is not a declaration, and emitting it would hand
+# the caller a title of control bytes.
+_ADB_MD_MASKC="$(printf '\001')"
+
 # Filter markdown on stdin to prose on stdout, one output line per input line.
 #
-#   adb_md_prose [text|nospan] [--keep-comments]
+#   adb_md_prose [text|mask] [--keep-comments]
 #     text    — HTML comments removed, inline code spans left intact
-#     nospan  — ...and span contents deleted too (a quoted example simply vanishes)
+#     mask    — ...and every byte of a resolved span replaced by \x01, so a quoted example declares
+#               nothing AND cannot fuse with its neighbours (see the masking note above)
 #
 # FAIL-CLOSED, and that is the whole reason this is a function rather than a pipeline at each call
 # site. A consumer that sanitizes a body and then asks "does it contain a closing keyword?" reads a
@@ -2324,8 +2337,8 @@ AWKMD
 adb_md_prose() {
   local mode="${1:-text}" keep=0 mark out rc
   case "$mode" in
-    text|nospan) : ;;
-    *) printf 'common: FATAL — adb_md_prose: mode must be text|nospan (got %s)\n' "$mode" >&2; return 2 ;;
+    text|mask) : ;;
+    *) printf 'common: FATAL — adb_md_prose: mode must be text|mask (got %s)\n' "$mode" >&2; return 2 ;;
   esac
   case "${2:-}" in
     '') : ;;
@@ -2337,7 +2350,7 @@ adb_md_prose() {
     { MDL[++MDN] = $0 }
     END {
       adb_md_run()
-      for (i = 1; i <= MDN; i++) print (emit == "nospan") ? MD_NOSPAN[i] : MD_TEXT[i]
+      for (i = 1; i <= MDN; i++) print (emit == "mask") ? MD_MASK[i] : MD_TEXT[i]
       printf "%c%s\n", 1, "ADB_MD_OK"
     }
   ')"; rc=$?

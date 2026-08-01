@@ -137,6 +137,11 @@ cmd_pr_targets_issue() {
   # or that is cut short, must never reach jq as a shorter body and answer a clean "not targeted".
   # `adb_md_prose` returns nonzero on both, and each failure here is `die` (exit 2), never 1.
   #
+  # `mask`, not a deleting filter, and that is a correctness requirement rather than a taste. Delete
+  # a span and its neighbours FUSE: `` clo`x`ses #42 `` becomes `closes #42`, and this predicate
+  # then freezes a ready issue on a keyword the author never wrote. Masking to \x01 — the same byte
+  # `deps-from-body` masks with, for the same reason — leaves a boundary the keyword cannot cross.
+  #
   # The LINKED-ISSUE half below is untouched, because it is genuinely GitHub's own computed set and
   # has no markdown in it. Only `.body` is replaced.
   local cnt idx body prose
@@ -146,7 +151,7 @@ cmd_pr_targets_issue() {
   while [ "$idx" -lt "$cnt" ]; do
     body="$(printf '%s' "$json" | jq -r --argjson i "$idx" '.[$i].body // ""' 2>/dev/null)" \
       || die "pr-targets-issue: could not read the body of PR index $idx"
-    prose="$(printf '%s' "$body" | adb_md_prose nospan)" \
+    prose="$(printf '%s' "$body" | adb_md_prose mask)" \
       || die "pr-targets-issue: the markdown prose filter failed on PR index $idx (refusing to scan an unfiltered body)"
     json="$(printf '%s' "$json" | jq -c --argjson i "$idx" --arg b "$prose" '.[$i].body = $b' 2>/dev/null)" \
       || die "pr-targets-issue: could not rewrite the body of PR index $idx"
@@ -542,19 +547,21 @@ cmd_release_command() {
   # `--keep-comments` is the whole reason the shared filter takes that flag (#136). This marker IS
   # an HTML comment, so the filter's comment-stripping half has to be off — which used to be stated
   # here as "the shared filter cannot be reused", above a fourth private fence detector that knew
-  # nothing about run lengths, info strings, container columns or CRLF. `nospan` DELETES span
-  # contents rather than masking them, so a marker the author quoted leaves no residue for `grep -o`
-  # to find. A filter failure is a nonzero return, never a silent empty read.
+  # nothing about run lengths, info strings, container columns or CRLF. `mask` replaces a quoted
+  # example's bytes with \x01, so its `<!--` can never reach `grep -o`; the `grep -v` below then
+  # drops a value that was itself partly quoted, which is not a declaration either. A filter failure
+  # is a nonzero return, never a silent empty read.
   # FILTER, THEN PIPE — two statements, never one. `filter || die | grep` parses as
   # `filter || (die | grep)`, so the guard would run INSIDE the pipeline and the failure would be
   # read as "no marker declared": a fail-open on the exact path this guard exists to close.
   local prose
-  prose="$(adb_md_prose nospan --keep-comments)" \
+  prose="$(adb_md_prose mask --keep-comments)" \
     || die "release-command: the markdown prose filter failed (refusing to read an unfiltered body)"
   printf '%s' "$prose" \
     | grep -o '<!--[[:space:]]*release-command:[[:space:]]*[^>]*-->' \
     | sed 's/.*release-command:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \
+    | LC_ALL=C grep -v "$_ADB_MD_MASKC" \
     | sed 's/^[/$]//' \
     | grep -vx 'your-skill' \
     | grep -vx 'your-release-skill' \
@@ -571,7 +578,7 @@ cmd_marker_title() {
   # perfectly good artifact. The `NAME` carve-out below is a value-based patch over that same hole;
   # it stays for the placeholder, but markup is what actually distinguishes the two.
   local prose
-  prose="$(adb_md_prose nospan --keep-comments)" \
+  prose="$(adb_md_prose mask --keep-comments)" \
     || die "marker-title: the markdown prose filter failed (refusing to read an unfiltered body)"
   # `grep -o` (one match per LINE OF OUTPUT), not `sed s///p` (one substitution per line of
   # INPUT): two markers on a single line must surface as two titles, so the caller can refuse an
@@ -580,6 +587,7 @@ cmd_marker_title() {
     | grep -o '<!--[[:space:]]*release-milestone:[[:space:]]*[^>]*-->' \
     | sed 's/.*release-milestone:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \
+    | LC_ALL=C grep -v "$_ADB_MD_MASKC" \
     | grep -vx 'NAME' \
     | sort -u
   return 0

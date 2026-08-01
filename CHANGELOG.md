@@ -324,6 +324,11 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     otherwise blind the scan for every PR after it), and the predicate stays **fail-closed**: a
     filter that cannot run, or that is cut short, is rc 2, never a clean "not targeted". The
     filter emits a completion marker so a truncated run cannot pass as a short clean result.
+  - **A quoted example is masked, never deleted.** Dropping a span lets the text on either side
+    **fuse** into a keyword nobody wrote — `` clo`x`ses #42 `` collapses to `closes #42`, freezing
+    a ready issue. The shared filter replaces span bytes with `\x01`, the same byte and the same
+    reason `deps-from-body` was already built with, so every word-scanning consumer inherits the
+    boundary instead of rediscovering the hazard.
   - **The two fence detectors are one.** `skill-compose.sh` toggled a boolean on any ``` after 0-3
     spaces, and had already drifted from `roadmap-lib`'s: a `~~~`-fenced `### ` line was
     **advertised** as a composable anchor, and a ``` closing a longer run left the toggle inverted

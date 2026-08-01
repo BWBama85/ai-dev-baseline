@@ -246,6 +246,12 @@ eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Docs: `Closes #42` is the syntax.')" '[
    "OVER: ...inside an inline code span"
 eq "$(targets 42 "$(arr "$(pr 100 "$(jb '    Closes #42')" '[]')")")" 1 \
    "OVER: ...inside a 4-space indented code block (the D27 rule, reaching this consumer too)"
+# A span is MASKED, never deleted. Deleting it lets the text on either side fuse into a keyword the
+# author never wrote — self-review find, and the reason `deps-from-body` masks with \x01 too.
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'clo`x`ses #42')" '[]')")")" 1 \
+   "OVER: two fragments either side of a span do NOT fuse into a closing keyword"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Docs: fi`x`es #42')" '[]')")")" 1 \
+   "OVER: ...for every keyword the pattern accepts"
 # UNDER — every real form must still target, or /roadmap emits work a PR already closes.
 eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Closes #42')" '[]')")")" 0 \
    "UNDER: plain prose still targets"
@@ -1474,6 +1480,8 @@ eq "$(rcmd "${q3}\n<!-- release-command: fenced -->\n${q3}\n")" '' "OVER: ...but
 eq "$(rcmd '> <!-- release-command: bq -->\n')" '' "OVER: ...nor a blockquoted one"
 eq "$(rcmd 'See \`<!-- release-command: spanned -->\` above.\n')" '' "OVER: ...nor one inside a code span"
 eq "$(rcmd '    <!-- release-command: indented -->\n')" '' "OVER: ...nor one in an indented block (D27)"
+eq "$(rcmd '<!-- release-command: \`quoted\` -->\n')" '' \
+   "OVER: a value that is itself partly quoted is not a declaration (it would resolve to mask bytes)"
 eq "$(mtit '<!-- release-milestone: Next release -->\n')" 'Next release' "a top-level marker-title declares"
 eq "$(mtit "${q3}\n<!-- release-milestone: Fake -->\n${q3}\n<!-- release-milestone: Real -->\n")" 'Real' \
    "OVER: a FENCED example is not a second title — two titles make the artifact ambiguous and refuse it"

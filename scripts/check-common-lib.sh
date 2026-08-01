@@ -1161,9 +1161,19 @@ mdp() { printf '%b' "$2" | adb_md_prose "$1"; }
 # The three views, on one line that has all three shapes in it.
 SPANLINE='keep `a span` and <!-- a comment --> too\n'
 eq "$(mdp text "$SPANLINE")"   'keep `a span` and  too' "text: comments go, spans stay"
-eq "$(mdp nospan "$SPANLINE")" 'keep  and  too'         "nospan: span CONTENTS go as well"
-eq "$(printf '%b' "$SPANLINE" | adb_md_prose nospan --keep-comments)" 'keep  and <!-- a comment --> too' \
+eq "$(mdp mask "$SPANLINE" | tr -d '\001')" 'keep  and  too' "mask: span contents become \\x01 (shown here with the mask bytes stripped)"
+eq "$(mdp mask "$SPANLINE" | wc -c | tr -d ' ')" "$(mdp text "$SPANLINE" | wc -c | tr -d ' ')" \
+   "mask is byte-for-byte the SAME LENGTH as text — the 1:1 invariant every offset-pairing consumer needs"
+eq "$(printf '%b' "$SPANLINE" | adb_md_prose mask --keep-comments | tr -d '\001')" 'keep  and <!-- a comment --> too' \
    "--keep-comments: the comment survives (the marker consumers need this; the flag exists for them)"
+
+# MASKING, NOT DELETION — the self-review find. Deleting a span lets its neighbours FUSE into a word
+# nobody wrote, and every consumer that scans for a keyword would inherit that. \x01 is a boundary
+# no keyword can cross. DIRECTION: over-match (a fabricated keyword freezes a ready issue).
+eq "$(mdp mask 'clo`x`ses #42\n' | tr -d '\001')" 'closes #42' \
+   "deleting the mask bytes shows the fusion that WOULD happen if the span were dropped..."
+eq "$(mdp mask 'clo`x`ses #42\n' | grep -c 'closes')" 0 \
+   "...and it does not happen, because the span is masked rather than removed"
 
 # LINE COUNT AND ORDER ARE PRESERVED. Every consumer indexes results by line, so a structural line
 # must yield an EMPTY line at its own position, never a deletion that renumbers what follows.
@@ -1183,11 +1193,11 @@ eq "$(mdp text '- item\n    continued\n')" '- item
 # MULTI-LINE SPANS — the reason the filter buffers at all (#136 §1).
 # Asserted with `wc -l`, not against a literal: `$( … )` strips trailing newlines, so comparing
 # two empty lines to '' would pass whether or not the second line survived at all.
-eq "$(mdp nospan '`a\nb`\n' | wc -l | tr -d ' ')" 2 \
+eq "$(mdp mask '`a\nb`\n' | wc -l | tr -d ' ')" 2 \
    "a span crossing a line ending is resolved, and BOTH its lines are still there"
-eq "$(mdp nospan '`a\nb`\n' | tr -d '\n' | wc -c | tr -d ' ')" 0 \
-   "...with nothing left in either of them"
-eq "$(mdp nospan 'x`a\nb\n')" 'x`a
+eq "$(mdp mask '`a\nb`\n' | tr -d '\001\n' | wc -c | tr -d ' ')" 0 \
+   "...with nothing but mask bytes left in either of them"
+eq "$(mdp mask 'x`a\nb\n')" 'x`a
 b' "an UNMATCHED run is literal text, so a stray backtick swallows nothing"
 
 # LEFTMOST OPENER WINS — the ordering that satisfies both #136 repros at once. Comments-first
