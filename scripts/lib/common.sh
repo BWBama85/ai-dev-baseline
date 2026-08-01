@@ -1969,8 +1969,10 @@ adb_version_ge() {
 
 # --- markdown structure: the ONE CommonMark prose filter (#136) ----------------
 #
-# "Is this text a DECLARATION, or is it documentation?" Six places in this repo have to answer
-# that question, and before #136 four of them answered it with their own parser. The bug family is
+# "Is this text a DECLARATION, or is it documentation?" Nine places in this repo have to answer
+# that question, and before #136 four of them answered it with their own parser. Seven consume this
+# filter now; the two that do not — `state-assert.sh lint` and `check-claims.sh`, both of which say
+# so in their own source — are tracked in #251 rather than left implied. The bug family is
 # always the same shape and it has been fixed one instance at a time since #69: a `#N` mention
 # (#69), a NEGATED mention (#108), a mention inside a repro block (#117), a fence written inside a
 # list item (#135). Every one of them is TEXT THAT DOCUMENTS THE VOCABULARY BEING READ AS AN
@@ -2003,8 +2005,8 @@ adb_version_ge() {
 # obvious streaming fix is worse than the bug: an "am I inside a span?" flag lets one stray
 # backtick (`` it`s fine ``) swallow every edge after it, which is the UNDER-MATCH direction and
 # the dangerous one — a dropped edge marks a genuinely blocked bundle `ready`. Bounding span
-# resolution to the PARAGRAPH keeps both: the multi-line span resolves, and the stray tick can
-# only ever reach the end of its own paragraph.
+# resolution to the BLOCK above keeps both: the multi-line span resolves, and the stray tick can
+# only ever reach the end of its own block.
 #
 # TWO VIEWS, because one sanitized string cannot serve these consumers and pretending otherwise is
 # how the last collapse silently disabled a rule:
@@ -2026,11 +2028,13 @@ adb_version_ge() {
 #
 # ORDER OF OPERATIONS, which is the part every previous attempt got wrong in one direction or the
 # other:
-#   1. BLOCK first, on the raw line — fences, blockquotes, indented code. Nothing else can be
-#      decided until this is, because a backtick run inside a fence is not a span delimiter.
-#      Deciding it WITHOUT consulting comment state is deliberate and it is what removed a whole
-#      class of coupling: a `<!--` sitting in a fence's info string can no longer arm the
-#      cross-line comment state, so the "disarm it again" special case is simply gone.
+#   1. BLOCK first, on the raw line — fences, blockquotes, indented code, and an HTML comment that
+#      STARTS a line. Nothing else can be decided until this is, because a backtick run inside a
+#      fence is not a span delimiter. A `<!--` in a fence's INFO STRING therefore cannot arm
+#      anything (the fence is decided first), so the old "disarm it again" special case is gone —
+#      but a line-initial comment has to be a BLOCK rather than an inline, because the inline pass
+#      runs a whole block BEHIND this one: a fence or a blockquote written inside a multi-line
+#      comment used to mutate block state before anything knew a comment was open.
 #   2. INLINE second, per paragraph, in ONE left-to-right pass in which a code-span opener and a
 #      `<!--` compete and WHICHEVER OPENS FIRST WINS. That is CommonMark's own precedence, and it
 #      is the only ordering that satisfies both reported repros at once: comments-first honors a
