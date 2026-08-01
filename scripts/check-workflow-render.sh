@@ -16,6 +16,28 @@
 # Uses the shared unit-test assertion family from check-lib.sh (ok/bad/eq/has/hasnt +
 # check_summary). Run standalone or via scripts/selfcheck.sh.
 
+# bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
+#
+# Before the cd, because $0 is frozen at invocation: a script that has already changed directory
+# may be unable to name itself for the re-exec.
+#
+# Before `set -u`, because sourcing is not the place to enforce it. An unbound variable expanded
+# while a library loads is FATAL under `set -u` — it kills the shell outright, before this script
+# has run a line of its own — so a single bad expansion anywhere in common.sh would take out the
+# whole suite with a message about a variable rather than about the library. `set -u` goes on
+# immediately below and governs everything this script actually does.
+#
+# And the load is confirmed by PROBING FOR THE FUNCTION, not by the source's exit status: a
+# sourced file returns its LAST command's status, so `. lib || exit 1` reports whatever that
+# happened to be and says nothing about whether the file loaded. Same idiom as project-gates.sh
+# and roadmap-lib.sh, which learned this first.
+# shellcheck source=/dev/null
+. "$(dirname "$0")/lib/common.sh" 2>/dev/null
+command -v adb_require_bash >/dev/null 2>&1 || {
+  printf '%s: FATAL — scripts/lib/common.sh is missing or corrupt; cannot verify the bash floor\n' "${0##*/}" >&2
+  exit 1
+}
+adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
@@ -32,8 +54,12 @@ trap 'rm -rf "$WORK"' EXIT
 # log at <dst>/build.log.
 render_fixture() {
   local dst="$1" name="$2" src="$3"
-  mkdir -p "$dst/scripts" "$dst/base/practices" "$dst/base/workflows" || return 2
+  mkdir -p "$dst/scripts" "$dst/scripts/lib" "$dst/base/practices" "$dst/base/workflows" || return 2
   cp "$ROOT/scripts/build.sh" "$dst/scripts/build.sh" || return 2
+  # build.sh gates its own interpreter (#256), so the fixture repo needs the library that holds the
+  # gate. Without it the fixture dies at the source line and EVERY assertion below reports the same
+  # "no SKILL.md" — a fixture failure wearing a render failure's clothes.
+  cp "$ROOT/scripts/lib/common.sh" "$dst/scripts/lib/common.sh" || return 2
   printf '# index\n' > "$dst/base/practices/00-index.md"
   printf '# dummy practice\n' > "$dst/base/practices/aaa.md"
   cp "$src" "$dst/base/workflows/$name.md" || return 2

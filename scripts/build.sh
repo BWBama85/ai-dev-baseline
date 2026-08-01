@@ -7,6 +7,12 @@
 # result. CI re-runs this and fails on drift, so a stale root doc can't merge.
 
 set -euo pipefail
+# bash 5.3 runtime floor (#256) — FIRST executable statement, before anything resolves a path
+# or reads input. adb_require_bash re-execs into a >= 5.3 interpreter or exits with the
+# platform's install instructions.
+# shellcheck source=/dev/null
+. "$(dirname "$0")/lib/common.sh" || exit 1
+adb_require_bash "$@"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"

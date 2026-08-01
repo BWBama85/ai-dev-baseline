@@ -9,6 +9,48 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **The bash 5.3 floor is now ENFORCED at runtime, not just observed in CI** (#256, #261, #2;
+  D30, D31, D32). #257 made every CI job prove which interpreter it got; this makes an entry
+  point that got the wrong one repair itself or stop.
+  - **`adb_require_bash`** in `scripts/lib/common.sh`, reusing the existing `adb_version_ge`.
+    Below the floor it **re-execs** into a >= 5.3 interpreter found at a fixed candidate list, and
+    only then fails — with the running version, the floor, and the **platform's** install command
+    (macOS `brew install bash`; Fedora/Arch/Alpine's package; and for Debian/Ubuntu <= 25.10 the
+    honest answer that *no 5.3 package exists*, so "install bash" would be unfollowable advice).
+  - **Re-exec is the mechanism, not belt-and-braces.** On macOS `/bin/bash` is 3.2.57 permanently,
+    so 5.3 is reachable only through `PATH` — and `PATH` is exactly what a Stop hook, a gate script
+    or another agent's CLI does not reliably carry. Reported live on the owner's machine: a
+    defensive `~/.zshrc` line ordering `/usr/bin:/bin` ahead of `/opt/homebrew/bin` left `env bash`
+    on 3.2.57 after a *successful* `brew install bash`. That is now a regression fixture.
+  - **Every entry point is classified, and the set is closed.** 55 **gate** · 3 **advisory** ·
+    1 **exempt**. `check-bash-floor.sh --entrypoints` fails the build on a shebang-bearing file
+    that is unclassified, uses the wrong form for its class, calls the gate in a comment, or calls
+    it after a `cd` or a stdin read — because `$0` is frozen at invocation and a drained hook
+    payload is not restored by the re-exec.
+  - **Two carve-outs, both load-bearing and both pinned.** `common.sh` stays parseable *below* the
+    floor forever (D30) — it holds the gate, and a caller cannot reach a function until sourcing
+    finishes, so a 5.3-only construct there would make the gate unreachable on exactly the hosts it
+    exists for; it is the one file #258/#259 must skip. And `check-bash-floor.sh` does not call the
+    gate (D31) — it is the observer, and its own negative test runs it under an old `/bin/bash`
+    expecting red.
+  - **The installer sources the gate rather than copying it.** Both issues asked for a standalone
+    copy on the premise that `install.sh` "cannot source what it installs". It already does
+    (`install.sh:24`) — it runs *from* the clone it installs — so the copy was not written; it
+    would have duplicated candidate resolution, version comparison and diagnostics for nothing.
+  - **Windows via WSL2** (#2): `docs/installation.md` states the WSL2 + Ubuntu 26.04 requirement and
+    the clone-inside-WSL rule; `install.sh` preflights for **CRLF** and warns (never fails) on a
+    `/mnt/<drive>/` checkout; `.gitattributes` pins `*.sh` **and the extensionless `bin/` commands**
+    to LF. The remedy deliberately does **not** suggest `git checkout .`, which destroys
+    uncommitted work. The WSL smoke CI job is sliced out — a `schedule`/`workflow_dispatch`
+    workflow cannot run until it is on the default branch, so "seen green" is unreachable from the
+    PR that introduces it.
+  - **Found by the guard harness, before review:** the loop sentinel `_ADB_BASH_REEXEC` is
+    exported, so a re-exec'd parent handed it to every child and a child starting on the old
+    interpreter failed closed instead of repairing itself. `selfcheck.sh` is exactly that shape —
+    re-exec, then ~30 `bash scripts/check-*.sh` children — so all of them would have died on a
+    machine with a shadowed Homebrew prefix. Fixed by clearing the sentinel once the version check
+    has passed, which keeps it a loop guard; pinned by a fixture watched failing without the fix.
+
 - **An edge `/roadmap` could not parse is now SAID, instead of silently dropped** (#132, D28).
   Every fix in this family (#69, #108, #112, #117, #136) resolved an ambiguity by picking a side
   silently, so "this body declares no edge" and "this body declares an edge I could not parse"

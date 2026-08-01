@@ -39,6 +39,20 @@
 
 set -u
 
+# bash 5.3 runtime floor (#256) — the ADVISORY form, and the distinction is this file's own
+# contract rather than a preference: a SessionStart hook renders an error notice on EVERY session
+# start when it exits non-zero, and this one exits 0 on every path by design — see the harness
+# contract above. Hard-failing here would make a sub-floor host look BROKEN rather than out of
+# date on every single session start, which is the opposite of what this file already promises.
+# It still takes the re-exec, which is silent and strictly better; it just never dies of the floor.
+#
+# `|| :` because the diagnostic already went to stderr and a non-zero status here must not reach
+# a `set -e` or become this process's exit code.
+if [ -f "$(dirname "$0")/lib/common.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$(dirname "$0")/lib/common.sh" && adb_require_bash_advisory "$@" || :
+fi
+
 # Always exit 0 — see the harness contract above. Registered before anything else can fail, so even
 # a syntax-level surprise in a sourced library cannot turn into a session-start error.
 trap 'exit 0' EXIT

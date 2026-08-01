@@ -215,6 +215,68 @@ a clear message (nothing is written) — `git init` first if it really is a proj
 
 ## 7. Requirements
 
+### bash 5.3 is a hard floor
+
+Every entry point checks its own interpreter before doing anything else. If the
+one it got is below **5.3**, it **re-execs** into a newer one it finds at a fixed
+path; if there is none, it **exits non-zero** and prints your platform's install
+command. There is no flag to lower it.
+
+| Platform | How to get bash >= 5.3 |
+|---|---|
+| **macOS** | `brew install bash`. `/bin/bash` is **3.2.57** and Apple keeps it there permanently, so Homebrew's is the only modern one. See the `PATH` note below. |
+| **Ubuntu 26.04+** | Ships `5.3` — nothing to do. |
+| **Ubuntu <= 25.10, Debian stable** | **No 5.3 package exists.** Upgrade the release, use a backport, or build from source. Ubuntu 24.04 ships `5.2.21` and Debian stable `5.2.p15` — both below the floor. |
+| **Fedora / RHEL** | `sudo dnf install bash` |
+| **Arch** | `sudo pacman -S bash` |
+| **Alpine** | `apk add bash` |
+| **Windows** | **WSL2 only** — see below. |
+
+**macOS: it is a `PATH` problem, not an install problem.** Homebrew installs
+5.3 *alongside* Apple's 3.2.57 rather than replacing it, so which one a
+`#!/usr/bin/env bash` script gets is decided entirely by `PATH` ordering. A
+`PATH` that lists `/usr/bin:/bin` **before** `/opt/homebrew/bin` still resolves
+the 2006 interpreter, even though `brew install bash` succeeded. Homebrew warns
+about this at install time (`shadowed by /bin/bash`) and it is easy to miss.
+Non-interactive shells — hooks, gate scripts, anything another agent's CLI
+spawns — often carry no Homebrew prefix at all. This is why the gate re-execs
+rather than merely complaining, and it means you do not have to get `PATH` right
+for the framework to work.
+
+### Windows: WSL2 only
+
+Windows is supported **through WSL2 and nothing else**. WSL2 *is* Linux — same
+interpreter, same userland, same symlinks — so there is no separate Windows port
+to install. Git Bash / MSYS2 and Cygwin are **not** supported: MSYS2 is a
+different userland that has had no portability pass here, and Cygwin's bash
+(`5.2.p21`) is below the floor regardless.
+
+Two things to get right:
+
+1. **The distro must ship bash 5.3.** `wsl --install` may still default to an
+   Ubuntu LTS that does not — 24.04 ships `5.2.21`. Install a 26.04 distro:
+   ```powershell
+   wsl --install -d Ubuntu-26.04
+   ```
+2. **Clone inside the WSL filesystem, not under `/mnt/c`.** Two distinct
+   failures live there:
+   - **CRLF.** A clone made by *Windows* git with `core.autocrlf=true` and then
+     run from WSL gives every script `\r` line endings, and the symptom is the
+     unhelpful `bash: $'\r': command not found` — on every entry point at once.
+     `install.sh` preflights for this and fails with the remedy, and
+     `.gitattributes` pins `*.sh` (and the extensionless `bin/` commands) to LF
+     so a fresh clone cannot acquire it. A checkout that is *already* fully
+     corrupted cannot run the preflight at all — `./install.sh` dies on its own
+     shebang first — so if you see that `$'\r'` error, re-clone inside WSL.
+   - **DrvFs semantics.** Exec bits and file modes on `/mnt/c` do not behave like
+     a Linux filesystem without the `metadata` mount option, and it is markedly
+     slower. `install.sh` **warns** here rather than failing.
+
+   The install *destination* is fine either way: `$HOME` under WSL is the Linux
+   home, so `~/.claude` and its symlinks land on the Linux filesystem regardless.
+
+### Tools
+
 | Tool | Needed for |
 |---|---|
 | `git` | Cloning this repo; every skill's branch/PR flow. |
@@ -225,6 +287,9 @@ Without `jq`, hook wiring is skipped (with a warning) but the rest of the
 install still completes. Without `gh`, the install itself still works — only
 the `gh`-dependent skills and the gate's fallback PR check are affected at
 use time.
+
+Bash is different from all three: it is not degradable, so it is checked and
+enforced rather than warned about.
 
 ## 8. A repo's own gate always wins
 

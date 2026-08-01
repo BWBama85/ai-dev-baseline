@@ -25,6 +25,28 @@
 #
 # Usage: bash scripts/check-bash-floor-guard.sh   (exit 0 = every rule observed failing)
 
+# bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
+#
+# Before the cd, because $0 is frozen at invocation: a script that has already changed directory
+# may be unable to name itself for the re-exec.
+#
+# Before `set -u`, because sourcing is not the place to enforce it. An unbound variable expanded
+# while a library loads is FATAL under `set -u` — it kills the shell outright, before this script
+# has run a line of its own — so a single bad expansion anywhere in common.sh would take out the
+# whole suite with a message about a variable rather than about the library. `set -u` goes on
+# immediately below and governs everything this script actually does.
+#
+# And the load is confirmed by PROBING FOR THE FUNCTION, not by the source's exit status: a
+# sourced file returns its LAST command's status, so `. lib || exit 1` reports whatever that
+# happened to be and says nothing about whether the file loaded. Same idiom as project-gates.sh
+# and roadmap-lib.sh, which learned this first.
+# shellcheck source=/dev/null
+. "$(dirname "$0")/lib/common.sh" 2>/dev/null
+command -v adb_require_bash >/dev/null 2>&1 || {
+  printf '%s: FATAL — scripts/lib/common.sh is missing or corrupt; cannot verify the bash floor\n' "${0##*/}" >&2
+  exit 1
+}
+adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
@@ -328,6 +350,327 @@ for bogus in x -1 ٥.٣ 5.3.x " " 5..3; do
   ADB_BASH_FLOOR="$bogus" bash "$LINT" --runtime >/dev/null 2>&1
   no $? "runtime: a malformed floor '$bogus' is rejected, never treated as 0"
 done
+
+# =====================================================================================================
+# #256 — the RUNTIME GATE (adb_require_bash) and the ENTRY-POINT LINT
+#
+# Everything above proves #257's OBSERVER: CI records which interpreter each job got. Everything
+# below proves #256's ENFORCEMENT: an entry point that got the wrong one repairs itself or stops.
+# Same discipline, and for the same reason — a gate's failure mode is silence, so each branch gets
+# a fixture that must make the real code come back red.
+#
+# EVERY FIXTURE IS A THROWAWAY SCRIPT IN $work. Nothing here edits a tracked file: the code under
+# test reads tracked files, and testing it by mutating one ends in the `git checkout --` that
+# base/practices/self-review.md and git-and-prs.md exist to forbid.
+# =====================================================================================================
+
+COMMON="$PWD/scripts/lib/common.sh"
+SYS_BASH=/bin/bash
+
+# A throwaway entry point that gates itself, then reports what it is running on.
+# $1 = path, $2 = the function to call (adb_require_bash | adb_require_bash_advisory), $3 = extra
+# lines injected before the call (used to stub adb_bash_candidates).
+make_entry() {
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -u\n'
+    printf '. "%s"\n' "$COMMON"
+    [ -n "${3:-}" ] && printf '%s\n' "$3"
+    printf '%s "$@"\n' "$2"
+    printf 'printf "RAN under %%s\\n" "$BASH"\n'
+    printf 'printf "ARG[%%s]\\n" "$@"\n'
+  } > "$1"
+  chmod +x "$1"
+}
+
+# A stub interpreter that CLAIMS version $2 when probed. $3 controls what it does when actually
+# run: "lie" execs the real system bash (so it reports >= floor but delivers 3.2 — the exec-loop
+# scenario), anything else is inert.
+make_stub_bash() {
+  mkdir -p "$(dirname "$1")"
+  { printf '#!/bin/sh\n'
+    printf 'if [ "$1" = "-c" ]; then printf "%s"; exit 0; fi\n' "$2"
+    if [ "${3:-}" = "lie" ]; then printf 'exec %s "$@"\n' "$SYS_BASH"; else printf 'exit 0\n'; fi
+  } > "$1"
+  chmod +x "$1"
+}
+
+# --- the gate's happy path --------------------------------------------------------------------------
+d="$work/rb"; mkdir -p "$d"
+make_entry "$d/ok.sh" adb_require_bash ""
+out="$(bash "$d/ok.sh" alpha 2>&1)"; rc=$?
+eq "$rc" "0" "gate: an interpreter at or above the floor passes straight through"
+has "$out" "RAN under" "gate: the script actually ran"
+hasnt "$out" "FATAL" "gate: a passing run says nothing at all"
+
+# --- THE acceptance fixture (#256): a real 3.2 with Homebrew hidden from PATH ------------------------
+# This is the reported failure, reproduced rather than described: `brew install bash` succeeded, and
+# a defensive ~/.zshrc line ordering /usr/bin:/bin ahead of /opt/homebrew/bin meant `env bash` still
+# resolved 3.2.57. PATH is where the wrong answer comes from, so the fixed candidate list is the only
+# thing that can find the right one. Guarded on a genuinely old /bin/bash so this asserts nothing
+# false on Linux, where /bin/bash IS 5.3.
+sysv="$("$SYS_BASH" -c 'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"' 2>/dev/null || echo 99)"
+if [ -x "$SYS_BASH" ] && [ "$sysv" = "3.2" ]; then
+  out="$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$SYS_BASH" "$d/ok.sh" alpha 2>&1)"; rc=$?
+  eq "$rc" "0" "re-exec: a real 3.2 with PATH shadowing Homebrew still reaches a >= floor interpreter"
+  hasnt "$out" "3.2.57" "re-exec: the script did not end up running on the 2006 interpreter"
+
+  # ARGUMENT BYTES, not just argument count. exec is the one place a quoted empty string, an
+  # embedded space or a glob character can be silently reshaped, and every entry point that gates
+  # itself passes "$@" through this.
+  out="$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$SYS_BASH" "$d/ok.sh" alpha "b c" '' 'x*y' 2>&1)"
+  has "$out" "ARG[alpha]" "re-exec: a plain argument survives"
+  has "$out" "ARG[b c]"   "re-exec: an argument containing a space survives as ONE argument"
+  has "$out" "ARG[]"      "re-exec: an EMPTY argument survives as an argument"
+  has "$out" "ARG[x*y]"   "re-exec: a glob character survives unexpanded"
+
+  # THE NEGATIVE JOB docs/ci-runners.md said #256 owed: the suite proven to FAIL below the floor,
+  # against a real old interpreter rather than a lowered constant. Runs on the macOS CI job, which
+  # is the only place a real 3.2 exists.
+  out="$(_ADB_BASH_REEXEC=1 "$SYS_BASH" "$d/ok.sh" 2>&1)"; rc=$?
+  eq "$rc" "1" "negative: a REAL 3.2 that cannot re-exec fails the entry point outright"
+  hasnt "$out" "RAN under" "negative: the script body never executed on the old interpreter"
+fi
+
+# --- fail closed when no candidate qualifies --------------------------------------------------------
+make_entry "$d/nocand.sh" adb_require_bash 'adb_bash_candidates() { printf "%s\n" "'"$SYS_BASH"'"; }'
+if [ "$sysv" = "3.2" ]; then
+  out="$("$SYS_BASH" "$d/nocand.sh" 2>&1)"; rc=$?
+  eq "$rc" "1" "no candidate: the gate exits non-zero rather than continuing"
+  hasnt "$out" "RAN under" "no candidate: the script body never ran"
+  has "$out" "bash >= 5.3 is required" "no candidate: the message names the floor"
+  has "$out" "3.2.57" "no candidate: the message names the version actually running"
+fi
+
+# A stub reporting a real-shaped 5.2.21 — the OTHER interpreter #256's acceptance names. It is a
+# STUB, not a real 5.2 binary: no hosted runner or workstation here has one, and hermetically
+# obtaining one is out of reach. Said plainly rather than implied, because claiming a real-5.2
+# observation this suite never made is exactly the overstatement these guards exist to prevent.
+make_stub_bash "$work/b52/bash" "5.2.21"
+make_entry "$d/only52.sh" adb_require_bash 'adb_bash_candidates() { printf "%s\n" "'"$work"'/b52/bash"; }'
+if [ "$sysv" = "3.2" ]; then
+  out="$("$SYS_BASH" "$d/only52.sh" 2>&1)"; rc=$?
+  eq "$rc" "1" "5.2 stub: a 5.2.21 candidate is rejected, not accepted as close enough"
+fi
+# Platform-independent half of the same claim, so this assertion holds on the Linux runner too.
+out="$(bash -c '. "'"$COMMON"'"; adb_version_ge 5.2.21 "$ADB_BASH_FLOOR_DEFAULT"' 2>&1)"; rc=$?
+no "$rc" "5.2.21 compares BELOW the floor constant the gate enforces"
+
+# --- the exec-loop sentinel -------------------------------------------------------------------------
+# A candidate that probes >= floor but does not deliver it: a wrapper, a shim, a stale symlink. Without
+# the sentinel this forks forever; with it, exactly one re-exec then a clean failure.
+make_stub_bash "$work/liar/bash" "5.3.99" lie
+make_entry "$d/liar.sh" adb_require_bash 'adb_bash_candidates() { printf "%s\n" "'"$work"'/liar/bash"; }'
+if [ "$sysv" = "3.2" ]; then
+  out="$(bash -c 'exec 2>&1; "$0" "$1"' "$SYS_BASH" "$d/liar.sh" 2>&1)"; rc=$?
+  eq "$rc" "1" "sentinel: a LYING candidate produces one re-exec and then a clean failure, not a loop"
+  has "$out" "already attempted" "sentinel: the message says a re-exec was tried and did not deliver"
+fi
+
+# --- the sentinel must not LEAK to children ---------------------------------------------------------
+# The bug this pins was found by this very harness and was live: _ADB_BASH_REEXEC is exported, so a
+# re-exec'd parent handed it to every child, and a child starting on the old interpreter then read
+# "already attempted" and failed closed instead of repairing itself. selfcheck.sh is exactly that
+# shape — it re-execs, then spawns ~30 `bash scripts/check-*.sh`, each resolving `bash` through the
+# same wrong PATH — so every one of them would have died.
+#
+# The fixture is the real shape: a gated parent that re-execs, then runs a gated child the same way
+# selfcheck does. Both must end up on a >= floor interpreter.
+if [ "$sysv" = "3.2" ]; then
+  make_entry "$d/child.sh" adb_require_bash ""
+  { printf '#!/usr/bin/env bash\n'
+    printf 'set -u\n'
+    printf '. "%s"\n' "$COMMON"
+    printf 'adb_require_bash "$@"\n'
+    printf 'printf "PARENT on %%s\\n" "$BASH"\n'
+    printf 'bash "%s" from-parent || printf "CHILD FAILED rc=%%s\\n" "$?"\n' "$d/child.sh"
+  } > "$d/parent.sh"
+  chmod +x "$d/parent.sh"
+  out="$(env -i HOME="$HOME" PATH="/usr/bin:/bin" "$SYS_BASH" "$d/parent.sh" 2>&1)"; rc=$?
+  eq "$rc" "0" "sentinel: a re-exec'd parent's gated CHILD still repairs itself (the leak regression)"
+  has "$out" "ARG[from-parent]" "sentinel: the child actually ran, with its arguments"
+  hasnt "$out" "CHILD FAILED" "sentinel: the child did not inherit 'already attempted' from its parent"
+fi
+
+# --- $0 is not a re-runnable script: sourced, piped, `bash -c` --------------------------------------
+# Found in self-review, and it was a live bug rather than a hypothetical: for `… | bash -s` and for
+# `bash -c`, bash sets $0 to the INTERPRETER — a perfectly readable file — so a `[ -r "$0" ]` test
+# passed and the gate exec'd the bash BINARY as a script (`cannot execute binary file`, rc 126).
+if [ "$sysv" = "3.2" ]; then
+  out="$(printf '. "%s"\nadb_require_bash "$@"\nprintf "RAN\\n"\n' "$COMMON" | "$SYS_BASH" -s 2>&1)"; rc=$?
+  eq "$rc" "1" "piped script: fails closed instead of exec'ing the bash binary as a script"
+  hasnt "$out" "cannot execute binary file" "piped script: never tries to run the interpreter as a script"
+  has "$out" "not a re-runnable script file" "piped script: says WHY it could not re-exec"
+
+  out="$("$SYS_BASH" -c ". \"$COMMON\"; adb_require_bash; printf 'RAN\n'" 2>&1)"; rc=$?
+  eq "$rc" "1" "bash -c: fails closed for the same reason"
+  hasnt "$out" "RAN" "bash -c: the body never ran"
+fi
+
+# --- the ADVISORY form returns; it never exits ------------------------------------------------------
+make_entry "$d/adv.sh" adb_require_bash_advisory 'adb_bash_candidates() { printf "%s\n" "'"$SYS_BASH"'"; }'
+if [ "$sysv" = "3.2" ]; then
+  out="$("$SYS_BASH" "$d/adv.sh" 2>/dev/null)"; rc=$?
+  eq "$rc" "0" "advisory: a sub-floor interpreter does NOT kill an entry point whose contract forbids it"
+  has "$out" "RAN under" "advisory: the body still runs, degraded rather than dead"
+fi
+
+# --- the floor constant is NOT overridable from the environment -------------------------------------
+# ADB_BASH_FLOOR is #257's test seam for the LINT. A production gate honoring it would be a
+# user-settable bypass of the thing it enforces — `ADB_BASH_FLOOR=0` waving 3.2 through every entry
+# point in the repo. The seam stays with the lint; the gate has none.
+if [ "$sysv" = "3.2" ]; then
+  out="$(ADB_BASH_FLOOR=0.0 _ADB_BASH_REEXEC=1 "$SYS_BASH" "$d/ok.sh" 2>&1)"; rc=$?
+  eq "$rc" "1" "gate: ADB_BASH_FLOOR=0.0 does NOT lower the runtime gate (it is the lint's seam only)"
+fi
+
+# --- the floor comparison is FORK-FREE, and must stay that way --------------------------------------
+# The gate answers "is this shell usable" at the top of every entry point. It must not need a second
+# program to decide that: when `awk` is the broken thing, a forking comparison reports `bash >= 5.3
+# is required` and sends the operator after the wrong fault. Driven with a stub `awk` on PATH, the
+# same way check-roadmap.sh proves its own filter fails closed.
+awk_stub="$work/awkstub"; mkdir -p "$awk_stub"
+printf '#!/bin/sh\nexit 7\n' > "$awk_stub/awk"; chmod +x "$awk_stub/awk"
+# "$BASH", not `bash`: this must run on a KNOWN >= floor interpreter, and `bash` is resolved from a
+# PATH that on a stock Mac points at 3.2.57 — which would make this assert the opposite of what it
+# is named for. This script gated its own interpreter at the top, so $BASH is >= the floor by
+# construction.
+out="$(PATH="$awk_stub:$PATH" "$BASH" -c '. "'"$COMMON"'"; adb_bash_self_ok; printf "%s" "$?"' 2>/dev/null)"
+eq "$out" "0" "floor compare: a BROKEN awk does not make a good interpreter look sub-floor"
+if [ "$sysv" = "3.2" ]; then
+  out="$(PATH="$awk_stub:$PATH" "$SYS_BASH" "$d/ok.sh" alpha 2>&1)"; rc=$?
+  eq "$rc" "0" "floor compare: the re-exec still finds a candidate with awk broken"
+  has "$out" "ARG[alpha]" "floor compare: and the script runs"
+fi
+# The integer path answers only the shape it is asked in, and says 2 — never a guess — otherwise,
+# so the caller falls back to the shared comparator rather than getting a wrong answer cheaply.
+out="$("$BASH" -c '. "'"$COMMON"'"
+                   for pair in "5 3" "5 2" "6 0" "4 9" "  " "x y"; do
+                     # shellcheck disable=SC2086  # deliberate split: the pair IS two arguments
+                     adb_bash_ge_floor $pair; printf "%s " "$?"
+                   done' 2>/dev/null)"
+out="${out% }"
+eq "$out" "0 1 0 1 2 2" "floor compare: 5.3 ok · 5.2 no · 6.0 ok · 4.9 no · empty and non-numeric defer (2)"
+
+# --- the ENTRY-POINT LINT, rule by rule -------------------------------------------------------------
+# Its failure mode is the usual one: a classifier that stops recognizing files reports the same clean
+# verdict as a compliant tree. Each rule gets a fixture tree it must reject, plus a clean tree proving
+# the lint is not simply red-always.
+ep_lint() { EPOUT="$(bash "$LINT" --entrypoints "$1" 2>&1)"; EPRC=$?; }
+
+# ep_tree <dir> <body-lines…> — a tree with one compliant entry point plus whatever the caller adds.
+ep_tree() {
+  mkdir -p "$1/scripts"
+  printf '#!/usr/bin/env bash\nset -u\nadb_require_bash "$@"\ncd /tmp\n' > "$1/scripts/compliant.sh"
+}
+
+d="$work/ep-clean"; ep_tree "$d"; ep_lint "$d"
+eq "$EPRC" "0" "entrypoints: a compliant tree passes"
+has "$EPOUT" "1 entry point(s)" "entrypoints: the lint reports how many it classified"
+has "$EPOUT" "1 gate, 0 advisory, 0 exempt" "entrypoints: and the per-class counts, so a blind scan is visible"
+
+d="$work/ep-missing"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\ncd /tmp\n' > "$d/scripts/ungated.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a shebang-bearing file that never calls the gate is rejected"
+has "$EPOUT" "ungated.sh" "entrypoints: the offending file is named"
+
+d="$work/ep-comment"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\n# adb_require_bash "$@"\ncd /tmp\n' > "$d/scripts/commented.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a COMMENTED call does not count as calling it"
+has "$EPOUT" "commented.sh" "entrypoints: the commented file is named"
+
+d="$work/ep-late"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\ncd /tmp\nadb_require_bash "$@"\n' > "$d/scripts/late.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a call AFTER a cd is rejected — \$0 may no longer resolve"
+has "$EPOUT" "AFTER a cd" "entrypoints: the message says what came first"
+
+d="$work/ep-stdin"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\ninput="$(cat)"\nadb_require_bash "$@"\n' > "$d/scripts/stdin.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a call after a stdin read is rejected — the re-exec cannot restore a drained payload"
+
+d="$work/ep-variant"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\nadb_require_bash_advisory "$@"\n' > "$d/scripts/soft.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: an unclassified file may not quietly pick the ADVISORY form"
+has "$EPOUT" "is not a gate" "entrypoints: the message says why the soft form is wrong there"
+
+# The classification is bidirectional, which is the half that keeps `advisory` from becoming a dial.
+d="$work/ep-adv-hard"; ep_tree "$d"; mkdir -p "$d/agents/claude/scripts"
+printf '#!/usr/bin/env bash\nset -u\nadb_require_bash "$@"\n' > "$d/agents/claude/scripts/statusline.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a declared-ADVISORY file using the hard-failing form is rejected too"
+has "$EPOUT" "classified ADVISORY" "entrypoints: the message names the classification it violated"
+
+d="$work/ep-adv-ok"; ep_tree "$d"; mkdir -p "$d/agents/claude/scripts"
+printf '#!/usr/bin/env bash\nset -u\nadb_require_bash_advisory "$@"\n' > "$d/agents/claude/scripts/statusline.sh"
+ep_lint "$d"
+eq "$EPRC" "0" "entrypoints: a declared-ADVISORY file using the advisory form passes"
+has "$EPOUT" "1 advisory" "entrypoints: and is counted as advisory, not as a gate"
+
+# The exemption has to be VISIBLE, or it is indistinguishable from an oversight.
+d="$work/ep-exempt"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\n' > "$d/scripts/check-bash-floor.sh"
+ep_lint "$d"
+eq "$EPRC" "0" "entrypoints: the exempt observer is allowed NOT to call the gate"
+has "$EPOUT" "1 exempt" "entrypoints: and is reported as exempt rather than silently skipped"
+printf '#!/usr/bin/env bash\nset -u\nadb_require_bash "$@"\n' > "$d/scripts/check-bash-floor.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: the exempt observer calling the gate is itself an error"
+has "$EPOUT" "stop testing" "entrypoints: the message says what wiring it in would break"
+
+d="$work/ep-empty"; mkdir -p "$d"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a tree with no entry points is a failure, not a clean run"
+has "$EPOUT" "scanned nothing" "entrypoints: it says it scanned nothing"
+
+# --- CRLF and DrvFs (#2) ----------------------------------------------------------------------------
+crlf_scan() { CLOUT="$(bash -c '. "'"$COMMON"'"; adb_crlf_scan "$1"' _ "$1" 2>&1)"; CLRC=$?; }
+
+d="$work/crlf"; mkdir -p "$d/bin" "$d/scripts"
+printf '#!/usr/bin/env bash\necho ok\n' > "$d/scripts/fine.sh"
+printf '#!/usr/bin/env bash\necho ok\n' > "$d/bin/agent-init"
+printf 'echo "an escaped \\r is two characters, not a CR byte"\n' > "$d/scripts/escaped.sh"
+crlf_scan "$d"
+eq "$CLRC" "0" "crlf: a clean tree passes"
+hasnt "$CLOUT" "escaped.sh" "crlf: a \\r ESCAPE in source is not mistaken for a CR byte"
+
+printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$d/scripts/fine.sh"
+crlf_scan "$d"
+eq "$CLRC" "1" "crlf: a CRLF .sh file is caught"
+has "$CLOUT" "fine.sh" "crlf: the offending file is named"
+
+printf '#!/usr/bin/env bash\necho ok\n' > "$d/scripts/fine.sh"
+printf '#!/usr/bin/env bash\r\necho ok\r\n' > "$d/bin/agent-init"
+crlf_scan "$d"
+eq "$CLRC" "1" "crlf: an EXTENSIONLESS entry point is caught too — a *.sh-only scan would miss bin/"
+has "$CLOUT" "agent-init" "crlf: the extensionless file is named"
+
+# The remedy must not hand the user a command that destroys uncommitted work. `git checkout .` is
+# named in base/practices/git-and-prs.md as unrecoverable, and #2's own body suggested it.
+rem="$(bash -c '. "'"$COMMON"'"; adb_crlf_remedy' 2>&1)"
+hasnt "$rem" "git checkout ." "crlf remedy: never suggests the bare git checkout that discards uncommitted work"
+has "$rem" "Re-clone INSIDE the WSL filesystem" "crlf remedy: leads with the non-destructive fix"
+
+# DrvFs: a WARNING, never a failure, and only for the Windows DRIVE shape. `/mnt/data` is an
+# ordinary Linux mountpoint on every non-WSL machine, and firing on it would be noise for people
+# who have never touched Windows.
+drv() { DRVOUT="$(WSL_DISTRO_NAME="${2:-}" bash -c '. "'"$COMMON"'"; adb_drvfs_warn "$1"' _ "$1" 2>&1)"; DRVRC=$?; }
+drv /mnt/c/Users/x/repo Ubuntu-26.04
+eq "$DRVRC" "0" "drvfs: a /mnt/c path WARNS and returns success — it never blocks the install"
+has "$DRVOUT" "WARNING" "drvfs: and it does warn"
+drv /mnt/data/repo Ubuntu-26.04
+eq "$DRVRC" "0" "drvfs: /mnt/data is an ordinary mountpoint, not a Windows drive"
+hasnt "$DRVOUT" "WARNING" "drvfs: so it says nothing"
+drv /home/me/repo Ubuntu-26.04
+hasnt "$DRVOUT" "WARNING" "drvfs: a normal Linux path says nothing"
+drv /mnt/c/Users/x/repo ""
+if [ -z "${WSL_INTEROP:-}" ] && ! grep -qi microsoft /proc/version 2>/dev/null; then
+  hasnt "$DRVOUT" "WARNING" "drvfs: outside WSL entirely, even /mnt/c says nothing"
+fi
 
 # --- usage ------------------------------------------------------------------------------------------
 bash "$LINT" --bogus >/dev/null 2>&1; no $? "an unknown flag exits non-zero"

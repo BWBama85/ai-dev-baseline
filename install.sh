@@ -22,6 +22,36 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Shared shell primitives (adb_info / adb_link / …) — the ONE home, sourced not copied.
 # shellcheck source=/dev/null
 . "$REPO/scripts/lib/common.sh"
+# bash 5.3 runtime floor (#256/#261) — SOURCED, not copied.
+#
+# Both issues assert the installer "cannot source common.sh — it is what installs it", and ask for
+# a standalone copy of the gate as a documented exception to `source, never copy`. That premise
+# does not hold: install.sh runs FROM the clone it installs, and it already sourced common.sh on
+# the line above. The exception would therefore buy nothing and cost a second implementation of
+# candidate resolution, version comparison and per-platform diagnostics, drifting from the first.
+# What actually makes this reachable is the bootstrap carve-out on common.sh itself (D30) — that
+# file stays parseable below the floor, permanently. See D31.
+adb_require_bash "$@"
+
+# WSL checkout preflight (#2). Runs here, in the installer, and NOT in every entry point: it is a
+# property of this CLONE, checked once when the clone is first put to work, rather than a scan
+# every gate invocation pays for. The install is also where a bad clone is cheapest to fix — the
+# alternative is 59 scripts each dying at their shebang later.
+#
+# WHAT THIS CANNOT DO, stated because a preflight that overstates itself is worse than none: a
+# FULLY CRLF-corrupted checkout cannot run this check at all. `./install.sh` dies on the `bash\r`
+# shebang before line 1 executes. The guarantee for a fresh clone is .gitattributes, which pins
+# these files to LF so a Windows-side clone cannot introduce CRLF in the first place; this
+# preflight catches the already-cloned and partially-corrupted cases, and docs/installation.md
+# names the `bash: $'\r'` symptom so the unrunnable case is still diagnosable by a human.
+if ! _crlf="$(adb_crlf_scan "$REPO")"; then
+  adb_info "install.sh: FATAL — CRLF line endings in this clone's shell files:"
+  printf '%s\n' "$_crlf" | sed 's/^/  /' >&2
+  adb_crlf_remedy
+  exit 1
+fi
+adb_drvfs_warn "$REPO"
+
 BACKUP_DIR="$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)"
 WIRE_HOOKS=1
 AGENTS=()

@@ -79,6 +79,9 @@ defbr()   { gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/
 # `releases/tag/` changelog link on a repo that already has tags. Uses the shared comparator.
 # shellcheck source=/dev/null
 . "$LIB/common.sh"
+# bash 5.3 runtime floor (#256). This is the first point at which common.sh is reachable — $LIB
+# is derived from the git root resolved above — and nothing before it reads stdin or cds.
+adb_require_bash "$@"
 version_max() {   # bare versions on stdin -> highest, bare
   best=""
   while IFS= read -r v; do

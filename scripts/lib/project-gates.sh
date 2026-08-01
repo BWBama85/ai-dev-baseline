@@ -60,6 +60,11 @@ if [ ! -f "$_adb_common" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_adb_common"
+# bash 5.3 runtime floor (#256) — only when EXECUTED. Sourced, `$0` names the CALLER, and the
+# caller is the entry point that owns the gate; re-exec'ing someone else's script from inside a
+# library is not this file's decision to make. An `if`, never `[ … ] && …`: the compound form
+# returns non-zero on the sourced path and would trip a caller's `set -e`.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then adb_require_bash "$@"; fi
 # Validate EVERY common.sh helper this file depends on, not just one — a library truncated
 # after defining adb_toml_get (but before adb_toml_unquote/adb_toml_keys) would otherwise pass
 # this check and then emit command-not-found noise + an empty (no-gates) result, i.e. the

@@ -30,6 +30,20 @@
 
 set -u
 
+# bash 5.3 runtime floor (#256) — the ADVISORY form, and the distinction is this file's own
+# contract rather than a preference: this gate deliberately refuses to wedge a session over
+# infrastructure absence (#35), reporting once on stderr instead. Hard-failing here would make a
+# sub-floor host look BROKEN rather than out of date, which is exactly the trade this file already
+# declined. It still takes the re-exec, which is silent and strictly better; it just never dies of
+# the floor.
+#
+# `|| :` because the diagnostic already went to stderr and a non-zero status here must not reach
+# a `set -e` or become this process's exit code.
+if [ -f "$(dirname "$0")/lib/common.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$(dirname "$0")/lib/common.sh" && adb_require_bash_advisory "$@" || :
+fi
+
 # Defer to a project-local copy by RUNNING it, not by stepping aside (#240) — same contract as the
 # sibling gates, so a repo can override the policy without editing the install. `exit 0` here was
 # enforcement silently OFF: nothing else invokes a project gate, so a repo that shipped its own

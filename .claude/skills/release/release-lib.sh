@@ -120,6 +120,8 @@ fi
 [ -f "$_ADB_COMMON" ] || { printf 'release-lib: cannot locate scripts/lib/common.sh\n' >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$_ADB_COMMON"
+# bash 5.3 runtime floor (#256), after this file's own two-step resolution of common.sh.
+adb_require_bash "$@"
 command -v adb_version_ge >/dev/null 2>&1 \
   || { printf 'release-lib: common.sh did not provide adb_version_ge\n' >&2; exit 2; }
 

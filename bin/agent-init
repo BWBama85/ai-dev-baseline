@@ -23,6 +23,10 @@ REPO="$(cd "$(dirname "$self")/.." && pwd)"
 # Shared shell primitives (adb_toml_get) — the ONE home, sourced not copied.
 # shellcheck source=/dev/null
 . "$REPO/scripts/lib/common.sh"
+# bash 5.3 runtime floor (#256). Placed after the symlink-resolving REPO bootstrap above rather
+# than before it: this command is installed onto PATH via a symlink, so `dirname "$0"` alone
+# does not find the clone. Still before any cd or argument shift.
+adb_require_bash "$@"
 
 FORCE=0
 [ "${1:-}" = "--force" ] && FORCE=1

@@ -76,7 +76,7 @@ is bash's move to GPLv3, and #255 records the expectation that Apple will not sh
 expectation is what the floor is *planned* around; the **observed** fact, and all this document
 asserts, is the version above.) Homebrew installs 5.3 alongside it, so **every** macOS install of
 this framework resolves its interpreter through `PATH`. That is exactly the surface
-`base/practices/shell-discipline.md` warns is absent in non-interactive shells — the shells that
+`base/practices/shell.md` warns is absent in non-interactive shells — the shells that
 hooks and gate scripts run in — which is why macOS is the platform worth spending a CI job on, and
 why #256 exists.
 
@@ -168,9 +168,19 @@ abandoned.
 
 Stated plainly, because a CI claim that overstates itself is worse than none:
 
-- **The suite is not yet proven to FAIL below the floor.** Every job here proves the runner *has*
-  5.3; none proves the code *needs* it. That negative job lands with **#256**, which owns the
-  runtime gate — and until it exists, "the floor is enforced" is an overstatement.
+- ~~**The suite is not yet proven to FAIL below the floor.**~~ **Closed by #256.** Every job here
+  proves the runner *has* 5.3; the negative half now lives in `check-bash-floor-guard.sh`, which
+  runs a real entry point under Apple's `/bin/bash` 3.2.57 with the re-exec sentinel pre-set and
+  requires a non-zero exit and an unexecuted body. It runs on the **macOS** job, which is the only
+  place a real sub-floor interpreter exists — the assertion is guarded on `/bin/bash` genuinely
+  being 3.2, so on Linux (where `/bin/bash` *is* 5.3) it skips rather than asserting something
+  false. It is a **step**, not a new job, so the required-context count is unchanged.
+
+  What that negative half still does **not** have is a real **5.2** interpreter. #256's acceptance
+  asked for one; no hosted runner or workstation here has a 5.2 binary and obtaining one
+  hermetically is out of reach, so 5.2 is covered by a **stub** that reports `5.2.21` when probed,
+  plus a direct comparison against the floor constant. Said plainly rather than implied: the
+  observation against 3.2 is real, the one against 5.2 is synthetic.
 - **No 5.3-only syntax has been written yet.** #258/#259 do that. This issue's job is to make the
   interpreter correct *before* the first such line lands, so the CI mirror never silently stops
   mirroring.

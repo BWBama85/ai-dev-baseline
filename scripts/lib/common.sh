@@ -15,7 +15,14 @@
 #     install.sh symlinks the whole scripts/lib/ dir into ~/.<agent>/scripts/lib/.
 #
 # Contract, so a sourced library never surprises its caller:
-#   - Portable to macOS bash 3.2 (no mapfile, no readlink -f, no associative arrays).
+#   - THE BOOTSTRAP CARVE-OUT (#256/#261, D30). This repo's runtime floor is bash 5.3, and every
+#     other file may use it — but THIS ONE MAY NOT, permanently. It holds adb_require_bash, the
+#     gate that re-execs an entry point into a 5.3 interpreter, and a caller cannot reach that
+#     function until sourcing has already finished. A 5.3-only construct anywhere in this file
+#     would therefore make the gate unreachable on exactly the hosts it exists for: the sub-floor
+#     ones. So common.sh stays parseable by the interpreter it is upgrading FROM — no mapfile, no
+#     readlink -f, no associative arrays, no namerefs, no `${ command; }`.
+#     This is the one file #258/#259's modernization must skip.
 #   - Passes shellcheck --severity=warning -e SC1091.
 #   - Depends on NO caller globals (REPO / BACKUP_DIR / HOME-relative state) — every
 #     input is a function argument. ($HOME is read only to prettify log paths.)
@@ -1965,6 +1972,366 @@ adb_version_ge() {
       }
       exit 0;
     }'
+}
+
+# --- the bash 5.3 runtime floor (#256) ----------------------------------------
+#
+# #257 made CI *observe* which interpreter each job got. This is the other half: making an
+# entry point that got the wrong one either FIX itself or STOP, on a contributor's machine as
+# well as on a runner.
+#
+# THE PROBLEM IS RESOLUTION, NOT COMPARISON. On macOS bash 5.3 is never /bin/bash — SIP pins that
+# at 3.2.57 permanently — so Homebrew's 5.3 is reachable only through PATH, and every one of this
+# repo's `#!/usr/bin/env bash` shebangs therefore resolves whatever PATH happens to hold. The
+# shells most likely to lack the Homebrew prefix are exactly the ones with no human watching:
+# Stop hooks, gate scripts, another agent's CLI. Reported live on the owner's machine (#256): a
+# defensive `~/.zshrc` line written specifically to make non-interactive shells work is what
+# ordered /usr/bin:/bin ahead of /opt/homebrew/bin, so `env bash` resolved 3.2.57 after a
+# successful `brew install bash`. A PATH fix on one machine does not close that — we control no
+# adopter's PATH — which is why the re-exec below is the load-bearing mechanism rather than
+# belt-and-braces.
+#
+# THE BOOTSTRAP CARVE-OUT, and it is load-bearing. This file is what performs the upgrade, so it
+# must stay parseable by the interpreter it is upgrading FROM. Callers cannot reach
+# adb_require_bash until sourcing has already finished, so a 5.3-only construct anywhere in
+# common.sh would make the gate unreachable on exactly the hosts it exists for. **common.sh is
+# therefore permanently exempt from the 5.3 modernization in #258/#259** — see the contract at
+# the top of this file, and D30.
+ADB_BASH_FLOOR_DEFAULT="5.3"
+
+# adb_bash_ge_floor <major> <minor> — is that version at or above the floor?
+#   0 = yes · 1 = no · 2 = this path cannot answer, ask adb_version_ge.
+#
+# FORK-FREE, and that is a correctness property rather than a micro-optimization. `adb_version_ge`
+# is an `awk` program, and the floor question is asked at the top of EVERY entry point — ~60 times
+# in one selfcheck run, plus once inside every hook invocation. Two costs follow, and the second is
+# the serious one:
+#
+#   - 60 processes spawned to settle a comparison two integers already settle;
+#   - the gate starts LYING when `awk` is the thing that is broken. Observed via check-roadmap.sh,
+#     which stubs `awk` to exit 7 to prove roadmap-lib.sh answers "do not trust this answer" (rc 2).
+#     With a forking floor check that run died at rc 1 saying `bash >= 5.3 is required` — blaming
+#     the interpreter for an awk fault, at the exact moment the operator needs pointing at awk.
+#     And it was not confined to a test: on any macOS box whose PATH resolves 3.2 first — the
+#     normal case this whole issue exists for — the candidate probe forked awk too, so selfcheck
+#     itself would have failed there.
+#
+# The thing that decides whether this shell is usable should not need a second program to decide
+# it. `adb_version_ge` stays the ONE home for version comparison generally; this answers the one
+# question it is asked, in the one shape it is asked in (`<major>.<minor>`, which is what the floor
+# constant is and what BASH_VERSINFO reports natively), and returns 2 — never a guess — for
+# anything else, so the caller falls back to the shared comparator.
+adb_bash_ge_floor() {
+  local maj min
+  # A floor carrying a patch component cannot be answered on major.minor alone: dropping it would
+  # make 5.3.0 clear a 5.3.1 floor. Anything non-numeric is likewise not this path's to judge.
+  case "$ADB_BASH_FLOOR_DEFAULT" in
+    *.*.*|*[!0-9.]*|.*|*.|'') return 2 ;;
+  esac
+  maj="${ADB_BASH_FLOOR_DEFAULT%%.*}"; min="${ADB_BASH_FLOOR_DEFAULT#*.}"
+  [ -n "$maj" ] && [ -n "$min" ] || return 2
+  case "${1:-}${2:-}" in ''|*[!0-9]*) return 2 ;; esac
+  [ "$1" -gt "$maj" ] && return 0
+  [ "$1" -lt "$maj" ] && return 1
+  [ "$2" -ge "$min" ]
+}
+
+# Is the RUNNING interpreter at or above the floor? Returns 0/1.
+adb_bash_self_ok() {
+  adb_bash_ge_floor "${BASH_VERSINFO[0]:-0}" "${BASH_VERSINFO[1]:-0}"
+  case "$?" in
+    0) return 0 ;;
+    1) return 1 ;;
+  esac
+  adb_version_ge \
+    "${BASH_VERSINFO[0]:-0}.${BASH_VERSINFO[1]:-0}.${BASH_VERSINFO[2]:-0}" \
+    "$ADB_BASH_FLOOR_DEFAULT"
+}
+
+# Does the bash at $1 clear the floor? Returns 0/1. Same fork-free path, so a broken `awk` cannot
+# make a perfectly good interpreter look unusable.
+adb_bash_candidate_ok() {
+  local v maj rest min
+  v="$(adb_bash_version_at "$1" 2>/dev/null || true)"
+  [ -n "$v" ] || return 1
+  maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"
+  adb_bash_ge_floor "$maj" "$min"
+  case "$?" in
+    0) return 0 ;;
+    1) return 1 ;;
+  esac
+  adb_version_ge "$v" "$ADB_BASH_FLOOR_DEFAULT"
+}
+
+# Print "<major>.<minor>.<patch>" for the bash at $1, or nothing if it cannot be run.
+# Probed by EXECUTING it: a filename says nothing about a version, and `--version` parsing has to
+# cope with the banner's wording. BASH_VERSINFO is the interpreter's own answer.
+adb_bash_version_at() {
+  [ -x "$1" ] || return 1
+  "$1" -c 'printf "%s.%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "${BASH_VERSINFO[2]}"' 2>/dev/null
+}
+
+# The interpreters to try, in order, one per line.
+#
+# FIXED PATHS FIRST, `command -v` LAST, and that order is the entire point. By the time this runs,
+# PATH has already resolved the wrong interpreter — that is the failure being repaired — so
+# consulting PATH first would just re-derive it. The Homebrew prefixes are named explicitly
+# because they are where a macOS 5.3 actually lives (Apple Silicon, then Intel).
+adb_bash_candidates() {
+  printf '%s\n' /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash /bin/bash
+  command -v bash 2>/dev/null || true
+}
+
+# The platform's remedy, on stderr, when no candidate clears the floor. A version number with no
+# instruction is a dead end for the person reading it, and the right instruction is genuinely
+# per-platform — on Debian/Ubuntu <= 25.10 there is no 5.3 package to install at all, so "install
+# bash" would be advice that cannot be followed.
+adb_bash_install_hint() {
+  case "$(uname -s 2>/dev/null || echo unknown)" in
+    Darwin)
+      printf '  macOS: brew install bash\n'
+      printf '         Homebrew installs alongside Apple'"'"'s /bin/bash (3.2.57, pinned forever), so\n'
+      printf '         make sure its prefix precedes /usr/bin and /bin in PATH.\n'
+      ;;
+    Linux)
+      # WSL FIRST, because the remedy is a different one and `wsl --install` still defaults to an
+      # Ubuntu LTS that may be 24.04 (bash 5.2.21). Telling that user to install bash sends them
+      # after a package their distro does not have; the fix is the distro (#2).
+      if adb_in_wsl; then
+        printf '  WSL2: this distro (%s) ships a bash below the floor.\n' "${WSL_DISTRO_NAME:-unknown}"
+        printf '        The remedy is a 5.3-capable DISTRO, not a bash reinstall:\n'
+        printf '          wsl --install -d Ubuntu-26.04     (26.04 ships bash 5.3; 24.04 ships 5.2.21)\n'
+        printf '        Never MSYS2/Git Bash (a different userland, unsupported here) or Cygwin (5.2, below the floor).\n'
+        return
+      fi
+      case "$(adb_linux_id)" in
+        debian|ubuntu|linuxmint|pop)
+          printf '  Debian/Ubuntu: there is NO bash 5.3 package on Ubuntu <= 25.10 or Debian stable.\n'
+          printf '                 Upgrade to Ubuntu 26.04 (ships 5.3), use a backport, or build from source.\n'
+          ;;
+        fedora|rhel|centos|rocky|almalinux) printf '  Fedora/RHEL: sudo dnf install bash\n' ;;
+        arch|manjaro|endeavouros)           printf '  Arch: sudo pacman -S bash\n' ;;
+        alpine)                             printf '  Alpine: apk add bash\n' ;;
+        *) printf '  Linux: install bash >= %s from your distribution, a backport, or source.\n' "$ADB_BASH_FLOOR_DEFAULT" ;;
+      esac
+      ;;
+    *)
+      printf '  Windows is supported via WSL2 ONLY, on a bash 5.3 distro (Ubuntu 26.04) — see docs/installation.md.\n'
+      printf '  Otherwise install bash >= %s for this platform.\n' "$ADB_BASH_FLOOR_DEFAULT"
+      ;;
+  esac
+}
+
+# Are we inside WSL? Checked three ways because no single one is reliable across WSL1/WSL2 and
+# across a login vs a non-interactive shell: the two variables are absent from some non-login
+# shells, and /proc/version is absent if /proc is not mounted.
+adb_in_wsl() {
+  [ -n "${WSL_DISTRO_NAME:-}" ] && return 0
+  [ -n "${WSL_INTEROP:-}" ] && return 0
+  grep -qi microsoft /proc/version 2>/dev/null
+}
+
+# The distro id from /etc/os-release, lowercased, or empty. `ID=` only — ID_LIKE is a similarity
+# hint, and guessing a package manager from it is how a user gets a command that does not exist.
+adb_linux_id() {
+  [ -r /etc/os-release ] || return 0
+  awk -F= '$1 == "ID" { gsub(/"/, "", $2); print tolower($2); exit }' /etc/os-release 2>/dev/null
+}
+
+# Is `$0` a script file this process could actually be re-run from?
+#
+# `[ -r "$0" ]` ALONE IS NOT ENOUGH, and the gap between the two is a live bug rather than a
+# theoretical one. For a piped script (`… | bash -s`) and for `bash -c '…'`, bash sets `$0` to the
+# INTERPRETER — a perfectly readable file — so a readability test passes and the gate `exec`s the
+# bash binary as if it were a script: `cannot execute binary file`, exit 126, from a guard whose
+# entire job is to not do that. Observed, then fixed here.
+#
+# `$BASH` names the running interpreter, and it equals `$0` in exactly those two shapes and in no
+# other (verified: a real script file always differs). So this is the discriminator, and the answer
+# for both shapes is the same — there is no file to re-run, the old interpreter has already
+# buffered the source, and the honest outcome is to fail closed rather than exec something that is
+# not this script.
+adb_bash_reexecable() {
+  [ -f "$0" ] && [ -r "$0" ] || return 1
+  [ "$0" != "${BASH:-}" ] || return 1
+}
+
+# adb_require_bash "$@" — THE GATE. Call it as the first executable statement of a process entry
+# point, before any `cd`, `shift`, stdin read, or mutation.
+#
+#   >= floor            -> returns 0, silently.
+#   below, re-execable  -> exec's the same script, same arguments, under a >= floor interpreter.
+#   below, no candidate -> prints the running version, the floor, and the platform's remedy, exit 1.
+#
+# THE CONTRACT, stated because every clause is a real constraint rather than documentation:
+#
+#   - DIRECT EXECUTION ONLY. It re-execs `"$0"`, so it is meaningless in a SOURCED library ($0 is
+#     the parent's name) and impossible for `bash -s` / a piped script (there is no file to
+#     re-run, and the old interpreter has already buffered the source). Both cases are detected —
+#     `$0` unreadable — and FAIL CLOSED rather than exec'ing something that is not this script.
+#   - BEFORE ANY STDIN READ. A hook's payload arrives on stdin; the re-exec inherits that fd and
+#     restarts the script from the top, so anything already consumed is gone. First statement.
+#   - BEFORE ANY `cd`. `$0` is frozen at invocation and is relative when invoked relatively, so a
+#     script that has changed directory may no longer be able to name itself.
+#   - ONE re-exec, ever. _ADB_BASH_REEXEC is exported before the exec, so a candidate that probes
+#     >= floor but does not deliver it (a wrapper, a shim, a stale symlink) fails closed on the
+#     second pass instead of forking a loop. Proven, not assumed — check-bash-floor-guard.sh
+#     drives a deliberately lying candidate through it.
+#   - NO ENVIRONMENT OVERRIDE. The floor is the constant above, never $ADB_BASH_FLOOR. That
+#     variable is #257's *test seam* for the CI lint, and a production gate that honored it would
+#     be a user-settable bypass of the thing it enforces — `ADB_BASH_FLOOR=0` would wave 3.2
+#     through every entry point in the repo. The lint keeps its seam; the gate has none.
+#   - `exit`, not `return`, on the failure path: a gate that lets its caller decide is not a gate.
+#     Entry points that CANNOT exit non-zero use adb_require_bash_advisory below.
+adb_require_bash() {
+  if adb_require_bash_advisory "$@"; then
+    return 0
+  fi
+  exit 1
+}
+
+# The advisory form: identical re-exec, but it RETURNS non-zero instead of exiting.
+#
+# For the handful of entry points whose own contract forbids a non-zero exit — a SessionStart hook
+# renders an error notice on every session start, the statusline is a cosmetic string, and
+# state-claim-gate.sh deliberately refuses to wedge a session on infrastructure failure. Hard-
+# failing those would make a sub-floor host look BROKEN rather than out of date, which is a worse
+# outcome than a stale statusline and is precisely what those files' headers already promise not
+# to do. They still take the re-exec, which is silent and strictly better; they just do not die.
+#
+# This is an exception list, not a dial: `check-bash-floor.sh --entrypoints` enforces that every
+# entry point is classified one way or the other, so a new script cannot quietly pick the softer
+# one.
+adb_require_bash_advisory() {
+  # Declared with values, not bare: an unset `local` under a caller's `set -u` is an error the
+  # moment it is expanded, and this library's contract is to be safe under that.
+  local _rb_self="" _rb_win=""
+  _rb_self="${BASH_VERSINFO[0]:-0}.${BASH_VERSINFO[1]:-0}.${BASH_VERSINFO[2]:-0}"
+  if adb_bash_self_ok; then
+    # CLEAR THE SENTINEL ON THE WAY OUT. It is exported, so without this it is inherited by every
+    # child of a re-exec'd script — and a child that starts on the old interpreter would then see
+    # "a re-exec was already attempted" and fail closed instead of repairing itself.
+    #
+    # Not hypothetical: selfcheck.sh re-execs, then spawns ~30 `bash scripts/check-*.sh` children,
+    # each resolving `bash` through the same PATH that was wrong in the first place. Every one of
+    # them would have died. Caught by check-bash-floor-guard.sh, whose own fixtures inherited it.
+    #
+    # It stays correct as a loop guard because the clearing is gated on the version check having
+    # PASSED: an exec chain that has not yet reached a good interpreter still carries it, so a
+    # candidate that lies about its version gets exactly one attempt.
+    unset _ADB_BASH_REEXEC
+    return 0
+  fi
+
+  if [ -z "${_ADB_BASH_REEXEC:-}" ] && adb_bash_reexecable; then
+    # PICK in a subshell, `exec` in the PARENT — the split is required, not stylistic. A
+    # `candidates | while read … exec` pipeline puts the loop in a subshell, so a successful exec
+    # replaces THAT subshell and the parent carries on under the old interpreter, silently. Silent
+    # is the one outcome a gate may never produce, so the choosing is what gets subshelled and the
+    # exec runs where it can actually take over.
+    #
+    # `while read`, not `for … in $(…)`: a candidate path containing whitespace or a glob
+    # character would word-split or expand, and this value is about to be handed to `exec`.
+    _rb_win="$(adb_bash_candidates | while IFS= read -r _rb_c; do
+                 [ -n "$_rb_c" ] || continue
+                 adb_bash_candidate_ok "$_rb_c" || continue
+                 printf '%s' "$_rb_c"; break
+               done)"
+    if [ -n "$_rb_win" ]; then
+      export _ADB_BASH_REEXEC=1
+      exec "$_rb_win" "$0" "$@"
+      # Reached only if exec itself failed (the file vanished, or lost its exec bit between the
+      # probe and now). Falling through to the diagnostic below is correct; returning 0 here would
+      # hand the caller a shell that never got upgraded.
+    fi
+  fi
+
+  printf '%s: FATAL — bash >= %s is required; this is %s (%s)\n' \
+    "${0##*/}" "$ADB_BASH_FLOOR_DEFAULT" "$_rb_self" "${BASH:-unknown}" >&2
+  if [ -n "${_ADB_BASH_REEXEC:-}" ]; then
+    printf '  A re-exec was already attempted and did not deliver a %s interpreter.\n' \
+      "$ADB_BASH_FLOOR_DEFAULT" >&2
+  elif ! adb_bash_reexecable; then
+    printf '  Cannot re-exec: "%s" is not a re-runnable script file (sourced, piped, or `bash -c`).\n' "$0" >&2
+  else
+    printf '  No bash >= %s found at /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin or on PATH.\n' \
+      "$ADB_BASH_FLOOR_DEFAULT" >&2
+  fi
+  adb_bash_install_hint >&2
+  return 1
+}
+
+# --- WSL2: the two ways a Windows-side checkout breaks a shell repo (#2) -------
+#
+# Windows is supported via WSL2 ONLY (owner decision, 2026-08-01). WSL2 *is* Linux — same
+# interpreter, same userland, same symlinks — so the entire native-Windows portability surface is
+# out of scope and the Linux CI job already covers the runtime. What WSL genuinely adds is a
+# checkout problem, and it has exactly two shapes. Both are about where the SOURCE repo lives; the
+# install DESTINATION is fine either way, because `$HOME` under WSL is the Linux home.
+
+# adb_crlf_scan <dir> — print every shell file under <dir> carrying CRLF line endings, one per
+# line. Returns 0 when the tree is clean, 1 when it is not, 2 when it could not look.
+#
+# A clone made by WINDOWS git with core.autocrlf=true and then executed from WSL gives every
+# script `\r` line endings, and the failure is the famously unhelpful `bash: $'\r': command not
+# found` — on all 59 entry points at once, with nothing naming the cause.
+#
+# Matching CR-at-end-of-line, not CR anywhere: grep splits on LF, so a CRLF file presents as lines
+# ending in CR. A `\r` ESCAPE in source (`printf '\r'`) is two characters, not a CR byte, so it
+# does not false-positive — verified against this repo's own `printf '\r'` sites.
+adb_crlf_scan() {
+  local dir="${1:-.}" cr found=0
+  [ -d "$dir" ] || { printf 'adb_crlf_scan: not a directory: %s\n' "$dir" >&2; return 2; }
+  cr="$(printf '\r')"
+  # Extensionless entry points count: `bin/agent-init` and `bin/baseline` are shell scripts with
+  # no `.sh`, and a scan that only knows `*.sh` reports a clean tree while two commands are
+  # corrupt. Selected by shebang rather than by name so the rule cannot go stale.
+  while IFS= read -r f; do
+    head -n 1 "$f" 2>/dev/null | grep -q '^#!.*\(bash\|sh\)' || continue
+    if LC_ALL=C grep -lq -- "$cr\$" "$f" 2>/dev/null; then
+      printf '%s\n' "$f"
+      found=1
+    fi
+  done <<EOF
+$(find "$dir" -type f -not -path '*/.git/*' -print 2>/dev/null)
+EOF
+  [ "$found" -eq 0 ]
+}
+
+# adb_crlf_remedy — the fix, on stderr. NOT `git checkout .`, which would silently discard every
+# uncommitted change in the tree; base/practices/git-and-prs.md names that exact command as one of
+# the ones that destroys work no reflog can recover. Re-cloning inside WSL is the safe remedy and
+# is what a corrupted checkout wants anyway.
+adb_crlf_remedy() {
+  printf 'CRLF line endings detected. Under WSL this fails as: bash: $'"'"'\\r'"'"': command not found\n' >&2
+  printf 'Fix, in order of safety:\n' >&2
+  printf '  1. Re-clone INSIDE the WSL filesystem (recommended):\n' >&2
+  printf '       git clone <url> ~/Code/ai-dev-baseline     # not under /mnt/c\n' >&2
+  printf '  2. Or repair this clone — `git config core.autocrlf false`, then re-checkout the\n' >&2
+  printf '     affected files. Note that re-checking-out DISCARDS uncommitted changes to them;\n' >&2
+  printf '     commit or stash first.\n' >&2
+}
+
+# adb_drvfs_warn <path> — WARN (never fail) when <path> sits on a Windows drive mounted into WSL.
+#
+# A warning rather than an error on purpose, and #2 says so explicitly: DrvFs works, it is just
+# worse — exec bits and file modes do not behave like a Linux filesystem without the `metadata`
+# mount option, and performance is markedly slower. Refusing to run would be picking a fight with
+# a setup that does function.
+#
+# Matched as /mnt/<single-letter>/, the Windows DRIVE shape — not a bare `/mnt/` prefix, which is
+# an ordinary Linux mountpoint (/mnt/data, /mnt/nfs) on every non-WSL machine and would fire on
+# people who have never seen Windows.
+adb_drvfs_warn() {
+  case "${1:-}" in
+    /mnt/[a-zA-Z]/*|/mnt/[a-zA-Z])
+      adb_in_wsl || return 0
+      printf 'WARNING: this repo lives on a Windows drive (%s) mounted into WSL.\n' "$1" >&2
+      printf '         File modes and exec bits do not behave like a Linux filesystem there, and it\n' >&2
+      printf '         is much slower. Prefer a clone inside the WSL filesystem (e.g. ~/Code/).\n' >&2
+      ;;
+  esac
+  return 0
 }
 
 # --- markdown structure: the ONE CommonMark prose filter (#136) ----------------

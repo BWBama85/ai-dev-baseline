@@ -293,6 +293,144 @@ EOF
     "$jobs" "$files" "$linux_jobs" "$macos_jobs" "$FLOOR"
 }
 
+# --- entry-point half (#256) ---------------------------------------------------------------------
+#
+# The runtime gate is only a floor if EVERY process entry point calls it, and "every" is not a
+# thing prose can hold: a new check-*.sh lands without the stanza and the suite it joins runs on
+# whatever interpreter it got, reporting green. So the set is closed here, mechanically.
+#
+# CLASSIFICATION IS FORCED, NOT OPTIONAL. Every shebang-bearing file is exactly one of:
+#
+#   gate      — calls adb_require_bash: re-exec, else exit non-zero. The default, and the
+#               overwhelming majority.
+#   advisory  — calls adb_require_bash_advisory: same re-exec, but RETURNS instead of exiting,
+#               for the three files whose own contract forbids a non-zero exit. Naming them here
+#               is what stops "advisory" becoming a dial a future script can quietly pick.
+#   exempt    — must NOT call it at all, and there is exactly one.
+#
+# Matched on the path RELATIVE to the scanned root, so the guard can build a fixture tree at the
+# same paths and drive each rule red.
+ADVISORY_ENTRYPOINTS="
+agents/claude/scripts/statusline.sh
+agents/claude/scripts/session-currency.sh
+agents/claude/scripts/state-claim-gate.sh
+"
+# check-bash-floor.sh is the OBSERVER, and an observer that upgrades its own interpreter has
+# destroyed the observation. Its whole --runtime job is to report which bash this job actually
+# got, and check-bash-floor-guard.sh proves that assertion fires by running this file under an old
+# /bin/bash and requiring red. Wire the gate in here and that test silently stops testing: the
+# script would re-exec to 5.3 and report a clean floor on a machine that has none on PATH.
+EXEMPT_ENTRYPOINTS="
+scripts/check-bash-floor.sh
+"
+
+# Print every file under $1 whose first line is a bash shebang, as a path relative to $1.
+# `find`, not `git ls-files`: this must work against a throwaway fixture tree (which has no .git),
+# and an UNTRACKED entry point still runs.
+scan_entrypoints() {
+  find "$1" -type f -not -path '*/.git/*' -print 2>/dev/null | while IFS= read -r f; do
+    head -n 1 "$f" 2>/dev/null | grep -q '^#!.*bash' || continue
+    printf '%s\n' "${f#$1/}"
+  done | LC_ALL=C sort
+}
+
+# The line number of the first NON-COMMENT occurrence of a pattern, or empty.
+# Comment-stripping is what makes "a commented-out call does not count" true: a `# TODO: call
+# adb_require_bash "$@"` is a note about doing the thing, not the thing — the same fail-open
+# #257's guard already caught in the workflow scanner.
+first_code_line() {
+  grep -nE "$2" "$1" 2>/dev/null | grep -v '^[0-9]*:[[:space:]]*#' | head -n 1 | cut -d: -f1
+}
+
+entrypoint_lint() {
+  root="${1%/}"
+  eps=0 gates=0 advisories=0 exempts=0
+
+  scanned="$(scan_entrypoints "$root")" || {
+    check_note "the entry-point scanner failed outright under $root — refusing to report a clean scan"
+    check_fail
+    return
+  }
+
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    f="$root/$rel"
+    eps=$((eps + 1))
+
+    kind=gate
+    case "
+$ADVISORY_ENTRYPOINTS" in *"
+$rel
+"*) kind=advisory ;; esac
+    case "
+$EXEMPT_ENTRYPOINTS" in *"
+$rel
+"*) kind=exempt ;; esac
+
+    call_gate="$(first_code_line "$f" '(^|[^_[:alnum:]])adb_require_bash "\$@"')"
+    call_adv="$(first_code_line "$f" 'adb_require_bash_advisory "\$@"')"
+
+    if [ "$kind" = exempt ]; then
+      exempts=$((exempts + 1))
+      if [ -n "$call_gate" ] || [ -n "$call_adv" ]; then
+        check_note "$rel is the EXEMPT observer but calls the floor gate (line ${call_gate:-$call_adv}) — re-exec'ing here would make its own negative test stop testing"
+        check_fail
+      fi
+      continue
+    fi
+
+    if [ "$kind" = advisory ]; then
+      advisories=$((advisories + 1))
+      call="$call_adv"
+      want="adb_require_bash_advisory \"\$@\""
+      if [ -n "$call_gate" ]; then
+        check_note "$rel is classified ADVISORY (its own contract forbids a non-zero exit) but calls the hard-failing adb_require_bash at line $call_gate"
+        check_fail
+        # One defect, one line. Falling through would also report "never calls the advisory form",
+        # which is true but is the same finding wearing a second hat.
+        continue
+      fi
+    else
+      gates=$((gates + 1))
+      call="$call_gate"
+      want="adb_require_bash \"\$@\""
+      if [ -z "$call_gate" ] && [ -n "$call_adv" ]; then
+        check_note "$rel is classified GATE but calls the advisory form at line $call_adv — a gate that lets its caller carry on under a sub-$FLOOR interpreter is not a gate"
+        check_fail
+        continue
+      fi
+    fi
+
+    if [ -z "$call" ]; then
+      check_note "$rel has a bash shebang but never calls $want — it would run under whatever interpreter PATH resolved (add the stanza, or classify it in $0)"
+      check_fail
+      continue
+    fi
+
+    # TOO LATE IS AS BAD AS ABSENT, and this is the half a presence test cannot see. `$0` is frozen
+    # at invocation and is relative when invoked relatively, so a script that has already `cd`'d may
+    # be unable to name itself for the re-exec; and a hook that has already drained its payload from
+    # stdin loses it, because the re-exec restarts the script from the top with that fd inherited.
+    late="$(first_code_line "$f" '^[[:space:]]*cd |\$\(cat\)|^[[:space:]]*input="\$\(cat\)"')"
+    if [ -n "$late" ] && [ "$late" -lt "$call" ]; then
+      check_note "$rel calls the floor gate at line $call, AFTER a cd or a stdin read at line $late — move it earlier (\$0 may no longer resolve, and a consumed stdin is not restored by the re-exec)"
+      check_fail
+    fi
+  done <<EOF
+$scanned
+EOF
+
+  if [ "$eps" -eq 0 ]; then
+    check_note "no shebang-bearing files found under $root — this lint scanned nothing, which is not a pass"
+    check_fail
+    return
+  fi
+  # SAY WHAT IT CHECKED, not merely that it passed: a scanner that goes blind reports the same
+  # clean verdict as a clean repo, and a count is what makes the difference readable in a log.
+  printf 'bash-floor: %d entry point(s) — %d gate, %d advisory, %d exempt\n' \
+    "$eps" "$gates" "$advisories" "$exempts"
+}
+
 case "${1:-}" in
   --runtime)
     runtime_check
@@ -303,12 +441,17 @@ case "${1:-}" in
     static_lint "$2"
     check_result "every CI job is on a proven bash >= $FLOOR runner and wires the runtime guard"
     ;;
+  --entrypoints)
+    entrypoint_lint "${2:-.}"
+    check_result "every entry point calls the bash >= $FLOOR runtime gate"
+    ;;
   "")
     static_lint ".github/workflows"
-    check_result "every CI job is on a proven bash >= $FLOOR runner and wires the runtime guard"
+    entrypoint_lint "."
+    check_result "every CI job is on a proven bash >= $FLOOR runner, and every entry point gates its interpreter"
     ;;
   *)
-    echo "usage: bash scripts/check-bash-floor.sh [--runtime | --workflow-dir DIR]" >&2
+    echo "usage: bash scripts/check-bash-floor.sh [--runtime | --workflow-dir DIR | --entrypoints [DIR]]" >&2
     exit 2
     ;;
 esac

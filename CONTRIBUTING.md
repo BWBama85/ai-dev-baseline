@@ -119,10 +119,17 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
 
 ## Style
 
-- **Shell:** `bash`/POSIX, macOS bash 3.2 safe (no `mapfile`, no `readlink -f`),
-  quote expansions, single-purpose commands. Must pass
+- **Shell:** `bash` **>= 5.3** — the runtime floor (epic #255), so `mapfile`,
+  associative arrays, namerefs and `${ command; }` are encouraged rather than avoided.
+  Quote expansions, single-purpose commands. Must pass
   `shellcheck --severity=warning -e SC1091`. Justify any `# shellcheck disable=` with
   a one-line reason.
+  - Every process entry point calls `adb_require_bash` as its first statement, which
+    re-execs into a >= 5.3 interpreter or exits with your platform's install command.
+    `check-bash-floor.sh --entrypoints` fails the build on one that does not.
+  - **`scripts/lib/common.sh` is exempt and must stay parseable below the floor** — it
+    holds the gate, so it cannot require what it installs (D30). `check-bash-floor.sh`
+    itself is the other exemption: it is the observer (D31).
 - **Markdown practices/skills:** concise, imperative, agent-neutral where the content
   is shared; include a short "Why" only where it earns its place.
 - **Commits/PRs:** semantic subject, feature branch + PR, green CI. Never push to

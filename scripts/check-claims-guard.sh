@@ -20,6 +20,28 @@
 #
 # Usage: bash scripts/check-claims-guard.sh   (exit 0 = all pass, 1 = a failure)
 
+# bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
+#
+# Before the cd, because $0 is frozen at invocation: a script that has already changed directory
+# may be unable to name itself for the re-exec.
+#
+# Before `set -u`, because sourcing is not the place to enforce it. An unbound variable expanded
+# while a library loads is FATAL under `set -u` — it kills the shell outright, before this script
+# has run a line of its own — so a single bad expansion anywhere in common.sh would take out the
+# whole suite with a message about a variable rather than about the library. `set -u` goes on
+# immediately below and governs everything this script actually does.
+#
+# And the load is confirmed by PROBING FOR THE FUNCTION, not by the source's exit status: a
+# sourced file returns its LAST command's status, so `. lib || exit 1` reports whatever that
+# happened to be and says nothing about whether the file loaded. Same idiom as project-gates.sh
+# and roadmap-lib.sh, which learned this first.
+# shellcheck source=/dev/null
+. "$(dirname "$0")/lib/common.sh" 2>/dev/null
+command -v adb_require_bash >/dev/null 2>&1 || {
+  printf '%s: FATAL — scripts/lib/common.sh is missing or corrupt; cannot verify the bash floor\n' "${0##*/}" >&2
+  exit 1
+}
+adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
