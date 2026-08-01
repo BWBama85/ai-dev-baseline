@@ -1966,3 +1966,385 @@ adb_version_ge() {
       exit 0;
     }'
 }
+
+# --- markdown structure: the ONE CommonMark prose filter (#136) ----------------
+#
+# "Is this text a DECLARATION, or is it documentation?" Six places in this repo have to answer
+# that question, and before #136 four of them answered it with their own parser. The bug family is
+# always the same shape and it has been fixed one instance at a time since #69: a `#N` mention
+# (#69), a NEGATED mention (#108), a mention inside a repro block (#117), a fence written inside a
+# list item (#135). Every one of them is TEXT THAT DOCUMENTS THE VOCABULARY BEING READ AS AN
+# ASSERTION, and the only durable fix is one filter every consumer shares.
+#
+# `_ADB_MD_AWK` is that filter, as an awk FUNCTION LIBRARY — no main rule and no END block, so a
+# consumer can prepend it to its own program and keep its own record handling (`skill-compose.sh`
+# runs over two named files and could not tolerate a main rule at all).
+#
+# HOW A CONSUMER DRIVES IT. Buffer the body, then resolve it once:
+#
+#     { MDL[++MDN] = $0 }
+#     END {
+#       adb_md_run()
+#       for (i = 1; i <= MDN; i++) {
+#         if (MD_SKIP[i]) continue
+#         ... MD_TEXT[i] / MD_MASK[i] / MD_NOSPAN[i] ...
+#       }
+#     }
+#
+# WHY IT BUFFERS, when the thing it replaced was a deliberately single-pass streaming sanitizer.
+# CommonMark inline code spans may cross a line ending inside a paragraph, so `` `Depends on #5 ``
+# / `` still example` `` renders entirely as code and declares nothing — while a line-at-a-time
+# scan copies the unmatched opening backtick as literal text and reads the clause as prose. The
+# obvious streaming fix is worse than the bug: an "am I inside a span?" flag lets one stray
+# backtick (`` it`s fine ``) swallow every edge after it, which is the UNDER-MATCH direction and
+# the dangerous one — a dropped edge marks a genuinely blocked bundle `ready`. Bounding span
+# resolution to the PARAGRAPH keeps both: the multi-line span resolves, and the stray tick can
+# only ever reach the end of its own paragraph.
+#
+# THREE VIEWS, because one sanitized string cannot serve these consumers and pretending otherwise
+# is how the last collapse silently disabled a rule:
+#   MD_TEXT[i]   prose with HTML comments removed; inline spans left INTACT.
+#   MD_MASK[i]   the same line, byte-for-byte the same LENGTH, with every byte of a resolved span
+#                replaced by \x01. The 1:1 length invariant is what lets an offset found in one
+#                index the other. `deps-from-body` needs exactly this pair: the KEYWORD must sit
+#                outside a span, while the `#N` may sit inside one, so `` `Depends on #5` ``
+#                declares nothing and `` Depends on `#5` `` still declares (#112).
+#   MD_NOSPAN[i] prose with span contents DELETED. What a consumer wants when a quoted example
+#                must simply vanish — `pr-targets-issue`, `release-command`, `marker-title`.
+# All three preserve LINE COUNT and line order: a structural line yields an empty string at its
+# own index, never a deletion that renumbers what follows.
+#
+# ORDER OF OPERATIONS, which is the part every previous attempt got wrong in one direction or the
+# other:
+#   1. BLOCK first, on the raw line — fences, blockquotes, indented code. Nothing else can be
+#      decided until this is, because a backtick run inside a fence is not a span delimiter.
+#      Deciding it WITHOUT consulting comment state is deliberate and it is what removed a whole
+#      class of coupling: a `<!--` sitting in a fence's info string can no longer arm the
+#      cross-line comment state, so the "disarm it again" special case is simply gone.
+#   2. INLINE second, per paragraph, in ONE left-to-right pass in which a code-span opener and a
+#      `<!--` compete and WHICHEVER OPENS FIRST WINS. That is CommonMark's own precedence, and it
+#      is the only ordering that satisfies both reported repros at once: comments-first honors a
+#      `<!--` the author quoted AS TEXT and swallows the body (#128), while spans-first can pair a
+#      backtick inside a real comment with one in later prose.
+#
+# `md_keep_comments=1` suppresses step 2's comment removal for the consumers whose declaration IS
+# an HTML comment (`release-command`, `marker-title`). Spans are still resolved, which is exactly
+# what those consumers need: the schema documents its own marker BY EXAMPLE, and what separates
+# the example from a declaration is markup, never the value.
+#
+# WHAT IS NOT MODELLED, stated plainly rather than implied:
+#   - A leading TAB is not counted as indentation. CommonMark expands tabs to 4-column stops; this
+#     counts spaces only. The error is toward SCANNING (over-match), never toward deleting prose.
+#   - Setext headings need lookahead past the line and are not detected. `- - -` and `* * *` read
+#     as list items rather than thematic breaks, for the same conservative reason.
+#   - HTML blocks other than comments are ordinary prose.
+#
+# Assigned via `read -r -d ''` (not `$(cat <<…)`): the program contains backticks, which command
+# substitution would try to execute.
+IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
+    # Counted with substr/index rather than regex intervals: `{0,3}` is a POSIX interval that the
+    # BSD awk on macOS and older mawk builds do not honor, and a silently-unmatched fence rule
+    # would fail OPEN — every fence would leak its contents back into the scan.
+    function adb_md_lead(s,   i) { i = 0; while (substr(s, i + 1, 1) == " ") i++; return i }
+    function adb_md_runlen(s, pos, ch,   n) { n = 0; while (substr(s, pos + n, 1) == ch) n++; return n }
+    # How many leading characters are CONTAINER, not content: indentation plus an optional list
+    # marker (`- ` / `* ` / `+ ` / `1. ` / `1) `) and the spaces after it. Returns -1 when the line
+    # is indented past 3 with no marker — indented-block territory, which adb_md_block decides.
+    #
+    # WHY (#135). Without this, a fence or a blockquote written INSIDE a list item is invisible:
+    # `- ```console` puts the delimiter after the marker, so the block was scanned (fabricating an
+    # edge) and its indented closer was then read as a NEW opener, swallowing every real edge after
+    # the list. Placing an example in a list item is one of the most common shapes in an issue.
+    function adb_md_content_at(s,   i, c, j, nsp, nd) {
+      i = adb_md_lead(s)
+      if (i > 3) return -1
+      c = substr(s, i + 1, 1)
+      if (c == "-" || c == "*" || c == "+") {
+        j = i + 1                                   # 1-based position of the marker character
+      } else {
+        nd = 0
+        while (nd < 10 && substr(s, i + 1 + nd, 1) >= "0" && substr(s, i + 1 + nd, 1) <= "9") nd++
+        # CommonMark caps an ordered marker at NINE digits. A tenth means this is not a list at
+        # all, and treating it as one drops the line: `1234567890. > Depends on #5` would read as
+        # a list-nested blockquote and lose a real edge.
+        if (nd == 0 || nd > 9) return i
+        c = substr(s, i + nd + 1, 1)
+        if (c != "." && c != ")") return i
+        j = i + nd + 1
+      }
+      nsp = 0
+      while (substr(s, j + 1 + nsp, 1) == " ") nsp++
+      if (nsp == 0) return i                        # `**bold**`, `---`, `1.x`: not a list marker
+      # 1-4 spaces after the marker are PADDING. At 5 or more, only the first is padding and the
+      # remainder is content INDENTATION — so `-     ```' is an indented code line inside the
+      # item, not a fence. Consuming it all would open a fence that CommonMark does not.
+      if (nsp >= 5) return j + 1
+      return j + nsp
+    }
+    # The CLOSER of an open fence: the same delimiter, a run at least as long, nothing but
+    # whitespace after it, and indented no more than 3 past the OPENER's content column. That last
+    # clause is container context, and it is load-bearing in both directions: without it a
+    # 4-space-indented backtick run *inside* a top-level fence closes it early (scanning quoted
+    # text, then reading the real closer as a fresh opener), and with too little of it a
+    # list-nested closer never matches and the fence swallows the rest of the body.
+    function adb_md_close_run(line, ch,   sp) {
+      sp = adb_md_lead(line)
+      if (sp > md_fence_at + 3) return 0
+      return adb_md_runlen(line, sp + 1, ch)
+    }
+    function adb_md_after_close(line, n,   sp) { sp = adb_md_lead(line); return substr(line, sp + n + 1) }
+    # THE fence rule, and the only one: does this line OPEN or CLOSE a fenced block? Returns 1 for
+    # a delimiter (either kind) and updates md_fence_*; `md_fence_len` IS the in-a-fence flag, so a
+    # separate boolean can never drift out of step with it.
+    #
+    # This is the function #131 exists for. `skill-compose.sh` carried a second detector — a
+    # boolean toggle on any ``` after 0-3 spaces — and the two had already drifted: a `~~~`-fenced
+    # `### ` line was advertised as a composable anchor, and a ``` closing a longer run left the
+    # toggle inverted for the whole rest of the file, hiding every later step.
+    function adb_md_fence_delim(line,   fn, at) {
+      if (md_fence_len) {                          # inside a fence: only its own closer matters
+        fn = adb_md_close_run(line, md_fence_ch)
+        if (fn >= md_fence_len && adb_md_after_close(line, fn) ~ /^[[:space:]]*$/) {
+          md_fence_ch = ""; md_fence_len = 0; md_fence_at = 0
+          return 1
+        }
+        return 0
+      }
+      at = adb_md_content_at(line)
+      if (at < 0) return 0                         # 4+ spaces: an indented block, never a fence
+      # A backtick fence opener may not carry a backtick in its info string; a tilde one may. The
+      # two probes are sequential, not parallel, because that asymmetry is the whole rule. The
+      # other delimiter never closes the current fence — that is what makes ``` inside ~~~ content.
+      # `md_fence_at` remembers this opener's column so its closer can be matched relative to the
+      # same container.
+      fn = adb_md_runlen(line, at + 1, "`")
+      if (fn >= 3 && index(substr(line, at + fn + 1), "`") == 0) {
+        md_fence_ch = "`"; md_fence_len = fn; md_fence_at = at; return 1
+      }
+      fn = adb_md_runlen(line, at + 1, "~")
+      if (fn >= 3) { md_fence_ch = "~"; md_fence_len = fn; md_fence_at = at; return 1 }
+      return 0
+    }
+    # A line that is PROSE but is its own block: an ATX heading, or a thematic break. It still
+    # reaches the consumer (`decisions` finds its section by reading `## Decisions` out of
+    # MD_TEXT), but it may not share a paragraph with its neighbours — otherwise a stray backtick
+    # on one side pairs with one on the other and masks a real declaration between them.
+    function adb_md_alone(line, at,   n, c, i, ch, cnt) {
+      n = adb_md_runlen(line, at + 1, "#")
+      if (n >= 1 && n <= 6) {
+        c = substr(line, at + n + 1, 1)
+        # `#5` is a REFERENCE, not a heading: the run must be followed by a space or end of line.
+        if (c == "" || c == " " || c == "\t") return 1
+      }
+      c = substr(line, at + 1, 1)
+      if (c == "-" || c == "_" || c == "*") {
+        cnt = 0
+        for (i = at + 1; i <= length(line); i++) {
+          ch = substr(line, i, 1)
+          if (ch == c) { cnt++; continue }
+          if (ch == " " || ch == "\t") continue
+          return 0
+        }
+        if (cnt >= 3) return 1
+      }
+      return 0
+    }
+    # Classify ONE line: 1 = structure (the consumer skips it), 0 = prose. Sets MD_LINE to the
+    # CR-normalized line and MD_ALONE when the line is a block of its own.
+    #
+    # A GitHub body submitted through the web UI is CRLF, and `gh` passes it through verbatim.
+    # Without normalizing, a closer reads as "```\r", its must-be-blank tail is not blank, the
+    # fence NEVER closes, and every edge in the rest of the body silently disappears.
+    function adb_md_block(line,   at, lead) {
+      if (substr(line, length(line), 1) == MD_CR) line = substr(line, 1, length(line) - 1)
+      MD_LINE = line; MD_ALONE = 0
+      if (md_fence_len) { adb_md_fence_delim(line); md_para = 0; return 1 }
+      # An INDENTED CODE BLOCK, once open, runs over blank lines and every line indented >= 4, and
+      # ends at the first non-blank line indented <= 3 (D27).
+      if (md_icode) {
+        if (line ~ /^[ \t]*$/) return 1
+        if (adb_md_lead(line) >= 4) return 1
+        md_icode = 0
+      }
+      if (line ~ /^[ \t]*$/) { md_para = 0; return 1 }
+      lead = adb_md_lead(line)
+      at = adb_md_content_at(line)
+      if (at < 0) {
+        # Indented 4+ with no list marker. THE §5 FORK, decided in D27: this OPENS an indented code
+        # block only at top level, and only where a paragraph is not already open. Both guards are
+        # load-bearing, because `    Depends on #52` is byte-identical at top level and as a
+        # continuation inside a list item — a bare `^ {4}` rule DELETES real edges, which is the
+        # under-match direction. CommonMark agrees on both: indented code cannot interrupt a
+        # paragraph, and inside a list item whose content starts at column 2 it needs 2+4 spaces.
+        if (!md_para && !md_list) { md_icode = 1; return 1 }
+        md_para = 1; return 0
+      }
+      # A list container suppresses indented-code detection until a column-0 line that is not
+      # itself a marker closes it. Erring toward "still open" errs toward SCANNING, never toward
+      # deleting prose.
+      if (at > lead) md_list = 1
+      else if (lead == 0) md_list = 0
+      if (adb_md_fence_delim(line)) { md_para = 0; return 1 }
+      # A blockquote nested under a list marker (`- > …`) is still quoted material (#135), so this
+      # tests the CONTENT position rather than the first non-space character.
+      if (substr(line, at + 1, 1) == ">") { md_para = 0; return 1 }
+      if (adb_md_alone(line, at)) { MD_ALONE = 1; md_para = 0; return 0 }
+      md_para = 1
+      return 0
+    }
+    # Where the run of EXACTLY n backticks that closes this span begins, or 0 when the span is
+    # never closed. A LONGER run is not a closer: it is skipped whole, so ``` inside a `` span
+    # stays content. (`close` is an awk builtin and cannot name this.)
+    function adb_md_span_end(s, from, n,   L, j, m) {
+      L = length(s); j = from
+      while (j <= L) {
+        if (substr(s, j, 1) != "`") { j++; continue }
+        m = adb_md_runlen(s, j, "`")
+        if (m == n) return j
+        j += m
+      }
+      return 0
+    }
+    # MASK must be written byte-by-byte, because it is \x01 by design — padding with spaces instead
+    # would let `depends` + span + `on` fuse into a keyword the author never wrote. Newlines are
+    # kept so the paragraph can be split back onto its original lines.
+    function adb_md_maskify(seg,   out, i, L, c) {
+      out = ""; L = length(seg)
+      for (i = 1; i <= L; i++) { c = substr(seg, i, 1); out = out ((c == "\n") ? c : MD_MASKC) }
+      return out
+    }
+    function adb_md_nl_only(seg) { gsub(/[^\n]/, "", seg); return seg }
+    # ONE left-to-right pass over a paragraph: at each step the next code-span opener and the next
+    # `<!--` compete, and whichever comes first wins. Comment state carries ACROSS paragraphs (a
+    # comment may span a blank line); span state does not (a span may not).
+    function adb_md_inline(s,   text, mask, nospan, p, q, cut, seg, n, e, nbs, k) {
+      text = ""; mask = ""; nospan = ""
+      while (length(s) > 0) {
+        if (md_incomment) {
+          q = index(s, "-->")
+          if (q == 0) {                            # the comment swallows the rest of this block
+            seg = adb_md_nl_only(s)
+            text = text seg; mask = mask seg; nospan = nospan seg; s = ""
+            continue
+          }
+          seg = adb_md_nl_only(substr(s, 1, q - 1))
+          text = text seg; mask = mask seg; nospan = nospan seg
+          s = substr(s, q + 3); md_incomment = 0
+          continue
+        }
+        p = index(s, "`")
+        q = md_keep_comments ? 0 : index(s, "<!--")
+        if (p == 0 && q == 0) { text = text s; mask = mask s; nospan = nospan s; s = ""; continue }
+        if (p > 0 && (q == 0 || p < q)) cut = p; else cut = q
+        if (cut > 1) {
+          seg = substr(s, 1, cut - 1)
+          text = text seg; mask = mask seg; nospan = nospan seg
+          s = substr(s, cut)
+        }
+        if (substr(s, 1, 1) == "`") {
+          n = adb_md_runlen(s, 1, "`")
+          e = adb_md_span_end(s, 1 + n, n)
+          if (e == 0) {                            # unmatched: literal text, copied as a SLICE
+            seg = substr(s, 1, n)
+            text = text seg; mask = mask seg; nospan = nospan seg; s = substr(s, n + 1)
+            continue
+          }
+          seg = substr(s, 1, e + n - 1)
+          text = text seg; mask = mask adb_md_maskify(seg); nospan = nospan adb_md_nl_only(seg)
+          s = substr(s, e + n)
+          continue
+        }
+        # `\<!--` is an ESCAPED opener: CommonMark renders the `<` as text, so this is prose
+        # DISPLAYING the delimiter, not markup (#135). PARITY MATTERS — only an ODD run of
+        # preceding backslashes escapes it: with two, the first escapes the second and the opener
+        # is REAL, so treating it as prose would scan a genuine comment and fabricate an edge.
+        nbs = 0; k = length(text)
+        while (k >= 1 && substr(text, k, 1) == "\\") { nbs++; k-- }
+        if (nbs % 2 == 1) {
+          text = text "<!--"; mask = mask "<!--"; nospan = nospan "<!--"
+          s = substr(s, 5); continue
+        }
+        s = substr(s, 5); md_incomment = 1
+        # `<!-->` and `<!--->` are EMPTY comments in CommonMark: the opener and closer share their
+        # dashes. Searching for `-->` strictly after the opener would miss them and arm the
+        # cross-line state, swallowing the rest of the body — the edge-dropping direction.
+        if (substr(s, 1, 1) == ">")  { md_incomment = 0; s = substr(s, 2); continue }
+        if (substr(s, 1, 2) == "->") { md_incomment = 0; s = substr(s, 3); continue }
+      }
+      MD_O_TEXT = text; MD_O_MASK = mask; MD_O_NOSPAN = nospan
+    }
+    function adb_md_flush(from, to, para,   i) {
+      adb_md_inline(para)
+      split(MD_O_TEXT,   _md_t, "\n")
+      split(MD_O_MASK,   _md_m, "\n")
+      split(MD_O_NOSPAN, _md_n, "\n")
+      for (i = from; i <= to; i++) {
+        MD_TEXT[i]   = _md_t[i - from + 1]
+        MD_MASK[i]   = _md_m[i - from + 1]
+        MD_NOSPAN[i] = _md_n[i - from + 1]
+      }
+    }
+    # Resolve MDL[1..MDN] into MD_SKIP / MD_TEXT / MD_MASK / MD_NOSPAN. Call once, from END.
+    function adb_md_run(   i, para, first) {
+      para = ""; first = 0
+      for (i = 1; i <= MDN; i++) {
+        if (adb_md_block(MDL[i])) {
+          MD_SKIP[i] = 1; MD_TEXT[i] = ""; MD_MASK[i] = ""; MD_NOSPAN[i] = ""
+          if (first) { adb_md_flush(first, i - 1, para); para = ""; first = 0 }
+          continue
+        }
+        MD_SKIP[i] = 0
+        if (first && MD_ALONE) { adb_md_flush(first, i - 1, para); para = ""; first = 0 }
+        if (!first) { first = i; para = MD_LINE } else para = para "\n" MD_LINE
+        if (MD_ALONE) { adb_md_flush(first, i, para); para = ""; first = 0 }
+      }
+      if (first) adb_md_flush(first, MDN, para)
+    }
+    # An UNTERMINATED fence or comment swallows to end-of-body rather than leaking back to prose.
+    BEGIN {
+      MD_CR = sprintf("%c", 13)
+      MD_MASKC = sprintf("%c", 1)   # a byte no body carries; never printed, only matched against
+      md_fence_ch = ""; md_fence_len = 0; md_fence_at = 0
+      md_incomment = 0; md_icode = 0; md_para = 0; md_list = 0
+      MDN = 0; MD_ALONE = 0
+    }
+AWKMD
+
+# Filter markdown on stdin to prose on stdout, one output line per input line.
+#
+#   adb_md_prose [text|nospan] [--keep-comments]
+#     text    — HTML comments removed, inline code spans left intact
+#     nospan  — ...and span contents deleted too (a quoted example simply vanishes)
+#
+# FAIL-CLOSED, and that is the whole reason this is a function rather than a pipeline at each call
+# site. A consumer that sanitizes a body and then asks "does it contain a closing keyword?" reads a
+# TRUNCATED body as a clean "no" — the exact fail-open a structure filter is supposed to remove. So
+# the awk program prints a completion trailer, and this checks for it: a killed, truncated, or
+# half-written run is a nonzero return here, never a short clean-looking result.
+adb_md_prose() {
+  local mode="${1:-text}" keep=0 mark out rc
+  case "$mode" in
+    text|nospan) : ;;
+    *) printf 'common: FATAL — adb_md_prose: mode must be text|nospan (got %s)\n' "$mode" >&2; return 2 ;;
+  esac
+  case "${2:-}" in
+    '') : ;;
+    --keep-comments) keep=1 ;;
+    *) printf 'common: FATAL — adb_md_prose: unknown option %s\n' "$2" >&2; return 2 ;;
+  esac
+  mark="$(printf '\001ADB_MD_OK')"
+  out="$(LC_ALL=C awk -v emit="$mode" -v md_keep_comments="$keep" "$_ADB_MD_AWK"'
+    { MDL[++MDN] = $0 }
+    END {
+      adb_md_run()
+      for (i = 1; i <= MDN; i++) print (emit == "nospan") ? MD_NOSPAN[i] : MD_TEXT[i]
+      printf "%c%s\n", 1, "ADB_MD_OK"
+    }
+  ')"; rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  case "$out" in
+    *"$mark") : ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "${out%"$mark"}"
+}

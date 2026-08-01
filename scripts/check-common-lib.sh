@@ -1150,4 +1150,65 @@ eq "$(adb_reviewers_in_class "$(printf 'foo bar\tnone\nb\tclean')" none)" "foo b
 eq "$(cls "foo bar" "$N" "$N" "$(printf '[{"user":{"login":"foo bar"},"content":"+1","created_at":"%s"}]' "$FRESH")")" "clean" \
    "classify: a whitespace-bearing login matches its OWN evidence under the TAB grammar"
 
+# --- adb_md_prose: THE shared CommonMark prose filter (#136) ------------------
+# The primitive's own unit home. `check-roadmap.sh` and `check-skill-compose.sh` exercise it
+# THROUGH their consumers, which is where the interesting inputs live — but a shared primitive gets
+# tested here too, so a break is attributed to the filter rather than to whichever consumer noticed.
+#
+# `mdp <mode> <body>` — the filter's stdout. `%b` so a fixture can be written with \n and \t.
+mdp() { printf '%b' "$2" | adb_md_prose "$1"; }
+
+# The three views, on one line that has all three shapes in it.
+SPANLINE='keep `a span` and <!-- a comment --> too\n'
+eq "$(mdp text "$SPANLINE")"   'keep `a span` and  too' "text: comments go, spans stay"
+eq "$(mdp nospan "$SPANLINE")" 'keep  and  too'         "nospan: span CONTENTS go as well"
+eq "$(printf '%b' "$SPANLINE" | adb_md_prose nospan --keep-comments)" 'keep  and <!-- a comment --> too' \
+   "--keep-comments: the comment survives (the marker consumers need this; the flag exists for them)"
+
+# LINE COUNT AND ORDER ARE PRESERVED. Every consumer indexes results by line, so a structural line
+# must yield an EMPTY line at its own position, never a deletion that renumbers what follows.
+eq "$(mdp text 'a\n```\nb\n```\nc\n' | wc -l | tr -d ' ')" 5 "line count survives a fenced block"
+eq "$(mdp text 'a\n```\nb\n```\nc\n' | sed -n '3p')" '' "...and the fenced line is empty at its own index"
+eq "$(mdp text 'a\n```\nb\n```\nc\n' | sed -n '5p')" 'c' "...so the line after it keeps its number"
+
+# STRUCTURE, one kind at a time. Each is empty output because the whole body is structure.
+eq "$(mdp text '```\nx\n```\n')" '' "a fenced block is structure"
+eq "$(mdp text '~~~\nx\n~~~\n')" '' "...both delimiters"
+eq "$(mdp text '> quoted\n')" ''    "a blockquote is structure"
+eq "$(mdp text '<!--\nx\n-->\n')" '' "a multi-line HTML comment is removed"
+eq "$(mdp text '    indented\n')" '' "a top-level indented block is structure (D27)"
+eq "$(mdp text '- item\n    continued\n')" '- item
+    continued' "...but an indented line under a list marker is prose (D27, the under-match guard)"
+
+# MULTI-LINE SPANS — the reason the filter buffers at all (#136 §1).
+# Asserted with `wc -l`, not against a literal: `$( … )` strips trailing newlines, so comparing
+# two empty lines to '' would pass whether or not the second line survived at all.
+eq "$(mdp nospan '`a\nb`\n' | wc -l | tr -d ' ')" 2 \
+   "a span crossing a line ending is resolved, and BOTH its lines are still there"
+eq "$(mdp nospan '`a\nb`\n' | tr -d '\n' | wc -c | tr -d ' ')" 0 \
+   "...with nothing left in either of them"
+eq "$(mdp nospan 'x`a\nb\n')" 'x`a
+b' "an UNMATCHED run is literal text, so a stray backtick swallows nothing"
+
+# LEFTMOST OPENER WINS — the ordering that satisfies both #136 repros at once. Comments-first
+# honors a quoted opener and swallows the body; spans-first pairs a backtick inside a real comment
+# with one in later prose. One left-to-right pass is the only rule that gets both right.
+eq "$(mdp text 'the opener is `<!--` here\nkept\n')" 'the opener is `<!--` here
+kept' "a <!-- inside a code span opens no comment"
+eq "$(mdp text 'real <!-- ` --> kept\n')" 'real  kept' "a backtick inside a real comment goes with it"
+
+# ARGUMENT VALIDATION and the FAIL-CLOSED completion marker. A truncated filter run must never look
+# like a clean short result — that is the fail-open `pr-targets-issue` maps to rc 2.
+adb_md_prose bogus </dev/null >/dev/null 2>&1; eq "$?" 2 "an unknown mode is rejected (2)"
+adb_md_prose text --nope </dev/null >/dev/null 2>&1; eq "$?" 2 "an unknown option is rejected (2)"
+eq "$(printf '' | adb_md_prose text | wc -c | tr -d ' ')" 0 "empty input is empty output, not an error"
+mdstub="$(mktemp -d)"
+printf '#!/bin/sh\nprintf "half\\n"\nexit 0\n' > "$mdstub/awk"; chmod +x "$mdstub/awk"
+( PATH="$mdstub:$PATH"; printf 'x\n' | adb_md_prose text >/dev/null 2>&1 ); eq "$?" 1 \
+   "a TRUNCATED run (exit 0, no completion marker) is a FAILURE, not a short clean result"
+printf '#!/bin/sh\nexit 9\n' > "$mdstub/awk"
+( PATH="$mdstub:$PATH"; printf 'x\n' | adb_md_prose text >/dev/null 2>&1 ); eq "$?" 1 \
+   "...and so is a hard awk failure"
+rm -rf "$mdstub"
+
 check_summary "common-lib"

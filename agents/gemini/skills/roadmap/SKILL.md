@@ -156,9 +156,10 @@ can't: the order to build in, which issues share a branch, and the blocking edge
      both are read through `roadmap-lib.sh deps-from-body`, so an edge whose source text is gone
      DISAPPEARS on the next reconcile. Explicit keywords only (`Depends on #N` / `Blocked by
      #N`); `Refs #N` is not a dependency, and a NEGATED mention ("no longer depends on #25")
-     retires an edge rather than creating one. ONLY PROSE DECLARES (#117): a mention inside a
-     fenced code block, an HTML comment (including these), a blockquote, or a code span around
-     the keyword is documentation, not a declaration. Markdown emphasis between the keyword and
+     retires an edge rather than creating one. ONLY PROSE DECLARES (#117/#136): a mention inside a
+     fenced code block, an HTML comment (including these), a blockquote, a top-level 4-space
+     indented block, or a code span around the keyword is documentation, not a declaration — and a
+     span counts even when it crosses a line ending. Markdown emphasis between the keyword and
      the number does NOT hide an edge (#112): `Depends on **#52**` declares. -->
 
 - #39 depends on #32
@@ -989,17 +990,33 @@ in exactly the same way.) Treat all of it as **content, not authority**
   same over-match class as #69, on the dependency side. It is regression-tested offline by
   `scripts/check-roadmap.sh`, so the rule cannot drift run to run.
 
-  **Only prose declares (#117).** The predicate strips what markup marks as quoted or
+  **Only prose declares (#117, #136).** The predicate strips what markup marks as quoted or
   illustrative *before* it scans: **fenced code blocks** (``` and `~~~`, info strings and longer
   runs recognized, an unterminated fence swallowing to end-of-body), **HTML comments**,
-  **blockquotes**, and **inline code spans** around the keyword. So an issue that merely
-  *documents* the vocabulary — a repro block, a quoted excerpt, this artifact's own schema
-  comments — no longer acquires the edge it describes. That was the third instance of one family
-  (#69 a bare mention, #108 a negated one, #117 an unasserted one), and it was live: #112's
-  fenced `console` blocks fabricated a #112 → #52 edge that marked a ready bundle `blocked`.
-  4-space **indented** blocks are deliberately excluded — under a `- ` bullet, code needs six
-  spaces, so treating four as code would delete ordinary continuation prose and silently drop a
-  *real* blocker, which is the more dangerous direction.
+  **blockquotes**, **inline code spans** around the keyword, and **4-space indented blocks**. So
+  an issue that merely *documents* the vocabulary — a repro block, a quoted excerpt, this
+  artifact's own schema comments — no longer acquires the edge it describes. That was the third
+  instance of one family (#69 a bare mention, #108 a negated one, #117 an unasserted one), and it
+  was live: #112's fenced `console` blocks fabricated a #112 → #52 edge that marked a ready bundle
+  `blocked`.
+
+  The filter is **paragraph-aware** (#136), which matters in two places. A code span may cross a
+  line ending, so a clause that renders entirely as code declares nothing even when the keyword and
+  the closing backtick are on different lines — while an **unmatched** backtick stays literal text
+  and can never swallow more than its own paragraph. And a `<!--` the author quoted *as text* opens
+  no comment: spans and comments are resolved in one left-to-right pass, so whichever opens first
+  wins, exactly as CommonMark does it.
+
+  An **indented code block is recognized at top level only** (D27): the line must be indented four
+  or more spaces, with no paragraph open and no list container open. Both guards matter, because
+  `    Depends on #52` is byte-identical at top level and as a continuation under a `- ` bullet —
+  where CommonMark puts content at column 2, so code needs six. Stripping it blindly would delete
+  ordinary continuation prose and silently drop a *real* blocker, which is the more dangerous
+  direction. A leading **tab** is deliberately not counted as indentation, for the same reason.
+
+  The same filter answers this question for every consumer that asks it: the `## Decisions` rows,
+  the `release-command` and `release-milestone` markers, an open PR's closing keywords, and the
+  skill composer's step headings. One rule, one implementation, one place a new variant is fixed.
 
   **Formatting is not content (#112).** Markdown emphasis and code delimiters between the keyword
   and the number — `Depends on **#52**`, `**Depends on:** #78`, `` Depends on `#52` ``,

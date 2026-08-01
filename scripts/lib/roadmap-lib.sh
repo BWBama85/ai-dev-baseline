@@ -61,6 +61,16 @@ if [ ! -f "$_adb_rm_common" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_adb_rm_common"
+# A MIXED-VERSION install is what this probe is for. `install.sh` symlinks the whole scripts/lib
+# directory, so the two files always travel together — but a workstation can still be pointing at
+# an older checkout, and then the sourced library simply has no `_ADB_MD_AWK` in it. Under `set -u`
+# that expansion aborts the shell with status 1, which every caller here reads as a trustworthy
+# NEGATIVE. Every hard error in this library is 2 ("do not trust this answer"), so a missing helper
+# has to be 2 too — the same symbol probe role-dispatch.sh applies to the TOML readers.
+if [ -z "${_ADB_MD_AWK:-}" ] || ! command -v adb_md_prose >/dev/null 2>&1; then
+  printf 'roadmap-lib: FATAL — %s is missing the shared markdown filter (_ADB_MD_AWK/adb_md_prose)\n' "$_adb_rm_common" >&2
+  exit 2
+fi
 
 usage() { adb_usage "$0"; }
 
@@ -110,6 +120,38 @@ cmd_pr_targets_issue() {
   # set prints `[]`, but a caller piping from an empty capture is treated identically.
   # A `case` glob does this with no subshell and no bash-4 expansion (bash-3.2 safe).
   case "$json" in *[![:space:]]*) : ;; *) return 1 ;; esac
+
+  # --- ONLY PROSE TARGETS (#130/#136) -----------------------------------------------------------
+  # This predicate used to be the deliberate exception to the structure rule ("jq over GitHub's own
+  # computed link set, a different language answering a different question"), and that exception was
+  # the bug. Its SECOND half is not GitHub's link set at all — it is a keyword scan over prose an
+  # author wrote — so `Closes #42` inside a fenced repro, an HTML comment, a blockquote, a code span
+  # or an indented block all read as "this PR targets #42", and /roadmap withheld a ready issue from
+  # every bundle. Verified in all five shapes.
+  #
+  # EACH BODY IS FILTERED ON ITS OWN. The filter carries cross-line state (an unterminated fence or
+  # comment swallows to end of input), so concatenating the array would let one PR's stray ``` blind
+  # the scan for every PR after it — a fail-open across records.
+  #
+  # FAIL-CLOSED, per the `rc>1 -> die` band this predicate already keeps: a filter that cannot run,
+  # or that is cut short, must never reach jq as a shorter body and answer a clean "not targeted".
+  # `adb_md_prose` returns nonzero on both, and each failure here is `die` (exit 2), never 1.
+  #
+  # The LINKED-ISSUE half below is untouched, because it is genuinely GitHub's own computed set and
+  # has no markdown in it. Only `.body` is replaced.
+  local cnt idx body prose
+  cnt="$(printf '%s' "$json" | jq 'if type != "array" then error("not an array") else length end' 2>/dev/null)" \
+    || die "pr-targets-issue: could not parse PR JSON (malformed input or not a JSON array)"
+  idx=0
+  while [ "$idx" -lt "$cnt" ]; do
+    body="$(printf '%s' "$json" | jq -r --argjson i "$idx" '.[$i].body // ""' 2>/dev/null)" \
+      || die "pr-targets-issue: could not read the body of PR index $idx"
+    prose="$(printf '%s' "$body" | adb_md_prose nospan)" \
+      || die "pr-targets-issue: the markdown prose filter failed on PR index $idx (refusing to scan an unfiltered body)"
+    json="$(printf '%s' "$json" | jq -c --argjson i "$idx" --arg b "$prose" '.[$i].body = $b' 2>/dev/null)" \
+      || die "pr-targets-issue: could not rewrite the body of PR index $idx"
+    idx=$((idx + 1))
+  done
 
   # One jq program does both halves of the union. The issue number and slug are passed as
   # typed --arg/--argjson values, never interpolated into the program text, so a slug with
@@ -489,22 +531,27 @@ cmd_release_counts() {
 cmd_release_command() {
   [ "$#" -eq 0 ] || die "release-command: takes no arguments (roadmap artifact body on stdin)"
   # ONLY PROSE DECLARES (#117), applied to this marker. Structure is dropped BEFORE extraction:
-  # fenced blocks, blockquotes, and inline code spans.
-  #
-  # The shared `md_prose` filter cannot be reused here — it strips HTML COMMENTS, and this marker
-  # IS an HTML comment — so the same rule is applied with that half omitted.
+  # fenced blocks, blockquotes, indented blocks, and inline code spans.
   #
   # Why it is needed at all: the artifact schema documents the marker BY EXAMPLE, and every body
   # bootstrapped by an earlier version carries `<!-- release-command: /release -->` in its OPTIONAL
   # comment block. Its shape is identical to a real declaration, so no value-based carve-out can
   # tell them apart — `release` is a perfectly legitimate thing to declare. What distinguishes them
   # is MARKUP: the example sits in a code span or a fence; a declaration does not.
-  awk '
-    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
-    fence { next }
-    /^[[:space:]]*>/ { next }
-    { line = $0; gsub(/`[^`]*`/, "", line); print line }
-  ' \
+  #
+  # `--keep-comments` is the whole reason the shared filter takes that flag (#136). This marker IS
+  # an HTML comment, so the filter's comment-stripping half has to be off — which used to be stated
+  # here as "the shared filter cannot be reused", above a fourth private fence detector that knew
+  # nothing about run lengths, info strings, container columns or CRLF. `nospan` DELETES span
+  # contents rather than masking them, so a marker the author quoted leaves no residue for `grep -o`
+  # to find. A filter failure is a nonzero return, never a silent empty read.
+  # FILTER, THEN PIPE — two statements, never one. `filter || die | grep` parses as
+  # `filter || (die | grep)`, so the guard would run INSIDE the pipeline and the failure would be
+  # read as "no marker declared": a fail-open on the exact path this guard exists to close.
+  local prose
+  prose="$(adb_md_prose nospan --keep-comments)" \
+    || die "release-command: the markdown prose filter failed (refusing to read an unfiltered body)"
+  printf '%s' "$prose" \
     | grep -o '<!--[[:space:]]*release-command:[[:space:]]*[^>]*-->' \
     | sed 's/.*release-command:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \
@@ -518,10 +565,19 @@ cmd_release_command() {
 
 cmd_marker_title() {
   [ "$#" -eq 0 ] || die "marker-title: takes no arguments (roadmap artifact body on stdin)"
+  # ONLY PROSE DECLARES, here too (#136). This marker had NO structure filter at all, so a fenced
+  # or code-spanned EXAMPLE of `<!-- release-milestone: … -->` was read as a real declaration — and
+  # because two distinct titles make the artifact ambiguous, a documented example could refuse a
+  # perfectly good artifact. The `NAME` carve-out below is a value-based patch over that same hole;
+  # it stays for the placeholder, but markup is what actually distinguishes the two.
+  local prose
+  prose="$(adb_md_prose nospan --keep-comments)" \
+    || die "marker-title: the markdown prose filter failed (refusing to read an unfiltered body)"
   # `grep -o` (one match per LINE OF OUTPUT), not `sed s///p` (one substitution per line of
   # INPUT): two markers on a single line must surface as two titles, so the caller can refuse an
   # ambiguous artifact. With sed, the leading `.*` is greedy and silently keeps only the last.
-  grep -o '<!--[[:space:]]*release-milestone:[[:space:]]*[^>]*-->' \
+  printf '%s' "$prose" \
+    | grep -o '<!--[[:space:]]*release-milestone:[[:space:]]*[^>]*-->' \
     | sed 's/.*release-milestone:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \
     | grep -vx 'NAME' \
@@ -529,166 +585,28 @@ cmd_marker_title() {
   return 0
 }
 
-# --- shared markdown-structure filter (#117) ---------------------------------------------------
-# `md_prose(line)` returns the line with HTML comments removed, and sets MD_SKIP=1 when the line is
-# STRUCTURE rather than prose — inside (or delimiting) a fenced block, or a blockquote. State
-# carries across lines, so this is a streaming sanitizer, not a per-line test.
+# --- markdown structure: this library's use of the ONE shared filter (#136, was #117) ---------
+# The filter itself lives in common.sh (`_ADB_MD_AWK`) — see its header for the model, the three
+# views, and why it buffers. This note records only what THIS library asks of it.
 #
-# WHY IT IS SHARED, and not inlined where it was first needed. This repo keeps fixing one bug
-# family one instance at a time: #69 (a bare `#N` read as an edge), #108 (a NEGATED mention read as
-# an edge), #117 (a mention inside a repro block read as an edge). The root cause every time is the
-# same — TEXT THAT DOCUMENTS THE VOCABULARY IS NOT AN ASSERTION — and it applies to every consumer
-# that reads an issue or artifact body, not just the one that happened to get reported. Both
-# body-scanning subcommands here use this, so a future variant is fixed once:
-#   - `deps-from-body`: a `Depends on #N` inside a fence/comment/blockquote declares nothing.
-#   - `decisions`:      a `| … |` row inside one is not a recorded owner decision, and a `#` line
-#                       inside one does not end the section. That second case is #108 exactly —
-#                       a real decision going unseen means the question re-asks on every run.
-# `pr-targets-issue` deliberately does NOT share it: that predicate is jq over GitHub's own
-# computed link set, a different language answering a different question. Its body-scan half has
-# the same exposure and is tracked separately rather than bolted on here.
-#
-# Assigned via `read -r -d ''` (not `$(cat <<…)`) for the reason skill-compose.sh gives: the
-# program contains backticks, which command substitution would try to execute.
-IFS= read -r -d '' _ADB_RM_MD <<'AWKMD' || true
-    # Counted with substr/index rather than regex intervals: `{0,3}` is a POSIX interval that the
-    # BSD awk on macOS and older mawk builds do not honor, and a silently-unmatched fence rule
-    # would fail OPEN — every fence would leak its contents back into the scan.
-    function lead_sp(s,   i) { i = 0; while (substr(s, i + 1, 1) == " ") i++; return i }
-    function run_len(s, pos, ch,   n) { n = 0; while (substr(s, pos + n, 1) == ch) n++; return n }
-    # How many leading characters are CONTAINER, not content: indentation plus an optional list
-    # marker (`- ` / `* ` / `+ ` / `1. ` / `1) `) and the spaces after it. Returns -1 when the line
-    # is indented past 3 with no marker — indented-block territory, which this pass leaves alone.
-    #
-    # WHY (#135). Without this, a fence or a blockquote written INSIDE a list item is invisible:
-    # `- ```console` puts the delimiter after the marker, so the block was scanned (fabricating an
-    # edge) and its indented closer was then read as a NEW opener, swallowing every real edge after
-    # the list. Placing an example in a list item is one of the most common shapes in an issue.
-    function content_at(s,   i, c, j, nsp, nd) {
-      i = lead_sp(s)
-      if (i > 3) return -1
-      c = substr(s, i + 1, 1)
-      if (c == "-" || c == "*" || c == "+") {
-        j = i + 1                                   # 1-based position of the marker character
-      } else {
-        nd = 0
-        while (nd < 10 && substr(s, i + 1 + nd, 1) >= "0" && substr(s, i + 1 + nd, 1) <= "9") nd++
-        # CommonMark caps an ordered marker at NINE digits. A tenth means this is not a list at
-        # all, and treating it as one drops the line: `1234567890. > Depends on #5` would read as
-        # a list-nested blockquote and lose a real edge.
-        if (nd == 0 || nd > 9) return i
-        c = substr(s, i + nd + 1, 1)
-        if (c != "." && c != ")") return i
-        j = i + nd + 1
-      }
-      nsp = 0
-      while (substr(s, j + 1 + nsp, 1) == " ") nsp++
-      if (nsp == 0) return i                        # `**bold**`, `---`, `1.x`: not a list marker
-      # 1-4 spaces after the marker are PADDING. At 5 or more, only the first is padding and the
-      # remainder is content INDENTATION — so `-     ```' is an indented code line inside the
-      # item, not a fence. Consuming it all would open a fence that CommonMark does not.
-      if (nsp >= 5) return j + 1
-      return j + nsp
-    }
-    # The CLOSER of an open fence: the same delimiter, a run at least as long, nothing but
-    # whitespace after it, and indented no more than 3 past the OPENER's content column. That last
-    # clause is container context, and it is load-bearing in both directions: without it a
-    # 4-space-indented backtick run *inside* a top-level fence closes it early (scanning quoted
-    # text, then reading the real closer as a fresh opener), and with too little of it a
-    # list-nested closer never matches and the fence swallows the rest of the body.
-    function fence_close(line, ch,   sp) {
-      sp = lead_sp(line)
-      if (sp > md_fence_at + 3) return 0
-      return run_len(line, sp + 1, ch)
-    }
-    function after_close(line, n,   sp) { sp = lead_sp(line); return substr(line, sp + n + 1) }
-    # Remove `<!-- ... -->`, both the inline form and one spanning lines.
-    function strip_comments(s,   out, p, q, nbs, k) {
-      out = ""
-      while (1) {
-        if (md_in_comment) {
-          q = index(s, "-->")
-          if (q == 0) return out                   # the comment swallows the rest of this line
-          s = substr(s, q + 3); md_in_comment = 0
-          continue
-        }
-        p = index(s, "<!--")
-        if (p == 0) return out s
-        # `\<!--` is an ESCAPED opener: CommonMark renders the `<` as text, so this is prose
-        # PARITY MATTERS. Only an ODD run of preceding backslashes escapes the `<`: with two, the
-        # first escapes the second and the opener is REAL, so treating it as prose would scan a
-        # genuine comment's contents and fabricate an edge from them.
-        # DISPLAYING the delimiter, not markup (#135). Treating it as real arms the cross-line
-        # state, and an illustrative marker rarely has a `-->` — so it swallowed every edge and
-        # every recorded decision in the rest of the body. Step over it and keep scanning.
-        nbs = 0; k = p - 1
-        while (k >= 1 && substr(s, k, 1) == "\\") { nbs++; k-- }
-        if (nbs % 2 == 1) {
-          out = out substr(s, 1, p + 3)
-          s = substr(s, p + 4)
-          continue
-        }
-        out = out substr(s, 1, p - 1)
-        s = substr(s, p + 4); md_in_comment = 1; md_opened_here = 1
-        # `<!-->` and `<!--->` are EMPTY comments in CommonMark: the opener and closer share their
-        # dashes. Searching for `-->` strictly after the opener would miss them and arm the
-        # cross-line state, swallowing the rest of the body — the edge-dropping direction.
-        if (substr(s, 1, 1) == ">")  { s = substr(s, 2); md_in_comment = 0; continue }
-        if (substr(s, 1, 2) == "->") { s = substr(s, 3); md_in_comment = 0; continue }
-      }
-    }
-    # `md_fence_len` IS the in-a-fence flag: an opener only ever sets it from a run of >=3, so a
-    # separate boolean would be a second copy of one fact for every site to keep in step.
-    function md_prose(line,   fn, at) {
-      MD_SKIP = 1
-      # A GitHub body submitted through the web UI is CRLF, and `gh` passes it through verbatim.
-      # Without this, a closer reads as "```\r", its must-be-blank tail is not blank, the fence
-      # NEVER closes, and every edge in the rest of the body silently disappears — a dropped edge
-      # marks a genuinely blocked bundle `ready`. Normalize once, for every consumer.
-      if (substr(line, length(line), 1) == CR) line = substr(line, 1, length(line) - 1)
-      if (md_fence_len) {                          # inside a fence: only its own closer matters
-        fn = fence_close(line, md_fence_ch)
-        if (fn >= md_fence_len && after_close(line, fn) ~ /^[[:space:]]*$/) {
-          md_fence_ch = ""; md_fence_len = 0; md_fence_at = 0
-        }
-        return ""                                  # opener, content and closer are all skipped
-      }
-      md_opened_here = 0
-      line = strip_comments(line)
-      at = content_at(line)                        # the container's content column, computed ONCE
-      if (at >= 0) {
-        # A backtick fence opener may not carry a backtick in its info string; a tilde one may. The
-        # two probes are sequential, not parallel, because that asymmetry is the whole rule. The
-        # other delimiter never closes the current fence — that is what makes ``` inside ~~~
-        # content. `md_fence_at` remembers this opener's column so its closer can be matched
-        # relative to the same container.
-        fn = run_len(line, at + 1, "`")
-        if (fn >= 3 && index(substr(line, at + fn + 1), "`") == 0) {
-          # A `<!--` on the OPENER line is info-string text, not a comment: the fence starts first,
-          # so it wins. Leaving the comment armed would leak past the closer (the in-fence branch
-          # never runs strip_comments) and swallow the whole rest of the body.
-          if (md_opened_here) md_in_comment = 0
-          md_fence_ch = "`"; md_fence_len = fn; md_fence_at = at; return ""
-        }
-        fn = run_len(line, at + 1, "~")
-        if (fn >= 3) {
-          if (md_opened_here) md_in_comment = 0
-          md_fence_ch = "~"; md_fence_len = fn; md_fence_at = at; return ""
-        }
-        # A blockquote nested under a list marker (`- > …`) is still quoted material (#135), so
-        # this tests the CONTENT position rather than the first non-space character.
-        if (substr(line, at + 1, 1) == ">") return ""
-      }
-      MD_SKIP = 0
-      return line
-    }
-    # An UNTERMINATED fence or comment swallows to end-of-body rather than leaking back to prose.
-    BEGIN {
-      md_fence_ch = ""; md_fence_len = 0; md_fence_at = 0
-      md_in_comment = 0; md_opened_here = 0; MD_SKIP = 0
-      CR = sprintf("%c", 13)
-    }
-AWKMD
+# Every body-reading subcommand here goes through it, and that is the point of #136: this repo kept
+# fixing one bug family one instance at a time (#69 a bare `#N`, #108 a NEGATED mention, #117 a
+# mention inside a repro block, #135 a fence inside a list item), and each fix landed in whichever
+# consumer happened to get reported. Five consumers, one rule:
+#   - `deps-from-body`  a `Depends on #N` inside a fence/comment/blockquote/indented block declares
+#                       nothing. Uses MD_TEXT *and* MD_MASK: the KEYWORD is matched against the
+#                       masked copy so a quoted clause cannot declare, while the `#N` is read from
+#                       the raw copy so `` Depends on `#52` `` still does (#112).
+#   - `decisions`       a `| … |` row inside one is not a recorded owner decision, and a `#` line
+#                       inside one does not end the section. That second case is #108 exactly — a
+#                       real decision going unseen means the question re-asks on every run.
+#   - `release-command` and `marker-title` — MD_NOSPAN with comments KEPT, because for these two the
+#                       declaration IS an HTML comment and what separates it from the schema's own
+#                       documented example is markup, never the value.
+#   - `pr-targets-issue` sanitizes each PR body before the closing-keyword scan (#130). It used to
+#                       be the deliberate exception ("jq over GitHub's own link set, a different
+#                       language"), and that exception was the bug: a `Closes #42` inside a fence,
+#                       comment, blockquote, span or indented block froze a ready issue.
 
 # --- deps-from-body ---------------------------------------------------------------------------
 # Print the dependency edges DECLARED BY a body (stdin), one issue number per line, ascending and
@@ -785,7 +703,7 @@ cmd_deps_from_body() {
   # LC_ALL=C keeps the byte-wise scan below predictable on a body containing multibyte text; the
   # two dash characters are normalized by literal string replacement rather than a bracket
   # expression, which is exactly what a byte-oriented locale cannot express safely.
-  LC_ALL=C awk -v self="$self" "$_ADB_RM_MD"'
+  LC_ALL=C awk -v self="$self" "$_ADB_MD_AWK"'
     # Literal (never regex) replace-all, so a dash normalization cannot be re-interpreted.
     function lreplace(s, from, to,   out, p) {
       out = ""
@@ -795,51 +713,18 @@ cmd_deps_from_body() {
       }
       return out s
     }
-    # --- inline code spans (#117) ---------------------------------------------------------------
-    # This half stays LOCAL to deps-from-body: it produces a second, length-aligned copy that only
-    # the KEYWORD scan reads, a contract no other consumer has. The line-structural half (fences,
-    # HTML comments, blockquotes) is the shared `md_prose` filter prepended above.
+    # THE TWO ALIGNED VIEWS, which is what makes the code-span rule TARGETED rather than blanket.
+    # The shared filter hands back MD_TEXT[i] and a byte-for-byte length-matched MD_MASK[i] whose
+    # resolved spans are \x01. The KEYWORD is matched against the masked copy, so a whole clause
+    # quoted as an example (`` `Depends on #5` ``) declares nothing; the REFERENCE is read from the
+    # raw copy, so `` Depends on `#52` `` still declares (#112). Blanket span-stripping would delete
+    # the reference outright and put those two rules in direct conflict.
     #
-    # Replace every byte of an inline code span (delimiters included) with MASK, preserving LENGTH
-    # so positions stay 1:1 with the unmasked line. Delimiters are equal-length backtick runs, per
-    # CommonMark; an UNMATCHED run is literal text and is left alone. Only the KEYWORD scan reads
-    # the masked copy — the reference scan reads the raw line, so a `#N` inside a span is left
-    # intact rather than deleted, which is what lets STEP resolve it (see the INLINE CODE SPANS
-    # and EMPHASIS IS NOT CONTENT rules above).
-    # span_end(s, from, n) — where the run of EXACTLY n backticks that closes this span begins, or
-    # 0 when the span is never closed. A LONGER run is not a closer: it is skipped whole, so
-    # ``` inside a `` span stays content. (`close` is an awk builtin and cannot name this.)
-    function span_end(s, from, n,   L, j, m) {
-      L = length(s); j = from
-      while (j <= L) {
-        if (substr(s, j, 1) != "`") { j++; continue }
-        m = run_len(s, j, "`")
-        if (m == n) return j
-        j += m
-      }
-      return 0
-    }
-    # Advance BOTH scan copies by the same offset. The 1:1 length invariant between `rest` and
-    # `masked` is what lets an offset found in one index the other, so consuming them is a single
-    # operation with one home — not a convention two call sites have to remember.
+    # Advance BOTH copies by the same offset. The 1:1 length invariant is what lets an offset found
+    # in one index the other, so consuming them is a single operation with one home — not a
+    # convention two call sites have to remember.
     function eat(at) { rest = substr(rest, at); masked = substr(masked, at) }
-    function mask_spans(s,   out, i, L, n, e, k) {
-      if (index(s, "`") == 0) return s            # the common line: nothing to mask, no rebuild
-      out = ""; i = 1; L = length(s)
-      while (i <= L) {
-        if (substr(s, i, 1) != "`") { out = out substr(s, i, 1); i++; continue }
-        n = run_len(s, i, "`")
-        e = span_end(s, i + n, n)
-        # Unmatched: literal text, copied as a SLICE. Matched: MASK must be written byte-by-byte,
-        # because it is \x01 by design — padding with spaces instead would let `depends` + span +
-        # `on` fuse into a keyword the author never wrote.
-        if (e == 0) { out = out substr(s, i, n); i += n }
-        else        { for (k = i; k < e + n; k++) out = out MASK; i = e + n }
-      }
-      return out
-    }
     BEGIN {
-      MASK = sprintf("%c", 1)   # a byte no issue body carries; never printed, only matched against
       apos = sprintf("%c", 39)   # a literal apostrophe; this program is single-quoted in shell
       KW  = "(depends?|dependent|dependant)[ \t]+(on|upon)|blocked[ \t]+(by|on)"
       NEG = "(^|[^a-z0-9_])(no|not|never|nor|longer|without|remove[sd]?|retire[sd]?"
@@ -880,55 +765,58 @@ cmd_deps_from_body() {
       # `Depends on **acme/repo#5**` all declare nothing.
       STEP = "^" EMR "[ \t]*((:|,|;|&|\\+|and)" EMR ")?[ \t]*" EMR "#[0-9]+"
     }
-    {
-      # STRUCTURE FIRST, on the RAW line (#117) — a fence is recognized before lowercasing, dash
-      # normalization, clause/negation analysis and chain parsing, so none of them ever sees text
-      # the markup marked as quoted or illustrative.
-      line = md_prose($0)                          # the shared filter; state carries across lines
-      if (MD_SKIP) next
-
-      rest = tolower(line)
-      # CHEAP NECESSARY CONDITION, before any rewriting. Every alternative of KW begins `depend` or
-      # `blocked`, and the dash normalization below maps only em/en-dash to `.` — so it can neither
-      # create nor destroy those prefixes. Bailing here skips the masking and the scan on the ~90%
-      # of body lines that can never match. Safe at this point precisely because the fence and
-      # comment state above is already updated for this line.
-      if (rest !~ /depend|blocked/) next
-      # Normalize the dashes that also end a clause (em/en) to a single-byte boundary char.
-      rest = lreplace(rest, "\342\200\224", ".")
-      rest = lreplace(rest, "\342\200\223", ".")
-      # The keyword is matched against a copy whose inline code spans are masked, while the
-      # reference chain is read from `rest`. The two are the same length, so the offsets below
-      # stay aligned as both are consumed in lockstep.
-      masked = mask_spans(rest)
-      while (match(masked, KW)) {
-        kstart = RSTART; klen = RLENGTH
-        # The clause is read UNMASKED on purpose. A negator the author happened to code-format —
-        # "this is `not` blocked by #5" — is still the author negating, and reading the masked copy
-        # here would hide it and MINT an edge the pre-#117 predicate never produced. Masking exists
-        # to stop a quoted keyword from DECLARING; it must not also stop a real one from retiring.
-        clause = substr(rest, 1, kstart - 1)
-        # Keep only the text since the last clause boundary — a negation in an EARLIER sentence
-        # must not suppress a later, genuine edge.
-        cut = 0
-        for (i = 1; i <= length(clause); i++) {
-          c = substr(clause, i, 1)
-          if (c == "." || c == ";" || c == ":" || c == "!" || c == "?") cut = i
-        }
-        clause = substr(clause, cut + 1)
-        eat(kstart + klen)
-        if (clause ~ NEG) continue            # negated: this retires an edge, never declares one
-        while (match(rest, STEP)) {
-          step = substr(rest, RSTART, RLENGTH)
-          eat(RSTART + RLENGTH)
-          h = index(step, "#")
-          digits = substr(step, h + 1)
-          # Bound the width BEFORE the numeric conversion. A run wider than an issue number is
-          # not an issue reference, and converting it would leave awk holding a float that prints
-          # in exponent/rounded form — emitting a fabricated "issue number" no tracker can have.
-          if (length(digits) > 9) continue
-          n = digits + 0
-          if (n > 0 && n != self) print n
+    { MDL[++MDN] = $0 }
+    END {
+      # STRUCTURE FIRST (#117/#136) — the whole body is resolved before a single keyword is looked
+      # for, so lowercasing, dash normalization, clause/negation analysis and chain parsing never
+      # see text the markup marked as quoted or illustrative.
+      adb_md_run()
+      for (ln = 1; ln <= MDN; ln++) {
+        if (MD_SKIP[ln]) continue
+        # ONE LINE PER EDGE is preserved deliberately. The filter buffers a PARAGRAPH to pair code
+        # spans across a line ending, then hands the lines back separately — the scan below still
+        # runs per line, so `Depends on\n#5` declares nothing, exactly as before.
+        rest = tolower(MD_TEXT[ln])
+        # CHEAP NECESSARY CONDITION, before any rewriting. Every alternative of KW begins `depend` or
+        # `blocked`, and the dash normalization below cannot create or destroy those prefixes. Bailing
+        # here skips the scan on the ~90% of body lines that can never match.
+        if (rest !~ /depend|blocked/) continue
+        masked = tolower(MD_MASK[ln])
+        # Normalize the dashes that also end a clause (em/en) to a boundary char — LENGTH-PRESERVING,
+        # a 3-byte sequence for 3 characters. `masked` is not rewritten at all, so the two copies stay
+        # 1:1 only because this substitution cannot shift an offset. A bare "." would shorten `rest`
+        # by two bytes per dash and silently slide every keyword offset past its own text.
+        rest = lreplace(rest, "\342\200\224", ".  ")
+        rest = lreplace(rest, "\342\200\223", ".  ")
+        while (match(masked, KW)) {
+          kstart = RSTART; klen = RLENGTH
+          # The clause is read UNMASKED on purpose. A negator the author happened to code-format —
+          # "this is `not` blocked by #5" — is still the author negating, and reading the masked copy
+          # here would hide it and MINT an edge the pre-#117 predicate never produced. Masking exists
+          # to stop a quoted keyword from DECLARING; it must not also stop a real one from retiring.
+          clause = substr(rest, 1, kstart - 1)
+          # Keep only the text since the last clause boundary — a negation in an EARLIER sentence
+          # must not suppress a later, genuine edge.
+          cut = 0
+          for (i = 1; i <= length(clause); i++) {
+            c = substr(clause, i, 1)
+            if (c == "." || c == ";" || c == ":" || c == "!" || c == "?") cut = i
+          }
+          clause = substr(clause, cut + 1)
+          eat(kstart + klen)
+          if (clause ~ NEG) continue            # negated: this retires an edge, never declares one
+          while (match(rest, STEP)) {
+            step = substr(rest, RSTART, RLENGTH)
+            eat(RSTART + RLENGTH)
+            h = index(step, "#")
+            digits = substr(step, h + 1)
+            # Bound the width BEFORE the numeric conversion. A run wider than an issue number is
+            # not an issue reference, and converting it would leave awk holding a float that prints
+            # in exponent/rounded form — emitting a fabricated "issue number" no tracker can have.
+            if (length(digits) > 9) continue
+            n = digits + 0
+            if (n > 0 && n != self) print n
+          }
         }
       }
     }
@@ -953,30 +841,39 @@ cmd_deps_from_body() {
 # later section can never be mistaken for a decision.
 cmd_decisions() {
   [ "$#" -eq 0 ] || die "decisions: takes no arguments (roadmap artifact body on stdin)"
-  LC_ALL=C awk "$_ADB_RM_MD"'
-    # Structure first (#117), through the SAME filter deps-from-body uses. Two bugs live here
+  LC_ALL=C awk "$_ADB_MD_AWK"'
+    # Structure first (#117/#136), through the SAME filter deps-from-body uses. Two bugs live here
     # without it, both on a document that ships fenced examples and an HTML comment INSIDE this
     # very section: a `| … |` row quoted in a fence would retire an owner question nobody
     # answered, and a `#` line quoted in one would end the section early — hiding every real
     # decision after it, which is #108 returning by another route.
-    { $0 = md_prose($0); if (MD_SKIP) next }
-    # Any heading ends the section; the Decisions heading (only) starts it.
-    /^[[:space:]]*#/ {
-      inside = (tolower($0) ~ /^[[:space:]]*##[[:space:]]+decisions[[:space:]]*$/)
-      next
-    }
-    !inside { next }
-    /^[[:space:]]*\|/ {
-      row = $0
-      sub(/^[[:space:]]*\|/, "", row)
-      p = index(row, "|")
-      cell = (p > 0) ? substr(row, 1, p - 1) : row
-      gsub(/`/, "", cell)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", cell)
-      if (cell == "") next
-      if (tolower(cell) == "question") next          # the header row
-      if (cell ~ /^[-:]+$/) next                     # the |---|---| separator row
-      print cell
+    #
+    # MD_TEXT, never MD_NOSPAN: a question id is routinely written as `` `q-1` `` by hand, and the
+    # cell strips its own backticks below. Deleting span CONTENT here would erase the id itself.
+    { MDL[++MDN] = $0 }
+    END {
+      adb_md_run()
+      for (ln = 1; ln <= MDN; ln++) {
+        if (MD_SKIP[ln]) continue
+        line = MD_TEXT[ln]
+        # Any heading ends the section; the Decisions heading (only) starts it.
+        if (line ~ /^[[:space:]]*#/) {
+          inside = (tolower(line) ~ /^[[:space:]]*##[[:space:]]+decisions[[:space:]]*$/)
+          continue
+        }
+        if (!inside) continue
+        if (line !~ /^[[:space:]]*\|/) continue
+        row = line
+        sub(/^[[:space:]]*\|/, "", row)
+        p = index(row, "|")
+        cell = (p > 0) ? substr(row, 1, p - 1) : row
+        gsub(/`/, "", cell)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", cell)
+        if (cell == "") continue
+        if (tolower(cell) == "question") continue      # the header row
+        if (cell ~ /^[-:]+$/) continue                 # the |---|---| separator row
+        print cell
+      }
     }
   ' | sort -u
   return 0
