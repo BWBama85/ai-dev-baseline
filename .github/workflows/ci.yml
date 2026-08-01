@@ -963,10 +963,17 @@ jobs:
       # `brew --prefix bash` is the keg's own prefix rather than $(brew --prefix), so the PATH entry
       # is the one that actually carries this formula's binary. GITHUB_PATH PREPENDS, and applies to
       # SUBSEQUENT steps only — which is why the proof is a separate step below and not this one.
-      - name: Install bash 5.3 and shellcheck from Homebrew, and put bash first on PATH
+      - name: Install bash 5.3, shellcheck and coreutils from Homebrew, and put bash first on PATH
         run: |
           set -uo pipefail
-          brew install bash shellcheck || exit 1
+          # coreutils supplies `gtimeout`. Without it check-role-dispatch.sh's outer-termination
+          # probe cannot start, and its "no orphaned agent" assertion passes because nothing was
+          # ever staged — the full suite running while one probe proves nothing.
+          #
+          # NOTE what is deliberately NOT done: coreutils' `libexec/gnubin` is kept OFF PATH. Adding
+          # it would shadow BSD sed/awk/date/stat with GNU ones and quietly destroy half of what
+          # this job is for. Only the g-prefixed names are gained.
+          brew install bash shellcheck coreutils || exit 1
 
           # NOT `echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"`. A failed substitution there
           # expands to the empty string and writes a bare "/bin" — PREPENDING the one directory

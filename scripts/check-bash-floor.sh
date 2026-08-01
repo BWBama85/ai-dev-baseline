@@ -135,6 +135,10 @@ runtime_check() {
 scan_jobs() {
   awk '
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function unquote(s) {
+      if (s ~ /^".*"$/ || s ~ /^'"'"'.*'"'"'$/) s = substr(s, 2, length(s) - 2)
+      return s
+    }
     # A plain YAML scalar as GitHub reads it. QUOTE FIRST, THEN COMMENT — the order is the whole
     # point. Stripping `#` first turns `runs-on: "ubuntu-26.04 # not-the-label"` into the approved
     # label `ubuntu-26.04`, accepting a job whose real label is the entire quoted string and which
@@ -162,10 +166,14 @@ scan_jobs() {
     # inline flow mapping that a `:[[:space:]]*$` anchor renders INVISIBLE. Invisible is the one
     # outcome a floor lint may never produce, so an inline job is captured with its raw value as
     # the label: it matches no approved label and fails LOUDLY rather than silently not existing.
-    /^  [A-Za-z0-9_-]+:/ {
+    # QUOTED job IDs count too. YAML permits `"hidden":`, and a key rule accepting only bare
+    # [A-Za-z0-9_-] skips straight past it — every line of that job then reads as belonging to the
+    # PREVIOUS one, so it is not merely unchecked, it does not exist. With a compliant Linux and
+    # macOS job elsewhere in the file the aggregate rules are satisfied and the lint reports PASS.
+    /^  ("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z0-9_-]+):/ {
       flush()
-      job = $0; sub(/^  /, "", job); sub(/:.*$/, "", job)
-      rest = $0; sub(/^  [A-Za-z0-9_-]+:/, "", rest); rest = trim(rest)
+      job = $0; sub(/^  /, "", job); sub(/:.*$/, "", job); job = unquote(job)
+      rest = $0; sub(/^  ("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z0-9_-]+):/, "", rest); rest = trim(rest)
       runson = ""; guard = 0; firstlog = 0; step = 0
       if (rest != "" && rest !~ /^#/) runson = "<inline mapping: " rest ">"
       next
@@ -178,11 +186,14 @@ scan_jobs() {
     # checkout or any bootstrap — so a runner image that quietly changed its bash is visible in the
     # log even when a later step is what fails.
     step == 1 && /run:.*bash --version/ { firstlog = 1 }
-    # WIRING, not MENTIONING. Anchored to `run:` because the invocation appearing anywhere else on a
-    # non-comment line — an `env:` value, a step `name:`, an `echo` — satisfied a bare substring test
-    # while executing nothing. (A `run: |` BLOCK carrying it on a later line is not recognized and
-    # reports unguarded: fail-closed, and no job here uses that form.)
-    /run:.*check-bash-floor\.sh --runtime/ { guard = 1 }
+    # EXECUTING, not merely APPEARING. The invocation must be the WHOLE run value — `run: bash
+    # scripts/check-bash-floor.sh --runtime` and nothing else on the line. Anything looser passes
+    # for a step that only talks about it: an `env:` value, a step `name:`, and (the one that
+    # survived the first tightening) `run: echo '"'"'bash scripts/check-bash-floor.sh --runtime'"'"'`,
+    # which runs the guard exactly zero times while satisfying a substring test.
+    # A `run: |` BLOCK carrying it on a later line is not recognized either, and reports unguarded:
+    # fail-closed, and no job here uses that form.
+    /^[[:space:]]*run:[[:space:]]*bash[[:space:]]+scripts\/check-bash-floor\.sh[[:space:]]+--runtime[[:space:]]*$/ { guard = 1 }
     END { flush() }
   ' "$1"
 }
@@ -201,9 +212,12 @@ static_lint() {
     # step in the workflow around bash, and a `^[[:space:]]*shell:` anchor never sees it. The cost
     # is that an action input legitimately named `shell` under `with:` would also trip this — which
     # is a loud, one-line fix to this lint, where the anchored version's cost was silence.
-    if grep -Eq '(^|[[:space:]{,])shell:' "$wf"; then
+    # The QUOTED spelling counts: `defaults: {run: {"shell": sh}}` is the same override in valid
+    # YAML, and a pattern that only knows the bare key waves it through while every `run:` step in
+    # the workflow is routed via sh.
+    if grep -Eq '(^|[[:space:]{,])"?'"'"'?shell'"'"'?"?[[:space:]]*:' "$wf"; then
       check_note "$wf names a 'shell' key, which can route steps around the floor guard:"
-      grep -En '(^|[[:space:]{,])shell:' "$wf" | sed 's/^/    /' >&2
+      grep -En '(^|[[:space:]{,])"?'"'"'?shell'"'"'?"?[[:space:]]*:' "$wf" | sed 's/^/    /' >&2
       check_fail
     fi
 

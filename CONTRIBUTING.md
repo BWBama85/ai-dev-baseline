@@ -86,10 +86,13 @@ runtime guard that says which interpreter it got — and that lint is itself obs
 every rule it owns), and an **install→uninstall dry-run** (all three agents) into a throwaway
 `HOME`.
 
-Green locally ≈ green in CI, with one honest qualification since #257: CI runs this offline suite
+Green locally ≈ green in CI, with two honest qualifications since #257. CI runs this offline suite
 on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
-them. A local green speaks for the offline checks on the OS you are sitting at, not for the other
-runner's image or its Homebrew bootstrap. See [`docs/ci-runners.md`](docs/ci-runners.md).
+them, so a local green speaks for the OS you are sitting at, not for the other runner's image or
+its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 27 CI
+jobs — is omitted locally on purpose: pinning a local gate to the 5.3 floor is #256's enforcement
+to introduce with install instructions, not this one's to impose sideways. Its **static** half does
+run here. See [`docs/ci-runners.md`](docs/ci-runners.md).
 
 ## Repository map
 

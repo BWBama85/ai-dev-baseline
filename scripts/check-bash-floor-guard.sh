@@ -205,6 +205,40 @@ run_lint "$d"
 eq "$RC" "1" "fail-open (e): a workflow may not set ADB_BASH_FLOOR"
 has "$OUT" "ADB_BASH_FLOOR" "fail-open (e) names the override it found"
 
+# --- three more the async PR reviewer reproduced, all "equivalent YAML spelling" bypasses ----------
+# Each PASSED after the first round of fixes. The lesson they share: a rule written against ONE
+# spelling of a construct is a rule that holds until someone writes the other one.
+
+# (f) `run: echo '…check-bash-floor.sh --runtime'` runs the guard exactly zero times, and satisfied
+#     a `run:`-anchored substring test. The invocation must now be the WHOLE run value.
+d="$work/echoedguard"; f="$(new_wf "$d")"
+emit_job "$f" linux-job ubuntu-26.04 1
+{
+  printf '  macos-job:\n    runs-on: macos-latest\n    steps:\n'
+  printf '      - name: Log this runner'"'"'s bash\n        run: bash --version\n'
+  printf '      - name: g\n        run: echo '"'"'bash scripts/check-bash-floor.sh --runtime'"'"'\n'
+} >> "$f"
+run_lint "$d"
+eq "$RC" "1" "fail-open (f): an ECHOED guard invocation does not count as running it"
+
+# (g) A QUOTED job id was skipped entirely — and worse than unchecked: every line of that job read
+#     as belonging to the previous one, so it did not exist at all.
+d="$work/quotedjob"; f="$(new_wf "$d")"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+printf '  "hidden":\n    runs-on: ubuntu-latest\n    steps:\n      - name: x\n        run: echo hi\n' >> "$f"
+run_lint "$d"
+eq "$RC" "1" "fail-open (g): a QUOTED job id is seen, not skipped"
+has "$OUT" "hidden" "fail-open (g) names the quoted job"
+
+# (h) `defaults: {run: {"shell": sh}}` — the quoted spelling of (c), same effect, previously unseen.
+d="$work/quotedshell"; f="$(new_wf "$d")"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+printf 'defaults: {run: {"shell": sh}}\n' >> "$f"
+run_lint "$d"
+eq "$RC" "1" "fail-open (h): a QUOTED shell key is caught too"
+
 # --- rule 9: the first step must log bash --version (#257 acceptance criterion 2) --------------------
 d="$work/nofirstlog"; f="$(new_wf "$d")"
 emit_job "$f" linux-job ubuntu-26.04 1

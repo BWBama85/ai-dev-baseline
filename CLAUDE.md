@@ -44,12 +44,19 @@ those. The rules below are specific to this repo's code.
    `check-claims.sh` runs the decision and date rules and **reports how many references it left
    unverified**).
 
-   **A third thing a local green cannot predict, since #257: the other platform.** CI now runs
-   this same offline suite on **two** hosted runners — `ubuntu-26.04` and `macos-latest`
-   (`selfcheck-macos`) — and one workstation is one of them. A local green speaks for the offline
-   checks on the OS you are sitting at; it says nothing about the other runner's image, its
-   Homebrew bootstrap, or preview-runner availability. That is not a change to the hermetic-gate
-   rule — the set of unpredictable things grew, and `docs/ci-runners.md` records why.
+   **Two more things a local green cannot predict, both since #257** (`docs/ci-runners.md`, D29):
+
+   - **the other platform.** CI now runs this same offline suite on **two** hosted runners —
+     `ubuntu-26.04` and `macos-latest` (`selfcheck-macos`) — and a workstation is one of them. A
+     local green speaks for the OS you are sitting at, not for the other runner's image or its
+     Homebrew bootstrap;
+   - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 27 CI jobs, but is
+     omitted from `selfcheck` deliberately: its verdict is about the machine, and pinning a local
+     gate to the 5.3 floor would fail a contributor still on 5.2 — #256's enforcement to
+     introduce, with install instructions, not this gate's to impose sideways. The **static** half
+     does run locally.
+
+   Neither changes the hermetic-gate rule; the set of unpredictable things simply grew.
 4. **Shell code must be portable and shellcheck-clean.** `bash`/POSIX, safe on macOS
    bash 3.2 (no `mapfile`, no `readlink -f`), passing
    `shellcheck --severity=warning -e SC1091`. The install runs on a stock Mac and on
