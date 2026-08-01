@@ -1645,14 +1645,27 @@ eq "$(amb "$afx")" "$(amb "$afx")" "deps-ambiguous is deterministic"
 # has cost this project unsaved work).
 crashdir="$(mktemp -d "${TMPDIR:-/tmp}/rl-crash.XXXXXX")"
 if [ -d "$crashdir" ]; then
-  cp "$RL" "$crashdir/roadmap-lib.sh"
   cp "$ROOT/scripts/lib/common.sh" "$crashdir/common.sh"
   # A syntax error inside the awk program: the scan cannot run, so any answer it gives is a lie.
-  perl -0pi -e 's/function eat\(at\)/function eat(at) THIS IS NOT AWK/' "$crashdir/roadmap-lib.sh"
-  printf 'Depends on #5' | bash "$crashdir/roadmap-lib.sh" deps-from-body >/dev/null 2>&1
-  eq "$?" 2 "a crashed scan makes deps-from-body an ERROR, not an empty edge set"
-  printf 'Depends on * #5' | bash "$crashdir/roadmap-lib.sh" deps-ambiguous >/dev/null 2>&1
-  eq "$?" 2 "...and deps-ambiguous too"
+  #
+  # `sed`, not `perl`. Perl is NOT a declared prerequisite of this repo (AGENTS.md asks for portable
+  # POSIX-safe shell that passes the linter, and this was the only perl call in the checks tree) — on a
+  # minimal Linux or macOS box it would exit 127, leave the copy UNBROKEN, and fail the two
+  # assertions below against a perfectly valid library, taking the required `selfcheck` red with it.
+  # A test whose failure mode is "the environment lacked a tool nobody promised" is worse than no
+  # test. (Bot-review find on PR #254.)
+  sed 's/function eat(at)/function eat(at) THIS IS NOT AWK/' "$RL" > "$crashdir/roadmap-lib.sh"
+  # ASSERT THE MUTATION LANDED. A substitution that matched nothing leaves a VALID library, and
+  # then these assertions would be testing the opposite of what they claim — the same vacuity the
+  # unbroken-copy check below guards from the other side.
+  if cmp -s "$RL" "$crashdir/roadmap-lib.sh"; then
+    bad "the crashed-scan fixture did not break its copy (the anchor text moved?) — assertions would be vacuous"
+  else
+    printf 'Depends on #5' | bash "$crashdir/roadmap-lib.sh" deps-from-body >/dev/null 2>&1
+    eq "$?" 2 "a crashed scan makes deps-from-body an ERROR, not an empty edge set"
+    printf 'Depends on * #5' | bash "$crashdir/roadmap-lib.sh" deps-ambiguous >/dev/null 2>&1
+    eq "$?" 2 "...and deps-ambiguous too"
+  fi
   # Prove the fixture can distinguish: the SAME copy, unbroken, still answers normally. Without
   # this the two assertions above would also pass against a library that always exited 2.
   cp "$RL" "$crashdir/roadmap-lib.sh"

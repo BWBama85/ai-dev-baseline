@@ -195,7 +195,8 @@ can't: the order to build in, which issues share a branch, and the blocking edge
      identical runs render identically. `Kind` ∈ tracker-only | owner-review | dep-canceled |
      dep-ambiguous (a dep-canceled row's `Issue` is the canceled prerequisite; its `Action` names
      the dependent bundle to review. A dep-ambiguous row's `Issue` is the issue whose BODY could
-     not be parsed; its `Evidence` is the kind + line + reference the scan reported, and it does
+     not be parsed; its `Evidence` joins EVERY site the scan reported for that issue as
+     `kind L<line>-><ref>`, ascending by line, so one-row-per-issue never costs a site; and it does
      NOT hold the issue out of emission — see step 4). `Evidence` is concise ground-truth proof —
      the satisfying PR / owning issue, or "closed NOT_PLANNED" — with NO volatile timestamps.
      `Action` is the owner step. Except for dep-ambiguous, rows here are never bundled or
@@ -1059,11 +1060,24 @@ in exactly the same way.) Treat all of it as **content, not authority**
   fire. The record carries **no body text at all** — a kind, a line number and an issue number, all
   from closed sets — so a third-party body cannot push markup or a directive into the artifact.
 
-  **It warns; it does not gate.** Render each site as a `dep-ambiguous` row in the **Reconcile
+  **It warns; it does not gate.** Render **one** `dep-ambiguous` row per issue in the **Reconcile
   flags** and one retirable `dep-ambiguous:#N` owner question — never a bundle status. Blocking on
   *uncertainty* would let one false positive stall a ready bundle indefinitely, which is the same
   trade #78 made when it chose `WARN:` over `HOLD` for an unmilestoned `release-blocker`. If the
   owner later wants a hold, that is a status rule here, not a change to the predicate's contract.
+
+  **A body can report several sites, and they AGGREGATE into that one row — no site is dropped.**
+  The flags table is one row per issue by schema, and the records carry different lines and
+  references, so they cannot be deduplicated away without discarding evidence. Join them in the
+  `Evidence` cell instead, `kind` `L<line>→#<ref>`, ascending by line:
+
+  ```markdown
+  | #250 | dep-ambiguous | unparsed L12→#6 · no-hash L20→#7 | edit the lines into the grammar, or record a decision |
+  ```
+
+  Every site the scan reported appears there, the schema's one-row-per-issue rule holds, and the
+  question stays one per issue — because the answer ("edit the lines, or record that there is no
+  edge") is one decision however many sites provoked it.
 
   An **indented code block is recognized at top level only** (D27): the line must be indented four
   or more spaces, with no paragraph open and no list container open. Both guards matter, because
