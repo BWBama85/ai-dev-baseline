@@ -725,7 +725,10 @@ cmd_deps_from_body() {
     # The shared filter hands back MD_TEXT[i] and a byte-for-byte length-matched MD_MASK[i] whose
     # resolved spans are \x01. The KEYWORD is matched against the masked copy, so a whole clause
     # quoted as an example (`` `Depends on #5` ``) declares nothing; the REFERENCE is read from the
-    # raw copy, so `` Depends on `#52` `` still declares (#112). Blanket span-stripping would delete  # adb-claim-ok: #112's own example form, quoted
+    # raw copy, so `` Depends on `#52` `` still declares (#112). Blanket span-stripping would delete
+    # the reference outright.  NO APOSTROPHE ANYWHERE IN THIS PROGRAM: it is a single-quoted shell
+    # string, so one would close the quote and the awk source would reach bash as commands.
+    # adb-claim-ok: #52 and #112 name the example form this masking exists to preserve
     # the reference outright and put those two rules in direct conflict.
     #
     # Advance BOTH copies by the same offset. The 1:1 length invariant is what lets an offset found
