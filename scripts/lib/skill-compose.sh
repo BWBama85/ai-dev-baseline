@@ -60,6 +60,13 @@ if ! command -v adb_repo_root >/dev/null 2>&1; then
   printf 'skill-compose: FATAL — %s is missing adb_repo_root\n' "$_adb_sc_common" >&2
   return 1 2>/dev/null || exit 1
 fi
+# The fence rule now lives in common.sh (#136/#131). A library predating it would leave
+# `$_ADB_MD_AWK` unset, and under `set -u` the awk invocation below would abort mid-run — so probe
+# for it by name and fail loud instead, the way the adb_repo_root probe above already does.
+if [ -z "${_ADB_MD_AWK:-}" ]; then
+  printf 'skill-compose: FATAL — %s is missing the shared markdown filter (_ADB_MD_AWK)\n' "$_adb_sc_common" >&2
+  return 1 2>/dev/null || exit 1
+fi
 
 # --- config -----------------------------------------------------------------------------------
 _ADB_SC_AGENT="claude"                 # v1 supports Claude only (codex/gemini are a follow-up)
@@ -97,18 +104,18 @@ function anchor_of(line,   t) {
   t = line; sub(/^###[[:space:]]+/, "", t); sub(/^[0-9]+\.[[:space:]]*/, "", t)
   return slug(t)
 }
-# A code-fence line, CommonMark-style: ``` after 0-3 spaces of indentation (4+ spaces is an
-# indented code block, not a fence). Counted with substr/index — NOT a `{0,3}` regex interval,
-# which old BSD/onetrueawk (macOS) doesn't support. Indented fences DO occur under list items,
-# and missing them would let a `### ` inside fenced example code be misread as a step heading.
-function is_fence(s,   n) {
-  n = 0
-  while (substr(s, n + 1, 1) == " ") n++
-  return (n <= 3 && substr(s, n + 1, 3) == "```")
-}
+# Fence detection is NOT defined here. `adb_md_fence_delim` from common.sh is prepended to this
+# program (#136/#131): it answers "does this line open or close a fenced block?", and `md_fence_len`
+# is the in-a-fence flag.
+#
+# This file used to carry its own — a boolean toggle on any ``` after 0-3 spaces — and the two
+# detectors had already drifted apart, in both directions at once. `roadmap-lib` honored `~~~` and
+# this did not, so a tilde-fenced `### ` line was ADVERTISED as a composable anchor; and a ``` that
+# closed a longer run left the toggle inverted for the whole rest of the file, HIDING every real
+# step after it. Two copies of one rule, two suites, and neither could see the other drift.
 BEGIN {
   in_block = 0; fatal = 0; base_seen = 0
-  frontmatter = 1; fmdelims = 0; infence = 0
+  frontmatter = 1; fmdelims = 0
   split(ops, _o, " "); for (i in _o) opok[_o[i]] = 1
 }
 
@@ -166,8 +173,8 @@ FILENAME == base {
   # Track fence state ALWAYS (so a `### ` inside a fence is never a heading, even while a replace
   # is skipping the body), but only PRINT the delimiter when not skipping — otherwise a replaced
   # step's fenced block would leak its empty ``` ``` delimiters into the output.
-  if (is_fence($0)) { infence = !infence; if (mode == "compose" && !skipping) print; next }
-  if (!infence && $0 ~ /^### /) {
+  if (adb_md_fence_delim($0)) { if (mode == "compose" && !skipping) print; next }
+  if (!md_fence_len && $0 ~ /^### /) {
     a = anchor_of($0)
     if (mode == "list") {                                # advertise the anchor; flag a base collision
       h = $0; sub(/^###[[:space:]]+/, "", h)
@@ -227,7 +234,7 @@ adb_sc_render() {
   local name="$1" base="$2" ov="$3" tmp="$4" k
   if ! LC_ALL=C awk -v mode=compose -v base="$base" -v ops="$_ADB_SC_OPS" -v agent="$_ADB_SC_AGENT" \
         -v skillname="$name" -v marker="$_ADB_SC_MARKER" -v version="$_ADB_SC_VERSION" \
-        "$_ADB_SC_AWK" "$ov" "$base" > "$tmp"; then
+        "$_ADB_MD_AWK$_ADB_SC_AWK" "$ov" "$base" > "$tmp"; then
     return 1
   fi
   # Self-validate the result (CI never inspects a project's composed output): still a loadable
@@ -377,7 +384,7 @@ adb_sc_main() {
     adb_sc_valid_name "$n" || { adb_sc_err "invalid skill name: '$n'"; return 2; }
     adb_sc_paths "$n" "$repo" "$home"
     [ -f "$_sc_base" ] || { adb_sc_err "no installed base skill: $_sc_base"; return 1; }
-    LC_ALL=C awk -v mode=list -v base="$_sc_base" -v ops="$_ADB_SC_OPS" "$_ADB_SC_AWK" "$_sc_base"
+    LC_ALL=C awk -v mode=list -v base="$_sc_base" -v ops="$_ADB_SC_OPS" "$_ADB_MD_AWK$_ADB_SC_AWK" "$_sc_base"
     return
   fi
 

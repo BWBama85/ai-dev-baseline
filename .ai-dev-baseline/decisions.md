@@ -1298,3 +1298,68 @@ limit: none of them is sufficient alone.
              Acting on that item as written would have configured less isolation and recorded it as
              hardening.
 - baseline-issue: #248
+
+## D27 — indented code blocks are recognized at top level only, and the acceptance fixture that "must flip" cannot correctly flip
+- date:      2026-07-31
+- category:  general
+- unknown:   #136 §5 names the one fork the rewrite could not decide for itself: are 4-space
+             INDENTED code blocks structure (so a `Depends on #N` inside one declares nothing), or
+             are they deliberately out of scope as #117 left them? It offers three options —
+             (1) permanent exclusion, (2) full container-aware indent tracking, (3) top-level-only
+             stripping — and says to settle it before writing code, because the answer decides how
+             much container state the parser has to carry.
+
+             A second unknown surfaced while answering the first. The acceptance list requires that
+             "the fixture that currently pins the present behavior is flipped … a rewrite that
+             leaves it green has not done the work", naming `check-roadmap.sh` § 6i's 4-space-indent
+             exclusion. At HEAD that is exactly one fixture, and its middle line sits at column 0.
+- decision:  OPTION 3, made implementable by two bits of block state rather than none. A line opens
+             an indented code block only when ALL of: it is indented >= 4 spaces, a paragraph is NOT
+             open (the previous line was blank, or structure, or nothing), and no list container is
+             open. The block then continues over blank lines and lines indented >= 4, and ends at
+             the first non-blank line indented <= 3.
+
+             The two bits are what make option 3 safe, and a stateless `^ {4}` rule is what makes it
+             dangerous. `    Depends on #52` is lexically identical at top level and as a
+             continuation under a list item, so a stateless rule DELETES real edges — the under-match
+             direction, which marks a genuinely blocked bundle `ready`. Both protected shapes the
+             issue names still declare: `- item` + 4-space continuation, and `- item` + 6-space
+             continuation. So does a lazy continuation of an ordinary paragraph, which CommonMark
+             also refuses to read as code ("indented code cannot interrupt a paragraph").
+
+             THE ACCEPTANCE FIXTURE CANNOT CORRECTLY FLIP, and this is the same trap the owner's own
+             comment on #136 documented for the #112 bullet. The fixture is three lines: an indented
+             backtick run, then `Depends on #5` at COLUMN 0, then another indented run. Under
+             CommonMark an indented code block ends at the first non-blank line indented < 4, so the
+             middle line is a paragraph and `5` is the correct answer both before and after this
+             change. An implementation that turned it empty would have to let an indented block
+             swallow lines at lower indentation — which is precisely the under-match this decision
+             exists to refuse. What was actually owed is honored instead: that fixture's RATIONALE is
+             rewritten (it no longer says indented blocks are out of scope; it now pins that a
+             non-indented line ENDS the block), and the §5 repros the issue actually reports —
+             `    Depends on #52` and `        Depends on #52` — become new fixtures that go from
+             `52` to empty. Both are red without this change.
+- placement: `scripts/lib/common.sh` (`_ADB_MD_AWK`, `adb_md_block`), the flipped rationale and new
+             fixtures in `scripts/check-roadmap.sh` § 6i, and the rule's prose in
+             `base/workflows/roadmap.md` (rendered into all three agents' skills).
+- reason:    Option 1 leaves the top-level false edge the issue reports and contradicts its own
+             acceptance list. Option 2 is CommonMark-correct and needs list-depth, content-column
+             and laziness state carried through every container — a parser this framework has no
+             reason to own, and a large surface for the under-match direction to hide in. Option 3
+             with a paragraph bit and a list bit costs two integers, is decidable in one line-order
+             pass, and errs toward NOT stripping in every case it cannot prove: an unclosed list
+             keeps scanning (over-match, visible as a bundle that sits blocked) rather than deleting
+             text (under-match, invisible). A leading TAB is deliberately still not counted as
+             indentation, for the same reason — miscounting it would delete prose.
+
+             The evidence that this is safe is empirical, not argued. The rewritten filter was run
+             over all 193 issue bodies in this tracker and produced a byte-identical edge set, and
+             over the whole existing 122-fixture § 6 suite with no expectation changed.
+
+             ORDERING, stated exactly rather than flatteringly. The acceptance list asks for this
+             entry "before implementation", and it was written before the code — but it lands in
+             the SAME commit, so the diff cannot evidence that and nobody should read it as
+             evidenced. What history does show is the substitute that actually matters: the new
+             fixtures fail against the parent commit. A future decision of this kind should be
+             committed on its own first, which is the only form of the claim a reviewer can check.
+- baseline-issue: #136

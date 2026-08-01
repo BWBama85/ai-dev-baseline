@@ -225,6 +225,84 @@ eq "$(targets 'abc' '[]')" 2              "a non-numeric issue number is an ERRO
 eq "$(targets '' '[]')" 2                 "an empty issue number is an ERROR (2)"
 eq "$(targets '-1' '[]')" 2               "a negative issue number is an ERROR (2)"
 
+# --- 1i. ONLY PROSE TARGETS: structure in a PR body is documentation (#130/#136) ------------  # adb-claim-ok: #130 is closed NOT_PLANNED, superseded by #136
+# The body half of this predicate is a keyword scan over prose an author wrote, and until #136 it
+# had no notion of markdown at all — so a PR that merely DOCUMENTED `Closes #N` froze that issue
+# out of every bundle. All five shapes below were verified returning 0 ("targets") before the fix.
+#
+# DIRECTION. Each case here guards the OVER-match: a fabricated target withholds a ready issue
+# forever, which is visible but wrong. The controls right after guard the UNDER-match, which is the
+# worse one — a missed target lets /roadmap emit work an open PR already closes.
+# `jb` builds a JSON body string from raw lines, so a fence can be written with real newlines.
+jb() { printf '%s\n' "$@" | jq -Rs .; }
+BT3='```'
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb "$BT3" 'Closes #42' "$BT3")" '[]')")")" 1 \
+   "OVER: a closing keyword inside a fenced block does not target"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb '<!-- Closes #42 -->')" '[]')")")" 1 \
+   "OVER: ...inside an HTML comment"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb '> Closes #42')" '[]')")")" 1 \
+   "OVER: ...inside a blockquote"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Docs: `Closes #42` is the syntax.')" '[]')")")" 1 \
+   "OVER: ...inside an inline code span"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb '    Closes #42')" '[]')")")" 1 \
+   "OVER: ...inside a 4-space indented code block (the D27 rule, reaching this consumer too)"
+# A span is MASKED, never deleted. Deleting it lets the text on either side fuse into a keyword the
+# author never wrote — self-review find, and the reason `deps-from-body` masks with \x01 too.
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'clo`x`ses #42')" '[]')")")" 1 \
+   "OVER: two fragments either side of a span do NOT fuse into a closing keyword"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Docs: fi`x`es #42')" '[]')")")" 1 \
+   "OVER: ...for every keyword the pattern accepts"
+# UNDER — every real form must still target, or /roadmap emits work a PR already closes.
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Closes #42')" '[]')")")" 0 \
+   "UNDER: plain prose still targets"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Some prose.' '' '    An indented block.' '' 'Closes #42')" '[]')")")" 0 \
+   "UNDER: prose AFTER an indented block still targets (the block ends at column 0)"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb "$BT3" 'x' "$BT3" 'Closes #42')" '[]')")")" 0 \
+   "UNDER: prose after a CLOSED fence still targets"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb "Closes $SLUG#42")" '[]')")")" 0 \
+   "UNDER: a THIS-repo-qualified closer still targets (stacked PRs depend on it)"
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Closes other/repo#42')" '[]')")")" 1 \
+   "OVER: an OTHER-repo-qualified closer never targets"
+# RECORD BOUNDARY. The filter carries cross-line state, so an unterminated fence swallows to end of
+# input. Each body must therefore be filtered ON ITS OWN — otherwise one PR's stray ``` blinds the
+# scan for every PR after it, which is a fail-OPEN across records.
+eq "$(targets 42 "$(arr "$(pr 100 "$(jb "$BT3" 'unterminated')" '[]')" "$(pr 101 "$(jb 'Closes #42')" '[]')")")" 0 \
+   "UNDER: an unterminated fence in one PR body does not blind the next PR's scan"
+# The LINKED-ISSUE half is GitHub's own computed set and is never filtered — a PR whose body only
+# documents the syntax still targets when the link is real.
+# The body documents a DIFFERENT number from the linked one, so a pass here cannot come from the
+# body scan. Built on its own line because the escape below is per-line and this fixture wraps.
+doc_only_body="$(jb "$BT3" 'Closes #99' "$BT3")"   # adb-claim-ok: fixture DATA — a number the body documents, never a citation
+eq "$(targets 42 "$(arr "$(pr 100 "$doc_only_body" "$(arr "$(ref 42)")")")")" 0 \
+   "UNDER: the closingIssuesReferences link targets regardless of what the body's markup says"
+
+# --- 1j. FAIL-CLOSED on a FILTER failure, not just a JSON one (#136) ------------------------
+# The acceptance property: "no sanitizing path may yield a clean negative on filter failure." A
+# body that is truncated or never filtered at all reads as "no keyword here" — the exact fail-open
+# the rc>1 band exists to prevent. Driven with a stub `awk` on PATH, so the failure is REAL rather
+# than asserted: the guard is watched going red on an input that would otherwise return 0.
+sc_stub="$(mktemp -d)"
+printf '#!/bin/sh\nexit 7\n' > "$sc_stub/awk"; chmod +x "$sc_stub/awk"
+eq "$(printf '%s' "$(arr "$(pr 100 "$(jb 'Closes #42')" '[]')")" \
+       | PATH="$sc_stub:$PATH" bash "$RL" pr-targets-issue 42 "$SLUG" >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "a prose-filter failure is an ERROR (2) on a body that WOULD have targeted"
+printf '#!/bin/sh\nprintf "half\\n"\nexit 0\n' > "$sc_stub/awk"
+eq "$(printf '%s' "$(arr "$(pr 100 "$(jb 'Closes #42')" '[]')")" \
+       | PATH="$sc_stub:$PATH" bash "$RL" pr-targets-issue 42 "$SLUG" >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "a TRUNCATED filter run is an ERROR (2) too — a short clean-looking body is the fail-open"
+rm -rf "$sc_stub"
+# MALFORMED FIELD SHAPES reach the same fail-closed band (review round 1). `jq -r '.[$i].body'`
+# stringifies a number without complaining, and `any(...)` over a non-array reference set yields an
+# empty generator rather than raising — so a malformed PR object answered a clean "not targeted".
+eq "$(targets 42 '[{"body":42,"closingIssuesReferences":[]}]')" 2 \
+   "a non-string body is an ERROR (2), never a clean negative"
+eq "$(targets 42 '[{"body":"","closingIssuesReferences":{}}]')" 2 \
+   "a non-array closingIssuesReferences is an ERROR (2)"
+eq "$(targets 42 '["a string member"]')" 2 \
+   "an array member that is not an object is an ERROR (2)"
+eq "$(targets 42 '[{"body":null,"closingIssuesReferences":null}]')" 1 \
+   "...while explicit nulls stay a clean negative — absent is not malformed"
+
 # --- 1h. jq-metacharacter safety in the slug (no injection into the filter) -----------------
 # The slug is passed as a typed --arg, never interpolated into the program text.
 eq "$(targets 69 "$(arr "$(pr 100 '"x"' "$(arr "$(ref 69)")")")" 'a"/b')" 1 \
@@ -1050,10 +1128,16 @@ eq "$(depsm "   $q3" 'Depends on #5' "   $q3")" '' "a fence indented 3 spaces is
 eq "$(depsm "${q3}a${bt}b" 'Depends on #5')" '5' \
    "a backtick fence whose info string holds a backtick does NOT open (so the prose is scanned)"
 eq "$(depsm "~~~a${bt}b" 'Depends on #5' '~~~')" '' "...but a tilde fence's info string may hold one"
-# A 4-space run is an INDENTED block and is deliberately NOT stripped (rationale in the lib's
-# STRUCTURE block). Pinned so the exclusion stays a decision rather than becoming an oversight.
+# A 4-space run is an INDENTED CODE BLOCK, not a fence — and since D27 its CONTENTS are structure
+# too. What this fixture pins now is the block's END: an indented code block ends at the first
+# non-blank line indented <= 3, so the middle line below is an ordinary paragraph and its edge
+# stands. (The rationale here used to read "indented blocks are deliberately out of scope"; #136's
+# acceptance list named this fixture as the one that must FLIP, and it cannot — the flip is in the
+# reason, and in the §5-repro fixtures further down. See D27.)
 eq "$(depsm "    $q3" 'Depends on #5' "    $q3")" '5' \
-   "a 4-space-indented run is NOT a fence (indented blocks are deliberately out of scope)"
+   "UNDER: a non-indented line ENDS an indented code block, so the prose between two runs declares"
+eq "$(depsm "    $q3" '    Depends on #5' "    $q3")" '' \
+   "OVER: ...while a line INSIDE the block declares nothing (this is the #129 exclusion, gone)"  # adb-claim-ok: #129 is closed NOT_PLANNED, superseded by #136
 # An unterminated fence must swallow to end-of-body rather than leak its contents back to prose.
 eq "$(depsm 'Depends on #9' "$q3" 'Depends on #5')" '9' "an unterminated fence swallows to EOF"
 eq "$(depsm "$q3" 'Depends on #9' "$q3" 'Depends on #5')" '5' "prose AFTER a closed fence is scanned"
@@ -1156,11 +1240,111 @@ eq "$(deps 'Text \\<!-- Depends on #5 --> Depends on #7')" '7' \
 eq "$(deps 'Text \\\<!-- Depends on #5 -->')" '5' \
    "...and three escape it again"
 
+# MULTI-LINE CODE SPANS (#136 §1). CommonMark lets an inline span cross a line ending inside a
+# paragraph, so a clause that RENDERS entirely as code was still being scanned: the line-at-a-time
+# filter copied the unmatched opening backtick as literal text. That recreated, in a narrow case,
+# the exact false dependency #117 exists to prevent.
+#
+# DIRECTION. The first group is OVER-match (a fabricated edge blocks a ready bundle). The control
+# group right after is UNDER-match, and it is the reason this is PARAGRAPH-scoped rather than
+# document-scoped: a stray backtick must not be able to swallow the rest of the body.
+eq "$(depsm "${bt}Depends on #5" "still example${bt}")" '' \
+   "OVER: a span that crosses a line ending declares nothing"
+eq "$(depsm "see ${bt}${bt}Depends on #5" "still example${bt}${bt} here")" '' \
+   "OVER: ...for a multi-backtick run too"
+eq "$(depsm "${bt}${bt}Depends on #5" "one ${bt} inside" "still example${bt}${bt}")" '' \
+   "OVER: ...and a shorter run inside a longer span is content, not its closer"
+eq "$(depsm "it${bt}s fine" 'Depends on #5')" '5' \
+   "UNDER: an UNMATCHED backtick is literal text and must not swallow the next line"
+eq "$(depsm "it${bt}s fine" '' 'Depends on #5')" '5' \
+   "UNDER: ...and span state resets at the paragraph boundary, so a later pair cannot reach back"
+eq "$(depsm "${bt}Depends on #5" '' "still example${bt}")" '5' \
+   "UNDER: a blank line ends the paragraph, so these two backticks are two unmatched literals"
+eq "$(depsm "${bt}Depends on #5" 'still example' 'Depends on #7')" '5 7' \
+   "UNDER: an opener with no closer anywhere in the paragraph is LITERAL — both edges stand"
+
+# A `<!--` QUOTED IN A SPAN IS TEXT, NOT STRUCTURE (#136 §2). Comment stripping used to run before
+# anything knew about spans, so a deliberately-quoted opener armed the cross-line comment state and
+# swallowed every following line — the inverse of the rule two blocks up, and the UNDER-match
+# direction: a dropped edge marks a genuinely blocked bundle `ready`.
+eq "$(depsm "The opener is ${bt}<!--${bt} in the schema." 'Depends on #5')" '5' \
+   "UNDER: a <!-- quoted in a code span does not open a comment"
+eq "$(depsm "Write ${bt}<!-- x -->${bt} to show it." 'Depends on #5')" '5' \
+   "UNDER: ...including a whole quoted comment"
+eq "$(deps "A real one: <!-- ${bt} --> Depends on #5")" '5' \
+   "UNDER: a backtick INSIDE a real comment is consumed with it (the comment opened first)"
+eq "$(depsm '<!-- x' "Depends on ${bt}#5${bt}" '-->' 'Depends on #7')" '7' \
+   "OVER: ...and a real comment still swallows a span, because it opened first"
+
+# AN HTML COMMENT THAT STARTS A LINE IS A BLOCK (review round 1). The inline pass runs a whole
+# paragraph BEHIND the block pass, so structure written INSIDE a multi-line comment used to mutate
+# block state before anything knew a comment was open. Both directions of that were live, and both
+# are UNDER-match: a fence opened and never closed, and a blockquote-shaped closer was skipped so
+# the comment never closed at all. Either swallowed every edge after it.
+eq "$(depsm '<!--' "$q3" '-->' 'Depends on #5')" '5' \
+   "UNDER: a fence delimiter INSIDE a multi-line comment opens no fence"
+eq "$(depsm '<!--' '> -->' 'Depends on #5')" '5' \
+   "UNDER: ...and a blockquote-shaped closer still closes the comment"
+eq "$(depsm '<!--' '    indented' '-->' 'Depends on #5')" '5' \
+   "UNDER: ...and an indented line inside one opens no code block"
+eq "$(depsm '<!--' 'Depends on #9' '-->' 'Depends on #5')" '5' \
+   "OVER: ...while the comment still swallows its own contents"
+eq "$(deps '<!-- Depends on #5 --> Depends on #7')" '7' \
+   "UNDER: a comment CLOSED on its own line stays inline, so the prose after it is still scanned"
+eq "$(depsm '- <!--' 'Depends on #9' '-->' 'Depends on #5')" '5' \
+   "OVER: a comment block opens at the CONTAINER content column too"
+
+# A LIST MARKER STARTS A NEW BLOCK (review round 1). Two adjacent items were buffered as one
+# paragraph, so their backticks paired across the item boundary and masked a real edge away.
+eq "$(depsm "- ${bt}Depends on #5" "- another ${bt} item")" '5' \
+   "UNDER: backticks in two DIFFERENT list items do not pair"
+eq "$(depsm "- ${bt}Depends on #5" "  still item one ${bt}")" '' \
+   "OVER: ...but a CONTINUATION line is the same paragraph, so a span across it still resolves"
+
+# AN ESCAPED BACKTICK IS LITERAL (review round 1), so it opens no span. Without the parity check a
+# phantom opener pairs with a real tick later in the paragraph and masks everything between.
+eq "$(depsm "\\${bt}Depends on #5" "later ${bt}")" '5' \
+   "UNDER: a backslash-escaped backtick is not a span opener"
+eq "$(depsm "\\\\${bt}Depends on #5" "later ${bt}")" '' \
+   "OVER: ...but TWO backslashes leave a real one (only odd parity escapes)"
+
 # The point of the whole family: prose still declares, and a quoted negation is not a retirement.
 eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \
    "a NEGATED mention quoted in a fence neither declares nor retires"
 eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7')" '5 6 7' \
    "a chain in prose still resolves with a fence present"
+
+# --- 6i-bis. INDENTED CODE BLOCKS — the #129 fork, decided in D27 ----------------------------  # adb-claim-ok: #129 is closed NOT_PLANNED, superseded by #136 — this is its historical name
+# The rule: a line opens an indented code block only when it is indented >= 4 spaces AND no
+# paragraph is open AND no list container is open. Both guards are the whole safety argument, so
+# each fixture below says which direction it holds.
+#
+# OVER-match here means scanning quoted code and fabricating an edge (a ready bundle sits blocked —
+# visible). UNDER-match means deleting ordinary prose and losing a real edge (a blocked bundle is
+# marked `ready` — invisible, and the reason a stateless `^ {4}` rule was refused).
+# The issue's §5 repro is written with `#52`; these use `#5` like every other fixture in § 6i.  # adb-claim-ok: quoting the repro's number, not citing it
+# The number is fixture DATA — what is under test is the indentation rule, not the reference.
+eq "$(deps '    Depends on #5')" '' \
+   "OVER: a top-level 4-space-indented line is code and declares nothing (the §5 repro)"
+eq "$(depsm '        Depends on #5')" '' "OVER: ...at any depth past 4"
+eq "$(depsm 'Prose.' '' '    Depends on #5')" '' "OVER: ...after a blank line"
+eq "$(depsm "$q3" 'x' "$q3" '    Depends on #5')" '' "OVER: ...and after a closed fence"
+eq "$(depsm '# A heading' '    Depends on #5')" '' "OVER: ...and directly after a heading"
+# UNDER — the shapes a stateless rule would have deleted. CommonMark refuses all four as code.
+eq "$(depsm '- item' '    Depends on #5')" '5' \
+   "UNDER: a 4-space continuation under a list marker is PROSE (content starts at column 2)"
+eq "$(depsm '- item' '      Depends on #5')" '5' \
+   "UNDER: ...and a 6-space one too, because indented code cannot interrupt a paragraph"
+eq "$(depsm '- item' '' '    Depends on #5')" '5' \
+   "UNDER: ...and the list container survives a blank line"
+eq "$(depsm 'Some prose' '    Depends on #5')" '5' \
+   "UNDER: a lazy continuation of an ordinary paragraph is prose, not code"
+eq "$(depsm '- a' '' 'Top-level prose.' '' '    Depends on #5')" '' \
+   "OVER: ...but a column-0 line CLOSES the list, so the next indented block is code again"
+eq "$(depsm '    x' 'Depends on #5')" '5' \
+   "UNDER: an indented block ends at the first non-blank line indented <= 3"
+eq "$(depsm "\tDepends on #5")" '5' \
+   "UNDER: a leading TAB is deliberately not counted as indentation (stated in the filter header)"
 
 # --- 6j. EMPHASIS between the keyword and the #N (#112) --------------------------------------
 # The UNDER-match mirror of #69, and the dangerous half of the family: an over-match blocks a
@@ -1316,6 +1500,52 @@ eq "$(dcs "${D_HEAD}> | quoted:#8 | from another thread | — |\n| a:#1 | x | �
    "a blockquoted row is quoted material, not a decision"
 eq "$(dcs "${D_HEAD}${q3}\r\nx\r\n${q3}\r\n| a:#1 | y | — |\r\n")" 'a:#1' \
    "a CRLF body closes its fence here too (see the CRLF note in 6i)"
+# The #136 repros reach THIS consumer too — it reads the same document through the same filter.
+eq "$(dcs "${D_HEAD}The opener is \`<!--\` in the schema.\n| a:#1 | x | — |\n")" 'a:#1' \
+   "a <!-- quoted in a span does not swallow the rest of the section (#136 §2, the #108 shape)"
+eq "$(dcs "${D_HEAD}\`| fake:#9 | quoted\nacross two lines | — |\`\n| a:#1 | x | — |\n")" 'a:#1' \
+   "a row inside a MULTI-LINE code span is not a decision (#136 §1)"
+# A BLANK LINE first, because that is what an indented code block actually requires: indented text
+# directly under a paragraph line is a lazy continuation, not code. Writing this fixture without
+# the blank line would have pinned the opposite rule.
+eq "$(dcs "${D_HEAD}\n    | indented:#9 | code | — |\n\n| a:#1 | x | — |\n")" 'a:#1' \
+   "a row inside a 4-space indented code block is not a decision (D27)"
+eq "$(dcs "${D_HEAD}    | lazy:#9 | a continuation, not code | — |\n")" 'lazy:#9' \
+   "UNDER: ...but an indented row DIRECTLY under one is a continuation and is still read"
+# UNDER-match control: the section itself must survive every one of those.
+eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n| b:#2 | y | — |\n")" 'a:#1 b:#2' \
+   "...and ordinary rows are still read (the filter must not eat the section)"
+
+# --- 7b. release-command / marker-title: the two COMMENT-shaped declarations (#136) ----------
+# These read a marker that IS an HTML comment, so they run the shared filter with comment
+# stripping OFF — spans and blocks still removed. That combination is why the filter takes a
+# `--keep-comments` flag at all; before it, each carried its own fence detector (or, for
+# `marker-title`, none whatever).
+rcmd() { printf '%b' "$1" | run_rl release-command; }
+mtit() { printf '%b' "$1" | run_rl marker-title; }
+eq "$(rcmd '<!-- release-command: release -->\n')" 'release' "UNDER: a top-level release-command declares"
+eq "$(rcmd "${q3}\n<!-- release-command: fenced -->\n${q3}\n")" '' "OVER: ...but a fenced one does not"
+eq "$(rcmd '> <!-- release-command: bq -->\n')" '' "OVER: ...nor a blockquoted one"
+eq "$(rcmd "See ${bt}<!-- release-command: spanned -->${bt} above.\n")" '' "OVER: ...nor one inside a code span"
+eq "$(rcmd '    <!-- release-command: indented -->\n')" '' "OVER: ...nor one in an indented block (D27)"
+eq "$(rcmd "<!-- release-command: ${bt}quoted${bt} -->\n")" '' \
+   "OVER: a value carrying backticks is not a declaration — a skill can never be named that"
+eq "$(mtit '<!-- release-milestone: Next release -->\n')" 'Next release' "UNDER: a top-level marker-title declares"
+eq "$(mtit "${q3}\n<!-- release-milestone: Fake -->\n${q3}\n<!-- release-milestone: Real -->\n")" 'Real' \
+   "OVER: a FENCED example is not a second title — two titles make the artifact ambiguous and refuse it"
+eq "$(mtit "Docs: ${bt}<!-- release-milestone: Fake -->${bt}\n<!-- release-milestone: Real -->\n")" 'Real' \
+   "OVER: ...nor is a code-spanned one"
+eq "$(mtit '> <!-- release-milestone: Quoted -->\n<!-- release-milestone: Real -->\n')" 'Real' \
+   "OVER: ...nor a blockquoted one"
+eq "$(mtit '<!-- release-milestone: A -->\n<!-- release-milestone: B -->\n')" 'A B' \
+   "UNDER: two REAL markers still both surface, so the caller can refuse an ambiguous artifact"
+# A BACKTICK INSIDE A COMMENT IS COMMENT DATA, NOT A SPAN DELIMITER (review round 1). With comment
+# detection skipped in keep-comments mode, two comments paired their ticks ACROSS the declaration
+# between them and masked it away — a real marker returning nothing, with exit 0.
+eq "$(mtit "<!-- note ${bt} -->\n<!-- release-milestone: Real -->\n<!-- ${bt} note -->\n")" 'Real' \
+   "UNDER: backticks in two separate comments do not pair across a real marker between them"
+eq "$(rcmd "<!-- note ${bt} -->\n<!-- release-command: real -->\n<!-- ${bt} note -->\n")" 'real' \
+   "UNDER: ...and the same for release-command"
 bash "$RL" decisions extra-arg >/dev/null 2>&1
 eq "$?" 2 "decisions takes no arguments"
 
