@@ -121,7 +121,7 @@ cmd_pr_targets_issue() {
   # A `case` glob does this with no subshell and no bash-4 expansion (bash-3.2 safe).
   case "$json" in *[![:space:]]*) : ;; *) return 1 ;; esac
 
-  # --- ONLY PROSE TARGETS (#130/#136) -----------------------------------------------------------
+  # --- ONLY PROSE TARGETS (#130/#136) ---------------------------------  # adb-claim-ok: #130 is closed NOT_PLANNED, superseded by #136
   # This predicate used to be the deliberate exception to the structure rule ("jq over GitHub's own
   # computed link set, a different language answering a different question"), and that exception was
   # the bug. Its SECOND half is not GitHub's link set at all — it is a keyword scan over prose an
@@ -604,7 +604,7 @@ cmd_marker_title() {
 #   - `deps-from-body`  a `Depends on #N` inside a fence/comment/blockquote/indented block declares
 #                       nothing. Uses MD_TEXT *and* MD_MASK: the KEYWORD is matched against the
 #                       masked copy so a quoted clause cannot declare, while the `#N` is read from
-#                       the raw copy so `` Depends on `#52` `` still does (#112).
+#                       the raw copy so `` Depends on `#52` `` still does (#112).  # adb-claim-ok: #112's own example form, quoted
 #   - `decisions`       a `| … |` row inside one is not a recorded owner decision, and a `#` line
 #                       inside one does not end the section. That second case is #108 exactly — a
 #                       real decision going unseen means the question re-asks on every run.
@@ -725,7 +725,7 @@ cmd_deps_from_body() {
     # The shared filter hands back MD_TEXT[i] and a byte-for-byte length-matched MD_MASK[i] whose
     # resolved spans are \x01. The KEYWORD is matched against the masked copy, so a whole clause
     # quoted as an example (`` `Depends on #5` ``) declares nothing; the REFERENCE is read from the
-    # raw copy, so `` Depends on `#52` `` still declares (#112). Blanket span-stripping would delete
+    # raw copy, so `` Depends on `#52` `` still declares (#112). Blanket span-stripping would delete  # adb-claim-ok: #112's own example form, quoted
     # the reference outright and put those two rules in direct conflict.
     #
     # Advance BOTH copies by the same offset. The 1:1 length invariant is what lets an offset found

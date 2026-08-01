@@ -302,6 +302,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 - **One paragraph-aware CommonMark prose filter, in one home, reached by every consumer that asks
   "is this a declaration or is it documentation?"** (#136, D27; supersedes #128/#129/#130/#131).
+  <!-- adb-claim-ok: those four were closed NOT_PLANNED precisely BECAUSE this issue absorbed them -->
   Four private parsers answered that question, and every one of them was wrong in a different way.
   They are now `_ADB_MD_AWK` + `adb_md_prose` in `scripts/lib/common.sh`.
   - **A code span that crosses a line ending is now resolved.** `` `Depends on #5 `` / ``

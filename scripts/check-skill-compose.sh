@@ -350,7 +350,7 @@ ic="$(cat "$(out_of indented)")"
 has "$ic" "### fake heading inside an indented fence" "the fenced fake heading is preserved verbatim"
 has "$ic" "APPENDED to real step." "append landed in the real step"
 
-# =========================== (R) THE WHOLE FENCE RULE (#131 / #136) ===========================
+# ================= (R) THE WHOLE FENCE RULE (#131 / #136) =================  # adb-claim-ok: #131 is closed NOT_PLANNED, superseded by #136
 # The composer used to carry its own fence detector: a boolean toggle on any ``` after 0-3 spaces.
 # That is a fraction of CommonMark, and every missing clause is a `### ` line classified wrongly —
 # in BOTH directions, which is why each case below says which one it guards:
@@ -380,7 +380,8 @@ mk_fence_base() {                 # mk_fence_base <name>  — body on stdin, aft
   } > "$BASEDIR/$name/SKILL.md"
 }
 
-# (R1) A ~~~ fence is a fence. The reported #131 drift: `roadmap-lib` honored both delimiters and
+# (R1) A ~~~ fence is a fence. The reported #131 drift (adb-claim-ok: closed NOT_PLANNED,
+# superseded by #136): `roadmap-lib` honored both delimiters and
 # the composer honored only backticks, so this exact document classified differently in two
 # installed libraries. ADVERTISES-a-fake, and the step AFTER it was fine, so nothing looked wrong.
 mk_fence_base tildef <<'EOF'

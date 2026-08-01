@@ -2029,7 +2029,8 @@ adb_version_ge() {
 #   2. INLINE second, per paragraph, in ONE left-to-right pass in which a code-span opener and a
 #      `<!--` compete and WHICHEVER OPENS FIRST WINS. That is CommonMark's own precedence, and it
 #      is the only ordering that satisfies both reported repros at once: comments-first honors a
-#      `<!--` the author quoted AS TEXT and swallows the body (#128), while spans-first can pair a
+#      `<!--` the author quoted AS TEXT and swallows the body (#128 — adb-claim-ok: closed
+#      NOT_PLANNED, folded into #136), while spans-first can pair a
 #      backtick inside a real comment with one in later prose.
 #
 # `md_keep_comments=1` suppresses step 2's comment removal for the consumers whose declaration IS
@@ -2102,7 +2103,8 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     # a delimiter (either kind) and updates md_fence_*; `md_fence_len` IS the in-a-fence flag, so a
     # separate boolean can never drift out of step with it.
     #
-    # This is the function #131 exists for. `skill-compose.sh` carried a second detector — a
+    # This is the function #131 exists for (adb-claim-ok: closed NOT_PLANNED, folded into #136).
+    # `skill-compose.sh` carried a second detector — a
     # boolean toggle on any ``` after 0-3 spaces — and the two had already drifted: a `~~~`-fenced
     # `### ` line was advertised as a composable anchor, and a ``` closing a longer run left the
     # toggle inverted for the whole rest of the file, hiding every later step.
@@ -2177,7 +2179,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       if (at < 0) {
         # Indented 4+ with no list marker. THE §5 FORK, decided in D27: this OPENS an indented code
         # block only at top level, and only where a paragraph is not already open. Both guards are
-        # load-bearing, because `    Depends on #52` is byte-identical at top level and as a
+        # load-bearing, because `    Depends on #52` is byte-identical at top level and as a  # adb-claim-ok: the issue's own repro text, quoted
         # continuation inside a list item — a bare `^ {4}` rule DELETES real edges, which is the
         # under-match direction. CommonMark agrees on both: indented code cannot interrupt a
         # paragraph, and inside a list item whose content starts at column 2 it needs 2+4 spaces.

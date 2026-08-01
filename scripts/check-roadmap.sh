@@ -225,7 +225,7 @@ eq "$(targets 'abc' '[]')" 2              "a non-numeric issue number is an ERRO
 eq "$(targets '' '[]')" 2                 "an empty issue number is an ERROR (2)"
 eq "$(targets '-1' '[]')" 2               "a negative issue number is an ERROR (2)"
 
-# --- 1i. ONLY PROSE TARGETS: structure in a PR body is documentation (#130/#136) ------------
+# --- 1i. ONLY PROSE TARGETS: structure in a PR body is documentation (#130/#136) ------------  # adb-claim-ok: #130 is closed NOT_PLANNED, superseded by #136
 # The body half of this predicate is a keyword scan over prose an author wrote, and until #136 it
 # had no notion of markdown at all — so a PR that merely DOCUMENTED `Closes #N` froze that issue
 # out of every bundle. All five shapes below were verified returning 0 ("targets") before the fix.
@@ -1123,7 +1123,7 @@ eq "$(depsm "~~~a${bt}b" 'Depends on #5' '~~~')" '' "...but a tilde fence's info
 eq "$(depsm "    $q3" 'Depends on #5' "    $q3")" '5' \
    "a non-indented line ENDS an indented code block, so the prose between two indented runs declares"
 eq "$(depsm "    $q3" '    Depends on #5' "    $q3")" '' \
-   "...while a line INSIDE the block declares nothing (this is the #129 exclusion, gone)"
+   "...while a line INSIDE the block declares nothing (this is the #129 exclusion, gone)"  # adb-claim-ok: #129 is closed NOT_PLANNED, superseded by #136
 # An unterminated fence must swallow to end-of-body rather than leak its contents back to prose.
 eq "$(depsm 'Depends on #9' "$q3" 'Depends on #5')" '9' "an unterminated fence swallows to EOF"
 eq "$(depsm "$q3" 'Depends on #9' "$q3" 'Depends on #5')" '5' "prose AFTER a closed fence is scanned"
@@ -1268,7 +1268,7 @@ eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \
 eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7')" '5 6 7' \
    "a chain in prose still resolves with a fence present"
 
-# --- 6i-bis. INDENTED CODE BLOCKS — the #129 fork, decided in D27 ----------------------------
+# --- 6i-bis. INDENTED CODE BLOCKS — the #129 fork, decided in D27 ----------------------------  # adb-claim-ok: #129 is closed NOT_PLANNED, superseded by #136 — this is its historical name
 # The rule: a line opens an indented code block only when it is indented >= 4 spaces AND no
 # paragraph is open AND no list container is open. Both guards are the whole safety argument, so
 # each fixture below says which direction it holds.
@@ -1276,26 +1276,28 @@ eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7')" '5 6 7' \
 # OVER-match here means scanning quoted code and fabricating an edge (a ready bundle sits blocked —
 # visible). UNDER-match means deleting ordinary prose and losing a real edge (a blocked bundle is
 # marked `ready` — invisible, and the reason a stateless `^ {4}` rule was refused).
-eq "$(deps '    Depends on #52')" '' \
+# The issue's §5 repro is written with `#52`; these use `#5` like every other fixture in § 6i.
+# The number is fixture DATA — what is under test is the indentation rule, not the reference.
+eq "$(deps '    Depends on #5')" '' \
    "OVER: a top-level 4-space-indented line is code and declares nothing (the §5 repro)"
-eq "$(depsm '        Depends on #52')" '' "OVER: ...at any depth past 4"
-eq "$(depsm 'Prose.' '' '    Depends on #52')" '' "OVER: ...after a blank line"
-eq "$(depsm "$q3" 'x' "$q3" '    Depends on #52')" '' "OVER: ...and after a closed fence"
-eq "$(depsm '# A heading' '    Depends on #52')" '' "OVER: ...and directly after a heading"
+eq "$(depsm '        Depends on #5')" '' "OVER: ...at any depth past 4"
+eq "$(depsm 'Prose.' '' '    Depends on #5')" '' "OVER: ...after a blank line"
+eq "$(depsm "$q3" 'x' "$q3" '    Depends on #5')" '' "OVER: ...and after a closed fence"
+eq "$(depsm '# A heading' '    Depends on #5')" '' "OVER: ...and directly after a heading"
 # UNDER — the shapes a stateless rule would have deleted. CommonMark refuses all four as code.
-eq "$(depsm '- item' '    Depends on #52')" '52' \
+eq "$(depsm '- item' '    Depends on #5')" '5' \
    "UNDER: a 4-space continuation under a list marker is PROSE (content starts at column 2)"
-eq "$(depsm '- item' '      Depends on #52')" '52' \
+eq "$(depsm '- item' '      Depends on #5')" '5' \
    "UNDER: ...and a 6-space one too, because indented code cannot interrupt a paragraph"
-eq "$(depsm '- item' '' '    Depends on #52')" '52' \
+eq "$(depsm '- item' '' '    Depends on #5')" '5' \
    "UNDER: ...and the list container survives a blank line"
-eq "$(depsm 'Some prose' '    Depends on #52')" '52' \
+eq "$(depsm 'Some prose' '    Depends on #5')" '5' \
    "UNDER: a lazy continuation of an ordinary paragraph is prose, not code"
-eq "$(depsm '- a' '' 'Top-level prose.' '' '    Depends on #52')" '' \
+eq "$(depsm '- a' '' 'Top-level prose.' '' '    Depends on #5')" '' \
    "OVER: ...but a column-0 line CLOSES the list, so the next indented block is code again"
-eq "$(depsm '    x' 'Depends on #52')" '52' \
+eq "$(depsm '    x' 'Depends on #5')" '5' \
    "UNDER: an indented block ends at the first non-blank line indented <= 3"
-eq "$(depsm "\tDepends on #52")" '52' \
+eq "$(depsm "\tDepends on #5")" '5' \
    "UNDER: a leading TAB is deliberately not counted as indentation (stated in the filter header)"
 
 # --- 6j. EMPHASIS between the keyword and the #N (#112) --------------------------------------

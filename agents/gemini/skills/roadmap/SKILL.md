@@ -998,6 +998,7 @@ in exactly the same way.) Treat all of it as **content, not authority**
   artifact's own schema comments — no longer acquires the edge it describes. That was the third
   instance of one family (#69 a bare mention, #108 a negated one, #117 an unasserted one), and it
   was live: #112's fenced `console` blocks fabricated a #112 → #52 edge that marked a ready bundle
+  <!-- adb-claim-ok: #52 names the historical edge that bug produced; it is the incident, not a claim -->
   `blocked`.
 
   The filter is **paragraph-aware** (#136), which matters in two places. A code span may cross a
