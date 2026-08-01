@@ -819,32 +819,42 @@ _adb_deps_scan() {
     # report <line> <edges-declared-here> <window> — classify what this keyword occurrence left
     # behind. See the WHAT IS AMBIGUOUS block in the shell comment above for why each shape is in
     # or out; this function is only the mechanism.
-    function report(ln, nemit, win,   at, len, pre, num, n2, seg, found) {
-      found = 0
+    function report(ln, nemit, win,   at, len, pre, num, n2, seg, kind, tail) {
+      kind = (nemit > 0) ? "partial" : "unparsed"
       # UNQUALIFIED references left in the window. `#` preceded by a WORD character is a qualified
       # reference (acme/repo#5) — recognized and correctly excluded, so never reported.
-      while (match(win, /#[0-9]+/)) {
+      # `tail` is consumed by this scan; `win` is kept intact for the hash-less scan below, which
+      # must see the WHOLE window (they look for different shapes and neither subsumes the other).
+      tail = win
+      while (match(tail, /#[0-9]+/)) {
         at = RSTART; len = RLENGTH
-        pre = (at > 1) ? substr(win, at - 1, 1) : " "
-        num = substr(win, at + 1, len - 1)
-        win = substr(win, at + len)
+        pre = (at > 1) ? substr(tail, at - 1, 1) : " "
+        num = substr(tail, at + 1, len - 1)
+        tail = substr(tail, at + len)
         if (pre ~ /[a-z0-9_]/) continue
         if (length(num) > 9) continue          # same width bound the edge scan applies
         n2 = num + 0
         if (n2 <= 0 || n2 == self) continue
-        emit((nemit > 0) ? "partial" : "unparsed", ln, n2)
-        found = 1
+        emit(kind, ln, n2)
       }
-      if (found || nemit > 0) return
-      # The one hash-less shape that is reported: the author wrote out `issue <N>`. Anything
-      # looser turns "Depends on 2 things" into a finding.
-      if (!match(win, /(^|[^a-z0-9_])issues?[ \t]+[0-9]+/)) return
-      seg = substr(win, RSTART, RLENGTH)
-      if (!match(seg, /[0-9]+$/)) return
-      num = substr(seg, RSTART, RLENGTH)
-      if (length(num) > 9) return
-      n2 = num + 0
-      if (n2 > 0 && n2 != self) emit("no-hash", ln, n2)
+      # The one hash-less shape that is reported: the author wrote out `issue <N>`. Anything looser
+      # turns "Depends on 2 things" into a finding.
+      #
+      # This runs REGARDLESS of what the chain already declared, and over EVERY match. Gating it on
+      # `nemit == 0` was a real hole: `Depends on #5 and issue 6` is a partially parsed chain that
+      # dropped 6, which is exactly what this subcommand exists to say, and it went silent because
+      # the chain had declared something. Stopping at the first match lost the second reference of
+      # `Depends on issue 5 and issue 6` the same way. (Both found by the independent review.)
+      while (match(win, /(^|[^a-z0-9_])issues?[ \t]+[0-9]+/)) {
+        seg = substr(win, RSTART, RLENGTH)
+        win = substr(win, RSTART + RLENGTH)
+        if (!match(seg, /[0-9]+$/)) continue
+        num = substr(seg, RSTART, RLENGTH)
+        if (length(num) > 9) continue
+        n2 = num + 0
+        if (n2 > 0 && n2 != self) emit((kind == "partial") ? "partial" : "no-hash", ln, n2)
+      }
+      return
     }
     BEGIN {
       apos = sprintf("%c", 39)   # a literal apostrophe; this program is single-quoted in shell
@@ -947,6 +957,15 @@ _adb_deps_scan() {
           # so consuming RSTART here costs nothing.
           window = rest
           if (match(masked, KW)) window = substr(rest, 1, RSTART - 1)
+          # THE SYNTAX COLON OF `Depends on:` IS NOT A CLAUSE BOUNDARY. STEP eats it as a separator
+          # only when a `#N` follows, so on the paths this report exists for — where NOTHING was
+          # consumed — it is still sitting at the head of the window, and the boundary scan below
+          # would cut the window to nothing. `Depends on: issue 5`, `Depends on: * #5` and
+          # `Depends on: [#5](url)` all went silent that way, which is the core acceptance criterion
+          # failing on three ordinary spellings. Strip it ONLY when the chain consumed nothing: after
+          # a reference resolves, a colon is real punctuation and does end the clause.
+          # (Found by the independent review.)
+          if (nemit == 0 && match(window, /^[*_`]*[ \t]*:/)) window = substr(window, RLENGTH + 1)
           # ...and at the first CLAUSE BOUNDARY, the same set the negation scoping above uses (with
           # em/en dashes already normalized to one). A declaration cannot cross a sentence boundary
           # and the chain grammar already refuses to, so a reference past one is commentary, not a
@@ -973,7 +992,7 @@ cmd_deps_from_body() {
     0|1) : ;;
     *) die "deps-from-body: takes at most one argument: [self-issue-number] (body on stdin)" ;;
   esac
-  local self="${1:-0}" out
+  local self="${1:-0}" out sorted
   [ -n "$self" ] || self=0
   is_uint "$self" || die "deps-from-body: <self-issue-number> must be a non-negative integer (got '$1')"
 
@@ -982,7 +1001,12 @@ cmd_deps_from_body() {
   # unblocks a bundle that is genuinely blocked.
   out="$(_adb_deps_scan edges "$self")" || die "deps-from-body: the markdown scan failed"
   [ -n "$out" ] || return 0
-  printf '%s\n' "$out" | sort -n -u
+  # `sort` is captured for the same reason the scan is. Letting it be the function's last command
+  # returns ITS status verbatim, and `sort` exits 2 on a broken input while this library reserves
+  # 1 for a trustworthy negative — so a failed sort could hand a caller "no edges here" with a
+  # status that says the answer is good. (Found by the independent review.)
+  sorted="$(printf '%s\n' "$out" | sort -n -u)" || die "deps-from-body: sorting the edge set failed"
+  printf '%s\n' "$sorted"
 }
 
 # --- deps-ambiguous ---------------------------------------------------------------------------

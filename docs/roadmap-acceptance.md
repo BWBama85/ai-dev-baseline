@@ -405,7 +405,7 @@ gh issue create --title "Driver work" --body "Depends on #1 and #2"    # #8
       dropped, which is the direction that marks a genuinely blocked bundle `ready`. The tolerance
       stops at formatting: `Depends on * #1` and `` Depends on `ignore #1` `` still create none,
       and neither does `Depends on **acme/repo#1**`.
-- [ ] **An edge the grammar refused is REPORTED, not dropped (#132, D28).** **[auto]** File an issue
+- [ ] **An edge the grammar refused is REPORTED, not dropped (#132, D28).** **[auto-partial]** File an issue
       whose body reads `Depends on #1 (the gate) and #2` → the edge set is `#1` alone (unchanged),
       **and** the run surfaces `dep-ambiguous:#N` naming the dropped `#2`. Same for
       `Depends on issue 1`, which declares no edge and previously looked identical to `Refs #1`.
@@ -414,6 +414,9 @@ gh issue create --title "Driver work" --body "Depends on #1 and #2"    # #8
       `Depends on #1; it is not blocked by #2` (negation is an answer) and
       `- #5 depends on #6 — satisfied, #6 closed (PR #7)` (past a clause boundary) report
       **nothing**. Measured on this repo at the time it shipped: zero reports across 37 open bodies.
+      The **library** half of this is automated in `check-roadmap.sh` § 6k; the rendering half below
+      — the Reconcile-flags row, the owner question, its retirement — is manual, which is why this
+      is `[auto-partial]` and not `[auto]`.
 - [ ] The ambiguity row **does not hold the issue out of emission** — it warns, exactly as an
       unmilestoned `release-blocker` warns (#78). A bundle whose member reported one is still
       emitted, and the question retires from a `## Decisions` row like any other `dep-*` id.

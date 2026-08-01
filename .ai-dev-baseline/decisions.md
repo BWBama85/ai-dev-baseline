@@ -1379,12 +1379,19 @@ limit: none of them is sufficient alone.
 
              The other three options are eliminated by constraints the issue itself states, not by
              taste. A `?`-prefixed line corrupts a stdout every consumer reads as bare numbers. A
-             non-zero exit collides head-on with "every current caller treats non-zero as a hard
-             stop" — it would turn a parse note into a run-ending error on the predicate's most
-             common input. stderr is outside the workflow output contract and is already where this
-             library puts real failures. A second subcommand is purely additive: no existing caller
-             changes, and `deps-from-body`s stdout is byte-identical (verified over all 37 open
-             bodies in this tracker).
+             non-zero exit collides head-on with the callers that DO preserve the status — it would
+             turn a parse note into a run-ending error on the predicate's most common input. stderr
+             is outside the workflow output contract and is already where this library puts real
+             failures.
+
+             STATED EXACTLY, because the issue's own framing is not quite right and repeating it
+             would be a false claim: it says "every current caller treats non-zero as a hard stop",
+             and gap analysis showed two do NOT — the composition sites discard it in a
+             `for d in $(…)`. That makes the argument stronger, not weaker (a status-based design
+             would have to repair those first), and both are repaired here regardless. What is
+             purely additive is the STDOUT CONTRACT: `deps-from-body`s output is byte-identical,
+             verified over all 37 open bodies in this tracker, so no caller changes on account of
+             the new subcommand.
 
              SHARING THE SCAN IS THE LOAD-BEARING PART, not an optimization. A report computed by a
              second parser drifts from the grammar it reports on at the first change to either, and

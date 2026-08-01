@@ -785,8 +785,11 @@ has "$wf" '{{ROADMAP_LIB}} deps-ambiguous' \
   "workflow asks the shared predicate what it could not parse (#132)"
 has "$wf" 'ambiguity scan failed' \
   "...and hard-stops the run when that scan fails (fail-closed, like every other read)"
-has "$wf" 'dep-ambiguous:#N' \
-  "workflow gives the ambiguity question a stable id in the dep-* vocabulary"
+# Pin the id in the VOCABULARY LIST, not merely somewhere in the file: `dep-ambiguous:#N` also
+# appears in the surrounding prose and in the retirement paragraph, so a bare search stays green
+# after the id is deleted from the list that actually fixes it. (Independent-review find.)
+has "$wf" '`dep-canceled:#N` · `dep-ambiguous:#N`' \
+  "workflow gives the ambiguity question a stable id IN the dep-* vocabulary list"
 # The two composition call sites discarded the extractor's exit status (`for d in $(…)`), so a
 # failed extraction read as "no prerequisites" and promoted an issue whose blocker stays behind.
 hasnt "$wf" 'for d in $(printf' \
@@ -1508,6 +1511,30 @@ eq "$(amb 'Depends on #5, #6 and the gate and #7')" 'partial:1:7' \
    "REPORT: a chain that resolves two members and drops the third"
 eq "$(deps 'Depends on #5, #6 and the gate and #7')" '5 6' "...and the two that resolved still do"
 
+# REPORT — the SYNTAX COLON of `Depends on:` is not a clause boundary. STEP eats it as a separator
+# only when a `#N` follows, so on exactly the paths this subcommand exists for it was still sitting
+# at the head of the window and the boundary scan cut the window to nothing. Three ordinary
+# spellings went silent. (Independent-review find.)
+eq "$(amb 'Depends on: issue 5')"    'no-hash:1:5'  "REPORT: the colon form of the hash-less witness"
+eq "$(amb 'Depends on: [#5](url)')"  'unparsed:1:5' "REPORT: ...of a markdown link"
+eq "$(amb 'Depends on: * #5')"       'unparsed:1:5' "REPORT: ...and of a floating run"
+eq "$(deps 'Depends on: #5')" '5' "...while the colon form that RESOLVES still declares its edge"
+eq "$(amb 'Depends on: #5')"  ''   "...and reports nothing"
+# A colon AFTER a resolved reference is ordinary punctuation and still ends the clause — the strip
+# is gated on the chain having consumed nothing, so these two cannot collapse into one rule.
+eq "$(amb 'Depends on #5: see #6 for context')" '' "SILENT: a colon after a resolved reference still bounds"
+
+# REPORT — a hash-less reference is surfaced even when the SAME occurrence already declared an edge,
+# and every match is named rather than the first. Gating this on "declared nothing" hid a partially
+# parsed chain, which is the precise thing this subcommand exists to say. (Independent-review find.)
+eq "$(amb 'Depends on #5 and issue 6')" 'partial:1:6' \
+   "REPORT: a hash-less reference dropped from a chain that DID declare"
+eq "$(deps 'Depends on #5 and issue 6')" '5' "...and the edge it did declare is unchanged"
+eq "$(amb 'Depends on issue 5 and issue 6')" 'no-hash:1:5 no-hash:1:6' \
+   "REPORT: every hash-less reference, not just the first"
+eq "$(amb 'Depends on * #5 and issue 6')" 'unparsed:1:5 no-hash:1:6' \
+   "REPORT: the two scans are independent — neither shape subsumes the other"
+
 # REPORT — multiple sites, deduped, in scan order (line ascending). Determinism comes from the
 # scan order itself, so no sort is applied and none is needed.
 eq "$(ambm 'Depends on * #5' 'Blocked by [#6](u)')" 'unparsed:1:5 unparsed:2:6' \
@@ -1528,7 +1555,13 @@ eq "$(amb 'Depends on #5 and blocked by #6')" '' \
 eq "$(deps 'Depends on #5 and blocked by #6')" '5 6' "...and both edges still resolve"
 neg_fx='Depends on #78; it is not blocked by #25'  # adb-claim-ok: fixture prose reusing this suite's standing #25/#78 example numbers, not a citation
 eq "$(amb "$neg_fx")" '' "SILENT: a NEGATED occurrence is a confident answer, not an ambiguity"
+# PAIRED with the edge assertion, because the ambiguity fixture alone is VACUOUS here: remove the
+# negation skip and the reference is consumed as an ordinary edge, so the report stays empty either
+# way. The edge output is what actually moves. (Independent-review find, the same class as the
+# self-reference pair below.)
+eq "$(deps "$neg_fx")" '78' "...and the negated reference is not an edge either"
 eq "$(amb 'No longer depends on #25')" '' "SILENT: ...whether or not anything else declares"  # adb-claim-ok: fixture prose, not a citation
+eq "$(deps 'No longer depends on #25')" '' "...and declares no edge, which is the half a mutation moves"  # adb-claim-ok: fixture prose, not a citation
 pre_fx='The #25 prerequisite was dropped; blocked by #78'  # adb-claim-ok: fixture prose, not a citation
 eq "$(amb "$pre_fx")" '' "SILENT: a reference BEFORE the keyword is in no window"
 
@@ -1547,8 +1580,8 @@ eq "$(amb 'Depends on #5 and see #6 for context')" 'partial:1:6' \
 
 # The numeric width bound applies to the REPORT too — a run wider than an issue number would print
 # rounded or in exponent form, fabricating an issue number no tracker can have (cf. § 6f).
-eq "$(amb 'Depends on * #999999999')"  'unparsed:1:999999999' "a 9-digit reference still reports"
-eq "$(amb 'Depends on * #9999999999')" '' "...and a 10-digit one is not a reference at all"
+eq "$(amb 'Depends on * #999999999')"  'unparsed:1:999999999' "a 9-digit reference still reports"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "$(amb 'Depends on * #9999999999')" '' "...and a 10-digit one is not a reference at all"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
 eq "$(amb 'Depends on issue 9999999999')" '' "...on the no-hash path either"
 # Two unconsumed references in ONE window are both named; a report that stopped at the first would
 # under-state what the line lost.

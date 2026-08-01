@@ -22,9 +22,11 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     reference in the clause, no edge out), or `no-hash` (`issue <N>` written without a `#`).
   - **A sibling subcommand, because the issue's own constraints eliminate the alternatives.** A
     `?`-prefixed line corrupts a stdout every consumer reads as bare numbers; a non-zero exit
-    collides with "every caller treats non-zero as a hard stop"; stderr is outside the output
-    contract. This is purely additive — `deps-from-body`'s output is byte-identical, verified over
-    all 37 open bodies in this tracker.
+    collides with the callers that *do* preserve the status; stderr is outside the output contract.
+    What is purely additive is the **stdout contract** — `deps-from-body`'s output is byte-identical,
+    verified over all 37 open bodies in this tracker, so nothing changes on account of the new
+    subcommand. (The issue's own "every caller treats non-zero as a hard stop" is not quite true:
+    two composition sites discarded it, which is fixed below.)
   - **It warns; it does not gate.** A report renders as a `dep-ambiguous` Reconcile-flags row and a
     retirable `dep-ambiguous:#N` question — the posture #78 chose when it picked `WARN:` over
     `HOLD`. Blocking on *uncertainty* would let one false positive stall a ready bundle forever.
