@@ -1539,6 +1539,21 @@ eq "$(amb '- #81 depends on #79 — **satisfied**, #79 closed COMPLETED (PR #111
 stop_fx='**Why it is blocked on this issue.** #123 rejects the approach'  # adb-claim-ok: quotes #141's body verbatim as the measured witness; the incident, not a citation
 eq "$(amb "$stop_fx")" '' "SILENT: a full stop ends it too, so the next sentence is not a dropped edge"
 eq "$(amb 'Depends on #5; see #6 for context')" '' "SILENT: ...and a semicolon"
+# ...and the same sentence WITHOUT the punctuation reports, which is the boundary being deliberate
+# rather than incidental. An author who meant `and #6` writes almost exactly this, so the clause is
+# genuinely ambiguous; punctuation is how a body says "the declaration ended here".
+eq "$(amb 'Depends on #5 and see #6 for context')" 'partial:1:6' \
+   "REPORT: no clause boundary means the reference is still inside the declaration"
+
+# The numeric width bound applies to the REPORT too — a run wider than an issue number would print
+# rounded or in exponent form, fabricating an issue number no tracker can have (cf. § 6f).
+eq "$(amb 'Depends on * #999999999')"  'unparsed:1:999999999' "a 9-digit reference still reports"
+eq "$(amb 'Depends on * #9999999999')" '' "...and a 10-digit one is not a reference at all"
+eq "$(amb 'Depends on issue 9999999999')" '' "...on the no-hash path either"
+# Two unconsumed references in ONE window are both named; a report that stopped at the first would
+# under-state what the line lost.
+eq "$(amb 'Depends on * #5 and see #6 for context')" 'unparsed:1:5 unparsed:1:6' \
+   "REPORT: every unconsumed reference in the window, not just the first"
 
 # SILENT — ordinary prose. `Depends on 2 things` is English; `issue <N>` is the ONLY hash-less
 # shape reported, and widening past it is what turns this into noise.
