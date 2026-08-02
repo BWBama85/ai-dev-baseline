@@ -139,7 +139,11 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 ### Fixed
 
 - **The 5.3 floor made a Stop hook adopt a session id off a stream it never finished reading**
-  (found while implementing #258 — introduced by #256, not by this PR). `this_session()` in
+  (found while implementing #258; the exposure predates this PR). The reliance arrived with #180;
+  until #256 the shebang was a bare `#!/usr/bin/env bash`, so which behaviour you got depended on
+  which interpreter `PATH` resolved — stock macOS gave 3.2 and the safe discard, a Homebrew-first
+  `PATH` gave 4.2+ and the retention. **#256's re-exec made >= 5.3, and therefore the retention,
+  universal.** `this_session()` in
   `implement-issue-gate.sh` relied on bash 3.2 **discarding** partial input when `read -t` fires,
   and its comment said so. bash >= 4.2 **keeps** it — measured: 3.2 returns status 1 with an empty
   variable, 5.3 returns 142 with the bytes. So a writer that sent a complete payload and then never

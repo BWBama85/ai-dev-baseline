@@ -1746,7 +1746,11 @@ limit: none of them is sufficient alone.
              once means the issue can close honestly instead of staying open against boxes that
              describe a tree that no longer exists.
 - review:    Building U2 in `check-implement-gate.sh` found a REAL defect that the floor itself had
-             introduced, which is the argument for treating a "comment-only" modernization as code.
+             made universal, which is the argument for treating a "comment-only" modernization as
+             code. (Precisely: the reliance arrived with #180; until #256 the shebang was a bare
+             `#!/usr/bin/env bash`, so the behaviour depended on which interpreter `PATH` resolved —
+             stock macOS gave 3.2 and the safe discard, a Homebrew-first `PATH` gave 4.2+ and the
+             retention. #256's re-exec removed the coin flip in the unsafe direction.)
              `this_session()` in `implement-issue-gate.sh` relied on bash 3.2 DISCARDING partial
              input when `read -t` fires, and said so. bash >= 4.2 KEEPS it (measured: 3.2 returns
              status 1 with an empty variable, 5.3 returns 142 with the bytes), so on the floor
