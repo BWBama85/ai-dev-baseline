@@ -1,0 +1,26 @@
+# ai-dev-baseline — line-ending policy (#2).
+#
+# Windows is supported via WSL2 only, and the one thing WSL genuinely adds to a shell-heavy repo
+# is a checkout hazard: a clone made by WINDOWS git with core.autocrlf=true, then executed from
+# WSL, gives every script `\r` line endings. The failure is `bash: $'\r': command not found` on
+# all 59 entry points at once, with nothing naming the cause.
+#
+# install.sh preflights for it (adb_crlf_scan), but a preflight is a net, not a guarantee — a
+# fully corrupted checkout cannot even run the preflight, because ./install.sh dies on its own
+# `bash\r` shebang first. THIS file is the guarantee: it takes the hazard away for a fresh clone
+# regardless of the user's core.autocrlf, so the net only ever has to catch a clone that predates
+# it or was repaired by hand.
+#
+# `eol=lf` implies `text`, but both are written out: the pairing is what makes the intent legible
+# to the next reader, and `text` alone would normalize on commit while leaving checkout to the
+# platform.
+*.sh    text eol=lf
+
+# The extensionless commands. `bin/agent-init` and `bin/baseline` are shell scripts with no `.sh`,
+# so a `*.sh`-only policy silently exempts the two files a user is most likely to run first.
+bin/agent-init  text eol=lf
+bin/baseline    text eol=lf
+
+# Shell files carried inside agent payloads and this repo's own hooks are matched by the `*.sh`
+# rule above; listed here as a reminder that the rule is deliberately tree-wide rather than scoped
+# to scripts/.

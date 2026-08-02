@@ -293,6 +293,236 @@ EOF
     "$jobs" "$files" "$linux_jobs" "$macos_jobs" "$FLOOR"
 }
 
+# --- entry-point half (#256) ---------------------------------------------------------------------
+#
+# The runtime gate is only a floor if EVERY process entry point calls it, and "every" is not a
+# thing prose can hold: a new check-*.sh lands without the stanza and the suite it joins runs on
+# whatever interpreter it got, reporting green. So the set is closed here, mechanically.
+#
+# CLASSIFICATION IS FORCED, NOT OPTIONAL. Every shebang-bearing file is exactly one of:
+#
+#   gate      — calls adb_require_bash: re-exec, else exit non-zero. The default, and the
+#               overwhelming majority.
+#   advisory  — calls adb_require_bash_advisory: same re-exec, but RETURNS instead of exiting,
+#               for the three files whose own contract forbids a non-zero exit. Naming them here
+#               is what stops "advisory" becoming a dial a future script can quietly pick.
+#   exempt    — must NOT call it at all, and there is exactly one.
+#
+# Matched on the path RELATIVE to the scanned root, so the guard can build a fixture tree at the
+# same paths and drive each rule red.
+ADVISORY_ENTRYPOINTS="
+agents/claude/scripts/statusline.sh
+agents/claude/scripts/session-currency.sh
+agents/claude/scripts/state-claim-gate.sh
+"
+# check-bash-floor.sh is the OBSERVER, and an observer that upgrades its own interpreter has
+# destroyed the observation. Its whole --runtime job is to report which bash this job actually
+# got, and check-bash-floor-guard.sh proves that assertion fires by running this file under an old
+# /bin/bash and requiring red. Wire the gate in here and that test silently stops testing: the
+# script would re-exec to 5.3 and report a clean floor on a machine that has none on PATH.
+EXEMPT_ENTRYPOINTS="
+scripts/check-bash-floor.sh
+"
+
+# Print every file under $1 whose first line is a bash shebang, as a path relative to $1.
+#
+# TRACKED files when $1 is a git worktree, `find` otherwise. Both halves are load-bearing:
+#
+#   - tracked, because `selfcheck` promises to predict CI, and CI only ever sees tracked files. A
+#     `find` scan fails on a contributor's untracked scratch script while CI passes — a local red
+#     that CI cannot reproduce is worse than no check, and it teaches people to ignore this one.
+#   - `find`, because check-bash-floor-guard.sh drives every rule below against throwaway fixture
+#     trees, and check_copy_worktree drops `.git`, so there is nothing to list there.
+#
+# The emptiness test is what makes the choice safe: a fixture dir that happens to sit INSIDE some
+# repo yields no tracked files under itself, so it falls through to `find` rather than silently
+# scanning zero files and reporting a clean tree.
+scan_entrypoints() {
+  root="$1" listing=""
+  listing="$(git -C "$root" ls-files 2>/dev/null)"
+  if [ -z "$listing" ]; then
+    listing="$(find "$root" -name .git -prune -o -type f -print 2>/dev/null | sed "s|^$root/||")"
+  fi
+  printf '%s\n' "$listing" | while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    head -n 1 "$root/$rel" 2>/dev/null | grep -q '^#!.*bash' || continue
+    printf '%s\n' "$rel"
+  done | LC_ALL=C sort
+}
+
+# The path of the scanned root RELATIVE TO ITS REPOSITORY ROOT, with a trailing `/`, or empty.
+#
+# The classification lists below are repository-relative, but scan_entrypoints yields paths relative
+# to whatever directory was scanned. Scanning a SUBDIRECTORY therefore matched nothing:
+# `--entrypoints agents/claude` sees `scripts/statusline.sh`, not
+# `agents/claude/scripts/statusline.sh`, so all three advisory hooks were classified as hard gates
+# and a perfectly valid tree exited 1 — and `--entrypoints scripts` lost the observer exemption the
+# same way. Review found it in the advertised `[DIR]` form.
+#
+# `--show-prefix` answers exactly this and answers it empty at a repository root, so the common case
+# costs nothing. A fixture tree that is not a repository at all yields empty too, which is right:
+# its paths are already relative to the thing being scanned.
+scan_prefix() {
+  git -C "$1" rev-parse --show-prefix 2>/dev/null || true
+}
+
+# The line number of the first occurrence of a pattern in TOP-LEVEL ACTIVE CODE, or empty.
+#
+# "Top-level" is load-bearing and is why this stops at the first function definition: a match
+# inside a function body proves the text exists, not that the process ever runs it.
+#
+# Comments are blanked before matching — both a whole-line `# adb_require_bash "$@"` and a TRAILING
+# `x=1  # TODO: adb_require_bash "$@"`. The trailing form is the one that matters: a note about
+# doing the thing read as the thing is exactly the fail-open #257's guard caught twice in the
+# workflow scanner, and a first cut of THIS lint reproduced it — an entry point with nothing but a
+# trailing-comment mention was reported compliant.
+#
+# `sed` blanks rather than deletes, so line numbering still matches the real file, which is what
+# lets the position rule below cite a usable line. The trailing pattern requires whitespace before
+# the `#` so a `${0##*/}` expansion is not mistaken for a comment.
+first_code_line() {
+  ADB_BF_PAT="$2" awk '
+    BEGIN { pat = ENVIRON["ADB_BF_PAT"] }
+    # HEREDOC BODIES ARE DATA. `cat <<EOF … adb_require_bash "$@" … EOF` is text this script
+    # PRINTS, not a call it makes, and a line-at-a-time matcher reads the two identically — the
+    # same species as the printf and quoted-assignment bypasses, and the one that survived the
+    # first tightening. Tracking the region needs state, which is why this is awk and not sed.
+    hd != "" {
+      probe = $0; sub(/^[[:space:]]+/, "", probe)   # <<- allows an indented terminator
+      if (probe == hd) hd = ""
+      next
+    }
+    {
+      line = $0
+      sub(/[[:space:]]#.*$/, "", line)      # a trailing comment
+      sub(/^[[:space:]]*#.*$/, "", line)    # a whole-line comment
+      # A FUNCTION DEFINITION ENDS THE TOP LEVEL for the purposes of this scan. Everything after
+      # the first one may never execute: an entry point can define an uninvoked function whose body
+      # holds the gate call, run its real body, and stay on the sub-floor interpreter while a
+      # command-position match reported PASS. Review found it; stopping here is also exactly the
+      # invariant the release scripts already had to satisfy by hand — the bootstrap precedes every
+      # definition, because bash parses a function body when it reaches it, so 5.3-only grammar in
+      # any of them fails to PARSE under 3.2 before the gate can rescue it.
+      # (No apostrophes in this block: it is a single-quoted shell string, and one would end it.)
+      if (line ~ /^[[:space:]]*([A-Za-z_][A-Za-z0-9_:.-]*[[:space:]]*\(\)|function[[:space:]]+[A-Za-z_])/) exit
+      if (line ~ pat) { print NR; exit }
+      # Open a heredoc only AFTER testing this line: the redirection line is itself code, and a
+      # gate call could legitimately share it. `<<<` is a herestring, not a heredoc — excluded, or
+      # its first word would be mistaken for a terminator and swallow the rest of the file.
+      if (line !~ /<<</ && match(line, /<<-?[[:space:]]*["\x27]?[A-Za-z_][A-Za-z0-9_]*/)) {
+        w = substr(line, RSTART, RLENGTH)
+        sub(/^<<-?[^A-Za-z_]*/, "", w)      # eat the operator, spaces and any opening quote
+        hd = w
+      }
+    }
+  ' "$1" 2>/dev/null
+}
+
+entrypoint_lint() {
+  root="${1%/}"
+  eps=0 gates=0 advisories=0 exempts=0
+  prefix="$(scan_prefix "$root")"
+
+  scanned="$(scan_entrypoints "$root")" || {
+    check_note "the entry-point scanner failed outright under $root — refusing to report a clean scan"
+    check_fail
+    return
+  }
+
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    f="$root/$rel"
+    # Classify on the REPOSITORY-relative path; report on it too, so a diagnostic from a
+    # subdirectory scan names a path the reader can actually open from the repo root.
+    key="$prefix$rel"
+    eps=$((eps + 1))
+
+    kind=gate
+    case "
+$ADVISORY_ENTRYPOINTS" in *"
+$key
+"*) kind=advisory ;; esac
+    case "
+$EXEMPT_ENTRYPOINTS" in *"
+$key
+"*) kind=exempt ;; esac
+
+    # COMMAND POSITION, not "appears somewhere". A bare token search accepts the call inside a
+    # string — a fixture whose only content was `printf 'adb_require_bash "$@"'` was classified
+    # compliant, which is the whole lint failing open. So the token must be preceded only by start
+    # of line, or by a shell operator that actually begins a command: `;`, `&&`, `||`, `|`, `&`, or
+    # a `then`/`do`/`else` keyword. `printf '` does not qualify; the three real stanza shapes do
+    # (bare, `&& adb_require_bash_advisory`, and `; then adb_require_bash`).
+    _CMDPOS='(^|[;&|]|[[:space:]](then|do|else))[[:space:]]*'
+    call_gate="$(first_code_line "$f" "${_CMDPOS}adb_require_bash \"\\\$@\"")"
+    call_adv="$(first_code_line "$f" "${_CMDPOS}adb_require_bash_advisory \"\\\$@\"")"
+
+    if [ "$kind" = exempt ]; then
+      exempts=$((exempts + 1))
+      if [ -n "$call_gate" ] || [ -n "$call_adv" ]; then
+        check_note "$key is the EXEMPT observer but calls the floor gate (line ${call_gate:-$call_adv}) — re-exec'ing here would make its own negative test stop testing"
+        check_fail
+      fi
+      continue
+    fi
+
+    if [ "$kind" = advisory ]; then
+      advisories=$((advisories + 1))
+      call="$call_adv"
+      want="adb_require_bash_advisory \"\$@\""
+      if [ -n "$call_gate" ]; then
+        check_note "$key is classified ADVISORY (its own contract forbids a non-zero exit) but calls the hard-failing adb_require_bash at line $call_gate"
+        check_fail
+        # One defect, one line. Falling through would also report "never calls the advisory form",
+        # which is true but is the same finding wearing a second hat.
+        continue
+      fi
+    else
+      gates=$((gates + 1))
+      call="$call_gate"
+      want="adb_require_bash \"\$@\""
+      if [ -z "$call_gate" ] && [ -n "$call_adv" ]; then
+        check_note "$key is classified GATE but calls the advisory form at line $call_adv — a gate that lets its caller carry on under a sub-$FLOOR interpreter is not a gate"
+        check_fail
+        continue
+      fi
+    fi
+
+    if [ -z "$call" ]; then
+      check_note "$key has a bash shebang but never calls $want — it would run under whatever interpreter PATH resolved (add the stanza, or classify it in $0)"
+      check_fail
+      continue
+    fi
+
+    # TOO LATE IS AS BAD AS ABSENT, and this is the half a presence test cannot see. `$0` is frozen
+    # at invocation and is relative when invoked relatively, so a script that has already `cd`'d may
+    # be unable to name itself for the re-exec; and a hook that has already drained its payload from
+    # stdin loses it, because the re-exec restarts the script from the top with that fd inherited.
+    # The stdin-consumer set is the `read` FAMILY, not just `$(cat)`. `IFS= read -r payload` before
+    # the gate drained a hook's payload and passed the first version of this rule — same defect as
+    # the narrow `cd` test, found by review. `mapfile`/`readarray` are bash 4+ spellings of the
+    # same thing, and `dd`/`</dev/stdin` are the two other ways a prologue eats the payload.
+    late="$(first_code_line "$f" \
+      '(^|[;&|]|[[:space:]](then|do|else))[[:space:]]*(cd|read|mapfile|readarray|dd)([[:space:]]|$)|\$\(cat\)|<[[:space:]]*/dev/stdin|(^|[[:space:]])(IFS=[^[:space:]]*[[:space:]]+)?read[[:space:]]+-')"
+    if [ -n "$late" ] && [ "$late" -lt "$call" ]; then
+      check_note "$key calls the floor gate at line $call, AFTER a cd or a stdin read at line $late — move it earlier (\$0 may no longer resolve, and a consumed stdin is not restored by the re-exec)"
+      check_fail
+    fi
+  done <<EOF
+$scanned
+EOF
+
+  if [ "$eps" -eq 0 ]; then
+    check_note "no shebang-bearing files found under $root — this lint scanned nothing, which is not a pass"
+    check_fail
+    return
+  fi
+  # SAY WHAT IT CHECKED, not merely that it passed: a scanner that goes blind reports the same
+  # clean verdict as a clean repo, and a count is what makes the difference readable in a log.
+  printf 'bash-floor: %d entry point(s) — %d gate, %d advisory, %d exempt\n' \
+    "$eps" "$gates" "$advisories" "$exempts"
+}
+
 case "${1:-}" in
   --runtime)
     runtime_check
@@ -303,12 +533,17 @@ case "${1:-}" in
     static_lint "$2"
     check_result "every CI job is on a proven bash >= $FLOOR runner and wires the runtime guard"
     ;;
+  --entrypoints)
+    entrypoint_lint "${2:-.}"
+    check_result "every entry point calls the bash >= $FLOOR runtime gate"
+    ;;
   "")
     static_lint ".github/workflows"
-    check_result "every CI job is on a proven bash >= $FLOOR runner and wires the runtime guard"
+    entrypoint_lint "."
+    check_result "every CI job is on a proven bash >= $FLOOR runner, and every entry point gates its interpreter"
     ;;
   *)
-    echo "usage: bash scripts/check-bash-floor.sh [--runtime | --workflow-dir DIR]" >&2
+    echo "usage: bash scripts/check-bash-floor.sh [--runtime | --workflow-dir DIR | --entrypoints [DIR]]" >&2
     exit 2
     ;;
 esac

@@ -44,6 +44,28 @@
 
 set -u
 
+# bash 5.3 runtime floor (#256) — the bootstrap is FIRST, ahead of every function definition below.
+#
+# Not merely tidiness: bash parses a function's body when it reaches the definition, so once
+# #258/#259 put 5.3-only grammar in any function down there, a 3.2 interpreter would fail to PARSE
+# this file before it ever reached the gate that exists to rescue it. The gate has to precede the
+# code it protects, not sit in the middle of it. (It also has to precede the `read` loops further
+# down: the re-exec restarts this script with stdin inherited, so anything already consumed is
+# gone.) Independent review caught both.
+#
+# Resolved relative to this file first (the layout is fixed: .claude/skills/release/ -> repo root),
+# with a git-root fallback so it still resolves through a symlink or from an unusual cwd.
+_ADB_SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+_ADB_COMMON="$_ADB_SELF_DIR/../../../scripts/lib/common.sh"
+if [ ! -f "$_ADB_COMMON" ]; then
+  _ADB_ROOT="$(git -C "$_ADB_SELF_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  _ADB_COMMON="$_ADB_ROOT/scripts/lib/common.sh"
+fi
+[ -f "$_ADB_COMMON" ] || { printf 'release-lib: cannot locate scripts/lib/common.sh\n' >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$_ADB_COMMON"
+adb_require_bash "$@"
+
 die() { printf 'release-lib: %s\n' "$*" >&2; exit 2; }
 
 usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -111,15 +133,6 @@ cmd_version_ok() {
 # Resolved relative to this file first (the layout is fixed: .claude/skills/release/ -> repo root),
 # with a git-root fallback so the predicate still resolves when invoked through a symlink or from
 # an unusual working directory.
-_ADB_SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-_ADB_COMMON="$_ADB_SELF_DIR/../../../scripts/lib/common.sh"
-if [ ! -f "$_ADB_COMMON" ]; then
-  _ADB_ROOT="$(git -C "$_ADB_SELF_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
-  _ADB_COMMON="$_ADB_ROOT/scripts/lib/common.sh"
-fi
-[ -f "$_ADB_COMMON" ] || { printf 'release-lib: cannot locate scripts/lib/common.sh\n' >&2; exit 2; }
-# shellcheck source=/dev/null
-. "$_ADB_COMMON"
 command -v adb_version_ge >/dev/null 2>&1 \
   || { printf 'release-lib: common.sh did not provide adb_version_ge\n' >&2; exit 2; }
 

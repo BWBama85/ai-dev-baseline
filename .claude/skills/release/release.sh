@@ -57,6 +57,17 @@ LIB="$ROOT/scripts/lib"
 RLIB="$SELF_DIR/release-lib.sh"
 RS="$ROOT/.claude/state/release-run.env"
 
+# bash 5.3 runtime floor (#256) — the bootstrap sits here, immediately after the four path
+# assignments it needs and AHEAD of every function definition below.
+#
+# Bash parses a function's body when it reaches the definition, so once #258/#259 put 5.3-only
+# grammar into any function further down, a 3.2 interpreter would fail to PARSE this file before
+# reaching the gate meant to rescue it. A gate placed among the definitions it protects is a gate
+# that arrives too late. Caught by independent review; the same fix is in release-lib.sh.
+# shellcheck source=/dev/null
+. "$LIB/common.sh"
+adb_require_bash "$@"
+
 die()  { printf 'release: %s\n' "$*" >&2; exit 1; }
 usage() { sed -n '/^# Usage:/,/^# Exit codes/p' "$0" | sed 's/^# \{0,1\}//'; }
 say()  { printf '%s\n' "$*"; }
@@ -77,8 +88,6 @@ defbr()   { gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/
 # has no -V, and inside a command substitution without pipefail the failure is masked by `tail`,
 # leaving the result EMPTY. An empty previous-version then reads as "first release" and blesses a
 # `releases/tag/` changelog link on a repo that already has tags. Uses the shared comparator.
-# shellcheck source=/dev/null
-. "$LIB/common.sh"
 version_max() {   # bare versions on stdin -> highest, bare
   best=""
   while IFS= read -r v; do

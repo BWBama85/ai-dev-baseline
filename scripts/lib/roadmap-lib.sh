@@ -62,6 +62,11 @@ if [ ! -f "$_adb_rm_common" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_adb_rm_common"
+# bash 5.3 runtime floor (#256) — only when EXECUTED. Sourced, `$0` names the CALLER, and the
+# caller is the entry point that owns the gate; re-exec'ing someone else's script from inside a
+# library is not this file's decision to make. An `if`, never `[ … ] && …`: the compound form
+# returns non-zero on the sourced path and would trip a caller's `set -e`.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then adb_require_bash "$@"; fi
 # A MIXED-VERSION install is what this probe is for. `install.sh` symlinks the whole scripts/lib
 # directory, so the two files always travel together — but a workstation can still be pointing at
 # an older checkout, and then the sourced library simply has no `_ADB_MD_AWK` in it. Under `set -u`
@@ -119,7 +124,8 @@ cmd_pr_targets_issue() {
   json="$(cat)"
   # An empty read is the "no open PRs" case, not a malformed one — `gh pr list` on an empty
   # set prints `[]`, but a caller piping from an empty capture is treated identically.
-  # A `case` glob does this with no subshell and no bash-4 expansion (bash-3.2 safe).
+  # A `case` glob does this with no subshell and no fork. (Written this way historically for the
+  # old 3.2 floor; kept because it is simply the cheaper form, not because the floor requires it.)
   case "$json" in *[![:space:]]*) : ;; *) return 1 ;; esac
 
   # --- ONLY PROSE TARGETS (#130/#136) ---------------------------------  # adb-claim-ok: #130 is closed NOT_PLANNED, superseded by #136

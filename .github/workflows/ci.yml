@@ -542,7 +542,12 @@ jobs:
       # the one that parses .github/workflows, for the neighbouring question of which contexts it
       # reports. Every OTHER job proves the bash it got; this step proves no job can be added
       # without doing so.
-      - name: Every CI job stays on a proven bash >= 5.3 runner and wires the floor guard (#257)
+      # Two lints, one invocation: the workflow half (#257 — no job may sit on an unproven runner)
+      # and the entry-point half (#256 — no shebang-bearing file may run without gating its own
+      # interpreter). Deliberately NOT a second job: an added job is an added non-required context,
+      # which is the drift `required-drift` below exists to flag, and both halves read the same
+      # tree for the same question.
+      - name: Every CI job is on a proven bash >= 5.3 runner, and every entry point gates its interpreter (#257, #256)
         run: bash scripts/check-bash-floor.sh
 
       # ...and the lint above is a guard, so it gets the treatment guards get here: every rule
@@ -926,7 +931,7 @@ jobs:
 
   # The second platform, and the whole reason #257 exists. macOS is where the 5.3 floor is hardest
   # to reach: macOS ships /bin/bash 3.2.57 (confirmed in the runner inventory), so 5.3 is reachable ONLY through
-  # PATH — exactly the surface base/practices/shell-discipline.md warns is absent in the
+  # PATH — exactly the surface base/practices/shell.md warns is absent in the
   # non-interactive shells that hooks and gate scripts run in.
   #
   # ONE aggregate job, not 26 mirrored ones, and that is a design choice with two reasons:

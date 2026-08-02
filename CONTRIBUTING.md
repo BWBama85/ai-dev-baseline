@@ -5,9 +5,12 @@ agent-facing quick rules live in [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS
 
 ## Prerequisites
 
-- `git`, `gh` (for issues/PRs), `jq` (install hook-wiring + gate state), `bash`.
+- `git`, `gh` (for issues/PRs), `jq` (install hook-wiring + gate state), and **`bash` >= 5.3**
+  (a hard floor — every entry point re-execs into one or exits; see `docs/installation.md` §7).
 - `shellcheck` recommended (CI runs it; `scripts/selfcheck.sh` skips it if absent).
-- macOS or Linux. Windows is not yet supported — see the open issue.
+- macOS, Linux, or **Windows via WSL2** on a bash-5.3 distro (Ubuntu 26.04). WSL2 *is* Linux, so
+  there is no separate port; Git Bash/MSYS2 and Cygwin are not supported. Clone inside the WSL
+  filesystem, not under `/mnt/c` — see [`docs/installation.md`](docs/installation.md) §7.
 
 ## The one thing to internalize
 
@@ -90,9 +93,10 @@ Green locally ≈ green in CI, with two honest qualifications since #257. CI run
 on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
 them, so a local green speaks for the OS you are sitting at, not for the other runner's image or
 its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 27 CI
-jobs — is omitted locally on purpose: pinning a local gate to the 5.3 floor is #256's enforcement
-to introduce with install instructions, not this one's to impose sideways. Its **static** half does
-run here. See [`docs/ci-runners.md`](docs/ci-runners.md).
+jobs — is still omitted locally, but since #256 the reason is different: what it adds beyond the
+entry gate is an assertion about the machine and about `command -v bash`, which is a CI-image
+question. (A contributor below the floor no longer gets a pass here — `selfcheck.sh` gates its own
+interpreter on line 1.) Its **static** half and #256's **entry-point** half both run here. See [`docs/ci-runners.md`](docs/ci-runners.md).
 
 ## Repository map
 
@@ -119,10 +123,25 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
 
 ## Style
 
-- **Shell:** `bash`/POSIX, macOS bash 3.2 safe (no `mapfile`, no `readlink -f`),
-  quote expansions, single-purpose commands. Must pass
+- **Shell:** `bash` **>= 5.3** — the runtime floor (epic #255), so `mapfile`,
+  associative arrays, namerefs and `${ command; }` are encouraged rather than avoided.
+  Quote expansions, single-purpose commands. Must pass
   `shellcheck --severity=warning -e SC1091`. Justify any `# shellcheck disable=` with
   a one-line reason.
+  - Every entry point gates its own interpreter as its first statement, in one of **three**
+    classifications that `check-bash-floor.sh --entrypoints` enforces (it fails the build on a
+    file that is unclassified or uses the wrong form):
+    - **gate** (55 files) — `adb_require_bash`: re-exec, else exit non-zero with your
+      platform's install command.
+    - **advisory** (3) — `adb_require_bash_advisory`: same re-exec, but when it cannot, the
+      file takes its own documented no-op and exits **0**. For `statusline.sh`,
+      `session-currency.sh` and `state-claim-gate.sh`, whose contracts forbid a non-zero exit.
+      It never runs its body under a sub-floor interpreter (D31).
+    - **exempt** (1) — `check-bash-floor.sh` calls neither: it is the observer, and an observer
+      that upgrades its own interpreter has destroyed the observation (D31).
+  - **`scripts/lib/common.sh` must stay parseable below the floor** — it holds the gate, and a
+    caller cannot reach a function until sourcing finishes, so a 5.3-only construct there makes
+    the gate unreachable on exactly the hosts it exists for (D30).
 - **Markdown practices/skills:** concise, imperative, agent-neutral where the content
   is shared; include a short "Why" only where it earns its place.
 - **Commits/PRs:** semantic subject, feature branch + PR, green CI. Never push to

@@ -72,6 +72,9 @@ REPO="$(cd "$(dirname "$self")/.." && pwd)"
 # Shared shell primitives (adb_default_branch / adb_branch_sync_state) — the ONE home.
 # shellcheck source=/dev/null
 . "$REPO/scripts/lib/common.sh"
+# bash 5.3 runtime floor (#256) — after the symlink-resolving REPO bootstrap, for the same
+# reason as bin/agent-init: this command is reached through a symlink on PATH.
+adb_require_bash "$@"
 
 # Print the top comment block as --help (the shared idiom in common.sh, sourced not copied).
 usage() { adb_usage "$0"; }

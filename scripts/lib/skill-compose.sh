@@ -56,6 +56,11 @@ if [ ! -f "$_adb_sc_common" ]; then
 fi
 # shellcheck source=/dev/null
 . "$_adb_sc_common"
+# bash 5.3 runtime floor (#256) — only when EXECUTED. Sourced, `$0` names the CALLER, and the
+# caller is the entry point that owns the gate; re-exec'ing someone else's script from inside a
+# library is not this file's decision to make. An `if`, never `[ … ] && …`: the compound form
+# returns non-zero on the sourced path and would trip a caller's `set -e`.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then adb_require_bash "$@"; fi
 if ! command -v adb_repo_root >/dev/null 2>&1; then
   printf 'skill-compose: FATAL — %s is missing adb_repo_root\n' "$_adb_sc_common" >&2
   return 1 2>/dev/null || exit 1

@@ -51,18 +51,34 @@ those. The rules below are specific to this repo's code.
      local green speaks for the OS you are sitting at, not for the other runner's image or its
      Homebrew bootstrap;
    - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 27 CI jobs, but is
-     omitted from `selfcheck` deliberately: its verdict is about the machine, and pinning a local
-     gate to the 5.3 floor would fail a contributor still on 5.2 — #256's enforcement to
-     introduce, with install instructions, not this gate's to impose sideways. The **static** half
-     does run locally.
+     omitted from `selfcheck` deliberately: what it adds beyond the entry gate is an assertion
+     about the **machine** and about `command -v bash`, which is a CI-image question. (Before
+     #256 the reason was "so a contributor on 5.2 can still run selfcheck" — that is no longer
+     true: `selfcheck.sh` gates its own interpreter on line 1.) The **static** half and the
+     **entry-point** half both run locally.
 
    Neither changes the hermetic-gate rule; the set of unpredictable things simply grew.
-4. **Shell code must be portable and shellcheck-clean.** `bash`/POSIX, safe on macOS
-   bash 3.2 (no `mapfile`, no `readlink -f`), passing
-   `shellcheck --severity=warning -e SC1091`. The install runs on a stock Mac and on
-   Linux CI. **Source the shared primitives, never copy them** — link/unlink/backup,
-   default-branch, TOML-read, and version-compare live once in `scripts/lib/common.sh`
-   (see `docs/design-principles.md`).
+4. **Shell code targets bash 5.3 and must be shellcheck-clean.** The runtime floor is
+   **bash 5.3** (owner decision, epic #255) on macOS, Linux and Windows-via-WSL2, so
+   `mapfile`, associative arrays, namerefs and `${ command; }` are **encouraged**, not
+   avoided. Pass `shellcheck --severity=warning -e SC1091`.
+
+   **Two carve-outs, both load-bearing:**
+   - **`scripts/lib/common.sh` stays parseable below the floor, permanently** (D30). It
+     holds `adb_require_bash`, and a caller cannot reach that function until sourcing
+     has finished — so a 5.3-only construct there makes the gate unreachable on exactly
+     the hosts it exists for. It is the one file #258/#259 must skip.
+   - **`scripts/check-bash-floor.sh` does not call the gate** (D31). It is the observer;
+     an observer that upgrades its own interpreter has destroyed the observation.
+
+   **Every other entry point calls the gate**, and `check-bash-floor.sh --entrypoints`
+   fails the build if one does not — a new script cannot join the suite without it. On
+   macOS a 5.3 is reachable only through `PATH`, which non-interactive shells routinely
+   lack, so the gate **re-execs** into a known-good interpreter before failing.
+
+   **Source the shared primitives, never copy them** — link/unlink/backup,
+   default-branch, TOML-read, version-compare and the bash floor itself live once in
+   `scripts/lib/common.sh` (see `docs/design-principles.md`).
 5. **Skills are self-contained.** A Claude `SKILL.md` loads whole — keep it complete.
    Keep shared content agent-neutral so adapters can render it.
 6. **Feature branch + PR + green CI.** No direct pushes to `main`. Deferred work earns a

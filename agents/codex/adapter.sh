@@ -11,8 +11,9 @@
 #   bash agents/codex/adapter.sh install   <repo> <backup_dir>
 #   bash agents/codex/adapter.sh uninstall <repo>
 #
-# Portable to macOS bash 3.2: no `readlink -f`, no `mapfile`, no associative
-# arrays.
+# Runs on bash >= 5.3 (this repo's runtime floor — #255). It gates its own interpreter via
+# adb_require_bash below, so an adapter invoked from a shell whose PATH resolves an older
+# bash re-execs into a current one rather than failing somewhere deep.
 
 set -uo pipefail
 
@@ -22,6 +23,8 @@ set -uo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "$_here/../../scripts/lib/common.sh"
+# bash 5.3 runtime floor (#256) — re-exec into a >= 5.3 interpreter, or exit with instructions.
+adb_require_bash "$@"
 
 cmd_install() {
   local repo="$1" backup_dir="$2" rc=0

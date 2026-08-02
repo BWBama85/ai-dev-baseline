@@ -13,6 +13,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Shared shell primitives (adb_info / adb_unlink_if_ours) — the ONE home, sourced not copied.
 # shellcheck source=/dev/null
 . "$REPO/scripts/lib/common.sh"
+# bash 5.3 runtime floor (#256) — re-exec into a >= 5.3 interpreter, or exit with instructions.
+adb_require_bash "$@"
 AGENTS=()
 while [ $# -gt 0 ]; do
   case "$1" in

@@ -48,6 +48,28 @@
 #   bash scripts/check-fact-drift.sh              # exit 0 = no drift, 1 = drift found
 #   bash scripts/check-fact-drift.sh --mutation   # exit 0 = every absent: pin was seen going RED
 
+# bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
+#
+# Before the cd, because $0 is frozen at invocation: a script that has already changed directory
+# may be unable to name itself for the re-exec.
+#
+# Before `set -u`, because sourcing is not the place to enforce it. An unbound variable expanded
+# while a library loads is FATAL under `set -u` — it kills the shell outright, before this script
+# has run a line of its own — so a single bad expansion anywhere in common.sh would take out the
+# whole suite with a message about a variable rather than about the library. `set -u` goes on
+# immediately below and governs everything this script actually does.
+#
+# And the load is confirmed by PROBING FOR THE FUNCTION, not by the source's exit status: a
+# sourced file returns its LAST command's status, so `. lib || exit 1` reports whatever that
+# happened to be and says nothing about whether the file loaded. Same idiom as project-gates.sh
+# and roadmap-lib.sh, which learned this first.
+# shellcheck source=/dev/null
+. "$(dirname "$0")/lib/common.sh" 2>/dev/null
+command -v adb_require_bash >/dev/null 2>&1 || {
+  printf '%s: FATAL — scripts/lib/common.sh is missing or corrupt; cannot verify the bash floor\n' "${0##*/}" >&2
+  exit 1
+}
+adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
@@ -745,6 +767,67 @@ fact fact-mutation-wired 'regex:^[^#]*check-fact-drift\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
 fact fact-guard-wired 'regex:^[^#]*check-fact-guard\.sh' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+
+# --- the bash floor: 5.3, and the 3.2 declaration it retired (#256/#261) ------
+#
+# The floor number itself, pinned across the constant and the docs that restate it. The constant in
+# common.sh IS the canonical source and is in the file list, so changing the floor fails this lint
+# until every consumer moves with it.
+_bf_docs="CLAUDE.md CONTRIBUTING.md docs/installation.md docs/ci-runners.md scripts/lib/common.sh"
+# shellcheck disable=SC2086  # deliberate word-splitting of the file list, as elsewhere in this file
+fact bash-floor-value 'regex:(bash )?(>= ?)?5\.3' -- $_bf_docs
+fact bash-floor-gate  'fixed:adb_require_bash' -- \
+  scripts/lib/common.sh scripts/check-bash-floor.sh CLAUDE.md CONTRIBUTING.md
+# The lint must stay WIRED, not merely present. `^[^#]*` for the same reason as the two rules
+# above: a `fixed:` pin is satisfied by a commented-out invocation, which is exactly the silent
+# un-wiring this family exists to catch.
+#
+# And it must be the BARE invocation — the default mode, which is the only one that runs BOTH the
+# workflow half and the entry-point half. `--runtime` or `--workflow-dir` in its place would leave
+# the token present while the entry-point lint ran zero times, so the pattern requires the
+# invocation to end the command: end-of-line (the `run:` step) or a `;` (selfcheck's `if …; then`).
+fact bash-entrypoint-lint-wired 'regex:^[^#]*check-bash-floor\.sh[[:space:]]*(;|$)' -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
+
+# THE NEGATIVE PIN, and it is deliberately NARROW. #261 proposed banning the string "bash 3.2"
+# tree-wide; that would be wrong twice over. This lint is an allowlisted superseded-VALUE checker,
+# not a prose blocklist (see this file's header) — and the historical mentions are legitimate and
+# load-bearing: D29 and docs/ci-runners.md explain WHY macOS needs a re-exec by naming 3.2.57, the
+# guard suite builds 3.2 fixtures, and the changelog records what shipped when. A rule that fired
+# on those would be deleted within a week.
+#
+# What is genuinely retired is the DECLARATION — the sentence that told a contributor to WRITE
+# 3.2-compatible code. So the pin is the declaration's real spellings, in the four files that
+# carried it, and nowhere else. Both witnesses are the exact strings that were in the tree before
+# this change (CLAUDE.md's "safe on macOS bash 3.2" and CONTRIBUTING.md/AGENTS.md's "macOS bash 3.2
+# safe"), so `--mutation` reintroducing either must make this lint go red.
+# The spelling set is WIDER than the four documents' headline sentences, because review found the
+# same declaration living in ordinary code comments too — `bash 3.2, this repo's floor`,
+# `bash-3.2-safe`, `bash-3.2 safe`. A rule that pinned only the headline spellings passed its own
+# mutation test while the acceptance criterion ("no doc, comment, or adapter header states a 3.2
+# floor") stayed violated in three files it did not list.
+#
+# The file list is correspondingly wider, and deliberately EXCLUDES the places a 3.2 mention is
+# legitimate history rather than a live declaration: CHANGELOG.md, .ai-dev-baseline/decisions.md,
+# docs/ci-runners.md, the guard suites that build 3.2 fixtures, and this file's own witnesses.
+# That is the line #261 asked for and the line a tree-wide ban would have crossed.
+fact bash-floor-stale-decl \
+  'absent:(safe on macOS bash 3\.2|macOS bash 3\.2 safe|Portable to macOS bash 3\.2|bash 3\.2, this repo|bash-3\.2[- ]safe)' \
+  'fires:Shell code must be portable and shellcheck-clean. bash/POSIX, safe on macOS bash 3.2' \
+  'fires:**Shell:** `bash`/POSIX, macOS bash 3.2 safe (no `mapfile`, no `readlink -f`),' \
+  'fires:# Portable to macOS bash 3.2: no `readlink -f`, no `mapfile`, no associative' \
+  'fires:  # which bash 3.2, this repo'"'"'s floor, does not have.' \
+  'fires:# falls back to a bash-3.2-safe background watchdog' \
+  'fires:  # A `case` glob does this with no subshell (bash-3.2 safe).' \
+  -- CLAUDE.md CONTRIBUTING.md AGENTS.md agents/codex/adapter.sh agents/gemini/adapter.sh \
+     scripts/lib/common.sh scripts/lib/roadmap-lib.sh scripts/lib/skill-compose.sh \
+     scripts/lib/pr-watch.sh docs/installation.md
+
+# The two carve-outs are the part most likely to be "cleaned up" by a later modernization pass that
+# does not know why they exist, so both are pinned where they are explained.
+fact bash-floor-bootstrap-carveout 'fixed:parseable' -- \
+  scripts/lib/common.sh CLAUDE.md CONTRIBUTING.md .ai-dev-baseline/decisions.md
+fact bash-floor-observer-carveout 'fixed:EXEMPT_ENTRYPOINTS' -- scripts/check-bash-floor.sh
 
 # --- what was actually evaluated ---------------------------------------------
 # A rule that scans nothing is already a hard failure inside fact(); these totals are the other

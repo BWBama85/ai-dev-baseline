@@ -1540,3 +1540,147 @@ limit: none of them is sufficient alone.
 - baseline-issue: n/a — this is how THIS repo proves its own floor. The general question (should
              the baseline model a runner/interpreter floor for adopting projects?) is #255's to
              answer once #256 and #261 have settled what the floor demands of an installed repo.
+
+## D30 — the file that installs the floor is the one file exempt from it
+- date:      2026-08-01
+- category:  project-delta
+- unknown:   #255 made bash 5.3 the runtime floor and #258/#259 will spend it — associative arrays,
+             namerefs, `mapfile`, `${ command; }` across `scripts/lib/` and the check suite. #256
+             puts the enforcing gate (`adb_require_bash`) in `scripts/lib/common.sh`. Those two
+             facts are in direct conflict and nothing in the baseline models the conflict: a caller
+             cannot reach a function in a library until sourcing that library has finished, so a
+             5.3-only construct anywhere in `common.sh` makes the gate unreachable on precisely the
+             hosts it exists for — the sub-floor ones. The gap-analysis pass named it a bootstrap
+             paradox and treated it as blocking.
+- decision:  `scripts/lib/common.sh` stays **parseable by the interpreter it is upgrading FROM**,
+             permanently. It is the one file the 5.3 modernization must skip: no `mapfile`, no
+             `readlink -f`, no associative arrays, no namerefs, no `${ command; }`. Recorded in its
+             own contract header (where an editor is standing when they would break it), in golden
+             rule 4, and in `CONTRIBUTING.md`.
+
+             This also settles the OTHER half of the same premise. Both #256 and #261 assert that
+             `install.sh` "cannot source `common.sh` — it is what installs it", and ask for a
+             standalone copy of the gate as a documented exception to *source, never copy*. The
+             premise is false: `install.sh` runs **from** the clone it installs and already sources
+             `common.sh` (`install.sh:24`). The copy was therefore not implemented. It would have
+             bought nothing and cost a second implementation of candidate resolution, version
+             comparison and per-platform diagnostics, free to drift from the first — the exact
+             failure `docs/design-principles.md` forbids. What actually makes the installer able to
+             source the gate is the carve-out above, not a duplicate.
+- placement: `scripts/lib/common.sh` contract header; `CLAUDE.md` golden rule 4; `CONTRIBUTING.md`;
+             pinned by `check-fact-drift.sh`'s `bash-floor-bootstrap-carveout` rule so a later
+             modernization pass cannot quietly delete the explanation.
+- reason:    A carve-out that lives only in an issue is a carve-out the next agent removes. #258 and
+             #259 are explicitly chartered to modernize `scripts/lib/` and the check suite, so the
+             file most likely to be "cleaned up" is the one that must not be. Writing the rule where
+             the edit would happen — and pinning it with a lint — is what makes it survive.
+- baseline-issue: n/a — this is a property of THIS repo's bootstrap, not a general practice. An
+             adopting project with a floor of its own would face the same shape, but the baseline
+             does not model runtime floors for adopters yet; #255 owns that question.
+
+## D31 — an entry point either gates its interpreter, degrades, or observes — and the set is closed
+- date:      2026-08-01
+- category:  project-delta
+- unknown:   #256 says "every process entry point" calls the gate and "every entry point exits
+             non-zero" below the floor. Three shipped files contradict that in their own headers:
+             `session-currency.sh` exits 0 on every path because a non-zero SessionStart hook
+             renders an error notice on every session start; `statusline.sh` renders one cosmetic
+             string on every render; `state-claim-gate.sh` deliberately refuses to wedge a session
+             over infrastructure absence (#35). A fourth, `check-bash-floor.sh`, is #257's
+             *observer* — and `check-bash-floor-guard.sh` runs it under an old `/bin/bash` and
+             asserts it reports red (the assertion named *"the $BASH rule fires ALONE"*), so wiring
+             the gate into it would silently un-test that. Cited by assertion name rather than by
+             line: this very entry named a line number that the same PR then moved 22 lines down.
+             The issue's own call-site list omits all four; nothing said what to do about them.
+- decision:  Three classes, forced and enumerated in `scripts/check-bash-floor.sh`:
+             **gate** (`adb_require_bash` — re-exec, else exit non-zero; the default, 55 files),
+             **advisory** (`adb_require_bash_advisory` — same re-exec, RETURNS instead of exiting;
+             the three files above), and **exempt** (must NOT call it; `check-bash-floor.sh` alone).
+             `--entrypoints` fails the build on a shebang-bearing file that is unclassified, calls
+             the wrong form for its class, calls it in a comment, or calls it after a `cd` or a
+             stdin read.
+- placement: `scripts/check-bash-floor.sh` (`ADVISORY_ENTRYPOINTS` / `EXEMPT_ENTRYPOINTS`, each with
+             its reason); every rule driven to red in `scripts/check-bash-floor-guard.sh`.
+- reason:    "Fail closed" is right for a gate and wrong for a statusline: hard-failing there makes
+             a sub-floor host look BROKEN rather than out of date, on every render, which is worse
+             than the degraded behaviour those files already promise. But *advisory* must not become
+             a dial the next script quietly picks, so the classification is bidirectional — a
+             declared-advisory file using the hard form fails the lint too — and the exemption is
+             asserted rather than implied, because an exemption that looks like an oversight will be
+             "fixed" by someone.
+
+             The lint checks POSITION, not just presence, and that is the half a grep cannot do.
+             `$0` is frozen at invocation and is relative when invoked relatively, so a call after a
+             `cd` may be unable to name its own script; and a hook that has already drained its
+             payload from stdin cannot get it back, because the re-exec restarts the script with
+             that fd inherited. Both are silent failures.
+- review:    Building the negative harness immediately found a defect in the gate itself, which is
+             the argument for building it: `_ADB_BASH_REEXEC` is **exported**, so a re-exec'd parent
+             handed the loop sentinel to every child, and a child starting on the old interpreter
+             then read "already attempted" and failed closed instead of repairing itself.
+             `selfcheck.sh` is exactly that shape — it re-execs, then spawns ~30
+             `bash scripts/check-*.sh`, each resolving `bash` through the same wrong `PATH` — so
+             every one of them would have died on a machine with a shadowed Homebrew prefix. The
+             fix clears the sentinel once the version check has PASSED, which keeps it a loop guard
+             (an exec chain that has not yet reached a good interpreter still carries it) while
+             stopping the leak. Pinned by a fixture that was watched failing without the fix.
+- baseline-issue: n/a
+
+## D32 — Windows via WSL2: the checkout is the delta, and the CI leg is sliced
+- date:      2026-08-01
+- category:  project-delta
+- unknown:   #2's rewritten body scopes Windows support to WSL2 and lists three items: docs, a
+             CRLF + `/mnt/` preflight, and a CI shape. The third asks for a WSL smoke job on a
+             release/weekly trigger that "has been seen green at least once". Two things make that
+             unreachable from this PR, and the baseline models neither.
+- decision:  Ship items 1 and 2 in full; **slice item 3** into its own tracked issue. #2 is
+             therefore `Refs`, not `Closes`.
+- placement: `docs/installation.md` §7 (prerequisites table + the WSL2 section); `adb_crlf_scan` /
+             `adb_crlf_remedy` / `adb_drvfs_warn` in `common.sh`, preflighted by `install.sh`;
+             `.gitattributes`; fixtures in `check-bash-floor-guard.sh`. CI leg → a follow-up issue.
+- reason:    Two independent blockers, both structural rather than a matter of effort. **A
+             scheduled or manually-dispatched workflow must already exist on the default branch
+             before it can run**, so "seen green" cannot be satisfied by the PR that introduces it —
+             any claim otherwise would be the unverified support claim
+             `base/practices/verify-before-asserting.md` exists to stop. And a Windows job would
+             have to change #257's workflow grammar, which just shipped: `check-bash-floor.sh`
+             allows only proven Linux/macOS labels and rejects every `shell:` key, both of which a
+             WSL job needs. Widening a guard that is one PR old, to accommodate a job that cannot be
+             verified in the same PR, is two risks stacked. The distro question is also open — the
+             common `setup-wsl` action's supported list stops at Ubuntu 24.04, which is *below the
+             floor*, so the job needs a custom 26.04 import that nothing here has exercised.
+
+             The CRLF preflight ships with its boundary stated rather than implied: a **fully**
+             CRLF-corrupted checkout cannot run it, because `./install.sh` dies on its own `bash\r`
+             shebang first. `.gitattributes` is the guarantee for a fresh clone; the preflight
+             catches the already-cloned and partially-corrupted cases; `docs/installation.md` names
+             the `bash: $'\r'` symptom so the unrunnable case stays diagnosable by a human.
+
+             **Review narrowed that boundary once already, and the correction is the interesting
+             part.** The first cut could not protect the very file it depends on: `install.sh`
+             sources `common.sh` BEFORE the scanner runs, and the scanner selected files by
+             SHEBANG — which a sourced library does not have. A checkout with only `common.sh`
+             converted therefore emitted raw `$'\r': command not found` from inside a library the
+             user has never heard of, while a direct scan afterwards reported the tree clean. Both
+             halves are fixed: a nine-line CR check on `common.sh` runs BEFORE the source (the one
+             place a standalone snippet is unavoidable, because it guards the loading of all shared
+             code), and the scanner now selects on `*.sh` OR a shebang, so sourced libraries and
+             extensionless commands are both in scope.
+
+             Two details corrected against the issue text. Its suggested repair, `git checkout .`,
+             is one of the commands `base/practices/git-and-prs.md` names as destroying uncommitted
+             work with no reflog to recover it — the remedy leads with re-cloning inside WSL
+             instead. And the `/mnt/` warning matches the Windows **drive** shape
+             (`/mnt/<letter>/`) under WSL only, not a bare `/mnt/` prefix.
+
+             **That second one is a DEVIATION from the issue's literal acceptance criterion, and is
+             recorded as one rather than quietly satisfied:** #2 says a `/mnt/` path warns.
+             `/mnt/data` and `/mnt/nfs` are ordinary Linux mountpoints on machines that have never
+             seen Windows, and warning there is the kind of noise that teaches people to ignore the
+             real warning. The criterion is met in spirit, not to the letter.
+- baseline-issue: n/a. The CI leg is tracked by **#2 itself, which stays OPEN** — the PR `Refs` it
+             rather than closing it. No child issue was filed on purpose: #2's remaining scope is
+             exactly this one item, so a second issue would be the duplicate
+             `base/practices/issues-and-scope.md` calls worse than a gap ("it splits context and
+             doubles triage"). The requirement that practice actually imposes is that deferred work
+             live in an OPEN ISSUE rather than a PR-body note, and #2 satisfies it.

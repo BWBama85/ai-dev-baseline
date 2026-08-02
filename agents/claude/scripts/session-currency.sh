@@ -39,9 +39,31 @@
 
 set -u
 
-# Always exit 0 — see the harness contract above. Registered before anything else can fail, so even
-# a syntax-level surprise in a sourced library cannot turn into a session-start error.
+# Always exit 0 — see the harness contract above. Registered FIRST, before the library source and
+# the floor gate below, so even an unbound-variable abort while loading a shared library cannot
+# turn into a session-start error notice. (It used to sit after them, which contradicted its own
+# "before anything else can fail" claim; independent review caught that.)
 trap 'exit 0' EXIT
+
+# bash 5.3 runtime floor (#256) — the ADVISORY form, and the distinction is this file's own
+# contract rather than a preference: a SessionStart hook renders an error notice on EVERY session
+# start when it exits non-zero, and this one exits 0 on every path by design.
+#
+# ADVISORY MEANS "STOP QUIETLY", NOT "CARRY ON REGARDLESS". The re-exec is attempted first and is
+# silent when it works. When it cannot — no >= 5.3 interpreter anywhere — this hook takes its
+# documented no-op path and exits 0. It does NOT run its body under a sub-floor interpreter: once
+# #258/#259 land 5.3-only syntax, that body would fail somewhere deep, which is the exact failure
+# the floor exists to prevent. Review caught the first cut doing precisely that.
+#
+# The cost of stopping is one skipped currency check, which is a convenience by this file's own
+# framing. The cost of continuing is an unpredictable failure in a session-start hook.
+if [ -f "$(dirname "$0")/lib/common.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$(dirname "$0")/lib/common.sh" 2>/dev/null
+  if command -v adb_require_bash_advisory >/dev/null 2>&1; then
+    adb_require_bash_advisory "$@" || exit 0
+  fi
+fi
 
 # --- output ------------------------------------------------------------------
 

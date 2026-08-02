@@ -19,6 +19,18 @@
 # nothing double-runs. Exit 2 blocks the stop, exactly as the global gate does.
 
 set -u
+# bash 5.3 runtime floor (#256) — FIRST, before the cd and before ANY read of the hook payload on
+# stdin: the re-exec inherits that fd and restarts this script from the top, so anything already
+# consumed would be lost.
+#
+# The source is CONDITIONAL on purpose. This file has a deliberate broken-install posture of its
+# own a few lines below, and the floor gate is not entitled to override it — if the shared library
+# is missing, that decision stays with the machinery that already owns it.
+if [ -f "$(dirname "$0")/../../scripts/lib/common.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$(dirname "$0")/../../scripts/lib/common.sh"
+  adb_require_bash "$@"
+fi
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -z "$repo_root" ] && exit 0

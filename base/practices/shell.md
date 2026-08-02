@@ -26,10 +26,30 @@ you are running a script with an explicit `#!/usr/bin/env bash` shebang.
   review and every bash-based test, then breaks on the default macOS shell. Pick
   a neutral name (`file`, `sfile`, `entry`) — and remember the rule applies to
   any snippet an agent executes, not just to `.sh` files.
-- **Don't assume PATH.** Non-interactive shells may not have your rc's PATH. If a
+- **Don't assume PATH — and know that `bash` itself is one of the things it
+  decides.** Non-interactive shells may not have your rc's PATH. If a
   brew/user-installed tool might be missing, export the prefix explicitly once
   (e.g. `export PATH="/opt/homebrew/bin:$PATH"`) rather than relying on login
   shell setup.
+
+  On macOS this reaches the **interpreter**, not just the tools. `/bin/bash` is
+  **3.2.57** and Apple has pinned it there for the whole bash-4-and-later era, so
+  a modern bash is a Homebrew install at `/opt/homebrew/bin` (Apple Silicon) or
+  `/usr/local/bin` (Intel) — reachable *only* through `PATH`. A
+  `#!/usr/bin/env bash` script therefore runs whichever bash `PATH` happens to
+  resolve, and the shells least likely to carry the Homebrew prefix are exactly
+  the ones with no human watching: hooks, gate scripts, anything spawned by
+  another agent's CLI.
+
+  Two consequences worth stating separately:
+  - **Ordering matters, not just membership.** A `PATH` that contains the
+    Homebrew prefix *after* `/usr/bin:/bin` still resolves the 2006 interpreter.
+    A defensive rc line written to make non-interactive shells work is a common
+    way to end up there.
+  - **A project with a bash floor should enforce it at the entry point**, by
+    re-exec'ing into a known-good interpreter rather than trusting `PATH` — and
+    failing loudly with the platform's install command when there is none. By the
+    time your code runs, `PATH` has already given its answer.
 - **Globs and `find`:** when a glob may match nothing, guard it (`shopt -s
   nullglob` in bash, or iterate `find … -print0 | while IFS= read -r -d ''`).
   Don't let an unmatched glob leak through as a literal argument.

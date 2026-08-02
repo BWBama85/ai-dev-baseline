@@ -17,11 +17,35 @@
 #   2. The OTHER PLATFORM. CI runs this same offline suite on ubuntu-26.04 AND macos-latest, and a
 #      workstation is one of them. Nothing here speaks for the other runner's image or its Homebrew
 #      bootstrap.
-#   3. `check-bash-floor.sh --runtime` — which IS offline, and runs in all 27 CI jobs. It is omitted
-#      here on purpose: its verdict is about the machine, and pinning a local gate to the real floor
-#      would fail a contributor still on 5.2. That is #256's enforcement to introduce, with install
-#      instructions, rather than this gate's to impose sideways. The STATIC half does run below.
+#   3. `check-bash-floor.sh --runtime` — which IS offline, and runs in all 27 CI jobs. Still omitted
+#      here, but the reason CHANGED when #256 landed. It is no longer "so a contributor on 5.2 can
+#      run selfcheck": they cannot, because line 1 of this script now gates its own interpreter and
+#      would have re-exec'd or exited long before any step ran. What --runtime adds beyond that is
+#      an assertion about the MACHINE and about `command -v bash` — a CI-image question. The STATIC
+#      half, plus the entry-point half #256 added, do run below.
 
+# bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
+#
+# Before the cd, because $0 is frozen at invocation: a script that has already changed directory
+# may be unable to name itself for the re-exec.
+#
+# Before `set -u`, because sourcing is not the place to enforce it. An unbound variable expanded
+# while a library loads is FATAL under `set -u` — it kills the shell outright, before this script
+# has run a line of its own — so a single bad expansion anywhere in common.sh would take out the
+# whole suite with a message about a variable rather than about the library. `set -u` goes on
+# immediately below and governs everything this script actually does.
+#
+# And the load is confirmed by PROBING FOR THE FUNCTION, not by the source's exit status: a
+# sourced file returns its LAST command's status, so `. lib || exit 1` reports whatever that
+# happened to be and says nothing about whether the file loaded. Same idiom as project-gates.sh
+# and roadmap-lib.sh, which learned this first.
+# shellcheck source=/dev/null
+. "$(dirname "$0")/lib/common.sh" 2>/dev/null
+command -v adb_require_bash >/dev/null 2>&1 || {
+  printf '%s: FATAL — scripts/lib/common.sh is missing or corrupt; cannot verify the bash floor\n' "${0##*/}" >&2
+  exit 1
+}
+adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 fail=0
@@ -241,12 +265,18 @@ step "repo-settings"
 if bash scripts/check-repo-settings.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "bash-floor"
-# Every CI job must sit on a runner PROVEN to carry bash >= 5.3 and must wire the runtime guard
-# that says which interpreter it actually got (#257). Rides beside repo-settings here because it
+# Two static halves in one invocation. Every CI job must sit on a runner PROVEN to carry bash >=
+# 5.3 and must wire the runtime guard that says which interpreter it actually got (#257); and
+# every shebang-bearing entry point must call adb_require_bash, so a new script cannot join the
+# suite without gating its own interpreter (#256). Rides beside repo-settings here because it
 # rides that job in CI, and for the same reason: it is the other lint that reads
-# .github/workflows/ci.yml. The RUNTIME half is deliberately not run here — its verdict is about
-# the machine, and pinning selfcheck to the real floor would fail on a contributor still at 5.2,
-# which is #256's enforcement to introduce (with install instructions), not this lint's.
+# .github/workflows/ci.yml.
+#
+# The RUNTIME half is still not run here, and the reason has changed since #256 landed. It is no
+# longer "so a contributor on 5.2 can run selfcheck" — they cannot, because this very script now
+# gates its own interpreter on line 1 and would have exited before reaching any step. It is that
+# --runtime asserts on the machine and on `command -v bash`, which is a CI-image question; the
+# entry gate has already settled the only part that governs whether this suite may run at all.
 if bash scripts/check-bash-floor.sh; then echo "PASS"; else echo "FAIL"; fail=1; fi
 
 step "bash-floor-guard"
