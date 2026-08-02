@@ -585,15 +585,19 @@ sc3 compose >/dev/null 2>&1; no $? "no-name compose fails on an orphaned compose
 # ============ (S) adb_sc_paths — the RETURN CONVENTION, called directly (#258) ============
 # Every assertion above reaches this function through the CLI, and none of them can see how it
 # HANDS BACK its three paths — they observe only the file it eventually wrote. #258 replaced three
-# shared globals with namerefs, and a nameref has two failure modes no path-shaped assertion
-# reaches:
+# shared globals with namerefs, and a nameref has FOUR failure modes no path-shaped assertion
+# reaches. Three of them are SILENT, which is why each gets its own case:
 #
-#   collision — an output name equal to one of the function's own locals is a CIRCULAR reference.
+#   collision — an output name matching the function's own `_asp_` prefix is a CIRCULAR reference.
 #               bash prints a warning to stderr and the caller's variable stays unset, so the
-#               caller silently composes against an empty path.
+#               caller silently composes against an empty path.  (S4, S5, S5b)
 #   injection — `declare -n ref=$name` EVALUATES an array subscript in $name. In a library that
 #               install.sh symlinks into every consumer's runtime, an unvalidated output name is a
-#               command-execution seam, not a tidiness question.
+#               command-execution seam, not a tidiness question.  (S6, and S10 proves it closed)
+#   aliasing  — three names that are really ONE variable leave all three paths equal to the last
+#               assignment: a wrong compose that looks like a working one.  (S9)
+#   arity     — too few arguments. NOT silent, but worse: an unbound expansion under the caller's
+#               `set -u` kills the caller outright rather than failing the call.  (S11)
 #
 # Sourced rather than shelled out, because the contract under test is the SOURCED one: `bash "$SC"`
 # would exercise the CLI again and prove nothing new.
