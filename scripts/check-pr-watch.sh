@@ -967,13 +967,28 @@ has "$OUT" "head moved" "wait: reports that the head moved under it"
 # stand in for these. `wait` used to bound itself with `$SECONDS`; it now uses `BASH_MONOSECONDS`.
 #
 # T1 proves the PROPERTY on this interpreter, at the primitive: `SECONDS` is an ordinary writable
-# variable that a caller can move at will, and `BASH_MONOSECONDS` silently refuses assignment. That
-# difference is the entire reason for the change, so it is asserted rather than assumed — a future
-# bash that made BASH_MONOSECONDS writable would break the premise and nothing else here would say so.
-mono_probe="$(bash -c 'm0=$BASH_MONOSECONDS
+# variable that a caller can move at will, and `BASH_MONOSECONDS` silently refuses assignment WHILE
+# IT RETAINS ITS SPECIAL NATURE. That difference is the entire reason for the change, so it is
+# asserted rather than assumed — a future bash that made BASH_MONOSECONDS writable would break the
+# premise and nothing else here would say so.
+#
+# The qualifier is load-bearing and not hedging: `unset BASH_MONOSECONDS` strips the special nature,
+# after which assignment works normally. That is why the library's comment scopes its guarantee to
+# the system clock and to an EXECUTED entry point (which gets the special variable rebuilt), rather
+# than claiming nobody can move it.
+# `"$BASH"`, NOT a bare `bash` — and this is the very trap the repo's own shell-discipline practice
+# documents, reproduced inside a test written to prove a 5.3 property. This script re-execs itself
+# onto a >= 5.3 interpreter, but that does NOT rewrite `PATH`: on macOS a bare `bash` still resolves
+# `/bin/bash` 3.2.57, which has no `BASH_MONOSECONDS` at all, so the probe answered `100` and the
+# whole suite went red for anyone whose PATH did not already carry the Homebrew prefix. `$BASH` is
+# the interpreter actually running this file, which is by construction the one the assertion is about.
+#
+# The second term compares against `m0` rather than a fixed floor: an absolute `> 100` would have
+# made the assertion depend on the machine's UPTIME, so it would fail on a freshly booted host.
+mono_probe="$("$BASH" -c 'm0=$BASH_MONOSECONDS
                        SECONDS=100000
                        BASH_MONOSECONDS=5 2>/dev/null
-                       printf "%s%s%s" "$(( SECONDS >= 100000 ))" "$(( BASH_MONOSECONDS > 100 ))" "$(( BASH_MONOSECONDS - m0 < 5 ))"' 2>/dev/null)"
+                       printf "%s%s%s" "$(( SECONDS >= 100000 ))" "$(( BASH_MONOSECONDS >= m0 ))" "$(( BASH_MONOSECONDS - m0 < 5 ))"' 2>/dev/null)"
 eq "$mono_probe" "111" "T1 SECONDS is writable and BASH_MONOSECONDS is not — the premise of the deadline's clock"
 
 # T2 pins that `wait` actually READS that clock. It is a source pin, not a behavioural assertion,
@@ -990,12 +1005,19 @@ eq "$mono_probe" "111" "T1 SECONDS is writable and BASH_MONOSECONDS is not — t
 #     is -9223372036854775786 and `remaining` is exactly 30. The pre-#258 code was already correct
 #     under that, and a fixture built on it PASSES on both clocks while appearing to prove one.
 #   - Only a MID-RUN jump separates them, and that needs an in-process assignment to SECONDS. The
-#     `gh`/`sleep` stubs are separate processes and cannot reach the watcher's variables; the only
-#     way to reach them would be a test seam in production code that moves the clock, which is a
-#     bypass of the thing being asserted.
+#     `gh`/`sleep` stubs are separate processes and cannot reach the watcher's variables.
 # So the property lives in T1 and the wiring lives here, and the headline benefit — a wall-clock
 # adjustment mid-watch no longer shortens or extends the bound — is REASONED from the two, not
 # reproduced. Saying so is better than a green fixture that proves neither half.
+#
+# ONE CORRECTION, because the first version of this note overstated it. It claimed no behavioural
+# fixture was reachable "without a test seam in production code". That is false, and the independent
+# review said so: a `DEBUG` trap injected through `BASH_ENV` with function tracing can read
+# `BASH_COMMAND` and move `SECONDS` immediately before the old arithmetic, distinguishing the two
+# clocks end-to-end with production untouched. It is not built here — it pins the shape of one
+# expression through a trap that fires on every command in the file, which is a fixture that breaks
+# on any refactor of code it is not even testing — but "we chose not to" and "it cannot be done" are
+# different sentences, and only the first one is true.
 uses() { if grep -q "$1" "$PW"; then ok; else bad "$2"; fi; }
 uses 'BASH_MONOSECONDS' "T2 wait's bound is computed from the monotonic clock"
 eq "$(grep -cE '(deadline|remaining)=\$\(\(.*\bSECONDS\b' "$PW")" "0" \

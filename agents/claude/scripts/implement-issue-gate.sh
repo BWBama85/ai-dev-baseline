@@ -139,6 +139,13 @@ this_session() {
   #
   # `rc` is captured on its own line rather than tested inside `if ! read …; then`, where `$?` would
   # be the status of the negation (always 0) and the discard would silently never happen.
+  #
+  # `> 128` IS NOT EXCLUSIVE TO THE TIMEOUT, and that is deliberate rather than overlooked (raised
+  # in review). A `read` interrupted by a trapped signal also returns 128 + signum, so an intact
+  # payload arriving at that instant would be discarded too. Two reasons that is the right trade:
+  # this script installs no trap before `this_session` runs, so the case is presently unreachable;
+  # and if it ever became reachable, discarding yields "cannot identify myself", which falls back to
+  # branch matching and ENFORCES. The failure direction is toward the gate doing its job.
   local rc=0
   IFS= read -r -d '' -t 5 payload || rc=$?
   if [ "$rc" -gt 128 ]; then payload=""; fi

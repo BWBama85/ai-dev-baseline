@@ -645,9 +645,44 @@ eq "$(sc_paths same same same)" "RC2" "S9 duplicate output names are refused rat
 short="$( ( set -u; . "$SC"; adb_sc_paths demo /r /h; printf 'RC%s' "$?"; printf ' ALIVE' ) 2>/dev/null )"
 eq "$short" "RC2 ALIVE" "S11 a call with too few arguments returns 2 and leaves the caller's shell alive"
 
-# The injection seam, proven CLOSED rather than merely refused: if the subscript were evaluated,
-# the marker file would exist.
+# The injection seam via a LITERAL argument, proven CLOSED rather than merely refused: if the
+# subscript were evaluated, the marker file would exist. Note what this does NOT cover — S12.
 ( set +u; . "$SC"; adb_sc_paths demo /r /h "a[\$(touch '$work/pwned')]" o u ) >/dev/null 2>&1 || true
-[ ! -e "$work/pwned" ] && ok || bad "S10 a subscript in an output name must never be evaluated"
+[ ! -e "$work/pwned" ] && ok || bad "S10 a literal subscript in an output name is never evaluated"
+
+# S12 — THE SEAM S10 COULD NOT SEE, and the reason a spelling check is not a validation.
+# `declare -n` CHAINS: if the caller's variable is itself a nameref, binding to it resolves to THAT
+# nameref's target — a string this function never received as an argument and never checked. So the
+# hostile payload never appears in any argument, S10's premise fails, and the subscript is evaluated
+# on assignment. Reproduced by the independent review against the first cut of this change, which
+# returned 0 and created the marker.
+rm -f "$work/pwned2"
+# `evil` is referenced BY NAME (as a string argument), which shellcheck cannot follow — that
+# indirection is the whole point of the case.
+# shellcheck disable=SC2034
+chain="$( ( set +u
+            . "$SC"
+            declare -n evil="arr[\$(touch '$work/pwned2')]"
+            adb_sc_paths demo /r /h evil o2 u2; printf 'RC%s' "$?" ) 2>/dev/null )"
+eq "$chain" "RC2" "S12 an output name that is ALREADY a nameref is refused (declare -n would chain)"
+[ ! -e "$work/pwned2" ] && ok || bad "S12 ...and the chained subscript is never evaluated"
+
+# S13 — a readonly target. Rejected BEFORE the assignment, not after: bash aborts the whole function
+# on an assignment to a readonly variable, so a post-hoc verification never runs and the caller gets
+# bash's status instead of this function's documented 2.
+# shellcheck disable=SC2034  # `frozen` is referenced by name, like `evil` above.
+ro="$( ( set +u; . "$SC"; readonly frozen=1; adb_sc_paths demo /r /h frozen o3 u3; printf 'RC%s' "$?" ) 2>/dev/null )"
+eq "$ro" "RC2" "S13 a readonly output name is refused with 2, not an aborted function"
+
+# S14 — a name that ACCEPTS the assignment and silently discards it. `BASH_MONOSECONDS` is the
+# worked example: `declare -p` shows nothing unusual, the assignment returns 0, and the variable
+# goes on reporting the clock. Only checking the OUTCOME catches this class.
+sp="$( ( set +u; . "$SC"; adb_sc_paths demo /r /h BASH_MONOSECONDS o4 u4; printf 'RC%s' "$?" ) 2>/dev/null )"
+eq "$sp" "RC2" "S14 an output name that silently discards its value is refused"
+
+# S15 — the library's own state. A caller's typo must not overwrite `_ADB_SC_AGENT` mid-call and
+# leave every path this function builds silently malformed.
+lib="$( ( set +u; . "$SC"; adb_sc_paths demo /r /h _ADB_SC_AGENT o5 u5; printf 'RC%s' "$?" ) 2>/dev/null )"
+eq "$lib" "RC2" "S15 a library-owned _ADB_SC_* output name is refused"
 
 check_summary "check-skill-compose"

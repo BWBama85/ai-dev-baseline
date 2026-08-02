@@ -469,8 +469,13 @@ adb_dispatch_bots_comparable() {
   esac
 
   # `${declared,,}` rather than a `tr` stage (#258): a builtin expansion instead of a process, and
-  # exactly equivalent here — it is the same locale-aware fold the unqualified `tr` was doing, over
-  # a value that is anyway constrained to GitHub logins (ASCII alphanumerics, hyphen, `[bot]`).
+  # equivalent here because it is the same LOCALE-AWARE fold the unqualified `tr` was doing (the
+  # `tr` carried no `LC_ALL=C`, so both honour the ambient locale identically).
+  #
+  # Note what is NOT being claimed: the check above rejects only embedded WHITESPACE, so this value
+  # is not in fact constrained to ASCII login characters — Unicode survives it. That does not matter
+  # for the equivalence, which was measured on both folds, but an earlier version of this comment
+  # justified the swap by an input guarantee the code does not make. (Caught in review.)
   want="$(printf '%s\n' "${declared,,}" \
           | sed -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*\[bot\][[:space:]]*$/d' \
           | LC_ALL=C sort -u \

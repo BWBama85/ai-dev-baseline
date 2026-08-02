@@ -1706,8 +1706,11 @@ limit: none of them is sufficient alone.
              2. "`skill-compose.sh` returns via nameref" — **met**, and see the API note below.
              3. "The temp-dir-as-map and parallel-array patterns are gone in favour of `declare -A`"
                 — **vacuous**: no such pattern exists in the eligible files. There is no `eval`-as-
-                map, no `mktemp -d` used as a map (`project-gates.sh`'s is a per-run log dir, its
-                cleanup asserted by `check-gates.sh`), and no key/value array pair. The map-shaped
+                map, no `mktemp -d` used as a map (`project-gates.sh`'s is a per-run log dir — what
+                `check-gates.sh` asserts about it is the FAILURE path, that a failed `mktemp -d`
+                must not `rm -rf` the shared temp dir; the successful cleanup is unobserved, so
+                deleting it would leak a log dir per run and leave the suite green), and no
+                key/value array pair. The map-shaped
                 code that does exist is inside awk programs, which have had associative arrays since
                 1977. Nothing was converted, because converting the ordered lists that ARE there
                 (`skill-compose.sh`'s `names`, `statusline.sh`'s `parts`) to an unordered container
@@ -1737,6 +1740,17 @@ limit: none of them is sufficient alone.
                 follow. It needs an explicit `# shellcheck disable=SC2034`. `adb_sc_paths` carries
                 one; without it that file was clean only because its collision `case` arm happens to
                 mention the three names, which is luck, not cleanliness.
+             **The issue's one non-checkbox request is dispositioned too**, because a reconciliation
+             that covers only the boxes leaves the next reader to re-litigate the rest. #258 invites
+             a pass over four long functions — `cmd_roll` (`release-convention.sh:429`),
+             `_adb_deps_scan` (`roadmap-lib.sh:787`), `cmd_check` (`currency-lib.sh:185`) and
+             `cmd_gate` (`pr-review.sh:137`) — on the stated grounds that "associative arrays and
+             namerefs are exactly what they were missing". All four were inspected; none of them was
+             missing either. `_adb_deps_scan` is 207 lines of **awk**, a language with associative
+             arrays since 1977 and no namerefs to want, so the premise does not apply to it at all;
+             the other three are control flow and API sequencing, not data structures. No concrete
+             transformation is specified and none is implied by the constructs named, so nothing was
+             changed. This is recorded as *inspected and inapplicable*, not as skipped.
 - placement: this entry; `CHANGELOG.md` [Unreleased]; and restated in the implementing PR's body so
              the issue's reader and the diff's reader see the same list.
 - reason:    An acceptance list that cannot be satisfied is not a standard, it is a trap: the next
@@ -1786,7 +1800,7 @@ limit: none of them is sufficient alone.
              the nameref failures that are SILENT — a circular reference leaves the caller's
              variable unset (it would compose against an empty path), and three names that are one
              variable would make all three paths equal to the last assignment.
-- placement: `scripts/lib/skill-compose.sh` (`adb_sc_paths` and its three callers); fixtures S1-S10
+- placement: `scripts/lib/skill-compose.sh` (`adb_sc_paths` and its three callers); fixtures S1-S15
              in `scripts/check-skill-compose.sh`, which call the function DIRECTLY — every
              pre-existing assertion reaches it through the CLI and can only observe the file it
              eventually wrote, so none of them can see a return convention at all.

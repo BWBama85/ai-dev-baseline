@@ -285,7 +285,7 @@ adb_sc_paths() {
   # does not fail the call — it kills the caller. A stale pre-#258 three-argument call must get a
   # clean refusal, not take a consumer's hook down with "unbound variable"; an empty name falls
   # straight into the validation below. Fixture: check-skill-compose.sh S11.
-  local _asp_n="${1-}" _asp_r="${2-}" _asp_h="${3-}" _asp_v
+  local _asp_n="${1-}" _asp_r="${2-}" _asp_h="${3-}" _asp_v _asp_d _asp_f
   for _asp_v in "${4-}" "${5-}" "${6-}"; do
     case "$_asp_v" in
       ''|*[!A-Za-z0-9_]*|[0-9]*)
@@ -297,21 +297,55 @@ adb_sc_paths() {
         # failure this whole check exists to prevent, reintroduced by an unrelated edit. Every
         # local here is `_asp_`-prefixed precisely so one rule covers all of them, now and later.
         adb_sc_err "adb_sc_paths: output name '$_asp_v' uses this function's reserved '_asp_' prefix"; return 2 ;;
+      _ADB_SC_*)
+        # The library's own state. Accepting one lets a caller's typo overwrite `_ADB_SC_AGENT`
+        # mid-call, and every path this function then builds is silently malformed.
+        adb_sc_err "adb_sc_paths: output name '$_asp_v' is library-owned state"; return 2 ;;
+    esac
+    # A SPELLING CHECK IS NOT ENOUGH, because `declare -n` CHAINS. If the caller's variable is
+    # ITSELF a nameref, binding to it resolves to *that* nameref's target — a string this function
+    # never saw and never validated. `declare -n evil='arr[$(cmd)]'` followed by passing `evil`
+    # therefore walked straight past the identifier check above and executed the subscript on
+    # assignment. Found by the independent review; the literal-name fixture (S10) could not see it,
+    # because the hostile string never appears in an argument. Same check retires the aliasing hole:
+    # two DIFFERENT names that are namerefs to one variable defeat the distinctness test below.
+    #
+    # Rejecting readonly here too, and it must be BEFORE the assignment rather than after: bash
+    # aborts the whole function on an assignment to a readonly variable, so a post-hoc verification
+    # never runs and the caller gets bash's status instead of this function's contract.
+    _asp_d="$(declare -p "$_asp_v" 2>/dev/null)" || _asp_d=""
+    case "$_asp_d" in
+      "declare -"*)
+        _asp_f="${_asp_d#declare -}"; _asp_f="${_asp_f%% *}"
+        case "$_asp_f" in
+          *n*) adb_sc_err "adb_sc_paths: output name '$_asp_v' is already a nameref; pass a plain variable"; return 2 ;;
+          *r*) adb_sc_err "adb_sc_paths: output name '$_asp_v' is readonly"; return 2 ;;
+        esac ;;
     esac
   done
   if [ "${4-}" = "${5-}" ] || [ "${4-}" = "${6-}" ] || [ "${5-}" = "${6-}" ]; then
     adb_sc_err "adb_sc_paths: the three output names must be distinct (got '${4-}' '${5-}' '${6-}')"; return 2
   fi
+  # Build the values FIRST, so the writes can be verified against them below.
+  local _asp_pb="$_asp_h/.$_ADB_SC_AGENT/skills/$_asp_n/SKILL.md"
+  local _asp_po="$_asp_r/.$_ADB_SC_AGENT/skills/$_asp_n/overrides.md"
+  local _asp_pu="$_asp_r/.$_ADB_SC_AGENT/skills/$_asp_n/SKILL.md"
   # SC2034 ("appears unused") is wrong for a nameref OUTPUT parameter: assigning it is the entire
   # point, and the read happens in the caller's scope through a name shellcheck cannot follow.
-  # Declared explicitly rather than left to luck — without it this file passes only because the
-  # collision `case` above happens to MENTION these three names, so deleting that guard would turn
-  # the linter red for a reason unrelated to the guard.
   # shellcheck disable=SC2034
   local -n _asp_base="${4-}" _asp_ov="${5-}" _asp_out="${6-}"
-  _asp_base="$_asp_h/.$_ADB_SC_AGENT/skills/$_asp_n/SKILL.md"
-  _asp_ov="$_asp_r/.$_ADB_SC_AGENT/skills/$_asp_n/overrides.md"
-  _asp_out="$_asp_r/.$_ADB_SC_AGENT/skills/$_asp_n/SKILL.md"
+  _asp_base="$_asp_pb"
+  _asp_ov="$_asp_po"
+  _asp_out="$_asp_pu"
+  # VERIFY THE WRITES LANDED. Some names accept an assignment and discard it — `BASH_MONOSECONDS`
+  # is the worked example: `declare -p` shows nothing unusual, the assignment returns 0, and the
+  # variable keeps reporting the clock. Without this the caller would get three empty-looking paths
+  # and a SUCCESS status. Checking the outcome covers that whole class at once, including whatever
+  # future bash adds to it, which no enumeration of special names could.
+  if [ "$_asp_base" != "$_asp_pb" ] || [ "$_asp_ov" != "$_asp_po" ] || [ "$_asp_out" != "$_asp_pu" ]; then
+    adb_sc_err "adb_sc_paths: one of '${4-}' '${5-}' '${6-}' did not accept its value (a special or otherwise unassignable variable?)"
+    return 2
+  fi
 }
 
 # compose one skill. Returns 0 on success, 1 on any error. Usage: adb_sc_compose_one <name> <repo> <home>

@@ -455,9 +455,18 @@ cmd_wait() {
   # here under the 5.3 floor (#258), and the difference is not cosmetic: $SECONDS is `time(NULL)`
   # minus the shell's start, so it MOVES WITH THE WALL CLOCK. An ntp step or a manual clock change
   # during a half-hour watch — which is exactly the length this loop is built for — either expires
-  # the bound early or extends it indefinitely. A monotonic source cannot be moved at all, by the
-  # system or by a caller: $SECONDS is an ordinary writable variable and $BASH_MONOSECONDS refuses
-  # assignment (pinned in check-pr-watch.sh, T1).
+  # the bound early or extends it indefinitely. The monotonic clock does not move that way.
+  #
+  # SAY THE GUARANTEE EXACTLY, because the obvious stronger sentence is false. "$BASH_MONOSECONDS
+  # cannot be moved by anyone" is wrong: while the variable retains its special nature bash refuses
+  # a direct assignment, but `unset BASH_MONOSECONDS` STRIPS that nature, after which it is an
+  # ordinary writable variable (measured; the independent review found the overclaim). What is
+  # actually true, and sufficient here: this file is an EXECUTED entry point — it gates its own
+  # interpreter above and dispatches unconditionally on load, never sourced — and an executed bash
+  # constructs the special variable afresh regardless of what the environment carried. So the
+  # guarantee is against the SYSTEM CLOCK, not against an in-process caller; and an in-process
+  # caller who can `unset` a shell variable can already run anything this file could.
+  # Pinned in check-pr-watch.sh, T1 (the property) and T2 (that this code reads it).
   #
   # Compute the DEADLINE once rather than keeping a start-time and a duration and subtracting both
   # every pass: the name is then true, and it stays correct whatever the counter's origin happens

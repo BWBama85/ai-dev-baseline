@@ -119,7 +119,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     an arbitrary-command-execution seam in a library `install.sh` symlinks into every consumer's
     runtime. The other two rejections cover the nameref failures that are **silent** — a circular
     reference leaves the caller's variable unset, and three names that are really one variable make
-    all three paths equal to the last assignment. Ten fixtures call the function directly, because
+    all three paths equal to the last assignment. Sixteen fixtures call the function directly, because
     every pre-existing assertion reaches it through the CLI and can only see the file it eventually
     wrote — never a return convention.
   - **`pr-watch.sh` bounds its watch with `BASH_MONOSECONDS`.** `$SECONDS` is `time(NULL)` minus the
