@@ -290,8 +290,13 @@ adb_sc_paths() {
     case "$_asp_v" in
       ''|*[!A-Za-z0-9_]*|[0-9]*)
         adb_sc_err "adb_sc_paths: '$_asp_v' is not a usable output variable name"; return 2 ;;
-      _asp_n|_asp_r|_asp_h|_asp_v|_asp_base|_asp_ov|_asp_out)
-        adb_sc_err "adb_sc_paths: output name '$_asp_v' collides with this function's own locals"; return 2 ;;
+      _asp_*)
+        # A PREFIX rule, not a list of the current locals. An enumeration is correct only until
+        # someone adds a local: the new name would be missing from it, and a caller passing that
+        # name would get bash's circular-reference warning and an unset variable — the silent
+        # failure this whole check exists to prevent, reintroduced by an unrelated edit. Every
+        # local here is `_asp_`-prefixed precisely so one rule covers all of them, now and later.
+        adb_sc_err "adb_sc_paths: output name '$_asp_v' uses this function's reserved '_asp_' prefix"; return 2 ;;
     esac
   done
   if [ "${4-}" = "${5-}" ] || [ "${4-}" = "${6-}" ] || [ "${5-}" = "${6-}" ]; then

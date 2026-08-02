@@ -622,6 +622,10 @@ eq "$gl" "[][][]" "S3 the pre-#258 _sc_base/_sc_ov/_sc_out globals are no longer
 # function's own nameref locals; `a[$(…)]` is the subscript-evaluation seam.
 eq "$(sc_paths _asp_out o u)"  "RC2" "S4 an output name colliding with the function's own local is refused"
 eq "$(sc_paths _asp_n o u)"    "RC2" "S5 ...including its non-nameref locals"
+# ...and a name that is NOT a local today. The rule is the `_asp_` PREFIX, not an enumeration of
+# the current locals, so adding a local later cannot open a hole in it. An enumeration would pass
+# this case and then fail silently the day someone declares `_asp_zzz`.
+eq "$(sc_paths _asp_zzz o u)"  "RC2" "S5b ...and any future local, because the rule is the prefix"
 eq "$(sc_paths 'a[$(id)]' o u)" "RC2" "S6 a non-identifier output name is refused before declare -n can evaluate it"
 eq "$(sc_paths '' o u)"        "RC2" "S7 an empty output name is refused"
 eq "$(sc_paths 9bad o u)"      "RC2" "S8 an output name starting with a digit is refused"
