@@ -220,9 +220,10 @@ chmod +x "$SBIN/gh"
 # A `sleep` shim that RECORDS the requested nap and then sleeps a flat 1s.
 #
 # Both halves are necessary and the reason is worth stating, because the obvious stub (record and
-# return instantly) HANGS THE SUITE. The bound is wall-clock — `$SECONDS - t0`, which is the honest
-# thing to measure — so a sleep that does not actually pass time means the deadline is never
-# reached and a `pending` scenario spins forever. Sleeping a flat 1s advances the clock enough for
+# return instantly) HANGS THE SUITE. The bound is elapsed REAL time — `$BASH_MONOSECONDS` against a
+# deadline, which is the honest thing to measure — so a sleep that does not actually pass time means
+# the deadline is never reached and a `pending` scenario spins forever. Sleeping a flat 1s advances
+# the clock enough for
 # a small `--max-secs` to expire in a few iterations, while RECORDING the requested value is what
 # lets the overshoot assertion below read the clamp the code actually computed rather than the
 # shortened one it slept.
@@ -960,6 +961,45 @@ activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT"
 reaction_fx "$CODEX" "+1" "$ARRIVED_AT"
 w wait --pr 1 --interval 1 --max-secs 3;  rc 11 "wait: a signal for the PREVIOUS head does not satisfy the new one"
 has "$OUT" "head moved" "wait: reports that the head moved under it"
+
+# ============ 11b. THE DEADLINE'S CLOCK IS NOT THE ENVIRONMENT'S TO SET (#258) ============
+# Every deadline assertion above passes on either clock source, which is exactly why they cannot
+# stand in for these. `wait` used to bound itself with `$SECONDS`; it now uses `BASH_MONOSECONDS`.
+#
+# T1 proves the PROPERTY on this interpreter, at the primitive: `SECONDS` is an ordinary writable
+# variable that a caller can move at will, and `BASH_MONOSECONDS` silently refuses assignment. That
+# difference is the entire reason for the change, so it is asserted rather than assumed — a future
+# bash that made BASH_MONOSECONDS writable would break the premise and nothing else here would say so.
+mono_probe="$(bash -c 'm0=$BASH_MONOSECONDS
+                       SECONDS=100000
+                       BASH_MONOSECONDS=5 2>/dev/null
+                       printf "%s%s%s" "$(( SECONDS >= 100000 ))" "$(( BASH_MONOSECONDS > 100 ))" "$(( BASH_MONOSECONDS - m0 < 5 ))"' 2>/dev/null)"
+eq "$mono_probe" "111" "T1 SECONDS is writable and BASH_MONOSECONDS is not — the premise of the deadline's clock"
+
+# T2 pins that `wait` actually READS that clock. It is a source pin, not a behavioural assertion,
+# and the distinction is stated rather than blurred because a pin that looks like a behavioural test
+# is worse than one that admits what it is. The suite already pins source this way at the bottom
+# (`absent`), for the same reason: some properties have no reachable fixture.
+#
+# WHY THERE IS NO END-TO-END FIXTURE HERE — this was attempted and discarded, so the next reader
+# does not spend the same hour:
+#   - A CONSTANT offset does not discriminate. `SECONDS` is inherited from the environment, so a
+#     process can start with it anywhere, including near the top of the signed range — but
+#     `deadline=$(( SECONDS + max ))` and `$(( deadline - SECONDS ))` overflow SYMMETRICALLY and the
+#     wraparound cancels. Measured: with SECONDS=9223372036854775800 and --max-secs 30, `deadline`
+#     is -9223372036854775786 and `remaining` is exactly 30. The pre-#258 code was already correct
+#     under that, and a fixture built on it PASSES on both clocks while appearing to prove one.
+#   - Only a MID-RUN jump separates them, and that needs an in-process assignment to SECONDS. The
+#     `gh`/`sleep` stubs are separate processes and cannot reach the watcher's variables; the only
+#     way to reach them would be a test seam in production code that moves the clock, which is a
+#     bypass of the thing being asserted.
+# So the property lives in T1 and the wiring lives here, and the headline benefit — a wall-clock
+# adjustment mid-watch no longer shortens or extends the bound — is REASONED from the two, not
+# reproduced. Saying so is better than a green fixture that proves neither half.
+uses() { if grep -q "$1" "$PW"; then ok; else bad "$2"; fi; }
+uses 'BASH_MONOSECONDS' "T2 wait's bound is computed from the monotonic clock"
+eq "$(grep -cE '(deadline|remaining)=\$\(\(.*\bSECONDS\b' "$PW")" "0" \
+   "T2 ...and no deadline arithmetic reads the movable \$SECONDS any more"
 
 # ============================ 12. the module's own boundary ============================
 # pr-review.sh's header names this module as where a waiting watch belongs, and this module's

@@ -117,13 +117,31 @@ this_session() {
   fi
   [ -t 0 ] && return 0
   # `-d ''` reads to EOF (the payload carries no NUL); the non-zero status on EOF is expected and
-  # the variable holds what arrived. On TIMEOUT, though, bash 3.2 — the macOS system bash this repo
-  # targets — DISCARDS the partial input, where bash >= 4.2 keeps it. So a pipe that stays open
-  # yields nothing here rather than a truncated id, and the caller correctly reads that as "cannot
-  # identify myself" (branch-name matching) instead of comparing against half a session id. The
-  # bound's job is to keep the hook alive, not to salvage the read. jq is guaranteed — the caller
-  # runs only after this script's own jq check.
-  IFS= read -r -d '' -t 5 payload || true
+  # the variable holds what arrived. THE TIMEOUT IS THE INTERESTING CASE, and it changed under this
+  # repo's 5.3 floor (#258).
+  #
+  # This used to rely on bash 3.2 DISCARDING whatever it had collected when `-t` fired. bash >= 4.2
+  # KEEPS it, so on the floor interpreter the discard is ours to perform, not the shell's. Measured
+  # on both, writing a partial object into a pipe that never closes:
+  #   bash 3.2  -> status 1,   variable empty
+  #   bash 5.3  -> status 142, variable holds the bytes  (128 + SIGALRM)
+  # so the bound is detectable as `> 128`, which EOF (1) never is.
+  #
+  # Left unhandled, that is not merely a stale comment. A writer that sends a COMPLETE object and
+  # then never closes the pipe would have its session id adopted here — an identity taken off a
+  # stream this function could not finish reading — and the gate would fall silent for a marker it
+  # should have enforced. Only jq's refusal to parse a TRUNCATED object was preventing the same
+  # thing for partial writes, which is luck, not a rule. Fixture: check-implement-gate.sh U2.
+  #
+  # Unknown identity is the safe direction: it falls back to branch-name matching, which ENFORCES.
+  # The bound's job is to keep the hook alive, not to salvage the read. jq is guaranteed — the
+  # caller runs only after this script's own jq check.
+  #
+  # `rc` is captured on its own line rather than tested inside `if ! read …; then`, where `$?` would
+  # be the status of the negation (always 0) and the discard would silently never happen.
+  local rc=0
+  IFS= read -r -d '' -t 5 payload || rc=$?
+  if [ "$rc" -gt 128 ]; then payload=""; fi
   [ -n "$payload" ] || return 0
   printf '%s' "$payload" | jq -r '.session_id // ""' 2>/dev/null || true
 }
@@ -451,9 +469,13 @@ if ! marker_unchanged; then
   exit 0
 fi
 
-# Invariant unmet: no PR, not blocked, tree clean. Emit the resume hint. Built as
-# a function (not inline command-substitution) to dodge macOS bash 3.2's heredoc
-# apostrophe-parsing bug.
+# Invariant unmet: no PR, not blocked, tree clean. Emit the resume hint.
+#
+# Built as a function rather than an inline command-substitution. The original reason was a macOS
+# bash 3.2 heredoc apostrophe-parsing bug, which the 5.3 floor retires (#258) — but the shape is
+# kept on its own merits: the `case` below selects one of three `lead` strings before the heredoc
+# renders, and a function is where that fits without nesting a multi-branch statement inside a
+# substitution. No apostrophe in the body needs escaping either way now.
 emit_resume_hint() {
   local lead unchecked=""
   # Every arm below has to survive a FAILED replacement lookup, not just the no-stored-PR one: the

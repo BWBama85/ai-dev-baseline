@@ -468,8 +468,10 @@ adb_dispatch_bots_comparable() {
       fi ;;
   esac
 
-  want="$(printf '%s\n' "$declared" \
-          | tr '[:upper:]' '[:lower:]' \
+  # `${declared,,}` rather than a `tr` stage (#258): a builtin expansion instead of a process, and
+  # exactly equivalent here — it is the same locale-aware fold the unqualified `tr` was doing, over
+  # a value that is anyway constrained to GitHub logins (ASCII alphanumerics, hyphen, `[bot]`).
+  want="$(printf '%s\n' "${declared,,}" \
           | sed -e '/^[[:space:]]*$/d' -e '/^[[:space:]]*\[bot\][[:space:]]*$/d' \
           | LC_ALL=C sort -u \
           | awk '{ e[NR] = $0; seen[$0] = 1 }
@@ -647,12 +649,14 @@ EOF
 _adb_rd_invoke_agent() {
   local token="$1" pf="$2" effort="${3:-}" repo rc last
   case "$token" in
+    # `$(<"$pf")` rather than `$(cat "$pf")` (#258): a builtin file read, no `cat` process. Both
+    # strip trailing newlines identically, and the prompt is passed as one argv element either way.
     claude)
-      _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" claude -p "$(cat "$pf")"
+      _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" claude -p "$(<"$pf")"
       return $?
       ;;
     gemini)
-      _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" agy -p "$(cat "$pf")"
+      _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" agy -p "$(<"$pf")"
       return $?
       ;;
     codex)

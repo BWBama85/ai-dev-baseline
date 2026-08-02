@@ -582,4 +582,64 @@ printf -- '---\n%s v1 — DO NOT EDIT BY HAND.\nname: orphan\n---\n# /orphan\n' 
 sc3 check   >/dev/null 2>&1; no $? "no-name check fails on an orphaned composed output"
 sc3 compose >/dev/null 2>&1; no $? "no-name compose fails on an orphaned composed output"
 
+# ============ (S) adb_sc_paths — the RETURN CONVENTION, called directly (#258) ============
+# Every assertion above reaches this function through the CLI, and none of them can see how it
+# HANDS BACK its three paths — they observe only the file it eventually wrote. #258 replaced three
+# shared globals with namerefs, and a nameref has two failure modes no path-shaped assertion
+# reaches:
+#
+#   collision — an output name equal to one of the function's own locals is a CIRCULAR reference.
+#               bash prints a warning to stderr and the caller's variable stays unset, so the
+#               caller silently composes against an empty path.
+#   injection — `declare -n ref=$name` EVALUATES an array subscript in $name. In a library that
+#               install.sh symlinks into every consumer's runtime, an unvalidated output name is a
+#               command-execution seam, not a tidiness question.
+#
+# Sourced rather than shelled out, because the contract under test is the SOURCED one: `bash "$SC"`
+# would exercise the CLI again and prove nothing new.
+sc_paths() {   # sc_paths <out1> <out2> <out3> -> "base|ov|out" on success, "RC<n>" on refusal
+  ( set +u
+    # shellcheck source=/dev/null
+    . "$SC"
+    adb_sc_paths demo /r /h "$1" "$2" "$3" || { printf 'RC%s\n' "$?"; exit 0; }
+    printf '%s|%s|%s\n' "${!1-}" "${!2-}" "${!3-}"
+  ) 2>/dev/null
+}
+eq "$(sc_paths p_base p_ov p_out)" "/h/.claude/skills/demo/SKILL.md|/r/.claude/skills/demo/overrides.md|/r/.claude/skills/demo/SKILL.md" \
+   "S1 adb_sc_paths writes all three paths into the caller's OWN variables"
+
+# The caller's names are arbitrary — including names that look nothing like the old globals. A
+# conversion that kept writing fixed globals and merely accepted the arguments would pass S1 only
+# by accident of naming, and fails here.
+eq "$(sc_paths zzz_a zzz_b zzz_c)" "/h/.claude/skills/demo/SKILL.md|/r/.claude/skills/demo/overrides.md|/r/.claude/skills/demo/SKILL.md" \
+   "S2 ...whatever the caller chose to call them"
+
+# The superseded globals must be GONE, not left behind as a second, drifting output channel.
+gl="$( ( set +u; . "$SC"; adb_sc_paths demo /r /h p_base p_ov p_out; printf '[%s][%s][%s]' "${_sc_base-}" "${_sc_ov-}" "${_sc_out-}" ) 2>/dev/null )"
+eq "$gl" "[][][]" "S3 the pre-#258 _sc_base/_sc_ov/_sc_out globals are no longer written"
+
+# Collision and injection are REFUSALS with a status, not warnings. `_asp_out` is one of the
+# function's own nameref locals; `a[$(…)]` is the subscript-evaluation seam.
+eq "$(sc_paths _asp_out o u)"  "RC2" "S4 an output name colliding with the function's own local is refused"
+eq "$(sc_paths _asp_n o u)"    "RC2" "S5 ...including its non-nameref locals"
+eq "$(sc_paths 'a[$(id)]' o u)" "RC2" "S6 a non-identifier output name is refused before declare -n can evaluate it"
+eq "$(sc_paths '' o u)"        "RC2" "S7 an empty output name is refused"
+eq "$(sc_paths 9bad o u)"      "RC2" "S8 an output name starting with a digit is refused"
+# Three names that are really ONE variable would make all three paths the last assignment — a
+# silently wrong compose, which is exactly the shape a nameref API invites.
+eq "$(sc_paths same same same)" "RC2" "S9 duplicate output names are refused rather than aliased"
+
+# TOO FEW ARGUMENTS MUST BE A RETURN, NOT A DEAD SHELL. This library is SOURCED — by its own
+# callers and by consumer hooks — so an unbound expansion under the caller's `set -u` does not fail
+# the call, it kills the caller. `$4` unguarded did exactly that, which turned a stale pre-#258
+# 3-argument call from a clean refusal into a hook that dies with "unbound variable". The guarded
+# `${4-}` makes a missing name an empty one, which the validation above already rejects.
+short="$( ( set -u; . "$SC"; adb_sc_paths demo /r /h; printf 'RC%s' "$?"; printf ' ALIVE' ) 2>/dev/null )"
+eq "$short" "RC2 ALIVE" "S11 a call with too few arguments returns 2 and leaves the caller's shell alive"
+
+# The injection seam, proven CLOSED rather than merely refused: if the subscript were evaluated,
+# the marker file would exist.
+( set +u; . "$SC"; adb_sc_paths demo /r /h "a[\$(touch '$work/pwned')]" o u ) >/dev/null 2>&1 || true
+[ ! -e "$work/pwned" ] && ok || bad "S10 a subscript in an output name must never be evaluated"
+
 check_summary "check-skill-compose"
