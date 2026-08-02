@@ -224,7 +224,7 @@ command. There is no flag to lower it.
 
 | Platform | How to get bash >= 5.3 |
 |---|---|
-| **macOS** | `brew install bash`. `/bin/bash` is **3.2.57** and has been for the whole bash-4-and-later era; Apple has shown no sign of shipping a newer one. Homebrew is the usual route (MacPorts, Nix or a source build work too). See the `PATH` note below. |
+| **macOS** | `brew install bash`. `/bin/bash` is **3.2.57** and has been for the whole bash-4-and-later era; Apple has shown no sign of shipping a newer one. Homebrew is the usual route; MacPorts, Nix and a source build into `/usr/local` are searched too (see the `PATH` note). |
 | **Ubuntu 26.04+** | Ships 5.3 — nothing to do. |
 | **Ubuntu 24.04 / <= 25.10** | Below the floor (24.04 ships 5.2.x). Upgrade the release, use a backport, or build from source. |
 | **Debian stable** | Below the floor (5.2.x). Same three options. |
@@ -247,6 +247,14 @@ Non-interactive shells — hooks, gate scripts, anything another agent's CLI
 spawns — often carry no Homebrew prefix at all. This is why the gate re-execs
 rather than merely complaining, and it means you do not have to get `PATH` right
 for the framework to work.
+
+**Which locations it searches**, in order, before falling back to `PATH`:
+`/opt/homebrew/bin` (Homebrew, Apple Silicon) · `/usr/local/bin` (Homebrew on
+Intel, and the default `make install` prefix, so source builds land here) ·
+`/opt/local/bin` (MacPorts) · the Nix system and user profiles · `/usr/bin` ·
+`/bin`. If your bash 5.3 lives somewhere else entirely, put its directory on
+`PATH` — that is the last thing checked, so it still works, and the failure
+message lists every path it tried.
 
 ### Windows: WSL2 only
 

@@ -567,6 +567,21 @@ if [ "$sysv" = "3.2" ]; then
   eq "$rc" "1" "gate: ADB_BASH_FLOOR=0.0 does NOT lower the runtime gate (it is the lint's seam only)"
 fi
 
+# --- the candidate list must cover every install route the docs claim ------------------------------
+# Review found the docs promising MacPorts/Nix/source builds while the list knew only Homebrew and
+# the system paths — so a MacPorts user whose hook shell carries the usual bare /usr/bin:/bin would
+# be told no bash 5.3 exists on a machine where it is installed. The list and the claim have to move
+# together, which is what this asserts.
+cands="$(bash -c '. "'"$COMMON"'"; adb_bash_candidates')"
+has "$cands" "/opt/homebrew/bin/bash" "candidates: Homebrew on Apple Silicon"
+has "$cands" "/usr/local/bin/bash"    "candidates: Homebrew on Intel, and the default source-build prefix"
+has "$cands" "/opt/local/bin/bash"    "candidates: MacPorts — named in docs/installation.md"
+has "$cands" "nix"                    "candidates: a Nix profile — also named in docs/installation.md"
+has "$cands" "/bin/bash"              "candidates: the system path"
+# HOME is routinely absent in the stripped environments this function exists for; it must not die.
+out="$(env -i "$BASH" -c '. "'"$COMMON"'"; adb_bash_candidates >/dev/null; echo SURVIVED' 2>&1)"
+has "$out" "SURVIVED" "candidates: an unset HOME does not break the list"
+
 # --- the floor comparison is FORK-FREE, and must stay that way --------------------------------------
 # The gate answers "is this shell usable" at the top of every entry point. It must not need a second
 # program to decide that: when `awk` is the broken thing, a forking comparison reports `bash >= 5.3
@@ -596,6 +611,28 @@ out="$("$BASH" -c '. "'"$COMMON"'"
                    done' 2>/dev/null)"
 out="${out% }"
 eq "$out" "0 0 1 1 0" "floor compare: 5.3/5.3.15/6.0 clear it; 5.2.21 and 3.2.57 do not"
+
+# --- the ADVISORY files keep their contracts even when the library is broken -------------------------
+# statusline.sh runs under `set -euo pipefail`, so a source that returns non-zero — an unreadable or
+# corrupt common.sh — aborted it before the documented `claude-code` fallback could print, handing
+# the harness a failed statusLine command instead of a harmless cosmetic line. Review found it.
+# Fixtures are copies; the live tree is never touched.
+sl_src="agents/claude/scripts/statusline.sh"
+if [ -f "$sl_src" ]; then
+  sl="$work/sl"; mkdir -p "$sl/scripts/lib"
+  cp "$sl_src" "$sl/scripts/statusline.sh"
+  printf 'this is not valid shell ((((\n' > "$sl/scripts/lib/common.sh"
+  out="$(printf '{"model":{"display_name":"x"}}' | "$BASH" "$sl/scripts/statusline.sh" 2>/dev/null)"; rc=$?
+  eq "$rc" "0" "statusline: a CORRUPT common.sh still exits 0 (errexit must not beat the fallback)"
+  eq "$out" "claude-code" "statusline: and prints the documented fallback line"
+
+  # ...and the ordinary path is unaffected, or the assertion above is satisfied by a broken script.
+  rm -rf "$sl/scripts/lib"; mkdir -p "$sl/scripts/lib"
+  cp scripts/lib/common.sh "$sl/scripts/lib/common.sh"
+  out="$(printf '{"model":{"display_name":"opus"}}' | "$BASH" "$sl/scripts/statusline.sh" 2>/dev/null)"; rc=$?
+  eq "$rc" "0" "statusline: a healthy library still renders"
+  has "$out" "opus" "statusline: and renders the real field, not the fallback"
+fi
 
 # --- the ENTRY-POINT LINT, rule by rule -------------------------------------------------------------
 # Its failure mode is the usual one: a classifier that stops recognizing files reports the same clean
@@ -676,6 +713,42 @@ printf '#!/usr/bin/env bash\nset -u\nadb_require_bash "$@"\n' > "$d/scripts/chec
 ep_lint "$d"
 eq "$EPRC" "1" "entrypoints: the exempt observer calling the gate is itself an error"
 has "$EPOUT" "stop testing" "entrypoints: the message says what wiring it in would break"
+
+# A call inside an UNINVOKED FUNCTION is not a call. The entry point defines it, never runs it, and
+# executes its real body on the sub-floor interpreter — while a command-position match anywhere in
+# the file reported PASS. Found in review; the scan now stops at the first function definition,
+# which is also the invariant the release scripts had to satisfy by hand (bash parses a function
+# body when it reaches it, so 5.3-only grammar in one fails to PARSE before the gate can help).
+d="$work/ep-infunc"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\nnever_called() {\n  adb_require_bash "$@"\n}\necho real body\n' > "$d/scripts/infunc.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a gate call inside an UNINVOKED function does not count"
+has "$EPOUT" "infunc.sh" "entrypoints: the file with the buried call is named"
+
+d="$work/ep-funcfirst"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\nhelper() { echo hi; }\nadb_require_bash "$@"\n' > "$d/scripts/funcfirst.sh"
+ep_lint "$d"
+eq "$EPRC" "1" "entrypoints: a gate call AFTER the first function definition is too late"
+
+# ...and the ordinary shape must still pass, or the rule above is just "always red".
+d="$work/ep-funcafter"; ep_tree "$d"
+printf '#!/usr/bin/env bash\nset -u\nadb_require_bash "$@"\nhelper() { echo hi; }\nhelper\n' > "$d/scripts/ok.sh"
+ep_lint "$d"
+eq "$EPRC" "0" "entrypoints: the gate BEFORE the definitions is the compliant shape"
+
+# SCANNING A SUBDIRECTORY must classify on the repository-relative path. The classification lists
+# are repo-relative while the scanner yields paths relative to the scanned dir, so `--entrypoints
+# agents/claude` saw `scripts/statusline.sh` and called all three advisory hooks hard gates — a
+# valid tree exiting 1. Asserted against the REAL repo, read-only, because the bug is precisely
+# about this repo's own layout.
+if git rev-parse --show-toplevel >/dev/null 2>&1; then
+  EPOUT="$(bash "$LINT" --entrypoints agents/claude 2>&1)"; EPRC=$?
+  eq "$EPRC" "0" "entrypoints: scanning a SUBDIRECTORY does not misclassify the advisory hooks"
+  has "$EPOUT" "3 advisory" "entrypoints: and it still sees them as advisory, not as gates"
+  EPOUT="$(bash "$LINT" --entrypoints scripts 2>&1)"; EPRC=$?
+  eq "$EPRC" "0" "entrypoints: scanning scripts/ keeps the observer exemption"
+  has "$EPOUT" "1 exempt" "entrypoints: and still counts it as exempt"
+fi
 
 d="$work/ep-empty"; mkdir -p "$d"
 ep_lint "$d"

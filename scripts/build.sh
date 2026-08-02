@@ -6,13 +6,23 @@
 # root docs are GENERATED — run this after editing any practice, and commit the
 # result. CI re-runs this and fails on drift, so a stale root doc can't merge.
 
-set -euo pipefail
-# bash 5.3 runtime floor (#256) — FIRST executable statement, before anything resolves a path
-# or reads input. adb_require_bash re-execs into a >= 5.3 interpreter or exits with the
-# platform's install instructions.
+# bash 5.3 runtime floor (#256) — FIRST executable statement, before `set -e` and before anything
+# resolves a path or reads input. adb_require_bash re-execs into a >= 5.3 interpreter or exits with
+# the platform's install instructions.
+#
+# Before `set -euo pipefail`, and confirmed by PROBING FOR THE FUNCTION rather than by the source's
+# exit status — the same idiom as the check-*.sh family, for the same two reasons. A sourced file
+# returns its LAST command's status, so `. lib || exit 1` reports whatever that happened to be and
+# says nothing about whether the file loaded; and under errexit a non-zero source aborts the script
+# outright, which is the defect review found in statusline.sh.
 # shellcheck source=/dev/null
-. "$(dirname "$0")/lib/common.sh" || exit 1
+. "$(dirname "$0")/lib/common.sh" 2>/dev/null
+command -v adb_require_bash >/dev/null 2>&1 || {
+  printf '%s: FATAL — scripts/lib/common.sh is missing or corrupt; cannot verify the bash floor\n' "${0##*/}" >&2
+  exit 1
+}
 adb_require_bash "$@"
+set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/.." && pwd)"

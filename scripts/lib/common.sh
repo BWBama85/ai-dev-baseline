@@ -2078,10 +2078,36 @@ adb_bash_version_at() {
 #
 # FIXED PATHS FIRST, `command -v` LAST, and that order is the entire point. By the time this runs,
 # PATH has already resolved the wrong interpreter — that is the failure being repaired — so
-# consulting PATH first would just re-derive it. The Homebrew prefixes are named explicitly
-# because they are where a macOS 5.3 actually lives (Apple Silicon, then Intel).
+# consulting PATH first would just re-derive it.
+#
+# THE LIST MUST COVER EVERY INSTALL ROUTE THE DOCS CLAIM TO SUPPORT, or the claim is false. Review
+# caught exactly that mismatch: `docs/installation.md` says MacPorts, Nix and a source build work,
+# while this list knew only Homebrew and the system paths — so a MacPorts user whose hook shell has
+# the usual bare `/usr/bin:/bin` would be told no bash 5.3 exists on a machine where it is
+# installed. Adding a prefix here is the cheap half of that pair; the expensive half is a support
+# claim nobody can act on.
+#
+#   /opt/homebrew/bin  Homebrew, Apple Silicon
+#   /usr/local/bin     Homebrew on Intel — and the default `make install` prefix, so it covers
+#                      source builds on both macOS and Linux
+#   /opt/local/bin     MacPorts
+#   /usr/bin, /bin     the system paths (Linux's 5.3 lives here; macOS's 3.2.57 also does, and is
+#                      simply rejected by the version probe)
+#   Nix                two profile paths: the NixOS system profile and a single-user `nix-profile`.
+#                      $HOME may legitimately be unset in the stripped environments this function
+#                      exists for, so it is expanded defensively rather than assumed.
 adb_bash_candidates() {
-  printf '%s\n' /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash /bin/bash
+  printf '%s\n' \
+    /opt/homebrew/bin/bash \
+    /usr/local/bin/bash \
+    /opt/local/bin/bash \
+    /run/current-system/sw/bin/bash \
+    /nix/var/nix/profiles/default/bin/bash \
+    /usr/bin/bash \
+    /bin/bash
+  # An `if`, not `[ … ] && …`: the compound form returns non-zero when HOME is unset, which under
+  # a caller's `set -e` would abort the very function that exists to rescue a broken environment.
+  if [ -n "${HOME:-}" ]; then printf '%s\n' "$HOME/.nix-profile/bin/bash"; fi
   command -v bash 2>/dev/null || true
 }
 
@@ -2283,8 +2309,10 @@ adb_require_bash_advisory() {
   elif ! adb_bash_reexecable; then
     printf '  Cannot re-exec: "%s" is not a re-runnable script file (sourced, piped, or `bash -c`).\n' "$0" >&2
   else
-    printf '  No bash >= %s found at /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin or on PATH.\n' \
-      "$ADB_BASH_FLOOR_DEFAULT" >&2
+    # Listed from the candidate function rather than retyped, so the message cannot drift from the
+    # set actually searched — the drift review caught between this list and docs/installation.md.
+    printf '  No bash >= %s at any of:\n' "$ADB_BASH_FLOOR_DEFAULT" >&2
+    adb_bash_candidates | sed 's/^/    /' >&2
   fi
   adb_bash_install_hint >&2
   return 1

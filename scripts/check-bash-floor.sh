@@ -350,7 +350,26 @@ scan_entrypoints() {
   done | LC_ALL=C sort
 }
 
-# The line number of the first occurrence of a pattern in ACTIVE CODE, or empty.
+# The path of the scanned root RELATIVE TO ITS REPOSITORY ROOT, with a trailing `/`, or empty.
+#
+# The classification lists below are repository-relative, but scan_entrypoints yields paths relative
+# to whatever directory was scanned. Scanning a SUBDIRECTORY therefore matched nothing:
+# `--entrypoints agents/claude` sees `scripts/statusline.sh`, not
+# `agents/claude/scripts/statusline.sh`, so all three advisory hooks were classified as hard gates
+# and a perfectly valid tree exited 1 — and `--entrypoints scripts` lost the observer exemption the
+# same way. Review found it in the advertised `[DIR]` form.
+#
+# `--show-prefix` answers exactly this and answers it empty at a repository root, so the common case
+# costs nothing. A fixture tree that is not a repository at all yields empty too, which is right:
+# its paths are already relative to the thing being scanned.
+scan_prefix() {
+  git -C "$1" rev-parse --show-prefix 2>/dev/null || true
+}
+
+# The line number of the first occurrence of a pattern in TOP-LEVEL ACTIVE CODE, or empty.
+#
+# "Top-level" is load-bearing and is why this stops at the first function definition: a match
+# inside a function body proves the text exists, not that the process ever runs it.
 #
 # Comments are blanked before matching — both a whole-line `# adb_require_bash "$@"` and a TRAILING
 # `x=1  # TODO: adb_require_bash "$@"`. The trailing form is the one that matters: a note about
@@ -377,6 +396,15 @@ first_code_line() {
       line = $0
       sub(/[[:space:]]#.*$/, "", line)      # a trailing comment
       sub(/^[[:space:]]*#.*$/, "", line)    # a whole-line comment
+      # A FUNCTION DEFINITION ENDS THE TOP LEVEL for the purposes of this scan. Everything after
+      # the first one may never execute: an entry point can define an uninvoked function whose body
+      # holds the gate call, run its real body, and stay on the sub-floor interpreter while a
+      # command-position match reported PASS. Review found it; stopping here is also exactly the
+      # invariant the release scripts already had to satisfy by hand — the bootstrap precedes every
+      # definition, because bash parses a function body when it reaches it, so 5.3-only grammar in
+      # any of them fails to PARSE under 3.2 before the gate can rescue it.
+      # (No apostrophes in this block: it is a single-quoted shell string, and one would end it.)
+      if (line ~ /^[[:space:]]*([A-Za-z_][A-Za-z0-9_:.-]*[[:space:]]*\(\)|function[[:space:]]+[A-Za-z_])/) exit
       if (line ~ pat) { print NR; exit }
       # Open a heredoc only AFTER testing this line: the redirection line is itself code, and a
       # gate call could legitimately share it. `<<<` is a herestring, not a heredoc — excluded, or
@@ -393,6 +421,7 @@ first_code_line() {
 entrypoint_lint() {
   root="${1%/}"
   eps=0 gates=0 advisories=0 exempts=0
+  prefix="$(scan_prefix "$root")"
 
   scanned="$(scan_entrypoints "$root")" || {
     check_note "the entry-point scanner failed outright under $root — refusing to report a clean scan"
@@ -403,16 +432,19 @@ entrypoint_lint() {
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
     f="$root/$rel"
+    # Classify on the REPOSITORY-relative path; report on it too, so a diagnostic from a
+    # subdirectory scan names a path the reader can actually open from the repo root.
+    key="$prefix$rel"
     eps=$((eps + 1))
 
     kind=gate
     case "
 $ADVISORY_ENTRYPOINTS" in *"
-$rel
+$key
 "*) kind=advisory ;; esac
     case "
 $EXEMPT_ENTRYPOINTS" in *"
-$rel
+$key
 "*) kind=exempt ;; esac
 
     # COMMAND POSITION, not "appears somewhere". A bare token search accepts the call inside a
@@ -428,7 +460,7 @@ $rel
     if [ "$kind" = exempt ]; then
       exempts=$((exempts + 1))
       if [ -n "$call_gate" ] || [ -n "$call_adv" ]; then
-        check_note "$rel is the EXEMPT observer but calls the floor gate (line ${call_gate:-$call_adv}) — re-exec'ing here would make its own negative test stop testing"
+        check_note "$key is the EXEMPT observer but calls the floor gate (line ${call_gate:-$call_adv}) — re-exec'ing here would make its own negative test stop testing"
         check_fail
       fi
       continue
@@ -439,7 +471,7 @@ $rel
       call="$call_adv"
       want="adb_require_bash_advisory \"\$@\""
       if [ -n "$call_gate" ]; then
-        check_note "$rel is classified ADVISORY (its own contract forbids a non-zero exit) but calls the hard-failing adb_require_bash at line $call_gate"
+        check_note "$key is classified ADVISORY (its own contract forbids a non-zero exit) but calls the hard-failing adb_require_bash at line $call_gate"
         check_fail
         # One defect, one line. Falling through would also report "never calls the advisory form",
         # which is true but is the same finding wearing a second hat.
@@ -450,14 +482,14 @@ $rel
       call="$call_gate"
       want="adb_require_bash \"\$@\""
       if [ -z "$call_gate" ] && [ -n "$call_adv" ]; then
-        check_note "$rel is classified GATE but calls the advisory form at line $call_adv — a gate that lets its caller carry on under a sub-$FLOOR interpreter is not a gate"
+        check_note "$key is classified GATE but calls the advisory form at line $call_adv — a gate that lets its caller carry on under a sub-$FLOOR interpreter is not a gate"
         check_fail
         continue
       fi
     fi
 
     if [ -z "$call" ]; then
-      check_note "$rel has a bash shebang but never calls $want — it would run under whatever interpreter PATH resolved (add the stanza, or classify it in $0)"
+      check_note "$key has a bash shebang but never calls $want — it would run under whatever interpreter PATH resolved (add the stanza, or classify it in $0)"
       check_fail
       continue
     fi
@@ -473,7 +505,7 @@ $rel
     late="$(first_code_line "$f" \
       '(^|[;&|]|[[:space:]](then|do|else))[[:space:]]*(cd|read|mapfile|readarray|dd)([[:space:]]|$)|\$\(cat\)|<[[:space:]]*/dev/stdin|(^|[[:space:]])(IFS=[^[:space:]]*[[:space:]]+)?read[[:space:]]+-')"
     if [ -n "$late" ] && [ "$late" -lt "$call" ]; then
-      check_note "$rel calls the floor gate at line $call, AFTER a cd or a stdin read at line $late — move it earlier (\$0 may no longer resolve, and a consumed stdin is not restored by the re-exec)"
+      check_note "$key calls the floor gate at line $call, AFTER a cd or a stdin read at line $late — move it earlier (\$0 may no longer resolve, and a consumed stdin is not restored by the re-exec)"
       check_fail
     fi
   done <<EOF
