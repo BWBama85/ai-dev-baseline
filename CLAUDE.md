@@ -28,8 +28,26 @@ those. The rules below are specific to this repo's code.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs
    (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
    pr-review · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration ·
-   install-guard · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill · install dry-run). Fix red at the root — never push and
+   install-guard · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill · selfcheck-guard · install-dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
+
+   **It runs those steps in PARALLEL** (#260, D37) — a registry of steps dispatched through a
+   `wait -n` pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
+   concurrent steps never interleave. Measured on a 10-core machine: **273s/279s before, 66-72s
+   after** (~4x). The flags worth knowing:
+
+   - **`--serial`** runs the registry in declaration order with output streaming live. Reach for it
+     when a parallel failure is hard to attribute — it is the debugging mode, and it is what the
+     acceptance criterion means by "reproduces today's behaviour".
+   - **`--only a,b`** runs just those steps (an unknown name is an error, never a quiet no-op),
+     **`--jobs N`** caps concurrency, **`--list`** prints the registry as
+     `name<TAB>command<TAB>pool|serial`.
+
+   **`build-drift` is the one step pinned to a serial prologue**, because it runs `scripts/build.sh`,
+   which rewrites tracked generated files in place — every other step only reads the tree or works
+   inside its own `mktemp -d`. The full reasoning, including what is deliberately *not* serialized,
+   is in `scripts/selfcheck.sh`'s "concurrency contract" header. Two concurrent selfcheck runs in
+   one checkout are still unsupported (#250).
 
    **Two CI steps are deliberately not mirrored** (D13, extended by D24), and both are the same
    shape — a verdict that depends on network, auth and externally-mutable state:
@@ -96,7 +114,7 @@ those. The rules below are specific to this repo's code.
 | `base/roles.md`, `templates/agents.toml` | Role model + per-project manifest |
 | `agents/<agent>/` | Per-agent: generated root doc, `adapter.sh`, generated `skills/` (all agents); Claude also has generated hook `scripts/` |
 | `.claude/skills/release/SKILL.md` | **This project's own `/release`** — hand-written, **not** generated, and deliberately outside `base/`+`agents/` so decision #3/D7's "no baseline `/release`" lint stays green. Cuts the tag: re-verifies readiness + branch health live, stamps `CHANGELOG.md` through a normal PR, tags the verified-green merge commit, then `baseline release roll`. Every adopting repo owes itself one of these (D14) |
-| `.claude/scripts/precommit-gate.sh` | **This project's own Stop-hook gate** (D25, #240). `[gates] test` here is `selfcheck.sh` — the whole CI mirror — which is right before a *push* and ruinous per *turn* (one measured run: 18m55s). This runs the fast subset instead (changed-file shellcheck · build-drift · workflow-render · practice-index · fact-drift, ~3s) and says so: it is a turn-end smoke test, **not** a CI predictor. The global gate detects it and `exec`s it |
+| `.claude/scripts/precommit-gate.sh` | **This project's own Stop-hook gate** (D25, #240). `[gates] test` here is `selfcheck.sh` — the whole CI mirror — which is right before a *push* and wrong per *turn*. (The 18m55s once observed is a figure about a contended machine, not the suite: #260 measured 273s serial and 66-72s parallel. The decision does not need the bigger number — even 66s per turn is the wrong trade.) This runs the fast subset instead (changed-file shellcheck · build-drift · workflow-render · practice-index · fact-drift, ~3s) and says so: it is a turn-end smoke test, **not** a CI predictor. The global gate detects it and `exec`s it |
 | `scripts/lib/common.sh` | Shared shell primitives — the **ONE home** for link/unlink/backup, default-branch, TOML-read, version-compare; **source it, never copy** |
 | `scripts/lib/project-gates.sh` | Gate auto-detector (installs beside `common.sh` into `~/.<agent>/scripts/lib`) |
 | `scripts/lib/skill-compose.sh` | Partial skill-override composer — merges a project's `overrides.md` onto the installed base skill so a project carries deltas without forking the whole skill (#22); installs beside `common.sh` |
@@ -105,7 +123,8 @@ those. The rules below are specific to this repo's code.
 | `scripts/lib/pr-watch.sh` | The **async-reviewer status detector** (#49) — has the declared reviewer finished with this PR, and did it find anything? `observe` classifies once; `wait` polls until a terminal answer **in shell**, so a half-hour wait costs no model tokens. Reads all **three** surfaces a declared reviewer can speak on — a review at the current head, a `+1` reaction on the PR post, and an issue comment (the Codex connector's task mode posts only the last, and only a `+1` on a clean pass) — classifying each through the shared evidence classifier in `common.sh` and requiring **every** declared reviewer to be clean before it reports one (#167/#185). Powers `/resolve-pr-threads --watch`. Deliberately **not** part of `pr-review.sh`, whose header forbids it growing a wait (`scripts/check-pr-watch.sh`); installs beside `common.sh` |
 | `scripts/lib/pr-review.sh` | The **pre-arm review guard** (#134) — has every reviewer this repo declares (`[reviewers] bots`) *signalled a clean pass* for the PR's **current head commit**? `/implement-issue` step 10 asks it before `gh pr merge --auto`, because GitHub gates on checks and a bot reviewer is not one. Reads the same three surfaces and the same shared classifier as `pr-watch.sh`, so the two can no longer disagree about what a signal means; `COMMENTED` is **21** ("review complete, attention required"), not a satisfied review (#167). Deliberately **not** part of `repo-settings.sh`, whose charter is repo settings, not review (`scripts/check-pr-review.sh`); installs beside `common.sh` |
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
-| `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role · release-skill) |
+| `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role · release-skill). Since #260 the mirror is a step **registry** dispatched through a bounded `wait -n` pool — see golden rule 3 for the flags and the serial prologue |
+| `scripts/check-selfcheck.sh` | The runner above is a guard too, so it gets what guards get here (#260). A job pool's failure mode is silence — a dispatcher that drops a worker's status, or reaps a job and blames the wrong step, prints what a clean run prints — so this drives the **real** `selfcheck.sh` over a throwaway fixture of stub steps and requires a deliberately failing step to still fail the run, attributed by name and exit code. Also pins collect-all, output atomicity, the concurrency bound (both that it is respected *and* that the pool is genuinely concurrent), `--serial` ordering, the prologue running alone, and cancellation reaping workers instead of orphaning them. Never mutates the tracked tree |
 | `scripts/check-fact-drift.sh --mutation` · `scripts/check-fact-guard.sh` | The negative half of the anti-drift lint, **proven able to fail** (#213). A `absent:` rule declares the real superseded spellings it catches (`fires:<witness>`); `--mutation` injects each into a **copy** of every pinned file and requires the lint to come back red; `check-fact-guard.sh` drives both against deliberately broken rules so the guard rails are themselves observed failing. Never mutates the working tree |
 | `scripts/check-claims.sh` · `scripts/check-claims-guard.sh` | The claim lint (#212): every `#N` an added line cites resolves and is the kind it is cited as, every `D<N>` resolves to a decision heading, every added decision date is within a day of its commit. The `#N` half needs the network, so it is **CI-only** and `selfcheck` runs the rest (D13/D24). The guard suite drives every rule to RED against a stubbed `gh` and pins the invocation sites |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |
