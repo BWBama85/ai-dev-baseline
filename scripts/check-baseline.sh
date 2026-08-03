@@ -285,6 +285,11 @@ hook_settings() {   # hook_settings <state>: write a settings.json in the fixtur
     none) printf '{"hooks":{}}\n' > "$fh/.claude/settings.json"; return ;;
   esac
   mapfile -t hooks < <(adb_claude_hook_scripts)
+  # Guarded like the other three enumerations (#259, review finding). Without this, an
+  # enumerator that returned nothing would write an EMPTY settings.json and iterate zero hooks —
+  # so the `wired` fixture would silently become the `none` fixture, and the cases below would
+  # still pass while testing the opposite state.
+  check_enumerated "adb_claude_hook_scripts (hook_settings $state)" "${hooks[@]}" || return 1
   for s in "${hooks[@]}"; do
     # `partial` omits precommit-gate.sh — the exact edit that motivated #242.
     [ "$state" = partial ] && [ "$s" = "precommit-gate.sh" ] && continue

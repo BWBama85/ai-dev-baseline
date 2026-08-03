@@ -377,9 +377,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Changed
 
-- **The check harnesses are written for bash 5.3** (#259; D35, D36). 57% of this repo's shell is
-  `scripts/check-*.sh`, and it was still shaped by an interpreter the floor retired in #256.
-  - **1,562 of 2,251 command substitutions are now `${ command; }`** — no subshell fork. What was
+- **The check harnesses are written for bash 5.3** (#259; D35, D36). `scripts/check-*.sh` is 18,931
+  of the 32,184 tracked shell lines here — 59% — and it was still shaped by an interpreter the floor
+  retired in #256. (#259 says 57%; that was measured before the tree grew.)
+  - **1,564 of 2,208 in-code command substitutions are now `${ command; }`** — no subshell fork.
+    644 remain by design. (The sweep's own report said "1,562 of 2,251"; it counts `$( )` written
+    inside comments too, and two new comments in this branch quote one. D36 carries both.) What was
     excluded is enumerated in D36; the short version is that the issue's criterion is a lexical
     test on the first word, and the safe set is smaller because `${ ; }` also stops *containing*
     what the body does. A helper that assigns a global, `cd`s outside a subshell, or calls `exit`
@@ -390,9 +393,11 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **`check-claims.sh` caches gh lookups in a `declare -A`**, not a directory of one-line files —
     no mkdir, no temp file per number, no `cat` fork per read. `check-fact-drift.sh`'s `fires:`
     witnesses are a real array instead of a newline-delimited string, and its duplicate-file check
-    is a map lookup instead of a quadratic self-join. Nine heredoc-fed `while read` loops are
-    `mapfile`, which also retires the `[ -n "$x" ] || continue` guard each carried — that empty
-    element was the heredoc's own trailing newline, never data.
+    is a map lookup instead of a quadratic self-join. Nine heredoc-fed `while read` loops are gone:
+    five became `mapfile` and the rest `for` loops over an array the `mapfile` already built. Each
+    retires the `[ -n "$x" ] || continue` guard it carried — that empty element was the heredoc's
+    own trailing newline, never data — and gains a `check_enumerated` call in its place, which
+    rejects both an empty list AND a single blank entry (the case a bare count test waves through).
   - **A third below-floor carve-out, pinned (D35).** `scripts/check-bash-floor.sh` is the floor
     OBSERVER: D31 exempts it from the runtime gate so it can run on an interpreter that does not
     clear the floor, and its guard executes it under `/bin/bash`. bash 3.2 *parses* `${ …; }` and

@@ -330,16 +330,25 @@ fi
 # the whole diagnostic with a single `bad substitution` line while still exiting 1. An rc-only
 # assertion would not notice.
 #
-# check-lib.sh is in scope transitively: the observer sources it before running any check.
+# check-lib.sh is in scope transitively: the observer sources it before running any check. And
+# common.sh is in scope because D30 says so — it is the FIRST of the three, and leaving it out
+# would be the worst omission of the three, since every entry point sources it before it can
+# report anything at all.
 #
 # A SOURCE scan rather than an execution, deliberately. The case above only runs where /bin/bash is
-# genuinely 3.2, so it skips on every Linux runner; this must hold everywhere. Comment-stripped for
-# the same reason the `sort -V` ban in check-release-skill.sh is, so a file may still explain the
-# hazard in prose.
+# genuinely 3.2, so it skips on every Linux runner; this must hold everywhere.
+#
+# ONLY WHOLE-LINE COMMENTS ARE DROPPED, not everything after the first `#`. `sed 's/#.*//'` — the
+# idiom the `sort -V` ban uses — does not understand quoting, so a line like
+# `printf '#'; x=${ printf hi; }` is truncated at the QUOTED hash and the funsub after it becomes
+# invisible. That is a guard that can be made blind by ordinary code, so this drops only lines that
+# are entirely a comment, and a funsub sharing a line with a trailing comment is still seen. The
+# cost is that a `${ …; }` written inside a trailing comment would false-positive — loudly, which
+# is the safe direction, and the two files are checked below to confirm none does today.
 bf_above_floor() {   # <file> -> 0 if it contains a construct bash 3.2 cannot expand
-  sed 's/#.*//' "$1" | grep -q '\${[[:space:]|]'
+  grep -v '^[[:space:]]*#' "$1" | grep -q '\${[[:space:]|]'
 }
-for _bf_f in "$LINT" scripts/check-lib.sh; do
+for _bf_f in "$LINT" scripts/check-lib.sh scripts/lib/common.sh; do
   if bf_above_floor "$_bf_f"; then
     bad "below-floor: $_bf_f uses \${ …; } / \${| …; }, which bash 3.2 cannot expand — and it runs there"
   else
@@ -354,10 +363,22 @@ printf 'x=${ printf hi; }\n' >> "$work/belowfloor/probe.sh"
 if bf_above_floor "$work/belowfloor/probe.sh"; then ok; else
   bad "below-floor: the scan did NOT fire on an injected \${ …; } — it is checking nothing"
 fi
+# THE QUOTED-HASH CASE, which is the one a naive `sed 's/#.*//'` cannot see. Review found this:
+# the stripper has no idea the `#` is inside quotes, deletes the rest of the line, and the funsub
+# after it goes unreported — a guard blinded by ordinary code rather than by a hostile input.
+printf "printf '#'; x=\${ printf hi; }\n" > "$work/belowfloor/quotedhash.sh"
+if bf_above_floor "$work/belowfloor/quotedhash.sh"; then ok; else
+  bad "below-floor: a funsub after a QUOTED '#' is invisible to the scan — comment stripping is too greedy"
+fi
 # And it must not fire on ordinary parameter expansion, or it would be deleted within a week.
 printf 'y="${HOME}${x:-d}${#z}"\n' > "$work/belowfloor/ordinary.sh"
 if bf_above_floor "$work/belowfloor/ordinary.sh"; then
   bad "below-floor: the scan fires on ordinary \${VAR} expansion — it would be unusable"
+else ok; fi
+# ...nor on a whole-line comment that DOCUMENTS the hazard, which all three files legitimately do.
+printf '# never write x=${ printf hi; } in this file\n' > "$work/belowfloor/prose.sh"
+if bf_above_floor "$work/belowfloor/prose.sh"; then
+  bad "below-floor: the scan fires on a whole-line comment explaining the rule"
 else ok; fi
 
 # ISOLATE the PATH rule the same way, and in the direction that actually bites: a CURRENT

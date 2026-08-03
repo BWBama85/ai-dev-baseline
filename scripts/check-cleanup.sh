@@ -487,7 +487,7 @@ printf 'demo skill\n' > "$cuseed/agents/claude/skills/demo/SKILL.md"
 # fixture in a way that looks like a bin/baseline bug.
 mapfile -t cunames < <(adb_agent_manifest claude "$cuseed" "$cuw/unused" | cut -f1 \
   | sed -n "s|^$cuseed/agents/claude/scripts/||p")
-[ "${#cunames[@]}" -gt 0 ] || bad "the manifest named no claude scripts — this fixture would stub nothing"
+check_enumerated "claude script manifest (cleanup fixture)" "${cunames[@]}"
 for sname in "${cunames[@]}"; do
   [ -e "$cuseed/agents/claude/scripts/$sname" ] || printf '#stub\n' > "$cuseed/agents/claude/scripts/$sname"
 done

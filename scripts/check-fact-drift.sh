@@ -873,7 +873,12 @@ if [ "$MODE" = mutation ]; then
   # the first half of a `\`-continued pipeline is a syntax error.
   _ra='req_absent'; _allow="adb-allow: $_ra"   # adb-allow: req_absent
   _stray=""; _sf=""; _hit=""; _nscanned=0
-  while IFS= read -r _sf; do
+  # NUL-DELIMITED (#259, review finding). The newline-delimited form this replaces split any path
+  # containing a newline into two fragments, both of which failed `[ -f ]` and were skipped — while
+  # the OTHER files kept `_nscanned` above zero, so the emptiness guard below could not see it
+  # either. A stray `req_absent` in such a file passed unread: a guard defeated by a filename.
+  # `-print0` costs nothing here and closes it; the `./` strip stays, since `find .` still emits it.
+  while IFS= read -r -d '' _sf; do
     [ -n "$_sf" ] || continue
     _sf="${_sf#./}"
     [ -f "$_sf" ] || continue
@@ -893,9 +898,7 @@ if [ "$MODE" = mutation ]; then
     _hit="$(grep -n "$_ra" "$_sf" | grep -Ev '^[0-9]+:[[:space:]]*#' | grep -Fv "$_allow")" || continue
     [ -n "$_hit" ] || continue
     _stray="${_stray}${ printf '%s\n' "$_hit" | sed "s@^@$_sf:@"; }${_FACT_NL}"
-  done <<EOF
-$(find . -type f ! -path './.git/*')
-EOF
+  done < <(find . -type f ! -path './.git/*' -print0)
   # Zero files scanned means the enumeration broke, not that the tree is clean.
   if [ "$_nscanned" -eq 0 ]; then
     check_note "the call-site scan found no shell files at all — the enumeration is broken"  # adb-allow: req_absent

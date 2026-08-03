@@ -1821,7 +1821,8 @@ limit: none of them is sufficient alone.
              deliberately exempts from the runtime gate so it can run on a below-floor interpreter —
              is also exempt from 5.3 *syntax*, and nothing at all says what happens to a file the
              observer SOURCES.
-- decision:  Three files, not one. `scripts/lib/common.sh` (D30), `scripts/check-bash-floor.sh`
+- decision:  Three files, not one, and all three ENFORCED rather than two enforced and one assumed.
+             `scripts/lib/common.sh` (D30), `scripts/check-bash-floor.sh`
              (the observer), and `scripts/check-lib.sh` (which the observer sources at line 35)
              must stay EVALUABLE below the floor. The rule that decides membership is not "is it a
              library" but **"does this code have to run in order to report that the interpreter is
@@ -1836,12 +1837,22 @@ limit: none of them is sufficient alone.
              `/bin/bash scripts/check-bash-floor.sh --runtime`: pristine prints
              `running interpreter /bin/bash (3.2.57)`, converted prints only the bad-substitution
              line.
-- placement: `scripts/check-bash-floor-guard.sh` — a comment-stripped source scan asserting neither
-             file contains `${ …; }` / `${| …; }`, plus its own negative test on a copy carrying an
-             injected funsub, plus a case proving it does NOT fire on ordinary `${VAR}` expansion.
-             A SOURCE scan rather than an execution because the existing under-3.2 case is guarded
-             on `/bin/bash` genuinely being 3.2 and therefore skips on every Linux runner, while
-             this invariant has to hold on both.
+- placement: `scripts/check-bash-floor-guard.sh` — a source scan asserting that none of the three
+             contains `${ …; }` / `${| …; }`, plus negative tests on copies. A SOURCE scan rather
+             than an execution because the existing under-3.2 case is guarded on `/bin/bash`
+             genuinely being 3.2 and therefore skips on every Linux runner, while this invariant
+             has to hold on both.
+
+             `common.sh` IS in the scanned set even though D30 already covers it in prose. Review
+             asked why it was omitted, and the answer was that D30 "already says so" — which is the
+             same reasoning that left the observer unpinned in the first place. A rule stated in a
+             decision and enforced nowhere is the one a sweep erases.
+
+             The predicate drops WHOLE-LINE comments only. The obvious `sed 's/#.*//'` — the idiom
+             the `sort -V` ban uses — has no idea about quoting, so `printf '#'; x=${ printf hi; }`
+             is truncated at the quoted hash and the funsub after it is invisible. Review found
+             that; it is now one of the negative tests, alongside an injected funsub, an ordinary
+             `${VAR}` expansion, and a whole-line comment that documents the hazard.
 - reason:    D30's own wording — "a caller cannot reach that function until sourcing has finished,
              so a 5.3-only construct there makes the gate unreachable on exactly the hosts it exists
              for" — is an argument about *reachability on an old interpreter*, not about that one
@@ -1874,7 +1885,22 @@ limit: none of them is sufficient alone.
                 the shape is right, the rationale is REWRITTEN, not deleted (#258's precedent).
              2. **`check-claims.sh` caches in a `declare -A`** → delivered in full.
              3. **"Helper-function and `printf` substitutions use `${ command; }`"** → delivered for
-                the ELIGIBLE, audited set: 1,562 of 2,251 sites. The criterion as written is a
+                the ELIGIBLE, audited set. Counted per commit with one quote/heredoc-aware scanner,
+                over the IN-CODE sites (a `$( )` inside a comment or a heredoc is prose or fixture
+                text, not a substitution this repo runs):
+
+                    origin/main   2208 in-code      (2249 spans incl. comments/heredocs)
+                    + the sweep    646   (-1562)
+                    + structural   644     (-2)     one `cat "$CACHE/$n"` replaced by a map read,
+                                                    one `$(printf '\t')` replaced by `$'\t'`
+                    + the markers  644     (+0)     markers and line joins move no substitution
+
+                So **1,564 of 2,208 in-code sites eliminated, 644 left by design.** The sweep's own
+                report said "1,562 of 2,251" because it ran on a working tree that already carried
+                two new explanatory comments, each of which quotes `$( )` in prose; the scanner
+                counts those as spans and the conversion correctly does not touch them. Both
+                framings are recorded because they answer different questions — what the tool did,
+                and what the tree now holds. The criterion as written is a
                 LEXICAL test on the first word, and the safe set is smaller, because `${ ; }` also
                 stops containing what the body does. What is excluded, and why:
                   * 546 an external binary (the issue itself says not to churn these);

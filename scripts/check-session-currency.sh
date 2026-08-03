@@ -86,7 +86,7 @@ printf 'demo skill\n' > "$seed/agents/claude/skills/demo/SKILL.md"
 . "$ROOT/scripts/lib/common.sh"
 mapfile -t seed_scripts < <(adb_agent_manifest claude "$seed" "$work/unused-home" \
   | cut -f1 | sed -n "s|^$seed/agents/claude/scripts/||p")
-[ "${#seed_scripts[@]}" -gt 0 ] || { echo "session-currency fixture: the manifest named no scripts" >&2; exit 1; }
+check_enumerated "claude script manifest (seed)" "${seed_scripts[@]}" || exit 1
 for s in "${seed_scripts[@]}"; do
   case "$s" in session-currency.sh) continue ;; esac   # the real one, copied above
   printf '#stub\n' > "$seed/agents/claude/scripts/$s"
@@ -106,7 +106,7 @@ ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
 mapfile -t src_scripts < <(adb_agent_manifest claude "$src" "$fh" | cut -f1 \
   | sed -n "s|^$src/agents/claude/scripts/||p")
-[ "${#src_scripts[@]}" -gt 0 ] || { echo "session-currency fixture: the manifest named no scripts to link" >&2; exit 1; }
+check_enumerated "claude script manifest (symlinks)" "${src_scripts[@]}" || exit 1
 for s in "${src_scripts[@]}"; do
   ln -s "$src/agents/claude/scripts/$s" "$fh/.claude/scripts/$s"
 done

@@ -595,7 +595,19 @@ printf '/home/axb/.claude/scripts/precommit-gate.sh\n' | grep -Eq "$hre2" \
 # `[ -n "$hs" ] || continue` guard all three carried: that empty element was the heredoc's own
 # trailing newline, never data, so the guard was working around the feeding mechanism.
 mapfile -t HOOK_SCRIPTS < <(adb_claude_hook_scripts)
-[ "${#HOOK_SCRIPTS[@]}" -gt 0 ] || bad "adb_claude_hook_scripts named no hooks — the cases below would assert nothing"
+check_enumerated "adb_claude_hook_scripts" "${HOOK_SCRIPTS[@]}"
+
+# ...and check_enumerated itself is watched answering WRONG, because a guard that cannot go red is
+# worse than no guard (#259, review finding). The rule set is closed — empty, blank, clean — so the
+# observation is a standing test rather than a note that someone once checked.
+#
+# Driven in a SUBSHELL: the helper reports through `bad`, so a direct call would land a real
+# failure in THIS suite's counter. The subshell discards it and leaves only the exit status.
+( check_enumerated probe a b )    >/dev/null 2>&1; eq "$?" 0 "check_enumerated: a clean list passes"
+( check_enumerated probe )        >/dev/null 2>&1; eq "$?" 1 "check_enumerated: an EMPTY list is rejected"
+( check_enumerated probe "" )     >/dev/null 2>&1; eq "$?" 1 \
+  "check_enumerated: ONE BLANK entry is rejected — the case a bare \${#a[@]} -gt 0 test waves through"
+( check_enumerated probe a "" b ) >/dev/null 2>&1; eq "$?" 1 "check_enumerated: a blank entry anywhere is rejected"
 
 # Every wired hook must also be a manifest entry, or it is never linked into place.
 manifest_dests="$(adb_agent_manifest claude /R /H | cut -f2)"

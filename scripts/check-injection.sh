@@ -181,12 +181,20 @@ cleanup 0'
 # scan_tree <root> — print one diagnostic per violation; print nothing when the contract holds.
 # Deliberately silent-on-success and side-effect free, so part 3 can call it against a copy.
 #
-# It does NOT accumulate the site count: every caller runs it inside `$( … )`, which is a subshell,
-# so an increment here is discarded the moment it returns. The first draft did exactly that and
-# reported "0 labelled read sites" beside 45 passing assertions — a coverage number that was pure
-# fiction, and the reason this suite prints one at all. The count is taken separately, below.
+# It does NOT accumulate the site count, and that is now a CHOICE rather than a constraint (#259).
+# Callers used to run it inside `$( … )`, a subshell, where an increment was discarded the moment
+# it returned; the first draft did exactly that and reported "0 labelled read sites" beside 45
+# passing assertions — a coverage number that was pure fiction, and the reason this suite prints
+# one at all. Callers are `${ scan_tree …; }` now, so an increment WOULD survive — but the count
+# is taken separately below precisely so it does not depend on how this function is invoked, and
+# a counter that only works under one call form is the fiction waiting to come back.
+#
+# The live consequence of the change: this function no longer runs in a subshell, so every
+# assignment in it must be `local` deliberately. `raw` was not, and is now — it was contained by
+# the old `$( )` and nothing outside reads it, so this was a latent leak rather than a live bug,
+# but it is exactly the shape that stops being harmless the moment someone reuses the name.
 scan_tree() {
-  local base="$1" wf stem want got f
+  local base="$1" wf stem want got f raw
   local practice="$base/base/practices/untrusted-content.md"
 
   # (a) the practice the labels point at must exist and must still carry its load-bearing tokens.

@@ -69,15 +69,17 @@ check_copy_worktree "$ROOT" "$PRISTINE" || { echo "check-fact-guard: could not c
 
 # fresh — print the path of a brand-new copy of the pristine tree.
 #
-# The unique name comes from `mktemp -d`, NOT from a counter: every call site is `d="$(fresh)"`,
-# which runs this in a SUBSHELL, so an incremented counter never reaches the parent. Every case
-# would then reuse one directory and inherit the previous case's sabotage — which is a silent
-# corruption, since a case that fails for the wrong reason still fails.
+# The unique name comes from `mktemp -d`, NOT from a counter, and it STAYS that way even though
+# the containment argument has expired (#259). Call sites are `d="${ fresh; }"` now, which runs in
+# the CURRENT shell, so a counter WOULD survive — but it would also be one more piece of state to
+# reset between cases, and `mktemp -d` needs none. What has changed is the hazard: an assignment
+# in here no longer dies with a subshell, so anything added below must be `local` on purpose
+# rather than by accident.
 fresh() {
   local d
   # Drop earlier case dirs first. Each case is self-contained and never revisits a previous one,
   # and the tree is ~4 MB — without this, ~24 cases peak at ~100 MB of temp. Statelessly, by glob,
-  # because a counter could not survive the subshell either.
+  # which is simplest and needs no per-case bookkeeping.
   rm -rf "$work"/case.*
   d="$(mktemp -d "$work/case.XXXXXX")" || return 1
   check_copy_worktree "$PRISTINE" "$d" || return 1
