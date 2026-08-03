@@ -220,7 +220,7 @@ if [ ! -e "$work/guard-dangle.txt" ]; then ok; else bad "adb_link dangling sourc
 mrepo="$work/mrepo"; mhome="$work/mhome"
 mkdir -p "$mrepo/agents/claude/skills/demo" "$mrepo/agents/claude/scripts" "$mrepo/scripts/lib" \
          "$mrepo/agents/codex/skills/demo" "$mrepo/agents/gemini/skills/demo"
-tab_="${ printf '\t'; }"
+tab_=$'\t'
 man="$(adb_agent_manifest claude "$mrepo" "$mhome")"
 # root doc line present, TAB-separated, pointing at the right dest
 echo "$man" | grep -Fq -- "$mrepo/agents/claude/CLAUDE.md${tab_}$mhome/.claude/CLAUDE.md" && ok || bad "manifest emits the claude root-doc line"
@@ -589,14 +589,19 @@ printf '/home/u/.claude/scripts/precommit-gate.sh\n' | grep -Eq "$hre" \
 hre2="$(adb_claude_hook_regex /home/a.b)"
 printf '/home/axb/.claude/scripts/precommit-gate.sh\n' | grep -Eq "$hre2" \
   && bad "an unescaped '.' in \$HOME widens the ownership match" || ok
+# The shipped hook set, read ONCE into an array (#259). Three cases below iterate it, and each
+# used to re-run the function through a `$( )` inside a heredoc — a subshell AND a heredoc temp
+# file per loop, for a list that cannot change between them. `mapfile` also retires the
+# `[ -n "$hs" ] || continue` guard all three carried: that empty element was the heredoc's own
+# trailing newline, never data, so the guard was working around the feeding mechanism.
+mapfile -t HOOK_SCRIPTS < <(adb_claude_hook_scripts)
+[ "${#HOOK_SCRIPTS[@]}" -gt 0 ] || bad "adb_claude_hook_scripts named no hooks — the cases below would assert nothing"
+
 # Every wired hook must also be a manifest entry, or it is never linked into place.
 manifest_dests="$(adb_agent_manifest claude /R /H | cut -f2)"
-while IFS= read -r hs; do
-  [ -n "$hs" ] || continue
+for hs in "${HOOK_SCRIPTS[@]}"; do
   has "$manifest_dests" "/H/.claude/scripts/$hs" "manifest links the wired hook $hs"
-done <<EOF
-$(adb_claude_hook_scripts)
-EOF
+done
 
 # --- adb_claude_hooks_state / adb_claude_hooks_missing (#242) ----------------
 # The defect this replaces inferred intent about the WHOLE hook payload from ONE member, so the
@@ -604,9 +609,7 @@ EOF
 hs_dir="$work/hookstate"; mkdir -p "$hs_dir"
 hs_home="$hs_dir/home"
 hs_all="$hs_dir/all.json"; hs_none="$hs_dir/none.json"; hs_part="$hs_dir/partial.json"
-: > "$hs_all"; while IFS= read -r hs; do [ -n "$hs" ] && printf '%s/.claude/scripts/%s\n' "$hs_home" "$hs" >> "$hs_all"; done <<EOF
-$(adb_claude_hook_scripts)
-EOF
+: > "$hs_all"; for hs in "${HOOK_SCRIPTS[@]}"; do printf '%s/.claude/scripts/%s\n' "$hs_home" "$hs" >> "$hs_all"; done
 printf '{"hooks":{}}\n' > "$hs_none"
 grep -v 'precommit-gate\.sh' "$hs_all" > "$hs_part"
 
@@ -630,13 +633,10 @@ eq "$(adb_claude_hooks_missing "$hs_none" "$hs_home" | wc -l | tr -d ' ')" "4" "
 
 # Each shipped hook must independently produce `partial` when it alone is removed. Without this,
 # the predicate could key on one filename again and still pass the cases above.
-while IFS= read -r hs; do
-  [ -n "$hs" ] || continue
+for hs in "${HOOK_SCRIPTS[@]}"; do
   grep -vF "/$hs" "$hs_all" > "$hs_dir/drop.json"
   eq "$(adb_claude_hooks_state "$hs_dir/drop.json" "$hs_home")" "partial" "hooks-state: dropping $hs alone → partial"
-done <<EOF
-$(adb_claude_hook_scripts)
-EOF
+done
 
 # --- adb_require_gh / adb_repo_slug (#87) ------------------------------------
 # Both are sourced by release-convention.sh AND repo-settings.sh, so a regression here breaks two
@@ -682,7 +682,12 @@ eq "$out" "" "adb_repo_slug prints nothing when it fails"
 # The mechanism was moved here so currency-lib.sh could share it instead of hand-rolling a second
 # watchdog. It had been covered only TRANSITIVELY, through check-role-dispatch.sh's agent dispatch;
 # a shared primitive with two callers needs its own tests. Both paths are exercised: the `timeout`
-# binary when present, and the bash-3.2 watchdog fallback that a stock Mac takes.
+# binary when present, and the pure-shell watchdog fallback that a stock Mac takes.
+#
+# "bash-3.2 watchdog" was the wrong name for it and outlived the thing it named (#259). The
+# fallback has nothing to do with the interpreter: `timeout`/`gtimeout` are GNU coreutils, which
+# macOS does not ship at all, so a stock Mac takes this path on bash 5.3 exactly as it did on 3.2.
+# The floor moved; this did not.
 
 # A fast child's status passes straight through, on both paths.
 adb_run_bounded 30 1 true; eq "$?" "0" "adb_run_bounded returns a successful child's status"

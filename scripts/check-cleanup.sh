@@ -485,12 +485,12 @@ printf 'demo skill\n' > "$cuseed/agents/claude/skills/demo/SKILL.md"
 # Stub every OTHER script the manifest expects, enumerated from the manifest itself: `baseline
 # update` verifies the full manifest, so a script added there but missing here would fail this
 # fixture in a way that looks like a bin/baseline bug.
-while IFS= read -r sname; do
-  [ -n "$sname" ] || continue
+mapfile -t cunames < <(adb_agent_manifest claude "$cuseed" "$cuw/unused" | cut -f1 \
+  | sed -n "s|^$cuseed/agents/claude/scripts/||p")
+[ "${#cunames[@]}" -gt 0 ] || bad "the manifest named no claude scripts — this fixture would stub nothing"
+for sname in "${cunames[@]}"; do
   [ -e "$cuseed/agents/claude/scripts/$sname" ] || printf '#stub\n' > "$cuseed/agents/claude/scripts/$sname"
-done <<CUEOF
-$(adb_agent_manifest claude "$cuseed" "$cuw/unused" | cut -f1 | sed -n "s|^$cuseed/agents/claude/scripts/||p")
-CUEOF
+done
 
 cuorigin="$cuw/origin.git"
 # check_make_repo_pair + check_git rather than a fourth hand-rolled identity wrapper: check_git

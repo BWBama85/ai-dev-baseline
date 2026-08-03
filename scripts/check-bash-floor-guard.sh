@@ -319,6 +319,47 @@ if [ -x /bin/bash ] && [ "$sysv" = "3.2" ] && [ "$pathv" != "3.2" ]; then
   has "$out" "at /bin/bash" "runtime blames the interpreter that is executing, not the PATH one"
 fi
 
+# --- THE OBSERVER MUST STAY EVALUABLE BELOW THE FLOOR (#259) ----------------------------------
+# The third carve-out, alongside common.sh (D30) and the gate exemption itself (D31) — and the one
+# a modernization sweep is most likely to erase, because nothing in either file says it exists.
+#
+# The case immediately above executes the observer under /bin/bash precisely because that is the
+# situation it is built to diagnose. So the observer may not contain a construct that interpreter
+# cannot EXPAND. bash 5.3's `${ command; }` is the live example, and it is a nastier one than a
+# syntax error: 3.2 PARSES it happily — `bash -n` is clean — and then dies at expansion, replacing
+# the whole diagnostic with a single `bad substitution` line while still exiting 1. An rc-only
+# assertion would not notice.
+#
+# check-lib.sh is in scope transitively: the observer sources it before running any check.
+#
+# A SOURCE scan rather than an execution, deliberately. The case above only runs where /bin/bash is
+# genuinely 3.2, so it skips on every Linux runner; this must hold everywhere. Comment-stripped for
+# the same reason the `sort -V` ban in check-release-skill.sh is, so a file may still explain the
+# hazard in prose.
+bf_above_floor() {   # <file> -> 0 if it contains a construct bash 3.2 cannot expand
+  sed 's/#.*//' "$1" | grep -q '\${[[:space:]|]'
+}
+for _bf_f in "$LINT" scripts/check-lib.sh; do
+  if bf_above_floor "$_bf_f"; then
+    bad "below-floor: $_bf_f uses \${ …; } / \${| …; }, which bash 3.2 cannot expand — and it runs there"
+  else
+    ok
+  fi
+done
+# ...and the predicate is watched going RED, on a COPY, because a check that cannot answer wrong is
+# worse than no check (self-review.md). Injected into a throwaway copy, never the tracked file.
+mkdir -p "$work/belowfloor"
+cp "$LINT" "$work/belowfloor/probe.sh"
+printf 'x=${ printf hi; }\n' >> "$work/belowfloor/probe.sh"
+if bf_above_floor "$work/belowfloor/probe.sh"; then ok; else
+  bad "below-floor: the scan did NOT fire on an injected \${ …; } — it is checking nothing"
+fi
+# And it must not fire on ordinary parameter expansion, or it would be deleted within a week.
+printf 'y="${HOME}${x:-d}${#z}"\n' > "$work/belowfloor/ordinary.sh"
+if bf_above_floor "$work/belowfloor/ordinary.sh"; then
+  bad "below-floor: the scan fires on ordinary \${VAR} expansion — it would be unusable"
+else ok; fi
+
 # ISOLATE the PATH rule the same way, and in the direction that actually bites: a CURRENT
 # interpreter executing the guard (so the $BASH rule is satisfied and cannot be what fails) while
 # PATH resolves `bash` to an OLD one. That is the live macOS hazard in mirror image — every

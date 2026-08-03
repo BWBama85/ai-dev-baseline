@@ -84,14 +84,13 @@ printf 'demo skill\n' > "$seed/agents/claude/skills/demo/SKILL.md"
 # here would fail this fixture in a way that looks like a bin/baseline bug.
 # shellcheck source=/dev/null
 . "$ROOT/scripts/lib/common.sh"
-while IFS= read -r s; do
-  [ -n "$s" ] || continue
+mapfile -t seed_scripts < <(adb_agent_manifest claude "$seed" "$work/unused-home" \
+  | cut -f1 | sed -n "s|^$seed/agents/claude/scripts/||p")
+[ "${#seed_scripts[@]}" -gt 0 ] || { echo "session-currency fixture: the manifest named no scripts" >&2; exit 1; }
+for s in "${seed_scripts[@]}"; do
   case "$s" in session-currency.sh) continue ;; esac   # the real one, copied above
   printf '#stub\n' > "$seed/agents/claude/scripts/$s"
-done <<EOF
-$(adb_agent_manifest claude "$seed" "$work/unused-home" \
-   | cut -f1 | sed -n "s|^$seed/agents/claude/scripts/||p")
-EOF
+done
 
 origin="$work/origin.git"
 check_make_repo_pair "$seed" "$origin" || { echo "session-currency fixture: repo pair init failed" >&2; exit 1; }
@@ -105,12 +104,12 @@ src="$work/src"; git clone -q "$origin" "$src"
 fh="$work/home"; mkdir -p "$fh/.claude/skills" "$fh/.claude/scripts"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
-while IFS= read -r s; do
-  [ -n "$s" ] || continue
+mapfile -t src_scripts < <(adb_agent_manifest claude "$src" "$fh" | cut -f1 \
+  | sed -n "s|^$src/agents/claude/scripts/||p")
+[ "${#src_scripts[@]}" -gt 0 ] || { echo "session-currency fixture: the manifest named no scripts to link" >&2; exit 1; }
+for s in "${src_scripts[@]}"; do
   ln -s "$src/agents/claude/scripts/$s" "$fh/.claude/scripts/$s"
-done <<EOF
-$(adb_agent_manifest claude "$src" "$fh" | cut -f1 | sed -n "s|^$src/agents/claude/scripts/||p")
-EOF
+done
 ln -s "$src/scripts/lib" "$fh/.claude/scripts/lib"
 srcgit="$(git -C "$src" rev-parse --absolute-git-dir)"
 

@@ -241,7 +241,7 @@ static_lint() {
     }
 
     file_jobs=0
-    while IFS="$(printf '\t')" read -r job runson guard firstlog; do
+    while IFS=$'\t' read -r job runson guard firstlog; do
       [ -n "$job" ] || continue
       jobs=$((jobs + 1))
       file_jobs=$((file_jobs + 1))

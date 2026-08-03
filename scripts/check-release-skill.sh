@@ -346,12 +346,27 @@ req_fixed "$DRV" 'mergeCommit'       driver-tags-the-prs-own-merge-commit
 req_fixed "$DRV" 'adb_version_ge'    driver-uses-the-shared-comparator
 req_fixed "$DRV" 'assert_role'       driver-keeps-the-release-role-guard
 req_fixed "$DRV" 'exit-code'         driver-verifies-the-remote-tag-with-exit-code
-# GNU-only tools are a portability failure this repo explicitly forbids (Golden Rule 4: macOS bash
-# 3.2 / BSD userland). `sort -V` does not exist on stock macOS, and inside a command substitution
-# without pipefail the failure is masked, leaving an EMPTY previous-version that reads as "first
-# release". Asserted against COMMENT-STRIPPED source so the file can explain the hazard.
+# THE BAN STAYS, AND ITS OLD RATIONALE DID NOT (#259 asked for this to be settled with evidence).
+#
+# What changed: Golden Rule 4 no longer says "macOS bash 3.2 / BSD userland" — the floor is bash
+# 5.3 (#256). And the flat claim that `sort -V` "does not exist on stock macOS" is no longer true:
+# measured on macOS 26 (Darwin 25.5), Apple's own /usr/bin/sort is `2.3-Apple (199)` and it accepts
+# `-V`, ordering 1.9 before 1.10 correctly.
+#
+# What did NOT change, and is why the rule survives its own rationale:
+#   * `sort` is coreutils/BSD, not bash. The 5.3 floor says nothing about it either way.
+#   * `-V` is not POSIX. It is a BSD/GNU extension, and this repo states no minimum macOS version,
+#     so "current macOS has it" is not "every supported host has it".
+#   * CI deliberately keeps Homebrew's `gnubin` OFF PATH on the macOS leg (.github/workflows/ci.yml)
+#     precisely so BSD userland is what gets exercised — a GNU-flag habit would go unnoticed there.
+#   * The failure mode is the reason it is a GATE rather than a preference: inside a command
+#     substitution without pipefail, an unsupported flag is MASKED, leaving an empty
+#     previous-version that reads as "first release" — a wrong release, silently.
+#
+# Asserted against COMMENT-STRIPPED source so the file can explain the hazard.
 if sed 's/#.*//' "$DRV" | grep -q 'sort -V'; then
-  check_note "release.sh uses GNU-only 'sort -V' in live code — not available on stock macOS"
+  check_note "release.sh uses GNU-only 'sort -V' in live code — '-V' is not POSIX, and an"
+  check_note "unsupported flag inside a command substitution is masked into an empty previous tag"
   check_fail
 fi
 # BRIDGE THE TWO ACCOUNTINGS. `check_result` RETURNS non-zero; `check_summary` exits on its own

@@ -280,18 +280,17 @@ eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "update current + healthy li
 
 hook_settings() {   # hook_settings <state>: write a settings.json in the fixture HOME
   local state="$1" s out=""
+  local -a hooks=()
   case "$state" in
     none) printf '{"hooks":{}}\n' > "$fh/.claude/settings.json"; return ;;
   esac
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
+  mapfile -t hooks < <(adb_claude_hook_scripts)
+  for s in "${hooks[@]}"; do
     # `partial` omits precommit-gate.sh — the exact edit that motivated #242.
     [ "$state" = partial ] && [ "$s" = "precommit-gate.sh" ] && continue
     out="${out}$fh/.claude/scripts/$s
 "
-  done <<HS
-$(adb_claude_hook_scripts)
-HS
+  done
   printf '%s' "$out" > "$fh/.claude/settings.json"
 }
 
