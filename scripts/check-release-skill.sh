@@ -67,29 +67,29 @@ rc_of() { bash "$RL" "$@" >/dev/null 2>&1; printf '%s' "$?"; }
 # =================================================================================================
 
 # --- format: the shell-glob validator accepted all of these -------------------------------------
-eq "$(printf '' | rc_of version-ok v1.2.3)"      0 "v1.2.3 with no prior versions is valid"
-eq "$(printf '' | rc_of version-ok v1.2.3-rc1)"  2 "v1.2.3-rc1 rejected (glob accepted it)"
-eq "$(printf '' | rc_of version-ok v1x.2.3)"     2 "v1x.2.3 rejected (glob accepted it)"
-eq "$(printf '' | rc_of version-ok v1.2.3.4)"    2 "v1.2.3.4 rejected (4 components)"
-eq "$(printf '' | rc_of version-ok v1.2)"        2 "v1.2 rejected (2 components)"
-eq "$(printf '' | rc_of version-ok 1.2.3)"       2 "1.2.3 rejected (no leading v)"
-eq "$(printf '' | rc_of version-ok v1.02.3)"     2 "v1.02.3 rejected (leading zero)"
-eq "$(printf '' | rc_of version-ok v.2.3)"       2 "v.2.3 rejected (empty component)"
-eq "$(printf '' | rc_of version-ok v0.0.0)"      0 "v0.0.0 is well-formed"
+eq "${ printf '' | rc_of version-ok v1.2.3; }"      0 "v1.2.3 with no prior versions is valid"
+eq "${ printf '' | rc_of version-ok v1.2.3-rc1; }"  2 "v1.2.3-rc1 rejected (glob accepted it)"
+eq "${ printf '' | rc_of version-ok v1x.2.3; }"     2 "v1x.2.3 rejected (glob accepted it)"
+eq "${ printf '' | rc_of version-ok v1.2.3.4; }"    2 "v1.2.3.4 rejected (4 components)"
+eq "${ printf '' | rc_of version-ok v1.2; }"        2 "v1.2 rejected (2 components)"
+eq "${ printf '' | rc_of version-ok 1.2.3; }"       2 "1.2.3 rejected (no leading v)"
+eq "${ printf '' | rc_of version-ok v1.02.3; }"     2 "v1.02.3 rejected (leading zero)"
+eq "${ printf '' | rc_of version-ok v.2.3; }"       2 "v.2.3 rejected (empty component)"
+eq "${ printf '' | rc_of version-ok v0.0.0; }"      0 "v0.0.0 is well-formed"
 
 # --- reuse: the case that stamps main for a release that can never be tagged ---------------------
-eq "$(printf 'v1.0.0\nv1.1.0\n' | rc_of version-ok v1.1.0)" 3 "exact reuse rejected"
-eq "$(printf '1.0.0\n1.1.0\n'   | rc_of version-ok v1.1.0)" 3 "reuse rejected across bare/v forms"
+eq "${ printf 'v1.0.0\nv1.1.0\n' | rc_of version-ok v1.1.0; }" 3 "exact reuse rejected"
+eq "${ printf '1.0.0\n1.1.0\n'   | rc_of version-ok v1.1.0; }" 3 "reuse rejected across bare/v forms"
 
 # --- ordering -----------------------------------------------------------------------------------
-eq "$(printf 'v1.0.0\nv1.1.0\n' | rc_of version-ok v1.2.0)" 0 "newer than the max is accepted"
-eq "$(printf 'v1.0.0\nv1.1.0\n' | rc_of version-ok v1.0.5)" 4 "older than the max is rejected"
-eq "$(printf 'v1.10.0\nv1.9.0\n' | rc_of version-ok v1.11.0)" 0 "numeric (not lexical) comparison: 1.11 > 1.10"
-eq "$(printf 'v1.10.0\n'         | rc_of version-ok v1.9.0)"  4 "numeric (not lexical): 1.9 < 1.10 rejected"
+eq "${ printf 'v1.0.0\nv1.1.0\n' | rc_of version-ok v1.2.0; }" 0 "newer than the max is accepted"
+eq "${ printf 'v1.0.0\nv1.1.0\n' | rc_of version-ok v1.0.5; }" 4 "older than the max is rejected"
+eq "${ printf 'v1.10.0\nv1.9.0\n' | rc_of version-ok v1.11.0; }" 0 "numeric (not lexical) comparison: 1.11 > 1.10"
+eq "${ printf 'v1.10.0\n'         | rc_of version-ok v1.9.0; }"  4 "numeric (not lexical): 1.9 < 1.10 rejected"
 # Unsorted input must not change the verdict — the max is computed, not assumed to be last.
-eq "$(printf 'v1.1.0\nv1.0.0\nv0.9.0\n' | rc_of version-ok v1.0.5)" 4 "max is computed regardless of input order"
-eq "$(printf '\n  \nv1.0.0\n'    | rc_of version-ok v1.1.0)" 0 "blank lines ignored"
-has "$(printf 'v1.2.3\n' | run version-ok v1.3.0 2>&1)" "1.3.0" "prints the bare version on success"
+eq "${ printf 'v1.1.0\nv1.0.0\nv0.9.0\n' | rc_of version-ok v1.0.5; }" 4 "max is computed regardless of input order"
+eq "${ printf '\n  \nv1.0.0\n'    | rc_of version-ok v1.1.0; }" 0 "blank lines ignored"
+has "${ printf 'v1.2.3\n' | run version-ok v1.3.0 2>&1; }" "1.3.0" "prints the bare version on success"
 
 # =================================================================================================
 # changelog-verify
@@ -103,41 +103,46 @@ good_cl() {   # <version> <last>
   else printf '[%s]: %s/releases/tag/%s\n' "${1#v}" "$BASE" "$1"; fi
 }
 
-eq "$(good_cl v1.2.0 v1.1.0 | rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY")" 0 "well-formed stamp passes"
-eq "$(good_cl v1.0.0 ''     | rc_of changelog-verify v1.0.0 ''     "$SLUG" "$TODAY")" 0 "first release uses releases/tag"
+eq "${ good_cl v1.2.0 v1.1.0 | rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY"; }" 0 "well-formed stamp passes"
+eq "${ good_cl v1.0.0 ''     | rc_of changelog-verify v1.0.0 ''     "$SLUG" "$TODAY"; }" 0 "first release uses releases/tag"
 
 # THE METACHARACTER REGRESSION: `1x1x0` must not satisfy a check for `1.1.0`.
 printf '# Changelog\n\n## [Unreleased]\n\n## [1x1x0] - %s\n\ntext\n\n[Unreleased]: %s/compare/v1.1.0...HEAD\n[1.1.0]: %s/compare/v1.0.0...v1.1.0\n' \
   "$TODAY" "$BASE" "$BASE" > /tmp/adb-cl-meta.$$
-eq "$(rc_of changelog-verify v1.1.0 v1.0.0 "$SLUG" "$TODAY" < /tmp/adb-cl-meta.$$)" 5 "1x1x0 does not satisfy the 1.1.0 heading"
+eq "${ rc_of changelog-verify v1.1.0 v1.0.0 "$SLUG" "$TODAY" < /tmp/adb-cl-meta.$$; }" 5 "1x1x0 does not satisfy the 1.1.0 heading"
 rm -f /tmp/adb-cl-meta.$$
 
 # THE WRONG-PREVIOUS-TAG REGRESSION: comparing from v1.0.0 when v1.1.0 is the previous release.
 printf '# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - %s\n\ntext\n\n[Unreleased]: %s/compare/v1.2.0...HEAD\n[1.2.0]: %s/compare/v1.0.0...v1.2.0\n' \
   "$TODAY" "$BASE" "$BASE" > /tmp/adb-cl-prev.$$
-eq "$(rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY" < /tmp/adb-cl-prev.$$)" 5 "wrong previous tag in the compare ref is rejected"
+eq "${ rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY" < /tmp/adb-cl-prev.$$; }" 5 "wrong previous tag in the compare ref is rejected"
 rm -f /tmp/adb-cl-prev.$$
 
 # THE NON-EMPTY [Unreleased] REGRESSION.
 printf '# Changelog\n\n## [Unreleased]\n\n### Added\n\n- leftover\n\n## [1.2.0] - %s\n\ntext\n\n[Unreleased]: %s/compare/v1.2.0...HEAD\n[1.2.0]: %s/compare/v1.1.0...v1.2.0\n' \
   "$TODAY" "$BASE" "$BASE" > /tmp/adb-cl-full.$$
-eq "$(rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY" < /tmp/adb-cl-full.$$)" 5 "non-empty [Unreleased] is rejected"
+eq "${ rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY" < /tmp/adb-cl-full.$$; }" 5 "non-empty [Unreleased] is rejected"
 rm -f /tmp/adb-cl-full.$$
 
 # Misdated heading, and a missing [Unreleased] ref.
 printf '# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - 2020-01-01\n\ntext\n\n[Unreleased]: %s/compare/v1.2.0...HEAD\n[1.2.0]: %s/compare/v1.1.0...v1.2.0\n' \
   "$BASE" "$BASE" > /tmp/adb-cl-date.$$
-eq "$(rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY" < /tmp/adb-cl-date.$$)" 5 "misdated version heading is rejected"
+eq "${ rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY" < /tmp/adb-cl-date.$$; }" 5 "misdated version heading is rejected"
 rm -f /tmp/adb-cl-date.$$
 eq "$(printf '# Changelog\n\n## [Unreleased]\n\n## [1.2.0] - %s\n\ntext\n' "$TODAY" \
       | rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY")" 5 "missing link refs are rejected"
 # A first-release shape must NOT satisfy a subsequent release (and vice versa).
-eq "$(good_cl v1.2.0 '' | rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY")" 5 "releases/tag shape rejected when a previous tag exists"
+eq "${ good_cl v1.2.0 '' | rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY"; }" 5 "releases/tag shape rejected when a previous tag exists"
 
 # =================================================================================================
 # checks-settled
 # =================================================================================================
 runs() {   # <n-completed> <n-pending>
+  # `local`, for the same reason rc_snip in check-roadmap-e2e.sh now declares its own (#259):
+  # `i` and `sep` were plain globals, and the only thing keeping them out of the caller was the
+  # `$( )` subshell every call site happened to wrap them in. `${ command; }` runs in the CURRENT
+  # shell, so a loop counter named `i` anywhere above would have been silently reset mid-loop.
+  local i sep
   printf '{"check_runs":['
   i=0; sep=""
   while [ "$i" -lt "$1" ]; do printf '%s{"name":"c%s","status":"completed"}' "$sep" "$i"; sep=","; i=$((i+1)); done
@@ -147,33 +152,33 @@ runs() {   # <n-completed> <n-pending>
 }
 
 # THE EMPTY-SET REGRESSION: zero check runs is "CI has not registered", never "all complete".
-eq "$(runs 0 0  | rc_of checks-settled 26)" 7 "empty check-run set is 'none', not settled"
-has "$(runs 0 0 | run checks-settled 26 2>&1)" "none" "empty set reports none"
+eq "${ runs 0 0  | rc_of checks-settled 26; }" 7 "empty check-run set is 'none', not settled"
+has "${ runs 0 0 | run checks-settled 26 2>&1; }" "none" "empty set reports none"
 
 # THE INCREMENTAL-REGISTRATION REGRESSION: a fast check completing before its siblings appear.
-eq "$(runs 1 0  | rc_of checks-settled 26)" 8 "1 complete of 26 expected is 'short', not settled"
-has "$(runs 1 0 | run checks-settled 26 2>&1)" "short" "partial registration reports short"
+eq "${ runs 1 0  | rc_of checks-settled 26; }" 8 "1 complete of 26 expected is 'short', not settled"
+has "${ runs 1 0 | run checks-settled 26 2>&1; }" "short" "partial registration reports short"
 
-eq "$(runs 20 6 | rc_of checks-settled 26)" 6 "still-running checks report pending"
-eq "$(runs 26 0 | rc_of checks-settled 26)" 0 "full complete set is settled"
-eq "$(runs 30 0 | rc_of checks-settled 26)" 0 "MORE checks than expected is settled (a job was added)"
-eq "$(runs 26 0 | rc_of checks-settled 0)"  0 "expected=0 with real checks is settled"
-eq "$(runs 0 0  | rc_of checks-settled 0)"  7 "expected=0 with NO checks is still 'none' (fail closed)"
+eq "${ runs 20 6 | rc_of checks-settled 26; }" 6 "still-running checks report pending"
+eq "${ runs 26 0 | rc_of checks-settled 26; }" 0 "full complete set is settled"
+eq "${ runs 30 0 | rc_of checks-settled 26; }" 0 "MORE checks than expected is settled (a job was added)"
+eq "${ runs 26 0 | rc_of checks-settled 0; }"  0 "expected=0 with real checks is settled"
+eq "${ runs 0 0  | rc_of checks-settled 0; }"  7 "expected=0 with NO checks is still 'none' (fail closed)"
 # Paginated input: --paginate concatenates one document per page.
-eq "$(printf '%s\n%s\n' "$(runs 13 0)" "$(runs 13 0)" | rc_of checks-settled 26)" 0 "paginated pages are summed"
+eq "${ printf '%s\n%s\n' "${ runs 13 0; }" "${ runs 13 0; }" | rc_of checks-settled 26; }" 0 "paginated pages are summed"
 # A malformed body must be a usage error, never a silent 'settled'.
-eq "$(printf 'not json' | rc_of checks-settled 26)" 2 "malformed JSON is an error, not settled"
+eq "${ printf 'not json' | rc_of checks-settled 26; }" 2 "malformed JSON is an error, not settled"
 
 # --- version-ok: the empty-component family ------------------------------------------------------
 # A TRAILING dot is the one the component loop cannot see: it consumes 1, 2, 3, then `${rest#*.}`
 # yields "" and the loop exits with n=3. `v1.2.3.` therefore validated and would have been written
 # into the changelog and used as a permanent tag.
-eq "$(printf '' | rc_of version-ok v1.2.3.)"  2 "trailing dot rejected"
-eq "$(printf '' | rc_of version-ok v.1.2.3)"  2 "leading dot rejected"
-eq "$(printf '' | rc_of version-ok v1..2.3)"  2 "doubled dot rejected"
-eq "$(printf '' | rc_of version-ok v1.2.3..)" 2 "doubled trailing dot rejected"
+eq "${ printf '' | rc_of version-ok v1.2.3.; }"  2 "trailing dot rejected"
+eq "${ printf '' | rc_of version-ok v.1.2.3; }"  2 "leading dot rejected"
+eq "${ printf '' | rc_of version-ok v1..2.3; }"  2 "doubled dot rejected"
+eq "${ printf '' | rc_of version-ok v1.2.3..; }" 2 "doubled trailing dot rejected"
 # The success path must still print a version with NO trailing dot.
-eq "$(printf '' | run version-ok v1.2.3 2>/dev/null)" "1.2.3" "valid version echoes cleanly"
+eq "${ printf '' | run version-ok v1.2.3 2>/dev/null; }" "1.2.3" "valid version echoes cleanly"
 
 # --- unreleased-entries: the pre-stamp emptiness refusal ------------------------------------------
 # `changelog-verify` cannot cover this — it only sees the POST-edit file, where [Unreleased] is
@@ -362,20 +367,20 @@ check_result "release skill delegates its decisions and stays out of the install
 # takes real arguments — and these assert that it does, and that it refuses bad ones.
 # =================================================================================================
 drv() { bash "$DRV" "$@" >/dev/null 2>&1; printf '%s' "$?"; }
-eq "$(drv --help)"                 0 "driver --help exits 0"
-eq "$(drv)"                        2 "no subcommand is a usage error"
-eq "$(drv not-a-subcommand)"       2 "unknown subcommand is a usage error"
-eq "$(drv version-guard)"          2 "version-guard requires an argument"
-eq "$(drv version-guard a b)"      2 "version-guard rejects extra arguments"
-eq "$(drv record-pr)"              2 "record-pr requires an argument"
-eq "$(drv record-pr not-a-number)" 1 "record-pr rejects a non-numeric PR"
-eq "$(drv tag)"                    2 "tag requires --message-file"
-eq "$(drv tag --message-file)"     2 "tag --message-file requires a path"
-eq "$(drv tag --message-file /nonexistent/nope)" 1 "tag refuses a missing message file"
-eq "$(drv tag --wrong-flag x)"     2 "tag rejects an unknown flag"
+eq "${ drv --help; }"                 0 "driver --help exits 0"
+eq "${ drv; }"                        2 "no subcommand is a usage error"
+eq "${ drv not-a-subcommand; }"       2 "unknown subcommand is a usage error"
+eq "${ drv version-guard; }"          2 "version-guard requires an argument"
+eq "${ drv version-guard a b; }"      2 "version-guard rejects extra arguments"
+eq "${ drv record-pr; }"              2 "record-pr requires an argument"
+eq "${ drv record-pr not-a-number; }" 1 "record-pr rejects a non-numeric PR"
+eq "${ drv tag; }"                    2 "tag requires --message-file"
+eq "${ drv tag --message-file; }"     2 "tag --message-file requires a path"
+eq "${ drv tag --message-file /nonexistent/nope; }" 1 "tag refuses a missing message file"
+eq "${ drv tag --wrong-flag x; }"     2 "tag rejects an unknown flag"
 # An EMPTY message file must be refused too — an empty annotated tag is the release's only note.
 : > /tmp/adb-empty-msg.$$
-eq "$(drv tag --message-file /tmp/adb-empty-msg.$$)" 1 "tag refuses an empty message file"
+eq "${ drv tag --message-file /tmp/adb-empty-msg.$$; }" 1 "tag refuses an empty message file"
 rm -f /tmp/adb-empty-msg.$$
 
 check_summary "release-skill"

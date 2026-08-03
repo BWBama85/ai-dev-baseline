@@ -117,7 +117,7 @@ found=0
 for wf in "$WFDIR"/*.md; do
   [ -f "$wf" ] || continue
   case "$(basename "$wf")" in README.md) continue ;; esac
-  hits="$(scan_one "$wf")"
+  hits="${ scan_one "$wf"; }"
   [ -n "$hits" ] || continue
   found=1
   check_note "$wf assigns a zsh-special variable inside a fenced block:"
@@ -152,7 +152,7 @@ if [ "$WFDIR" = "base/workflows" ]; then
                'export manpath=/z'; do
       i=$((i + 1))
       printf -- '---\nname: f%s\n---\n```bash\n%s\n```\n' "$i" "$bad" > "$st/f$i.md"
-      if [ -z "$(scan_one "$st/f$i.md")" ]; then
+      if [ -z "${ scan_one "$st/f$i.md"; }" ]; then
         check_note "self-test: the guard FAILED to catch [$bad] — it cannot see the bug it exists to stop"
         check_fail
       fi
@@ -168,14 +168,14 @@ if [ "$WFDIR" = "base/workflows" ]; then
                 'printf "%s\n" "${path##*/}"'; do
       j=$((j + 1))
       printf -- '---\nname: g%s\n---\n```bash\n%s\n```\n' "$j" "$good" > "$st/g$j.md"
-      if [ -n "$(scan_one "$st/g$j.md")" ]; then
+      if [ -n "${ scan_one "$st/g$j.md"; }" ]; then
         check_note "self-test: FALSE POSITIVE on [$good]"
         check_fail
       fi
     done
     # Text outside a fenced bash block is prose and must never be scanned.
     printf -- '---\nname: h\n---\nProse mentioning path=/tmp inline.\n\n```text\npath=/tmp\n```\n' > "$st/h.md"
-    if [ -n "$(scan_one "$st/h.md")" ]; then
+    if [ -n "${ scan_one "$st/h.md"; }" ]; then
       check_note "self-test: FALSE POSITIVE outside a fenced bash block"
       check_fail
     fi

@@ -190,7 +190,7 @@ snippet() { check_wf_snippet "$WF" "$1"; }
 # Prints the snippet's stdout (plus the tail's); sets RC_ to its exit status.
 run_snippet() {
   local name="$1" tail_code="${2:-}" code
-  code="$(snippet "$name")"
+  code="${ snippet "$name"; }"
   if [ -z "$code" ]; then
     bad "snippet '$name' not found in base/workflows/roadmap.md (marker removed or renamed?)"
     RC_=90; OUT=""; return 1
@@ -257,7 +257,7 @@ wf_arr() {
 health_set() {
   printf '{"check_runs":%s}\n' "$1"                          > "$FIX/check-runs.json"
   printf '{"sha":"%s","state":"x","statuses":%s}\n' "$E2E_SHA" "$2" > "$FIX/commit-status.json"
-  printf '{"workflows":%s}\n' "$(wf_arr "$3")"               > "$FIX/workflows.json"
+  printf '{"workflows":%s}\n' "${ wf_arr "$3"; }"               > "$FIX/workflows.json"
 }
 # ck1 <status> <conclusion-json> [sha] [app-slug] — the single-check-run fixture the health cases
 # vary. The app slug defaults to the value an Actions-produced check run really carries, read from
@@ -268,10 +268,10 @@ health_set() {
 check_actions_slug
 ck1() { printf '[{"name":"ci","head_sha":"%s","status":"%s","conclusion":%s,"app":{"slug":"%s"}}]' \
           "${3:-$E2E_SHA}" "$1" "$2" "${4:-$ACTIONS_SLUG}"; }
-health_green()  { health_set "$(ck1 completed '"success"')" '[]' 1; }
-health_red()    { health_set "$(ck1 completed '"failure"')" '[]' 1; }
-health_running(){ health_set "$(ck1 in_progress null)"      '[]' 1; }
-health_stale()  { health_set "$(ck1 completed '"success"' deadbeefdeadbeefdeadbeef)" '[]' 1; }
+health_green()  { health_set "${ ck1 completed '"success"'; }" '[]' 1; }
+health_red()    { health_set "${ ck1 completed '"failure"'; }" '[]' 1; }
+health_running(){ health_set "${ ck1 in_progress null; }"      '[]' 1; }
+health_stale()  { health_set "${ ck1 completed '"success"' deadbeefdeadbeefdeadbeef; }" '[]' 1; }
 health_no_ci()  { health_set '[]' '[]' 0; }
 health_norun()  { health_set '[]' '[]' 2; }
 # A non-Actions provider reports only through the legacy status API.
@@ -546,13 +546,13 @@ hasnt "$OUT" "VERDICT=met" "...so adding an unrelated passing status cannot turn
 # The SECOND masking provider (bot-review find): a check run from a different Checks API app lands
 # in `check_runs` too, so gating the inventory read on "any check runs" would skip it and let
 # `$total > 0` return green while Actions reported nothing. Attribution is by `app.slug`.
-fix_default; ms_drained; health_set "$(ck1 completed '"success"' "$E2E_SHA" vercel)" '[]' 3
+fix_default; ms_drained; health_set "${ ck1 completed '"success"' "$E2E_SHA" vercel; }" '[]' 3
 readiness
 has "$OUT" "VERDICT=indeterminate" \
   "a green check run from ANOTHER Checks app never speaks for 3 silent Actions workflows"
 has "$OUT" "Actions has not reported" "...and the reason names Actions specifically"
 # Same fixture, no active workflows: that app IS the repo's CI, so it legitimately reports green.
-fix_default; ms_drained; health_set "$(ck1 completed '"success"' "$E2E_SHA" vercel)" '[]' 0
+fix_default; ms_drained; health_set "${ ck1 completed '"success"' "$E2E_SHA" vercel; }" '[]' 0
 readiness
 has "$OUT" "VERDICT=met" "...while with 0 active workflows that same app is the repo's CI"
 
@@ -621,21 +621,21 @@ art_with_decision="$(printf '%s\n' \
   '| Question | Decision | Recorded |' \
   '| -------- | -------- | -------- |' \
   '| dep-outside-release:#73 | Re-scoped; no longer depends on #25 | #73 body |')"
-art_without="$(printf '%s\n' '<!-- ai-dev-baseline:roadmap:v1 -->' '# Build roadmap' '## Dependencies' '- #73 depends on #25')"
+art_without="${ printf '%s\n' '<!-- ai-dev-baseline:roadmap:v1 -->' '# Build roadmap' '## Dependencies' '- #73 depends on #25'; }"
 
-answered="$(printf '%s' "$art_with_decision" | bash "$RL" decisions)"
-eq "$(printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked)" \
+answered="${ printf '%s' "$art_with_decision" | bash "$RL" decisions; }"
+eq "${ printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked; }" \
    retired "a recorded decision retires its question"
-answered="$(printf '%s' "$art_without" | bash "$RL" decisions)"
-eq "$(printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked)" \
+answered="${ printf '%s' "$art_without" | bash "$RL" decisions; }"
+eq "${ printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked; }" \
    asked "...and an unrecorded one is still asked"
 
 # The stale edge in `## Dependencies` must NOT survive: edges are re-derived from the live
 # sources, and the decision row's own text retires this one.
-row="$(printf '%s' "$art_with_decision" | awk -F'|' '/dep-outside-release/ { print $3 }')"
-eq "$(printf '%s' "$row" | bash "$RL" deps-from-body | tr '\n' ' ' | sed 's/ $//')" '' \
+row="${ printf '%s' "$art_with_decision" | awk -F'|' '/dep-outside-release/ { print $3 }'; }"
+eq "${ printf '%s' "$row" | bash "$RL" deps-from-body | tr '\n' ' ' | sed 's/ $//'; }" '' \
    "the decision row retires the #25 edge (a negated mention never declares one)"
-eq "$(printf 'Depends on #78 only.' | bash "$RL" deps-from-body | tr '\n' ' ' | sed 's/ $//')" '78' \
+eq "${ printf 'Depends on #78 only.' | bash "$RL" deps-from-body | tr '\n' ' ' | sed 's/ $//'; }" '78' \
    "...while the body that replaced it declares the edge that IS real"
 
 # ============================================================================================
@@ -747,7 +747,13 @@ done
 # loudly — Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo without
 # one silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
 rc_snip() {   # <CMD> <user-root> [subdirs] [prefix] [extra-key] [probe] [cwd] -> prints RESOLVES
-  body="$(snippet release-command)"
+  # `local`, and it is load-bearing rather than tidiness (#259). This file also drives a
+  # file-scope `body` through the snippet-parse loop below, and the two are the same name. That
+  # was harmless only for as long as every caller wrapped this in `$( )`, where the subshell
+  # swallowed the assignment — so the helper was one modernization away from clobbering a
+  # variable in the caller it never knew about. `${ command; }` runs in the CURRENT shell.
+  local body
+  body="${ snippet release-command; }"
   body="${body//\{\{SKILLS_SUBDIRS\}\}/${3-no-project-skills}}"
   body="${body//\{\{SKILL_REGISTRY_PROBE\}\}/${6-}}"
   body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
@@ -755,7 +761,7 @@ rc_snip() {   # <CMD> <user-root> [subdirs] [prefix] [extra-key] [probe] [cwd] -
   body="${body//\{\{SKILL_PREFIX\}\}/${4:-/}}"
   body="${body//\{\{SKILL_EXTRA_KEY\}\}/${5-}}"
   printf 'ARTIFACT_BODY=%s\n%s\nprintf %%s "$RESOLVES"\n' \
-    "$(printf '%q' "<!-- release-command: $1 -->")" "$body" > "$work/rc.sh"
+    "${ printf '%q' "<!-- release-command: $1 -->"; }" "$body" > "$work/rc.sh"
   ( cd "${7:-$work}" && bash "$work/rc.sh" )
 }
 # A LOADABLE skill: opening `---` plus the two keys every registry needs. `printf x` is not one.
@@ -763,76 +769,76 @@ mk_skill() { mkdir -p "$1"; printf -- '---\nname: %s\ndescription: d\nuser-invoc
 mkdir -p "$work/sk" "$work/empty-sk"
 mk_skill "$work/sk/release"; mk_skill "$work/sk/ship"
 
-eq "$(rc_snip '/release' "$work/sk")"                 1 "a declared command with a SKILL.md resolves"
-eq "$(rc_snip '/nope' "$work/sk")"                    0 "a declared command with no skill does NOT resolve"
-eq "$(rc_snip '' "$work/sk")"                         0 "an absent marker never resolves (no /release default)"
+eq "${ rc_snip '/release' "$work/sk"; }"                 1 "a declared command with a SKILL.md resolves"
+eq "${ rc_snip '/nope' "$work/sk"; }"                    0 "a declared command with no skill does NOT resolve"
+eq "${ rc_snip '' "$work/sk"; }"                         0 "an absent marker never resolves (no /release default)"
 # A marker may carry ARGUMENTS. Resolution must use the command name only, or a valid skill reads
 # as missing — skills take invocation arguments, so this is an ordinary marker, not an edge case.
-eq "$(rc_snip '/ship --channel production' "$work/sk")" 1 "arguments are stripped before resolution"
-eq "$(rc_snip '/ship --channel production' "$work/empty-sk")" 0 "still refuses when the named skill is absent"
+eq "${ rc_snip '/ship --channel production' "$work/sk"; }" 1 "arguments are stripped before resolution"
+eq "${ rc_snip '/ship --channel production' "$work/empty-sk"; }" 0 "still refuses when the named skill is absent"
 # A directory without a SKILL.md is not a skill.
 mkdir -p "$work/sk/hollow"
-eq "$(rc_snip '/hollow' "$work/sk")"                  0 "a directory without SKILL.md does not resolve"
+eq "${ rc_snip '/hollow' "$work/sk"; }"                  0 "a directory without SKILL.md does not resolve"
 # EXISTENCE IS NOT LOADABILITY: a SKILL.md the agent's registry would reject must not certify a
 # command. Missing frontmatter, and present-but-incomplete frontmatter, both fail.
 mkdir -p "$work/sk/nofm"; printf 'just prose\n' > "$work/sk/nofm/SKILL.md"
-eq "$(rc_snip '/nofm' "$work/sk")"                    0 "SKILL.md without frontmatter does not resolve"
+eq "${ rc_snip '/nofm' "$work/sk"; }"                    0 "SKILL.md without frontmatter does not resolve"
 mkdir -p "$work/sk/partialfm"; printf -- '---\nname: partialfm\n---\n' > "$work/sk/partialfm/SKILL.md"
-eq "$(rc_snip '/partialfm' "$work/sk")"               0 "SKILL.md missing description: does not resolve"
+eq "${ rc_snip '/partialfm' "$work/sk"; }"               0 "SKILL.md missing description: does not resolve"
 # The marker must declare an INVOCATION. `release` resolves a directory but emits `Next: release`,
 # which is not a runnable command.
-eq "$(rc_snip '/' "$work/sk")"                        0 "a bare prefix with no name does not resolve"
+eq "${ rc_snip '/' "$work/sk"; }"                        0 "a bare prefix with no name does not resolve"
 # The PROJECT root is searched too — and is anchored at the git toplevel, not $PWD, so /roadmap
 # invoked from a package subdirectory of a monorepo still finds the repo-root skills.
-eq "$(rc_snip '/release' "$work/empty-sk" sk)"        1 "a project-root skill resolves"
+eq "${ rc_snip '/release' "$work/empty-sk" sk; }"        1 "a project-root skill resolves"
 # $HOME (or any user root) containing whitespace must not word-split.
 mkdir -p "$work/sp ace"; mk_skill "$work/sp ace/release"
-eq "$(rc_snip '/release' "$work/sp ace")"             1 "a user root containing a space still resolves"
+eq "${ rc_snip '/release' "$work/sp ace"; }"             1 "a user root containing a space still resolves"
 # An EMPTY project subdir (agents with no established project-local discovery, e.g. Codex) must
 # search the USER root only — and must not glob, word-split, or resolve from the git root.
-eq "$(rc_snip '/release' "$work/sk" '')"              1 "empty project subdir still resolves from the user root"
-eq "$(rc_snip '/release' "$work/empty-sk" '')"        0 "empty project subdir does not fall back to the git root"
+eq "${ rc_snip '/release' "$work/sk" ''; }"              1 "empty project subdir still resolves from the user root"
+eq "${ rc_snip '/release' "$work/empty-sk" ''; }"        0 "empty project subdir does not fall back to the git root"
 # The invocation prefix is RENDERED per agent: Codex uses `$skill`, not a slash command. With a
 # `$` prefix, `/release` must be REJECTED and `$release` accepted — the mirror of the Claude case.
 # The marker is stored AGENT-NEUTRAL: whatever prefix the author wrote is stripped, and each
 # agent's render re-attaches its own. So one artifact is correct on every agent — which is the
 # real fix for a Codex adopter copying `/release` out of the schema.
-eq "$(rc_snip '$release' "$work/sk" sk '$')"          1 "codex render resolves a \$-written marker"
-eq "$(rc_snip '/release' "$work/sk" sk '$')"          1 "codex render also resolves a /-written marker"
-eq "$(rc_snip '$release' "$work/sk" sk '/')"          1 "claude render resolves a \$-written marker"
-eq "$(rc_snip 'release'  "$work/sk" sk '/')"          1 "a bare name resolves (prefix is re-attached)"
-eq "$(rc_snip '/your-skill' "$work/sk" sk '/')"       0 "the schema placeholder never resolves"
+eq "${ rc_snip '$release' "$work/sk" sk '$'; }"          1 "codex render resolves a \$-written marker"
+eq "${ rc_snip '/release' "$work/sk" sk '$'; }"          1 "codex render also resolves a /-written marker"
+eq "${ rc_snip '$release' "$work/sk" sk '/'; }"          1 "claude render resolves a \$-written marker"
+eq "${ rc_snip 'release'  "$work/sk" sk '/'; }"          1 "a bare name resolves (prefix is re-attached)"
+eq "${ rc_snip '/your-skill' "$work/sk" sk '/'; }"       0 "the schema placeholder never resolves"
 # `name: # TODO` parses as YAML null — the remainder is a comment, so the field is absent.
 mkdir -p "$work/sk/todofm"
 printf -- '---\nname: # TODO\ndescription: # TODO\n---\n' > "$work/sk/todofm/SKILL.md"
-eq "$(rc_snip '/todofm' "$work/sk" sk)"               0 "a commented-out frontmatter value does not resolve"
+eq "${ rc_snip '/todofm' "$work/sk" sk; }"               0 "a commented-out frontmatter value does not resolve"
 # THE AGENT SKILLS NAME GRAMMAR: lowercase hyphen-case, <=64, no leading/trailing/consecutive
 # hyphens. A looser check certifies a directory the agent will not register.
 # NOT `Release`: macOS is case-insensitive, so that directory IS `release` and mk_skill would
 # overwrite the shared fixture's name field, breaking every later /release assertion.
 mk_skill "$work/sk/Upcase"
-eq "$(rc_snip '/Upcase' "$work/sk" sk '/' user-invocable)"      0 "an uppercase name does not resolve"
+eq "${ rc_snip '/Upcase' "$work/sk" sk '/' user-invocable; }"      0 "an uppercase name does not resolve"
 mk_skill "$work/sk/trail-"
-eq "$(rc_snip '/trail-' "$work/sk" sk '/' user-invocable)"      0 "a trailing hyphen does not resolve"
+eq "${ rc_snip '/trail-' "$work/sk" sk '/' user-invocable; }"      0 "a trailing hyphen does not resolve"
 mk_skill "$work/sk/dou--ble"
-eq "$(rc_snip '/dou--ble' "$work/sk" sk '/' user-invocable)"    0 "consecutive hyphens do not resolve"
+eq "${ rc_snip '/dou--ble' "$work/sk" sk '/' user-invocable; }"    0 "consecutive hyphens do not resolve"
 mk_skill "$work/sk/under_score"
-eq "$(rc_snip '/under_score' "$work/sk" sk '/' user-invocable)" 0 "an underscore does not resolve"
-LONGNAME="$(printf 'a%.0s' $(seq 1 65))"
+eq "${ rc_snip '/under_score' "$work/sk" sk '/' user-invocable; }" 0 "an underscore does not resolve"
+LONGNAME="${ printf 'a%.0s' $(seq 1 65); }"
 mk_skill "$work/sk/$LONGNAME"
-eq "$(rc_snip "/$LONGNAME" "$work/sk" sk '/' user-invocable)"   0 "a name over 64 chars does not resolve"
+eq "${ rc_snip "/$LONGNAME" "$work/sk" sk '/' user-invocable; }"   0 "a name over 64 chars does not resolve"
 mk_skill "$work/sk/ok-name"
-eq "$(rc_snip '/ok-name' "$work/sk" sk '/' user-invocable)"     1 "valid hyphen-case resolves"
+eq "${ rc_snip '/ok-name' "$work/sk" sk '/' user-invocable; }"     1 "valid hyphen-case resolves"
 # A TAB is a valid shell argument separator; splitting on a literal space alone leaves it in
 # the name and reports an installed skill as missing.
-eq "$(rc_snip "$(printf '/release\t--channel prod')" "$work/sk" sk '/' user-invocable)" 1 "tab-separated arguments still resolve"
+eq "${ rc_snip "${ printf '/release\t--channel prod'; }" "$work/sk" sk '/' user-invocable; }" 1 "tab-separated arguments still resolve"
 # A valid unquoted YAML value ends at an inline comment; the loader sees `release`.
 mkdir -p "$work/sk/inlinec"
 printf -- '---\nname: inlinec # the project cutter\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/inlinec/SKILL.md"
-eq "$(rc_snip '/inlinec' "$work/sk" sk '/' user-invocable)"  1 "an inline YAML comment after the name resolves"
+eq "${ rc_snip '/inlinec' "$work/sk" sk '/' user-invocable; }"  1 "an inline YAML comment after the name resolves"
 mkdir -p "$work/sk/quotedc"
 printf -- '---\nname: "quotedc" # note\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/quotedc/SKILL.md"
-eq "$(rc_snip '/quotedc' "$work/sk" sk '/' user-invocable)"  1 "a quoted name with a trailing comment resolves"
+eq "${ rc_snip '/quotedc' "$work/sk" sk '/' user-invocable; }"  1 "a quoted name with a trailing comment resolves"
 # Structure never declares: a marker inside a fence, blockquote or code span is documentation.
 eq "$(printf '\140\140\140\n<!-- release-command: fenced -->\n\140\140\140\n' \
       | bash "$RL" release-command | sed "/^$/d" | wc -l | tr -d " ")" 0 "a fenced marker declares nothing"
@@ -841,10 +847,10 @@ eq "$(printf '> <!-- release-command: bq -->\n' \
 # `user-invocable: false` is an explicit statement that the operator cannot invoke the skill.
 mkdir -p "$work/sk/notinvocable"
 printf -- '---\nname: notinvocable\ndescription: d\nuser-invocable: false\n---\n' > "$work/sk/notinvocable/SKILL.md"
-eq "$(rc_snip '/notinvocable' "$work/sk" sk '/' user-invocable)" 0 "user-invocable: false does not resolve"
+eq "${ rc_snip '/notinvocable' "$work/sk" sk '/' user-invocable; }" 0 "user-invocable: false does not resolve"
 # An untrusted name reaching grep as an OPTION exits 0 with no match, certifying a phantom skill.
-eq "$(rc_snip '/--help' "$work/sk" sk '/' user-invocable)"    0 "an option-shaped name does not resolve"
-eq "$(rc_snip '/../escape' "$work/sk" sk '/' user-invocable)" 0 "a path-traversal name does not resolve"
+eq "${ rc_snip '/--help' "$work/sk" sk '/' user-invocable; }"    0 "an option-shaped name does not resolve"
+eq "${ rc_snip '/../escape' "$work/sk" sk '/' user-invocable; }" 0 "a path-traversal name does not resolve"
 # The LEGACY schema example every upgraded artifact carries must not read as a declaration.
 eq "$(printf 'Optionally `<!-- release-command: /release -->` overrides it.\n' \
       | bash "$RL" release-command | sed "/^$/d" | wc -l | tr -d " ")" 0 "the backticked schema example declares nothing"
@@ -853,33 +859,33 @@ eq "$(printf '<!-- release-command: release -->\n' \
 # A QUOTED YAML name is valid and registers fine; a raw compare would reject it.
 mkdir -p "$work/sk/quoted"
 printf -- '---\nname: "quoted"\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/quoted/SKILL.md"
-eq "$(rc_snip '/quoted' "$work/sk" sk '/' user-invocable)"    1 "a quoted YAML name resolves"
+eq "${ rc_snip '/quoted' "$work/sk" sk '/' user-invocable; }"    1 "a quoted YAML name resolves"
 # The FIRST line must be the opening `---`. A file whose frontmatter starts later is rejected by
 # the loader, but a scan that skips line 1 finds the later delimiter and calls it the close.
 mkdir -p "$work/sk/lateopen"
 printf 'stray prose\n---\nname: lateopen\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/lateopen/SKILL.md"
-eq "$(rc_snip '/lateopen' "$work/sk" sk '/' user-invocable)" 0 "frontmatter not starting at line 1 does not resolve"
+eq "${ rc_snip '/lateopen' "$work/sk" sk '/' user-invocable; }" 0 "frontmatter not starting at line 1 does not resolve"
 # A repo path containing SPACES must not word-split the project root.
 mkdir -p "$work/sp dir"; cp -R "$work/sk" "$work/sp dir/sk"
 ( cd "$work/sp dir" && :; )
-eq "$(rc_snip '/release' "$work/empty-sk" sk '/' user-invocable '' "$work/sp dir")" 1 "a project root containing spaces still resolves"
+eq "${ rc_snip '/release' "$work/empty-sk" sk '/' user-invocable '' "$work/sp dir"; }" 1 "a project root containing spaces still resolves"
 # The loader contract, per agent. `name` must EQUAL the directory (a mismatch is the
 # misidentified-skill case build.sh refuses), and Claude additionally requires `user-invocable`.
 mkdir -p "$work/sk/misnamed"
 printf -- '---\nname: something-else\ndescription: d\nuser-invocable: true\n---\n' > "$work/sk/misnamed/SKILL.md"
-eq "$(rc_snip '/misnamed' "$work/sk" sk '/' user-invocable)"  0 "name not matching the directory does not resolve"
+eq "${ rc_snip '/misnamed' "$work/sk" sk '/' user-invocable; }"  0 "name not matching the directory does not resolve"
 mkdir -p "$work/sk/noinvoke"
 printf -- '---\nname: noinvoke\ndescription: d\n---\n' > "$work/sk/noinvoke/SKILL.md"
-eq "$(rc_snip '/noinvoke' "$work/sk" sk '/' user-invocable)" 0 "Claude: missing user-invocable does not resolve"
-eq "$(rc_snip '/noinvoke' "$work/sk" sk '/' '')"            1 "Codex/Antigravity: name+description suffice"
+eq "${ rc_snip '/noinvoke' "$work/sk" sk '/' user-invocable; }" 0 "Claude: missing user-invocable does not resolve"
+eq "${ rc_snip '/noinvoke' "$work/sk" sk '/' ''; }"            1 "Codex/Antigravity: name+description suffice"
 # Frontmatter must be CLOSED. An unterminated block is an incomplete edit the loader rejects.
 mkdir -p "$work/sk/unclosed"
 printf -- '---\nname: unclosed\ndescription: d\n' > "$work/sk/unclosed/SKILL.md"
-eq "$(rc_snip '/unclosed' "$work/sk" sk)"             0 "unterminated frontmatter does not resolve"
+eq "${ rc_snip '/unclosed' "$work/sk" sk; }"             0 "unterminated frontmatter does not resolve"
 # ...and the values must be non-empty.
 mkdir -p "$work/sk/emptyval"
 printf -- '---\nname:\ndescription:\n---\n' > "$work/sk/emptyval/SKILL.md"
-eq "$(rc_snip '/emptyval' "$work/sk" sk)"             0 "empty frontmatter values do not resolve"
+eq "${ rc_snip '/emptyval' "$work/sk" sk; }"             0 "empty frontmatter values do not resolve"
 
 # ============================================================================================
 # 9. AUTO-COMPOSITION — an empty release milestone is filled, not reported (D15 / #80)
@@ -922,7 +928,7 @@ compose_issues() {
 # The Decisions-edge source is the artifact itself, so a case that exercises it needs the artifact
 # present in the SAME open read.
 artifact_body() {
-  local body; body="$(printf '%s' "$1" | jq -Rs .)"
+  local body; body="${ printf '%s' "$1" | jq -Rs .; }"
   jq --argjson a "{\"number\":31,\"state\":\"open\",\"title\":\"roadmap\",\"labels\":[{\"name\":\"roadmap\"}],\"milestone\":null,\"body\":$body}" \
      '. + [$a]' "$FIX/open-issues.json" > "$FIX/open-issues.json.tmp" \
      && mv "$FIX/open-issues.json.tmp" "$FIX/open-issues.json"
@@ -937,7 +943,7 @@ fix_default
 compose_issues '102!' '112!' 20 80 31
 ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
 eq "$RC_" 0 "the compose snippet runs clean"
-eq "$(promoted)" "102 112" "every open bug is promoted; enhancements are not"
+eq "${ promoted; }" "102 112" "every open bug is promoted; enhancements are not"
 has "$OUT" "composed: #102 -> Next release (release-blocker)" "each promotion reports one line"
 has "$OUT" "rider candidates" "the enhancement slate is printed for judgement"
 
@@ -955,20 +961,20 @@ eq "$(grep -- '--milestone Next release' "$FIX/calls" 2>/dev/null | wc -l | tr -
 fix_default
 compose_issues '136!>55' 55 31
 ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "55 136" "a bug's open prerequisite is promoted with it, even as an enhancement"
+eq "${ promoted; }" "55 136" "a bug's open prerequisite is promoted with it, even as an enhancement"
 
 # --- 9c-bis. closure is TRANSITIVE --------------------------------------------------------
 fix_default
 compose_issues '136!>55' '55>62' 62 31
 ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "55 62 136" "closure follows the chain to its end, not one hop"
+eq "${ promoted; }" "55 62 136" "closure follows the chain to its end, not one hop"
 
 # --- 9c-ter. a CLOSED prerequisite is satisfied and pulls nothing in -------------------------
 # #999 is absent from the open read, so the edge is already satisfied.
 fix_default
 compose_issues '136!>999' 31
 ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "136" "a prerequisite that is not open is satisfied and promotes nothing extra"
+eq "${ promoted; }" "136" "a prerequisite that is not open is satisfied and promotes nothing extra"
 
 # --- 9d. --no-autofix is read-only ----------------------------------------------------------
 fix_default
@@ -1000,7 +1006,7 @@ has "$OUT" "no promotable bugs" "...and the empty floor is stated"
 fix_default
 compose_issues '31!' '102!'
 ADB_RELEASE_MODE=1 ADB_ROADMAP_NUM=31 run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "102" "the roadmap issue is excluded even when it carries the bug label"
+eq "${ promoted; }" "102" "the roadmap issue is excluded even when it carries the bug label"
 
 # --- 9h. hard stops: a failed read never composes a release out of nothing -------------------
 fix_default; compose_issues '102!' 31; : > "$FIX/fail-openissues"
@@ -1041,7 +1047,7 @@ fix_default
 compose_issues '102!' 31
 printf '[{"number":31,"state":"open","labels":[{"name":"roadmap"}],"title":"the roadmap"}]\n' > "$FIX/milestone-issues.json"
 ADB_RELEASE_MODE=1 ADB_ROADMAP_NUM=31 run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "102" "the artifact itself never counts as a composed member"
+eq "${ promoted; }" "102" "the artifact itself never counts as a composed member"
 
 # --- 9l. NON-IMPLEMENTABLE ISSUES ARE NEVER PROMOTED (review round 1) -----------------------
 # A `bug` that step 4 classified `tracker-only` or `owner-review` is never emitted by the advance
@@ -1051,13 +1057,13 @@ eq "$(promoted)" "102" "the artifact itself never counts as a composed member"
 fix_default
 compose_issues '102!' '112!' 31
 ADB_RELEASE_MODE=1 ADB_EXCLUDE="112" run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "102" "an excluded (tracker-only / owner-review) bug is not promoted"
+eq "${ promoted; }" "102" "an excluded (tracker-only / owner-review) bug is not promoted"
 
 # ...and a bug whose PREREQUISITE is excluded is dropped too, with the reason stated.
 fix_default
 compose_issues '136!>112' '112!' 31
 ADB_RELEASE_MODE=1 ADB_EXCLUDE="112" run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "" "a bug whose prerequisite is excluded is not promoted either"
+eq "${ promoted; }" "" "a bug whose prerequisite is excluded is not promoted either"
 has "$OUT" "#136 NOT promoted" "...and the drop is reported, never silent"
 
 # COMPOSE_EXCLUDE must be SET, even when empty — a silently-unset exclusion set is the bug above.
@@ -1066,7 +1072,7 @@ compose_issues '102!' 31
 OUT="$(PATH="$SBIN:$PATH" ADB_FIX="$FIX" bash -c "
   set -u
   M_NUM=9; ROADMAP_NUM=31; RELEASE_MODE=1
-  $(snippet compose-candidates)" 2>&1)"; RC_=$?
+  ${ snippet compose-candidates; }" 2>&1)"; RC_=$?
 no "$RC_" "an UNSET COMPOSE_EXCLUDE is a hard stop, not an empty set"
 has "$OUT" "COMPOSE_EXCLUDE" "...and the message names the variable"
 
@@ -1077,14 +1083,14 @@ fix_default
 compose_issues '136!>99' '102!' 31
 printf '{"number":99,"state":"closed","state_reason":"not_planned"}\n' > "$FIX/issue-99.json"
 ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "102" "a bug whose prerequisite was CANCELED is not promoted"
+eq "${ promoted; }" "102" "a bug whose prerequisite was CANCELED is not promoted"
 has "$OUT" "#136 NOT promoted" "...and says which prerequisite cannot be promoted"
 # ...while a prerequisite closed as COMPLETED is genuinely satisfied.
 fix_default
 compose_issues '136!>99' 31
 printf '{"number":99,"state":"closed","state_reason":"completed"}\n' > "$FIX/issue-99.json"
 ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "136" "a prerequisite closed as COMPLETED is satisfied and blocks nothing"
+eq "${ promoted; }" "136" "a prerequisite closed as COMPLETED is satisfied and blocks nothing"
 
 # --- 9n. ISSUES IN ANOTHER MILESTONE ARE NOT CANDIDATES (review round 1) ---------------------
 # An issue slated into some other milestone carries a scope decision an owner already made;
@@ -1093,12 +1099,12 @@ eq "$(promoted)" "136" "a prerequisite closed as COMPLETED is satisfied and bloc
 fix_default
 compose_issues '102!' '200!@v2.0' 31
 ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "102" "a bug already slated into another milestone is never reassigned"
+eq "${ promoted; }" "102" "a bug already slated into another milestone is never reassigned"
 # ...and it is not silently pulled in as a prerequisite either.
 fix_default
 compose_issues '136!>200' '200!@v2.0' 31
 ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "" "...nor dragged in through another issue's dependency closure"
+eq "${ promoted; }" "" "...nor dragged in through another issue's dependency closure"
 
 # --- 9o. DECISIONS ROWS ARE AN EDGE SOURCE (review round 1) ----------------------------------
 # Step 4 defines the edge set as issue bodies UNION the artifact's `## Decisions` rows. Reading
@@ -1112,7 +1118,7 @@ artifact_body '## Decisions
 | --- | --- | --- |
 | dep-outside-release:#73 | Re-scoped to a thin driver; Depends on #78 only. | #73 body |'
 ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "73 78" "an edge declared only in a Decisions row still pulls its prerequisite in"
+eq "${ promoted; }" "73 78" "an edge declared only in a Decisions row still pulls its prerequisite in"
 
 # ...and attribution is PER ROW: a second row must not cross-multiply into a fabricated edge.
 fix_default
@@ -1124,7 +1130,7 @@ artifact_body '## Decisions
 | dep-outside-release:#73 | Depends on #78 only. | #73 body |
 | install-currency:#90 | No dependency; a policy note. | #90 body |'
 ADB_RELEASE_MODE=1 ADB_EXCLUDE="" run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "73 78 90" "a second decision row declares nothing extra (no cross-product edges)"
+eq "${ promoted; }" "73 78 90" "a second decision row declares nothing extra (no cross-product edges)"
 
 # --- 9p. --no-autofix PREVIEWS the slate instead of a generic message (review round 1) -------
 # The refusal contract promises to say what a normal run WOULD have promoted; returning before the
@@ -1154,10 +1160,10 @@ has "$OUT" "is empty again" "...and states the milestone is composable again"
 
 # --- 9j. determinism: two runs over an unchanged tracker promote the same set ----------------
 fix_default; compose_issues '102!' '112!>20' 20 80 31
-ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null; FIRST="$(promoted)"
+ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null; FIRST="${ promoted; }"
 fix_default; compose_issues '102!' '112!>20' 20 80 31
 ADB_RELEASE_MODE=1 run_snippet compose-candidates >/dev/null
-eq "$(promoted)" "$FIRST" "composition is deterministic over an unchanged tracker"
+eq "${ promoted; }" "$FIRST" "composition is deterministic over an unchanged tracker"
 eq "$FIRST" "20 102 112" "...and closes the chain it selected"
 
 # ============================================================================================
@@ -1166,7 +1172,7 @@ eq "$FIRST" "20 102 112" "...and closes the chain it selected"
 # Every snippet this file claims to execute must still exist. Without this, renaming a marker
 # would make run_snippet quietly find nothing and the suite would go green on zero coverage.
 for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command compose-candidates; do
-  if [ -n "$(snippet "$s")" ]; then ok; else bad "workflow lost its '# ADB-SNIPPET: $s' marker"; fi
+  if [ -n "${ snippet "$s"; }" ]; then ok; else bad "workflow lost its '# ADB-SNIPPET: $s' marker"; fi
 done
 
 # EVERY snippet must PARSE, checked independently of whether a scenario above happens to execute
@@ -1174,7 +1180,7 @@ done
 # apostrophe inside a `${VAR:?word}` message is a syntax error even within double quotes, and bash
 # then refuses the WHOLE snippet — a fail-loud guard that silently broke everything around it.
 for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilestoned release-command compose-candidates; do
-  body="$(snippet "$s")"
+  body="${ snippet "$s"; }"
   [ -n "$body" ] || continue
   body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
   body="${body//\{\{SKILLS_SUBDIRS\}\}/.claude\/skills}"

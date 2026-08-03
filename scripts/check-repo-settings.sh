@@ -132,7 +132,7 @@ jobs:
 EOF
 disco main
 yes "$RC_" "discovery over a ci.yml-shaped file exits 0"
-eq "$(ctx)" 'build-drift|shellcheck|' "only real jobs are contexts — the on: block's push/pull_request are NOT harvested"
+eq "${ ctx; }" 'build-drift|shellcheck|' "only real jobs are contexts — the on: block's push/pull_request are NOT harvested"
 hasnt "$OUT" "push"          "the push: trigger never becomes a required context"
 hasnt "$OUT" "pull_request"  "the pull_request: trigger never becomes a required context"
 hasnt "$OUT" "Checkout"      "a step-level '- name:' is never mistaken for a job name"
@@ -175,36 +175,36 @@ jobs:
     runs-on: ubuntu-latest
 EOF
 disco main
-eq "$(ctx)" 'Human Name|bare|keyed|quoted name|' "name: wins over the job key; a keyless job falls back to its key; quotes stripped"
+eq "${ ctx; }" 'Human Name|bare|keyed|quoted name|' "name: wins over the job key; a keyless job falls back to its key; quotes stripped"
 has "$ERR" "skipping job conditional" "a job-level if: is skipped (it may never report)"
 has "$ERR" "skipping job matrixed"    "a matrix job is skipped (its check name carries a suffix)"
 has "$ERR" "skipping job reusable"    "a reusable-workflow job is skipped (names come from the callee)"
 has "$ERR" "skipping job dynamic"     "a \${{ }} job name is skipped (not statically knowable)"
 has "$ERR" "blocks the PR forever"    "the skip reason states WHY a phantom context is dangerous"
-hasnt "$(ctx)" 'mat|'  "a matrix job never reaches the required set"
-hasnt "$(ctx)" 'cond|' "a conditional job never reaches the required set"
+hasnt "${ ctx; }" 'mat|'  "a matrix job never reaches the required set"
+hasnt "${ ctx; }" 'cond|' "a conditional job never reaches the required set"
 
 # --- file-level triggers ----------------------------------------------------------------------
 wf_reset
 printf 'name: P\non: push\njobs:\n  never-on-pr:\n    runs-on: ubuntu-latest\n' > "$WF/push-only.yml"
 disco main
-eq "$(ctx)" '' "a workflow with no pull_request trigger contributes nothing"
+eq "${ ctx; }" '' "a workflow with no pull_request trigger contributes nothing"
 has "$ERR" "no pull_request trigger" "the file skip names the missing trigger"
 
 wf_reset
 printf 'name: I\non: [push, pull_request]\njobs:\n  inline:\n    runs-on: ubuntu-latest\n' > "$WF/inline.yml"
 disco main
-eq "$(ctx)" 'inline|' "an inline flow-sequence 'on: [push, pull_request]' is recognized"
+eq "${ ctx; }" 'inline|' "an inline flow-sequence 'on: [push, pull_request]' is recognized"
 
 wf_reset
 printf 'name: S\non: pull_request\njobs:\n  scalar:\n    runs-on: ubuntu-latest\n' > "$WF/scalar.yml"
 disco main
-eq "$(ctx)" 'scalar|' "an inline scalar 'on: pull_request' is recognized"
+eq "${ ctx; }" 'scalar|' "an inline scalar 'on: pull_request' is recognized"
 
 wf_reset
 printf 'name: Pa\non:\n  pull_request:\n    paths:\n      - "src/**"\njobs:\n  scoped:\n    runs-on: ubuntu-latest\n' > "$WF/paths.yml"
 disco main
-eq "$(ctx)" '' "a paths-filtered pull_request contributes nothing (it does not run for every PR)"
+eq "${ ctx; }" '' "a paths-filtered pull_request contributes nothing (it does not run for every PR)"
 has "$ERR" "paths/paths-ignore filter" "the file skip names the paths filter"
 
 # branches: filters — provably-includes vs not. Both directions matter: over-skipping silently
@@ -215,17 +215,17 @@ printf 'name: C\non:\n  pull_request:\n    branches:\n      - main\njobs:\n  ok-
 printf 'name: D\non:\n  pull_request:\n    branches:\n      - develop\njobs:\n  wrong-base:\n    runs-on: ubuntu-latest\n' > "$WF/b3.yml"
 printf 'name: E\non:\n  pull_request:\n    branches: ["*"]\njobs:\n  star:\n    runs-on: ubuntu-latest\n' > "$WF/b4.yml"
 disco main
-eq "$(ctx)" 'ok-block|ok-inline|star|' "branches: including the target (inline, block, or '*') keeps the job; another base drops it"
+eq "${ ctx; }" 'ok-block|ok-inline|star|' "branches: including the target (inline, block, or '*') keeps the job; another base drops it"
 has "$ERR" "does not provably include main" "the branches skip names the target branch"
 disco develop
-has "$(ctx)" 'wrong-base|' "the same fixture keeps the develop-only job when develop IS the target"
+has "${ ctx; }" 'wrong-base|' "the same fixture keeps the develop-only job when develop IS the target"
 
 # --- multiple files aggregate; a missing dir is 'no CI', not an error -------------------------
 wf_reset
 printf 'name: One\non:\n  pull_request:\njobs:\n  one:\n    runs-on: ubuntu-latest\n' > "$WF/one.yml"
 printf 'name: Two\non:\n  pull_request:\njobs:\n  two:\n    runs-on: ubuntu-latest\n' > "$WF/two.yaml"
 disco main
-eq "$(ctx)" 'one|two|' "contexts aggregate across .yml and .yaml files"
+eq "${ ctx; }" 'one|two|' "contexts aggregate across .yml and .yaml files"
 
 OUT="$(bash "$RS" checks --branch main --workflow-dir "$work/nonexistent" 2>"$work/err")"; RC_=$?
 yes "$RC_" "a repo with no .github/workflows exits 0 (no CI is a legitimate state, not an error)"
@@ -393,7 +393,7 @@ rsx_auth required-drift; no "$RC_" "required-drift with unauthenticated gh exits
 wf_one; repo_fx true false; prot_checks "stale-name"
 rsx_stub apply
 yes "$RC_" "apply succeeds against a branch that already has required checks"
-eq "$(calls_of)" 'PATCH repos/acme/widget/branches/main/protection/required_status_checks|PATCH repos/acme/widget|' \
+eq "${ calls_of; }" 'PATCH repos/acme/widget/branches/main/protection/required_status_checks|PATCH repos/acme/widget|' \
   "protected-with-checks -> narrow PATCH on the sub-resource, THEN the auto-merge PATCH"
 has "$OUT" "nothing else touched" "the narrow path says it cannot lose other settings"
 eq "$(jq -r '.contexts|sort|join(",")' "$S/body.json")" "one,stale-name" \
@@ -406,7 +406,7 @@ eq "$(jq -r '.strict' "$S/body.json")" "false" "strict defaults off (see D9)"
 wf_one; repo_fx true false; prot_nochecks
 rsx_stub apply
 yes "$RC_" "apply succeeds against a protected branch that has no required checks"
-eq "$(calls_of)" 'PUT repos/acme/widget/branches/main/protection|PATCH repos/acme/widget|' \
+eq "${ calls_of; }" 'PUT repos/acme/widget/branches/main/protection|PATCH repos/acme/widget|' \
   "protected-no-checks -> full protection PUT, THEN the auto-merge PATCH"
 has "$OUT" "read-modify-write" "the wide path says it is preserving the existing object"
 eq "$(jq -r '.required_conversation_resolution' "$S/body.json")" "true" \
@@ -436,7 +436,7 @@ has "$OUT" "dropping" "--prune says what it removed"
 # after its first successful apply.
 wf_one; repo_fx true false; prot_checks "one"
 rsx_stub apply --enforce-admins
-has "$(calls_of)" "POST repos/acme/widget/branches/main/protection/enforce_admins" \
+has "${ calls_of; }" "POST repos/acme/widget/branches/main/protection/enforce_admins" \
   "--enforce-admins is honored on the PATCH path via its own endpoint"
 
 # The read-modify-write PUT must preserve EVERY protection sub-object. Dropping
@@ -472,7 +472,7 @@ eq "$(jq -r '.enforce_admins' "$S/body.json")" "true" "--enforce-admins opts in 
 wf_one; repo_fx true false; prot_none
 rsx_stub apply
 yes "$RC_" "apply succeeds on an unprotected branch (admin can see it is genuinely unprotected)"
-eq "$(calls_of)" 'PUT repos/acme/widget/branches/main/protection|PATCH repos/acme/widget|' \
+eq "${ calls_of; }" 'PUT repos/acme/widget/branches/main/protection|PATCH repos/acme/widget|' \
   "unprotected -> PUT standing protection up, THEN the auto-merge PATCH"
 eq "$(jq -r '.required_conversation_resolution' "$S/body.json")" "true" "a fresh stand-up turns thread resolution on"
 eq "$(jq -r '.required_pull_request_reviews.required_approving_review_count' "$S/body.json")" "0" \
@@ -482,7 +482,7 @@ eq "$(jq -r '.required_pull_request_reviews.required_approving_review_count' "$S
 wf_one; repo_fx true false; prot_nochecks
 STUB_FAIL_WRITE="protection" rsx_stub apply
 no "$RC_" "a failed required-checks write makes apply exit nonzero"
-eq "$(calls_of)" 'PUT repos/acme/widget/branches/main/protection FAILED|' \
+eq "${ calls_of; }" 'PUT repos/acme/widget/branches/main/protection FAILED|' \
   "the auto-merge write is NEVER reached when the checks write fails (order is load-bearing)"
 has "$OUT" "refusing to enable auto-merge" "the refusal says why"
 STUB_FAIL_WRITE=""
@@ -491,7 +491,7 @@ STUB_FAIL_WRITE=""
 wf_one; repo_fx false false; prot_nochecks
 rsx_stub apply
 no "$RC_" "a non-admin apply exits nonzero"
-eq "$(calls_of)" "" "a non-admin apply performs NO writes (the permission probe runs before any write)"
+eq "${ calls_of; }" "" "a non-admin apply performs NO writes (the permission probe runs before any write)"
 has "$OUT" "No admin permission" "the non-admin path names the problem"
 has "$OUT" "required checks FIRST" "the manual instructions state the load-bearing order"
 
@@ -499,7 +499,7 @@ has "$OUT" "required checks FIRST" "the manual instructions state the load-beari
 wf_one; repo_fx true false; prot_nochecks
 rsx_stub apply --dry-run
 yes "$RC_" "apply --dry-run exits 0"
-eq "$(calls_of)" "" "apply --dry-run performs NO mutations"
+eq "${ calls_of; }" "" "apply --dry-run performs NO mutations"
 has "$OUT" "would set required checks" "dry-run prints the write it would do"
 has "$OUT" "Dry run — nothing was changed" "dry-run says it changed nothing"
 
@@ -507,13 +507,13 @@ has "$OUT" "Dry run — nothing was changed" "dry-run says it changed nothing"
 wf_none; repo_fx true false; prot_none
 rsx_stub apply
 yes "$RC_" "apply on a repo with no CI still succeeds (it must not block)"
-eq "$(calls_of)" 'PATCH repos/acme/widget|' "no CI -> the checks write is skipped, auto-merge is still enabled"
+eq "${ calls_of; }" 'PATCH repos/acme/widget|' "no CI -> the checks write is skipped, auto-merge is still enabled"
 has "$OUT" "SKIPPED (no PR-triggered CI" "the no-CI path says the checks write was skipped"
 
 # --- already-enabled auto-merge is not re-written ---------------------------------------------
 wf_one; repo_fx true true; prot_checks "one"
 rsx_stub apply
-eq "$(calls_of)" 'PATCH repos/acme/widget/branches/main/protection/required_status_checks|' \
+eq "${ calls_of; }" 'PATCH repos/acme/widget/branches/main/protection/required_status_checks|' \
   "an already-enabled allow_auto_merge is not written again"
 has "$OUT" "already enabled" "apply reports auto-merge was already on"
 

@@ -228,9 +228,9 @@ _g() {
     STUB_EMPTY_REACTIONS="${STUB_EMPTY_REACTIONS:-0}" \
     bash "$PR" "$@" )
 }
-g() { OUT="$(_g "$@" 2>&1)"; RC_=$?; }
+g() { OUT="${ _g "$@" 2>&1; }"; RC_=$?; }
 # gout : stdout ONLY (the witnessed SHA contract) — stderr is diagnostics and must not pollute it.
-gout() { OUT="$(_g "$@" 2>/dev/null)"; RC_=$?; }
+gout() { OUT="${ _g "$@" 2>/dev/null; }"; RC_=$?; }
 
 # ============================ usage / dispatch ============================
 g -h;      yes "$RC_" "-h exits 0";  has "$OUT" "the pre-arm review guard" "-h prints the usage header"
@@ -629,7 +629,7 @@ g gate --pr 7
 eq "$RC_" "20" "a declared reviewer review with NO commit_id -> 20, not outvoted by a fresh '+1'"
 gout gate --pr 7
 eq "$OUT" "" "...and prints NO head SHA"
-has "$(_g gate --pr 7 2>&1)" "no usable commit_id" "the undatable review is named"
+has "${ _g gate --pr 7 2>&1; }" "no usable commit_id" "the undatable review is named"
 
 # AN IMPOSSIBLE TIMESTAMP must not read as fresh. `9999-99-99T99:99:99Z` passes a character-class
 # glob and sorts above every real anchor INCLUDING the no-anchor sentinel, so it defeated the

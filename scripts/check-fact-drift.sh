@@ -890,7 +890,7 @@ if [ "$MODE" = mutation ]; then
     #   3. drop lines carrying the sanctioned marker.
     _hit="$(grep -n "$_ra" "$_sf" | grep -Ev '^[0-9]+:[[:space:]]*#' | grep -Fv "$_allow")" || continue
     [ -n "$_hit" ] || continue
-    _stray="${_stray}$(printf '%s\n' "$_hit" | sed "s@^@$_sf:@")${_FACT_NL}"
+    _stray="${_stray}${ printf '%s\n' "$_hit" | sed "s@^@$_sf:@"; }${_FACT_NL}"
   done <<EOF
 $(find . -type f ! -path './.git/*')
 EOF

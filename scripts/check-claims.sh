@@ -308,7 +308,7 @@ cc_entity() {
       # The response must be ABOUT the number that was asked for. Real gh always is, so this only
       # fires on a misbehaving or redirected read — but reporting on #9 from a payload describing
       # #146 is a wrong answer, and a wrong answer is worse than no answer.
-      if [ "$(printf '%s' "$rec" | cut -f4)" -ne "$n" ] 2>/dev/null; then
+      if [ "${ printf '%s' "$rec" | cut -f4; }" -ne "$n" ] 2>/dev/null; then
         printf 'UNREADABLE\n' > "$f"
       else
         printf '%s\n' "$rec" > "$f"
@@ -394,7 +394,7 @@ REFS="$WORK/refs"; : > "$REFS"    # "<n>\t<file>:<line>\t<kind-hint>"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   N_FILES=$((N_FILES + 1))
-  while IFS="$(printf '\t')" read -r lno raw; do
+  while IFS="${ printf '\t'; }" read -r lno raw; do
     [ -n "$lno" ] || continue
     N_ADDED=$((N_ADDED + 1))
     # The exemption is read from the RAW line: the marker is normally written as a trailing
@@ -403,7 +403,7 @@ while IFS= read -r f; do
       N_EXEMPT=$((N_EXEMPT + 1)); continue
     fi
     case "$f" in
-      *.md) text="$(cc_prose "$raw")" ;;
+      *.md) text="${ cc_prose "$raw"; }" ;;
       *)    text="$raw" ;;
     esac
 
@@ -509,7 +509,7 @@ cc_added_dates() {
 for c in $(git rev-list "$REVRANGE" -- "$DECISIONS" 2>/dev/null); do
   cday="$(git log -1 --format='%cI' "$c" 2>/dev/null)"; cday="${cday%%T*}"
   [ -n "$cday" ] || continue
-  cnum="$(cc_daynum "$cday")"
+  cnum="${ cc_daynum "$cday"; }"
   while IFS= read -r dl; do
     if printf '%s' "$dl" | grep -qE "$CC_EXEMPT_RE"; then
       N_EXEMPT=$((N_EXEMPT + 1)); continue
@@ -535,7 +535,7 @@ for c in $(git rev-list "$REVRANGE" -- "$DECISIONS" 2>/dev/null); do
       cc_violation "$DECISIONS ($c): 'date: $d' is not a real calendar date"
       continue
     fi
-    dnum="$(cc_daynum "$d")"
+    dnum="${ cc_daynum "$d"; }"
     diff=$((dnum - cnum)); [ "$diff" -lt 0 ] && diff=$((-diff))
     # Absolute one-day tolerance, BOTH directions. A future stamp is a violation exactly as a
     # stale one is; the #173 entry was a day ahead, not behind.
@@ -559,9 +559,9 @@ elif [ "$LIVE" -eq 1 ]; then
   for n in $(awk -F'\t' '{print $1}' "$REFS" | sort -un); do
     cc_entity "$n"
     ent="$(cat "$CACHE/$n")"
-    kind="$(printf '%s' "$ent" | cut -f1)"
-    st="$(printf '%s' "$ent" | cut -f2)"
-    rs="$(printf '%s' "$ent" | cut -f3)"
+    kind="${ printf '%s' "$ent" | cut -f1; }"
+    st="${ printf '%s' "$ent" | cut -f2; }"
+    rs="${ printf '%s' "$ent" | cut -f3; }"
     sites="$(awk -F'\t' -v k="$n" '$1==k{print $2}' "$REFS" | sort -u | tr '\n' ' ')"
     # "DOES NOT EXIST" AND "COULD NOT BE READ" ARE DIFFERENT ANSWERS and are reported as such. The
     # first draft collapsed them, so a transport failure mid-run accused a perfectly real issue of
@@ -586,14 +586,14 @@ elif [ "$LIVE" -eq 1 ]; then
     # quoted the wrong spelling as an example. A diagnostic that names an innocent line is one
     # the reader learns to distrust.
     awk -F'\t' -v k="$n" '$1==k && $3!="bare" {print $3 "\t" $2}' "$REFS" | sort -u \
-      | while IFS="$(printf '\t')" read -r hint site; do
+      | while IFS="${ printf '\t'; }" read -r hint site; do
           [ "$hint" = "$kind" ] && continue
           case "$hint" in
             issue) printf 'ISSUE\t%s\n' "$site" ;;
             pull)  printf 'PULL\t%s\n'  "$site" ;;
           esac
         done > "$WORK/kindbad"
-  while IFS="$(printf '\t')" read -r want site; do
+  while IFS="${ printf '\t'; }" read -r want site; do
       [ -n "$site" ] || continue
       case "$want" in
         ISSUE) cc_violation "#$n is cited as an issue at $site, but it resolves to a pull request" ;;

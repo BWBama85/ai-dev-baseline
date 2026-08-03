@@ -64,37 +64,37 @@ clr_global() { rm -f "$GHOME/.config/ai-dev-baseline/agents.toml"; }
 # ============================ resolve ============================
 set_repo '[roles]' 'primary = "claude"' 'gap_analysis = "codex"' 'review = ["claude"]' 'debug = "claude"'
 clr_global
-eq "$(rd resolve primary)"      "claude" "resolve primary from repo"
-eq "$(rd resolve gap_analysis)" "codex"  "resolve gap_analysis from repo"
-eq "$(rd resolve review)"       "claude" "resolve single-element review"
-eq "$(rd resolve debug)"        "claude" "resolve debug from repo"
+eq "${ rd resolve primary; }"      "claude" "resolve primary from repo"
+eq "${ rd resolve gap_analysis; }" "codex"  "resolve gap_analysis from repo"
+eq "${ rd resolve review; }"       "claude" "resolve single-element review"
+eq "${ rd resolve debug; }"        "claude" "resolve debug from repo"
 
 # multi-agent review list
 set_repo '[roles]' 'primary = "claude"' 'review = ["claude", "gemini"]'
-eq "$(rd resolve review | tr '\n' ',')" "claude,gemini," "resolve multi-agent review list"
+eq "${ rd resolve review | tr '\n' ','; }" "claude,gemini," "resolve multi-agent review list"
 
 # resolution ORDER: no repo file → global default manifest wins
 clr_repo
 set_global '[roles]' 'primary = "codex"' 'review = ["gemini"]'
-eq "$(rd resolve primary)" "codex"  "unset repo → global primary"
-eq "$(rd resolve review)"  "gemini" "unset repo → global review"
+eq "${ rd resolve primary; }" "codex"  "unset repo → global primary"
+eq "${ rd resolve review; }"  "gemini" "unset repo → global review"
 
 # built-in fallback (no manifest anywhere): primary=claude; review/debug → primary; gap → skip
 clr_repo; clr_global
-eq "$(rd resolve primary)" "claude" "built-in primary default is claude"
-eq "$(rd resolve review)"  "claude" "built-in review falls back to primary"
-eq "$(rd resolve debug)"   "claude" "built-in debug falls back to primary"
-out="$(rd resolve gap_analysis)"; rc=$?
+eq "${ rd resolve primary; }" "claude" "built-in primary default is claude"
+eq "${ rd resolve review; }"  "claude" "built-in review falls back to primary"
+eq "${ rd resolve debug; }"   "claude" "built-in debug falls back to primary"
+out="${ rd resolve gap_analysis; }"; rc=$?
 eq "$out" "" "built-in gap_analysis is a skip (no output)"; yes "$rc" "skip is a 0 status"
 
 # gap_analysis = "" is the explicit skip
 set_repo '[roles]' 'gap_analysis = ""'
-out="$(rd resolve gap_analysis)"; rc=$?
+out="${ rd resolve gap_analysis; }"; rc=$?
 eq "$out" "" 'gap_analysis="" → empty'; yes "$rc" 'gap_analysis="" is a 0 status'
 
 # review = "" (empty string) → the primary's own pass (documented default), NOT an error
 set_repo '[roles]' 'primary = "claude"' 'review = ""'
-eq "$(rd resolve review)" "claude" 'review="" → primary'
+eq "${ rd resolve review; }" "claude" 'review="" → primary'
 
 # --- `release` + `issue_author`: declared roles with no shipped consumer (#3) ------------------
 # The baseline ships no /release skill on purpose — `release` names WHO would cut a release in a
@@ -103,7 +103,7 @@ eq "$(rd resolve review)" "claude" 'review="" → primary'
 # resolver handles gap_analysis|review|debug|issue_author|release in ONE case arm, so the
 # gap_analysis cases below already cover that arm for every key.
 set_repo '[roles]' 'primary = "claude"' 'release = "codex"'
-eq "$(rd resolve release)" "codex" "explicit release wins over the primary fallback"
+eq "${ rd resolve release; }" "codex" "explicit release wins over the primary fallback"
 
 # "Falls back to primary" must be proven with a NON-claude primary. The built-in-default cases at
 # the top can't do this (with no manifest anywhere, primary IS claude), so "falls back to primary"
@@ -112,7 +112,7 @@ eq "$(rd resolve release)" "codex" "explicit release wins over the primary fallb
 # two roles this change happened to add.
 set_repo '[roles]' 'primary = "gemini"'
 for r in review debug issue_author release; do
-  eq "$(rd resolve "$r")" "gemini" "unset $r falls back to primary (not literal claude)"
+  eq "${ rd resolve "$r"; }" "gemini" "unset $r falls back to primary (not literal claude)"
 done
 
 # --- validation: errors, and NO fall-through past an invalid higher-precedence value ---
@@ -156,16 +156,16 @@ rd resolve debug >/dev/null 2>&1; no $? "debug = [list] is rejected (single-owne
 
 # ============================ bots ============================
 clr_repo; clr_global
-b="$(rd bots)"
+b="${ rd bots; }"
 has "$b" "chatgpt-codex-connector" "default bot allowlist includes the Codex connector"
 has "$b" "copilot[bot]"            "default bot allowlist includes copilot[bot]"
 has "$b" "claude-code[bot]"        "default bot allowlist includes claude-code[bot]"
 
 set_repo '[reviewers]' 'bots = ["chatgpt-codex-connector", "my-bot[bot]"]'
-eq "$(rd bots | tr '\n' ',')" "chatgpt-codex-connector,my-bot[bot]," "[reviewers] bots override is authoritative"
+eq "${ rd bots | tr '\n' ','; }" "chatgpt-codex-connector,my-bot[bot]," "[reviewers] bots override is authoritative"
 
 set_repo '[reviewers]' 'bots = []'
-out="$(rd bots)"; rc=$?
+out="${ rd bots; }"; rc=$?
 eq "$out" "" "bots = [] disables (empty output)"; yes "$rc" "bots = [] is a 0 status"
 
 # a non-array bots value is malformed — rejected, NOT mistaken for the [] disable
@@ -180,25 +180,25 @@ rd bots >/dev/null 2>&1; no $? "scalar [reviewers].bots is rejected (not treated
 # auto-merge on a repo that does have one, which is #134 itself.
 set_repo '[reviewers]' 'bots = ["chatgpt-codex-connector"]'
 clr_global
-out="$(rd bots --declared)"; rc=$?
+out="${ rd bots --declared; }"; rc=$?
 eq "$out" "chatgpt-codex-connector" "bots --declared returns the declared logins"
 yes "$rc" "a declared non-empty list is a 0 status"
 
 set_repo '[reviewers]' 'bots = []'
-out="$(rd bots --declared)"; rc=$?
+out="${ rd bots --declared; }"; rc=$?
 eq "$out" "" "bots --declared: [] is declared-and-empty (no async reviewer)"
 yes "$rc" "declared [] is a 0 status — distinct from undeclared"
 
 clr_repo; clr_global
-out="$(rd bots --declared 2>/dev/null)"; rc=$?
+out="${ rd bots --declared 2>/dev/null; }"; rc=$?
 eq "$out" "" "bots --declared prints nothing when undeclared"
 eq "$rc" "3" "UNDECLARED is its own status (3), never the built-in default set"
 # The contrast that matters: the SAME state yields the default allowlist for /resolve-pr-threads.
-has "$(rd bots)" "chatgpt-codex-connector" "undeclared still yields the DEFAULT set for the plain 'bots' reader"
+has "${ rd bots; }" "chatgpt-codex-connector" "undeclared still yields the DEFAULT set for the plain 'bots' reader"
 
 # global-only declaration still counts as declared (the layering is repo -> global)
 clr_repo; set_global '[reviewers]' 'bots = ["my-bot[bot]"]'
-out="$(rd bots --declared)"; rc=$?
+out="${ rd bots --declared; }"; rc=$?
 eq "$out" "my-bot[bot]" "a GLOBAL declaration counts as declared"
 yes "$rc" "global declaration is a 0 status"
 clr_global
@@ -215,16 +215,16 @@ rd bots --bogus >/dev/null 2>&1; eq "$?" "2" "an unknown bots flag is rejected"
 # must review before a merge is armed. One home, here, beside the manifest reader it wraps.
 clr_repo; clr_global
 set_repo '[reviewers]' 'bots = ["Chatgpt-Codex-Connector", "MY-BOT[BOT]", "chatgpt-codex-connector"]'
-out="$(rd bots --comparable)"; rc=$?
+out="${ rd bots --comparable; }"; rc=$?
 yes "$rc" "bots --comparable is a 0 status for a usable declaration"
-eq "$(printf '%s' "$out" | tr '\n' ',')" "chatgpt-codex-connector,my-bot[bot]" \
+eq "${ printf '%s' "$out" | tr '\n' ','; }" "chatgpt-codex-connector,my-bot[bot]" \
    "bots --comparable lowercases and de-duplicates"
 
 # THE SUFFIX IS NO LONGER STRIPPED FROM THE DECLARATION, and that is the #176 fix: stripping it meant
 # `bots = ["foo[bot]"]` was satisfied by a HUMAN account named `foo`. The suffix now survives into the
 # comparison form, where the asymmetric matcher (common.sh) treats it as "this App, exactly".
 set_repo '[reviewers]' 'bots = ["foo[bot]"]'
-eq "$(rd bots --comparable)" "foo[bot]" "bots --comparable PRESERVES a declared '[bot]' suffix"
+eq "${ rd bots --comparable; }" "foo[bot]" "bots --comparable PRESERVES a declared '[bot]' suffix"
 
 # BOTH SPELLINGS OF ONE ACCOUNT ARE ONE REVIEWER. The arming guard requires EVERY declared login to
 # have reviewed, so keeping both would make one account two independent requirements — and because a
@@ -232,19 +232,19 @@ eq "$(rd bots --comparable)" "foo[bot]" "bots --comparable PRESERVES a declared 
 # reported bare could never satisfy both and the guard would wedge at "awaiting review" for good.
 # Declaring both used to be harmless and the old docs suggested it, so real manifests carry it.
 set_repo '[reviewers]' 'bots = ["foo", "foo[bot]"]'
-eq "$(rd bots --comparable | tr '\n' ',')" "foo," \
+eq "${ rd bots --comparable | tr '\n' ','; }" "foo," \
    "bots --comparable: a declared 'foo[bot]' is subsumed by a declared 'foo'"
 # ...and the suffixed entry survives on its own, where it is the operator's strict choice.
 set_repo '[reviewers]' 'bots = ["foo[bot]", "bar"]'
-eq "$(rd bots --comparable | tr '\n' ',')" "bar,foo[bot]," \
+eq "${ rd bots --comparable | tr '\n' ','; }" "bar,foo[bot]," \
    "bots --comparable: an unpaired '[bot]' entry is preserved"
 # Subsumption is per-account, not global — an unrelated suffixed login is untouched.
 set_repo '[reviewers]' 'bots = ["foo", "foo[bot]", "baz[bot]"]'
-eq "$(rd bots --comparable | tr '\n' ',')" "baz[bot],foo," \
+eq "${ rd bots --comparable | tr '\n' ','; }" "baz[bot],foo," \
    "bots --comparable: subsumption applies only to the matching bare login"
 
 set_repo '[reviewers]' 'bots = []'
-out="$(rd bots --comparable)"; rc=$?
+out="${ rd bots --comparable; }"; rc=$?
 eq "$out" "" "bots --comparable: [] is the empty set, not an error"
 yes "$rc" "declared [] is a 0 status under --comparable too"
 
@@ -277,7 +277,7 @@ rd bots --comparable >/dev/null 2>&1
 eq "$?" "18" "...and it rejects the WHOLE declaration rather than silently shrinking the set"
 # ...while an ordinary declaration is untouched by the new check.
 set_repo '[reviewers]' 'bots = ["good-bot", "other-bot[bot]"]'
-eq "$(rd bots --comparable 2>/dev/null | tr '\n' ' ')" "good-bot other-bot[bot] " \
+eq "${ rd bots --comparable 2>/dev/null | tr '\n' ' '; }" "good-bot other-bot[bot] " \
    "a well-formed multi-entry declaration still passes through unchanged"
 
 # THE TRI-STATE READER'S OWN CONTRACT MUST NOT MOVE. `adb_dispatch_bots` maps the reader's statuses,
@@ -339,20 +339,20 @@ set_repo '[roles]' 'primary = "claude"' 'gap_analysis = "codex"' 'review = ["cla
 
 # codex: stdout is the CLEAN final message; noise is on stderr, not stdout; and the prompt
 # reached codex on stdin (default path — GNU timeout on CI).
-out="$(printf 'do gap analysis' | rd invoke gap_analysis 2>/dev/null)"; rc=$?
+out="${ printf 'do gap analysis' | rd invoke gap_analysis 2>/dev/null; }"; rc=$?
 yes "$rc" "invoke gap_analysis (codex) succeeds"
-eq "$out" "$(printf 'RECEIVED:do gap analysis\nVERDICT: proceed')" "codex invoke returns ONLY the final message AND the prompt reached codex"
+eq "$out" "${ printf 'RECEIVED:do gap analysis\nVERDICT: proceed'; }" "codex invoke returns ONLY the final message AND the prompt reached codex"
 err="$(printf 'x' | rd invoke gap_analysis 2>&1 >/dev/null)"
 has "$err" "EXPLORATION NOISE" "codex exploration stream is routed to stderr"
 hasnt "$out" "EXPLORATION NOISE" "codex exploration noise never contaminates stdout"
 # REGRESSION (watchdog stdin bug): the portable watchdog path must ALSO deliver the prompt on
 # stdin, not /dev/null. Before the `<&0` fix this returned "RECEIVED:" (empty).
-outw="$(printf 'watchdog-prompt' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis 2>/dev/null ))"
+outw="${ printf 'watchdog-prompt' | ( cd "$REPO" && HOME="$GHOME" PATH="$BIN:$PATH" ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis 2>/dev/null ); }"
 has "$outw" "RECEIVED:watchdog-prompt" "watchdog path delivers the prompt on stdin (not /dev/null)"
 
 # explicit agent tokens invoke directly
-eq "$(printf 'review it' | rd invoke claude 2>/dev/null)" "CLAUDE:review it" "invoke <claude> runs claude -p"
-eq "$(printf 'review it' | rd invoke gemini 2>/dev/null)" "GEMINI:review it" "invoke <gemini> runs agy -p"
+eq "${ printf 'review it' | rd invoke claude 2>/dev/null; }" "CLAUDE:review it" "invoke <claude> runs claude -p"
+eq "${ printf 'review it' | rd invoke gemini 2>/dev/null; }" "GEMINI:review it" "invoke <gemini> runs agy -p"
 
 # a multi-agent role is refused (use resolve + per-slot invoke)
 printf 'x' | rd invoke review >/dev/null 2>&1; no $? "invoke of a multi-agent role is refused"
@@ -411,23 +411,23 @@ eq "$out_rc" "124" "the bash watchdog fallback also enforces the timeout"
 rd_var() { local v="$1"; shift
   env -u ADB_DISPATCH_TIMEOUT_SECS -u ADB_DISPATCH_KILL_GRACE_SECS -u ADB_DISPATCH_NO_TIMEOUT_BIN \
     "$@" bash -c '. "$1" >/dev/null 2>&1; printf %s "${!2:-unset}"' rd_var "$RD" "$v"; }
-eq "$(rd_var _ADB_RD_TIMEOUT_SECS)" "2700" "the no-environment default bound is 2700s (45-min hang backstop)"
-eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=99)" "99" "ADB_DISPATCH_TIMEOUT_SECS still overrides the default"
-eq "$(rd_var _ADB_RD_KILL_GRACE_SECS)" "10" "the no-environment kill grace is 10s"
+eq "${ rd_var _ADB_RD_TIMEOUT_SECS; }" "2700" "the no-environment default bound is 2700s (45-min hang backstop)"
+eq "${ rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=99; }" "99" "ADB_DISPATCH_TIMEOUT_SECS still overrides the default"
+eq "${ rd_var _ADB_RD_KILL_GRACE_SECS; }" "10" "the no-environment kill grace is 10s"
 # Both degenerate grace values are clamped: `timeout -k 0` means "no SIGKILL at all" to GNU
 # timeout (so a 0 grace would leave the binary path with NO escalation while the watchdog path
 # kills immediately), and a non-numeric value makes timeout exit 125 — which would classify as
 # "a real agent error" and send the reader hunting a codex bug that isn't there.
-eq "$(rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=0)" "1"  "a 0 kill grace is clamped to 1 (never 'no escalation')"
-eq "$(rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=x)" "10" "a non-numeric kill grace falls back to the default"
-eq "$(rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=3)" "3"  "a valid kill grace is honored"
+eq "${ rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=0; }" "1"  "a 0 kill grace is clamped to 1 (never 'no escalation')"
+eq "${ rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=x; }" "10" "a non-numeric kill grace falls back to the default"
+eq "${ rd_var _ADB_RD_KILL_GRACE_SECS ADB_DISPATCH_KILL_GRACE_SECS=3; }" "3"  "a valid kill grace is honored"
 # The bound is compared arithmetically (the 137->124 normalization) and counted down by the
 # portable watchdog, both integer-only — so a fractional override that `timeout` would happily
 # accept produced `[: 0.5: integer expression expected` and fired the bound instantly, failing
 # every dispatch at once. Reject it loudly instead (bot review, PR #105).
-eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=0.5 2>/dev/null)" "2700" "a fractional bound falls back to the default rather than breaking every dispatch"
-eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=0   2>/dev/null)" "2700" "a zero bound falls back to the default"
-eq "$(rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=abc 2>/dev/null)" "2700" "a non-numeric bound falls back to the default"
+eq "${ rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=0.5 2>/dev/null; }" "2700" "a fractional bound falls back to the default rather than breaking every dispatch"
+eq "${ rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=0   2>/dev/null; }" "2700" "a zero bound falls back to the default"
+eq "${ rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=abc 2>/dev/null; }" "2700" "a non-numeric bound falls back to the default"
 # NOT via rd_var: it silences the sourcing's stderr, which is exactly the stream under test here.
 frac_err="$(ADB_DISPATCH_TIMEOUT_SECS=0.5 bash -c '. "$1" >/dev/null' rd_var "$RD" 2>&1)"
 has "$frac_err" "not a positive whole number" "a rejected bound says so on stderr rather than failing silently"
@@ -441,13 +441,13 @@ has "$frac_err" "not a positive whole number" "a rejected bound says so on stder
 # shellcheck source=/dev/null
 _cls_all="$( . "$RD" >/dev/null 2>&1; for r in 0 7 124 137 143; do printf '%s|%s\n' "$r" "$(adb_dispatch_classify_rc "$r")"; done )"
 cls() { printf '%s\n' "$_cls_all" | grep "^$1|" | cut -d'|' -f2-; }
-has "$(cls 124)" "backstop"     "rc 124 is classified as our own hang backstop"
-has "$(cls 124)" "ADB_DISPATCH_TIMEOUT_SECS" "the 124 classification names the override knob"
-has "$(cls 143)" "OUTER"        "rc 143 is classified as an OUTER bound, not ours"
-has "$(cls 137)" "outside"      "rc 137 is classified as an external kill"
-has "$(cls 7)"   "real agent"   "an arbitrary nonzero rc is classified as a real agent error"
-hasnt "$(cls 7)" "backstop"     "a real agent error is NOT blamed on our backstop"
-eq "$(cls 0)" "completed"       "rc 0 is classified as completed"
+has "${ cls 124; }" "backstop"     "rc 124 is classified as our own hang backstop"
+has "${ cls 124; }" "ADB_DISPATCH_TIMEOUT_SECS" "the 124 classification names the override knob"
+has "${ cls 143; }" "OUTER"        "rc 143 is classified as an OUTER bound, not ours"
+has "${ cls 137; }" "outside"      "rc 137 is classified as an external kill"
+has "${ cls 7; }"   "real agent"   "an arbitrary nonzero rc is classified as a real agent error"
+hasnt "${ cls 7; }" "backstop"     "a real agent error is NOT blamed on our backstop"
+eq "${ cls 0; }" "completed"       "rc 0 is classified as completed"
 
 # --- the backstop must actually terminate (#93) ------------------------------
 # A backstop that only sends SIGTERM is not a backstop: a child that traps TERM leaves `wait`
@@ -564,29 +564,29 @@ pkill -f '[q]qstub' >/dev/null 2>&1 || true
 
 # --- resolver -------------------------------------------------------------------------------
 clr_repo; clr_global
-eq "$(rd effort review)" "medium" "built-in review effort is medium"
-out="$(rd effort gap_analysis)"; rc=$?
+eq "${ rd effort review; }" "medium" "built-in review effort is medium"
+out="${ rd effort gap_analysis; }"; rc=$?
 eq "$out" "" "gap_analysis has no built-in effort (inherit)"; eq "$rc" "1" "inherit is rc 1, not 0"
-out="$(rd effort debug)"; rc=$?; eq "$rc" "1" "a role with no default inherits"
+out="${ rd effort debug; }"; rc=$?; eq "$rc" "1" "a role with no default inherits"
 
 set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "low"'
-eq "$(rd effort review)" "low" "repo [roles.effort] wins over the built-in default"
+eq "${ rd effort review; }" "low" "repo [roles.effort] wins over the built-in default"
 
 clr_repo; set_global '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "high"'
-eq "$(rd effort review)" "high" "global [roles.effort] applies when the repo declares none"
+eq "${ rd effort review; }" "high" "global [roles.effort] applies when the repo declares none"
 
 set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "ultra"'
-eq "$(rd effort review)" "ultra" "repo beats global"
+eq "${ rd effort review; }" "ultra" "repo beats global"
 
 # An explicit "" is the documented escape hatch: inherit, do NOT fall through to the built-in.
 set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = ""'
-out="$(rd effort review)"; rc=$?
+out="${ rd effort review; }"; rc=$?
 eq "$out" "" 'explicit "" means inherit'; eq "$rc" "1" 'explicit "" is rc 1, not the medium default'
 
 # An invalid value must SURFACE. Falling back to the default here would mean a typo'd manifest
 # runs at a setting the operator never chose while believing it is bounded.
 set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "vigorous"'
-out="$(rd effort review 2>/dev/null)"; rc=$?
+out="${ rd effort review 2>/dev/null; }"; rc=$?
 eq "$rc" "2" "an invalid declared effort is rc 2"
 
 # The allowlist must track the CLI's own catalog, not a hand-written subset. `max` and `ultra` are
@@ -595,7 +595,7 @@ eq "$rc" "2" "an invalid declared effort is rc 2"
 # edit cannot quietly reintroduce either.
 for lvl in low medium high xhigh max ultra; do
   set_repo '[roles]' 'primary = "claude"' '[roles.effort]' "review = \"$lvl\""
-  eq "$(rd effort review)" "$lvl" "the CLI's catalog level '$lvl' is accepted"
+  eq "${ rd effort review; }" "$lvl" "the CLI's catalog level '$lvl' is accepted"
 done
 set_repo '[roles]' 'primary = "claude"' '[roles.effort]' 'review = "minimal"'
 rd effort review >/dev/null 2>&1; eq "$?" "2" "'minimal' is rejected — no bundled model supports it"
@@ -673,14 +673,14 @@ rd_path "$BIN:$BARE" available bogus  >/dev/null 2>&1; eq "$?" "2" "available: a
 rd_path "$BIN:$BARE" available >/dev/null 2>&1; eq "$?" "2" "available with no agent argument is a usage error"
 # O3: rc alone cannot tell the usage guard from `adb_agent_cli ""` (both 2). Pin the DIAGNOSTIC too,
 # or removing the guard is invisible.
-has "$(rd_path "$BIN:$BARE" available 2>&1)" "usage:" "available with no argument prints a usage diagnostic"
+has "${ rd_path "$BIN:$BARE" available 2>&1; }" "usage:" "available with no argument prints a usage diagnostic"
 
 # SILENT: the exit code IS the answer. A ladder asking about several agents must not have to
 # filter this helper's chatter out of its own report.
 # BYTES, not `$(...)`. Command substitution strips trailing newlines, so a stray `printf '\n'`
 # on either path would satisfy an `eq "" ` assertion while plainly violating the silent contract.
-eq "$(rd_path "$BIN:$BARE" available codex 2>&1 | wc -c | tr -d ' ')" "0" "available emits ZERO bytes when the CLI is present"
-eq "$(rd_path "$BARE" available codex 2>&1 | wc -c | tr -d ' ')" "0" "available emits ZERO bytes when the CLI is absent"
+eq "${ rd_path "$BIN:$BARE" available codex 2>&1 | wc -c | tr -d ' '; }" "0" "available emits ZERO bytes when the CLI is present"
+eq "${ rd_path "$BARE" available codex 2>&1 | wc -c | tr -d ' '; }" "0" "available emits ZERO bytes when the CLI is absent"
 
 # --- THE PAIRING PROOF ---------------------------------------------------------------------
 # `adb_agent_cli` names the executable and `_adb_rd_invoke_agent` runs it. If those two ever
@@ -732,35 +732,35 @@ for _t in codex claude agy; do printf '#!/usr/bin/env bash\nexit 0\n' > "$RB/$_t
 clr_global
 
 set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]'
-eq "$(rung "$RB:$BARE")"          "independent codex" "rung: a usable non-primary reviewer is independent"
+eq "${ rung "$RB:$BARE"; }"          "independent codex" "rung: a usable non-primary reviewer is independent"
 # THE DRIVER ARGUMENT. Same manifest, run BY codex: the reviewer is now the model writing the diff,
 # so `independent` would be a false claim of an independent pass. Comparing against `primary` (the
 # manifest's guess at who writes) instead of the real driver is the fail-open this argument closes.
-eq "$(rung "$RB:$BARE" codex)"    "same-model codex"  "rung: driver=codex makes a codex reviewer same-model"
-eq "$(rung "$RB:$BARE" gemini)"   "independent codex" "rung: driver=gemini keeps a codex reviewer independent"
+eq "${ rung "$RB:$BARE" codex; }"    "same-model codex"  "rung: driver=codex makes a codex reviewer same-model"
+eq "${ rung "$RB:$BARE" gemini; }"   "independent codex" "rung: driver=gemini keeps a codex reviewer independent"
 rung "$RB:$BARE" notanagent >/dev/null 2>&1; eq "$?" "2" "rung: a bogus driver token is unknown, not ignored"
-has "$(rung "$RB:$BARE" notanagent)" "unknown" "rung: the bogus-driver line says unknown"
+has "${ rung "$RB:$BARE" notanagent; }" "unknown" "rung: the bogus-driver line says unknown"
 
 set_repo '[roles]' 'primary = "claude"' 'review = ["claude"]'
-eq "$(rung "$RB:$BARE")" "same-model claude" "rung: review == primary is same-model"
+eq "${ rung "$RB:$BARE"; }" "same-model claude" "rung: review == primary is same-model"
 
 # MISSING SLOTS SURVIVE. An early return on the first available agent discarded the rest, so a
 # partially-installed list reported unqualified coverage while a configured slot ran nothing.
 set_repo '[roles]' 'primary = "claude"' 'review = ["codex", "gemini"]'
 ONLYC="$work/onlyc"; mkdir -p "$ONLYC"; cp "$RB/codex" "$ONLYC/codex"
-eq "$(rung "$ONLYC:$BARE")" "independent codex missing=gemini" "rung: an unavailable slot is reported alongside the rung"
-eq "$(rung "$BARE")"        "none missing=codex,gemini"        "rung: every unavailable slot is listed"
+eq "${ rung "$ONLYC:$BARE"; }" "independent codex missing=gemini" "rung: an unavailable slot is reported alongside the rung"
+eq "${ rung "$BARE"; }"        "none missing=codex,gemini"        "rung: every unavailable slot is listed"
 
 # THE DEFERRED ARM AGREES WITH THE MERGE GUARD. `--declared` accepts a syntactically valid array
 # whose entries no reviewer can match; `--comparable` (what pr-review.sh gate uses) rejects it 18.
 # Reporting `deferred` off the looser reader promises a hand-off the guard will refuse.
 set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]' '[reviewers]' 'bots = ["chatgpt-codex-connector"]'
-eq "$(rung "$BARE")" "deferred chatgpt-codex-connector missing=codex" "rung: a usable declared bot defers"
+eq "${ rung "$BARE"; }" "deferred chatgpt-codex-connector missing=codex" "rung: a usable declared bot defers"
 set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]' '[reviewers]' 'bots = ["[bot]"]'
 rung "$BARE" >/dev/null 2>&1; eq "$?" "2" "rung: a declaration the merge guard rejects is unknown, not deferred"
-hasnt "$(rung "$BARE")" "deferred" "rung: an unmatchable bot login never reports deferred"
+hasnt "${ rung "$BARE"; }" "deferred" "rung: an unmatchable bot login never reports deferred"
 set_repo '[roles]' 'primary = "claude"' 'review = ["codex"]' '[reviewers]' 'bots = []'
-eq "$(rung "$BARE")" "none missing=codex" "rung: an explicit bots = [] is none, not deferred"
+eq "${ rung "$BARE"; }" "none missing=codex" "rung: an explicit bots = [] is none, not deferred"
 
 # READER FAILURES ARE NEVER EMPTY CONFIG.
 set_repo '[roles]' 'primary = "claude"' 'review = ["bogus"]' '[reviewers]' 'bots = ["chatgpt-codex-connector"]'

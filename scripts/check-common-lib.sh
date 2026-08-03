@@ -220,7 +220,7 @@ if [ ! -e "$work/guard-dangle.txt" ]; then ok; else bad "adb_link dangling sourc
 mrepo="$work/mrepo"; mhome="$work/mhome"
 mkdir -p "$mrepo/agents/claude/skills/demo" "$mrepo/agents/claude/scripts" "$mrepo/scripts/lib" \
          "$mrepo/agents/codex/skills/demo" "$mrepo/agents/gemini/skills/demo"
-tab_="$(printf '\t')"
+tab_="${ printf '\t'; }"
 man="$(adb_agent_manifest claude "$mrepo" "$mhome")"
 # root doc line present, TAB-separated, pointing at the right dest
 echo "$man" | grep -Fq -- "$mrepo/agents/claude/CLAUDE.md${tab_}$mhome/.claude/CLAUDE.md" && ok || bad "manifest emits the claude root-doc line"
@@ -331,7 +331,7 @@ eq "$( cd "$nongit" && adb_repo_root )" "$( cd "$nongit" && pwd )" "adb_repo_roo
 tidy="$work/tidy"; mkdir -p "$tidy"; git init -q "$tidy"
 sh1="$(adb_repo_shape "$tidy")"
 eq "$(adb_shape_val "$sh1" in_git)"        "1"            "shape: tidy repo is in_git"
-eq "$(adb_shape_val "$sh1" root)"          "$(canon "$tidy")" "shape: root is the canonical git top-level"
+eq "$(adb_shape_val "$sh1" root)"          "${ canon "$tidy"; }" "shape: root is the canonical git top-level"
 eq "$(adb_shape_val "$sh1" cwd_is_root)"   "1"            "shape: cwd==root → cwd_is_root=1"
 eq "$(adb_shape_val "$sh1" parent_in_git)" "0"            "shape: tidy repo's parent is not a git repo"
 eq "$(adb_shape_val "$sh1" nested_in)"     ""             "shape: tidy repo is not nested"
@@ -340,7 +340,7 @@ eq "$(adb_shape_all "$sh1" extra_doc)"     ""             "shape: tidy repo has 
 
 # adb_shape_val returns only the FIRST match; adb_shape_all returns every line — verify on a
 # hand-built multi-value blob so the two accessors' contract is pinned independent of the walk.
-multi="$(printf 'k\tone\nk\ttwo\nother\tx\n')"
+multi="${ printf 'k\tone\nk\ttwo\nother\tx\n'; }"
 eq "$(adb_shape_val "$multi" k)"            "one"       "adb_shape_val returns the first match only"
 eq "$(adb_shape_all "$multi" k | tr '\n' ',')" "one,two," "adb_shape_all returns every match"
 eq "$(adb_shape_val "$multi" absent)"       ""          "adb_shape_val on an absent key prints nothing"
@@ -349,25 +349,25 @@ eq "$(adb_shape_val "$multi" absent)"       ""          "adb_shape_val on an abs
 mkdir -p "$tidy/sub/deeper"
 sh2="$(adb_repo_shape "$tidy/sub/deeper")"
 eq "$(adb_shape_val "$sh2" cwd_is_root)" "0"                "shape: cwd below root → cwd_is_root=0"
-eq "$(adb_shape_val "$sh2" root)"        "$(canon "$tidy")" "shape: subdir still resolves the git root"
+eq "$(adb_shape_val "$sh2" root)"        "${ canon "$tidy"; }" "shape: subdir still resolves the git root"
 
 # (3) Nested repo: an inner repo checked out inside an outer repo.
 outer="$work/outer"; mkdir -p "$outer"; git init -q "$outer"
 inner="$outer/vendor/plugin"; mkdir -p "$inner"; git init -q "$inner"
 sh3="$(adb_repo_shape "$inner")"
-eq "$(adb_shape_val "$sh3" root)"          "$(canon "$inner")" "shape: nested inner repo resolves to itself"
+eq "$(adb_shape_val "$sh3" root)"          "${ canon "$inner"; }" "shape: nested inner repo resolves to itself"
 eq "$(adb_shape_val "$sh3" parent_in_git)" "1"                 "shape: nested repo's parent is inside a git repo"
-eq "$(adb_shape_val "$sh3" nested_in)"     "$(canon "$outer")" "shape: nested_in names the enclosing repo"
+eq "$(adb_shape_val "$sh3" nested_in)"     "${ canon "$outer"; }" "shape: nested_in names the enclosing repo"
 
 # (4) bama-style: a git repo dropped inside an UNTRACKED parent tree, with a root doc ABOVE it.
 site="$work/site"; plugin="$site/wp-content/plugins/myplugin"
 mkdir -p "$plugin"; git init -q "$plugin"
 printf 'site root doc\n' > "$site/CLAUDE.md"        # outside any repo
 sh4="$(adb_repo_shape "$plugin")"
-eq "$(adb_shape_val "$sh4" root)"          "$(canon "$plugin")" "shape: bama-style resolves the plugin as root"
+eq "$(adb_shape_val "$sh4" root)"          "${ canon "$plugin"; }" "shape: bama-style resolves the plugin as root"
 eq "$(adb_shape_val "$sh4" parent_in_git)" "0"                  "shape: bama-style parent is outside any git repo"
 eq "$(adb_shape_val "$sh4" nested_in)"     ""                   "shape: bama-style is not nested in another repo"
-has "$(adb_shape_all "$sh4" foreign_doc)"  "$(canon "$site")/CLAUDE.md" "shape: finds the out-of-repo site CLAUDE.md above"
+has "$(adb_shape_all "$sh4" foreign_doc)"  "${ canon "$site"; }/CLAUDE.md" "shape: finds the out-of-repo site CLAUDE.md above"
 
 # (5) Monorepo / layered: extra_doc lists an in-tree root doc that sits beside a manifest, and
 # NEVER a bare doc with no manifest (the framework's own generated agents/<a>/CLAUDE.md class) or
@@ -380,9 +380,9 @@ printf 'bare\n' > "$mono/docs/CLAUDE.md"            # no manifest sibling → NO
 git -C "$mono" add -A                                # extra_doc reads the index (tracked only)
 sh5="$(adb_repo_shape "$mono")"
 extra5="$(adb_shape_all "$sh5" extra_doc)"
-has  "$extra5" "$(canon "$mono")/packages/api/CLAUDE.md" "shape: extra_doc includes a doc beside a manifest"
+has  "$extra5" "${ canon "$mono"; }/packages/api/CLAUDE.md" "shape: extra_doc includes a doc beside a manifest"
 hasnt "$extra5" "docs/CLAUDE.md"                          "shape: extra_doc excludes a bare doc (no manifest)"
-hasnt "$extra5" "$(canon "$mono")/CLAUDE.md"              "shape: extra_doc never lists the top-level root doc"
+hasnt "$extra5" "${ canon "$mono"; }/CLAUDE.md"              "shape: extra_doc never lists the top-level root doc"
 # An UNtracked package doc is invisible to extra_doc (git ls-files reads the index).
 mkdir -p "$mono/packages/web"; printf 'web\n' > "$mono/packages/web/CLAUDE.md"; printf '{}\n' > "$mono/packages/web/package.json"
 sh5b="$(adb_repo_shape "$mono")"
@@ -507,7 +507,7 @@ mtf="$work/mtime-file"; printf 'x\n' > "$mtf"
 mt="$(adb_mtime "$mtf")"
 case "$mt" in ''|*[!0-9]*) bad "adb_mtime: expected digits for a real file, got [$mt]" ;; *) ok ;; esac
 eq "$(adb_mtime "$work/definitely-not-here")" "" "adb_mtime: missing path → empty"
-eq "$(printf '%s' "$(adb_mtime "$mtf")" | wc -l | tr -d ' ')" "0" "adb_mtime: never multi-line"
+eq "${ printf '%s' "$(adb_mtime "$mtf")" | wc -l | tr -d ' '; }" "0" "adb_mtime: never multi-line"
 
 statbin="$work/statbin"; mkdir -p "$statbin"
 # A GNU-flavored stat: -c works; -f prints a multi-line report to STDOUT and fails.
@@ -706,8 +706,8 @@ eq "$?" "124" "watchdog: a TERM-resistant child still returns 124 (escalates to 
 # stdin reaches the child. The `<&0` in both paths is load-bearing: a backgrounded command in a
 # non-interactive shell otherwise gets /dev/null, so a child fed its input on stdin would read
 # nothing — the bug that once silently handed codex an empty prompt.
-eq "$(printf 'fed' | adb_run_bounded 30 1 cat)" "fed" "adb_run_bounded delivers stdin to the child"
-eq "$(printf 'fed' | ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 cat)" "fed" \
+eq "${ printf 'fed' | adb_run_bounded 30 1 cat; }" "fed" "adb_run_bounded delivers stdin to the child"
+eq "${ printf 'fed' | ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 cat; }" "fed" \
    "the watchdog path also delivers stdin to the child"
 
 # The grace is clamped for its callers, so a literal or an env value cannot disable escalation.
@@ -963,41 +963,41 @@ git -C "$fslug" remote remove pathy; git -C "$fslug" remote remove weird
 # --- the fork and upstream-only layouts, through the cross-check --------------------------------
 # THE REGRESSION, pinned. Both of these worked before the anchor existed and must work now.
 fsc() { ( cd "$1" && adb_pr_slug_check test 7 "$2" "$3" >/dev/null 2>&1; echo $? ); }
-eq "$(fsc "$fslug" 7 'junegunn/fzf')" "0" \
+eq "${ fsc "$fslug" 7 'junegunn/fzf'; }" "0" \
    "fork clone: a PR on UPSTREAM verifies (an origin-only anchor called this a different repository)"
-eq "$(fsc "$fslug" 7 'me/fzf')" "0" "fork clone: a PR on the fork itself also verifies"
+eq "${ fsc "$fslug" 7 'me/fzf'; }" "0" "fork clone: a PR on the fork itself also verifies"
 # ...and the hole the anchor exists for is still closed: GH_REPO names a repo in NOBODY's remote set.
-eq "$(fsc "$fslug" 7 'cli/cli')" "2" "fork clone: a read that answered for an UNTRACKED repo is still refused"
+eq "${ fsc "$fslug" 7 'cli/cli'; }" "2" "fork clone: a read that answered for an UNTRACKED repo is still refused"
 uslug="$work/upstreamonly"; mkdir -p "$uslug"; git init -q "$uslug"
 git -C "$uslug" remote add upstream https://github.com/junegunn/fzf.git
-eq "$(fsc "$uslug" 7 'junegunn/fzf')" "0" \
+eq "${ fsc "$uslug" 7 'junegunn/fzf'; }" "0" \
    "upstream-only clone: verifies (an origin-only anchor had no anchor at all here)"
-eq "$(fsc "$uslug" 7 'cli/cli')" "2" "upstream-only clone: an untracked repo is still refused"
+eq "${ fsc "$uslug" 7 'cli/cli'; }" "2" "upstream-only clone: an untracked repo is still refused"
 
 # --- adb_pr_slug_check: the cross-check, and its ORDER -----------------------------------------
 mk_origin "https://github.com/acme/widget.git"
 sc() { ( cd "$oslug" && adb_pr_slug_check test 7 "$1" "$2" >/dev/null 2>&1; echo $? ); }
-eq "$(sc '7' 'acme/widget')" "0" "slug-check: a bare number against the matching checkout verifies"
-eq "$(sc 'https://github.com/acme/widget/pull/7' 'acme/widget')" "0" "slug-check: an agreeing URL verifies"
-eq "$(sc 'https://github.com/Acme/Widget/pull/7' 'ACME/WIDGET')" "0" "slug-check: comparison is case-insensitive on both sides"
-eq "$(sc 'https://github.com/other/project/pull/7' 'acme/widget')" "2" "slug-check: a URL naming another repo is refused"
-eq "$(sc 'github.com/other/project/pull/7' 'acme/widget')" "2" "slug-check: the SCHEME-LESS form is refused too (#173)"
+eq "${ sc '7' 'acme/widget'; }" "0" "slug-check: a bare number against the matching checkout verifies"
+eq "${ sc 'https://github.com/acme/widget/pull/7' 'acme/widget'; }" "0" "slug-check: an agreeing URL verifies"
+eq "${ sc 'https://github.com/Acme/Widget/pull/7' 'ACME/WIDGET'; }" "0" "slug-check: comparison is case-insensitive on both sides"
+eq "${ sc 'https://github.com/other/project/pull/7' 'acme/widget'; }" "2" "slug-check: a URL naming another repo is refused"
+eq "${ sc 'github.com/other/project/pull/7' 'acme/widget'; }" "2" "slug-check: the SCHEME-LESS form is refused too (#173)"
 # The GH_REPO class: a bare number names no repository, so only the checkout anchor catches a
 # redirected read.
-eq "$(sc '7' 'other/project')" "2" "slug-check: reads that answered for another repo are refused even for a bare number"
+eq "${ sc '7' 'other/project'; }" "2" "slug-check: reads that answered for another repo are refused even for a bare number"
 # UNREADABLE OUTRANKS MISMATCHED, and that order is part of the contract. The old check was guarded on
 # a non-empty observed slug, so it silently VANISHED on exactly these responses — and a foreign URL
 # was then answered about this repo. Each must report 1 (the caller's 20), never 2 and never 0.
 for got in "" "acme" "acme/widget/extra" "/widget" "acme/"; do
-  eq "$(sc '7' "$got")" "1" "slug-check: an observed slug of '$got' is unreadable (1), not a mismatch"
-  eq "$(sc 'https://github.com/other/project/pull/7' "$got")" "1" \
+  eq "${ sc '7' "$got"; }" "1" "slug-check: an observed slug of '$got' is unreadable (1), not a mismatch"
+  eq "${ sc 'https://github.com/other/project/pull/7' "$got"; }" "1" \
      "slug-check: unreadable metadata outranks a foreign URL ('$got')"
 done
 # A slug beginning with `-` must be COMPARED, not handed to grep as options. Without `--` grep aborted
 # with a usage dump and the comparison never ran, and the code then reported a repository mismatch for
 # a test that had not happened. Unreachable from the API, but the harness calls this primitive directly.
 _dashout="$( cd "$oslug" && adb_pr_slug_check test 7 '' '-x/y' 2>&1 >/dev/null )"
-eq "$(sc '7' '-x/y')" "2" "slug-check: a leading-dash slug is refused as a mismatch"
+eq "${ sc '7' '-x/y'; }" "2" "slug-check: a leading-dash slug is refused as a mismatch"
 hasnt "$_dashout" "invalid option" "slug-check: grep never sees a slug as its own options"
 hasnt "$_dashout" "Usage" "slug-check: no raw grep usage dump reaches the operator"
 
@@ -1005,7 +1005,7 @@ hasnt "$_dashout" "Usage" "slug-check: no raw grep usage dump reaches the operat
 # distinct. Every remote goes, not just origin: with any remote left the checkout still has an
 # identity, so the honest answer would be 2 (a mismatch) rather than 1 (no anchor at all).
 for r in $(git -C "$oslug" remote); do git -C "$oslug" remote remove "$r"; done
-eq "$(sc '7' 'acme/widget')" "1" "slug-check: no remotes at all -> unverifiable (1), never verified"
+eq "${ sc '7' 'acme/widget'; }" "1" "slug-check: no remotes at all -> unverifiable (1), never verified"
 # Diagnostics go to stderr under the caller's label, and stdout stays empty (callers print SHAs there).
 mk_origin "https://github.com/acme/widget.git"
 _scout="$( cd "$oslug" && adb_pr_slug_check mylabel 7 'https://github.com/other/project/pull/7' 'acme/widget' 2>/dev/null )"
@@ -1025,33 +1025,33 @@ has "$_scerr" "different repository" "slug-check says why it refused"
 # real User account (id 200291788), so that collision space is populated.
 rmatch() {   # <api-login> <declared…> -> "true"/"false"
   local api="$1"; shift
-  jq -n -r --arg a "$api" --argjson who "$(printf '%s\n' "$@" | jq -R -s -c 'split("\n")|map(select(length>0))')" \
+  jq -n -r --arg a "$api" --argjson who "${ printf '%s\n' "$@" | jq -R -s -c 'split("\n")|map(select(length>0))'; }" \
     "$(adb_reviewer_match_jq) \$a | adb_declared_reviewer(\$who)" 2>/dev/null
 }
-eq "$(rmatch 'foo' 'foo')"                "true"  "identity: bare declared, bare login -> match"
-eq "$(rmatch 'foo[bot]' 'foo')"           "true"  "identity: bare declared, '[bot]' login -> match (the REST spelling)"
-eq "$(rmatch 'FOO[BOT]' 'foo')"           "true"  "identity: matching is case-insensitive"
-eq "$(rmatch 'FOO[BOT]' 'foo[bot]')"      "true"  "identity: case-insensitive for a suffixed declaration too"
+eq "${ rmatch 'foo' 'foo'; }"                "true"  "identity: bare declared, bare login -> match"
+eq "${ rmatch 'foo[bot]' 'foo'; }"           "true"  "identity: bare declared, '[bot]' login -> match (the REST spelling)"
+eq "${ rmatch 'FOO[BOT]' 'foo'; }"           "true"  "identity: matching is case-insensitive"
+eq "${ rmatch 'FOO[BOT]' 'foo[bot]'; }"      "true"  "identity: case-insensitive for a suffixed declaration too"
 # CASE IS FOLDED ON BOTH SIDES. The production path lower-cases the declaration before it gets here,
 # so this asserts the primitive is correct STANDALONE — a future consumer passing a raw declaration
 # must not silently match nothing, because "matches nothing" wedges a guard at "awaiting review"
 # forever, which is the safe and therefore silent direction.
-eq "$(rmatch 'foo' 'FOO[BOT]')"           "false" "identity: a RAW uppercase '[bot]' declaration still rejects a human"
-eq "$(rmatch 'foo[bot]' 'FOO[BOT]')"      "true"  "identity: a RAW uppercase declaration still matches its App"
-eq "$(rmatch 'foo' 'FOO')"                "true"  "identity: a RAW uppercase bare declaration matches"
-eq "$(rmatch 'foo[bot]' 'foo[bot]')"      "true"  "identity: '[bot]' declared, '[bot]' login -> match"
-eq "$(rmatch 'foo' 'foo[bot]')"           "false" "identity: '[bot]' declared, HUMAN login -> NO match (#176's fail-open)"
-eq "$(rmatch 'foo[bot][bot]' 'foo[bot]')" "false" "identity: a DOUBLED suffix does not satisfy '[bot]' declared"
-eq "$(rmatch 'bar' 'foo')"                "false" "identity: an unrelated login does not match"
-eq "$(rmatch 'bar[bot]' 'foo')"           "false" "identity: an unrelated BOT does not match (an allowlist, not a heuristic)"
-eq "$(rmatch 'foobar' 'foo')"             "false" "identity: the match is anchored, not a prefix test"
-eq "$(rmatch 'foo' 'foo' 'foo')"          "true"  "identity: a duplicated declaration still matches"
-eq "$(rmatch 'baz[bot]' 'foo' 'baz[bot]')" "true" "identity: any ONE of several declarations may match"
-eq "$(rmatch 'foo' 'bar[bot]' 'foo')"     "true"  "identity: a bare entry beside a suffixed one still matches"
-eq "$(rmatch 'foo')"                      "false" "identity: an EMPTY declaration set matches nothing"
+eq "${ rmatch 'foo' 'FOO[BOT]'; }"           "false" "identity: a RAW uppercase '[bot]' declaration still rejects a human"
+eq "${ rmatch 'foo[bot]' 'FOO[BOT]'; }"      "true"  "identity: a RAW uppercase declaration still matches its App"
+eq "${ rmatch 'foo' 'FOO'; }"                "true"  "identity: a RAW uppercase bare declaration matches"
+eq "${ rmatch 'foo[bot]' 'foo[bot]'; }"      "true"  "identity: '[bot]' declared, '[bot]' login -> match"
+eq "${ rmatch 'foo' 'foo[bot]'; }"           "false" "identity: '[bot]' declared, HUMAN login -> NO match (#176's fail-open)"
+eq "${ rmatch 'foo[bot][bot]' 'foo[bot]'; }" "false" "identity: a DOUBLED suffix does not satisfy '[bot]' declared"
+eq "${ rmatch 'bar' 'foo'; }"                "false" "identity: an unrelated login does not match"
+eq "${ rmatch 'bar[bot]' 'foo'; }"           "false" "identity: an unrelated BOT does not match (an allowlist, not a heuristic)"
+eq "${ rmatch 'foobar' 'foo'; }"             "false" "identity: the match is anchored, not a prefix test"
+eq "${ rmatch 'foo' 'foo' 'foo'; }"          "true"  "identity: a duplicated declaration still matches"
+eq "${ rmatch 'baz[bot]' 'foo' 'baz[bot]'; }" "true" "identity: any ONE of several declarations may match"
+eq "${ rmatch 'foo' 'bar[bot]' 'foo'; }"     "true"  "identity: a bare entry beside a suffixed one still matches"
+eq "${ rmatch 'foo'; }"                      "false" "identity: an EMPTY declaration set matches nothing"
 # An entry that is only the suffix must not become a reviewer that matches everything suffixed. The
 # declaration reader drops it (and then rejects the declaration); the predicate must not rescue it.
-eq "$(rmatch 'anything[bot]' '[bot]')"    "false" "identity: a bare '[bot]' entry does not match every App"
+eq "${ rmatch 'anything[bot]' '[bot]'; }"    "false" "identity: a bare '[bot]' entry does not match every App"
 
 # ============ the reviewer-evidence classifier and its folds (#167) ============
 # The ONE answer to "given everything a declared reviewer emitted, has this head been reviewed, and
@@ -1095,8 +1095,8 @@ FRESH="2026-07-25T04:45:23Z"; STALE="2026-07-25T04:40:00Z"
 # cls <who-csv> <reviews> <comments> <reactions> [anchor] -> the FOLDED class across the set
 cls() {
   local who="$1" ev
-  ev="$(adb_reviewer_evidence "$(printf '%s' "$who" | tr ',' '\n')" "$2" "$3" "$4" "$SHA")" || { printf 'ERR'; return; }
-  local c; c="$(adb_reviewer_classes t "$(printf '%s' "$who" | tr ',' '\n')" "$ev" "${5:-$ANCH}" 2>/dev/null)" \
+  ev="$(adb_reviewer_evidence "${ printf '%s' "$who" | tr ',' '\n'; }" "$2" "$3" "$4" "$SHA")" || { printf 'ERR'; return; }
+  local c; c="$(adb_reviewer_classes t "${ printf '%s' "$who" | tr ',' '\n'; }" "$ev" "${5:-$ANCH}" 2>/dev/null)" \
     || { printf 'RC2'; return; }
   adb_fold_reviewer_classes "$c"
 }
@@ -1106,13 +1106,13 @@ rx()  { printf '[{"user":{"login":"%s"},"content":"%s","created_at":"%s"}]' "$1"
 N='[]'
 
 # THE TABLE (#167 §4), one row at a time.
-eq "$(cls a "$(rv a CHANGES_REQUESTED)" "$N" "$N")" "rejected"  "classify: CHANGES_REQUESTED at head -> rejected"
-eq "$(cls a "$(rv a COMMENTED)"         "$N" "$N")" "attention" "classify: COMMENTED at head -> attention"
-eq "$(cls a "$(rv a APPROVED)"          "$N" "$N")" "clean"     "classify: APPROVED at head -> clean"
-eq "$(cls a "$(rv a PENDING)"           "$N" "$N")" "none"      "classify: an unsubmitted PENDING draft is not evidence"
-eq "$(cls a "$(rv a DISMISSED)"         "$N" "$N")" "none"      "classify: a DISMISSED review is not evidence"
-eq "$(cls a "$(rv a WHAT_IS_THIS)"      "$N" "$N")" "unknown"   "classify: an unrecognized state -> unknown (fails closed)"
-eq "$(cls a "$(rv a APPROVED bbbb)"     "$N" "$N")" "none"      "classify: a review of ANOTHER commit is not evidence about this head"
+eq "${ cls a "${ rv a CHANGES_REQUESTED; }" "$N" "$N"; }" "rejected"  "classify: CHANGES_REQUESTED at head -> rejected"
+eq "${ cls a "${ rv a COMMENTED; }"         "$N" "$N"; }" "attention" "classify: COMMENTED at head -> attention"
+eq "${ cls a "${ rv a APPROVED; }"          "$N" "$N"; }" "clean"     "classify: APPROVED at head -> clean"
+eq "${ cls a "${ rv a PENDING; }"           "$N" "$N"; }" "none"      "classify: an unsubmitted PENDING draft is not evidence"
+eq "${ cls a "${ rv a DISMISSED; }"         "$N" "$N"; }" "none"      "classify: a DISMISSED review is not evidence"
+eq "${ cls a "${ rv a WHAT_IS_THIS; }"      "$N" "$N"; }" "unknown"   "classify: an unrecognized state -> unknown (fails closed)"
+eq "${ cls a "${ rv a APPROVED bbbb; }"     "$N" "$N"; }" "none"      "classify: a review of ANOTHER commit is not evidence about this head"
 # A REVIEW THAT CANNOT BE TIED TO A COMMIT IS `unknown`, NOT ABSENT. The commit filter used to run
 # BEFORE the reviewer match, so a declared reviewer CHANGES_REQUESTED whose commit_id was missing or
 # non-string was discarded before anything read who wrote it — and a fresh `+1` on another surface
@@ -1122,75 +1122,75 @@ NO_CID='[{"user":{"login":"a"},"state":"CHANGES_REQUESTED"}]'
 NULL_CID='[{"user":{"login":"a"},"state":"CHANGES_REQUESTED","commit_id":null}]'
 NUM_CID='[{"user":{"login":"a"},"state":"CHANGES_REQUESTED","commit_id":12345}]'
 FOREIGN_NO_CID='[{"user":{"login":"nobody"},"state":"CHANGES_REQUESTED"}]'
-eq "$(cls a "$NO_CID" "$N" "$N")" "unknown" \
+eq "${ cls a "$NO_CID" "$N" "$N"; }" "unknown" \
    "classify: a declared reviewer review with NO commit_id -> unknown, never absent"
-eq "$(cls a "$NULL_CID" "$N" "$N")" "unknown" \
+eq "${ cls a "$NULL_CID" "$N" "$N"; }" "unknown" \
    "classify: ...an explicitly null commit_id likewise"
-eq "$(cls a "$NUM_CID" "$N" "$N")" "unknown" \
+eq "${ cls a "$NUM_CID" "$N" "$N"; }" "unknown" \
    "classify: ...and a NON-STRING commit_id, which the equality test silently dropped"
-eq "$(cls a "$NO_CID" "$N" "$(rx a +1 "$FRESH")")" "unknown" \
+eq "${ cls a "$NO_CID" "$N" "${ rx a +1 "$FRESH"; }"; }" "unknown" \
    "classify: an undatable rejection is NOT outvoted by a fresh +1 (the false-arm)"
 # ...but an UNDECLARED login with the same malformation must not wedge the guard: only declared
 # reviewers are classified, so a stray malformed review from anyone else is simply not evidence.
-eq "$(cls a "$FOREIGN_NO_CID" "$N" "$(rx a +1 "$FRESH")")" "clean" \
+eq "${ cls a "$FOREIGN_NO_CID" "$N" "${ rx a +1 "$FRESH"; }"; }" "clean" \
    "classify: an UNDECLARED login with no commit_id does not wedge the guard"
 
 # THE WITHIN-REVIEWER ORDER: rejected > attention > unknown > clean > none.
-eq "$(cls a "$(rv a APPROVED)" "$(cm a "$FRESH")" "$N")" "attention" \
+eq "${ cls a "${ rv a APPROVED; }" "${ cm a "$FRESH"; }" "$N"; }" "attention" \
    "within-reviewer: a fresh comment outranks that reviewer's APPROVED"
-eq "$(cls a "$(printf '[{"user":{"login":"a"},"state":"COMMENTED","commit_id":"%s"},{"user":{"login":"a"},"state":"CHANGES_REQUESTED","commit_id":"%s"}]' "$SHA" "$SHA")" "$N" "$N")" "rejected" \
+eq "${ cls a "${ printf '[{"user":{"login":"a"},"state":"COMMENTED","commit_id":"%s"},{"user":{"login":"a"},"state":"CHANGES_REQUESTED","commit_id":"%s"}]' "$SHA" "$SHA"; }" "$N" "$N"; }" "rejected" \
    "within-reviewer: a standing CHANGES_REQUESTED outranks a COMMENTED on the same commit"
-eq "$(cls a "$(printf '[{"user":{"login":"a"},"state":"WEIRD","commit_id":"%s"},{"user":{"login":"a"},"state":"APPROVED","commit_id":"%s"}]' "$SHA" "$SHA")" "$N" "$N")" "unknown" \
+eq "${ cls a "${ printf '[{"user":{"login":"a"},"state":"WEIRD","commit_id":"%s"},{"user":{"login":"a"},"state":"APPROVED","commit_id":"%s"}]' "$SHA" "$SHA"; }" "$N" "$N"; }" "unknown" \
    "within-reviewer: UNKNOWN outranks clean — an uninterpretable state is never outvoted into a pass"
-eq "$(cls a "$(rv a APPROVED)" "$N" "$(rx a +1 "$STALE")")" "clean" \
+eq "${ cls a "${ rv a APPROVED; }" "$N" "${ rx a +1 "$STALE"; }"; }" "clean" \
    "within-reviewer: a STALE '+1' beside that reviewer's APPROVED is still clean"
 
 # THE ACROSS-REVIEWER ORDER IS NOT THE SAME ORDER, and the swapped pair IS #185: `none` outranks
 # `clean`, so a pass requires EVERY declared reviewer. Reusing the within-reviewer order here is
 # exactly the shipped bug — one fast `+1` reporting a clean pass for a set that had not looked.
-eq "$(cls a,b "$N" "$N" "$(rx a +1 "$FRESH")")" "none" \
+eq "${ cls a,b "$N" "$N" "${ rx a +1 "$FRESH"; }"; }" "none" \
    "#185: one fresh '+1' of two declared reviewers folds to none, NOT clean"
-eq "$(cls a,b "$N" "$N" "$(printf '[{"user":{"login":"a"},"content":"+1","created_at":"%s"},{"user":{"login":"b"},"content":"+1","created_at":"%s"}]' "$FRESH" "$FRESH")")" "clean" \
+eq "${ cls a,b "$N" "$N" "${ printf '[{"user":{"login":"a"},"content":"+1","created_at":"%s"},{"user":{"login":"b"},"content":"+1","created_at":"%s"}]' "$FRESH" "$FRESH"; }"; }" "clean" \
    "#185: BOTH declared reviewers clean -> clean"
-eq "$(cls a,b "$(rv a CHANGES_REQUESTED)" "$N" "$N")" "rejected" \
+eq "${ cls a,b "${ rv a CHANGES_REQUESTED; }" "$N" "$N"; }" "rejected" \
    "#185: a rejection from one wins outright over another's silence"
-eq "$(cls a,b "$(rv b WEIRD)" "$N" "$(rx a +1 "$FRESH")")" "unknown" \
+eq "${ cls a,b "${ rv b WEIRD; }" "$N" "${ rx a +1 "$FRESH"; }"; }" "unknown" \
    "#185: unknown outranks a sibling's clean — fail closed, never arm"
-eq "$(cls a,b "$(rv b APPROVED)" "$N" "$(rx a +1 "$FRESH")")" "clean" \
+eq "${ cls a,b "${ rv b APPROVED; }" "$N" "${ rx a +1 "$FRESH"; }"; }" "clean" \
    "#185: mixed evidence across surfaces still satisfies the whole set"
 
 # UNDATABLE AND UNORDERABLE RECORDS. A declared reviewer's signal with no `created_at` is malformed,
 # and dropping it would silently read as "that reviewer said nothing" — which on the clean path is a
 # false pass. An unrecognized FORMAT is rejected outright (rc 2) rather than normalized.
-eq "$(cls a "$N" '[{"user":{"login":"a"},"body":"x"}]' "$N")" "unknown" \
+eq "${ cls a "$N" '[{"user":{"login":"a"},"body":"x"}]' "$N"; }" "unknown" \
    "classify: a declared reviewer's comment with NO timestamp -> unknown"
-eq "$(cls a "$N" "$N" '[{"user":{"login":"a"},"content":"+1"}]')" "unknown" \
+eq "${ cls a "$N" "$N" '[{"user":{"login":"a"},"content":"+1"}]'; }" "unknown" \
    "classify: a declared reviewer's '+1' with NO timestamp -> unknown"
-eq "$(cls a "$N" "$(cm a '2026-07-25T04:45:23-04:00')" "$N")" "RC2" \
+eq "${ cls a "$N" "${ cm a '2026-07-25T04:45:23-04:00'; }" "$N"; }" "RC2" \
    "classify: an unorderable timestamp FORMAT returns rc 2, never a guessed ordering"
-eq "$(cls a "$N" '[{"user":{"login":"nobody"},"body":"x"}]' "$N")" "none" \
+eq "${ cls a "$N" '[{"user":{"login":"nobody"},"body":"x"}]' "$N"; }" "none" \
    "classify: an UNDECLARED login's undatable record is ignored, not fatal"
 
 # THE SENTINEL. `ADB_NO_ANCHOR` is what an unestablished anchor degrades to, and it must make every
 # date-scoped signal read as stale while leaving commit-scoped review evidence untouched. An EMPTY
 # anchor would be the fail-open spelling exactly — every non-empty string is `\>` the empty one.
-eq "$(cls a "$N" "$N" "$(rx a +1 "$FRESH")" "$ADB_NO_ANCHOR")" "none" \
+eq "${ cls a "$N" "$N" "${ rx a +1 "$FRESH"; }" "$ADB_NO_ANCHOR"; }" "none" \
    "sentinel: an unestablished anchor makes a fresh '+1' unprovable -> none, never clean"
-eq "$(cls a "$(rv a APPROVED)" "$N" "$N" "$ADB_NO_ANCHOR")" "clean" \
+eq "${ cls a "${ rv a APPROVED; }" "$N" "$N" "$ADB_NO_ANCHOR"; }" "clean" \
    "sentinel: commit-scoped review evidence is unaffected by an unestablished anchor"
 if adb_is_utc_instant "$ADB_NO_ANCHOR"; then ok; else bad "ADB_NO_ANCHOR must itself be an orderable instant"; fi
 
 # The fold's identity: no reviewer classified at all is `none`, never `clean`.
 eq "$(adb_fold_reviewer_classes "")" "none" "fold: an EMPTY class list is none, never clean"
-eq "$(adb_reviewers_in_class "$(printf 'a\tnone\nb\tclean\nc\tnone')" none)" "a c" \
+eq "$(adb_reviewers_in_class "${ printf 'a\tnone\nb\tclean\nc\tnone'; }" none)" "a c" \
    "adb_reviewers_in_class names exactly the logins in that class"
-eq "$(adb_reviewers_in_class "$(printf 'a\tclean')" none)" "" \
+eq "$(adb_reviewers_in_class "${ printf 'a\tclean'; }" none)" "" \
    "adb_reviewers_in_class is empty when nobody is in the class"
 # SEVERAL classes at once — pr-watch reports `rejected` and `attention` as one outcome, and joining
 # two separately-fetched lists (either of which may be empty) is what produced a stray double space.
-eq "$(adb_reviewers_in_class "$(printf 'a\trejected\nb\tnone\nc\tattention')" rejected attention)" "a c" \
+eq "$(adb_reviewers_in_class "${ printf 'a\trejected\nb\tnone\nc\tattention'; }" rejected attention)" "a c" \
    "adb_reviewers_in_class accepts several classes and preserves order"
-eq "$(adb_reviewers_in_class "$(printf 'a\trejected\nb\tnone')" rejected attention)" "a" \
+eq "$(adb_reviewers_in_class "${ printf 'a\trejected\nb\tnone'; }" rejected attention)" "a" \
    "...with no stray separator when only one of the named classes is populated"
 
 # THE `<login> <class>` GRAMMAR IS PARSED FROM THE RIGHT. A login carrying whitespace can never name
@@ -1198,15 +1198,15 @@ eq "$(adb_reviewers_in_class "$(printf 'a\trejected\nb\tnone')" rejected attenti
 # (18, fail-closed — dropping just the bad entry would SHRINK the set every consumer must satisfy).
 # These pin the belt to that braces: parsed from the LEFT, `foo bar none` yields the non-class
 # "bar none", which ranks as none by accident rather than by rule and makes the diagnostic garbage.
-eq "$(adb_fold_reviewer_classes "$(printf 'foo bar\tnone')")" "none" \
+eq "$(adb_fold_reviewer_classes "${ printf 'foo bar\tnone'; }")" "none" \
    "fold: a whitespace-bearing login still yields a REAL class, not a garbled one"
-eq "$(adb_fold_reviewer_classes "$(printf 'foo bar\tclean')")" "clean" \
+eq "$(adb_fold_reviewer_classes "${ printf 'foo bar\tclean'; }")" "clean" \
    "fold: ...and the TAB split is total, so a clean class is not lost"
-eq "$(adb_reviewers_in_class "$(printf 'foo bar\tnone\nb\tclean')" none)" "foo bar" \
+eq "$(adb_reviewers_in_class "${ printf 'foo bar\tnone\nb\tclean'; }" none)" "foo bar" \
    "adb_reviewers_in_class recovers the whole login, not its first word"
 # ...and the same login round-trips through the CLASSIFIER, which the space grammar could not do:
 # it split `foo bar` at the delimiter, so the reviewer never matched its own evidence.
-eq "$(cls "foo bar" "$N" "$N" "$(printf '[{"user":{"login":"foo bar"},"content":"+1","created_at":"%s"}]' "$FRESH")")" "clean" \
+eq "${ cls "foo bar" "$N" "$N" "${ printf '[{"user":{"login":"foo bar"},"content":"+1","created_at":"%s"}]' "$FRESH"; }"; }" "clean" \
    "classify: a whitespace-bearing login matches its OWN evidence under the TAB grammar"
 
 # --- adb_md_prose: THE shared CommonMark prose filter (#136) ------------------
@@ -1221,59 +1221,59 @@ mdp() { printf '%b' "$2" | adb_md_prose "$1"; }
 SPANLINE='keep `a span` and <!-- a comment --> too\n'
 # DIRECTION, on every fixture in this block: an OVER-match means the filter left something a
 # consumer will scan as a declaration; an UNDER-match means it removed text that was never markup.
-eq "$(mdp text "$SPANLINE")"   'keep `a span` and  too' "OVER/UNDER: text — comments go, spans stay"
-eq "$(mdp mask "$SPANLINE" | tr -d '\001')" 'keep  and  too' "mask: span contents become \\x01 (shown here with the mask bytes stripped)"
-eq "$(mdp mask "$SPANLINE" | wc -c | tr -d ' ')" "$(mdp text "$SPANLINE" | wc -c | tr -d ' ')" \
+eq "${ mdp text "$SPANLINE"; }"   'keep `a span` and  too' "OVER/UNDER: text — comments go, spans stay"
+eq "${ mdp mask "$SPANLINE" | tr -d '\001'; }" 'keep  and  too' "mask: span contents become \\x01 (shown here with the mask bytes stripped)"
+eq "${ mdp mask "$SPANLINE" | wc -c | tr -d ' '; }" "${ mdp text "$SPANLINE" | wc -c | tr -d ' '; }" \
    "mask is byte-for-byte the SAME LENGTH as text — the 1:1 invariant every offset-pairing consumer needs"
-eq "$(printf '%b' "$SPANLINE" | adb_md_prose mask --keep-comments | tr -d '\001')" 'keep  and <!-- a comment --> too' \
+eq "${ printf '%b' "$SPANLINE" | adb_md_prose mask --keep-comments | tr -d '\001'; }" 'keep  and <!-- a comment --> too' \
    "--keep-comments: the comment survives (the marker consumers need this; the flag exists for them)"
 
 # MASKING, NOT DELETION — the self-review find. Deleting a span lets its neighbours FUSE into a word
 # nobody wrote, and every consumer that scans for a keyword would inherit that. \x01 is a boundary
 # no keyword can cross. DIRECTION: over-match (a fabricated keyword freezes a ready issue).
-eq "$(mdp mask 'clo`x`ses #42\n' | tr -d '\001')" 'closes #42' \
+eq "${ mdp mask 'clo`x`ses #42\n' | tr -d '\001'; }" 'closes #42' \
    "deleting the mask bytes shows the fusion that WOULD happen if the span were dropped..."
-eq "$(mdp mask 'clo`x`ses #42\n' | grep -c 'closes')" 0 \
+eq "${ mdp mask 'clo`x`ses #42\n' | grep -c 'closes'; }" 0 \
    "...and it does not happen, because the span is masked rather than removed"
 
 # LINE COUNT AND ORDER ARE PRESERVED. Every consumer indexes results by line, so a structural line
 # must yield an EMPTY line at its own position, never a deletion that renumbers what follows.
-eq "$(mdp text 'a\n```\nb\n```\nc\n' | wc -l | tr -d ' ')" 5 \
+eq "${ mdp text 'a\n```\nb\n```\nc\n' | wc -l | tr -d ' '; }" 5 \
    "UNDER: line count survives a fenced block — a deletion would renumber every consumer's index"
-eq "$(mdp text 'a\n```\nb\n```\nc\n' | sed -n '3p')" '' "OVER: ...and the fenced line is empty at its own index"
-eq "$(mdp text 'a\n```\nb\n```\nc\n' | sed -n '5p')" 'c' "UNDER: ...so the line after it keeps its number"
+eq "${ mdp text 'a\n```\nb\n```\nc\n' | sed -n '3p'; }" '' "OVER: ...and the fenced line is empty at its own index"
+eq "${ mdp text 'a\n```\nb\n```\nc\n' | sed -n '5p'; }" 'c' "UNDER: ...so the line after it keeps its number"
 
 # STRUCTURE, one kind at a time. Each is empty output because the whole body is structure.
-eq "$(mdp text '```\nx\n```\n')" '' "OVER: a fenced block is structure"
-eq "$(mdp text '~~~\nx\n~~~\n')" '' "OVER: ...both delimiters"
-eq "$(mdp text '> quoted\n')" ''    "OVER: a blockquote is structure"
-eq "$(mdp text '<!--\nx\n-->\n')" '' "OVER: a multi-line HTML comment is removed"
-eq "$(mdp text '    indented\n')" '' "OVER: a top-level indented block is structure (D27)"
-eq "$(mdp text '- item\n    continued\n')" '- item
+eq "${ mdp text '```\nx\n```\n'; }" '' "OVER: a fenced block is structure"
+eq "${ mdp text '~~~\nx\n~~~\n'; }" '' "OVER: ...both delimiters"
+eq "${ mdp text '> quoted\n'; }" ''    "OVER: a blockquote is structure"
+eq "${ mdp text '<!--\nx\n-->\n'; }" '' "OVER: a multi-line HTML comment is removed"
+eq "${ mdp text '    indented\n'; }" '' "OVER: a top-level indented block is structure (D27)"
+eq "${ mdp text '- item\n    continued\n'; }" '- item
     continued' "UNDER: ...but an indented line under a list marker is prose (D27)"
 
 # MULTI-LINE SPANS — the reason the filter buffers at all (#136 §1).
 # Asserted with `wc -l`, not against a literal: `$( … )` strips trailing newlines, so comparing
 # two empty lines to '' would pass whether or not the second line survived at all.
-eq "$(mdp mask '`a\nb`\n' | wc -l | tr -d ' ')" 2 \
+eq "${ mdp mask '`a\nb`\n' | wc -l | tr -d ' '; }" 2 \
    "a span crossing a line ending is resolved, and BOTH its lines are still there"
-eq "$(mdp mask '`a\nb`\n' | tr -d '\001\n' | wc -c | tr -d ' ')" 0 \
+eq "${ mdp mask '`a\nb`\n' | tr -d '\001\n' | wc -c | tr -d ' '; }" 0 \
    "...with nothing but mask bytes left in either of them"
-eq "$(mdp mask 'x`a\nb\n')" 'x`a
+eq "${ mdp mask 'x`a\nb\n'; }" 'x`a
 b' "an UNMATCHED run is literal text, so a stray backtick swallows nothing"
 
 # LEFTMOST OPENER WINS — the ordering that satisfies both #136 repros at once. Comments-first
 # honors a quoted opener and swallows the body; spans-first pairs a backtick inside a real comment
 # with one in later prose. One left-to-right pass is the only rule that gets both right.
-eq "$(mdp text 'the opener is `<!--` here\nkept\n')" 'the opener is `<!--` here
+eq "${ mdp text 'the opener is `<!--` here\nkept\n'; }" 'the opener is `<!--` here
 kept' "UNDER: a <!-- inside a code span opens no comment"
-eq "$(mdp text 'real <!-- ` --> kept\n')" 'real  kept' "OVER: a backtick inside a real comment goes with it"
+eq "${ mdp text 'real <!-- ` --> kept\n'; }" 'real  kept' "OVER: a backtick inside a real comment goes with it"
 
 # ARGUMENT VALIDATION and the FAIL-CLOSED completion marker. A truncated filter run must never look
 # like a clean short result — that is the fail-open `pr-targets-issue` maps to rc 2.
 adb_md_prose bogus </dev/null >/dev/null 2>&1; eq "$?" 2 "an unknown mode is rejected (2)"
 adb_md_prose text --nope </dev/null >/dev/null 2>&1; eq "$?" 2 "an unknown option is rejected (2)"
-eq "$(printf '' | adb_md_prose text | wc -c | tr -d ' ')" 0 "empty input is empty output, not an error"
+eq "${ printf '' | adb_md_prose text | wc -c | tr -d ' '; }" 0 "empty input is empty output, not an error"
 mdstub="$(mktemp -d)"
 printf '#!/bin/sh\nprintf "half\\n"\nexit 0\n' > "$mdstub/awk"; chmod +x "$mdstub/awk"
 ( PATH="$mdstub:$PATH"; printf 'x\n' | adb_md_prose text >/dev/null 2>&1 ); eq "$?" 1 \

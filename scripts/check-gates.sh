@@ -42,7 +42,7 @@ cd "$(dirname "$0")/.." || exit 1
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-TAB="$(printf '\t')"
+TAB="${ printf '\t'; }"
 
 # --- _adb_valid_label --------------------------------------------------------
 _adb_valid_label build;   yes $? "valid label: build"

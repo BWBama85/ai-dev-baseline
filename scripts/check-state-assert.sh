@@ -89,7 +89,7 @@ run() { PATH="$shimbin:$PATH" bash "$LIB" "$@" 2>/dev/null; }
 
 # An OPEN PR renders past-tense and names the entity.
 export SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/7"}'
-OUT="$(run observe pr 7)"
+OUT="${ run observe pr 7; }"
 has "$OUT" "PR #7 was observed OPEN at " "open PR renders past-tense with a timestamp"
 run observe pr 7 >/dev/null 2>&1; eq "$?" "0" "open PR exits 0"
 
@@ -98,26 +98,26 @@ run observe pr 7 >/dev/null 2>&1; eq "$?" "0" "open PR exits 0"
 # merging" — and the run that narrated "#137 is still open" would merely have swapped one wrong
 # sentence for another.
 export SHIM_PR_JSON='{"state":"CLOSED","mergedAt":"2026-07-27T21:48:14Z","url":"https://github.com/o/r/pull/137"}'
-OUT="$(run observe pr 137)"
+OUT="${ run observe pr 137; }"
 has "$OUT" "PR #137 was observed MERGED at " "merged PR is MERGED, not CLOSED (mergedAt wins over state)"
 
 # A genuinely closed-without-merge PR says so, and says it distinctly.
 export SHIM_PR_JSON='{"state":"CLOSED","mergedAt":null,"url":"https://github.com/o/r/pull/8"}'
-OUT="$(run observe pr 8)"
+OUT="${ run observe pr 8; }"
 has "$OUT" "PR #8 was observed CLOSED without merging at " "closed-unmerged PR is distinguished from merged"
 
 # Issues: OPEN, closed-completed, and closed-NOT_PLANNED are three different facts. Flattening
 # NOT_PLANNED into "closed" is how an ABANDONED requirement reads as a delivered one.
 export SHIM_ISSUE_JSON='{"state":"OPEN","stateReason":null,"url":"https://github.com/o/r/issues/138"}'
-has "$(run observe issue 138)" "issue #138 was observed OPEN at " "open issue renders"
+has "${ run observe issue 138; }" "issue #138 was observed OPEN at " "open issue renders"
 export SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/o/r/issues/134"}'
-has "$(run observe issue 134)" "issue #134 was observed CLOSED as completed at " "completed issue renders"
+has "${ run observe issue 134; }" "issue #134 was observed CLOSED as completed at " "completed issue renders"
 export SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"NOT_PLANNED","url":"https://github.com/o/r/issues/77"}'
-has "$(run observe issue 77)" "issue #77 was observed CLOSED as NOT_PLANNED at " "NOT_PLANNED is not flattened into completed"
+has "${ run observe issue 77; }" "issue #77 was observed CLOSED as NOT_PLANNED at " "NOT_PLANNED is not flattened into completed"
 
 # No rendered line may promise the future. These are the words that shipped the second violation.
 export SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/7"}'
-OUT="$(run observe pr 7)"
+OUT="${ run observe pr 7; }"
 case "$OUT" in
   *" is still "*|*" will "*|*" is waiting"*) bad "rendered line contains a predictive phrase: [$OUT]" ;;
   *) ok ;;
@@ -131,7 +131,7 @@ esac
 expect_silent() {
   local want_rc="$1" label="$2"; shift 2
   local out rc
-  out="$(run "$@")"; rc=$?
+  out="${ run "$@"; }"; rc=$?
   eq "$out" "" "$label: renders no sentence"
   eq "$rc" "$want_rc" "$label: exits $want_rc"
 }
@@ -180,9 +180,9 @@ SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/acme/pul
 # ...and the legitimate members of those same repos must STILL render, or the fix would have
 # traded a wrong sentence for a missing one.
 SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/acme/issues/pull/146"}'
-has "$(run observe pr 146)" "PR #146 was observed OPEN at " "a real PR in a repo named 'issues' still renders"
+has "${ run observe pr 146; }" "PR #146 was observed OPEN at " "a real PR in a repo named 'issues' still renders"
 SHIM_ISSUE_JSON='{"state":"OPEN","stateReason":null,"url":"https://github.com/acme/pull/issues/9"}'
-has "$(run observe issue 9)" "issue #9 was observed OPEN at " "a real issue in a repo named 'pull' still renders"
+has "${ run observe issue 9; }" "issue #9 was observed OPEN at " "a real issue in a repo named 'pull' still renders"
 
 # The response must be ABOUT the entity asked for. Only a misbehaving read produces this, but
 # rendering "PR #9" from a payload describing #146 is a wrong sentence, and a wrong sentence is
@@ -190,7 +190,7 @@ has "$(run observe issue 9)" "issue #9 was observed OPEN at " "a real issue in a
 SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/146"}' \
   fails_closed "payload describes a different entity number" observe pr 9
 SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/146"}'
-has "$(run observe pr 0146)" "PR #0146 was observed OPEN at " "a zero-padded argument matches its own URL"
+has "${ run observe pr 0146; }" "PR #0146 was observed OPEN at " "a zero-padded argument matches its own URL"
 SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/abc"}' \
   fails_closed "unparseable entity number in the URL" observe pr 7
 
@@ -268,7 +268,7 @@ SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":null,"url":"https://github.com/
 SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"REOPENED_THEN_CLOSED","url":"https://github.com/o/r/issues/5"}' \
   fails_closed "CLOSED issue with an unknown stateReason" observe issue 5
 export SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/o/r/issues/5"}'
-has "$(run observe issue 5)" "issue #5 was observed CLOSED as completed at " "an explicit COMPLETED still renders"
+has "${ run observe issue 5; }" "issue #5 was observed CLOSED as completed at " "an explicit COMPLETED still renders"
 
 # ============================ 3b. lint — the claim grammar (#195) ============================
 # `observe` makes a stated status correct; it cannot make anyone state one. `lint` is the half that
@@ -285,8 +285,8 @@ lint_out() { printf '%s\n' "$1" | bash "$LIB" lint 2>/dev/null; }
 # 14-minute-old read. A sentence-level test finds the template and passes the whole line, which is
 # why the check is per-OCCURRENCE. If this ever goes green, the gate has stopped working.
 SHIPPED='PR #194 was observed MERGED at 2026-07-29T15:09:10Z — it merged between my last check (OPEN at 14:55:26Z) and this sweep.'
-eq "$(lint_rc "$SHIPPED")" 1 "the 2026-07-29 sentence is a violation"
-has "$(lint_out "$SHIPPED")" "open" "...the stale parenthetical is named"
+eq "${ lint_rc "$SHIPPED"; }" 1 "the 2026-07-29 sentence is a violation"
+has "${ lint_out "$SHIPPED"; }" "open" "...the stale parenthetical is named"
 
 # --- 3b-b. a verbatim observe line is always compliant ---------------------------------------
 for line in \
@@ -297,90 +297,90 @@ for line in \
   'issue #5 was observed CLOSED as completed at 2026-07-29T14:55:26Z' \
   'issue #5 was observed CLOSED as NOT_PLANNED at 2026-07-29T14:55:26Z'
 do
-  eq "$(lint_rc "$line")" 0 "compliant: ${line:0:38}..."
+  eq "${ lint_rc "$line"; }" 0 "compliant: ${line:0:38}..."
 done
 
 # --- 3b-c. the canonical failures the practice names ------------------------------------------
-eq "$(lint_rc 'PR #137 is still open.')" 1 "\"still open\" is a violation"
-eq "$(lint_rc 'Issue #40 is closed.')" 1 "a bare closed-claim is a violation"
-eq "$(lint_rc 'CI is green on PR #194.')" 1 "an unsourced CI claim bound to a PR is a violation"
-eq "$(lint_rc 'PR #194 is merged and #195 is still open.')" 1 "multiple claims in one line are caught"
+eq "${ lint_rc 'PR #137 is still open.'; }" 1 "\"still open\" is a violation"
+eq "${ lint_rc 'Issue #40 is closed.'; }" 1 "a bare closed-claim is a violation"
+eq "${ lint_rc 'CI is green on PR #194.'; }" 1 "an unsourced CI claim bound to a PR is a violation"
+eq "${ lint_rc 'PR #194 is merged and #195 is still open.'; }" 1 "multiple claims in one line are caught"
 
 # --- 3b-d. PRECISION: ordinary English must not fire ------------------------------------------
 # Every one of these is a verb or an intent, not a state assertion. A gate that flags them is a
 # gate that gets disabled.
-eq "$(lint_rc 'Let me open a PR for #195.')" 0 "\"open a PR\" is a verb, not a claim"
-eq "$(lint_rc 'I merged the branch for #195.')" 0 "\"merged the branch\" is a verb"
-eq "$(lint_rc 'I will close #195 once this lands.')" 0 "an intent is not a claim"
-eq "$(lint_rc 'Filed as #195 and started the branch.')" 0 "no status word at all"
-eq "$(lint_rc 'The green path in roadmap-lib was unreachable.')" 0 "a status word with no entity reference"
-eq "$(lint_rc 'This closed a whole class of bugs.')" 0 "\"closed a class\" is a verb with no entity"
+eq "${ lint_rc 'Let me open a PR for #195.'; }" 0 "\"open a PR\" is a verb, not a claim"
+eq "${ lint_rc 'I merged the branch for #195.'; }" 0 "\"merged the branch\" is a verb"
+eq "${ lint_rc 'I will close #195 once this lands.'; }" 0 "an intent is not a claim"
+eq "${ lint_rc 'Filed as #195 and started the branch.'; }" 0 "no status word at all"
+eq "${ lint_rc 'The green path in roadmap-lib was unreachable.'; }" 0 "a status word with no entity reference"
+eq "${ lint_rc 'This closed a whole class of bugs.'; }" 0 "\"closed a class\" is a verb with no entity"
 
 # --- 3b-e. ONLY PROSE DECLARES (#117 applied to claims) ---------------------------------------
-eq "$(lint_rc "$(printf '```\nPR #1 is still open\n```')")" 0 "a fenced block declares nothing"
-eq "$(lint_rc "$(printf '~~~\nPR #1 is still open\n~~~')")" 0 "a tilde fence declares nothing"
-eq "$(lint_rc 'The rule forbids `PR #1 is still open` in prose.')" 0 "an inline code span declares nothing"
-eq "$(lint_rc '> PR #1 is still open')" 0 "a blockquote declares nothing"
-eq "$(lint_rc '<!-- PR #1 is still open -->')" 0 "an HTML comment declares nothing"
-eq "$(lint_rc "$(printf '<!--\nPR #1 is still open\n-->')")" 0 "a multi-line HTML comment declares nothing"
+eq "${ lint_rc "${ printf '```\nPR #1 is still open\n```'; }"; }" 0 "a fenced block declares nothing"
+eq "${ lint_rc "${ printf '~~~\nPR #1 is still open\n~~~'; }"; }" 0 "a tilde fence declares nothing"
+eq "${ lint_rc 'The rule forbids `PR #1 is still open` in prose.'; }" 0 "an inline code span declares nothing"
+eq "${ lint_rc '> PR #1 is still open'; }" 0 "a blockquote declares nothing"
+eq "${ lint_rc '<!-- PR #1 is still open -->'; }" 0 "an HTML comment declares nothing"
+eq "${ lint_rc "${ printf '<!--\nPR #1 is still open\n-->'; }"; }" 0 "a multi-line HTML comment declares nothing"
 # ...but a real claim AFTER a closed fence is still caught.
-eq "$(lint_rc "$(printf '```\ncode\n```\nPR #1 is still open.')")" 1 "a claim after a fence is still a violation"
+eq "${ lint_rc "${ printf '```\ncode\n```\nPR #1 is still open.'; }"; }" 1 "a claim after a fence is still a violation"
 
 # --- 3b-g. the observe phrase binds to ITS OWN word, not to a later one (review round 1) ------
 # `was observed [a-z ]*$` let a second status word inherit an earlier clause's compliance, so
 # "was observed OPEN but is now CLOSED" passed ENTIRELY — the mixed compliant/stale sentence this
 # check is per-occurrence in order to catch. Only an IMMEDIATE `was observed ` counts.
-eq "$(lint_rc 'PR #1 was observed OPEN but is now CLOSED.')" 1 \
+eq "${ lint_rc 'PR #1 was observed OPEN but is now CLOSED.'; }" 1 \
    "a later status word cannot inherit an earlier \"was observed\""
-has "$(lint_out 'PR #1 was observed OPEN but is now CLOSED.')" "closed" "...and the stale word is named"
-eq "$(lint_out 'PR #1 was observed OPEN but is now CLOSED.' | wc -l | tr -d ' ')" 1 \
+has "${ lint_out 'PR #1 was observed OPEN but is now CLOSED.'; }" "closed" "...and the stale word is named"
+eq "${ lint_out 'PR #1 was observed OPEN but is now CLOSED.' | wc -l | tr -d ' '; }" 1 \
    "...while the genuinely-observed word is not also flagged"
-eq "$(lint_rc 'PR #1 was observed OPEN and I then merged the branch.')" 0 \
+eq "${ lint_rc 'PR #1 was observed OPEN and I then merged the branch.'; }" 0 \
    "a verb after a compliant clause is still a verb"
 
 # --- 3b-h. a status word taking an ENTITY object is a verb (review round 1) -------------------
 # "I closed #195" reports an action just performed; it is not an assertion about current state.
 # Stripping punctuation before the object test left `nextw` empty and misread these as claims.
-eq "$(lint_rc 'I closed #195.')" 0 "\"closed #195\" is a verb with an entity object"
-eq "$(lint_rc 'I reopened #5 after the revert.')" 0 "\"reopened #5\" likewise"
-eq "$(lint_rc 'Merged #194 and started the follow-up.')" 0 "\"Merged #194\" likewise"
+eq "${ lint_rc 'I closed #195.'; }" 0 "\"closed #195\" is a verb with an entity object"
+eq "${ lint_rc 'I reopened #5 after the revert.'; }" 0 "\"reopened #5\" likewise"
+eq "${ lint_rc 'Merged #194 and started the follow-up.'; }" 0 "\"Merged #194\" likewise"
 # ...but a genuine state assertion about the same entity still fires.
-eq "$(lint_rc 'Issue #195 is closed.')" 1 "a predicative claim about the same entity still fires"
+eq "${ lint_rc 'Issue #195 is closed.'; }" 1 "a predicative claim about the same entity still fires"
 
 # --- 3b-i. multi-backtick code spans declare nothing (review round 1) -------------------------
 # CommonMark permits a run of N backticks; a single-backtick-only stripper left that content
 # exposed, so quoting a status the way this repo's own docs do would block a turn.
-eq "$(lint_rc 'The docs show ``PR #1 is still open`` as an example.')" 0 \
+eq "${ lint_rc 'The docs show ``PR #1 is still open`` as an example.'; }" 0 \
    "a double-backtick span declares nothing"
-eq "$(lint_rc 'See ```PR #1 is still open``` inline.')" 0 "a triple-backtick span declares nothing"
-eq "$(lint_rc 'Quoting ``PR #1 is still open`` but PR #2 is still open.')" 1 \
+eq "${ lint_rc 'See ```PR #1 is still open``` inline.'; }" 0 "a triple-backtick span declares nothing"
+eq "${ lint_rc 'Quoting ``PR #1 is still open`` but PR #2 is still open.'; }" 1 \
    "...while a real claim beside a quoted one is still caught"
 
 # --- 3b-j. `draft` is not a status token (live false positive, hours after shipping) ---------
 # It is an ordinary English noun and it collided with prose an agent genuinely writes. A gate that
 # fires on ordinary prose gets worked around, and then it protects nothing — so the word is out of
 # the set, which is the precision-over-recall trade stated in the header.
-eq "$(lint_rc 'My first draft of the summary for #196 was wrong.')" 0 \
+eq "${ lint_rc 'My first draft of the summary for #196 was wrong.'; }" 0 \
    "\"draft\" as an ordinary noun does not fire"
-eq "$(lint_rc 'A rough draft of #196 exists.')" 0 "...in any ordinary phrasing"
+eq "${ lint_rc 'A rough draft of #196 exists.'; }" 0 "...in any ordinary phrasing"
 # The cost is stated rather than hidden: a genuine draft-status claim is no longer caught.
-eq "$(lint_rc 'PR #196 is a draft.')" 0 \
+eq "${ lint_rc 'PR #196 is a draft.'; }" 0 \
    "the accepted cost: a genuine draft-status claim is NOT caught"
 # ...and removing it must not have weakened anything else.
-eq "$(lint_rc 'PR #137 is still open.')" 1 "the load-bearing tokens still fire"
-eq "$(lint_rc 'CI is green on PR #194.')" 1 "...including CI"
+eq "${ lint_rc 'PR #137 is still open.'; }" 1 "the load-bearing tokens still fire"
+eq "${ lint_rc 'CI is green on PR #194.'; }" 1 "...including CI"
 
 # --- 3b-k. straight quotes are PROSE, not markup ---------------------------------------------
 # Only markup declares nothing. Double quotes are ambiguous — scare quotes, emphasis, and genuine
 # quotation are indistinguishable — and stripping them would let `He said "PR #1 is still open"`
 # through, which is a real claim in a real sentence. Backticks are the way to quote a status.
-eq "$(lint_rc 'It fired on "CI on #196 is green".')" 1 "a double-quoted status is still a claim"
-eq "$(lint_rc 'It fired on `CI on #196 is green`.')" 0 "...while a backticked one is not"
+eq "${ lint_rc 'It fired on "CI on #196 is green".'; }" 1 "a double-quoted status is still a claim"
+eq "${ lint_rc 'It fired on `CI on #196 is green`.'; }" 0 "...while a backticked one is not"
 
 # --- 3b-f. determinism + hygiene ---------------------------------------------------------------
-eq "$(lint_out "$SHIPPED")" "$(lint_out "$SHIPPED")" "lint is deterministic"
-eq "$(printf '' | bash "$LIB" lint >/dev/null 2>&1; printf '%s' "$?")" 0 "empty input is clean"
-eq "$(printf 'x' | bash "$LIB" lint EXTRA >/dev/null 2>&1; printf '%s' "$?")" 2 "lint rejects arguments"
+eq "${ lint_out "$SHIPPED"; }" "${ lint_out "$SHIPPED"; }" "lint is deterministic"
+eq "${ printf '' | bash "$LIB" lint >/dev/null 2>&1; printf '%s' "$?"; }" 0 "empty input is clean"
+eq "${ printf 'x' | bash "$LIB" lint EXTRA >/dev/null 2>&1; printf '%s' "$?"; }" 2 "lint rejects arguments"
 
 # ================== 3c. the Stop hook that gives the grammar teeth (#195) ===================
 # The grammar only matters if something acts on it. These drive the hook end to end against a
@@ -396,10 +396,10 @@ HOOK="$tdir/state-claim-gate.sh"
 # transcript <text> — a one-message JSONL session log, then the hook payload naming it.
 transcript() {
   printf '{"type":"assistant","message":{"content":[{"type":"text","text":%s}]}}\n' \
-    "$(printf '%s' "$1" | jq -Rs .)" > "$tdir/t.jsonl"
+    "${ printf '%s' "$1" | jq -Rs .; }" > "$tdir/t.jsonl"
   printf '{"transcript_path":"%s"}' "$tdir/t.jsonl"
 }
-run_hook() { HOOK_OUT="$(printf '%s' "$(transcript "$1")" | bash "$HOOK" 2>&1)"; HOOK_RC=$?; }
+run_hook() { HOOK_OUT="${ printf '%s' "${ transcript "$1"; }" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?; }
 
 run_hook "$SHIPPED"
 eq "$HOOK_RC" 2 "the hook BLOCKS the turn on the 2026-07-29 sentence"
@@ -415,22 +415,22 @@ run_hook 'Filed as #195; the branch is pushed.'
 eq "$HOOK_RC" 0 "a turn with no status claim passes"
 
 # --- the hook NEVER wedges a session on infrastructure absence -------------------------------
-HOOK_OUT="$(printf '{"transcript_path":"/nonexistent/t.jsonl"}' | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+HOOK_OUT="${ printf '{"transcript_path":"/nonexistent/t.jsonl"}' | bash "$HOOK" 2>&1; }"; HOOK_RC=$?
 eq "$HOOK_RC" 0 "a missing transcript is a no-op, never a block"
-HOOK_OUT="$(printf '{}' | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+HOOK_OUT="${ printf '{}' | bash "$HOOK" 2>&1; }"; HOOK_RC=$?
 eq "$HOOK_RC" 0 "a payload with no transcript_path is a no-op"
-HOOK_OUT="$(printf 'not json' | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+HOOK_OUT="${ printf 'not json' | bash "$HOOK" 2>&1; }"; HOOK_RC=$?
 eq "$HOOK_RC" 0 "an unparseable payload is a no-op"
 printf 'garbage not json\n' > "$tdir/t.jsonl"
-HOOK_OUT="$(printf '{"transcript_path":"%s"}' "$tdir/t.jsonl" | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+HOOK_OUT="${ printf '{"transcript_path":"%s"}' "$tdir/t.jsonl" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?
 eq "$HOOK_RC" 0 "an unparseable transcript is a no-op"
 # A turn whose final message is pure tool use has no text to lint.
 printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}\n' > "$tdir/t.jsonl"
-HOOK_OUT="$(printf '{"transcript_path":"%s"}' "$tdir/t.jsonl" | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+HOOK_OUT="${ printf '{"transcript_path":"%s"}' "$tdir/t.jsonl" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?
 eq "$HOOK_RC" 0 "a text-free final message is a no-op"
 # Missing linter -> reports, never blocks (#35: not silent, but not wedging either).
 mv "$tdir/lib/state-assert.sh" "$tdir/lib/state-assert.sh.bak"
-HOOK_OUT="$(printf '%s' "$(transcript "$SHIPPED")" | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+HOOK_OUT="${ printf '%s' "${ transcript "$SHIPPED"; }" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?
 eq "$HOOK_RC" 0 "a missing linter does not block the session"
 has "$HOOK_OUT" "incomplete install" "...but says the claims are NOT being checked"
 mv "$tdir/lib/state-assert.sh.bak" "$tdir/lib/state-assert.sh"
@@ -441,7 +441,7 @@ mv "$tdir/lib/state-assert.sh.bak" "$tdir/lib/state-assert.sh"
 # disables this gate exactly when the install is damaged, and discarding the linter's stderr hides
 # why. The gate must say so instead of passing silently.
 mv "$tdir/lib/common.sh" "$tdir/lib/common.sh.bak"
-HOOK_OUT="$(printf '%s' "$(transcript "$SHIPPED")" | bash "$HOOK" 2>&1)"; HOOK_RC=$?
+HOOK_OUT="${ printf '%s' "${ transcript "$SHIPPED"; }" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?
 eq "$HOOK_RC" 0 "a broken linter dependency does not wedge the session"
 has "$HOOK_OUT" "NOT being checked" "...but the gate reports that it is disabled"
 has "$HOOK_OUT" "common.sh" "...and surfaces the linter's own diagnostic"

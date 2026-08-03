@@ -123,38 +123,38 @@ run_update() {
 
 # current: clean, on main, up to date with origin.
 reset_src
-eq "$(run_check "$src/bin/baseline" "$fh")" "current|0" "current"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "current|0" "current"
 
 # behind: origin advances; src stays put (baseline's own fetch sees the gap).
 reset_src
 advance_origin "origin-ahead-1"
-eq "$(run_check "$src/bin/baseline" "$fh")" "behind|10" "behind"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "behind|10" "behind"
 
 # dirty: an uncommitted change must block, before any branch reasoning.
 reset_src
 printf 'local edit\n' >> "$src/agents/claude/CLAUDE.md"
-eq "$(run_check "$src/bin/baseline" "$fh")" "dirty|20" "dirty"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "dirty|20" "dirty"
 
 # ahead: an unpushed local commit, origin unchanged.
 reset_src
 check_git "$src" commit -q --allow-empty -m local-only
-eq "$(run_check "$src/bin/baseline" "$fh")" "ahead|20" "ahead"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "ahead|20" "ahead"
 
 # diverged: unique commits on both sides.
 reset_src
 check_git "$src" commit -q --allow-empty -m local-div
 advance_origin "origin-div"
-eq "$(run_check "$src/bin/baseline" "$fh")" "diverged|20" "diverged"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "diverged|20" "diverged"
 
 # detached HEAD.
 reset_src
 git -C "$src" checkout -q --detach HEAD
-eq "$(run_check "$src/bin/baseline" "$fh")" "detached|20" "detached"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "detached|20" "detached"
 
 # not-default: on a feature branch.
 reset_src
 git -C "$src" checkout -q -b feature-y
-eq "$(run_check "$src/bin/baseline" "$fh")" "not-default|20" "not-default"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "not-default|20" "not-default"
 
 # in-progress: a mid-operation clone with a CLEAN tree — the case `git status --porcelain` and
 # the detached-HEAD test both miss. Each sentinel git itself writes must be recognized, because
@@ -166,7 +166,7 @@ for sentinel in rebase-merge/ rebase-apply/ sequencer/ MERGE_HEAD CHERRY_PICK_HE
     */) mkdir -p "$gitdir/${sentinel%/}" ;;
     *)  printf '%s\n' "$(git -C "$src" rev-parse HEAD)" > "$gitdir/$sentinel" ;;
   esac
-  eq "$(run_check "$src/bin/baseline" "$fh")" "in-progress|20" "in-progress ($sentinel)"
+  eq "${ run_check "$src/bin/baseline" "$fh"; }" "in-progress|20" "in-progress ($sentinel)"
   rm -rf "${gitdir:?}/${sentinel%/}"
 done
 
@@ -177,7 +177,7 @@ done
 reset_src
 printf 'local edit\n' >> "$src/agents/claude/CLAUDE.md"
 git -C "$src" remote set-url origin "$work/no-such-origin.git"
-eq "$(run_check "$src/bin/baseline" "$fh")" "dirty|20" "dirty is classified before any fetch"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "dirty|20" "dirty is classified before any fetch"
 git -C "$src" remote set-url origin "$origin"
 reset_src
 
@@ -188,10 +188,10 @@ reset_src
 advance_origin "lock-case"
 mkdir -p "$gitdir/adb-update.lock"
 head_locked="$(git -C "$src" rev-parse HEAD)"
-eq "$(run_update "$src/bin/baseline" "$fh")" "5" "a held update lock exits 5"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "5" "a held update lock exits 5"
 eq "$(git -C "$src" rev-parse HEAD)" "$head_locked" "a locked-out update changes nothing"
 rmdir "$gitdir/adb-update.lock"
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "the update proceeds once the lock is released"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "the update proceeds once the lock is released"
 if [ -d "$gitdir/adb-update.lock" ]; then bad "the lock must be released on exit"; else ok; fi
 
 # A STALE lock (older than the bound) whose holder is GONE is broken rather than blocking
@@ -202,7 +202,7 @@ advance_origin "stale-lock-case"
 mkdir -p "$gitdir/adb-update.lock"
 touch -t 202001010000 "$gitdir/adb-update.lock"
 head_stale="$(git -C "$src" rev-parse HEAD)"
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "a stale lock with no live holder is broken"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "a stale lock with no live holder is broken"
 if [ "$(git -C "$src" rev-parse HEAD)" != "$head_stale" ]; then ok; else bad "a stale-locked update should proceed"; fi
 rm -rf "$gitdir/adb-update.lock"
 
@@ -216,7 +216,7 @@ mkdir -p "$gitdir/adb-update.lock"
 printf '%s 1577836800\n' "$$" > "$gitdir/adb-update.lock/owner"
 touch -t 202001010000 "$gitdir/adb-update.lock"
 head_live="$(git -C "$src" rev-parse HEAD)"
-eq "$(run_update "$src/bin/baseline" "$fh")" "5" "an OLD lock with a LIVE holder is still obeyed"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "5" "an OLD lock with a LIVE holder is still obeyed"
 eq "$(git -C "$src" rev-parse HEAD)" "$head_live" "a live-holder lock blocks the pull"
 rm -rf "$gitdir/adb-update.lock"
 
@@ -228,7 +228,7 @@ advance_origin "future-lock-case"
 mkdir -p "$gitdir/adb-update.lock"
 touch -t 209901010000 "$gitdir/adb-update.lock"
 head_future="$(git -C "$src" rev-parse HEAD)"
-eq "$(run_update "$src/bin/baseline" "$fh")" "5" "a future-dated lock is never judged stale"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "5" "a future-dated lock is never judged stale"
 eq "$(git -C "$src" rev-parse HEAD)" "$head_future" "a future-dated lock blocks the pull"
 rm -rf "$gitdir/adb-update.lock"
 
@@ -265,7 +265,7 @@ eq "$rc" "3" "no-install exits 3"
 
 # update (current + all links resolve) → "nothing to do", exit 0.
 reset_src
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "update current + healthy links exits 0"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "update current + healthy links exits 0"
 
 # --- hook state is the OTHER half of "is the installed surface right?" (#242) ------------------
 # `current` + healthy links used to exit 0 without ever consulting the hook wiring, so a PARTIAL
@@ -296,12 +296,12 @@ HS
 }
 
 reset_src; : > "$work/install.log"; hook_settings wired
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "hooks wired → nothing to do (exit 0)"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "hooks wired → nothing to do (exit 0)"
 eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks wired → the installer is not re-run"
 
 # `none` is the opt-out and must be honoured.
 reset_src; : > "$work/install.log"; hook_settings none
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "hooks none (opt-out) → nothing to do (exit 0)"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "hooks none (opt-out) → nothing to do (exit 0)"
 eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks none → the opt-out is not overruled"
 
 # PARTIAL is REPORTED, never repaired. Removing one hook's entry is the DOCUMENTED way to disable
@@ -309,7 +309,7 @@ eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks none → the opt-out 
 # SessionStart currency hook survives a per-hook removal, so it would be destroyed again next
 # session. #242 was that `partial` was indistinguishable from `none` and silent, not unrepaired.
 reset_src; : > "$work/install.log"; hook_settings partial
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "hooks PARTIAL → reported, still exit 0 (no false repair)"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "hooks PARTIAL → reported, still exit 0 (no false repair)"
 eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks PARTIAL → the installer is NOT re-run"
 # NOT asserted here: that settings.json still lacks the hook. The fixture's install.sh is a stub
 # that only logs its argv — it cannot wire anything — so such a check could never fail and would
@@ -331,9 +331,9 @@ rm -f "$fh/.claude/settings.json"
 reset_src
 mkdir -p "$fh/.claude/skills"
 ln -s "$src/agents/claude/skills/ghost" "$fh/.claude/skills/ghost"   # target does not exist
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "update prunes a renamed-away orphan (exit 0)"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "update prunes a renamed-away orphan (exit 0)"
 if [ -L "$fh/.claude/skills/ghost" ]; then bad "orphaned link should have been pruned"; else ok; fi
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "second update after prune is an idempotent no-op (exit 0)"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "second update after prune is an idempotent no-op (exit 0)"
 
 # prune is STRICTLY ownership-scoped: it must NEVER remove a still-resolving owned link, a
 # dangling link that points ELSEWHERE (not ours), or a real file that lives in a scanned
@@ -356,7 +356,7 @@ rm -f "$fh/.claude/skills/foreign" "$fh/.claude/scripts/keepme"
 reset_src
 rm -f "$fh/.claude/scripts/statusline.sh"
 printf 'not a link\n' > "$fh/.claude/scripts/statusline.sh"   # a real file shadowing a manifest dest
-eq "$(run_update "$src/bin/baseline" "$fh")" "1" "verify rejects a manifest dest that is not our symlink into src"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "1" "verify rejects a manifest dest that is not our symlink into src"
 rm -f "$fh/.claude/scripts/statusline.sh"
 ln -s "$src/agents/claude/scripts/statusline.sh" "$fh/.claude/scripts/statusline.sh"   # restore canonical link
 
@@ -364,14 +364,14 @@ ln -s "$src/agents/claude/scripts/statusline.sh" "$fh/.claude/scripts/statusline
 # (physical-path comparison via pwd -P) — regression guard for the bug review's finding.
 reset_src
 aliasdir="$work/alias-src"; ln -s "$src" "$aliasdir"
-eq "$(run_check "$aliasdir/bin/baseline" "$fh")" "current|0" "symlinked-path spelling is not treated as wrong-clone"
+eq "${ run_check "$aliasdir/bin/baseline" "$fh"; }" "current|0" "symlinked-path spelling is not treated as wrong-clone"
 
 # The mutating `update` path must also REFUSE ahead state and preserve the local commit
 # (the no-data-loss invariant on the write path, not just --check).
 reset_src
 check_git "$src" commit -q --allow-empty -m local-only-2
 head_before="$(git -C "$src" rev-parse HEAD)"
-eq "$(run_update "$src/bin/baseline" "$fh")" "20" "update refuses ahead (exit 20)"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "20" "update refuses ahead (exit 20)"
 eq "$(git -C "$src" rev-parse HEAD)" "$head_before" "update preserves HEAD when ahead"
 
 # A `behind` update must ALWAYS re-run the installer (a pulled commit can add a new skill
@@ -379,7 +379,7 @@ eq "$(git -C "$src" rev-parse HEAD)" "$head_before" "update preserves HEAD when 
 reset_src
 advance_origin "adds-a-payload"
 : > "$work/install.log"
-eq "$(run_update "$src/bin/baseline" "$fh")" "0" "update behind exits 0"
+eq "${ run_update "$src/bin/baseline" "$fh"; }" "0" "update behind exits 0"
 [ -s "$work/install.log" ] && ok || bad "update behind re-runs install.sh (thread 4)"
 
 # self-heal must install ONLY agents whose root doc points into this source — an unrelated
@@ -399,7 +399,7 @@ rm -rf "$fh/.codex"
 rm -f "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/CLAUDE-moved.md" "$fh/.claude/CLAUDE.md"   # target missing; clone intact
 reset_src
-eq "$(run_check "$src/bin/baseline" "$fh")" "current|0" "dangling root-doc still resolves the source (thread 3)"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "current|0" "dangling root-doc still resolves the source (thread 3)"
 
 # Prune must NEVER remove an agent ROOT-DOC link, even a dangling one: it lives at a fixed path
 # that DETECTS the install (and resolves the source), so a dangling root doc is surfaced loudly,
