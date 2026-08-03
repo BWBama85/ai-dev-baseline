@@ -310,9 +310,13 @@ adb_sc_paths() {
     # because the hostile string never appears in an argument. Same check retires the aliasing hole:
     # two DIFFERENT names that are namerefs to one variable defeat the distinctness test below.
     #
-    # Rejecting readonly here too, and it must be BEFORE the assignment rather than after: bash
-    # aborts the whole function on an assignment to a readonly variable, so a post-hoc verification
-    # never runs and the caller gets bash's status instead of this function's contract.
+    # THE TARGET'S ATTRIBUTES ARE CHECKED HERE, BEFORE THE ASSIGNMENT, because the dangerous ones
+    # make bash abort the whole function — so the outcome verification further down never runs, and
+    # the caller gets bash's status (or a dead shell) instead of this function's contract. Two do
+    # that: `-r`, and `-i`, where every assignment is an ARITHMETIC evaluation, so storing a path
+    # raises "arithmetic syntax error: operand expected" and takes the caller with it. The integer
+    # case came from the bot review; the readonly case from the independent pass before it. Same
+    # shape, found twice, which is why the residual rule below exists rather than a third patch.
     _asp_d="$(declare -p "$_asp_v" 2>/dev/null)" || _asp_d=""
     case "$_asp_d" in
       "declare -"*)
@@ -320,6 +324,18 @@ adb_sc_paths() {
         case "$_asp_f" in
           *n*) adb_sc_err "adb_sc_paths: output name '$_asp_v' is already a nameref; pass a plain variable"; return 2 ;;
           *r*) adb_sc_err "adb_sc_paths: output name '$_asp_v' is readonly"; return 2 ;;
+          *i*) adb_sc_err "adb_sc_paths: output name '$_asp_v' has the integer attribute; a path assigned to it is evaluated as arithmetic"; return 2 ;;
+        esac
+        # RESIDUAL RULE — an ALLOWLIST, so a bash release that adds an attribute cannot quietly
+        # become the next `-i`. Everything left is refused unless it was verified harmless here:
+        # `-` (no attributes), `a`/`A` (bash stores the scalar at index 0 and `$name` reads it
+        # straight back — measured, and pinned by S18 so this rule cannot over-tighten onto a
+        # working caller), `x` (export) and `t` (trace). `u`/`l` land here too: they silently
+        # CASE-FOLD the stored path, which the outcome check would also catch, but naming the
+        # attribute is a better diagnosis than "did not accept its value".
+        case "${_asp_f//[aAxt-]/}" in
+          '') : ;;
+          *) adb_sc_err "adb_sc_paths: output name '$_asp_v' carries unsupported attribute(s) '-$_asp_f'"; return 2 ;;
         esac ;;
     esac
   done

@@ -685,4 +685,28 @@ eq "$sp" "RC2" "S14 an output name that silently discards its value is refused"
 lib="$( ( set +u; . "$SC"; adb_sc_paths demo /r /h _ADB_SC_AGENT o5 u5; printf 'RC%s' "$?" ) 2>/dev/null )"
 eq "$lib" "RC2" "S15 a library-owned _ADB_SC_* output name is refused"
 
+# S16 — AN INTEGER-ATTRIBUTED TARGET, the second way an assignment kills the caller (bot review).
+# `declare -i tgt` makes every assignment to `tgt` an ARITHMETIC evaluation, so storing a path into
+# it raises "arithmetic syntax error" and terminates the caller — the same class as the readonly
+# target in S13, and equally invisible to the outcome check, which never runs. Measured: without
+# the pre-check the probe emits neither a status nor its liveness marker.
+intg="$( ( set +u; . "$SC"; declare -i tgt; adb_sc_paths demo /r /h tgt o6 u6; printf 'RC%s' "$?"; printf ' ALIVE' ) 2>/dev/null )"
+eq "$intg" "RC2 ALIVE" "S16 an integer-attributed output name is refused, and the caller survives"
+
+# S17 — a case-TRANSFORMING target (`declare -u`) is refused rather than silently storing a
+# corrupted path. This one the outcome check would already catch; asserting it pins the ATTRIBUTE
+# rule rather than leaving the coverage to a downstream comparison that a later edit could weaken.
+upc="$( ( set +u; . "$SC"; declare -u tgt; adb_sc_paths demo /r /h tgt o7 u7; printf 'RC%s' "$?"; printf ' ALIVE' ) 2>/dev/null )"
+eq "$upc" "RC2 ALIVE" "S17 a case-transforming output name is refused"
+
+# S18 — AND THE OVER-TIGHTENING GUARD, which matters as much as the rejections. An ARRAY target is
+# demonstrably fine: bash stores the scalar at index 0 and `$tgt` reads it straight back, so a rule
+# written to reject `-i` must not sweep `-a`/`-A`/`-x` up with it. This passes before and after the
+# attribute rule; it exists so a future tightening cannot quietly break a working caller.
+# SC2128 (bare array expansion gives element 0) is the ASSERTION here, not an accident: what makes
+# an array target usable is exactly that `$tgt` reads back what was stored at index 0.
+# shellcheck disable=SC2128
+arrv="$( ( set +u; . "$SC"; declare -a tgt; adb_sc_paths demo /r /h tgt o8 u8; printf 'RC%s|%s' "$?" "${tgt}" ) 2>/dev/null )"
+eq "$arrv" "RC0|/h/.claude/skills/demo/SKILL.md" "S18 an array-attributed output still works (the rejection is not over-broad)"
+
 check_summary "check-skill-compose"
