@@ -531,6 +531,7 @@ add install-dry-run     step_install_dry_run
 JOBS=0
 SERIAL=0
 ONLY=""
+ONLY_GIVEN=0   # distinct from ONLY="" — see the --only handling below
 
 usage() {
   cat <<'USAGE'
@@ -557,6 +558,10 @@ cpu_count() {
   n="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || n=""
   [ -n "$n" ] || n="$(sysctl -n hw.ncpu 2>/dev/null)" || n=""
   [ -n "$n" ] || n="$(nproc 2>/dev/null)" || n=""
+  # Trim surrounding whitespace before the digit test. A probe that answered " 10" would otherwise
+  # fail it and fall back to 1 — a pool of one, which is this whole change silently not happening.
+  # (The run header prints the job count, so it would be visible; it should also not occur.)
+  n="${n#"${n%%[![:space:]]*}"}"; n="${n%"${n##*[![:space:]]}"}"
   case "$n" in ''|*[!0-9]*) n=1 ;; esac
   [ "$n" -ge 1 ] 2>/dev/null || n=1
   printf '%s' "$n"
@@ -571,7 +576,10 @@ while [ "$#" -gt 0 ]; do
       JOBS="$2"; shift ;;
     --only)
       [ "$#" -ge 2 ] || { echo "selfcheck: --only needs a value" >&2; exit 2; }
-      ONLY="$2"; shift ;;
+      # The FLAG is recorded separately from its VALUE. Keying the filter on a non-empty $ONLY
+      # would make `--only ""` — which is what `--only "$LIST"` becomes when LIST is empty — run
+      # the entire suite instead of erroring: a filter silently doing the opposite of narrowing.
+      ONLY="$2"; ONLY_GIVEN=1; shift ;;
     --list)
       # Three TAB-separated fields: name, command, and whether it runs in the serial prologue.
       # The third is here so a guard can ask the runner which steps are pinned instead of grepping
@@ -594,7 +602,7 @@ done
 # than being skipped: a filter that quietly matches nothing runs zero checks and reports the same
 # clean verdict a full green run reports (base/practices/self-review.md).
 declare -a SELECTED=()
-if [ -n "$ONLY" ]; then
+if [ "$ONLY_GIVEN" -eq 1 ]; then
   declare -A _want=()
   IFS=, read -r -a _only_names <<< "$ONLY"
   for _n in "${_only_names[@]}"; do

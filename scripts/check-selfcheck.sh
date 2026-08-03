@@ -264,6 +264,12 @@ has "$OUT" "unknown step" "...and says which"
 hasnt "$OUT" "ALL CHECKS PASSED" "...and never reports a pass"
 sc --only ,,
 eq "$RC_" "2" "--only that selects nothing is an error, not an empty pass"
+# `--only "$LIST"` with an empty LIST is the realistic way this arrives, and the failure it used to
+# produce was the worst available: the filter was keyed on a non-empty value, so an empty one ran
+# the ENTIRE suite. A narrowing flag must never silently widen.
+sc --only ""
+eq "$RC_" "2" "--only with an empty value is an error, and never a full run"
+hasnt "$OUT" "ALL CHECKS PASSED" "...and never reports the whole suite as passed"
 sc --jobs 0
 eq "$RC_" "2" "--jobs 0 is rejected (a pool of zero would never dispatch)"
 sc --jobs banana
