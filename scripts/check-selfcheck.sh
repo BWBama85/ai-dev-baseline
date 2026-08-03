@@ -93,6 +93,12 @@ if [ -f "$ctl/$name.beat" ]; then
   # tell "this worker is still alive" from "this worker is asleep" without pgrep — the workers run
   # as `bash scripts/check-<x>.sh` from the fixture root, so their argv carries no token unique to
   # this suite and a pgrep would match the REAL check-*.sh processes running alongside it.
+  #
+  # `$name.deaf` additionally makes the worker IGNORE SIGTERM. Without such a worker the runner's
+  # TERM -> grace -> KILL escalation cannot be observed at all: every polite stub dies on the first
+  # TERM, so deleting the entire KILL loop leaves the suite green. A backstop that only ever runs
+  # its first step is not a backstop.
+  [ -f "$ctl/$name.deaf" ] && trap '' TERM HUP
   n=0
   while [ "$n" -lt 150 ]; do n=$((n + 1)); printf '%s\n' "$n" > "$ctl/$name.beat"; sleep 0.2; done
 else
@@ -121,6 +127,11 @@ peak_concurrency() {
 }
 
 # block_of <step> — the lines the runner emitted between that step's banner and its verdict.
+#
+# LIMITATION, stated rather than implied: it stops at the first body line beginning `PASS (` or
+# `FAIL (`, so a step whose own output contained such a line would have its block truncated here.
+# No stub emits one, so no assertion is silently weakened today — but this helper cannot see
+# interleaving that occurred after a verdict-shaped line, and a future stub must not emit one.
 block_of() {
   printf '%s\n' "$OUT" | awk -v s="=== $1 ===" '
     $0 == s { inb = 1; next }
@@ -198,12 +209,25 @@ sc --serial --only "$ONLY"
 yes "$RC_" "--serial over passing steps exits 0"
 eq "$(peak_concurrency)" "1" "--serial never runs two steps at once"
 serial_order="$(printf '%s\n' "$OUT" | sed -n 's/^=== \(.*\) ===$/\1/p' | grep -v '^result$' | tr '\n' ' ')"
+# THE ORACLE MUST BE INDEPENDENT OF THE RUNNER. Deriving the expectation from the same runner's
+# `--list` made this assertion tautological: mutate `add` to prepend rather than append and both
+# `--list` and `--serial` reverse together, so the suite stayed green while declaration order was
+# inverted. (Demonstrated by review, not hypothesised.) The order the `add` lines appear in the
+# SOURCE is the independent fact, so read that instead.
+#
 # WHOLE-NAME membership, not a substring test: `cleanup` is a substring of `cleanup-enum`, so an
 # unanchored match silently adds a step the run never selected and the expectation is wrong rather
 # than the runner.
-declared="$(bash "$FX/scripts/selfcheck.sh" --list | cut -f1 | while IFS= read -r n; do
+declared="$(sed -n 's/^add[[:space:]]\{1,\}\([A-Za-z0-9_-]\{1,\}\)[[:space:]].*$/\1/p' \
+              "$FX/scripts/selfcheck.sh" | while IFS= read -r n; do
               case ",$ONLY," in *",$n,"*) printf '%s ' "$n" ;; esac; done)"
-eq "$serial_order" "$declared" "--serial emits steps in DECLARATION order"
+eq "$(printf '%s' "$declared" | wc -w | tr -d ' ')" "8" \
+  "fixture setup: the source-order oracle found all 8 selected steps (not a silent empty match)"
+eq "$serial_order" "$declared" "--serial emits steps in DECLARATION order (vs the SOURCE, not --list)"
+# ...and --list must agree with the source too, since other guards read --list as the registry.
+list_order="$(bash "$FX/scripts/selfcheck.sh" --list | cut -f1 | while IFS= read -r n; do
+                case ",$ONLY," in *",$n,"*) printf '%s ' "$n" ;; esac; done)"
+eq "$list_order" "$declared" "--list reports the registry in SOURCE declaration order"
 
 # ...and a failing step still fails a serial run, with the same summary shape.
 reset_ctl
@@ -255,6 +279,87 @@ eq "$(awk '/^\+zulu$/{getline nxt; print nxt}' "$FX/ctl/events")" "-zulu" \
 real_pinned="$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$3 == "serial" {print $1}' | tr '\n' ' ')"
 eq "$real_pinned" "build-drift " "the shipped runner's serial prologue is exactly build-drift"
 
+# ============================== 7b. FUNCTION-valued steps ====================================
+# Six of the shipped registry's forty commands are shell FUNCTIONS (`step_shellcheck`,
+# `step_build_drift`, `step_workflow_map`, `step_skill_frontmatter`, `step_gate_detector`,
+# `step_install_dry_run`), not `bash scripts/check-*.sh`. Every stub above is external, so a
+# dispatcher that silently skipped every function-valued step — or lost its exit status, which is
+# the more likely bug since a function returns rather than exiting — would pass everything so far.
+# Register one in the copy and put it through both outcomes.
+cp "$ROOT/scripts/selfcheck.sh" "$FX/scripts/fnstep.sh"
+cat > "$work/fn.frag" <<'FRAG'
+
+step_fixture_fn() {
+  printf '%s\n' "+fnstep" >> "$ADB_STUB_CTL/events"
+  printf 'fnstep-line-1\n'
+  printf '%s\n' "-fnstep" >> "$ADB_STUB_CTL/events"
+  [ -f "$ADB_STUB_CTL/fnstep.fail" ] && return 5
+  return 0
+}
+add fnstep              step_fixture_fn
+FRAG
+awk -v frag="$work/fn.frag" '
+  /^add install-dry-run/ { while ((getline l < frag) > 0) print l }
+  { print }
+  ' "$FX/scripts/selfcheck.sh" > "$FX/scripts/fnstep.sh"
+grep -q '^add fnstep ' "$FX/scripts/fnstep.sh" && ok \
+  || bad "fixture setup: could not register a function-valued step in the copied runner"
+
+reset_ctl
+OUT="$(ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/fnstep.sh" --only "practice-index,fnstep" --jobs 2 2>&1)"; RC_=$?
+yes "$RC_" "a function-valued step that succeeds passes"
+has "$OUT" "=== fnstep ===" "a function-valued step is dispatched, not skipped"
+has "$(block_of fnstep)" "fnstep-line-1" "a function-valued step's output is captured like any other"
+eq "$(grep -c '^+fnstep$' "$FX/ctl/events")" "1" "a function-valued step actually EXECUTED (once)"
+
+reset_ctl
+: > "$FX/ctl/fnstep.fail"
+OUT="$(ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/fnstep.sh" --only "practice-index,fnstep" --jobs 2 2>&1)"; RC_=$?
+no "$RC_" "a function-valued step that RETURNS non-zero fails the run"
+has "$OUT" "FAILED: fnstep" "...and is named"
+has "$OUT" "FAIL (exit 5" "...carrying the status the function returned, not a generic 1"
+
+# ============================== 7c. registration is validated =================================
+# `add` is the one place a step enters the run, so the ways a step can be registered into a silent
+# no-op belong here. An empty command registered, then executed nothing and reported PASS.
+mkreg() {  # mkreg <line> -> a copy of the runner with <line> appended to the registry
+  awk -v line="$1" '/^add install-dry-run/ { print line } { print }' \
+    "$FX/scripts/selfcheck.sh" > "$FX/scripts/reg.sh"
+  ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/reg.sh" --list >/dev/null 2>&1
+}
+mkreg 'add empty-cmd            ""' ; eq "$?" "2" "add rejects an EMPTY command (it would PASS having run nothing)"
+mkreg 'add bad,name             bash scripts/check-gates.sh'
+eq "$?" "2" "add rejects a step name that --only could never select (comma)"
+mkreg 'add practice-index       bash scripts/check-gates.sh'
+eq "$?" "2" "add rejects a duplicate step name"
+# A metacharacter that stays INSIDE the argument. Deliberately not a `;` or a `&&`: those are
+# command SEPARATORS, so bash would parse them before `add` ever saw them — the injected text would
+# simply run as its own command, which is a hazard to write into a fixture and proves nothing about
+# the validator. `?` matches no file here, so it reaches `add` as a literal argument character.
+mkreg 'add meta                 bash scripts/check-gates.sh?'
+eq "$?" "2" "add rejects a command carrying a shell metacharacter inside an argument"
+
+# ============================== 7d. automatic job sizing ======================================
+# `--jobs` is passed explicitly everywhere above, so the DEFAULT — the probe chain, the whitespace
+# trim and the cap at 8 — was entirely untested, and a probe that silently answered 1 would undo
+# the whole change while every other assertion stayed green. The run header states the count, so
+# the runner can be asked. Drive it with a stubbed probe on PATH.
+probe() {  # probe <getconf-output> -> the job count the runner chose
+  local sb="$work/probe"; rm -rf "$sb"; mkdir -p "$sb"
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$1" > "$sb/getconf"
+  # sysctl and nproc are stubbed EMPTY so the fallback chain cannot rescue a bad first answer and
+  # make this test pass for the wrong reason.
+  printf '#!/bin/sh\nexit 1\n' > "$sb/sysctl"; printf '#!/bin/sh\nexit 1\n' > "$sb/nproc"
+  chmod +x "$sb/getconf" "$sb/sysctl" "$sb/nproc"
+  PATH="$sb:$PATH" ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/selfcheck.sh" --only practice-index 2>&1 \
+    | sed -n 's/^selfcheck: .* \([0-9][0-9]*\) parallel job(s).*/\1/p'
+}
+eq "$(probe 4)"      "4" "cpu probe: a plain count is used as-is"
+eq "$(probe 32)"     "8" "cpu probe: the count is capped at 8"
+eq "$(probe '  6  ')" "6" "cpu probe: surrounding whitespace is trimmed, not read as garbage"
+eq "$(probe banana)" "1" "cpu probe: unusable output falls back to 1 rather than to an empty bound"
+eq "$(probe '')"     "1" "cpu probe: an empty answer falls back to 1"
+
 # ============================== 8. filters that select nothing ================================
 # A filter that quietly matches nothing runs zero checks and prints the same clean verdict a full
 # green run prints. That is the silent-guard failure this repo keeps paying for, so it is an error.
@@ -304,31 +409,86 @@ eq "$(printf '%s\n' "$blk" | grep -c '^gates-line-')" "4000" "large output: ever
 # own traps a cancelled run kills the parent and leaves up to $JOBS check suites running
 # unattended. The stubs here sleep far longer than the poll below, so a surviving worker is
 # unambiguous rather than a race.
+# cancel_run <label> <extra-setup-fn> — start a run whose stubs heartbeat, wait until the pool is
+# genuinely occupied, TERM the runner, and report whether the workers stopped ticking.
+#
+# "Stopped ticking" is polled to a QUIESCENT state rather than sampled once. A single 1.5s sample
+# can read a live-but-descheduled process as dead, and this suite itself runs inside the pool
+# alongside seven other steps, so being descheduled is not hypothetical. Polling until two
+# consecutive reads agree, with a hard ceiling, is both faster in the common case and not a race:
+# the stubs tick for ~30s, so a surviving worker cannot produce two identical reads 0.5s apart.
+cancel_run() {
+  local label="$1"; shift
+  local want="${1:-2}"; shift 2>/dev/null || true
+  local runner started=0 waited=0 a b tries=0
+  ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/selfcheck.sh" --only "$ONLY" "$@" \
+    >"$work/cancel.out" 2>&1 &
+  runner=$!
+  # `grep -c` exits 1 on zero matches while still printing the count, so its status is deliberately
+  # discarded rather than `|| echo 0`-ed into a two-line result.
+  while [ "$waited" -lt 100 ]; do
+    started="$(grep -c '^+' "$FX/ctl/events" 2>/dev/null)" || :
+    [ "${started:-0}" -ge "$want" ] && break
+    sleep 0.1; waited=$((waited + 1))
+  done
+  [ "${started:-0}" -ge "$want" ] && ok || bad "$label: only $started worker(s) started; needed $want to cancel"
+  kill -TERM "$runner" 2>/dev/null
+  wait "$runner" 2>/dev/null; CANCEL_RC=$?
+
+  a="$(cat "$FX"/ctl/*.beat 2>/dev/null)"
+  QUIET=0
+  while [ "$tries" -lt 12 ]; do
+    tries=$((tries + 1))
+    sleep 0.5
+    b="$(cat "$FX"/ctl/*.beat 2>/dev/null)"
+    if [ "$b" = "$a" ]; then QUIET=1; break; fi
+    a="$b"
+  done
+}
+
 reset_ctl
 # A pre-created .beat file puts each stub into heartbeat mode: it ticks a counter for ~30s.
 for s in "${STUBS[@]}"; do printf '0\n' > "$FX/ctl/$s.beat"; done
-ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/selfcheck.sh" --only "$ONLY" --jobs 4 >"$work/cancel.out" 2>&1 &
-runner=$!
-# Wait for the pool to be genuinely occupied before signalling, so this tests cancellation rather
-# than a race against startup. `grep -c` exits 1 on zero matches while still printing the count,
-# so its status is deliberately discarded rather than `|| echo 0`-ed into a two-line result.
-started=0; waited=0
-while [ "$waited" -lt 100 ]; do
-  started="$(grep -c '^+' "$FX/ctl/events" 2>/dev/null)" || :
-  [ "${started:-0}" -ge 2 ] && break
-  sleep 0.1; waited=$((waited + 1))
-done
-[ "${started:-0}" -ge 2 ] && ok || bad "cancellation: the pool never started two workers to cancel"
-kill -TERM "$runner" 2>/dev/null
-wait "$runner" 2>/dev/null; cancel_rc=$?
-no "$cancel_rc" "a cancelled run exits non-zero"
+cancel_run "cancellation" 2 --jobs 4
+no "$CANCEL_RC" "a cancelled run exits non-zero"
+eq "$QUIET" "1" "cancellation terminates the workers instead of orphaning them"
 
-# The workers must be GONE, and "gone" is asked of the heartbeats rather than of the process table:
-# a live stub ticks every 0.2s, so a 1.5s window it fails to move in is 7 missed ticks. Without the
-# runner's traps these would keep ticking for another ~30 seconds.
-beats_before="$(cat "$FX"/ctl/*.beat 2>/dev/null)"
-sleep 1.5
-beats_after="$(cat "$FX"/ctl/*.beat 2>/dev/null)"
-eq "$beats_after" "$beats_before" "cancellation terminates the workers instead of orphaning them"
+# ...and in --serial, which is a DIFFERENT code path and was the one left uncovered. A serial step
+# used to run in the foreground, where a TERM aimed at the runner never reaches it — so cancelling
+# during the `build-drift` prologue left a `scripts/build.sh` still rewriting the working tree after
+# the runner had exited. Only one worker runs at a time here, so one started worker is the bar.
+reset_ctl
+for s in "${STUBS[@]}"; do printf '0\n' > "$FX/ctl/$s.beat"; done
+cancel_run "cancellation (--serial)" 1 --serial
+no "$CANCEL_RC" "a cancelled --serial run exits non-zero"
+eq "$QUIET" "1" "cancelling --serial terminates the running step instead of leaving it behind"
+
+# ...and the same again with workers that IGNORE SIGTERM. This is what makes the TERM -> grace ->
+# KILL escalation observable: with only polite stubs, deleting the entire KILL loop from _cleanup
+# leaves every assertion green (demonstrated by review). A deaf worker is stopped only by the
+# escalation, so this case is the one that can see it missing.
+reset_ctl
+for s in "${STUBS[@]}"; do printf '0\n' > "$FX/ctl/$s.beat"; : > "$FX/ctl/$s.deaf"; done
+cancel_run "cancellation (TERM-ignoring workers)" 2 --jobs 4
+no "$CANCEL_RC" "a cancelled run exits non-zero even when its workers ignore TERM"
+eq "$QUIET" "1" "the TERM -> grace -> KILL escalation stops a worker that ignores TERM"
+
+# ============================== 11. NUL bytes survive =========================================
+# The runner buffers to a FILE rather than a variable precisely so binary-ish output survives —
+# command substitution cannot hold a NUL. That rationale was prose until now; assert it on bytes.
+# `sc` cannot be used here for the same reason it is being tested: $OUT is a shell variable.
+reset_ctl
+cat > "$FX/scripts/check-gates.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'nul-before\n'
+printf 'A\000B\n'
+printf 'nul-after\n'
+STUB
+chmod +x "$FX/scripts/check-gates.sh"
+ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/selfcheck.sh" --only gates --jobs 1 >"$work/nul.out" 2>&1
+yes "$?" "the NUL-emitting step passes"
+eq "$(LC_ALL=C tr -dc '\000' < "$work/nul.out" | wc -c | tr -d ' ')" "1" \
+  "a NUL byte in a step's output reaches the run's output intact (the file buffer, not a variable)"
+has "$(LC_ALL=C tr -d '\000' < "$work/nul.out")" "nul-after" "...and output AFTER the NUL is not truncated"
 
 check_summary "check-selfcheck"

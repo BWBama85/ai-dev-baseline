@@ -1940,8 +1940,9 @@ limit: none of them is sufficient alone.
                  measurement *falsifies* — #260 asks for "under 6 minutes on an 8-core machine",
                  and the suite already did that before a line was written. (2) What a step
                  orchestrator owes when it stops being straight-line code: `selfcheck.sh` went
-                 from 39 inline `if …; then` blocks, which cannot lose a failure, to a job pool,
-                 which can.
+                 from 39 sequential inline steps — most an `if bash …; then` line, some a
+                 multi-command block — none of which could lose a failure, to a job pool, which
+                 can.
 - decision:      Build the work as specified, correct the premise in the tree rather than in the
                  PR body alone, and give the runner its own guard suite.
                  1. **The measurement, taken before the branch existed.** Pre-change HEAD
@@ -1952,7 +1953,8 @@ limit: none of them is sufficient alone.
                     310.66s independently and reached the same conclusion.
                  2. **The 18m55s figure is corrected where it is restated** (`CLAUDE.md`,
                     `.claude/scripts/precommit-gate.sh`), not deleted. It was a real observation
-                    of a contended machine, and the decision it justified — D25's fast Stop-hook
+                    that did not reproduce; that run was not instrumented, so no cause is
+                    asserted. The decision it justified — D25's fast Stop-hook
                     subset — survives without it: 66s at the end of every turn is still the wrong
                     trade. What is removed is the implication that 18m55s is the suite's cost.
                  3. **`build-drift` alone is pinned to a serial prologue.** It runs `build.sh`,
@@ -1963,12 +1965,16 @@ limit: none of them is sufficient alone.
                     (D13), so there is no rate limit to serialize on.
                  4. **Output ordering is a contract, and it is completion order.** A failure
                     surfaces when it happens rather than behind a straggler, and `--serial`
-                    supplies declaration order for debugging. The `FAILED: <names>` line is LAST
-                    because `project-gates.sh` tails only the final few KB on failure.
+                    supplies declaration order for debugging. The `FAILED: <names>` line is the
+                    second-to-last — immediately before the verdict, which stays last as the
+                    recognisable terminal contract — because `project-gates.sh` tails only the
+                    final few KB on failure.
                  5. **`scripts/check-selfcheck.sh`.** The pool's failure mode is silence, and no
-                    existing check would notice it, so every rule is driven to RED against a
-                    deliberately broken copy of the runner — dropped exit status, misattributed
-                    pid, unbuffered output, a pool of one.
+                    existing check would notice it, so the suite was driven to RED against five
+                    deliberately broken copies of the runner — a dropped exit status, a
+                    misattributed pid, unbuffered output, a pool of one, and an empty `--only` that
+                    widened instead of narrowing. That is the core of the dispatcher, not literally
+                    all 53 assertions, and the distinction is stated rather than rounded up.
 - placement:     `scripts/selfcheck.sh` (the runner + its concurrency-contract header);
                  `scripts/check-selfcheck.sh`; this entry; the PR body carries the full
                  measurement table.

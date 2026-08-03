@@ -122,6 +122,14 @@ declare -A STEP_CMD=()
 
 add() {
   local name="$1"; shift
+  # The NAME is a slug, and that is not cosmetic. `--only` splits on commas and `--list` is
+  # TAB-delimited, so a name carrying either is unselectable or corrupts the format other guards
+  # parse; whitespace and newlines additionally let a name forge an output boundary.
+  case "$name" in
+    ''|*[!A-Za-z0-9_-]*)
+      printf 'selfcheck: FATAL — step name %s is not a [A-Za-z0-9_-] slug\n' "${name:-<empty>}" >&2
+      exit 2 ;;
+  esac
   [ "$#" -ge 1 ] || { printf 'selfcheck: FATAL — step %s registered with no command\n' "$name" >&2; exit 2; }
   [ -z "${STEP_CMD[$name]+x}" ] || { printf 'selfcheck: FATAL — step %s registered twice\n' "$name" >&2; exit 2; }
   # The values are authored in this file and split on whitespace, so a metacharacter would either
@@ -136,6 +144,13 @@ add() {
   # marker (0x7F) in the result — every command here would have "failed" validation on a byte that
   # is not in the source. Assigning `$*` to a scalar first makes it one ordinary string.
   local _cmd="$*"
+  # An argument COUNT is not a command. `add foo ""` passes the count test, registers, and then
+  # `run_step` executes nothing at all and returns 0 — a step that reports PASS having run nothing,
+  # which is precisely the silent-no-op this suite exists to make impossible.
+  case "$_cmd" in
+    *[![:space:]]*) : ;;
+    *) printf 'selfcheck: FATAL — step %s registered with an empty command\n' "$name" >&2; exit 2 ;;
+  esac
   local _rest="${_cmd//[A-Za-z0-9_.\/ -]/}"
   [ -z "$_rest" ] || {
     printf 'selfcheck: FATAL — step %s: command carries %s outside [A-Za-z0-9_./ -] (%s)\n' \
@@ -267,7 +282,12 @@ step_gate_detector() {
 
 step_install_dry_run() {
   local FAKE ok=1 log
-  FAKE="$(mktemp -d)" || return 1
+  # UNDER THE RUNNER'S SCRATCH DIR, not a free-standing mktemp. This step is the only one that
+  # builds a whole fake HOME, and cancellation kills the worker outright — `rm -rf "$FAKE"` at the
+  # bottom never runs, so an independent temp dir survives the run that made it. Rooting it in
+  # $WORK hands it to the EXIT trap, which removes the tree whatever happens. The fallback keeps
+  # the function callable outside the runner.
+  FAKE="$(mktemp -d "${WORK:-${TMPDIR:-/tmp}}/dryrun.XXXXXX")" || return 1
   # The log lives in this run's own scratch dir, not at a fixed /tmp path, and its contents are
   # printed INTO this step's output on failure. A fixed path was two problems: a second selfcheck
   # in another checkout clobbered it (#250's class), and "see /tmp/adb-selfcheck.log" is not an
@@ -543,8 +563,9 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--list]
                 --serial is the mode that does not.
   --only a,b    Run only the named steps (still honouring the serial prologue). An unknown
                 name is an error — a filter that silently selects nothing is not a pass.
-  --list        Print the registry as "<name><TAB><command>" and exit. This is the runner's
-                own answer to "what does it run", so a guard can ask instead of grepping.
+  --list        Print the registry as "<name><TAB><command><TAB>pool|serial" and exit. This is
+                the runner's own answer to "what does it run", so a guard can ask instead of
+                grepping. The third field says whether the step runs in the serial prologue.
 USAGE
 }
 
@@ -567,12 +588,20 @@ cpu_count() {
   printf '%s' "$n"
 }
 
+LIST=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --serial) SERIAL=1 ;;
     --jobs)
       [ "$#" -ge 2 ] || { echo "selfcheck: --jobs needs a value" >&2; exit 2; }
-      case "$2" in ''|*[!0-9]*|0) echo "selfcheck: --jobs needs a positive integer, got '$2'" >&2; exit 2 ;; esac
+      # `0` alone is not the test. `000` is not the literal 0 and passes a pattern check, then
+      # evaluates to 0 arithmetically and falls through to the automatic default — an explicit
+      # `--jobs 000` silently becoming an 8-job run. So does a value too large for bash arithmetic,
+      # which makes the later comparison error instead of returning false. Decide it HERE, once,
+      # arithmetically, and never fall back on a value the operator actually supplied.
+      case "$2" in ''|*[!0-9]*) echo "selfcheck: --jobs needs a positive integer, got '$2'" >&2; exit 2 ;; esac
+      [ "$2" -ge 1 ] 2>/dev/null \
+        || { echo "selfcheck: --jobs needs a positive integer, got '$2'" >&2; exit 2; }
       JOBS="$2"; shift ;;
     --only)
       [ "$#" -ge 2 ] || { echo "selfcheck: --only needs a value" >&2; exit 2; }
@@ -580,23 +609,31 @@ while [ "$#" -gt 0 ]; do
       # would make `--only ""` — which is what `--only "$LIST"` becomes when LIST is empty — run
       # the entire suite instead of erroring: a filter silently doing the opposite of narrowing.
       ONLY="$2"; ONLY_GIVEN=1; shift ;;
-    --list)
-      # Three TAB-separated fields: name, command, and whether it runs in the serial prologue.
-      # The third is here so a guard can ask the runner which steps are pinned instead of grepping
-      # PINNED_STEPS out of this file — and, unlike a grep, asking cannot pass while the array it
-      # read has stopped being the one the dispatcher consults.
-      for _s in "${STEP_ORDER[@]}"; do
-        _where=pool
-        for _p in "${PINNED_STEPS[@]}"; do [ "$_s" = "$_p" ] && _where=serial; done
-        printf '%s\t%s\t%s\n' "$_s" "${STEP_CMD[$_s]}" "$_where"
-      done
-      exit 0 ;;
+    # A terminal mode is RECORDED here and acted on after the loop, not executed mid-parse.
+    # Exiting inside the loop made rejection depend on argument ORDER: `--list --nonsense` printed
+    # the registry and exited 0 while `--nonsense --list` errored. An unknown flag is an error
+    # wherever it appears.
+    --list) LIST=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "selfcheck: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
-[ "$JOBS" -gt 0 ] 2>/dev/null || { JOBS="$(cpu_count)"; [ "$JOBS" -le 8 ] || JOBS=8; }
+
+if [ "$LIST" -eq 1 ]; then
+  # Three TAB-separated fields: name, command, and whether it runs in the serial prologue.
+  # The third is here so a guard can ask the runner which steps are pinned instead of grepping
+  # PINNED_STEPS out of this file — and, unlike a grep, asking cannot pass while the array it
+  # read has stopped being the one the dispatcher consults.
+  for _s in "${STEP_ORDER[@]}"; do
+    _where=pool
+    for _p in "${PINNED_STEPS[@]}"; do [ "$_s" = "$_p" ] && _where=serial; done
+    printf '%s\t%s\t%s\n' "$_s" "${STEP_CMD[$_s]}" "$_where"
+  done
+  exit 0
+fi
+
+[ "$JOBS" -gt 0 ] || { JOBS="$(cpu_count)"; [ "$JOBS" -le 8 ] || JOBS=8; }
 
 # --only, applied to the declared order so the selection keeps it. An unknown name EXITS rather
 # than being skipped: a filter that quietly matches nothing runs zero checks and reports the same
@@ -633,10 +670,26 @@ declare -a SLOW=()          # "secs name", for the summary
 # backstop, because anything that traps or ignores it survives.
 _cleanup() {
   local p had=0
-  for p in "${!LIVE[@]}"; do kill -TERM -- "-$p" 2>/dev/null && had=1; done
+  for p in "${!LIVE[@]}"; do
+    # GUARD THE SUBSCRIPT BEFORE NEGATING IT. `kill -- -0` signals the CALLER'S OWN process group —
+    # i.e. the operator's shell and everything in it — so a key that is not a positive integer must
+    # never reach the `-$p` form. `$!` cannot be 0 today; the cost of being wrong is the whole
+    # session, which is worth one test.
+    case "$p" in ''|0|*[!0-9]*) continue ;; esac
+    kill -TERM -- "-$p" 2>/dev/null && had=1
+    # ...and the bare pid too, because the group form only reaches a group if `set -m` actually
+    # took effect. Where it did, the worker is already gone and this is a harmless ESRCH; where it
+    # did not, this is the only signal that lands. (A worker surviving cancellation is what
+    # check-selfcheck.sh's heartbeat case detects, so the two halves are not redundant claims.)
+    kill -TERM "$p" 2>/dev/null && had=1
+  done
   if [ "$had" -eq 1 ]; then
     sleep 1
-    for p in "${!LIVE[@]}"; do kill -KILL -- "-$p" 2>/dev/null; done
+    for p in "${!LIVE[@]}"; do
+      case "$p" in ''|0|*[!0-9]*) continue ;; esac
+      kill -KILL -- "-$p" 2>/dev/null
+      kill -KILL "$p" 2>/dev/null
+    done
   fi
   LIVE=()
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
@@ -675,13 +728,30 @@ record() {   # name rc secs
 }
 
 run_serial() {   # names...
-  local name t0 rc
+  local name t0 rc pid
+  # Job control here for the same reason `run_pool` uses it, and it is not optional: without it the
+  # backgrounded step shares THIS shell's process group, so `_cleanup` can only signal the worker
+  # subshell — and the `bash scripts/check-*.sh` it forked is orphaned and runs on. The step being
+  # cancelled in this path is usually `build-drift`, i.e. a `scripts/build.sh` still rewriting the
+  # working tree after the runner has exited.
+  set -m
   for name in "$@"; do
     banner "$name"
     t0="$EPOCHSECONDS"; rc=0
-    run_step "$name" || rc=$?
+    # Backgrounded and tracked, then waited on — NOT run in the foreground. Output still streams
+    # live (stdout and stderr are inherited, not redirected), so this is the same experience; what
+    # it buys is that the serial prologue and every `--serial` step land in `LIVE` and are therefore
+    # reachable by `_cleanup`. A foreground child does not receive a TERM aimed at this shell, so
+    # cancelling during `build-drift` used to leave a `scripts/build.sh` rewriting the working tree
+    # after the runner had already exited — the one step where that matters most.
+    run_step "$name" &
+    pid=$!
+    LIVE["$pid"]=1
+    wait "$pid" || rc=$?
+    unset "LIVE[$pid]"
     record "$name" "$rc" "$(( EPOCHSECONDS - t0 ))"
   done
+  set +m
 }
 
 # The pool. Dispatch in declaration order, block until ANY worker finishes, emit that worker's
@@ -731,8 +801,14 @@ run_pool() {   # names...
       fail=1
       break
     fi
-    running=$(( running - 1 ))
+    # DROP IT FROM `LIVE` FIRST, before anything that can be interrupted. This pid has been reaped,
+    # so the kernel may hand the number to an unrelated process; a signal arriving while it was
+    # still listed would have `_cleanup` TERM a pid — and a process GROUP — that is no longer ours.
+    # (The mirror-image window, between `&` and the assignment below, cannot be closed in shell:
+    # there is no way to fork and record atomically. It is one statement wide and is stated here
+    # rather than papered over.)
     unset "LIVE[$pid]"
+    running=$(( running - 1 ))
     name="${pid_name[$pid]}"; out="${pid_out[$pid]}"
     banner "$name"
     [ -s "$out" ] && cat "$out"
@@ -779,8 +855,10 @@ if [ "${#SLOW[@]}" -gt 0 ]; then
   done
   printf '\n'
 fi
-# The failing names LAST, and that placement is load-bearing: the Stop-hook gate runner tails only
-# the final few KB of this output on failure (scripts/lib/project-gates.sh), and under completion
-# order the failing step's own block can be anywhere.
+# The failing names in the LAST TWO LINES — immediately before the verdict, which stays last
+# because it is the recognisable terminal contract. The placement is load-bearing either way: the
+# Stop-hook gate runner tails only the final few KB of this output on failure
+# (scripts/lib/project-gates.sh), and under completion order the failing step's own block can be
+# anywhere in the run.
 [ "${#FAILED[@]}" -gt 0 ] && printf 'FAILED: %s\n' "${FAILED[*]}"
 if [ "$fail" -eq 0 ]; then echo "ALL CHECKS PASSED"; exit 0; else echo "SOME CHECKS FAILED"; exit 1; fi

@@ -10,8 +10,9 @@
 # THAT 18m55s FIGURE IS NOT THE SUITE'S COST, and #260 measured it rather than repeating it. On the
 # maintainer's 10-core machine the pre-#260 sequential suite is 273s and 279s, and the post-#260
 # parallel suite is 66-72s; a deliberately timed run never came close to nineteen minutes. The
-# 18m55s was real but is a figure about a *contended machine*, not about this suite — which is
-# exactly why it is restated here as an observation rather than as the suite's runtime.
+# 18m55s was real, but what has been demonstrated is that it DOES NOT REPRODUCE — not a cause for
+# it. That run was not instrumented, so "the machine was busy" is a guess and is not asserted here;
+# it is restated as an observation rather than as the suite's runtime.
 #
 # The decision it justified is unchanged, and does not need the bigger number. One command, two
 # cadences, wildly different budgets: even 66s at the end of every turn is the wrong trade, so this

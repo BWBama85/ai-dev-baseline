@@ -65,14 +65,17 @@ bash scripts/selfcheck.sh
 `scripts/selfcheck.sh` runs its steps **concurrently** (#260): a registry dispatched through a
 `wait -n` job pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
 eight steps at once never interleave. Results therefore arrive in *completion* order, and the final
-`result` block names every failing step. On a 10-core machine the suite went from 273s to 66s.
+`result` block names every failing step. On a 10-core machine the suite went from 273–279s to
+66–72s.
 
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs everything
 sequentially, in the order listed below, with output streaming live — that is the mode for
 attributing a confusing parallel failure. **`--only <name>,<name>`** re-runs just the steps you
 care about (`--list` prints every name; an unknown name is an error rather than a quiet no-op).
-`build-drift` always runs first and alone, because it is the one step that rewrites files in the
-working tree; everything else either reads the tree or works in its own temporary directory.
+In a default (parallel) run `build-drift` goes first and alone, because it is the one step that
+rewrites files in the working tree; everything else either reads the tree or works in its own
+temporary directory. Under `--serial` it simply takes its declared place, and `--only` can leave it
+out altogether.
 
 The steps, in declaration order: **shellcheck** (tracked `*.sh` + `bin/agent-init`),
 **build-drift** (rebuild + assert generated root docs **and** skills are current — not

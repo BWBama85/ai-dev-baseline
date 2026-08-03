@@ -15,16 +15,18 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **Measured, and the issue's premise corrected rather than repeated.** On the maintainer's
     10-core machine (bash 5.3.15, macOS): **272.6s / 279.5s** at the pre-change commit,
     **66.2s / 69.7s / 72.0s** after — a **~4x** improvement. `--serial` on the new code is
-    **283.6s / 298.1s**, i.e. the pre-change wall clock plus the ~10s the new guard step adds.
+    **283.6s / 298.1s**: the pre-change wall clock, the ~9.8s the newly added guard step costs, and
+    run-to-run variance.
     The issue's stated target ("under 6 minutes on an 8-core machine") was **already met before the
     change**, so it could not discriminate success from doing nothing; the 18m55s figure it and
-    `CLAUDE.md` cite did not reproduce in any deliberate measurement and is a figure about a
-    contended machine, not about this suite. Both restatements of it are corrected in place.
+    `CLAUDE.md` cite **did not reproduce** in any deliberate measurement. What was demonstrated is
+    non-reproduction, not a cause: that run was not instrumented, so contention is a guess and is
+    not asserted. Both restatements of it are corrected in place.
   - **Output is atomic and attributable.** Each step's stdout and stderr go to one file and the
     *parent* emits the banner, the body and the verdict together once the step is reaped, so eight
     concurrent steps never interleave. Results arrive in completion order — a failure surfaces as
-    soon as it happens — and the `result` block ends with `FAILED: <names>`, placed last because
-    the Stop-hook gate runner tails only the final few KB on failure.
+    soon as it happens — and the `result` block's last two lines are `FAILED: <names>` and the
+    verdict, because the Stop-hook gate runner tails only the final few KB on failure.
   - **Exit semantics are unchanged**: collect-all, not fail-fast. Every step runs and is reported;
     any red exits 1.
   - **`build-drift` is the one step pinned to a serial prologue**, because it runs `build.sh`,
@@ -43,12 +45,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   here. A job pool's failure mode is **silence**: a dispatcher that drops a worker's exit status, or
   reaps a job and blames the wrong step, prints exactly what a clean run prints, and every existing
   `check-*.sh` still passes. So the real `selfcheck.sh` is driven over a throwaway fixture of stub
-  steps and required to fail on a red one, name it, and carry its actual exit code. 51 assertions
+  steps and required to fail on a red one, name it, and carry its actual exit code. 53 assertions
   covering collect-all, output atomicity, the concurrency bound (both respected *and* genuinely
   concurrent — a pool of one would otherwise pass everything else), `--serial` ordering, the
-  prologue running alone, filters that select nothing, large output, and cancellation. Each rule was
-  **observed going red** against a deliberately broken copy of the runner; the tracked tree is never
-  mutated. `check-claims-guard.sh`'s wiring pins move from grepping `if bash …; then` lines to
+  prologue running alone, filters that select nothing or widen, large output, and cancellation.
+  The suite was **observed going red** against five deliberately broken copies of the runner — a
+  dropped exit status, a misattributed pid, unbuffered output, a pool of one, and the pre-fix empty
+  `--only` — each firing the rules that name it; the tracked tree is never mutated. `check-claims-guard.sh`'s wiring pins move from grepping `if bash …; then` lines to
   reading `selfcheck.sh --list` — asking the dispatcher what it runs, which a string match cannot do.
 
 - **The bash 5.3 floor is now ENFORCED at runtime, not just observed in CI** (#256, #261, #2;
