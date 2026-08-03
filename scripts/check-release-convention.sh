@@ -168,23 +168,23 @@ WANT='rename milestone #9 "Next release" -> "v1.1.0"|create milestone "Next rele
 fix_default
 rcx_stub roll --version v1.1.0 --dry-run
 yes "$RC_" "roll --dry-run on a met milestone exits 0"
-eq "$(plan_of)" "$WANT" "dry-run plan is rename -> create -> move -> close"
+eq "${ plan_of; }" "$WANT" "dry-run plan is rename -> create -> move -> close"
 has "$OUT" "dry-run: no changes made" "dry-run says it changed nothing"
-eq "$(calls_of)" "" "dry-run performs NO mutations"
+eq "${ calls_of; }" "" "dry-run performs NO mutations"
 has "$OUT" '"Next release" -> "v1.1.0"' "rolling title resolved from the artifact marker"
 
 fix_default
 rcx_stub roll --version v1.1.0
 yes "$RC_" "roll on a met milestone exits 0"
-eq "$(calls_of)" 'PATCH repos/acme/widget/milestones/9|POST repos/acme/widget/milestones|move 99|PATCH repos/acme/widget/milestones/9|' \
+eq "${ calls_of; }" 'PATCH repos/acme/widget/milestones/9|POST repos/acme/widget/milestones|move 99|PATCH repos/acme/widget/milestones/9|' \
   "executed order is rename -> create -> move -> close"
 has "$OUT" "rolled: 'Next release' -> 'v1.1.0'" "success emits one audit line"
 has "$OUT" "marker is unchanged" "success states the marker needed no edit"
 
 # The plan the operator READ and the mutations that RAN come from one record list, so a dry-run
 # and a real run must describe the same operations in the same order.
-fix_default; rcx_stub roll --version v1.1.0 --dry-run; PLAN_DRY="$(plan_of)"
-fix_default; rcx_stub roll --version v1.1.0;           PLAN_RUN="$(plan_of)"
+fix_default; rcx_stub roll --version v1.1.0 --dry-run; PLAN_DRY="${ plan_of; }"
+fix_default; rcx_stub roll --version v1.1.0;           PLAN_RUN="${ plan_of; }"
 eq "$PLAN_RUN" "$PLAN_DRY" "the executed run prints the same plan the dry-run did"
 
 # A fully-drained milestone (nothing open to disposition) still rolls -- just with no move step.
@@ -192,7 +192,7 @@ fix_default
 iss '[{"number":74,"state":"closed","state_reason":"completed","labels":[{"name":"release-blocker"}]}]'
 rcx_stub roll --version v1.1.0 --dry-run
 yes "$RC_" "roll works when there are no leftovers to move"
-eq "$(plan_of)" 'rename milestone #9 "Next release" -> "v1.1.0"|create milestone "Next release"|close milestone #9 ("v1.1.0")|' \
+eq "${ plan_of; }" 'rename milestone #9 "Next release" -> "v1.1.0"|create milestone "Next release"|close milestone #9 ("v1.1.0")|' \
   "no leftovers -> no move step"
 
 # An unlabelled leftover is still a leftover.
@@ -200,7 +200,7 @@ fix_default
 iss '[{"number":74,"state":"closed","state_reason":"completed","labels":[{"name":"release-blocker"}]},
       {"number":99,"state":"open","state_reason":null,"labels":[]}]'
 rcx_stub roll --version v1.1.0 --dry-run
-eq "$(plan_of)" "$WANT" "an issue with no labels is moved like any other leftover"
+eq "${ plan_of; }" "$WANT" "an issue with no labels is moved like any other leftover"
 
 # The artifact is never a backlog item and never counted; a PR carrying the milestone is neither.
 # (`repos/.../issues` returns PRs too -- re-milestoning one would corrupt it and make roll's count
@@ -211,19 +211,19 @@ iss '[{"number":74,"state":"closed","state_reason":"completed","labels":[{"name"
       {"number":31,"state":"open","state_reason":null,"labels":[{"name":"roadmap"}]},
       {"number":50,"state":"open","state_reason":null,"labels":[],"pull_request":{"url":"x"}}]'
 rcx_stub roll --version v1.1.0 --dry-run
-eq "$(plan_of)" "$WANT" "the roadmap artifact and open PRs are never moved and never counted"
+eq "${ plan_of; }" "$WANT" "the roadmap artifact and open PRs are never moved and never counted"
 
 # --- refusals: every one is checked BEFORE any mutation --------------------------------------
 fix_default
 rcx_stub roll --version "Next release"
 no "$RC_" "roll refuses when --version is the rolling title itself"
 has "$OUT" "is the rolling title itself" "the collision is named"
-eq "$(calls_of)" "" "no mutation before the rolling-title refusal"
+eq "${ calls_of; }" "" "no mutation before the rolling-title refusal"
 
 fix_default
 rcx_stub roll --version Backlog
 no "$RC_" "roll refuses when --version is the backlog title"
-eq "$(calls_of)" "" "no mutation before the backlog-title refusal"
+eq "${ calls_of; }" "" "no mutation before the backlog-title refusal"
 
 # An OPEN must-have blocks on TWO independent guards, and both are asserted because they fail at
 # different layers: the readiness verdict catches it first, and if that is waived, the demotion
@@ -234,11 +234,11 @@ iss '[{"number":74,"state":"closed","state_reason":"completed","labels":[{"name"
 rcx_stub roll --version v1.1.0
 no "$RC_" "roll refuses while an open release-blocker remains"
 has "$OUT" "verdict is 'unmet'" "the readiness guard fires first"
-eq "$(calls_of)" "" "no mutation before the open-blocker refusal"
+eq "${ calls_of; }" "" "no mutation before the open-blocker refusal"
 rcx_stub roll --version v1.1.0 --force
 no "$RC_" "--force still refuses to demote an open must-have"
 has "$OUT" "will not demote a must-have" "the demotion guard survives --force"
-eq "$(calls_of)" "" "no mutation under --force with an open blocker"
+eq "${ calls_of; }" "" "no mutation under --force with an open blocker"
 
 # A NOT_PLANNED blocker -> predicate `held` -> withheld, and the message names the owner's options.
 fix_default
@@ -246,7 +246,7 @@ iss '[{"number":74,"state":"closed","state_reason":"not_planned","labels":[{"nam
 rcx_stub roll --version v1.1.0
 no "$RC_" "roll refuses on the held verdict"
 has "$OUT" "held" "the held verdict is named"
-eq "$(calls_of)" "" "no mutation before the held refusal"
+eq "${ calls_of; }" "" "no mutation before the held refusal"
 # --force is exactly the documented override for `held` (nothing is OPEN, so nothing is demoted).
 rcx_stub roll --version v1.1.0 --force
 yes "$RC_" "--force overrides the held verdict"
@@ -272,7 +272,7 @@ fix_default; marker '<!-- ai-dev-baseline:roadmap:v1 -->\n'
 rcx_stub roll --version v1.1.0
 no "$RC_" "roll refuses when the artifact carries no marker"
 has "$OUT" "no usable" "the marker failure is named"
-eq "$(calls_of)" "" "no mutation when the marker cannot be resolved"
+eq "${ calls_of; }" "" "no mutation when the marker cannot be resolved"
 
 # The schema's own example token is a placeholder, not a milestone (same carve-out /roadmap uses).
 fix_default; marker '<!-- release-milestone: NAME -->\n'
@@ -294,14 +294,14 @@ no "$RC_" "two markers on one line are still ambiguous"
 fix_default; marker '<!-- ai-dev-baseline:roadmap:v1 -->\n'
 rcx_stub roll --version v1.1.0 --release-name "Next release" --dry-run
 yes "$RC_" "--release-name overrides marker resolution"
-eq "$(plan_of)" "$WANT" "the override produces the same plan"
+eq "${ plan_of; }" "$WANT" "the override produces the same plan"
 
 # --- state classification: already-rolled is a clean refusal, not a second rename -------------
 fix_default; ms 'v1.1.0\tclosed\t9\nNext release\topen\t12\nBacklog\topen\t8\n'
 rcx_stub roll --version v1.1.0
 no "$RC_" "roll refuses when the version milestone is already closed"
 has "$OUT" "already rolled" "the already-rolled state is named"
-eq "$(calls_of)" "" "no mutation when already rolled"
+eq "${ calls_of; }" "" "no mutation when already rolled"
 
 # A missing rolling title does NOT prove a rename happened -- an unrelated open milestone can
 # carry the version name (real repos keep version-named planning milestones). So the two halves
@@ -310,13 +310,12 @@ eq "$(calls_of)" "" "no mutation when already rolled"
 fix_default; ms 'v1.1.0\topen\t9\nBacklog\topen\t8\n'
 rcx_stub roll --version v1.1.0 --dry-run
 yes "$RC_" "a missing rolling title still produces a plan"
-eq "$(plan_of)" 'create milestone "Next release"|' \
+eq "${ plan_of; }" 'create milestone "Next release"|' \
   "only the safe repair is planned without --resume -- no move, no close"
 has "$OUT" "is NOT assumed to be this roll's archive" "it says why it stopped short"
 rcx_stub roll --version v1.1.0 --resume --dry-run
 yes "$RC_" "--resume finishes an interrupted roll"
-eq "$(plan_of)" 'create milestone "Next release"|move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' \
-  "--resume skips the done rename and finishes the tail"
+eq "${ plan_of; }" 'create milestone "Next release"|move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' "--resume skips the done rename and finishes the tail"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # Both milestones open = interrupted-after-create OR a pre-existing version-named milestone. The
 # tracker cannot tell them apart, so roll refuses and asks. Emptiness of the rolling milestone is
@@ -330,12 +329,11 @@ for rolling_fixture in EMPTY SLATED; do
   rcx_stub roll --version v1.1.0
   no "$RC_" "two open milestones ($rolling_fixture rolling) refuse without --resume"
   has "$OUT" "re-run with --resume" "the refusal names the way forward ($rolling_fixture)"
-  eq "$(calls_of)" "" "no mutation before the ambiguity refusal ($rolling_fixture)"
+  eq "${ calls_of; }" "" "no mutation before the ambiguity refusal ($rolling_fixture)"
 
   rcx_stub roll --version v1.1.0 --resume --dry-run
   yes "$RC_" "--resume finishes the tail ($rolling_fixture)"
-  eq "$(plan_of)" 'move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' \
-    "--resume skips the done rename and create ($rolling_fixture)"
+  eq "${ plan_of; }" 'move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' "--resume skips the done rename and create ($rolling_fixture)"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
   rm -f "$S/issues/12.json"
 done
 
@@ -350,7 +348,7 @@ has "$OUT" "readiness re-check is skipped" "a resume does not re-run the readine
 # ...but it still must not demote the reopened must-have. It does the REPAIR (recreate the rolling
 # title, which un-blocks /roadmap and moves nothing) and stops before the move/close.
 has "$OUT" "Recreating 'Next release' anyway" "the repair step runs despite the open blocker"
-eq "$(calls_of)" 'POST repos/acme/widget/milestones|' "repair creates the rolling milestone and nothing else"
+eq "${ calls_of; }" 'POST repos/acme/widget/milestones|' "repair creates the rolling milestone and nothing else"
 has "$OUT" "still OPEN and NOT rolled" "the partial state is reported honestly"
 no "$RC_" "an unfinished roll exits nonzero"
 # The archive has been renamed, so the blocker report must name it by its CURRENT title.
@@ -368,7 +366,7 @@ hasnt "$OUT" "baseline release init" "the refusal never advises init, which woul
 fix_default; ms 'Next release\topen\t9\nIcebox\topen\t8\n'
 rcx_stub roll --version v1.1.0 --backlog-name Icebox --dry-run
 yes "$RC_" "--backlog-name names a renamed backlog milestone"
-has "$(plan_of)" 'move issue #99 -> "Icebox"' "leftovers go to the named backlog"
+has "${ plan_of; }" 'move issue #99 -> "Icebox"' "leftovers go to the named backlog"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 rcx_stub roll --version v1.1.0 --backlog-name ''
 no "$RC_" "--backlog-name rejects an empty value"
 
@@ -384,7 +382,7 @@ fix_default
 rcx_stub roll --version v1.1.0 --backlog-name "Next release"
 no "$RC_" "roll refuses a backlog target equal to the rolling title"
 has "$OUT" "arming it with zero" "the refusal explains the trap"
-eq "$(calls_of)" "" "no mutation before the backlog==rolling refusal"
+eq "${ calls_of; }" "" "no mutation before the backlog==rolling refusal"
 
 # The roadmap artifact is excluded BY NUMBER, and that number is resolved in the CALLER's shell --
 # resolve_rolling_title is read through $( ), so a value it assigned would die with the subshell
@@ -393,7 +391,7 @@ fix_default
 iss '[{"number":74,"state":"closed","state_reason":"completed","labels":[{"name":"release-blocker"}]},
       {"number":31,"state":"open","state_reason":null,"labels":[{"name":"roadmap"}]}]'
 rcx_stub roll --version v1.1.0 --dry-run
-eq "$(plan_of)" 'rename milestone #9 "Next release" -> "v1.1.0"|create milestone "Next release"|close milestone #9 ("v1.1.0")|' \
+eq "${ plan_of; }" 'rename milestone #9 "Next release" -> "v1.1.0"|create milestone "Next release"|close milestone #9 ("v1.1.0")|' \
   "the artifact is excluded by number and never moved"
 
 # Thread 5: the plan is built from ONE snapshot, but the guarantee "not even --force demotes an
@@ -405,7 +403,7 @@ rcx_stub roll --version v1.1.0
 no "$RC_" "a leftover that gained the blocker label mid-run stops the move"
 has "$OUT" "since the plan was built" "the mid-run label change is named as the reason"
 # The rename+create already ran; the MOVE must not have.
-hasnt "$(calls_of)" "move 99" "the must-have is never moved once it is re-read as a blocker"
+hasnt "${ calls_of; }" "move 99" "the must-have is never moved once it is re-read as a blocker"
 rm -f "$S/issue-99-labels.txt"
 
 # ...and the final pre-close check refuses to seal an archive that now holds an open must-have.
@@ -415,7 +413,7 @@ cat > "$SBIN/gh.close-race" <<'RACE'
 RACE
 rcx_stub roll --version v1.1.0
 yes "$RC_" "the ordinary path still completes when nothing changed mid-run"
-has "$(calls_of)" "move 99" "the leftover is moved when it is still a non-blocker at mutation time"
+has "${ calls_of; }" "move 99" "the leftover is moved when it is still a non-blocker at mutation time"
 rm -f "$S/issue-99-labels.txt" "$SBIN/gh.close-race"
 
 check_summary "release-convention"

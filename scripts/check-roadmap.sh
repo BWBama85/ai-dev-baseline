@@ -94,7 +94,7 @@ health_why() {
   printf '%s' "$1" | bash "$RL" branch-health "${2:-$SHA}" "${3:-1}" 2>/dev/null | sed -n '2p'
 }
 # run_health <args...> — stdin-taking capture, mirroring `run` for the non-stdin subcommands.
-run_health() { OUT="$(printf '%s' "$1" | bash "$RL" branch-health "${@:2}" 2>&1)"; RC_=$?; }
+run_health() { OUT="${ printf '%s' "$1" | bash "$RL" branch-health "${@:2}" 2>&1; }"; RC_=$?; }
 # ck <name> <sha> <status> <conclusion> [app-slug] — one check-run object.
 # The app slug defaults to what an Actions-produced check run REALLY carries, sourced from the one
 # home rather than restated — a hard-coded default here is precisely what hid #179: the fixture
@@ -126,48 +126,48 @@ run() { OUT="$(bash "$RL" "$@" 2>&1)"; RC_=$?; }
 # --- 1a. the bug itself: a bare cross-reference must NOT freeze a ready member --------------
 # This is #69 verbatim. `Refs #69` / prose ("similar to #69") used to match the `#N` substring
 # test and freeze the member forever. Step 5 already says Refs is NOT an edge; now step 6 agrees.
-eq "$(targets 69 "$(arr "$(pr 100 '"Refs #69"' '[]')")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Refs #69"' '[]'; }"; }"; }" 1 \
    "bare 'Refs #69' does NOT freeze (the #69 bug)"
-eq "$(targets 69 "$(arr "$(pr 100 '"similar to #69 but unrelated"' '[]')")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"similar to #69 but unrelated"' '[]'; }"; }"; }" 1 \
    "prose mention of #69 does NOT freeze"
-eq "$(targets 69 "$(arr "$(pr 100 '"See #69 for context. Also #69."' '[]')")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"See #69 for context. Also #69."' '[]'; }"; }"; }" 1 \
    "repeated non-closing mentions do NOT freeze"
 
 # --- 1b. a PR that genuinely targets the issue DOES freeze ----------------------------------
-eq "$(targets 69 "$(arr "$(pr 100 '"unrelated body"' "$(arr "$(ref 69)")")")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"unrelated body"' "${ arr "${ ref 69; }"; }"; }"; }"; }" 0 \
    "linked-issue set (closingIssuesReferences) freezes"
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes #69"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes #69"' '[]'; }"; }"; }" 0 \
    "closing keyword in body freezes (stacked/non-default-branch PR GitHub does not auto-link)"
 for kw in Closes closes CLOSES Close Closed Fixes fix Fixed Resolves resolve Resolved; do
-  eq "$(targets 69 "$(arr "$(pr 100 "\"$kw #69\"" '[]')")")" 0 \
+  eq "${ targets 69 "${ arr "${ pr 100 "\"$kw #69\"" '[]'; }"; }"; }" 0 \
      "closing keyword '$kw' freezes (GitHub's keyword list, case-insensitive)"
 done
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes: #69"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes: #69"' '[]'; }"; }"; }" 0 \
    "'Closes: #69' (colon form) freezes"
 
 # --- 1c. word-boundary: #7 must never match #70 ---------------------------------------------
 # The old test used \b, which this preserves; keep it pinned so a future regex edit can't
 # reintroduce prefix matching in either direction.
-eq "$(targets 7 "$(arr "$(pr 100 '"Closes #70"' '[]')")")" 1 \
+eq "${ targets 7 "${ arr "${ pr 100 '"Closes #70"' '[]'; }"; }"; }" 1 \
    "#7 does NOT match a body closing #70"
-eq "$(targets 7 "$(arr "$(pr 100 '"unrelated"' "$(arr "$(ref 70)")")")")" 1 \
+eq "${ targets 7 "${ arr "${ pr 100 '"unrelated"' "${ arr "${ ref 70; }"; }"; }"; }"; }" 1 \
    "#7 does NOT match a linked #70 (numeric compare, not substring)"
-eq "$(targets 70 "$(arr "$(pr 100 '"Closes #70"' '[]')")")" 0 \
+eq "${ targets 70 "${ arr "${ pr 100 '"Closes #70"' '[]'; }"; }"; }" 0 \
    "#70 DOES match its own closing keyword"
 
 # --- 1c-bis. the keyword must be a STANDALONE WORD (left boundary) --------------------------
 # Caught in self-review: without a leading \b, "precloses #69" matched inside a longer word and
 # froze a ready member — the same over-match class #69 is about, just on the keyword side.
 for w in precloses unfixes XCloses reresolves deresolved prefix; do
-  eq "$(targets 69 "$(arr "$(pr 100 "\"$w #69\"" '[]')")")" 1 \
+  eq "${ targets 69 "${ arr "${ pr 100 "\"$w #69\"" '[]'; }"; }"; }" 1 \
      "'$w #69' does NOT freeze (keyword must be a standalone word)"
 done
 # ...while the same keywords still match at a word boundary after punctuation/newlines.
-eq "$(targets 69 "$(arr "$(pr 100 '"Some text\nCloses #69\nmore"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Some text\nCloses #69\nmore"' '[]'; }"; }"; }" 0 \
    "a closing keyword on its own line freezes (multi-line body)"
-eq "$(targets 69 "$(arr "$(pr 100 '"(Closes #69)"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"(Closes #69)"' '[]'; }"; }"; }" 0 \
    "a closing keyword after an opening paren freezes"
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes #69 — 日本語 🎉"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes #69 — 日本語 🎉"' '[]'; }"; }"; }" 0 \
    "a body with multibyte/emoji content is matched correctly (no encoding corruption)"
 
 # --- 1c-ter. repository-QUALIFIED closing keywords, for THIS repo only ----------------------
@@ -176,76 +176,76 @@ eq "$(targets 69 "$(arr "$(pr 100 '"Closes #69 — 日本語 🎉"' '[]')")")" 0
 # not auto-link keywords on a PR whose base is not the default branch, so a stacked PR writing
 # the full syntax would otherwise read "not targeted" and let /roadmap emit work it closes.
 # (Reported by the codex reviewer on PR #76.)
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/widget#69"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes acme/widget#69"' '[]'; }"; }"; }" 0 \
    "'Closes acme/widget#69' (repo-qualified, this repo) freezes"
-eq "$(targets 69 "$(arr "$(pr 100 '"Fixes acme/widget#69"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Fixes acme/widget#69"' '[]'; }"; }"; }" 0 \
    "'Fixes acme/widget#69' freezes"
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes https://github.com/acme/widget/issues/69"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes https://github.com/acme/widget/issues/69"' '[]'; }"; }"; }" 0 \
    "an issue-URL reference to this repo freezes"
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes http://github.com/acme/widget/issues/69"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes http://github.com/acme/widget/issues/69"' '[]'; }"; }"; }" 0 \
    "the http (non-TLS) issue-URL form freezes too"
 # ...and the cross-repo guarantee must survive the widened pattern.
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes other/repo#69"' '[]')")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes other/repo#69"' '[]'; }"; }"; }" 1 \
    "'Closes other/repo#69' does NOT freeze (different repo)"
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/other#69"' '[]')")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes acme/other#69"' '[]'; }"; }"; }" 1 \
    "same-owner different-repo qualified keyword does NOT freeze"
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes https://github.com/other/repo/issues/69"' '[]')")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes https://github.com/other/repo/issues/69"' '[]'; }"; }"; }" 1 \
    "an issue-URL for another repo does NOT freeze"
-eq "$(targets 69 "$(arr "$(pr 100 '"Refs acme/widget#69"' '[]')")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Refs acme/widget#69"' '[]'; }"; }"; }" 1 \
    "a qualified reference without a closing keyword does NOT freeze"
-eq "$(targets 7 "$(arr "$(pr 100 '"Closes acme/widget#70"' '[]')")")" 1 \
+eq "${ targets 7 "${ arr "${ pr 100 '"Closes acme/widget#70"' '[]'; }"; }"; }" 1 \
    "#7 does not match a qualified #70 (boundary holds in the widened pattern)"
 # The slug is embedded as a LITERAL: a repo name containing regex metacharacters must not match
 # by pattern (`acme/my.app` must never match `acme/myXapp`).
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/myXapp#69"' '[]')")" 'acme/my.app')" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes acme/myXapp#69"' '[]'; }"; }" 'acme/my.app'; }" 1 \
    "a '.' in the slug is literal, not a wildcard"
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/my.app#69"' '[]')")" 'acme/my.app')" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes acme/my.app#69"' '[]'; }"; }" 'acme/my.app'; }" 0 \
    "...while the exact dotted slug still matches"
-eq "$(targets 69 "$(arr "$(pr 100 '"Closes acme/c++-lib#69"' '[]')")" 'acme/c++-lib')" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Closes acme/c++-lib#69"' '[]'; }"; }" 'acme/c++-lib'; }" 0 \
    "a slug with regex metacharacters (+) matches literally"
 
 # --- 1d. cross-repo safety: other/repo#69 must not freeze this repo's #69 --------------------
 # GitHub supports cross-repository closing links, so closingIssuesReferences can carry an issue
 # from ANOTHER repo. Matching a bare number would let it freeze this repo's same-numbered issue.
-eq "$(targets 69 "$(arr "$(pr 100 '"x"' "$(arr "$(ref 69 someone other)")")")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"x"' "${ arr "${ ref 69 someone other; }"; }"; }"; }"; }" 1 \
    "cross-repo link (someone/other#69) does NOT freeze acme/widget#69"
-eq "$(targets 69 "$(arr "$(pr 100 '"x"' "$(arr "$(ref 69 acme other)")")")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"x"' "${ arr "${ ref 69 acme other; }"; }"; }"; }"; }" 1 \
    "same-owner different-repo link does NOT freeze"
-eq "$(targets 69 "$(arr "$(pr 100 '"x"' "$(arr "$(ref 69 other widget)")")")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"x"' "${ arr "${ ref 69 other widget; }"; }"; }"; }"; }" 1 \
    "same-repo-name different-owner link does NOT freeze"
-eq "$(targets 69 "$(arr "$(pr 100 '"x"' "$(arr "$(ref 69 someone other)" "$(ref 69)")")")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"x"' "${ arr "${ ref 69 someone other; }" "${ ref 69; }"; }"; }"; }"; }" 0 \
    "a matching link still freezes when a cross-repo link is also present"
 
 # --- 1e. multi-PR sets: any targeting PR freezes; none targeting does not -------------------
-eq "$(targets 69 "$(arr "$(pr 100 '"Refs #69"' '[]')" "$(pr 101 '"Closes #69"' '[]')")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Refs #69"' '[]'; }" "${ pr 101 '"Closes #69"' '[]'; }"; }"; }" 0 \
    "one targeting PR among several freezes"
-eq "$(targets 69 "$(arr "$(pr 100 '"Refs #69"' '[]')" "$(pr 101 '"Closes #45"' "$(arr "$(ref 45)")")")")" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"Refs #69"' '[]'; }" "${ pr 101 '"Closes #45"' "${ arr "${ ref 45; }"; }"; }"; }"; }" 1 \
    "a set where no PR targets #69 does NOT freeze"
-eq "$(targets 45 "$(arr "$(pr 100 '"Refs #69"' '[]')" "$(pr 101 '"Closes #45"' "$(arr "$(ref 45)")")")")" 0 \
+eq "${ targets 45 "${ arr "${ pr 100 '"Refs #69"' '[]'; }" "${ pr 101 '"Closes #45"' "${ arr "${ ref 45; }"; }"; }"; }"; }" 0 \
    "the same set DOES freeze #45 (the one actually targeted)"
 
 # --- 1f. empty / null / absent shapes are a clean negative, never an error ------------------
-eq "$(targets 69 '[]')" 1                            "empty PR array = not targeted"
-eq "$(targets 69 '')" 1                              "empty stdin (no open PRs) = not targeted"
-eq "$(targets 69 '   ')" 1                           "whitespace-only stdin = not targeted"
-eq "$(targets 69 "$(arr "$(pr 100 'null' '[]')")")" 1 \
+eq "${ targets 69 '[]'; }" 1                            "empty PR array = not targeted"
+eq "${ targets 69 ''; }" 1                              "empty stdin (no open PRs) = not targeted"
+eq "${ targets 69 '   '; }" 1                           "whitespace-only stdin = not targeted"
+eq "${ targets 69 "${ arr "${ pr 100 'null' '[]'; }"; }"; }" 1 \
    "a null PR body is handled (not an error, not a match)"
-eq "$(targets 69 "$(arr '{"number":100}')")" 1 \
+eq "${ targets 69 "${ arr '{"number":100}'; }"; }" 1 \
    "a PR object missing body+closingIssuesReferences is handled"
-eq "$(targets 69 "$(arr "$(pr 100 'null' "$(arr "$(ref 69)")")")")" 0 \
+eq "${ targets 69 "${ arr "${ pr 100 'null' "${ arr "${ ref 69; }"; }"; }"; }"; }" 0 \
    "a null body still freezes when the link matches"
 
 # --- 1g. FAIL-CLOSED: a broken input must be an ERROR (>=2), never a silent negative --------
 # This is the safety property. If a tooling failure returned 1 ("not targeted"), /roadmap would
 # emit an issue that is already being implemented — the duplicate-work class this prevents.
-eq "$(targets 69 '{not json')" 2        "malformed JSON is an ERROR (2), not a negative"
-eq "$(targets 69 '{"a":1}')" 2          "a JSON object (not an array) is an ERROR (2)"
-eq "$(targets 69 '"a string"')" 2       "a JSON string (not an array) is an ERROR (2)"
-eq "$(targets 69 '[]' 'no-slash-slug')" 2 "a malformed repo slug is an ERROR (2)"
-eq "$(targets 69 '[]' '')" 2              "an empty repo slug is an ERROR (2)"
-eq "$(targets 'abc' '[]')" 2              "a non-numeric issue number is an ERROR (2)"
-eq "$(targets '' '[]')" 2                 "an empty issue number is an ERROR (2)"
-eq "$(targets '-1' '[]')" 2               "a negative issue number is an ERROR (2)"
+eq "${ targets 69 '{not json'; }" 2        "malformed JSON is an ERROR (2), not a negative"
+eq "${ targets 69 '{"a":1}'; }" 2          "a JSON object (not an array) is an ERROR (2)"
+eq "${ targets 69 '"a string"'; }" 2       "a JSON string (not an array) is an ERROR (2)"
+eq "${ targets 69 '[]' 'no-slash-slug'; }" 2 "a malformed repo slug is an ERROR (2)"
+eq "${ targets 69 '[]' ''; }" 2              "an empty repo slug is an ERROR (2)"
+eq "${ targets 'abc' '[]'; }" 2              "a non-numeric issue number is an ERROR (2)"
+eq "${ targets '' '[]'; }" 2                 "an empty issue number is an ERROR (2)"
+eq "${ targets '-1' '[]'; }" 2               "a negative issue number is an ERROR (2)"
 
 # --- 1i. ONLY PROSE TARGETS: structure in a PR body is documentation (#130/#136) ------------  # adb-claim-ok: #130 is closed NOT_PLANNED, superseded by #136
 # The body half of this predicate is a keyword scan over prose an author wrote, and until #136 it
@@ -258,44 +258,44 @@ eq "$(targets '-1' '[]')" 2               "a negative issue number is an ERROR (
 # `jb` builds a JSON body string from raw lines, so a fence can be written with real newlines.
 jb() { printf '%s\n' "$@" | jq -Rs .; }
 BT3='```'
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb "$BT3" 'Closes #42' "$BT3")" '[]')")")" 1 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb "$BT3" 'Closes #42' "$BT3"; }" '[]'; }"; }"; }" 1 \
    "OVER: a closing keyword inside a fenced block does not target"
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb '<!-- Closes #42 -->')" '[]')")")" 1 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb '<!-- Closes #42 -->'; }" '[]'; }"; }"; }" 1 \
    "OVER: ...inside an HTML comment"
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb '> Closes #42')" '[]')")")" 1 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb '> Closes #42'; }" '[]'; }"; }"; }" 1 \
    "OVER: ...inside a blockquote"
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Docs: `Closes #42` is the syntax.')" '[]')")")" 1 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb 'Docs: `Closes #42` is the syntax.'; }" '[]'; }"; }"; }" 1 \
    "OVER: ...inside an inline code span"
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb '    Closes #42')" '[]')")")" 1 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb '    Closes #42'; }" '[]'; }"; }"; }" 1 \
    "OVER: ...inside a 4-space indented code block (the D27 rule, reaching this consumer too)"
 # A span is MASKED, never deleted. Deleting it lets the text on either side fuse into a keyword the
 # author never wrote — self-review find, and the reason `deps-from-body` masks with \x01 too.
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'clo`x`ses #42')" '[]')")")" 1 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb 'clo`x`ses #42'; }" '[]'; }"; }"; }" 1 \
    "OVER: two fragments either side of a span do NOT fuse into a closing keyword"
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Docs: fi`x`es #42')" '[]')")")" 1 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb 'Docs: fi`x`es #42'; }" '[]'; }"; }"; }" 1 \
    "OVER: ...for every keyword the pattern accepts"
 # UNDER — every real form must still target, or /roadmap emits work a PR already closes.
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Closes #42')" '[]')")")" 0 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb 'Closes #42'; }" '[]'; }"; }"; }" 0 \
    "UNDER: plain prose still targets"
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Some prose.' '' '    An indented block.' '' 'Closes #42')" '[]')")")" 0 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb 'Some prose.' '' '    An indented block.' '' 'Closes #42'; }" '[]'; }"; }"; }" 0 \
    "UNDER: prose AFTER an indented block still targets (the block ends at column 0)"
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb "$BT3" 'x' "$BT3" 'Closes #42')" '[]')")")" 0 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb "$BT3" 'x' "$BT3" 'Closes #42'; }" '[]'; }"; }"; }" 0 \
    "UNDER: prose after a CLOSED fence still targets"
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb "Closes $SLUG#42")" '[]')")")" 0 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb "Closes $SLUG#42"; }" '[]'; }"; }"; }" 0 \
    "UNDER: a THIS-repo-qualified closer still targets (stacked PRs depend on it)"
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb 'Closes other/repo#42')" '[]')")")" 1 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb 'Closes other/repo#42'; }" '[]'; }"; }"; }" 1 \
    "OVER: an OTHER-repo-qualified closer never targets"
 # RECORD BOUNDARY. The filter carries cross-line state, so an unterminated fence swallows to end of
 # input. Each body must therefore be filtered ON ITS OWN — otherwise one PR's stray ``` blinds the
 # scan for every PR after it, which is a fail-OPEN across records.
-eq "$(targets 42 "$(arr "$(pr 100 "$(jb "$BT3" 'unterminated')" '[]')" "$(pr 101 "$(jb 'Closes #42')" '[]')")")" 0 \
+eq "${ targets 42 "${ arr "${ pr 100 "${ jb "$BT3" 'unterminated'; }" '[]'; }" "${ pr 101 "${ jb 'Closes #42'; }" '[]'; }"; }"; }" 0 \
    "UNDER: an unterminated fence in one PR body does not blind the next PR's scan"
 # The LINKED-ISSUE half is GitHub's own computed set and is never filtered — a PR whose body only
 # documents the syntax still targets when the link is real.
 # The body documents a DIFFERENT number from the linked one, so a pass here cannot come from the
 # body scan. Built on its own line because the escape below is per-line and this fixture wraps.
-doc_only_body="$(jb "$BT3" 'Closes #99' "$BT3")"   # adb-claim-ok: fixture DATA — a number the body documents, never a citation
-eq "$(targets 42 "$(arr "$(pr 100 "$doc_only_body" "$(arr "$(ref 42)")")")")" 0 \
+doc_only_body="${ jb "$BT3" 'Closes #99' "$BT3"; }"   # adb-claim-ok: fixture DATA — a number the body documents, never a citation
+eq "${ targets 42 "${ arr "${ pr 100 "$doc_only_body" "${ arr "${ ref 42; }"; }"; }"; }"; }" 0 \
    "UNDER: the closingIssuesReferences link targets regardless of what the body's markup says"
 
 # --- 1j. FAIL-CLOSED on a FILTER failure, not just a JSON one (#136) ------------------------
@@ -305,31 +305,31 @@ eq "$(targets 42 "$(arr "$(pr 100 "$doc_only_body" "$(arr "$(ref 42)")")")")" 0 
 # than asserted: the guard is watched going red on an input that would otherwise return 0.
 sc_stub="$(mktemp -d)"
 printf '#!/bin/sh\nexit 7\n' > "$sc_stub/awk"; chmod +x "$sc_stub/awk"
-eq "$(printf '%s' "$(arr "$(pr 100 "$(jb 'Closes #42')" '[]')")" \
+eq "$(printf '%s' "${ arr "${ pr 100 "${ jb 'Closes #42'; }" '[]'; }"; }" \
        | PATH="$sc_stub:$PATH" bash "$RL" pr-targets-issue 42 "$SLUG" >/dev/null 2>&1; printf '%s' "$?")" 2 \
    "a prose-filter failure is an ERROR (2) on a body that WOULD have targeted"
 printf '#!/bin/sh\nprintf "half\\n"\nexit 0\n' > "$sc_stub/awk"
-eq "$(printf '%s' "$(arr "$(pr 100 "$(jb 'Closes #42')" '[]')")" \
+eq "$(printf '%s' "${ arr "${ pr 100 "${ jb 'Closes #42'; }" '[]'; }"; }" \
        | PATH="$sc_stub:$PATH" bash "$RL" pr-targets-issue 42 "$SLUG" >/dev/null 2>&1; printf '%s' "$?")" 2 \
    "a TRUNCATED filter run is an ERROR (2) too — a short clean-looking body is the fail-open"
 rm -rf "$sc_stub"
 # MALFORMED FIELD SHAPES reach the same fail-closed band (review round 1). `jq -r '.[$i].body'`
 # stringifies a number without complaining, and `any(...)` over a non-array reference set yields an
 # empty generator rather than raising — so a malformed PR object answered a clean "not targeted".
-eq "$(targets 42 '[{"body":42,"closingIssuesReferences":[]}]')" 2 \
+eq "${ targets 42 '[{"body":42,"closingIssuesReferences":[]}]'; }" 2 \
    "a non-string body is an ERROR (2), never a clean negative"
-eq "$(targets 42 '[{"body":"","closingIssuesReferences":{}}]')" 2 \
+eq "${ targets 42 '[{"body":"","closingIssuesReferences":{}}]'; }" 2 \
    "a non-array closingIssuesReferences is an ERROR (2)"
-eq "$(targets 42 '["a string member"]')" 2 \
+eq "${ targets 42 '["a string member"]'; }" 2 \
    "an array member that is not an object is an ERROR (2)"
-eq "$(targets 42 '[{"body":null,"closingIssuesReferences":null}]')" 1 \
+eq "${ targets 42 '[{"body":null,"closingIssuesReferences":null}]'; }" 1 \
    "...while explicit nulls stay a clean negative — absent is not malformed"
 
 # --- 1h. jq-metacharacter safety in the slug (no injection into the filter) -----------------
 # The slug is passed as a typed --arg, never interpolated into the program text.
-eq "$(targets 69 "$(arr "$(pr 100 '"x"' "$(arr "$(ref 69)")")")" 'a"/b')" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"x"' "${ arr "${ ref 69; }"; }"; }"; }" 'a"/b'; }" 1 \
    "a slug containing a quote is compared literally (no injection, no crash)"
-eq "$(targets 69 "$(arr "$(pr 100 '"x"' "$(arr "$(ref 69)")")")" '.*/.*')" 1 \
+eq "${ targets 69 "${ arr "${ pr 100 '"x"' "${ arr "${ ref 69; }"; }"; }"; }" '.*/.*'; }" 1 \
    "a regex-metacharacter slug does not match by pattern (exact compare)"
 
 # ============================================================================================
@@ -339,34 +339,34 @@ eq "$(targets 69 "$(arr "$(pr 100 '"x"' "$(arr "$(ref 69)")")")" '.*/.*')" 1 \
 # Arg order throughout: <label-exists> <armed> <open-blockers> <open-issues> <canceled>
 
 # --- 2a. armed guard: an empty milestone is neither ready nor complete ----------------------
-eq "$(ready 1 0 0 0 0)" unarmed "empty milestone (armed=0) => unarmed, never a cut"
-eq "$(ready 0 0 0 0 0)" unarmed "unarmed in fallback mode too"
+eq "${ ready 1 0 0 0 0; }" unarmed "empty milestone (armed=0) => unarmed, never a cut"
+eq "${ ready 0 0 0 0 0; }" unarmed "unarmed in fallback mode too"
 
 # --- 2b. blocker-mode (label EXISTS): met iff 0 open release-blockers in the milestone ------
-eq "$(ready 1 1 3 9 0)" unmet "blocker-mode with 3 open blockers => unmet"
-eq "$(ready 1 1 1 9 0)" unmet "blocker-mode with 1 open blocker => unmet"
-eq "$(ready 1 1 0 9 0)" met   "blocker-mode with 0 open blockers => met (open non-blockers roll over)"
+eq "${ ready 1 1 3 9 0; }" unmet "blocker-mode with 3 open blockers => unmet"
+eq "${ ready 1 1 1 9 0; }" unmet "blocker-mode with 1 open blocker => unmet"
+eq "${ ready 1 1 0 9 0; }" met   "blocker-mode with 0 open blockers => met (open non-blockers roll over)"
 
 # --- 2c. fallback (label ABSENT/404): met iff 0 open issues in the milestone ----------------
-eq "$(ready 0 1 0 2 0)" unmet "fallback mode with 2 open issues => unmet"
-eq "$(ready 0 1 0 0 0)" met   "fallback mode with 0 open issues => met"
+eq "${ ready 0 1 0 2 0; }" unmet "fallback mode with 2 open issues => unmet"
+eq "${ ready 0 1 0 0 0; }" met   "fallback mode with 0 open issues => met"
 
 # --- 2b/2c-bis. MODE SELECTION is keyed off label EXISTENCE, never a live count -------------
 # The load-bearing rule: the same counts must yield OPPOSITE verdicts depending only on whether
 # the label exists. Previously this could only be checked by hand (a manual acceptance
 # checkbox) because the predicate ignored the flag; passing both counts makes it executable.
-eq "$(ready 1 1 0 5 0)" met   "label EXISTS: 5 open non-blockers do NOT block the cut"
-eq "$(ready 0 1 0 5 0)" unmet "label ABSENT: the same 5 open issues DO block the cut"
-eq "$(ready 1 1 4 0 0)" unmet "label EXISTS: 4 open blockers block, even with 0 counted issues"
-eq "$(ready 0 1 4 0 0)" met   "label ABSENT: the blocker count is IGNORED (fallback reads issues)"
+eq "${ ready 1 1 0 5 0; }" met   "label EXISTS: 5 open non-blockers do NOT block the cut"
+eq "${ ready 0 1 0 5 0; }" unmet "label ABSENT: the same 5 open issues DO block the cut"
+eq "${ ready 1 1 4 0 0; }" unmet "label EXISTS: 4 open blockers block, even with 0 counted issues"
+eq "${ ready 0 1 4 0 0; }" met   "label ABSENT: the blocker count is IGNORED (fallback reads issues)"
 
 # --- 2d. NOT_PLANNED-canceled blocker withholds the cut for owner review --------------------
-eq "$(ready 1 1 0 0 1)" held "count satisfied BUT a canceled blocker => held (owner review)"
-eq "$(ready 0 1 0 0 1)" held "held applies in fallback mode too (contradictory input => withhold)"
+eq "${ ready 1 1 0 0 1; }" held "count satisfied BUT a canceled blocker => held (owner review)"
+eq "${ ready 0 1 0 0 1; }" held "held applies in fallback mode too (contradictory input => withhold)"
 
 # --- 2e. precedence — every input maps to exactly one verdict, deterministically ------------
-eq "$(ready 1 0 0 0 1)" unarmed "unarmed outranks canceled (nothing to cut in an empty set)"
-eq "$(ready 1 1 2 0 1)" unmet   "open blockers outrank canceled (still building)"
+eq "${ ready 1 0 0 0 1; }" unarmed "unarmed outranks canceled (nothing to cut in an empty set)"
+eq "${ ready 1 1 2 0 1; }" unmet   "open blockers outrank canceled (still building)"
 
 # --- 2f. determinism (#45) ------------------------------------------------------------------
 # Both predicates are pure functions of their inputs — no clock, RNG, network, or filesystem
@@ -375,10 +375,10 @@ eq "$(ready 1 1 2 0 1)" unmet   "open blockers outrank canceled (still building)
 # is asserted against a fixed expected verdict), so re-running it and comparing it to itself
 # would add no distinct failure mode. For the targeting predicate, which parses external JSON,
 # assert repeat-invocation stability explicitly on one mixed fixture.
-fx="$(arr "$(pr 100 '"Refs #69"' '[]')" "$(pr 101 '"Closes #45"' "$(arr "$(ref 45)")")")"
-eq "$(targets 69 "$fx")$(targets 69 "$fx")" "11" "pr-targets-issue is deterministic (negative)"
-eq "$(targets 45 "$fx")$(targets 45 "$fx")" "00" "pr-targets-issue is deterministic (positive)"
-eq "$(ready 1 1 5 0 0)" unmet "an unlisted tuple still lands on exactly one verdict"
+fx="${ arr "${ pr 100 '"Refs #69"' '[]'; }" "${ pr 101 '"Closes #45"' "${ arr "${ ref 45; }"; }"; }"; }"
+eq "${ targets 69 "$fx"; }${ targets 69 "$fx"; }" "11" "pr-targets-issue is deterministic (negative)"
+eq "${ targets 45 "$fx"; }${ targets 45 "$fx"; }" "00" "pr-targets-issue is deterministic (positive)"
+eq "${ ready 1 1 5 0 0; }" unmet "an unlisted tuple still lands on exactly one verdict"
 
 # --- 2g. FAIL-CLOSED on bad readiness input -------------------------------------------------
 # A fabricated "met" from a bad count would cut a release that isn't ready — the worst failure
@@ -421,7 +421,7 @@ eq "$RC_" 2 "an over-wide issue count is an ERROR in fallback mode too"
 hasnt "$OUT" "met" "an over-wide fallback count never yields 'met'"
 has "$OUT" "non-negative integer" "...and it fails on the COUNT, not on arity"
 # 18 digits is inside the supported range and must still compute normally.
-eq "$(ready 1 1 999999999999999999 0 0)" unmet "an 18-digit count still evaluates (bound is not over-tight)"
+eq "${ ready 1 1 999999999999999999 0 0; }" unmet "an 18-digit count still evaluates (bound is not over-tight)"
 
 # Every errored readiness call must print no verdict — assert it per call, not just on the last
 # one (the previous single check only inspected whichever `run` happened to be most recent).
@@ -438,26 +438,26 @@ done
 
 # --- 2i. #78: branch health gates the FINAL step, and only the final step -------------------
 # The whole point of the issue: a drained checklist is not a shippable build.
-eq "$(ready 1 1 0 0 0 green)"         met           "0 blockers + green branch => met (the cut)"
-eq "$(ready 1 1 0 0 0 not-green)"     not-green     "0 blockers + RED branch => not-green, never a cut"
-eq "$(ready 1 1 0 0 0 indeterminate)" indeterminate "0 blockers + unknown health => fail closed"
-eq "$(ready 1 1 0 0 0 no-ci)"         met           "a repo with no CI is not deadlocked (#24)"
-eq "$(ready 1 1 0 0 0 skipped)"       met           "an explicit opt-out (release roll) still reaches met"
+eq "${ ready 1 1 0 0 0 green; }"         met           "0 blockers + green branch => met (the cut)"
+eq "${ ready 1 1 0 0 0 not-green; }"     not-green     "0 blockers + RED branch => not-green, never a cut"
+eq "${ ready 1 1 0 0 0 indeterminate; }" indeterminate "0 blockers + unknown health => fail closed"
+eq "${ ready 1 1 0 0 0 no-ci; }"         met           "a repo with no CI is not deadlocked (#24)"
+eq "${ ready 1 1 0 0 0 skipped; }"       met           "an explicit opt-out (release roll) still reaches met"
 
 # Health is consulted ONLY at the would-be-met boundary — a repo still building never has its
 # verdict changed by CI, so /roadmap need not read CI at all while blockers remain.
-eq "$(ready 1 1 2 0 0 not-green)"     unmet   "open blockers outrank a red branch (still building)"
-eq "$(ready 1 1 2 0 0 indeterminate)" unmet   "open blockers outrank unknown health"
-eq "$(ready 0 1 0 3 0 not-green)"     unmet   "fallback mode: open issues outrank a red branch"
-eq "$(ready 1 0 0 0 0 not-green)"     unarmed "unarmed outranks a red branch (nothing to cut)"
-eq "$(ready 1 0 0 0 0 indeterminate)" unarmed "unarmed outranks unknown health"
+eq "${ ready 1 1 2 0 0 not-green; }"     unmet   "open blockers outrank a red branch (still building)"
+eq "${ ready 1 1 2 0 0 indeterminate; }" unmet   "open blockers outrank unknown health"
+eq "${ ready 0 1 0 3 0 not-green; }"     unmet   "fallback mode: open issues outrank a red branch"
+eq "${ ready 1 0 0 0 0 not-green; }"     unarmed "unarmed outranks a red branch (nothing to cut)"
+eq "${ ready 1 0 0 0 0 indeterminate; }" unarmed "unarmed outranks unknown health"
 
 # held vs health: BOTH withhold the cut, so neither ordering can ship anything wrong. `held` is
 # reported first because it has a deterministic owner remedy (reopen / unlabel / drop), whereas
 # red CI clears itself once the build is fixed. Pinned so the precedence cannot drift silently.
-eq "$(ready 1 1 0 0 1 not-green)"     held "a canceled blocker outranks a red branch (held first)"
-eq "$(ready 1 1 0 0 1 indeterminate)" held "a canceled blocker outranks unknown health"
-eq "$(ready 1 1 0 0 1 green)"         held "...and still holds on a green branch"
+eq "${ ready 1 1 0 0 1 not-green; }"     held "a canceled blocker outranks a red branch (held first)"
+eq "${ ready 1 1 0 0 1 indeterminate; }" held "a canceled blocker outranks unknown health"
+eq "${ ready 1 1 0 0 1 green; }"         held "...and still holds on a green branch"
 
 # ============================================================================================
 # 2j. BRANCH HEALTH (#78) — "is the default branch green" as a pure, testable decision
@@ -466,85 +466,85 @@ eq "$(ready 1 1 0 0 1 green)"         held "...and still holds on a green branch
 # unrelated scheduled workflow, a run for an older commit, or one workflow's success while a
 # sibling is red — which is why the predicate takes the expected HEAD sha and evaluates the checks
 # attached to it.
-eq "$(health "$(hj "$(ck ci "$SHA" completed success)" '')")" green "one successful check => green"
-eq "$(health "$(hj "$(ck a "$SHA" completed success),$(ck b "$SHA" completed success)" '')")" green \
+eq "${ health "${ hj "${ ck ci "$SHA" completed success; }" ''; }"; }" green "one successful check => green"
+eq "${ health "${ hj "${ ck a "$SHA" completed success; },${ ck b "$SHA" completed success; }" ''; }"; }" green \
    "every check successful => green"
-eq "$(health "$(hj "$(ck a "$SHA" completed success)" "$(st vercel success)")")" green \
+eq "${ health "${ hj "${ ck a "$SHA" completed success; }" "${ st vercel success; }"; }"; }" green \
    "checks AND legacy statuses both green => green"
 
 # A red build is red no matter how many siblings passed.
-eq "$(health "$(hj "$(ck a "$SHA" completed success),$(ck b "$SHA" completed failure)" '')")" not-green \
+eq "${ health "${ hj "${ ck a "$SHA" completed success; },${ ck b "$SHA" completed failure; }" ''; }"; }" not-green \
    "one failing check among successes => not-green (the #78 headline case)"
-has "$(health_why "$(hj "$(ck a "$SHA" completed success),$(ck b "$SHA" completed failure)" '')")" "b" \
+has "${ health_why "${ hj "${ ck a "$SHA" completed success; },${ ck b "$SHA" completed failure; }" ''; }"; }" "b" \
    "...and it NAMES the failing check (a /debug signal must be actionable)"
 for bad in failure timed_out cancelled action_required startup_failure stale; do
-  eq "$(health "$(hj "$(ck ci "$SHA" completed "$bad")" '')")" not-green "conclusion '$bad' is not green"
+  eq "${ health "${ hj "${ ck ci "$SHA" completed "$bad"; }" ''; }"; }" not-green "conclusion '$bad' is not green"
 done
 # GitHub itself scores these as passing a required check; treating them as red would wedge every
 # repo with conditional jobs.
 for okc in success skipped neutral; do
-  eq "$(health "$(hj "$(ck ci "$SHA" completed "$okc")" '')")" green "conclusion '$okc' does not fail the branch"
+  eq "${ health "${ hj "${ ck ci "$SHA" completed "$okc"; }" ''; }"; }" green "conclusion '$okc' does not fail the branch"
 done
 # A non-Actions provider reports through the legacy status API only. Reading one API and not the
 # other would silently ignore a whole CI provider.
-eq "$(health "$(hj '' "$(st vercel failure)")")" not-green "a failing legacy status alone => not-green"
-eq "$(health "$(hj '' "$(st vercel error)")")"   not-green "a legacy 'error' state => not-green"
+eq "${ health "${ hj '' "${ st vercel failure; }"; }"; }" not-green "a failing legacy status alone => not-green"
+eq "${ health "${ hj '' "${ st vercel error; }"; }"; }"   not-green "a legacy 'error' state => not-green"
 
 # A RUNNING build is unknown, not red — scoring a null conclusion as "not success" would report
 # every mid-CI run as a false failure. (Caught by smoke-testing the first implementation.)
-eq "$(health "$(hj "$(ck ci "$SHA" in_progress null)" '')")" indeterminate "an in-progress check => indeterminate"
-eq "$(health "$(hj "$(ck ci "$SHA" queued null)" '')")"      indeterminate "a queued check => indeterminate"
-eq "$(health "$(hj "$(ck ci "$SHA" completed null)" '')")"   indeterminate "completed with NO conclusion => indeterminate"
-eq "$(health "$(hj '' "$(st vercel pending)")")"             indeterminate "a pending legacy status => indeterminate"
+eq "${ health "${ hj "${ ck ci "$SHA" in_progress null; }" ''; }"; }" indeterminate "an in-progress check => indeterminate"
+eq "${ health "${ hj "${ ck ci "$SHA" queued null; }" ''; }"; }"      indeterminate "a queued check => indeterminate"
+eq "${ health "${ hj "${ ck ci "$SHA" completed null; }" ''; }"; }"   indeterminate "completed with NO conclusion => indeterminate"
+eq "${ health "${ hj '' "${ st vercel pending; }"; }"; }"             indeterminate "a pending legacy status => indeterminate"
 # ...but a check that has already FAILED settles it: a pending sibling cannot un-fail it.
-eq "$(health "$(hj "$(ck a "$SHA" completed failure),$(ck b "$SHA" in_progress null)" '')")" not-green \
+eq "${ health "${ hj "${ ck a "$SHA" completed failure; },${ ck b "$SHA" in_progress null; }" ''; }"; }" not-green \
    "a failure plus a still-running sibling => not-green (the failure is decisive)"
 
 # STALE EVIDENCE. A check attached to a different commit describes the wrong build. Dropping it
 # silently could leave zero checks and read as `no-ci` — inventing a pass out of a stale read.
-eq "$(health "$(hj "$(ck ci "$OTHER_SHA" completed success)" '')")" indeterminate \
+eq "${ health "${ hj "${ ck ci "$OTHER_SHA" completed success; }" ''; }"; }" indeterminate \
    "a green check on a DIFFERENT commit is never this branch's green"
-has "$(health_why "$(hj "$(ck ci "$OTHER_SHA" completed success)" '')")" "different commit" \
+has "${ health_why "${ hj "${ ck ci "$OTHER_SHA" completed success; }" ''; }"; }" "different commit" \
    "...and says so"
 
 # THE no-ci / indeterminate DISCRIMINATOR — the one #78 could not resolve from `gh run list`,
 # which returns [] for BOTH. The active-workflow count is what separates them.
-eq "$(health "$(hj '' '')" "$SHA" 0)" no-ci "no checks AND no active workflows => no-ci (skip, per #24)"
-eq "$(health "$(hj '' '')" "$SHA" 3)" indeterminate \
+eq "${ health "${ hj '' ''; }" "$SHA" 0; }" no-ci "no checks AND no active workflows => no-ci (skip, per #24)"
+eq "${ health "${ hj '' ''; }" "$SHA" 3; }" indeterminate \
    "no checks BUT 3 active workflows => indeterminate, NOT no-ci (fail closed)"
-has "$(health_why "$(hj '' '')" "$SHA" 3)" "Actions has not reported" "...and explains the difference"
+has "${ health_why "${ hj '' ''; }" "$SHA" 3; }" "Actions has not reported" "...and explains the difference"
 
 # THE FALSE-CUT REGRESSION (adversarial-review find). `$total` counts "somebody reported", not
 # "everybody reported". Without an explicit unreported-workflows arm ahead of `green`, ONE
 # unrelated passing legacy status satisfies `$total > 0` and converts a genuinely unreported
 # Actions build into a confident `green` — i.e. adding a green status to a repo whose CI has not
 # run turns a correct refusal into a RELEASE. Fail-open, the one direction that matters.
-eq "$(health "$(hj '' "$(st vercel success)")" "$SHA" 3)" indeterminate \
+eq "${ health "${ hj '' "${ st vercel success; }"; }" "$SHA" 3; }" indeterminate \
    "3 active workflows + no check runs + ONE green legacy status => still indeterminate, never green"
-has "$(health_why "$(hj '' "$(st vercel success)")" "$SHA" 3)" "Actions has not reported" \
+has "${ health_why "${ hj '' "${ st vercel success; }"; }" "$SHA" 3; }" "Actions has not reported" \
    "...naming the unreported workflows rather than the status that did report"
 # The same shape with NO active workflows is the legitimate non-Actions repo: the status IS the CI.
-eq "$(health "$(hj '' "$(st vercel success)")" "$SHA" 0)" green \
+eq "${ health "${ hj '' "${ st vercel success; }"; }" "$SHA" 0; }" green \
    "...but with 0 active workflows a green legacy status IS the branch's green (non-Actions CI)"
 # And an ACTIONS check run present means the workflows did report — inventory cannot override it.
-eq "$(health "$(hj "$(ck ci "$SHA" completed success)" "$(st vercel success)")" "$SHA" 3)" green \
+eq "${ health "${ hj "${ ck ci "$SHA" completed success; }" "${ st vercel success; }"; }" "$SHA" 3; }" green \
    "an Actions check run present => reported, whatever the inventory count says"
 
 # THE SECOND MASKING PROVIDER (bot-review find, same class as the one above). A check run from a
 # DIFFERENT Checks API app also lands in `check_runs`, so a plain "are there any check runs" test
 # cannot tell it apart from an Actions run: the inventory read would be skipped and `$total > 0`
 # would return `green` while Actions had reported nothing. Attribution is by `app.slug`.
-eq "$(health "$(hj "$(ck vercel "$SHA" completed success vercel)" '')" "$SHA" 3)" indeterminate \
+eq "${ health "${ hj "${ ck vercel "$SHA" completed success vercel; }" ''; }" "$SHA" 3; }" indeterminate \
    "3 active workflows + a green check run from ANOTHER app => still indeterminate, never green"
-has "$(health_why "$(hj "$(ck vercel "$SHA" completed success vercel)" '')" "$SHA" 3)" "Actions has not reported" \
+has "${ health_why "${ hj "${ ck vercel "$SHA" completed success vercel; }" ''; }" "$SHA" 3; }" "Actions has not reported" \
    "...and says Actions specifically has not reported"
-eq "$(health "$(hj "$(ck vercel "$SHA" completed success vercel)" '')" "$SHA" 0)" green \
+eq "${ health "${ hj "${ ck vercel "$SHA" completed success vercel; }" ''; }" "$SHA" 0; }" green \
    "...while with 0 active workflows that same app IS the repo's CI"
 # Unknown provenance must not stand in as proof Actions ran (fail closed on a missing app field).
-eq "$(health "$(printf '{"check_runs":[{"name":"ci","head_sha":"%s","status":"completed","conclusion":"success"}],"statuses":[]}' "$SHA")" "$SHA" 3)" \
+eq "${ health "${ printf '{"check_runs":[{"name":"ci","head_sha":"%s","status":"completed","conclusion":"success"}],"statuses":[]}' "$SHA"; }" "$SHA" 3; }" \
    indeterminate "a check run with no identifiable app does not prove Actions reported"
 # A FAILING non-Actions check still fails the branch — attribution gates `green`, never `not-green`.
-eq "$(health "$(hj "$(ck vercel "$SHA" completed failure vercel)" '')" "$SHA" 3)" not-green \
+eq "${ health "${ hj "${ ck vercel "$SHA" completed failure vercel; }" ''; }" "$SHA" 3; }" not-green \
    "a failing check from another app is still red (attribution never rescues a failure)"
 
 # --- 4d. THE API CONTRACT: what slug does GitHub Actions ACTUALLY stamp? (#179) --------------
@@ -560,18 +560,18 @@ eq "$(health "$(hj "$(ck vercel "$SHA" completed failure vercel)" '')" "$SHA" 3)
 # add is the BEHAVIOR — that an API-shaped check run reaches `green` and that the retired value
 # does not. If GitHub ever renames the slug, these are among the tests that must change
 # deliberately, which is the entire point.
-eq "$(health "$(hj "$(ck ci "$SHA" completed success github-actions)" '')" "$SHA" 1)" green \
+eq "${ health "${ hj "${ ck ci "$SHA" completed success github-actions; }" ''; }" "$SHA" 1; }" green \
    "an API-shaped Actions check run (slug github-actions) + active workflows => GREEN (the #179 bug)"
-eq "$(health "$(hj "$(ck ci "$SHA" completed success github)" '')" "$SHA" 1)" indeterminate \
+eq "${ health "${ hj "${ ck ci "$SHA" completed success github; }" ''; }" "$SHA" 1; }" indeterminate \
    "the RETIRED literal 'github' is just another app slug, never Actions"
-has "$(health_why "$(hj "$(ck ci "$SHA" completed success github)" '')" "$SHA" 1)" "Actions has not reported" \
+has "${ health_why "${ hj "${ ck ci "$SHA" completed success github; }" ''; }" "$SHA" 1; }" "Actions has not reported" \
    "...and the reason names Actions specifically, not the app that did report"
 # `app` is required-but-NULLABLE in the REST schema, so this is a real shape, not a hypothetical.
-eq "$(health "$(hj "$(ck_noapp ci "$SHA" completed success)" '')" "$SHA" 1)" indeterminate \
+eq "${ health "${ hj "${ ck_noapp ci "$SHA" completed success; }" ''; }" "$SHA" 1; }" indeterminate \
    "a null app is UNKNOWN provenance, never proof Actions ran"
 # The fix must not have widened attribution to the app OWNER login, which IS `github` — that would
 # re-admit the retired literal through a second door and quietly restore the bug.
-eq "$(health "$(printf '{"check_runs":[{"name":"ci","head_sha":"%s","status":"completed","conclusion":"success","app":{"slug":"circleci","owner":{"login":"github"}}}],"statuses":[]}' "$SHA")" "$SHA" 1)" \
+eq "${ health "${ printf '{"check_runs":[{"name":"ci","head_sha":"%s","status":"completed","conclusion":"success","app":{"slug":"circleci","owner":{"login":"github"}}}],"statuses":[]}' "$SHA"; }" "$SHA" 1; }" \
    indeterminate "attribution is by app.slug ALONE — an app owned by 'github' is not Actions"
 
 # FAIL-CLOSED on every unreadable input. An unparseable health read must never be `green`.
@@ -587,40 +587,40 @@ for bad_json in '' 'not json' '[]' '"str"' '{"check_runs":{}}' '{"statuses":5}' 
   hasnt "$OUT" "no-ci" "[${bad_json:-<empty>}] never yields no-ci (which would reach 'met')"
 done
 # ...and with BOTH keys explicitly present and empty, `no-ci` is the correct, intended answer.
-eq "$(health "$(hj '' '')" "$SHA" 0)" no-ci "two EXPLICIT empty arrays are a real no-ci, not an error"
-run_health "$(hj '' '')" "" 1;      eq "$RC_" 2 "an empty sha is an ERROR (never compare against nothing)"
-run_health "$(hj '' '')" "zzz" 1;   eq "$RC_" 2 "a non-hex sha is an ERROR"
-run_health "$(hj '' '')" "abc" 1;   eq "$RC_" 2 "a too-short sha is an ERROR"
-run_health "$(hj '' '')" "$SHA" x;  eq "$RC_" 2 "a non-numeric workflow count is an ERROR"
-run_health "$(hj '' '')" "$SHA" -1; eq "$RC_" 2 "a negative workflow count is an ERROR"
-run_health "$(hj '' '')" "$SHA";    eq "$RC_" 2 "too few args is an ERROR"; has "$OUT" "exactly 2" "arity error states the arity"
-run_health "$(hj '' '')" "$SHA" 1 EXTRA; eq "$RC_" 2 "extra args are an ERROR"
+eq "${ health "${ hj '' ''; }" "$SHA" 0; }" no-ci "two EXPLICIT empty arrays are a real no-ci, not an error"
+run_health "${ hj '' ''; }" "" 1;      eq "$RC_" 2 "an empty sha is an ERROR (never compare against nothing)"
+run_health "${ hj '' ''; }" "zzz" 1;   eq "$RC_" 2 "a non-hex sha is an ERROR"
+run_health "${ hj '' ''; }" "abc" 1;   eq "$RC_" 2 "a too-short sha is an ERROR"
+run_health "${ hj '' ''; }" "$SHA" x;  eq "$RC_" 2 "a non-numeric workflow count is an ERROR"
+run_health "${ hj '' ''; }" "$SHA" -1; eq "$RC_" 2 "a negative workflow count is an ERROR"
+run_health "${ hj '' ''; }" "$SHA";    eq "$RC_" 2 "too few args is an ERROR"; has "$OUT" "exactly 2" "arity error states the arity"
+run_health "${ hj '' ''; }" "$SHA" 1 EXTRA; eq "$RC_" 2 "extra args are an ERROR"
 
 # SHA comparison is case-insensitive. GitHub returns lowercase and the workflow sources the
 # expected sha from the same API, so both sides match today — but a caller that got the sha
 # elsewhere (an operator, or #73's auto-cut driver) must not be told `indeterminate` by nothing
 # but letter case. (Self-review find.)
-UPPER_SHA="$(printf '%s' "$SHA" | tr 'a-f' 'A-F')"
-eq "$(health "$(hj "$(ck ci "$SHA" completed success)" '')" "$UPPER_SHA")" green \
+UPPER_SHA="${ printf '%s' "$SHA" | tr 'a-f' 'A-F'; }"
+eq "${ health "${ hj "${ ck ci "$SHA" completed success; }" ''; }" "$UPPER_SHA"; }" green \
    "an UPPERCASE expected sha still matches a lowercase check sha"
-eq "$(health "$(hj "$(ck ci "$UPPER_SHA" completed success)" '')" "$SHA")" green \
+eq "${ health "${ hj "${ ck ci "$UPPER_SHA" completed success; }" ''; }" "$SHA"; }" green \
    "...and the reverse (case never fabricates stale evidence)"
 
 # A check-run with NO head_sha cannot be attributed to this commit, so it is stale evidence, not
 # a silent drop — dropping it could leave zero checks and read as `no-ci`, inventing a pass.
-eq "$(health "$(printf '{"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}],"statuses":[]}')")" \
+eq "${ health "${ printf '{"check_runs":[{"name":"ci","status":"completed","conclusion":"success"}],"statuses":[]}'; }"; }" \
    indeterminate "a check-run with no head_sha is stale evidence, never green"
 
 # Determinism: a pure function of its inputs, so /roadmap's "same tracker => same emit" holds.
-fx_h="$(hj "$(ck a "$SHA" completed success),$(ck b "$SHA" completed failure)" "$(st vercel success)")"
-eq "$(health "$fx_h")$(health "$fx_h")" "not-greennot-green" "branch-health is deterministic"
+fx_h="${ hj "${ ck a "$SHA" completed success; },${ ck b "$SHA" completed failure; }" "${ st vercel success; }"; }"
+eq "${ health "$fx_h"; }${ health "$fx_h"; }" "not-greennot-green" "branch-health is deterministic"
 
 # --- 2g-bis. arity is enforced on BOTH subcommands ------------------------------------------
 # pr-targets-issue previously ignored extra arguments; a caller that appended a stray field
 # would get a silent answer computed from the first two. (Adversarial-review find.)
-eq "$(printf '[]' | bash "$RL" pr-targets-issue 69 "$SLUG" EXTRA >/dev/null 2>&1; printf '%s' "$?")" 2 \
+eq "${ printf '[]' | bash "$RL" pr-targets-issue 69 "$SLUG" EXTRA >/dev/null 2>&1; printf '%s' "$?"; }" 2 \
    "pr-targets-issue rejects extra arguments"
-eq "$(printf '[]' | bash "$RL" pr-targets-issue 69 >/dev/null 2>&1; printf '%s' "$?")" 2 \
+eq "${ printf '[]' | bash "$RL" pr-targets-issue 69 >/dev/null 2>&1; printf '%s' "$?"; }" 2 \
    "pr-targets-issue rejects a missing slug"
 
 # ============================================================================================
@@ -638,17 +638,17 @@ cdoc() { printf '{"issues":[%s],"edges":%s}' "$1" "${2:-[]}"; }
 # compose <doc> [roadmap-num] [bug-label] — run it, echo stdout.
 compose() { printf '%s' "$1" | bash "$RL" compose-candidates "${2:-31}" "${3:-bug}" 2>/dev/null; }
 
-C_BUGS="$(ci 102 'bug A' bug),$(ci 136 'bug B' bug),$(ci 112 'bug C' bug)"
-C_ENH="$(ci 20 'enh A' enhancement),$(ci 80 'enh B' enhancement)"
-C_ALL="$C_BUGS,$C_ENH,$(ci 31 'the roadmap' roadmap)"
+C_BUGS="${ ci 102 'bug A' bug; },${ ci 136 'bug B' bug; },${ ci 112 'bug C' bug; }"
+C_ENH="${ ci 20 'enh A' enhancement; },${ ci 80 'enh B' enhancement; }"
+C_ALL="$C_BUGS,$C_ENH,${ ci 31 'the roadmap' roadmap; }"
 
 # --- 2j-a. bugs rank before enhancements, ascending within tier -----------------------------
-eq "$(compose "$(cdoc "$C_ALL")" | awk -F'\t' '{printf "%s%s ", $1, $2}')" \
+eq "${ compose "${ cdoc "$C_ALL"; }" | awk -F'\t' '{printf "%s%s ", $1, $2}'; }" \
    "bug102 bug112 bug136 other20 other80 " \
    "bugs first, then others; ascending issue number within each tier"
 
 # --- 2j-b. the roadmap artifact is never a candidate ----------------------------------------
-eq "$(compose "$(cdoc "$C_ALL")" | grep -c '	31	' || true)" 0 \
+eq "${ compose "${ cdoc "$C_ALL"; }" | grep -c '	31	' || true; }" 0 \
    "the roadmap issue is excluded from its own composition"
 
 # --- 2j-c. pull requests are never candidates -----------------------------------------------
@@ -657,70 +657,70 @@ eq "$(compose "$(cdoc "$C_ALL")" | grep -c '	31	' || true)" 0 \
 # malformed JSON — which the predicate correctly rejects, so the test would fail for a reason that
 # has nothing to do with the behavior under test.
 C_PR="$C_BUGS,{\"number\":999,\"title\":\"a PR\",\"labels\":[],\"pull_request\":{}}"
-C_PR_DOC="$(cdoc "$C_PR")"
-eq "$(compose "$C_PR_DOC" | wc -l | tr -d ' ')" 3 \
+C_PR_DOC="${ cdoc "$C_PR"; }"
+eq "${ compose "$C_PR_DOC" | wc -l | tr -d ' '; }" 3 \
    "a pull_request entry is not a composition candidate"
 
 # --- 2j-d. THE DRAIN GUARD: an open prerequisite marks a candidate blocked -------------------
-eq "$(compose "$(cdoc "$C_ALL" '[[136,112]]')" | awk -F'\t' '$2 == 136 { print $3 "/" $4 }')" "1/112" \
+eq "${ compose "${ cdoc "$C_ALL" '[[136,112]]'; }" | awk -F'\t' '$2 == 136 { print $3 "/" $4 }'; }" "1/112" \
    "a candidate with an OPEN prerequisite is blocked, and names it"
-eq "$(compose "$(cdoc "$C_ALL" '[[136,112]]')" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "0/-" \
+eq "${ compose "${ cdoc "$C_ALL" '[[136,112]]'; }" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }'; }" "0/-" \
    "the prerequisite itself is unblocked"
 
 # --- 2j-e. a CLOSED prerequisite is satisfied and must not hold a candidate out --------------
 # #178 is absent from the open set, so the edge is satisfied. Getting this wrong is the failure
 # that would exclude every issue whose history mentions a shipped dependency.
-eq "$(compose "$(cdoc "$C_ALL" '[[112,178]]')" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "0/-" \
+eq "${ compose "${ cdoc "$C_ALL" '[[112,178]]'; }" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }'; }" "0/-" \
    "a prerequisite that is not open is satisfied, never blocking"
 
 # --- 2j-f. unblocked sorts before blocked WITHIN a tier --------------------------------------
-eq "$(compose "$(cdoc "$C_ALL" '[[102,112]]')" | awk -F'\t' '$1 == "bug" { printf "%s ", $2 }')" "112 136 102 " \
+eq "${ compose "${ cdoc "$C_ALL" '[[102,112]]'; }" | awk -F'\t' '$1 == "bug" { printf "%s ", $2 }'; }" "112 136 102 " \
    "within a tier, unblocked candidates rank above blocked ones"
 
 # --- 2j-g. a self-edge is ignored, never a self-block ---------------------------------------
-eq "$(compose "$(cdoc "$C_ALL" '[[112,112]]')" | awk -F'\t' '$2 == 112 { print $3 }')" 0 \
+eq "${ compose "${ cdoc "$C_ALL" '[[112,112]]'; }" | awk -F'\t' '$2 == 112 { print $3 }'; }" 0 \
    "an issue declaring itself as a prerequisite is not blocked by itself"
 
 # --- 2j-h. duplicate edges collapse ---------------------------------------------------------
-eq "$(compose "$(cdoc "$C_ALL" '[[136,112],[136,112]]')" | awk -F'\t' '$2 == 136 { print $4 }')" "112" \
+eq "${ compose "${ cdoc "$C_ALL" '[[136,112],[136,112]]'; }" | awk -F'\t' '$2 == 136 { print $4 }'; }" "112" \
    "a duplicated edge is reported once"
 
 # --- 2j-i. the bug label is configurable, and drives the tier --------------------------------
-eq "$(compose "$(cdoc "$(ci 5 'x' defect),$(ci 6 'y' enhancement)")" 31 defect | awk -F'\t' '{printf "%s%s ", $1, $2}')" \
+eq "${ compose "${ cdoc "${ ci 5 'x' defect; },${ ci 6 'y' enhancement; }"; }" 31 defect | awk -F'\t' '{printf "%s%s ", $1, $2}'; }" \
    "bug5 other6 " "the tier label is a parameter, not a hardcoded 'bug'"
-eq "$(compose "$(cdoc "$(ci 5 'x' defect),$(ci 6 'y' enhancement)")" | awk -F'\t' '{printf "%s ", $1}')" \
+eq "${ compose "${ cdoc "${ ci 5 'x' defect; },${ ci 6 'y' enhancement; }"; }" | awk -F'\t' '{printf "%s ", $1}'; }" \
    "other other " "a repo with no issue carrying the label composes an all-'other' slate, not an error"
 
 # --- 2j-j. zero-config generality (#80's non-negotiable): no labels, no edges, no error ------
-eq "$(printf '{"issues":[{"number":7,"title":"bare"}]}' | bash "$RL" compose-candidates 31 bug 2>/dev/null | awk -F'\t' '{print $1 "/" $2 "/" $3}')" \
+eq "${ printf '{"issues":[{"number":7,"title":"bare"}]}' | bash "$RL" compose-candidates 31 bug 2>/dev/null | awk -F'\t' '{print $1 "/" $2 "/" $3}'; }" \
    "other/7/0" "an issue with no labels and no edges key ranks cleanly"
 
 # --- 2j-k. an empty backlog is a valid EMPTY answer, never an error --------------------------
-run_c() { OUT="$(printf '%s' "$1" | bash "$RL" compose-candidates "${2:-31}" 2>&1)"; RC_=$?; }
+run_c() { OUT="${ printf '%s' "$1" | bash "$RL" compose-candidates "${2:-31}" 2>&1; }"; RC_=$?; }
 run_c '{"issues":[],"edges":[]}'; yes "$RC_" "an empty backlog exits 0"; eq "$OUT" "" "...with empty output"
 
 # --- 2j-l. TSV integrity: a title containing a tab or newline cannot break the format --------
-eq "$(compose "$(cdoc '{"number":9,"title":"a\ttab\nand a newline","labels":[]}')" | wc -l | tr -d ' ')" 1 \
+eq "${ compose "${ cdoc '{"number":9,"title":"a\ttab\nand a newline","labels":[]}'; }" | wc -l | tr -d ' '; }" 1 \
    "a title containing a tab or newline still yields exactly one row"
-eq "$(compose "$(cdoc '{"number":9,"title":"a\ttab\nand a newline","labels":[]}')" | awk -F'\t' '{print NF}')" 5 \
+eq "${ compose "${ cdoc '{"number":9,"title":"a\ttab\nand a newline","labels":[]}'; }" | awk -F'\t' '{print NF}'; }" 5 \
    "...with exactly five fields"
 
 # --- 2j-m. determinism (#45) ----------------------------------------------------------------
-eq "$(compose "$(cdoc "$C_ALL" '[[136,112],[80,112]]')")" "$(compose "$(cdoc "$C_ALL" '[[136,112],[80,112]]')")" \
+eq "${ compose "${ cdoc "$C_ALL" '[[136,112],[80,112]]'; }"; }" "${ compose "${ cdoc "$C_ALL" '[[136,112],[80,112]]'; }"; }" \
    "compose-candidates is deterministic over an unchanged tracker"
 
 # --- 2j-n. FAIL-CLOSED on bad input ----------------------------------------------------------
 run_c 'not json';        eq "$RC_" 2 "malformed JSON is an ERROR, never an empty slate"
 run_c '{"issues":[]}' x; eq "$RC_" 2 "a non-numeric roadmap number is an ERROR"
-eq "$(printf '{"issues":[]}' | bash "$RL" compose-candidates >/dev/null 2>&1; printf '%s' "$?")" 2 \
+eq "${ printf '{"issues":[]}' | bash "$RL" compose-candidates >/dev/null 2>&1; printf '%s' "$?"; }" 2 \
    "a missing roadmap number is an ERROR"
-eq "$(printf '{"issues":[]}' | bash "$RL" compose-candidates 31 bug EXTRA >/dev/null 2>&1; printf '%s' "$?")" 2 \
+eq "${ printf '{"issues":[]}' | bash "$RL" compose-candidates 31 bug EXTRA >/dev/null 2>&1; printf '%s' "$?"; }" 2 \
    "extra arguments are an ERROR"
-eq "$(printf '{"issues":[]}' | bash "$RL" compose-candidates 31 '' >/dev/null 2>&1; printf '%s' "$?")" 2 \
+eq "${ printf '{"issues":[]}' | bash "$RL" compose-candidates 31 '' >/dev/null 2>&1; printf '%s' "$?"; }" 2 \
    "an empty bug label is an ERROR"
 
 # --- 2j-o. a label containing jq metacharacters is DATA, never filter text -------------------
-eq "$(compose "$(cdoc "$(ci 5 'x' 'a\"b')")" 31 'a"b' | awk -F'\t' '{print $1}')" "bug" \
+eq "${ compose "${ cdoc "${ ci 5 'x' 'a\"b'; }"; }" 31 'a"b' | awk -F'\t' '{print $1}'; }" "bug" \
    "a label containing a quote is matched as data (no filter injection)"
 
 # --- 2j-p. `exclude`: present and blocking, but never a candidate (review round 1) -----------
@@ -728,20 +728,20 @@ eq "$(compose "$(cdoc "$(ci 5 'x' 'a\"b')")" 31 'a"b' | awk -F'\t' '{print $1}')
 # meaning here. Both must BLOCK a dependent (they are open and undelivered) while never being
 # promoted themselves — collapsing the two questions is what would promote a bug the advance logic
 # can never emit.
-CX_DOC="$(cdoc "$C_ALL" '[[136,112]]')"
-CX_DOC="$(printf '%s' "$CX_DOC" | jq -c '. + {exclude: [112]}')"
-eq "$(compose "$CX_DOC" | awk -F'\t' '{printf "%s ", $2}')" "102 136 20 80 " \
+CX_DOC="${ cdoc "$C_ALL" '[[136,112]]'; }"
+CX_DOC="${ printf '%s' "$CX_DOC" | jq -c '. + {exclude: [112]}'; }"
+eq "${ compose "$CX_DOC" | awk -F'\t' '{printf "%s ", $2}'; }" "102 136 20 80 " \
    "an excluded issue is not offered as a candidate"
-eq "$(compose "$CX_DOC" | awk -F'\t' '$2 == 136 { print $3 "/" $4 }')" "1/112" \
+eq "${ compose "$CX_DOC" | awk -F'\t' '$2 == 136 { print $3 "/" $4 }'; }" "1/112" \
    "...but it still BLOCKS the dependent that needs it"
 
 # --- 2j-q. `canceled`: a NOT_PLANNED prerequisite is not satisfied (review round 1) ----------
 # #999 is absent from the open set. As a completed close that is satisfaction; as a cancellation it
 # is abandonment, and step 4's `dep-canceled` rule says it does not satisfy the dependent.
-eq "$(compose "$(cdoc "$C_ALL" '[[112,999]]')" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "0/-" \
+eq "${ compose "${ cdoc "$C_ALL" '[[112,999]]'; }" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }'; }" "0/-" \
    "a prerequisite absent from the open set is satisfied by default (completed close)"
-CN_DOC="$(printf '%s' "$(cdoc "$C_ALL" '[[112,999]]')" | jq -c '. + {canceled: [999]}')"
-eq "$(compose "$CN_DOC" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }')" "1/999" \
+CN_DOC="${ printf '%s' "${ cdoc "$C_ALL" '[[112,999]]'; }" | jq -c '. + {canceled: [999]}'; }"
+eq "${ compose "$CN_DOC" | awk -F'\t' '$2 == 112 { print $3 "/" $4 }'; }" "1/999" \
    "...but a CANCELED one keeps blocking"
 
 # ============================================================================================
@@ -752,31 +752,31 @@ sel() { printf '%s\n' "$1" | bash "$RL" compose-select 2>/dev/null | awk -F'\t' 
 # drops <candidate-tsv> — the `n:blocker` pairs that were dropped.
 drops() { printf '%s\n' "$1" | bash "$RL" compose-select 2>/dev/null | awk -F'\t' '$1=="drop"{printf "%s:%s ", $2, $3}' | sed 's/ $//'; }
 
-T_PLAIN="$(printf 'bug\t102\t0\t-\tb1\nother\t20\t0\t-\te1\n')"
-eq "$(sel "$T_PLAIN")" "102" "the bug tier is the seed; an unrelated enhancement is not selected"
+T_PLAIN="${ printf 'bug\t102\t0\t-\tb1\nother\t20\t0\t-\te1\n'; }"
+eq "${ sel "$T_PLAIN"; }" "102" "the bug tier is the seed; an unrelated enhancement is not selected"
 
-T_CLOSE="$(printf 'bug\t136\t1\t55\tb1\nother\t55\t0\t-\te1\n')"
-eq "$(sel "$T_CLOSE")" "55 136" "closure pulls a promotable prerequisite in, even an enhancement"
+T_CLOSE="${ printf 'bug\t136\t1\t55\tb1\nother\t55\t0\t-\te1\n'; }"
+eq "${ sel "$T_CLOSE"; }" "55 136" "closure pulls a promotable prerequisite in, even an enhancement"
 
-T_CHAIN="$(printf 'bug\t136\t1\t55\tb1\nother\t55\t1\t62\te1\nother\t62\t0\t-\te2\n')"
-eq "$(sel "$T_CHAIN")" "55 62 136" "closure is transitive"
+T_CHAIN="${ printf 'bug\t136\t1\t55\tb1\nother\t55\t1\t62\te1\nother\t62\t0\t-\te2\n'; }"
+eq "${ sel "$T_CHAIN"; }" "55 62 136" "closure is transitive"
 
 # THE PRUNE PASS. A prerequisite with no candidate row can never be promoted, so its dependent
 # cannot drain — and a milestone holding a blocker nothing can close never reports `met`.
-T_PRUNE="$(printf 'bug\t136\t1\t99\tb1\nbug\t102\t0\t-\tb2\n')"
-eq "$(sel "$T_PRUNE")" "102" "a bug whose prerequisite is not promotable is dropped"
-eq "$(drops "$T_PRUNE")" "136:99" "...and the drop names the prerequisite that caused it"
+T_PRUNE="${ printf 'bug\t136\t1\t99\tb1\nbug\t102\t0\t-\tb2\n'; }"
+eq "${ sel "$T_PRUNE"; }" "102" "a bug whose prerequisite is not promotable is dropped"
+eq "${ drops "$T_PRUNE"; }" "136:99" "...and the drop names the prerequisite that caused it"
 
-T_CASCADE="$(printf 'bug\t136\t1\t99\tb1\nbug\t200\t1\t136\tb2\n')"
-eq "$(sel "$T_CASCADE")" "" "pruning cascades to whatever depended on the dropped issue"
-eq "$(drops "$T_CASCADE")" "136:99 200:136" "...and every drop is reported, never silent"
+T_CASCADE="${ printf 'bug\t136\t1\t99\tb1\nbug\t200\t1\t136\tb2\n'; }"
+eq "${ sel "$T_CASCADE"; }" "" "pruning cascades to whatever depended on the dropped issue"
+eq "${ drops "$T_CASCADE"; }" "136:99 200:136" "...and every drop is reported, never silent"
 
-eq "$(sel "$(printf '')")" "" "an empty slate selects nothing"
-eq "$(printf '' | bash "$RL" compose-select >/dev/null 2>&1; printf '%s' "$?")" 0 \
+eq "${ sel "${ printf ''; }"; }" "" "an empty slate selects nothing"
+eq "${ printf '' | bash "$RL" compose-select >/dev/null 2>&1; printf '%s' "$?"; }" 0 \
    "...and exits 0, because an empty backlog is an answer"
-eq "$(printf 'bug\t1\t0\t-\tx\n' | bash "$RL" compose-select EXTRA >/dev/null 2>&1; printf '%s' "$?")" 2 \
+eq "${ printf 'bug\t1\t0\t-\tx\n' | bash "$RL" compose-select EXTRA >/dev/null 2>&1; printf '%s' "$?"; }" 2 \
    "compose-select rejects arguments"
-eq "$(sel "$T_CASCADE")" "$(sel "$T_CASCADE")" "compose-select is deterministic"
+eq "${ sel "$T_CASCADE"; }" "${ sel "$T_CASCADE"; }" "compose-select is deterministic"
 
 # --- 2h. dispatch surface -------------------------------------------------------------------
 run -h;     yes "$RC_" "-h exits 0"; has "$OUT" "roadmap-lib.sh" "-h prints usage"
@@ -849,7 +849,7 @@ has "$wf" 'could not list open issues' \
 # per-member check is a bare `if` with no enclosing loop — asserted file-wide it also fires on a
 # `continue` that IS inside a real `for`, which is ordinary shell (the release-command resolver
 # iterates skill roots). A guard that flags correct code trains readers to route around it.
-freshread_block="$(check_wf_snippet "$WF" fresh-read)"
+freshread_block="${ check_wf_snippet "$WF" fresh-read; }"
 hasnt "$freshread_block" '|| continue' \
   "the fresh-read snippet's per-member check uses no loop-only 'continue' (bash falls through; zsh aborts)"
 
@@ -868,7 +868,7 @@ has "$inflight_block" 'OPEN_PRS=' \
 # Delegates to check_wf_snippet (check-lib.sh), the ONE home for the marker/closing-fence
 # contract — three suites execute documented snippets and three copies of this awk could drift.
 wf_snippet() { check_wf_snippet "$WF" "$1"; }
-gauge_block="$(wf_snippet gauge)"
+gauge_block="${ wf_snippet gauge; }"
 has "$gauge_block" 'labels/$LABEL' \
   "the destination-report snippet probes the label"
 has "$gauge_block" 'REPO=' \
@@ -880,7 +880,7 @@ has "$gauge_block" 'LABEL="${LABEL:-}"' \
   "the gauge tolerates an unconfigured destination-label instead of exploding on it"
 has "$gauge_block" '[ -n "$LABEL" ] &&' \
   "...and skips the probe entirely when none is configured"
-readiness_block="$(wf_snippet readiness)"
+readiness_block="${ wf_snippet readiness; }"
 has "$readiness_block" 'gh repo view' \
   "the readiness snippet resolves \$REPO itself (it may run as its own shell invocation)"
 has "$readiness_block" 'M_NUM:?' \
@@ -979,33 +979,33 @@ I_CANCELED='{"number":77,"state":"closed","state_reason":"not_planned","labels":
 I_ROADMAP='{"number":31,"state":"open","state_reason":null,"labels":[{"name":"roadmap"}]}'
 I_PR='{"number":50,"state":"open","state_reason":null,"labels":[],"pull_request":{"url":"x"}}'
 
-eq "$(counts '[]')"                    '0 0 0 0|||'  "empty milestone => unarmed, nothing to move"
-eq "$(counts "$(iss_json "$I_CLOSED_BLK")")"        '1 0 0 0|||' "a closed blocker still ARMS the milestone"
-eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN")")" '1 0 1 0|99||' "open non-blocker is a leftover, not a blocker"
-eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_BLK")")"   '1 1 1 0||88|' "an open blocker is reported, never a leftover"
-eq "$(counts "$(iss_json "$I_CANCELED")")"          '1 0 0 1|||' "a NOT_PLANNED blocker sets canceled"
+eq "${ counts '[]'; }"                    '0 0 0 0|||'  "empty milestone => unarmed, nothing to move"
+eq "${ counts "${ iss_json "$I_CLOSED_BLK"; }"; }"        '1 0 0 0|||' "a closed blocker still ARMS the milestone"
+eq "${ counts "${ iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN"; }"; }" '1 0 1 0|99||' "open non-blocker is a leftover, not a blocker"
+eq "${ counts "${ iss_json "$I_CLOSED_BLK,$I_OPEN_BLK"; }"; }"   '1 1 1 0||88|' "an open blocker is reported, never a leftover"
+eq "${ counts "${ iss_json "$I_CANCELED"; }"; }"          '1 0 0 1|||' "a NOT_PLANNED blocker sets canceled"
 # A NOT_PLANNED close of a NON-blocker is not a canceled requirement.
-eq "$(counts "$(iss_json '{"number":60,"state":"closed","state_reason":"not_planned","labels":[]}')")" \
+eq "${ counts "${ iss_json '{"number":60,"state":"closed","state_reason":"not_planned","labels":[]}'; }"; }" \
    '1 0 0 0|||' "a NOT_PLANNED non-blocker does not set canceled"
 # The two exclusions, asserted by their EFFECT on every field.
-eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_ROADMAP")" 31)" '1 0 1 0|99||' \
+eq "${ counts "${ iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_ROADMAP"; }" 31; }" '1 0 1 0|99||' \
    "the roadmap artifact is excluded BY NUMBER from counts and leftovers"
-eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_PR")")" '1 0 1 0|99||' \
+eq "${ counts "${ iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_PR"; }"; }" '1 0 1 0|99||' \
    "a PR carrying the milestone is excluded from counts and leftovers"
-eq "$(counts "$(iss_json "$I_ROADMAP")" 31)" '0 0 0 0|||' \
+eq "${ counts "${ iss_json "$I_ROADMAP"; }" 31; }" '0 0 0 0|||' \
    "a milestone holding ONLY the roadmap artifact is unarmed, not armed by it"
 # ...and the exclusion is BY NUMBER, never by label. A CLOSED issue that still carries the
 # `roadmap` label is ordinary history: dropping it could under-count a milestone into `unarmed`,
 # or -- the dangerous direction -- hide a NOT_PLANNED-canceled blocker and turn `held` into `met`.
 I_OLD_ROADMAP_BLK='{"number":77,"state":"closed","state_reason":"not_planned","labels":[{"name":"roadmap"},{"name":"release-blocker"}]}'
-eq "$(counts "$(iss_json "$I_ROADMAP,$I_OLD_ROADMAP_BLK")" 31)" '1 0 0 1|||' \
+eq "${ counts "${ iss_json "$I_ROADMAP,$I_OLD_ROADMAP_BLK"; }" 31; }" '1 0 0 1|||' \
    "a closed issue still carrying the roadmap label is counted, not dropped"
-eq "$(counts "$(iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_ROADMAP")" 0)" '1 0 2 0|99 31||' \
+eq "${ counts "${ iss_json "$I_CLOSED_BLK,$I_OPEN_PLAIN,$I_ROADMAP"; }" 0; }" '1 0 2 0|99 31||' \
    "with no artifact number given, nothing is excluded by label"
 bash "$RL" release-counts release-blocker notanumber >/dev/null 2>&1 </dev/null
 eq "$?" 2 "a non-numeric roadmap-issue-number is exit 2"
 # An issue with no labels is an ordinary leftover.
-eq "$(counts "$(iss_json '{"number":12,"state":"open","state_reason":null,"labels":[]}')")" \
+eq "${ counts "${ iss_json '{"number":12,"state":"open","state_reason":null,"labels":[]}'; }"; }" \
    '1 0 1 0|12||' "an unlabelled open issue is a leftover"
 # Fail-closed: malformed input is an ERROR (>=2), never an innocent-looking zero row.
 printf 'not json' | bash "$RL" release-counts release-blocker >/dev/null 2>&1
@@ -1020,20 +1020,20 @@ eq "$?" 2 "release-counts without its label argument is exit 2"
 # overlay on in a repo that never opted in, and a missed second value hides an ambiguous artifact.
 mt() { printf '%b' "$1" | bash "$RL" marker-title 2>/dev/null | tr '\n' '|'; }
 
-eq "$(mt '<!-- release-milestone: Next release -->\n')" 'Next release|' "a valued marker resolves"
-eq "$(mt 'no marker here\n')"                           ''              "no marker => empty, not an error"
-eq "$(mt '<!-- release-milestone: -->\n')"              ''              "an empty value is not a title"
-eq "$(mt '<!-- release-milestone: NAME -->\n')"         ''              "the literal placeholder NAME is not a title"
-eq "$(mt '<!-- release-milestone:Next release-->\n')"   'Next release|' "spacing around the value is optional"
-eq "$(mt '<!-- release-milestone: A -->\n<!-- release-milestone: A -->\n')" 'A|' "the same value twice is one title"
-eq "$(mt '<!-- release-milestone: B -->\n<!-- release-milestone: A -->\n')" 'A|B|' \
+eq "${ mt '<!-- release-milestone: Next release -->\n'; }" 'Next release|' "a valued marker resolves"
+eq "${ mt 'no marker here\n'; }"                           ''              "no marker => empty, not an error"
+eq "${ mt '<!-- release-milestone: -->\n'; }"              ''              "an empty value is not a title"
+eq "${ mt '<!-- release-milestone: NAME -->\n'; }"         ''              "the literal placeholder NAME is not a title"
+eq "${ mt '<!-- release-milestone:Next release-->\n'; }"   'Next release|' "spacing around the value is optional"
+eq "${ mt '<!-- release-milestone: A -->\n<!-- release-milestone: A -->\n'; }" 'A|' "the same value twice is one title"
+eq "${ mt '<!-- release-milestone: B -->\n<!-- release-milestone: A -->\n'; }" 'A|B|' \
    "two different values BOTH surface, so the caller can refuse an ambiguous artifact"
 # The greedy-match trap: two markers on ONE line must still be two titles. A `.*`-anchored match
 # keeps only the last, silently resolving a title the reader never wrote.
-eq "$(mt '<!-- release-milestone: B --> x <!-- release-milestone: A -->\n')" 'A|B|' \
+eq "${ mt '<!-- release-milestone: B --> x <!-- release-milestone: A -->\n'; }" 'A|B|' \
    "two markers on one line are two titles, not the last one"
 # ...and the value must not run past its own `-->` into a later comment on the same line.
-eq "$(mt '<!-- release-milestone: A --> then <!-- something else -->\n')" 'A|' \
+eq "${ mt '<!-- release-milestone: A --> then <!-- something else -->\n'; }" 'A|' \
    "the value stops at its own marker terminator"
 bash "$RL" marker-title extra-arg >/dev/null 2>&1
 eq "$?" 2 "marker-title takes no arguments"
@@ -1062,66 +1062,62 @@ run_rl() {                     # run_rl <subcommand> [args...]  — body on stdi
 deps() { printf '%s' "$1" | run_rl deps-from-body ${2:+"$2"}; }
 
 # --- 6a. the explicit keywords DO declare an edge -------------------------------------------
-eq "$(deps 'Depends on #78')"        '78' "'Depends on #78' is an edge"
-eq "$(deps 'Depends on: #78 only.')" '78' "the colon form is an edge"
-eq "$(deps 'Blocked by #25')"        '25' "'Blocked by #25' is an edge"
-eq "$(deps 'Blocked on #25')"        '25' "'Blocked on #25' is an edge"
-eq "$(deps 'DEPENDS ON #12')"        '12' "the keyword is case-insensitive"
-eq "$(deps 'depends upon #12')"      '12' "'depends upon' is an edge"
-eq "$(deps 'This is dependent on #9')" '9' "'dependent on' is an edge"
-eq "$(deps '- Depends on #78')"      '78' "a markdown list item is scanned"
-eq "$(deps 'Cannot proceed: blocked by #78')" '78' \
+eq "${ deps 'Depends on #78'; }"        '78' "'Depends on #78' is an edge"
+eq "${ deps 'Depends on: #78 only.'; }" '78' "the colon form is an edge"
+eq "${ deps 'Blocked by #25'; }"        '25' "'Blocked by #25' is an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Blocked on #25'; }"        '25' "'Blocked on #25' is an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'DEPENDS ON #12'; }"        '12' "the keyword is case-insensitive"
+eq "${ deps 'depends upon #12'; }"      '12' "'depends upon' is an edge"
+eq "${ deps 'This is dependent on #9'; }" '9' "'dependent on' is an edge"
+eq "${ deps '- Depends on #78'; }"      '78' "a markdown list item is scanned"
+eq "${ deps 'Cannot proceed: blocked by #78'; }" '78' \
    "'cannot' does not read as the negator 'not' (substring guard)"
 
 # --- 6b. a cross-reference is NEVER an edge (the #69 rule, dependency side) ------------------
-eq "$(deps 'Refs #69')"                    '' "'Refs #69' is not an edge"
-eq "$(deps 'Relates to #69 and see #70')"  '' "prose proximity is not an edge"
-eq "$(deps 'See #12 for context')"         '' "'See #12' is not an edge"
-eq "$(deps '#78')"                         '' "a bare #N is not an edge"
+eq "${ deps 'Refs #69'; }"                    '' "'Refs #69' is not an edge"
+eq "${ deps 'Relates to #69 and see #70'; }"  '' "prose proximity is not an edge"
+eq "${ deps 'See #12 for context'; }"         '' "'See #12' is not an edge"
+eq "${ deps '#78'; }"                         '' "a bare #N is not an edge"
 
 # --- 6c. NEGATION retires an edge, never creates one (the #108 bug) --------------------------
-eq "$(deps 'No longer depends on #25.')"          '' "'no longer depends on' is not an edge"
-eq "$(deps 'This does not depend on #25')"        '' "'does not depend on' is not an edge"
-eq "$(deps 'It is not blocked by #25')"           '' "'is not blocked by' is not an edge"
-eq "$(deps 'Never depended on #25')"              '' "'never depended on' is not an edge"
-eq "$(deps 'Rescoped — no longer blocked by #25')" '' "an em-dash clause boundary is honored"
-eq "$(deps 'The #25 prerequisite was dropped; blocked by #78')" '78' \
-   "a negator in an EARLIER clause does not suppress a later real edge"
-eq "$(deps 'Depends on #78; it is not blocked by #25')" '78' \
-   "one line can declare one edge and retire another"
+eq "${ deps 'No longer depends on #25.'; }"          '' "'no longer depends on' is not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'This does not depend on #25'; }"        '' "'does not depend on' is not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'It is not blocked by #25'; }"           '' "'is not blocked by' is not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Never depended on #25'; }"              '' "'never depended on' is not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Rescoped — no longer blocked by #25'; }" '' "an em-dash clause boundary is honored"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'The #25 prerequisite was dropped; blocked by #78'; }" '78' "a negator in an EARLIER clause does not suppress a later real edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on #78; it is not blocked by #25'; }" '78' "one line can declare one edge and retire another"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # --- 6d. this repo only — a qualified reference is not a local edge --------------------------
-eq "$(deps 'Depends on acme/repo#5')"                          '' "owner/repo#N is not a local edge"
-eq "$(deps 'Depends on https://github.com/acme/repo/issues/5')" '' "an issue URL is not a local edge"
-eq "$(deps 'Depends on #5 and other/repo#7')"                  '5' \
+eq "${ deps 'Depends on acme/repo#5'; }"                          '' "owner/repo#N is not a local edge"
+eq "${ deps 'Depends on https://github.com/acme/repo/issues/5'; }" '' "an issue URL is not a local edge"
+eq "${ deps 'Depends on #5 and other/repo#7'; }"                  '5' \
    "a qualified reference ends the chain instead of contributing a false edge"
 
 # --- 6e. chains, ordering, dedup, self-edges ------------------------------------------------
-eq "$(deps 'Depends on #5, #6 and #7')" '5 6 7' "a comma/and chain yields every member"
-eq "$(deps 'Depends on #7 #5')"         '5 7'   "output is ascending, not source order"
-eq "$(deps 'Depends on #5 and #5')"     '5'     "duplicates collapse"
-eq "$(deps 'Depends on #5 (the gate) and #6')" '5' \
+eq "${ deps 'Depends on #5, #6 and #7'; }" '5 6 7' "a comma/and chain yields every member"
+eq "${ deps 'Depends on #7 #5'; }"         '5 7'   "output is ascending, not source order"
+eq "${ deps 'Depends on #5 and #5'; }"     '5'     "duplicates collapse"
+eq "${ deps 'Depends on #5 (the gate) and #6'; }" '5' \
    "an interrupted chain stops (conservative: an invented edge blocks a bundle forever)"
-eq "$(deps 'Depends on #73 and #78' 73)" '78'   "the self-edge is dropped"
-eq "$(deps 'Depends on #73' 73)"         ''     "a body depending only on itself yields nothing"
-eq "$(deps 'Depends on #7')"             '7'    "#7 is not confused with #70"
-eq "$(deps 'Depends on #70')"            '70'   "...nor #70 with #7"
+eq "${ deps 'Depends on #73 and #78' 73; }" '78'   "the self-edge is dropped"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on #73' 73; }"         ''     "a body depending only on itself yields nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on #7'; }"             '7'    "#7 is not confused with #70"
+eq "${ deps 'Depends on #70'; }"            '70'   "...nor #70 with #7"
 
 # --- 6f. shapes that must be a clean empty, never an error ----------------------------------
-eq "$(deps '')"                  '' "an empty body yields no edges"
-eq "$(deps 'nothing here')"      '' "a body with no reference yields no edges"
-eq "$(deps 'Depends on issue 5')" '' "a reference without '#' is not an edge"
+eq "${ deps ''; }"                  '' "an empty body yields no edges"
+eq "${ deps 'nothing here'; }"      '' "a body with no reference yields no edges"
+eq "${ deps 'Depends on issue 5'; }" '' "a reference without '#' is not an edge"
 # A digit run wider than any issue number must be REJECTED before the numeric conversion: awk
 # would otherwise hold a float and print it rounded/in exponent form, emitting a fabricated
 # "issue number" no tracker can have. (Self-review find, mirrors release-ready's is_uint bound.)
-eq "$(deps 'Depends on #99999999999999999999')" '' \
-   "an over-wide reference is not an edge (never a float-formatted fake number)"
-eq "$(deps 'Depends on #99999999999999999999, #5')" '5' \
-   "...and the rest of the chain still resolves"
-eq "$(deps 'Depends on #999999999')" '999999999' "a 9-digit reference still resolves (bound is not over-tight)"
-eq "$(deps 'Depends on #0')" '' "#0 is not an issue reference"
+eq "${ deps 'Depends on #99999999999999999999'; }" '' "an over-wide reference is not an edge (never a float-formatted fake number)"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ deps 'Depends on #99999999999999999999, #5'; }" '5' "...and the rest of the chain still resolves"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ deps 'Depends on #999999999'; }" '999999999' "a 9-digit reference still resolves (bound is not over-tight)" # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ deps 'Depends on #0'; }" '' "#0 is not an issue reference"
 # A keyword and its reference must share a line — a wrapped 'dependency' reads as one to nobody.
-eq "$(deps "$(printf 'Depends on\n#5')")" '' "a keyword and reference split across lines is not an edge"
+eq "${ deps "${ printf 'Depends on\n#5'; }"; }" '' "a keyword and reference split across lines is not an edge"
 
 # --- 6g. argument validation (fail-closed, like every other subcommand) ---------------------
 printf 'x' | bash "$RL" deps-from-body notanumber >/dev/null 2>&1
@@ -1133,8 +1129,8 @@ eq "$?" 0 "deps-from-body with no argument is valid (no self-number)"
 
 # --- 6h. determinism ------------------------------------------------------------------------
 dfx='Depends on #9, #3 and #5; no longer blocked by #4'
-eq "$(deps "$dfx")" "$(deps "$dfx")" "deps-from-body is deterministic"
-eq "$(deps "$dfx")" '3 5 9'          "...and mixed declare/retire resolves to the declared set"
+eq "${ deps "$dfx"; }" "${ deps "$dfx"; }" "deps-from-body is deterministic"
+eq "${ deps "$dfx"; }" '3 5 9'          "...and mixed declare/retire resolves to the declared set"
 
 # --- 6i. STRUCTURE: an issue that DOCUMENTS the keyword must not acquire the edge (#117) -----
 # WHY this rule exists lives once, in the STRUCTURE block of scripts/lib/roadmap-lib.sh. These
@@ -1152,59 +1148,59 @@ q3='```'; q4='````'
 bt='`'
 
 # Fenced blocks: both characters, info strings, indentation, run lengths, interleaving.
-eq "$(depsm "${q3}console" 'Depends on #5' "$q3")" '' "a fenced block declares nothing"
-eq "$(depsm '~~~' 'Depends on #5' '~~~')" '' "a ~~~ fence declares nothing"
-eq "$(depsm '~~~' "$q3" 'Depends on #5' "$q3" '~~~')" '' \
+eq "${ depsm "${q3}console" 'Depends on #5' "$q3"; }" '' "a fenced block declares nothing"
+eq "${ depsm '~~~' 'Depends on #5' '~~~'; }" '' "a ~~~ fence declares nothing"
+eq "${ depsm '~~~' "$q3" 'Depends on #5' "$q3" '~~~'; }" '' \
    'a backtick-fence run inside a ~~~ fence is content, not a closer'
-eq "$(depsm "$q3" '~~~' 'Depends on #5' '~~~' "$q3")" '' "...and the reverse"
-eq "$(depsm "$q4" 'Depends on #5' "$q3" "$q4")" '' \
+eq "${ depsm "$q3" '~~~' 'Depends on #5' '~~~' "$q3"; }" '' "...and the reverse"
+eq "${ depsm "$q4" 'Depends on #5' "$q3" "$q4"; }" '' \
    "a closer SHORTER than its opener does not close the fence"
-eq "$(depsm "$q3" 'Depends on #5' "$q3 nope" "$q3")" '' \
+eq "${ depsm "$q3" 'Depends on #5' "$q3 nope" "$q3"; }" '' \
    "a would-be closer carrying trailing text is content, not a closer"
-eq "$(depsm "   $q3" 'Depends on #5' "   $q3")" '' "a fence indented 3 spaces is still a fence"
-eq "$(depsm "${q3}a${bt}b" 'Depends on #5')" '5' \
+eq "${ depsm "   $q3" 'Depends on #5' "   $q3"; }" '' "a fence indented 3 spaces is still a fence"
+eq "${ depsm "${q3}a${bt}b" 'Depends on #5'; }" '5' \
    "a backtick fence whose info string holds a backtick does NOT open (so the prose is scanned)"
-eq "$(depsm "~~~a${bt}b" 'Depends on #5' '~~~')" '' "...but a tilde fence's info string may hold one"
+eq "${ depsm "~~~a${bt}b" 'Depends on #5' '~~~'; }" '' "...but a tilde fence's info string may hold one"
 # A 4-space run is an INDENTED CODE BLOCK, not a fence — and since D27 its CONTENTS are structure
 # too. What this fixture pins now is the block's END: an indented code block ends at the first
 # non-blank line indented <= 3, so the middle line below is an ordinary paragraph and its edge
 # stands. (The rationale here used to read "indented blocks are deliberately out of scope"; #136's
 # acceptance list named this fixture as the one that must FLIP, and it cannot — the flip is in the
 # reason, and in the §5-repro fixtures further down. See D27.)
-eq "$(depsm "    $q3" 'Depends on #5' "    $q3")" '5' \
+eq "${ depsm "    $q3" 'Depends on #5' "    $q3"; }" '5' \
    "UNDER: a non-indented line ENDS an indented code block, so the prose between two runs declares"
-eq "$(depsm "    $q3" '    Depends on #5' "    $q3")" '' \
+eq "${ depsm "    $q3" '    Depends on #5' "    $q3"; }" '' \
    "OVER: ...while a line INSIDE the block declares nothing (this is the #129 exclusion, gone)"  # adb-claim-ok: #129 is closed NOT_PLANNED, superseded by #136
 # An unterminated fence must swallow to end-of-body rather than leak its contents back to prose.
-eq "$(depsm 'Depends on #9' "$q3" 'Depends on #5')" '9' "an unterminated fence swallows to EOF"
-eq "$(depsm "$q3" 'Depends on #9' "$q3" 'Depends on #5')" '5' "prose AFTER a closed fence is scanned"
-eq "$(depsm 'Depends on #9' "$q3" 'Depends on #5' "$q3")" '9' "prose BEFORE a fence is scanned"
-eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #3' "$q3" 'Depends on #7' "$q3")" '3' \
+eq "${ depsm 'Depends on #9' "$q3" 'Depends on #5'; }" '9' "an unterminated fence swallows to EOF"
+eq "${ depsm "$q3" 'Depends on #9' "$q3" 'Depends on #5'; }" '5' "prose AFTER a closed fence is scanned"
+eq "${ depsm 'Depends on #9' "$q3" 'Depends on #5' "$q3"; }" '9' "prose BEFORE a fence is scanned"
+eq "${ depsm "$q3" 'Depends on #5' "$q3" 'Depends on #3' "$q3" 'Depends on #7' "$q3"; }" '3' \
    "two fences with prose between them yield only the prose edge"
 
 # HTML comments — the artifact's own schema quotes `Depends on #78` as the example vocabulary.
-eq "$(deps 'a <!-- Depends on #5 --> b')" '' "an inline HTML comment declares nothing"
-eq "$(depsm '<!-- x' 'Depends on #5' '-->')" '' "a multi-line HTML comment declares nothing"
-eq "$(deps '<!-- Depends on #5 --> Depends on #7')" '7' \
+eq "${ deps 'a <!-- Depends on #5 --> b'; }" '' "an inline HTML comment declares nothing"
+eq "${ depsm '<!-- x' 'Depends on #5' '-->'; }" '' "a multi-line HTML comment declares nothing"
+eq "${ deps '<!-- Depends on #5 --> Depends on #7'; }" '7' \
    "...and the prose AFTER a closed comment on the same line is still scanned"
 
 # Blockquotes — quoted material, never this issue's own claim.
-eq "$(deps '> Depends on #5')"    '' "a blockquote declares nothing"
-eq "$(deps '   > Depends on #5')" '' "...including one indented up to 3 spaces"
+eq "${ deps '> Depends on #5'; }"    '' "a blockquote declares nothing"
+eq "${ deps '   > Depends on #5'; }" '' "...including one indented up to 3 spaces"
 
 # Inline code spans — TARGETED, not blanket: the KEYWORD must be outside a span, the `#N` may sit
 # inside one. Blanket stripping would delete the reference and collide head-on with #112.
-eq "$(deps "see ${bt}Depends on #5${bt} here")" '' "a whole clause quoted in a span declares nothing"
-eq "$(deps "see ${bt}${bt} Depends on ${bt}#5${bt} ${bt}${bt} here")" '' \
+eq "${ deps "see ${bt}Depends on #5${bt} here"; }" '' "a whole clause quoted in a span declares nothing"
+eq "${ deps "see ${bt}${bt} Depends on ${bt}#5${bt} ${bt}${bt} here"; }" '' \
    "...including a double-backtick span"
-eq "$(deps "Depends on ${bt}#5${bt}")" '5' \
+eq "${ deps "Depends on ${bt}#5${bt}"; }" '5' \
    "a span around only the REFERENCE resolves (what the targeted masking left room for; #112)"
 
 # Masking must not leak into the NEGATION rule: it stops a quoted keyword from DECLARING, and must
 # not also stop a real one from RETIRING. (Self-review find; see the lib's clause comment.)
-eq "$(deps "This is ${bt}not${bt} blocked by #5")" '' \
+eq "${ deps "This is ${bt}not${bt} blocked by #5"; }" '' \
    "a code-formatted negator still retires (the clause is read unmasked)"
-eq "$(deps "It ${bt}no longer${bt} depends on #5")" '' \
+eq "${ deps "It ${bt}no longer${bt} depends on #5"; }" '' \
    "...including a multi-word one"
 
 # CRLF. A body submitted through the GitHub web UI is CRLF and `gh` passes it through verbatim, so
@@ -1212,69 +1208,69 @@ eq "$(deps "It ${bt}no longer${bt} depends on #5")" '' \
 # the fence NEVER closed, and every edge in the rest of the body vanished — a dropped edge marks a
 # genuinely blocked bundle `ready`. This repo's own issues are all API-authored LF, which is
 # exactly why nothing here caught it. (Adversarial-review find.)
-cr="$(printf '\r')"
-eq "$(depsm "$q3" 'repro' "$q3$cr" 'Depends on #5')" '5' \
+cr="${ printf '\r'; }"
+eq "${ depsm "$q3" 'repro' "$q3$cr" 'Depends on #5'; }" '5' \
    "a CRLF fence closer still closes the fence"
-eq "$(depsm "$q3$cr" 'repro' "$q3$cr" "Depends on #5$cr")" '5' \
+eq "${ depsm "$q3$cr" 'repro' "$q3$cr" "Depends on #5$cr"; }" '5' \
    "...with CRLF throughout"
 
 # An HTML comment must not arm the cross-line state when it is really something else.
-eq "$(depsm "${q3}html<!--" '<div/>' "$q3" 'Depends on #5')" '5' \
+eq "${ depsm "${q3}html<!--" '<div/>' "$q3" 'Depends on #5'; }" '5' \
    "a <!-- in a fence INFO STRING is text: the fence starts first, so it must not arm a comment"
-eq "$(depsm '~~~html<!--' '<div/>' '~~~' 'Depends on #5')" '5' "...same for a tilde fence"
-eq "$(deps '<!-->')$(depsm '<!-->' 'Depends on #5')" '5' \
+eq "${ depsm '~~~html<!--' '<div/>' '~~~' 'Depends on #5'; }" '5' "...same for a tilde fence"
+eq "${ deps '<!-->'; }${ depsm '<!-->' 'Depends on #5'; }" '5' \
    "<!--> is an EMPTY comment (opener and closer share dashes), not an unterminated one"
-eq "$(depsm '<!--->' 'Depends on #5')" '5' "...and so is <!--->"
-eq "$(depsm '<!--' 'Depends on #9' '-->' 'Depends on #5')" '5' \
+eq "${ depsm '<!--->' 'Depends on #5'; }" '5' "...and so is <!--->"
+eq "${ depsm '<!--' 'Depends on #9' '-->' 'Depends on #5'; }" '5' \
    "a genuine multi-line comment still swallows its contents"
 
 # STRUCTURE INSIDE A LIST ITEM (#135). Putting a fenced example in a list item is one of the most
 # common shapes in a real issue, and the delimiter then sits after the marker. Missing it failed
 # BOTH ways at once: the block was scanned (fabricating an edge), and its indented closer was read
 # as a NEW opener, swallowing every genuine edge after the list to end-of-body.
-eq "$(depsm '- '"$q3"'console' '  Depends on #5' "  $q3" 'Depends on #7')" '7' \
+eq "${ depsm '- '"$q3"'console' '  Depends on #5' "  $q3" 'Depends on #7'; }" '7' \
    "a fence inside a list item is a fence, and its closer does not re-open one"
-eq "$(depsm '1. '"$q3" '   Depends on #5' "   $q3" 'Depends on #7')" '7' \
+eq "${ depsm '1. '"$q3" '   Depends on #5' "   $q3" 'Depends on #7'; }" '7' \
    "...with an ordered list marker"
-eq "$(depsm '  - '"$q3" '    Depends on #5' "    $q3" 'Depends on #7')" '7' \
+eq "${ depsm '  - '"$q3" '    Depends on #5' "    $q3" 'Depends on #7'; }" '7' \
    "...and an indented list item, whose closer sits past the 3-space opener limit"
-eq "$(deps '- > Depends on #6')" '' "a blockquote under a list marker is still quoted material"
-eq "$(deps '* > Depends on #6')" '' "...for every bullet character"
+eq "${ deps '- > Depends on #6'; }" '' "a blockquote under a list marker is still quoted material"
+eq "${ deps '* > Depends on #6'; }" '' "...for every bullet character"
 # The marker rules must not eat ordinary prose.
-eq "$(deps '- Depends on #78')"    '78' "a list item of PROSE still declares"
-eq "$(deps '1. Depends on #78')"   '78' "...ordered too"
-eq "$(deps '**Depends on #78**')"  '78' "a bold run is not a list marker"
-eq "$(depsm '---' 'Depends on #78')" '78' "a horizontal rule is not a list marker"
+eq "${ deps '- Depends on #78'; }"    '78' "a list item of PROSE still declares"
+eq "${ deps '1. Depends on #78'; }"   '78' "...ordered too"
+eq "${ deps '**Depends on #78**'; }"  '78' "a bold run is not a list marker"
+eq "${ depsm '---' 'Depends on #78'; }" '78' "a horizontal rule is not a list marker"
 
 # CONTAINER CONTEXT — the four ways the marker/indent rules go wrong (PR #137 review).
 # A closer is matched relative to its OPENER's content column, not globally. Both directions bite:
 # too strict and a list-nested closer never matches (the fence swallows the body); too loose and
 # indented content inside a top-level fence closes it early, after which the REAL closer reads as
 # a fresh opener and eats every edge after the block.
-eq "$(depsm "$q3" "    $q3" 'Depends on #5' "$q3" 'Depends on #7')" '7' \
+eq "${ depsm "$q3" "    $q3" 'Depends on #5' "$q3" 'Depends on #7'; }" '7' \
    "an indented backtick run INSIDE a top-level fence is content, not its closer"
 # CommonMark: 1-4 spaces after a marker are padding; at 5+, only the first is, and the rest is
 # content indentation — so the delimiter is an indented code line, not a fence.
-eq "$(depsm "-     $q3" 'Depends on #5' "$q3" 'Depends on #7')" '5' \
+eq "${ depsm "-     $q3" 'Depends on #5' "$q3" 'Depends on #7'; }" '5' \
    "5+ spaces after a list marker is content indentation, so no fence opens"
 # CommonMark caps an ordered marker at NINE digits; a tenth means it is not a list at all.
-eq "$(deps '1234567890. > Depends on #5')" '5' \
+eq "${ deps '1234567890. > Depends on #5'; }" '5' \
    "a 10-digit run is not an ordered marker, so this is prose and the edge stands"
-eq "$(deps '123456789. > Depends on #5')" '' "...while nine digits IS a marker"
-eq "$(deps '1.Depends on #5')" '5' "a marker needs a space after it"
+eq "${ deps '123456789. > Depends on #5'; }" '' "...while nine digits IS a marker"
+eq "${ deps '1.Depends on #5'; }" '5' "a marker needs a space after it"
 
 # An ESCAPED comment opener is prose DISPLAYING the delimiter, not markup. Treating it as real
 # armed the cross-line state, and an illustrative marker rarely carries a closer — so it swallowed
 # every edge and every recorded decision after it.
-eq "$(depsm 'Use \<!-- literally' 'Depends on #41')" '41' \
+eq "${ depsm 'Use \<!-- literally' 'Depends on #41'; }" '41' \
    "a backslash-escaped <!-- does not open a comment"
-eq "$(depsm 'Real: <!-- x' 'Depends on #41' '-->' 'Depends on #7')" '7' \
+eq "${ depsm 'Real: <!-- x' 'Depends on #41' '-->' 'Depends on #7'; }" '7' \
    "...while an unescaped one still does"
 # Only an ODD run of backslashes escapes: with two, the first escapes the second and the opener is
 # REAL, so treating it as prose would scan a genuine comment and fabricate an edge from it.
-eq "$(deps 'Text \\<!-- Depends on #5 --> Depends on #7')" '7' \
+eq "${ deps 'Text \\<!-- Depends on #5 --> Depends on #7'; }" '7' \
    "two backslashes leave a REAL comment opener (only odd parity escapes)"
-eq "$(deps 'Text \\\<!-- Depends on #5 -->')" '5' \
+eq "${ deps 'Text \\\<!-- Depends on #5 -->'; }" '5' \
    "...and three escape it again"
 
 # MULTI-LINE CODE SPANS (#136 §1). CommonMark lets an inline span cross a line ending inside a
@@ -1285,32 +1281,32 @@ eq "$(deps 'Text \\\<!-- Depends on #5 -->')" '5' \
 # DIRECTION. The first group is OVER-match (a fabricated edge blocks a ready bundle). The control
 # group right after is UNDER-match, and it is the reason this is PARAGRAPH-scoped rather than
 # document-scoped: a stray backtick must not be able to swallow the rest of the body.
-eq "$(depsm "${bt}Depends on #5" "still example${bt}")" '' \
+eq "${ depsm "${bt}Depends on #5" "still example${bt}"; }" '' \
    "OVER: a span that crosses a line ending declares nothing"
-eq "$(depsm "see ${bt}${bt}Depends on #5" "still example${bt}${bt} here")" '' \
+eq "${ depsm "see ${bt}${bt}Depends on #5" "still example${bt}${bt} here"; }" '' \
    "OVER: ...for a multi-backtick run too"
-eq "$(depsm "${bt}${bt}Depends on #5" "one ${bt} inside" "still example${bt}${bt}")" '' \
+eq "${ depsm "${bt}${bt}Depends on #5" "one ${bt} inside" "still example${bt}${bt}"; }" '' \
    "OVER: ...and a shorter run inside a longer span is content, not its closer"
-eq "$(depsm "it${bt}s fine" 'Depends on #5')" '5' \
+eq "${ depsm "it${bt}s fine" 'Depends on #5'; }" '5' \
    "UNDER: an UNMATCHED backtick is literal text and must not swallow the next line"
-eq "$(depsm "it${bt}s fine" '' 'Depends on #5')" '5' \
+eq "${ depsm "it${bt}s fine" '' 'Depends on #5'; }" '5' \
    "UNDER: ...and span state resets at the paragraph boundary, so a later pair cannot reach back"
-eq "$(depsm "${bt}Depends on #5" '' "still example${bt}")" '5' \
+eq "${ depsm "${bt}Depends on #5" '' "still example${bt}"; }" '5' \
    "UNDER: a blank line ends the paragraph, so these two backticks are two unmatched literals"
-eq "$(depsm "${bt}Depends on #5" 'still example' 'Depends on #7')" '5 7' \
+eq "${ depsm "${bt}Depends on #5" 'still example' 'Depends on #7'; }" '5 7' \
    "UNDER: an opener with no closer anywhere in the paragraph is LITERAL — both edges stand"
 
 # A `<!--` QUOTED IN A SPAN IS TEXT, NOT STRUCTURE (#136 §2). Comment stripping used to run before
 # anything knew about spans, so a deliberately-quoted opener armed the cross-line comment state and
 # swallowed every following line — the inverse of the rule two blocks up, and the UNDER-match
 # direction: a dropped edge marks a genuinely blocked bundle `ready`.
-eq "$(depsm "The opener is ${bt}<!--${bt} in the schema." 'Depends on #5')" '5' \
+eq "${ depsm "The opener is ${bt}<!--${bt} in the schema." 'Depends on #5'; }" '5' \
    "UNDER: a <!-- quoted in a code span does not open a comment"
-eq "$(depsm "Write ${bt}<!-- x -->${bt} to show it." 'Depends on #5')" '5' \
+eq "${ depsm "Write ${bt}<!-- x -->${bt} to show it." 'Depends on #5'; }" '5' \
    "UNDER: ...including a whole quoted comment"
-eq "$(deps "A real one: <!-- ${bt} --> Depends on #5")" '5' \
+eq "${ deps "A real one: <!-- ${bt} --> Depends on #5"; }" '5' \
    "UNDER: a backtick INSIDE a real comment is consumed with it (the comment opened first)"
-eq "$(depsm '<!-- x' "Depends on ${bt}#5${bt}" '-->' 'Depends on #7')" '7' \
+eq "${ depsm '<!-- x' "Depends on ${bt}#5${bt}" '-->' 'Depends on #7'; }" '7' \
    "OVER: ...and a real comment still swallows a span, because it opened first"
 
 # AN HTML COMMENT THAT STARTS A LINE IS A BLOCK (review round 1). The inline pass runs a whole
@@ -1318,37 +1314,37 @@ eq "$(depsm '<!-- x' "Depends on ${bt}#5${bt}" '-->' 'Depends on #7')" '7' \
 # block state before anything knew a comment was open. Both directions of that were live, and both
 # are UNDER-match: a fence opened and never closed, and a blockquote-shaped closer was skipped so
 # the comment never closed at all. Either swallowed every edge after it.
-eq "$(depsm '<!--' "$q3" '-->' 'Depends on #5')" '5' \
+eq "${ depsm '<!--' "$q3" '-->' 'Depends on #5'; }" '5' \
    "UNDER: a fence delimiter INSIDE a multi-line comment opens no fence"
-eq "$(depsm '<!--' '> -->' 'Depends on #5')" '5' \
+eq "${ depsm '<!--' '> -->' 'Depends on #5'; }" '5' \
    "UNDER: ...and a blockquote-shaped closer still closes the comment"
-eq "$(depsm '<!--' '    indented' '-->' 'Depends on #5')" '5' \
+eq "${ depsm '<!--' '    indented' '-->' 'Depends on #5'; }" '5' \
    "UNDER: ...and an indented line inside one opens no code block"
-eq "$(depsm '<!--' 'Depends on #9' '-->' 'Depends on #5')" '5' \
+eq "${ depsm '<!--' 'Depends on #9' '-->' 'Depends on #5'; }" '5' \
    "OVER: ...while the comment still swallows its own contents"
-eq "$(deps '<!-- Depends on #5 --> Depends on #7')" '7' \
+eq "${ deps '<!-- Depends on #5 --> Depends on #7'; }" '7' \
    "UNDER: a comment CLOSED on its own line stays inline, so the prose after it is still scanned"
-eq "$(depsm '- <!--' 'Depends on #9' '-->' 'Depends on #5')" '5' \
+eq "${ depsm '- <!--' 'Depends on #9' '-->' 'Depends on #5'; }" '5' \
    "OVER: a comment block opens at the CONTAINER content column too"
 
 # A LIST MARKER STARTS A NEW BLOCK (review round 1). Two adjacent items were buffered as one
 # paragraph, so their backticks paired across the item boundary and masked a real edge away.
-eq "$(depsm "- ${bt}Depends on #5" "- another ${bt} item")" '5' \
+eq "${ depsm "- ${bt}Depends on #5" "- another ${bt} item"; }" '5' \
    "UNDER: backticks in two DIFFERENT list items do not pair"
-eq "$(depsm "- ${bt}Depends on #5" "  still item one ${bt}")" '' \
+eq "${ depsm "- ${bt}Depends on #5" "  still item one ${bt}"; }" '' \
    "OVER: ...but a CONTINUATION line is the same paragraph, so a span across it still resolves"
 
 # AN ESCAPED BACKTICK IS LITERAL (review round 1), so it opens no span. Without the parity check a
 # phantom opener pairs with a real tick later in the paragraph and masks everything between.
-eq "$(depsm "\\${bt}Depends on #5" "later ${bt}")" '5' \
+eq "${ depsm "\\${bt}Depends on #5" "later ${bt}"; }" '5' \
    "UNDER: a backslash-escaped backtick is not a span opener"
-eq "$(depsm "\\\\${bt}Depends on #5" "later ${bt}")" '' \
+eq "${ depsm "\\\\${bt}Depends on #5" "later ${bt}"; }" '' \
    "OVER: ...but TWO backslashes leave a real one (only odd parity escapes)"
 
 # The point of the whole family: prose still declares, and a quoted negation is not a retirement.
-eq "$(depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7')" '7' \
+eq "${ depsm "$q3" 'no longer depends on #5' "$q3" 'Depends on #7'; }" '7' \
    "a NEGATED mention quoted in a fence neither declares nor retires"
-eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7')" '5 6 7' \
+eq "${ depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7'; }" '5 6 7' \
    "a chain in prose still resolves with a fence present"
 
 # --- 6i-bis. INDENTED CODE BLOCKS — the #129 fork, decided in D27 ----------------------------  # adb-claim-ok: #129 is closed NOT_PLANNED, superseded by #136 — this is its historical name
@@ -1361,26 +1357,26 @@ eq "$(depsm "$q3" 'Depends on #5' "$q3" 'Depends on #5, #6 and #7')" '5 6 7' \
 # marked `ready` — invisible, and the reason a stateless `^ {4}` rule was refused).
 # The issue's §5 repro is written with `#52`; these use `#5` like every other fixture in § 6i.  # adb-claim-ok: quoting the repro's number, not citing it
 # The number is fixture DATA — what is under test is the indentation rule, not the reference.
-eq "$(deps '    Depends on #5')" '' \
+eq "${ deps '    Depends on #5'; }" '' \
    "OVER: a top-level 4-space-indented line is code and declares nothing (the §5 repro)"
-eq "$(depsm '        Depends on #5')" '' "OVER: ...at any depth past 4"
-eq "$(depsm 'Prose.' '' '    Depends on #5')" '' "OVER: ...after a blank line"
-eq "$(depsm "$q3" 'x' "$q3" '    Depends on #5')" '' "OVER: ...and after a closed fence"
-eq "$(depsm '# A heading' '    Depends on #5')" '' "OVER: ...and directly after a heading"
+eq "${ depsm '        Depends on #5'; }" '' "OVER: ...at any depth past 4"
+eq "${ depsm 'Prose.' '' '    Depends on #5'; }" '' "OVER: ...after a blank line"
+eq "${ depsm "$q3" 'x' "$q3" '    Depends on #5'; }" '' "OVER: ...and after a closed fence"
+eq "${ depsm '# A heading' '    Depends on #5'; }" '' "OVER: ...and directly after a heading"
 # UNDER — the shapes a stateless rule would have deleted. CommonMark refuses all four as code.
-eq "$(depsm '- item' '    Depends on #5')" '5' \
+eq "${ depsm '- item' '    Depends on #5'; }" '5' \
    "UNDER: a 4-space continuation under a list marker is PROSE (content starts at column 2)"
-eq "$(depsm '- item' '      Depends on #5')" '5' \
+eq "${ depsm '- item' '      Depends on #5'; }" '5' \
    "UNDER: ...and a 6-space one too, because indented code cannot interrupt a paragraph"
-eq "$(depsm '- item' '' '    Depends on #5')" '5' \
+eq "${ depsm '- item' '' '    Depends on #5'; }" '5' \
    "UNDER: ...and the list container survives a blank line"
-eq "$(depsm 'Some prose' '    Depends on #5')" '5' \
+eq "${ depsm 'Some prose' '    Depends on #5'; }" '5' \
    "UNDER: a lazy continuation of an ordinary paragraph is prose, not code"
-eq "$(depsm '- a' '' 'Top-level prose.' '' '    Depends on #5')" '' \
+eq "${ depsm '- a' '' 'Top-level prose.' '' '    Depends on #5'; }" '' \
    "OVER: ...but a column-0 line CLOSES the list, so the next indented block is code again"
-eq "$(depsm '    x' 'Depends on #5')" '5' \
+eq "${ depsm '    x' 'Depends on #5'; }" '5' \
    "UNDER: an indented block ends at the first non-blank line indented <= 3"
-eq "$(depsm "\tDepends on #5")" '5' \
+eq "${ depsm "\tDepends on #5"; }" '5' \
    "UNDER: a leading TAB is deliberately not counted as indentation (stated in the filter header)"
 
 # --- 6j. EMPHASIS between the keyword and the #N (#112) --------------------------------------
@@ -1395,100 +1391,98 @@ eq "$(depsm "\tDepends on #5")" '5' \
 # what it is lives once, in the STEP block of scripts/lib/roadmap-lib.sh.
 
 # UNDER — every emphasis/code delimiter the acceptance list names.
-eq "$(deps 'Depends on **#52**')"   '52' "UNDER: bold around the reference"
-eq "$(deps 'Depends on __#52__')"   '52' "UNDER: __bold__ around the reference"
-eq "$(deps 'Depends on *#52*')"     '52' "UNDER: *italic* around the reference"
-eq "$(deps 'Depends on _#52_')"     '52' "UNDER: _italic_ around the reference"
+eq "${ deps 'Depends on **#52**'; }"   '52' "UNDER: bold around the reference"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on __#52__'; }"   '52' "UNDER: __bold__ around the reference"
+eq "${ deps 'Depends on *#52*'; }"     '52' "UNDER: *italic* around the reference"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on _#52_'; }"     '52' "UNDER: _italic_ around the reference"
 # (the single-backtick span is pinned in 6i, beside the code-span rule it constrains)
-eq "$(deps "Depends on ${bt}${bt}#52${bt}${bt}")" '52' "UNDER: a double-backtick span too"
-eq "$(deps 'Blocked by **#52**')"   '52' "UNDER: the blocked-by keyword takes it as well"
-eq "$(deps 'Depends on _**#5**_')"  '5'  "UNDER: nesting resolves at the INNERMOST pair"
-eq "$(deps 'Depends on *_#5_*')"    '5'  "UNDER: ...whose run is length 1, not 2 (the scan loop)"
+eq "${ deps "Depends on ${bt}${bt}#52${bt}${bt}"; }" '52' "UNDER: a double-backtick span too"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Blocked by **#52**'; }"   '52' "UNDER: the blocked-by keyword takes it as well"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on _**#5**_'; }"  '5'  "UNDER: nesting resolves at the INNERMOST pair"
+eq "${ deps 'Depends on *_#5_*'; }"    '5'  "UNDER: ...whose run is length 1, not 2 (the scan loop)"
 
 # UNDER — the closing run of emphasis that WRAPPED THE KEYWORD, which is what actually broke.
 # `- **Blocked by** #155` is the exact form six live edges were written in.
-eq "$(deps '- **Blocked by** #155')" '155' "UNDER: a bolded keyword's closer, the live shape"
-eq "$(deps '*Blocked by* #155')"     '155' "UNDER: ...italic"
-eq "$(deps '**Depends on:** #78')"   '78'  "UNDER: the colon INSIDE the emphasis"
-eq "$(deps '**Depends on**: #78')"   '78'  "UNDER: ...and outside it"
-eq "$(deps '__Depends on:__ #78')"   '78'  "UNDER: ...with __ delimiters"
-eq "$(deps '**Blocked by** **#78**')" '78' "UNDER: both halves formatted at once"
+eq "${ deps '- **Blocked by** #155'; }" '155' "UNDER: a bolded keyword's closer, the live shape" # adb-claim-ok: parser INPUT, not a citation — the grammar under test, not a claim about #155
+eq "${ deps '*Blocked by* #155'; }"     '155' "UNDER: ...italic" # adb-claim-ok: parser INPUT, not a citation — the grammar under test, not a claim about #155
+eq "${ deps '**Depends on:** #78'; }"   '78'  "UNDER: the colon INSIDE the emphasis"
+eq "${ deps '**Depends on**: #78'; }"   '78'  "UNDER: ...and outside it"
+eq "${ deps '__Depends on:__ #78'; }"   '78'  "UNDER: ...with __ delimiters"
+eq "${ deps '**Blocked by** **#78**'; }" '78' "UNDER: both halves formatted at once"
 
 # UNDER — the forms that already worked must not regress. `**Depends on: #78 only.**` is the one
 # that made this defect so easy to miss: the `**` never sits between the keyword and the number.
-eq "$(deps '**Depends on: #78 only.**')" '78' "UNDER: emphasis PRECEDING the keyword (worked before)"
-eq "$(deps '- Blocked by #155')"         '155' "UNDER: the unformatted list item (worked before)"
-eq "$(deps '- **Blocked by #155**')"     '155' "UNDER: the whole clause bolded (worked before)"
-eq "$(deps 'Depends on #5**')"           '5'   "UNDER: a stray trailing run does not invalidate a direct reference"
+eq "${ deps '**Depends on: #78 only.**'; }" '78' "UNDER: emphasis PRECEDING the keyword (worked before)"
+eq "${ deps '- Blocked by #155'; }"         '155' "UNDER: the unformatted list item (worked before)" # adb-claim-ok: parser INPUT, not a citation — the grammar under test, not a claim about #155
+eq "${ deps '- **Blocked by #155**'; }"     '155' "UNDER: the whole clause bolded (worked before)" # adb-claim-ok: parser INPUT, not a citation — the grammar under test, not a claim about #155
+eq "${ deps 'Depends on #5**'; }"           '5'   "UNDER: a stray trailing run does not invalidate a direct reference"
 
 # UNDER — chains and the numeric bound survive formatting.
-eq "$(deps "Depends on **#5**, **#6** and ${bt}#7${bt}")" '5 6 7' \
+eq "${ deps "Depends on **#5**, **#6** and ${bt}#7${bt}"; }" '5 6 7' \
    "UNDER: a formatted chain yields every member (the closer must not end the chain)"
-eq "$(deps 'Depends on **#5**, #6')"      '5 6' "UNDER: mixed formatted/plain chain"
+eq "${ deps 'Depends on **#5**, #6'; }"      '5 6' "UNDER: mixed formatted/plain chain"
 # ONE wrapper around a WHOLE chain. A first cut of this fix required an opener to reappear right
 # after the digits, which is false here — the closer follows the LAST member — so `#5` was dropped
 # and the scan resumed inside the text it had just rejected, yielding `6` alone. A partial set is
 # the worst outcome available: it reads as resolved while a real prerequisite has vanished.
-eq "$(deps 'Depends on **#5, #6**')"      '5 6' "UNDER: one wrapper around a whole chain"
-eq "$(deps 'Depends on **#5, #6, #7**')"  '5 6 7' "UNDER: ...of any length"
-eq "$(deps 'Depends on **#5 and #6**')"   '5 6' "UNDER: ...joined by 'and'"
-eq "$(deps 'Depends on __#5, #6__')"      '5 6' "UNDER: ...for every delimiter"
-eq "$(deps "Depends on ${bt}#5, #6${bt}")" '5 6' "UNDER: ...including a code span"
+eq "${ deps 'Depends on **#5, #6**'; }"      '5 6' "UNDER: one wrapper around a whole chain"
+eq "${ deps 'Depends on **#5, #6, #7**'; }"  '5 6 7' "UNDER: ...of any length"
+eq "${ deps 'Depends on **#5 and #6**'; }"   '5 6' "UNDER: ...joined by 'and'"
+eq "${ deps 'Depends on __#5, #6__'; }"      '5 6' "UNDER: ...for every delimiter"
+eq "${ deps "Depends on ${bt}#5, #6${bt}"; }" '5 6' "UNDER: ...including a code span"
 # An UNBALANCED run is accepted on purpose: the author who typed it still declares the edge, and
 # refusing it is the under-match direction. See the PAIRING note in roadmap-lib.sh's STEP block.
-eq "$(deps 'Depends on **#5')"            '5'   "UNDER: an unclosed opener still declares"
-eq "$(deps "Depends on ${bt}#5 and more${bt}")" '5' \
+eq "${ deps 'Depends on **#5'; }"            '5'   "UNDER: an unclosed opener still declares"
+eq "${ deps "Depends on ${bt}#5 and more${bt}"; }" '5' \
    "UNDER: a phrase-quoted reference still declares (the edge is real; markup is not content)"
-eq "$(deps 'Depends on **#73** and **#78**' 73)" '78' "UNDER: the self-edge is still dropped"
-eq "$(deps 'Depends on **#999999999**')"  '999999999' "UNDER: a formatted 9-digit reference resolves"
+eq "${ deps 'Depends on **#73** and **#78**' 73; }" '78' "UNDER: the self-edge is still dropped"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on **#999999999**'; }"  '999999999' "UNDER: a formatted 9-digit reference resolves" # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
 
 # OVER — the guard that matters most: the tolerance must not become a blanket punctuation skip.
 # Each of these is one character away from a fixture above.
-eq "$(deps 'Depends on * #5')"   '' \
+eq "${ deps 'Depends on * #5'; }"   '' \
    "OVER: a run floating in whitespace is not emphasis (cf. '*Blocked by* #5', which IS)"
-eq "$(deps 'Depends on ** #5 **')" '' "OVER: spaced asterisks are not emphasis in CommonMark either"
-eq "$(deps "Depends on ${bt}ignore #5${bt}")" '' \
+eq "${ deps 'Depends on ** #5 **'; }" '' "OVER: spaced asterisks are not emphasis in CommonMark either"
+eq "${ deps "Depends on ${bt}ignore #5${bt}"; }" '' \
    "OVER: the run must reach '#' without crossing a word character"
-eq "$(deps 'Depends on **ignore #5**')"       '' "OVER: ...for every delimiter, not just backticks"
+eq "${ deps 'Depends on **ignore #5**'; }"       '' "OVER: ...for every delimiter, not just backticks"
 # `~` is deliberately NOT in EMPH, and this is the one place widening the set later would be
 # actively WRONG rather than merely broader: struck-through text reads as RETRACTED, so honouring
 # `~~#5~~` would convert a retirement into a declaration — the #108 direction, inverted.
-eq "$(deps 'Depends on ~~#5~~')"   '' "OVER: strikethrough reads as retracted, so it declares nothing"
-eq "$(deps 'Depends on [#5](http://x)')"   '' "OVER: a markdown link is not a wrapped reference"
-eq "$(deps 'Depends on **[#5](http://x)**')" '' "OVER: ...nor a bolded one"
+eq "${ deps 'Depends on ~~#5~~'; }"   '' "OVER: strikethrough reads as retracted, so it declares nothing"
+eq "${ deps 'Depends on [#5](http://x)'; }"   '' "OVER: a markdown link is not a wrapped reference"
+eq "${ deps 'Depends on **[#5](http://x)**'; }" '' "OVER: ...nor a bolded one"
 
 # OVER — every #69/#108/#117 guarantee re-pinned WITH the newly accepted syntax, because a
 # widened match is exactly where an old guard silently loosens. The first three never reach the
 # widened grammar at all — they carry no `depend`/`blocked`, so the cheap bail discards the line
 # before STEP runs — which is precisely the guarantee they pin: formatting must not turn a
 # non-keyword into one. The rest DO exercise STEP.
-eq "$(deps 'Refs **#52**')"  '' "OVER: 'Refs' is still not a keyword, however formatted"
-eq "$(deps 'See **#52**')"   '' "OVER: ...nor 'See'"
-eq "$(deps '**#52**')"       '' "OVER: a bare formatted reference is still not an edge"
-eq "$(deps 'Depends on **acme/repo#5**')" '' "OVER: a bolded QUALIFIED reference is still not local"
-eq "$(deps 'Depends on acme/repo**#5**')" '' "OVER: ...nor one whose number alone is bolded"
-eq "$(deps 'No longer depends on **#25**')" '' "OVER: a formatted negation still RETIRES"
-eq "$(deps 'No longer **depends on:** #25')" '' "OVER: ...with the keyword formatted too"
-eq "$(deps "This is ${bt}not${bt} blocked by **#5**")" '' \
+eq "${ deps 'Refs **#52**'; }"  '' "OVER: 'Refs' is still not a keyword, however formatted"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'See **#52**'; }"   '' "OVER: ...nor 'See'"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps '**#52**'; }"       '' "OVER: a bare formatted reference is still not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on **acme/repo#5**'; }" '' "OVER: a bolded QUALIFIED reference is still not local"
+eq "${ deps 'Depends on acme/repo**#5**'; }" '' "OVER: ...nor one whose number alone is bolded"
+eq "${ deps 'No longer depends on **#25**'; }" '' "OVER: a formatted negation still RETIRES"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'No longer **depends on:** #25'; }" '' "OVER: ...with the keyword formatted too"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps "This is ${bt}not${bt} blocked by **#5**"; }" '' \
    "OVER: a code-formatted negator still retires a formatted edge"
-eq "$(deps "${bt}Depends on${bt} **#5**")" '' \
+eq "${ deps "${bt}Depends on${bt} **#5**"; }" '' \
    "OVER: a quoted KEYWORD declares nothing even when the reference is real markup"
-eq "$(deps 'Depends on **#5** (the gate) and #6')" '5' \
+eq "${ deps 'Depends on **#5** (the gate) and #6'; }" '5' \
    "OVER: formatting does not defeat the conservative chain stop"
-eq "$(deps 'Depends on **#9999999999**')" '' \
-   "OVER: the 10-digit bound holds through formatting (leftmost-longest must not truncate to 9)"
-eq "$(deps 'Depends on **#99999999999999999999**, **#5**')" '5' \
-   "OVER: ...and the rest of a formatted chain still resolves"
-eq "$(deps 'Depends on **#0**')" '' "OVER: #0 is not an issue reference, formatted or not"
+eq "${ deps 'Depends on **#9999999999**'; }" '' "OVER: the 10-digit bound holds through formatting (leftmost-longest must not truncate to 9)"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ deps 'Depends on **#99999999999999999999**, **#5**'; }" '5' "OVER: ...and the rest of a formatted chain still resolves"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ deps 'Depends on **#0**'; }" '' "OVER: #0 is not an issue reference, formatted or not"
 
 # OVER — STRUCTURE still wins over the widened match. A formatted edge inside a fence, a comment
 # or a blockquote is still documentation (#117); this is the intersection the two rules share.
-eq "$(depsm "$q3" 'Depends on **#5**' "$q3" 'Depends on **#7**')" '7' \
+eq "${ depsm "$q3" 'Depends on **#5**' "$q3" 'Depends on **#7**'; }" '7' \
    "OVER: a formatted edge quoted in a fence declares nothing"
-eq "$(deps '<!-- Depends on **#5** --> Depends on **#7**')" '7' \
+eq "${ deps '<!-- Depends on **#5** --> Depends on **#7**'; }" '7' \
    "OVER: ...nor one inside an HTML comment"
-eq "$(deps '> Depends on **#5**')" '' "OVER: ...nor a blockquoted one"
-eq "$(deps '* Depends on #5')" '5' \
+eq "${ deps '> Depends on **#5**'; }" '' "OVER: ...nor a blockquoted one"
+eq "${ deps '* Depends on #5'; }" '5' \
    "a bullet is still a LIST MARKER, not emphasis that swallows the line's prose"
 
 # --- 6k. DEPS-AMBIGUOUS — what the grammar REFUSED, reported instead of dropped (#132) -------
@@ -1513,112 +1507,112 @@ ambm() {
 }
 
 # REPORT — the two witnesses the issue names, verified still ambiguous in the owner's own comment.
-eq "$(amb 'Depends on #5 (the gate) and #6')" 'partial:1:6' \
+eq "${ amb 'Depends on #5 (the gate) and #6'; }" 'partial:1:6' \
    "REPORT: an interrupted chain names the reference it dropped"
-eq "$(deps 'Depends on #5 (the gate) and #6')" '5' \
+eq "${ deps 'Depends on #5 (the gate) and #6'; }" '5' \
    "...while the EDGE output is unchanged (this is a report, never a parser widening)"
-eq "$(amb 'Depends on issue 5')" 'no-hash:1:5' \
+eq "${ amb 'Depends on issue 5'; }" 'no-hash:1:5' \
    "REPORT: a reference written without a '#' is surfaced, not silently empty"
-eq "$(deps 'Depends on issue 5')" '' "...and still declares no edge"
+eq "${ deps 'Depends on issue 5'; }" '' "...and still declares no edge"
 
 # REPORT — the shapes #112 deliberately refuses. Each is one character from a form that DECLARES,
 # which is exactly why a silent refusal was indistinguishable from no declaration at all.
-eq "$(amb 'Depends on [#5](http://x)')" 'unparsed:1:5' "REPORT: a markdown link"
-eq "$(amb 'Depends on * #5')"           'unparsed:1:5' "REPORT: a run floating in whitespace"
-eq "$(amb "Depends on ${bt}ignore #5${bt}")" 'unparsed:1:5' \
+eq "${ amb 'Depends on [#5](http://x)'; }" 'unparsed:1:5' "REPORT: a markdown link"
+eq "${ amb 'Depends on * #5'; }"           'unparsed:1:5' "REPORT: a run floating in whitespace"
+eq "${ amb "Depends on ${bt}ignore #5${bt}"; }" 'unparsed:1:5' \
    "REPORT: a reference the span could not reach without crossing a word"
-eq "$(amb 'Depends on ~~#5~~')"         'unparsed:1:5' "REPORT: strikethrough (retracted, but visibly so)"
-eq "$(amb 'Depends on the gate and #6')" 'unparsed:1:6' "REPORT: prose between the keyword and the reference"
-eq "$(amb 'Depends on #5, #6 and the gate and #7')" 'partial:1:7' \
+eq "${ amb 'Depends on ~~#5~~'; }"         'unparsed:1:5' "REPORT: strikethrough (retracted, but visibly so)"
+eq "${ amb 'Depends on the gate and #6'; }" 'unparsed:1:6' "REPORT: prose between the keyword and the reference"
+eq "${ amb 'Depends on #5, #6 and the gate and #7'; }" 'partial:1:7' \
    "REPORT: a chain that resolves two members and drops the third"
-eq "$(deps 'Depends on #5, #6 and the gate and #7')" '5 6' "...and the two that resolved still do"
+eq "${ deps 'Depends on #5, #6 and the gate and #7'; }" '5 6' "...and the two that resolved still do"
 
 # REPORT — the SYNTAX COLON of `Depends on:` is not a clause boundary. STEP eats it as a separator
 # only when a `#N` follows, so on exactly the paths this subcommand exists for it was still sitting
 # at the head of the window and the boundary scan cut the window to nothing. Three ordinary
 # spellings went silent. (Independent-review find.)
-eq "$(amb 'Depends on: issue 5')"    'no-hash:1:5'  "REPORT: the colon form of the hash-less witness"
-eq "$(amb 'Depends on: [#5](url)')"  'unparsed:1:5' "REPORT: ...of a markdown link"
-eq "$(amb 'Depends on: * #5')"       'unparsed:1:5' "REPORT: ...and of a floating run"
-eq "$(deps 'Depends on: #5')" '5' "...while the colon form that RESOLVES still declares its edge"
-eq "$(amb 'Depends on: #5')"  ''   "...and reports nothing"
+eq "${ amb 'Depends on: issue 5'; }"    'no-hash:1:5'  "REPORT: the colon form of the hash-less witness"
+eq "${ amb 'Depends on: [#5](url)'; }"  'unparsed:1:5' "REPORT: ...of a markdown link"
+eq "${ amb 'Depends on: * #5'; }"       'unparsed:1:5' "REPORT: ...and of a floating run"
+eq "${ deps 'Depends on: #5'; }" '5' "...while the colon form that RESOLVES still declares its edge"
+eq "${ amb 'Depends on: #5'; }"  ''   "...and reports nothing"
 # A colon AFTER a resolved reference is ordinary punctuation and still ends the clause — the strip
 # is gated on the chain having consumed nothing, so these two cannot collapse into one rule.
-eq "$(amb 'Depends on #5: see #6 for context')" '' "SILENT: a colon after a resolved reference still bounds"
+eq "${ amb 'Depends on #5: see #6 for context'; }" '' "SILENT: a colon after a resolved reference still bounds"
 
 # REPORT — a hash-less reference is surfaced even when the SAME occurrence already declared an edge,
 # and every match is named rather than the first. Gating this on "declared nothing" hid a partially
 # parsed chain, which is the precise thing this subcommand exists to say. (Independent-review find.)
-eq "$(amb 'Depends on #5 and issue 6')" 'partial:1:6' \
+eq "${ amb 'Depends on #5 and issue 6'; }" 'partial:1:6' \
    "REPORT: a hash-less reference dropped from a chain that DID declare"
-eq "$(deps 'Depends on #5 and issue 6')" '5' "...and the edge it did declare is unchanged"
-eq "$(amb 'Depends on issue 5 and issue 6')" 'no-hash:1:5 no-hash:1:6' \
+eq "${ deps 'Depends on #5 and issue 6'; }" '5' "...and the edge it did declare is unchanged"
+eq "${ amb 'Depends on issue 5 and issue 6'; }" 'no-hash:1:5 no-hash:1:6' \
    "REPORT: every hash-less reference, not just the first"
-eq "$(amb 'Depends on * #5 and issue 6')" 'unparsed:1:5 no-hash:1:6' \
+eq "${ amb 'Depends on * #5 and issue 6'; }" 'unparsed:1:5 no-hash:1:6' \
    "REPORT: the two scans are independent — neither shape subsumes the other"
 
 # REPORT — multiple sites, deduped, in scan order (line ascending). Determinism comes from the
 # scan order itself, so no sort is applied and none is needed.
-eq "$(ambm 'Depends on * #5' 'Blocked by [#6](u)')" 'unparsed:1:5 unparsed:2:6' \
+eq "${ ambm 'Depends on * #5' 'Blocked by [#6](u)'; }" 'unparsed:1:5 unparsed:2:6' \
    "REPORT: one record per site, line-ordered"
-eq "$(amb 'Depends on * #5 and blocked by * #5')" 'unparsed:1:5' \
+eq "${ amb 'Depends on * #5 and blocked by * #5'; }" 'unparsed:1:5' \
    "REPORT: an identical record from two keyword occurrences collapses"
 
 # SILENT — a QUALIFIED reference is RECOGNIZED and correctly excluded, never "unparsed". The
 # word-character guard IS the cross-repo rule; reporting a confident answer is what makes noise.
-eq "$(amb 'Depends on acme/repo#5')"        '' "SILENT: a qualified reference is a confident non-edge"
-eq "$(amb 'Depends on #5 and other/repo#7')" '' "SILENT: ...including one that ends a chain"
-eq "$(amb 'Depends on **acme/repo#5**')"    '' "SILENT: ...formatted"
+eq "${ amb 'Depends on acme/repo#5'; }"        '' "SILENT: a qualified reference is a confident non-edge"
+eq "${ amb 'Depends on #5 and other/repo#7'; }" '' "SILENT: ...including one that ends a chain"
+eq "${ amb 'Depends on **acme/repo#5**'; }"    '' "SILENT: ...formatted"
 
 # SILENT — the two false-positive traps a naive "keyword present, reference unconsumed" rule hits.
 # Both were live shapes before the window and the negation skip were added.
-eq "$(amb 'Depends on #5 and blocked by #6')" '' \
+eq "${ amb 'Depends on #5 and blocked by #6'; }" '' \
    "SILENT: the window ends at the NEXT keyword, which is about to claim that reference"
-eq "$(deps 'Depends on #5 and blocked by #6')" '5 6' "...and both edges still resolve"
+eq "${ deps 'Depends on #5 and blocked by #6'; }" '5 6' "...and both edges still resolve"
 neg_fx='Depends on #78; it is not blocked by #25'  # adb-claim-ok: fixture prose reusing this suite's standing #25/#78 example numbers, not a citation
-eq "$(amb "$neg_fx")" '' "SILENT: a NEGATED occurrence is a confident answer, not an ambiguity"
+eq "${ amb "$neg_fx"; }" '' "SILENT: a NEGATED occurrence is a confident answer, not an ambiguity"
 # PAIRED with the edge assertion, because the ambiguity fixture alone is VACUOUS here: remove the
 # negation skip and the reference is consumed as an ordinary edge, so the report stays empty either
 # way. The edge output is what actually moves. (Independent-review find, the same class as the
 # self-reference pair below.)
-eq "$(deps "$neg_fx")" '78' "...and the negated reference is not an edge either"
-eq "$(amb 'No longer depends on #25')" '' "SILENT: ...whether or not anything else declares"  # adb-claim-ok: fixture prose, not a citation
-eq "$(deps 'No longer depends on #25')" '' "...and declares no edge, which is the half a mutation moves"  # adb-claim-ok: fixture prose, not a citation
+eq "${ deps "$neg_fx"; }" '78' "...and the negated reference is not an edge either"
+eq "${ amb 'No longer depends on #25'; }" '' "SILENT: ...whether or not anything else declares"  # adb-claim-ok: fixture prose, not a citation
+eq "${ deps 'No longer depends on #25'; }" '' "...and declares no edge, which is the half a mutation moves"  # adb-claim-ok: fixture prose, not a citation
 pre_fx='The #25 prerequisite was dropped; blocked by #78'  # adb-claim-ok: fixture prose, not a citation
-eq "$(amb "$pre_fx")" '' "SILENT: a reference BEFORE the keyword is in no window"
+eq "${ amb "$pre_fx"; }" '' "SILENT: a reference BEFORE the keyword is in no window"
 
 # SILENT — the clause boundary. Measured, not assumed: without it this fired 13 times on this
 # repo's own 37 open bodies and every one was of this shape — commentary after the declaration.
-eq "$(amb '- #81 depends on #79 — **satisfied**, #79 closed COMPLETED (PR #111).')" '' \
+eq "${ amb '- #81 depends on #79 — **satisfied**, #79 closed COMPLETED (PR #111).'; }" '' \
    "SILENT: an em-dash ends the declaration, so the restatement and the PR number are commentary"
 stop_fx='**Why it is blocked on this issue.** #123 rejects the approach'  # adb-claim-ok: quotes #141's body verbatim as the measured witness; the incident, not a citation
-eq "$(amb "$stop_fx")" '' "SILENT: a full stop ends it too, so the next sentence is not a dropped edge"
-eq "$(amb 'Depends on #5; see #6 for context')" '' "SILENT: ...and a semicolon"
+eq "${ amb "$stop_fx"; }" '' "SILENT: a full stop ends it too, so the next sentence is not a dropped edge"
+eq "${ amb 'Depends on #5; see #6 for context'; }" '' "SILENT: ...and a semicolon"
 # ...and the same sentence WITHOUT the punctuation reports, which is the boundary being deliberate
 # rather than incidental. An author who meant `and #6` writes almost exactly this, so the clause is
 # genuinely ambiguous; punctuation is how a body says "the declaration ended here".
-eq "$(amb 'Depends on #5 and see #6 for context')" 'partial:1:6' \
+eq "${ amb 'Depends on #5 and see #6 for context'; }" 'partial:1:6' \
    "REPORT: no clause boundary means the reference is still inside the declaration"
 
 # The numeric width bound applies to the REPORT too — a run wider than an issue number would print
 # rounded or in exponent form, fabricating an issue number no tracker can have (cf. § 6f).
-eq "$(amb 'Depends on * #999999999')"  'unparsed:1:999999999' "a 9-digit reference still reports"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
-eq "$(amb 'Depends on * #9999999999')" '' "...and a 10-digit one is not a reference at all"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
-eq "$(amb 'Depends on issue 9999999999')" '' "...on the no-hash path either"
+eq "${ amb 'Depends on * #999999999'; }"  'unparsed:1:999999999' "a 9-digit reference still reports"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ amb 'Depends on * #9999999999'; }" '' "...and a 10-digit one is not a reference at all"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ amb 'Depends on issue 9999999999'; }" '' "...on the no-hash path either"
 # Two unconsumed references in ONE window are both named; a report that stopped at the first would
 # under-state what the line lost.
-eq "$(amb 'Depends on * #5 and see #6 for context')" 'unparsed:1:5 unparsed:1:6' \
+eq "${ amb 'Depends on * #5 and see #6 for context'; }" 'unparsed:1:5 unparsed:1:6' \
    "REPORT: every unconsumed reference in the window, not just the first"
 
 # SILENT — ordinary prose. `Depends on 2 things` is English; `issue <N>` is the ONLY hash-less
 # shape reported, and widening past it is what turns this into noise.
-eq "$(amb 'Depends on 2 things')"          '' "SILENT: a bare number is not an attempted reference"
-eq "$(amb 'Depends on the design decision')" '' "SILENT: no reference of any shape"
-eq "$(amb 'Refs #69')"                     '' "SILENT: no keyword, so no site at all"
-eq "$(amb 'Depends on #5, #6 and #7')"     '' "SILENT: a chain that fully resolves"
-eq "$(amb 'Depends on **#52**')"           '' "SILENT: a form #112 made resolve is no longer ambiguous"  # adb-claim-ok: #52 is #112's own example number, quoted
-eq "$(amb "Depends on ${bt}#5${bt}")"      '' "SILENT: ...nor a span around only the reference"
-eq "$(amb '')"                             '' "SILENT: an empty body"
+eq "${ amb 'Depends on 2 things'; }"          '' "SILENT: a bare number is not an attempted reference"
+eq "${ amb 'Depends on the design decision'; }" '' "SILENT: no reference of any shape"
+eq "${ amb 'Refs #69'; }"                     '' "SILENT: no keyword, so no site at all"
+eq "${ amb 'Depends on #5, #6 and #7'; }"     '' "SILENT: a chain that fully resolves"
+eq "${ amb 'Depends on **#52**'; }"           '' "SILENT: a form #112 made resolve is no longer ambiguous"  # adb-claim-ok: #52 is #112's own example number, quoted
+eq "${ amb "Depends on ${bt}#5${bt}"; }"      '' "SILENT: ...nor a span around only the reference"
+eq "${ amb ''; }"                             '' "SILENT: an empty body"
 
 # SILENT — a SELF reference is dropped by the edge scan on purpose, so it must not resurface here
 # as an ambiguity. The load-bearing case is an UNPARSED self reference: a resolvable one is
@@ -1626,19 +1620,19 @@ eq "$(amb '')"                             '' "SILENT: an empty body"
 # absence of a report without exercising the guard that produces it. (Both shapes are kept — the
 # first is the one a mutation can break; the others pin the ordinary path — but only after a
 # mutation run showed the ordinary pair passing with the guard deliberately removed.)
-eq "$(amb 'Depends on * #73' 73)"        '' "SILENT: an UNPARSED self reference is not an ambiguity"  # adb-claim-ok: #73 is this suite's standing self-edge fixture number
-eq "$(amb 'Depends on issue 73' 73)"     '' "SILENT: ...nor a hash-less one"
-eq "$(amb 'Depends on #73' 73)"          '' "SILENT: a body depending only on itself"  # adb-claim-ok: fixture self-edge number
-eq "$(amb 'Depends on #73 and #78' 73)"  '' "SILENT: ...alongside a real edge"  # adb-claim-ok: fixture self-edge number
+eq "${ amb 'Depends on * #73' 73; }"        '' "SILENT: an UNPARSED self reference is not an ambiguity"  # adb-claim-ok: #73 is this suite's standing self-edge fixture number
+eq "${ amb 'Depends on issue 73' 73; }"     '' "SILENT: ...nor a hash-less one"
+eq "${ amb 'Depends on #73' 73; }"          '' "SILENT: a body depending only on itself"  # adb-claim-ok: fixture self-edge number
+eq "${ amb 'Depends on #73 and #78' 73; }"  '' "SILENT: ...alongside a real edge"  # adb-claim-ok: fixture self-edge number
 
 # SILENT — STRUCTURE wins here exactly as it does for edges. The report runs on the SAME resolved
 # MD_TEXT/MD_MASK views, so a documented example cannot become an ambiguity report either — which
 # is the whole reason this is one scan in two modes rather than a second parser.
-eq "$(ambm "$q3" 'Depends on * #5' "$q3")" '' "SILENT: a fenced example reports nothing"
-eq "$(amb '<!-- Depends on * #5 -->')"     '' "SILENT: ...nor an HTML comment"
-eq "$(amb '> Depends on * #5')"            '' "SILENT: ...nor a blockquote"
-eq "$(amb "see ${bt}Depends on * #5${bt} here")" '' "SILENT: ...nor a quoted clause"
-eq "$(ambm 'para' '' '    Depends on * #5')" '' "SILENT: ...nor a top-level indented block (D27)"
+eq "${ ambm "$q3" 'Depends on * #5' "$q3"; }" '' "SILENT: a fenced example reports nothing"
+eq "${ amb '<!-- Depends on * #5 -->'; }"     '' "SILENT: ...nor an HTML comment"
+eq "${ amb '> Depends on * #5'; }"            '' "SILENT: ...nor a blockquote"
+eq "${ amb "see ${bt}Depends on * #5${bt} here"; }" '' "SILENT: ...nor a quoted clause"
+eq "${ ambm 'para' '' '    Depends on * #5'; }" '' "SILENT: ...nor a top-level indented block (D27)"
 
 # ARGUMENT VALIDATION — fail-closed, matching every other subcommand.
 printf 'x' | bash "$RL" deps-ambiguous notanumber >/dev/null 2>&1
@@ -1652,7 +1646,7 @@ eq "$?" 0 "...and so does the ordinary empty result"
 
 # DETERMINISM (#45).
 afx='Depends on * #5 and blocked by [#6](u)'
-eq "$(amb "$afx")" "$(amb "$afx")" "deps-ambiguous is deterministic"
+eq "${ amb "$afx"; }" "${ amb "$afx"; }" "deps-ambiguous is deterministic"
 
 # --- 6k-bis. A CRASHED SCAN IS AN ERROR, NEVER A CLEAN EMPTY ---------------------------------
 # `awk | sort` reports only sort, so before this both subcommands answered a BROKEN scan with
@@ -1691,7 +1685,7 @@ if [ -d "$crashdir" ]; then
   # Prove the fixture can distinguish: the SAME copy, unbroken, still answers normally. Without
   # this the two assertions above would also pass against a library that always exited 2.
   cp "$RL" "$crashdir/roadmap-lib.sh"
-  eq "$(printf 'Depends on #5' | bash "$crashdir/roadmap-lib.sh" deps-from-body)" '5' \
+  eq "${ printf 'Depends on #5' | bash "$crashdir/roadmap-lib.sh" deps-from-body; }" '5' \
      "...while the same copy UNBROKEN still resolves the edge (the fixture is not vacuous)"
   rm -rf "$crashdir"
 else
@@ -1709,55 +1703,52 @@ fi
 dcs() { printf '%b' "$1" | run_rl decisions; }
 
 D_HEAD='## Decisions\n| Question | Decision | Recorded |\n| -------- | -------- | -------- |\n'
-eq "$(dcs "${D_HEAD}| dep-outside-release:#73 | re-scoped | #73 body |\n")" 'dep-outside-release:#73' \
-   "a recorded question id is reported"
-eq "$(dcs "${D_HEAD}| \`dep-outside-release:#73\` | re-scoped | — |\n")" 'dep-outside-release:#73' \
-   "surrounding backticks are stripped (a row is written by hand)"
-eq "$(dcs "${D_HEAD}|   unmilestoned:#5   | leave it | — |\n")" 'unmilestoned:#5' \
+eq "${ dcs "${D_HEAD}| dep-outside-release:#73 | re-scoped | #73 body |\n"; }" 'dep-outside-release:#73' "a recorded question id is reported"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ dcs "${D_HEAD}| \`dep-outside-release:#73\` | re-scoped | — |\n"; }" 'dep-outside-release:#73' "surrounding backticks are stripped (a row is written by hand)"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ dcs "${D_HEAD}|   unmilestoned:#5   | leave it | — |\n"; }" 'unmilestoned:#5' \
    "cell whitespace is trimmed"
-eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n| b:#2 | y | — |\n")" 'a:#1 b:#2' "every row is reported"
-eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n| a:#1 | y | — |\n")" 'a:#1' "duplicate rows collapse"
-eq "$(dcs '# Roadmap\n## Bundles\n| B1 | #5 |\n')" '' \
+eq "${ dcs "${D_HEAD}| a:#1 | x | — |\n| b:#2 | y | — |\n"; }" 'a:#1 b:#2' "every row is reported"
+eq "${ dcs "${D_HEAD}| a:#1 | x | — |\n| a:#1 | y | — |\n"; }" 'a:#1' "duplicate rows collapse"
+eq "${ dcs '# Roadmap\n## Bundles\n| B1 | #5 |\n'; }" '' \
    "no Decisions section => nothing recorded (not an error)"
-eq "$(dcs "${D_HEAD}")" '' "the header and separator rows are not decisions"
+eq "${ dcs "${D_HEAD}"; }" '' "the header and separator rows are not decisions"
 # The section ENDS at the next heading: a table in a later section must never read as a decision.
-eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n## Bundles\n| B1 | #5 | gates | — | ready |\n")" 'a:#1' \
+eq "${ dcs "${D_HEAD}| a:#1 | x | — |\n## Bundles\n| B1 | #5 | gates | — | ready |\n"; }" 'a:#1' \
    "parsing stops at the next heading (a Bundles row is not a decision)"
-eq "$(dcs '## Bundles\n| B1 | #5 |\n## Decisions\n| a:#1 | x | — |\n')" 'a:#1' \
+eq "${ dcs '## Bundles\n| B1 | #5 |\n## Decisions\n| a:#1 | x | — |\n'; }" 'a:#1' \
    "a section BEFORE Decisions does not leak into it"
-eq "$(dcs '## decisions\n| a:#1 | x | — |\n')" 'a:#1' "the heading match is case-insensitive"
-eq "$(dcs '## Decisions log\n| a:#1 | x | — |\n')" '' \
+eq "${ dcs '## decisions\n| a:#1 | x | — |\n'; }" 'a:#1' "the heading match is case-insensitive"
+eq "${ dcs '## Decisions log\n| a:#1 | x | — |\n'; }" '' \
    "a differently-titled heading is NOT the Decisions section"
-eq "$(dcs "${D_HEAD}<!-- a comment -->\n| a:#1 | x | — |\n")" 'a:#1' \
+eq "${ dcs "${D_HEAD}<!-- a comment -->\n| a:#1 | x | — |\n"; }" 'a:#1' \
    "an HTML comment inside the section is skipped"
 
 # STRUCTURE (#117) — `decisions` reads the same document as `deps-from-body`, so it runs the same
 # filter. Without it, two bugs live here, and the artifact ships BOTH shapes inside this very
 # section (a schema HTML comment, and fenced examples elsewhere in the body).
-eq "$(dcs "${D_HEAD}${q3}\n| fake:#99 | a quoted example | — |\n${q3}\n| a:#1 | x | — |\n")" 'a:#1' \
-   "a table row quoted in a fence is NOT a recorded decision (it would retire an unanswered question)"
-eq "$(dcs "${D_HEAD}${q3}\n# not a heading\n${q3}\n| a:#1 | x | — |\n")" 'a:#1' \
+eq "${ dcs "${D_HEAD}${q3}\n| fake:#99 | a quoted example | — |\n${q3}\n| a:#1 | x | — |\n"; }" 'a:#1' "a table row quoted in a fence is NOT a recorded decision (it would retire an unanswered question)"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ dcs "${D_HEAD}${q3}\n# not a heading\n${q3}\n| a:#1 | x | — |\n"; }" 'a:#1' \
    "a #-line quoted in a fence does not end the section (that is #108 returning by another route)"
-eq "$(dcs "${D_HEAD}<!--\n| example:#7 | the schema's own example row | — |\n-->\n| a:#1 | x | — |\n")" 'a:#1' \
+eq "${ dcs "${D_HEAD}<!--\n| example:#7 | the schema's own example row | — |\n-->\n| a:#1 | x | — |\n"; }" 'a:#1' \
    "a row inside a MULTI-LINE HTML comment is not a decision"
-eq "$(dcs "${D_HEAD}> | quoted:#8 | from another thread | — |\n| a:#1 | x | — |\n")" 'a:#1' \
+eq "${ dcs "${D_HEAD}> | quoted:#8 | from another thread | — |\n| a:#1 | x | — |\n"; }" 'a:#1' \
    "a blockquoted row is quoted material, not a decision"
-eq "$(dcs "${D_HEAD}${q3}\r\nx\r\n${q3}\r\n| a:#1 | y | — |\r\n")" 'a:#1' \
+eq "${ dcs "${D_HEAD}${q3}\r\nx\r\n${q3}\r\n| a:#1 | y | — |\r\n"; }" 'a:#1' \
    "a CRLF body closes its fence here too (see the CRLF note in 6i)"
 # The #136 repros reach THIS consumer too — it reads the same document through the same filter.
-eq "$(dcs "${D_HEAD}The opener is \`<!--\` in the schema.\n| a:#1 | x | — |\n")" 'a:#1' \
+eq "${ dcs "${D_HEAD}The opener is \`<!--\` in the schema.\n| a:#1 | x | — |\n"; }" 'a:#1' \
    "a <!-- quoted in a span does not swallow the rest of the section (#136 §2, the #108 shape)"
-eq "$(dcs "${D_HEAD}\`| fake:#9 | quoted\nacross two lines | — |\`\n| a:#1 | x | — |\n")" 'a:#1' \
+eq "${ dcs "${D_HEAD}\`| fake:#9 | quoted\nacross two lines | — |\`\n| a:#1 | x | — |\n"; }" 'a:#1' \
    "a row inside a MULTI-LINE code span is not a decision (#136 §1)"
 # A BLANK LINE first, because that is what an indented code block actually requires: indented text
 # directly under a paragraph line is a lazy continuation, not code. Writing this fixture without
 # the blank line would have pinned the opposite rule.
-eq "$(dcs "${D_HEAD}\n    | indented:#9 | code | — |\n\n| a:#1 | x | — |\n")" 'a:#1' \
+eq "${ dcs "${D_HEAD}\n    | indented:#9 | code | — |\n\n| a:#1 | x | — |\n"; }" 'a:#1' \
    "a row inside a 4-space indented code block is not a decision (D27)"
-eq "$(dcs "${D_HEAD}    | lazy:#9 | a continuation, not code | — |\n")" 'lazy:#9' \
+eq "${ dcs "${D_HEAD}    | lazy:#9 | a continuation, not code | — |\n"; }" 'lazy:#9' \
    "UNDER: ...but an indented row DIRECTLY under one is a continuation and is still read"
 # UNDER-match control: the section itself must survive every one of those.
-eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n| b:#2 | y | — |\n")" 'a:#1 b:#2' \
+eq "${ dcs "${D_HEAD}| a:#1 | x | — |\n| b:#2 | y | — |\n"; }" 'a:#1 b:#2' \
    "...and ordinary rows are still read (the filter must not eat the section)"
 
 # --- 7b. release-command / marker-title: the two COMMENT-shaped declarations (#136) ----------
@@ -1767,37 +1758,36 @@ eq "$(dcs "${D_HEAD}| a:#1 | x | — |\n| b:#2 | y | — |\n")" 'a:#1 b:#2' \
 # `marker-title`, none whatever).
 rcmd() { printf '%b' "$1" | run_rl release-command; }
 mtit() { printf '%b' "$1" | run_rl marker-title; }
-eq "$(rcmd '<!-- release-command: release -->\n')" 'release' "UNDER: a top-level release-command declares"
-eq "$(rcmd "${q3}\n<!-- release-command: fenced -->\n${q3}\n")" '' "OVER: ...but a fenced one does not"
-eq "$(rcmd '> <!-- release-command: bq -->\n')" '' "OVER: ...nor a blockquoted one"
-eq "$(rcmd "See ${bt}<!-- release-command: spanned -->${bt} above.\n")" '' "OVER: ...nor one inside a code span"
-eq "$(rcmd '    <!-- release-command: indented -->\n')" '' "OVER: ...nor one in an indented block (D27)"
-eq "$(rcmd "<!-- release-command: ${bt}quoted${bt} -->\n")" '' \
+eq "${ rcmd '<!-- release-command: release -->\n'; }" 'release' "UNDER: a top-level release-command declares"
+eq "${ rcmd "${q3}\n<!-- release-command: fenced -->\n${q3}\n"; }" '' "OVER: ...but a fenced one does not"
+eq "${ rcmd '> <!-- release-command: bq -->\n'; }" '' "OVER: ...nor a blockquoted one"
+eq "${ rcmd "See ${bt}<!-- release-command: spanned -->${bt} above.\n"; }" '' "OVER: ...nor one inside a code span"
+eq "${ rcmd '    <!-- release-command: indented -->\n'; }" '' "OVER: ...nor one in an indented block (D27)"
+eq "${ rcmd "<!-- release-command: ${bt}quoted${bt} -->\n"; }" '' \
    "OVER: a value carrying backticks is not a declaration — a skill can never be named that"
-eq "$(mtit '<!-- release-milestone: Next release -->\n')" 'Next release' "UNDER: a top-level marker-title declares"
-eq "$(mtit "${q3}\n<!-- release-milestone: Fake -->\n${q3}\n<!-- release-milestone: Real -->\n")" 'Real' \
+eq "${ mtit '<!-- release-milestone: Next release -->\n'; }" 'Next release' "UNDER: a top-level marker-title declares"
+eq "${ mtit "${q3}\n<!-- release-milestone: Fake -->\n${q3}\n<!-- release-milestone: Real -->\n"; }" 'Real' \
    "OVER: a FENCED example is not a second title — two titles make the artifact ambiguous and refuse it"
-eq "$(mtit "Docs: ${bt}<!-- release-milestone: Fake -->${bt}\n<!-- release-milestone: Real -->\n")" 'Real' \
+eq "${ mtit "Docs: ${bt}<!-- release-milestone: Fake -->${bt}\n<!-- release-milestone: Real -->\n"; }" 'Real' \
    "OVER: ...nor is a code-spanned one"
-eq "$(mtit '> <!-- release-milestone: Quoted -->\n<!-- release-milestone: Real -->\n')" 'Real' \
+eq "${ mtit '> <!-- release-milestone: Quoted -->\n<!-- release-milestone: Real -->\n'; }" 'Real' \
    "OVER: ...nor a blockquoted one"
-eq "$(mtit '<!-- release-milestone: A -->\n<!-- release-milestone: B -->\n')" 'A B' \
+eq "${ mtit '<!-- release-milestone: A -->\n<!-- release-milestone: B -->\n'; }" 'A B' \
    "UNDER: two REAL markers still both surface, so the caller can refuse an ambiguous artifact"
 # A BACKTICK INSIDE A COMMENT IS COMMENT DATA, NOT A SPAN DELIMITER (review round 1). With comment
 # detection skipped in keep-comments mode, two comments paired their ticks ACROSS the declaration
 # between them and masked it away — a real marker returning nothing, with exit 0.
-eq "$(mtit "<!-- note ${bt} -->\n<!-- release-milestone: Real -->\n<!-- ${bt} note -->\n")" 'Real' \
+eq "${ mtit "<!-- note ${bt} -->\n<!-- release-milestone: Real -->\n<!-- ${bt} note -->\n"; }" 'Real' \
    "UNDER: backticks in two separate comments do not pair across a real marker between them"
-eq "$(rcmd "<!-- note ${bt} -->\n<!-- release-command: real -->\n<!-- ${bt} note -->\n")" 'real' \
+eq "${ rcmd "<!-- note ${bt} -->\n<!-- release-command: real -->\n<!-- ${bt} note -->\n"; }" 'real' \
    "UNDER: ...and the same for release-command"
 bash "$RL" decisions extra-arg >/dev/null 2>&1
 eq "$?" 2 "decisions takes no arguments"
 
 # A decision row can DECLARE or RETIRE an edge in the same vocabulary an issue body uses — the
 # composition that makes `## Decisions` a real edge source rather than a second dialect.
-eq "$(deps 'Re-scoped to a standalone driver; no longer depends on #25')" '' \
-   "a decision row that retires an edge yields no edge"
-eq "$(deps 'Confirmed: depends on #78 only.')" '78' \
+eq "${ deps 'Re-scoped to a standalone driver; no longer depends on #25'; }" '' "a decision row that retires an edge yields no edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Confirmed: depends on #78 only.'; }" '78' \
    "a decision row that declares an edge yields it"
 
 # ============================================================================================
@@ -1902,16 +1892,16 @@ O_OPEN_B='{"number":12,"state":"open"}'
 O_CLOSED='{"number":7,"state":"closed"}'
 O_PR='{"number":9,"state":"open","pull_request":{"url":"x"}}'
 
-eq "$(oi "[$O_OPEN_A,$O_OPEN_B]")"  '5 12' "open issues are reported"
-eq "$(oi "[$O_OPEN_B,$O_OPEN_A]")"  '5 12' "output is ascending, not source order"
-eq "$(oi "[$O_OPEN_A,$O_CLOSED]")"  '5'    "a closed issue is not in the open set"
-eq "$(oi "[$O_OPEN_A,$O_PR]")"      '5'    "a PR is excluded (repos/../issues returns PRs too)"
-eq "$(oi '[]')"                     ''     "an empty repo is empty output, not an error"
-eq "$(oi "[$O_OPEN_A,$O_OPEN_A]")"  '5'    "duplicates across page boundaries collapse"
+eq "${ oi "[$O_OPEN_A,$O_OPEN_B]"; }"  '5 12' "open issues are reported"
+eq "${ oi "[$O_OPEN_B,$O_OPEN_A]"; }"  '5 12' "output is ascending, not source order"
+eq "${ oi "[$O_OPEN_A,$O_CLOSED]"; }"  '5'    "a closed issue is not in the open set"
+eq "${ oi "[$O_OPEN_A,$O_PR]"; }"      '5'    "a PR is excluded (repos/../issues returns PRs too)"
+eq "${ oi '[]'; }"                     ''     "an empty repo is empty output, not an error"
+eq "${ oi "[$O_OPEN_A,$O_OPEN_A]"; }"  '5'    "duplicates across page boundaries collapse"
 # The artifact is deliberately NOT excluded here: this set is compared against a repo-wide
 # `is:issue is:open` total, so both sides must count the same population. Excluding it here would
 # make every completeness check off by one — a `short` verdict, i.e. a hard stop, on a healthy repo.
-eq "$(oi '[{"number":31,"state":"open","labels":[{"name":"roadmap"}]}]')" '31' \
+eq "${ oi '[{"number":31,"state":"open","labels":[{"name":"roadmap"}]}]'; }" '31' \
    "the roadmap artifact is counted (the caller drops it; the completeness check must not)"
 # `gh api --paginate` can emit ONE merged array or a separate array per page. Reading only the
 # first input would silently drop every page after the first — the exact truncation this ends.
@@ -1924,11 +1914,11 @@ eq "$?" 2 "open-issues takes no arguments"
 
 # rc <read> <expected> -> the verdict.
 rcv() { bash "$RL" read-complete "$1" "$2" 2>/dev/null; }
-eq "$(rcv 140 140)" complete "an exact match is complete"
-eq "$(rcv 0 0)"     complete "an empty repo is complete, not short"
-eq "$(rcv 200 231)" short    "a capped read that came back short is SHORT (the #79 failure)"
-eq "$(rcv 0 3)"     short    "a read that returned nothing against a non-zero total is SHORT"
-eq "$(rcv 141 140)" ahead    "more than expected is 'ahead' (the Search index lags REST)"
+eq "${ rcv 140 140; }" complete "an exact match is complete"
+eq "${ rcv 0 0; }"     complete "an empty repo is complete, not short"
+eq "${ rcv 200 231; }" short    "a capped read that came back short is SHORT (the #79 failure)"
+eq "${ rcv 0 3; }"     short    "a read that returned nothing against a non-zero total is SHORT"
+eq "${ rcv 141 140; }" ahead    "more than expected is 'ahead' (the Search index lags REST)"
 # The asymmetry is the whole design: demanding equality in BOTH directions would hard-stop a
 # healthy run whenever an issue was filed between the two reads.
 run read-complete 200;        eq "$RC_" 2 "too few args is an ERROR"
@@ -1995,7 +1985,7 @@ hasnt "$wf" 'git push'   "the skill never pushes"
 hasnt "$wf" 'gh pr create' "the skill never opens a PR"
 # The autofix must be a runnable step, not a description of one — otherwise "fix what you find"
 # is re-invented by every agent that reads it. scripts/check-roadmap-e2e.sh executes this snippet.
-autofix_block="$(wf_snippet autofix-unmilestoned)"
+autofix_block="${ wf_snippet autofix-unmilestoned; }"
 has "$autofix_block" 'select(.milestone == null)' \
   "the limbo set is DERIVED from milestone == null (which is what makes autofix idempotent)"
 # #78's carve-out lives here too — one home for every assertion about this snippet.

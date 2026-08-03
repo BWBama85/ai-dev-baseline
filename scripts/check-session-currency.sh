@@ -84,14 +84,13 @@ printf 'demo skill\n' > "$seed/agents/claude/skills/demo/SKILL.md"
 # here would fail this fixture in a way that looks like a bin/baseline bug.
 # shellcheck source=/dev/null
 . "$ROOT/scripts/lib/common.sh"
-while IFS= read -r s; do
-  [ -n "$s" ] || continue
+mapfile -t seed_scripts < <(adb_agent_manifest claude "$seed" "$work/unused-home" \
+  | cut -f1 | sed -n "s|^$seed/agents/claude/scripts/||p")
+check_enumerated "claude script manifest (seed)" "${seed_scripts[@]}" || exit 1
+for s in "${seed_scripts[@]}"; do
   case "$s" in session-currency.sh) continue ;; esac   # the real one, copied above
   printf '#stub\n' > "$seed/agents/claude/scripts/$s"
-done <<EOF
-$(adb_agent_manifest claude "$seed" "$work/unused-home" \
-   | cut -f1 | sed -n "s|^$seed/agents/claude/scripts/||p")
-EOF
+done
 
 origin="$work/origin.git"
 check_make_repo_pair "$seed" "$origin" || { echo "session-currency fixture: repo pair init failed" >&2; exit 1; }
@@ -105,12 +104,12 @@ src="$work/src"; git clone -q "$origin" "$src"
 fh="$work/home"; mkdir -p "$fh/.claude/skills" "$fh/.claude/scripts"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
 ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
-while IFS= read -r s; do
-  [ -n "$s" ] || continue
+mapfile -t src_scripts < <(adb_agent_manifest claude "$src" "$fh" | cut -f1 \
+  | sed -n "s|^$src/agents/claude/scripts/||p")
+check_enumerated "claude script manifest (symlinks)" "${src_scripts[@]}" || exit 1
+for s in "${src_scripts[@]}"; do
   ln -s "$src/agents/claude/scripts/$s" "$fh/.claude/scripts/$s"
-done <<EOF
-$(adb_agent_manifest claude "$src" "$fh" | cut -f1 | sed -n "s|^$src/agents/claude/scripts/||p")
-EOF
+done
 ln -s "$src/scripts/lib" "$fh/.claude/scripts/lib"
 srcgit="$(git -C "$src" rev-parse --absolute-git-dir)"
 
@@ -174,21 +173,21 @@ eq "$OUT" "" "malformed event → silence"
 for s in clear compact resume fork; do
   reset_src
   advance_origin "for-$s"
-  before="$(head_of)"
+  before="${ head_of; }"
   run_hook "$s"
   eq "$RC" "0" "source=$s → exit 0"
   eq "$OUT" "" "source=$s → silence"
-  eq "$(head_of)" "$before" "source=$s → clone NOT updated"
+  eq "${ head_of; }" "$before" "source=$s → clone NOT updated"
 done
 
 # --- auto mode: a behind clone is updated, once, with one line ---------------
 
 reset_src
 advance_origin "brings-a-fix"
-before="$(head_of)"
+before="${ head_of; }"
 run_hook startup
 eq "$RC" "0" "behind + startup → exit 0"
-if [ "$(head_of)" != "$before" ]; then ok; else bad "behind + startup must fast-forward the clone"; fi
+if [ "${ head_of; }" != "$before" ]; then ok; else bad "behind + startup must fast-forward the clone"; fi
 has "$OUT" '"systemMessage"' "update reports via systemMessage (operator-visible channel)"
 has "$OUT" 'updated' "update line says it updated"
 has "$OUT" '(1 commit)' "update line names the commit count, singular"
@@ -214,11 +213,11 @@ advance_origin "rate-limited"
 INTERVAL_ENV=3600
 run_hook startup                      # first run: no stamp yet → checks, updates
 has "$OUT" 'updated' "first run inside the interval still checks"
-before="$(head_of)"
+before="${ head_of; }"
 advance_origin "should-be-skipped"
 run_hook startup                      # second run: stamp is fresh → skipped entirely
 eq "$OUT" "" "a run inside the rate-limit interval is silent"
-eq "$(head_of)" "$before" "a rate-limited run does not touch the clone"
+eq "${ head_of; }" "$before" "a rate-limited run does not touch the clone"
 INTERVAL_ENV=0
 run_hook startup                      # interval 0 disables the limit
 has "$OUT" 'updated' "interval 0 checks on every startup"
@@ -228,31 +227,31 @@ INTERVAL_ENV=""
 
 reset_src
 advance_origin "session-inside-src"
-before="$(head_of)"
+before="${ head_of; }"
 run_hook startup "$src"
 eq "$OUT" "" "session started inside the install-source → silent"
-eq "$(head_of)" "$before" "session started inside the install-source → clone untouched"
+eq "${ head_of; }" "$before" "session started inside the install-source → clone untouched"
 # …and a session in a SUBDIRECTORY of it is the same clone.
 run_hook startup "$src/scripts"
-eq "$(head_of)" "$before" "session started in a subdirectory of the install-source → untouched"
+eq "${ head_of; }" "$before" "session started in a subdirectory of the install-source → untouched"
 # A LINKED WORKTREE of the install-source is a different work-tree root but the SAME repository;
 # fast-forwarding the main clone under it is the same surprise, so it must skip too.
 reset_src
 advance_origin "worktree-case"
 git -C "$src" worktree add -q "$work/src-wt" -b wt-probe >/dev/null 2>&1
-before="$(head_of)"
+before="${ head_of; }"
 run_hook startup "$work/src-wt"
-eq "$(head_of)" "$before" "session in a linked worktree of the install-source → untouched"
+eq "${ head_of; }" "$before" "session in a linked worktree of the install-source → untouched"
 git -C "$src" worktree remove --force "$work/src-wt" >/dev/null 2>&1
 git -C "$src" branch -D wt-probe >/dev/null 2>&1
 
 # A session in any OTHER repo still gets the update — the whole point of the feature.
 reset_src
 advance_origin "other-repo-case"
-before="$(head_of)"
+before="${ head_of; }"
 other="$work/other-project"; mkdir -p "$other"; git init -q "$other"
 run_hook startup "$other"
-if [ "$(head_of)" != "$before" ]; then ok; else bad "a session in another repo must still update the install-source"; fi
+if [ "${ head_of; }" != "$before" ]; then ok; else bad "a session in another repo must still update the install-source"; fi
 
 # A FUTURE-dated stamp (clock skew: a restored VM snapshot, a dual-boot RTC, a backup that
 # rewrites ~/.cache) must not read as "checked very recently" and suppress the check until
@@ -263,10 +262,10 @@ mkdir -p "$work/cache/ai-dev-baseline"
 : > "$work/cache/ai-dev-baseline/session-currency.stamp"
 touch -t 209901010000 "$work/cache/ai-dev-baseline/session-currency.stamp"
 INTERVAL_ENV=3600
-before="$(head_of)"
+before="${ head_of; }"
 run_hook startup
 has "$OUT" 'updated' "a future-dated stamp does not wedge the rate limit off"
-if [ "$(head_of)" != "$before" ]; then ok; else bad "a future-dated stamp must not suppress the check"; fi
+if [ "${ head_of; }" != "$before" ]; then ok; else bad "a future-dated stamp must not suppress the check"; fi
 INTERVAL_ENV=""
 
 # --- unsafe clone states are refused, and named ------------------------------
@@ -274,11 +273,11 @@ INTERVAL_ENV=""
 # that the hook surfaces WHICH state, rather than failing silently or claiming success.
 # refused <expected-word> <label>  — run against the clone as currently staged.
 refused() {
-  local before; before="$(head_of)"
+  local before; before="${ head_of; }"
   run_hook startup
   eq "$RC" "0" "$2 → still exit 0"
   has "$OUT" "$1" "$2 → the line names $1"
-  eq "$(head_of)" "$before" "$2 → never fast-forwarded"
+  eq "${ head_of; }" "$before" "$2 → never fast-forwarded"
 }
 
 reset_src
@@ -303,11 +302,11 @@ refused not-default "clone on a feature branch"
 reset_src
 advance_origin "locked-case"
 mkdir -p "$srcgit/adb-update.lock"
-before="$(head_of)"
+before="${ head_of; }"
 run_hook startup
 eq "$RC" "0" "another update holding the lock → exit 0"
 eq "$OUT" "" "another update holding the lock → silent (the peer reports it)"
-eq "$(head_of)" "$before" "another update holding the lock → clone untouched"
+eq "${ head_of; }" "$before" "another update holding the lock → clone untouched"
 rmdir "$srcgit/adb-update.lock"
 # With the lock released, the very next run proceeds — the lock must not be sticky.
 rm -rf "${work:?}/cache"
@@ -318,17 +317,17 @@ has "$OUT" 'updated' "a released lock lets the next run proceed"
 
 reset_src
 advance_origin "mode-cases"
-before="$(head_of)"
+before="${ head_of; }"
 MODE_ENV=off
 run_hook startup
 eq "$OUT" "" "mode=off → silent"
-eq "$(head_of)" "$before" "mode=off → clone untouched"
+eq "${ head_of; }" "$before" "mode=off → clone untouched"
 
 MODE_ENV=notify
 rm -rf "${work:?}/cache"
 run_hook startup
 has "$OUT" 'behind' "mode=notify → reports that it is behind"
-eq "$(head_of)" "$before" "mode=notify → reports only, never pulls"
+eq "${ head_of; }" "$before" "mode=notify → reports only, never pulls"
 
 # notify reports `behind` and NOTHING ELSE. A clone deliberately parked on a branch (or left
 # dirty) would otherwise produce an attention line at every startup past the rate limit, forever,
@@ -342,15 +341,15 @@ for staged in dirty not-default; do
     not-default) git -C "$src" checkout -q -b "notify-quiet-branch" ;;
   esac
   MODE_ENV=notify
-  before_q="$(head_of)"
+  before_q="${ head_of; }"
   run_hook startup
   eq "$RC" "0" "mode=notify + $staged → exit 0"
   eq "$OUT" "" "mode=notify stays silent for $staged (only 'behind' is reported)"
-  eq "$(head_of)" "$before_q" "mode=notify + $staged → clone untouched"
+  eq "${ head_of; }" "$before_q" "mode=notify + $staged → clone untouched"
 done
 reset_src
 advance_origin "post-notify"
-before="$(head_of)"
+before="${ head_of; }"
 
 MODE_ENV=nonsense
 rm -rf "${work:?}/cache"
@@ -363,10 +362,10 @@ reset_src
 advance_origin "toml-off"
 mkdir -p "$fh/.config/ai-dev-baseline"
 printf '[updates]\nsession_start = "off"\n' > "$fh/.config/ai-dev-baseline/agents.toml"
-before="$(head_of)"
+before="${ head_of; }"
 run_hook startup
 eq "$OUT" "" "global agents.toml [updates] session_start=off → silent"
-eq "$(head_of)" "$before" "global agents.toml off → clone untouched"
+eq "${ head_of; }" "$before" "global agents.toml off → clone untouched"
 printf '[updates]\nsession_start = "auto"\n' > "$fh/.config/ai-dev-baseline/agents.toml"
 rm -rf "${work:?}/cache"
 run_hook startup
@@ -383,10 +382,10 @@ mkdir -p "$work/xdg-decoy/ai-dev-baseline" "$fh/.config/ai-dev-baseline"
 printf '[updates]\nsession_start = "off"\n'  > "$work/xdg-decoy/ai-dev-baseline/agents.toml"
 printf '[updates]\nsession_start = "auto"\n' > "$fh/.config/ai-dev-baseline/agents.toml"
 XDG_CONFIG_ENV="$work/xdg-decoy"
-before="$(head_of)"
+before="${ head_of; }"
 run_hook startup
 has "$OUT" 'updated' "the mode is read from \$HOME/.config — an XDG_CONFIG_HOME decoy is ignored"
-if [ "$(head_of)" != "$before" ]; then ok; else bad "an XDG_CONFIG_HOME decoy must not disable the updater"; fi
+if [ "${ head_of; }" != "$before" ]; then ok; else bad "an XDG_CONFIG_HOME decoy must not disable the updater"; fi
 XDG_CONFIG_ENV=""
 rm -f "$fh/.config/ai-dev-baseline/agents.toml"
 
@@ -395,9 +394,9 @@ reset_src
 advance_origin "project-toml-ignored"
 proj="$work/proj"; mkdir -p "$proj"; git init -q "$proj"
 printf '[updates]\nsession_start = "off"\n' > "$proj/agents.toml"
-before="$(head_of)"
+before="${ head_of; }"
 run_hook startup "$proj"
-if [ "$(head_of)" != "$before" ]; then ok; else bad "a project agents.toml must not disable the global updater"; fi
+if [ "${ head_of; }" != "$before" ]; then ok; else bad "a project agents.toml must not disable the global updater"; fi
 
 # --- a same-HEAD repair still reports, and asks for a reload -------------------
 # The clone is current but an installed link is broken: `baseline update` repairs it and returns
@@ -406,7 +405,7 @@ if [ "$(head_of)" != "$before" ]; then ok; else bad "a project agents.toml must 
 reset_src
 rm -f "$fh/.claude/skills/demo"                       # break an installed link
 ln -s "$src/agents/claude/skills/gone" "$fh/.claude/skills/demo"
-head_repair="$(head_of)"
+head_repair="${ head_of; }"
 run_hook startup
 eq "$RC" "0" "same-HEAD repair → exit 0"
 has "$OUT" 'repaired' "same-HEAD repair is reported, not silently swallowed"
@@ -419,7 +418,7 @@ eq "$?" "6" "baseline update exits 6 on a successful same-HEAD repair"
 HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1
 eq "$?" "0" "a second run after the repair is a plain no-op (0)"
 has "$OUT" '"reloadSkills":true' "same-HEAD repair asks the harness to reload skills"
-eq "$(head_of)" "$head_repair" "same-HEAD repair does not move HEAD"
+eq "${ head_of; }" "$head_repair" "same-HEAD repair does not move HEAD"
 rm -f "$fh/.claude/skills/demo"
 ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
 
@@ -431,10 +430,10 @@ ln -s "$src/agents/claude/skills/demo" "$fh/.claude/skills/demo"
 # origin: if the hook overrode it, the update could not happen.
 reset_src
 advance_origin "ssh-command-case"
-before="$(head_of)"
+before="${ head_of; }"
 git -C "$src" config core.sshCommand "ssh -o BatchMode=yes"
 run_hook startup
-if [ "$(head_of)" != "$before" ]; then ok; else bad "a clone with core.sshCommand must still update"; fi
+if [ "${ head_of; }" != "$before" ]; then ok; else bad "a clone with core.sshCommand must still update"; fi
 hasnt "$OUT" 'needs attention' "core.sshCommand does not turn the update into an attention line"
 git -C "$src" config --unset core.sshCommand
 

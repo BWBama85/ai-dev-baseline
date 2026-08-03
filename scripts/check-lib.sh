@@ -113,6 +113,35 @@ has()  { case "$1" in *"$2"*) ok ;; *) bad "$3: [$1] missing [$2]" ;; esac; }
 # hasnt <haystack> <needle> <label> — assert needle is NOT a substring of haystack.
 hasnt() { case "$1" in *"$2"*) bad "$3: [$1] unexpectedly contains [$2]" ;; *) ok ;; esac; }
 
+# check_enumerated <label> <item>… — a `mapfile`-built list is USABLE: non-empty, and carrying no
+# blank entry. Returns 0 when it is, else records ONE failure and returns 1 (#259).
+#
+# The reason it is a function and not `[ "${#a[@]}" -gt 0 ]` at each site: that test passes on the
+# exact input it most needs to reject. `mapfile -t` over a producer that emitted a single blank
+# line yields an array of ONE EMPTY STRING, so the count is 1, the guard reports "not empty", and
+# the loop below it iterates once with an empty name — building a fixture out of `/…/scripts/`
+# rather than a hook. The advertised zero-coverage guard then goes green for the wrong reason,
+# which is the silent-guard shape this repo keeps paying for. Review caught it.
+#
+# Takes the items as ARGUMENTS rather than an array name on purpose: check-lib.sh is sourced by
+# the floor observer and must stay evaluable on bash 3.2 (D35), which has no namerefs.
+check_enumerated() {
+  local label="$1" x n=0
+  shift
+  for x in "$@"; do
+    if [ -z "$x" ]; then
+      bad "$label: enumeration produced a BLANK entry — the producer is broken, not the list empty"
+      return 1
+    fi
+    n=$((n + 1))
+  done
+  if [ "$n" -eq 0 ]; then
+    bad "$label: enumeration produced NOTHING — everything below it would assert less, silently"
+    return 1
+  fi
+  return 0
+}
+
 # check_summary <name> — emit the terminal "<name>: N passed, M failed" line, then exit 1 if any
 # assertion failed, else print "<name>: PASS". Callers end with this instead of re-reading
 # $pass/$fail (which would trip SC2154, since ShellCheck does not follow the sourced file).

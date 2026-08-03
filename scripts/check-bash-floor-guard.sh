@@ -99,7 +99,7 @@ new_wf() {   # new_wf <dir> — create <dir> with a workflow header, echo the wo
 
 # --- the clean fixture: the lint must be able to PASS -------------------------------------------
 # Without this, every assertion below is satisfied by a lint that returns 1 unconditionally.
-d="$work/clean"; f="$(new_wf "$d")"
+d="$work/clean"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1
 run_lint "$d"
@@ -108,7 +108,7 @@ has "$OUT" "2 job(s)" "clean fixture reports how many jobs it checked"
 has "$OUT" "1 Linux, 1 macOS" "clean fixture names the per-platform counts it checked"
 
 # --- rule 1: a runner label outside the proven allowlist ----------------------------------------
-d="$work/badrunner"; f="$(new_wf "$d")"
+d="$work/badrunner"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-latest 1      # the exact trap: today's ubuntu-latest is bash 5.2.21
 emit_job "$f" macos-job macos-latest 1
 run_lint "$d"
@@ -118,14 +118,14 @@ has "$OUT" "linux-job" "rule 1 names the offending job"
 
 # A label nobody has thought about must be rejected too — the allowlist is what makes that true,
 # and a denylist of known-old labels is what this asserts we did NOT write.
-d="$work/unknownrunner"; f="$(new_wf "$d")"
+d="$work/unknownrunner"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-30.04 1
 emit_job "$f" macos-job macos-latest 1
 run_lint "$d"
 eq "$RC" "1" "rule 1: an unheard-of label is rejected, not waved through"
 
 # --- rule 2: a job that never wires the runtime guard --------------------------------------------
-d="$work/noguard"; f="$(new_wf "$d")"
+d="$work/noguard"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 0
 run_lint "$d"
@@ -136,7 +136,7 @@ has "$OUT" "nothing proves the bash it actually got" "rule 2 says what is unprov
 # A COMMENT mentioning the invocation must not satisfy rule 2. Caught in self-review: the scanner
 # matched the string anywhere in the job, so a `# TODO: add check-bash-floor.sh --runtime` would
 # have registered as wiring it — a lint reading a note about doing the thing as the thing.
-d="$work/commentonly"; f="$(new_wf "$d")"
+d="$work/commentonly"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 0
 printf '      # TODO: add bash scripts/check-bash-floor.sh --runtime here\n' >> "$f"
@@ -145,7 +145,7 @@ eq "$RC" "1" "rule 2: a COMMENT naming the guard does not count as wiring it"
 has "$OUT" "macos-job" "rule 2 still names the job whose only mention was a comment"
 
 # --- rule 3: a shell: override, which routes around the guard -------------------------------------
-d="$work/shellover"; f="$(new_wf "$d")"
+d="$work/shellover"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1
 printf '      - name: sneaky\n        shell: sh\n        run: echo hi\n' >> "$f"
@@ -163,7 +163,7 @@ has "$OUT" "gone blind" "rule 4 names the silent-scanner failure mode"
 # PER FILE, not just in total. Caught in self-review: a grand-total check lets a second workflow
 # file go blind for free the moment a first one still parses, which is the fail-open this whole
 # family of checks exists to close.
-d="$work/onegood-oneblind"; f="$(new_wf "$d")"
+d="$work/onegood-oneblind"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1
 printf 'name: Other\non:\n  pull_request:\n' > "$d/other.yml"     # parses, declares nothing
@@ -177,7 +177,7 @@ has "$OUT" "other.yml" "rule 4 names WHICH file declared no jobs"
 # (a) An inline flow-mapping job was INVISIBLE — the job-key rule required `job:` alone on the line,
 #     so this one was not counted at all, and the per-file zero-jobs rule cannot see partial
 #     blindness. Invisible is the one verdict a floor lint may never reach.
-d="$work/inlinejob"; f="$(new_wf "$d")"
+d="$work/inlinejob"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1
 printf '  hidden: {runs-on: ubuntu-latest, steps: [{run: "echo unguarded"}]}\n' >> "$f"
@@ -187,7 +187,7 @@ has "$OUT" "hidden" "fail-open (a) names the inline job"
 
 # (b) A quoted label carrying `#` was reduced to an approved label. GitHub reads the whole quoted
 #     string as the label, so this job would never run — while the lint called it approved.
-d="$work/quotedhash"; f="$(new_wf "$d")"
+d="$work/quotedhash"; f="${ new_wf "$d"; }"
 emit_job "$f" macos-job macos-latest 1
 printf '  linux-job:\n    runs-on: "ubuntu-26.04 # not-the-label"\n    steps:\n' >> "$f"
 printf '      - name: Log this runner'"'"'s bash\n        run: bash --version\n' >> "$f"
@@ -197,7 +197,7 @@ eq "$RC" "1" "fail-open (b): a quoted label containing '#' is not silently trunc
 
 # (c) `defaults: {run: {shell: sh}}` routes EVERY step in the workflow around bash, and a
 #     line-anchored `^[[:space:]]*shell:` grep never saw it.
-d="$work/inlineshell"; f="$(new_wf "$d")"
+d="$work/inlineshell"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1
 printf 'defaults: {run: {shell: sh}}\n' >> "$f"
@@ -206,7 +206,7 @@ eq "$RC" "1" "fail-open (c): an INLINE defaults shell override is caught"
 
 # (d) The guard invocation in an `env:` value satisfied a bare substring test while executing
 #     nothing. A step name or an `echo` would have done the same.
-d="$work/envmention"; f="$(new_wf "$d")"
+d="$work/envmention"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 {
   printf '  macos-job:\n    runs-on: macos-latest\n'
@@ -219,7 +219,7 @@ has "$OUT" "macos-job" "fail-open (d) names the job that only mentioned the guar
 
 # (e) A workflow setting ADB_BASH_FLOOR turns every runtime assertion in scope into a formality
 #     while this lint stays green — the one bypass the guard cannot see from inside itself.
-d="$work/floorenv"; f="$(new_wf "$d")"
+d="$work/floorenv"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1
 printf '    env:\n      ADB_BASH_FLOOR: 0.0\n' >> "$f"
@@ -233,7 +233,7 @@ has "$OUT" "ADB_BASH_FLOOR" "fail-open (e) names the override it found"
 
 # (f) `run: echo '…check-bash-floor.sh --runtime'` runs the guard exactly zero times, and satisfied
 #     a `run:`-anchored substring test. The invocation must now be the WHOLE run value.
-d="$work/echoedguard"; f="$(new_wf "$d")"
+d="$work/echoedguard"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 {
   printf '  macos-job:\n    runs-on: macos-latest\n    steps:\n'
@@ -245,7 +245,7 @@ eq "$RC" "1" "fail-open (f): an ECHOED guard invocation does not count as runnin
 
 # (g) A QUOTED job id was skipped entirely — and worse than unchecked: every line of that job read
 #     as belonging to the previous one, so it did not exist at all.
-d="$work/quotedjob"; f="$(new_wf "$d")"
+d="$work/quotedjob"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1
 printf '  "hidden":\n    runs-on: ubuntu-latest\n    steps:\n      - name: x\n        run: echo hi\n' >> "$f"
@@ -254,7 +254,7 @@ eq "$RC" "1" "fail-open (g): a QUOTED job id is seen, not skipped"
 has "$OUT" "hidden" "fail-open (g) names the quoted job"
 
 # (h) `defaults: {run: {"shell": sh}}` — the quoted spelling of (c), same effect, previously unseen.
-d="$work/quotedshell"; f="$(new_wf "$d")"
+d="$work/quotedshell"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1
 printf 'defaults: {run: {"shell": sh}}\n' >> "$f"
@@ -262,7 +262,7 @@ run_lint "$d"
 eq "$RC" "1" "fail-open (h): a QUOTED shell key is caught too"
 
 # --- rule 9: the first step must log bash --version (#257 acceptance criterion 2) --------------------
-d="$work/nofirstlog"; f="$(new_wf "$d")"
+d="$work/nofirstlog"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1 skip-version-log
 run_lint "$d"
@@ -278,13 +278,13 @@ has "$OUT" "scanned nothing" "rule 5 says it scanned nothing"
 # --- rule 6: both platforms must actually be represented -------------------------------------------
 # #257's first acceptance criterion. Without this the macOS job can be deleted and every other rule
 # still passes — the floor would be "proven" only on the platform where it was never in doubt.
-d="$work/nomacos"; f="$(new_wf "$d")"
+d="$work/nomacos"; f="${ new_wf "$d"; }"
 emit_job "$f" linux-job ubuntu-26.04 1
 run_lint "$d"
 eq "$RC" "1" "rule 6: a Linux-only workflow is rejected"
 has "$OUT" "unproven on the platform where it is hardest to reach" "rule 6 names the missing macOS coverage"
 
-d="$work/nolinux"; f="$(new_wf "$d")"
+d="$work/nolinux"; f="${ new_wf "$d"; }"
 emit_job "$f" macos-job macos-latest 1
 run_lint "$d"
 eq "$RC" "1" "rule 6: a macOS-only workflow is rejected"
@@ -318,6 +318,68 @@ if [ -x /bin/bash ] && [ "$sysv" = "3.2" ] && [ "$pathv" != "3.2" ]; then
   has "$out" "IN USE" "runtime says outright that the system bash is the one running"
   has "$out" "at /bin/bash" "runtime blames the interpreter that is executing, not the PATH one"
 fi
+
+# --- THE OBSERVER MUST STAY EVALUABLE BELOW THE FLOOR (#259) ----------------------------------
+# The third carve-out, alongside common.sh (D30) and the gate exemption itself (D31) — and the one
+# a modernization sweep is most likely to erase, because nothing in either file says it exists.
+#
+# The case immediately above executes the observer under /bin/bash precisely because that is the
+# situation it is built to diagnose. So the observer may not contain a construct that interpreter
+# cannot EXPAND. bash 5.3's `${ command; }` is the live example, and it is a nastier one than a
+# syntax error: 3.2 PARSES it happily — `bash -n` is clean — and then dies at expansion, replacing
+# the whole diagnostic with a single `bad substitution` line while still exiting 1. An rc-only
+# assertion would not notice.
+#
+# check-lib.sh is in scope transitively: the observer sources it before running any check. And
+# common.sh is in scope because D30 says so — it is the FIRST of the three, and leaving it out
+# would be the worst omission of the three, since every entry point sources it before it can
+# report anything at all.
+#
+# A SOURCE scan rather than an execution, deliberately. The case above only runs where /bin/bash is
+# genuinely 3.2, so it skips on every Linux runner; this must hold everywhere.
+#
+# ONLY WHOLE-LINE COMMENTS ARE DROPPED, not everything after the first `#`. `sed 's/#.*//'` — the
+# idiom the `sort -V` ban uses — does not understand quoting, so a line like
+# `printf '#'; x=${ printf hi; }` is truncated at the QUOTED hash and the funsub after it becomes
+# invisible. That is a guard that can be made blind by ordinary code, so this drops only lines that
+# are entirely a comment, and a funsub sharing a line with a trailing comment is still seen. The
+# cost is that a `${ …; }` written inside a trailing comment would false-positive — loudly, which
+# is the safe direction, and the two files are checked below to confirm none does today.
+bf_above_floor() {   # <file> -> 0 if it contains a construct bash 3.2 cannot expand
+  grep -v '^[[:space:]]*#' "$1" | grep -q '\${[[:space:]|]'
+}
+for _bf_f in "$LINT" scripts/check-lib.sh scripts/lib/common.sh; do
+  if bf_above_floor "$_bf_f"; then
+    bad "below-floor: $_bf_f uses \${ …; } / \${| …; }, which bash 3.2 cannot expand — and it runs there"
+  else
+    ok
+  fi
+done
+# ...and the predicate is watched going RED, on a COPY, because a check that cannot answer wrong is
+# worse than no check (self-review.md). Injected into a throwaway copy, never the tracked file.
+mkdir -p "$work/belowfloor"
+cp "$LINT" "$work/belowfloor/probe.sh"
+printf 'x=${ printf hi; }\n' >> "$work/belowfloor/probe.sh"
+if bf_above_floor "$work/belowfloor/probe.sh"; then ok; else
+  bad "below-floor: the scan did NOT fire on an injected \${ …; } — it is checking nothing"
+fi
+# THE QUOTED-HASH CASE, which is the one a naive `sed 's/#.*//'` cannot see. Review found this:
+# the stripper has no idea the `#` is inside quotes, deletes the rest of the line, and the funsub
+# after it goes unreported — a guard blinded by ordinary code rather than by a hostile input.
+printf "printf '#'; x=\${ printf hi; }\n" > "$work/belowfloor/quotedhash.sh"
+if bf_above_floor "$work/belowfloor/quotedhash.sh"; then ok; else
+  bad "below-floor: a funsub after a QUOTED '#' is invisible to the scan — comment stripping is too greedy"
+fi
+# And it must not fire on ordinary parameter expansion, or it would be deleted within a week.
+printf 'y="${HOME}${x:-d}${#z}"\n' > "$work/belowfloor/ordinary.sh"
+if bf_above_floor "$work/belowfloor/ordinary.sh"; then
+  bad "below-floor: the scan fires on ordinary \${VAR} expansion — it would be unusable"
+else ok; fi
+# ...nor on a whole-line comment that DOCUMENTS the hazard, which all three files legitimately do.
+printf '# never write x=${ printf hi; } in this file\n' > "$work/belowfloor/prose.sh"
+if bf_above_floor "$work/belowfloor/prose.sh"; then
+  bad "below-floor: the scan fires on a whole-line comment explaining the rule"
+else ok; fi
 
 # ISOLATE the PATH rule the same way, and in the direction that actually bites: a CURRENT
 # interpreter executing the guard (so the $BASH rule is satisfied and cannot be what fails) while
@@ -428,7 +490,7 @@ if [ -x "$SYS_BASH" ] && [ "$sysv" = "3.2" ]; then
   # first cut and it proved nothing: the fixture printed only a PATH, so the assertion passed
   # whether or not the re-exec happened. This reads the version the fixture reported and compares
   # it against the real floor through the real comparator.
-  got="$(fixture_version "$out")"
+  got="${ fixture_version "$out"; }"
   if [ -n "$got" ]; then
     adb_version_ge "$got" "$ADB_BASH_FLOOR_DEFAULT"
     yes $? "re-exec: the interpreter it LANDED on ($got) is at or above the $ADB_BASH_FLOOR_DEFAULT floor"
@@ -540,7 +602,7 @@ fi
 # `bash -c`, bash sets $0 to the INTERPRETER — a perfectly readable file — so a `[ -r "$0" ]` test
 # passed and the gate exec'd the bash BINARY as a script (`cannot execute binary file`, rc 126).
 if [ "$sysv" = "3.2" ]; then
-  out="$(printf '. "%s"\nadb_require_bash "$@"\nprintf "RAN\\n"\n' "$COMMON" | "$SYS_BASH" -s 2>&1)"; rc=$?
+  out="${ printf '. "%s"\nadb_require_bash "$@"\nprintf "RAN\\n"\n' "$COMMON" | "$SYS_BASH" -s 2>&1; }"; rc=$?
   eq "$rc" "1" "piped script: fails closed instead of exec'ing the bash binary as a script"
   hasnt "$out" "cannot execute binary file" "piped script: never tries to run the interpreter as a script"
   has "$out" "not a re-runnable script file" "piped script: says WHY it could not re-exec"
@@ -622,14 +684,14 @@ if [ -f "$sl_src" ]; then
   sl="$work/sl"; mkdir -p "$sl/scripts/lib"
   cp "$sl_src" "$sl/scripts/statusline.sh"
   printf 'this is not valid shell ((((\n' > "$sl/scripts/lib/common.sh"
-  out="$(printf '{"model":{"display_name":"x"}}' | "$BASH" "$sl/scripts/statusline.sh" 2>/dev/null)"; rc=$?
+  out="${ printf '{"model":{"display_name":"x"}}' | "$BASH" "$sl/scripts/statusline.sh" 2>/dev/null; }"; rc=$?
   eq "$rc" "0" "statusline: a CORRUPT common.sh still exits 0 (errexit must not beat the fallback)"
   eq "$out" "claude-code" "statusline: and prints the documented fallback line"
 
   # ...and the ordinary path is unaffected, or the assertion above is satisfied by a broken script.
   rm -rf "$sl/scripts/lib"; mkdir -p "$sl/scripts/lib"
   cp scripts/lib/common.sh "$sl/scripts/lib/common.sh"
-  out="$(printf '{"model":{"display_name":"opus"}}' | "$BASH" "$sl/scripts/statusline.sh" 2>/dev/null)"; rc=$?
+  out="${ printf '{"model":{"display_name":"opus"}}' | "$BASH" "$sl/scripts/statusline.sh" 2>/dev/null; }"; rc=$?
   eq "$rc" "0" "statusline: a healthy library still renders"
   has "$out" "opus" "statusline: and renders the real field, not the fallback"
 fi
@@ -839,7 +901,7 @@ if check_copy_worktree "$PWD" "$crlf_boot/repo"; then
   # `$(printf '\n')` is NOT usable as the pattern here — command substitution strips trailing
   # newlines, so it expands to empty and `${out%%*}` eats the whole string. head(1) is the honest
   # way to take a first line.
-  eq "$(printf '%s\n' "$out" | head -n 1)" \
+  eq "${ printf '%s\n' "$out" | head -n 1; }" \
      "install.sh: FATAL — scripts/lib/common.sh has CRLF line endings, so nothing here can load." \
      "install: and it is the FIRST line, i.e. the refusal preceded the source"
 fi

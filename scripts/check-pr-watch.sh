@@ -308,9 +308,9 @@ _w() {
     bash "$PW" "$@" )
 }
 # w : stdout AND stderr, for asserting diagnostics.
-w()    { OUT="$(_w "$@" 2>&1)"; RC_=$?; }
+w()    { OUT="${ _w "$@" 2>&1; }"; RC_=$?; }
 # wout : stdout ONLY (the "<verdict> <sha>" contract) — stderr is diagnostics and must not pollute it.
-wout() { OUT="$(_w "$@" 2>/dev/null)"; RC_=$?; }
+wout() { OUT="${ _w "$@" 2>/dev/null; }"; RC_=$?; }
 rc() { eq "$RC_" "$1" "$2"; }
 
 reset_fx

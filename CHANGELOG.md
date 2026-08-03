@@ -377,6 +377,41 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Changed
 
+- **The check harnesses are written for bash 5.3** (#259; D35, D36). `scripts/check-*.sh` is 18,931
+  of the 32,184 tracked shell lines here — 59% — and it was still shaped by an interpreter the floor
+  retired in #256. (#259 says 57%; that was measured before the tree grew.)
+  - **1,564 of 2,208 in-code command substitutions are now `${ command; }`** — no subshell fork.
+    644 remain by design. (The sweep's own report said "1,562 of 2,251"; it counts `$( )` written
+    inside comments too, and two new comments in this branch quote one. D36 carries both.) What was
+    excluded is enumerated in D36; the short version is that the issue's criterion is a lexical
+    test on the first word, and the safe set is smaller because `${ ; }` also stops *containing*
+    what the body does. A helper that assigns a global, `cd`s outside a subshell, or calls `exit`
+    stays on `$( )` — an `exit` inside a funsub kills the whole harness.
+  - **Two latent hazards fixed rather than excluded.** `rc_snip` and `runs` assigned bare globals
+    (`body`, `i`, `sep`) that collide with names their own files use elsewhere. Nothing was wrong
+    only because every call site happened to wrap them in a subshell. Both declare their locals now.
+  - **`check-claims.sh` caches gh lookups in a `declare -A`**, not a directory of one-line files —
+    no mkdir, no temp file per number, no `cat` fork per read. `check-fact-drift.sh`'s `fires:`
+    witnesses are a real array instead of a newline-delimited string, and its duplicate-file check
+    is a map lookup instead of a quadratic self-join. Nine heredoc-fed `while read` loops are gone:
+    five became `mapfile` and the rest `for` loops over an array the `mapfile` already built. Each
+    retires the `[ -n "$x" ] || continue` guard it carried — that empty element was the heredoc's
+    own trailing newline, never data — and gains a `check_enumerated` call in its place, which
+    rejects both an empty list AND a single blank entry (the case a bare count test waves through).
+  - **A third below-floor carve-out, pinned (D35).** `scripts/check-bash-floor.sh` is the floor
+    OBSERVER: D31 exempts it from the runtime gate so it can run on an interpreter that does not
+    clear the floor, and its guard executes it under `/bin/bash`. bash 3.2 *parses* `${ …; }` and
+    dies at expansion, so converting it would replace the entire diagnostic with one
+    `bad substitution` line **while still exiting 1** — invisible to an rc-only test. It and
+    `scripts/check-lib.sh` (which it sources) are excluded, and `check-bash-floor-guard.sh` now
+    asserts so, with the assertion observed going red on a copy carrying an injected funsub.
+  - **Two stale rationales corrected, not deleted.** The `adb_run_bounded` fallback was never a
+    "bash-3.2 watchdog" — `timeout` is GNU coreutils, which macOS does not ship, so a stock Mac
+    takes that path on 5.3 too. And the `sort -V` ban keeps its gate but loses its reasoning:
+    measured on macOS 26, Apple's `/usr/bin/sort` is `2.3-Apple (199)` and **does** accept `-V`.
+    It stays banned because `-V` is not POSIX, CI deliberately keeps `gnubin` off PATH, and an
+    unsupported flag inside a command substitution is masked into an empty previous tag.
+
 - **Reasoning effort is declared per role instead of inherited** (`Refs #225`). `role-dispatch.sh`
   passed no effort override, so every cross-agent dispatch ran at whatever the agent's own config
   said. A workstation carrying `model_reasoning_effort = "xhigh"` in `~/.codex/config.toml` applied

@@ -107,7 +107,9 @@ MUT_ROOT=""; MUT_BAK=""
 # empty needle (which matches every line of every file), a missing `--`, an empty file list, an
 # `absent:` rule with no witness, and a `fires:` on a rule that is not `absent:`.
 fact() {
-  local label spec kind needle wits nwit w f g dupes nfiles
+  local label spec kind needle w f nfiles
+  local -a wits=()
+  local -A seen=()
   if [ "$#" -lt 2 ]; then
     check_note "[fact] usage: fact <label> <spec> [fires:<witness> …] -- <file> […]"; check_fail; return
   fi
@@ -129,9 +131,10 @@ fact() {
     check_note "[$label] empty $kind pattern — a rule that asserts nothing"; check_fail; return
   fi
 
-  # Witnesses accumulate into a NEWLINE-DELIMITED string rather than an array: expanding an empty
-  # array under `set -u` is an unbound-variable error on the bash 3.2 that ships with macOS.
-  wits=""; nwit=0
+  # Witnesses accumulate into an array. They were a newline-delimited STRING because expanding an
+  # empty array under `set -u` was an unbound-variable error on bash 3.2; the floor is 5.3 (#256),
+  # where `"${wits[@]}"` on an empty array is simply empty. The rejection below stays regardless:
+  # `grep` is line-oriented, so a witness that spans lines can never match one.
   while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
     case "$1" in
       fires:*)
@@ -144,7 +147,7 @@ fact() {
             check_note "[$label] fires: witness spans lines; grep is line-oriented, so a witness is ONE line"
             check_fail; return ;;
         esac
-        wits="${wits}${w}${_FACT_NL}"; nwit=$((nwit + 1)) ;;
+        wits+=("$w") ;;
       *) check_note "[$label] unexpected argument '$1' before '--'"; check_fail; return ;;
     esac
     shift
@@ -159,33 +162,30 @@ fact() {
   # A file listed twice asserts nothing new, and under `--mutation` it breaks the backup/restore
   # isolation outright: the second injection overwrites the backup, so the restore puts back an
   # ALREADY-MUTATED file and one witness leaks into the next one's run.
+  #
+  # A `declare -A` membership test rather than the quadratic self-join it replaces — the same
+  # bash 3.2 gap that shaped the witness accumulation above shaped this too.
   for f in "$@"; do
-    dupes=0
-    for g in "$@"; do
-      if [ "$g" = "$f" ]; then dupes=$((dupes + 1)); fi
-    done
-    if [ "$dupes" -gt 1 ]; then
+    if [ -n "${seen[$f]+set}" ]; then
       check_note "[$label] file listed more than once: $f"; check_fail; return
     fi
+    seen["$f"]=1
   done
 
   if [ "$kind" = absent ]; then
-    if [ "$nwit" -eq 0 ]; then
+    if [ "${#wits[@]}" -eq 0 ]; then
       check_note "[$label] absent: rule declares no fires: witness — see this file's header (#213)"
       check_fail; return
     fi
     # THE CHEAP HALF OF THE PROOF, run on every invocation: a pattern that cannot match the real
     # spelling it retires is unfirable, and that is knowable without touching a single file.
-    while IFS= read -r w; do
-      [ -n "$w" ] || continue
+    for w in "${wits[@]}"; do
       if ! printf '%s\n' "$w" | grep -Eq -- "$needle"; then
         check_note "[$label] UNFIRABLE PIN: /$needle/ does not match its own witness [$w]"
         check_fail; return
       fi
       FACT_WITNESSES=$((FACT_WITNESSES + 1))
-    done <<EOF
-$wits
-EOF
+    done
     # A pinned file that does not EXIST is a rule asserting nothing about it: `req_absent` is
     # vacuously true on a missing path by design, and the rationale for that (the positive rules
     # report a bad path, so double-reporting one typo helps nobody) only holds for a file some
@@ -202,7 +202,7 @@ EOF
     done
     FACT_ABSENT_RULES=$((FACT_ABSENT_RULES + 1))
     FACT_ABSENT_FILES=$((FACT_ABSENT_FILES + nfiles))
-  elif [ "$nwit" -ne 0 ]; then
+  elif [ "${#wits[@]}" -ne 0 ]; then
     check_note "[$label] fires: is only meaningful on an absent: rule"; check_fail; return
   fi
 
@@ -210,7 +210,7 @@ EOF
   FACT_ASSERTS=$((FACT_ASSERTS + $#))
 
   if [ "$MODE" = mutation ]; then
-    if [ "$kind" = absent ]; then _fact_mutate "$label" "$needle" "$wits" "$@"; fi
+    if [ "$kind" = absent ]; then _fact_mutate "$label" "$needle" "${#wits[@]}" "${wits[@]}" "$@"; fi
     return
   fi
 
@@ -223,7 +223,11 @@ EOF
   done
 }
 
-# _fact_mutate <label> <pattern> <newline-delimited witnesses> <file> [<file>…]
+# _fact_mutate <label> <pattern> <n-witnesses> <witness>×n <file> [<file>…]
+#
+# COUNT-PREFIXED rather than newline-joined. Two variadic lists cannot share one argument vector
+# without a boundary, and the count is the boundary that a witness containing any character
+# whatsoever cannot forge — which a delimiter can.
 # The expensive half of the proof, and the reason `--mutation` exists at all: inject each witness
 # into a COPY of every pinned file, re-run the REAL lint there, and require the drift verdict.
 #
@@ -231,10 +235,10 @@ EOF
 # as much for nothing (req_absent accumulates every file's failure in one pass), but folding
 # several witnesses into a single run would let a working witness cover for a broken one.
 _fact_mutate() {
-  local label="$1" needle="$2" wits="$3"; shift 3
+  local label="$1" needle="$2" nw="$3"; shift 3
+  local -a wits=("${@:1:nw}"); shift "$nw"    # what is left in "$@" is the file list
   local w f out rc want
-  while IFS= read -r w; do
-    [ -n "$w" ] || continue
+  for w in "${wits[@]}"; do
     # TWO passes: back every file up FIRST, then inject. One pass would leave earlier files
     # mutated when a later one turns out to be missing or unreadable, and the leftovers would
     # contaminate every diagnostic after it.
@@ -294,9 +298,7 @@ _fact_mutate() {
            check_fail ;;
       esac
     done
-  done <<EOF
-$wits
-EOF
+  done
 }
 
 # --- the throwaway tree copy (--mutation only) -------------------------------
@@ -871,7 +873,12 @@ if [ "$MODE" = mutation ]; then
   # the first half of a `\`-continued pipeline is a syntax error.
   _ra='req_absent'; _allow="adb-allow: $_ra"   # adb-allow: req_absent
   _stray=""; _sf=""; _hit=""; _nscanned=0
-  while IFS= read -r _sf; do
+  # NUL-DELIMITED (#259, review finding). The newline-delimited form this replaces split any path
+  # containing a newline into two fragments, both of which failed `[ -f ]` and were skipped — while
+  # the OTHER files kept `_nscanned` above zero, so the emptiness guard below could not see it
+  # either. A stray `req_absent` in such a file passed unread: a guard defeated by a filename.
+  # `-print0` costs nothing here and closes it; the `./` strip stays, since `find .` still emits it.
+  while IFS= read -r -d '' _sf; do
     [ -n "$_sf" ] || continue
     _sf="${_sf#./}"
     [ -f "$_sf" ] || continue
@@ -890,10 +897,8 @@ if [ "$MODE" = mutation ]; then
     #   3. drop lines carrying the sanctioned marker.
     _hit="$(grep -n "$_ra" "$_sf" | grep -Ev '^[0-9]+:[[:space:]]*#' | grep -Fv "$_allow")" || continue
     [ -n "$_hit" ] || continue
-    _stray="${_stray}$(printf '%s\n' "$_hit" | sed "s@^@$_sf:@")${_FACT_NL}"
-  done <<EOF
-$(find . -type f ! -path './.git/*')
-EOF
+    _stray="${_stray}${ printf '%s\n' "$_hit" | sed "s@^@$_sf:@"; }${_FACT_NL}"
+  done < <(find . -type f ! -path './.git/*' -print0)
   # Zero files scanned means the enumeration broke, not that the tree is clean.
   if [ "$_nscanned" -eq 0 ]; then
     check_note "the call-site scan found no shell files at all — the enumeration is broken"  # adb-allow: req_absent

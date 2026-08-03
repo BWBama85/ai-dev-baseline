@@ -102,7 +102,7 @@ out_of() { printf '%s' "$OVROOT/$1/SKILL.md"; }
 
 # =========================== list-anchors ===========================
 mk_base demo
-anchors="$(sc list-anchors demo)"
+anchors="${ sc list-anchors demo; }"
 has "$anchors" "preflight"             "list-anchors: preflight"
 has "$anchors" "implement"             "list-anchors: implement"
 has "$anchors" "file-issues-mandatory" "list-anchors: number-stripped close-out slug"
@@ -122,7 +122,7 @@ REPLACED milestone decision tree.
 <!-- adb:end -->
 EOF
 sc compose demo >/dev/null; yes $? "compose demo (all three ops)"
-comp="$(cat "$(out_of demo)")"
+comp="$(cat "${ out_of demo; }")"
 has "$comp" "APPENDED sign-off line."      "append content present"
 has "$comp" "Write the code."              "append preserves original step body"
 has "$comp" "PREPENDED runbook note."      "prepend content present"
@@ -132,7 +132,7 @@ has "$comp" "More implement text."         "append lands after the whole step bo
 has "$comp" "echo hi"                       "fenced code inside a step is preserved"
 
 # prepend lands right after the heading (before the original first body line)
-prepend_after="$(printf '%s\n' "$comp" | awk '/^### 1\. Preflight/{getline; print; exit}')"
+prepend_after="${ printf '%s\n' "$comp" | awk '/^### 1\. Preflight/{getline; print; exit}'; }"
 has "$prepend_after" "PREPENDED" "prepend sits immediately after its heading"
 
 # replace on a step that CONTAINS a fenced code block must drop the whole body — including the
@@ -145,7 +145,7 @@ REPLACED whole implement step.
 <!-- adb:end -->
 EOF
 sc compose repfence >/dev/null 2>&1; yes $? "compose replace over a fenced step"
-rf="$(cat "$(out_of repfence)")"
+rf="$(cat "${ out_of repfence; }")"
 has  "$rf" "REPLACED whole implement step." "replace body present"
 hasnt "$rf" "echo hi"          "replace dropped the fenced code content"
 hasnt "$rf" "Write the code."  "replace dropped the original step body"
@@ -157,10 +157,10 @@ has  "$rf" "File deferred work." "a later step still renders (fence state not co
 # record counter that an empty first file would never advance).
 mk_base emptyov; mk_ov emptyov </dev/null
 sc compose emptyov >/dev/null 2>&1; yes $? "empty overrides.md composes (base + marker, no error)"
-has "$(cat "$(out_of emptyov)")" "# adb:composed-skill" "empty-overrides output still carries the marker"
+has "$(cat "${ out_of emptyov; }")" "# adb:composed-skill" "empty-overrides output still carries the marker"
 
 # =========================== output validity ===========================
-eq "$(head -n1 "$(out_of demo)")" "---" "composed output starts with '---'"
+eq "$(head -n1 "${ out_of demo; }")" "---" "composed output starts with '---'"
 has "$comp" "# adb:composed-skill"  "composed output carries the ownership marker"
 has "$comp" "name: demo"            "composed output keeps name:"
 has "$comp" "user-invocable: true"  "composed output keeps user-invocable:"
@@ -169,9 +169,9 @@ hasnt "$comp" "adb:end"             "no adb:end residue in output"
 
 # =========================== idempotency ===========================
 sc compose demo >/dev/null
-a="$(cat "$(out_of demo)")"
+a="$(cat "${ out_of demo; }")"
 sc compose demo >/dev/null
-b="$(cat "$(out_of demo)")"
+b="$(cat "${ out_of demo; }")"
 eq "$a" "$b" "compose is idempotent (twice → identical)"
 
 # =========================== currency / inherit future changes ===========================
@@ -180,10 +180,10 @@ sc check demo >/dev/null 2>&1; yes $? "check: current right after compose"
 printf '\n### 20. New Baseline Step\n\nnew baseline content.\n' >> "$BASEDIR/demo/SKILL.md"
 sc check demo >/dev/null 2>&1; no $? "check: STALE after the base gains a step"
 sc compose demo >/dev/null;    yes $? "recompose after base change"
-has "$(cat "$(out_of demo)")" "New Baseline Step" "recompose inherited the new base step"
+has "$(cat "${ out_of demo; }")" "New Baseline Step" "recompose inherited the new base step"
 sc check demo >/dev/null 2>&1; yes $? "check: current again after recompose"
 # A hand-edit to the composed output is also caught (byte-exact, not input-hash).
-printf '\nHAND EDIT\n' >> "$(out_of demo)"
+printf '\nHAND EDIT\n' >> "${ out_of demo; }"
 sc check demo >/dev/null 2>&1; no $? "check: STALE after a hand-edit to the composed output"
 sc compose demo >/dev/null   # restore
 
@@ -216,7 +216,7 @@ See the `<!-- adb:endpoint /v1/foo -->` marker for details.
 <!-- adb:end -->
 EOF
 sc compose endsub >/dev/null 2>&1; yes $? "content mentioning adb:endpoint composes (no false residue error)"
-has "$(cat "$(out_of endsub)")" "adb:endpoint /v1/foo" "the adb:endpoint mention survives into the output"
+has "$(cat "${ out_of endsub; }")" "adb:endpoint /v1/foo" "the adb:endpoint mention survives into the output"
 
 # The clobber-guard inspects only the top of the file, so a hand fork that merely MENTIONS the
 # ownership marker deep in its body is still correctly refused (not mistaken for our output).
@@ -358,7 +358,7 @@ EOF
   sed "s/__N__/$1/g" "$BASEDIR/$1/SKILL.md" > "$BASEDIR/$1/SKILL.md.t"; mv "$BASEDIR/$1/SKILL.md.t" "$BASEDIR/$1/SKILL.md"
 }
 mk_indent indented
-ianch="$(sc list-anchors indented)"
+ianch="${ sc list-anchors indented; }"
 has  "$ianch" "real-step"    "indented fence: real step is an anchor"
 has  "$ianch" "second-step"  "indented fence: step after the fence is an anchor"
 hasnt "$ianch" "fake-heading" "indented fence: a '### ' inside it is NOT an anchor"
@@ -368,7 +368,7 @@ APPENDED to real step.
 <!-- adb:end -->
 EOF
 sc compose indented >/dev/null 2>&1; yes $? "compose over an indented-fence base"
-ic="$(cat "$(out_of indented)")"
+ic="$(cat "${ out_of indented; }")"
 has "$ic" "### fake heading inside an indented fence" "the fenced fake heading is preserved verbatim"
 has "$ic" "APPENDED to real step." "append landed in the real step"
 
@@ -419,7 +419,7 @@ after tilde.
 
 body
 EOF
-ta="$(sc list-anchors tildef)"
+ta="${ sc list-anchors tildef; }"
 has   "$ta" "tilde-step"          "R1 tilde: the real step is an anchor"
 has   "$ta" "second-step"         "R1 tilde: the step after the fence is an anchor"
 hasnt "$ta" "fake-tilde-heading"  "R1 tilde: ADVERTISES-a-fake — a '### ' inside ~~~ is not an anchor"
@@ -434,7 +434,7 @@ APPENDED-BY-PROJECT
 <!-- adb:end -->
 EOF
 sc compose tildef >/dev/null 2>&1; yes $? "R2 tilde: compose over a ~~~-fenced base"
-tc="$(out_of tildef)"
+tc="${ out_of tildef; }"
 ln_app="$(grep -n 'APPENDED-BY-PROJECT' "$tc" | head -1 | cut -d: -f1)"
 ln_end="$(grep -n 'after tilde\.' "$tc" | head -1 | cut -d: -f1)"
 ln_two="$(grep -n '^### 2\. Second Step' "$tc" | head -1 | cut -d: -f1)"
@@ -462,7 +462,7 @@ mk_fence_base runlen <<'EOF'
 
 body
 EOF
-ra="$(sc list-anchors runlen)"
+ra="${ sc list-anchors runlen; }"
 has   "$ra" "run-step"    "R3 run-length: the real step is an anchor"
 has   "$ra" "after-run"   "R3 run-length: HIDES-a-real-step — the step after a ```` block is still an anchor"
 hasnt "$ra" "fake-long-run-heading"                 "R3 run-length: ADVERTISES-a-fake — inside the block"
@@ -483,7 +483,7 @@ mk_fence_base trailer <<'EOF'
 
 body
 EOF
-tra="$(sc list-anchors trailer)"
+tra="${ sc list-anchors trailer; }"
 has   "$tra" "trailer-step"   "R4 closer-text: the real step is an anchor"
 has   "$tra" "after-trailer"  "R4 closer-text: HIDES-a-real-step — the step after the block is an anchor"
 hasnt "$tra" "fake-trailing-heading"                      "R4 closer-text: ADVERTISES-a-fake — inside"
@@ -512,7 +512,7 @@ mk_fence_base nestf <<'EOF'
 
 body
 EOF
-na="$(sc list-anchors nestf)"
+na="${ sc list-anchors nestf; }"
 has   "$na" "nest-step"     "R5 nesting: the first real step is an anchor"
 has   "$na" "reverse-nest"  "R5 nesting: the middle real step is an anchor"
 has   "$na" "after-nest"    "R5 nesting: HIDES-a-real-step — the step after both blocks is an anchor"
@@ -539,7 +539,7 @@ genuinely fenced
 
 body
 EOF
-ia2="$(sc list-anchors infostr)"
+ia2="${ sc list-anchors infostr; }"
 has "$ia2" "info-step"   "R6 info-string: the real step is an anchor"
 has "$ia2" "after-info"  "R6 info-string: HIDES-a-real-step — the step after the block is an anchor"
 has "$ia2" "a-real-heading-because-the-line-above-is-not-a-fence-opener" \
@@ -559,7 +559,7 @@ mk_fence_base indent4 <<'EOF'
 
 body
 EOF
-i4="$(sc list-anchors indent4)"
+i4="${ sc list-anchors indent4; }"
 has  "$i4" "indent-step"  "R7 indent: the real step is an anchor"
 has  "$i4" "after-indent" "R7 indent: HIDES-a-real-step — a 4-space run opens no fence to swallow it"
 
@@ -609,13 +609,13 @@ sc_paths() {   # sc_paths <out1> <out2> <out3> -> "base|ov|out" on success, "RC<
     printf '%s|%s|%s\n' "${!1-}" "${!2-}" "${!3-}"
   ) 2>/dev/null
 }
-eq "$(sc_paths p_base p_ov p_out)" "/h/.claude/skills/demo/SKILL.md|/r/.claude/skills/demo/overrides.md|/r/.claude/skills/demo/SKILL.md" \
+eq "${ sc_paths p_base p_ov p_out; }" "/h/.claude/skills/demo/SKILL.md|/r/.claude/skills/demo/overrides.md|/r/.claude/skills/demo/SKILL.md" \
    "S1 adb_sc_paths writes all three paths into the caller's OWN variables"
 
 # The caller's names are arbitrary — including names that look nothing like the old globals. A
 # conversion that kept writing fixed globals and merely accepted the arguments would pass S1 only
 # by accident of naming, and fails here.
-eq "$(sc_paths zzz_a zzz_b zzz_c)" "/h/.claude/skills/demo/SKILL.md|/r/.claude/skills/demo/overrides.md|/r/.claude/skills/demo/SKILL.md" \
+eq "${ sc_paths zzz_a zzz_b zzz_c; }" "/h/.claude/skills/demo/SKILL.md|/r/.claude/skills/demo/overrides.md|/r/.claude/skills/demo/SKILL.md" \
    "S2 ...whatever the caller chose to call them"
 
 # The superseded globals must be GONE, not left behind as a second, drifting output channel.
@@ -624,18 +624,18 @@ eq "$gl" "[][][]" "S3 the pre-#258 _sc_base/_sc_ov/_sc_out globals are no longer
 
 # Collision and injection are REFUSALS with a status, not warnings. `_asp_out` is one of the
 # function's own nameref locals; `a[$(…)]` is the subscript-evaluation seam.
-eq "$(sc_paths _asp_out o u)"  "RC2" "S4 an output name colliding with the function's own local is refused"
-eq "$(sc_paths _asp_n o u)"    "RC2" "S5 ...including its non-nameref locals"
+eq "${ sc_paths _asp_out o u; }"  "RC2" "S4 an output name colliding with the function's own local is refused"
+eq "${ sc_paths _asp_n o u; }"    "RC2" "S5 ...including its non-nameref locals"
 # ...and a name that is NOT a local today. The rule is the `_asp_` PREFIX, not an enumeration of
 # the current locals, so adding a local later cannot open a hole in it. An enumeration would pass
 # this case and then fail silently the day someone declares `_asp_zzz`.
-eq "$(sc_paths _asp_zzz o u)"  "RC2" "S5b ...and any future local, because the rule is the prefix"
-eq "$(sc_paths 'a[$(id)]' o u)" "RC2" "S6 a non-identifier output name is refused before declare -n can evaluate it"
-eq "$(sc_paths '' o u)"        "RC2" "S7 an empty output name is refused"
-eq "$(sc_paths 9bad o u)"      "RC2" "S8 an output name starting with a digit is refused"
+eq "${ sc_paths _asp_zzz o u; }"  "RC2" "S5b ...and any future local, because the rule is the prefix"
+eq "${ sc_paths 'a[$(id)]' o u; }" "RC2" "S6 a non-identifier output name is refused before declare -n can evaluate it"
+eq "${ sc_paths '' o u; }"        "RC2" "S7 an empty output name is refused"
+eq "${ sc_paths 9bad o u; }"      "RC2" "S8 an output name starting with a digit is refused"
 # Three names that are really ONE variable would make all three paths the last assignment — a
 # silently wrong compose, which is exactly the shape a nameref API invites.
-eq "$(sc_paths same same same)" "RC2" "S9 duplicate output names are refused rather than aliased"
+eq "${ sc_paths same same same; }" "RC2" "S9 duplicate output names are refused rather than aliased"
 
 # TOO FEW ARGUMENTS MUST BE A RETURN, NOT A DEAD SHELL. This library is SOURCED — by its own
 # callers and by consumer hooks — so an unbound expansion under the caller's `set -u` does not fail

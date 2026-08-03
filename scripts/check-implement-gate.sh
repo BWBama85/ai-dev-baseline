@@ -159,21 +159,21 @@ gone() { [ ! -f "$marker_file" ]; }
 
 # A. stored PR OPEN and this-run's → satisfied: marker removed, exit 0.
 reset_case; write_marker committed "$REPO_URL/pull/1"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json OPEN '' "$REPO_URL/pull/1" feat)"
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json OPEN '' "$REPO_URL/pull/1" feat; }"
 run_gate
 eq "$RC" 0 "A: open stored PR → exit 0"
 if gone; then ok; else bad "A: open stored PR removes the marker"; fi
 
 # B. stored PR MERGED → satisfied, even though phase=complete is not trusted on its own.
 reset_case; write_marker complete "$REPO_URL/pull/1"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json MERGED 2026-01-01T00:00:00Z "$REPO_URL/pull/1" feat)"
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json MERGED 2026-01-01T00:00:00Z "$REPO_URL/pull/1" feat; }"
 run_gate
 eq "$RC" 0 "B: merged stored PR → exit 0"
 if gone; then ok; else bad "B: merged stored PR removes the marker"; fi
 
 # C. stored PR CLOSED-unmerged, no replacement → keep going, marker retained, closed message.
 reset_case; write_marker complete "$REPO_URL/pull/1"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json CLOSED '' "$REPO_URL/pull/1" feat)"; SHIM_OPEN_PR_URL=""
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json CLOSED '' "$REPO_URL/pull/1" feat; }"; SHIM_OPEN_PR_URL=""
 run_gate
 eq "$RC" 2 "C: closed-unmerged → keep going (exit 2)"
 if gone; then bad "C: closed-unmerged must RETAIN the marker"; else ok; fi
@@ -181,14 +181,14 @@ has "$OUT" "CLOSED without merging" "C: message names the closed PR"
 
 # D. stored PR belongs to a DIFFERENT repo → unverified → keep going.
 reset_case; write_marker committed "$REPO_URL/pull/1"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json OPEN '' "https://github.com/other/repo/pull/1" feat)"; SHIM_OPEN_PR_URL=""
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json OPEN '' "https://github.com/other/repo/pull/1" feat; }"; SHIM_OPEN_PR_URL=""
 run_gate
 eq "$RC" 2 "D: wrong-repo PR is unverified → keep going"
 if gone; then bad "D: wrong-repo unverified must RETAIN the marker"; else ok; fi
 
 # E. stored PR CLOSED but a replacement OPEN PR exists for the branch → satisfied.
 reset_case; write_marker committed "$REPO_URL/pull/1"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json CLOSED '' "$REPO_URL/pull/1" feat)"; SHIM_OPEN_PR_URL="$REPO_URL/pull/2"
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json CLOSED '' "$REPO_URL/pull/1" feat; }"; SHIM_OPEN_PR_URL="$REPO_URL/pull/2"
 run_gate
 eq "$RC" 0 "E: closed stored + replacement open PR → exit 0"
 if gone; then ok; else bad "E: replacement open PR removes the marker"; fi
@@ -218,21 +218,21 @@ has "$OUT" "has not opened a PR yet" "H: message is the not-yet-opened hint"
 
 # I. stored PR is for a DIFFERENT branch → unverified → keep going.
 reset_case; write_marker committed "$REPO_URL/pull/1"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json OPEN '' "$REPO_URL/pull/1" some-other-branch)"; SHIM_OPEN_PR_URL=""
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json OPEN '' "$REPO_URL/pull/1" some-other-branch; }"; SHIM_OPEN_PR_URL=""
 run_gate
 eq "$RC" 2 "I: PR on a different branch is unverified → keep going"
 
 # J. branch-lookup fallback must EXCLUDE a fork PR (isCrossRepository=true) with the same branch
 #    name — a closed stored PR + only-a-fork-PR must keep going, not falsely satisfy.
 reset_case; write_marker committed "$REPO_URL/pull/1"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json CLOSED '' "$REPO_URL/pull/1" feat)"
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json CLOSED '' "$REPO_URL/pull/1" feat; }"
 SHIM_PR_LIST_JSON='[{"url":"https://github.com/fork/repo/pull/9","isCrossRepository":true}]'
 run_gate
 eq "$RC" 2 "J: a same-name fork PR does NOT satisfy → keep going"
 if gone; then bad "J: fork-only lookup must RETAIN the marker"; else ok; fi
 # J2. a SAME-repo replacement in the list (isCrossRepository=false) DOES satisfy.
 reset_case; write_marker committed "$REPO_URL/pull/1"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json CLOSED '' "$REPO_URL/pull/1" feat)"
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json CLOSED '' "$REPO_URL/pull/1" feat; }"
 SHIM_PR_LIST_JSON='[{"url":"https://github.com/fork/repo/pull/9","isCrossRepository":true},{"url":"'"$REPO_URL"'/pull/2","isCrossRepository":false}]'
 run_gate
 eq "$RC" 0 "J2: a same-repo replacement PR (past a fork) satisfies → exit 0"
@@ -241,7 +241,7 @@ if gone; then ok; else bad "J2: same-repo replacement removes the marker"; fi
 # K. DIRTY tree + closed stored PR + no replacement → must KEEP GOING (fail closed), not defer to
 #    precommit (completion gating sits ahead of the uncommitted-changes deferral).
 reset_case; write_marker complete "$REPO_URL/pull/1"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json CLOSED '' "$REPO_URL/pull/1" feat)"; SHIM_OPEN_PR_URL=""
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json CLOSED '' "$REPO_URL/pull/1" feat; }"; SHIM_OPEN_PR_URL=""
 printf 'dirty\n' >> "$repo/README.md"   # make the worktree dirty (tracked file)
 run_gate
 eq "$RC" 2 "K: dirty tree + closed PR → keep going (not deferred to precommit)"
@@ -276,7 +276,7 @@ SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
 run_gate
 eq "$RC" 0 "L: foreign-owner marker → exit 0 (silence)"
 eq "$OUT" "" "L: foreign-owner marker produces NO output"
-eq "$(marker_now)" "$SNAP" "L: foreign-owner marker must be left byte-identical"
+eq "${ marker_now; }" "$SNAP" "L: foreign-owner marker must be left byte-identical"
 if [ -s "$SHIM_TRACE" ]; then bad "L: foreign-owner marker must not trigger any gh call"; else ok; fi
 
 # M. The OWNING session is still enforced — ownership narrows who acts, it never disarms the run.
@@ -301,12 +301,12 @@ run_gate
 eq "$RC" 2 "O: unidentifiable session → legacy branch behavior (still enforced)"
 
 # P. Identity from the stdin PAYLOAD when the env var is absent — foreign → silence.
-reset_case; write_marker committed "" "$SID_A"; GATE_STDIN="$(payload_file "$SID_B")"
+reset_case; write_marker committed "" "$SID_A"; GATE_STDIN="${ payload_file "$SID_B"; }"
 SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
 run_gate
 eq "$RC" 0 "P: payload session_id (foreign) → exit 0"
 # P2. …and the same source proves ownership the other way.
-reset_case; write_marker committed "" "$SID_A"; GATE_STDIN="$(payload_file "$SID_A")"
+reset_case; write_marker committed "" "$SID_A"; GATE_STDIN="${ payload_file "$SID_A"; }"
 SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
 run_gate
 eq "$RC" 2 "P2: payload session_id (mine) → keep going"
@@ -354,16 +354,16 @@ SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
 SHIM_MUTATE="replace"; SHIM_MUTATE_ON="list"; SHIM_MARKER_REPLACEMENT="$REPLACEMENT"
 run_gate
 eq "$RC" 0 "R2: marker replaced mid-hook → exit 0"
-eq "$(marker_now)" "$REPLACEMENT" "R2: the replacement marker must survive"
+eq "${ marker_now; }" "$REPLACEMENT" "R2: the replacement marker must survive"
 
 # R3. Same race on the SATISFIED path: the stored PR verifies, but the marker we would clear is no
 #     longer the one we read — deleting it would disarm a run that had not even started.
 reset_case; write_marker committed "$REPO_URL/pull/1" "$SID_A"; GATE_SESSION="$SID_A"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json OPEN '' "$REPO_URL/pull/1" feat)"
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json OPEN '' "$REPO_URL/pull/1" feat; }"
 SHIM_MUTATE="replace"; SHIM_MUTATE_ON="view"; SHIM_MARKER_REPLACEMENT="$REPLACEMENT"
 run_gate
 eq "$RC" 0 "R3: satisfied PR + replaced marker → exit 0"
-eq "$(marker_now)" "$REPLACEMENT" "R3: a replacement marker must not be deleted"
+eq "${ marker_now; }" "$REPLACEMENT" "R3: a replacement marker must not be deleted"
 
 # --- 'could not check' is not 'there is no PR' --------------------------------
 # S. A failed branch lookup must surface the uncertainty, never assert the absence
@@ -384,7 +384,7 @@ hasnt "$OUT" "has not opened a PR yet" "S: an unchecked lookup must not claim th
 # T. env says A (matches the marker), payload says B. Env-first → mine → enforced.
 #    If the payload won, this session would read as B, the marker as foreign, and the gate exit 0.
 reset_case; write_marker committed "" "$SID_A"
-GATE_SESSION="$SID_A"; GATE_STDIN="$(payload_file "$SID_B")"
+GATE_SESSION="$SID_A"; GATE_STDIN="${ payload_file "$SID_B"; }"
 SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
 run_gate
 eq "$RC" 2 "T: env id wins over a conflicting payload id (marker is mine → keep going)"
@@ -392,7 +392,7 @@ eq "$RC" 2 "T: env id wins over a conflicting payload id (marker is mine → kee
 # T2. The mirror: env says B, payload says A, marker owned by A. Env-first → foreign → silence.
 #     If the payload won, the marker would read as mine and the gate would nag.
 reset_case; write_marker committed "" "$SID_A"
-GATE_SESSION="$SID_B"; GATE_STDIN="$(payload_file "$SID_A")"
+GATE_SESSION="$SID_B"; GATE_STDIN="${ payload_file "$SID_A"; }"
 SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
 run_gate
 eq "$RC" 0 "T2: env id wins over a conflicting payload id (marker is foreign → exit 0)"
@@ -499,7 +499,7 @@ has "$OUT" "could not be checked for an open PR" "X: it reports the unchecked lo
 # X2. The closed-stored-PR arm also has to carry the warning: it tells the agent to open a
 #     REPLACEMENT PR, and a failed lookup means we never checked whether one exists.
 reset_case; write_marker complete "$REPO_URL/pull/1" "$SID_A"; GATE_SESSION="$SID_A"
-SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="$(pr_json CLOSED '' "$REPO_URL/pull/1" feat)"; SHIM_PR_LIST_FAIL=1
+SHIM_REPO_URL="$REPO_URL"; SHIM_PR_JSON="${ pr_json CLOSED '' "$REPO_URL/pull/1" feat; }"; SHIM_PR_LIST_FAIL=1
 run_gate
 eq "$RC" 2 "X2: closed stored PR + failed replacement lookup → keep going"
 has "$OUT" "could not be run" "X2: the closed arm warns that no replacement lookup succeeded"
