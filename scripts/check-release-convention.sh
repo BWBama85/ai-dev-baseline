@@ -315,8 +315,7 @@ eq "${ plan_of; }" 'create milestone "Next release"|' \
 has "$OUT" "is NOT assumed to be this roll's archive" "it says why it stopped short"
 rcx_stub roll --version v1.1.0 --resume --dry-run
 yes "$RC_" "--resume finishes an interrupted roll"
-eq "${ plan_of; }" 'create milestone "Next release"|move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' \
-  "--resume skips the done rename and finishes the tail"
+eq "${ plan_of; }" 'create milestone "Next release"|move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' "--resume skips the done rename and finishes the tail"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # Both milestones open = interrupted-after-create OR a pre-existing version-named milestone. The
 # tracker cannot tell them apart, so roll refuses and asks. Emptiness of the rolling milestone is
@@ -334,8 +333,7 @@ for rolling_fixture in EMPTY SLATED; do
 
   rcx_stub roll --version v1.1.0 --resume --dry-run
   yes "$RC_" "--resume finishes the tail ($rolling_fixture)"
-  eq "${ plan_of; }" 'move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' \
-    "--resume skips the done rename and create ($rolling_fixture)"
+  eq "${ plan_of; }" 'move issue #99 -> "Backlog"|close milestone #9 ("v1.1.0")|' "--resume skips the done rename and create ($rolling_fixture)"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
   rm -f "$S/issues/12.json"
 done
 
@@ -368,7 +366,7 @@ hasnt "$OUT" "baseline release init" "the refusal never advises init, which woul
 fix_default; ms 'Next release\topen\t9\nIcebox\topen\t8\n'
 rcx_stub roll --version v1.1.0 --backlog-name Icebox --dry-run
 yes "$RC_" "--backlog-name names a renamed backlog milestone"
-has "${ plan_of; }" 'move issue #99 -> "Icebox"' "leftovers go to the named backlog"
+has "${ plan_of; }" 'move issue #99 -> "Icebox"' "leftovers go to the named backlog"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 rcx_stub roll --version v1.1.0 --backlog-name ''
 no "$RC_" "--backlog-name rejects an empty value"
 

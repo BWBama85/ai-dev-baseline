@@ -113,7 +113,7 @@ has "${ run observe issue 138; }" "issue #138 was observed OPEN at " "open issue
 export SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/o/r/issues/134"}'
 has "${ run observe issue 134; }" "issue #134 was observed CLOSED as completed at " "completed issue renders"
 export SHIM_ISSUE_JSON='{"state":"CLOSED","stateReason":"NOT_PLANNED","url":"https://github.com/o/r/issues/77"}'
-has "${ run observe issue 77; }" "issue #77 was observed CLOSED as NOT_PLANNED at " "NOT_PLANNED is not flattened into completed"
+has "${ run observe issue 77; }" "issue #77 was observed CLOSED as NOT_PLANNED at " "NOT_PLANNED is not flattened into completed"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # No rendered line may promise the future. These are the words that shipped the second violation.
 export SHIM_PR_JSON='{"state":"OPEN","mergedAt":null,"url":"https://github.com/o/r/pull/7"}'
@@ -317,26 +317,23 @@ eq "${ lint_rc 'The green path in roadmap-lib was unreachable.'; }" 0 "a status 
 eq "${ lint_rc 'This closed a whole class of bugs.'; }" 0 "\"closed a class\" is a verb with no entity"
 
 # --- 3b-e. ONLY PROSE DECLARES (#117 applied to claims) ---------------------------------------
-eq "${ lint_rc "${ printf '```\nPR #1 is still open\n```'; }"; }" 0 "a fenced block declares nothing"
-eq "${ lint_rc "${ printf '~~~\nPR #1 is still open\n~~~'; }"; }" 0 "a tilde fence declares nothing"
-eq "${ lint_rc 'The rule forbids `PR #1 is still open` in prose.'; }" 0 "an inline code span declares nothing"
-eq "${ lint_rc '> PR #1 is still open'; }" 0 "a blockquote declares nothing"
-eq "${ lint_rc '<!-- PR #1 is still open -->'; }" 0 "an HTML comment declares nothing"
-eq "${ lint_rc "${ printf '<!--\nPR #1 is still open\n-->'; }"; }" 0 "a multi-line HTML comment declares nothing"
+eq "${ lint_rc "${ printf '```\nPR #1 is still open\n```'; }"; }" 0 "a fenced block declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc "${ printf '~~~\nPR #1 is still open\n~~~'; }"; }" 0 "a tilde fence declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc 'The rule forbids `PR #1 is still open` in prose.'; }" 0 "an inline code span declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc '> PR #1 is still open'; }" 0 "a blockquote declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc '<!-- PR #1 is still open -->'; }" 0 "an HTML comment declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc "${ printf '<!--\nPR #1 is still open\n-->'; }"; }" 0 "a multi-line HTML comment declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 # ...but a real claim AFTER a closed fence is still caught.
-eq "${ lint_rc "${ printf '```\ncode\n```\nPR #1 is still open.'; }"; }" 1 "a claim after a fence is still a violation"
+eq "${ lint_rc "${ printf '```\ncode\n```\nPR #1 is still open.'; }"; }" 1 "a claim after a fence is still a violation"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # --- 3b-g. the observe phrase binds to ITS OWN word, not to a later one (review round 1) ------
 # `was observed [a-z ]*$` let a second status word inherit an earlier clause's compliance, so
 # "was observed OPEN but is now CLOSED" passed ENTIRELY — the mixed compliant/stale sentence this
 # check is per-occurrence in order to catch. Only an IMMEDIATE `was observed ` counts.
-eq "${ lint_rc 'PR #1 was observed OPEN but is now CLOSED.'; }" 1 \
-   "a later status word cannot inherit an earlier \"was observed\""
-has "${ lint_out 'PR #1 was observed OPEN but is now CLOSED.'; }" "closed" "...and the stale word is named"
-eq "${ lint_out 'PR #1 was observed OPEN but is now CLOSED.' | wc -l | tr -d ' '; }" 1 \
-   "...while the genuinely-observed word is not also flagged"
-eq "${ lint_rc 'PR #1 was observed OPEN and I then merged the branch.'; }" 0 \
-   "a verb after a compliant clause is still a verb"
+eq "${ lint_rc 'PR #1 was observed OPEN but is now CLOSED.'; }" 1 "a later status word cannot inherit an earlier \"was observed\""  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+has "${ lint_out 'PR #1 was observed OPEN but is now CLOSED.'; }" "closed" "...and the stale word is named"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_out 'PR #1 was observed OPEN but is now CLOSED.' | wc -l | tr -d ' '; }" 1 "...while the genuinely-observed word is not also flagged"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc 'PR #1 was observed OPEN and I then merged the branch.'; }" 0 "a verb after a compliant clause is still a verb"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # --- 3b-h. a status word taking an ENTITY object is a verb (review round 1) -------------------
 # "I closed #195" reports an action just performed; it is not an assertion about current state.
@@ -350,11 +347,9 @@ eq "${ lint_rc 'Issue #195 is closed.'; }" 1 "a predicative claim about the same
 # --- 3b-i. multi-backtick code spans declare nothing (review round 1) -------------------------
 # CommonMark permits a run of N backticks; a single-backtick-only stripper left that content
 # exposed, so quoting a status the way this repo's own docs do would block a turn.
-eq "${ lint_rc 'The docs show ``PR #1 is still open`` as an example.'; }" 0 \
-   "a double-backtick span declares nothing"
-eq "${ lint_rc 'See ```PR #1 is still open``` inline.'; }" 0 "a triple-backtick span declares nothing"
-eq "${ lint_rc 'Quoting ``PR #1 is still open`` but PR #2 is still open.'; }" 1 \
-   "...while a real claim beside a quoted one is still caught"
+eq "${ lint_rc 'The docs show ``PR #1 is still open`` as an example.'; }" 0 "a double-backtick span declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc 'See ```PR #1 is still open``` inline.'; }" 0 "a triple-backtick span declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc 'Quoting ``PR #1 is still open`` but PR #2 is still open.'; }" 1 "...while a real claim beside a quoted one is still caught"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # --- 3b-j. `draft` is not a status token (live false positive, hours after shipping) ---------
 # It is an ordinary English noun and it collided with prose an agent genuinely writes. A gate that

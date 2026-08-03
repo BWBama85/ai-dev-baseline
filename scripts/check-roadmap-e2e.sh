@@ -621,14 +621,12 @@ art_with_decision="$(printf '%s\n' \
   '| Question | Decision | Recorded |' \
   '| -------- | -------- | -------- |' \
   '| dep-outside-release:#73 | Re-scoped; no longer depends on #25 | #73 body |')"
-art_without="${ printf '%s\n' '<!-- ai-dev-baseline:roadmap:v1 -->' '# Build roadmap' '## Dependencies' '- #73 depends on #25'; }"
+art_without="${ printf '%s\n' '<!-- ai-dev-baseline:roadmap:v1 -->' '# Build roadmap' '## Dependencies' '- #73 depends on #25'; }"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 answered="${ printf '%s' "$art_with_decision" | bash "$RL" decisions; }"
-eq "${ printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked; }" \
-   retired "a recorded decision retires its question"
+eq "${ printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked; }" retired "a recorded decision retires its question"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 answered="${ printf '%s' "$art_without" | bash "$RL" decisions; }"
-eq "${ printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked; }" \
-   asked "...and an unrecorded one is still asked"
+eq "${ printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked; }" asked "...and an unrecorded one is still asked"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # The stale edge in `## Dependencies` must NOT survive: edges are re-derived from the live
 # sources, and the decision row's own text retires this one.

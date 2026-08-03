@@ -1064,8 +1064,8 @@ deps() { printf '%s' "$1" | run_rl deps-from-body ${2:+"$2"}; }
 # --- 6a. the explicit keywords DO declare an edge -------------------------------------------
 eq "${ deps 'Depends on #78'; }"        '78' "'Depends on #78' is an edge"
 eq "${ deps 'Depends on: #78 only.'; }" '78' "the colon form is an edge"
-eq "${ deps 'Blocked by #25'; }"        '25' "'Blocked by #25' is an edge"
-eq "${ deps 'Blocked on #25'; }"        '25' "'Blocked on #25' is an edge"
+eq "${ deps 'Blocked by #25'; }"        '25' "'Blocked by #25' is an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Blocked on #25'; }"        '25' "'Blocked on #25' is an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ deps 'DEPENDS ON #12'; }"        '12' "the keyword is case-insensitive"
 eq "${ deps 'depends upon #12'; }"      '12' "'depends upon' is an edge"
 eq "${ deps 'This is dependent on #9'; }" '9' "'dependent on' is an edge"
@@ -1080,15 +1080,13 @@ eq "${ deps 'See #12 for context'; }"         '' "'See #12' is not an edge"
 eq "${ deps '#78'; }"                         '' "a bare #N is not an edge"
 
 # --- 6c. NEGATION retires an edge, never creates one (the #108 bug) --------------------------
-eq "${ deps 'No longer depends on #25.'; }"          '' "'no longer depends on' is not an edge"
-eq "${ deps 'This does not depend on #25'; }"        '' "'does not depend on' is not an edge"
-eq "${ deps 'It is not blocked by #25'; }"           '' "'is not blocked by' is not an edge"
-eq "${ deps 'Never depended on #25'; }"              '' "'never depended on' is not an edge"
-eq "${ deps 'Rescoped — no longer blocked by #25'; }" '' "an em-dash clause boundary is honored"
-eq "${ deps 'The #25 prerequisite was dropped; blocked by #78'; }" '78' \
-   "a negator in an EARLIER clause does not suppress a later real edge"
-eq "${ deps 'Depends on #78; it is not blocked by #25'; }" '78' \
-   "one line can declare one edge and retire another"
+eq "${ deps 'No longer depends on #25.'; }"          '' "'no longer depends on' is not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'This does not depend on #25'; }"        '' "'does not depend on' is not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'It is not blocked by #25'; }"           '' "'is not blocked by' is not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Never depended on #25'; }"              '' "'never depended on' is not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Rescoped — no longer blocked by #25'; }" '' "an em-dash clause boundary is honored"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'The #25 prerequisite was dropped; blocked by #78'; }" '78' "a negator in an EARLIER clause does not suppress a later real edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on #78; it is not blocked by #25'; }" '78' "one line can declare one edge and retire another"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # --- 6d. this repo only — a qualified reference is not a local edge --------------------------
 eq "${ deps 'Depends on acme/repo#5'; }"                          '' "owner/repo#N is not a local edge"
@@ -1102,8 +1100,8 @@ eq "${ deps 'Depends on #7 #5'; }"         '5 7'   "output is ascending, not sou
 eq "${ deps 'Depends on #5 and #5'; }"     '5'     "duplicates collapse"
 eq "${ deps 'Depends on #5 (the gate) and #6'; }" '5' \
    "an interrupted chain stops (conservative: an invented edge blocks a bundle forever)"
-eq "${ deps 'Depends on #73 and #78' 73; }" '78'   "the self-edge is dropped"
-eq "${ deps 'Depends on #73' 73; }"         ''     "a body depending only on itself yields nothing"
+eq "${ deps 'Depends on #73 and #78' 73; }" '78'   "the self-edge is dropped"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Depends on #73' 73; }"         ''     "a body depending only on itself yields nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ deps 'Depends on #7'; }"             '7'    "#7 is not confused with #70"
 eq "${ deps 'Depends on #70'; }"            '70'   "...nor #70 with #7"
 
@@ -1393,13 +1391,13 @@ eq "${ depsm "\tDepends on #5"; }" '5' \
 # what it is lives once, in the STEP block of scripts/lib/roadmap-lib.sh.
 
 # UNDER — every emphasis/code delimiter the acceptance list names.
-eq "${ deps 'Depends on **#52**'; }"   '52' "UNDER: bold around the reference"
+eq "${ deps 'Depends on **#52**'; }"   '52' "UNDER: bold around the reference"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ deps 'Depends on __#52__'; }"   '52' "UNDER: __bold__ around the reference"
-eq "${ deps 'Depends on *#52*'; }"     '52' "UNDER: *italic* around the reference"
+eq "${ deps 'Depends on *#52*'; }"     '52' "UNDER: *italic* around the reference"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ deps 'Depends on _#52_'; }"     '52' "UNDER: _italic_ around the reference"
 # (the single-backtick span is pinned in 6i, beside the code-span rule it constrains)
-eq "${ deps "Depends on ${bt}${bt}#52${bt}${bt}"; }" '52' "UNDER: a double-backtick span too"
-eq "${ deps 'Blocked by **#52**'; }"   '52' "UNDER: the blocked-by keyword takes it as well"
+eq "${ deps "Depends on ${bt}${bt}#52${bt}${bt}"; }" '52' "UNDER: a double-backtick span too"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'Blocked by **#52**'; }"   '52' "UNDER: the blocked-by keyword takes it as well"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ deps 'Depends on _**#5**_'; }"  '5'  "UNDER: nesting resolves at the INNERMOST pair"
 eq "${ deps 'Depends on *_#5_*'; }"    '5'  "UNDER: ...whose run is length 1, not 2 (the scan loop)"
 
@@ -1437,7 +1435,7 @@ eq "${ deps "Depends on ${bt}#5, #6${bt}"; }" '5 6' "UNDER: ...including a code 
 eq "${ deps 'Depends on **#5'; }"            '5'   "UNDER: an unclosed opener still declares"
 eq "${ deps "Depends on ${bt}#5 and more${bt}"; }" '5' \
    "UNDER: a phrase-quoted reference still declares (the edge is real; markup is not content)"
-eq "${ deps 'Depends on **#73** and **#78**' 73; }" '78' "UNDER: the self-edge is still dropped"
+eq "${ deps 'Depends on **#73** and **#78**' 73; }" '78' "UNDER: the self-edge is still dropped"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ deps 'Depends on **#999999999**'; }"  '999999999' "UNDER: a formatted 9-digit reference resolves" # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
 
 # OVER — the guard that matters most: the tolerance must not become a blanket punctuation skip.
@@ -1460,13 +1458,13 @@ eq "${ deps 'Depends on **[#5](http://x)**'; }" '' "OVER: ...nor a bolded one"
 # widened grammar at all — they carry no `depend`/`blocked`, so the cheap bail discards the line
 # before STEP runs — which is precisely the guarantee they pin: formatting must not turn a
 # non-keyword into one. The rest DO exercise STEP.
-eq "${ deps 'Refs **#52**'; }"  '' "OVER: 'Refs' is still not a keyword, however formatted"
-eq "${ deps 'See **#52**'; }"   '' "OVER: ...nor 'See'"
-eq "${ deps '**#52**'; }"       '' "OVER: a bare formatted reference is still not an edge"
+eq "${ deps 'Refs **#52**'; }"  '' "OVER: 'Refs' is still not a keyword, however formatted"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'See **#52**'; }"   '' "OVER: ...nor 'See'"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps '**#52**'; }"       '' "OVER: a bare formatted reference is still not an edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ deps 'Depends on **acme/repo#5**'; }" '' "OVER: a bolded QUALIFIED reference is still not local"
 eq "${ deps 'Depends on acme/repo**#5**'; }" '' "OVER: ...nor one whose number alone is bolded"
-eq "${ deps 'No longer depends on **#25**'; }" '' "OVER: a formatted negation still RETIRES"
-eq "${ deps 'No longer **depends on:** #25'; }" '' "OVER: ...with the keyword formatted too"
+eq "${ deps 'No longer depends on **#25**'; }" '' "OVER: a formatted negation still RETIRES"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ deps 'No longer **depends on:** #25'; }" '' "OVER: ...with the keyword formatted too"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ deps "This is ${bt}not${bt} blocked by **#5**"; }" '' \
    "OVER: a code-formatted negator still retires a formatted edge"
 eq "${ deps "${bt}Depends on${bt} **#5**"; }" '' \
@@ -1705,10 +1703,8 @@ fi
 dcs() { printf '%b' "$1" | run_rl decisions; }
 
 D_HEAD='## Decisions\n| Question | Decision | Recorded |\n| -------- | -------- | -------- |\n'
-eq "${ dcs "${D_HEAD}| dep-outside-release:#73 | re-scoped | #73 body |\n"; }" 'dep-outside-release:#73' \
-   "a recorded question id is reported"
-eq "${ dcs "${D_HEAD}| \`dep-outside-release:#73\` | re-scoped | — |\n"; }" 'dep-outside-release:#73' \
-   "surrounding backticks are stripped (a row is written by hand)"
+eq "${ dcs "${D_HEAD}| dep-outside-release:#73 | re-scoped | #73 body |\n"; }" 'dep-outside-release:#73' "a recorded question id is reported"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ dcs "${D_HEAD}| \`dep-outside-release:#73\` | re-scoped | — |\n"; }" 'dep-outside-release:#73' "surrounding backticks are stripped (a row is written by hand)"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ dcs "${D_HEAD}|   unmilestoned:#5   | leave it | — |\n"; }" 'unmilestoned:#5' \
    "cell whitespace is trimmed"
 eq "${ dcs "${D_HEAD}| a:#1 | x | — |\n| b:#2 | y | — |\n"; }" 'a:#1 b:#2' "every row is reported"
@@ -1730,8 +1726,7 @@ eq "${ dcs "${D_HEAD}<!-- a comment -->\n| a:#1 | x | — |\n"; }" 'a:#1' \
 # STRUCTURE (#117) — `decisions` reads the same document as `deps-from-body`, so it runs the same
 # filter. Without it, two bugs live here, and the artifact ships BOTH shapes inside this very
 # section (a schema HTML comment, and fenced examples elsewhere in the body).
-eq "${ dcs "${D_HEAD}${q3}\n| fake:#99 | a quoted example | — |\n${q3}\n| a:#1 | x | — |\n"; }" 'a:#1' \
-   "a table row quoted in a fence is NOT a recorded decision (it would retire an unanswered question)"
+eq "${ dcs "${D_HEAD}${q3}\n| fake:#99 | a quoted example | — |\n${q3}\n| a:#1 | x | — |\n"; }" 'a:#1' "a table row quoted in a fence is NOT a recorded decision (it would retire an unanswered question)"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ dcs "${D_HEAD}${q3}\n# not a heading\n${q3}\n| a:#1 | x | — |\n"; }" 'a:#1' \
    "a #-line quoted in a fence does not end the section (that is #108 returning by another route)"
 eq "${ dcs "${D_HEAD}<!--\n| example:#7 | the schema's own example row | — |\n-->\n| a:#1 | x | — |\n"; }" 'a:#1' \
@@ -1791,8 +1786,7 @@ eq "$?" 2 "decisions takes no arguments"
 
 # A decision row can DECLARE or RETIRE an edge in the same vocabulary an issue body uses — the
 # composition that makes `## Decisions` a real edge source rather than a second dialect.
-eq "${ deps 'Re-scoped to a standalone driver; no longer depends on #25'; }" '' \
-   "a decision row that retires an edge yields no edge"
+eq "${ deps 'Re-scoped to a standalone driver; no longer depends on #25'; }" '' "a decision row that retires an edge yields no edge"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ deps 'Confirmed: depends on #78 only.'; }" '78' \
    "a decision row that declares an edge yields it"
 
