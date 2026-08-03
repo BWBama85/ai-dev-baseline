@@ -1810,3 +1810,99 @@ limit: none of them is sufficient alone.
              non-security failures are silent, which is the failure mode this repo's self-review
              practice singles out as worse than a crash.
 - baseline-issue: n/a
+
+## D35 — the below-floor set is three files, and the rule is "who reports the bad interpreter"
+
+- date:      2026-08-03
+- category:  project-delta
+- unknown:   D30 exempts `scripts/lib/common.sh` from the 5.3 floor by name, and names #258/#259 as
+             the issues that must skip it. #259 then asks for **all** of `scripts/check-*.sh` to be
+             modernized. Nothing in the baseline says whether the floor OBSERVER — which D31
+             deliberately exempts from the runtime gate so it can run on a below-floor interpreter —
+             is also exempt from 5.3 *syntax*, and nothing at all says what happens to a file the
+             observer SOURCES.
+- decision:  Three files, not one. `scripts/lib/common.sh` (D30), `scripts/check-bash-floor.sh`
+             (the observer), and `scripts/check-lib.sh` (which the observer sources at line 35)
+             must stay EVALUABLE below the floor. The rule that decides membership is not "is it a
+             library" but **"does this code have to run in order to report that the interpreter is
+             too old"** — everything on that path is exempt, transitively, and everything else is
+             not. `check-bash-floor-guard.sh` DOES gate its own interpreter and is not exempt.
+
+             Measured rather than assumed, because the failure is subtler than a syntax error:
+             bash 3.2 PARSES `${ command; }` (a `bash -n` over the converted observer is clean) and
+             fails at EXPANSION, so the observer's whole diagnostic is replaced by one
+             `bad substitution` line while the exit status stays 1. An rc-only assertion sees
+             nothing wrong. Proven by converting a COPY of the tree and running
+             `/bin/bash scripts/check-bash-floor.sh --runtime`: pristine prints
+             `running interpreter /bin/bash (3.2.57)`, converted prints only the bad-substitution
+             line.
+- placement: `scripts/check-bash-floor-guard.sh` — a comment-stripped source scan asserting neither
+             file contains `${ …; }` / `${| …; }`, plus its own negative test on a copy carrying an
+             injected funsub, plus a case proving it does NOT fire on ordinary `${VAR}` expansion.
+             A SOURCE scan rather than an execution because the existing under-3.2 case is guarded
+             on `/bin/bash` genuinely being 3.2 and therefore skips on every Linux runner, while
+             this invariant has to hold on both.
+- reason:    D30's own wording — "a caller cannot reach that function until sourcing has finished,
+             so a 5.3-only construct there makes the gate unreachable on exactly the hosts it exists
+             for" — is an argument about *reachability on an old interpreter*, not about that one
+             file. The observer is the same argument one step further out: it is the thing that
+             TELLS you the interpreter is too old, so it cannot require the new one. Leaving that
+             implicit is what a mechanical sweep erases, which is why it is pinned rather than
+             written down.
+- baseline-issue: n/a
+
+## D36 — #259's acceptance list, narrowed on evidence
+
+- date:      2026-08-03
+- category:  project-delta
+- unknown:   #259 states five acceptance criteria in absolute terms ("no bash-3.2 workaround
+             comments remain", "helper-function and `printf` substitutions use `${ command; }`",
+             "passes on all three platforms"). The gap-analysis pass classified four of the five as
+             literally unsatisfiable. D33 is the precedent — #258's list was likewise written
+             before the constraint that governs it — so the same treatment applies rather than
+             either failing the issue or quietly under-delivering.
+- decision:  Delivered as narrowed, one criterion at a time:
+
+             1. **"No bash-3.2 workaround comments"** → no *workaround* remains. Three classes of
+                3.2 MENTION deliberately stay, and each is load-bearing: the floor observer and its
+                guard suite (which build and execute real 3.2 fixtures), `check-fact-drift.sh`'s
+                negative-pin rules and their `fires:` witnesses (which must spell the retired
+                strings to be firable at all), and `check-implement-gate.sh`'s account of the
+                `read -t` divergence, which explains why case U2 exists. That last one was
+                re-measured rather than trusted: 3.2 returns status 1 with an empty variable, 5.3
+                returns 142 with the bytes — exactly as written. Where the constraint is gone but
+                the shape is right, the rationale is REWRITTEN, not deleted (#258's precedent).
+             2. **`check-claims.sh` caches in a `declare -A`** → delivered in full.
+             3. **"Helper-function and `printf` substitutions use `${ command; }`"** → delivered for
+                the ELIGIBLE, audited set: 1,562 of 2,251 sites. The criterion as written is a
+                LEXICAL test on the first word, and the safe set is smaller, because `${ ; }` also
+                stops containing what the body does. What is excluded, and why:
+                  * 546 an external binary (the issue itself says not to churn these);
+                  * 52 a multi-line body; 24 in a comment; 16 in a heredoc (prose and fixture text);
+                  * 21 in a file that must stay evaluable below the floor (D35);
+                  * 20 with no leading command word;
+                  * 8 the `cmd 2>&1 >/dev/null` stderr-only capture, and 2 an unquoted
+                    word-splitting context. These two are NOT safety: bash treats both spellings
+                    identically (probed both ways), but shellcheck 0.11.0 models only `$( )` and
+                    fires SC2043/SC2069 on the funsub, so converting would buy nothing and cost a
+                    `# shellcheck disable=` line.
+                A helper that assigns a global, `cd`s outside a subshell, or calls `exit` is
+                excluded too — `exit` inside a funsub kills the whole harness (verified). Two such
+                helpers were FIXED rather than excluded (`rc_snip`, `runs`), because both were
+                latent hazards that only the subshell was containing.
+             4. **"`selfcheck.sh` passes on all three platforms"** → met for the two CI actually
+                runs, `ubuntu-26.04` and `macos-latest`. There is no WSL2 leg; D32 sliced it and #2
+                tracks it. Same narrowing D33 applied to #258.
+             5. **Report the measured before/after wall clock** → delivered, and the issue's
+                *premise* is corrected rather than confirmed. #259 attributes the 18m55s to "`gh`
+                network round-trips"; `selfcheck` is hermetic (roadmap stubs `gh`, claims omits its
+                live half), so there are none. The ~1% prediction survives anyway, for a different
+                reason: a subshell fork is ~0.30 ms (measured), and even several thousand runtime
+                sites is single-digit seconds against a run of this length.
+- placement: this entry; the PR body carries the measurements and the per-suite equivalence proof.
+- reason:    An acceptance list is a statement of intent written before the code was read. Where
+             reading it proves a criterion cannot hold, the honest move is to say which one, why,
+             and what was delivered instead — not to force it and break a guard, and not to call
+             the issue done while quietly meeting less. Every narrowing above is backed by a
+             measurement or a proof in the tree, not by preference.
+- baseline-issue: n/a

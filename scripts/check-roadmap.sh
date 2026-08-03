@@ -1114,11 +1114,9 @@ eq "${ deps 'Depends on issue 5'; }" '' "a reference without '#' is not an edge"
 # A digit run wider than any issue number must be REJECTED before the numeric conversion: awk
 # would otherwise hold a float and print it rounded/in exponent form, emitting a fabricated
 # "issue number" no tracker can have. (Self-review find, mirrors release-ready's is_uint bound.)
-eq "${ deps 'Depends on #99999999999999999999'; }" '' \
-   "an over-wide reference is not an edge (never a float-formatted fake number)"
-eq "${ deps 'Depends on #99999999999999999999, #5'; }" '5' \
-   "...and the rest of the chain still resolves"
-eq "${ deps 'Depends on #999999999'; }" '999999999' "a 9-digit reference still resolves (bound is not over-tight)"
+eq "${ deps 'Depends on #99999999999999999999'; }" '' "an over-wide reference is not an edge (never a float-formatted fake number)"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ deps 'Depends on #99999999999999999999, #5'; }" '5' "...and the rest of the chain still resolves"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ deps 'Depends on #999999999'; }" '999999999' "a 9-digit reference still resolves (bound is not over-tight)" # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
 eq "${ deps 'Depends on #0'; }" '' "#0 is not an issue reference"
 # A keyword and its reference must share a line — a wrapped 'dependency' reads as one to nobody.
 eq "${ deps "${ printf 'Depends on\n#5'; }"; }" '' "a keyword and reference split across lines is not an edge"
@@ -1407,8 +1405,8 @@ eq "${ deps 'Depends on *_#5_*'; }"    '5'  "UNDER: ...whose run is length 1, no
 
 # UNDER — the closing run of emphasis that WRAPPED THE KEYWORD, which is what actually broke.
 # `- **Blocked by** #155` is the exact form six live edges were written in.
-eq "${ deps '- **Blocked by** #155'; }" '155' "UNDER: a bolded keyword's closer, the live shape"
-eq "${ deps '*Blocked by* #155'; }"     '155' "UNDER: ...italic"
+eq "${ deps '- **Blocked by** #155'; }" '155' "UNDER: a bolded keyword's closer, the live shape" # adb-claim-ok: parser INPUT, not a citation — the grammar under test, not a claim about #155
+eq "${ deps '*Blocked by* #155'; }"     '155' "UNDER: ...italic" # adb-claim-ok: parser INPUT, not a citation — the grammar under test, not a claim about #155
 eq "${ deps '**Depends on:** #78'; }"   '78'  "UNDER: the colon INSIDE the emphasis"
 eq "${ deps '**Depends on**: #78'; }"   '78'  "UNDER: ...and outside it"
 eq "${ deps '__Depends on:__ #78'; }"   '78'  "UNDER: ...with __ delimiters"
@@ -1417,8 +1415,8 @@ eq "${ deps '**Blocked by** **#78**'; }" '78' "UNDER: both halves formatted at o
 # UNDER — the forms that already worked must not regress. `**Depends on: #78 only.**` is the one
 # that made this defect so easy to miss: the `**` never sits between the keyword and the number.
 eq "${ deps '**Depends on: #78 only.**'; }" '78' "UNDER: emphasis PRECEDING the keyword (worked before)"
-eq "${ deps '- Blocked by #155'; }"         '155' "UNDER: the unformatted list item (worked before)"
-eq "${ deps '- **Blocked by #155**'; }"     '155' "UNDER: the whole clause bolded (worked before)"
+eq "${ deps '- Blocked by #155'; }"         '155' "UNDER: the unformatted list item (worked before)" # adb-claim-ok: parser INPUT, not a citation — the grammar under test, not a claim about #155
+eq "${ deps '- **Blocked by #155**'; }"     '155' "UNDER: the whole clause bolded (worked before)" # adb-claim-ok: parser INPUT, not a citation — the grammar under test, not a claim about #155
 eq "${ deps 'Depends on #5**'; }"           '5'   "UNDER: a stray trailing run does not invalidate a direct reference"
 
 # UNDER — chains and the numeric bound survive formatting.
@@ -1440,7 +1438,7 @@ eq "${ deps 'Depends on **#5'; }"            '5'   "UNDER: an unclosed opener st
 eq "${ deps "Depends on ${bt}#5 and more${bt}"; }" '5' \
    "UNDER: a phrase-quoted reference still declares (the edge is real; markup is not content)"
 eq "${ deps 'Depends on **#73** and **#78**' 73; }" '78' "UNDER: the self-edge is still dropped"
-eq "${ deps 'Depends on **#999999999**'; }"  '999999999' "UNDER: a formatted 9-digit reference resolves"
+eq "${ deps 'Depends on **#999999999**'; }"  '999999999' "UNDER: a formatted 9-digit reference resolves" # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
 
 # OVER — the guard that matters most: the tolerance must not become a blanket punctuation skip.
 # Each of these is one character away from a fixture above.
@@ -1475,10 +1473,8 @@ eq "${ deps "${bt}Depends on${bt} **#5**"; }" '' \
    "OVER: a quoted KEYWORD declares nothing even when the reference is real markup"
 eq "${ deps 'Depends on **#5** (the gate) and #6'; }" '5' \
    "OVER: formatting does not defeat the conservative chain stop"
-eq "${ deps 'Depends on **#9999999999**'; }" '' \
-   "OVER: the 10-digit bound holds through formatting (leftmost-longest must not truncate to 9)"
-eq "${ deps 'Depends on **#99999999999999999999**, **#5**'; }" '5' \
-   "OVER: ...and the rest of a formatted chain still resolves"
+eq "${ deps 'Depends on **#9999999999**'; }" '' "OVER: the 10-digit bound holds through formatting (leftmost-longest must not truncate to 9)"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
+eq "${ deps 'Depends on **#99999999999999999999**, **#5**'; }" '5' "OVER: ...and the rest of a formatted chain still resolves"  # adb-claim-ok: a width-bound fixture; the number is deliberately one no tracker can have
 eq "${ deps 'Depends on **#0**'; }" '' "OVER: #0 is not an issue reference, formatted or not"
 
 # OVER — STRUCTURE still wins over the widened match. A formatted edge inside a fence, a comment

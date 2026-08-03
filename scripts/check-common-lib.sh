@@ -1045,7 +1045,7 @@ eq "${ rmatch 'foo' 'FOO[BOT]'; }"           "false" "identity: a RAW uppercase 
 eq "${ rmatch 'foo[bot]' 'FOO[BOT]'; }"      "true"  "identity: a RAW uppercase declaration still matches its App"
 eq "${ rmatch 'foo' 'FOO'; }"                "true"  "identity: a RAW uppercase bare declaration matches"
 eq "${ rmatch 'foo[bot]' 'foo[bot]'; }"      "true"  "identity: '[bot]' declared, '[bot]' login -> match"
-eq "${ rmatch 'foo' 'foo[bot]'; }"           "false" "identity: '[bot]' declared, HUMAN login -> NO match (#176's fail-open)"
+eq "${ rmatch 'foo' 'foo[bot]'; }"           "false" "identity: '[bot]' declared, HUMAN login -> NO match (#176's fail-open)"  # adb-claim-ok: deliberately historical; #176 is named as the fail-open this case pins
 eq "${ rmatch 'foo[bot][bot]' 'foo[bot]'; }" "false" "identity: a DOUBLED suffix does not satisfy '[bot]' declared"
 eq "${ rmatch 'bar' 'foo'; }"                "false" "identity: an unrelated login does not match"
 eq "${ rmatch 'bar[bot]' 'foo'; }"           "false" "identity: an unrelated BOT does not match (an allowlist, not a heuristic)"
