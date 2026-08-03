@@ -70,7 +70,10 @@ fail=0
 #
 #   * it runs `scripts/build.sh`, which REWRITES tracked generated files in the working tree, and
 #   * the root-doc render is a plain `> "$outfile"` truncate-and-write (scripts/build.sh:52), not
-#     a temp-then-rename.
+#     a temp-then-rename — unlike the skill render in the same file, which does temp-then-mv. That
+#     asymmetry is a defect in its own right (an interrupted build leaves a truncated tracked file)
+#     and is tracked in #268; fixing it removes the torn-single-file case but NOT this pin, because
+#     the three root docs still do not update atomically with respect to each other.
 #
 # So while it runs, `agents/claude/CLAUDE.md` and its two siblings can be observed half-written —
 # by `workflow-map` and `skill-frontmatter` here, and by `fact-drift`, `injection`, `bash-floor`,
