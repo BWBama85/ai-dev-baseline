@@ -269,7 +269,7 @@ _ADB_PW_MAX_UNREADABLE=3
 # would make `wait` return before its first read.
 #
 # The LENGTH bound is not belt-and-braces: an all-digit value wider than a shell integer overflows
-# the `$(( deadline - SECONDS ))` arithmetic below, so `--max-secs 99999999999999999999` would pass
+# the `$(( deadline - BASH_MONOSECONDS ))` arithmetic below, so `--max-secs 99999999999999999999` would pass
 # a digits-only check and then produce a nonsense (possibly negative) remaining time — a "bound"
 # that expires immediately or never. 18 digits is the same ceiling `roadmap-lib.sh`'s `is_uint`
 # documents for the same reason; the shared validator is #181 (which consolidated #150).
@@ -451,11 +451,27 @@ cmd_wait() {
   [ "$wrc" -eq 0 ] || return "$wrc"
   adb_require_gh jq || return 20
 
-  # $SECONDS is a bash builtin (no fork, works on bash 3.2) counting seconds since shell start.
+  # $BASH_MONOSECONDS is a bash 5.3 builtin (no fork) reading CLOCK_MONOTONIC. It replaced $SECONDS
+  # here under the 5.3 floor (#258), and the difference is not cosmetic: $SECONDS is `time(NULL)`
+  # minus the shell's start, so it MOVES WITH THE WALL CLOCK. An ntp step or a manual clock change
+  # during a half-hour watch — which is exactly the length this loop is built for — either expires
+  # the bound early or extends it indefinitely. The monotonic clock does not move that way.
+  #
+  # SAY THE GUARANTEE EXACTLY, because the obvious stronger sentence is false. "$BASH_MONOSECONDS
+  # cannot be moved by anyone" is wrong: while the variable retains its special nature bash refuses
+  # a direct assignment, but `unset BASH_MONOSECONDS` STRIPS that nature, after which it is an
+  # ordinary writable variable (measured; the independent review found the overclaim). What is
+  # actually true, and sufficient here: this file is an EXECUTED entry point — it gates its own
+  # interpreter above and dispatches unconditionally on load, never sourced — and an executed bash
+  # constructs the special variable afresh regardless of what the environment carried. So the
+  # guarantee is against the SYSTEM CLOCK, not against an in-process caller; and an in-process
+  # caller who can `unset` a shell variable can already run anything this file could.
+  # Pinned in check-pr-watch.sh, T1 (the property) and T2 (that this code reads it).
+  #
   # Compute the DEADLINE once rather than keeping a start-time and a duration and subtracting both
-  # every pass: the name is then true, and it stays correct when the file is run from a shell whose
-  # $SECONDS did not start at 0.
-  deadline=$(( SECONDS + OPT_MAX_SECS ))
+  # every pass: the name is then true, and it stays correct whatever the counter's origin happens
+  # to be — which is why a shell whose clock did not start at 0 was never the problem worth solving.
+  deadline=$(( BASH_MONOSECONDS + OPT_MAX_SECS ))
 
   # Report an interruption honestly rather than letting the shell's default status stand in for a
   # verdict: an operator ^C is "we stopped watching", which is `pending`, not `clean`. `exit`, not
@@ -495,7 +511,7 @@ cmd_wait() {
         lasthead="$head" ;;
     esac
 
-    remaining=$(( deadline - SECONDS ))
+    remaining=$(( deadline - BASH_MONOSECONDS ))
     if [ "$remaining" -le 0 ]; then
       # Only echo a verdict line if the last poll actually produced one. An unreadable poll writes
       # nothing to stdout, so an unguarded print would emit a BARE NEWLINE — stdout is contracted

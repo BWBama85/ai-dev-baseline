@@ -1684,3 +1684,129 @@ limit: none of them is sufficient alone.
              `base/practices/issues-and-scope.md` calls worse than a gap ("it splits context and
              doubles triage"). The requirement that practice actually imposes is that deferred work
              live in an OPEN ISSUE rather than a PR-body note, and #2 satisfies it.
+
+## D33 — #258's acceptance list was written before D30, and D30 wins
+- date:      2026-08-02
+- category:  project-delta
+- unknown:   #258 ("modernize `scripts/lib/`, adapters and hook scripts") was filed against a tree
+             where `scripts/lib/common.sh` was in scope. D30 then exempted that file permanently
+             and named #258 as the thing it constrains. Nothing said what happens to the issue's
+             acceptance list, and four of its six checkboxes turn out to be affected — two of them
+             unsatisfiable as literally written. An implementer reading only the issue would either
+             break the bootstrap carve-out or report criteria met that were not.
+- decision:  D30 wins; #258's list is honoured as narrowed below, and the narrowing is recorded
+             here rather than re-derived by the next reader.
+             1. "Zero bash-3.2 workaround comments in `scripts/lib/`" — **narrowed** to the
+                non-bootstrap files. `common.sh` KEEPS its 3.2 rationale by design (D30 pins the
+                word `parseable` there via `check-fact-drift.sh`'s `bash-floor-bootstrap-carveout`),
+                so a literal reading of this box requires deleting the carve-out it must preserve.
+                Met for the eligible set: the four accommodation sites are gone. What remains in
+                those files is PAST-TENSE history of what changed and why, which is retained
+                deliberately — deleting it makes the next reader re-derive the shape of the code.
+             2. "`skill-compose.sh` returns via nameref" — **met**, and see the API note below.
+             3. "The temp-dir-as-map and parallel-array patterns are gone in favour of `declare -A`"
+                — **vacuous**: no such pattern exists in the eligible files. There is no `eval`-as-
+                map, no `mktemp -d` used as a map (`project-gates.sh`'s is a per-run log dir — what
+                `check-gates.sh` asserts about it is the FAILURE path, that a failed `mktemp -d`
+                must not `rm -rf` the shared temp dir; the successful cleanup is unobserved, so
+                deleting it would leak a log dir per run and leave the suite green), and no
+                key/value array pair. The map-shaped
+                code that does exist is inside awk programs, which have had associative arrays since
+                1977. Nothing was converted, because converting the ordered lists that ARE there
+                (`skill-compose.sh`'s `names`, `statusline.sh`'s `parts`) to an unordered container
+                would lose ordering their callers depend on.
+             4. "`adb_run_bounded` and `pr-watch.sh` time against `BASH_MONOSECONDS`" — the
+                `pr-watch.sh` half is **met**; the `adb_run_bounded` half is **refused**, because
+                that function is in `common.sh`. Referencing `BASH_MONOSECONDS` there would parse
+                below the floor (it is an ordinary expansion), so this is not the bootstrap paradox
+                D30 was written for — it is refused on D30's plain terms instead: `common.sh` is the
+                one file the modernization skips, and a carve-out that admits a first exception on a
+                judgement call is not a carve-out. The gain forgone is small and worth naming: the
+                `$SECONDS` reference there guards ONE heuristic (normalizing GNU `timeout`'s 137 to
+                124 when the bound really did elapse), so a clock step would at worst mislabel an
+                already-failed run's status.
+             5. "Every existing `check-*.sh` still passes, on all three platforms" — **met for
+                two.** CI runs this suite on `ubuntu-26.04` and `macos-latest`; there is no
+                Windows/WSL2 job, because D32 sliced that CI leg and **#2 stays open to track it**.
+                Reporting three platforms would be a claim no run supports.
+             6. "shellcheck still clean (may need a `--shell=bash` version bump)" — **met, no bump
+                needed**, but the premise is wrong twice and #259 will hit the second one. It
+                conflates shell MODE with tool VERSION: mode is already selected by each file's bash
+                shebang, and CI pins no version at all (apt on Ubuntu, brew on macOS). Measured on
+                0.11.0, `${ command; }`, `mapfile`, `${var,,}` and `declare -A` all parse clean.
+                **Namerefs do not, quite:** `SC2034 "appears unused"` fires on a nameref local that
+                is only ever assigned — which is exactly the output-parameter shape #258 asks for,
+                since the read happens in the caller's scope through a name shellcheck cannot
+                follow. It needs an explicit `# shellcheck disable=SC2034`. `adb_sc_paths` carries
+                one; without it that file was clean only because its collision `case` arm happens to
+                mention the three names, which is luck, not cleanliness.
+             **The issue's one non-checkbox request is dispositioned too**, because a reconciliation
+             that covers only the boxes leaves the next reader to re-litigate the rest. #258 invites
+             a pass over four long functions — `cmd_roll` (`release-convention.sh:429`),
+             `_adb_deps_scan` (`roadmap-lib.sh:787`), `cmd_check` (`currency-lib.sh:185`) and
+             `cmd_gate` (`pr-review.sh:137`) — on the stated grounds that "associative arrays and
+             namerefs are exactly what they were missing". All four were inspected; none of them was
+             missing either. `_adb_deps_scan` is 207 lines of **awk**, a language with associative
+             arrays since 1977 and no namerefs to want, so the premise does not apply to it at all;
+             the other three are control flow and API sequencing, not data structures. No concrete
+             transformation is specified and none is implied by the constructs named, so nothing was
+             changed. This is recorded as *inspected and inapplicable*, not as skipped.
+- placement: this entry; `CHANGELOG.md` [Unreleased]; and restated in the implementing PR's body so
+             the issue's reader and the diff's reader see the same list.
+- reason:    An acceptance list that cannot be satisfied is not a standard, it is a trap: the next
+             agent either breaks D30 to tick box 1, or ticks box 3 by inventing a `declare -A`
+             refactor of code that has no map in it. Both were live risks — the gap-analysis pass
+             classified all three of these as BLOCKING and stopped. Writing the reconciliation down
+             once means the issue can close honestly instead of staying open against boxes that
+             describe a tree that no longer exists.
+- review:    Building U2 in `check-implement-gate.sh` found a REAL defect that the floor itself had
+             made universal, which is the argument for treating a "comment-only" modernization as
+             code. (Precisely: the reliance arrived with #180; until #256 the shebang was a bare
+             `#!/usr/bin/env bash`, so the behaviour depended on which interpreter `PATH` resolved —
+             stock macOS gave 3.2 and the safe discard, a Homebrew-first `PATH` gave 4.2+ and the
+             retention. #256's re-exec removed the coin flip in the unsafe direction.)
+             `this_session()` in `implement-issue-gate.sh` relied on bash 3.2 DISCARDING partial
+             input when `read -t` fires, and said so. bash >= 4.2 KEEPS it (measured: 3.2 returns
+             status 1 with an empty variable, 5.3 returns 142 with the bytes), so on the floor
+             interpreter a writer that sent a complete payload and never closed the pipe had its
+             session id ADOPTED — and the Stop hook then fell silent for a marker it should have
+             enforced. Only jq's refusal to parse a truncated object was preventing the same thing
+             for partial writes, which is luck, not a rule. The existing bound fixture (case U)
+             could not see it: it writes no bytes at all, so it cannot tell a discard from a
+             retention. The discard is now explicit (`rc > 128`) and U2 pins it.
+- baseline-issue: n/a — this is a scope reconciliation between two of THIS repo's own records.
+
+## D34 — `adb_sc_paths` takes output-variable names, and validates them
+- date:      2026-08-02
+- category:  project-delta
+- unknown:   #258 requires `skill-compose.sh:264` to "return via nameref, not globals". The function
+             is `adb_sc_paths` — no underscore prefix, so by this repo's naming convention it reads
+             as a PUBLIC surface of a library that `install.sh` symlinks into every consumer's
+             `~/.<agent>/scripts/lib`. Changing how a public function returns is a compatibility
+             question the issue does not answer, and the gap-analysis pass raised it as needing an
+             owner decision.
+- decision:  Converted, with no compatibility shim. The function's OUTPUTS were `_sc_base`,
+             `_sc_ov` and `_sc_out` — underscore-prefixed, i.e. private by the same convention that
+             made the function name look public. A consumer could only have depended on this by
+             reading names the repo marks private, and a tree-wide search found no reader outside
+             `skill-compose.sh` itself (three call sites, all updated in the same commit). So the
+             surface that looked public had no public part to preserve.
+
+             The nameref conversion VALIDATES its three output names — a plain identifier, not
+             colliding with the function's own locals, all three distinct — and returns 2 rather
+             than warning. That is not defensive garnish: `declare -n ref=$x` EVALUATES an array
+             subscript inside `$x`, so an unvalidated output name is an arbitrary-command-execution
+             seam in a library that installs into consumer repos. The other two rejections cover
+             the nameref failures that are SILENT — a circular reference leaves the caller's
+             variable unset (it would compose against an empty path), and three names that are one
+             variable would make all three paths equal to the last assignment.
+- placement: `scripts/lib/skill-compose.sh` (`adb_sc_paths` and its three callers); fixtures S1-S15
+             in `scripts/check-skill-compose.sh`, which call the function DIRECTLY — every
+             pre-existing assertion reaches it through the CLI and can only observe the file it
+             eventually wrote, so none of them can see a return convention at all.
+- reason:    A shim for a contract nobody held would be permanent cost for zero protection, and
+             `docs/design-principles.md` already forbids the second implementation it would create.
+             The validation is here rather than left to bash because the seam is real and the two
+             non-security failures are silent, which is the failure mode this repo's self-review
+             practice singles out as worse than a crash.
+- baseline-issue: n/a

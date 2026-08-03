@@ -109,8 +109,49 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     reference is consumed by the chain and never reaches the window — they were vacuous, and only
     the mutation said so.
 
+- **The bash-3.2 accommodations are gone from the libraries, adapters and hook scripts** (#258;
+  D33, D34). The floor is 5.3 and enforced (#256/#257), so code shaped by a 2006 interpreter is
+  code shaped by nothing.
+  - **`adb_sc_paths` returns through namerefs**, not three shared `_sc_*` globals, and it
+    **validates its output names** — a plain identifier, none colliding with its own locals, all
+    three distinct — returning 2 rather than warning. That is a security boundary, not tidiness:
+    `declare -n ref=$x` *evaluates an array subscript inside `$x`*, so an unvalidated output name is
+    an arbitrary-command-execution seam in a library `install.sh` symlinks into every consumer's
+    runtime. The other two rejections cover the nameref failures that are **silent** — a circular
+    reference leaves the caller's variable unset, and three names that are really one variable make
+    all three paths equal to the last assignment. Sixteen fixtures call the function directly, because
+    every pre-existing assertion reaches it through the CLI and can only see the file it eventually
+    wrote — never a return convention.
+  - **`pr-watch.sh` bounds its watch with `BASH_MONOSECONDS`.** `$SECONDS` is `time(NULL)` minus the
+    shell's start, so it moves with the wall clock; an ntp step during the half-hour wait this loop
+    exists for either expires the bound early or extends it indefinitely.
+  - **Retired rationale is rewritten, not deleted.** Where a 3.2 constraint no longer applies but
+    the shape is still right — `read -r -d ''` over `$(cat <<…)`, a `case` glob over a fork — the
+    comment now gives the reason that actually holds. The past tense is kept deliberately, so the
+    next reader does not re-derive why the code looks as it does.
+  - **What #258 asked for that was NOT done, and why** (D33): `common.sh` is untouched — D30 exempts
+    it permanently, which narrows the "zero workaround comments" criterion and refuses the
+    `adb_run_bounded` half of the `BASH_MONOSECONDS` one. The `declare -A` criterion is **vacuous**:
+    no temp-dir-as-map or parallel-array pattern exists in the eligible files, and the ordered lists
+    that do exist would lose ordering their callers depend on. "All three platforms" is met for
+    **two** — there is no WSL2 CI job, which **#2** tracks.
+
 ### Fixed
 
+- **The 5.3 floor made a Stop hook adopt a session id off a stream it never finished reading**
+  (found while implementing #258; the exposure predates this PR). The reliance arrived with #180;
+  until #256 the shebang was a bare `#!/usr/bin/env bash`, so which behaviour you got depended on
+  which interpreter `PATH` resolved — stock macOS gave 3.2 and the safe discard, a Homebrew-first
+  `PATH` gave 4.2+ and the retention. **#256's re-exec made >= 5.3, and therefore the retention,
+  universal.** `this_session()` in
+  `implement-issue-gate.sh` relied on bash 3.2 **discarding** partial input when `read -t` fires,
+  and its comment said so. bash >= 4.2 **keeps** it — measured: 3.2 returns status 1 with an empty
+  variable, 5.3 returns 142 with the bytes. So a writer that sent a complete payload and then never
+  closed the pipe had its id adopted, and the gate fell **silent** for a marker it should have
+  enforced. Partial writes were saved only by jq refusing to parse a truncated object, which is luck
+  rather than a rule. The discard is now the gate's own (`rc > 128`), where unknown identity falls
+  back to branch matching — the direction that enforces. The existing bound fixture could not see
+  any of this: it writes **no bytes**, so it cannot tell a discard from a retention.
 - **A crashed edge scan answered "this body declares no edges"** (found while implementing #132).
   `deps-from-body` ran `awk | sort`, and a pipeline reports only its last command, so a broken scan
   exited **0 with empty output** — indistinguishable from a clean negative, and the direction that

@@ -582,4 +582,131 @@ printf -- '---\n%s v1 — DO NOT EDIT BY HAND.\nname: orphan\n---\n# /orphan\n' 
 sc3 check   >/dev/null 2>&1; no $? "no-name check fails on an orphaned composed output"
 sc3 compose >/dev/null 2>&1; no $? "no-name compose fails on an orphaned composed output"
 
+# ============ (S) adb_sc_paths — the RETURN CONVENTION, called directly (#258) ============
+# Every assertion above reaches this function through the CLI, and none of them can see how it
+# HANDS BACK its three paths — they observe only the file it eventually wrote. #258 replaced three
+# shared globals with namerefs, and a nameref has FOUR failure modes no path-shaped assertion
+# reaches. Three of them are SILENT, which is why each gets its own case:
+#
+#   collision — an output name matching the function's own `_asp_` prefix is a CIRCULAR reference.
+#               bash prints a warning to stderr and the caller's variable stays unset, so the
+#               caller silently composes against an empty path.  (S4, S5, S5b)
+#   injection — `declare -n ref=$name` EVALUATES an array subscript in $name. In a library that
+#               install.sh symlinks into every consumer's runtime, an unvalidated output name is a
+#               command-execution seam, not a tidiness question.  (S6, and S10 proves it closed)
+#   aliasing  — three names that are really ONE variable leave all three paths equal to the last
+#               assignment: a wrong compose that looks like a working one.  (S9)
+#   arity     — too few arguments. NOT silent, but worse: an unbound expansion under the caller's
+#               `set -u` kills the caller outright rather than failing the call.  (S11)
+#
+# Sourced rather than shelled out, because the contract under test is the SOURCED one: `bash "$SC"`
+# would exercise the CLI again and prove nothing new.
+sc_paths() {   # sc_paths <out1> <out2> <out3> -> "base|ov|out" on success, "RC<n>" on refusal
+  ( set +u
+    # shellcheck source=/dev/null
+    . "$SC"
+    adb_sc_paths demo /r /h "$1" "$2" "$3" || { printf 'RC%s\n' "$?"; exit 0; }
+    printf '%s|%s|%s\n' "${!1-}" "${!2-}" "${!3-}"
+  ) 2>/dev/null
+}
+eq "$(sc_paths p_base p_ov p_out)" "/h/.claude/skills/demo/SKILL.md|/r/.claude/skills/demo/overrides.md|/r/.claude/skills/demo/SKILL.md" \
+   "S1 adb_sc_paths writes all three paths into the caller's OWN variables"
+
+# The caller's names are arbitrary — including names that look nothing like the old globals. A
+# conversion that kept writing fixed globals and merely accepted the arguments would pass S1 only
+# by accident of naming, and fails here.
+eq "$(sc_paths zzz_a zzz_b zzz_c)" "/h/.claude/skills/demo/SKILL.md|/r/.claude/skills/demo/overrides.md|/r/.claude/skills/demo/SKILL.md" \
+   "S2 ...whatever the caller chose to call them"
+
+# The superseded globals must be GONE, not left behind as a second, drifting output channel.
+gl="$( ( set +u; . "$SC"; adb_sc_paths demo /r /h p_base p_ov p_out; printf '[%s][%s][%s]' "${_sc_base-}" "${_sc_ov-}" "${_sc_out-}" ) 2>/dev/null )"
+eq "$gl" "[][][]" "S3 the pre-#258 _sc_base/_sc_ov/_sc_out globals are no longer written"
+
+# Collision and injection are REFUSALS with a status, not warnings. `_asp_out` is one of the
+# function's own nameref locals; `a[$(…)]` is the subscript-evaluation seam.
+eq "$(sc_paths _asp_out o u)"  "RC2" "S4 an output name colliding with the function's own local is refused"
+eq "$(sc_paths _asp_n o u)"    "RC2" "S5 ...including its non-nameref locals"
+# ...and a name that is NOT a local today. The rule is the `_asp_` PREFIX, not an enumeration of
+# the current locals, so adding a local later cannot open a hole in it. An enumeration would pass
+# this case and then fail silently the day someone declares `_asp_zzz`.
+eq "$(sc_paths _asp_zzz o u)"  "RC2" "S5b ...and any future local, because the rule is the prefix"
+eq "$(sc_paths 'a[$(id)]' o u)" "RC2" "S6 a non-identifier output name is refused before declare -n can evaluate it"
+eq "$(sc_paths '' o u)"        "RC2" "S7 an empty output name is refused"
+eq "$(sc_paths 9bad o u)"      "RC2" "S8 an output name starting with a digit is refused"
+# Three names that are really ONE variable would make all three paths the last assignment — a
+# silently wrong compose, which is exactly the shape a nameref API invites.
+eq "$(sc_paths same same same)" "RC2" "S9 duplicate output names are refused rather than aliased"
+
+# TOO FEW ARGUMENTS MUST BE A RETURN, NOT A DEAD SHELL. This library is SOURCED — by its own
+# callers and by consumer hooks — so an unbound expansion under the caller's `set -u` does not fail
+# the call, it kills the caller. `$4` unguarded did exactly that, which turned a stale pre-#258
+# 3-argument call from a clean refusal into a hook that dies with "unbound variable". The guarded
+# `${4-}` makes a missing name an empty one, which the validation above already rejects.
+short="$( ( set -u; . "$SC"; adb_sc_paths demo /r /h; printf 'RC%s' "$?"; printf ' ALIVE' ) 2>/dev/null )"
+eq "$short" "RC2 ALIVE" "S11 a call with too few arguments returns 2 and leaves the caller's shell alive"
+
+# The injection seam via a LITERAL argument, proven CLOSED rather than merely refused: if the
+# subscript were evaluated, the marker file would exist. Note what this does NOT cover — S12.
+( set +u; . "$SC"; adb_sc_paths demo /r /h "a[\$(touch '$work/pwned')]" o u ) >/dev/null 2>&1 || true
+[ ! -e "$work/pwned" ] && ok || bad "S10 a literal subscript in an output name is never evaluated"
+
+# S12 — THE SEAM S10 COULD NOT SEE, and the reason a spelling check is not a validation.
+# `declare -n` CHAINS: if the caller's variable is itself a nameref, binding to it resolves to THAT
+# nameref's target — a string this function never received as an argument and never checked. So the
+# hostile payload never appears in any argument, S10's premise fails, and the subscript is evaluated
+# on assignment. Reproduced by the independent review against the first cut of this change, which
+# returned 0 and created the marker.
+rm -f "$work/pwned2"
+# `evil` is referenced BY NAME (as a string argument), which shellcheck cannot follow — that
+# indirection is the whole point of the case.
+# shellcheck disable=SC2034
+chain="$( ( set +u
+            . "$SC"
+            declare -n evil="arr[\$(touch '$work/pwned2')]"
+            adb_sc_paths demo /r /h evil o2 u2; printf 'RC%s' "$?" ) 2>/dev/null )"
+eq "$chain" "RC2" "S12 an output name that is ALREADY a nameref is refused (declare -n would chain)"
+[ ! -e "$work/pwned2" ] && ok || bad "S12 ...and the chained subscript is never evaluated"
+
+# S13 — a readonly target. Rejected BEFORE the assignment, not after: bash aborts the whole function
+# on an assignment to a readonly variable, so a post-hoc verification never runs and the caller gets
+# bash's status instead of this function's documented 2.
+# shellcheck disable=SC2034  # `frozen` is referenced by name, like `evil` above.
+ro="$( ( set +u; . "$SC"; readonly frozen=1; adb_sc_paths demo /r /h frozen o3 u3; printf 'RC%s' "$?" ) 2>/dev/null )"
+eq "$ro" "RC2" "S13 a readonly output name is refused with 2, not an aborted function"
+
+# S14 — a name that ACCEPTS the assignment and silently discards it. `BASH_MONOSECONDS` is the
+# worked example: `declare -p` shows nothing unusual, the assignment returns 0, and the variable
+# goes on reporting the clock. Only checking the OUTCOME catches this class.
+sp="$( ( set +u; . "$SC"; adb_sc_paths demo /r /h BASH_MONOSECONDS o4 u4; printf 'RC%s' "$?" ) 2>/dev/null )"
+eq "$sp" "RC2" "S14 an output name that silently discards its value is refused"
+
+# S15 — the library's own state. A caller's typo must not overwrite `_ADB_SC_AGENT` mid-call and
+# leave every path this function builds silently malformed.
+lib="$( ( set +u; . "$SC"; adb_sc_paths demo /r /h _ADB_SC_AGENT o5 u5; printf 'RC%s' "$?" ) 2>/dev/null )"
+eq "$lib" "RC2" "S15 a library-owned _ADB_SC_* output name is refused"
+
+# S16 — AN INTEGER-ATTRIBUTED TARGET, the second way an assignment kills the caller (bot review).
+# `declare -i tgt` makes every assignment to `tgt` an ARITHMETIC evaluation, so storing a path into
+# it raises "arithmetic syntax error" and terminates the caller — the same class as the readonly
+# target in S13, and equally invisible to the outcome check, which never runs. Measured: without
+# the pre-check the probe emits neither a status nor its liveness marker.
+intg="$( ( set +u; . "$SC"; declare -i tgt; adb_sc_paths demo /r /h tgt o6 u6; printf 'RC%s' "$?"; printf ' ALIVE' ) 2>/dev/null )"
+eq "$intg" "RC2 ALIVE" "S16 an integer-attributed output name is refused, and the caller survives"
+
+# S17 — a case-TRANSFORMING target (`declare -u`) is refused rather than silently storing a
+# corrupted path. This one the outcome check would already catch; asserting it pins the ATTRIBUTE
+# rule rather than leaving the coverage to a downstream comparison that a later edit could weaken.
+upc="$( ( set +u; . "$SC"; declare -u tgt; adb_sc_paths demo /r /h tgt o7 u7; printf 'RC%s' "$?"; printf ' ALIVE' ) 2>/dev/null )"
+eq "$upc" "RC2 ALIVE" "S17 a case-transforming output name is refused"
+
+# S18 — AND THE OVER-TIGHTENING GUARD, which matters as much as the rejections. An ARRAY target is
+# demonstrably fine: bash stores the scalar at index 0 and `$tgt` reads it straight back, so a rule
+# written to reject `-i` must not sweep `-a`/`-A`/`-x` up with it. This passes before and after the
+# attribute rule; it exists so a future tightening cannot quietly break a working caller.
+# SC2128 (bare array expansion gives element 0) is the ASSERTION here, not an accident: what makes
+# an array target usable is exactly that `$tgt` reads back what was stored at index 0.
+# shellcheck disable=SC2128
+arrv="$( ( set +u; . "$SC"; declare -a tgt; adb_sc_paths demo /r /h tgt o8 u8; printf 'RC%s|%s' "$?" "${tgt}" ) 2>/dev/null )"
+eq "$arrv" "RC0|/h/.claude/skills/demo/SKILL.md" "S18 an array-attributed output still works (the rejection is not over-broad)"
+
 check_summary "check-skill-compose"

@@ -401,8 +401,9 @@ eq "$RC" 0 "T2: env id wins over a conflicting payload id (marker is foreign →
 # U. stdin is a pipe that is never closed. A hook that blocks here burns its whole 30s budget and
 #    gets killed — and a killed Stop hook enforces NOTHING, which is the fail-open the bound exists
 #    to prevent. Deleting `-t 5` from the gate left the suite green before this case existed.
-#    bash 3.2 discards partial input on timeout, so identity ends up unknown and the gate falls back
-#    to branch matching (enforced) — the assertion is that it TERMINATES and still enforces.
+#    The gate discards what a timed-out read collected, so identity ends up unknown and it falls
+#    back to branch matching (enforced) — the assertion is that it TERMINATES and still enforces.
+#    NOTE this case writes NO bytes, so it cannot tell a discard from a retention; U2 does that.
 reset_case; write_marker committed "" "$SID_A"
 SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
 fifo="$work/stdin.fifo"; rm -f "$fifo"; mkfifo "$fifo"
@@ -417,6 +418,35 @@ kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 rm -f "$fifo"
 if [ "$((t1 - t0))" -lt 20 ]; then ok; else bad "U: unclosed stdin must not block the hook (took $((t1 - t0))s)"; fi
 eq "$RC" 2 "U: unclosed stdin → identity unknown → legacy enforcement, not a hang"
+
+# U2. THE SAME BOUND, WITH BYTES ON THE WIRE — the case U cannot see (#258).
+#
+# `read -t` behaves differently either side of this repo's floor, and the gate's design depends on
+# which: bash 3.2 DISCARDED what it had collected when the bound fired, bash >= 4.2 KEEPS it
+# (measured: 3.2 returns status 1 with an empty variable, 5.3 returns 142 with the bytes). This
+# file's identity rule was written against the discard and said so, so under the 5.3 floor the
+# discard became the gate's own job rather than the interpreter's.
+#
+# The payload here is a COMPLETE, VALID object naming a FOREIGN session, on a pipe that never
+# closes. That combination is what discriminates, and both halves are load-bearing: a TRUNCATED
+# object would be rejected by jq on either interpreter, so a fixture built on one proves nothing.
+#   retained -> jq parses it -> identity is SID_B -> foreign marker -> silence (0)
+#   discarded -> identity unknown -> branch matching -> still enforced (2)
+# The gate must not take an identity off a stream it could not finish reading: unknown falls
+# TOWARD enforcement, which is the direction every other ownership decision in this file picks.
+reset_case; write_marker committed "" "$SID_A"
+SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
+fifo2="$work/stdin2.fifo"; rm -f "$fifo2"; mkfifo "$fifo2"
+# Write a whole object, then hold the write end open past the gate's 5s bound WITHOUT sending EOF.
+( exec 3>"$fifo2"
+  jq -cn --arg s "$SID_B" '{session_id:$s, hook_event_name:"Stop", stop_hook_active:false}' >&3
+  sleep 25 ) &
+holder2=$!
+OUT="$(cd "$repo" && unset CLAUDE_CODE_EXECPATH && unset CLAUDE_CODE_SESSION_ID \
+      && PATH="$shimbin:$PATH" bash "$GATE" < "$fifo2" 2>&1)"; RC=$?
+kill "$holder2" 2>/dev/null; wait "$holder2" 2>/dev/null
+rm -f "$fifo2"
+eq "$RC" 2 "U2: a timed-out read discards what arrived — no identity from an unfinished stream"
 
 # --- malformed markers must be inert, never a hint ----------------------------
 # Folding the `jq -e .` validation into the extract dropped these: `jq -r '.branch // ""'` exits 0

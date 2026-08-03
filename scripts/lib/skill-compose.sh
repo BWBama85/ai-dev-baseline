@@ -88,10 +88,13 @@ _ADB_SC_OPS="append prepend replace"
 # base/anchor error. Kept to POSIX awk (index/substr/2-arg match/gsub — no gensub, no
 # match(s,re,arr)) so it runs on BSD awk (macOS) as well as gawk; callers run it under LC_ALL=C
 # for byte-stable classes.
-# Assigned via `read -r -d ''` (NOT `$(cat <<…)`): the program contains backticks (fence
-# detection, backtick-stripping in slug()), which bash 3.2's naive command-substitution scanner
-# mis-pairs across a heredoc. Feeding the heredoc to `read` sidesteps that scan entirely; `-d ''`
-# reads to EOF (returns nonzero there, hence `|| true`) and `-r` keeps every backslash literal.
+# Assigned via `read -r -d ''` rather than `$(cat <<…)`, and it STAYS that way under the 5.3 floor
+# (#258) — for a better reason than the one it replaced. The original rationale was a bash 3.2
+# defect: that parser's command-substitution scanner mis-paired the backticks this program contains
+# (fence detection, backtick-stripping in slug()) across a heredoc. 5.3 parses that form correctly,
+# so the defect is gone — but `$(cat …)` costs a fork and a subshell to move a compile-time
+# constant, and `read` is a builtin that costs neither. `-d ''` reads to EOF (returns nonzero there,
+# hence `|| true`) and `-r` keeps every backslash literal.
 IFS= read -r -d '' _ADB_SC_AWK <<'AWK' || true
 function err(m) { printf "skill-compose: %s\n", m > "/dev/stderr" }
 function emit(s) { if (s != "") print s }              # empty content emits nothing
@@ -261,36 +264,129 @@ adb_sc_render() {
   return 0
 }
 
-# Paths for <name> under <repo>/<home>. Sets base/ov/out globals (bash 3.2: no namerefs).
+# Paths for <name> under <repo>/<home>, returned through NAMEREFS: $4, $5 and $6 name the caller's
+# own variables for base / overrides / output. Returns 0, or 2 on an unusable output name.
+#
+# This used to write three shared `_sc_*` globals because bash 3.2 had no namerefs (#258). Three
+# call sites then read state nothing had declared, and every one of them had to remember which
+# global held which path — the ordering bug that a nameref makes unrepresentable.
+#
+# THE OUTPUT NAMES ARE VALIDATED, and that is not defensive garnish. `declare -n ref=$x` EVALUATES
+# an array subscript inside $x, so an unvalidated name is an arbitrary-command-execution seam in a
+# library `install.sh` symlinks into every consumer's runtime. Requiring a plain identifier closes
+# it. The same pass catches the other two nameref failures, both of which are silent:
+#   - a name equal to one of THIS function's locals is a circular reference — bash warns on stderr
+#     and the caller's variable stays unset, so it composes against an empty path;
+#   - three names that are really one variable would leave all three paths equal to the last
+#     assignment, which is a wrong compose that looks like a working one.
+# Refusing beats warning: the caller gets a status it can act on. Fixtures: check-skill-compose.sh (S).
 adb_sc_paths() {
-  local name="$1" repo="$2" home="$3"
-  _sc_base="$home/.$_ADB_SC_AGENT/skills/$name/SKILL.md"
-  _sc_ov="$repo/.$_ADB_SC_AGENT/skills/$name/overrides.md"
-  _sc_out="$repo/.$_ADB_SC_AGENT/skills/$name/SKILL.md"
+  # `${4-}`, NOT `$4`. This library is SOURCED, so an unbound expansion under the caller's `set -u`
+  # does not fail the call — it kills the caller. A stale pre-#258 three-argument call must get a
+  # clean refusal, not take a consumer's hook down with "unbound variable"; an empty name falls
+  # straight into the validation below. Fixture: check-skill-compose.sh S11.
+  local _asp_n="${1-}" _asp_r="${2-}" _asp_h="${3-}" _asp_v _asp_d _asp_f
+  for _asp_v in "${4-}" "${5-}" "${6-}"; do
+    case "$_asp_v" in
+      ''|*[!A-Za-z0-9_]*|[0-9]*)
+        adb_sc_err "adb_sc_paths: '$_asp_v' is not a usable output variable name"; return 2 ;;
+      _asp_*)
+        # A PREFIX rule, not a list of the current locals. An enumeration is correct only until
+        # someone adds a local: the new name would be missing from it, and a caller passing that
+        # name would get bash's circular-reference warning and an unset variable — the silent
+        # failure this whole check exists to prevent, reintroduced by an unrelated edit. Every
+        # local here is `_asp_`-prefixed precisely so one rule covers all of them, now and later.
+        adb_sc_err "adb_sc_paths: output name '$_asp_v' uses this function's reserved '_asp_' prefix"; return 2 ;;
+      _ADB_SC_*)
+        # The library's own state. Accepting one lets a caller's typo overwrite `_ADB_SC_AGENT`
+        # mid-call, and every path this function then builds is silently malformed.
+        adb_sc_err "adb_sc_paths: output name '$_asp_v' is library-owned state"; return 2 ;;
+    esac
+    # A SPELLING CHECK IS NOT ENOUGH, because `declare -n` CHAINS. If the caller's variable is
+    # ITSELF a nameref, binding to it resolves to *that* nameref's target — a string this function
+    # never saw and never validated. `declare -n evil='arr[$(cmd)]'` followed by passing `evil`
+    # therefore walked straight past the identifier check above and executed the subscript on
+    # assignment. Found by the independent review; the literal-name fixture (S10) could not see it,
+    # because the hostile string never appears in an argument. Same check retires the aliasing hole:
+    # two DIFFERENT names that are namerefs to one variable defeat the distinctness test below.
+    #
+    # THE TARGET'S ATTRIBUTES ARE CHECKED HERE, BEFORE THE ASSIGNMENT, because the dangerous ones
+    # make bash abort the whole function — so the outcome verification further down never runs, and
+    # the caller gets bash's status (or a dead shell) instead of this function's contract. Two do
+    # that: `-r`, and `-i`, where every assignment is an ARITHMETIC evaluation, so storing a path
+    # raises "arithmetic syntax error: operand expected" and takes the caller with it. The integer
+    # case came from the bot review; the readonly case from the independent pass before it. Same
+    # shape, found twice, which is why the residual rule below exists rather than a third patch.
+    _asp_d="$(declare -p "$_asp_v" 2>/dev/null)" || _asp_d=""
+    case "$_asp_d" in
+      "declare -"*)
+        _asp_f="${_asp_d#declare -}"; _asp_f="${_asp_f%% *}"
+        case "$_asp_f" in
+          *n*) adb_sc_err "adb_sc_paths: output name '$_asp_v' is already a nameref; pass a plain variable"; return 2 ;;
+          *r*) adb_sc_err "adb_sc_paths: output name '$_asp_v' is readonly"; return 2 ;;
+          *i*) adb_sc_err "adb_sc_paths: output name '$_asp_v' has the integer attribute; a path assigned to it is evaluated as arithmetic"; return 2 ;;
+        esac
+        # RESIDUAL RULE — an ALLOWLIST, so a bash release that adds an attribute cannot quietly
+        # become the next `-i`. Everything left is refused unless it was verified harmless here:
+        # `-` (no attributes), `a`/`A` (bash stores the scalar at index 0 and `$name` reads it
+        # straight back — measured, and pinned by S18 so this rule cannot over-tighten onto a
+        # working caller), `x` (export) and `t` (trace). `u`/`l` land here too: they silently
+        # CASE-FOLD the stored path, which the outcome check would also catch, but naming the
+        # attribute is a better diagnosis than "did not accept its value".
+        case "${_asp_f//[aAxt-]/}" in
+          '') : ;;
+          *) adb_sc_err "adb_sc_paths: output name '$_asp_v' carries unsupported attribute(s) '-$_asp_f'"; return 2 ;;
+        esac ;;
+    esac
+  done
+  if [ "${4-}" = "${5-}" ] || [ "${4-}" = "${6-}" ] || [ "${5-}" = "${6-}" ]; then
+    adb_sc_err "adb_sc_paths: the three output names must be distinct (got '${4-}' '${5-}' '${6-}')"; return 2
+  fi
+  # Build the values FIRST, so the writes can be verified against them below.
+  local _asp_pb="$_asp_h/.$_ADB_SC_AGENT/skills/$_asp_n/SKILL.md"
+  local _asp_po="$_asp_r/.$_ADB_SC_AGENT/skills/$_asp_n/overrides.md"
+  local _asp_pu="$_asp_r/.$_ADB_SC_AGENT/skills/$_asp_n/SKILL.md"
+  # SC2034 ("appears unused") is wrong for a nameref OUTPUT parameter: assigning it is the entire
+  # point, and the read happens in the caller's scope through a name shellcheck cannot follow.
+  # shellcheck disable=SC2034
+  local -n _asp_base="${4-}" _asp_ov="${5-}" _asp_out="${6-}"
+  _asp_base="$_asp_pb"
+  _asp_ov="$_asp_po"
+  _asp_out="$_asp_pu"
+  # VERIFY THE WRITES LANDED. Some names accept an assignment and discard it — `BASH_MONOSECONDS`
+  # is the worked example: `declare -p` shows nothing unusual, the assignment returns 0, and the
+  # variable keeps reporting the clock. Without this the caller would get three empty-looking paths
+  # and a SUCCESS status. Checking the outcome covers that whole class at once, including whatever
+  # future bash adds to it, which no enumeration of special names could.
+  if [ "$_asp_base" != "$_asp_pb" ] || [ "$_asp_ov" != "$_asp_po" ] || [ "$_asp_out" != "$_asp_pu" ]; then
+    adb_sc_err "adb_sc_paths: one of '${4-}' '${5-}' '${6-}' did not accept its value (a special or otherwise unassignable variable?)"
+    return 2
+  fi
 }
 
 # compose one skill. Returns 0 on success, 1 on any error. Usage: adb_sc_compose_one <name> <repo> <home>
 adb_sc_compose_one() {
   local name="$1" repo="$2" home="$3" tmp rc=0
-  adb_sc_paths "$name" "$repo" "$home"
-  [ -f "$_sc_ov" ]   || { adb_sc_err "no overrides file: $_sc_ov"; return 1; }
-  [ -f "$_sc_base" ] || { adb_sc_err "no installed base skill: $_sc_base (is the baseline installed for $_ADB_SC_AGENT?)"; return 1; }
+  local sc_base sc_ov sc_out
+  adb_sc_paths "$name" "$repo" "$home" sc_base sc_ov sc_out || return 1
+  [ -f "$sc_ov" ]   || { adb_sc_err "no overrides file: $sc_ov"; return 1; }
+  [ -f "$sc_base" ] || { adb_sc_err "no installed base skill: $sc_base (is the baseline installed for $_ADB_SC_AGENT?)"; return 1; }
   # Refuse to clobber a destination we do not own — a pre-existing SKILL.md WITHOUT our marker is a
   # hand-authored full fork; overwriting it would silently destroy the project's work. Our marker
   # always sits near the very top (line 2, right after the opening ---), so only the head is
   # inspected — a fork that merely *mentions* the marker deep in its prose isn't mistaken for ours.
-  if [ -e "$_sc_out" ] && ! head -n 5 "$_sc_out" 2>/dev/null | grep -Fq "$_ADB_SC_MARKER"; then
-    adb_sc_err "refusing to overwrite $_sc_out — it exists but is not a skill-compose output (a hand-authored fork?). Remove or rename it, then recompose."
+  if [ -e "$sc_out" ] && ! head -n 5 "$sc_out" 2>/dev/null | grep -Fq "$_ADB_SC_MARKER"; then
+    adb_sc_err "refusing to overwrite $sc_out — it exists but is not a skill-compose output (a hand-authored fork?). Remove or rename it, then recompose."
     return 1
   fi
   tmp="$(mktemp "${TMPDIR:-/tmp}/adb-sc.XXXXXX")" || { adb_sc_err "mktemp failed"; return 1; }
-  if adb_sc_render "$name" "$_sc_base" "$_sc_ov" "$tmp"; then
+  if adb_sc_render "$name" "$sc_base" "$sc_ov" "$tmp"; then
     # A failed mkdir/mv (read-only tree, ENOSPC, …) must NOT report success — automation would
     # otherwise believe the composed SKILL.md was refreshed while the old/missing file remains.
-    if mkdir -p "$(dirname "$_sc_out")" && mv "$tmp" "$_sc_out"; then
-      printf 'skill-compose: composed %s\n' "$_sc_out"
+    if mkdir -p "$(dirname "$sc_out")" && mv "$tmp" "$sc_out"; then
+      printf 'skill-compose: composed %s\n' "$sc_out"
     else
-      adb_sc_err "failed to write $_sc_out (read-only project tree? no space?)"; rc=1
+      adb_sc_err "failed to write $sc_out (read-only project tree? no space?)"; rc=1
     fi
   else
     rc=1
@@ -302,21 +398,22 @@ adb_sc_compose_one() {
 # check one skill's currency (recompose + byte-compare). Returns 0 current, 1 stale/error.
 adb_sc_check_one() {
   local name="$1" repo="$2" home="$3" tmp rc=0
-  adb_sc_paths "$name" "$repo" "$home"
-  [ -f "$_sc_ov" ]   || { adb_sc_err "no overrides file: $_sc_ov"; return 1; }
-  [ -f "$_sc_base" ] || { adb_sc_err "no installed base skill: $_sc_base"; return 1; }
+  local sc_base sc_ov sc_out
+  adb_sc_paths "$name" "$repo" "$home" sc_base sc_ov sc_out || return 1
+  [ -f "$sc_ov" ]   || { adb_sc_err "no overrides file: $sc_ov"; return 1; }
+  [ -f "$sc_base" ] || { adb_sc_err "no installed base skill: $sc_base"; return 1; }
   tmp="$(mktemp "${TMPDIR:-/tmp}/adb-sc.XXXXXX")" || { adb_sc_err "mktemp failed"; return 1; }
-  if ! adb_sc_render "$name" "$_sc_base" "$_sc_ov" "$tmp"; then
+  if ! adb_sc_render "$name" "$sc_base" "$sc_ov" "$tmp"; then
     rm -f "$tmp"; return 1
   fi
-  if [ ! -e "$_sc_out" ]; then
-    printf 'skill-compose: STALE %s — composed output missing; run: skill-compose compose %s\n' "$_sc_out" "$name" >&2
+  if [ ! -e "$sc_out" ]; then
+    printf 'skill-compose: STALE %s — composed output missing; run: skill-compose compose %s\n' "$sc_out" "$name" >&2
     rc=1
-  elif ! cmp -s "$tmp" "$_sc_out"; then
-    printf 'skill-compose: STALE %s — differs from a fresh compose (base updated, overrides changed, or hand-edited); run: skill-compose compose %s\n' "$_sc_out" "$name" >&2
+  elif ! cmp -s "$tmp" "$sc_out"; then
+    printf 'skill-compose: STALE %s — differs from a fresh compose (base updated, overrides changed, or hand-edited); run: skill-compose compose %s\n' "$sc_out" "$name" >&2
     rc=1
   else
-    printf 'skill-compose: current %s\n' "$_sc_out"
+    printf 'skill-compose: current %s\n' "$sc_out"
   fi
   rm -f "$tmp"
   return "$rc"
@@ -387,9 +484,10 @@ adb_sc_main() {
     [ "${#names[@]}" -eq 1 ] || { adb_sc_err "list-anchors takes exactly one NAME"; return 2; }
     n="${names[0]}"
     adb_sc_valid_name "$n" || { adb_sc_err "invalid skill name: '$n'"; return 2; }
-    adb_sc_paths "$n" "$repo" "$home"
-    [ -f "$_sc_base" ] || { adb_sc_err "no installed base skill: $_sc_base"; return 1; }
-    LC_ALL=C awk -v mode=list -v base="$_sc_base" -v ops="$_ADB_SC_OPS" "$_ADB_MD_AWK$_ADB_SC_AWK" "$_sc_base"
+    local sc_base sc_ov sc_out
+    adb_sc_paths "$n" "$repo" "$home" sc_base sc_ov sc_out || return 1
+    [ -f "$sc_base" ] || { adb_sc_err "no installed base skill: $sc_base"; return 1; }
+    LC_ALL=C awk -v mode=list -v base="$sc_base" -v ops="$_ADB_SC_OPS" "$_ADB_MD_AWK$_ADB_SC_AWK" "$sc_base"
     return
   fi
 
