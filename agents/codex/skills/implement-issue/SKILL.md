@@ -296,14 +296,20 @@ rm -f .codex/state/gap-prompt.txt .codex/state/gaps.md .codex/state/gaps.err \
 # gaps: a run whose `review` role is unset, or whose only slot is deferred or absent (step 8's
 # rungs 2-3), never overwrites review.md, so the PREVIOUS run's findings sit there reading as this
 # run's. Bounding a single dispatch's captured stream WITHIN a run is separate, and tracked in #141.
+rm -f .codex/state/review-prompt.txt .codex/state/review.md .codex/state/review.err
+# The per-slot family too, so this set stays identical to the `review` arm of
+# `cleanup-lib.sh state-scan`: a name /cleanup can sweep but preflight cannot clear is exactly the
+# stale-reads-as-current file this exists to remove.
 #
-# The `review-*` globs are here to keep this set identical to the `review` arm of
-# `cleanup-lib.sh state-scan`. A name /cleanup can sweep but preflight cannot clear is exactly the
-# stale-reads-as-current file this clears, so the two spellings move together. An unmatched glob
-# stays literal in POSIX shells and `rm -f` is silent on a path that does not exist, so the common
-# case — no per-slot files — costs nothing and reports nothing.
-rm -f .codex/state/review-prompt.txt .codex/state/review.md .codex/state/review.err \
-      .codex/state/review-*.md .codex/state/review-*.err
+# Matched by `find`, NOT by a shell glob, and that is not a style preference. Appending
+# `.codex/state/review-*.md` to the `rm -f` above looks equivalent and is not — an unmatched glob
+# is left literal by sh and bash, but zsh's default `nomatch` ABORTS THE WHOLE COMMAND. macOS runs
+# zsh (`base/practices/shell.md`) and a per-slot file usually does not exist, so the common case
+# would be `no matches found` and NONE of the three names above deleted either: a clear that
+# silently clears nothing, wearing the shape of the fix. The patterns are quoted, so no shell
+# expands them. `-exec … +` rather than `-delete`, which is not POSIX.
+find .codex/state -maxdepth 1 -type f \( -name 'review-*.md' -o -name 'review-*.err' \) \
+     -exec rm -f {} +
 ```
 
 ### 2. Verify repo scope + fetch the issue(s)

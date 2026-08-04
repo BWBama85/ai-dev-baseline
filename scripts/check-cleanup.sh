@@ -491,6 +491,11 @@ if [ ! -f "$II" ]; then
   bad "6 base/workflows/implement-issue.md not found"
 else
   ii="$(cat "$II")"
+  # The EXECUTABLE half with shell comments dropped, for the same reason section 6 above builds
+  # one: the blocks explain which spellings they deliberately avoid, so a whole-file `hasnt` would
+  # fail on the very comment documenting the avoidance.
+  iiexec="${ awk '/^```bash$/ { inb = 1; next } /^```$/ { inb = 0; next } inb' "$II" \
+             | sed 's/[[:space:]]*#.*$//'; }"
   has "$ii" ': > {{STATE_DIR}}/gap-analysis.lock' "6 /implement-issue takes the lock before dispatching"
   has "$ii" 'rm -f {{STATE_DIR}}/gap-analysis.lock' "6 /implement-issue releases the lock when the call terminates"
   # ORDER is the contract. The lock must be taken BEFORE gap-prompt.txt exists: a /cleanup landing
@@ -533,10 +538,22 @@ else
   # two halves drifting apart is not cosmetic: a file /cleanup will delete but preflight will not
   # refresh is a stale artifact that a NEW run's marker makes read as live — the exact
   # stale-findings-look-current trap #264 is about, reintroduced through the back door.
-  iiclearline="${ printf '%s\n' "$ii" | sed -n "${iiclear:-0},$((${iiclear:-0} + 1))p"; }"
-  for rname in 'review-prompt.txt' 'review.md' 'review.err' 'review-*.md' 'review-*.err'; do
+  # `:-1`, never `:-0`: GNU sed rejects a 0 line-address outright, so the already-failing
+  # clear-is-missing path would additionally emit a platform-specific error instead of an empty
+  # region the assertions below report cleanly. CI runs both GNU and BSD sed (docs/ci-runners.md).
+  iiclearline="${ printf '%s\n' "$ii" | sed -n "${iiclear:-1},$((${iiclear:-1} + 12))p"; }"
+  for rname in 'review-prompt.txt' 'review.md' 'review.err'; do
     has "$iiclearline" "{{STATE_DIR}}/$rname" "6 …and clears $rname, matching state-scan's review family"
   done
+  for rpat in 'review-*.md' 'review-*.err'; do
+    has "$iiclearline" "-name '$rpat'" "6 …and the $rpat family, which state-scan can also sweep"
+  done
+  # …via `find`, NEVER a shell glob on the rm line. zsh's default `nomatch` aborts the WHOLE
+  # command on an unmatched pattern, so `rm -f …/review.md …/review-*.md` deletes NOTHING on the
+  # common macOS path — a clear that silently clears nothing, wearing the shape of the fix.
+  # Observed while writing this change: zsh exits 1 with "no matches found" and all three files
+  # survive. Same class as the #125 zsh bug this suite already exists to catch.
+  hasnt "$iiexec" 'rm -f {{STATE_DIR}}/review-*' "6 …and never through an rm glob zsh's nomatch would abort"
 fi
 
 # ==================== 7. the currency step, EXECUTED (#139) ==================================
