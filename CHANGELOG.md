@@ -7,6 +7,19 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-04
+
+**The runtime floor moves to bash 5.3, and this is the release that makes it binding.** An entry
+point that gets an older interpreter now re-execs into a good one or stops with the platform's
+install command — so a host that installed and ran on macOS's 3.2.57 or on Ubuntu LTS's 5.2.21
+will refuse until it has a 5.3, and Debian/Ubuntu ≤ 25.10 have no such package at all. That is the
+breaking change, and it is deliberate: it buys `mapfile`, associative arrays, namerefs and
+`${ …; }` everywhere, and it deletes the ~20 accommodation sites that existed only for 2006's
+shell. Windows support is answered in the same breath — **WSL2 only**, proven by a smoke job that
+was watched running green rather than asserted. Alongside it: `selfcheck.sh` is ~4x faster on a
+bounded `wait -n` pool, `/roadmap` now says when it cannot parse a dependency edge instead of
+silently dropping it, and `/implement-issue`'s review artifacts finally get swept.
+
 ### Added
 
 - **`/implement-issue`'s review artifacts now have a lifecycle, on both ends** (#264, D40).
@@ -1888,6 +1901,7 @@ Everything below landed before this tag; entries are grouped as they accumulated
   finish on partial or empty output. Clarifies that "advisory" is the standing of a
   **completed** finding, not license to skip the step.
 
-[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/BWBama85/ai-dev-baseline/releases/tag/v1.0.0
