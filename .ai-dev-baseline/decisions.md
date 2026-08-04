@@ -2143,9 +2143,13 @@ limit: none of them is sufficient alone.
              therefore fail on a CORRECT file, which
              under `--mutation` means it never even reaches its witness: the mode requires a clean
              baseline before injecting. So the pattern is contextual — root **and** reaching a
-             framework command — and covers `-u` and a numeric `0`, because `--user root`, `-u root`,
-             `--user 0` and `-u 0` are the same instruction to `wsl.exe` and a pin for only the first
-             has three ways around it.
+             framework command. It covers `-u root`, which is the same instruction spelled short, and
+             a numeric uid for a weaker reason that review was right to force apart from the first:
+             `wsl --user` resolves a NAME through `getpwnam`, so `--user 0` names a user that does not
+             exist and errors rather than running as root. That branch is defence against a future
+             `wsl.exe` that accepts a uid; its witness proves the pattern matches, not that the
+             spelling would run as root. The original entry claimed all four spellings were "the same
+             instruction to `wsl.exe`", which was simply false.
 
              **The negative half alone is insufficient, and the reason generalizes.** The regression
              this exists to stop is "the job silently returns to root", and the cheapest way to get
@@ -2158,15 +2162,48 @@ limit: none of them is sufficient alone.
              family, arrived at from the opposite side: there the negative caught a stale copy kept
              beside the new value; here the positive catches a value deleted rather than changed.
 
-             **Observed failing, on the real superseded input.** All seven new rules were driven red
-             against the pre-#271 workflow, and each regression vector was driven red individually on
-             a throwaway tree copy: dropping the flag, `-u root`, `--user 0`, `--user root` on
-             `install.sh`, a root-performed clone, and a deleted uid assertion. The fixed file is
-             green, so the pins do not merely fire — they discriminate. Two of the negative rule's
-             seven witnesses are spellings that were never in the tree (`-u root`, `--user 0`); that
-             is said in the file rather than implied, because `base/practices/self-review.md` asks a
-             guard to be proven on REAL superseded input and those two are not that. They are there
-             because an alternation exercised through one branch is three untested branches.
+             **Observed failing, on the real superseded input.** Every rule was driven red against the
+             pre-#271 workflow, and each regression vector was driven red individually on a throwaway
+             tree copy: dropping the flag, `-u root`, `--user 0`, `--user root` on `install.sh`, a
+             root-performed clone, root restored on the distro bash log, and a neutered uid
+             comparison. The fixed file is green and three legitimate variants — a trailing comment
+             naming the old form, the `-u adb` shorthand, `--distribution` spelled out — were
+             confirmed NOT to fire, so the pins do not merely fire, they discriminate. Two of the
+             negative rule's eight witnesses are spellings that were never in the tree (`-u root`,
+             `--user 0`); that is said in the file rather than implied, because
+             `base/practices/self-review.md` asks a guard to be proven on REAL superseded input and
+             those two are not that.
+
+             **AND THE FIRST CUT OF THIS GUARD HAD FOUR HOLES, WHICH IS THE MOST INSTRUCTIVE PART.**
+             All four were found by independent review, all four were reproduced against this file,
+             and none of them was visible from the vectors above — because every one of those vectors
+             was written by the same person who wrote the rules, testing the failures that person had
+             already thought of. That is the specific limit of self-negative-testing, and it is worth
+             recording as plainly as the technique it qualifies:
+
+               1. **A trailing comment is not a comment as far as an anchored rule is concerned.**
+                  Anchoring at `run:` excludes a whole-line comment, and the entry originally claimed
+                  on that basis that "a comment can never satisfy — or trip — either half". False:
+                  `run: wsl … # once --user root … bash scripts/selfcheck.sh` put the forbidden text
+                  on an executable line, and an unbounded `.*` read straight through the `#`.
+               2. **The same hole in the positive rules fails OPEN**, which is worse.
+                  `run: wsl --help # --user adb --cd /home/adb/x -- bash scripts/selfcheck.sh`
+                  satisfied the pin while executing `wsl --help`; the clone pin fell to the same
+                  trick with `bash -c "true" # git clone /home/adb/`. `[^#]*` between the anchors is
+                  the fix, plus `"[^"]*` to confine the clone match to inside the quoted string.
+               3. **A guard pinned to the INPUT of an assertion is not pinned to the assertion.** The
+                  uid rule matched the `id -u` read, so changing `if ($uid -eq '0')` to compare
+                  against anything else left the lint green — the value was still being read and
+                  simply no longer judged. It is two rules now, the read and the judgement.
+               4. **The one framework line with no `--cd` and no script name was uncovered.** The
+                  distro's `bash --version` log matched none of the negative rule's framework tokens
+                  and had no positive pin, so `--user adb` could be dropped from the very line whose
+                  job is to say which interpreter the framework runs under, with nothing going red.
+
+             A fifth, in the workflow rather than the lint: the DrvFs assertion treated the absence of
+             a match as a pass, so a `df` that never ran reported "not DrvFs" — and pwsh propagates
+             only the LAST native exit code, which a later command supplied. It now checks the exit
+             code and the shape of what it read.
 
              **The uid is asserted, not merely logged, which is a deliberate strengthening of the
              issue's own wording.** The issue asked to "log the effective user … so a future
@@ -2191,6 +2228,14 @@ limit: none of them is sufficient alone.
              criterion, and it holds identically here: the live half is discharged by a
              `workflow_dispatch`, not by the diff that fixes it. Everything checkable offline was
              checked — the YAML parses at 14 steps, `check-bash-floor.sh` still reports `1 WSL-host`,
-             and every new rule was observed rejecting its own violation.
+             and every new LINT rule was observed rejecting its own violation.
+
+             The boundary inside that sentence is deliberate. The lint rules were observed failing;
+             the two RUNTIME assertions this change adds — the effective uid is not 0, the clone is
+             owned by `adb` — were not, and cannot be from here, because they execute only inside
+             WSL. What is known about them is that they are reachable and correctly shaped, not that
+             they have been seen red. Saying "every new guard was observed failing" would have
+             covered two that were not, which is exactly the overstatement
+             `base/practices/self-review.md` exists to prevent.
 - baseline-issue: n/a — this is this repo's own CI shape and its own lint, not a gap in the
              baseline's config surfaces.

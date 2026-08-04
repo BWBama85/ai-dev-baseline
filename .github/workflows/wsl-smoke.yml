@@ -240,6 +240,17 @@ jobs:
         run: |
           $mount = wsl -d Ubuntu-26.04 --user adb -- df -PT /home/adb/ai-dev-baseline | Out-String
           Write-Host $mount
+          # THE ABSENCE OF A MATCH IS NOT A PASS. `df` failing leaves $mount empty or partial, which
+          # matches no forbidden filesystem type — so without these two lines the assertion below
+          # reports "not DrvFs" for a read that never happened, and the step still exits 0 because
+          # pwsh propagates only the LAST native exit code and a later command supplies it. A guard
+          # whose failure mode is silence has to say what it read.
+          if ($LASTEXITCODE -ne 0) {
+            throw "could not read the filesystem type of the working clone — 'df -PT' exited $LASTEXITCODE"
+          }
+          if ($mount -notmatch '(?m)^Filesystem\s') {
+            throw "'df -PT' returned no recognizable output for the working clone — got '$mount'"
+          }
           if ($mount -match 'drvfs|9p|v9fs') {
             throw "the working clone is on a Windows-backed filesystem — the supported topology is a clone inside WSL"
           }

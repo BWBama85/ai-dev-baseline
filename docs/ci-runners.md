@@ -168,11 +168,27 @@ The regression guard for it lives in `check-fact-drift.sh`, and its shape is ins
 job is far too slow to be the only thing between an edit and that state, but a bare
 `absent:--user root` pin cannot express the rule. `fact` applies one pattern to a *whole file* with
 no step selector, so such a pin would trip on the invocations that must stay root and fail on a
-correct file. The pattern is contextual instead — root **and** reaching a framework command, across
-all four spellings `wsl.exe` accepts (`--user root`, `-u root`, `--user 0`, `-u 0`). And it is paired
-with a **positive** pin per framework command, because the cheapest way back to root spells nothing
-at all: simply dropping `--user` runs as the image's default, and no negative pattern can match an
-absent flag.
+correct file. The pattern is contextual instead — root **and** reaching a framework command. It
+covers `-u root` as well as `--user root`, those being the same instruction spelled two ways, and a
+numeric uid for a weaker reason worth stating separately: `wsl --user` resolves a *name* through
+`getpwnam`, so `--user 0` names a nonexistent user and errors rather than running as root. That
+branch is defence against a future `wsl.exe` that accepts a uid, not a spelling that works today.
+
+It is paired with a **positive** pin per framework command, because the cheapest way back to root
+spells nothing at all: simply dropping `--user` runs as the image's default, and no negative pattern
+can match an absent flag. That includes the distro's `bash --version` log, which carries neither a
+`--cd` nor a script name and so matched none of the negative rule's framework tokens — the one
+framework-touching line where root could have been restored with nothing going red, found by review
+rather than by the author.
+
+**Two shapes here are worth carrying to any similar pin.** First, anchoring a rule at `run:` rules
+out a *whole-line* comment but not a **trailing** one, so an unbounded `.*` reads straight through a
+`#`: that made the negative rule fire on a comment and made every positive rule satisfiable *by* a
+comment (`run: wsl --help # --user adb … bash scripts/selfcheck.sh` passed while running
+`wsl --help`). `[^#]*` between the anchors is what confines a rule to executable content. Second, a
+guard pinned to the **input** of an assertion is not pinned to the assertion: the uid rule matched
+the `id -u` read, so neutering the `if ($uid -eq '0')` comparison beside it left the lint green. The
+read and the judgement are two rules now.
 
 ### Why the lint needed a third class
 

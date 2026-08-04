@@ -288,16 +288,31 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     the pin lives in `scripts/check-fact-drift.sh` — but `fact` applies one pattern to a whole file
     with no step selector, so a bare `absent:--user root` would be tripped by the three invocations
     that must *stay* root and by the workflow's own comments, failing on a correct file. The pattern
-    is therefore **contextual** (root *and* reaching a framework command) and covers `-u` and a
-    numeric `0` as well, since all four spellings are the same instruction to `wsl.exe`.
+    is therefore **contextual**: root *and* reaching a framework command. It covers `-u root`, which
+    is genuinely the same instruction spelled short, and a numeric uid for a weaker and separately
+    stated reason — `wsl --user` resolves a *name* through `getpwnam`, so `--user 0` names a user
+    that does not exist and errors rather than running as root. That branch is defence against a
+    future `wsl.exe` that accepts a uid, not a spelling that works today.
   - **Both directions are pinned, and here the negative genuinely is not enough.** The regression is
     "the job silently returns to root", and **dropping `--user` entirely does that without ever
     spelling the word** — `wsl --install --no-launch` provisions no user, so an invocation with no
     `--user` runs as the image's default, which is root. No negative pattern can catch an absent
-    flag. So each framework command carries a positive pin naming `adb`. All seven new rules were
-    observed going red against the real pre-fix file, and each individual regression vector — drop
-    the flag, `-u root`, `--user 0`, `--user root`, a root clone, a deleted uid assertion — was
-    driven to red on a throwaway copy.
+    flag. So each framework command carries a positive pin naming `adb`, including the distro's
+    `bash --version` log, which has neither a `--cd` nor a script name and was therefore the one
+    framework line the first cut of the negative rule missed entirely.
+  - **Independent review found four holes in the first cut of that guard, and each is closed and
+    re-proven.** Anchoring on `run:` excluded a whole-line comment but not a *trailing* one, so an
+    unbounded `.*` read straight through a `#` — which made the negative rule falsely fire on a
+    comment, and made every positive rule satisfiable *by* one (`run: wsl --help # --user adb …`
+    passed while executing `wsl --help`). The patterns now use `[^#]*`, and the clone pin matches
+    only inside the first quoted string. The uid rule pinned the `id -u` *read* but not the
+    comparison, so neutering `if ($uid -eq '0')` left the lint green; it is now two rules. And the
+    filesystem assertion could pass on a `df` that never ran, since an absent match is not a match.
+  - Every rule was observed going red against the real pre-fix file, and each regression vector was
+    driven to red individually on a throwaway copy: dropping the flag, `-u root`, `--user 0`,
+    `--user root`, a root clone, root on the distro bash log, a neutered uid comparison, and both
+    comment-based fail-open attacks. Three legitimate variants — a trailing comment naming the old
+    form, the `-u adb` shorthand, and `--distribution` spelled out — were confirmed *not* to fire.
   - **What this PR does *not* claim.** The job has still not been observed green: a `schedule` /
     `workflow_dispatch` workflow runs the version on the ref it is dispatched against, and the
     Windows leg's live half is discharged by a dispatch, not by the diff that fixes it — the same
