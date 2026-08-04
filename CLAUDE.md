@@ -68,7 +68,8 @@ those. The rules below are specific to this repo's code.
      `ubuntu-26.04` and `macos-latest` (`selfcheck-macos`) — and a workstation is one of them. A
      local green speaks for the OS you are sitting at, not for the other runner's image or its
      Homebrew bootstrap;
-   - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 27 CI jobs, but is
+   - **`check-bash-floor.sh --runtime`**, which *is* offline and runs in all 28 CI jobs — the 27
+     per-PR jobs plus the scheduled WSL smoke (#2), which reaches it through `wsl -d …` — but is
      omitted from `selfcheck` deliberately: what it adds beyond the entry gate is an assertion
      about the **machine** and about `command -v bash`, which is a CI-image question. (Before
      #256 the reason was "so a contributor on 5.2 can still run selfcheck" — that is no longer

@@ -14,6 +14,18 @@
 #                        runtime half, no step escapes the guard through a `shell:` override, and
 #                        both platforms the floor must hold on are actually represented.
 #
+# THE WSL-HOST CLASS (#2). Windows is supported via WSL2 only, so a Windows job proves the floor for
+# the interpreter INSIDE WSL — never the host's. That distinction is the whole rule, because the
+# host clears the floor on its own: `windows-latest` (Windows Server 2025) ships Git-Bash
+# **5.3.15**, so the ordinary `run: bash scripts/check-bash-floor.sh --runtime` PASSES there without
+# ever entering WSL. A generic widening — add the label to the allowlist and move on — would
+# therefore manufacture a green that proves the floor on an explicitly UNSUPPORTED runtime (native
+# MSYS2/Git-Bash, whose userland #2 ruled out of scope). So a WSL-host job is approved only when it
+# reaches the guard through `wsl -d <distro> -- …`, and the bare form does not satisfy it.
+#
+# `-d <distro>` is required rather than cosmetic: a bare `wsl -- …` runs in whatever distro happens
+# to be DEFAULT on the image, which is not the one the job installed.
+#
 # Usage: bash scripts/check-bash-floor.sh [--runtime | --workflow-dir DIR]
 #        exit 0 = clear · 1 = below the floor / workflow drift · 2 = usage
 #
@@ -62,7 +74,10 @@ esac
 # and a denylist waves through every label nobody thought to name.
 APPROVED_LINUX="ubuntu-26.04"
 APPROVED_MACOS="macos-latest"
-APPROVED_RUNNERS="$APPROVED_LINUX $APPROVED_MACOS"
+# The WSL HOST. Approved only as a launcher — see the header. A job here proves the floor for the
+# distro it starts, and nothing about the Windows userland, which #2 placed out of scope.
+APPROVED_WSL_HOST="windows-latest"
+APPROVED_RUNNERS="$APPROVED_LINUX $APPROVED_MACOS $APPROVED_WSL_HOST"
 
 # --- runtime half ------------------------------------------------------------------------------
 
@@ -152,8 +167,21 @@ scan_jobs() {
       sub(/[[:space:]]+#.*$/, "", s)
       return trim(s)
     }
+    # The distro token a `wsl -d <name>` / `--distribution <name>` invocation names, unquoted, or
+    # empty. Captured rather than merely matched because the two WSL steps must name the SAME
+    # distro: without this the lint accepts a `bash --version` logged in distro A followed by the
+    # floor proved in distro B, while the job claims to have logged the interpreter it proved.
+    function wsl_distro(s,   t) {
+      if (match(s, /(-d|--distribution)[[:space:]]+[^[:space:]]+/)) {
+        t = substr(s, RSTART, RLENGTH)
+        sub(/^(-d|--distribution)[[:space:]]+/, "", t)
+        return unquote(t)
+      }
+      return ""
+    }
     function flush() {
-      if (job != "") printf "%s\t%s\t%s\t%s\n", job, (runson == "" ? "<none>" : runson), guard, firstlog
+      if (job != "") printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", job, (runson == "" ? "<none>" : runson), \
+                            guard, firstlog, wslguard, wsllog, wsllogd, wslguardd
     }
     # Job keys sit at exactly two spaces under `jobs:`. `on:` puts push/pull_request at that SAME
     # indent, so track whether we are inside the jobs: block rather than scanning the whole file —
@@ -174,7 +202,8 @@ scan_jobs() {
       flush()
       job = $0; sub(/^  /, "", job); sub(/:.*$/, "", job); job = unquote(job)
       rest = $0; sub(/^  ("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z0-9_-]+):/, "", rest); rest = trim(rest)
-      runson = ""; guard = 0; firstlog = 0; step = 0
+      runson = ""; guard = 0; firstlog = 0; step = 0; wslguard = 0; wsllog = 0
+      wsllogd = ""; wslguardd = ""
       if (rest != "" && rest !~ /^#/) runson = "<inline mapping: " rest ">"
       next
     }
@@ -194,13 +223,28 @@ scan_jobs() {
     # A `run: |` BLOCK carrying it on a later line is not recognized either, and reports unguarded:
     # fail-closed, and no job here uses that form.
     /^[[:space:]]*run:[[:space:]]*bash[[:space:]]+scripts\/check-bash-floor\.sh[[:space:]]+--runtime[[:space:]]*$/ { guard = 1 }
+    # THE WSL FORMS (#2), recorded as STEP NUMBERS rather than booleans, because for a WSL-host job
+    # the interesting question is ORDER: the distro must be named before the guard runs in it, so a
+    # log emitted after the proof documents nothing about the run that was proved.
+    #
+    # The shape is deliberately narrow — `wsl -d <distro> [flags…] -- bash …` and nothing else on
+    # the line. `-d` is required (a bare `wsl --` takes the images default distro, not the one the
+    # job installed), the middle may not carry a pipe or a command separator, and the invocation
+    # must be the WHOLE run value, so an echoed or `-c`-wrapped mention matches nothing. That is the
+    # same standard the bare form above already holds, transplanted rather than reinvented.
+    /^[[:space:]]*run:[[:space:]]*wsl(\.exe)?[[:space:]]+(-d|--distribution)[[:space:]]+[^[:space:]]+[^|;&]*--[[:space:]]+bash[[:space:]]+--version[[:space:]]*$/ {
+      if (wsllog == 0) { wsllog = step; wsllogd = wsl_distro($0) }
+    }
+    /^[[:space:]]*run:[[:space:]]*wsl(\.exe)?[[:space:]]+(-d|--distribution)[[:space:]]+[^[:space:]]+[^|;&]*--[[:space:]]+bash[[:space:]]+scripts\/check-bash-floor\.sh[[:space:]]+--runtime[[:space:]]*$/ {
+      if (wslguard == 0) { wslguard = step; wslguardd = wsl_distro($0) }
+    }
     END { flush() }
   ' "$1"
 }
 
 static_lint() {
   dir="$1"
-  files=0 jobs=0 linux_jobs=0 macos_jobs=0
+  files=0 jobs=0 linux_jobs=0 macos_jobs=0 wsl_jobs=0
 
   for wf in "$dir"/*.yml "$dir"/*.yaml; do
     [ -f "$wf" ] || continue
@@ -241,7 +285,7 @@ static_lint() {
     }
 
     file_jobs=0
-    while IFS=$'\t' read -r job runson guard firstlog; do
+    while IFS=$'\t' read -r job runson guard firstlog wslguard wsllog wsllogd wslguardd; do
       [ -n "$job" ] || continue
       jobs=$((jobs + 1))
       file_jobs=$((file_jobs + 1))
@@ -252,7 +296,48 @@ static_lint() {
       esac
       case " $APPROVED_LINUX " in *" $runson "*) linux_jobs=$((linux_jobs + 1)) ;; esac
       case " $APPROVED_MACOS " in *" $runson "*) macos_jobs=$((macos_jobs + 1)) ;; esac
-      if [ "$guard" != "1" ]; then
+      is_wsl=0
+      case " $APPROVED_WSL_HOST " in *" $runson "*) is_wsl=1; wsl_jobs=$((wsl_jobs + 1)) ;; esac
+
+      if [ "$is_wsl" = "1" ]; then
+        # NORMALIZE BEFORE COMPARING. These two arrive as fields from `read`, and the ordering rule
+        # below is a NUMERIC test: `[ "" -ge 3 ]` is not false, it is an ERROR, which `if` then reads
+        # as "the ordering is fine". A scanner that emitted an empty field for any reason would
+        # therefore turn the rule off rather than trip it. Anything that is not a run of digits is
+        # forced to 0 — i.e. treated as ABSENT — so every degenerate value lands on the fail-closed
+        # side of the two rules that follow.
+        case "$wslguard" in ''|*[!0-9]*) wslguard=0 ;; esac
+        case "$wsllog"   in ''|*[!0-9]*) wsllog=0   ;; esac
+
+        # THE WHOLE POINT OF THE CLASS: the bare form is NOT accepted here. `windows-latest` carries
+        # its own bash 5.3.15, so a job satisfying the ordinary rule would prove the floor for
+        # native Git-Bash — a userland #2 explicitly ruled unsupported — and report it as Windows
+        # coverage. Only the interpreter inside the distro counts.
+        if [ "$wslguard" = "0" ]; then
+          check_note "$wf: job '$job' is on the WSL host '$runson' but never runs 'wsl -d <distro> -- bash scripts/check-bash-floor.sh --runtime' — the host's own bash clears the floor, so a bare invocation here would prove the floor for native Git-Bash, which is NOT a supported runtime (#2)"
+          check_fail
+        fi
+        if [ "$wsllog" = "0" ]; then
+          check_note "$wf: job '$job' never logs 'wsl -d <distro> -- bash --version', so the log never says which interpreter the distro actually supplied"
+          check_fail
+        elif [ "$wslguard" != "0" ] && [ "$wsllog" -ge "$wslguard" ]; then
+          check_note "$wf: job '$job' logs the WSL bash at step $wsllog, at or AFTER the guard step $wslguard — a version logged after the proof documents nothing about the run that was proved"
+          check_fail
+        fi
+
+        # SAME DISTRO, not merely some distro at each step. Two invocations naming different distros
+        # let a job log the interpreter of one image and prove the floor in another, which is the
+        # claim this class exists to make true. An EMPTY name (`-d ""`) is rejected outright: it is
+        # syntactically a token but names nothing, so `wsl` would fall back to the default distro —
+        # the exact hole requiring `-d` was meant to close.
+        if [ "$wslguard" != "0" ] && [ -z "$wslguardd" ]; then
+          check_note "$wf: job '$job' passes an empty distro name to the floor guard — 'wsl -d \"\"' names nothing and falls back to the image's default distro"
+          check_fail
+        elif [ "$wslguard" != "0" ] && [ "$wsllog" != "0" ] && [ "$wsllogd" != "$wslguardd" ]; then
+          check_note "$wf: job '$job' logs the bash of distro '$wsllogd' but proves the floor in distro '$wslguardd' — the logged interpreter is not the one that was asserted about"
+          check_fail
+        fi
+      elif [ "$guard" != "1" ]; then
         check_note "$wf: job '$job' has no 'run:' step invoking 'scripts/check-bash-floor.sh --runtime', so nothing proves the bash it actually got"
         check_fail
       fi
@@ -289,8 +374,17 @@ EOF
   [ "$linux_jobs" -gt 0 ] || { check_note "no job runs on a proven Linux runner ($APPROVED_LINUX) — the floor is unproven on Linux"; check_fail; }
   [ "$macos_jobs" -gt 0 ] || { check_note "no job runs on a proven macOS runner ($APPROVED_MACOS) — the floor is unproven on the platform where it is hardest to reach"; check_fail; }
 
-  printf 'bash-floor: %d job(s) across %d file(s) — %d Linux, %d macOS, floor %s\n' \
-    "$jobs" "$files" "$linux_jobs" "$macos_jobs" "$FLOOR"
+  # The WSL count is PRINTED but not required, and the asymmetry with Linux/macOS is deliberate.
+  # Those two are per-PR jobs whose absence would silently unprove the floor on a platform this repo
+  # ships to. The WSL smoke job is scheduled-only and lives in its own file; requiring one would
+  # make every fixture in check-bash-floor-guard.sh red for a reason other than the rule it tests,
+  # which is the isolation failure that file's own header warns against. So a zero is made VISIBLE
+  # in the log rather than fatal — base/practices/self-review.md, "make the guard say what it
+  # checked". What is NOT claimed: that the distro is Ubuntu 26.04. The lint reads YAML, so it can
+  # prove the guard runs inside SOME named distro; that the distro clears the floor is proved at
+  # runtime by the guard itself, which goes red on a 5.2 image.
+  printf 'bash-floor: %d job(s) across %d file(s) — %d Linux, %d macOS, %d WSL-host, floor %s\n' \
+    "$jobs" "$files" "$linux_jobs" "$macos_jobs" "$wsl_jobs" "$FLOOR"
 }
 
 # --- entry-point half (#256) ---------------------------------------------------------------------

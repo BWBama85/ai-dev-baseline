@@ -7,12 +7,14 @@
 # notice, because every assertion elsewhere still passes.
 #
 # base/practices/self-review.md: "a new guard is not done until it has been observed failing", and
-# "automate the observation where the set is closed". The rule set here IS closed — NINE static
+# "automate the observation where the set is closed". The rule set here IS closed — TWELVE static
 # rules (approved label · guard wired via `run:` · no `shell` key · no ADB_BASH_FLOOR in a workflow ·
 # per-file zero jobs · no workflow files · Linux present · macOS present · first step logs
-# `bash --version`) and THREE runtime ones ($BASH below floor · PATH bash below floor or absent ·
-# a malformed floor override) — so each gets a fixture that must make the real lint come back red,
-# plus a clean fixture proving the lint is not simply red-always.
+# `bash --version` · and the three WSL-class rules #2 added: the guard reached through
+# `wsl -d <distro>` · a WSL bash version logged at all · that log preceding the guard) and THREE
+# runtime ones ($BASH below floor · PATH bash below floor or absent · a malformed floor override) —
+# so each gets a fixture that must make the real lint come back red, plus a clean fixture proving
+# the lint is not simply red-always.
 #
 # Where a rule can be ISOLATED it is: a fixture that only fails through some OTHER rule proves
 # nothing about the rule it is named for. Review caught two of those here and they are fixed rather
@@ -289,6 +291,130 @@ emit_job "$f" macos-job macos-latest 1
 run_lint "$d"
 eq "$RC" "1" "rule 6: a macOS-only workflow is rejected"
 has "$OUT" "unproven on Linux" "rule 6 names the missing Linux coverage"
+
+# --- the WSL-HOST CLASS (#2) -------------------------------------------------------------------------
+#
+# This class exists because `windows-latest` CLEARS the floor on its own — Windows Server 2025 ships
+# Git-Bash 5.3.15 — so the ordinary rule cannot distinguish "proved the floor inside Ubuntu 26.04"
+# from "proved the floor for native MSYS2", a userland #2 ruled unsupported. A widening that merely
+# added the label to the allowlist would therefore have manufactured a green, and NOTHING else in
+# this suite would have noticed: every other assertion still passes. Each rule below was observed
+# red before it was written down here.
+WSL_LOG='wsl -d Ubuntu-26.04 -- bash --version'
+WSL_GUARD='wsl -d Ubuntu-26.04 --cd /root/adb -- bash scripts/check-bash-floor.sh --runtime'
+
+# emit_wsl_job <file> <job> <guard-run-value> [log-run-value] [after]
+#   an EMPTY log value omits the `bash --version` step entirely; "after" emits it AFTER the guard.
+emit_wsl_job() {
+  {
+    printf '  %s:\n' "$2"
+    printf '    runs-on: windows-latest\n'
+    printf '    steps:\n'
+    printf '      - name: Log this runner'"'"'s bash\n'
+    printf '        run: bash --version\n'
+    [ -n "${4:-}" ] && [ "${5:-}" != after ] && printf '      - name: wsl log\n        run: %s\n' "$4"
+    printf '      - name: floor\n        run: %s\n' "$3"
+    [ -n "${4:-}" ] && [ "${5:-}" = after ] && printf '      - name: wsl log\n        run: %s\n' "$4"
+    :
+  } >> "$1"
+}
+
+# The clean WSL fixture FIRST — without it every assertion below is satisfied by a lint that simply
+# rejects every Windows job, which would be a different bug wearing the same green.
+d="$work/wsl-clean"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job "$WSL_GUARD" "$WSL_LOG"
+run_lint "$d"
+eq "$RC" "0" "wsl: a compliant WSL-host job passes"
+has "$OUT" "1 WSL-host" "wsl: and the count is REPORTED, so a zero is visible rather than inferred"
+
+# THE rule. The bare invocation is the false proof: it passes on this runner while proving the floor
+# for an unsupported userland, which is strictly worse than no Windows job at all.
+d="$work/wsl-bare"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job 'bash scripts/check-bash-floor.sh --runtime' "$WSL_LOG"
+run_lint "$d"
+eq "$RC" "1" "wsl: the BARE host invocation does not satisfy a WSL-host job"
+has "$OUT" "NOT a supported runtime" "wsl: and the diagnostic says why the host's own bash is not the answer"
+
+# `-d` is required, not cosmetic: a bare `wsl --` runs in whatever distro is DEFAULT on the image,
+# which is not the one the job installed.
+d="$work/wsl-nodistro"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job 'wsl -- bash scripts/check-bash-floor.sh --runtime' "$WSL_LOG"
+run_lint "$d"
+eq "$RC" "1" "wsl: an unnamed distro (no -d) is rejected"
+
+# The same two spellings the bare form already had to survive, transplanted: a guard that is merely
+# QUOTED or MENTIONED runs zero times, and one behind a separator is a different command.
+d="$work/wsl-echoed"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job 'wsl -d Ubuntu-26.04 -- echo bash scripts/check-bash-floor.sh --runtime' "$WSL_LOG"
+run_lint "$d"
+eq "$RC" "1" "wsl: an ECHOED guard inside the wsl invocation does not count as running it"
+
+d="$work/wsl-chained"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job 'wsl -d Ubuntu-26.04 -- true; bash scripts/check-bash-floor.sh --runtime' "$WSL_LOG"
+run_lint "$d"
+eq "$RC" "1" "wsl: a guard behind a command separator is not the wsl invocation"
+
+# No WSL bash logged at all — the log then never says which interpreter the distro supplied.
+d="$work/wsl-nolog"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job "$WSL_GUARD" ""
+run_lint "$d"
+eq "$RC" "1" "wsl: a WSL-host job that never logs the distro's bash is rejected"
+
+# ...and logging it AFTER the proof is the same defect wearing a compliant-looking step: the version
+# printed then describes a run that has already been asserted about.
+d="$work/wsl-lateorder"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job "$WSL_GUARD" "$WSL_LOG" after
+run_lint "$d"
+eq "$RC" "1" "wsl: the distro's bash logged AFTER the guard is rejected"
+has "$OUT" "at or AFTER the guard step" "wsl: and the diagnostic names the ordering"
+
+# SAME DISTRO. Independent review found this one: keeping only step NUMBERS let a job log distro A's
+# bash and prove the floor in distro B, while the ordering rule above reported everything in order.
+d="$work/wsl-distromismatch"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job "$WSL_GUARD" 'wsl -d Ubuntu-24.04 -- bash --version'
+run_lint "$d"
+eq "$RC" "1" "wsl: logging distro A's bash while proving the floor in distro B is rejected"
+has "$OUT" "is not the one that was asserted about" "wsl: and the diagnostic names the substitution"
+
+# An EMPTY distro name is syntactically a token but names nothing, so `wsl` falls back to the
+# image's default — the exact hole that requiring `-d` was meant to close.
+d="$work/wsl-emptydistro"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job 'wsl -d "" --cd /root/adb -- bash scripts/check-bash-floor.sh --runtime' 'wsl -d "" -- bash --version'
+run_lint "$d"
+eq "$RC" "1" "wsl: an EMPTY distro name is rejected, not treated as a named distro"
+has "$OUT" "names nothing" "wsl: and the diagnostic says why an empty name is not a name"
+
+# THE CONVERSE, and it is the half a one-directional widening would have dropped: admitting the wsl
+# form must not let a LINUX or macOS job satisfy its own guard through it. Without this the widening
+# would have handed every existing job a second, unproven way to look compliant.
+d="$work/wsl-linuxform"; f="${ new_wf "$d"; }"
+emit_job "$f" macos-job macos-latest 1
+{
+  printf '  linux-job:\n    runs-on: ubuntu-26.04\n    steps:\n'
+  printf '      - name: Log this runner'"'"'s bash\n        run: bash --version\n'
+  printf '      - name: floor\n        run: %s\n' "$WSL_GUARD"
+} >> "$f"
+run_lint "$d"
+eq "$RC" "1" "wsl: a LINUX job may not satisfy its guard through the wsl form"
+has "$OUT" "linux-job" "wsl: and the converse names the job that tried it"
 
 # --- the runtime half ------------------------------------------------------------------------------
 # Driven through ADB_BASH_FLOOR rather than through a second interpreter, so the assertion holds

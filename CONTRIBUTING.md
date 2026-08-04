@@ -109,8 +109,9 @@ three agents) into a throwaway `HOME`.
 Green locally ≈ green in CI, with two honest qualifications since #257. CI runs this offline suite
 on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
 them, so a local green speaks for the OS you are sitting at, not for the other runner's image or
-its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 27 CI
-jobs — is still omitted locally, but since #256 the reason is different: what it adds beyond the
+its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 28 CI
+jobs (the 27 per-PR jobs plus the scheduled WSL smoke #2 added, which reaches it through `wsl -d …`)
+— is still omitted locally, but since #256 the reason is different: what it adds beyond the
 entry gate is an assertion about the machine and about `command -v bash`, which is a CI-image
 question. (A contributor below the floor no longer gets a pass here — `selfcheck.sh` gates its own
 interpreter on line 1.) Its **static** half and #256's **entry-point** half both run here. See [`docs/ci-runners.md`](docs/ci-runners.md).
@@ -129,6 +130,7 @@ interpreter on line 1.) Its **static** half and #256's **entry-point** half both
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent · ci-runners |
 | `.github/workflows/ci.yml` | 26 Linux jobs on `ubuntu-26.04` + one aggregate `selfcheck-macos` job (shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · claims-live (CI-only) · practice-index · release-role · release-skill · install dry-run). Every job proves its own bash ≥ 5.3 — [`docs/ci-runners.md`](docs/ci-runners.md) |
+| `.github/workflows/wsl-smoke.yml` | The Windows leg (#2): **one** `windows-latest` job, on a weekly `schedule` + `workflow_dispatch` + `push: tags`, **never per-PR**. Installs `Ubuntu-26.04` into WSL2, clones onto the Linux filesystem, and runs the installer + `selfcheck.sh` there. Its own file so `repo-settings.sh` can never discover or add it as a required context — discovery skips a workflow with no `pull_request` trigger (an admin can still require any context by hand) |
 
 ## Adding a new agent
 

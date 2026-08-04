@@ -25,7 +25,8 @@
 #   2. The OTHER PLATFORM. CI runs this same offline suite on ubuntu-26.04 AND macos-latest, and a
 #      workstation is one of them. Nothing here speaks for the other runner's image or its Homebrew
 #      bootstrap.
-#   3. `check-bash-floor.sh --runtime` — which IS offline, and runs in all 27 CI jobs. Still omitted
+#   3. `check-bash-floor.sh --runtime` — which IS offline, and runs in all 28 CI jobs (the 27 per-PR
+#      jobs, plus the scheduled WSL smoke #2 added, which reaches it through `wsl -d …`). Still omitted
 #      here, but the reason CHANGED when #256 landed. It is no longer "so a contributor on 5.2 can
 #      run selfcheck": they cannot, because line 1 of this script now gates its own interpreter and
 #      would have re-exec'd or exited long before any step ran. What --runtime adds beyond that is

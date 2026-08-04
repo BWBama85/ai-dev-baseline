@@ -840,6 +840,61 @@ fact bash-floor-bootstrap-carveout 'fixed:parseable' -- \
   scripts/lib/common.sh CLAUDE.md CONTRIBUTING.md .ai-dev-baseline/decisions.md
 fact bash-floor-observer-carveout 'fixed:EXEMPT_ENTRYPOINTS' -- scripts/check-bash-floor.sh
 
+# --- FACT: the Windows/WSL smoke job exists, and the docs that claim it agree (#2, D38) ---------
+#
+# THIS IS THE ENFORCEMENT HALF, and it deliberately does NOT live in check-bash-floor.sh. Review
+# was right that printing "0 WSL-host" is visibility, not enforcement: delete `wsl-smoke.yml` and
+# that lint still exits 0 while `docs/ci-runners.md` and `CONTRIBUTING.md` go on describing a
+# Windows leg that no longer runs. But an "at least one WSL job" AGGREGATE rule in the floor lint is
+# the wrong home for it: every fixture in check-bash-floor-guard.sh would then go red for a reason
+# other than the rule under test, which is the isolation failure that file's own header warns
+# against — the test harness would be shaping the production invariant.
+#
+# A positive `fact` rule is the right home, and it is strictly stronger than the aggregate would
+# have been. A `fixed:` rule REPORTS A BAD PATH rather than passing vacuously (this file's own
+# header says so, which is why the rendered skills are pinned the same way), so deleting the
+# workflow fails here loudly — and because the same token is pinned in the two docs that assert the
+# claim, deleting the claim without the job, or the job without the claim, both fail. Neither can
+# drift away from the other silently.
+# ANCHORED TO EXECUTABLE FIELDS, NOT TO TOKENS ANYWHERE IN THE FILE. The first cut of these rules
+# used `fixed:windows-latest` / `fixed:Ubuntu-26.04` over the workflow AND the docs, and review
+# reproduced the hole: both tokens also appear in this workflow's own explanatory COMMENTS, so
+# repointing `runs-on:` at `ubuntu-26.04` and swapping the floor step for the ordinary host
+# invocation deleted the Windows leg while every rule here stayed green and `check-bash-floor.sh`
+# reported `0 WSL-host … PASS`. A pin satisfied by prose about the thing is the same fail-open as a
+# `# TODO: run the guard` comment satisfying the guard rule — twice now in this repo.
+#
+# So the workflow is pinned on the two fields that actually RUN, each anchored to the start of a
+# YAML line (a `#` comment can therefore never satisfy them), and the doc-side token pins are split
+# onto the docs alone.
+#
+# THE DIVISION OF LABOUR IS DELIBERATE: this file pins that the job EXISTS and names the right host
+# and distro; `check-bash-floor.sh` owns the GRAMMAR (guard reached through `wsl -d <distro>`, the
+# version logged first, both naming the same distro). Once `runs-on: windows-latest` is pinned here,
+# the WSL-host class forces all of that, so re-stating the grammar in this file would be the copy
+# this repo's law forbids.
+fact wsl-smoke-runner \
+  'regex:^[[:space:]]*runs-on:[[:space:]]*windows-latest[[:space:]]*$' \
+  -- .github/workflows/wsl-smoke.yml
+# PINNED ON THE GUARD LINE, not on "a run: step mentioning the distro anywhere". Negative-testing
+# the looser form found the residual hole: repointing every `-d` invocation at Ubuntu-24.04 — a
+# distro BELOW the floor — left the `wsl --install --distribution Ubuntu-26.04` step still matching,
+# so the pin stayed green while the suite would have run on 5.2.21. The floor proof is the line that
+# has to name the distro, because it is the line whose interpreter is the claim.
+fact wsl-smoke-floor-in-distro \
+  'regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\.exe[[:space:]]).*(-d|--distribution)[[:space:]]+Ubuntu-26\.04[^|;&]*--[[:space:]]+bash[[:space:]]+scripts/check-bash-floor\.sh[[:space:]]+--runtime[[:space:]]*$' \
+  -- .github/workflows/wsl-smoke.yml
+# The trigger shape is the other half of the decision (#2's "release/weekly", D38's "never
+# per-PR"): a job quietly repointed at `pull_request` would be a per-PR Windows cost AND a
+# discovered required context, which is exactly what its own file was chosen to prevent.
+fact wsl-smoke-scheduled 'regex:^[[:space:]]*schedule:' -- .github/workflows/wsl-smoke.yml
+# The DOCS half: the two files that assert the Windows leg to a reader must keep naming it, so the
+# job and the claim cannot drift apart in either direction. `fixed:` is right here — these are prose
+# documents, and the token appearing in prose is exactly what is being pinned.
+_wsl_smoke_docs="docs/ci-runners.md CONTRIBUTING.md"
+fact wsl-smoke-doc-host   'fixed:windows-latest' -- $_wsl_smoke_docs
+fact wsl-smoke-doc-distro 'fixed:Ubuntu-26.04'   -- $_wsl_smoke_docs
+
 # --- what was actually evaluated ---------------------------------------------
 # A rule that scans nothing is already a hard failure inside fact(); these totals are the other
 # half of the same idea, and the half that survives a future edit fact() does not model. Zero rules
