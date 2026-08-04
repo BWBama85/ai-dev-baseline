@@ -457,9 +457,13 @@ else
   has "$wfcode" 'sweep_file' "6 state deletions report their failures instead of silently continuing"
   # --- #264: the review family is swept, and on ITS OWN liveness signal --------------------
   has "$wfcode" '{{CLEANUP_LIB}} state-verdict review' "6 review artifacts are decided through the library, not inline"
-  # The SWEEP arm's own body, not a bare `review)` — the LARGE arm below it opens a `review)` case
-  # too, so the bare token stays matched even when the deletion arm is gone entirely (observed).
-  has "$wfcode" '[ "$RV" = stale ] || continue' "6 …and the sweep loop has an arm that acts on the verdict"
+  # The label BOUND TO ITS BODY, which needs both halves in one needle. A bare `review)` stays
+  # matched by the LARGE arm below even when the deletion arm is gone entirely; and a bare
+  # `[ "$RV" = stale ]` stays matched when the LABEL is renamed to `reviews)`, which no longer
+  # matches any record `state-scan` emits — a sweep arm that is present, correct and unreachable.
+  # Both were observed passing before this needle spanned the two lines.
+  has "$wfcode" 'review)
+      [ "$RV" = stale ] || continue' "6 …and the sweep loop's review arm acts on that verdict"
   # THE decision this issue asked for, pinned as a NEGATIVE. `state-verdict review "$RUN"` is the
   # obvious-looking call and the wrong one: $RUN is decided before a marker pass that makes live PR
   # round trips, so it is exactly the stale signal the re-scan exists to replace. Nothing else in
@@ -538,22 +542,60 @@ else
   # two halves drifting apart is not cosmetic: a file /cleanup will delete but preflight will not
   # refresh is a stale artifact that a NEW run's marker makes read as live — the exact
   # stale-findings-look-current trap #264 is about, reintroduced through the back door.
-  # `:-1`, never `:-0`: GNU sed rejects a 0 line-address outright, so the already-failing
-  # clear-is-missing path would additionally emit a platform-specific error instead of an empty
-  # region the assertions below report cleanly. CI runs both GNU and BSD sed (docs/ci-runners.md).
-  iiclearline="${ printf '%s\n' "$ii" | sed -n "${iiclear:-1},$((${iiclear:-1} + 12))p"; }"
-  for rname in 'review-prompt.txt' 'review.md' 'review.err'; do
-    has "$iiclearline" "{{STATE_DIR}}/$rname" "6 …and clears $rname, matching state-scan's review family"
-  done
-  for rpat in 'review-*.md' 'review-*.err'; do
-    has "$iiclearline" "-name '$rpat'" "6 …and the $rpat family, which state-scan can also sweep"
-  done
-  # …via `find`, NEVER a shell glob on the rm line. zsh's default `nomatch` aborts the WHOLE
-  # command on an unmatched pattern, so `rm -f …/review.md …/review-*.md` deletes NOTHING on the
-  # common macOS path — a clear that silently clears nothing, wearing the shape of the fix.
-  # Observed while writing this change: zsh exits 1 with "no matches found" and all three files
-  # survive. Same class as the #125 zsh bug this suite already exists to catch.
-  hasnt "$iiexec" 'rm -f {{STATE_DIR}}/review-*' "6 …and never through an rm glob zsh's nomatch would abort"
+  # The whole preflight clear region, delimited by its own block rather than by a line offset — the
+  # `find` and the `rm -f` may legitimately sit in either order (they were swapped once already, so
+  # that a failed `rm` is the block's exit status instead of being masked by an empty `find`).
+  # COMMENTS STRIPPED, like `wfexec` above and for the identical reason: this block documents at
+  # length which spellings it avoids and why, so every assertion below would be satisfiable by the
+  # prose explaining the rule rather than by the code obeying it. That is not hypothetical — the
+  # `-type l` pin was observed passing against a `-type f`-only clear, matched by the very comment
+  # saying `-type f` alone is wrong.
+  iiclearline="${ awk '/^mkdir -p \{\{STATE_DIR\}\}/ { inb = 1 } inb; inb && /^```$/ { exit }' "$II" \
+                  | sed 's/[[:space:]]*#.*$//'; }"
+
+  # DERIVED FROM THE LIBRARY, not a second hardcoded list. Two hardcoded lists cannot detect that
+  # they disagree: adding `review-extra.json` to `state-scan`'s arm and nothing to preflight left
+  # this suite green, because no fixture named that file and the preflight assertions only ever
+  # asked about the five names someone had already thought of. Reading the arm's own patterns makes
+  # the assertion "every name the sweep can delete, preflight can clear" instead of "these five
+  # strings appear" — which is the property #264 actually needs.
+  revarm="${ sed -n 's/^      \(review[^)]*\))$/\1/p' "$CL" | head -n1; }"
+  if [ -n "$revarm" ]; then
+    IFS='|' read -r -a revpats <<< "$revarm"
+    check_enumerated "state-scan review family" "${revpats[@]}"
+    for rpat in "${revpats[@]}"; do
+      case "$rpat" in
+        # A glob member is covered by find's quoted -name; an exact member by the rm -f line.
+        *'*'*) has "$iiclearline" "-name '$rpat'"     "6 …and preflight covers the $rpat family state-scan sweeps" ;;
+        *)     has "$iiclearline" "{{STATE_DIR}}/$rpat" "6 …and preflight clears $rpat, which state-scan classifies review" ;;
+      esac
+    done
+  else
+    bad "6 could not read state-scan's review arm from cleanup-lib.sh — the set-equality check asserted NOTHING"
+  fi
+  # The two selectors must agree on symlinks too. `state-scan` picks files with `[ -f ]`, which
+  # FOLLOWS a link to a regular file; a bare `find -type f` does not match the link itself, so a
+  # `review-slot.md` symlink was classified `review` and left unclearable (observed).
+  has "$iiclearline" '-type l' "6 …including symlinks, which state-scan's [ -f ] test follows"
+  # ORDER within the clear: the fixed-name `rm -f` must come LAST. It is the block's final command,
+  # so its status is what the agent reads as preflight's — and with the `find` there instead, a
+  # read-only state dir left the three artifacts #264 is about in place while an empty, successful
+  # `find` reported preflight green. A masked failure here is a silently un-cleared run.
+  iifind="${ printf '%s\n' "$ii" | grep -n '^find {{STATE_DIR}} -maxdepth' | head -n1 | cut -d: -f1; }"
+  if [ -n "$iifind" ] && [ -n "$iiclear" ] && [ "$iifind" -lt "$iiclear" ]; then ok; else
+    bad "6 …and the fixed-name rm must be the LAST clear, so its failure is not masked by the find (find@${iifind:-?} rm@${iiclear:-?})"
+  fi
+  # …and the family reaches `rm` ONLY through find's quoted `-name`, never as a shell path. zsh's
+  # default `nomatch` aborts the WHOLE command on an unmatched pattern, so a `{{STATE_DIR}}/review-*`
+  # argument makes the clear delete nothing at all on the common macOS path — the fix wearing the
+  # shape of the bug. Observed while writing this: zsh exits 1 with "no matches found" and all
+  # three files survive. Same class as the #125 zsh bug this suite already exists to catch.
+  #
+  # Matched on the TEMPLATED PATH rather than on `rm -f {{STATE_DIR}}/review-*`: the dangerous form
+  # puts the globs on a continuation line, where the contiguous `rm -f …` spelling never appears.
+  # (That exact form is caught today by the `-name` assertions above — it deletes the find — but a
+  # variant that keeps the find AND adds the glob would slip a substring pin.)
+  hasnt "$iiexec" '{{STATE_DIR}}/review-*' "6 …and never as a shell glob argument, which zsh's nomatch aborts"
 fi
 
 # ==================== 7. the currency step, EXECUTED (#139) ==================================

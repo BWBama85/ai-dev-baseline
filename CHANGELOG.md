@@ -10,8 +10,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 ### Added
 
 - **`/implement-issue`'s review artifacts now have a lifecycle, on both ends** (#264, D40).
-  `review-prompt.txt`, `review.md` and `review.err` were written by step 8 of every run and removed
-  by nothing: preflight cleared the *gap* set and not these, and `cleanup-lib.sh state-scan`
+  `review-prompt.txt`, `review.md` and `review.err` were written by step 8 of every run that
+  dispatches an in-session reviewer, and removed by nothing — a run whose slot is deferred or
+  absent writes none of them, which is half of why the staleness below bites. Preflight cleared the
+  *gap* set and not these, and `cleanup-lib.sh state-scan`
   classified them `other`, which `/cleanup` never sweeps — correctly, since sweeping what it cannot
   classify is how a sweep starts eating files. They were therefore permanent. Preflight now clears
   them, and a `review` arm classifies them beside the `gaps` one.
@@ -25,15 +27,19 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **No review lock, and that asymmetry with the gap artifacts is the decision the issue asked
     for.** `gap-analysis.lock` exists for one window — gap analysis runs in step 3, before the
     branch and marker exist, so a live dispatch has nothing to prove its liveness with. Review is
-    written in step 8, *after* step 5's marker and while the run's branch still exists, so the
-    marker already is that signal for every reachable write.
+    written in step 8, *after* step 5's marker and while the run's branch still exists, so within
+    the **one-active-run-per-checkout** boundary `/implement-issue` already declares, the marker
+    already is that signal. Outside it a second run's preflight can delete a live marker (#202) —
+    and a review lock would be cleared by that same preflight, so it would not help either.
   - **But `/cleanup` reads it from the re-scan, never from the `$RUN` it computed earlier.** That
     is the same rule the lock already follows: the signal governing a destructive delete must be
     true *at* the delete, and `$RUN` predates a marker pass that makes live PR round trips. Any
     marker still present in the fresh scan is one the sweep just kept, or one a run created since.
   - **The `LARGE …` report covers the review stream too**, gated on its own verdict rather than the
-    gap one — `review.err` is routinely the larger of the two, so it was the file most likely to
-    trigger a warning that did not exist for it.
+    gap one. The run #264 recorded left a `review.err` of 389 KB — already past the 256 KB
+    threshold — so this was a warning the operator could not get for a file that had crossed it.
+    That arm now also enumerates from the scan instead of a `"$STATE"/*.err` glob, which zsh's
+    default `nomatch` aborts.
   - **`pr-body.md` deliberately stays `other`** (the issue scopes it out: the shipped workflow does
     not name that file, an agent chose it), and a test now pins that it was not made sweepable in
     passing.

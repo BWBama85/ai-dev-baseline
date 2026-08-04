@@ -2261,10 +2261,20 @@ limit: none of them is sufficient alone.
              *before* the branch and the run marker exist (step 5 writes them), so a live gap
              dispatch has no marker to consult and its artifacts read as a finished run's
              leftovers. Review is written in step 8 — after step 5, while the run's local branch
-             still exists — so `state-verdict marker` returns `keep` for every reachable write. The
-             marker already is the signal. A second one could leak, be cleared late, and disagree
-             with the first, and it would need the whole gap-lock protocol (take before the write,
-             release outside the detached block, clear leaks at preflight) to buy nothing.
+             still exists — so `state-verdict marker` returns `keep` for every review write **within
+             the one-active-run-per-checkout boundary `/implement-issue` already declares**. The
+             marker already is the signal there. A second one could leak, be cleared late, and
+             disagree with the first, and it would need the whole gap-lock protocol (take before the
+             write, release outside the detached block, clear leaks at preflight) to buy nothing.
+
+             **That boundary is stated because outside it the claim is false, and a lock does not
+             rescue it.** A second run's preflight clears the fixed marker paths unconditionally, so
+             it can delete a live run's marker (#202); the first run then reaches step 8 with no
+             marker and this sweep would call its live artifacts stale. A review lock lives at a
+             fixed path too and would be cleared by that same preflight. The independent review of
+             this change caught the original wording claiming "every reachable write" without that
+             qualifier — the engineering decision is unchanged, the scope of what it promises is
+             not.
 
              **What that costs, and where it is paid: `$RUN` is not good enough.** `$RUN` is
              decided during a marker pass that makes live PR round trips, and the step already

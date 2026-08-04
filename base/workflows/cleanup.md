@@ -449,8 +449,17 @@ lock that governs a destructive delete must be the one that is true *at the dele
 
 **Review artifacts have no lock, and need none (#264).** `/implement-issue` writes them in its
 step 8 — *after* step 5 has written the run marker, and while the run's branch still exists — so
-the window the gap lock exists for (step 3, before any marker) has no counterpart here. The marker
-*is* the in-flight signal for every reachable write.
+the window the gap lock exists for (step 3, before any marker) has no counterpart here. Within the
+**one-active-run-per-checkout** boundary `/implement-issue` already declares, the marker is the
+in-flight signal for every review write.
+
+**Outside that boundary it is not, and a lock would not rescue it either.** A second run's
+preflight clears the fixed marker paths unconditionally, so it can delete a live run's marker
+(`/implement-issue`'s state protocol says so; tracked as #202) — after which that still-running
+first run reaches step 8 with no marker and this sweep would classify its live artifacts `stale`.
+A review lock would be cleared by exactly the same preflight, so it buys nothing here: the gap
+lock survives that path only because a *concurrent* run is not what it guards against. Two real
+runs in one checkout is #202's problem, not a hole this arm can close.
 
 **But it is read from THIS scan, never from `$RUN`.** The rule above is not about locks
 specifically; it is that the signal governing a destructive delete must be true *at the delete*,
@@ -509,8 +518,9 @@ EOF
 
 A kept captured stream that has grown large is **reported, not truncated** — truncating a live
 run's stream destroys the evidence its operator is about to read. This covers the **review**
-stream too (#264): `review.err` is routinely the larger of the two, so leaving it out would have
-dropped the warning for the file most likely to trigger it.
+stream too (#264): `review.err` captures a reviewer's whole exploration, and the run #264 recorded
+left one of 389 KB, so a threshold that never looked at it was a warning the operator could not
+get for a file that had already crossed it.
 
 Each family is gated on **its own** verdict. `$RV` is not `$GV` — a live gap dispatch and a live
 review dispatch are different runs at different steps, and reporting one family under the other's
