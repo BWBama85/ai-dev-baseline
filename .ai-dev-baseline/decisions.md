@@ -2120,9 +2120,10 @@ limit: none of them is sufficient alone.
              part worth recording.
 - decision:  Create an ordinary `adb` user in the distro and hand it everything the framework
              touches (clone, distro bash log, floor guard, `install.sh`, `selfcheck.sh`,
-             `uninstall.sh`), keeping root only for `wsl --install`, `apt-get`, `useradd` and the two
-             image-shape reads that precede the account. Guard it with a **contextual** negative rule
-             plus a **positive rule per framework command**, not with the literal pin requested.
+             `uninstall.sh`). Exactly three in-distro invocations keep `--user root`: the
+             `/etc/os-release` read, which precedes the account, plus `apt-get` and `useradd`, which
+             are privileged by nature. Guard it with a **contextual** negative rule plus a
+             **positive rule per framework command**, not with the literal pin requested.
 - placement: `.github/workflows/wsl-smoke.yml`; the `wsl-smoke-nonroot-framework` /
              `wsl-smoke-runs-as-adb` / `wsl-smoke-clones-as-adb` / `wsl-smoke-asserts-nonroot-uid`
              rules in `scripts/check-fact-drift.sh`.
@@ -2137,9 +2138,9 @@ limit: none of them is sufficient alone.
              **The literal `absent:--user root` rule is unsatisfiable, and that is a fact about the
              `fact` grammar rather than about this workflow.** `fact` applies ONE pattern to a WHOLE
              file — there is no step selector. Three invocations must stay root (the
-             `/etc/os-release` read and the pre-account `bash --version` log run before the user
-             exists; `apt-get` and `useradd` are privileged by nature), and the workflow's own
-             comments discuss the old form. A bare pin would therefore fail on a CORRECT file, which
+             `/etc/os-release` read precedes the account; `apt-get` and `useradd` are privileged by
+             nature), and the workflow's own comments discuss the old form. A bare pin would
+             therefore fail on a CORRECT file, which
              under `--mutation` means it never even reaches its witness: the mode requires a clean
              baseline before injecting. So the pattern is contextual — root **and** reaching a
              framework command — and covers `-u` and a numeric `0`, because `--user root`, `-u root`,

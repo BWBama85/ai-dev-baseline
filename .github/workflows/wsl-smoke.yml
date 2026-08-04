@@ -84,11 +84,12 @@ jobs:
         # therefore passes `--user` EXPLICITLY rather than relying on an unprovisioned image's
         # default, which is root.
         #
-        # WHICH user is the subject of #271, and the split is not cosmetic. The image-shape checks
-        # and the apt bootstrap run as **root** because they must — and because they run before the
-        # account exists. Everything the framework itself touches — the clone, the effective-user
-        # log, the distro's bash log, the floor guard, `install.sh`, `selfcheck.sh`, `uninstall.sh`
-        # — runs as an ordinary user, for two reasons:
+        # WHICH user is the subject of #271, and the split is not cosmetic. Exactly three in-distro
+        # invocations below still pass `--user root`: the `/etc/os-release` read, which runs before
+        # the account exists, and `apt-get` and `useradd`, which are privileged by nature.
+        # Everything the framework itself touches — the clone, the effective-user log, the distro's
+        # bash log, the floor guard, `install.sh`, `selfcheck.sh`, `uninstall.sh` — runs as an
+        # ordinary user, for two reasons:
         #
         #   1. Root holds `CAP_DAC_OVERRIDE`, so a POSIX mode bit cannot DENY it a write. The
         #      offline suite has an assertion that depends on exactly that
@@ -227,21 +228,27 @@ jobs:
         # OWNERSHIP is the second half, and it is here because `--cd` cannot be relied on to
         # enforce it (#271): WSL treats a failed `chdir` as non-fatal and launches the command
         # anyway, so a clone that landed somewhere else — or landed root-owned — would not stop the
-        # steps below at their own boundary. `stat -c %U` names the owner, and the `-ne 0` check on
-        # the numeric uid is what actually rules out root, since a *name* comparison would pass for
-        # any second account that happened to be created.
+        # steps below at their own boundary. It also covers the path simply not existing: `stat` on
+        # a missing target prints nothing, and an empty string fails the pattern below.
+        #
+        # `%U:%u` and NOT `'%U %u'` — the colon is load-bearing. This argument crosses pwsh into
+        # `wsl.exe` and then into the distro, and an argument containing a SPACE has to survive
+        # quoting at every one of those boundaries; one that contains none cannot be split by any of
+        # them. Both fields are read because they answer different questions: the name is what the
+        # log should say, and the numeric uid is what actually rules out root — a name comparison
+        # alone would pass for an `adb` account that happened to be uid 0.
         run: |
           $mount = wsl -d Ubuntu-26.04 --user adb -- df -PT /home/adb/ai-dev-baseline | Out-String
           Write-Host $mount
           if ($mount -match 'drvfs|9p|v9fs') {
             throw "the working clone is on a Windows-backed filesystem — the supported topology is a clone inside WSL"
           }
-          $owner = (wsl -d Ubuntu-26.04 --user adb -- stat -c '%U %u' /home/adb/ai-dev-baseline | Out-String).Trim()
+          $owner = (wsl -d Ubuntu-26.04 --user adb -- stat -c '%U:%u' /home/adb/ai-dev-baseline | Out-String).Trim()
           Write-Host "clone owner: $owner"
-          if ($owner -notmatch '^adb\s+[0-9]+$') {
+          if ($owner -notmatch '^adb:[0-9]+$') {
             throw "the working clone is not owned by 'adb' — got '$owner'; a root-owned tree handed to a non-root user fails later and confusingly (git 'dubious ownership', install.sh permission errors)"
           }
-          if ($owner -match '\s0$') {
+          if ($owner -match ':0$') {
             throw "the working clone is owned by uid 0 — it must be cloned AS the non-root user, not handed to it (#271)"
           }
 

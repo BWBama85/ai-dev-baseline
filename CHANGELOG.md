@@ -271,8 +271,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   everywhere a normal user runs it would have deleted real coverage to accommodate a CI choice.
   - **The job now creates an ordinary user and hands it everything the framework touches** — the
     clone, the distro's `bash --version` log, the floor guard, `install.sh`, `selfcheck.sh` and
-    `uninstall.sh`. Only the genuinely privileged steps stay root: `wsl --install`, the `apt-get`
-    bootstrap, `useradd`, and the two image-shape reads that run before the account exists.
+    `uninstall.sh`. Exactly three in-distro invocations still pass `--user root`, and each has a
+    reason: the `/etc/os-release` read (it runs before the account exists), the `apt-get` bootstrap,
+    and `useradd` itself. The host-side steps — `wsl --install`, `wsl --list --verbose`, and the
+    runner's own `bash --version` — take no `--user` at all.
   - **It raises fidelity rather than merely turning the job green.** `docs/installation.md` tells a
     Windows user to clone and install inside WSL **as themselves**, so running as root was proving a
     setup no real user has.

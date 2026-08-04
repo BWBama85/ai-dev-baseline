@@ -152,9 +152,10 @@ offline suite has an assertion that depends on exactly that: `check-skill-compos
 directory `555` and requires the next compose to fail. Run as root, that assertion **inverts**, and
 the job is red on a fixture that passes on `ubuntu-26.04` and on a maintainer's macOS workstation
 alike. So the job creates an `adb` account and hands it everything the framework touches — the clone,
-the distro's `bash --version` log, the floor guard, `install.sh`, `selfcheck.sh`, `uninstall.sh` —
-keeping root only for `wsl --install`, `apt-get`, `useradd` and the two image-shape reads that run
-before the account exists. That is also the *documented* topology: `docs/installation.md` tells a
+the distro's `bash --version` log, the floor guard, `install.sh`, `selfcheck.sh`, `uninstall.sh`.
+Exactly three in-distro invocations still pass `--user root`: the `/etc/os-release` read, which runs
+before the account exists, and the two that are privileged by nature — the `apt-get` bootstrap and
+`useradd`. That is also the *documented* topology: `docs/installation.md` tells a
 Windows user to clone and install inside WSL **as themselves**, so the previous arrangement was
 proving a setup no real user has.
 
