@@ -261,6 +261,47 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The WSL smoke job ran the suite as root, which inverted a permission fixture** (#271, D39).
+  `.github/workflows/wsl-smoke.yml` passed `--user root` to every in-distro command, and root holds
+  `CAP_DAC_OVERRIDE` — so a POSIX mode bit cannot deny it a write. `scripts/check-skill-compose.sh`
+  chmods a skill directory `555` and requires the next compose to **fail**; under root the write
+  succeeded, the assertion inverted, and the weekly job went red on `skill-compose: 123 passed, 1
+  failed` — an assertion that passes on `ubuntu-26.04` and on a maintainer's macOS workstation
+  alike. The defect was the workflow's, not the check's: weakening an assertion that is correct
+  everywhere a normal user runs it would have deleted real coverage to accommodate a CI choice.
+  - **The job now creates an ordinary user and hands it everything the framework touches** — the
+    clone, the distro's `bash --version` log, the floor guard, `install.sh`, `selfcheck.sh` and
+    `uninstall.sh`. Only the genuinely privileged steps stay root: `wsl --install`, the `apt-get`
+    bootstrap, `useradd`, and the two image-shape reads that run before the account exists.
+  - **It raises fidelity rather than merely turning the job green.** `docs/installation.md` tells a
+    Windows user to clone and install inside WSL **as themselves**, so running as root was proving a
+    setup no real user has.
+  - **The clone is made *as* that user, not handed to it.** A root-owned tree given to a non-root
+    user fails later and confusingly — git refuses it outright with "detected dubious ownership" —
+    rather than at the step that caused it. A new assertion proves the working clone's owner, and
+    the effective uid is now asserted (not merely printed) in its own step, so a future inversion of
+    this kind fails at the cause instead of surfacing as one baffling fixture 30 steps downstream.
+  - **The regression guard is the interesting part, because the obvious form of it does not work.**
+    A weekly job is far too slow to be the only thing standing between an edit and this state, so
+    the pin lives in `scripts/check-fact-drift.sh` — but `fact` applies one pattern to a whole file
+    with no step selector, so a bare `absent:--user root` would be tripped by the three invocations
+    that must *stay* root and by the workflow's own comments, failing on a correct file. The pattern
+    is therefore **contextual** (root *and* reaching a framework command) and covers `-u` and a
+    numeric `0` as well, since all four spellings are the same instruction to `wsl.exe`.
+  - **Both directions are pinned, and here the negative genuinely is not enough.** The regression is
+    "the job silently returns to root", and **dropping `--user` entirely does that without ever
+    spelling the word** — `wsl --install --no-launch` provisions no user, so an invocation with no
+    `--user` runs as the image's default, which is root. No negative pattern can catch an absent
+    flag. So each framework command carries a positive pin naming `adb`. All seven new rules were
+    observed going red against the real pre-fix file, and each individual regression vector — drop
+    the flag, `-u root`, `--user 0`, `--user root`, a root clone, a deleted uid assertion — was
+    driven to red on a throwaway copy.
+  - **What this PR does *not* claim.** The job has still not been observed green: a `schedule` /
+    `workflow_dispatch` workflow runs the version on the ref it is dispatched against, and the
+    Windows leg's live half is discharged by a dispatch, not by the diff that fixes it — the same
+    boundary D38 drew for #2's "seen green at least once" criterion. Everything checkable offline
+    was checked.
+
 - **The 5.3 floor made a Stop hook adopt a session id off a stream it never finished reading**
   (found while implementing #258; the exposure predates this PR). The reliance arrived with #180;
   until #256 the shebang was a bare `#!/usr/bin/env bash`, so which behaviour you got depended on

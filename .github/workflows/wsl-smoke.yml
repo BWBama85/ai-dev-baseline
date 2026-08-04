@@ -80,9 +80,27 @@ jobs:
         # as the default, so `wsl --install` is the documented mechanism with no third party in it.
         #
         # `--no-launch` skips first-run provisioning, which is what keeps this unattended: there is
-        # no interactive username/password prompt, and no user is created. Every command below
-        # therefore passes `--user root` EXPLICITLY rather than relying on the default user of an
-        # unprovisioned image being root.
+        # no interactive username/password prompt, and **no user is created**. Every command below
+        # therefore passes `--user` EXPLICITLY rather than relying on an unprovisioned image's
+        # default, which is root.
+        #
+        # WHICH user is the subject of #271, and the split is not cosmetic. The image-shape checks
+        # and the apt bootstrap run as **root** because they must — and because they run before the
+        # account exists. Everything the framework itself touches — the clone, the effective-user
+        # log, the distro's bash log, the floor guard, `install.sh`, `selfcheck.sh`, `uninstall.sh`
+        # — runs as an ordinary user, for two reasons:
+        #
+        #   1. Root holds `CAP_DAC_OVERRIDE`, so a POSIX mode bit cannot DENY it a write. The
+        #      offline suite has an assertion that depends on exactly that
+        #      (`scripts/check-skill-compose.sh:329-330` chmods a directory 555 and requires the
+        #      next compose to FAIL); under root the write succeeds, the assertion inverts, and the
+        #      job goes red for a reason that has nothing to do with WSL. Weakening the assertion
+        #      would have deleted real coverage to accommodate a CI choice — the workflow was what
+        #      was wrong.
+        #   2. It is the DOCUMENTED configuration. `docs/installation.md` tells a Windows user to
+        #      clone and install inside WSL as themselves, so running as root was proving a setup
+        #      no real user has. The fix raises this job's fidelity rather than merely turning it
+        #      green.
         run: wsl --install --distribution Ubuntu-26.04 --no-launch --web-download
 
       - name: Assert the distro registered, and at WSL version 2
@@ -118,12 +136,6 @@ jobs:
             throw "the registered distro is not Ubuntu 26.04"
           }
 
-      # BEFORE the floor guard below, deliberately: a version logged after the proof documents
-      # nothing about the run that was proved. `check-bash-floor.sh` enforces both that ordering and
-      # that this line names the SAME distro the guard runs in.
-      - name: Log the WSL distro's bash
-        run: wsl -d Ubuntu-26.04 --user root -- bash --version
-
       - name: Install the suite's prerequisites inside WSL
         # A `--no-launch` install is a bare image: no git, no jq, no ShellCheck, no Node. Every one
         # of those is installed for the SAME reason the macOS job installs ShellCheck — the suite
@@ -132,6 +144,51 @@ jobs:
         # under WSL" would be false in precisely the silent way this repo keeps writing guards
         # against. npm is what makes that claim honest for the two gate-detection integration cases.
         run: wsl -d Ubuntu-26.04 --user root -- bash -c "set -eu; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y git jq shellcheck nodejs npm ca-certificates"
+
+      # THE LAST ROOT STEP, and the last one that needs to be (#271). `useradd` is privileged;
+      # everything after this runs as the account it creates.
+      #
+      # `set -eu` plus the trailing `id adb` is the degraded-state contract: a `useradd` that fails
+      # fails THIS step rather than letting the job proceed to a silent root fallback, and the `id`
+      # makes the account's existence observable rather than assumed. `-m` is what creates
+      # `/home/adb`, which the clone below depends on.
+      - name: Create the non-root user the framework is actually installed by
+        run: wsl -d Ubuntu-26.04 --user root -- bash -c "set -eu; useradd -m -s /bin/bash adb; id adb"
+
+      # ASSERTED, not merely logged — and the distinction is the whole lesson of #271. The
+      # inversion it fixes was invisible for a full run: the only symptom was a single failing
+      # compose assertion 30 steps downstream, and reconstructing "we are root" from it took a
+      # dedicated investigation. A uid printed here makes that readable; a uid *checked* here makes
+      # the job fail at the cause instead.
+      #
+      # `id -u` rather than `id`, because the parse must be exact. Bare `id` output contains
+      # `uid=0(root)` AND `gid=0(root)` AND every supplementary group, so any pattern loose enough
+      # to find the uid in it is loose enough to be satisfied by a group — the "a note about the
+      # thing read as the thing" fail-open this repo has been bitten by more than once. Full `id`
+      # is printed too, because the log should still say who this was.
+      - name: Log the effective user the framework runs as, and assert it is not root
+        run: |
+          $whoami = wsl -d Ubuntu-26.04 --user adb -- id | Out-String
+          Write-Host $whoami
+          $uid = (wsl -d Ubuntu-26.04 --user adb -- id -u | Out-String).Trim()
+          Write-Host "effective uid: $uid"
+          if ($uid -notmatch '^[0-9]+$') {
+            throw "could not read the effective uid inside WSL — got '$uid'"
+          }
+          if ($uid -eq '0') {
+            throw "the framework's steps would run as root — root holds CAP_DAC_OVERRIDE, so a read-only fixture cannot deny it a write and scripts/check-skill-compose.sh inverts (#271)"
+          }
+
+      # BEFORE the floor guard below, deliberately: a version logged after the proof documents
+      # nothing about the run that was proved. `check-bash-floor.sh` enforces both that ordering and
+      # that this line names the SAME distro the guard runs in.
+      #
+      # AS `adb`, and after the account exists, for the same reason the lint insists the logged
+      # distro match the proved one: the interpreter this line reports must be the one the framework
+      # is actually about to run under. `PATH` is per-user, so a log emitted as root describes root's
+      # resolution, not the one the guard below proves.
+      - name: Log the WSL distro's bash
+        run: wsl -d Ubuntu-26.04 --user adb -- bash --version
 
       - name: Clone this repo onto the WSL filesystem, at the commit under test
         # THE SUPPORTED TOPOLOGY, executed rather than described — a clone made inside WSL, on the
@@ -154,17 +211,38 @@ jobs:
         # One `bash -c` with `set -eu`, deliberately: the runner's pwsh propagates only the LAST
         # native exit code in a multi-line block, so a failed clone followed by a successful
         # checkout would report success. Inside bash, `set -e` makes the first failure the outcome.
-        run: wsl -d Ubuntu-26.04 --user root -- bash -c "set -eu; git clone https://github.com/${{ github.repository }}.git /root/adb; git -C /root/adb -c advice.detachedHead=false checkout ${{ github.sha }}"
+        #
+        # CLONED AS `adb`, not handed to it (#271). A root-owned tree given to a non-root user
+        # fails later and confusingly — `install.sh` hits a permission error, and git refuses the
+        # repository outright with "detected dubious ownership" — rather than at the step that
+        # caused it. Cloning as the account that will use it is also the topology
+        # `docs/installation.md` prescribes.
+        run: wsl -d Ubuntu-26.04 --user adb -- bash -c "set -eu; git clone https://github.com/${{ github.repository }}.git /home/adb/ai-dev-baseline; git -C /home/adb/ai-dev-baseline -c advice.detachedHead=false checkout ${{ github.sha }}"
 
-      - name: Assert the working clone is on the Linux filesystem, not DrvFs
+      - name: Assert the working clone is on the Linux filesystem, and owned by the non-root user
         # The assertion the step above would otherwise only claim. Checking the filesystem TYPE
         # rather than the path prefix is the honest test: a path that merely does not start with
         # /mnt proves nothing if it was bind-mounted from one.
+        #
+        # OWNERSHIP is the second half, and it is here because `--cd` cannot be relied on to
+        # enforce it (#271): WSL treats a failed `chdir` as non-fatal and launches the command
+        # anyway, so a clone that landed somewhere else — or landed root-owned — would not stop the
+        # steps below at their own boundary. `stat -c %U` names the owner, and the `-ne 0` check on
+        # the numeric uid is what actually rules out root, since a *name* comparison would pass for
+        # any second account that happened to be created.
         run: |
-          $mount = wsl -d Ubuntu-26.04 --user root -- df -PT /root/adb | Out-String
+          $mount = wsl -d Ubuntu-26.04 --user adb -- df -PT /home/adb/ai-dev-baseline | Out-String
           Write-Host $mount
           if ($mount -match 'drvfs|9p|v9fs') {
             throw "the working clone is on a Windows-backed filesystem — the supported topology is a clone inside WSL"
+          }
+          $owner = (wsl -d Ubuntu-26.04 --user adb -- stat -c '%U %u' /home/adb/ai-dev-baseline | Out-String).Trim()
+          Write-Host "clone owner: $owner"
+          if ($owner -notmatch '^adb\s+[0-9]+$') {
+            throw "the working clone is not owned by 'adb' — got '$owner'; a root-owned tree handed to a non-root user fails later and confusingly (git 'dubious ownership', install.sh permission errors)"
+          }
+          if ($owner -match '\s0$') {
+            throw "the working clone is owned by uid 0 — it must be cloned AS the non-root user, not handed to it (#271)"
           }
 
       - name: bash floor — prove the WSL distro's interpreter clears 5.3 (#257, #2)
@@ -172,16 +250,18 @@ jobs:
         # only assertion here that speaks for the interpreter the framework will actually run under
         # on Windows. It fails closed — a distro whose bash is below the floor goes red here rather
         # than surfacing as a mystery later.
-        run: wsl -d Ubuntu-26.04 --user root --cd /root/adb -- bash scripts/check-bash-floor.sh --runtime
+        run: wsl -d Ubuntu-26.04 --user adb --cd /home/adb/ai-dev-baseline -- bash scripts/check-bash-floor.sh --runtime
 
       - name: Install all three agents inside WSL
         # The real installer, not a simulation: symlink creation is one of the things a different
-        # platform is most likely to break, and $HOME here is the Linux home, so ~/.claude and the
-        # adb_link symlinks land on ext4 exactly as they do for a real user.
-        run: wsl -d Ubuntu-26.04 --user root --cd /root/adb -- bash install.sh --agent claude --agent codex --agent gemini
+        # platform is most likely to break, and $HOME here is the Linux home — `/home/adb`, because
+        # `wsl --user adb` reads it from /etc/passwd — so ~/.claude and the adb_link symlinks land
+        # on ext4 exactly as they do for a real user. `install.sh` is entirely $HOME-scoped and
+        # needs nothing root provides.
+        run: wsl -d Ubuntu-26.04 --user adb --cd /home/adb/ai-dev-baseline -- bash install.sh --agent claude --agent codex --agent gemini
 
       - name: The full offline suite, inside WSL
-        run: wsl -d Ubuntu-26.04 --user root --cd /root/adb -- bash scripts/selfcheck.sh
+        run: wsl -d Ubuntu-26.04 --user adb --cd /home/adb/ai-dev-baseline -- bash scripts/selfcheck.sh
 
       - name: Uninstall all three agents inside WSL
-        run: wsl -d Ubuntu-26.04 --user root --cd /root/adb -- bash uninstall.sh --agent claude --agent codex --agent gemini
+        run: wsl -d Ubuntu-26.04 --user adb --cd /home/adb/ai-dev-baseline -- bash uninstall.sh --agent claude --agent codex --agent gemini

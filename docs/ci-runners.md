@@ -145,6 +145,34 @@ default-branch base".
 so a `release:` trigger would fire zero times — a leg that never runs is the silent-guard failure
 mode, not a leg.
 
+**And it runs as an ordinary user, which is a correctness requirement rather than hygiene** (#271,
+D39). `wsl --install --no-launch` provisions **no user**, so an unprovisioned distro's default is
+root — and root holds `CAP_DAC_OVERRIDE`, which means a POSIX mode bit cannot *deny* it a write. The
+offline suite has an assertion that depends on exactly that: `check-skill-compose.sh` chmods a skill
+directory `555` and requires the next compose to fail. Run as root, that assertion **inverts**, and
+the job is red on a fixture that passes on `ubuntu-26.04` and on a maintainer's macOS workstation
+alike. So the job creates an `adb` account and hands it everything the framework touches — the clone,
+the distro's `bash --version` log, the floor guard, `install.sh`, `selfcheck.sh`, `uninstall.sh` —
+keeping root only for `wsl --install`, `apt-get`, `useradd` and the two image-shape reads that run
+before the account exists. That is also the *documented* topology: `docs/installation.md` tells a
+Windows user to clone and install inside WSL **as themselves**, so the previous arrangement was
+proving a setup no real user has.
+
+The clone is made **as** that user rather than handed to it — a root-owned tree given to a non-root
+user fails later and confusingly (git refuses it with "detected dubious ownership"; `install.sh` hits
+permission errors) instead of at the step that caused it — and both the effective uid and the
+clone's owner are **asserted**, not merely logged, so an inversion of this kind fails at its cause.
+
+The regression guard for it lives in `check-fact-drift.sh`, and its shape is instructive: a weekly
+job is far too slow to be the only thing between an edit and that state, but a bare
+`absent:--user root` pin cannot express the rule. `fact` applies one pattern to a *whole file* with
+no step selector, so such a pin would trip on the invocations that must stay root and fail on a
+correct file. The pattern is contextual instead — root **and** reaching a framework command, across
+all four spellings `wsl.exe` accepts (`--user root`, `-u root`, `--user 0`, `-u 0`). And it is paired
+with a **positive** pin per framework command, because the cheapest way back to root spells nothing
+at all: simply dropping `--user` runs as the image's default, and no negative pattern can match an
+absent flag.
+
 ### Why the lint needed a third class
 
 `windows-latest` ships **Git-Bash 5.3.15**, which *clears this repo's floor*. So the ordinary rule —
@@ -297,3 +325,13 @@ Stated plainly, because a CI claim that overstates itself is worse than none:
   built to **fail closed** on that question rather than to assume it: the registration, the WSL
   version, the `VERSION_ID`, and the floor are each asserted, so a mechanism that does not work
   produces a red job, never a green one that proved nothing.
+
+  **The first dispatch settled part of that and opened a new question** (run `30912271234`). Steps
+  1–11 succeeded — `wsl --install` *does* complete unattended, the distro registers at WSL 2, the
+  `VERSION_ID` is right, the clone lands on ext4, and the distro's bash clears the floor — so the
+  mechanism is sound. What it also surfaced was #271: the suite itself failed one assertion, because
+  every step ran as root. That is fixed, and it moves the boundary rather than erasing it — **the job
+  has still not been observed green end-to-end**, and it cannot be by the PR that fixes it, for the
+  same structural reason as before. A `workflow_dispatch` runs the workflow as it exists on the ref
+  it is dispatched against, so pre-merge verification means dispatching against the feature branch;
+  otherwise the criterion is discharged after merge.
