@@ -382,6 +382,26 @@ run_lint "$d"
 eq "$RC" "1" "wsl: the distro's bash logged AFTER the guard is rejected"
 has "$OUT" "at or AFTER the guard step" "wsl: and the diagnostic names the ordering"
 
+# SAME DISTRO. Independent review found this one: keeping only step NUMBERS let a job log distro A's
+# bash and prove the floor in distro B, while the ordering rule above reported everything in order.
+d="$work/wsl-distromismatch"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job "$WSL_GUARD" 'wsl -d Ubuntu-24.04 -- bash --version'
+run_lint "$d"
+eq "$RC" "1" "wsl: logging distro A's bash while proving the floor in distro B is rejected"
+has "$OUT" "is not the one that was asserted about" "wsl: and the diagnostic names the substitution"
+
+# An EMPTY distro name is syntactically a token but names nothing, so `wsl` falls back to the
+# image's default — the exact hole that requiring `-d` was meant to close.
+d="$work/wsl-emptydistro"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+emit_wsl_job "$f" wsl-job 'wsl -d "" --cd /root/adb -- bash scripts/check-bash-floor.sh --runtime' 'wsl -d "" -- bash --version'
+run_lint "$d"
+eq "$RC" "1" "wsl: an EMPTY distro name is rejected, not treated as a named distro"
+has "$OUT" "names nothing" "wsl: and the diagnostic says why an empty name is not a name"
+
 # THE CONVERSE, and it is the half a one-directional widening would have dropped: admitting the wsl
 # form must not let a LINUX or macOS job satisfy its own guard through it. Without this the widening
 # would have handed every existing job a second, unproven way to look compliant.

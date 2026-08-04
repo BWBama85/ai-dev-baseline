@@ -167,9 +167,21 @@ scan_jobs() {
       sub(/[[:space:]]+#.*$/, "", s)
       return trim(s)
     }
+    # The distro token a `wsl -d <name>` / `--distribution <name>` invocation names, unquoted, or
+    # empty. Captured rather than merely matched because the two WSL steps must name the SAME
+    # distro: without this the lint accepts a `bash --version` logged in distro A followed by the
+    # floor proved in distro B, while the job claims to have logged the interpreter it proved.
+    function wsl_distro(s,   t) {
+      if (match(s, /(-d|--distribution)[[:space:]]+[^[:space:]]+/)) {
+        t = substr(s, RSTART, RLENGTH)
+        sub(/^(-d|--distribution)[[:space:]]+/, "", t)
+        return unquote(t)
+      }
+      return ""
+    }
     function flush() {
-      if (job != "") printf "%s\t%s\t%s\t%s\t%s\t%s\n", job, (runson == "" ? "<none>" : runson), \
-                            guard, firstlog, wslguard, wsllog
+      if (job != "") printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", job, (runson == "" ? "<none>" : runson), \
+                            guard, firstlog, wslguard, wsllog, wsllogd, wslguardd
     }
     # Job keys sit at exactly two spaces under `jobs:`. `on:` puts push/pull_request at that SAME
     # indent, so track whether we are inside the jobs: block rather than scanning the whole file —
@@ -191,6 +203,7 @@ scan_jobs() {
       job = $0; sub(/^  /, "", job); sub(/:.*$/, "", job); job = unquote(job)
       rest = $0; sub(/^  ("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z0-9_-]+):/, "", rest); rest = trim(rest)
       runson = ""; guard = 0; firstlog = 0; step = 0; wslguard = 0; wsllog = 0
+      wsllogd = ""; wslguardd = ""
       if (rest != "" && rest !~ /^#/) runson = "<inline mapping: " rest ">"
       next
     }
@@ -220,10 +233,10 @@ scan_jobs() {
     # must be the WHOLE run value, so an echoed or `-c`-wrapped mention matches nothing. That is the
     # same standard the bare form above already holds, transplanted rather than reinvented.
     /^[[:space:]]*run:[[:space:]]*wsl(\.exe)?[[:space:]]+(-d|--distribution)[[:space:]]+[^[:space:]]+[^|;&]*--[[:space:]]+bash[[:space:]]+--version[[:space:]]*$/ {
-      if (wsllog == 0) wsllog = step
+      if (wsllog == 0) { wsllog = step; wsllogd = wsl_distro($0) }
     }
     /^[[:space:]]*run:[[:space:]]*wsl(\.exe)?[[:space:]]+(-d|--distribution)[[:space:]]+[^[:space:]]+[^|;&]*--[[:space:]]+bash[[:space:]]+scripts\/check-bash-floor\.sh[[:space:]]+--runtime[[:space:]]*$/ {
-      if (wslguard == 0) wslguard = step
+      if (wslguard == 0) { wslguard = step; wslguardd = wsl_distro($0) }
     }
     END { flush() }
   ' "$1"
@@ -272,7 +285,7 @@ static_lint() {
     }
 
     file_jobs=0
-    while IFS=$'\t' read -r job runson guard firstlog wslguard wsllog; do
+    while IFS=$'\t' read -r job runson guard firstlog wslguard wsllog wsllogd wslguardd; do
       [ -n "$job" ] || continue
       jobs=$((jobs + 1))
       file_jobs=$((file_jobs + 1))
@@ -287,6 +300,15 @@ static_lint() {
       case " $APPROVED_WSL_HOST " in *" $runson "*) is_wsl=1; wsl_jobs=$((wsl_jobs + 1)) ;; esac
 
       if [ "$is_wsl" = "1" ]; then
+        # NORMALIZE BEFORE COMPARING. These two arrive as fields from `read`, and the ordering rule
+        # below is a NUMERIC test: `[ "" -ge 3 ]` is not false, it is an ERROR, which `if` then reads
+        # as "the ordering is fine". A scanner that emitted an empty field for any reason would
+        # therefore turn the rule off rather than trip it. Anything that is not a run of digits is
+        # forced to 0 — i.e. treated as ABSENT — so every degenerate value lands on the fail-closed
+        # side of the two rules that follow.
+        case "$wslguard" in ''|*[!0-9]*) wslguard=0 ;; esac
+        case "$wsllog"   in ''|*[!0-9]*) wsllog=0   ;; esac
+
         # THE WHOLE POINT OF THE CLASS: the bare form is NOT accepted here. `windows-latest` carries
         # its own bash 5.3.15, so a job satisfying the ordinary rule would prove the floor for
         # native Git-Bash — a userland #2 explicitly ruled unsupported — and report it as Windows
@@ -300,6 +322,19 @@ static_lint() {
           check_fail
         elif [ "$wslguard" != "0" ] && [ "$wsllog" -ge "$wslguard" ]; then
           check_note "$wf: job '$job' logs the WSL bash at step $wsllog, at or AFTER the guard step $wslguard — a version logged after the proof documents nothing about the run that was proved"
+          check_fail
+        fi
+
+        # SAME DISTRO, not merely some distro at each step. Two invocations naming different distros
+        # let a job log the interpreter of one image and prove the floor in another, which is the
+        # claim this class exists to make true. An EMPTY name (`-d ""`) is rejected outright: it is
+        # syntactically a token but names nothing, so `wsl` would fall back to the default distro —
+        # the exact hole requiring `-d` was meant to close.
+        if [ "$wslguard" != "0" ] && [ -z "$wslguardd" ]; then
+          check_note "$wf: job '$job' passes an empty distro name to the floor guard — 'wsl -d \"\"' names nothing and falls back to the image's default distro"
+          check_fail
+        elif [ "$wslguard" != "0" ] && [ "$wsllog" != "0" ] && [ "$wsllogd" != "$wslguardd" ]; then
+          check_note "$wf: job '$job' logs the bash of distro '$wsllogd' but proves the floor in distro '$wslguardd' — the logged interpreter is not the one that was asserted about"
           check_fail
         fi
       elif [ "$guard" != "1" ]; then

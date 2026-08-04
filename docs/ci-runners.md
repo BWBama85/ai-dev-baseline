@@ -23,9 +23,12 @@ Rejected, and why it matters that it is written down:
   Homebrew 5.3.15 on 2026-08-01). The failure direction is the dangerous one: local passes, CI
   fails, and only for constructs nobody has written yet.
 - **`ubuntu-25.10`, Debian stable/testing** — 5.2.x, below the floor (#255's platform table).
-- **Windows *per-PR*** — still rejected. WSL2 on Ubuntu 26.04 runs a bash and userland identical to
-  the Linux job, so a per-PR Windows runner would re-prove it at several times the cost and with the
-  flakiness a distro download adds. What ships instead is **one scheduled smoke job** (below).
+- **Windows *per-PR*** — still rejected. WSL2 on Ubuntu 26.04 runs the same bash and the same Ubuntu
+  release as the Linux job, so a per-PR Windows runner would largely re-prove it at several times the
+  cost and with the flakiness a distro download adds. (Not an *identical* userland: the WSL image is
+  bare, so git, jq, ShellCheck and Node have to be installed, where the Linux Actions image ships
+  them. The overlap is the release and the interpreter, which is what the floor is about.) What ships
+  instead is **one scheduled smoke job** (below).
 - **`Vampire/setup-wsl`** — its supported-distribution list stops at **Ubuntu-24.04**, whose bash is
   5.2.21, so the action cannot express the only distro this floor permits. `wsl --install
   --distribution Ubuntu-26.04` is used directly instead, which is also one fewer third party in the
@@ -123,9 +126,20 @@ the *checkout* — CRLF from a Windows-side clone, `/mnt/c` DrvFs semantics — 
 
 1. `ci.yml` has only unfiltered `push:` and `pull_request:` triggers, so a `schedule:` there would
    run **all 27** of its jobs weekly to gain this one.
-2. `repo-settings.sh` discovery skips any workflow with **no `pull_request` trigger**, so a
-   schedule-only file can never become a required context. Put the same job in `ci.yml` and it
-   becomes both a per-PR cost *and* a required context that reports on every PR.
+2. `repo-settings.sh` discovery skips any workflow with **no `pull_request` trigger**, so this
+   repo's own tooling can never *discover or add* a schedule-only file as a required context. Put
+   the same job in `ci.yml` and it becomes both a per-PR cost *and* a discovered required context.
+   (An administrator or a ruleset can still require any context by hand; what is ruled out is
+   `baseline repo apply` doing it for you.)
+
+**The suite runs from a clone made inside WSL, from the canonical remote** — which is exactly what
+`docs/installation.md` tells a Windows user to do, so the job executes the documented topology
+rather than approximating it. There is deliberately **no `actions/checkout`**, because cloning the
+Actions workspace instead fails two ways that review reproduced: the `/mnt/<drive>` mount becomes
+`origin`, which is not GitHub-shaped, so `adb_git_origin_slug` cannot resolve it and
+`check-state-assert.sh` fails; and on a tag ref `actions/checkout` leaves HEAD **detached**, so the
+clone carries tags but no `origin/<default>` and `check-claims.sh` exits 2 with "cannot resolve a
+default-branch base".
 
 **Not `release:`.** This repo versions by pushed git tag and never publishes a GitHub Release object,
 so a `release:` trigger would fire zero times — a leg that never runs is the silent-guard failure
@@ -146,19 +160,31 @@ So `check-bash-floor.sh` has a **WSL-host class**, and a job on it is approved o
 - **names a distro** — a bare `wsl --` runs whatever is *default* on the image, not what the job
   installed;
 - logs `wsl -d <distro> -- bash --version` **before** the guard step, because a version logged after
-  the proof describes a run already asserted about.
+  the proof describes a run already asserted about;
+- names the **same** distro in both — otherwise a job could log image A's interpreter and prove the
+  floor in image B, which is the claim this whole class exists to make true. An empty `-d ""` is
+  rejected for the same reason `-d` is required at all.
 
 `check-bash-floor-guard.sh` drives each of those to red, including the false-proof fixture (a WSL
 job satisfying its guard with the bare host invocation) and the converse (a Linux job trying the
 `wsl` form).
 
-### What the lint does *not* prove about the distro
+### What the lint does *not* do, and where that half lives instead
 
-It reads YAML, so it can prove the guard runs inside **some** named distro. That the distro is
-Ubuntu 26.04, that WSL reports version 2, and that its bash clears the floor are **runtime**
-assertions in the workflow itself — `wsl --list --verbose`, `/etc/os-release`, and the floor guard —
-and each fails the job closed. That split is deliberate: a lint that pattern-matched a distro name
-in YAML would be asserting a label, not a fact.
+**It does not prove the distro is Ubuntu 26.04.** It reads YAML, so it can prove the guard runs
+inside *some* consistently-named distro. That the distro really is 26.04, that WSL reports version 2,
+and that its bash clears the floor are **runtime** assertions in the workflow — `wsl --list
+--verbose`, `/etc/os-release`, and the floor guard — each failing the job closed. A lint that
+pattern-matched a distro name in YAML would be asserting a label, not a fact.
+
+**It does not require a WSL job to exist.** The count is printed, so a zero is visible; but printing
+is visibility, not enforcement. Enforcement lives in `check-fact-drift.sh`, which pins the host
+label, the distro and the `schedule:` trigger across the workflow **and** the two docs that claim
+them. A positive `fact` rule reports a missing path rather than passing vacuously, so deleting the
+workflow fails loudly — and because the same tokens are pinned on both sides, the job and the claim
+cannot drift apart in either direction. That home was chosen over an aggregate rule in the floor lint
+because the aggregate would turn every fixture in `check-bash-floor-guard.sh` red for a reason other
+than the rule under test, letting the test harness shape the production invariant.
 
 ## Why not a `strategy.matrix`
 
@@ -188,10 +214,12 @@ lint assert facts about this repo's *settings and tracker*, which are platform-i
 - runs `bash scripts/check-bash-floor.sh --runtime` as a step — or, on the WSL host, reaches it
   through `wsl -d <distro> -- …` (see the Windows section above);
 - sets no `shell:` override, which would route around that guard. **The WSL job needs no exception
-  here** — it runs under the runner's default pwsh and invokes `wsl.exe` explicitly, one command per
-  step so each exit code is checked individually. A multi-line pwsh block propagates only its *last*
-  native exit code, which is a fail-open; one command per step is what avoids both that and a
-  `shell:` carve-out.
+  here** — it runs under the runner's default pwsh and invokes `wsl.exe` explicitly, **one native
+  command per step** so each exit code is checked individually. The runner appends an exit on
+  `$LASTEXITCODE`, so a multi-line block propagates only its *last* native exit code — a fail-open.
+  (The assertion steps *are* multi-line pwsh, but each makes a single native call and fails via
+  `throw`, which is terminating and reliably exits the step non-zero. Where two commands genuinely
+  belong together, they go inside one `bash -c "set -eu; …"` so bash decides the outcome.)
 
 It also requires at least one job on each of Linux and macOS, so the macOS job cannot be quietly
 deleted, and that the job's **first** step logs `bash --version` — before checkout or any bootstrap,

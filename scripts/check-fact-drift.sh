@@ -840,6 +840,30 @@ fact bash-floor-bootstrap-carveout 'fixed:parseable' -- \
   scripts/lib/common.sh CLAUDE.md CONTRIBUTING.md .ai-dev-baseline/decisions.md
 fact bash-floor-observer-carveout 'fixed:EXEMPT_ENTRYPOINTS' -- scripts/check-bash-floor.sh
 
+# --- FACT: the Windows/WSL smoke job exists, and the docs that claim it agree (#2, D38) ---------
+#
+# THIS IS THE ENFORCEMENT HALF, and it deliberately does NOT live in check-bash-floor.sh. Review
+# was right that printing "0 WSL-host" is visibility, not enforcement: delete `wsl-smoke.yml` and
+# that lint still exits 0 while `docs/ci-runners.md` and `CONTRIBUTING.md` go on describing a
+# Windows leg that no longer runs. But an "at least one WSL job" AGGREGATE rule in the floor lint is
+# the wrong home for it: every fixture in check-bash-floor-guard.sh would then go red for a reason
+# other than the rule under test, which is the isolation failure that file's own header warns
+# against — the test harness would be shaping the production invariant.
+#
+# A positive `fact` rule is the right home, and it is strictly stronger than the aggregate would
+# have been. A `fixed:` rule REPORTS A BAD PATH rather than passing vacuously (this file's own
+# header says so, which is why the rendered skills are pinned the same way), so deleting the
+# workflow fails here loudly — and because the same token is pinned in the two docs that assert the
+# claim, deleting the claim without the job, or the job without the claim, both fail. Neither can
+# drift away from the other silently.
+_wsl_smoke=".github/workflows/wsl-smoke.yml docs/ci-runners.md CONTRIBUTING.md"
+fact wsl-smoke-host   'fixed:windows-latest' -- $_wsl_smoke
+fact wsl-smoke-distro 'fixed:Ubuntu-26.04'   -- $_wsl_smoke
+# The trigger shape is the other half of the decision (#2's "release/weekly", D38's "never
+# per-PR"): a job quietly repointed at `pull_request` would be a per-PR Windows cost AND a
+# discovered required context, which is exactly what its own file was chosen to prevent.
+fact wsl-smoke-scheduled 'regex:^[[:space:]]*schedule:' -- .github/workflows/wsl-smoke.yml
+
 # --- what was actually evaluated ---------------------------------------------
 # A rule that scans nothing is already a hard failure inside fact(); these totals are the other
 # half of the same idea, and the half that survives a future edit fact() does not model. Zero rules

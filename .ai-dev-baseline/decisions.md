@@ -2054,11 +2054,35 @@ limit: none of them is sufficient alone.
              merge; claiming otherwise would be the unverified support claim
              `base/practices/verify-before-asserting.md` exists to prevent.
 
-             **One asymmetry, deliberate:** Linux and macOS each have a "at least one job must
-             exist" rule; WSL does not. Requiring one would turn every fixture in
+             **One asymmetry, deliberate — and independent review was right that the first version
+             of it was wrong.** Linux and macOS each have an "at least one job must exist" aggregate
+             rule; WSL does not, because requiring one would turn every fixture in
              `check-bash-floor-guard.sh` red for a reason other than the rule under test — the
-             isolation failure that file's own header warns against. The WSL job count is PRINTED
-             instead, so a zero is visible in the log rather than silent.
+             isolation failure that file's own header warns against. But the original justification
+             stopped there, at "the count is printed", and review named the flaw exactly: *printing
+             zero is visibility, not enforcement, and that rationale lets fixture convenience decide
+             a production invariant.* Correct. The fix is a different HOME rather than a different
+             rule: `check-fact-drift.sh` now pins the host label, the distro and the `schedule:`
+             trigger across the workflow AND the two docs that claim them. A positive `fact` rule
+             reports a missing path rather than passing vacuously, so deleting the workflow fails
+             loudly — and pinning both sides means the job and the claim cannot drift apart in
+             either direction. That is strictly stronger than the aggregate would have been, and it
+             costs no fixture churn.
+
+             **What review changed, recorded because the reproductions are the valuable part.** The
+             first cut ran the suite from a clone of the `actions/checkout` workspace. Review
+             reproduced two failures in that topology: the `/mnt/<drive>` mount becomes `origin`,
+             which is not GitHub-shaped, so `adb_git_origin_slug` cannot resolve it and
+             `check-state-assert.sh` fails 14 assertions (selfcheck 39/1); and on a **tag** ref
+             `actions/checkout` leaves HEAD detached, so the clone carries tags but no
+             `origin/<default>` and `check-claims.sh` exits 2 — the `push: tags` leg could not have
+             run the suite at all. Cloning from the canonical remote inside WSL fixes both, is the
+             topology `docs/installation.md` actually prescribes, and let `actions/checkout` go
+             entirely. Review also caught that the bootstrap installed ShellCheck (to avoid a silent
+             skip) while omitting Node/npm, which `check-gates.sh` skips on identically; that the
+             distro-list match was unanchored and satisfied by a `FakeUbuntu-26.04`; and that
+             retaining only step NUMBERS let a job log distro A's bash and prove the floor in distro
+             B. All fixed, the last two with their own red fixtures.
 - baseline-issue: n/a — this is this repo's own CI shape, not a gap in the baseline's config
              surfaces. Windows support is a per-project platform question; nothing here needs a new
              override surface.

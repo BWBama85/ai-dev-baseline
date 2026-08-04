@@ -9,15 +9,21 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
-- **A WSL2 smoke job proves the Windows support claim** (#2, D38). `.github/workflows/wsl-smoke.yml`
-  installs **Ubuntu 26.04** into WSL2 on `windows-latest`, clones onto the Linux filesystem, and runs
-  the real installer plus the full `selfcheck.sh` there. It closes the last item of #2 — the CI
-  shape — and with it the gap where the baseline *said* it supported Windows and never executed it.
+- **A WSL2 smoke job, so the Windows support claim becomes checkable** (#2, D38).
+  `.github/workflows/wsl-smoke.yml` installs **`Ubuntu-26.04`** into WSL2 on `windows-latest`, clones
+  onto the Linux filesystem, and runs the real installer plus the full `selfcheck.sh` there. It
+  implements the last item of #2 — the CI shape.
+  - **It does not yet *prove* anything, and the distinction is the point.** A workflow that has
+    never run is a plan, not evidence. The proof arrives on the first dispatch (see the last bullet);
+    until that is observed green, this entry claims only that the leg exists and that everything
+    checkable offline was checked.
   - **Weekly `schedule` + `workflow_dispatch` + `push: tags`, never per-PR**, and in its **own
     file**. Both halves are structural. `ci.yml` has only unfiltered `push:`/`pull_request:`
     triggers, so a `schedule:` added there would run all 27 of its jobs weekly to gain one; and
-    `repo-settings.sh` discovery skips a workflow with **no `pull_request` trigger**, so a
-    schedule-only file can never become a required context that reports on no PR.
+    `repo-settings.sh` discovery skips a workflow with **no `pull_request` trigger**, so this repo's
+    own tooling can never *discover or add* it as a required context that then reports on no PR. (An
+    administrator or a ruleset can still require any context by hand — that is outside what
+    `repo-settings.sh` governs, and the claim is scoped to what it does.)
   - **Not `release:`** — this repo versions by pushed git tag and never publishes a GitHub Release
     object, so that trigger would have fired zero times. A leg that never runs is the silent-guard
     failure mode, not a leg.
@@ -32,8 +38,11 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **The converse is enforced too**: the `wsl` form does not satisfy a Linux or macOS job, so the
     widening gave no existing job a second way to look compliant.
   - **No `shell:` carve-out was needed.** The job runs under the runner's default pwsh and invokes
-    `wsl.exe` explicitly, **one command per step** — a multi-line pwsh block propagates only its
-    *last* native exit code, which is a fail-open. So #257's blanket `shell:` rejection is untouched.
+    `wsl.exe` explicitly, **one native command per step** — the runner appends an exit on
+    `$LASTEXITCODE`, so a multi-line block propagates only its *last* native exit code, which is a
+    fail-open. (The assertion steps are multi-line pwsh, but each makes a single native call and
+    fails via `throw`, which is terminating.) Where two commands genuinely belong together they go
+    inside one `bash -c "set -eu; …"`. So #257's blanket `shell:` rejection is untouched.
   - **`Vampire/setup-wsl` is not used**: its distribution list stops at Ubuntu-24.04 (bash 5.2.21,
     below the floor), so it cannot express the only distro this floor permits. `wsl --install
     --distribution Ubuntu-26.04` is Microsoft's own documented mechanism and one fewer third party.
@@ -42,10 +51,30 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     than assumes: distro registration, WSL version 2, `VERSION_ID="26.04"`, that the clone is not on
     DrvFs, and the floor itself. A mechanism that does not work yields a red job, never a green one
     that proved nothing.
+  - **The clone is made from the canonical remote, inside WSL** — which is precisely what
+    `docs/installation.md` tells a Windows user to do, so the job executes the documented topology
+    rather than approximating it. Independent review reproduced the alternative and it failed two
+    ways: cloning the Actions workspace records the `/mnt/<drive>` mount as `origin`, which is not a
+    GitHub-shaped remote, so `adb_git_origin_slug` cannot resolve it and `check-state-assert.sh`
+    fails 14 assertions; and on the `push: tags` leg `actions/checkout` leaves HEAD **detached**, so
+    that clone carries the tags but **no `origin/<default>`** and `check-claims.sh` exits 2 with
+    "cannot resolve a default-branch base". Cloning from the URL and checking out `github.sha` fixes
+    the remote, the missing branch ref and the commit pinning together. `actions/checkout` is gone.
+  - **Node/npm is installed too, not just ShellCheck.** `check-gates.sh` skips its two gate-detection
+    integration cases with `SKIP: npm or jq missing`, which is the same silent-skip the ShellCheck
+    install exists to prevent — so "the full offline suite" would have been quietly false.
+  - **Existence is enforced by `check-fact-drift.sh`, not by the floor lint.** Printing `0 WSL-host`
+    is visibility, not enforcement: delete the workflow and the floor lint still exits 0 while the
+    docs go on describing a Windows leg. An "at least one WSL job" aggregate rule was the wrong home
+    — every fixture in `check-bash-floor-guard.sh` would then go red for a reason other than the rule
+    under test. Three `fact` rules pin the host label, the distro and the `schedule:` trigger across
+    the workflow **and** the two docs that claim them, and a positive `fact` rule reports a missing
+    path rather than passing vacuously — so the job and the claim cannot drift apart in either
+    direction.
   - **What this PR could not do, stated plainly:** run it. A `schedule`/`workflow_dispatch` workflow
     must already be on the default branch before it can fire, so #2's "seen green at least once" is
-    discharged by a manual dispatch **after** merge. Every offline half was verified, including each
-    new lint rule observed rejecting its own violation.
+    discharged by a manual dispatch **after** merge, and #2 stays open until that is observed. Every
+    offline half was verified, including each new lint rule observed rejecting its own violation.
 
 - **`scripts/selfcheck.sh` runs its steps in parallel** (#260, D37). The 40 steps are now a
   **registry** — an ordered name list plus a name → command map — dispatched through a `wait -n`
