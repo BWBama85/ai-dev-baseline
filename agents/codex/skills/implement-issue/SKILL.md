@@ -312,13 +312,18 @@ rm -f .codex/state/gap-prompt.txt .codex/state/gaps.md .codex/state/gaps.err \
 # symlink to a regular file and classifies it `review`. A bare `-type f` does not match the link
 # itself, so a `review-slot.md` symlink was sweepable by /cleanup and unclearable here — the set
 # inequality this block exists to prevent, in the one shape the two selectors disagree on.
+# BOTH clears report, and NEITHER may mask the other — the block's status is an explicit check, not
+# whichever command happens to be written last. Ordering alone cannot do this: with the `rm` last a
+# read-only state dir left the three fixed artifacts in place behind an empty, successful `find`;
+# with the `find` last, a directory that is writable but NOT READABLE (mode `wx`) lets `rm -f` unlink
+# a known path while `find` cannot enumerate at all, so the per-slot family survives. Either way
+# preflight reports green over artifacts it did not clear, which is the stale-reads-as-current bug
+# this block exists to remove.
+CLEAR_RC=0
 find .codex/state -maxdepth 1 \( -type f -o -type l \) \
-     \( -name 'review-*.md' -o -name 'review-*.err' \) -exec rm -f {} +
-# The fixed names LAST, deliberately: this is the block's final command, so its status is what the
-# agent reads as preflight's. Putting the `find` here instead masked a failed `rm` — a read-only
-# state dir left the three artifacts #264 is actually about in place while an empty, successful
-# `find` reported preflight green.
-rm -f .codex/state/review-prompt.txt .codex/state/review.md .codex/state/review.err
+     \( -name 'review-*.md' -o -name 'review-*.err' \) -exec rm -f {} + || CLEAR_RC=$?
+rm -f .codex/state/review-prompt.txt .codex/state/review.md .codex/state/review.err || CLEAR_RC=$?
+[ "$CLEAR_RC" -eq 0 ] || { echo "ERROR: could not clear stale review artifacts from .codex/state"; exit 1; }
 ```
 
 ### 2. Verify repo scope + fetch the issue(s)

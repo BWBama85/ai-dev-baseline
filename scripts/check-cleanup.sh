@@ -577,14 +577,18 @@ else
   # FOLLOWS a link to a regular file; a bare `find -type f` does not match the link itself, so a
   # `review-slot.md` symlink was classified `review` and left unclearable (observed).
   has "$iiclearline" '-type l' "6 …including symlinks, which state-scan's [ -f ] test follows"
-  # ORDER within the clear: the fixed-name `rm -f` must come LAST. It is the block's final command,
-  # so its status is what the agent reads as preflight's — and with the `find` there instead, a
-  # read-only state dir left the three artifacts #264 is about in place while an empty, successful
-  # `find` reported preflight green. A masked failure here is a silently un-cleared run.
+  # NEITHER clear may mask the other, and ORDERING CANNOT ACHIEVE THAT — whichever command is last
+  # supplies the block's status and hides the other's failure. Both directions were shipped and
+  # both are wrong: `rm` last hid a `find` that could not enumerate a write-only (mode `wx`) state
+  # dir, `find` last hid an `rm` that could not delete in a read-only one. Pin the explicit capture,
+  # so a future reordering cannot quietly reintroduce either.
   iifind="${ printf '%s\n' "$ii" | grep -n '^find {{STATE_DIR}} -maxdepth' | head -n1 | cut -d: -f1; }"
   if [ -n "$iifind" ] && [ -n "$iiclear" ] && [ "$iifind" -lt "$iiclear" ]; then ok; else
-    bad "6 …and the fixed-name rm must be the LAST clear, so its failure is not masked by the find (find@${iifind:-?} rm@${iiclear:-?})"
+    bad "6 …and the family clear runs before the fixed-name one (find@${iifind:-?} rm@${iiclear:-?})"
   fi
+  eq "${ printf '%s\n' "$iiclearline" | grep -c '|| CLEAR_RC=\$?'; }" "2" \
+     "6 …and BOTH clears capture their exit status, so neither can mask the other"
+  has "$iiclearline" '[ "$CLEAR_RC" -eq 0 ] ||' "6 …and preflight fails loudly when either could not clear"
   # …and the family reaches `rm` ONLY through find's quoted `-name`, never as a shell path. zsh's
   # default `nomatch` aborts the WHOLE command on an unmatched pattern, so a `{{STATE_DIR}}/review-*`
   # argument makes the clear delete nothing at all on the common macOS path — the fix wearing the
