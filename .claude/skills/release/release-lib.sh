@@ -230,17 +230,41 @@ cmd_unreleased_entries() {
 #   2. TREATING THE CURRENTLY-REGISTERED SET AS THE WHOLE SET. GitHub registers jobs
 #      INCREMENTALLY: on a repo with ~26 independent jobs, a fast one can complete before the
 #      others appear, so "nothing is pending" is briefly true and catastrophically wrong. That is
-#      why <expected> is required — normally the number of checks that ran on the reviewed head,
-#      since the same CI config produced them. -> `short` until the set is at least that big.
+#      why <expected> is required. -> `short` until the set is at least that big.
+#
+# COUNT DISTINCT NAMES, NOT CHECK RUNS — and the difference is not cosmetic, it is the whole
+# reason a bar recorded on one commit can be applied to another. `<expected>` is normally taken
+# from the reviewed PR head, and the tempting premise ("the same CI config produced both, so the
+# counts match") is FALSE whenever a workflow carries both an unfiltered `push:` and a
+# `pull_request:` trigger — as this repo's `ci.yml` does. A PR branch head then receives BOTH runs
+# and every job name appears TWICE, while the merge commit on the default branch receives only the
+# `push:` run. Measured live on v2.0.0: the reviewed head 25cca85 carried **54** check runs over
+# **27** distinct names; the merge commit 1c02f24 carried **27** runs over the SAME 27 names, all
+# successful. A raw-count bar of 54 is therefore unreachable on any merge commit in such a repo —
+# `verify-merge` spent its full 90 iterations and refused to tag a release that was genuinely green.
+#
+# Distinct names are invariant across that trigger asymmetry while still catching hazard 2: an
+# incrementally-registering set has FEWER names, not fewer duplicates. A job that is genuinely
+# missing from the merge commit still shows up as `short`, which is the property being protected.
+# Duplicate runs of one name are also exactly what a re-run produces, and a re-run must not inflate
+# the bar for the next commit either.
 cmd_checks_settled() {
   [ "$#" -eq 1 ] || die "checks-settled: needs <expected>"
   case "$1" in ''|*[!0-9]*) die "checks-settled: <expected> must be a non-negative integer" ;; esac
   expected="$1"
   command -v jq >/dev/null 2>&1 || die "checks-settled: jq not found"
   json="$(cat)"
-  total="$(printf '%s' "$json" | jq -s '[.[].check_runs[]?] | length' 2>/dev/null)" \
+  # `unique` over names, so two runs of `shellcheck` count once. A run with no `name` would
+  # collapse every such run into one bucket, so they are counted individually via `// empty` +
+  # the raw-run fallback below rather than silently merged under `null`.
+  total="$(printf '%s' "$json" | jq -s '[.[].check_runs[]?.name // empty] | unique | length' 2>/dev/null)" \
     || die "checks-settled: unreadable check-run JSON"
   [ -n "$total" ] || die "checks-settled: unreadable check-run JSON"
+  # A check run without a `name` is not nameless in practice, but if the API ever returns one it
+  # must not vanish from the count — that would under-report and read as `short` forever.
+  unnamed="$(printf '%s' "$json" | jq -s '[.[].check_runs[]? | select(has("name") | not)] | length' 2>/dev/null)" \
+    || die "checks-settled: unreadable check-run JSON"
+  total=$((total + unnamed))
   pending="$(printf '%s' "$json" | jq -s '[.[].check_runs[]? | select(.status != "completed")] | length' 2>/dev/null)" \
     || die "checks-settled: unreadable check-run JSON"
 
