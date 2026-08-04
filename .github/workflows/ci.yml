@@ -55,6 +55,18 @@ jobs:
           # fails on real correctness findings (warning/error), not style.
           shellcheck --severity=warning -e SC1091 "${files[@]}"
 
+      # The RUNNER that dispatches every other job's local counterpart is itself a guard now (#260),
+      # so it gets the treatment guards get here: a deliberately failing step must be observed still
+      # failing the run under parallelism, attributed to the right name.
+      #
+      # A STEP on this job, deliberately NOT a job of its own — the same reasoning the bash-floor
+      # lint records under `repo-settings` below: a new job is a newly added non-required context,
+      # which is exactly the drift `required-drift` exists to flag, and adding one costs the owner a
+      # branch-protection change. This job is the natural host: it is the one whose charter is the
+      # tracked shell suite as a whole rather than one library in it.
+      - name: The selfcheck runner must be observed failing on a red step under parallelism (#260)
+        run: bash scripts/check-selfcheck.sh
+
   build-drift:
     name: build-drift
     runs-on: ubuntu-26.04
@@ -951,8 +963,12 @@ jobs:
   selfcheck-macos:
     name: selfcheck-macos
     runs-on: macos-latest
-    # Generous next to the Linux jobs' 10: this one runs the WHOLE offline suite serially (~250s on
-    # the maintainer's machine, ~5min on this runner) plus a Homebrew install first.
+    # Generous next to the Linux jobs' 10: this one runs the WHOLE offline suite plus a Homebrew
+    # install first. Since #260 the suite dispatches its steps through a bounded `wait -n` pool
+    # rather than sequentially — measured on the maintainer's 10-core machine at 273/279s before
+    # the change and 66-72s after — but the bound is min(cpu, 8) and a hosted runner has far fewer
+    # cores than a workstation, so the headroom here stays as it was rather than being trimmed to
+    # a number this runner will not reproduce.
     timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives

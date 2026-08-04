@@ -721,13 +721,30 @@ git -C "$REPO" checkout -q -B probe "$BASE"
 SELFCHECK="$ROOT/scripts/selfcheck.sh"
 CI="$ROOT/.github/workflows/ci.yml"
 
-if grep -qE '^if bash scripts/check-claims\.sh; then' "$SELFCHECK"; then ok; else
-  bad "selfcheck.sh does not ACTIVELY invoke check-claims.sh"; fi
-if grep -qE '^if bash scripts/check-claims-guard\.sh; then' "$SELFCHECK"; then ok; else
-  bad "selfcheck.sh does not ACTIVELY invoke check-claims-guard.sh"; fi
+# ASK THE RUNNER, do not grep it (#260). selfcheck.sh no longer carries `if bash …; then` lines:
+# its steps are a REGISTRY dispatched through a `wait -n` job pool. A grep for the old shape would
+# now report "not wired" for a perfectly wired suite, and a grep for the new shape would prove only
+# that a string exists somewhere in a file — a weaker claim than the one this section is making.
+#
+# `--list` is the dispatcher's own answer to "what do you run", so it cannot pass while the array it
+# read has stopped being the one the pool consults; and `scripts/check-selfcheck.sh` is what proves
+# every listed step is actually EXECUTED and that its exit status reaches the run's exit code. The
+# pair is strictly stronger than the line match it replaces, which is why the replacement is this
+# and not a re-spelled regex.
+registry="$(bash "$SELFCHECK" --list 2>/dev/null)" || registry=""
+if [ -n "$registry" ]; then ok; else bad "selfcheck.sh --list produced no registry to check"; fi
+eq "$(printf '%s\n' "$registry" | awk -F'\t' '$1 == "claims" {print $2}')" \
+   "bash scripts/check-claims.sh" "selfcheck.sh's registry ACTIVELY invokes check-claims.sh"
+eq "$(printf '%s\n' "$registry" | awk -F'\t' '$1 == "claims-guard" {print $2}')" \
+   "bash scripts/check-claims-guard.sh" "selfcheck.sh's registry ACTIVELY invokes check-claims-guard.sh"
 
 # The local mirror must NOT run the live half: D13 keeps selfcheck hermetic, and a network-dependent
-# step there would make a local green stop predicting CI for every other step too.
+# step there would make a local green stop predicting CI for every other step too. Asserted on the
+# registry AND on the file: the registry is what runs, and the file grep still catches a `--live`
+# reintroduced somewhere the registry does not reach.
+if printf '%s\n' "$registry" | grep -q -- '--live'; then
+  bad "selfcheck.sh's registry runs the LIVE claim half — that breaks the hermetic-mirror promise (D13)"
+else ok; fi
 if grep -qE '^[^#]*check-claims\.sh[^#]*--live' "$SELFCHECK"; then
   bad "selfcheck.sh runs the LIVE claim half — that breaks the hermetic-mirror promise (D13)"
 else ok; fi

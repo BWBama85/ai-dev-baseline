@@ -765,6 +765,15 @@ fact pr-primitives-no-copies 'absent:^_sa_local_slug\(\)' \
 #
 # What it does NOT do: prove the surrounding YAML still parses, or that the step belongs to a job
 # that runs. That needs a real workflow parser — tracked in #229.
+#
+# AND, since #260, it does not prove the selfcheck side RUNS either. These invocations used to be
+# `if bash …; then` lines that could not be present without executing; they are now records in
+# selfcheck's step registry, and a record is a weaker claim than a call. The patterns are unchanged
+# — the registration lines are written unquoted and command-last precisely so they keep matching —
+# but the "…and it actually runs" half now lives in `scripts/check-selfcheck.sh`, which drives the
+# real dispatcher over a fixture and requires every registered step to execute and its status to
+# reach the exit code. Neither half is sufficient alone; do not delete one on the strength of the
+# other.
 fact fact-mutation-wired 'regex:^[^#]*check-fact-drift\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
 fact fact-guard-wired 'regex:^[^#]*check-fact-guard\.sh' -- \

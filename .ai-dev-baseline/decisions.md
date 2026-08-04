@@ -1932,3 +1932,59 @@ limit: none of them is sufficient alone.
              the issue done while quietly meeting less. Every narrowing above is backed by a
              measurement or a proof in the tree, not by preference.
 - baseline-issue: n/a
+
+## D37 — #260's acceptance target was already met before the change, and the runner became a guard
+- date:          2026-08-03
+- category:      project-delta
+- unknown:       Two things the baseline does not model. (1) An acceptance criterion that a
+                 measurement *falsifies* — #260 asks for "under 6 minutes on an 8-core machine",
+                 and the suite already did that before a line was written. (2) What a step
+                 orchestrator owes when it stops being straight-line code: `selfcheck.sh` went
+                 from 39 sequential inline steps — most an `if bash …; then` line, some a
+                 multi-command block — none of which could lose a failure, to a job pool, which
+                 can.
+- decision:      Build the work as specified, correct the premise in the tree rather than in the
+                 PR body alone, and give the runner its own guard suite.
+                 1. **The measurement, taken before the branch existed.** Pre-change HEAD
+                    (`00340a1`), 10-core macOS, bash 5.3.15: **272.63s** and **279.48s**. After:
+                    **66.20s**, **69.69s** and **71.97s**. `--serial` on the new code:
+                    **283.56s** and **298.07s** — the pre-change wall clock plus the ~9.8s the
+                    one added step costs, within run-to-run variance. The gap-analysis pass measured
+                    310.66s independently and reached the same conclusion.
+                 2. **The 18m55s figure is corrected where it is restated** (`CLAUDE.md`,
+                    `.claude/scripts/precommit-gate.sh`), not deleted. It was a real observation
+                    that did not reproduce; that run was not instrumented, so no cause is
+                    asserted. The decision it justified — D25's fast Stop-hook
+                    subset — survives without it: 66s at the end of every turn is still the wrong
+                    trade. What is removed is the implication that 18m55s is the suite's cost.
+                 3. **`build-drift` alone is pinned to a serial prologue.** It runs `build.sh`,
+                    which rewrites tracked generated files, and the root-doc render is a plain
+                    `> "$outfile"` truncate-and-write — so a concurrent reader of
+                    `agents/*/CLAUDE.md` can see a half-written file. Everything else reads the
+                    tree or works inside its own `mktemp -d`; the `gh`-shaped suites drive stubs
+                    (D13), so there is no rate limit to serialize on.
+                 4. **Output ordering is a contract, and it is completion order.** A failure
+                    surfaces when it happens rather than behind a straggler, and `--serial`
+                    supplies declaration order for debugging. The `FAILED: <names>` line is the
+                    second-to-last — immediately before the verdict, which stays last as the
+                    recognisable terminal contract — because `project-gates.sh` tails only the
+                    final few KB on failure.
+                 5. **`scripts/check-selfcheck.sh`.** The pool's failure mode is silence, and no
+                    existing check would notice it, so the suite was driven to RED against five
+                    deliberately broken copies of the runner — a dropped exit status, a
+                    misattributed pid, unbuffered output, a pool of one, and an empty `--only` that
+                    widened instead of narrowing. That is the core of the dispatcher, not literally
+                    all 53 assertions, and the distinction is stated rather than rounded up.
+- placement:     `scripts/selfcheck.sh` (the runner + its concurrency-contract header);
+                 `scripts/check-selfcheck.sh`; this entry; the PR body carries the full
+                 measurement table.
+- reason:        An acceptance number written before the code was read can be wrong, and #260's
+                 was — it was satisfied by the status quo. Meeting it silently would have let a
+                 4x improvement be reported as "target met" while the target proved nothing, and
+                 dropping the work because the target was stale would have delivered nothing.
+                 Measuring first, saying which criterion cannot discriminate and why, and fixing
+                 the falsified claim where it lives is the honest third option — the same move
+                 D36 made for #259's list. The guard suite is not garnish: a dispatcher that
+                 loses a status reports what a clean run reports, which is the exact failure this
+                 repo keeps writing guards against.
+- baseline-issue: n/a

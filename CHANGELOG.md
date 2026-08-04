@@ -9,6 +9,51 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **`scripts/selfcheck.sh` runs its steps in parallel** (#260, D37). The 40 steps are now a
+  **registry** — an ordered name list plus a name → command map — dispatched through a `wait -n`
+  job pool bounded at `min(cpu, 8)`, instead of 39 inline steps run strictly one after another.
+  - **Measured, and the issue's premise corrected rather than repeated.** On the maintainer's
+    10-core machine (bash 5.3.15, macOS): **272.6s / 279.5s** at the pre-change commit,
+    **66.2s / 69.7s / 72.0s** after — a **~4x** improvement. `--serial` on the new code is
+    **283.6s / 298.1s**: the pre-change wall clock, the ~9.8s the newly added guard step costs, and
+    run-to-run variance.
+    The issue's stated target ("under 6 minutes on an 8-core machine") was **already met before the
+    change**, so it could not discriminate success from doing nothing; the 18m55s figure it and
+    `CLAUDE.md` cite **did not reproduce** in any deliberate measurement. What was demonstrated is
+    non-reproduction, not a cause: that run was not instrumented, so contention is a guess and is
+    not asserted. Both restatements of it are corrected in place.
+  - **Output is atomic and attributable.** Each step's stdout and stderr go to one file and the
+    *parent* emits the banner, the body and the verdict together once the step is reaped, so eight
+    concurrent steps never interleave. Results arrive in completion order — a failure surfaces as
+    soon as it happens — and the `result` block's last two lines are `FAILED: <names>` and the
+    verdict, because the Stop-hook gate runner tails only the final few KB on failure.
+  - **Exit semantics are unchanged**: collect-all, not fail-fast. Every step runs and is reported;
+    any red exits 1.
+  - **`build-drift` is the one step pinned to a serial prologue**, because it runs `build.sh`,
+    which rewrites tracked generated files in place — and the root-doc render is a plain
+    truncate-and-write, so a concurrent reader can see a half-written file. What is deliberately
+    *not* serialized, and why, is stated in the script's "concurrency contract" header.
+  - **New flags**: `--serial` (declaration order, output streaming live — the debugging mode),
+    `--jobs N`, `--only a,b`, `--list`. A filter naming an unknown step is an **error**, never a
+    quiet run of nothing.
+  - **Cancellation reaps the workers.** `set -m` puts each worker in its own process group so
+    `_cleanup` signals the group; without it a `^C` killed the parent and reparented up to `$JOBS`
+    check suites to init, which is the divergence `adb_run_bounded` documents for its own watchdog
+    path (#141). Found by the new guard suite, not by inspection.
+
+- **`scripts/check-selfcheck.sh`** (#260) — the runner is a guard now, so it gets what guards get
+  here. A job pool's failure mode is **silence**: a dispatcher that drops a worker's exit status, or
+  reaps a job and blames the wrong step, prints exactly what a clean run prints, and every existing
+  `check-*.sh` still passes. So the real `selfcheck.sh` is driven over a throwaway fixture of stub
+  steps and required to fail on a red one, name it, and carry its actual exit code. 53 assertions
+  covering collect-all, output atomicity, the concurrency bound (both respected *and* genuinely
+  concurrent — a pool of one would otherwise pass everything else), `--serial` ordering, the
+  prologue running alone, filters that select nothing or widen, large output, and cancellation.
+  The suite was **observed going red** against five deliberately broken copies of the runner — a
+  dropped exit status, a misattributed pid, unbuffered output, a pool of one, and the pre-fix empty
+  `--only` — each firing the rules that name it; the tracked tree is never mutated. `check-claims-guard.sh`'s wiring pins move from grepping `if bash …; then` lines to
+  reading `selfcheck.sh --list` — asking the dispatcher what it runs, which a string match cannot do.
+
 - **The bash 5.3 floor is now ENFORCED at runtime, not just observed in CI** (#256, #261, #2;
   D30, D31, D32). #257 made every CI job prove which interpreter it got; this makes an entry
   point that got the wrong one repair itself or stop.

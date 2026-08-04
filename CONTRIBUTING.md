@@ -62,7 +62,22 @@ bash scripts/build.sh
 bash scripts/selfcheck.sh
 ```
 
-`scripts/selfcheck.sh` runs, in order: **shellcheck** (tracked `*.sh` + `bin/agent-init`),
+`scripts/selfcheck.sh` runs its steps **concurrently** (#260): a registry dispatched through a
+`wait -n` job pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
+eight steps at once never interleave. Results therefore arrive in *completion* order, and the final
+`result` block names every failing step. On a 10-core machine the suite went from 273–279s to
+66–72s.
+
+Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs everything
+sequentially, in the order listed below, with output streaming live — that is the mode for
+attributing a confusing parallel failure. **`--only <name>,<name>`** re-runs just the steps you
+care about (`--list` prints every name; an unknown name is an error rather than a quiet no-op).
+In a default (parallel) run `build-drift` goes first and alone, because it is the one step that
+rewrites files in the working tree; everything else either reads the tree or works in its own
+temporary directory. Under `--serial` it simply takes its declared place, and `--only` can leave it
+out altogether.
+
+The steps, in declaration order: **shellcheck** (tracked `*.sh` + `bin/agent-init`),
 **build-drift** (rebuild + assert generated root docs **and** skills are current — not
 stale, untracked, or missing), **workflow-map** (each `base/workflows/<name>.md` maps 1:1
 to a rendered skill, no orphans), **skill-frontmatter** (each `SKILL.md` has
@@ -86,8 +101,10 @@ stamp, and the check-set settled test — plus the boundary invariants that keep
 installed `scripts/lib` and keep the skill delegating rather than re-deriving), **bash-floor** +
 **bash-floor-guard** (every CI job sits on a runner proven to carry bash ≥ 5.3 and wires the
 runtime guard that says which interpreter it got — and that lint is itself observed going red on
-every rule it owns), and an **install→uninstall dry-run** (all three agents) into a throwaway
-`HOME`.
+every rule it owns), **selfcheck-guard** (the runner above is a guard too, so a deliberately failing
+step is observed still failing a *parallel* run, attributed by name and exit code — plus the
+concurrency bound, output atomicity and cancellation), and an **install→uninstall dry-run** (all
+three agents) into a throwaway `HOME`.
 
 Green locally ≈ green in CI, with two honest qualifications since #257. CI runs this offline suite
 on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
@@ -108,7 +125,7 @@ interpreter on line 1.) Its **static** half and #256's **entry-point** half both
 | `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) generated `skills/` + `scripts/` |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
-| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill) |
+| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill · selfcheck) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent · ci-runners |
 | `.github/workflows/ci.yml` | 26 Linux jobs on `ubuntu-26.04` + one aggregate `selfcheck-macos` job (shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · claims-live (CI-only) · practice-index · release-role · release-skill · install dry-run). Every job proves its own bash ≥ 5.3 — [`docs/ci-runners.md`](docs/ci-runners.md) |
