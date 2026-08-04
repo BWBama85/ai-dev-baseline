@@ -178,13 +178,23 @@ and that its bash clears the floor are **runtime** assertions in the workflow �
 pattern-matched a distro name in YAML would be asserting a label, not a fact.
 
 **It does not require a WSL job to exist.** The count is printed, so a zero is visible; but printing
-is visibility, not enforcement. Enforcement lives in `check-fact-drift.sh`, which pins the host
-label, the distro and the `schedule:` trigger across the workflow **and** the two docs that claim
-them. A positive `fact` rule reports a missing path rather than passing vacuously, so deleting the
-workflow fails loudly — and because the same tokens are pinned on both sides, the job and the claim
-cannot drift apart in either direction. That home was chosen over an aggregate rule in the floor lint
-because the aggregate would turn every fixture in `check-bash-floor-guard.sh` red for a reason other
-than the rule under test, letting the test harness shape the production invariant.
+is visibility, not enforcement. Enforcement lives in `check-fact-drift.sh`, and it is pinned on the
+fields that actually **run** — `runs-on: windows-latest`, and the floor-guard line naming
+`Ubuntu-26.04` — each anchored to the start of a YAML line, plus the `schedule:` trigger, plus the
+two docs that assert the claim to a reader.
+
+**The anchoring is the whole point, and the first cut got it wrong.** Pinning the bare tokens
+`windows-latest` / `Ubuntu-26.04` anywhere in the workflow was satisfied by this file's own
+explanatory *comments*: repointing `runs-on:` at `ubuntu-26.04` and swapping the floor step for the
+ordinary host invocation deleted the Windows leg while every rule stayed green and the floor lint
+reported `0 WSL-host … PASS`. Negative-testing the *replacement* then found a second, narrower hole
+— pinning "some `run:` step names the distro" was satisfied by the `wsl --install` line even after
+every `-d` invocation had been repointed at Ubuntu-24.04, a distro *below the floor*. Hence the pin
+sits on the **floor-guard line**: the line whose interpreter is the claim.
+
+That home was chosen over an aggregate "at least one WSL job" rule in the floor lint because the
+aggregate would turn every fixture in `check-bash-floor-guard.sh` red for a reason other than the
+rule under test, letting the test harness shape the production invariant.
 
 ## Why not a `strategy.matrix`
 

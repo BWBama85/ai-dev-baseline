@@ -2062,12 +2062,34 @@ limit: none of them is sufficient alone.
              stopped there, at "the count is printed", and review named the flaw exactly: *printing
              zero is visibility, not enforcement, and that rationale lets fixture convenience decide
              a production invariant.* Correct. The fix is a different HOME rather than a different
-             rule: `check-fact-drift.sh` now pins the host label, the distro and the `schedule:`
-             trigger across the workflow AND the two docs that claim them. A positive `fact` rule
-             reports a missing path rather than passing vacuously, so deleting the workflow fails
-             loudly — and pinning both sides means the job and the claim cannot drift apart in
-             either direction. That is strictly stronger than the aggregate would have been, and it
-             costs no fixture churn.
+             rule: `check-fact-drift.sh` now pins the workflow's EXECUTABLE FIELDS — `runs-on:
+             windows-latest` and the floor-guard line naming `Ubuntu-26.04`, each anchored to the
+             start of a YAML line — plus the `schedule:` trigger and the two docs that assert the
+             claim. A positive `fact` rule reports a missing path rather than passing vacuously, so
+             deleting the workflow fails loudly, and pinning both sides means the job and the claim
+             cannot drift apart in either direction. Strictly stronger than the aggregate, at no
+             fixture cost.
+
+             **A SECOND review round caught that this enforcement was itself hollow, which is the
+             most instructive part of the whole change.** The first cut pinned the bare tokens
+             `windows-latest` / `Ubuntu-26.04` anywhere in the workflow — and both also appear in
+             that file's own explanatory COMMENTS. Reproduced: repoint `runs-on:` at `ubuntu-26.04`,
+             restore the bare floor step, and the Windows leg is gone while `check-fact-drift.sh`
+             says PASS and `check-bash-floor.sh` says `0 WSL-host … PASS`. That is precisely the
+             "a note about the thing read as the thing" fail-open the floor lint had already been
+             bitten by twice, reintroduced in the very rule written to prevent a silent
+             disappearance. The lesson is narrower than "test your guards": the deletion case HAD
+             been observed failing, and passing that test is what made the mutation case feel
+             covered. `base/practices/self-review.md` says to prove a guard on the REAL superseded
+             input, and a mutated file — not just a missing one — is that input here.
+
+             Negative-testing the REPLACEMENT then found a second, narrower hole: a rule reading
+             "some `run:` step names the distro" was still satisfied by the `wsl --install
+             --distribution Ubuntu-26.04` line after every `-d` invocation had been repointed at
+             Ubuntu-24.04 — a distro BELOW the floor. So the pin sits on the floor-guard line
+             specifically, because that is the line whose interpreter is the claim. All five
+             mutation vectors (runner repointed, guard reverted to the bare form, distro repointed,
+             `schedule:` removed, workflow deleted) were each observed firing their own named rule.
 
              **What review changed, recorded because the reproductions are the valuable part.** The
              first cut ran the suite from a clone of the `actions/checkout` workspace. Review

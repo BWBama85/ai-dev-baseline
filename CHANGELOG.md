@@ -67,10 +67,19 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     is visibility, not enforcement: delete the workflow and the floor lint still exits 0 while the
     docs go on describing a Windows leg. An "at least one WSL job" aggregate rule was the wrong home
     — every fixture in `check-bash-floor-guard.sh` would then go red for a reason other than the rule
-    under test. Three `fact` rules pin the host label, the distro and the `schedule:` trigger across
-    the workflow **and** the two docs that claim them, and a positive `fact` rule reports a missing
-    path rather than passing vacuously — so the job and the claim cannot drift apart in either
-    direction.
+    under test. `fact` rules pin the fields that actually **run** — `runs-on: windows-latest` and the
+    floor-guard line naming `Ubuntu-26.04`, each anchored to the start of a YAML line — plus the
+    `schedule:` trigger and the two docs that assert the claim, so the job and the claim cannot drift
+    apart in either direction.
+    - **The anchoring is the correction, and it took two rounds of negative testing.** Pinning the
+      bare tokens anywhere in the file was satisfied by the workflow's own explanatory *comments*:
+      repointing `runs-on:` at `ubuntu-26.04` and restoring the bare floor step deleted the Windows
+      leg while every rule stayed green and the floor lint reported `0 WSL-host … PASS` — the same
+      "a note about the thing read as the thing" fail-open the floor lint has been bitten by twice.
+      Negative-testing the replacement then found a narrower one: pinning "some `run:` step names the
+      distro" was still satisfied by the `wsl --install` line after every `-d` invocation had been
+      repointed at Ubuntu-24.04, *below the floor*. The pin now sits on the floor-guard line, and
+      each of the five mutation vectors was observed firing its own named rule.
   - **What this PR could not do, stated plainly:** run it. A `schedule`/`workflow_dispatch` workflow
     must already be on the default branch before it can fire, so #2's "seen green at least once" is
     discharged by a manual dispatch **after** merge, and #2 stays open until that is observed. Every
