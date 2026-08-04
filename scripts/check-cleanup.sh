@@ -223,6 +223,25 @@ sv gaps 0 bogus >/dev/null 2>&1; no $? "2c an unrecognised run word is an error"
 sv gaps 1 bogus >/dev/null 2>&1; no $? "2c …even when the lock would short-circuit the decision"
 sv nosuchkind 0 >/dev/null 2>&1; no $? "2c an unknown kind is an error"
 
+# --- 2c2. review artifacts: the run marker alone, and NO lock argument (#264) -----------------
+# The deliberate asymmetry with `gaps`. Review is written in /implement-issue step 8, AFTER step 5
+# has written the marker and while the run's branch still exists, so the window the gap lock exists
+# for has no counterpart — the marker IS the in-flight signal for every reachable write. What the
+# caller owes in exchange is that the <run> word is read at the moment of the delete; the source
+# pins in section 6 are what hold that end up.
+eq "${ sv review keep; }"  "keep"  "2c2 a live run keeps its review artifacts"
+eq "${ sv review stale; }" "stale" "2c2 a finished run's review artifacts are swept"
+eq "${ sv review none; }"  "stale" "2c2 no marker at all means nothing owns them (#264's own case)"
+# ARITY IS THE CONTRACT, and it is what stops the two arms being confused for each other. A
+# `review` that tolerated a stray extra argument would silently accept `review "$LOCK" "$RUN"` —
+# the gaps call shape — and decide on the LOCK, which for review is always 0: every artifact swept
+# on every run, including mid-review.
+sv review >/dev/null 2>&1;            no $? "2c2 review with no run word is an error"
+sv review 0 none >/dev/null 2>&1;     no $? "2c2 …and the gaps ARITY is refused, never silently re-read"
+sv review keep keep >/dev/null 2>&1;  no $? "2c2 …as is any extra argument"
+sv review bogus >/dev/null 2>&1;      no $? "2c2 an unrecognised run word is an error"
+sv review 1 >/dev/null 2>&1;          no $? "2c2 a lock-shaped argument is not a run word"
+
 # --- 2d. marker-branch: one reader, used by both the scan and the delete-time re-read ---------
 printf '{"branch":"issue-5-x","phase":"pushed"}' > "$work/m-ok.json"
 printf 'not json'                                > "$work/m-bad.json"
@@ -263,6 +282,16 @@ S="$work/state"; mkdir -p "$S"
 : > "$S/gaps.err"
 : > "$S/gaps-retry.err"
 : > "$S/gap-analysis.lock"
+: > "$S/review-prompt.txt"
+: > "$S/review.md"
+: > "$S/review.err"
+: > "$S/review-codex.md"
+: > "$S/review-gemini.err"
+: > "$S/review.txt"
+: > "$S/review-foo.txt"
+: > "$S/review.md.bak"
+: > "$S/reviewer.md"
+: > "$S/pr-body.md"
 : > "$S/some-other-skill.json"
 : > "$S/.marker.tmp"
 printf '{"branch":"issue-9-thing","issue":"9","phase":"pushed"}' > "$S/implement-issue-active.json"
@@ -277,6 +306,23 @@ eq "${ kindof gap-analysis.lock; }"            "lock"    "3 the in-flight lock i
 eq "${ kindof gaps.err; }"                     "gaps"    "3 gap artifacts are classified"
 eq "${ kindof gaps-retry.err; }"               "gaps"    "3 …including the gaps-retry.* debris #84 names"
 eq "${ kindof gap-prompt.txt; }"               "gaps"    "3 …and the prompt, which carries private repo context"
+# #264: the three names /implement-issue step 8 actually writes, all of which used to fall through
+# to `other` and therefore lived forever.
+eq "${ kindof review-prompt.txt; }"            "review"  "3 the review prompt is classified (#264)"
+eq "${ kindof review.md; }"                    "review"  "3 …the reviewer's findings"
+eq "${ kindof review.err; }"                   "review"  "3 …and the captured exploration stream"
+eq "${ kindof review-codex.md; }"              "review"  "3 …plus the per-slot family the glob anticipates"
+eq "${ kindof review-gemini.err; }"            "review"  "3 …on both suffixes"
+# The ALLOWLIST property, tested from the side that costs something: a near-miss must NOT become
+# sweepable. `state-scan` widening by accident is how a sweep starts eating files it never owned,
+# and the failure would look like corruption rather than a cleanup.
+eq "${ kindof review.txt; }"                   "other"   "3 a review-shaped name outside the family is NOT swept"
+eq "${ kindof review-foo.txt; }"               "other"   "3 …nor is a family prefix with the wrong suffix"
+eq "${ kindof review.md.bak; }"                "other"   "3 …nor a backup of one"
+eq "${ kindof reviewer.md; }"                  "other"   "3 …nor a longer word that merely starts with 'review'"
+# Named explicitly because #264 puts it out of scope: pr-body.md is the AGENT's filename, not one
+# the shipped workflow writes, so the fix must not have quietly made it sweepable.
+eq "${ kindof pr-body.md; }"                   "other"   "3 pr-body.md stays 'other' — #264 scopes it out"
 eq "${ kindof some-other-skill.json; }"        "other"   "3 an unrecognised file is 'other' — never swept"
 eq "${ kindof .marker.tmp; }"                  "other"   "3 a staged temp file is seen, and is 'other'"
 # The marker's key is its recorded branch — that is what the liveness read is done against.
@@ -409,6 +455,33 @@ else
   eq "${ printf '%s\n' "$wfcode" | grep -c 'state-scan "\$STATE"'; }" "2" \
      "6 …i.e. the lock governing a delete is the one true AT the delete, not at classification"
   has "$wfcode" 'sweep_file' "6 state deletions report their failures instead of silently continuing"
+  # --- #264: the review family is swept, and on ITS OWN liveness signal --------------------
+  has "$wfcode" '{{CLEANUP_LIB}} state-verdict review' "6 review artifacts are decided through the library, not inline"
+  # The label BOUND TO ITS BODY, which needs both halves in one needle. A bare `review)` stays
+  # matched by the LARGE arm below even when the deletion arm is gone entirely; and a bare
+  # `[ "$RV" = stale ]` stays matched when the LABEL is renamed to `reviews)`, which no longer
+  # matches any record `state-scan` emits — a sweep arm that is present, correct and unreachable.
+  # Both were observed passing before this needle spanned the two lines.
+  has "$wfcode" 'review)
+      [ "$RV" = stale ] || continue' "6 …and the sweep loop's review arm acts on that verdict"
+  # THE decision this issue asked for, pinned as a NEGATIVE. `state-verdict review "$RUN"` is the
+  # obvious-looking call and the wrong one: $RUN is decided before a marker pass that makes live PR
+  # round trips, so it is exactly the stale signal the re-scan exists to replace. Nothing else in
+  # the suite can see that substitution — both spellings run, both print a verdict.
+  hasnt "$wfexec" 'state-verdict review "$RUN"' "6 …decided from the FRESH scan, never the pre-pass \$RUN"
+  has "$wfcode" 'RUN_NOW=none' "6 the fresh-scan marker probe fails closed to 'no run' before it reads"
+  has "$wfcode" 'grep -q "^marker' "6 …and reads liveness from the scan, not a second hardcoded marker path"
+  # Same AND-list hazard the lock probe already carries a pin for: "no marker present" is the
+  # common case right after a merge, so the compound form would leave a healthy sweep on status 1.
+  hasnt "$wfcode" 'grep -q "^marker${TABC}" && RUN_NOW=keep' "6 the marker probe does not leave its block on a non-zero status"
+  # The LARGE arm must gate on the review verdict, not the gap one — otherwise a kept review.err
+  # is reported under a live GAP dispatch's liveness, naming the wrong run.
+  has "$wfcode" 'review) [ "$RV" = keep ]' "6 a kept review stream is reported under its own verdict, not \$GV"
+  # …and it must read its paths from the scan. A `"$STATE"/review-*.err` glob here is left literal
+  # by POSIX shells but ABORTS the command under zsh's default `nomatch` — macOS's shell — so the
+  # whole size report would silently not happen. Same class as the #125 zsh bug this file guards.
+  hasnt "$wfcode" '"$STATE"/review-*.err' "6 …and enumerates streams from the scan, not a glob zsh's nomatch would abort"
+  hasnt "$wfcode" '"$STATE"/gaps-*.err'   "6 …which applies to the gap streams it already reported"
   has "$wf" '{{CLEANUP_LIB}} clone-state' \
      "6 the switch/pull guard uses the clone classifier, not a porcelain-only test (rebase/bisect leave it clean)"
   hasnt "$wfcode" 'git pull --ff-only' \
@@ -422,6 +495,11 @@ if [ ! -f "$II" ]; then
   bad "6 base/workflows/implement-issue.md not found"
 else
   ii="$(cat "$II")"
+  # The EXECUTABLE half with shell comments dropped, for the same reason section 6 above builds
+  # one: the blocks explain which spellings they deliberately avoid, so a whole-file `hasnt` would
+  # fail on the very comment documenting the avoidance.
+  iiexec="${ awk '/^```bash$/ { inb = 1; next } /^```$/ { inb = 0; next } inb' "$II" \
+             | sed 's/[[:space:]]*#.*$//'; }"
   has "$ii" ': > {{STATE_DIR}}/gap-analysis.lock' "6 /implement-issue takes the lock before dispatching"
   has "$ii" 'rm -f {{STATE_DIR}}/gap-analysis.lock' "6 /implement-issue releases the lock when the call terminates"
   # ORDER is the contract. The lock must be taken BEFORE gap-prompt.txt exists: a /cleanup landing
@@ -442,6 +520,86 @@ else
   if [ -n "$iirel" ] && [ -n "$iifence" ] && [ "$iirel" -gt "$iifence" ]; then ok; else
     bad "6 the lock release must be in a separate fenced block after the detached dispatch (release@${iirel:-?} block-end@${iifence:-?})"
   fi
+
+  # --- #264: preflight clears the review family, in PREFLIGHT ---------------------------------
+  # A filename-presence pin would be worthless here: all three names already appear in this file at
+  # their step-8 WRITE sites, so `has "$ii" 'review.err'` passed before the fix existed and would
+  # keep passing after a revert. What is pinned is the `rm -f` LINE, and where it sits.
+  iiclear="${ printf '%s\n' "$ii" | grep -n 'rm -f {{STATE_DIR}}/review-prompt.txt' | head -n1 | cut -d: -f1; }"
+  iirevwrite="${ printf '%s\n' "$ii" | grep -n 'cat > {{STATE_DIR}}/review-prompt.txt' | head -n1 | cut -d: -f1; }"
+  if [ -n "$iiclear" ] && [ -n "$iirevwrite" ] && [ "$iiclear" -lt "$iirevwrite" ]; then ok; else
+    bad "6 preflight must clear review-prompt.txt BEFORE step 8 writes it (clear@${iiclear:-?} write@${iirevwrite:-?})"
+  fi
+  # …and it must be in PREFLIGHT, which is a stronger claim than "earlier than the write" and has
+  # to be asserted separately: a clear sitting one line ABOVE the step-8 write satisfies the test
+  # above while clearing nothing stale and truncating nothing useful. Anchoring on step 3's lock
+  # take puts it in step 1 — beside the marker and gap clears — without pinning a line number.
+  # Observed: without this, moving the clear down to step 8 left the suite green.
+  if [ -n "$iiclear" ] && [ -n "$iitake" ] && [ "$iiclear" -lt "$iitake" ]; then ok; else
+    bad "6 …and that clear belongs in PREFLIGHT, before step 3 dispatches (clear@${iiclear:-?} step3@${iitake:-?})"
+  fi
+  # Every name the `review` arm of state-scan can sweep must also be a name preflight clears. The
+  # two halves drifting apart is not cosmetic: a file /cleanup will delete but preflight will not
+  # refresh is a stale artifact that a NEW run's marker makes read as live — the exact
+  # stale-findings-look-current trap #264 is about, reintroduced through the back door.
+  # The whole preflight clear region, delimited by its own block rather than by a line offset — the
+  # `find` and the `rm -f` may legitimately sit in either order (they were swapped once already, so
+  # that a failed `rm` is the block's exit status instead of being masked by an empty `find`).
+  # COMMENTS STRIPPED, like `wfexec` above and for the identical reason: this block documents at
+  # length which spellings it avoids and why, so every assertion below would be satisfiable by the
+  # prose explaining the rule rather than by the code obeying it. That is not hypothetical — the
+  # `-type l` pin was observed passing against a `-type f`-only clear, matched by the very comment
+  # saying `-type f` alone is wrong.
+  iiclearline="${ awk '/^mkdir -p \{\{STATE_DIR\}\}/ { inb = 1 } inb; inb && /^```$/ { exit }' "$II" \
+                  | sed 's/[[:space:]]*#.*$//'; }"
+
+  # DERIVED FROM THE LIBRARY, not a second hardcoded list. Two hardcoded lists cannot detect that
+  # they disagree: adding `review-extra.json` to `state-scan`'s arm and nothing to preflight left
+  # this suite green, because no fixture named that file and the preflight assertions only ever
+  # asked about the five names someone had already thought of. Reading the arm's own patterns makes
+  # the assertion "every name the sweep can delete, preflight can clear" instead of "these five
+  # strings appear" — which is the property #264 actually needs.
+  revarm="${ sed -n 's/^      \(review[^)]*\))$/\1/p' "$CL" | head -n1; }"
+  if [ -n "$revarm" ]; then
+    IFS='|' read -r -a revpats <<< "$revarm"
+    check_enumerated "state-scan review family" "${revpats[@]}"
+    for rpat in "${revpats[@]}"; do
+      case "$rpat" in
+        # A glob member is covered by find's quoted -name; an exact member by the rm -f line.
+        *'*'*) has "$iiclearline" "-name '$rpat'"     "6 …and preflight covers the $rpat family state-scan sweeps" ;;
+        *)     has "$iiclearline" "{{STATE_DIR}}/$rpat" "6 …and preflight clears $rpat, which state-scan classifies review" ;;
+      esac
+    done
+  else
+    bad "6 could not read state-scan's review arm from cleanup-lib.sh — the set-equality check asserted NOTHING"
+  fi
+  # The two selectors must agree on symlinks too. `state-scan` picks files with `[ -f ]`, which
+  # FOLLOWS a link to a regular file; a bare `find -type f` does not match the link itself, so a
+  # `review-slot.md` symlink was classified `review` and left unclearable (observed).
+  has "$iiclearline" '-type l' "6 …including symlinks, which state-scan's [ -f ] test follows"
+  # NEITHER clear may mask the other, and ORDERING CANNOT ACHIEVE THAT — whichever command is last
+  # supplies the block's status and hides the other's failure. Both directions were shipped and
+  # both are wrong: `rm` last hid a `find` that could not enumerate a write-only (mode `wx`) state
+  # dir, `find` last hid an `rm` that could not delete in a read-only one. Pin the explicit capture,
+  # so a future reordering cannot quietly reintroduce either.
+  iifind="${ printf '%s\n' "$ii" | grep -n '^find {{STATE_DIR}} -maxdepth' | head -n1 | cut -d: -f1; }"
+  if [ -n "$iifind" ] && [ -n "$iiclear" ] && [ "$iifind" -lt "$iiclear" ]; then ok; else
+    bad "6 …and the family clear runs before the fixed-name one (find@${iifind:-?} rm@${iiclear:-?})"
+  fi
+  eq "${ printf '%s\n' "$iiclearline" | grep -c '|| CLEAR_RC=\$?'; }" "2" \
+     "6 …and BOTH clears capture their exit status, so neither can mask the other"
+  has "$iiclearline" '[ "$CLEAR_RC" -eq 0 ] ||' "6 …and preflight fails loudly when either could not clear"
+  # …and the family reaches `rm` ONLY through find's quoted `-name`, never as a shell path. zsh's
+  # default `nomatch` aborts the WHOLE command on an unmatched pattern, so a `{{STATE_DIR}}/review-*`
+  # argument makes the clear delete nothing at all on the common macOS path — the fix wearing the
+  # shape of the bug. Observed while writing this: zsh exits 1 with "no matches found" and all
+  # three files survive. Same class as the #125 zsh bug this suite already exists to catch.
+  #
+  # Matched on the TEMPLATED PATH rather than on `rm -f {{STATE_DIR}}/review-*`: the dangerous form
+  # puts the globs on a continuation line, where the contiguous `rm -f …` spelling never appears.
+  # (That exact form is caught today by the `-name` assertions above — it deletes the find — but a
+  # variant that keeps the find AND adds the glob would slip a substring pin.)
+  hasnt "$iiexec" '{{STATE_DIR}}/review-*' "6 …and never as a shell glob argument, which zsh's nomatch aborts"
 fi
 
 # ==================== 7. the currency step, EXECUTED (#139) ==================================

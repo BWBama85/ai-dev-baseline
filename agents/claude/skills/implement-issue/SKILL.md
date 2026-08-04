@@ -288,6 +288,40 @@ rm -f .claude/state/implement-issue-active.json .claude/state/implement-issue-bl
 # the start of the next run — is the place that clears it.
 rm -f .claude/state/gap-prompt.txt .claude/state/gaps.md .claude/state/gaps.err \
       .claude/state/gap-analysis.lock
+# Step 8's REVIEW artifacts, for every clause of the reason above (#264). review-prompt.txt is the
+# larger of the two prompts — it carries the full diff AND the issue body and every comment — and
+# review.err is the reviewer's whole exploration stream. The staleness trap is wider here than for
+# gaps: a run whose `review` role is unset, or whose only slot is deferred or absent (step 8's
+# rungs 2-3), never overwrites review.md, so the PREVIOUS run's findings sit there reading as this
+# run's. Bounding a single dispatch's captured stream WITHIN a run is separate, and tracked in #141.
+# The per-slot family, so this set stays identical to the `review` arm of
+# `cleanup-lib.sh state-scan`: a name /cleanup can sweep but preflight cannot clear is exactly the
+# stale-reads-as-current file this exists to remove.
+#
+# Matched by `find`, NOT by a shell glob, and that is not a style preference. Appending
+# `.claude/state/review-*.md` to the `rm -f` below looks equivalent and is not — an unmatched glob
+# is left literal by sh and bash, but zsh's default `nomatch` ABORTS THE WHOLE COMMAND. macOS runs
+# zsh (`base/practices/shell.md`) and a per-slot file usually does not exist, so the common case
+# would be `no matches found` and NONE of the three fixed names deleted either: a clear that
+# silently clears nothing, wearing the shape of the fix. The patterns are quoted, so no shell
+# expands them. `-exec … +` rather than `-delete`, which is not POSIX.
+#
+# `-type f -o -type l`, not `-type f` alone: `state-scan` selects with `[ -f ]`, which FOLLOWS a
+# symlink to a regular file and classifies it `review`. A bare `-type f` does not match the link
+# itself, so a `review-slot.md` symlink was sweepable by /cleanup and unclearable here — the set
+# inequality this block exists to prevent, in the one shape the two selectors disagree on.
+# BOTH clears report, and NEITHER may mask the other — the block's status is an explicit check, not
+# whichever command happens to be written last. Ordering alone cannot do this: with the `rm` last a
+# read-only state dir left the three fixed artifacts in place behind an empty, successful `find`;
+# with the `find` last, a directory that is writable but NOT READABLE (mode `wx`) lets `rm -f` unlink
+# a known path while `find` cannot enumerate at all, so the per-slot family survives. Either way
+# preflight reports green over artifacts it did not clear, which is the stale-reads-as-current bug
+# this block exists to remove.
+CLEAR_RC=0
+find .claude/state -maxdepth 1 \( -type f -o -type l \) \
+     \( -name 'review-*.md' -o -name 'review-*.err' \) -exec rm -f {} + || CLEAR_RC=$?
+rm -f .claude/state/review-prompt.txt .claude/state/review.md .claude/state/review.err || CLEAR_RC=$?
+[ "$CLEAR_RC" -eq 0 ] || { echo "ERROR: could not clear stale review artifacts from .claude/state"; exit 1; }
 ```
 
 ### 2. Verify repo scope + fetch the issue(s)

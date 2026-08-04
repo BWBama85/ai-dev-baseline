@@ -33,6 +33,7 @@
 #   cleanup-lib.sh state-verdict  threads <pr-state>
 #   cleanup-lib.sh state-verdict  marker  <pr-state> <local-ref> <remote-ref>
 #   cleanup-lib.sh state-verdict  gaps    <lock 0|1> <run keep|stale|none>
+#   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
 #   cleanup-lib.sh marker-branch   <marker-path>
 #   cleanup-lib.sh marker-identity <marker-path>
 #   cleanup-lib.sh report [--tail <line>]                      # TSV "<category>\t<item>" on stdin
@@ -218,6 +219,7 @@ EOF
 #   marker   <branch>|-      an /implement-issue run marker; the key is its recorded branch
 #   lock     -               the gap-analysis in-flight lock
 #   gaps     -               a gap-analysis artifact (prompt, findings, captured stream)
+#   review   -               a code-review artifact (prompt, findings, captured stream)
 #   other    -               ANYTHING ELSE
 #
 # `other` is emitted rather than dropped, and the workflow NEVER sweeps it. That asymmetry is the
@@ -257,6 +259,16 @@ cmd_state_scan() {
       # past run left `gaps-retry.{md,err}` behind, and #84 names that debris explicitly.
       gap-prompt.txt|gaps.md|gaps.err|gaps-*.md|gaps-*.err)
         printf 'gaps\t%s\t-\n' "$f"
+        ;;
+      # /implement-issue step 8's review artifacts (#264), which had NEITHER half of the lifecycle
+      # the gap set gets: preflight did not clear them and this scan classified them `other`, so
+      # they were permanent. Same family shape as the gaps arm, and for the same reason — the
+      # workflow writes three fixed names today, but a per-slot `review-<token>.{md,err}` is the
+      # obvious next shape and would otherwise fall straight back into `other`. The PREFLIGHT set
+      # in base/workflows/implement-issue.md is kept identical to this glob: a name this arm can
+      # sweep but preflight cannot clear is a stale file that a fresh run's marker makes look live.
+      review-prompt.txt|review.md|review.err|review-*.md|review-*.err)
+        printf 'review\t%s\t-\n' "$f"
         ;;
       *)
         printf 'other\t%s\t-\n' "$f"
@@ -332,7 +344,7 @@ cmd_marker_identity() {
 # it belongs to has resolved, and a mtime rule would delete a slow run's state while preserving a
 # fast one's. Every fact below is a live PR state or a freshly-fetched ref.
 cmd_state_verdict() {
-  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps)"
+  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|review)"
   local kind="$1"; shift
   case "$kind" in
     threads)
@@ -391,7 +403,33 @@ cmd_state_verdict() {
         *)    printf 'stale\n' ;;
       esac
       ;;
-    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps)" ;;
+    review)
+      [ "$#" -eq 1 ] || die "state-verdict review: needs exactly 1 arg: <run keep|stale|none>"
+      case "$1" in keep|stale|none) : ;;
+        *) die "state-verdict review: <run> must be keep|stale|none (got '$1')" ;; esac
+      # NO LOCK ARGUMENT, and that asymmetry with `gaps` is the deliberate decision #264 asked for
+      # rather than an omission. The gap lock exists for ONE window: gap analysis runs in
+      # /implement-issue step 3, BEFORE the branch and the run marker exist (step 5 writes them),
+      # so a live gap dispatch has no marker to prove liveness and its artifacts would otherwise
+      # read as a finished run's leftovers. Review artifacts are written in step 8 — after step 5,
+      # while the run's local branch still exists — so the marker IS the in-flight signal for
+      # every reachable write, and a lock would add a second one that can leak, be cleared late,
+      # and disagree with the first.
+      #
+      # The CALLER owes one thing in exchange: the <run> it passes must be read at the moment of
+      # the delete, not at classification. base/workflows/cleanup.md derives it from the same
+      # re-scan that re-reads the lock, for the reason stated there — a signal captured before a
+      # marker pass that makes live PR round trips is not the signal that governs the delete.
+      #
+      # `stale` and `none` are both accepted and both sweep. The workflow's fresh-scan derivation
+      # can only produce `keep` or `none` (a marker is present, or it is not), but a caller that
+      # holds a full marker verdict must get the same answer from the word it already has.
+      case "$1" in
+        keep) printf 'keep\n' ;;
+        *)    printf 'stale\n' ;;
+      esac
+      ;;
+    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|review)" ;;
   esac
 }
 
