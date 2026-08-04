@@ -9,6 +9,34 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **`/implement-issue`'s review artifacts now have a lifecycle, on both ends** (#264, D40).
+  `review-prompt.txt`, `review.md` and `review.err` were written by step 8 of every run and removed
+  by nothing: preflight cleared the *gap* set and not these, and `cleanup-lib.sh state-scan`
+  classified them `other`, which `/cleanup` never sweeps — correctly, since sweeping what it cannot
+  classify is how a sweep starts eating files. They were therefore permanent. Preflight now clears
+  them, and a `review` arm classifies them beside the `gaps` one.
+  - **The defect is residue and staleness, not disk growth.** Each dispatch redirects with `>`, so
+    a run truncates the previous run's files rather than appending to them. What was wrong is that
+    `review-prompt.txt` — the full diff *plus* the issue body and every comment — and `review.err`,
+    the reviewer's whole exploration stream, sat indefinitely in a directory whose stated purpose is
+    swept scratch; and that a run whose `review` slot is unset, deferred or absent (step 8's rungs
+    2–3) never overwrites `review.md`, so the *previous* run's findings read as the current one's.
+    Bounding a single dispatch's stream *within* a run is separate, and stays #141.
+  - **No review lock, and that asymmetry with the gap artifacts is the decision the issue asked
+    for.** `gap-analysis.lock` exists for one window — gap analysis runs in step 3, before the
+    branch and marker exist, so a live dispatch has nothing to prove its liveness with. Review is
+    written in step 8, *after* step 5's marker and while the run's branch still exists, so the
+    marker already is that signal for every reachable write.
+  - **But `/cleanup` reads it from the re-scan, never from the `$RUN` it computed earlier.** That
+    is the same rule the lock already follows: the signal governing a destructive delete must be
+    true *at* the delete, and `$RUN` predates a marker pass that makes live PR round trips. Any
+    marker still present in the fresh scan is one the sweep just kept, or one a run created since.
+  - **The `LARGE …` report covers the review stream too**, gated on its own verdict rather than the
+    gap one — `review.err` is routinely the larger of the two, so it was the file most likely to
+    trigger a warning that did not exist for it.
+  - **`pr-body.md` deliberately stays `other`** (the issue scopes it out: the shipped workflow does
+    not name that file, an agent chose it), and a test now pins that it was not made sweepable in
+    passing.
 - **A WSL2 smoke job, so the Windows support claim becomes checkable** (#2, D38).
   `.github/workflows/wsl-smoke.yml` installs **`Ubuntu-26.04`** into WSL2 on `windows-latest`, clones
   onto the Linux filesystem, and runs the real installer plus the full `selfcheck.sh` there. It

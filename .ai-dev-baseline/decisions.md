@@ -2239,3 +2239,56 @@ limit: none of them is sufficient alone.
              `base/practices/self-review.md` exists to prevent.
 - baseline-issue: n/a — this is this repo's own CI shape and its own lint, not a gap in the
              baseline's config surfaces.
+
+## D40 — review artifacts are swept on the run marker alone, and the marker is re-read at the delete
+- date:      2026-08-04
+- category:  project-delta
+- unknown:   #264. `/implement-issue` step 8 writes `review-prompt.txt`, `review.md` and
+             `review.err`; nothing removed them. The mechanical half of the fix (a preflight clear,
+             a `review` arm in `state-scan`) had an obvious precedent in the gap artifacts. The half
+             that did not was liveness: the gap arm answers "is a dispatch running right now?" with
+             `gap-analysis.lock`, and **review has no equivalent lock**. The issue named this as its
+             one design question — does review need a lock, or is the run marker enough? — rather
+             than something to port by analogy.
+- decision:  **No review lock.** `state-verdict review` takes `<run keep|stale|none>` and no lock
+             argument. The caller derives that word from the marker records in the **re-scan** that
+             already re-reads the lock — `RUN_NOW=keep` when any `marker` record survives it — and
+             explicitly **not** from the `$RUN` computed earlier in the step.
+- placement: `scripts/lib/cleanup-lib.sh` (the `review` arms of `state-scan` and `state-verdict`);
+             `base/workflows/cleanup.md` step 5; `base/workflows/implement-issue.md` preflight;
+             pinned in `scripts/check-cleanup.sh` sections 2c2, 3 and 6.
+- reason:    **The lock exists for a window review does not have.** Gap analysis runs in step 3,
+             *before* the branch and the run marker exist (step 5 writes them), so a live gap
+             dispatch has no marker to consult and its artifacts read as a finished run's
+             leftovers. Review is written in step 8 — after step 5, while the run's local branch
+             still exists — so `state-verdict marker` returns `keep` for every reachable write. The
+             marker already is the signal. A second one could leak, be cleared late, and disagree
+             with the first, and it would need the whole gap-lock protocol (take before the write,
+             release outside the detached block, clear leaks at preflight) to buy nothing.
+
+             **What that costs, and where it is paid: `$RUN` is not good enough.** `$RUN` is
+             decided during a marker pass that makes live PR round trips, and the step already
+             states the rule that governs this — *the signal that governs a destructive delete must
+             be the one true at the delete*. So review's liveness is re-derived from the fresh
+             scan. That is equivalent to `$RUN` in every non-race case (the pass deletes exactly the
+             markers it proved stale; a delete that fails or finds a changed file forces
+             `RUN=keep`) and strictly safer when a marker appears mid-sweep. Passing `$RUN` is
+             pinned as a NEGATIVE in `check-cleanup.sh`, because both spellings run and both print
+             a verdict — nothing else in the suite can see the substitution.
+
+             **The residual race is named rather than claimed closed.** A file deleted after the
+             re-scan but recreated at the same path before `sweep_file` reaches its record is not
+             excluded by anything here — the same consistency model the `gaps` and `threads` arms
+             already use. Reaching it needs a new marker to appear *after* the re-scan **and** that
+             run to get from preflight to step 8 before this loop ends, which is minutes of work
+             inside a window of milliseconds. True exclusion would need delete-time file identity,
+             which is what markers get and what their failure mode (a disarmed continuation gate)
+             justifies; a re-fetchable prompt does not.
+
+             **The preflight and classifier sets are kept byte-identical, including the family
+             globs.** The issue asked for `review-*.md|review-*.err` so a future per-slot output is
+             covered. A name `/cleanup` can sweep but preflight cannot clear is a stale artifact
+             that a *new* run's marker makes read as live — the exact trap #264 is about — so
+             preflight clears the family too, and a test pins the two lists against each other.
+- baseline-issue: n/a — the artifacts, the sweep and the workflow are all this repo's own code, and
+             `cleanup-lib.sh` was already the prescribed home for a `/cleanup` decision predicate.

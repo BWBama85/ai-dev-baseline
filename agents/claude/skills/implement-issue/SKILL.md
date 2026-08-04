@@ -288,6 +288,20 @@ rm -f .claude/state/implement-issue-active.json .claude/state/implement-issue-bl
 # the start of the next run — is the place that clears it.
 rm -f .claude/state/gap-prompt.txt .claude/state/gaps.md .claude/state/gaps.err \
       .claude/state/gap-analysis.lock
+# Step 8's REVIEW artifacts, for every clause of the reason above (#264). review-prompt.txt is the
+# larger of the two prompts — it carries the full diff AND the issue body and every comment — and
+# review.err is the reviewer's whole exploration stream. The staleness trap is wider here than for
+# gaps: a run whose `review` role is unset, or whose only slot is deferred or absent (step 8's
+# rungs 2-3), never overwrites review.md, so the PREVIOUS run's findings sit there reading as this
+# run's. Bounding a single dispatch's captured stream WITHIN a run is separate, and tracked in #141.
+#
+# The `review-*` globs are here to keep this set identical to the `review` arm of
+# `cleanup-lib.sh state-scan`. A name /cleanup can sweep but preflight cannot clear is exactly the
+# stale-reads-as-current file this clears, so the two spellings move together. An unmatched glob
+# stays literal in POSIX shells and `rm -f` is silent on a path that does not exist, so the common
+# case — no per-slot files — costs nothing and reports nothing.
+rm -f .claude/state/review-prompt.txt .claude/state/review.md .claude/state/review.err \
+      .claude/state/review-*.md .claude/state/review-*.err
 ```
 
 ### 2. Verify repo scope + fetch the issue(s)

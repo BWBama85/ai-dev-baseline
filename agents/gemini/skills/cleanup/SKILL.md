@@ -100,7 +100,7 @@ narrates itself buries the one or two lines that matter.
 
 ```
 Deleted (local): issue-3-generic-release-workflow-or-document
-Cleared state: threads-{41,47,51,57,59,65,68,72,76}.json, gaps.md, gaps.err
+Cleared state: threads-{41,47,51,57,59,65,68,72,76}.json, gaps.md, gaps.err, review.md, review.err
 baseline: updated 3818548 → ebca0f3 (2 commits).
 main: clean, in sync with origin/main
 ```
@@ -444,7 +444,7 @@ $SCAN
 EOF
 ```
 
-**Then gap artifacts and thread caches.**
+**Then gap artifacts, review artifacts and thread caches.**
 
 **Re-scan before deleting anything.** `$SCAN` and `$LOCK` were captured at the top of this step,
 before a marker pass that makes live PR round trips — seconds, sometimes longer. A new
@@ -452,12 +452,31 @@ before a marker pass that makes live PR round trips — seconds, sometimes longe
 and deleting from the old snapshot would remove files a locked dispatch is actively writing. The
 lock that governs a destructive delete must be the one that is true *at the delete*.
 
+**Review artifacts have no lock, and need none (#264).** `/implement-issue` writes them in its
+step 8 — *after* step 5 has written the run marker, and while the run's branch still exists — so
+the window the gap lock exists for (step 3, before any marker) has no counterpart here. The marker
+*is* the in-flight signal for every reachable write.
+
+**But it is read from THIS scan, never from `$RUN`.** The rule above is not about locks
+specifically; it is that the signal governing a destructive delete must be true *at the delete*,
+and `$RUN` was decided before the marker pass. Any `marker` record still present in the fresh scan
+is one this sweep just kept — or one a run created since it started; both mean a run owns these
+files. In every non-race case that is the same answer `$RUN` gives (the pass deletes exactly the
+markers it proved stale, and a delete that fails or finds a changed file forces `RUN=keep`), and in
+a race it is the safe one.
+
 ```bash
 SCAN="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-scan "$STATE")"
 LOCK=0
 if printf '%s\n' "$SCAN" | grep -q "^lock${TABC}"; then LOCK=1; fi
+# An `if`, not `… && RUN_NOW=keep`, for the reason given above the lock probe: an AND-list whose
+# test fails leaves the whole fenced block on exit status 1, and "no marker present" is the
+# common case after a merge — the sweep would read as a failed step.
+RUN_NOW=none
+if printf '%s\n' "$SCAN" | grep -q "^marker${TABC}"; then RUN_NOW=keep; fi
 
 GV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict gaps "$LOCK" "$RUN")" || GV=keep
+RV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict review "$RUN_NOW")" || RV=keep
 
 # rm failures are REPORTED, never swallowed. A read-only state dir would otherwise leave every
 # eligible file in place while the report showed a clean, successful no-op — precisely what the
@@ -478,6 +497,10 @@ while IFS="$TABC" read -r kind sfile key; do
       [ "$GV" = stale ] || continue
       sweep_file "$sfile"
       ;;
+    review)
+      [ "$RV" = stale ] || continue
+      sweep_file "$sfile"
+      ;;
     threads)
       TV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict threads "$(pr_state "$key")")" || continue
       [ "$TV" = stale ] || continue
@@ -489,19 +512,39 @@ $SCAN
 EOF
 ```
 
-A kept gap artifact that has grown large is **reported, not truncated** — truncating a live run's
-captured stream destroys the evidence its operator is about to read.
+A kept captured stream that has grown large is **reported, not truncated** — truncating a live
+run's stream destroys the evidence its operator is about to read. This covers the **review**
+stream too (#264): `review.err` is routinely the larger of the two, so leaving it out would have
+dropped the warning for the file most likely to trigger it.
+
+Each family is gated on **its own** verdict. `$RV` is not `$GV` — a live gap dispatch and a live
+review dispatch are different runs at different steps, and reporting one family under the other's
+liveness would name the wrong file as belonging to a live run.
 
 ```bash
-if [ "$GV" = keep ]; then
-  for f in "$STATE"/gaps.err "$STATE"/gaps-*.err; do
-    [ -f "$f" ] || continue
-    sz="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
-    [ -n "$sz" ] && [ "$sz" -gt 262144 ] \
-      && NOTES="${NOTES}LARGE ${f##*/} is $((sz / 1024)) KB and belongs to a live run — kept
+# The paths come from the SCAN, never from a second set of globs spelled here. That is the rule
+# the lock probe already follows — one home per filename, so a rename cannot update only one
+# spelling — and it removes a portability trap in the same move: an unmatched `gaps-*.err` is left
+# literal by POSIX shells, but under zsh's default `nomatch` it ABORTS the command, and macOS runs
+# zsh (base/practices/shell.md). The whole report would then silently not happen.
+#
+# An `if`, not a trailing AND-list, so a healthy run — every stream under the threshold — does not
+# leave this block, the LAST of the step, on exit status 1.
+while IFS="$TABC" read -r kind sfile key; do
+  case "$kind" in
+    gaps)   [ "$GV" = keep ] || continue ;;
+    review) [ "$RV" = keep ] || continue ;;
+    *)      continue ;;
+  esac
+  case "$sfile" in *.err) : ;; *) continue ;; esac
+  sz="$(wc -c < "$sfile" 2>/dev/null | tr -d ' ')"
+  if [ -n "$sz" ] && [ "$sz" -gt 262144 ]; then
+    NOTES="${NOTES}LARGE ${sfile##*/} is $((sz / 1024)) KB and belongs to a live run — kept
 "
-  done
-fi
+  fi
+done <<EOF
+$SCAN
+EOF
 ```
 
 ### 6. Compose the report — but do not print it yet
