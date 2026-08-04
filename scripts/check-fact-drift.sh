@@ -895,6 +895,124 @@ _wsl_smoke_docs="docs/ci-runners.md CONTRIBUTING.md"
 fact wsl-smoke-doc-host   'fixed:windows-latest' -- $_wsl_smoke_docs
 fact wsl-smoke-doc-distro 'fixed:Ubuntu-26.04'   -- $_wsl_smoke_docs
 
+# --- FACT: the WSL job runs the FRAMEWORK as a non-root user (#271, D39) ------------------------
+#
+# Root holds `CAP_DAC_OVERRIDE`, so a POSIX mode bit cannot deny it a write — and the offline suite
+# has one assertion that depends on exactly that (`scripts/check-skill-compose.sh:329-330` chmods a
+# directory 555 and requires the next compose to FAIL). Run the suite as root and that assertion
+# INVERTS: the job goes red on a fixture that passes everywhere a normal user runs it. The smoke job
+# is weekly, so it is far too slow to be the only thing standing between a future edit and that
+# state; this is the guard that catches it in the same run that writes it.
+#
+# THE LITERAL RULE THE ISSUE ASKED FOR IS UNSATISFIABLE, and recording why is the point of the shape
+# below. `fact` applies ONE pattern to a WHOLE FILE — there is no step selector — so a bare
+# `absent:--user root` would be tripped by the three invocations that must STAY root (the
+# `/etc/os-release` read precedes the account; `apt-get` and `useradd` are privileged by nature) and
+# by this workflow's own explanatory comments. It would fail on a correct file, which under
+# `--mutation` means it never even reaches its witness. So the pattern is CONTEXTUAL: a `wsl`
+# invocation that runs as root **and reaches a framework command**.
+#
+# BOTH DIRECTIONS ARE PINNED, and here the negative alone genuinely is not enough — the same lesson
+# as the `actions-slug-*` family above, arrived at from the other side. The regression this exists to
+# stop is "the job silently returns to root", and dropping `--user` ENTIRELY does that without ever
+# spelling the word: `wsl --install --no-launch` provisions no user, so an invocation with no
+# `--user` runs as the image's default, which is root. No negative pattern can catch an absent flag.
+# Hence a positive rule per framework command, each asserting that line names `adb`.
+#
+# `[^#]*` RATHER THAN `.*` BETWEEN THE ANCHORS, and that is a review finding rather than caution.
+# Anchoring on `run:` at the start of the line excludes a WHOLE-LINE comment, but not a TRAILING
+# one: `run: wsl … # once --user root … bash scripts/selfcheck.sh` put the forbidden text on an
+# executable line, where an unbounded `.*` read straight through the `#` and reported root use that
+# YAML never executes. The positive rules had the mirror-image hole, and it was worse because it
+# fails OPEN — `run: wsl --help # --user adb --cd /home/adb/x -- bash scripts/selfcheck.sh` satisfied
+# the pin while executing `wsl --help`. Both were reproduced against this file. `[^#]*` cannot cross
+# a `#`, so every one of these rules now describes executable content only. No real invocation here
+# carries a `#` (the clone's URL is the only near-miss, and it has none).
+#
+# THE NARROWER CONTRACT IS DELIBERATE, and stated so nobody has to rediscover it: these pins accept
+# `--user`/`-u` and `-d`/`--distribution`, but the invocation must be the whole `run:` value on one
+# line. A `run: |` block carrying the same command is NOT recognized — the same fail-closed choice
+# `check-bash-floor.sh` makes for the floor guard, and for the same reason: a form nothing in this
+# repo uses is not worth a hole in a pattern.
+#
+# The negative also covers `-u`, the documented short form, which is genuinely the same instruction.
+# It covers a NUMERIC uid too, but for a different and weaker reason, said plainly rather than
+# folded in: `wsl --user` resolves a NAME through `getpwnam`, so `--user 0` does not mean root — it
+# names a user that does not exist and errors. That branch is defence against a future `wsl.exe`
+# that accepts a uid, not a spelling that works today, and its witness proves the pattern matches,
+# not that the spelling would run as root.
+fact wsl-smoke-nonroot-framework \
+  'absent:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\.exe[[:space:]])[^#]*(--user|-u)[[:space:]]+(root|0)([[:space:]]|$)[^#]*(--cd|git[[:space:]]+clone|bash[[:space:]]+(scripts/|install\.sh|uninstall\.sh|--version))' \
+  'fires:        run: wsl -d Ubuntu-26.04 --user root --cd /root/adb -- bash scripts/check-bash-floor.sh --runtime' \
+  'fires:        run: wsl -d Ubuntu-26.04 --user root --cd /root/adb -- bash install.sh --agent claude --agent codex --agent gemini' \
+  'fires:        run: wsl -d Ubuntu-26.04 --user root --cd /root/adb -- bash scripts/selfcheck.sh' \
+  'fires:        run: wsl -d Ubuntu-26.04 --user root --cd /root/adb -- bash uninstall.sh --agent claude --agent codex --agent gemini' \
+  'fires:        run: wsl -d Ubuntu-26.04 --user root -- bash -c "set -eu; git clone https://github.com/${{ github.repository }}.git /root/adb; git -C /root/adb -c advice.detachedHead=false checkout ${{ github.sha }}"' \
+  'fires:        run: wsl -d Ubuntu-26.04 --user root -- bash --version' \
+  'fires:        run: wsl -d Ubuntu-26.04 -u root --cd /home/adb/ai-dev-baseline -- bash scripts/selfcheck.sh' \
+  'fires:        run: wsl -d Ubuntu-26.04 --user 0 --cd /home/adb/ai-dev-baseline -- bash scripts/selfcheck.sh' \
+  -- .github/workflows/wsl-smoke.yml
+# The first SIX witnesses are the REAL superseded lines, copied verbatim out of the commit before
+# #271 — the input `base/practices/self-review.md` asks a guard to be proven on. The last two never
+# existed in this tree, and saying which is which is more useful than implying every witness is
+# historical: `-u root` is the same instruction spelled short, and `--user 0` is the defensive
+# branch described above. They are here because an alternation exercised through one branch is
+# several untested branches.
+#
+# `bash --version` IS in the framework alternation, and review is why. The distro's interpreter log
+# is the one framework-touching line with no `--cd` and no script name, so the first cut of this
+# rule let `--user adb` be dropped from it with nothing going red — root reintroduced on the very
+# line whose whole job is to say which interpreter the framework runs under.
+
+# The positive half: each command the framework itself runs must name `adb`. One rule per command
+# — a `fact` proves only that SOME line matches, so a single rule could be satisfied by one
+# compliant step while the others had drifted.
+#
+# The four `--cd` steps share a shape, so the pattern and the command token are derived from one
+# list rather than written out five times: a hand-copied pattern is exactly where a rule that hunts
+# one command while claiming to hunt another comes from (the lesson the `pr-classifier-no-copies`
+# loop above records).
+for _wslcmd in 'scripts/check-bash-floor\.sh' 'install\.sh' 'scripts/selfcheck\.sh' 'uninstall\.sh'; do
+  fact wsl-smoke-runs-as-adb \
+    "regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\\.exe[[:space:]])[^#]*(--user|-u)[[:space:]]+adb[[:space:]]+--cd[[:space:]]+/home/adb/[^|;&#]*--[[:space:]]+bash[[:space:]]+$_wslcmd" \
+    -- .github/workflows/wsl-smoke.yml
+done
+# The distro's `bash --version` log is the fifth `--user adb` line and gets its own pin, because it
+# matches none of the shapes above: no `--cd`, no script name. It is also the line the negative rule
+# missed until review found it.
+fact wsl-smoke-logs-bash-as-adb \
+  'regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\.exe[[:space:]])[^#]*(--user|-u)[[:space:]]+adb[^#]*--[[:space:]]+bash[[:space:]]+--version[[:space:]]*$' \
+  -- .github/workflows/wsl-smoke.yml
+# The clone is the sixth, and it is NOT a `--cd` step — it is what creates the directory the other
+# four `--cd` into, so it has to name its destination in full. It is pinned separately rather than
+# forced into the loop's template, because a clone performed as root and merely handed to `adb` is
+# its own defect: git refuses such a tree outright ("detected dubious ownership") and `install.sh`
+# would fail on permissions, both several steps after the one that caused it.
+#
+# `"[^"]*git…` and not `".*git…`: confining the match to the INSIDE of the first quoted string is
+# what makes this prove an executable clone. With `.*` the reviewer satisfied this rule using a line
+# that ran `bash -c "true"` and mentioned `git clone /home/adb/` in a trailing comment.
+fact wsl-smoke-clones-as-adb \
+  'regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\.exe[[:space:]])[^#]*(--user|-u)[[:space:]]+adb[[:space:]]+--[[:space:]]+bash[[:space:]]+-c[[:space:]]+"[^"]*git[[:space:]]+clone[^"]*/home/adb/' \
+  -- .github/workflows/wsl-smoke.yml
+# And the step that makes the whole thing readable in a log instead of reconstructable from a
+# failing fixture 30 steps later: the job must assert its own effective uid is not 0.
+#
+# TWO RULES, because the read and the assertion are two things and pinning only the first proved
+# nothing. Review changed `if ($uid -eq '0')` to compare against another value and this lint stayed
+# green: `id -u` was still being read, and its result was simply no longer being judged. A guard
+# pinned to the input of an assertion is not pinned to the assertion.
+#
+# Both are anchored to the start of a line with only whitespace before the code, so a PowerShell
+# comment — which begins with `#` — can satisfy neither. The earlier unanchored form could be
+# satisfied by a comment anywhere in the file.
+fact wsl-smoke-reads-effective-uid \
+  'regex:^[[:space:]]*\$uid[[:space:]]*=[[:space:]]*\(wsl[[:space:]]+(-d|--distribution)[[:space:]]+Ubuntu-26\.04[^#]*(--user|-u)[[:space:]]+adb[[:space:]]+--[[:space:]]+id[[:space:]]+-u' \
+  -- .github/workflows/wsl-smoke.yml
+fact wsl-smoke-asserts-nonroot-uid \
+  "regex:^[[:space:]]*if[[:space:]]*\\(\\\$uid[[:space:]]+-eq[[:space:]]+'0'\\)[[:space:]]*\\{[[:space:]]*\$" \
+  -- .github/workflows/wsl-smoke.yml
+
 # --- what was actually evaluated ---------------------------------------------
 # A rule that scans nothing is already a hard failure inside fact(); these totals are the other
 # half of the same idea, and the half that survives a future edit fact() does not model. Zero rules

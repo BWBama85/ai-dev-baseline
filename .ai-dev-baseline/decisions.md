@@ -2108,3 +2108,134 @@ limit: none of them is sufficient alone.
 - baseline-issue: n/a — this is this repo's own CI shape, not a gap in the baseline's config
              surfaces. Windows support is a per-project platform question; nothing here needs a new
              override surface.
+
+## D39 — the WSL job runs the framework as an ordinary user, and the guard for that could not be the one the issue asked for
+- date:      2026-08-04
+- category:  project-delta
+- unknown:   #271. D38's job passed `--user root` to every in-distro command, and one assertion in
+             the offline suite depends on POSIX mode bits to DENY a write. Root holds
+             `CAP_DAC_OVERRIDE`, so that write succeeds, the assertion inverts, and the weekly job
+             cannot reach a passing run. The issue's own test plan then asked for a regression guard
+             spelled `absent:--user root` — which turns out to be unsatisfiable, and *why* is the
+             part worth recording.
+- decision:  Create an ordinary `adb` user in the distro and hand it everything the framework
+             touches (clone, distro bash log, floor guard, `install.sh`, `selfcheck.sh`,
+             `uninstall.sh`). Exactly three in-distro invocations keep `--user root`: the
+             `/etc/os-release` read, which precedes the account, plus `apt-get` and `useradd`, which
+             are privileged by nature. Guard it with a **contextual** negative rule plus a
+             **positive rule per framework command**, not with the literal pin requested.
+- placement: `.github/workflows/wsl-smoke.yml`; the `wsl-smoke-nonroot-framework` /
+             `wsl-smoke-runs-as-adb` / `wsl-smoke-clones-as-adb` / `wsl-smoke-asserts-nonroot-uid`
+             rules in `scripts/check-fact-drift.sh`.
+- reason:    **The workflow was wrong, not the check.** `scripts/check-skill-compose.sh:329-330`
+             chmods a directory `555` and requires the next compose to fail; it passes on
+             `ubuntu-26.04` and on a maintainer's macOS workstation, both of which run as a normal
+             user. Weakening or skipping it under root would have deleted real coverage to
+             accommodate a CI choice. And the fix is not merely a UID swap: `docs/installation.md`
+             tells a Windows user to clone and install inside WSL **as themselves**, so running as
+             root was proving a setup no real user has. Fixing it raises the job's fidelity.
+
+             **The literal `absent:--user root` rule is unsatisfiable, and that is a fact about the
+             `fact` grammar rather than about this workflow.** `fact` applies ONE pattern to a WHOLE
+             file — there is no step selector. Three invocations must stay root (the
+             `/etc/os-release` read precedes the account; `apt-get` and `useradd` are privileged by
+             nature), and the workflow's own comments discuss the old form. A bare pin would
+             therefore fail on a CORRECT file, which
+             under `--mutation` means it never even reaches its witness: the mode requires a clean
+             baseline before injecting. So the pattern is contextual — root **and** reaching a
+             framework command. It covers `-u root`, which is the same instruction spelled short, and
+             a numeric uid for a weaker reason that review was right to force apart from the first:
+             `wsl --user` resolves a NAME through `getpwnam`, so `--user 0` names a user that does not
+             exist and errors rather than running as root. That branch is defence against a future
+             `wsl.exe` that accepts a uid; its witness proves the pattern matches, not that the
+             spelling would run as root. The original entry claimed all four spellings were "the same
+             instruction to `wsl.exe`", which was simply false.
+
+             **The negative half alone is insufficient, and the reason generalizes.** The regression
+             this exists to stop is "the job silently returns to root", and the cheapest way to get
+             there spells nothing at all: `wsl --install --no-launch` provisions no user, so an
+             invocation that simply DROPS `--user` runs as the image's default, which is root. **No
+             negative pattern can match an absent flag.** Hence a positive rule per framework command
+             asserting that line names `adb` — one per command, because a `fact` proves only that
+             SOME line matches, so a single rule would be satisfied by one compliant step while the
+             other four had drifted. This is the same both-directions shape as the `actions-slug-*`
+             family, arrived at from the opposite side: there the negative caught a stale copy kept
+             beside the new value; here the positive catches a value deleted rather than changed.
+
+             **Observed failing, on the real superseded input.** Every rule was driven red against the
+             pre-#271 workflow, and each regression vector was driven red individually on a throwaway
+             tree copy: dropping the flag, `-u root`, `--user 0`, `--user root` on `install.sh`, a
+             root-performed clone, root restored on the distro bash log, and a neutered uid
+             comparison. The fixed file is green and three legitimate variants — a trailing comment
+             naming the old form, the `-u adb` shorthand, `--distribution` spelled out — were
+             confirmed NOT to fire, so the pins do not merely fire, they discriminate. Two of the
+             negative rule's eight witnesses are spellings that were never in the tree (`-u root`,
+             `--user 0`); that is said in the file rather than implied, because
+             `base/practices/self-review.md` asks a guard to be proven on REAL superseded input and
+             those two are not that.
+
+             **AND THE FIRST CUT OF THIS GUARD HAD FOUR HOLES, WHICH IS THE MOST INSTRUCTIVE PART.**
+             All four were found by independent review, all four were reproduced against this file,
+             and none of them was visible from the vectors above — because every one of those vectors
+             was written by the same person who wrote the rules, testing the failures that person had
+             already thought of. That is the specific limit of self-negative-testing, and it is worth
+             recording as plainly as the technique it qualifies:
+
+               1. **A trailing comment is not a comment as far as an anchored rule is concerned.**
+                  Anchoring at `run:` excludes a whole-line comment, and the entry originally claimed
+                  on that basis that "a comment can never satisfy — or trip — either half". False:
+                  `run: wsl … # once --user root … bash scripts/selfcheck.sh` put the forbidden text
+                  on an executable line, and an unbounded `.*` read straight through the `#`.
+               2. **The same hole in the positive rules fails OPEN**, which is worse.
+                  `run: wsl --help # --user adb --cd /home/adb/x -- bash scripts/selfcheck.sh`
+                  satisfied the pin while executing `wsl --help`; the clone pin fell to the same
+                  trick with `bash -c "true" # git clone /home/adb/`. `[^#]*` between the anchors is
+                  the fix, plus `"[^"]*` to confine the clone match to inside the quoted string.
+               3. **A guard pinned to the INPUT of an assertion is not pinned to the assertion.** The
+                  uid rule matched the `id -u` read, so changing `if ($uid -eq '0')` to compare
+                  against anything else left the lint green — the value was still being read and
+                  simply no longer judged. It is two rules now, the read and the judgement.
+               4. **The one framework line with no `--cd` and no script name was uncovered.** The
+                  distro's `bash --version` log matched none of the negative rule's framework tokens
+                  and had no positive pin, so `--user adb` could be dropped from the very line whose
+                  job is to say which interpreter the framework runs under, with nothing going red.
+
+             A fifth, in the workflow rather than the lint: the DrvFs assertion treated the absence of
+             a match as a pass, so a `df` that never ran reported "not DrvFs" — and pwsh propagates
+             only the LAST native exit code, which a later command supplied. It now checks the exit
+             code and the shape of what it read.
+
+             **The uid is asserted, not merely logged, which is a deliberate strengthening of the
+             issue's own wording.** The issue asked to "log the effective user … so a future
+             inversion of this kind is readable in the log rather than reconstructed from a failing
+             assertion". Reconstructing it was exactly what #271 cost: the only symptom was one
+             failing compose assertion far downstream. A `throw` on `uid = 0` fails the job at the
+             cause, which serves that stated goal strictly better than a line in a log nobody reads
+             on a green run. `id -u` rather than bare `id`, because `id` output carries `uid=0(root)`
+             AND `gid=0(root)` AND every supplementary group, so any pattern loose enough to find the
+             uid in it is satisfiable by a group — the "a note about the thing read as the thing"
+             fail-open this repo has been bitten by more than once.
+
+             **The clone is made AS the user, and its ownership is asserted.** A root-owned tree
+             handed to a non-root user fails later and confusingly — git refuses it with "detected
+             dubious ownership" and `install.sh` hits permission errors — rather than at the step that
+             caused it. `--cd` cannot be leaned on to enforce this either: WSL treats a failed
+             `chdir` as non-fatal and launches the command anyway, so a clone that landed elsewhere
+             would not stop the steps below at their own boundary.
+
+             **What is NOT discharged by the change, said plainly.** The job still has not been
+             observed green. D38 already drew this boundary for #2's "seen green at least once"
+             criterion, and it holds identically here: the live half is discharged by a
+             `workflow_dispatch`, not by the diff that fixes it. Everything checkable offline was
+             checked — the YAML parses at 14 steps, `check-bash-floor.sh` still reports `1 WSL-host`,
+             and every new LINT rule was observed rejecting its own violation.
+
+             The boundary inside that sentence is deliberate. The lint rules were observed failing;
+             the two RUNTIME assertions this change adds — the effective uid is not 0, the clone is
+             owned by `adb` — were not, and cannot be from here, because they execute only inside
+             WSL. What is known about them is that they are reachable and correctly shaped, not that
+             they have been seen red. Saying "every new guard was observed failing" would have
+             covered two that were not, which is exactly the overstatement
+             `base/practices/self-review.md` exists to prevent.
+- baseline-issue: n/a — this is this repo's own CI shape and its own lint, not a gap in the
+             baseline's config surfaces.

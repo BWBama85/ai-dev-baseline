@@ -261,6 +261,64 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The WSL smoke job ran the suite as root, which inverted a permission fixture** (#271, D39).
+  `.github/workflows/wsl-smoke.yml` passed `--user root` to every in-distro command, and root holds
+  `CAP_DAC_OVERRIDE` — so a POSIX mode bit cannot deny it a write. `scripts/check-skill-compose.sh`
+  chmods a skill directory `555` and requires the next compose to **fail**; under root the write
+  succeeded, the assertion inverted, and the weekly job went red on `skill-compose: 123 passed, 1
+  failed` — an assertion that passes on `ubuntu-26.04` and on a maintainer's macOS workstation
+  alike. The defect was the workflow's, not the check's: weakening an assertion that is correct
+  everywhere a normal user runs it would have deleted real coverage to accommodate a CI choice.
+  - **The job now creates an ordinary user and hands it everything the framework touches** — the
+    clone, the distro's `bash --version` log, the floor guard, `install.sh`, `selfcheck.sh` and
+    `uninstall.sh`. Exactly three in-distro invocations still pass `--user root`, and each has a
+    reason: the `/etc/os-release` read (it runs before the account exists), the `apt-get` bootstrap,
+    and `useradd` itself. The host-side steps — `wsl --install`, `wsl --list --verbose`, and the
+    runner's own `bash --version` — take no `--user` at all.
+  - **It raises fidelity rather than merely turning the job green.** `docs/installation.md` tells a
+    Windows user to clone and install inside WSL **as themselves**, so running as root was proving a
+    setup no real user has.
+  - **The clone is made *as* that user, not handed to it.** A root-owned tree given to a non-root
+    user fails later and confusingly — git refuses it outright with "detected dubious ownership" —
+    rather than at the step that caused it. A new assertion proves the working clone's owner, and
+    the effective uid is now asserted (not merely printed) in its own step, so a future inversion of
+    this kind fails at the cause instead of surfacing as one baffling fixture 30 steps downstream.
+  - **The regression guard is the interesting part, because the obvious form of it does not work.**
+    A weekly job is far too slow to be the only thing standing between an edit and this state, so
+    the pin lives in `scripts/check-fact-drift.sh` — but `fact` applies one pattern to a whole file
+    with no step selector, so a bare `absent:--user root` would be tripped by the three invocations
+    that must *stay* root and by the workflow's own comments, failing on a correct file. The pattern
+    is therefore **contextual**: root *and* reaching a framework command. It covers `-u root`, which
+    is genuinely the same instruction spelled short, and a numeric uid for a weaker and separately
+    stated reason — `wsl --user` resolves a *name* through `getpwnam`, so `--user 0` names a user
+    that does not exist and errors rather than running as root. That branch is defence against a
+    future `wsl.exe` that accepts a uid, not a spelling that works today.
+  - **Both directions are pinned, and here the negative genuinely is not enough.** The regression is
+    "the job silently returns to root", and **dropping `--user` entirely does that without ever
+    spelling the word** — `wsl --install --no-launch` provisions no user, so an invocation with no
+    `--user` runs as the image's default, which is root. No negative pattern can catch an absent
+    flag. So each framework command carries a positive pin naming `adb`, including the distro's
+    `bash --version` log, which has neither a `--cd` nor a script name and was therefore the one
+    framework line the first cut of the negative rule missed entirely.
+  - **Independent review found four holes in the first cut of that guard, and each is closed and
+    re-proven.** Anchoring on `run:` excluded a whole-line comment but not a *trailing* one, so an
+    unbounded `.*` read straight through a `#` — which made the negative rule falsely fire on a
+    comment, and made every positive rule satisfiable *by* one (`run: wsl --help # --user adb …`
+    passed while executing `wsl --help`). The patterns now use `[^#]*`, and the clone pin matches
+    only inside the first quoted string. The uid rule pinned the `id -u` *read* but not the
+    comparison, so neutering `if ($uid -eq '0')` left the lint green; it is now two rules. And the
+    filesystem assertion could pass on a `df` that never ran, since an absent match is not a match.
+  - Every rule was observed going red against the real pre-fix file, and each regression vector was
+    driven to red individually on a throwaway copy: dropping the flag, `-u root`, `--user 0`,
+    `--user root`, a root clone, root on the distro bash log, a neutered uid comparison, and both
+    comment-based fail-open attacks. Three legitimate variants — a trailing comment naming the old
+    form, the `-u adb` shorthand, and `--distribution` spelled out — were confirmed *not* to fire.
+  - **What this PR does *not* claim.** The job has still not been observed green: a `schedule` /
+    `workflow_dispatch` workflow runs the version on the ref it is dispatched against, and the
+    Windows leg's live half is discharged by a dispatch, not by the diff that fixes it — the same
+    boundary D38 drew for #2's "seen green at least once" criterion. Everything checkable offline
+    was checked.
+
 - **The 5.3 floor made a Stop hook adopt a session id off a stream it never finished reading**
   (found while implementing #258; the exposure predates this PR). The reliance arrived with #180;
   until #256 the shebang was a bare `#!/usr/bin/env bash`, so which behaviour you got depended on
