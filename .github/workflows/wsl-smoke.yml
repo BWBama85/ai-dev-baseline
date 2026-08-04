@@ -1,0 +1,156 @@
+name: WSL smoke
+
+# The Windows leg of the support claim (#2, item 3). Windows is supported via WSL2 ONLY (owner
+# decision, 2026-08-01), and `base/practices/verify-before-asserting.md` applies to a support claim
+# as much as to a PR status: a platform this repo says it supports and never executes is an
+# assertion, not support.
+#
+# ITS OWN FILE, AND THAT IS LOAD-BEARING TWICE OVER:
+#
+#   1. `ci.yml` has only unfiltered `push:` and `pull_request:` triggers, so a `schedule:` added
+#      there would run ALL 27 of its jobs weekly to gain this one.
+#   2. `scripts/lib/repo-settings.sh` discovery emits only jobs it can prove report on EVERY pull
+#      request, and skips any workflow with "no pull_request trigger". This file has none, so it can
+#      never become a required context — which is exactly right, because a required check that never
+#      reports on a PR is the phantom deadlock `automerge-ok` code 13 names, and clearing it needs an
+#      admin token. Adding this job to `ci.yml` instead would have made it a per-PR cost AND a
+#      required context.
+#
+# NOT `release:`. This repo versions by pushed git tag and never publishes a GitHub Release object
+# (`.claude/skills/release/SKILL.md`: "It never publishes a GitHub Release, a package, or a
+# deploy"), so a `release:` trigger would be a leg that fires zero times — the silent-guard failure
+# mode this repo keeps writing checks against. `push: tags:` is the trigger that corresponds to how
+# a release actually happens here.
+on:
+  schedule:
+    # Weekly, not per-PR. WSL2 on Ubuntu 26.04 runs a bash and a userland identical to what the
+    # `ubuntu-26.04` jobs already cover, so a per-PR run would mostly re-prove the Linux job at
+    # several times the runtime, with the flakiness a Windows runner plus a distro download adds.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  # `wsl.exe` emits UTF-16LE by default, which arrives in pwsh as NUL-interleaved text that no
+  # `-match` below would ever match — an assertion that cannot see its input passes for the wrong
+  # reason. WSL_UTF8=1 is the documented switch that makes its output UTF-8.
+  WSL_UTF8: '1'
+
+jobs:
+  wsl-smoke:
+    name: wsl-smoke
+    runs-on: windows-latest
+    # Generous: a distro download plus an apt bootstrap plus the whole offline suite, on a runner
+    # with fewer cores than a workstation.
+    timeout-minutes: 60
+    steps:
+      # FIRST, before checkout or any bootstrap — the same rule every job in ci.yml follows, and
+      # here it earns its keep twice. `windows-latest` (Windows Server 2025) ships Git-Bash
+      # **5.3.15**, which CLEARS this repo's floor. That is precisely why every proof below goes
+      # through `wsl -d …`: a bare `bash scripts/check-bash-floor.sh --runtime` on this runner would
+      # pass while proving the floor for native MSYS2/Git-Bash — a userland #2 explicitly ruled out
+      # of scope. Logging the host bash is what makes that distinction READABLE in the log instead
+      # of something the reader has to know.
+      - name: Log this runner's bash
+        run: bash --version
+
+      - name: Checkout
+        # fetch-depth: 0 because the WSL clone below inherits every history requirement the offline
+        # suite has at once: `claims` diffs against the default-branch base, and
+        # check-install-migration.sh needs a merge-base with origin/<default> — without it that
+        # check SKIPS its pull simulation and exits 0, i.e. reports success for a test it never ran.
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Ubuntu 26.04 into WSL
+        # `Vampire/setup-wsl` is deliberately NOT used: its supported-distribution list stops at
+        # Ubuntu-24.04, whose bash is 5.2.21 — below this repo's floor — so it cannot express the
+        # one distro this job exists to test. Microsoft's own distribution manifest carries
+        # `Ubuntu-26.04` ("Ubuntu 26.04 LTS"), and the runner image ships WSL 2.7.10.0 with WSLv2
+        # as the default, so `wsl --install` is the documented mechanism with no third party in it.
+        run: wsl --install --distribution Ubuntu-26.04 --no-launch --web-download
+
+      - name: Assert the distro registered, and at WSL version 2
+        # ASSERTED, not assumed. `wsl --install` has been known to report success while leaving a
+        # distro unregistered, and WSLv1 would silently give this job different filesystem and
+        # syscall semantics than the platform #2 actually supports. `throw` under the runner's
+        # pwsh (which sets $ErrorActionPreference = 'stop') exits non-zero, so each of these fails
+        # the job rather than printing a complaint into a green log.
+        run: |
+          $listing = wsl --list --verbose | Out-String
+          Write-Host $listing
+          if ($listing -notmatch 'Ubuntu-26\.04') {
+            throw "Ubuntu-26.04 did not register — 'wsl --install' reported success but the distro is absent"
+          }
+          if ($listing -notmatch 'Ubuntu-26\.04\s+\S+\s+2') {
+            throw "Ubuntu-26.04 is not running under WSL version 2 — #2 supports WSL2 only"
+          }
+
+      - name: Assert the distro really is Ubuntu 26.04
+        # The distro NAME is a label the caller chose; VERSION_ID is what the image says it is. A
+        # 24.04 image registered under a 26.04 name would otherwise sail through, and its bash
+        # 5.2.21 would only surface as a baffling floor failure two steps later.
+        run: |
+          $osRelease = wsl -d Ubuntu-26.04 -- cat /etc/os-release | Out-String
+          Write-Host $osRelease
+          if ($osRelease -notmatch 'VERSION_ID="26\.04"') {
+            throw "the registered distro is not Ubuntu 26.04"
+          }
+
+      # BEFORE the floor guard below, deliberately: a version logged after the proof documents
+      # nothing about the run that was proved. `check-bash-floor.sh` enforces that ordering.
+      - name: Log the WSL distro's bash
+        run: wsl -d Ubuntu-26.04 -- bash --version
+
+      - name: Install the suite's prerequisites inside WSL
+        # A `--no-launch` install skips first-run provisioning, so this is a bare image: no git, no
+        # jq, no ShellCheck. shellcheck is installed for the same reason the macOS job installs it —
+        # `selfcheck.sh` SKIPs that step when the binary is absent, so without it "the full suite ran
+        # under WSL" would be false in precisely the silent way this repo keeps writing guards
+        # against.
+        run: wsl -d Ubuntu-26.04 -- bash -c "set -eu; export DEBIAN_FRONTEND=noninteractive; apt-get update; apt-get install -y git jq shellcheck ca-certificates"
+
+      - name: Clone the checkout onto the WSL filesystem
+        # THE SUPPORTED TOPOLOGY, executed rather than described. docs/installation.md tells a
+        # Windows user to clone INSIDE WSL, and this is that instruction. Running the suite straight
+        # out of the Actions workspace would run it from /mnt/<drive> — DrvFs — where exec bits and
+        # file modes do not behave like a Linux filesystem, and where `adb_drvfs_warn` only WARNS
+        # and returns success. That job would go green while violating the very topology this issue
+        # documents.
+        run: wsl -d Ubuntu-26.04 --cd "${{ github.workspace }}" -- git clone --no-hardlinks . /root/adb
+
+      - name: Assert the working clone is on the Linux filesystem, not DrvFs
+        # The assertion the step above would otherwise only claim. Checking the filesystem TYPE
+        # rather than the path prefix is the honest test: a path that merely does not start with
+        # /mnt proves nothing if it was bind-mounted from one.
+        run: |
+          $mount = wsl -d Ubuntu-26.04 -- df -PT /root/adb | Out-String
+          Write-Host $mount
+          if ($mount -match 'drvfs|9p|v9fs') {
+            throw "the working clone is on a Windows-backed filesystem — the supported topology is a clone inside WSL"
+          }
+
+      - name: bash floor — prove the WSL distro's interpreter clears 5.3 (#257, #2)
+        # THE step this job exists for, and the reason the lint has a WSL class at all: this is the
+        # only assertion here that speaks for the interpreter the framework will actually run under
+        # on Windows. It fails closed — a distro whose bash is below the floor goes red here rather
+        # than surfacing as a mystery later.
+        run: wsl -d Ubuntu-26.04 --cd /root/adb -- bash scripts/check-bash-floor.sh --runtime
+
+      - name: Install all three agents inside WSL
+        # The real installer, not a simulation: symlink creation is one of the things a different
+        # platform is most likely to break, and $HOME here is the Linux home, so ~/.claude and the
+        # adb_link symlinks land on ext4 exactly as they do for a real user.
+        run: wsl -d Ubuntu-26.04 --cd /root/adb -- bash install.sh --agent claude --agent codex --agent gemini
+
+      - name: The full offline suite, inside WSL
+        run: wsl -d Ubuntu-26.04 --cd /root/adb -- bash scripts/selfcheck.sh
+
+      - name: Uninstall all three agents inside WSL
+        run: wsl -d Ubuntu-26.04 --cd /root/adb -- bash uninstall.sh --agent claude --agent codex --agent gemini

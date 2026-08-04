@@ -1988,3 +1988,77 @@ limit: none of them is sufficient alone.
                  loses a status reports what a clean run reports, which is the exact failure this
                  repo keeps writing guards against.
 - baseline-issue: n/a
+
+## D38 — the Windows leg is one scheduled job, and the host's own bash is why the lint needed a third class
+- date:      2026-08-03
+- category:  project-delta
+- unknown:   #2's last open item — the CI shape for Windows/WSL2. D32 deliberately left three things
+             unresolved: the trigger, the distro mechanism, and how #257's workflow grammar could
+             admit a Windows job without weakening what it proves for Linux and macOS.
+- decision:  Ship **one** `windows-latest` job in **its own workflow file**, on a weekly `schedule`
+             + `workflow_dispatch` + `push: tags`, installing **Ubuntu 26.04** into WSL2 via
+             `wsl --install` and running the real installer plus the full `selfcheck.sh` on a clone
+             that lives on the Linux filesystem. Give `check-bash-floor.sh` a **WSL-host class**
+             rather than widening the existing allowlist.
+- placement: `.github/workflows/wsl-smoke.yml`; `APPROVED_WSL_HOST` + the WSL rules in
+             `scripts/check-bash-floor.sh`; red fixtures in `scripts/check-bash-floor-guard.sh`;
+             `docs/ci-runners.md` ("Windows: the host clears the floor, and that is the problem").
+- reason:    **The generic widening was a trap, and it is the finding worth recording.**
+             `windows-latest` (Windows Server 2025) ships Git-Bash **5.3.15**, which *clears this
+             repo's floor*. So the ordinary rule — `run: bash scripts/check-bash-floor.sh
+             --runtime` — PASSES on that runner without ever entering WSL, proving the floor for
+             native MSYS2: precisely the userland #2 ruled out of scope. Adding the label to
+             `APPROVED_RUNNERS` and stopping would have produced a green Windows job that proved
+             the floor for an unsupported runtime, and no other assertion in the suite would have
+             noticed — the silent-guard failure mode `base/practices/self-review.md` exists for.
+             Hence a class whose defining rule is `wsl -d <distro> -- …`, with `-d` required
+             because a bare `wsl --` runs the image's *default* distro rather than the installed
+             one, and with the distro's `bash --version` logged BEFORE the guard, because a version
+             printed after the proof describes a run already asserted about. The converse is
+             enforced too: the `wsl` form does not satisfy a Linux/macOS job.
+
+             **The `shell:` ban survives untouched**, which was not obvious going in. The job runs
+             under the runner's default pwsh and calls `wsl.exe` explicitly, **one command per
+             step** — necessary anyway, because a multi-line pwsh block propagates only its LAST
+             native exit code, so a failing middle command would be invisible. One command per step
+             fixes that and removes the need for a carve-out in the same move.
+
+             **Its own file is structural, not tidiness.** `ci.yml` carries only unfiltered `push:`
+             and `pull_request:` triggers, so a `schedule:` there would run all 27 of its jobs
+             weekly to gain one. And `repo-settings.sh` discovery skips a workflow with no
+             `pull_request` trigger, so a schedule-only file can never be discovered as a required
+             context — putting the job in `ci.yml` would have made it both a per-PR cost and a
+             required check. **Not `release:`**: this repo versions by pushed git tag and never
+             publishes a Release object, so that trigger would have fired zero times.
+
+             **The distro question from D32 is settled, and the answer changed.** `Vampire/setup-wsl`
+             still stops at Ubuntu-24.04 (bash 5.2.21, below the floor), so it cannot express the
+             only distro permitted here. But the premise it forced has moved: the runner image now
+             ships WSLv2 2.7.10.0 as the default, and Microsoft's own distribution manifest carries
+             `Ubuntu-26.04`. So `wsl --install --distribution Ubuntu-26.04` is a documented,
+             first-party mechanism with no third party in the chain.
+
+             **What is verified, and what is not — said exactly.** Source-verifiable and verified:
+             the manifest entry, the runner inventory, the YAML, the lint accepting the job, and
+             every new lint rule OBSERVED rejecting its own violation (including a fixture where a
+             WSL job satisfies its guard with the bare host invocation). NOT verified: that
+             `wsl --install` completes unattended on a hosted runner. That is unknowable from a
+             workstation, so the job asserts every step of it — registration, WSL version 2,
+             `VERSION_ID="26.04"`, a non-DrvFs clone, and the floor — and **fails closed**. A
+             mechanism that does not work yields red, never a green that proved nothing.
+
+             **DEVIATION-adjacent, and named rather than glossed:** #2's criterion "has been seen
+             green at least once" is NOT satisfied by the PR that ships this. A `schedule` /
+             `workflow_dispatch` workflow must already exist on the default branch before it can
+             run, exactly as D32 predicted. The criterion is discharged by a manual dispatch after
+             merge; claiming otherwise would be the unverified support claim
+             `base/practices/verify-before-asserting.md` exists to prevent.
+
+             **One asymmetry, deliberate:** Linux and macOS each have a "at least one job must
+             exist" rule; WSL does not. Requiring one would turn every fixture in
+             `check-bash-floor-guard.sh` red for a reason other than the rule under test — the
+             isolation failure that file's own header warns against. The WSL job count is PRINTED
+             instead, so a zero is visible in the log rather than silent.
+- baseline-issue: n/a — this is this repo's own CI shape, not a gap in the baseline's config
+             surfaces. Windows support is a per-project platform question; nothing here needs a new
+             override surface.

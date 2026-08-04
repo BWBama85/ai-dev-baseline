@@ -9,6 +9,44 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **A WSL2 smoke job proves the Windows support claim** (#2, D38). `.github/workflows/wsl-smoke.yml`
+  installs **Ubuntu 26.04** into WSL2 on `windows-latest`, clones onto the Linux filesystem, and runs
+  the real installer plus the full `selfcheck.sh` there. It closes the last item of #2 — the CI
+  shape — and with it the gap where the baseline *said* it supported Windows and never executed it.
+  - **Weekly `schedule` + `workflow_dispatch` + `push: tags`, never per-PR**, and in its **own
+    file**. Both halves are structural. `ci.yml` has only unfiltered `push:`/`pull_request:`
+    triggers, so a `schedule:` added there would run all 27 of its jobs weekly to gain one; and
+    `repo-settings.sh` discovery skips a workflow with **no `pull_request` trigger**, so a
+    schedule-only file can never become a required context that reports on no PR.
+  - **Not `release:`** — this repo versions by pushed git tag and never publishes a GitHub Release
+    object, so that trigger would have fired zero times. A leg that never runs is the silent-guard
+    failure mode, not a leg.
+  - **The lint gained a WSL-host class, and the reason is the interesting part.** `windows-latest`
+    ships Git-Bash **5.3.15**, which *clears this repo's floor* — so the ordinary
+    `run: bash scripts/check-bash-floor.sh --runtime` **passes there without ever entering WSL**,
+    proving the floor for native MSYS2, a userland #2 ruled out of scope. Adding the label to
+    `APPROVED_RUNNERS` and stopping would have manufactured a green that nothing else in the suite
+    could see. A WSL-host job is therefore approved only when it reaches the guard through
+    `wsl -d <distro> -- …`, names a distro (a bare `wsl --` runs the image's *default* one), and logs
+    that distro's `bash --version` **before** the guard rather than after.
+  - **The converse is enforced too**: the `wsl` form does not satisfy a Linux or macOS job, so the
+    widening gave no existing job a second way to look compliant.
+  - **No `shell:` carve-out was needed.** The job runs under the runner's default pwsh and invokes
+    `wsl.exe` explicitly, **one command per step** — a multi-line pwsh block propagates only its
+    *last* native exit code, which is a fail-open. So #257's blanket `shell:` rejection is untouched.
+  - **`Vampire/setup-wsl` is not used**: its distribution list stops at Ubuntu-24.04 (bash 5.2.21,
+    below the floor), so it cannot express the only distro this floor permits. `wsl --install
+    --distribution Ubuntu-26.04` is Microsoft's own documented mechanism and one fewer third party.
+  - **Fail-closed on the one thing that cannot be checked offline.** Whether that install completes
+    unattended on a hosted runner is not knowable from a workstation, so the job *asserts* rather
+    than assumes: distro registration, WSL version 2, `VERSION_ID="26.04"`, that the clone is not on
+    DrvFs, and the floor itself. A mechanism that does not work yields a red job, never a green one
+    that proved nothing.
+  - **What this PR could not do, stated plainly:** run it. A `schedule`/`workflow_dispatch` workflow
+    must already be on the default branch before it can fire, so #2's "seen green at least once" is
+    discharged by a manual dispatch **after** merge. Every offline half was verified, including each
+    new lint rule observed rejecting its own violation.
+
 - **`scripts/selfcheck.sh` runs its steps in parallel** (#260, D37). The 40 steps are now a
   **registry** — an ordered name list plus a name → command map — dispatched through a `wait -n`
   job pool bounded at `min(cpu, 8)`, instead of 39 inline steps run strictly one after another.
@@ -87,9 +125,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     the clone-inside-WSL rule; `install.sh` preflights for **CRLF** and warns (never fails) on a
     `/mnt/<drive>/` checkout; `.gitattributes` pins `*.sh` **and the extensionless `bin/` commands**
     to LF. The remedy deliberately does **not** suggest `git checkout .`, which destroys
-    uncommitted work. The WSL smoke CI job is sliced out — a `schedule`/`workflow_dispatch`
-    workflow cannot run until it is on the default branch, so "seen green" is unreachable from the
-    PR that introduces it.
+    uncommitted work. The WSL smoke CI job was sliced out of that PR and **ships here** (see the
+    `wsl-smoke` entry above); the "seen green" half is still unreachable from the PR that
+    introduces a `schedule`/`workflow_dispatch` workflow, because it cannot run until it is on the
+    default branch.
   - **`adb_version_ge` grew the fork-free path itself**, rather than a floor-specific helper beside
     it. A separate comparator would have answered the real floor outright, leaving the canonical one
     reached only for shapes nobody passes — reuse in name only. The two paths are differentially
@@ -178,8 +217,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     it permanently, which narrows the "zero workaround comments" criterion and refuses the
     `adb_run_bounded` half of the `BASH_MONOSECONDS` one. The `declare -A` criterion is **vacuous**:
     no temp-dir-as-map or parallel-array pattern exists in the eligible files, and the ordered lists
-    that do exist would lose ordering their callers depend on. "All three platforms" is met for
-    **two** — there is no WSL2 CI job, which **#2** tracks.
+    that do exist would lose ordering their callers depend on. "All three platforms" was met for
+    **two** at the time; the WSL2 leg (**#2**) ships in this same unreleased set, on a weekly
+    schedule rather than per-PR.
 
 ### Fixed
 

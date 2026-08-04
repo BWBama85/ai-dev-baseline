@@ -244,8 +244,11 @@ does *not* claim: a local `20 → SKIP` arm is possible and would catch drift be
 preference for a hermetic gate, not an impossibility.
 
 Since #257 there is a second, different reason a local green cannot stand in for CI, and it is not
-about hermeticity at all: CI runs the offline suite on **two** hosted platforms (`ubuntu-26.04` and
-`macos-latest`) and a workstation is one of them. See `docs/ci-runners.md` (D29).
+about hermeticity at all: CI runs the offline suite on **two** hosted platforms per PR
+(`ubuntu-26.04` and `macos-latest`) and a workstation is one of them. A **third**, `windows-latest`
+under WSL2, runs on a weekly schedule rather than per-PR (#2) — and because its workflow has no
+`pull_request` trigger, discovery below skips it, so it never becomes a required context. See
+`docs/ci-runners.md` (D29, D38).
 
 ### When it fails
 
