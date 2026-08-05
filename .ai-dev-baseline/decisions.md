@@ -2642,7 +2642,7 @@ limit: none of them is sufficient alone.
              approximation — it invented a word break nobody wrote. This is also exactly what
              distinguishes a comment from a code span, whose content is visible-but-code and is
              therefore MASKED rather than dropped; the filter already draws that line and draws it
-             deliberately. (2) is a FIX in the same direction as `\x01` itself: reading "PR #7"
+             deliberately. (2) is a FIX in the same direction as `\x01` itself: reading `PR #7`
              across a code span is the phrase fusion the mask byte exists to prevent, and the
              reference is still resolved for EXISTENCE — only the fabricated KIND claim is lost.
              The alternative in both cases is a boundary-preserving third view in `common.sh`,

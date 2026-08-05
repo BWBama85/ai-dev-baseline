@@ -36,7 +36,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **Two semantic changes come with the shared filter and are deliberate** (D43). An HTML comment
     is *zero-width* in CommonMark, so its bytes are deleted rather than replaced by a space:
     `D<!--x-->99` now reads as the `D99` a reader actually sees. And a code span becomes `\x01`
-    rather than one space, so `` PR`x`#7 `` no longer reads as the phrase "PR #7" *across* a span —
+    rather than one space, so `` PR`x`#7 `` no longer reads as the phrase `PR #7` *across* a span —
     the reference is still existence-checked, only the fabricated *kind* claim goes away.
   - **Two fail-opens closed on the way past.** `adb_md_prose` is fail-closed, and `check-claims.sh`
     now exits 3 rather than treating an empty prose view as a clean file; and `cc_scan_file`'s exit
