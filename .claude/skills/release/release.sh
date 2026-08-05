@@ -110,27 +110,47 @@ inventory() {
 # --- check-set settling ---------------------------------------------------------------------------
 # GitHub registers jobs INCREMENTALLY, so "nothing is pending" is briefly true while siblings have
 # not appeared. A fixed expected-count cannot be known up front either — that was the round-3 bug
-# (`checks-settled 1` recorded a partial set as the bar). So settle on STABILITY: nothing pending,
-# a non-empty set, and the total unchanged across consecutive reads.
-# Prints the settled total. Args: <sha> [min-expected]
+# (`checks-settled 1` recorded a partial set as the bar). So settle on STABILITY: the predicate
+# reports `settled`, and the count is unchanged across consecutive reads.
+#
+# THE VERDICT IS THE LIBRARY'S, NOT THIS LOOP'S. This function used to re-derive `total` and
+# `pending` with its own inline jq — a second implementation of `release-lib.sh checks-settled`,
+# living two files away from the tested one and drifting from it silently. It did drift: the
+# library learned to count DISTINCT NAMES (see its header) and this copy would have kept counting
+# raw runs, so the two would have disagreed about the same commit with nothing to notice. This loop
+# now owns only the WAITING; what counts as settled has exactly one home.
+# Prints the settled count. Args: <sha> [min-expected]
 await_checks() {
   sha="$1"; min="${2:-0}"
   stable=0; last=-1; i=0
   while [ "$i" -lt 90 ]; do
     ck="$(gh api --paginate "repos/$(slug)/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || { sleep 10; i=$((i+1)); continue; }
-    total="$(printf '%s' "$ck" | jq -s '[.[].check_runs[]?] | length' 2>/dev/null)" || total=0
-    pending="$(printf '%s' "$ck" | jq -s '[.[].check_runs[]? | select(.status != "completed")] | length' 2>/dev/null)" || pending=1
-    if [ "$total" -gt 0 ] && [ "$pending" -eq 0 ] && [ "$total" -ge "$min" ]; then
-      if [ "$total" -eq "$last" ]; then
-        stable=$((stable + 1))
-        [ "$stable" -ge 3 ] && { printf '%s' "$total"; return 0; }
-      else
-        stable=1
-      fi
-    else
-      stable=0
-    fi
-    last="$total"; sleep 10; i=$((i+1))
+    out="$(printf '%s' "$ck" | bash "$RLIB" checks-settled "$min" 2>/dev/null)"; rc=$?
+    case "$rc" in
+      0)
+        # `settled <count>/<expected>` — field 2's numerator is the settled count.
+        n="${out#* }"; n="${n%%/*}"
+        case "$n" in ''|*[!0-9]*) n=-1 ;; esac
+        if [ "$n" -ge 0 ] && [ "$n" -eq "$last" ]; then
+          stable=$((stable + 1))
+          [ "$stable" -ge 3 ] && { printf '%s' "$n"; return 0; }
+        else
+          stable=1
+        fi
+        last="$n"
+        ;;
+      2)
+        # Usage/unreadable-JSON: a malformed body is an ERROR, never "not settled yet". Retrying
+        # for 15 minutes against a body that cannot parse would report a timeout and hide the cause.
+        return 1
+        ;;
+      *)
+        # none (7) · short (8) · pending (6) — all legitimately "keep waiting", and all reset the
+        # stability run so a set that shrinks and re-grows is not mistaken for a stable one.
+        stable=0; last=-1
+        ;;
+    esac
+    sleep 10; i=$((i+1))
   done
   return 1
 }

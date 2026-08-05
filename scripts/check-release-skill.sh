@@ -137,17 +137,34 @@ eq "${ good_cl v1.2.0 '' | rc_of changelog-verify v1.2.0 v1.1.0 "$SLUG" "$TODAY"
 # =================================================================================================
 # checks-settled
 # =================================================================================================
-runs() {   # <n-completed> <n-pending>
+runs_named() {   # <name-prefix> <n-completed> <n-pending>
   # `local`, for the same reason rc_snip in check-roadmap-e2e.sh now declares its own (#259):
   # `i` and `sep` were plain globals, and the only thing keeping them out of the caller was the
   # `$( )` subshell every call site happened to wrap them in. `${ command; }` runs in the CURRENT
   # shell, so a loop counter named `i` anywhere above would have been silently reset mid-loop.
+  local pfx i sep
+  pfx="$1"
+  printf '{"check_runs":['
+  i=0; sep=""
+  while [ "$i" -lt "$2" ]; do printf '%s{"name":"%s%s","status":"completed"}' "$sep" "$pfx" "$i"; sep=","; i=$((i+1)); done
+  i=0
+  while [ "$i" -lt "$3" ]; do printf '%s{"name":"p%s","status":"in_progress"}' "$sep" "$i"; sep=","; i=$((i+1)); done
+  printf ']}'
+}
+
+runs() { runs_named c "$1" "$2"; }
+
+dup_runs() {   # <n-distinct> -> each name TWICE, all completed (the PR-head shape)
+  # The shape a PR branch head actually has when one workflow carries both an unfiltered `push:`
+  # and a `pull_request:` trigger. Deliberately built as ONE document rather than two pages, so it
+  # cannot be mistaken for the pagination fixture above.
   local i sep
   printf '{"check_runs":['
   i=0; sep=""
-  while [ "$i" -lt "$1" ]; do printf '%s{"name":"c%s","status":"completed"}' "$sep" "$i"; sep=","; i=$((i+1)); done
-  i=0
-  while [ "$i" -lt "$2" ]; do printf '%s{"name":"p%s","status":"in_progress"}' "$sep" "$i"; sep=","; i=$((i+1)); done
+  while [ "$i" -lt "$1" ]; do
+    printf '%s{"name":"c%s","status":"completed"},{"name":"c%s","status":"completed"}' "$sep" "$i" "$i"
+    sep=","; i=$((i+1))
+  done
   printf ']}'
 }
 
@@ -164,10 +181,34 @@ eq "${ runs 26 0 | rc_of checks-settled 26; }" 0 "full complete set is settled"
 eq "${ runs 30 0 | rc_of checks-settled 26; }" 0 "MORE checks than expected is settled (a job was added)"
 eq "${ runs 26 0 | rc_of checks-settled 0; }"  0 "expected=0 with real checks is settled"
 eq "${ runs 0 0  | rc_of checks-settled 0; }"  7 "expected=0 with NO checks is still 'none' (fail closed)"
-# Paginated input: --paginate concatenates one document per page.
-eq "${ printf '%s\n%s\n' "${ runs 13 0; }" "${ runs 13 0; }" | rc_of checks-settled 26; }" 0 "paginated pages are summed"
+# Paginated input: --paginate concatenates one document per page. The pages must carry DISTINCT
+# names, because a real paginated response does — two pages of the same 13 runs is not pagination,
+# it is the duplicate-name case pinned immediately below, and conflating the two is what let the
+# raw-count bar look correct.
+eq "${ printf '%s\n%s\n' "${ runs 13 0; }" "${ runs_named d 13 0; }" | rc_of checks-settled 26; }" 0 "paginated pages are summed"
 # A malformed body must be a usage error, never a silent 'settled'.
 eq "${ printf 'not json' | rc_of checks-settled 26; }" 2 "malformed JSON is an error, not settled"
+
+# THE TWO-TRIGGER REGRESSION (v2.0.0 — the bar was recorded on a commit class that cannot match).
+# `ci.yml` carries an unfiltered `push:` AND a `pull_request:` trigger, so a PR branch head receives
+# BOTH runs of every job and each name appears twice, while the merge commit on the default branch
+# receives only the `push:` run. Live numbers from the v2.0.0 cut: reviewed head 25cca85 = 54 runs
+# over 27 names; merge commit 1c02f24 = 27 runs over the SAME 27 names, all successful. Counting
+# raw runs made `verify-merge` demand >= 54 on a commit that can only ever have 27 — unreachable,
+# so it burned its full 90 iterations and refused to tag a genuinely green release.
+#
+# The bar recorded from the PR head must therefore be the DISTINCT-NAME count...
+eq "${ dup_runs 27 | run checks-settled 0; }" "settled 27/0" "a doubled PR-head set counts its distinct names, not its runs"
+# ...and the merge commit's single set must then SATISFY that bar rather than read short.
+eq "${ runs 27 0 | rc_of checks-settled 27; }" 0 "the merge commit's single set satisfies a bar taken from the doubled head"
+# The hazard the bar exists for is untouched: a genuinely MISSING job still reads short, because an
+# incrementally-registering set has fewer NAMES, not fewer duplicates.
+eq "${ dup_runs 26 | rc_of checks-settled 27; }" 8 "a job missing from the doubled set is still short"
+eq "${ runs 26 0 | rc_of checks-settled 27; }" 8 "a job missing from the single set is still short"
+# A duplicate whose second run is still going is pending, not settled — a re-run in flight must not
+# be collapsed away by the dedup. The second document repeats a name the first already carried, so
+# the distinct-name count stays 27 and only the pending arm can catch it.
+eq "${ printf '%s\n{"check_runs":[{"name":"c0","status":"in_progress"}]}\n' "${ runs 27 0; }" | rc_of checks-settled 27; }" 6 "an in-flight duplicate run still reports pending"
 
 # --- version-ok: the empty-component family ------------------------------------------------------
 # A TRAILING dot is the one the component loop cannot see: it consumes 1, 2, 3, then `${rest#*.}`
