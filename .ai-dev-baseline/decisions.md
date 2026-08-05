@@ -2732,7 +2732,19 @@ limit: none of them is sufficient alone.
              un-armed auto-merge and a named file, against a prior worst outcome of `apply`
              reporting success while gating nothing.
 
+             REVIEW moved one line of this decision. The first cut treated ANY value on a job-key
+             line as an inline flow mapping, and skipped every inline job outright. Independent
+             review showed both halves were wrong in opposite directions: a YAML ANCHOR
+             (`build: &base_job`) is an ordinary job whose properties still follow below, and an
+             inline mapping with NO `name:` has a provably correct context — its key — so skipping
+             it left valid PR CI ungated, the mirror image of the phantom this file exists to
+             prevent. The reader now distinguishes `{…}` / `&anchor` / `*alias`, and reports
+             `unnamed` so the consumer can require the key when that is provable.
+
              SCOPE REFUSED: discovery's matrix/`if:`/reusable/dynamic-name exclusions are
              unchanged, the floor lint still sees every one of those jobs, no YAML library or
-             general parser was introduced, and the real workflows were not reindented.
+             general parser was introduced, and the real workflows were not reindented. The reader
+             is explicitly NOT a YAML parser: multi-line flow collections and merge keys (`<<:`)
+             are unsupported and documented as such, and both under-report — which skips a job
+             rather than requiring one that can never report.
 - baseline-issue: #262, #102

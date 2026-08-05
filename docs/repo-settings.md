@@ -65,6 +65,14 @@ key opens a block, and that block's children sit at whatever column the first co
 it happens to use — so two-space, four-space, and files that **mix** the two all read correctly.
 No indent unit is detected or assumed, which matters because a file can legitimately carry more
 than one (a two-space `on:` block above a four-space `jobs:` block is valid YAML that GitHub runs).
+Block sequences are read at both spellings — indented under their key, and at the key's own column
+(`branches:` followed by `- main` at the same indent is valid YAML, and GitHub runs it).
+
+The reader is **not** a YAML parser, and the boundary is stated rather than left to be discovered:
+a flow collection spanning several physical lines is read only from its opening line, merge keys
+(`<<:`) are not resolved, and a block/folded scalar (`name: >-`) is reported as *unreadable* rather
+than approximated. Every one of those under-reports — the job is skipped, never required under a
+name that cannot report.
 
 This replaced a real fail-open. The parser used to pin job keys to exactly two spaces and job
 properties to four, so a uniform four-space workflow was reported as

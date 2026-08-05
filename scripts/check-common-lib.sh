@@ -1527,6 +1527,66 @@ printf '#!/bin/sh\nexit 9\n' > "$wfstub/awk"
 printf '#!/bin/sh\nprintf "\\001ADB_WF_OK\\n"\nexit 0\n' > "$wfstub/awk"
 ( PATH="$wfstub:$PATH"; adb_wf_jobs "$wfd/two.yml" >/dev/null 2>&1 ); eq "$?" 1 \
    "a stub emitting the FIXED marker text is rejected — the trailer is nonced per invocation"
+# --- the YAML forms independent review found the first cut could not read -----
+# Every one of these is valid YAML that GitHub runs, and every one was previously either invisible
+# or — worse — turned into a required context that nothing reports.
+
+# ANCHORS AND ALIASES. GitHub documents anchoring a whole job configuration. `build: &base_job` puts
+# a value on the job-key line, and classifying any such value as an inline mapping made discovery
+# skip a perfectly readable job while the floor lint replaced its real runner with `<inline
+# mapping>` and failed a valid workflow. An ALIAS is genuinely unreadable — the configuration lives
+# at the anchor — so it stays flagged.
+cat > "$wfd/anchor.yml" <<'EOF'
+on:
+  pull_request:
+jobs:
+  build: &base_job
+    name: Build
+    runs-on: ubuntu-26.04
+  alt-build: *base_job
+EOF
+has "${ wf anchor.yml; }" "RUNSON|1|ubuntu-26.04" "an ANCHORED job is read normally (its properties still follow below)"
+has "${ wf anchor.yml; }" "NAME|1|Build"          "...including its name"
+hasnt "${ wf anchor.yml; }" "FLAG|1|inline"       "...and it is NOT mistaken for an inline mapping"
+has "${ wf anchor.yml; }" "FLAG|2|alias"          "an ALIAS is flagged — its configuration is not under this key"
+
+# AN INLINE FLOW MAPPING WITH NO `name:` has a provable context: the job key. Skipping it left valid
+# PR CI ungated, which is the opposite error from a phantom context and just as real.
+printf 'on:\n  pull_request:\njobs:\n  plain: {runs-on: ubuntu-26.04}\n  named: {runs-on: ubuntu-26.04, name: Real Name}\n' > "$wfd/inline.yml"
+has "${ wf inline.yml; }" "FLAG|1|inline"   "an inline mapping is flagged for the floor lint either way"
+has "${ wf inline.yml; }" "FLAG|1|unnamed"  "...and an inline mapping with NO name: says so, so its key IS the context"
+hasnt "${ wf inline.yml; }" "FLAG|2|unnamed" "...while one carrying a name: does not"
+
+# BLOCK AND FOLDED SCALARS. `name: >-` puts the text on the FOLLOWING lines, and emitting the header
+# produced the required context `>-` — a phantom that never reports and needs an admin token to
+# clear. Reported unreadable instead, which under-requires, the recoverable direction.
+printf 'on:\n  pull_request:\njobs:\n  a:\n    name: >-\n      Build and test\n    runs-on: ubuntu-26.04\n' > "$wfd/block.yml"
+has "${ wf block.yml; }" "FLAG|1|blockname" "a folded-scalar name: is reported unreadable"
+hasnt "${ wf block.yml; }" "NAME|1|>-"      "...and its HEADER is never emitted as the name"
+
+# QUOTED-SCALAR ESCAPES, both styles. Truncating at the first inner quote invents a context.
+printf 'on:\n  pull_request:\njobs:\n  a:\n    name: "Build \\"quoted\\""\n  b:\n    name: '"'"'it'"'"''"'"'s here'"'"'\n' > "$wfd/esc.yml"
+has "${ wf esc.yml; }" 'NAME|1|Build "quoted"' "a backslash-escaped quote inside a double-quoted name survives"
+has "${ wf esc.yml; }" "NAME|2|it's here"      "a doubled single quote inside a single-quoted name survives"
+
+# BLOCK SEQUENCES, at BOTH spellings, for `on:` and for a filter. The dash form is not a mapping
+# key, so a reader that only accepts keys reported "no pull_request trigger" on a workflow that runs
+# on every PR — #102's failure in a different costume.
+printf 'on:\n  - push\n  - pull_request\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/seq1.yml"
+has "${ wfon seq1.yml; }" "TRIGGER|pull_request" "an INDENTED block-sequence 'on:' is read"
+printf 'on:\n- push\n- pull_request\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/seq2.yml"
+has "${ wfon seq2.yml; }" "TRIGGER|pull_request" "an INDENTATIONLESS block-sequence 'on:' is read"
+printf 'on:\n  pull_request:\n    branches:\n    - main\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/seq3.yml"
+has "${ wfon seq3.yml; }" "PRBRANCH|main" "a branches: sequence at its key's OWN column is read"
+printf 'on:\n  pull_request:\n    types:\n    - opened\n    - synchronize\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/seq4.yml"
+has "${ wfon seq4.yml; }" "PRTYPE|synchronize" "a types: sequence at its key's OWN column is read"
+
+# A FLOW SEQUENCE SPLIT ON QUOTE-AWARE COMMAS. A branch pattern may contain a comma; splitting
+# blindly yields two malformed values and the real branch reads as excluded.
+printf 'on:\n  pull_request:\n    branches: ["release,stable", main]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/comma.yml"
+has "${ wfon comma.yml; }" "PRBRANCH|release,stable" "a comma INSIDE a quoted flow entry does not split it"
+has "${ wfon comma.yml; }" "PRBRANCH|main"           "...and the following entry is still read"
+
 rm -rf "$wfstub" "$wfd"
 
 # THE REAL TREE, cross-checked against an INDEPENDENT counter. Every assertion above runs on a

@@ -428,6 +428,21 @@ eq "$RC" "1" "a crashed job scanner fails the lint (never a silent clean scan)"
 has "$OUT" "refusing to report a clean scan" "...and says it is refusing rather than passing"
 rm -rf "$work/awkstub"
 
+# --- the eight-field record must refuse what it cannot encode -------------------------------------
+# The shared reader's grammar is value-LAST so a tab inside a quoted scalar survives. THIS record
+# cannot be: it carries eight fields and static_lint splits them field-by-field. A tab inside a
+# quoted `runs-on:` therefore shifted `guard` and `firstlog` into the label's own bytes, and
+# independent review reproduced a job with a NONEXISTENT runner being reported as guarded and
+# logging — a fail-OPEN in a guard, which is the one outcome this file exists to prevent.
+d="$work/tabrunner"; mkdir -p "$d"
+{ printf 'name: CI\non:\n  pull_request:\n\njobs:\n'
+  printf '  evil:\n    runs-on: "ubuntu-26.04\t1\t1"\n'
+} > "$d/ci.yml"
+emit_job "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "a TAB inside a quoted runs-on is REFUSED, not silently field-shifted into a pass"
+has "$OUT" "cannot encode" "...and the refusal says the record cannot represent the value"
+
 # --- the WSL-HOST CLASS (#2) -------------------------------------------------------------------------
 #
 # This class exists because `windows-latest` CLEARS the floor on its own — Windows Server 2025 ships

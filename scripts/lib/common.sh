@@ -3019,10 +3019,12 @@ adb_md_prose() {
 #                                   EVERY job, precisely including the ones discovery skips.
 #
 # THE OPPOSITE FILTERS ARE LEGITIMATE AND STAY. What was duplicated — and what drifted — is
-# job-boundary detection and YAML scalar parsing. They had already diverged before either shipped:
-# `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by one (a quoted value ends at its
-# closing quote) and reduced to the approved label `ubuntu-26.04` by the other, which accepted a
-# job whose real runner label is the whole quoted string and which GitHub would never schedule.
+# job-boundary detection and YAML scalar parsing. They had already diverged by the time the SECOND
+# one was written: `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by repo-settings.sh
+# (a quoted value ends at its closing quote) and reduced to the approved label `ubuntu-26.04` by
+# check-bash-floor.sh, which would have accepted a job whose real runner label is the whole quoted
+# string and which GitHub would never schedule. Review caught that one before #257 merged; nothing
+# prevented the next divergence.
 # This is the same shape, and the same remedy, as `_ADB_MD_AWK` (#136/#251, D43): one reader, and
 # every consumer adopts its semantics rather than keeping a private approximation.
 #
@@ -3047,8 +3049,19 @@ adb_md_prose() {
 # contain a tab inside a quoted scalar, so a multi-column record would be truncated there by any
 # field-by-field read — silently requiring a context that does not exist, which is the phantom
 # deadlock repo-settings.sh exists to avoid. One free-text field per record, always last, means
-# `IFS=<tab> read -r tag n value` keeps it byte-for-byte with no per-call-site splitting rule. A
-# value can never contain a NEWLINE, because every value is read from one input line.
+# `IFS=<tab> read -r tag n value` keeps it byte-for-byte with no per-call-site splitting rule.
+#
+# NO EMITTED VALUE CONTAINS A NEWLINE, because each is taken from one physical input line. That is a
+# statement about the RECORD, not about YAML: a YAML scalar may legitimately span several lines
+# (`name: >-` with the text below it), and this reader simply does not have such a value. It reports
+# those as unreadable — `FLAG <n> blockname` / `blockrunner` — rather than emitting the header text,
+# because `>-` as a required context is a phantom that never reports.
+#
+# WHAT THIS READER IS NOT: a YAML parser. It reads the block-mapping and block/flow-sequence forms
+# GitHub workflows actually use, and it fails toward "unreadable" on the rest. Known and deliberate:
+# a flow collection spanning multiple physical lines is read only from its opening line, and merge
+# keys (`<<:`) are not resolved. Both directions under-report, which skips a job rather than
+# requiring one that cannot report.
 #
 # RANGE is what lets the floor lint keep its STEP-level rules without re-deriving job boundaries:
 # it scans within the line range this reader assigned, rather than re-answering "where does this
@@ -3069,12 +3082,51 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
     # becomes the approved label `ubuntu-26.04`, accepting a job that can never be scheduled; skip
     # the comment rule and `name: Build  # the main build job` becomes a required context nothing
     # ever reports, blocking every PR forever. Both halves are load-bearing, in opposite directions.
-    function adb_wf_scalar(s) {
+    #
+    # ESCAPES ARE HONOURED IN BOTH QUOTE STYLES, because getting them wrong invents a context. YAML
+    # double-quoted scalars escape with a backslash (`"Build \"quoted\""`) and single-quoted ones by
+    # DOUBLING the quote (`'it''s'`); a reader that stops at the first inner quote truncates
+    # `Build \"quoted\"` to `Build \` and requires a context under that name — a phantom that never
+    # reports and blocks every PR, which is this module's headline failure mode rather than a
+    # cosmetic slip.
+    function adb_wf_scalar(s,   out, c, n, i) {
       s = adb_wf_trim(s)
-      if (s ~ /^"/) { sub(/^"/, "", s); sub(/".*$/, "", s); return s }
-      if (s ~ /^'/) { sub(/^'/, "", s); sub(/'.*$/, "", s); return s }
+      if (s ~ /^"/) {
+        out = ""; n = length(s)
+        for (i = 2; i <= n; i++) {
+          c = substr(s, i, 1)
+          if (c == "\\" && i < n) { i++; out = out substr(s, i, 1); continue }
+          if (c == "\"") break
+          out = out c
+        }
+        return out
+      }
+      if (s ~ /^'/) {
+        out = ""; n = length(s)
+        for (i = 2; i <= n; i++) {
+          c = substr(s, i, 1)
+          if (c == "'") {
+            if (substr(s, i + 1, 1) == "'") { i++; out = out "'"; continue }
+            break
+          }
+          out = out c
+        }
+        return out
+      }
       sub(/[[:space:]]+#.*$/, "", s)
       return adb_wf_trim(s)
+    }
+    # Is this value a BLOCK SCALAR HEADER (`|`, `>`, with any of the `-`/`+`/digit indicators)? Then
+    # the real value is on the FOLLOWING lines and this reader — which reads one physical line per
+    # value — does not have it.
+    #
+    # Reported rather than returned as text, because the text would be a lie with teeth: `name: >-`
+    # yielded the required context `>-`, a name nothing ever reports. Under-requiring is recoverable;
+    # a phantom required context needs an admin token to clear.
+    function adb_wf_isblock(s) {
+      s = adb_wf_trim(s)
+      sub(/[[:space:]]+#.*$/, "", s)
+      return (s ~ /^[|>][0-9]*[-+]?$/ || s ~ /^[|>][-+]?[0-9]*$/)
     }
     # A line carrying no content: blank, or a comment at any indent. Skipped everywhere rather than
     # only at column 0, because a comment indented INSIDE a block would otherwise be taken for that
@@ -3110,10 +3162,18 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
       return -1
     }
     # The last line of the block opened at `at`, whose own key sits at column `col`.
-    function adb_wf_blockend(at, col, lim,   i) {
+    #
+    # A SEQUENCE ENTRY AT EXACTLY `col` BELONGS TO THIS BLOCK, and missing that made the
+    # same-column sequence form unreachable rather than merely unhandled: for `on:` at column 0
+    # followed by `- push` at column 0, this returned the key's own line, so the block range
+    # excluded the very entries adb_wf_seq was about to look for. A sibling KEY at `col` still ends
+    # the block — only a dash continues it, which is exactly the YAML rule.
+    function adb_wf_blockend(at, col, lim,   i, lead) {
       for (i = at + 1; i <= lim; i++) {
         if (adb_wf_blank(WFL[i])) continue
-        if (adb_wf_lead(WFL[i]) <= col) return i - 1
+        lead = adb_wf_lead(WFL[i])
+        if (lead < col) return i - 1
+        if (lead == col && substr(WFL[i], col + 1, 1) != "-") return i - 1
       }
       return lim
     }
@@ -3138,13 +3198,61 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
       return 0
     }
     # An inline flow sequence `[a, b]`, one record per entry under `tag`.
-    function adb_wf_flow(s, tag,   n, i, v, parts) {
+    #
+    # SPLIT ON QUOTE-AWARE COMMAS, not on every comma. `branches: ["release,stable"]` is one branch
+    # pattern containing a comma, and splitting it blindly yields two malformed values — so a repo
+    # whose target branch really is `release,stable` reads as "this filter does not include the
+    # target" and its jobs stop being required. Rare, but the failure is silent and this is the one
+    # home for the rule.
+    #
+    # WHAT THIS DOES NOT DO: a flow collection spanning MULTIPLE physical lines is read only from its
+    # opening line. That direction is fail-safe — the entries are simply not seen, so a `branches:`
+    # filter cannot be proven to include the target and the file is SKIPPED rather than requiring
+    # something wrong — and it is stated here rather than left for a reader to discover.
+    function adb_wf_flow(s, tag,   n, i, c, cur, q, v) {
       sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
-      n = split(s, parts, ",")
+      n = length(s); cur = ""; q = ""
       for (i = 1; i <= n; i++) {
-        v = adb_wf_unquote(adb_wf_trim(parts[i]))
-        if (v != "") printf "%s\t%s\n", tag, v
+        c = substr(s, i, 1)
+        if (q != "") {
+          cur = cur c
+          if (c == q) q = ""
+          else if (c == "\\" && q == "\"" && i < n) { i++; cur = cur substr(s, i, 1) }
+          continue
+        }
+        if (c == "\"" || c == "'") { q = c; cur = cur c; continue }
+        if (c == ",") {
+          v = adb_wf_unquote(adb_wf_trim(cur))
+          if (v != "") printf "%s\t%s\n", tag, v
+          cur = ""; continue
+        }
+        cur = cur c
       }
+      v = adb_wf_unquote(adb_wf_trim(cur))
+      if (v != "") printf "%s\t%s\n", tag, v
+    }
+    # Emit every entry of the BLOCK SEQUENCE under the key at `at` (whose own column is `col`), one
+    # record per entry under `tag`. Returns 1 if it found a sequence at all.
+    #
+    # Driven through adb_wf_seqcol, so the `- x` entries may be indented under the key OR sit at the
+    # key's own column — both are valid YAML and GitHub runs both. The second spelling is why this
+    # is a shared helper rather than an inline loop: `steps:` already needed the rule, and `on:`,
+    # `branches:` and `types:` each need exactly the same one.
+    function adb_wf_seq(at, col, lim, tag,   sc, i, it, found) {
+      sc = adb_wf_seqcol(at, col, lim)
+      if (sc < 0) return 0
+      found = 0
+      for (i = at + 1; i <= lim; i++) {
+        if (adb_wf_blank(WFL[i])) continue
+        if (adb_wf_lead(WFL[i]) < sc) break
+        if (adb_wf_lead(WFL[i]) != sc) continue
+        it = substr(WFL[i], sc + 1)
+        if (it !~ /^-([[:space:]]|$)/) break
+        sub(/^-[[:space:]]*/, "", it)
+        it = adb_wf_scalar(it)
+        if (it != "") { printf "%s\t%s\n", tag, it; found = 1 }
+      }
+      return found
     }
 
     # --- the `on:` block ---------------------------------------------------------------------
@@ -3161,6 +3269,15 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
         return
       }
       on_end = adb_wf_blockend(at, 0, WFN)
+      # `on:` AS A BLOCK SEQUENCE — the third valid spelling, and the one both predecessors were
+      # blind to:
+      #     on:              on:
+      #       - push         - push
+      #       - pull_request - pull_request
+      # Neither dash form is a mapping key, so a reader that only accepts keys reports
+      # `no pull_request trigger` on a workflow that runs on every PR — silently contributing zero
+      # contexts, which is exactly the #102 failure in a different costume.
+      if (adb_wf_seq(at, 0, on_end, "TRIGGER")) return
       tc = adb_wf_childcol(at, on_end)
       if (tc < 0) return
       for (i = at + 1; i <= on_end; i++) {
@@ -3195,18 +3312,14 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
           printf "PRFILTER\t%s\n", fk
           tag = (fk == "types" ? "PRTYPE" : "PRBRANCH")
           if (fv ~ /^\[/) { adb_wf_flow(fv, tag); continue }
-          WFCOL[m] = fc
+          # THROUGH THE SHARED SEQUENCE HELPER, so a `branches:` list whose dashes sit at the key's
+          # own column reads exactly like an indented one. `steps:` already went through it and
+          # these did not, which is a rule applied in one place and not its twin — and the
+          # consequence was concrete: a valid `branches:\n- main` was read as a filter naming
+          # nothing, so it "did not provably include main" and the file's jobs stopped being
+          # required.
           send = adb_wf_blockend(m, fc, tend)
-          ic = adb_wf_childcol(m, send)
-          if (ic < 0) continue
-          for (q = m + 1; q <= send; q++) {
-            if (adb_wf_blank(WFL[q])) continue
-            if (adb_wf_lead(WFL[q]) != ic) continue
-            it = substr(WFL[q], ic + 1)
-            if (it !~ /^-[[:space:]]/) continue
-            sub(/^-[[:space:]]*/, "", it)
-            printf "%s\t%s\n", tag, adb_wf_scalar(it)
-          }
+          adb_wf_seq(m, fc, send, tag)
         }
       }
     }
@@ -3233,11 +3346,28 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
       for (j = 1; j <= n; j++) {
         printf "JOB\t%d\t%s\n", j, JK[j]
         printf "RANGE\t%d\t%d\t%d\n", j, JS[j], JE[j]
-        # An inline flow mapping (`hidden: {runs-on: …, steps: […]}`) is a REAL job that this
-        # reader does not decompose. It is reported as a job carrying the `inline` flag rather
-        # than omitted, because invisible is the one outcome a floor lint may never produce:
-        # a consumer that cannot read it must fail loudly, not silently not see it.
-        if (JI[j] != "" && JI[j] !~ /^#/) printf "FLAG\t%d\tinline\n", j
+        # WHAT SITS ON THE JOB-KEY LINE ITSELF, and the three cases are NOT interchangeable.
+        # Treating every non-comment value as an inline mapping was wrong in both directions:
+        #
+        #   `{…}`      an inline flow mapping. A real job this reader does not decompose. Flagged
+        #              rather than omitted, because invisible is the one outcome a floor lint may
+        #              never produce — a consumer that cannot read it must fail LOUDLY. `unnamed`
+        #              is emitted alongside when the mapping carries no `name:`, because then the
+        #              check context provably IS the job key and discovery can require it.
+        #   `&anchor`  a YAML anchor. GitHub explicitly supports anchoring a job configuration, and
+        #              the job's properties still follow BELOW it — so this is an ordinary job and
+        #              flagging it made discovery skip a perfectly readable one while the floor lint
+        #              replaced its real runner with `<inline mapping>` and failed a valid workflow.
+        #   `*alias`   an alias. The configuration lives at the anchor, NOT under this key, so
+        #              nothing here is readable and the job is genuinely unprovable.
+        if (JI[j] ~ /^\{/) {
+          printf "FLAG\t%d\tinline\n", j
+          if (JI[j] !~ /(^|[{,[:space:]])("name"|'name'|name)[[:space:]]*:/) printf "FLAG\t%d\tunnamed\n", j
+        } else if (JI[j] ~ /^\*/) {
+          printf "FLAG\t%d\talias\n", j
+        } else if (JI[j] != "" && JI[j] !~ /^#/ && JI[j] !~ /^&/) {
+          printf "FLAG\t%d\tinline\n", j
+        }
         WFCOL[JS[j]] = jc
         pc = adb_wf_childcol(JS[j], JE[j])
         if (pc < 0) continue
@@ -3248,10 +3378,17 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
           if (!adb_wf_iskey(body)) continue
           pk = adb_wf_keyof(body); pv = adb_wf_valof(body)
           if (pk == "name") {
+            # A BLOCK-SCALAR name (`name: >-` with the text on the following lines) is one this
+            # reader does not have — it reads one physical line per value. Emitting the header as
+            # the name produced the required context `>-`, which nothing ever reports and which
+            # takes an admin token to clear. Report it as unreadable instead and let the consumer
+            # under-require, which is the recoverable direction.
+            if (adb_wf_isblock(pv)) { printf "FLAG\t%d\tblockname\n", j; continue }
             v = adb_wf_scalar(pv)
             printf "NAME\t%d\t%s\n", j, v
             if (v ~ /\$\{\{/) printf "FLAG\t%d\tdynamic\n", j
           } else if (pk == "runs-on") {
+            if (adb_wf_isblock(pv)) { printf "FLAG\t%d\tblockrunner\n", j; continue }
             printf "RUNSON\t%d\t%s\n", j, adb_wf_scalar(pv)
           } else if (pk == "if") {
             printf "FLAG\t%d\tif\n", j

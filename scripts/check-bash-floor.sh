@@ -150,10 +150,10 @@ runtime_check() {
 # matrix job left on ubuntu-latest is still a job running below the floor.
 #
 # What is NO LONGER duplicated is how those jobs are FOUND (#262). Both files used to carry their
-# own job-boundary detection and their own YAML scalar parser, and the two had already drifted
-# before either shipped: `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by one and
-# reduced to the approved label `ubuntu-26.04` by this one, accepting a job GitHub would never
-# schedule. Enumeration now comes from `adb_wf_jobs` in scripts/lib/common.sh — one reader, two
+# own job-boundary detection and their own YAML scalar parser, and the two had already drifted by
+# the time THIS one was written: `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by
+# repo-settings.sh and reduced to the approved label `ubuntu-26.04` here, which would have accepted
+# a job GitHub would never schedule. Review caught it before #257 merged. Enumeration now comes from `adb_wf_jobs` in scripts/lib/common.sh — one reader, two
 # opposite filters — and it hands over each job's LINE RANGE and STEP boundaries so the rules below
 # stay scoped without re-answering "where does this job start" in a second dialect.
 #
@@ -215,6 +215,24 @@ scan_jobs() {
       if (j > 0 && STEPAT[FNR] > 0) step = STEPAT[FNR]
     }
     j == 0 { next }
+    # BLOCK-SCALAR CONTENT IS DATA, NOT STRUCTURE, and skipping it here closes a fail-open that
+    # every rule below shared. The `run:` patterns are deliberately unanchored (a step key can sit
+    # at any depth), so a `run: |` block whose CONTENT happened to contain the literal line
+    #     run: bash scripts/check-bash-floor.sh --runtime
+    # set GUARD without the guard running even once — a here-document that merely PRINTS the
+    # command satisfied it. That is the same species as the `echo` bypass this file already closed,
+    # and the whole point of the surrounding rules is EXECUTING, not APPEARING.
+    #
+    # A block scalar opens on a `<key>: |` / `<key>: >` line and owns every following line indented
+    # MORE than that key, which is YAML'"'"'s own rule and needs no indent unit to apply.
+    {
+      lead = match($0, /[^ ]/) ? RSTART - 1 : 0
+      if (inblock) { if ($0 ~ /^[[:space:]]*$/ || lead > blockcol) next; inblock = 0 }
+      if ($0 ~ /^[[:space:]]*[^:[:space:]][^:]*:[[:space:]]*[|>][0-9]*[-+]?[[:space:]]*$/ ||
+          $0 ~ /^[[:space:]]*-[[:space:]]+[^:[:space:]][^:]*:[[:space:]]*[|>][0-9]*[-+]?[[:space:]]*$/) {
+        inblock = 1; blockcol = lead
+      }
+    }
     # `bash --version` must be logged by the job'"'"'s FIRST step (#257 acceptance criterion 2), before
     # checkout or any bootstrap — so a runner image that quietly changed its bash is visible in the
     # log even when a later step is what fails.
@@ -251,9 +269,25 @@ scan_jobs() {
         # form it cannot verify instead of silently not seeing the job at all.
         if (INLINE[j]) ro = "<inline mapping>"
         if (ro == "") ro = "<none>"
+        # REFUSE TO SERIALIZE A VALUE THIS RECORD CANNOT ENCODE. Unlike the shared reader'"'"'s grammar,
+        # this record carries EIGHT fields and its consumer splits them field-by-field, so its free
+        # text cannot be value-last. A tab inside a quoted `runs-on:` therefore shifted `guard` and
+        # `firstlog` into the label'"'"'s own bytes: `runs-on: "ubuntu-26.04<TAB>1<TAB>1"` produced a job
+        # with a nonexistent runner that the lint reported as guarded and logging — a fail-OPEN in a
+        # guard, which is the one outcome this file exists to prevent.
+        #
+        # A tab cannot appear in a real GitHub job id or runner label, so this is unreachable for a
+        # valid workflow; it is refused rather than escaped because a guard must not quietly
+        # normalize an input it cannot represent (the same rule state-scan applies in D41).
+        if (KEY[j] ~ /\t/ || ro ~ /\t/) {
+          printf "bash-floor: FATAL — job %d carries a TAB in its key or runs-on value, which this record cannot encode\n", j > "/dev/stderr"
+          bad = 1
+          continue
+        }
         printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", KEY[j], ro, \
                GUARD[j] + 0, FIRSTLOG[j] + 0, WSLGUARD[j] + 0, WSLLOG[j] + 0, WSLLOGD[j], WSLGUARDD[j]
       }
+      if (bad) exit 1
     }
   ' "$1"
 }

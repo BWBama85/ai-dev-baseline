@@ -275,10 +275,11 @@ required context and still very much a job running below the floor.
 
 What is **not** duplicated any more is how those jobs are *found* (#262). Both files used to carry
 their own job-boundary detection and their own YAML scalar parser, and the two had already drifted
-before either shipped: `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by one (a quoted
-value ends at its closing quote) and reduced to the approved label `ubuntu-26.04` by the other,
-accepting a job whose real runner label is the whole quoted string and which GitHub would never
-schedule.
+**by the time the second one was written**: `runs-on: "ubuntu-26.04 # not-the-label"` was read
+correctly by `repo-settings.sh` (a quoted value ends at its closing quote) and reduced to the
+approved label `ubuntu-26.04` by `check-bash-floor.sh`, which would have accepted a job whose real
+runner label is the whole quoted string and which GitHub would never schedule. Review caught that
+one before #257 merged; nothing prevented the next divergence.
 
 Enumeration now comes from `adb_wf_on` / `adb_wf_jobs` in `scripts/lib/common.sh` — one reader, two
 filters — and it hands each consumer the job's **line range** and **step boundaries** so the floor

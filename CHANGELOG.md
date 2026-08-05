@@ -19,11 +19,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     desired set from the same discovery, so `apply` reported success while gating nothing. The
     symptom came from the *trigger* parser, which is why fixing only the job enumerator would have
     left the reported case unfixed.
-  - **The two scanners had also already drifted** — the demonstration #262 was filed on.
-    `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by `repo-settings.sh` (a quoted
-    value ends at its closing quote) and reduced to the approved label `ubuntu-26.04` by
-    `check-bash-floor.sh`, which accepted a job whose real runner label is the whole quoted string
-    and which GitHub would never schedule.
+  - **The two scanners had also already drifted** by the time the second was written — the
+    demonstration #262 was filed on. `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by
+    `repo-settings.sh` (a quoted value ends at its closing quote) and reduced to the approved label
+    `ubuntu-26.04` by `check-bash-floor.sh`, which would have accepted a job whose real runner label
+    is the whole quoted string and which GitHub would never schedule. Review caught that one before
+    #257 merged; nothing prevented the next divergence.
 
   The YAML reading now lives in **one** place — `_ADB_WF_AWK` + `adb_wf_on` / `adb_wf_jobs` in
   `scripts/lib/common.sh`, the shape #136 chose for the shared prose filter and D43 affirmed — and both
@@ -34,7 +35,14 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
   It tracks **relative depth** rather than detecting an indent unit, so 2-space, 4-space, and files
   that **mix** the two all read — the mixed case being the one an indent-unit heuristic gets wrong,
-  because such a file has no single unit. `check-fact-drift.sh` now pins that both consumers call
+  because such a file has no single unit. Independent review then found six more valid YAML forms
+  the first cut still could not read, each fixed with a fixture: **block-sequence** `on:` triggers
+  and `branches:`/`types:` filters at *both* spellings (indented, and at the key's own column),
+  **YAML anchors** (`build: &base_job` is an ordinary job, not an inline mapping — treating it as
+  one skipped a readable job and failed the floor lint on a valid workflow), **aliases**, quoted
+  scalars carrying **escaped quotes** (`"Build \"quoted\""`, `'it''s'`), **block/folded scalars**
+  (`name: >-` used to become the required context `>-`, a phantom nothing ever reports), and flow
+  sequences whose entries **contain a comma**. `check-fact-drift.sh` now pins that both consumers call
   the shared reader, with an `absent:` rule (proven able to fail under `--mutation`) rejecting the
   retired local `yaml_scalar` / `flush_job` definitions coming back beside it.
 
@@ -47,6 +55,14 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   (and under `--prune` refuses to *delete* the contexts still gating the branch), while
   `automerge-ok` and `required-drift` return **20** — never `12` ("this repo has no CI") or `0`
   ("in sync"). This means `repo-settings.sh` can now exit non-zero where it always exited 0.
+
+  Two fail-opens **in the guards themselves** were found by that same review and closed. A `run: |`
+  block whose *content* merely printed `run: bash scripts/check-bash-floor.sh --runtime` satisfied
+  the floor lint's guard-wiring and first-step-logging rules without the guard ever running — the
+  same "appearing, not executing" species the lint had already closed twice — so block-scalar
+  content is now skipped as data. And a tab inside a quoted `runs-on:` shifted the floor lint's
+  eight-field record, letting a job with a nonexistent runner report as guarded; that record cannot
+  be value-last, so it now **refuses** a value it cannot encode rather than mis-splitting it.
 
 - **The two LINT consumers of the shared prose filter were still running their own parsers**
   (#251, D43). #136 landed one paragraph-aware CommonMark filter (`_ADB_MD_AWK` / `adb_md_prose`

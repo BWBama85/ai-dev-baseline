@@ -336,6 +336,62 @@ printf 'name: M\non:\n  pull_request:\njobs:\n    inner-four:\n        runs-on: 
 disco main
 eq "${ ctx; }" 'inner-four|' "a SINGLE file mixing units between its on: and jobs: blocks reads too"
 
+# --- the two DELIBERATE behaviour changes, pinned so neither drifts back silently ----------------
+# Both were verified against origin/main and both turned out to be fixes rather than trade-offs.
+
+# (a) NEGATION IS SCOPED TO BRANCH PATTERNS. The awk predecessor set the flag from ANY flow list it
+#     parsed, `types:` included, so an ordinary `branches: [main]` beside a negated types entry was
+#     refused and the job stopped being required — a silent under-requirement with no message
+#     naming the real cause.
+wf_reset
+printf 'on:\n  pull_request:\n    types: [opened, synchronize, "!weird"]\n    branches: [main]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/negtypes.yml"
+disco main
+eq "${ ctx; }" 'a|' "a negated TYPES entry does not trip the branch-negation rule"
+# ...and the rule it was scoped away from must still fire on a real branch negation, or the fix
+# would have simply deleted the guard.
+wf_reset
+printf 'on:\n  pull_request:\n    branches: ["*", "!main"]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/negbr.yml"
+disco main
+eq "${ ctx; }" '' "a negated BRANCH pattern still refuses the file"
+has "$ERR" "negative patterns" "...naming the ordered-precedence reason"
+
+# (b) AN INLINE FLOW-MAPPING JOB. With a `name:` inside, the context is that name and requiring the
+#     KEY would be a phantom that never reports. With NO `name:`, the context provably IS the key,
+#     and skipping it would leave valid PR CI ungated — the opposite error, equally real.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  plain: {runs-on: ubuntu-26.04}\n  named: {runs-on: ubuntu-26.04, name: Real Name}\n' > "$WF/inline.yml"
+disco main
+eq "${ ctx; }" 'plain|' "an inline job with NO name: is required under its key"
+has "$ERR" "skipping job named" "...while one carrying a name: is skipped"
+has "$ERR" "cannot be proven" "...for the stated reason"
+
+# (c) YAML ANCHORS are ordinary jobs; ALIASES are not. Anchoring a job configuration is documented
+#     GitHub behaviour, and treating the anchor token as an inline mapping skipped a readable job.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  build: &base\n    runs-on: ubuntu-26.04\n  alt: *base\n' > "$WF/anchor.yml"
+disco main
+eq "${ ctx; }" 'build|' "an ANCHORED job is required; its ALIAS is skipped"
+has "$ERR" "YAML alias" "...and the alias skip names why"
+
+# (d) A BLOCK-SCALAR name: must never become a required context. `>-` reports for nothing and needs
+#     an admin token to clear.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  a:\n    name: >-\n      Build and test\n    runs-on: ubuntu-26.04\n' > "$WF/blockname.yml"
+disco main
+eq "${ ctx; }" '' "a block-scalar name: is skipped, not required"
+hasnt "$OUT" ">-" "...and the scalar HEADER never reaches the required set"
+
+# (e) BLOCK-SEQUENCE TRIGGERS, both spellings — valid YAML that used to read as 'no pull_request
+#     trigger', which is #102's failure wearing a different costume.
+wf_reset
+printf 'on:\n  - push\n  - pull_request\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/seqin.yml"
+disco main
+eq "${ ctx; }" 'a|' "an indented block-sequence 'on:' is recognized"
+wf_reset
+printf 'on:\n- push\n- pull_request\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/seqflat.yml"
+disco main
+eq "${ ctx; }" 'a|' "an indentationless block-sequence 'on:' is recognized"
+
 # ============================ #102: fail loud, never a silent clean scan ============================
 # "This repo has no CI" (#24, legitimate, exit 0) and "this parser went blind" (a failure) used to
 # be the same observable. Every workflow has an `on:` key and a `jobs:` block with at least one job
