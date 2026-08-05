@@ -2318,10 +2318,10 @@ limit: none of them is sufficient alone.
                 field is a `%q`-ENCODED rendering, and **exit stays 0**.
              2. The **state directory's own** path being unserializable is **fatal** (exit 2, no
                 stdout), because it poisons every record at once.
-             3. A marker's `.branch` carrying **any control character** (codepoint < 0x20, i.e.
-                `git check-ref-format`'s own rule) is treated as **unreadable** — empty key -> `-`
-                -> `unknown` -> keep — and **the marker record is still emitted**. That rejection
-                happens **inside jq**, not in the shell.
+             3. A marker's `.branch` carrying **any ASCII control character** (codepoint < 0x20
+                **or** 0x7f) is treated as **unreadable** — empty key -> `-` -> `unknown` -> keep —
+                and **the marker record is still emitted**. That rejection happens **inside jq**,
+                not in the shell.
 - placement: `scripts/lib/cleanup-lib.sh` (`_adb_cl_tsv_safe`, `_adb_cl_tsv_display`, the guard
              ahead of `state-scan`'s `case`, and `_adb_cl_marker_branch`); `base/workflows/cleanup.md`
              step 5 (the captured scan status and the `unsafe` NOTES loop); pinned in
@@ -2369,9 +2369,26 @@ limit: none of them is sufficient alone.
              contract in the same move. Neither is a forgery — they are the opposite failure, a
              malformed marker quietly becoming a valid-looking one — and both are invisible to a
              check that only ever sees the post-substitution string. jq now returns `empty` for any
-             codepoint < 0x20, so the bad bytes never reach the shell at all; the shell-side
+             ASCII control character, so the bad bytes never reach the shell at all; the shell-side
              predicate stays as a belt-and-braces re-check. Reverting to the shell-side form was
              observed turning four assertions red, including the stderr-silence one.
+
+             **The control class is `< 0x20` OR `0x7f`, and the first attempt at it stopped short.**
+             That version cited `git check-ref-format` while implementing only `< 0x20` — but git
+             rejects **DEL** too, and DEL is the control character that sits *above* the printable
+             range, so a `< 32` test is exactly the shape that misses it. The consequence was not
+             cosmetic: DEL serializes perfectly well, so it forged nothing and instead triggered the
+             *other* failure this reader guards — emitted as an ordinary key, matched no ref, had no
+             recorded PR, and `state-verdict marker` returned **stale**, deleting the marker and the
+             run's artifacts with it. Caught by the second review round; pinned now, with the
+             boundary either side of DEL tested rather than the one example.
+
+             **What it is NOT is a reimplementation of `git check-ref-format`.** That grammar also
+             rejects spaces, `~^:?*[`, `\`, a leading `-`, `..`, `@{` and a trailing `.lock`. Every
+             one of those is a value a ref query simply fails to find, which the existing
+             no-such-ref path already handles correctly. A control character is the case that
+             *additionally* corrupts the record — so the control class is the line, and the claim is
+             now stated that narrowly rather than borrowing git's authority for a wider one.
 
              **Exit 0 for a file, exit 2 for the directory.** An unserializable filename is not a
              tooling failure; it is a file this subcommand declines to classify, which is the state

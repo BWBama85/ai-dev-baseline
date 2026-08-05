@@ -381,15 +381,28 @@ cmd_state_scan() {
 #     quiet-on-every-failure contract in the same move.
 # Both were reproduced under bash 5.3 by the independent review of #273.
 #
-# The predicate is "any codepoint below 0x20", i.e. exactly `git check-ref-format`'s rule, which is
-# also the honest reason this counts as UNREADABLE rather than as a refusal: such a value is not a
-# branch name, so every ref query built from it was guaranteed to miss. `explode` is used instead
-# of a regex so the test does not depend on the regex engine's `\u` support.
+# The predicate is "any ASCII CONTROL character" — codepoint < 0x20 **or** 0x7f (DEL). Both halves
+# are needed: `git check-ref-format` rejects DEL as well, and an earlier version of this test that
+# stopped at `< 32` let a DEL-bearing value through as an ordinary key, whereupon no ref matched, no
+# PR was recorded, and `state-verdict marker` returned STALE — deleting the marker and, with it, the
+# run's gap and review artifacts. That is the precise fail-open the `-` key exists to prevent, so
+# the miss cost more than a cosmetic mismatch with git. Caught by the independent review.
+#
+# It is the CONTROL-CHARACTER class specifically, and NOT a reimplementation of `git
+# check-ref-format`, which also rejects spaces, `~^:?*[`, `\`, a leading `-`, `..`, `@{` and a
+# trailing `.lock`. Those are all values a ref query simply fails to find, which the existing
+# no-such-ref path already handles correctly; a control character is the case that additionally
+# corrupts the record this function feeds. Shelling out to git per marker to borrow the full grammar
+# would buy nothing here and would put a fork in a pure string check.
+#
+# This is deliberately NOT `_adb_cl_tsv_safe`'s question. That one asks "can this be a TSV field"
+# (tab and newline only); DEL is perfectly safe to serialize and still cannot be a branch name.
+# `explode` is used instead of a regex so the test does not depend on the engine's `\u` support.
 _adb_cl_marker_branch() {
   local b
   command -v jq >/dev/null 2>&1 || return 0
   b="$(jq -r 'if (.branch|type) == "string"
-                 and ((.branch | explode | map(select(. < 32)) | length) == 0)
+                 and ((.branch | explode | map(select(. < 32 or . == 127)) | length) == 0)
               then .branch else empty end' "$1" 2>/dev/null)" || return 0
   # Belt and braces: jq has already excluded the delimiters, so this can only fire if that ever
   # stops being true. A sanitizer that trusts its upstream is one upstream change from silence.

@@ -447,6 +447,18 @@ eq "$(mb '{"branch":"dead\u0000branch"}')" "" \
    "3b a .branch containing a NUL is unreadable, not silently spliced into a valid branch name"
 eq "$(cat "$work/mb.err")" "" \
    "3b …and reading it stays SILENT — no shell warning leaks past the quiet contract"
+# DEL (0x7f) is a control character too, and it is the one that sits ABOVE the printable range —
+# so a `< 32` test misses it while `git check-ref-format` rejects it. It does not forge a record
+# (DEL is a fine TSV byte), which is exactly why it needs its own case: the damage is the OTHER
+# failure this reader guards, a value that cannot name a ref being emitted as an ordinary key, so
+# no ref matches, no PR is recorded, and `state-verdict marker` says STALE — deleting the marker
+# and the run's artifacts with it. Shipped in the first review round and caught by the second.
+eq "$(mb '{"branch":"dead\u007fbranch"}')" "" \
+   "3b a .branch containing DEL is unreadable — the control character a '< 32' test misses"
+# …and the boundary either side of it, so the class is pinned rather than the one example.
+eq "$(mb '{"branch":"dead\u001fbranch"}')" "" "3b …as is 0x1f, the last codepoint below the printable range"
+eq "$(mb '{"branch":"dead~branch"}')" "dead~branch" \
+   "3b …while 0x7e stays readable: this is the CONTROL class, not a reimplementation of git's ref grammar"
 # The other direction, so the rejection cannot be "refuse everything": an ordinary name still reads.
 eq "$(mb '{"branch":"issue-42-ok"}')" "issue-42-ok" "3b …while an ordinary branch name still reads normally"
 eq "$(mb '{"branch":123}')" "" "3b …and a non-string .branch is unreadable rather than coerced"
