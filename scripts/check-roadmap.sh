@@ -601,6 +601,20 @@ eq "${ health "${ hj '' "${ st 'ci/circleci: build' failure; }" "$REQ1"; }" "$SH
 
 # `no-ci` NOW NEEDS BOTH PROBES TO SAY NO. Either one declaring CI is enough to refuse.
 eq "${ health "${ hj '' ''; }" "$SHA" 0; }" no-ci "0 workflows AND an authoritative empty required set => no-ci"
+# A NON-STRING MEMBER IS AN ERROR, NOT A MEMBER TO DROP (self-review find). Filtering it out looks
+# defensive and is fail-OPEN: `[5]` filters to `[]`, which is the AUTHORITATIVE "declares nothing",
+# so a context list nobody could read reaches `no-ci` — and `release-ready` maps that to `met`. It
+# really did print `no-ci` before this pin.
+for bad_req in '[5]' '[null]' '["ci",5]' '["ci",null]' '[{"context":"ci"}]' '[["ci"]]' '[true]'; do
+  run_health "${ hj '' '' "$bad_req"; }" "$SHA" 0 0
+  eq "$RC_" 2 "a non-string required_contexts member [$bad_req] is an ERROR"
+  hasnt "$OUT" "no-ci" "...and never reaches no-ci (which would reach 'met')"
+  hasnt "$OUT" "green" "...nor green"
+done
+# A DUPLICATE must not be counted or named twice — `unique`, exactly as the reported set is.
+eq "${ health_why "${ hj '' '' '["ci","ci"]'; }" "$SHA" 0; }" \
+   "1 required context(s) have not reported on $SHA: ci" \
+   "a duplicated required context is counted and named once, not twice"
 eq "${ health "${ hj '' '' "$REQ1"; }" "$SHA" 0; }" indeterminate "...a declared context alone withholds it"
 eq "${ health "${ hj '' ''; }" "$SHA" 3; }" indeterminate "...active Actions workflows alone withhold it"
 

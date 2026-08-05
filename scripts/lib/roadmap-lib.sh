@@ -385,8 +385,17 @@ cmd_branch_health() {
     | .required_contexts as $reqraw
     | if ($reqraw != null) and (($reqraw | type) != "array")
       then error("required_contexts must be an array or null") else . end
+    # EVERY MEMBER MUST BE A STRING, and a bad one is an ERROR rather than a member to drop.
+    # Filtering non-strings out looks defensive and is fail-OPEN: `required_contexts: [5]` would
+    # filter to `[]`, which is the AUTHORITATIVE "this branch declares nothing" — so a context list
+    # nobody could read reaches `no-ci`, and `release-ready` maps that to `met`. Same law as the
+    # missing-key guard above, one level down. (Found by self-review; it really did print `no-ci`.)
+    | if ($reqraw != null) and (($reqraw | map(type != "string") | any))
+      then error("required_contexts entries must all be strings") else . end
     | ($reqraw != null) as $reqknown
-    | (($reqraw // []) | map(select(type == "string"))) as $req
+    # `unique` for the same reason `$reported` is: a duplicated entry would otherwise be counted
+    # and NAMED twice in the reason line ("2 required context(s) ... : ci, ci").
+    | (($reqraw // []) | unique) as $req
     # A check attached to a different commit is evidence about the WRONG build. Count it, and let
     # it force `indeterminate` below — dropping it silently could leave zero checks and read as
     # no-ci, inventing a pass out of a stale read.
