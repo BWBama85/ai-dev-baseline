@@ -576,6 +576,90 @@ commit "indented fence"
 cc --range "$BASE..probe"
 eq "$RC_" 1 "md: a 4-space-indented fence does not toggle fence state and hide the rest"
 
+# =============================== the MULTI-LINE HTML comment (#251) ============================
+# THE DEFECT #251 FILED. `cc_prose` was `sed`, and `sed` is line-based, so it could strip a comment
+# that opened and closed on ONE line and nothing else. A `#N` quoted inside a MULTI-LINE comment was
+# therefore scanned as a live citation, and `--live` would resolve it and fail CI on text that is
+# not a claim at all.
+#
+# NOT THEORETICAL: this repo writes exactly that shape. base/workflows/roadmap.md carries a
+# multi-line schema comment quoting the dependency vocabulary by example, and it was latent only
+# because the numbers it happens to quote all resolve.
+#
+# The OPENER AND CLOSER ARE IN THE BASE COMMIT and only the middle line is ADDED, which is the
+# fixture that actually pins the fix: the scan sees an added line whose containing block was opened
+# by a line it never looks at, so it can only be right if the WHOLE file is fed to the
+# paragraph-aware filter and the added-line set applied afterwards. A fixture that added the whole
+# comment at once would pass under a naive per-added-line filter too, and prove nothing.
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf '<!-- schema notes\n'
+  printf '     PLACEHOLDER\n'
+  printf '     -->\n\n'
+  printf 'Ordinary prose.\n'
+} > "$REPO/notes.md"
+commit "a multi-line comment whose body is not yet a citation"
+MLBASE="$(git -C "$REPO" rev-parse HEAD)"
+sed "s/PLACEHOLDER/it may cite $REF_GONE as example vocabulary/" "$REPO/notes.md" > "$REPO/notes.md.new"
+mv "$REPO/notes.md.new" "$REPO/notes.md"
+commit "quote a dangling number INSIDE the multi-line comment"
+: > "$GH_CALLS"
+cc --range "$MLBASE..probe" --live
+eq "$RC_" 0 "md: a #N inside a MULTI-LINE HTML comment is NOT a citation"
+has "$OUT" "refs=0/0" "md: ...it is not even collected as a reference"
+eq "$(grep -c 'issue view' "$GH_CALLS" | tr -d ' ')" 0 "md: ...so --live makes no entity read at all"
+
+# ...and the inverse, so the fix is a STRIP and not a blanket "stop scanning after a `<!--`":
+# a real dangling reference AFTER the closer is still caught, at the right file:line.
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf '<!-- schema notes\n'
+  printf '     spanning two lines\n'
+  printf '     -->\n\n'
+  printf 'This cites %s in ordinary prose after the comment.\n' "$REF_GONE"
+} > "$REPO/notes.md"
+commit "a dangling reference AFTER a multi-line comment"
+cc --range "$BASE..probe" --live
+eq "$RC_" 1 "md: a real citation AFTER the closer is still caught"
+has "$OUT" "notes.md:7" "md: ...at the correct line, so the filter did not renumber the file"
+
+# =============================== RAW vs PROSE stay two views (#251) ============================
+# THE FAILURE THIS FILE ALREADY DOCUMENTS, asserted instead of assumed. check-claims deliberately
+# keeps TWO views of every added line: the RULES read prose (a number quoted in a code span is not
+# a citation), while the EXEMPTION reads the RAW line (the marker is normally a trailing comment,
+# which in markdown may well sit inside a span). A single shared stripper is how a rule was once
+# silently disabled here — it deleted exactly the tokens that rule searched for, reported zero on a
+# commit carrying nine, and no assertion went red.
+#
+# The conversion to the shared filter is what makes this worth pinning: it would be natural to feed
+# the prose view to everything, and nothing else in this suite would notice.
+#
+# ONE LINE carries both halves — a dangling decision reference OUTSIDE any span, and a valid
+# `adb-claim-ok:` marker INSIDE one. Only the two-view reading is green: collapse them and the
+# marker vanishes with the span, the exemption never fires, and the dangling D is a violation.
+#
+# It passes on the parent too, because the separation predates this change — so it was driven RED
+# against a deliberately COLLAPSED-view copy of the tree (exemption read from prose instead of raw)
+# rather than left as an unwitnessed assertion. See base/practices/self-review.md.
+reset_branch
+printf 'This cites %s and shows the escape as `adb-claim-ok: a quoted example`.\n' \
+  "$D_MISSING" > "$REPO/notes.md"
+commit "the escape marker inside a code span, beside a real dangling D-ref"
+cc --range "$BASE..probe"
+eq "$RC_" 0 "views: the exemption is read from the RAW line, so a marker inside a span still waives"
+has "$OUT" "exempt=1" "views: ...and the line is reported as exempt, not merely unscanned"
+
+# The mirror image: with no marker anywhere, the SAME line is a violation — so the case above is
+# passing because of the exemption, not because the prose view happened to drop the reference.
+reset_branch
+printf 'This cites %s and shows the escape as `a quoted example`.\n' \
+  "$D_MISSING" > "$REPO/notes.md"
+commit "the same line WITHOUT the marker"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "views: ...while the same line with no marker IS a violation"
+
 # =============================== the commit walk must not stray onto the base ==================
 # `A...B` means two DIFFERENT things to the two git commands this lint uses: to `git diff` it is
 # "from the merge base to B", but to `git rev-list` it is the SYMMETRIC DIFFERENCE — which drags in

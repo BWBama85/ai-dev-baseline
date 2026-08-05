@@ -9,6 +9,42 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The two LINT consumers of the shared prose filter were still running their own parsers**
+  (#251, D43). #136 landed one paragraph-aware CommonMark filter (`_ADB_MD_AWK` / `adb_md_prose`
+  in `scripts/lib/common.sh`) and moved five consumers onto it. Two more *declared themselves
+  consumers in their own source* and were never converted, so both sentences asserted a
+  consolidation that had happened for everyone except the file making the claim. Each copy was
+  also carrying a live defect:
+  - **`check-claims.sh` could not strip a multi-line HTML comment.** `cc_prose` was `sed`, and
+    `sed` is line-based: a comment that opened and closed on one line was stripped, and one that
+    spanned lines was not. A `#N` quoted inside such a comment was therefore collected as a live
+    citation, and `--live` would resolve it and fail CI on text that is not a claim. **Reachable,
+    not theoretical** — `base/workflows/roadmap.md` carries a multi-line schema comment quoting the
+    dependency vocabulary by example; it was latent only because the numbers it happens to quote
+    all resolve. Measured on a throwaway fixture: `refs=1/1` before, `refs=0/0` after.
+  - **`state-assert.sh lint` fired on a code span.** It collapsed every run of 2+ backticks to one
+    and then matched `` `[^`]*` ``, so a CommonMark span fenced by **two** ticks whose body held a
+    lone tick was cut at the *inner* tick, leaving a fragment of the quoted status exposed as
+    prose. `` The docs show ``PR ` #1 is still open`` as an example. `` was a violation — a Stop
+    hook blocking a turn for quoting a status the way this repo documents one. #251 filed this half
+    as an approximation that "repeated probing did not produce a false fire from"; it reproduces.
+  - **Both now consume the shared filter**, and the raw-vs-prose separation `check-claims.sh`
+    documents is **asserted** rather than assumed: the exemption marker is still read from the RAW
+    line (it is normally a trailing comment, which in markdown may sit inside a span) while the
+    rules read the masked prose view. That fixture passes on the parent, so it was driven RED
+    against a deliberately collapsed-view copy of the tree.
+  - **Two semantic changes come with the shared filter and are deliberate** (D43). An HTML comment
+    is *zero-width* in CommonMark, so its bytes are deleted rather than replaced by a space:
+    `D<!--x-->99` now reads as the `D99` a reader actually sees. And a code span becomes `\x01`
+    rather than one space, so `` PR`x`#7 `` no longer reads as the phrase "PR #7" *across* a span —
+    the reference is still existence-checked, only the fabricated *kind* claim goes away.
+  - **Two fail-opens closed on the way past.** `adb_md_prose` is fail-closed, and `check-claims.sh`
+    now exits 3 rather than treating an empty prose view as a clean file; and `cc_scan_file`'s exit
+    status is no longer discarded by a process substitution, where an awk that died mid-file arrived
+    as zero added lines and reported in the same words a clean file uses. A new `md-structural=`
+    count makes the stripping visible in the log instead of indistinguishable from a range with
+    fewer claims in it.
+
 - **A fenced block indented to a list item's content column was scanned as prose** (#252, D42).
   `adb_md_content_at` (`scripts/lib/common.sh`) computed a line's container content column from
   **that line alone**, so everything past column 3 was indented-block territory no matter which

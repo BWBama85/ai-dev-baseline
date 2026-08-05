@@ -2411,13 +2411,21 @@ adb_drvfs_warn() {
 # --- markdown structure: the ONE CommonMark prose filter (#136) ----------------
 #
 # "Is this text a DECLARATION, or is it documentation?" Nine places in this repo have to answer
-# that question, and before #136 four of them answered it with their own parser. Seven consume this
-# filter now; the two that do not — `state-assert.sh lint` and `check-claims.sh`, both of which say
-# so in their own source — are tracked in #251 rather than left implied. The bug family is
+# that question, and before #136 four of them answered it with their own parser. ALL NINE consume
+# this filter now: `state-assert.sh lint` and `check-claims.sh` were the last two holdouts — each
+# declaring itself a consumer in its own source while still carrying a private copy — and #251
+# converted them. The bug family is
 # always the same shape and it has been fixed one instance at a time since #69: a `#N` mention
 # (#69), a NEGATED mention (#108), a mention inside a repro block (#117), a fence written inside a
 # list item (#135). Every one of them is TEXT THAT DOCUMENTS THE VOCABULARY BEING READ AS AN
 # ASSERTION, and the only durable fix is one filter every consumer shares.
+#
+# BOTH HOLDOUTS WERE CARRYING A LIVE DEFECT, not just a duplicate — which is the part #251 named
+# only half of. `check-claims.sh`'s was `sed`, so it could not strip a MULTI-LINE HTML comment and
+# scanned a `#N` quoted inside one as a live citation. `state-assert.sh lint` collapsed backtick
+# runs before matching, so a span fenced by two ticks whose body held a lone tick was cut at the
+# INNER tick and fired on the fragment. The issue filed that second one as an unwitnessed
+# approximation; it is reproducible, and its fixture is check-state-assert.sh 3b-i2.
 #
 # `_ADB_MD_AWK` is that filter, as an awk FUNCTION LIBRARY — no main rule and no END block, so a
 # consumer can prepend it to its own program and keep its own record handling (`skill-compose.sh`

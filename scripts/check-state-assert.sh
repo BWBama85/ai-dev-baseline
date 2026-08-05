@@ -351,6 +351,44 @@ eq "${ lint_rc 'The docs show ``PR #1 is still open`` as an example.'; }" 0 "a d
 eq "${ lint_rc 'See ```PR #1 is still open``` inline.'; }" 0 "a triple-backtick span declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ lint_rc 'Quoting ``PR #1 is still open`` but PR #2 is still open.'; }" 1 "...while a real claim beside a quoted one is still caught"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
+# --- 3b-i2. ...INCLUDING one whose body carries a lone backtick (#251) -------------------------
+# THE APPROXIMATION THAT SHIPPED, and it was a live false positive rather than the "second half of
+# one conversion" #251 filed it as. The old stripper collapsed every run of 2+ backticks to one and
+# then matched `` `[^`]*` ``, so a CommonMark span fenced by TWO ticks whose body contains a lone
+# tick was cut at the INNER tick: `` ``PR ` #1 is still open`` `` stripped to `  #1 is still open` `
+# and fired `open`. That is a Stop hook blocking a turn for quoting a status the way this very repo
+# documents one — the precision failure the grammar's own header says it is built to avoid.
+#
+# Observed RED against the pre-conversion library before the shared filter landed (rc 1, naming
+# `open`), which is what makes it a witness rather than decoration.
+eq "${ lint_rc 'The docs show ``PR ` #1 is still open`` as an example.'; }" 0 \
+   "a 2-tick span whose BODY holds a lone backtick declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+# ...and the filter must not swallow live prose to achieve that: a real claim beside it still fires,
+# exactly once.
+eq "${ lint_rc 'Quoting ``PR ` #1 is still open`` but PR #2 is still open.'; }" 1 \
+   "...while a real claim beside THAT span is still caught"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_out 'Quoting ``PR ` #1 is still open`` but PR #2 is still open.' | wc -l | tr -d ' '; }" 1 \
+   "...and only the real one is reported"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+
+# THE EXCERPT MUST STAY PRINTABLE. The mask view replaces a span's bytes with \x01, and the Stop
+# hook prints this excerpt straight to the operator — so the mask byte is an internal matching
+# boundary that must never reach a diagnostic. Asserted on the raw bytes, because a control byte is
+# invisible in a diff and in most terminals: exactly the way this would ship unnoticed.
+eq "${ lint_out 'Quoting ``PR ` #1 is still open`` but PR #2 is still open.' | tr -d '\001' | wc -c | tr -d ' '; }" \
+   "${ lint_out 'Quoting ``PR ` #1 is still open`` but PR #2 is still open.' | wc -c | tr -d ' '; }" \
+   "the excerpt carries NO \\x01 mask byte — it is printed verbatim by the Stop hook"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+
+# --- 3b-i3. the shared filter's block model, now that lint uses it (#251) ---------------------
+# Indented code is structure (D27), so a 4-space-indented claim after a blank line no longer fires.
+# STATED AS A COST, not hidden: it is CommonMark's rule and the same one every other consumer of
+# the filter obeys, and the alternative — lint keeping a private block model — is the fourth copy
+# #136 exists to delete. Indented code CANNOT interrupt a paragraph, so the far commoner shape (an
+# indented line continuing prose above it) is unaffected, and that half is pinned too.
+eq "${ lint_rc "${ printf 'Intro.\n\n    PR #1 is still open'; }"; }" 0 \
+   "the accepted cost: an indented CODE block declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc "${ printf 'Intro.\n    PR #1 is still open'; }"; }" 1 \
+   "...but indented code cannot interrupt a paragraph, so a wrapped claim still fires"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+
 # --- 3b-j. `draft` is not a status token (live false positive, hours after shipping) ---------
 # It is an ordinary English noun and it collided with prose an agent genuinely writes. A gate that
 # fires on ordinary prose gets worked around, and then it protects nothing — so the word is out of
