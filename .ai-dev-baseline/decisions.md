@@ -2585,20 +2585,19 @@ limit: none of them is sufficient alone.
              corpus run is therefore evidence of SAFETY (nothing regressed across 210 real bodies),
              and the fixtures are the evidence of the fix.
 
-             ORDERING stated exactly as D27 asks. Eighteen of the new assertions were run against
+             ORDERING stated exactly as D27 asks. Nineteen of the new assertions were run against
              the parent's `scripts/lib/common.sh` in a throwaway copy of the tree and observed RED —
-             sixteen in `check-roadmap.sh`, two in `check-common-lib.sh` — while the assertions
+             seventeen in `check-roadmap.sh`, two in `check-common-lib.sh` — while the assertions
              pinning deliberately-unchanged behaviour stayed green, which is the split that makes
              them witnesses rather than decoration.
 
-             TWO of them cannot be witnessed that way and were driven RED against deliberately wrong
-             builds instead, because the parent gets both bodies right and a red-at-parent run
-             therefore proves nothing about them. The closer-bound fixture was driven against a
-             build carrying the container column WITHOUT the clamp; the state-lifetime fixture
-             against one that clears the column on any markerless dedent, standing in for the
-             container stack this decision declined. A third fixture was found by review to pin
-             nothing at all — a two-space fence that every candidate model recognizes — and its
-             description now claims only the negative-offset half it actually witnesses.
+             OTHERS cannot be witnessed that way, because the parent reads those bodies correctly
+             and a red-at-parent run therefore proves nothing about them. Each was driven RED
+             against a deliberately wrong build instead: the closer-bound fixture against one
+             carrying the container column WITHOUT the clamp, and both laziness fixtures against one
+             whose column-0 rule drops the `md_para` qualifier. A further fixture was found by
+             review to pin nothing at all — a two-space fence that every candidate model recognizes
+             — and its description now claims only the negative-offset half it actually witnesses.
 
              This entry lands in the SAME commit as the code, so the diff cannot evidence that it
              was written first and nobody should read it as evidenced; the red-at-parent fixtures

@@ -77,12 +77,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     is the evidence of safety; the fixtures are the evidence of the fix.
   - `scripts/check-roadmap.sh` § 6i gains fixtures for both delimiters, blockquotes, ordered and
     nested markers, the closer-bound pair, the stale-dedent shape, CRLF, and the D27 boundary;
-    `check-common-lib.sh` pins the rule at the primitive. **Eighteen of the new assertions were
+    `check-common-lib.sh` pins the rule at the primitive. **Nineteen of the new assertions were
     observed red** against the parent's library in a throwaway copy, while the ones pinning
-    deliberately-unchanged behaviour stayed green. Two more could not be witnessed that way — the
-    parent reads both bodies correctly — so they were driven red against deliberately wrong builds
-    instead: one carrying the container column without the clamp, one clearing the column on any
-    markerless dedent (standing in for the container stack D42 declined).
+    deliberately-unchanged behaviour stayed green. Others could not be witnessed that way — the
+    parent reads those bodies correctly — so each was driven red against a deliberately wrong build
+    instead: the closer-bound fixture against one carrying the container column without the clamp,
+    and both laziness fixtures against one whose column-0 rule drops the `md_para` qualifier.
 
 - **`/cleanup` could be made to delete a file nobody asked it to touch** (#273, D41).
   `cleanup-lib.sh state-scan` serialized one record per state file as `<kind>TAB<path>TAB<key>`
