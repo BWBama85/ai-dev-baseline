@@ -292,6 +292,192 @@ run_lint "$d"
 eq "$RC" "1" "rule 6: a macOS-only workflow is rejected"
 has "$OUT" "unproven on Linux" "rule 6 names the missing Linux coverage"
 
+# --- INDENTATION IS NOT THE GRAMMAR (#102, #262) ---------------------------------------------------
+# This lint used to pin job keys to two spaces, job properties to four, and STEPS to six. A uniform
+# 4-space workflow is valid YAML that GitHub runs, and every rule above went blind on it at once:
+# zero jobs seen, so rule 4 fired for the wrong reason and no runner label, guard wiring, or step
+# ordering was ever evaluated. Rule 4 firing is what made that survivable here — the sibling
+# consumer (repo-settings.sh discovery) had no such backstop and simply reported success.
+#
+# `emit_job` writes 2-space YAML, so these fixtures are hand-written at 4 spaces.
+emit_job4() {   # emit_job4 <file> <job> <runs-on> <wire-guard 0|1>
+  {
+    printf '    %s:\n' "$2"
+    printf '        name: %s\n' "$2"
+    printf '        runs-on: %s\n' "$3"
+    printf '        steps:\n'
+    printf '            - name: Log this runner'"'"'s bash\n'
+    printf '              run: bash --version\n'
+    if [ "$4" = "1" ]; then
+      printf '            - name: bash floor\n'
+      printf '              run: bash scripts/check-bash-floor.sh --runtime\n'
+    else
+      printf '            - name: work\n'
+      printf '              run: echo hi\n'
+    fi
+  } >> "$1"
+}
+new_wf4() { mkdir -p "$1"; printf 'name: CI\non:\n    pull_request:\n\njobs:\n' > "$1/ci.yml"; printf '%s/ci.yml' "$1"; }
+
+d="$work/four-clean"; f="${ new_wf4 "$d"; }"
+emit_job4 "$f" linux-job ubuntu-26.04 1
+emit_job4 "$f" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "0" "4-space: a compliant workflow PASSES (it used to report zero jobs)"
+has "$OUT" "2 job(s)" "4-space: both jobs are counted"
+has "$OUT" "1 Linux, 1 macOS" "4-space: both platforms are recognized"
+
+# READING THE FILE IS ONLY HALF OF IT. A rule that silently stopped firing at the new indent would
+# report a clean run over a job that violates it — so each rule is driven to red at 4 spaces too,
+# not merely shown to parse.
+d="$work/four-badrunner"; f="${ new_wf4 "$d"; }"
+emit_job4 "$f" linux-job ubuntu-latest 1
+emit_job4 "$f" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "4-space: the runner allowlist still rejects ubuntu-latest"
+has "$OUT" "runs on 'ubuntu-latest'" "4-space: ...and names the label"
+
+d="$work/four-noguard"; f="${ new_wf4 "$d"; }"
+emit_job4 "$f" linux-job ubuntu-26.04 1
+emit_job4 "$f" macos-job macos-latest 0
+run_lint "$d"
+eq "$RC" "1" "4-space: an unguarded job is still rejected"
+has "$OUT" "nothing proves the bash it actually got" "4-space: ...for the right reason"
+
+# THE STEP-ORDER RULE is the one that most depended on the pinned indent: `step == 1` is
+# meaningless if no step boundary is ever found. At 4 spaces steps sit at 12.
+d="$work/four-nolog"; mkdir -p "$d"
+{ printf 'name: CI\non:\n    pull_request:\n\njobs:\n'
+  printf '    linux-job:\n        name: linux-job\n        runs-on: ubuntu-26.04\n        steps:\n'
+  printf '            - name: Checkout\n              uses: actions/checkout@v4\n'
+  printf '            - name: bash floor\n              run: bash scripts/check-bash-floor.sh --runtime\n'
+} > "$d/ci.yml"
+emit_job4 "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "4-space: the FIRST-step 'bash --version' rule still fires"
+has "$OUT" "does not log 'bash --version' in its FIRST step" "4-space: ...and names the ordering it wanted"
+
+# A MIXED FILE — 2-space `on:`, 4-space `jobs:` — is valid YAML and defeats any per-file
+# "detect the indent unit" heuristic, because the file has two.
+d="$work/mixed"; mkdir -p "$d"
+printf 'name: CI\non:\n  pull_request:\n\njobs:\n' > "$d/ci.yml"
+emit_job4 "$d/ci.yml" linux-job ubuntu-26.04 1
+emit_job4 "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "0" "a file mixing a 2-space on: block with a 4-space jobs: block passes"
+has "$OUT" "2 job(s)" "...with both jobs visible"
+
+# TWO FILES AT DIFFERENT UNITS, since the scan is per file and a unit detected from one must never
+# be applied to another.
+d="$work/mixedfiles"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+printf 'name: CI\non:\n    pull_request:\n\njobs:\n' > "$d/four.yml"
+emit_job4 "$d/four.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "0" "a repo whose two workflow files use different indent units passes"
+has "$OUT" "2 job(s) across 2 file(s)" "...counting both files' jobs"
+
+# --- THE OPPOSITE FILTER, which is the whole reason there are two consumers (#262) ------------------
+# repo-settings.sh discovery SKIPS matrix / `if:` / reusable / dynamic-name jobs, because none of
+# them reports a provable check context. This lint must see every one of them anyway: a matrix job
+# left on ubuntu-latest is still a job running below the floor. Sharing one enumerator is only safe
+# if that asymmetry survives it — a shared reader that quietly adopted discovery's skips would take
+# exactly the jobs nothing else is watching and stop watching them too.
+d="$work/opposite"; mkdir -p "$d"
+{ printf 'name: CI\non:\n  pull_request:\n\njobs:\n'
+  printf '  matrixed:\n    name: mat\n    strategy:\n      matrix:\n        os: [a, b]\n'
+  printf '    runs-on: ubuntu-latest\n    steps:\n      - name: v\n        run: bash --version\n'
+  printf '      - name: g\n        run: bash scripts/check-bash-floor.sh --runtime\n'
+  printf '  conditional:\n    name: cond\n    if: github.event_name == '"'"'push'"'"'\n'
+  printf '    runs-on: ubuntu-latest\n    steps:\n      - name: v\n        run: bash --version\n'
+  printf '      - name: g\n        run: bash scripts/check-bash-floor.sh --runtime\n'
+  printf '  dyn:\n    name: d-${{ github.event_name }}\n'
+  printf '    runs-on: ubuntu-latest\n    steps:\n      - name: v\n        run: bash --version\n'
+  printf '      - name: g\n        run: bash scripts/check-bash-floor.sh --runtime\n'
+} > "$d/ci.yml"
+emit_job "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "opposite filter: a matrix/if/dynamic job on a bad runner is still caught"
+has "$OUT" "'matrixed'" "opposite filter: the MATRIX job is checked (discovery skips it)"
+has "$OUT" "'conditional'" "opposite filter: the if: job is checked (discovery skips it)"
+has "$OUT" "'dyn'" "opposite filter: the dynamic-name job is checked (discovery skips it)"
+has "$OUT" "4 job(s)" "opposite filter: all four jobs are enumerated, none skipped"
+
+# A REUSABLE-WORKFLOW job has no `runs-on` at all — discovery skips it as unnameable, and this lint
+# must report it rather than pass it: a `uses:` job's runner is the callee's business, which is
+# exactly a runner this repo has not proven.
+d="$work/reusable"; f="${ new_wf "$d"; }"
+printf '  called:\n    uses: ./.github/workflows/other.yml\n' >> "$f"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "opposite filter: a reusable-workflow job is enumerated and reported, not skipped"
+has "$OUT" "'called'" "...and named"
+
+# --- the scanner's own failure must PROPAGATE, not read as 'this file has no jobs' ------------------
+# The shared reader is fail-closed (a nonce completion trailer), and this asserts the lint honours
+# that rather than treating a crashed read as an empty one. A stub `awk` that exits non-zero stands
+# in for a reader that died mid-file; without propagation this is indistinguishable from a clean scan.
+d="$work/scanfail"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+mkdir -p "$work/awkstub"
+printf '#!/bin/sh\nexit 9\n' > "$work/awkstub/awk"; chmod +x "$work/awkstub/awk"
+OUT="$(PATH="$work/awkstub:$PATH" bash "$LINT" --workflow-dir "$d" 2>&1)"; RC=$?
+eq "$RC" "1" "a crashed job scanner fails the lint (never a silent clean scan)"
+has "$OUT" "refusing to report a clean scan" "...and says it is refusing rather than passing"
+rm -rf "$work/awkstub"
+
+# --- a block scalar ends at ITS KEY'S column, not at a sequence dash --------------------------------
+# The block-scalar skip that closed the impersonation fail-open reached too far: anchored on the
+# DASH, it swallowed the entry's SIBLING keys, so a valid `- name: |` step had its real
+# `run: bash --version` skipped as scalar text and the lint failed a workflow that is fine.
+d="$work/blockkeycol"; mkdir -p "$d"
+{ printf 'name: CI\non:\n  pull_request:\n\njobs:\n'
+  printf '  linux-job:\n    runs-on: ubuntu-26.04\n    steps:\n'
+  printf '      - name: |\n          a multi-line step name\n        run: bash --version\n'
+  printf '      - name: floor\n        run: bash scripts/check-bash-floor.sh --runtime\n'
+} > "$d/ci.yml"
+emit_job "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "0" "a step whose sequence-entry line carries a block scalar still has its sibling keys read"
+
+# ...and closing that must NOT reopen the impersonation hole, in EITHER spelling. Both forms are
+# pinned because the fix turns on which pattern is tested first.
+d="$work/blockimperson"; mkdir -p "$d"
+{ printf 'name: CI\non:\n  pull_request:\n\njobs:\n'
+  printf '  linux-job:\n    runs-on: ubuntu-26.04\n    steps:\n'
+  printf '      - name: pretend\n        run: |\n'
+  printf '          run: bash --version\n          run: bash scripts/check-bash-floor.sh --runtime\n'
+} > "$d/ci.yml"
+emit_job "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "a plain 'run: |' block that merely PRINTS the guard still proves nothing"
+d="$work/blockimperson2"; mkdir -p "$d"
+{ printf 'name: CI\non:\n  pull_request:\n\njobs:\n'
+  printf '  linux-job:\n    runs-on: ubuntu-26.04\n    steps:\n'
+  printf '      - run: |\n'
+  printf '          run: bash --version\n          run: bash scripts/check-bash-floor.sh --runtime\n'
+} > "$d/ci.yml"
+emit_job "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "...and neither does the DASH form '- run: |'"
+
+# --- the eight-field record must refuse what it cannot encode -------------------------------------
+# The shared reader's grammar is value-LAST so a tab inside a quoted scalar survives. THIS record
+# cannot be: it carries eight fields and static_lint splits them field-by-field. A tab inside a
+# quoted `runs-on:` therefore shifted `guard` and `firstlog` into the label's own bytes, and
+# independent review reproduced a job with a NONEXISTENT runner being reported as guarded and
+# logging — a fail-OPEN in a guard, which is the one outcome this file exists to prevent.
+d="$work/tabrunner"; mkdir -p "$d"
+{ printf 'name: CI\non:\n  pull_request:\n\njobs:\n'
+  printf '  evil:\n    runs-on: "ubuntu-26.04\t1\t1"\n'
+} > "$d/ci.yml"
+emit_job "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "a TAB inside a quoted runs-on is REFUSED, not silently field-shifted into a pass"
+has "$OUT" "cannot encode" "...and the refusal says the record cannot represent the value"
+
 # --- the WSL-HOST CLASS (#2) -------------------------------------------------------------------------
 #
 # This class exists because `windows-latest` CLEARS the floor on its own — Windows Server 2025 ships

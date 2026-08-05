@@ -60,14 +60,52 @@ Discovery also refuses a `pull_request:` written as an inline flow mapping carry
 (`pull_request: {types: [closed]}`) and one whose `branches:` list uses **negative** patterns
 (`["*", "!main"]` — GitHub evaluates those in order, so the `*` is not the last word).
 
-Known limitation: discovery reads two-space-indented YAML (what `actions/*` templates and every
-real workflow in the wild use). A workflow this parser cannot read contributes no contexts and
-says so loudly on stderr — it never silently under-requires.
+Indentation is **not** the grammar (#102). Discovery reads workflow YAML by *relative depth* — a
+key opens a block, and that block's children sit at whatever column the first content line inside
+it happens to use — so two-space, four-space, and files that **mix** the two all read correctly.
+No indent unit is detected or assumed, which matters because a file can legitimately carry more
+than one (a two-space `on:` block above a four-space `jobs:` block is valid YAML that GitHub runs).
+Block sequences are read at both spellings — indented under their key, and at the key's own column
+(`branches:` followed by `- main` at the same indent is valid YAML, and GitHub runs it).
+
+The reader is **not** a YAML parser, and the boundary is stated rather than left to be discovered:
+a flow collection spanning several physical lines is read only from its opening line, merge keys
+(`<<:`) are not resolved, and a block/folded scalar (`name: >-`) is reported as *unreadable* rather
+than approximated. Every one of those under-reports — the job is skipped, never required under a
+name that cannot report.
+
+This replaced a real fail-open. The parser used to pin job keys to exactly two spaces and job
+properties to four, so a uniform four-space workflow was reported as
+`skipping ci.yml — no pull_request trigger`, contributed **zero** contexts, and exited **0**. The
+`required-drift` backstop could not catch the under-requirement, because it derives its desired set
+from this same discovery — so `apply` reported success while gating nothing.
+
+Discovery now **fails loud** rather than reporting a clean empty scan. Every GitHub workflow has an
+`on:` key and a `jobs:` block containing at least one job — those facts are what make the file a
+workflow — so a file violating any of them is never a legitimate shape, only a read that failed:
+
+| Situation | Result |
+|---|---|
+| no `.github/workflows`, or no workflow files | exit **0** — "this repo has no CI" is legitimate (#24) |
+| every file legitimately skipped (no PR trigger, a `paths:` filter, …) | exit **0**, contexts empty |
+| a file with no `on:` block, no `jobs:` block, or a `jobs:` block yielding zero jobs | exit **non-zero**, naming the file |
+
+The structural check runs on **every** workflow file, including ones the trigger verdict skipped —
+checking only the files that passed would leave #102's own shape unexamined, since a blind trigger
+parse looks exactly like a file with no `pull_request` trigger.
+
+Downstream, a failed discovery is mapped fail-closed rather than being allowed to masquerade as an
+empty repo: `apply` refuses to write (and, under `--prune`, refuses to *delete* the contexts still
+gating the branch), while `automerge-ok` and `required-drift` return **20**, never `12` ("no CI at
+all") or `0` ("in sync").
 
 Discovery is scoped to the `jobs:` block, which is not a nicety: `on:` puts `push:` and
-`pull_request:` at the *same* two-space indent as job keys, so a whole-file indent scan harvests
-those two as jobs and requires contexts that can never report. This repo's own `ci.yml` is exactly
-that shape.
+`pull_request:` at the *same* indent as job keys, so a whole-file indent scan harvests those two as
+jobs and requires contexts that can never report. This repo's own `ci.yml` is exactly that shape.
+
+The YAML reading itself lives in **one** place — `adb_wf_on` / `adb_wf_jobs` in
+`scripts/lib/common.sh` — shared with `scripts/check-bash-floor.sh`, which asks the *opposite*
+question of the same records (#262). See `docs/ci-runners.md`.
 
 ## Endpoint choice — the wide one is destructive
 

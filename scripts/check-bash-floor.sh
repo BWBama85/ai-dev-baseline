@@ -140,33 +140,37 @@ runtime_check() {
 
 # --- static half -------------------------------------------------------------------------------
 
-# Emit "<job>\t<runs-on>\t<wires-guard 0|1>" for every job in the workflow file at $1.
+
+# Emit "<job>\t<runs-on>\t<guard>\t<firstlog>\t<wslguard>\t<wsllog>\t<wsllogd>\t<wslguardd>" for
+# every job in the workflow file at $1. Returns non-zero if the file could not be read.
 #
-# Deliberately NOT repo-settings.sh's discovery, which reads the same file. That one exists to emit
-# provable check CONTEXTS and therefore SKIPS jobs on purpose — matrix, `if:`, an interpolated
-# `name:`. A floor lint must see every job precisely INCLUDING the ones discovery declines to
-# require: a matrix job left on ubuntu-latest is still a job running below the floor. Same file,
-# opposite requirement, so this is a second reader rather than a copy of the first.
+# THE OPPOSITE FILTER FROM repo-settings.sh, AND THAT PART IS THE POINT. That module emits provable
+# check CONTEXTS and therefore SKIPs jobs on purpose — matrix, `if:`, an interpolated `name:`. A
+# floor lint must see every job precisely INCLUDING the ones discovery declines to require: a
+# matrix job left on ubuntu-latest is still a job running below the floor.
+#
+# What is NO LONGER duplicated is how those jobs are FOUND (#262). Both files used to carry their
+# own job-boundary detection and their own YAML scalar parser, and the two had already drifted by
+# the time THIS one was written: `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by
+# repo-settings.sh and reduced to the approved label `ubuntu-26.04` here, which would have accepted
+# a job GitHub would never schedule. Review caught it before #257 merged. Enumeration now comes from `adb_wf_jobs` in scripts/lib/common.sh — one reader, two
+# opposite filters — and it hands over each job's LINE RANGE and STEP boundaries so the rules below
+# stay scoped without re-answering "where does this job start" in a second dialect.
+#
+# WHAT STAYS HERE is this lint's own grammar: which `run:` invocations count as wiring the guard,
+# and the WSL forms. That is a question about THIS repo's CI contract, not about YAML.
 scan_jobs() {
-  awk '
-    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
-    function unquote(s) {
-      if (s ~ /^".*"$/ || s ~ /^'"'"'.*'"'"'$/) s = substr(s, 2, length(s) - 2)
-      return s
-    }
-    # A plain YAML scalar as GitHub reads it. QUOTE FIRST, THEN COMMENT — the order is the whole
-    # point. Stripping `#` first turns `runs-on: "ubuntu-26.04 # not-the-label"` into the approved
-    # label `ubuntu-26.04`, accepting a job whose real label is the entire quoted string and which
-    # would never run. Same semantics as yaml_scalar in scripts/lib/repo-settings.sh; that the two
-    # had DIFFERENT semantics until review caught it is the argument for the shared enumerator
-    # follow-up, not an argument that this file may guess.
-    function yaml_scalar(s) {
-      s = trim(s)
-      if (s ~ /^"/)  { sub(/^"/,  "", s); sub(/".*$/,  "", s); return s }
-      if (s ~ /^'"'"'/) { sub(/^'"'"'/, "", s); sub(/'"'"'.*$/, "", s); return s }
-      sub(/[[:space:]]+#.*$/, "", s)
-      return trim(s)
-    }
+  local records
+  records="$(adb_wf_jobs "$1")" || return 1
+  # Passed through the ENVIRONMENT, not `awk -v`: -v processes backslash escapes in the value, so a
+  # job key or a runner label containing a backslash would arrive mangled. ENVIRON does not.
+  #
+  # The ceiling this accepts, stated rather than discovered: the records ride `execve`'s ARG_MAX
+  # alongside the inherited environment (1 MiB on this macOS host). A workflow large enough to cross
+  # it cannot start awk — which fails CLOSED, through the `|| return 1` below, so the lint refuses
+  # rather than reporting a clean scan. Reaching it needs thousands of jobs in one file; the two in
+  # this repo produce a few KB.
+  ADB_WF_RECORDS="$records" awk "$_ADB_WF_AWK"'
     # The distro token a `wsl -d <name>` / `--distribution <name>` invocation names, unquoted, or
     # empty. Captured rather than merely matched because the two WSL steps must name the SAME
     # distro: without this the lint accepts a `bash --version` logged in distro A followed by the
@@ -175,46 +179,86 @@ scan_jobs() {
       if (match(s, /(-d|--distribution)[[:space:]]+[^[:space:]]+/)) {
         t = substr(s, RSTART, RLENGTH)
         sub(/^(-d|--distribution)[[:space:]]+/, "", t)
-        return unquote(t)
+        return adb_wf_unquote(t)
       }
       return ""
     }
-    function flush() {
-      if (job != "") printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", job, (runson == "" ? "<none>" : runson), \
-                            guard, firstlog, wslguard, wsllog, wsllogd, wslguardd
+    BEGIN {
+      n = split(ENVIRON["ADB_WF_RECORDS"], REC, "\n")
+      njobs = 0
+      for (r = 1; r <= n; r++) {
+        if (REC[r] == "") continue
+        # Split on the FIRST tabs only, keeping the free-text value whole: every record in this
+        # grammar carries at most one such value and carries it LAST (see common.sh).
+        tag = REC[r]; sub(/\t.*$/, "", tag)
+        body = REC[r]; sub(/^[^\t]*\t/, "", body)
+        if (tag == "JOB") {
+          j = body; sub(/\t.*$/, "", j); v = body; sub(/^[^\t]*\t/, "", v)
+          KEY[j + 0] = v; if (j + 0 > njobs) njobs = j + 0
+        } else if (tag == "RANGE") {
+          j = body; sub(/\t.*$/, "", j); v = body; sub(/^[^\t]*\t/, "", v)
+          s = v; sub(/\t.*$/, "", s); e = v; sub(/^[^\t]*\t/, "", e)
+          for (i = s + 0; i <= e + 0; i++) OWNER[i] = j + 0
+        } else if (tag == "RUNSON") {
+          j = body; sub(/\t.*$/, "", j); v = body; sub(/^[^\t]*\t/, "", v)
+          RUNSON[j + 0] = v
+        } else if (tag == "STEP") {
+          j = body; sub(/\t.*$/, "", j); v = body; sub(/^[^\t]*\t/, "", v)
+          k = v; sub(/\t.*$/, "", k); ln = v; sub(/^[^\t]*\t/, "", ln)
+          STEPAT[ln + 0] = k + 0
+        } else if (tag == "FLAG") {
+          j = body; sub(/\t.*$/, "", j); v = body; sub(/^[^\t]*\t/, "", v)
+          if (v == "inline") INLINE[j + 0] = 1
+        }
+      }
     }
-    # Job keys sit at exactly two spaces under `jobs:`. `on:` puts push/pull_request at that SAME
-    # indent, so track whether we are inside the jobs: block rather than scanning the whole file —
-    # the trap docs/repo-settings.md records this repo'"'"'s own ci.yml falling into.
-    /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
-    /^[^[:space:]#]/      { in_jobs = 0 }
-    !in_jobs { next }
-    /^[[:space:]]*#/ { next }
-    # ANY two-space key inside jobs: is a job — including `hidden: {runs-on: …, steps: […]}`, the
-    # inline flow mapping that a `:[[:space:]]*$` anchor renders INVISIBLE. Invisible is the one
-    # outcome a floor lint may never produce, so an inline job is captured with its raw value as
-    # the label: it matches no approved label and fails LOUDLY rather than silently not existing.
-    # QUOTED job IDs count too. YAML permits `"hidden":`, and a key rule accepting only bare
-    # [A-Za-z0-9_-] skips straight past it — every line of that job then reads as belonging to the
-    # PREVIOUS one, so it is not merely unchecked, it does not exist. With a compliant Linux and
-    # macOS job elsewhere in the file the aggregate rules are satisfied and the lint reports PASS.
-    /^  ("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z0-9_-]+):/ {
-      flush()
-      job = $0; sub(/^  /, "", job); sub(/:.*$/, "", job); job = unquote(job)
-      rest = $0; sub(/^  ("[^"]+"|'"'"'[^'"'"']+'"'"'|[A-Za-z0-9_-]+):/, "", rest); rest = trim(rest)
-      runson = ""; guard = 0; firstlog = 0; step = 0; wslguard = 0; wsllog = 0
-      wsllogd = ""; wslguardd = ""
-      if (rest != "" && rest !~ /^#/) runson = "<inline mapping: " rest ">"
-      next
+    # A step BEGINS at the line the shared reader assigned it; every line after it belongs to that
+    # step until the next one starts. Tracked per job so a job with no steps at all leaves `step`
+    # at 0 rather than inheriting the previous job'"'"'s count.
+    {
+      j = OWNER[FNR] + 0
+      if (j != cur) { cur = j; step = 0 }
+      if (j > 0 && STEPAT[FNR] > 0) step = STEPAT[FNR]
     }
-    job == "" { next }
-    /^    runs-on:/ { v = $0; sub(/^    runs-on:[[:space:]]*/, "", v); runson = yaml_scalar(v); next }
-    # Step boundaries, so "the FIRST step" is a question this can answer at all.
-    /^      - / { step++ }
+    j == 0 { next }
+    # BLOCK-SCALAR CONTENT IS DATA, NOT STRUCTURE, and skipping it here closes a fail-open that
+    # every rule below shared. The `run:` patterns are deliberately unanchored (a step key can sit
+    # at any depth), so a `run: |` block whose CONTENT happened to contain the literal line
+    #     run: bash scripts/check-bash-floor.sh --runtime
+    # set GUARD without the guard running even once — a here-document that merely PRINTS the
+    # command satisfied it. That is the same species as the `echo` bypass this file already closed,
+    # and the whole point of the surrounding rules is EXECUTING, not APPEARING.
+    #
+    # A block scalar opens on a `<key>: |` / `<key>: >` line and owns every following line indented
+    # MORE than THAT KEY, which is YAML'"'"'s own rule and needs no indent unit to apply.
+    #
+    # THE KEY'"'"'S COLUMN, NOT THE DASH'"'"'S. On a sequence-entry line the two differ, and using the dash
+    # swallowed the entry'"'"'s SIBLING KEYS: for
+    #     - name: |
+    #         some multi-line name
+    #       run: bash --version
+    # the dash sits at 6 and `run:` at 8, so everything deeper than 6 was skipped as scalar text and
+    # the real `run:` went unseen — the lint then reported a VALID workflow as not logging
+    # `bash --version`. Sibling keys sit at the key'"'"'s own column, so anchoring there ends the scalar
+    # exactly where YAML does.
+    {
+      lead = match($0, /[^ ]/) ? RSTART - 1 : 0
+      if (inblock) { if ($0 ~ /^[[:space:]]*$/ || lead > blockcol) next; inblock = 0 }
+      # THE DASH FORM IS TESTED FIRST, and that ordering is load-bearing rather than stylistic: the
+      # plain-key pattern below ALSO matches a sequence entry (its `[^:[:space:]]` happily consumes
+      # the `-`), so with the arms the other way round the dash branch was unreachable and blockcol
+      # kept taking the dash'"'"'s column — which is the whole defect this is fixing.
+      if ($0 ~ /^[[:space:]]*-[[:space:]]+[^:[:space:]][^:]*:[[:space:]]*[|>][0-9]*[-+]?[[:space:]]*$/) {
+        match($0, /^[[:space:]]*-[[:space:]]+/)
+        inblock = 1; blockcol = RLENGTH
+      } else if ($0 ~ /^[[:space:]]*[^:[:space:]][^:]*:[[:space:]]*[|>][0-9]*[-+]?[[:space:]]*$/) {
+        inblock = 1; blockcol = lead
+      }
+    }
     # `bash --version` must be logged by the job'"'"'s FIRST step (#257 acceptance criterion 2), before
     # checkout or any bootstrap — so a runner image that quietly changed its bash is visible in the
     # log even when a later step is what fails.
-    step == 1 && /run:.*bash --version/ { firstlog = 1 }
+    step == 1 && /run:.*bash --version/ { FIRSTLOG[j] = 1 }
     # EXECUTING, not merely APPEARING. The invocation must be the WHOLE run value — `run: bash
     # scripts/check-bash-floor.sh --runtime` and nothing else on the line. Anything looser passes
     # for a step that only talks about it: an `env:` value, a step `name:`, and (the one that
@@ -222,7 +266,7 @@ scan_jobs() {
     # which runs the guard exactly zero times while satisfying a substring test.
     # A `run: |` BLOCK carrying it on a later line is not recognized either, and reports unguarded:
     # fail-closed, and no job here uses that form.
-    /^[[:space:]]*run:[[:space:]]*bash[[:space:]]+scripts\/check-bash-floor\.sh[[:space:]]+--runtime[[:space:]]*$/ { guard = 1 }
+    /^[[:space:]]*run:[[:space:]]*bash[[:space:]]+scripts\/check-bash-floor\.sh[[:space:]]+--runtime[[:space:]]*$/ { GUARD[j] = 1 }
     # THE WSL FORMS (#2), recorded as STEP NUMBERS rather than booleans, because for a WSL-host job
     # the interesting question is ORDER: the distro must be named before the guard runs in it, so a
     # log emitted after the proof documents nothing about the run that was proved.
@@ -233,12 +277,40 @@ scan_jobs() {
     # must be the WHOLE run value, so an echoed or `-c`-wrapped mention matches nothing. That is the
     # same standard the bare form above already holds, transplanted rather than reinvented.
     /^[[:space:]]*run:[[:space:]]*wsl(\.exe)?[[:space:]]+(-d|--distribution)[[:space:]]+[^[:space:]]+[^|;&]*--[[:space:]]+bash[[:space:]]+--version[[:space:]]*$/ {
-      if (wsllog == 0) { wsllog = step; wsllogd = wsl_distro($0) }
+      if (WSLLOG[j] == 0) { WSLLOG[j] = step; WSLLOGD[j] = wsl_distro($0) }
     }
     /^[[:space:]]*run:[[:space:]]*wsl(\.exe)?[[:space:]]+(-d|--distribution)[[:space:]]+[^[:space:]]+[^|;&]*--[[:space:]]+bash[[:space:]]+scripts\/check-bash-floor\.sh[[:space:]]+--runtime[[:space:]]*$/ {
-      if (wslguard == 0) { wslguard = step; wslguardd = wsl_distro($0) }
+      if (WSLGUARD[j] == 0) { WSLGUARD[j] = step; WSLGUARDD[j] = wsl_distro($0) }
     }
-    END { flush() }
+    END {
+      for (j = 1; j <= njobs; j++) {
+        ro = RUNSON[j]
+        # An inline flow-mapping job (`hidden: {runs-on: …, steps: […]}`) is a real job the shared
+        # reader does not decompose. Reported with an unmatchable label rather than omitted:
+        # INVISIBLE is the one outcome a floor lint may never produce, so this fails LOUDLY on a
+        # form it cannot verify instead of silently not seeing the job at all.
+        if (INLINE[j]) ro = "<inline mapping>"
+        if (ro == "") ro = "<none>"
+        # REFUSE TO SERIALIZE A VALUE THIS RECORD CANNOT ENCODE. Unlike the shared reader'"'"'s grammar,
+        # this record carries EIGHT fields and its consumer splits them field-by-field, so its free
+        # text cannot be value-last. A tab inside a quoted `runs-on:` therefore shifted `guard` and
+        # `firstlog` into the label'"'"'s own bytes: `runs-on: "ubuntu-26.04<TAB>1<TAB>1"` produced a job
+        # with a nonexistent runner that the lint reported as guarded and logging — a fail-OPEN in a
+        # guard, which is the one outcome this file exists to prevent.
+        #
+        # A tab cannot appear in a real GitHub job id or runner label, so this is unreachable for a
+        # valid workflow; it is refused rather than escaped because a guard must not quietly
+        # normalize an input it cannot represent (the same rule state-scan applies in D41).
+        if (KEY[j] ~ /\t/ || ro ~ /\t/) {
+          printf "bash-floor: FATAL — job %d carries a TAB in its key or runs-on value, which this record cannot encode\n", j > "/dev/stderr"
+          bad = 1
+          continue
+        }
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", KEY[j], ro, \
+               GUARD[j] + 0, FIRSTLOG[j] + 0, WSLGUARD[j] + 0, WSLLOG[j] + 0, WSLLOGD[j], WSLGUARDD[j]
+      }
+      if (bad) exit 1
+    }
   ' "$1"
 }
 

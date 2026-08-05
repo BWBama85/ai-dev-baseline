@@ -9,6 +9,70 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **A 4-space-indented workflow was invisible to check discovery, and nothing reported it**
+  (#102, #262, D44). Both readers of `.github/workflows` treated indentation as the grammar — job
+  keys at exactly 2 spaces, job properties at 4, steps at 6 — so a uniform 4-space workflow, which
+  is valid YAML that GitHub runs happily, went unread.
+  - **In `repo-settings.sh` this was fail-OPEN.** Discovery reported
+    `skipping ci.yml — no pull_request trigger`, contributed **zero** contexts, and exited **0**.
+    The `required-drift` backstop could not catch the under-requirement because it derives its
+    desired set from the same discovery, so `apply` reported success while gating nothing. The
+    symptom came from the *trigger* parser, which is why fixing only the job enumerator would have
+    left the reported case unfixed.
+  - **The two scanners had also already drifted** by the time the second was written — the
+    demonstration #262 was filed on. `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by
+    `repo-settings.sh` (a quoted value ends at its closing quote) and reduced to the approved label
+    `ubuntu-26.04` by `check-bash-floor.sh`, which would have accepted a job whose real runner label
+    is the whole quoted string and which GitHub would never schedule. Review caught that one before
+    #257 merged; nothing prevented the next divergence.
+
+  The YAML reading now lives in **one** place — `_ADB_WF_AWK` + `adb_wf_on` / `adb_wf_jobs` in
+  `scripts/lib/common.sh`, the shape #136 chose for the shared prose filter and D43 affirmed — and both
+  consumers apply their own opposite filters on top of it (`repo-settings.sh` skips matrix / `if:`
+  / reusable / dynamic-name jobs; `check-bash-floor.sh` must see precisely those). The reader
+  hands over each job's line range and step boundaries, so the floor lint's step-level rules stay
+  scoped without re-deriving job boundaries.
+
+  It tracks **relative depth** rather than detecting an indent unit, so 2-space, 4-space, and files
+  that **mix** the two all read — the mixed case being the one an indent-unit heuristic gets wrong,
+  because such a file has no single unit. Independent review then found six more valid YAML forms
+  the first cut still could not read, each fixed with a fixture: **block-sequence** `on:` triggers
+  and `branches:`/`types:` filters at *both* spellings (indented, and at the key's own column),
+  **YAML anchors** (`build: &base_job` is an ordinary job, not an inline mapping — treating it as
+  one skipped a readable job and failed the floor lint on a valid workflow), **aliases**, quoted
+  scalars carrying **escaped quotes** (`"Build \"quoted\""`, `'it''s'`), **block/folded scalars**
+  (`name: >-` used to become the required context `>-`, a phantom nothing ever reports), and flow
+  sequences whose entries **contain a comma**. `check-fact-drift.sh` now pins that both consumers call
+  the shared reader, with an `absent:` rule (proven able to fail under `--mutation`) rejecting the
+  retired local `yaml_scalar` / `flush_job` definitions coming back beside it.
+
+  **Discovery also stops reporting a clean empty scan when it cannot read a file.** Every workflow
+  has an `on:` key and a `jobs:` block with at least one job in it, so a file violating any of
+  those is a parse failure, never a legitimate shape — checked on **every** file, including ones
+  the trigger verdict skipped, since a blind trigger parse looks exactly like "no `pull_request`
+  trigger". A repo with no workflow directory, no workflow files, or only legitimately-skipped
+  ones still exits 0 (#24). Downstream the failure is mapped fail-closed: `apply` refuses to write
+  (and under `--prune` refuses to *delete* the contexts still gating the branch), while
+  `automerge-ok` and `required-drift` return **20** — never `12` ("this repo has no CI") or `0`
+  ("in sync"). This means `repo-settings.sh` can now exit non-zero where it always exited 0.
+
+  A second review round found three more, all in that same first round's fixes: the block-scalar
+  skip anchored on a sequence **dash** rather than on its key, so a valid `- name: |` step had its
+  sibling `run:` swallowed and the lint failed a workflow that is fine; the inline-mapping
+  `name:` test was a substring search, so a nested `environment: {name: …}` suppressed the job
+  key's context and left a real PR job ungated; and an inline job carrying `if:` / `uses:` /
+  `strategy:` was required under its key even though the block-form path skips exactly those — a
+  phantom context that never reports. The inline test is depth- and quote-aware now, and all four
+  keys disqualify.
+
+  Two fail-opens **in the guards themselves** were found by that same review and closed. A `run: |`
+  block whose *content* merely printed `run: bash scripts/check-bash-floor.sh --runtime` satisfied
+  the floor lint's guard-wiring and first-step-logging rules without the guard ever running — the
+  same "appearing, not executing" species the lint had already closed twice — so block-scalar
+  content is now skipped as data. And a tab inside a quoted `runs-on:` shifted the floor lint's
+  eight-field record, letting a job with a nonexistent runner report as guarded; that record cannot
+  be value-last, so it now **refuses** a value it cannot encode rather than mis-splitting it.
+
 - **The two LINT consumers of the shared prose filter were still running their own parsers**
   (#251, D43). #136 landed one paragraph-aware CommonMark filter (`_ADB_MD_AWK` / `adb_md_prose`
   in `scripts/lib/common.sh`) and moved five consumers onto it. Two more *declared themselves

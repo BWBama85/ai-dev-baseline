@@ -840,6 +840,55 @@ fact bash-floor-bootstrap-carveout 'fixed:parseable' -- \
   scripts/lib/common.sh CLAUDE.md CONTRIBUTING.md .ai-dev-baseline/decisions.md
 fact bash-floor-observer-carveout 'fixed:EXEMPT_ENTRYPOINTS' -- scripts/check-bash-floor.sh
 
+# --- FACT: there is ONE workflow-YAML reader, and both consumers call it (#262, #102) -----------
+#
+# The structural half of #262, and it is the half prose cannot hold. Two files read
+# .github/workflows and want OPPOSITE things from it (provable check contexts vs every job on a
+# proven runner), and before the shared reader each carried its own job-boundary detection and its
+# own YAML scalar parser. They drifted before either shipped: `runs-on: "ubuntu-26.04 # …"` was
+# read correctly by one and reduced to the approved label by the other.
+#
+# Nothing stops the next divergence except a rule that FAILS when a consumer stops calling the
+# shared reader — because re-growing a local scanner is a silent change. Both files still pass their
+# own suites afterwards: each one's tests only ever prove that ITS filter behaves, and a private
+# parser that agrees with the shared one today is exactly what the last one looked like too.
+# The DEFINITION site, so renaming the primitive fails until every consumer moves with it.
+fact workflow-reader-home 'fixed:adb_wf_jobs' -- scripts/lib/common.sh
+fact workflow-reader-on   'fixed:adb_wf_on'   -- scripts/lib/common.sh
+
+# The CALL sites, matched as an actual invocation rather than as the token appearing anywhere.
+# A `fixed:` pin was not enough and the gap is not hypothetical: both consumers explain the shared
+# reader in their own comments, so deleting the call and leaving the paragraph that describes it
+# kept the rule green — a pin that reads as "this file still uses the reader" while the file has
+# quietly regrown a private one. `^[^#]*` requires the match to be reached without passing a `#`,
+# so a commented mention cannot satisfy it.
+fact workflow-reader-called 'regex:^[^#]*adb_wf_jobs[[:space:]]+"' -- \
+  scripts/lib/repo-settings.sh scripts/check-bash-floor.sh scripts/check-common-lib.sh
+fact workflow-reader-on-called 'regex:^[^#]*adb_wf_on[[:space:]]+"' -- \
+  scripts/lib/repo-settings.sh scripts/check-common-lib.sh
+
+# The NEGATIVE half: the retired local scanners must not come back beside the shared call. A
+# presence check alone cannot catch a file that calls `adb_wf_jobs` AND keeps a private
+# `yaml_scalar` next to it, which is precisely how a superseded implementation survives a repoint.
+#
+# `function yaml_scalar` / `function flush_job` are the real retired spellings — both files defined
+# their scalar parser that way, and repo-settings.sh fused enumeration with its CHECK/SKIP verdict
+# in `flush_job`, the seam #262 had to cut. The witnesses are the literal lines that were deleted.
+#
+# WHAT THIS PAIR DOES AND DOES NOT PROVE, because overstating a guard is worse than a narrow one.
+# The `regex:` call pins above are the load-bearing half: they fail if a consumer stops CALLING the
+# shared reader, whatever it does instead. This `absent:` rule is the narrower complement — it
+# rejects the two retired definitions coming back BESIDE a still-present call, which presence
+# checking alone cannot see. It does NOT enumerate every name a future private scanner could take;
+# an inline awk scanner under some other name would pass it. That is inherent to a negative pin, and
+# the call pins are what make it acceptable: a second reader can exist only in addition to the
+# shared one, never instead of it.
+fact workflow-scanner-stale \
+  'absent:^[[:space:]]*function[[:space:]]+(yaml_scalar|flush_job|scan_jobs_local)[[:space:]]*\(' \
+  'fires:    function yaml_scalar(s) {' \
+  'fires:    function flush_job() {' \
+  -- scripts/lib/repo-settings.sh scripts/check-bash-floor.sh
+
 # --- FACT: the Windows/WSL smoke job exists, and the docs that claim it agree (#2, D38) ---------
 #
 # THIS IS THE ENFORCEMENT HALF, and it deliberately does NOT live in check-bash-floor.sh. Review

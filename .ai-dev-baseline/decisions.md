@@ -2666,3 +2666,85 @@ limit: none of them is sufficient alone.
              Setext headings, mid-line comment containers), and no revival of the removed
              path-claim rule.
 - baseline-issue: #251
+
+## D44 — the workflow reader lands in `common.sh`, and a blind parse is a failure rather than an empty repo
+- date:      2026-08-05
+- category:  general
+- unknown:   #262 asks for ONE job enumerator to replace the two hand-written scanners in
+             `scripts/lib/repo-settings.sh` and `scripts/check-bash-floor.sh`, and #102 asks for
+             discovery to stop being blind to a 4-space-indented workflow. Gap analysis raised
+             three questions neither issue decides. (1) WHERE the shared reader lives —
+             `common.sh` carries D30's permanent below-floor restriction and framework-wide blast
+             radius, while a new `scripts/lib/workflow-lib.sh` is "least coupled". (2) Whether
+             #102's fix belongs only in the job enumerator, when the reported symptom
+             (`no pull_request trigger`) comes from the separate TRIGGER parser. (3) What "fail
+             loud" means as a machine contract, given `discover_checks` deliberately returns 0 for
+             a legitimately CI-less repo (#24) and four guards consume it.
+- decision:  (1) `scripts/lib/common.sh`, as an awk FUNCTION LIBRARY (`_ADB_WF_AWK`) plus two
+             wrappers (`adb_wf_on`, `adb_wf_jobs`) — the shape #136 chose for
+             `_ADB_MD_AWK`/`adb_md_prose` and #251/D43 affirmed, answering the identical question
+             (N consumers, one parser, opposite needs). (2) BOTH parsers become indent-agnostic, and neither detects
+             an indent "unit": the reader tracks RELATIVE DEPTH, so 2-space, 4-space and MIXED
+             files all read. (3) The structural facts every workflow must have — an `on:` key, a
+             `jobs:` block, at least one job — are checked on EVERY file, and a violation returns
+             non-zero; `apply` then refuses to write, and `automerge-ok`/`required-drift` return
+             the existing fail-closed **20**.
+- placement: `scripts/lib/common.sh` (the reader), both consumers, fixtures in
+             `scripts/check-common-lib.sh` + `scripts/check-repo-settings.sh` +
+             `scripts/check-bash-floor-guard.sh`, structural pins in `scripts/check-fact-drift.sh`,
+             and `docs/repo-settings.md` + `docs/ci-runners.md`
+- reason:    **(1) A new library does not escape the below-floor constraint, it duplicates it.**
+             `check-bash-floor.sh` is the D31 OBSERVER — exempt from `adb_require_bash` on purpose,
+             and executed under `/bin/bash` 3.2 by its own guard suite — so anything it sources
+             must stay evaluable there. A new file would therefore need its own permanent
+             carve-out, its own entry in `check-bash-floor-guard.sh`'s hard-coded `bf_above_floor`
+             list (whose omission fails silently), a missing-library bootstrap in two consumers,
+             and either a new `check-*.sh` plus a `selfcheck` registry entry or a split test home.
+             `common.sh` needs none of that: both consumers already source it, D30 already covers
+             it, `bf_above_floor` already scans it, and `check-common-lib.sh` is already the home
+             for exactly this kind of contract test. "Least coupled" counted the coupling a new
+             file adds as zero; it is not.
+
+             **(2) Fixing only the job enumerator would have left #102 unfixed in the reported
+             case.** Reproduced before writing any code: a uniform 4-space `ci.yml` is rejected by
+             `_adb_rs_file_verdict` — which pinned trigger names to 2 spaces and filters to 4 —
+             *before* job enumeration is ever reached. And the issue's own suggested remedy,
+             "detect the file's indent unit", is wrong for a file that has TWO (a 2-space `on:`
+             block above a 4-space `jobs:` block is valid YAML that GitHub runs). Relative depth
+             has no unit to get wrong, and it also makes the mixed case work rather than merely
+             not crashing on it.
+
+             **(3) The two empties had to stop being the same observable.** "This repo has no CI"
+             (#24, legitimate, 0) and "this parser went blind" were indistinguishable, which is
+             the whole of #102: the 4-space repo produced `nwant=0`, and `required-drift` — the
+             backstop that was supposed to catch the under-requirement — derives its desired set
+             from the same discovery, so it returned 0 and reported "in sync" about a comparison
+             it never made. The structural check therefore runs on files the trigger verdict
+             SKIPPED too: a blind trigger parse looks exactly like "no `pull_request` trigger", so
+             checking only the files that passed would omit it from precisely the case it exists
+             for. `20` rather than a new code because it already means "fail closed"; `12` in
+             particular would have been a confident claim ("this repo has no CI") about a repo
+             whose CI could not be read, sending the operator to the wrong remedy.
+
+             STATED PLAINLY: this makes `repo-settings.sh` able to exit non-zero where it
+             previously always exited 0, for adopting repos as well as this one. That is the
+             behaviour #102 asks for, and every mapping is fail-closed — the worst outcome is an
+             un-armed auto-merge and a named file, against a prior worst outcome of `apply`
+             reporting success while gating nothing.
+
+             REVIEW moved one line of this decision. The first cut treated ANY value on a job-key
+             line as an inline flow mapping, and skipped every inline job outright. Independent
+             review showed both halves were wrong in opposite directions: a YAML ANCHOR
+             (`build: &base_job`) is an ordinary job whose properties still follow below, and an
+             inline mapping with NO `name:` has a provably correct context — its key — so skipping
+             it left valid PR CI ungated, the mirror image of the phantom this file exists to
+             prevent. The reader now distinguishes `{…}` / `&anchor` / `*alias`, and reports
+             `unnamed` so the consumer can require the key when that is provable.
+
+             SCOPE REFUSED: discovery's matrix/`if:`/reusable/dynamic-name exclusions are
+             unchanged, the floor lint still sees every one of those jobs, no YAML library or
+             general parser was introduced, and the real workflows were not reindented. The reader
+             is explicitly NOT a YAML parser: multi-line flow collections and merge keys (`<<:`)
+             are unsupported and documented as such, and both under-report — which skips a job
+             rather than requiring one that can never report.
+- baseline-issue: #262, #102

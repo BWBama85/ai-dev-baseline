@@ -1323,4 +1323,305 @@ printf '#!/bin/sh\nprintf "\\001ADB_MD_OK\\n"\nexit 0\n' > "$mdstub/awk"
    "a stub emitting the FIXED marker text is rejected — the trailer is nonced per invocation"
 rm -rf "$mdstub"
 
+
+# --- adb_wf_on / adb_wf_jobs: THE shared workflow reader (#262, #102) ---------
+#
+# Direct contract coverage, not only the two consumers' coverage. This reader is the single answer
+# to "what does this workflow declare", so a consumer test can only ever show that ONE filter still
+# behaves; a record this reader stops emitting is invisible to a consumer that never wanted it, and
+# that asymmetry is exactly how the two scanners drifted in the first place.
+
+wfd="$(mktemp -d)"
+# wf <name> — records for a fixture, tabs rendered as `|` so a whole record is one eq assertion.
+wf()  { adb_wf_jobs "$wfd/$1" | tr '\t' '|' | tr '\n' ' '; }
+wfon(){ adb_wf_on   "$wfd/$1" | tr '\t' '|' | tr '\n' ' '; }
+
+# THE SAME WORKFLOW AT TWO INDENT UNITS must produce byte-identical records apart from line
+# numbers. This is #102's whole claim, and asserting the two are EQUAL is stronger than asserting
+# each is individually plausible: no indent unit is detected or privileged anywhere.
+cat > "$wfd/two.yml" <<'EOF'
+name: CI
+on:
+  pull_request:
+    branches:
+      - main
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-26.04
+    steps:
+      - name: a
+        run: bash --version
+EOF
+cat > "$wfd/four.yml" <<'EOF'
+name: CI
+on:
+    pull_request:
+        branches:
+            - main
+jobs:
+    lint:
+        name: Lint
+        runs-on: ubuntu-26.04
+        steps:
+            - name: a
+              run: bash --version
+EOF
+eq "${ wfon two.yml; }" "${ wfon four.yml; }" \
+   "on: reads identically at 2- and 4-space indent (#102: the 4-space file used to report 'no pull_request trigger')"
+eq "${ wf two.yml; }" "${ wf four.yml; }" \
+   "jobs: read identically at 2- and 4-space indent, line numbers included (the files are line-for-line parallel)"
+has "${ wfon four.yml; }" "TRIGGER|pull_request" "a 4-space pull_request trigger is seen at all"
+has "${ wf four.yml; }"   "RUNSON|1|ubuntu-26.04" "a 4-space runs-on is read"
+has "${ wf four.yml; }"   "STEP|1|1|11" "a 4-space step boundary is found (steps sit at 12 spaces there)"
+
+# A MIXED FILE — 2-space `on:`, 4-space `jobs:` — is valid YAML, and it is the case an "detect the
+# file's indent unit" heuristic gets wrong: there is no single unit to detect. Relative depth has
+# no opinion, which is why this reads.
+cat > "$wfd/mixed.yml" <<'EOF'
+name: CI
+on:
+  pull_request:
+jobs:
+    lint:
+        name: Lint
+        runs-on: ubuntu-26.04
+        steps:
+            - name: a
+              run: bash --version
+EOF
+has "${ wfon mixed.yml; }" "TRIGGER|pull_request" "a mixed file's 2-space on: block is read"
+has "${ wf mixed.yml; }"   "JOB|1|lint"           "...and its 4-space jobs: block in the same file"
+has "${ wf mixed.yml; }"   "NAME|1|Lint"          "...including a job property at the deeper unit"
+
+# THE DRIFT THAT PROVED #262. Quote first, THEN comment: a quoted value ends at its closing quote,
+# so the whole quoted string is the label; an UNQUOTED one ends at a whitespace-preceded `#`. Both
+# halves, because getting either backwards ships a real defect in opposite directions — an accepted
+# job GitHub will never schedule, or a required context nothing ever reports.
+cat > "$wfd/scalar.yml" <<'EOF'
+on:
+  pull_request:
+jobs:
+  a:
+    name: Build  # the main build job
+    runs-on: "ubuntu-26.04 # not-the-label"
+  b:
+    name: "quoted # kept"
+    runs-on: ubuntu-26.04  # trailing comment
+EOF
+has "${ wf scalar.yml; }" "RUNSON|1|ubuntu-26.04 # not-the-label" \
+    "a QUOTED runs-on keeps its whole value — reducing it to the approved label is the #262 drift"
+has "${ wf scalar.yml; }" "NAME|1|Build" \
+    "an UNQUOTED name drops its trailing comment — keeping it requires a context nothing reports"
+has "${ wf scalar.yml; }" "NAME|2|quoted # kept" "a quoted name keeps a # inside the quotes"
+has "${ wf scalar.yml; }" "RUNSON|2|ubuntu-26.04" "an unquoted runs-on drops its trailing comment"
+
+# EVERY METADATA FLAG, since the two consumers read them in opposite directions and a flag that
+# stops being emitted is silently benign to one of them.
+cat > "$wfd/flags.yml" <<'EOF'
+on:
+  pull_request:
+jobs:
+  plain:
+    runs-on: ubuntu-26.04
+  conditional:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-26.04
+  reusable:
+    uses: ./.github/workflows/other.yml
+  matrixed:
+    strategy:
+      matrix:
+        os: [a, b]
+    runs-on: ${{ matrix.os }}
+  bare-strategy:
+    strategy:
+      fail-fast: false
+    runs-on: ubuntu-26.04
+  inline-strat:
+    strategy: {matrix: {os: [a]}}
+    runs-on: ubuntu-26.04
+  dyn:
+    name: n-${{ github.event_name }}
+    runs-on: ubuntu-26.04
+  "quoted-key":
+    runs-on: ubuntu-26.04
+  hidden: {runs-on: ubuntu-26.04, steps: [x]}
+EOF
+has "${ wf flags.yml; }" "FLAG|2|if"       "a job-level if: is flagged"
+has "${ wf flags.yml; }" "FLAG|3|uses"     "a reusable-workflow job is flagged"
+has "${ wf flags.yml; }" "FLAG|4|matrix"   "a block-form strategy.matrix is flagged"
+hasnt "${ wf flags.yml; }" "FLAG|5|matrix" "a bare strategy: without matrix is NOT flagged"
+has "${ wf flags.yml; }" "FLAG|6|matrix"   "an inline 'strategy: {matrix: …}' is flagged"
+has "${ wf flags.yml; }" "FLAG|7|dynamic"  "a name: carrying \${{ }} is flagged"
+has "${ wf flags.yml; }" "JOB|8|quoted-key" "a QUOTED job id is a visible job, unquoted"
+has "${ wf flags.yml; }" "FLAG|9|inline"   "an inline flow-mapping job is a visible job, flagged"
+eq  "${ adb_wf_jobs "$wfd/flags.yml" | grep -c '^JOB	'; }" "9" "every job is enumerated, none skipped"
+
+# THE `on:` FALSE POSITIVE that scoping exists to prevent: `push:`/`pull_request:` sit at the SAME
+# indent as job keys, so a whole-file scan harvests them as jobs and requires contexts that can
+# never report. This repo's own ci.yml is that shape.
+cat > "$wfd/onshape.yml" <<'EOF'
+on:
+  push:
+  pull_request:
+jobs:
+  real:
+    runs-on: ubuntu-26.04
+EOF
+eq "${ adb_wf_jobs "$wfd/onshape.yml" | grep -c '^JOB	'; }" "1" \
+   "a trigger at job-key indent is never enumerated as a job"
+
+# THE `on:` FILTER VOCABULARY, each of which is a verdict input in repo-settings.sh.
+printf 'on: [push, pull_request]\njobs:\n  a:\n' > "$wfd/flowseq.yml"
+has "${ wfon flowseq.yml; }" "TRIGGER|pull_request" "an inline flow-sequence 'on:' is read"
+printf 'on: pull_request\njobs:\n  a:\n' > "$wfd/inlinescalar.yml"
+has "${ wfon inlinescalar.yml; }" "TRIGGER|pull_request" "an inline scalar 'on:' is read"
+printf 'on:\n  pull_request: {types: [closed]}\njobs:\n  a:\n' > "$wfd/inlinemap.yml"
+has "${ wfon inlinemap.yml; }" "PRINLINEFILTER|pull_request" "an inline flow-MAPPING filter is reported, not silently dropped"
+printf 'on:\n  pull_request:\n    paths-ignore:\n      - docs/**\njobs:\n  a:\n' > "$wfd/pi.yml"
+has "${ wfon pi.yml; }" "PRFILTER|paths" "paths-ignore reports as the paths filter"
+printf 'on:\n  pull_request:\n    branches-ignore:\n      - dev\njobs:\n  a:\n' > "$wfd/bi.yml"
+has "${ wfon bi.yml; }" "PRFILTER|branches-ignore" "branches-ignore is its own filter"
+
+# STRUCTURAL ABSENCE is a REPORTED fact, not an empty result — this is what lets a consumer tell
+# "no jobs here" apart from "this parser went blind", the distinction #102 is entirely about.
+printf 'name: x\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/noon.yml"
+has "${ wfon noon.yml; }" "ONBLOCK|0" "a file with no on: block says so"
+printf 'on:\n  pull_request:\n' > "$wfd/nojobs.yml"
+has "${ wf nojobs.yml; }" "JOBSBLOCK|0" "a file with no jobs: block says so"
+printf 'on:\n  pull_request:\njobs:\n' > "$wfd/emptyjobs.yml"
+has "${ wf emptyjobs.yml; }" "JOBSBLOCK|1" "a file WITH a jobs: block says so..."
+eq "${ adb_wf_jobs "$wfd/emptyjobs.yml" | grep -c '^JOB	'; }" "0" "...and yields no jobs — the pair a consumer must fail loud on"
+
+# A SEQUENCE AT ITS KEY'S OWN COLUMN is valid YAML that GitHub runs. Handled here rather than in a
+# consumer: a floor lint that cannot see a job's steps reports that job unguarded, so this spelling
+# would turn a legitimate workflow red for a reason its author could not act on.
+printf 'on:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-26.04\n    steps:\n    - name: one\n      run: x\n    - name: two\n      run: y\n' > "$wfd/seqflat.yml"
+eq "${ adb_wf_jobs "$wfd/seqflat.yml" | grep -c '^STEP	'; }" "2" \
+   "steps written at their key's own column are still counted"
+
+# COMMENTS AND BLANKS never set a block's child column. An indented comment as the first line
+# inside a block would otherwise define the indent for everything under it.
+printf 'on:\n  # a comment first\n  pull_request:\njobs:\n\n      # deeply indented comment\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/comments.yml"
+has "${ wfon comments.yml; }" "TRIGGER|pull_request" "a comment before the first trigger does not set the trigger column"
+has "${ wf comments.yml; }"   "JOB|1|a"              "a blank line and an over-indented comment do not set the job column"
+
+# CRLF: a workflow authored on Windows is one GitHub runs, and a stray \r riding inside every
+# scalar turns a valid label into one that matches no allowlist entry.
+printf 'on:\r\n  pull_request:\r\njobs:\r\n  a:\r\n    runs-on: ubuntu-26.04\r\n' > "$wfd/crlf.yml"
+has "${ wf crlf.yml; }" "RUNSON|1|ubuntu-26.04" "a CRLF workflow yields clean scalars"
+
+# ARGUMENT VALIDATION and the FAIL-CLOSED completion marker. The dangerous answer from this reader
+# is EMPTY — it reads as a legitimately jobless file, which is #102 in production.
+adb_wf_jobs >/dev/null 2>&1;            eq "$?" 1 "no argument is a failure, not an empty scan"
+adb_wf_jobs /nonexistent >/dev/null 2>&1; eq "$?" 1 "an unreadable file is a failure, not an empty scan"
+_adb_wf_read bogus /dev/null >/dev/null 2>&1; eq "$?" 2 "an unknown mode is rejected (2)"
+wfstub="$(mktemp -d)"
+printf '#!/bin/sh\nprintf "JOB\\t1\\ta\\n"\nexit 0\n' > "$wfstub/awk"; chmod +x "$wfstub/awk"
+( PATH="$wfstub:$PATH"; adb_wf_jobs "$wfd/two.yml" >/dev/null 2>&1 ); eq "$?" 1 \
+   "a TRUNCATED run (exit 0, plausible records, no completion marker) is a FAILURE"
+printf '#!/bin/sh\nexit 9\n' > "$wfstub/awk"
+( PATH="$wfstub:$PATH"; adb_wf_jobs "$wfd/two.yml" >/dev/null 2>&1 ); eq "$?" 1 \
+   "...and so is a hard awk failure"
+printf '#!/bin/sh\nprintf "\\001ADB_WF_OK\\n"\nexit 0\n' > "$wfstub/awk"
+( PATH="$wfstub:$PATH"; adb_wf_jobs "$wfd/two.yml" >/dev/null 2>&1 ); eq "$?" 1 \
+   "a stub emitting the FIXED marker text is rejected — the trailer is nonced per invocation"
+# --- the YAML forms independent review found the first cut could not read -----
+# Every one of these is valid YAML that GitHub runs, and every one was previously either invisible
+# or — worse — turned into a required context that nothing reports.
+
+# ANCHORS AND ALIASES. GitHub documents anchoring a whole job configuration. `build: &base_job` puts
+# a value on the job-key line, and classifying any such value as an inline mapping made discovery
+# skip a perfectly readable job while the floor lint replaced its real runner with `<inline
+# mapping>` and failed a valid workflow. An ALIAS is genuinely unreadable — the configuration lives
+# at the anchor — so it stays flagged.
+cat > "$wfd/anchor.yml" <<'EOF'
+on:
+  pull_request:
+jobs:
+  build: &base_job
+    name: Build
+    runs-on: ubuntu-26.04
+  alt-build: *base_job
+EOF
+has "${ wf anchor.yml; }" "RUNSON|1|ubuntu-26.04" "an ANCHORED job is read normally (its properties still follow below)"
+has "${ wf anchor.yml; }" "NAME|1|Build"          "...including its name"
+hasnt "${ wf anchor.yml; }" "FLAG|1|inline"       "...and it is NOT mistaken for an inline mapping"
+has "${ wf anchor.yml; }" "FLAG|2|alias"          "an ALIAS is flagged — its configuration is not under this key"
+
+# AN INLINE FLOW MAPPING WITH NO `name:` has a provable context: the job key. Skipping it left valid
+# PR CI ungated, which is the opposite error from a phantom context and just as real.
+printf 'on:\n  pull_request:\njobs:\n  plain: {runs-on: ubuntu-26.04}\n  named: {runs-on: ubuntu-26.04, name: Real Name}\n' > "$wfd/inline.yml"
+has "${ wf inline.yml; }" "FLAG|1|inline"   "an inline mapping is flagged for the floor lint either way"
+has "${ wf inline.yml; }" "FLAG|1|keyed"    "...and one whose key is PROVABLY the context says so"
+hasnt "${ wf inline.yml; }" "FLAG|2|keyed"  "...while one carrying a name: does not"
+
+# BLOCK AND FOLDED SCALARS. `name: >-` puts the text on the FOLLOWING lines, and emitting the header
+# produced the required context `>-` — a phantom that never reports and needs an admin token to
+# clear. Reported unreadable instead, which under-requires, the recoverable direction.
+printf 'on:\n  pull_request:\njobs:\n  a:\n    name: >-\n      Build and test\n    runs-on: ubuntu-26.04\n' > "$wfd/block.yml"
+has "${ wf block.yml; }" "FLAG|1|blockname" "a folded-scalar name: is reported unreadable"
+hasnt "${ wf block.yml; }" "NAME|1|>-"      "...and its HEADER is never emitted as the name"
+
+# QUOTED-SCALAR ESCAPES, both styles. Truncating at the first inner quote invents a context.
+printf 'on:\n  pull_request:\njobs:\n  a:\n    name: "Build \\"quoted\\""\n  b:\n    name: '"'"'it'"'"''"'"'s here'"'"'\n' > "$wfd/esc.yml"
+has "${ wf esc.yml; }" 'NAME|1|Build "quoted"' "a backslash-escaped quote inside a double-quoted name survives"
+has "${ wf esc.yml; }" "NAME|2|it's here"      "a doubled single quote inside a single-quoted name survives"
+
+# BLOCK SEQUENCES, at BOTH spellings, for `on:` and for a filter. The dash form is not a mapping
+# key, so a reader that only accepts keys reported "no pull_request trigger" on a workflow that runs
+# on every PR — #102's failure in a different costume.
+printf 'on:\n  - push\n  - pull_request\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/seq1.yml"
+has "${ wfon seq1.yml; }" "TRIGGER|pull_request" "an INDENTED block-sequence 'on:' is read"
+printf 'on:\n- push\n- pull_request\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/seq2.yml"
+has "${ wfon seq2.yml; }" "TRIGGER|pull_request" "an INDENTATIONLESS block-sequence 'on:' is read"
+printf 'on:\n  pull_request:\n    branches:\n    - main\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/seq3.yml"
+has "${ wfon seq3.yml; }" "PRBRANCH|main" "a branches: sequence at its key's OWN column is read"
+printf 'on:\n  pull_request:\n    types:\n    - opened\n    - synchronize\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/seq4.yml"
+has "${ wfon seq4.yml; }" "PRTYPE|synchronize" "a types: sequence at its key's OWN column is read"
+
+# THE INLINE-MAPPING KEY TEST IS DEPTH-AWARE, not a substring search. `environment: {name: …}` is
+# the common nesting, so a substring test suppressed `keyed` for an ordinary deploy job and left a
+# real PR job ungated. And `keyed` means the key is PROVABLY the context, so `if:`/`uses:`/
+# `strategy:` disqualify it too — requiring one of those under its key is a phantom context that
+# never reports, which is the deadlock, not the recoverable direction.
+printf 'on:\n  pull_request:\njobs:\n  deploy: {runs-on: ubuntu-26.04, environment: {name: production}, steps: [x]}\n' > "$wfd/nested.yml"
+has "${ wf nested.yml; }" "FLAG|1|keyed" "a NESTED name: does not suppress keyed — the context is still the job key"
+printf 'on:\n  pull_request:\njobs:\n  a: {runs-on: x, name: Real, steps: [y]}\n  b: {runs-on: x, "name": Q, steps: [y]}\n' > "$wfd/topname.yml"
+hasnt "${ wf topname.yml; }" "FLAG|1|keyed" "a TOP-LEVEL name: does suppress it"
+hasnt "${ wf topname.yml; }" "FLAG|2|keyed" "...including a QUOTED top-level name:"
+printf 'on:\n  pull_request:\njobs:\n  a: {runs-on: x, if: false, steps: [y]}\n  b: {runs-on: x, strategy: {matrix: {os: [p]}}, steps: [y]}\n  c: {uses: ./.github/workflows/o.yml}\n  d: {runs-on: x, steps: [y]}\n' > "$wfd/inlmeta.yml"
+hasnt "${ wf inlmeta.yml; }" "FLAG|1|keyed" "an inline job carrying if: is not keyed"
+hasnt "${ wf inlmeta.yml; }" "FLAG|2|keyed" "an inline job carrying strategy: is not keyed"
+hasnt "${ wf inlmeta.yml; }" "FLAG|3|keyed" "an inline job carrying uses: is not keyed"
+has   "${ wf inlmeta.yml; }" "FLAG|4|keyed" "...while a plain inline job still is"
+
+# A FLOW SEQUENCE SPLIT ON QUOTE-AWARE COMMAS. A branch pattern may contain a comma; splitting
+# blindly yields two malformed values and the real branch reads as excluded.
+printf 'on:\n  pull_request:\n    branches: ["release,stable", main]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/comma.yml"
+has "${ wfon comma.yml; }" "PRBRANCH|release,stable" "a comma INSIDE a quoted flow entry does not split it"
+has "${ wfon comma.yml; }" "PRBRANCH|main"           "...and the following entry is still read"
+
+rm -rf "$wfstub" "$wfd"
+
+# THE REAL TREE, cross-checked against an INDEPENDENT counter. Every assertion above runs on a
+# fixture this file wrote, so all of them survive a reader that goes PARTIALLY blind on the actual
+# workflows — and the two consumers' aggregate rules survive it too (the floor lint fails only on
+# a file yielding ZERO jobs; discovery fails only on the same). One real job quietly dropped is
+# therefore invisible everywhere, which is the gap this closes.
+#
+# The counter is deliberately a SECOND METHOD, not a second call: a naive 2-space scan scoped to
+# the `jobs:` block, which is exactly what the retired scanners did and is correct for these two
+# files because both are uniformly 2-space indented. Agreement between an indent-agnostic reader
+# and an indent-pinned one ON A 2-SPACE FILE is a real cross-check; it needs no updating when a CI
+# job is added, so it cannot rot into a number nobody trusts.
+naive_jobs() {
+  awk '/^jobs:[[:space:]]*$/{j=1;next} /^[^[:space:]#]/{j=0} j && /^  [A-Za-z0-9_"-]+:/{n++} END{print n+0}' "$1"
+}
+for _wf in .github/workflows/*.yml; do
+  eq "${ adb_wf_jobs "$_wf" | grep -c '^JOB	'; }" "${ naive_jobs "$_wf"; }" \
+     "real tree: the shared reader and an independent 2-space counter agree on $_wf"
+done
+
 check_summary "common-lib"

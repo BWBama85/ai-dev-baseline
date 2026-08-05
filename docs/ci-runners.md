@@ -261,6 +261,38 @@ one would be invisible.
 The two CI-only steps are deliberately not duplicated on macOS: `required-drift` and the live claim
 lint assert facts about this repo's *settings and tracker*, which are platform-independent.
 
+## Two consumers, one reader
+
+`.github/workflows` is read by two things that want **opposite** answers from it:
+
+| Reader | Question | So it… |
+|---|---|---|
+| `scripts/lib/repo-settings.sh` | which jobs report a **provable check context**? | *skips* matrix / `if:` / reusable / dynamic-name jobs |
+| `scripts/check-bash-floor.sh` | which jobs run on a **proven bash ≥ 5.3 runner**? | must see **every** job, precisely including the ones discovery skips |
+
+The opposite filters are correct and stay — a matrix job left on `ubuntu-latest` is invisible as a
+required context and still very much a job running below the floor.
+
+What is **not** duplicated any more is how those jobs are *found* (#262). Both files used to carry
+their own job-boundary detection and their own YAML scalar parser, and the two had already drifted
+**by the time the second one was written**: `runs-on: "ubuntu-26.04 # not-the-label"` was read
+correctly by `repo-settings.sh` (a quoted value ends at its closing quote) and reduced to the
+approved label `ubuntu-26.04` by `check-bash-floor.sh`, which would have accepted a job whose real
+runner label is the whole quoted string and which GitHub would never schedule. Review caught that
+one before #257 merged; nothing prevented the next divergence.
+
+Enumeration now comes from `adb_wf_on` / `adb_wf_jobs` in `scripts/lib/common.sh` — one reader, two
+filters — and it hands each consumer the job's **line range** and **step boundaries** so the floor
+lint's step-level rules stay scoped without re-answering "where does this job start" in a second
+dialect. What stays in `check-bash-floor.sh` is its own grammar: which `run:` invocations count as
+wiring the guard, and the WSL forms. That is a question about this repo's CI contract, not about
+YAML.
+
+Two structural rules keep it that way, because re-growing a private scanner is a silent change that
+leaves both files' own suites green: `check-fact-drift.sh` pins that both consumers still call the
+shared reader, and an `absent:` rule (proven able to fail by `--mutation`) rejects the retired local
+`yaml_scalar` / `flush_job` definitions coming back beside it.
+
 ## Adding a job
 
 `scripts/check-bash-floor.sh` (offline, in `selfcheck`) will fail the PR unless the new job:

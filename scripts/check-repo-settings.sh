@@ -232,6 +232,228 @@ yes "$RC_" "a repo with no .github/workflows exits 0 (no CI is a legitimate stat
 eq "$OUT" "" "a repo with no CI discovers no contexts"
 has "$(cat "$work/err")" "no CI" "the no-CI case says so on stderr"
 
+wf_reset
+mkdir -p "$WF"
+printf 'name: E\non:\n  pull_request:\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/keep.yml"
+OUT="$(bash "$RS" checks --branch main --workflow-dir "$WF" 2>"$work/err")"; RC_=$?
+yes "$RC_" "a directory with only readable workflows still exits 0"
+
+# ============================ #102: indentation is not the grammar ============================
+# THE REPRODUCTION. A uniform 4-space workflow is valid YAML that GitHub runs happily. Before this,
+# discovery reported `skipping ci.yml — no pull_request trigger`, contributed ZERO contexts, and
+# EXITED 0 — the parser going blind with nothing to report it. `required-drift`, the backstop that
+# was supposed to catch the under-requirement, could not (it derives its desired set from this same
+# discovery), so `apply` reported success while gating nothing.
+wf_reset
+cat > "$WF/ci.yml" <<'EOF'
+name: CI
+on:
+    push:
+    pull_request:
+        branches:
+            - main
+jobs:
+    shellcheck:
+        name: shellcheck
+        runs-on: ubuntu-26.04
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+    build-drift:
+        name: build-drift
+        runs-on: ubuntu-26.04
+        steps:
+            - name: Rebuild
+              run: bash scripts/build.sh
+EOF
+disco main
+yes "$RC_" "4-space: discovery exits 0"
+eq "${ ctx; }" 'build-drift|shellcheck|' "4-space: both jobs are discovered (they used to be invisible)"
+hasnt "$ERR" "no pull_request trigger" "4-space: the trigger block is read, not reported missing"
+hasnt "$OUT" "push" "4-space: the push: trigger still never becomes a context"
+hasnt "$OUT" "Checkout" "4-space: a step-level '- name:' is still never mistaken for a job name"
+
+# THE SAME FILTERS MUST STILL APPLY at 4 spaces. Reading the file is only half of it — a skip rule
+# that silently stopped firing at the new indent would require a context that can never report.
+wf_reset
+cat > "$WF/skips.yml" <<'EOF'
+name: S
+on:
+    pull_request:
+jobs:
+    keyed:
+        runs-on: ubuntu-26.04
+    conditional:
+        if: github.event_name == 'push'
+        runs-on: ubuntu-26.04
+    matrixed:
+        strategy:
+            matrix:
+                os: [a, b]
+        runs-on: ${{ matrix.os }}
+    reusable:
+        uses: ./.github/workflows/other.yml
+    dynamic:
+        name: dyn-${{ github.event_name }}
+        runs-on: ubuntu-26.04
+EOF
+disco main
+eq "${ ctx; }" 'keyed|' "4-space: every 'cannot prove it reports' skip still fires"
+has "$ERR" "skipping job conditional" "4-space: a job-level if: is still skipped"
+has "$ERR" "skipping job matrixed"    "4-space: a matrix job is still skipped"
+has "$ERR" "skipping job reusable"    "4-space: a reusable-workflow job is still skipped"
+has "$ERR" "skipping job dynamic"     "4-space: a \${{ }} job name is still skipped"
+
+# 4-space FILE-LEVEL filters, at their own relative depths.
+wf_reset
+printf 'on:\n    pull_request:\n        paths:\n            - "src/**"\njobs:\n    a:\n        runs-on: ubuntu-26.04\n' > "$WF/p.yml"
+disco main
+eq "${ ctx; }" '' "4-space: a paths-filtered pull_request contributes nothing"
+has "$ERR" "paths/paths-ignore filter" "4-space: the paths skip is named"
+wf_reset
+printf 'on:\n    pull_request:\n        branches:\n            - develop\njobs:\n    a:\n        runs-on: ubuntu-26.04\n' > "$WF/b.yml"
+disco main
+eq "${ ctx; }" '' "4-space: a branches: filter naming another base is honoured"
+has "$ERR" "does not provably include main" "4-space: the branches skip names the target"
+disco develop
+eq "${ ctx; }" 'a|' "4-space: ...and the same file keeps the job when develop IS the target"
+wf_reset
+printf 'on:\n    pull_request:\n        types:\n            - closed\njobs:\n    a:\n        runs-on: ubuntu-26.04\n' > "$WF/t.yml"
+disco main
+eq "${ ctx; }" '' "4-space: a narrowed types: is honoured (the merge-cleanup trap)"
+has "$ERR" "needs both opened and synchronize" "4-space: the types skip says what is missing"
+
+# A MIXED REPOSITORY: one 2-space file and one 4-space file, each detected independently. This is
+# the case an "detect the file's indent unit" heuristic gets wrong — there is no single unit — and
+# a per-file unit would still miss a file that mixes units WITHIN itself, which the next case is.
+wf_reset
+printf 'name: Two\non:\n  pull_request:\njobs:\n  two-space:\n    runs-on: ubuntu-26.04\n' > "$WF/two.yml"
+printf 'name: Four\non:\n    pull_request:\njobs:\n    four-space:\n        runs-on: ubuntu-26.04\n' > "$WF/four.yml"
+disco main
+eq "${ ctx; }" 'four-space|two-space|' "a repo mixing 2-space and 4-space FILES discovers both"
+wf_reset
+printf 'name: M\non:\n  pull_request:\njobs:\n    inner-four:\n        runs-on: ubuntu-26.04\n' > "$WF/m.yml"
+disco main
+eq "${ ctx; }" 'inner-four|' "a SINGLE file mixing units between its on: and jobs: blocks reads too"
+
+# --- the two DELIBERATE behaviour changes, pinned so neither drifts back silently ----------------
+# Both were verified against origin/main and both turned out to be fixes rather than trade-offs.
+
+# (a) NEGATION IS SCOPED TO BRANCH PATTERNS. The awk predecessor set the flag from ANY flow list it
+#     parsed, `types:` included, so an ordinary `branches: [main]` beside a negated types entry was
+#     refused and the job stopped being required — a silent under-requirement with no message
+#     naming the real cause.
+wf_reset
+printf 'on:\n  pull_request:\n    types: [opened, synchronize, "!weird"]\n    branches: [main]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/negtypes.yml"
+disco main
+eq "${ ctx; }" 'a|' "a negated TYPES entry does not trip the branch-negation rule"
+# ...and the rule it was scoped away from must still fire on a real branch negation, or the fix
+# would have simply deleted the guard.
+wf_reset
+printf 'on:\n  pull_request:\n    branches: ["*", "!main"]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/negbr.yml"
+disco main
+eq "${ ctx; }" '' "a negated BRANCH pattern still refuses the file"
+has "$ERR" "negative patterns" "...naming the ordered-precedence reason"
+
+# (b) AN INLINE FLOW-MAPPING JOB. With a `name:` inside, the context is that name and requiring the
+#     KEY would be a phantom that never reports. With NO `name:`, the context provably IS the key,
+#     and skipping it would leave valid PR CI ungated — the opposite error, equally real.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  plain: {runs-on: ubuntu-26.04}\n  named: {runs-on: ubuntu-26.04, name: Real Name}\n' > "$WF/inline.yml"
+disco main
+eq "${ ctx; }" 'plain|' "an inline job with NO name: is required under its key"
+has "$ERR" "skipping job named" "...while one carrying a name: is skipped"
+has "$ERR" "cannot prove a check name" "...for the stated reason"
+
+#     An inline job is required under its key ONLY when that key is provably the context. A NESTED
+#     `environment: {name: …}` must not suppress it (a substring test did, leaving a real job
+#     ungated), and `if:`/`uses:`/`strategy:` inside the mapping must disqualify it exactly as the
+#     block-form arms do — requiring one of those under its key is a phantom that never reports.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  deploy: {runs-on: ubuntu-26.04, environment: {name: production}, steps: [x]}\n' > "$WF/nested.yml"
+disco main
+eq "${ ctx; }" 'deploy|' "an inline job whose only name: is NESTED is still required under its key"
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  conditional: {runs-on: x, if: false, steps: [y]}\n  matrixed: {runs-on: x, strategy: {matrix: {os: [p]}}, steps: [y]}\n  reusable: {uses: ./.github/workflows/o.yml}\n  plain: {runs-on: x, steps: [y]}\n' > "$WF/inlmeta.yml"
+disco main
+eq "${ ctx; }" 'plain|' "inline jobs carrying if:/strategy:/uses: are NOT required under their keys"
+has "$ERR" "skipping job conditional" "...and each is skipped by name"
+has "$ERR" "skipping job matrixed"    "...matrix too"
+has "$ERR" "skipping job reusable"    "...and the reusable one"
+
+# (c) YAML ANCHORS are ordinary jobs; ALIASES are not. Anchoring a job configuration is documented
+#     GitHub behaviour, and treating the anchor token as an inline mapping skipped a readable job.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  build: &base\n    runs-on: ubuntu-26.04\n  alt: *base\n' > "$WF/anchor.yml"
+disco main
+eq "${ ctx; }" 'build|' "an ANCHORED job is required; its ALIAS is skipped"
+has "$ERR" "YAML alias" "...and the alias skip names why"
+
+# (d) A BLOCK-SCALAR name: must never become a required context. `>-` reports for nothing and needs
+#     an admin token to clear.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  a:\n    name: >-\n      Build and test\n    runs-on: ubuntu-26.04\n' > "$WF/blockname.yml"
+disco main
+eq "${ ctx; }" '' "a block-scalar name: is skipped, not required"
+hasnt "$OUT" ">-" "...and the scalar HEADER never reaches the required set"
+
+# (e) BLOCK-SEQUENCE TRIGGERS, both spellings — valid YAML that used to read as 'no pull_request
+#     trigger', which is #102's failure wearing a different costume.
+wf_reset
+printf 'on:\n  - push\n  - pull_request\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/seqin.yml"
+disco main
+eq "${ ctx; }" 'a|' "an indented block-sequence 'on:' is recognized"
+wf_reset
+printf 'on:\n- push\n- pull_request\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/seqflat.yml"
+disco main
+eq "${ ctx; }" 'a|' "an indentationless block-sequence 'on:' is recognized"
+
+# ============================ #102: fail loud, never a silent clean scan ============================
+# "This repo has no CI" (#24, legitimate, exit 0) and "this parser went blind" (a failure) used to
+# be the same observable. Every workflow has an `on:` key and a `jobs:` block with at least one job
+# in it — those facts are what make the file a workflow — so a violation is never a legitimate
+# shape, only a read that failed.
+wf_reset
+printf 'name: CI\non:\n  pull_request:\njobs:\n' > "$WF/empty.yml"
+disco main
+no "$RC_" "a jobs: block that yielded NO jobs is a hard failure, not an empty scan"
+has "$ERR" "always a parse failure" "...and the diagnostic says why that combination can never be legitimate"
+has "$ERR" "empty.yml" "...and names WHICH file"
+eq "${ ctx; }" '' "a failed scan contributes no contexts"
+
+wf_reset
+printf 'name: CI\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/noon.yml"
+disco main
+no "$RC_" "a file with no on: block at all is a hard failure"
+has "$ERR" "no on: block" "...and the diagnostic names the missing block"
+
+# PER FILE, not just in total — the same fail-open shape the floor lint's rule 4 closes. A second
+# file going blind is free the moment a first one still parses.
+wf_reset
+printf 'name: Good\non:\n  pull_request:\njobs:\n  good:\n    runs-on: ubuntu-26.04\n' > "$WF/good.yml"
+printf 'name: Bad\non:\n  pull_request:\njobs:\n' > "$WF/bad.yml"
+disco main
+no "$RC_" "a jobless SECOND file fails the run even though the first file parsed fine"
+has "$ERR" "bad.yml" "...and names the file that failed"
+has "${ ctx; }" 'good|' "...while the file that DID parse still contributes its context"
+
+# THE STRUCTURAL CHECK RUNS ON SKIPPED FILES TOO. A file skipped as "no pull_request trigger" is
+# exactly what a blind trigger parse looks like, so checking only the files that PASSED would leave
+# #102's own shape unexamined — the check would be absent from precisely the case it exists for.
+wf_reset
+printf 'name: P\non: push\njobs:\n' > "$WF/pushonly.yml"
+disco main
+no "$RC_" "a file the verdict SKIPS is still structurally checked"
+
+# ...and a legitimately skipped file that IS well-formed still exits 0, or the rule above would
+# fail every repo carrying a schedule-only or push-only workflow.
+wf_reset
+printf 'name: P\non: push\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/pushok.yml"
+disco main
+yes "$RC_" "a well-formed push-only workflow is skipped WITHOUT failing the run"
+eq "${ ctx; }" '' "...and contributes nothing"
+has "$ERR" "no pull_request trigger" "...for the documented reason"
+
 # ============================ gh-backed behavior (recording stub) ============================
 S="$work/stub"; mkdir -p "$S"
 SBIN="$work/sbin"; mkdir -p "$SBIN"
@@ -815,5 +1037,62 @@ fi
 if grep -q 'gh pr merge .*--auto --squash' "$WFSRC"; then
   bad "base/workflows/implement-issue.md hardcodes --squash again"
 else ok; fi
+
+# ============ #102: a blind parse must not reach a WRITE, or a fail-OPEN guard code ============
+# The parse-failure mapping, driven through the recording stub. These are the four consumers of
+# discovery, and each one's dangerous behaviour on an unreadable desired set is different:
+#
+#   apply          would write required checks from an incomplete scan — reporting success while
+#                  gating nothing, and with --prune DELETING the contexts still gating the repo.
+#   automerge-ok   would see nwant=0 and return 12 ("no CI at all"), a confident claim about a repo
+#                  whose CI it could not read, sending the operator to the wrong remedy.
+#   required-drift would see nwant=0 and return 0 — "in sync" about a comparison it never made.
+#                  That is #102's own shape one level up, and it is precisely why the backstop that
+#                  was supposed to catch #102 could not.
+#   status         would print "discovered contexts (desired): 0", which reads identically to a
+#                  repo that legitimately has no CI.
+wf_blind() { wf_reset; printf 'name: CI\non:\n  pull_request:\njobs:\n' > "$WF/blind.yml"; }
+
+wf_blind; repo_fx true true; branch_checks "one"
+rsx_stub required-drift
+eq "$RC_" "20" "required-drift maps a failed discovery to 20 — NOT 0, and NOT 14"
+has "$OUT" "check discovery failed" "...and says discovery is what failed"
+
+wf_blind; repo_fx true true; branch_checks "one"
+rsx_stub automerge-ok
+eq "$RC_" "20" "automerge-ok maps a failed discovery to 20 — NOT 12 ('this repo has no CI')"
+has "$OUT" "refusing to arm auto-merge" "...and refuses to arm"
+
+wf_blind; repo_fx true true; branch_checks "one"
+rsx_stub status
+no "$RC_" "status reports drift when discovery failed"
+has "$OUT" "check discovery FAILED" "...naming discovery rather than showing a bare 0 desired contexts"
+
+# THE WRITE MUST NOT HAPPEN. rc alone is not enough here: `apply` could fail AFTER mutating, which
+# is the half-configured state this module exists to prevent. Assert the call log is empty of
+# writes — that is the property, and it is checked structurally rather than inferred from a message.
+wf_blind; repo_fx true true; branch_checks "one"
+rsx_stub apply
+no "$RC_" "apply refuses when discovery failed"
+has "$OUT" "refusing to write required checks" "...and says so"
+hasnt "$(cat "$STUB_CALLS")" "required_status_checks" "apply wrote NO required checks after a failed scan"
+hasnt "$(cat "$STUB_CALLS")" "allow_auto_merge" "apply did NOT enable auto-merge after a failed scan"
+
+# --prune is the destructive arm: it DELETES required contexts this tool did not discover. A blind
+# scan discovers nothing, so an unguarded --prune would clear the branch's entire required set —
+# turning a parse failure into the repo losing its gating. Pinned separately from plain apply.
+wf_blind; repo_fx true true; branch_checks "one" "two"
+rsx_stub apply --prune
+no "$RC_" "apply --prune refuses when discovery failed"
+eq "$(cat "$STUB_CALLS")" "" "...and made NO API call at all — a blind --prune would have cleared the required set"
+
+# The 4-space repo that used to be invisible now applies normally, which is the other half of the
+# claim: fail-loud must not have been bought by failing on files that are simply fine.
+wf_reset
+printf 'name: CI\non:\n    pull_request:\njobs:\n    one:\n        runs-on: ubuntu-26.04\n' > "$WF/four.yml"
+repo_fx true true; branch_checks "one"
+rsx_stub required-drift
+eq "$RC_" "0" "a 4-space repo whose job IS required reports no drift (it used to report nwant=0)"
+has "$OUT" "no drift" "...by matching, not by discovering nothing"
 
 check_summary "repo-settings"
