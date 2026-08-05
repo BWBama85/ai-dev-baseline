@@ -164,6 +164,12 @@ scan_jobs() {
   records="$(adb_wf_jobs "$1")" || return 1
   # Passed through the ENVIRONMENT, not `awk -v`: -v processes backslash escapes in the value, so a
   # job key or a runner label containing a backslash would arrive mangled. ENVIRON does not.
+  #
+  # The ceiling this accepts, stated rather than discovered: the records ride `execve`'s ARG_MAX
+  # alongside the inherited environment (1 MiB on this macOS host). A workflow large enough to cross
+  # it cannot start awk — which fails CLOSED, through the `|| return 1` below, so the lint refuses
+  # rather than reporting a clean scan. Reaching it needs thousands of jobs in one file; the two in
+  # this repo produce a few KB.
   ADB_WF_RECORDS="$records" awk "$_ADB_WF_AWK"'
     # The distro token a `wsl -d <name>` / `--distribution <name>` invocation names, unquoted, or
     # empty. Captured rather than merely matched because the two WSL steps must name the SAME
