@@ -690,6 +690,27 @@ cmd_release_counts() {
   printf '%s\n' "$out" | awk 'NR <= 3 { print } END { for (i = NR + 1; i <= 3; i++) print "" }'
 }
 
+# --- the marker readers' shared escape neutralizer --------------------------------------------
+# _adb_rm_deescape — stdin: prose that has already been through `adb_md_prose`. Neutralizes a
+# BACKSLASH-ESCAPED comment opening so an escaped EXAMPLE cannot read as a declaration.
+#
+# WHY THIS IS NOT `adb_md_prose`'s JOB, and why it is not three copies either. The shared filter
+# removes STRUCTURE — fences, spans, blockquotes, indented blocks — and with `--keep-comments` it
+# deliberately leaves HTML comments alone, because for these three readers the comment IS the
+# declaration. A backslash escape is a different thing: it is not a container, it is a statement
+# that what follows is literal text. GitHub renders `\<!--` as a visible `<!--`, so an author who
+# escapes the marker is SHOWING it in the rendered issue — exactly the "documentation, not
+# declaration" case the markup rule exists for, arriving by a door the structure filter does not
+# watch. Deciding that is the marker reader's call, so it lives here; teaching the shared filter
+# about escapes would change `deps-from-body`, `decisions` and every other consumer, which is a
+# separate change with a far wider blast radius.
+#
+# ONE home, three callers, for the reason this repo always gives: the three readers had this hole
+# identically (verified on all three), and three pasted `sed`s would be three things to fix next
+# time. Replacing with the MASK BYTE rather than deleting: the value filters downstream already
+# drop anything carrying it, so a partially-escaped construct cannot reassemble into a match.
+_adb_rm_deescape() { sed "s/\\\\<!--/${_ADB_MD_MASKC}/g"; }
+
 # --- marker-title ---------------------------------------------------------------------------
 # Print the DISTINCT release-milestone titles named by a roadmap artifact body (stdin), one per
 # line. Empty output means "the convention is not active here" — the caller decides whether that
@@ -742,6 +763,7 @@ cmd_release_command() {
   prose="$(adb_md_prose mask --keep-comments)" \
     || die "release-command: the markdown prose filter failed (refusing to read an unfiltered body)"
   printf '%s' "$prose" \
+    | _adb_rm_deescape \
     | grep -o '<!--[[:space:]]*release-command:[[:space:]]*[^>]*-->' \
     | sed 's/.*release-command:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \
@@ -791,6 +813,7 @@ cmd_health_optout() {
   # byte dropped so a span-swallowed value is not a declaration, and a backticked value dropped
   # because no legal value contains one.
   values="$(printf '%s' "$prose" \
+    | _adb_rm_deescape \
     | grep -o '<!--[[:space:]]*release-health:[[:space:]]*[^>]*-->' \
     | sed 's/.*release-health:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \
@@ -827,6 +850,7 @@ cmd_marker_title() {
   # INPUT): two markers on a single line must surface as two titles, so the caller can refuse an
   # ambiguous artifact. With sed, the leading `.*` is greedy and silently keeps only the last.
   printf '%s' "$prose" \
+    | _adb_rm_deescape \
     | grep -o '<!--[[:space:]]*release-milestone:[[:space:]]*[^>]*-->' \
     | sed 's/.*release-milestone:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
     | grep -v '^[[:space:]]*$' \

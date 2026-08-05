@@ -1284,6 +1284,18 @@ eq "${ ho '<!-- release-health: skip-unreported --> then <!-- something else -->
    "the value stops at its own marker terminator"
 bash "$RL" health-optout extra-arg >/dev/null 2>&1
 eq "$?" 2 "health-optout takes no arguments"
+# A BACKSLASH-ESCAPED marker is DOCUMENTATION, not a declaration (bot-review find on PR #294).
+# GitHub renders `\<!--` as a visible `<!--`, so an author who escapes the marker is SHOWING it in
+# the rendered issue — but the shared prose filter leaves it alone (it removes structure, and an
+# escape is not a container), so the extraction matched the `<!-- … -->` substring inside it and
+# armed the opt-out. All THREE marker readers had this identically; the fix is one neutralizer they
+# share, so both directions are pinned for each of them below.
+eq "${ ho '\\<!-- release-health: skip-unreported -->\n'; }" 'off' \
+   "OVER: a BACKSLASH-ESCAPED marker does not declare (it renders as visible text, i.e. an example)"
+eq "${ ho 'Write it as \\<!-- release-health: skip-unreported --> to show it.\n'; }" 'off' \
+   "OVER: ...including mid-sentence, which is how a body actually documents it"
+eq "${ ho '\\<!-- release-health: skip-unreported -->\n<!-- release-health: skip-unreported -->\n'; }" \
+   'skip-unreported' "UNDER: a real marker below an escaped example still declares"
 # THE SCHEMA'S OWN EXAMPLE MUST NOT DECLARE. A bootstrapped artifact copies the workflow's OPTIONAL
 # comment block verbatim, so if that block's example read as a declaration every fresh roadmap
 # would ship with the escape hatch armed — the exact false activation the opt-in design forbids.
@@ -2158,6 +2170,18 @@ eq "${ mtit "<!-- note ${bt} -->\n<!-- release-milestone: Real -->\n<!-- ${bt} n
    "UNDER: backticks in two separate comments do not pair across a real marker between them"
 eq "${ rcmd "<!-- note ${bt} -->\n<!-- release-command: real -->\n<!-- ${bt} note -->\n"; }" 'real' \
    "UNDER: ...and the same for release-command"
+# THE SAME ESCAPE HOLE, on the two markers that had it before this change (bot-review find on
+# PR #294). `release-milestone` is the mode switch for the whole release-readiness overlay and
+# `release-command` is what a met verdict emits, so an escaped EXAMPLE reading as a declaration
+# turns the overlay on, or declares a command, in a repo that only meant to document the syntax.
+eq "${ mtit '\\<!-- release-milestone: Next release -->\n'; }" '' \
+   "OVER: an escaped release-milestone example does not activate the overlay"
+eq "${ rcmd '\\<!-- release-command: release -->\n'; }" '' \
+   "OVER: ...nor does an escaped release-command example declare a command"
+eq "${ mtit '\\<!-- release-milestone: Fake -->\n<!-- release-milestone: Real -->\n'; }" 'Real' \
+   "UNDER: ...and a real marker beside an escaped one still declares, alone"
+eq "${ rcmd '\\<!-- release-command: fake -->\n<!-- release-command: real -->\n'; }" 'real' \
+   "UNDER: ...same for release-command (the escape must not swallow the declaration after it)"
 bash "$RL" decisions extra-arg >/dev/null 2>&1
 eq "$?" 2 "decisions takes no arguments"
 
