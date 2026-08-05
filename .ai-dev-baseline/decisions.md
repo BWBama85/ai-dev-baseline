@@ -2845,4 +2845,4 @@ limit: none of them is sufficient alone.
              in `check-roadmap.sh` 4d, `check-repo-settings.sh` and `check-common-lib.sh` were left
              alone: they are API-contract fixtures whose whole value is that they do NOT derive the
              slug.
-- baseline-issue: #115, #113, #183  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->
+- baseline-issue: #115, #113, #183; the unprotected-branch residue is #293  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->

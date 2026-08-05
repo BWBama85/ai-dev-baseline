@@ -155,7 +155,7 @@ being taken as "requires nothing".
 
 **What this still cannot see**, stated plainly. An **unprotected** branch declares no contexts, so a
 repo with external CI and no branch protection still reads `no-ci` when nothing has ever reported on
-the commit; no non-admin endpoint answers "does CI exist" for that shape. And required checks are
+the commit; no non-admin endpoint answers "does CI exist" for that shape. Tracked in #293. And required checks are
 matched by **context name** — GitHub's newer `checks` array can bind a context to an expected
 `app_id`, which this discards, so a same-named result from another provider satisfies the
 requirement. Both are the model `read_branch`, `live_contexts` and `required-drift` already use.

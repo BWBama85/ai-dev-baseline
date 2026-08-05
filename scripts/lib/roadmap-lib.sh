@@ -304,7 +304,8 @@ cmd_pr_targets_issue() {
 #      there is nothing to protect. #115's acceptance says "a non-Actions CI repo does not resolve
 #      to `no-ci`"; that now holds for a repo that DECLARES required contexts (the case its own
 #      reproduction describes) and does NOT hold for an unprotected one. Knowingly unmet, not
-#      overlooked.
+#      overlooked, and TRACKED IN #293 — which is where the choice between an owner declaration, a
+#      check-suites probe, and inverting the no-evidence default gets made.
 #   2. Required checks are matched by CONTEXT NAME. GitHub's newer `checks` array can additionally
 #      bind a context to an expected `app_id`, and that binding is discarded here — so a check or
 #      status from a DIFFERENT provider with the same name satisfies the requirement. This matches

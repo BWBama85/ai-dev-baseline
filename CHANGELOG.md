@@ -52,7 +52,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   ever reported; no non-admin endpoint answers that shape. #115's acceptance says "a non-Actions CI
   repo does not resolve to `no-ci`" — that now holds for a repo which **declares required contexts**
   (the case its own reproduction describes) and does **not** hold for an unprotected one, which is
-  knowingly unmet rather than overlooked. Separately, required checks are matched by **context
+  knowingly unmet rather than overlooked and is tracked in #293. Separately, required checks are matched by **context
   name**, and GitHub's newer `checks` array can bind a context to an expected `app_id`, which this
   discards; that matches what `read_branch`, `live_contexts` and `required-drift` have always read,
   so it is the established model rather than a new gap, and not a regression — before this change
