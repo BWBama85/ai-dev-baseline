@@ -296,9 +296,17 @@ rm -f .gemini/state/gap-prompt.txt .gemini/state/gaps.md .gemini/state/gaps.err 
 # gaps: a run whose `review` role is unset, or whose only slot is deferred or absent (step 8's
 # rungs 2-3), never overwrites review.md, so the PREVIOUS run's findings sit there reading as this
 # run's. Bounding a single dispatch's captured stream WITHIN a run is separate, and tracked in #141.
-# The per-slot family, so this set stays identical to the `review` arm of
-# `cleanup-lib.sh state-scan`: a name /cleanup can sweep but preflight cannot clear is exactly the
-# stale-reads-as-current file this exists to remove.
+# The per-slot family, so this set covers the `review` arm of `cleanup-lib.sh state-scan`: a name
+# /cleanup can sweep but preflight cannot clear is exactly the stale-reads-as-current file this
+# exists to remove.
+#
+# CONTAINMENT, not equality, and the direction is the one that matters (#273). Since `state-scan`
+# refuses to serialize a name containing a tab or newline, /cleanup can now sweep strictly FEWER
+# names than this clear removes — `find … -exec rm -f {} +` passes such a name through fine, so
+# preflight still clears it. That is the harmless direction: the invariant is *everything
+# sweepable is clearable*, never the reverse, and widening the clear is never what strands a stale
+# artifact. Do NOT mirror the refusal here to restore a literal equality; it would only stop
+# preflight from cleaning up a file it can clean up perfectly well.
 #
 # Matched by `find`, NOT by a shell glob, and that is not a style preference. Appending
 # `.gemini/state/review-*.md` to the `rm -f` below looks equivalent and is not — an unmatched glob

@@ -334,6 +334,138 @@ eq "$(bash "$CL" state-scan "$S" | awk -F'\t' '/implement-issue-blocked/{print $
    "3 an unreadable marker yields the '-' key, so it fails closed"
 eq "$(bash "$CL" state-scan "$work/does-not-exist")" "" "3 a missing state dir is an empty result, not an error"
 
+# ================= 3b. the RECORD FORMAT itself cannot be forged (#273) =======================
+# The allowlist in section 3 is only a safety property if a record's FIELDS mean what they say.
+# `state-scan` serializes `<kind>TAB<path>TAB<key>NL` and the sweep parses it with
+# `IFS=<tab> read -r kind sfile key`, so a field carrying a raw tab or newline does not corrupt a
+# record — it FORGES one, whose `kind` is attacker-chosen text. The forged record then walks past
+# `other` (the carrier below is classified `other`, the harmless kind) and reaches `rm -f`.
+#
+# TESTED FROM BOTH CARRIERS, because they are not the same bug and a fix for one leaves the other
+# live. A FILENAME cannot contain `/`, so it reaches only names in the directory the sweep is
+# anchored at; a MARKER's `.branch` is a JSON string that CAN contain `/`, so it reaches an
+# ABSOLUTE path. A pathname-only fixture goes red then green while the worse half still works.
+#
+# `$'…'` is load-bearing in the fixtures: an ordinary quoted "\n" makes two literal characters and
+# would test nothing at all. Each fixture asserts its own hostile file exists before drawing any
+# conclusion from a green result.
+TAB=$'\t'
+FS_DIR="$work/forge"; mkdir -p "$FS_DIR"
+HOSTILE_NAME=$'notes.json\ngaps\tCHANGELOG.md\t-'
+: > "$FS_DIR/$HOSTILE_NAME"
+: > "$FS_DIR/gaps.md"
+: > "$FS_DIR/plain.json"
+if [ -f "$FS_DIR/$HOSTILE_NAME" ]; then ok; else
+  bad "3b the newline-in-filename fixture was not created — everything below asserts NOTHING"
+fi
+
+fscan="$(bash "$CL" state-scan "$FS_DIR")"
+# THE bug, stated as the property that failed: parse the scan the way the sweep does, and collect
+# every path any SWEEPABLE kind would hand to `rm -f`. Before the fix this list contained
+# `CHANGELOG.md`; it must now contain only real files inside the state dir.
+sweepable="$(printf '%s\n' "$fscan" | while IFS="$TAB" read -r k sf _; do
+  case "$k" in gaps|review|threads) printf '%s\n' "$sf" ;; esac
+done)"
+hasnt "$sweepable" "CHANGELOG.md" "3b a newline in a filename cannot forge a sweepable record"
+eq "$sweepable" "$FS_DIR/gaps.md" "3b …and the only sweepable path is the real gap artifact beside it"
+# The carrier is REPORTED, not silently dropped: `other` is emitted rather than dropped for the
+# same reason, and an operator who cannot see the skip cannot go rename the file.
+eq "${ printf '%s\n' "$fscan" | awk -F'\t' '$1=="unsafe"{n++} END{print n+0}'; }" "1" \
+   "3b the unserializable name is reported as exactly one 'unsafe' record"
+# …and its rendering is itself safe. The whole point is that the raw name never reaches stdout, so
+# a diagnostic that pasted it back would reopen the hole one line below the fix.
+# Three files in the fixture (the hostile carrier, gaps.md, plain.json) must yield three physical
+# lines. This is the count that WAS wrong: before the fix the carrier produced two.
+eq "${ printf '%s\n' "$fscan" | grep -c .; }" "3" \
+   "3b every file yields exactly one physical line — the hostile name forged no extra record"
+hasnt "$fscan" "$HOSTILE_NAME" "3b the raw hostile name never reaches stdout in any form"
+# EVERY record, not just the interesting ones: a three-field contract that holds for the arms
+# someone remembered is not a contract.
+eq "${ printf '%s\n' "$fscan" | awk -F'\t' 'NF!=3{n++} END{print n+0}'; }" "0" \
+   "3b every emitted record has exactly three fields"
+# A tab alone forges just as well as a newline — it ends the path field early, so the REST of the
+# name becomes the key and the next record's fields shift.
+: > "$FS_DIR/"$'a\tb.json'
+eq "${ bash "$CL" state-scan "$FS_DIR" | awk -F'\t' '$1=="unsafe"{n++} END{print n+0}'; }" "2" \
+   "3b a tab-only filename is refused too, not just a newline"
+
+# --- the marker key: the same forge, through JSON, and it reaches absolute paths ---------------
+MK_DIR="$work/forge-marker"; mkdir -p "$MK_DIR"
+VICTIM_ABS="$work/victim-absolute.txt"
+: > "$VICTIM_ABS"
+# `\\n` / `\\t`, so the FILE holds JSON ESCAPES that jq decodes into real control characters.
+# Writing raw control bytes instead would make the file invalid JSON — jq would fail to parse it,
+# the key would fall to `-` because the marker is UNREADABLE, and every assertion below would pass
+# without the refusal ever being exercised. That is the silent-guard shape, so the fixture asserts
+# its own JSON is valid AND that the decoded value really does carry the delimiter.
+printf '{"branch":"issue-9-x\\ngaps\\t%s\\t-","phase":"pushed"}' "$VICTIM_ABS" \
+  > "$MK_DIR/implement-issue-active.json"
+: > "$MK_DIR/gaps.md"
+jq -e . "$MK_DIR/implement-issue-active.json" >/dev/null 2>&1
+yes $? "3b the marker fixture is VALID json — otherwise the refusal below is never reached"
+eq "${ jq -r '.branch' "$MK_DIR/implement-issue-active.json" | grep -c .; }" "2" \
+   "3b …and its .branch really decodes to a value carrying a newline"
+mscan="$(bash "$CL" state-scan "$MK_DIR")"
+msweepable="$(printf '%s\n' "$mscan" | while IFS="$TAB" read -r k sf _; do
+  case "$k" in gaps|review|threads) printf '%s\n' "$sf" ;; esac
+done)"
+hasnt "$msweepable" "$VICTIM_ABS" "3b a newline in a marker's .branch cannot forge a sweepable record"
+eq "${ printf '%s\n' "$mscan" | awk -F'\t' '$1=="marker"{print $3}'; }" "-" \
+   "3b …the unusable branch yields the '-' key, which the caller maps to unknown -> keep"
+# THE second half of that decision, and the one a "just drop the record" fix gets wrong. The
+# workflow reads run liveness from the PRESENCE of a marker record (`RUN_NOW=keep`), so dropping
+# the marker would report "no run in flight" — the verdict that lets a LIVE run's gap and review
+# artifacts be swept out from under it. Refusing the key must not cost the record.
+eq "${ printf '%s\n' "$mscan" | awk -F'\t' '$1=="marker"{n++} END{print n+0}'; }" "1" \
+   "3b …and the marker record SURVIVES, so run liveness still fails closed"
+# `git check-ref-format` rejects control characters, so this value was never a branch name — the
+# key is unreadable in the honest sense, exactly like malformed JSON.
+eq "$(bash "$CL" marker-branch "$MK_DIR/implement-issue-active.json")" "" \
+   "3b marker-branch — the one reader both the scan and the delete-time re-read use — refuses it too"
+
+# --- the state directory's OWN path, which poisons every record at once ------------------------
+# Fatal rather than skipped: refusing file-by-file would leave an empty scan indistinguishable
+# from a clean, already-empty state dir, and a sweep that reports success while doing nothing is
+# the #106 class this library exists to remove.
+BAD_DIR="$work/"$'st\nate'; mkdir -p "$BAD_DIR"; : > "$BAD_DIR/gaps.md"
+bad_out="$(bash "$CL" state-scan "$BAD_DIR" 2>/dev/null)"; bad_rc=$?
+no "$bad_rc" "3b an unserializable state-dir path is a hard error, not a silent empty scan"
+eq "$bad_out" "" "3b …and it emits no partial records to act on"
+
+# --- END TO END: the forged record must not survive the sweep's own parse loop -----------------
+# Section 3b above proves the producer is safe; this proves the thing the issue is actually about,
+# through the loop shape base/workflows/cleanup.md step 5 runs (mirrored here, as
+# check-cleanup-enum.sh mirrors the enumeration pipeline — a fenced block full of `{{…}}`
+# placeholders cannot be sourced, and section 6 pins that the real one still has these parts).
+#
+# THE FIXTURE IS ITS OWN ROOT. `check-cleanup.sh` runs anchored at the REAL repo root, so a victim
+# named `CHANGELOG.md` parsed from here would resolve to this repo's own changelog: the test would
+# be destructive when it failed and green for the wrong reason when it passed.
+#
+# AND IT CARRIES A SENTINEL THAT MUST DIE. A sweep that deletes nothing at all satisfies "the
+# victim survived" perfectly, so the fixture demands a real gap artifact be removed in the same
+# pass — the test then fails both when the guard leaks and when it over-corrects into a no-op.
+SW_ROOT="$work/sweeproot"; SW_STATE="$SW_ROOT/state"; mkdir -p "$SW_STATE"
+: > "$SW_ROOT/CHANGELOG.md"
+: > "$SW_STATE/$HOSTILE_NAME"
+: > "$SW_STATE/gaps.md"
+(
+  cd "$SW_ROOT" || exit 1
+  GV=stale
+  sweep_file() { rm -f "$1" 2>/dev/null; }
+  bash "$CL" state-scan "$SW_STATE" | while IFS="$TAB" read -r kind sfile _; do
+    case "$kind" in
+      gaps) [ "$GV" = stale ] || continue; sweep_file "$sfile" ;;
+    esac
+  done
+)
+if [ -f "$SW_ROOT/CHANGELOG.md" ]; then ok; else
+  bad "3b THE BUG: the sweep deleted a repo-root file the forged record named"
+fi
+if [ -f "$SW_STATE/gaps.md" ]; then
+  bad "3b the sweep left a genuinely stale gap artifact — the fixture proved nothing"
+else ok; fi
+
 # ============================ 4. report: the terse output contract ============================
 rep() { bash "$CL" report "$@" 2>/dev/null; }
 
@@ -482,6 +614,28 @@ else
   # whole size report would silently not happen. Same class as the #125 zsh bug this file guards.
   hasnt "$wfcode" '"$STATE"/review-*.err' "6 …and enumerates streams from the scan, not a glob zsh's nomatch would abort"
   hasnt "$wfcode" '"$STATE"/gaps-*.err'   "6 …which applies to the gap streams it already reported"
+  # --- #273: the scan's refusals are surfaced, and the fatal one is not swallowed -----------
+  # A `SCAN="$(… state-scan …)"` that ignores its status turns the state-dir refusal (exit 2, no
+  # stdout) into an empty scan — which sweeps nothing and reads exactly like a clean state dir.
+  # Pin the captured form, which is the only spelling that can tell those two apart.
+  has "$wfcode" 'if ! SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"; then' \
+     "6 the first scan's exit status is captured, so a refusal cannot read as an empty state dir"
+  # The refusal message must not paste the state-dir path back in: that path is the thing carrying
+  # a newline, so interpolating it moves the injection from the delete protocol into the report.
+  hasnt "$wfexec" 'REFUSED the state sweep — state-scan could not enumerate $STATE' \
+     "6 …and that message does not interpolate the unserializable path into the report"
+  # The label BOUND TO ITS BODY, the same way the review arm is pinned above: a bare `unsafe)`
+  # survives a deleted body, and a bare NOTES line survives a renamed kind that matches no record
+  # state-scan emits — a report arm that is present, correct and unreachable.
+  has "$wfcode" '[ "$kind" = unsafe ] || continue
+  NOTES="${NOTES}SKIPPED' \
+     "6 files state-scan refused to serialize are reported through NOTES, not dropped silently"
+  # Reported from the FIRST snapshot only. The scan is re-taken before the destructive deletes, so
+  # a second reporting loop would name every skipped file twice for one sweep.
+  eq "${ printf '%s\n' "$wfcode" | grep -c '\[ "$kind" = unsafe \]'; }" "1" \
+     "6 …exactly once, not once per snapshot"
+  # `unsafe` must never reach a delete: its path field is a %q-ENCODED rendering, not a real path.
+  hasnt "$wfexec" 'unsafe)' "6 …and no sweep arm treats 'unsafe' as a deletable kind"
   has "$wf" '{{CLEANUP_LIB}} clone-state' \
      "6 the switch/pull guard uses the clone classifier, not a porcelain-only test (rebase/bisect leave it clean)"
   hasnt "$wfcode" 'git pull --ff-only' \

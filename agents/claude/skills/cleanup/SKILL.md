@@ -358,6 +358,14 @@ Runs in every scope. `state-scan` enumerates; the library decides; **anything it
 `other` is never touched** — a sweep that deleted what it could not classify would eventually
 eat a file some future skill depends on.
 
+**A record's fields are the library's problem, not this loop's (#273).** The record format is
+`<kind>TAB<path>TAB<key>`, parsed below with `read`, and a field carrying a raw tab or newline
+would not corrupt a record — it would **forge** one, with an attacker-chosen `kind` that walks
+straight past the `other` allowlist and reaches `rm -f`. `state-scan` now refuses to serialize
+such a name and reports it as `unsafe` instead, so this step does **not** re-validate the paths it
+reads: both snapshots come from that one producer, and a second copy of the rule here would be
+duplicated logic that can drift out of agreement with it.
+
 ```bash
 # ANCHORED AT $ROOT, never relative to the current directory. `/cleanup` is a repo-wide sweep and
 # may be invoked from a subdirectory (base/practices/repo-scope.md: working dir != git root is a
@@ -365,7 +373,31 @@ eat a file some future skill depends on.
 # could inspect a same-named directory under some package instead.
 STATE="$ROOT/.claude/state"
 TABC="$(printf '\t')"
-SCAN="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-scan "$STATE")"
+
+# state-scan exits 2 — with NO stdout — when the state directory's OWN path cannot be serialized.
+# Captured with an `if` rather than left to fall through, because the fallthrough is the silent
+# one: an empty $SCAN sweeps nothing and looks exactly like a clean, already-empty state dir, and
+# "reported success while doing nothing" is the #106 class this whole library exists to remove.
+# The message deliberately does NOT interpolate $STATE — that path is the thing containing a
+# newline, and pasting it into the report would move the injection into the operator's output.
+if ! SCAN="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-scan "$STATE")"; then
+  NOTES="${NOTES}REFUSED the state sweep — state-scan could not enumerate the state directory safely; no state was swept
+"
+  SCAN=""
+fi
+
+# Files state-scan declined to serialize. Reported HERE, in the first pass, and deliberately not
+# in the second: the scan is re-taken before the destructive deletes below, so a record rendered
+# from both snapshots would be reported twice for one file. The path field of an `unsafe` record
+# is a `%q`-ENCODED rendering, not a usable path — it is safe to interpolate, and it must never be
+# handed to `rm`, which is why no sweep arm below names this kind.
+while IFS="$TABC" read -r kind sfile key; do
+  [ "$kind" = unsafe ] || continue
+  NOTES="${NOTES}SKIPPED $sfile — its name contains a tab or newline, so it cannot be classified safely; kept
+"
+done <<EOF
+$SCAN
+EOF
 
 # The gap-analysis lock, if present, means a gap dispatch is writing artifacts RIGHT NOW. Read it
 # from the SCAN, not from a second hardcoded path: the library already recognises the filename,
