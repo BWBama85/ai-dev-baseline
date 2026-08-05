@@ -2671,7 +2671,10 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       # opened a fence that never closed, and `<!--` / `> -->` skipped its own closer as a
       # blockquote: both swallowed every edge after them, the under-match direction.
       if (md_html) { if (index(line, "-->")) md_html = 0; md_para = 0; return 1 }
-      if (md_fence_len) { adb_md_fence_delim(line); md_para = 0; return 1 }
+      # `md_list_at` is passed here too even though this call can only take the in-a-fence branch,
+      # which never reads it: no call site is then left leaning on awk's uninitialized-parameter
+      # rule, and the argument always means the same thing.
+      if (md_fence_len) { adb_md_fence_delim(line, md_list_at); md_para = 0; return 1 }
       # An INDENTED CODE BLOCK, once open, runs over blank lines and every line indented >= 4, and
       # ends at the first non-blank line indented <= 3 (D27).
       if (md_icode) {

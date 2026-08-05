@@ -181,7 +181,13 @@ FILENAME == base {
   # Track fence state ALWAYS (so a `### ` inside a fence is never a heading, even while a replace
   # is skipping the body), but only PRINT the delimiter when not skipping — otherwise a replaced
   # step's fenced block would leak its empty ``` ``` delimiters into the output.
-  if (adb_md_fence_delim($0)) { if (mode == "compose" && !skipping) print; next }
+  #
+  # The explicit `0` is the CONTAINER COLUMN (#252, D42), and stating it is the point: this scan
+  # calls the fence predicate directly instead of driving `adb_md_block`, so it tracks no list
+  # container and every fence it recognizes is top-level — the rule it has always applied. Passing
+  # the argument rather than letting it default also keeps the predicate off awk's uninitialized-
+  # parameter semantics, which is the one thing here no local dialect could be tested against.
+  if (adb_md_fence_delim($0, 0)) { if (mode == "compose" && !skipping) print; next }
   if (!md_fence_len && $0 ~ /^### /) {
     a = anchor_of($0)
     if (mode == "list") {                                # advertise the anchor; flag a base collision
