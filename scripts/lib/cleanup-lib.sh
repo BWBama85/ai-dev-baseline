@@ -78,6 +78,48 @@ usage() { adb_usage "$0"; }
 die() { printf 'cleanup-lib: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
+# A literal newline. NOT `NL="$(printf '\n')"`, which is the EMPTY STRING — command substitution
+# strips trailing newlines, so that spelling turns every `case "$x" in *"$NL"*)` below into a
+# substring test against "" that matches everything. Same trap check-cleanup.sh already documents
+# for the workflow's whole-line `grep -Fxq`. The literal-in-single-quotes form is the one that
+# works, and it is the idiom scripts/lib/project-gates.sh already uses.
+NL='
+'
+
+# --- the record format's own safety (#273) ------------------------------------------------------
+# `state-scan` serializes one record per file as `<kind>TAB<path>TAB<key>NL`, and the consumer
+# parses it with `IFS=<tab> read -r kind sfile key` and hands `$sfile` to `rm -f`. A field carrying
+# a raw TAB or NEWLINE therefore does not corrupt the record — it FORGES A NEW ONE, and the forged
+# record's kind is attacker-chosen text that walks straight past the `other` allowlist the whole
+# subcommand is built around.
+#
+# BOTH serialized fields can carry one, and they are not equally bad:
+#   - the PATH comes from a filename, which cannot contain `/`, so a forged target is limited to
+#     names in whatever directory the sweep is anchored at (the repo root: `CHANGELOG.md`,
+#     `install.sh`, `CLAUDE.md`);
+#   - the KEY comes from a marker's `.branch` JSON value, which CAN contain `/` — so that carrier
+#     reaches an ABSOLUTE path and is strictly the worse of the two.
+#
+# The fix is at the record format rather than per-arm, because the defect is in the serialization
+# and not in which `case` arm matched: the carrier above was classified `other`, the harmless kind.
+_adb_cl_tsv_safe() { case "$1" in *"$TAB"*|*"$NL"*) return 1 ;; *) return 0 ;; esac; }
+
+# Render a value that FAILED the test above onto ONE physical line, so a diagnostic naming it
+# cannot re-open the hole in the operator's output. `%q` is the right tool and not a hand-rolled
+# substitution chain: it escapes the delimiters (a newline becomes `$'\n'`) AND the backslashes,
+# so the encoding stays unambiguous — a file really named `a\nb` and a file named `a<NL>b` do not
+# collapse to the same rendering.
+#
+# THE RESULT IS RE-TESTED rather than assumed. A sanitizer's failure mode is silence: if some
+# future `printf` let a delimiter through, an unchecked encoder would hand the forged bytes to the
+# very record format this exists to protect, and the output would look exactly like a clean one.
+# The fallback is a fixed token, which is useless to the operator and safe — the right trade when
+# the alternative is a silently-forged record.
+_adb_cl_tsv_display() {
+  local enc
+  enc="$(printf '%q' "$1")"
+  if _adb_cl_tsv_safe "$enc"; then printf '%s' "$enc"; else printf '<unrenderable-name>'; fi
+}
 
 # --- branch-verdict ---------------------------------------------------------------------------
 # Classify ONE local branch against the default branch. Exit 0 for any computed verdict; 2 on bad
@@ -220,6 +262,8 @@ EOF
 #   lock     -               the gap-analysis in-flight lock
 #   gaps     -               a gap-analysis artifact (prompt, findings, captured stream)
 #   review   -               a code-review artifact (prompt, findings, captured stream)
+#   unsafe   -               a file whose NAME cannot be serialized (see #273 below); the path
+#                            field is a `%q`-ENCODED rendering, never a usable path
 #   other    -               ANYTHING ELSE
 #
 # `other` is emitted rather than dropped, and the workflow NEVER sweeps it. That asymmetry is the
@@ -231,15 +275,44 @@ EOF
 # A `threads-<junk>.json` is deliberately `other`, not a malformed `threads`: the key must be a
 # PR number for the liveness read to mean anything, so a name that cannot supply one is simply
 # not ours to delete.
+#
+# A NAME THAT CANNOT BE SERIALIZED IS `unsafe`, AND ITS RAW FORM NEVER REACHES STDOUT (#273).
+# Classifying such a file `other` is NOT sufficient and was the trap worth naming: `other` is about
+# which arm matched, and the record is emitted either way — so the forged second line survives the
+# safest-looking classification in the file. The name has to not be printed at all, which is why
+# the refusal sits ahead of the `case` rather than inside it.
+#
+# It is reported rather than dropped, for the same reason `other` is emitted rather than dropped:
+# a sweep whose coverage is invisible cannot be audited, and "this file was skipped" is exactly
+# what the operator needs to see to go rename it. The workflow renders these into its NOTES.
+#
+# EXIT 0, not the fail-closed 2. An unserializable name is not a tooling failure — it is a file
+# this subcommand declines to classify, which is the state `other` already describes and which
+# already resolves to "never deleted". The one case that IS fatal is the state DIRECTORY's own
+# path (below): there, every record would be refused, and a scan that silently returns nothing is
+# a no-op wearing a success message — the #106 failure class this library exists to remove.
 cmd_state_scan() {
   [ "$#" -eq 1 ] || die "state-scan: needs exactly 1 arg: <state-dir>"
   local dir="$1" f base n key
   [ -d "$dir" ] || return 0
+  # Checked ONCE, up front, and fatal. Every emitted path is "$dir/$base", so an unserializable
+  # directory poisons every record — including the `marker` ones that decide whether a run is
+  # live. Refusing them one by one would leave the caller with an empty scan indistinguishable
+  # from a clean, empty state dir.
+  _adb_cl_tsv_safe "$dir" \
+    || die "state-scan: the state directory's own path contains a tab or newline, so no record can be serialized safely; refusing to enumerate it"
   # Both globs, so a staged `.marker.tmp` is seen (and classified `other`) rather than invisible.
   # An unmatched glob stays literal in POSIX shells, which `[ -f ]` filters — no nullglob needed.
   for f in "$dir"/* "$dir"/.[!.]*; do
     [ -f "$f" ] || continue
     base="${f##*/}"
+    # AHEAD of the classification, so no arm can print the raw name. `$f` and not `$base`: the
+    # emitted field is the full path, and `$dir` is already known safe from the check above, so
+    # testing `$f` is testing exactly the bytes that would be written.
+    if ! _adb_cl_tsv_safe "$f"; then
+      printf 'unsafe\t%s\t-\n' "$(_adb_cl_tsv_display "$base")"
+      continue
+    fi
     case "$base" in
       threads-*.json)
         n="${base#threads-}"; n="${n%.json}"
@@ -282,9 +355,59 @@ cmd_state_scan() {
 # `unknown` liveness signal, which state-verdict fails closed on. Reporting the failure here
 # instead would make an unreadable marker an error that stops the sweep, when the correct
 # behaviour is to keep the file and carry on.
+#
+# A VALUE CARRYING A TAB OR NEWLINE IS TREATED AS UNREADABLE (#273), and this is the sharper half
+# of that issue: unlike a filename, a JSON string may contain `/`, so a forged record from here
+# names an ABSOLUTE path and is not confined to the directory the sweep is anchored at.
+#
+# "Unreadable" is the honest classification, not a euphemism for a refusal: `git check-ref-format`
+# rejects ASCII control characters, so a `.branch` containing one is not a branch name at all and
+# every ref query the caller would run with it is guaranteed to miss. The existing contract then
+# does the rest — empty key -> `-` -> `unknown` -> `state-verdict marker` keeps the file.
+#
+# THE RECORD IS STILL EMITTED, and dropping it instead would be a second bug wearing the shape of
+# a fix. The workflow derives run liveness from the PRESENCE of a `marker` record in the scan
+# (`RUN_NOW=keep`); a dropped marker reads as "no run in flight", which is precisely the verdict
+# that lets a LIVE run's gap and review artifacts be swept out from under it. Refusing the key
+# while keeping the record fails closed on both axes at once.
+# THE REJECTION HAPPENS INSIDE jq, and that placement is load-bearing rather than stylistic. Doing
+# it in the shell means going through `$(…)`, which MUTATES the value before it can be judged:
+#   - command substitution strips EVERY trailing newline, so `"dead-branch\n"` — not a branch name —
+#     arrives as the perfectly well-formed `dead-branch`, is accepted, and (with no such ref and no
+#     PR) is classified STALE and deleted. Normalizing a malformed marker into a valid-looking one
+#     is the opposite of failing closed;
+#   - JSON permits `\u0000`, and bash silently drops NUL bytes from a substitution *and* warns on
+#     stderr — mangling `"dead\u0000branch"` into `deadbranch` and breaking this function's
+#     quiet-on-every-failure contract in the same move.
+# Both were reproduced under bash 5.3 by the independent review of #273.
+#
+# The predicate is "any ASCII CONTROL character" — codepoint < 0x20 **or** 0x7f (DEL). Both halves
+# are needed: `git check-ref-format` rejects DEL as well, and an earlier version of this test that
+# stopped at `< 32` let a DEL-bearing value through as an ordinary key, whereupon no ref matched, no
+# PR was recorded, and `state-verdict marker` returned STALE — deleting the marker and, with it, the
+# run's gap and review artifacts. That is the precise fail-open the `-` key exists to prevent, so
+# the miss cost more than a cosmetic mismatch with git. Caught by the independent review.
+#
+# It is the CONTROL-CHARACTER class specifically, and NOT a reimplementation of `git
+# check-ref-format`, which also rejects spaces, `~^:?*[`, `\`, a leading `-`, `..`, `@{` and a
+# trailing `.lock`. Those are all values a ref query simply fails to find, which the existing
+# no-such-ref path already handles correctly; a control character is the case that additionally
+# corrupts the record this function feeds. Shelling out to git per marker to borrow the full grammar
+# would buy nothing here and would put a fork in a pure string check.
+#
+# This is deliberately NOT `_adb_cl_tsv_safe`'s question. That one asks "can this be a TSV field"
+# (tab and newline only); DEL is perfectly safe to serialize and still cannot be a branch name.
+# `explode` is used instead of a regex so the test does not depend on the engine's `\u` support.
 _adb_cl_marker_branch() {
+  local b
   command -v jq >/dev/null 2>&1 || return 0
-  jq -r '.branch // empty' "$1" 2>/dev/null || return 0
+  b="$(jq -r 'if (.branch|type) == "string"
+                 and ((.branch | explode | map(select(. < 32 or . == 127)) | length) == 0)
+              then .branch else empty end' "$1" 2>/dev/null)" || return 0
+  # Belt and braces: jq has already excluded the delimiters, so this can only fire if that ever
+  # stops being true. A sanitizer that trusts its upstream is one upstream change from silence.
+  _adb_cl_tsv_safe "$b" || return 0
+  printf '%s' "$b"
 }
 
 # --- marker-branch ------------------------------------------------------------------------------

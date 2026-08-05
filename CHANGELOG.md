@@ -7,6 +7,57 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/cleanup` could be made to delete a file nobody asked it to touch** (#273, D41).
+  `cleanup-lib.sh state-scan` serialized one record per state file as `<kind>TAB<path>TAB<key>`
+  with **no escaping**, and the sweep parses that with `IFS=<tab> read -r kind sfile key` before
+  handing `$sfile` to `rm -f`. A filename may legally contain a tab or a newline, so a file in the
+  state dir could inject a **second, forged record** — and the forged `kind` is attacker-chosen
+  text, so it could name `gaps` and reach the delete. `state-scan` now refuses to serialize a name
+  it cannot encode, reporting it as a new `unsafe` kind whose path field is a `%q`-encoded
+  rendering rather than a usable path.
+  - **Classifying the carrier `other` would not have fixed it**, which is the part worth stating.
+    The file that reproduced this *was* `other` — the kind that is never swept — because the defect
+    is in the record format, not in which arm matched. `other` is still emitted, so the raw name
+    still reached stdout and the forged line survived the safest classification in the file. The
+    refusal therefore sits ahead of the classification, not inside it.
+  - **The marker's `.branch` was the same bug through a second door, and a worse one.** A filename
+    cannot contain `/`, so that carrier was confined to names in the repo root (`CHANGELOG.md`,
+    `install.sh`, `CLAUDE.md`); a marker's `.branch` is a JSON string that **can**, so it reached an
+    **absolute** path. A value carrying any ASCII control character — codepoint `< 0x20` **or**
+    `0x7f` — is now treated as unreadable, which is honest rather than a euphemism: `git
+    check-ref-format` rejects control characters, so such a value was never a branch name and every
+    ref query built from it was guaranteed to miss. The key falls to `-`, then `unknown`, then keep.
+    (This is deliberately the control class and **not** a reimplementation of git's ref grammar —
+    git also rejects spaces, `~^:?*[` and more, but those merely fail to match a ref, which the
+    existing no-such-ref path already handles.)
+  - **That rejection happens inside `jq`, because the shell could not be trusted to see the value
+    it was judging.** Checking after `b="$(jq …)"` judges a string command substitution has already
+    *mutated*: it strips every trailing newline, so `"dead-branch\n"` arrived as the ordinary
+    `dead-branch` and — with no matching ref and no PR — would be classified **stale and deleted**;
+    and bash silently drops a JSON `\u0000` from a substitution while warning on stderr, both
+    corrupting the value and breaking the reader's quiet contract. Both were found by the
+    independent review and are covered by regressions, including one asserting the read stays
+    silent.
+  - **But the marker RECORD survives that refusal**, and a fix that dropped it would have traded
+    one bug for a worse one: `/cleanup` reads run liveness from the presence of a marker record, so
+    dropping it reports "no run in flight" — the verdict that lets a **live** `/implement-issue`
+    run's gap and review artifacts be swept out from under it.
+  - **A state directory whose own path is unserializable is fatal** (exit 2, no output) rather than
+    skipped file-by-file: every record would be refused, and a scan that silently returns nothing
+    looks exactly like a clean, empty state dir — a sweep reporting success while doing nothing,
+    which is the #106 class this library exists to remove. `/cleanup` captures that status instead
+    of letting it fall through, and reports skipped files through its existing `NOTES` contract.
+  - **NUL-delimited records were considered and rejected**: bash strips NUL bytes from `$(…)` while
+    zsh preserves them, and macOS runs zsh — so the record format would have behaved differently on
+    the two platforms CI covers.
+  - `scripts/check-cleanup.sh` carries fixtures for **both** carriers plus an end-to-end sweep in a
+    throwaway root, with a sentinel that must be deleted so a no-op cannot pass. Thirteen of the new
+    assertions were observed red against the unfixed library, and the marker-liveness one — which
+    *cannot* fail against the old code, only against a naive fix — was observed red against a
+    deliberately naive one.
+
 ## [2.0.0] - 2026-08-04
 
 **The runtime floor moves to bash 5.3, and this is the release that makes it binding.** An entry

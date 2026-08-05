@@ -2302,3 +2302,132 @@ limit: none of them is sufficient alone.
              preflight clears the family too, and a test pins the two lists against each other.
 - baseline-issue: n/a — the artifacts, the sweep and the workflow are all this repo's own code, and
              `cleanup-lib.sh` was already the prescribed home for a `/cleanup` decision predicate.
+
+## D41 — `state-scan` refuses to serialize a name it cannot encode, and the marker record survives that refusal
+- date:      2026-08-04
+- category:  project-delta
+- unknown:   #273. `state-scan` serializes `<kind>TAB<path>TAB<key>NL` with no escaping, and the
+             sweep parses it with `IFS=<tab> read -r kind sfile key` before handing `$sfile` to
+             `rm -f`. A field carrying a raw tab or newline therefore does not corrupt a record —
+             it **forges** one, with an attacker-chosen `kind`. The baseline models "which files
+             may be deleted" (the `other` allowlist) but had no model at all for "which values may
+             be written into a record", so the question the issue asked — where does the fix go,
+             and what happens to a name that cannot be encoded — had no prescribed answer.
+- decision:  **Refuse at the record format, in three parts.**
+             1. A file whose emitted path is unserializable gets an **`unsafe`** record whose path
+                field is a `%q`-ENCODED rendering, and **exit stays 0**.
+             2. The **state directory's own** path being unserializable is **fatal** (exit 2, no
+                stdout), because it poisons every record at once.
+             3. A marker's `.branch` carrying **any ASCII control character** (codepoint < 0x20
+                **or** 0x7f) is treated as **unreadable** — empty key -> `-` -> `unknown` -> keep —
+                and **the marker record is still emitted**. That rejection happens **inside jq**,
+                not in the shell.
+- placement: `scripts/lib/cleanup-lib.sh` (`_adb_cl_tsv_safe`, `_adb_cl_tsv_display`, the guard
+             ahead of `state-scan`'s `case`, and `_adb_cl_marker_branch`); `base/workflows/cleanup.md`
+             step 5 (the captured scan status and the `unsafe` NOTES loop); pinned in
+             `scripts/check-cleanup.sh` sections 3b and 6.
+- reason:    **Per-arm checks were never the fix.** The carrier that reproduced this was classified
+             `other` — the *safest* kind, the one that is never swept — because the defect is in
+             the serialization, not in which arm matched. The forged record's kind is attacker-
+             chosen text, so it can name `gaps` no matter what the carrier is.
+
+             **`other` is not sufficient either, and that is the trap worth recording.** The
+             obvious-looking fix is to classify such a file `other` and rely on the allowlist. It
+             does not work: `other` is still *emitted*, so the raw name still reaches stdout and
+             the forged second line survives the safest classification in the file. The name has to
+             not be printed, which is why the refusal sits ahead of the `case` rather than inside it.
+
+             **Both fields carry the bug, and the second one is worse.** A filename cannot contain
+             `/`, so that carrier reaches only names in the directory the sweep is anchored at
+             (`CHANGELOG.md`, `install.sh`, `CLAUDE.md`). A marker's `.branch` is a JSON string that
+             **can** contain `/`, so it reaches an **absolute** path. A pathname-only fix would have
+             gone green with the worse half still live; the independent gap-analysis pass and a
+             hand reproduction both landed on this before any code was written.
+
+             **Refusing the marker's KEY must not cost its RECORD, and this is the half a naive fix
+             gets backwards.** The workflow derives run liveness from the *presence* of a `marker`
+             record (`RUN_NOW=keep`). Dropping the record would report "no run in flight" — exactly
+             the verdict that lets a **live** run's gap and review artifacts be swept out from under
+             it. So the record is emitted with the `-` key, which the existing contract already
+             maps to `unknown` and `state-verdict marker` already fails closed on. Calling the value
+             *unreadable* is honest rather than a euphemism: `git check-ref-format` rejects ASCII
+             control characters, so such a value was never a branch name and every ref query built
+             from it was guaranteed to miss. `check-cleanup.sh` pins the surviving record, and that
+             assertion was observed going red against a deliberately-written naive fix — it cannot
+             go red against the pre-fix library, so it needed its own negative test.
+
+             **The marker-key rejection had to move INSIDE jq, and that is a correctness fix rather
+             than a style choice.** The first implementation checked the value in the shell, after
+             `b="$(jq -r '.branch // empty' …)"` — and `$(…)` *mutates the value on the way out*, so
+             a malformed marker was normalized into a well-formed one before anything could judge
+             it. Two live defects, both reproduced under bash 5.3 by the independent review:
+             command substitution strips **every** trailing newline, so `"dead-branch\n"` — not a
+             branch name — arrived as the perfectly ordinary `dead-branch`, was accepted, and with
+             no matching ref and no PR would be classified **stale and deleted**; and JSON permits
+             `\u0000`, which bash silently drops from a substitution (`"dead\u0000branch"` ->
+             `deadbranch`) *while warning on stderr*, breaking the reader's quiet-on-every-failure
+             contract in the same move. Neither is a forgery — they are the opposite failure, a
+             malformed marker quietly becoming a valid-looking one — and both are invisible to a
+             check that only ever sees the post-substitution string. jq now returns `empty` for any
+             ASCII control character, so the bad bytes never reach the shell at all; the shell-side
+             predicate stays as a belt-and-braces re-check. Reverting to the shell-side form was
+             observed turning four assertions red, including the stderr-silence one.
+
+             **The control class is `< 0x20` OR `0x7f`, and the first attempt at it stopped short.**
+             That version cited `git check-ref-format` while implementing only `< 0x20` — but git
+             rejects **DEL** too, and DEL is the control character that sits *above* the printable
+             range, so a `< 32` test is exactly the shape that misses it. The consequence was not
+             cosmetic: DEL serializes perfectly well, so it forged nothing and instead triggered the
+             *other* failure this reader guards — emitted as an ordinary key, matched no ref, had no
+             recorded PR, and `state-verdict marker` returned **stale**, deleting the marker and the
+             run's artifacts with it. Caught by the second review round; pinned now, with the
+             boundary either side of DEL tested rather than the one example.
+
+             **What it is NOT is a reimplementation of `git check-ref-format`.** That grammar also
+             rejects spaces, `~^:?*[`, `\`, a leading `-`, `..`, `@{` and a trailing `.lock`. Every
+             one of those is a value a ref query simply fails to find, which the existing
+             no-such-ref path already handles correctly. A control character is the case that
+             *additionally* corrupts the record — so the control class is the line, and the claim is
+             now stated that narrowly rather than borrowing git's authority for a wider one.
+
+             **Exit 0 for a file, exit 2 for the directory.** An unserializable filename is not a
+             tooling failure; it is a file this subcommand declines to classify, which is the state
+             `other` already describes and which already resolves to "never deleted". The directory
+             is different in kind: every record would be refused, and a scan that silently returns
+             nothing is indistinguishable from a clean, empty state dir — a sweep reporting success
+             while doing nothing, which is the #106 class this library exists to remove. The
+             workflow therefore captures the scan's status with an `if` rather than letting it fall
+             through, and its diagnostic deliberately does **not** interpolate the offending path,
+             which would move the injection into the operator's output.
+
+             **NUL-delimited records were rejected on portability, not taste.** `<kind>TAB<path>
+             TAB<key>NUL` still permits a tab inside the path, and fully NUL-delimited fields need a
+             new consumer grammar. Decisively: both snapshots are captured into shell variables via
+             `$(…)`, and **bash strips NUL bytes while zsh preserves them** — macOS runs zsh
+             (`base/practices/shell.md`), so the record format would behave differently on the two
+             platforms CI now covers (D29). `read -r -d ''` works in both shells; the capture
+             architecture around it does not.
+
+             **The validator is PRIVATE to `cleanup-lib.sh`, not promoted to `common.sh`.** This
+             cuts against the usual "one home for shared primitives" instinct, so the reason is
+             recorded: the policy is state-record-specific (it must cover the marker key, not just
+             filenames), and the obvious second callers **do not want it yet**. `adb_repo_shape`
+             and `adb_agent_manifest` emit path-bearing TSV while explicitly declaring tab/newline
+             paths *unsupported* — whether to support them is a separate cross-library decision
+             with its own consequences (`bin/agent-init` uses a parsed shape value as its write
+             root), and folding it into this issue would make that decision silently. A shared
+             primitive whose obvious adopters deliberately abstain is worse than a private one.
+             `project-gates.sh` has a narrower `_adb_has_tab` and is **not** a third site with this
+             bug: its producer is `adb_toml_get`, an awk line-oriented reader, so a TOML value can
+             never contain a newline.
+
+             **The `review` set-equality invariant becomes containment, and the prose says so.**
+             `/cleanup` can now sweep strictly fewer names than `/implement-issue`'s preflight
+             clears, because `find … -exec rm -f {} +` handles a control-character name that
+             `state-scan` refuses to serialize. That is the harmless direction — the invariant that
+             matters is *everything sweepable is clearable* — so the fix is to qualify the claim,
+             **not** to mirror the refusal into preflight, which would only stop it cleaning a file
+             it can clean perfectly well.
+- baseline-issue: n/a — `state-scan`, its record format and the sweep that consumes it are all this
+             repo's own code, and `cleanup-lib.sh` was already the prescribed home for a `/cleanup`
+             decision predicate.
