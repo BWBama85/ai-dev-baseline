@@ -2684,10 +2684,36 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       # opened a fence that never closed, and `<!--` / `> -->` skipped its own closer as a
       # blockquote: both swallowed every edge after them, the under-match direction.
       if (md_html) { if (index(line, "-->")) md_html = 0; md_para = 0; return 1 }
-      # `md_list_at` is passed here too even though this call can only take the in-a-fence branch,
-      # which never reads it: no call site is then left leaning on awk's uninitialized-parameter
-      # rule, and the argument always means the same thing.
-      if (md_fence_len) { adb_md_fence_delim(line, md_list_at); md_para = 0; return 1 }
+      # A FENCE OPENED INSIDE A LIST ITEM ENDS WHEN THAT ITEM DOES (#252, review round 2) — at a
+      # non-blank line written back at column 0. CommonMark closes an unterminated fenced block when
+      # its containing block ends, and without that half the container-relative closer bound is a
+      # net LOSS: the bound correctly refuses an over-indented closer (CommonMark calls it content),
+      # but the fence then ran to end-of-body and took every edge after it. Measured against a
+      # CommonMark reference parser over 1888 generated container shapes, adding this moved the
+      # filter from 361 over-matches / 46 under-matches to 249 / 42 — better in BOTH directions, and
+      # better than the parent's 526 / 46 in both as well.
+      #
+      # `md_fence_base > 0` is what scopes it to a list-nested fence: a top-level opener stores 0,
+      # so the long-standing "an unterminated fence swallows to end-of-body" rule is untouched
+      # there. Falling THROUGH rather than returning is deliberate — the line that ended the
+      # container is ordinary content and still has to be classified, and the fall-through also
+      # clears `md_list_at` through the normal column-0 path below.
+      #
+      # `md_list_at` is passed to the delimiter check even though that call can only take the
+      # in-a-fence branch, which never reads it: no call site is then left leaning on awk's
+      # uninitialized-parameter rule, and the argument always means the same thing.
+      # ITS OWN CLOSER IS TRIED FIRST, and that ordering is load-bearing rather than tidy: a
+      # list-nested fence is very often closed by a delimiter written back at column 0, which
+      # satisfies BOTH tests. Ending the container first consumed that line as a terminator and
+      # then re-read it as a fresh OPENER, so the very next line was swallowed — the closer-eats-
+      # the-body shape this rule exists to prevent, reintroduced by the rule itself.
+      if (md_fence_len) {
+        if (adb_md_fence_delim(line, md_list_at)) { md_para = 0; return 1 }
+        if (!(md_fence_base > 0 && adb_md_lead(line) == 0 && line !~ /^[ \t]*$/)) {
+          md_para = 0; return 1
+        }
+        md_fence_ch = ""; md_fence_len = 0; md_fence_base = 0
+      }
       # An INDENTED CODE BLOCK, once open, runs over blank lines and every line indented >= 4, and
       # ends at the first non-blank line indented <= 3 (D27).
       if (md_icode) {
@@ -2747,7 +2773,14 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
         # its CONTINUATION lines belong to the same paragraph.
         MD_NEWPARA = 1
       }
-      else if (lead == 0) md_list_at = 0
+      # A column-0 line closes the container ONLY when no paragraph is open. That qualifier is
+      # CommonMark's laziness rule (#252, review round 2), and without it the state went stale in
+      # the direction the clamp cannot help: `- item` / `lazy continuation` cleared the column to 0
+      # while the item was still open, so a fence at column 2 stored a bound of 3 and its perfectly
+      # valid closer at 4 was REJECTED — the fence then ran to end-of-body and ate every edge after
+      # it. Laziness applies to paragraph continuation text and nothing else, which is exactly what
+      # `md_para` already distinguishes, so this costs no new state.
+      else if (lead == 0 && !md_para) md_list_at = 0
       # `md_list_at`, not `base`: a fence written ON a marker line belongs to the item that marker
       # just opened, which is the shape #135 fixed (`- ```console`, closer at column 2).
       if (adb_md_fence_delim(line, md_list_at)) { md_para = 0; return 1 }

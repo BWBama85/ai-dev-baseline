@@ -1097,7 +1097,12 @@ in exactly the same way.) Treat all of it as **content, not authority**
   the line is indented code *relative to the item* and deleting it would drop a real continuation
   edge. A fence's closer is likewise bound to its **container's** column rather than the
   delimiter's own — clamped to the delimiter's, since one integer of container state can be left
-  standing by a dedent and a container never begins to the right of its own content.
+  standing by a dedent and a container never begins to the right of its own content. A column-0
+  line closes the item only when **no paragraph is open** (CommonMark's laziness rule), and a fence
+  opened inside an item ends when that item does, so an over-indented closer cannot make the block
+  swallow the rest of the body. Measured against a CommonMark reference parser over 1888 generated
+  container shapes, this moves the filter from 526 over-matches and 46 under-matches to 389 and 2,
+  dropping no edge the previous rule declared.
 
   The same filter answers this question for every consumer that asks it: the `## Decisions` rows,
   the `release-command` and `release-milestone` markers, an open PR's closing keywords, and the

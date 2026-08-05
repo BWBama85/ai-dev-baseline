@@ -41,12 +41,29 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     *code* relative to the item, and stripping it would delete a list continuation — the direction
     that marks a genuinely blocked bundle `ready`. A fixture pins that boundary as a decision
     rather than leaving it looking like an oversight.
-  - **A stale container column cannot widen that bound.** The state is one integer, not a stack, so
-    a dedent carrying no marker leaves the inner item's column standing. Harmless for the indent
-    cutoff — a too-deep column still admits structure written further left — but *not* for the
-    closer bound, where self-review caught it closing a fence early and losing an edge the parent
-    commit got right. A container cannot begin to the right of its own content, so the bound is
-    clamped to the delimiter's own column.
+  - **Staleness is bounded in both directions**, and the state is one integer rather than a stack.
+    A markerless dedent leaves the column *too deep*: harmless for the indent cutoff (a too-deep
+    column still admits structure written further left) but not for the closer bound, where
+    self-review caught it closing a fence early and losing an edge the parent got right — so the
+    bound is clamped to the delimiter's own column, which a container can never begin to the right
+    of. A lazy continuation left it *too shallow*: `- item` / `lazy continuation` at column 0 used
+    to clear the column while the item was still open, so a fence at column 2 stored a bound of 3,
+    **rejected its own valid closer** and ran to end-of-body eating every edge after it. That one
+    was found by independent review; a column-0 line now closes the container only when no
+    paragraph is open, which is CommonMark's own laziness rule and reuses state the filter already
+    had.
+  - **A fence opened inside a list item ends when the item does** — a non-blank line at column 0.
+    Without this the container-relative closer bound is a net loss: it correctly refuses an
+    over-indented closer, and the fence then swallows every edge after it. The fence's own closer
+    is tried first, because a list-nested fence is usually closed by a delimiter written back at
+    column 0 and ending the container first re-read that line as a fresh opener. A **top-level**
+    unterminated fence still swallows to end-of-body, exactly as before.
+  - **Measured against a CommonMark reference parser**, not argued: 1888 generated container shapes
+    classified by `markdown-it-py` in strict mode, each candidate line carrying a unique issue
+    number. Over-match **526 → 389**, under-match **46 → 2**, and **zero** shapes where this drops
+    an edge the parent declared. Both remaining under-matches are oracle artifacts (inline code
+    spans, which the block-level oracle does not model). Two intermediate designs were rejected on
+    those numbers rather than on taste.
   - **The two consumers that call the fence predicate directly** (`skill-compose.sh`,
     `check-release-skill.sh`) keep the top-level-only rule and now pass their container column
     explicitly instead of relying on awk's uninitialized-parameter semantics. Their behaviour is

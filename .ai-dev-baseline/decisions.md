@@ -2460,19 +2460,42 @@ limit: none of them is sufficient alone.
              moves for every caller, including the two that never track a container at all. Two
              changes, stated as two.
 
-             THE LIFETIME IS THE BOOLEAN'S, UNCHANGED (fork 1). A blank line preserves it, a
-             column-0 non-marker line clears it, and a marker sets it to that marker's own content
-             column — so a marker written further left dedents by plain assignment. It does NOT pop
-             on a dedent carrying no marker: that needs the container stack D27 refused, and the
-             column left standing is the harmless direction. What makes one integer sufficient is a
-             property of the comparison, not an optimistic reading: `base` moves where indented-
-             block territory STARTS and never changes the column the function returns, because
-             marker detection already happens at the line's own first non-space character. A base
-             deeper than the true container therefore still passes for a line written further LEFT
-             (the difference goes negative), so a stale column can never HIDE structure — only
-             admit it a little deeper than CommonMark would, where CommonMark says "indented code",
-             which is not a declaration either. Both readings suppress; a stack and a single column
-             cannot disagree about whether an edge exists.
+             THE LIFETIME (fork 1) IS THE BOOLEAN'S PLUS ONE QUALIFIER. A blank line preserves the
+             column, a marker sets it to that marker's own content column (so a marker written
+             further left dedents by plain assignment), and a column-0 line clears it ONLY WHEN NO
+             PARAGRAPH IS OPEN. That last clause is CommonMark's laziness rule, it costs no new
+             state because `md_para` already distinguishes the case, and it is not optional — see
+             the stale-SHALLOW paragraph below. The column does NOT pop on a dedent carrying no
+             marker: that needs the container stack D27 refused.
+
+             STALENESS IS BOUNDED IN BOTH DIRECTIONS, and an earlier draft of this entry claimed it
+             could only ever go one way. That was wrong, and independent review produced the
+             counterexample:
+
+               - STALE-DEEP, from a markerless dedent, is harmless for the indent cutoff. `base`
+                 moves where indented-block territory STARTS and never changes the column the
+                 function returns, because marker detection already happens at the line's own first
+                 non-space character — so a too-deep base still passes for a line written further
+                 LEFT (the difference goes negative) and can only admit structure a little deeper
+                 than CommonMark would, where CommonMark says "indented code", which is not a
+                 declaration either. It is NOT harmless for the closer bound, which is why that is
+                 clamped (below).
+
+               - STALE-SHALLOW was the one the draft missed. A lazy continuation — `- item` /
+                 `lazy continuation` at column 0 — cleared the column to 0 while the item was still
+                 open. A fence at column 2 then stored a bound of 3 and REJECTED its own valid
+                 closer at 4, ran to end-of-body and ate every edge after it. That is the dangerous
+                 direction, and no clamp can repair it because the state was already too small. The
+                 laziness qualifier prevents it at the source.
+
+             A FENCE OPENED INSIDE AN ITEM ENDS WHEN THE ITEM DOES — a non-blank line at column 0,
+             scoped by `md_fence_base > 0` so a top-level unterminated fence still swallows to
+             end-of-body as it always has. Its OWN CLOSER IS TRIED FIRST: a list-nested fence is
+             most often closed by a delimiter written back at column 0, which satisfies both tests,
+             and ending the container first consumed that line as a terminator and then re-read it
+             as a fresh OPENER — reintroducing the swallow this rule exists to prevent. Without this
+             half, the container-relative closer bound is a net LOSS: it correctly refuses an
+             over-indented closer, and the fence then takes every edge after it.
 
              THE STALE COLUMN IS CLAMPED WHERE IT WOULD OTHERWISE BITE. "Leave it standing" is
              harmless for `adb_md_content_at`, by the argument above, but NOT for the closer bound:
@@ -2529,6 +2552,29 @@ limit: none of them is sufficient alone.
              narrower than it reads, and repeating it would be a false claim: several conservative
              non-CommonMark cases are retained on purpose. The defensible claim is that this was
              the remaining REPORTED list-continuation hole.
+
+             MEASURED AGAINST A COMMONMARK REFERENCE PARSER, which is the evidence that decides
+             the shape rather than argues it. 1888 generated container shapes (list markers at four
+             indents, nested and not, both fence delimiters at every reachable column, closers at
+             four columns, blockquotes, with and without a blank line) were classified by
+             markdown-it-py in strict CommonMark mode, and every candidate line carries a unique
+             issue number so "did the filter declare N" maps 1:1 onto "is line L prose":
+
+                                     over-match      under-match
+                 parent                     526               46
+                 this change                389                2   (newly dropped: 0)
+
+             Better in BOTH directions, and — the number that actually governs — ZERO shapes where
+             this drops an edge the parent declared. Over-match blocks a ready bundle and is
+             visible; under-match marks a genuinely blocked bundle `ready` and is not. The two
+             under-matches that remain are artifacts of the oracle, which models block structure
+             only: both are backtick runs that CommonMark pairs as an INLINE code span, which this
+             filter also suppresses and the oracle does not model.
+
+             Intermediate shapes were measured rather than assumed, and two were rejected on the
+             numbers: the container column with the closer bound left opener-relative (389/34, but
+             it keeps the early-close bug that fails both ways at once), and the container-end rule
+             applied before the closer check (389 over, and it re-swallowed bodies).
 
              EVIDENCE ON THE LIVE CORPUS, to D27's own standard. `deps-from-body` was run over all
              210 issue bodies in this tracker with the parent library and with this one, and the

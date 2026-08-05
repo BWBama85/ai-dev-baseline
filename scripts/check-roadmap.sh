@@ -1309,8 +1309,26 @@ eq "${ depsm '   ~~~' 'Depends on #5' '      ~~~' 'Depends on #7'; }" '' \
 # deleting a list continuation, the direction that marks a genuinely BLOCKED bundle `ready`.
 eq "${ depsm '- item' '      ~~~' '      Depends on #5' '      ~~~' 'Depends on #7'; }" '5 7' \
    "UNDER: at content column + 4 the indent rule still refuses to strip (D27's guard, unmoved)"
-eq "${ depsm '  - item' 'Depends on #9' '    ~~~' '    Depends on #5' '    ~~~'; }" '5 9' \
-   "UNDER: a column-0 line CLOSES the container, so its content column stops applying"
+# A column-0 line closes the container only when NO PARAGRAPH IS OPEN — CommonMark's laziness rule,
+# which applies to paragraph continuation text and nothing else. Both halves are pinned, because
+# getting this wrong went stale in the direction the clamp cannot repair: clearing the column while
+# the item was still open made a fence store an UNDERSIZED bound and reject its own valid closer,
+# and the fence then ate every edge to end-of-body. (Review round 2. The first version of the
+# fixture below asserted `5 9` and was wrong: `Depends on #9` is a lazy continuation, so the block
+# after it is still item content and #5 is quoted. A CommonMark reference parser says so too.)
+eq "${ depsm '  - item' 'Depends on #9' '    ~~~' '    Depends on #5' '    ~~~'; }" '9' \
+   "OVER: a column-0 LAZY CONTINUATION does not close the item, so the fence after it still quotes"
+eq "${ depsm '- item' 'lazy continuation' '  ~~~' '  Depends on #5' '    ~~~' 'Depends on #7'; }" '7' \
+   "UNDER: ...so the item's column survives, and a valid closer is not rejected by a shrunken bound"
+eq "${ depsm '- a' '' 'Top-level prose.' '' '    Depends on #5'; }" '' \
+   "OVER: ...while after a BLANK line a column-0 line is not lazy, and does close the container"
+# The other half of the container's lifetime: a fence opened inside an item ends when the item does.
+# Without it the container-relative closer bound is a net loss — it correctly refuses an
+# over-indented closer, and the fence then runs to end-of-body and takes every edge with it.
+eq "${ depsm '- item' '   ~~~' '   Depends on #5' '      ~~~' 'Depends on #7'; }" '7' \
+   "UNDER: a column-0 line ENDS a list-nested fence, so an over-indented closer cannot eat the body"
+eq "${ depsm 'Depends on #9' '```' 'Depends on #5'; }" '9' \
+   "UNDER: ...while a TOP-LEVEL unterminated fence still swallows to EOF (that rule is untouched)"
 eq "${ depsm '    ~~~' 'Depends on #5'; }" '5' \
    "UNDER: with no list open at all, a 4-space delimiter is an indented block, not a fence"
 # The container state is ONE integer, not a stack: a dedent carrying no marker leaves the inner
@@ -1318,15 +1336,19 @@ eq "${ depsm '    ~~~' 'Depends on #5'; }" '5' \
 # written further LEFT — and this pins it rather than leaving it to be discovered.
 eq "${ depsm '- outer' '    - inner' '  ~~~' '  Depends on #5' '  ~~~' 'Depends on #7'; }" '7' \
    "UNDER: a fence further LEFT than the standing column still counts (a negative offset passes)"
-# THAT ONE DOES NOT PIN THE STATE'S LIFETIME, and saying so is the point (review finding). A
+# THAT ONE DOES NOT PIN THE STATE'S LIFETIME, and saying so is the point (review round 1). A
 # two-space fence is recognized by every model in play — the parent, a container stack, one that
 # clears the state on dedent, and the one shipped — so it can only witness the negative-offset half
-# of the cutoff. THIS is the fixture that separates them: after a markerless dedent the column is
-# still the INNER item's 6, so a fence written at 6 is recognized. A stack would have popped to
-# `outer` and called that indented code (declaring #5), and so does the parent. Shipping the
-# one-integer model means shipping this answer, so it is pinned rather than left implicit.
+# of the cutoff. THIS is the fixture that separates them: `  text` is a lazy continuation of the
+# INNER item, so that item is still open and a fence at its column 6 is structure. An
+# implementation that dropped the column on any markerless dedent calls the same line indented code
+# and declares #5, and so does the parent.
+#
+# The expected value here is what a CommonMark reference parser gives; an earlier note claimed a
+# container stack would answer differently, and that was simply wrong (review round 2) — laziness
+# keeps the inner item open, so a stack agrees with the single integer on this body.
 eq "${ depsm '- outer' '    - inner' '  text' '      ~~~' '      Depends on #5' '      ~~~' 'Depends on #7'; }" '7' \
-   "UNDER: the column really does stay standing — a fence AT the stale column is still structure"
+   "UNDER: a lazy continuation keeps the inner item open, so a fence AT its column is structure"
 # ...and the STALE column must not reach the closer bound, which is the one place "leave it
 # standing" is not harmless. Unclamped, the inner item's 6 admitted a closer at 9, so the 6-space
 # delimiter below closed this fence EARLY — fabricating #5 and then reading the real closer as a
