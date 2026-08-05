@@ -2525,7 +2525,16 @@ limit: none of them is sufficient alone.
              non-CommonMark cases are retained on purpose. The defensible claim is that this was
              the remaining REPORTED list-continuation hole.
 
-             EVIDENCE, and ORDERING stated exactly as D27 asks. Seventeen of the first round of
+             EVIDENCE ON THE LIVE CORPUS, to D27's own standard. `deps-from-body` was run over all
+             210 issue bodies in this tracker with the parent library and with this one, and the
+             edge sets are IDENTICAL — 30 edges either way, no body's reading moved. Said plainly
+             rather than spun: that means this was a LATENT hole, not an incident in progress. The
+             only shape that would have moved is the one #252 reports, and even its own repro is
+             written inside a top-level fence, so the issue body does not trip its own bug. The
+             corpus run is therefore evidence of SAFETY (nothing regressed across 210 real bodies),
+             and the fixtures are the evidence of the fix.
+
+             ORDERING stated exactly as D27 asks. Seventeen of the first round of
              assertions
              were run against the parent's `scripts/lib/common.sh` in a throwaway copy of the tree
              and observed RED — fifteen in `check-roadmap.sh`, two in `check-common-lib.sh` — while

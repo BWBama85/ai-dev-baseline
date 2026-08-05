@@ -52,7 +52,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     container-relative for everyone, so a fence they open at indent 1–3 now needs its closer at
     indent ≤ 3. Every indented opener in the tree today pairs with a closer at the same indent, so
     no file's reading moves.
-  - **Pre-existing, not a regression** — the same body yields the same two numbers before #136.
+  - **Pre-existing, not a regression** — the same body yields the same two numbers before #136 —
+    and **latent rather than live**: `deps-from-body` over all 210 issue bodies in this tracker
+    produces an identical 30-edge set before and after, so no body's reading moved. The corpus run
+    is the evidence of safety; the fixtures are the evidence of the fix.
   - `scripts/check-roadmap.sh` § 6i gains fixtures for both delimiters, blockquotes, ordered and
     nested markers, the closer-bound pair, the stale-dedent shape, CRLF, and the D27 boundary;
     `check-common-lib.sh` pins the rule at the primitive. **Seventeen of the first round of
