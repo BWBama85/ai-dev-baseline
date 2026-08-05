@@ -351,6 +351,46 @@ eq "${ lint_rc 'The docs show ``PR #1 is still open`` as an example.'; }" 0 "a d
 eq "${ lint_rc 'See ```PR #1 is still open``` inline.'; }" 0 "a triple-backtick span declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 eq "${ lint_rc 'Quoting ``PR #1 is still open`` but PR #2 is still open.'; }" 1 "...while a real claim beside a quoted one is still caught"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
+# --- 3b-i2. ...INCLUDING one whose body carries a lone backtick (#251) -------------------------
+# THE APPROXIMATION THAT SHIPPED, and it was a live false positive rather than the "second half of
+# one conversion" #251 filed it as. The old stripper collapsed every run of 2+ backticks to one and
+# then matched `` `[^`]*` ``, so a CommonMark span fenced by TWO ticks whose body contains a lone
+# tick was cut at the INNER tick: `` ``PR ` #1 is still open`` `` stripped to `  #1 is still open` `
+# and fired `open`. That is a Stop hook blocking a turn for quoting a status the way this very repo
+# documents one — the precision failure the grammar's own header says it is built to avoid.
+#
+# Observed RED against the pre-conversion library before the shared filter landed (rc 1, naming
+# `open`), which is what makes it a witness rather than decoration.
+#
+# ONE LINE PER ASSERTION, and that is not a style choice: the `adb-claim-ok:` escape is PER LINE, so
+# a wrapped `eq` puts the marker on the continuation while the fixture string — which carries a
+# pull-request reference — sits on the line above, unexempted. The live claim lint caught exactly
+# that here, which is the trap check-claims.sh's own header names. Note a code span does not help
+# in a .sh file: only `.md` gets a prose view, because the defect that motivated the lint was
+# itself written in a shell comment.
+eq "${ lint_rc 'The docs show ``PR ` #1 is still open`` as an example.'; }" 0 "a 2-tick span whose BODY holds a lone backtick declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+# ...and the filter must not swallow live prose to achieve that: a real claim beside it still fires,
+# exactly once.
+eq "${ lint_rc 'Quoting ``PR ` #1 is still open`` but PR #2 is still open.'; }" 1 "...while a real claim beside THAT span is still caught"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_out 'Quoting ``PR ` #1 is still open`` but PR #2 is still open.' | wc -l | tr -d ' '; }" 1 "...and only the real one is reported"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+
+# THE EXCERPT MUST STAY PRINTABLE. The mask view replaces a span's bytes with \x01, and the Stop
+# hook prints this excerpt straight to the operator — so the mask byte is an internal matching
+# boundary that must never reach a diagnostic. Asserted on the raw bytes, because a control byte is
+# invisible in a diff and in most terminals: exactly the way this would ship unnoticed.
+SA_MASKFIX='Quoting ``PR ` #1 is still open`` but PR #2 is still open.'  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_out "$SA_MASKFIX" | tr -d '\001' | wc -c | tr -d ' '; }" "${ lint_out "$SA_MASKFIX" | wc -c | tr -d ' '; }" \
+   "the excerpt carries NO \\x01 mask byte — it is printed verbatim by the Stop hook"
+
+# --- 3b-i3. the shared filter's block model, now that lint uses it (#251) ---------------------
+# Indented code is structure (D27), so a 4-space-indented claim after a blank line no longer fires.
+# STATED AS A COST, not hidden: it is CommonMark's rule and the same one every other consumer of
+# the filter obeys, and the alternative — lint keeping a private block model — is the fourth copy
+# #136 exists to delete. Indented code CANNOT interrupt a paragraph, so the far commoner shape (an
+# indented line continuing prose above it) is unaffected, and that half is pinned too.
+eq "${ lint_rc "${ printf 'Intro.\n\n    PR #1 is still open'; }"; }" 0 "the accepted cost: an indented CODE block declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ lint_rc "${ printf 'Intro.\n    PR #1 is still open'; }"; }" 1 "...but indented code cannot interrupt a paragraph, so a wrapped claim still fires"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+
 # --- 3b-j. `draft` is not a status token (live false positive, hours after shipping) ---------
 # It is an ordinary English noun and it collided with prose an agent genuinely writes. A gate that
 # fires on ordinary prose gets worked around, and then it protects nothing — so the word is out of
@@ -440,6 +480,33 @@ HOOK_OUT="${ printf '%s' "${ transcript "$SHIPPED"; }" | bash "$HOOK" 2>&1; }"; 
 eq "$HOOK_RC" 0 "a broken linter dependency does not wedge the session"
 has "$HOOK_OUT" "NOT being checked" "...but the gate reports that it is disabled"
 has "$HOOK_OUT" "common.sh" "...and surfaces the linter's own diagnostic"
+mv "$tdir/lib/common.sh.bak" "$tdir/lib/common.sh"
+
+# --- A common.sh WITHOUT THE SHARED FILTER IS ALSO A BROKEN INSTALL (#251) -------------------
+# Since the conversion, `lint` has no structure model of its own — it is `_ADB_MD_AWK` or nothing.
+# A common.sh that PREDATES the filter loads perfectly well and simply has no `_ADB_MD_AWK` in it.
+#
+# WHAT THE PROBE BUYS, measured against a copy with its condition neutralized rather than assumed:
+# WITHOUT it the run does not scan unstripped prose — awk aborts with `calling undefined function
+# adb_md_run` and exits 2, which the Stop hook renders as the catch-all "the linter exited 2".
+# WITH it the exit is the documented broken-install 1, and the message names the library and the
+# missing primitive, which is what tells an operator to run `baseline update` rather than to go
+# reading awk. So this fixture pins the CODE and the DIAGNOSTIC, and it was witnessed going red
+# (2 -> 1) that way. Said exactly: the value here is a usable failure, not the difference between
+# failing and not.
+#
+# Doctored in the COPY under $tdir, never in the working tree: this suite reads the tree it is
+# testing (base/practices/self-review.md).
+cp "$tdir/lib/common.sh" "$tdir/lib/common.sh.bak"
+printf '\n_ADB_MD_AWK=""\n' >> "$tdir/lib/common.sh"
+LINT_OUT="${ printf 'PR #1 is still open.\n' | bash "$tdir/lib/state-assert.sh" lint 2>&1; }"; LINT_RC=$?  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "$LINT_RC" 1 "a common.sh with no shared filter fails the lint rather than scanning raw markdown"
+has "$LINT_OUT" "common.sh" "...and the diagnostic names the library, not a variable"
+has "$LINT_OUT" "_ADB_MD_AWK" "...and the missing primitive"
+# The Stop hook renders that as "claims are NOT being checked", never as a clean turn.
+HOOK_OUT="${ printf '%s' "${ transcript "$SHIPPED"; }" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?
+eq "$HOOK_RC" 0 "...and the hook does not wedge the session over it"
+has "$HOOK_OUT" "NOT being checked" "...but reports that the gate is disabled"
 mv "$tdir/lib/common.sh.bak" "$tdir/lib/common.sh"
 
 # --- EVERY CLAIM KIND GETS A COMMAND THAT CAN ANSWER IT (review round 1) ---------------------

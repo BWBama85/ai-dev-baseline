@@ -2622,3 +2622,47 @@ limit: none of them is sufficient alone.
              was written first and nobody should read it as evidenced; the red-at-parent fixtures
              are the part a reviewer can check.
 - baseline-issue: #252
+
+## D43 — the shared filter's comment/span semantics are adopted as-is, not worked around per-consumer
+- date:      2026-08-05
+- category:  general
+- unknown:   #251 converts `check-claims.sh` and `state-assert.sh lint` onto `_ADB_MD_AWK`. Gap
+             analysis raised two BLOCKING semantic deltas that the issue does not decide, both
+             affecting only the two joining consumers because the other seven already live with
+             them. (1) The shared filter DELETES an HTML comment's bytes where both private copies
+             substituted a space, so `D<!--x-->99` becomes `D99` and `cl<!--x-->osed` becomes
+             `closed` — text fusing into a token neither copy would have seen. (2) A resolved code
+             span becomes one `\x01` PER BYTE where `cc_prose` substituted a single space, so the
+             C1 kind hint in `PR`x`#7` stops matching and the reference is recorded `bare` rather
+             than `pull`. Either could be called a regression, and adopting them silently would be
+             the "silently disabled rule" failure `check-claims.sh`'s own header is about.
+- decision:  ADOPT BOTH, and pin each with a fixture rather than reproducing the old spacing.
+             (1) is CORRECT, not a regression: an HTML comment is ZERO-WIDTH in CommonMark, so the
+             rendered text a reader sees genuinely is `D99`. The space substitution was the
+             approximation — it invented a word break nobody wrote. This is also exactly what
+             distinguishes a comment from a code span, whose content is visible-but-code and is
+             therefore MASKED rather than dropped; the filter already draws that line and draws it
+             deliberately. (2) is a FIX in the same direction as `\x01` itself: reading `PR #7`
+             across a code span is the phrase fusion the mask byte exists to prevent, and the
+             reference is still resolved for EXISTENCE — only the fabricated KIND claim is lost.
+             The alternative in both cases is a boundary-preserving third view in `common.sh`,
+             which would change the reading of all seven existing consumers to spare two new ones.
+- placement: scripts/lib/common.sh (unchanged), the two consumers, and fixtures in
+             scripts/check-claims-guard.sh + scripts/check-state-assert.sh
+- reason:    The single-source law only pays if joining a consumer means adopting the shared
+             semantics. A per-consumer workaround for a semantic it dislikes is the fourth copy
+             #136 exists to delete, wearing a smaller costume — and it would have to be maintained
+             against a filter that keeps moving (#135, #252).
+
+             DIRECTION, stated as D27 asks. (1) is an OVER-match: a fabricated `D99`/`#4242` could
+             fail CI on text that is not a claim. It needs `<!--` written mid-token with no
+             surrounding space, which nothing in this tree does and no author writes; the audited
+             `adb-claim-ok:` escape covers the pathological case. (2) is an UNDER-match confined
+             to the kind hint, and the number is still resolved. Both were measured on fixtures
+             before being accepted rather than reasoned about.
+
+             SCOPE REFUSED, deliberately: no boundary-preserving view, no widening of the parser's
+             documented exclusions (leading tabs, a container stack, item-relative indented code,
+             Setext headings, mid-line comment containers), and no revival of the removed
+             path-claim rule.
+- baseline-issue: #251

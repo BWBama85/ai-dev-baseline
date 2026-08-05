@@ -230,15 +230,47 @@ _sa_observe_issue() {
 #
 # ONLY PROSE DECLARES (#117, applied here): fenced blocks, HTML comments, blockquotes and inline
 # code spans are stripped BEFORE scanning, so quoting a status, documenting this grammar, or
-# showing an example never trips it. This repeats a container-stripping idiom that #136 exists to
-# single-source; when that lands, this becomes its third consumer rather than a fourth copy.
+# showing an example never trips it. That stripping is `_ADB_MD_AWK` in common.sh — THE one
+# paragraph-aware CommonMark filter (#136) — and this file is one of its consumers (#251). It
+# carried a private copy until then, and the copy was not merely redundant: it was WRONG in a way
+# that fired on ordinary repo prose. See the block model below.
+#
+# WHAT THE CONVERSION FIXED, because "it was a duplicate" undersells it (#251). The old copy
+# collapsed every run of 2+ backticks to one and then matched `` `[^`]*` ``, so a span fenced by
+# TWO ticks whose body held a lone tick was cut at the INNER tick — leaving a fragment of the
+# quoted status exposed as prose. `` ``PR ` #1 is still open`` `` therefore FIRED, blocking a turn
+# for quoting a status the way this repo documents one. #251 filed that half as an unwitnessed
+# approximation; it is a demonstrated false positive, and check-state-assert.sh 3b-i2 pins it.
+#
+# THE BLOCK MODEL IS NOW COMMONMARK`S, not this file`s, and the one visible cost is stated rather
+# than discovered: an indented CODE block is structure (D27), so a 4-space-indented claim after a
+# blank line no longer fires. Indented code cannot interrupt a paragraph, so a merely wrapped line
+# is unaffected. Both halves are pinned.
+#
+# TWO VIEWS, and this reads MD_MASK: a resolved span becomes \x01 rather than being deleted, so a
+# quoted example declares nothing AND cannot fuse with its neighbours into a word nobody wrote.
+# The mask byte is an INTERNAL matching boundary — it is mapped back to a space before any excerpt
+# reaches the caller, because the Stop hook prints that excerpt straight to the operator.
 #
 # BIASED TOWARD FLAGGING. A false positive costs one rephrase; a false negative costs the trust
 # this practice exists to protect. The verb carve-outs below exist only to keep ordinary English
 # ("open a PR", "merged the branch") from firing — never to excuse a state claim.
 cmd_lint() {
   [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-  awk '
+  # A common.sh too old to carry the filter would leave `$_ADB_MD_AWK` empty, and awk would then
+  # run the scan with NO structure stripping at all — every fenced, quoted and commented status in
+  # the turn firing at once. That is the loud direction, but it is loud in the wrong place (the
+  # operator sees a wall of bogus findings, not a broken install), so say what is actually wrong.
+  # Exit 1 is the documented broken-install code, and the Stop hook already renders an exit-1 with
+  # no findings as "claims are NOT being checked this turn" plus this diagnostic.
+  [ -n "${_ADB_MD_AWK:-}" ] || {
+    printf 'state-assert: FATAL — %s is missing the shared markdown filter (_ADB_MD_AWK); claims cannot be checked\n' \
+      "$_adb_sa_common" >&2
+    exit 1
+  }
+  # LC_ALL=C for the same reason every other consumer sets it: the scan below is byte-oriented, and
+  # the mask byte is a byte.
+  LC_ALL=C awk "$_ADB_MD_AWK"'
     BEGIN {
       # STATUS words. Kept tight on purpose: every addition is a new false-positive surface, and
       # the ones here are the vocabulary in which the failures actually occurred.
@@ -256,28 +288,15 @@ cmd_lint() {
       split("to will can could should would must may let lets", MOD, " ")
     }
     # --- structure stripping: only prose declares -----------------------------------------
-    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
-    fence { next }
-    /^[[:space:]]*>/ { next }
-    {
-      line = $0
-      gsub(/<!--.*-->/, " ", line)          # single-line HTML comment
-      if (line ~ /<!--/) { htm = 1 }
-      if (htm) { if (line ~ /-->/) { htm = 0 }; next }
-      # Inline code spans, INCLUDING multi-backtick delimiters. CommonMark lets a span be fenced
-      # by a run of N backticks (`` ``PR #1 is still open`` `` is a valid span), and a
-      # single-backtick-only stripper leaves that content exposed as prose — so quoting a status
-      # the way this very file documents it would block a turn. Collapsing every run of 2+
-      # backticks to one first makes the single-span rule cover them all.
-      #
-      # An approximation, and named as one: a multi-backtick span whose BODY contains a lone
-      # backtick strips only up to that inner tick. It can leave a fragment behind, never a whole
-      # unstripped span. The exact CommonMark rule belongs to the shared prose filter (#136), of
-      # which this is a declared consumer.
-      gsub(/``+/, "`", line)
-      gsub(/`[^`]*`/, " ", line)            # inline code spans
-    }
-    {
+    # BUFFER, then resolve once. The filter is paragraph-aware because a CommonMark code span may
+    # cross a line ending, so it cannot be driven a line at a time — which is exactly what the
+    # private copy this replaces tried to do.
+    { MDL[++MDN] = $0 }
+    END {
+      adb_md_run()
+      for (ln = 1; ln <= MDN; ln++) {
+        if (MD_SKIP[ln]) continue          # a fence, a blockquote, indented code, an HTML comment
+        line = MD_MASK[ln]
       # --- sentence split. Terminators only when followed by space or end of line, so a version
       # number or a timestamp is never cut in half.
       n = split(line, S, /[.!?](  *|$)/)
@@ -327,15 +346,25 @@ cmd_lint() {
             prevw = pre; sub(/[^a-z0-9]+$/, "", prevw); sub(/^.*[^a-z0-9]/, "", prevw)
             for (m in MOD) if (prevw == MOD[m]) skip = 1
             if (skip) continue
-            ex = s; gsub(/^[[:space:]]+|[[:space:]]+$/, "", ex)
+            # THE MASK BYTE NEVER LEAVES THIS PROGRAM. `s` comes from MD_MASK, so a quoted span is
+            # \x01 here — and the Stop hook prints this excerpt verbatim to the operator
+            # (state-claim-gate.sh). A control byte is invisible in a terminal and in a diff, so it
+            # would ship unnoticed; map it back to a space, BEFORE trimming, so a span at either
+            # end is trimmed away rather than left as padding.
+            ex = s; gsub(MD_MASKC, " ", ex)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", ex)
             if (length(ex) > 120) ex = substr(ex, 1, 117) "..."
-            printf "%d\t%s\t%s\n", NR, w, ex
+            # `ln`, NOT `NR`. Everything runs in END now, where NR is the record COUNT — it would
+            # report the last line of the turn for every finding. The hook renders this field as
+            # "line %s", so a constant there is a wrong answer, not a cosmetic one.
+            printf "%d\t%s\t%s\n", ln, w, ex
             found = 1
           }
         }
       }
+      }
+      exit (found ? 1 : 0)
     }
-    END { exit (found ? 1 : 0) }
   '
 }
 

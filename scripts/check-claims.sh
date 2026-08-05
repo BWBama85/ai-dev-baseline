@@ -37,7 +37,10 @@
 #   0  no claim violations
 #   1  at least one claim violation (diagnostics on stderr)
 #   2  usage error
-#   3  --live was requested and the live half could NOT be run (fail closed — never a pass)
+#   3  a required half of the check could NOT be run (fail closed — never a pass): --live was
+#      requested and gh/jq is unavailable, or the shared markdown filter failed on a .md file.
+#      Both are "I could not tell", which is never the same answer as "nothing is wrong" — a
+#      filter that returns nothing looks exactly like a file with no claims in it.
 #
 # KNOWN LIMIT OF THE REFERENCE GRAMMAR: a six-digit CSS colour is shaped exactly like an issue
 # number, so a value such as #123456 in a stylesheet would be looked up.  adb-claim-ok: that is a
@@ -108,6 +111,13 @@ _cc_common="scripts/lib/common.sh"
 [ -f "$_cc_common" ] || { echo "check-claims: FATAL — $_cc_common not found" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$_cc_common"
+# THE PROSE FILTER IS NOT OPTIONAL (#251). Without it the `.md` rules below would scan raw markdown
+# — every fenced, quoted and commented number in the range read as a live citation. Probed for the
+# same reason roadmap-lib.sh and skill-compose.sh probe: a common.sh that predates the filter loads
+# perfectly well and simply has no `adb_md_prose` in it, and under `set -u` the first use would be
+# an unbound-variable abort naming a variable rather than the real problem.
+command -v adb_md_prose >/dev/null 2>&1 \
+  || { echo "check-claims: FATAL — $_cc_common is missing the shared markdown filter (adb_md_prose)" >&2; exit 2; }
 
 RANGE=""
 LIVE=0
@@ -185,7 +195,7 @@ _CC_NL=$'\n'
 # is visible in the log.
 N_FILES=0; N_ADDED=0; N_SKIP_BIN=0; N_SKIP_PATH=0
 N_REF_OCC=0; N_REF_DISTINCT=0; N_REF_LOOKUPS=0
-N_DREF=0; N_DATE=0; N_EXEMPT=0
+N_DREF=0; N_DATE=0; N_EXEMPT=0; N_MD_STRUCT=0
 
 cc_violation() { check_note "$1"; check_fail; }
 
@@ -350,43 +360,67 @@ cc_entity() {
 # Content comes from the range's HEAD revision, never the working tree, so an explicit --range
 # scans what it names rather than whatever happens to be checked out.
 cc_scan_file() {   # <file> -> "<lineno>\t<raw text>" per scannable added line
-  local f="$1" lines="$WORK/ln" is_md=0
+  local f="$1" lines="$WORK/ln"
   awk -F'\t' -v want="$f" '$1 == want { print $2 }' "$ADDEDMAP" | sort -n -u > "$lines"
   [ -s "$lines" ] || return 0
-  case "$f" in *.md) is_md=1 ;; esac
-  git show "$HEADREV:$f" 2>/dev/null | awk -v want="$lines" -v md="$is_md" '
+  # NO MARKDOWN MODEL HERE ANY MORE (#251). This used to carry a whole-file fence toggle — a
+  # private parser, and a worse one than the shared filter it sat next to: it knew nothing of
+  # blockquotes, HTML comments, list containers, or a closer shorter than its opener. Structure is
+  # now decided once, by `cc_prose_view` below, and this function is back to what its name says.
+  #
+  # A STRUCTURAL LINE IS STILL EMITTED, rather than dropped as the toggle dropped a fenced one.
+  # That is deliberate: the EXEMPTION is read from the raw line, so a line this function silently
+  # swallowed could never be reported as exempt, and `added-lines` would quietly mean "added lines
+  # that survived a parser" while reading like "added lines". Its prose view is empty, so no rule
+  # can fire on it; `md-structural` below counts them.
+  git show "$HEADREV:$f" 2>/dev/null | awk -v want="$lines" '
     BEGIN { while ((getline l < want) > 0) W[l + 0] = 1 }
-    {
-      # Fenced blocks are dropped for markdown regardless of rule: nothing inside one declares.
-      if (md) {
-        # Up to THREE spaces of indent is a fence; four or more is an indented code block and
-        # must NOT toggle. A whole-file toggle on an indented ``` hid every following line.
-        if ($0 ~ /^ {0,3}(\140\140\140|~~~)/) { fence = !fence; next }
-        if (fence) next
-      }
-      if (!(NR in W)) next
-      printf "%d\t%s\n", NR, $0
-    }'
+    { if (NR in W) printf "%d\t%s\n", NR, $0 }'
 }
 
-# cc_prose <raw> — the view the reference rules get: inline code spans and HTML comments removed.
+# cc_prose_view <file> — populate CC_MASK with the shared filter`s MASK view of the WHOLE file, one
+# element per line (CC_MASK[n-1] is line n). Returns non-zero if the filter could not be run.
 #
-# NON-GREEDY, deliberately. `s/<!--.*-->/ /` is greedy, so a line carrying TWO comments had
-# everything between them deleted as well — including any real citation sitting in that prose. That
-# direction is the dangerous one: it hides a claim rather than inventing one. `[^-]` is not a
-# faithful "not `-->`" either, so the comment body is matched as "anything that is not the start of
-# the terminator", repeated.
+# THE WHOLE FILE, NEVER THE ADDED LINES ALONE, and that is the property the multi-line-comment
+# fixture actually pins. A block is opened by a line the diff may not contain: feeding only added
+# lines to a paragraph-aware parser asks it to decide containment from a body with its openers cut
+# out, which is the same line-at-a-time mistake in a new costume. So the file is filtered whole and
+# the added-line set is applied afterwards — the ordering `cc_scan_file` already used.
 #
-# THIS IS AN APPROXIMATION AND IS NAMED AS ONE. A multi-line HTML comment, a multi-backtick span
-# whose body contains a lone backtick, and an indented-code-block fence are all modelled loosely.
-# The exact CommonMark rule belongs to the shared paragraph-aware prose filter that issue #136
-# exists to single-source, of which this is a declared consumer — the same position
-# state-assert.sh's grammar takes, rather than growing a second private parser here.
-cc_prose() {
-  printf '%s\n' "$1" \
-    | sed -E -e 's/<!--([^-]|-[^-]|--[^>])*-->/ /g' \
-             -e 's/``+/`/g' \
-             -e 's/`[^`]*`/ /g'
+# MASK, NOT TEXT. `MD_TEXT` leaves inline spans INTACT by design; the reference and decision rules
+# must not see inside one, so they get the view where a resolved span is \x01. Masking rather than
+# deleting is also what stops `clo`x`ses #42` collapsing into a keyword nobody wrote.
+#
+# FAIL LOUD, because the failure mode here is a clean-looking pass. `adb_md_prose` is fail-closed —
+# its awk prints a per-invocation nonce trailer and the wrapper returns non-zero without it — so a
+# killed or truncated run is a status, not a short result. Swallowing that would give every line of
+# the file an empty prose view: zero references, zero decision refs, and a confident PASS. That is
+# precisely the silently-disabled rule this file`s own header is about.
+CC_MASK=()
+cc_prose_view() {   # <file>
+  local f="$1" nraw nprose
+  CC_MASK=()
+  # The pipeline`s status IS adb_md_prose`s (it is last), which is the one that can fail closed.
+  git show "$HEADREV:$f" 2>/dev/null | adb_md_prose mask > "$WORK/prose" || return 1
+  mapfile -t CC_MASK < "$WORK/prose"
+  # ONE OUTPUT LINE PER INPUT LINE, ASSERTED RATHER THAN TRUSTED. Every lookup below is
+  # `CC_MASK[lno - 1]`, so the whole conversion rests on that alignment — and its failure mode is
+  # SILENCE, not a crash: a prose view one line short makes every subsequent lookup read the wrong
+  # line, and a view that is EMPTY makes every line read "", which is zero references, zero
+  # decision refs and a confident PASS. That is indistinguishable in the log from a range with no
+  # claims in it, which is the exact shape this file`s header was written about.
+  #
+  # The filter documents the 1:1 invariant and check-common-lib.sh pins it, so this is a FORWARD
+  # guard on a contract that holds today, not a workaround for a known break — said plainly rather
+  # than implying it caught something. It cost one awk and it turns a future renumbering from a
+  # silent pass into a named failure.
+  #
+  # `awk END { print NR }` rather than `wc -l`, because a file whose last line carries no newline
+  # is one line short by wc`s counting and would fail this check spuriously.
+  nraw="$(git show "$HEADREV:$f" 2>/dev/null | awk 'END { print NR }')"
+  nprose="${#CC_MASK[@]}"
+  [ "$nraw" = "$nprose" ] || return 2
+  return 0
 }
 
 # The audited escape. A line carrying this token is exempt from every rule below — greppable, so
@@ -404,6 +438,32 @@ REFS="$WORK/refs"; : > "$REFS"    # "<n>\t<file>:<line>\t<kind-hint>"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   N_FILES=$((N_FILES + 1))
+  # The prose view is resolved ONCE PER FILE, before any line of it is read — the filter is
+  # paragraph-aware and needs the whole body.
+  CC_IS_MD=0
+  case "$f" in
+    *.md)
+      CC_IS_MD=1
+      cc_prose_view "$f"; _cc_pv=$?
+      case "$_cc_pv" in
+        0) : ;;
+        2) echo "check-claims: FATAL — the prose view of '$f' has a different line count than the file." >&2
+           echo "              Every lookup is by line number, so this is NOT a pass: it would silently" >&2
+           echo "              scan the wrong lines, or none at all." >&2
+           exit 3 ;;
+        *) echo "check-claims: FATAL — the shared markdown filter failed on '$f'. This is NOT a pass:" >&2
+           echo "              with no prose view every rule below would scan nothing and report clean." >&2
+           exit 3 ;;
+      esac ;;
+  esac
+  # MATERIALIZED, not piped. `done < <(cc_scan_file "$f")` discards the scanner`s exit status, so an
+  # awk that died mid-file arrived as zero added lines — a file this lint never read, reported in
+  # the same words a clean file uses. Same fail-open shape as the filter guard above, one line up
+  # the pipe, and it is fixed here because this conversion is what made the scan path load-bearing.
+  cc_scan_file "$f" > "$WORK/scanned" || {
+    echo "check-claims: FATAL — could not scan '$f' (the added-line reader failed). This is NOT a pass." >&2
+    exit 3
+  }
   while IFS=$'\t' read -r lno raw; do
     [ -n "$lno" ] || continue
     N_ADDED=$((N_ADDED + 1))
@@ -412,10 +472,22 @@ while IFS= read -r f; do
     if printf '%s' "$raw" | grep -qE "$CC_EXEMPT_RE"; then
       N_EXEMPT=$((N_EXEMPT + 1)); continue
     fi
-    case "$f" in
-      *.md) text="${ cc_prose "$raw"; }" ;;
-      *)    text="$raw" ;;
-    esac
+    # THE TWO VIEWS, and the separation is the point (see cc_prose_view). The rules read the
+    # filter`s MASK view of this line; the exemption above read the RAW one.
+    #
+    # NO `-` DEFAULT ON THIS LOOKUP, deliberately. An earlier cut wrote `${CC_MASK[lno - 1]-}` and
+    # justified it as "correct for a trailing structural line" — which is simply false: the filter
+    # emits an EMPTY RECORD for every structural line, at its own index, and `mapfile` keeps it.
+    # So an out-of-range index cannot happen while the 1:1 invariant holds, and cannot mean
+    # anything good if it ever does. The default would have turned that into "" — silently
+    # scanning nothing, which is this file`s signature failure. Bare, `set -u` makes it an
+    # unbound-variable abort instead: loud, at the exact index that broke.
+    if [ "$CC_IS_MD" -eq 1 ]; then
+      text="${CC_MASK[lno - 1]}"
+      [ -n "$text" ] || N_MD_STRUCT=$((N_MD_STRUCT + 1))
+    else
+      text="$raw"
+    fi
 
     # --- C1: collect issue/PR references (resolved later, in one deduplicated live pass) --------
     # `#` must not be preceded by a word character or `/`, which excludes `owner/repo#123` — a
@@ -456,7 +528,7 @@ while IFS= read -r f; do
     done
 
     # --- (the path-claim check deliberately does NOT live here — see the header) ----------------
-  done < <(cc_scan_file "$f")
+  done < "$WORK/scanned"
 done < "$SCANLIST"
 
 # --- C4: a decision's date must be near the commit that INTRODUCED it ---------------------------
@@ -624,8 +696,18 @@ else
 fi
 
 # --- what this run actually evaluated -----------------------------------------------------------
-printf 'check-claims: range=%s files=%d added-lines=%d refs=%s/%d live-lookups=%d d-refs=%d dates=%d exempt=%d binary-skipped=%d path-skipped=%d\n' \
-  "$RANGE" "$N_FILES" "$N_ADDED" "$N_REF_DISTINCT" "$N_REF_OCC" "$N_REF_LOOKUPS" \
+# `md-structural` is new with #251 and is not decoration: it is the count of NON-EXEMPT added
+# markdown lines whose PROSE VIEW IS EMPTY — a fence body, a blockquote, indented code, an HTML
+# comment, and also an ordinary BLANK line, which resolves to nothing for the same reason and is
+# not worth a second counter to separate. "Non-exempt" is exact rather than incidental: an
+# `adb-claim-ok:` line returns above this point and is counted by `exempt` alone, so the two
+# figures never double-count the same line.
+# Before the conversion the fenced ones were dropped inside the scanner, so
+# `added-lines` read like "added lines" while meaning "added lines a private parser let through".
+# Reporting both keeps D22's rule honest: a run that suddenly strips far more than it used to is
+# now visible in the log rather than indistinguishable from a range with fewer claims in it.
+printf 'check-claims: range=%s files=%d added-lines=%d md-structural=%d refs=%s/%d live-lookups=%d d-refs=%d dates=%d exempt=%d binary-skipped=%d path-skipped=%d\n' \
+  "$RANGE" "$N_FILES" "$N_ADDED" "$N_MD_STRUCT" "$N_REF_DISTINCT" "$N_REF_OCC" "$N_REF_LOOKUPS" \
   "$N_DREF" "$N_DATE" "$N_EXEMPT" "$N_SKIP_BIN" "$N_SKIP_PATH"
 
 check_result "no unverified claims in the range"

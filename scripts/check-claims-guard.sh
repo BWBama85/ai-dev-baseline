@@ -576,6 +576,180 @@ commit "indented fence"
 cc --range "$BASE..probe"
 eq "$RC_" 1 "md: a 4-space-indented fence does not toggle fence state and hide the rest"
 
+# =============================== the MULTI-LINE HTML comment (#251) ============================
+# THE DEFECT #251 FILED. `cc_prose` was `sed`, and `sed` is line-based, so it could strip a comment
+# that opened and closed on ONE line and nothing else. A `#N` quoted inside a MULTI-LINE comment was
+# therefore scanned as a live citation, and `--live` would resolve it and fail CI on text that is
+# not a claim at all.
+#
+# NOT THEORETICAL: this repo writes exactly that shape. base/workflows/roadmap.md carries a
+# multi-line schema comment quoting the dependency vocabulary by example, and it was latent only
+# because the numbers it happens to quote all resolve.
+#
+# The OPENER AND CLOSER ARE IN THE BASE COMMIT and only the middle line is ADDED, which is the
+# fixture that actually pins the fix: the scan sees an added line whose containing block was opened
+# by a line it never looks at, so it can only be right if the WHOLE file is fed to the
+# paragraph-aware filter and the added-line set applied afterwards. A fixture that added the whole
+# comment at once would pass under a naive per-added-line filter too, and prove nothing.
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf '<!-- schema notes\n'
+  printf '     PLACEHOLDER\n'
+  printf '     -->\n\n'
+  printf 'Ordinary prose.\n'
+} > "$REPO/notes.md"
+commit "a multi-line comment whose body is not yet a citation"
+MLBASE="$(git -C "$REPO" rev-parse HEAD)"
+sed "s/PLACEHOLDER/it may cite $REF_GONE as example vocabulary/" "$REPO/notes.md" > "$REPO/notes.md.new"
+mv "$REPO/notes.md.new" "$REPO/notes.md"
+commit "quote a dangling number INSIDE the multi-line comment"
+: > "$GH_CALLS"
+cc --range "$MLBASE..probe" --live
+eq "$RC_" 0 "md: a #N inside a MULTI-LINE HTML comment is NOT a citation"
+has "$OUT" "refs=0/0" "md: ...it is not even collected as a reference"
+eq "$(grep -c 'issue view' "$GH_CALLS" | tr -d ' ')" 0 "md: ...so --live makes no entity read at all"
+
+# ...and the inverse, so the fix is a STRIP and not a blanket "stop scanning after a `<!--`":
+# a real dangling reference AFTER the closer is still caught, at the right file:line.
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf '<!-- schema notes\n'
+  printf '     spanning two lines\n'
+  printf '     -->\n\n'
+  printf 'This cites %s in ordinary prose after the comment.\n' "$REF_GONE"
+} > "$REPO/notes.md"
+commit "a dangling reference AFTER a multi-line comment"
+cc --range "$BASE..probe" --live
+eq "$RC_" 1 "md: a real citation AFTER the closer is still caught"
+has "$OUT" "notes.md:7" "md: ...at the correct line, so the filter did not renumber the file"
+
+# =============================== RAW vs PROSE stay two views (#251) ============================
+# THE FAILURE THIS FILE ALREADY DOCUMENTS, asserted instead of assumed. check-claims deliberately
+# keeps TWO views of every added line: the RULES read prose (a number quoted in a code span is not
+# a citation), while the EXEMPTION reads the RAW line (the marker is normally a trailing comment,
+# which in markdown may well sit inside a span). A single shared stripper is how a rule was once
+# silently disabled here — it deleted exactly the tokens that rule searched for, reported zero on a
+# commit carrying nine, and no assertion went red.
+#
+# The conversion to the shared filter is what makes this worth pinning: it would be natural to feed
+# the prose view to everything, and nothing else in this suite would notice.
+#
+# ONE LINE carries both halves — a dangling decision reference OUTSIDE any span, and a valid
+# `adb-claim-ok:` marker INSIDE one. Only the two-view reading is green: collapse them and the
+# marker vanishes with the span, the exemption never fires, and the dangling D is a violation.
+#
+# It passes on the parent too, because the separation predates this change — so it was driven RED
+# against a deliberately COLLAPSED-view copy of the tree (exemption read from prose instead of raw)
+# rather than left as an unwitnessed assertion. See base/practices/self-review.md.
+reset_branch
+printf 'This cites %s and shows the escape as `adb-claim-ok: a quoted example`.\n' \
+  "$D_MISSING" > "$REPO/notes.md"
+commit "the escape marker inside a code span, beside a real dangling D-ref"
+cc --range "$BASE..probe"
+eq "$RC_" 0 "views: the exemption is read from the RAW line, so a marker inside a span still waives"
+has "$OUT" "exempt=1" "views: ...and the line is reported as exempt, not merely unscanned"
+
+# The mirror image: with no marker anywhere, the SAME line is a violation — so the case above is
+# passing because of the exemption, not because the prose view happened to drop the reference.
+reset_branch
+printf 'This cites %s and shows the escape as `a quoted example`.\n' \
+  "$D_MISSING" > "$REPO/notes.md"
+commit "the same line WITHOUT the marker"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "views: ...while the same line with no marker IS a violation"
+
+# =============================== the filter is NOT optional (#251) =============================
+# Since the conversion the `.md` rules have no structure model of their own. A common.sh that
+# PREDATES the filter loads perfectly well and simply has no `adb_md_prose` in it.
+#
+# WHAT THE PROBE IS AND IS NOT WORTH, measured rather than asserted: removing it does NOT open a
+# raw-markdown scan — the missing function makes the filter pipeline exit 127, so the run still
+# fails closed, at 3. What the probe buys is WHERE and WHEN: exit 2 before a single file is read,
+# naming a stale library, instead of exit 3 partway through blaming "the filter failed on
+# notes.md". This fixture therefore pins the CODE, and it was witnessed going red (2 -> 3) against
+# a copy with the probe deleted. Stated exactly, because a guard whose value is a better
+# diagnostic is worth having and is not worth overclaiming.
+#
+# 2 (a broken invocation) rather than 1 (a claim is wrong), because nothing has been judged.
+#
+# Doctored in the throwaway repo`s COPY of common.sh and restored immediately. The lint reads FILE
+# CONTENT from git objects, so a working-tree edit here changes only the library it sources — which
+# is exactly the surface under test.
+reset_branch
+printf 'Plain prose with no claims.\n' > "$REPO/notes.md"
+commit "a benign range, to isolate the library probe"
+cp "$REPO/scripts/lib/common.sh" "$work/common.sh.bak"
+printf '\nunset -f adb_md_prose\n' >> "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 2 "filter: a common.sh with no adb_md_prose is a hard failure, not a silent raw scan"
+has "$OUT" "adb_md_prose" "filter: ...and the diagnostic names the missing primitive"
+cp "$work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 0 "filter: ...and the same range is clean once the library is whole again"
+
+# THE 1:1 LINE INVARIANT, which every `CC_MASK[lno - 1]` lookup rests on. Its failure mode is
+# silence: a prose view one line short reads the WRONG line for everything after it, and an empty
+# one reads "" for every line — zero references, zero decision refs, and a confident PASS.
+#
+# It cannot be driven red from an input, because the invariant holds (check-common-lib.sh pins it).
+# So it is witnessed the way this repo witnesses a forward guard: a deliberately broken filter that
+# drops a line, in the throwaway copy. Without the check, the run below PASSES while scanning the
+# wrong lines; with it, it is a named failure.
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf 'This cites %s in ordinary prose.\n' "$D_MISSING"
+} > "$REPO/notes.md"
+commit "a real violation, to prove the broken filter would HIDE it"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "1:1: the range is genuinely a violation with the filter intact"
+cp "$REPO/scripts/lib/common.sh" "$work/common.sh.bak"
+# Drop the LAST line of the filter`s output — a renumbering no input can produce.
+printf '\nadb_md_prose() { LC_ALL=C awk "{ print \\"\\" }" | sed \x27$d\x27; }\n' \
+  >> "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 3 "1:1: a filter whose output is SHORT is caught, not silently scanned as empty"
+has "$OUT" "line count" "1:1: ...and the diagnostic says what is wrong"
+cp "$work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+
+# A FILTER THAT FAILS OUTRIGHT is the third arm, and it is the one `adb_md_prose`'s nonce trailer
+# exists for: a killed or truncated run returns non-zero rather than a short clean result. The two
+# fixtures above cover a MISSING function and a SHORT one; this covers a present one that FAILS,
+# which is a different branch of the same `case` and was unwitnessed until review said so.
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf 'This cites %s in ordinary prose.\n' "$D_MISSING"
+} > "$REPO/notes.md"
+commit "a real violation the failing filter must not hide"
+cp "$REPO/scripts/lib/common.sh" "$work/common.sh.bak"
+printf '\nadb_md_prose() { return 1; }\n' >> "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 3 "filter: a filter that FAILS is exit 3, not an empty prose view scanned as clean"
+has "$OUT" "markdown filter failed" "filter: ...and the diagnostic names the filter and the file"
+cp "$work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+
+# AND THE ADDED-LINE SCANNER ITSELF. Its status used to be discarded by a process substitution, so
+# an awk that died mid-file arrived as zero added lines — a file never read, reported in the words
+# of a clean one. Driven here with a shim that fails ONLY `cc_scan_file`'s second awk (the one
+# invoked with a leading `-v want=`), over a NON-markdown file so the prose filter — whose own awk
+# also leads with `-v` — is never reached and cannot be what fails.
+reset_branch
+printf 'This cites %s from a shell file.\n' "$D_MISSING" > "$REPO/notes.txt"
+commit "a real violation in a non-markdown file"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "scanner: the range is genuinely a violation with the scanner intact"
+cp "$REPO/scripts/lib/common.sh" "$work/common.sh.bak"
+printf '\nawk() { case "$1" in -v) return 3 ;; esac; command awk "$@"; }\n' \
+  >> "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 3 "scanner: an added-line reader that DIES is exit 3, not zero added lines reported clean"
+has "$OUT" "could not scan" "scanner: ...and the diagnostic names the file it failed on"
+cp "$work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+rm -f "$REPO/notes.txt"
+
 # =============================== the commit walk must not stray onto the base ==================
 # `A...B` means two DIFFERENT things to the two git commands this lint uses: to `git diff` it is
 # "from the merge base to B", but to `git rev-list` it is the SYMMETRIC DIFFERENCE — which drags in
