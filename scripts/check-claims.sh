@@ -398,11 +398,28 @@ cc_scan_file() {   # <file> -> "<lineno>\t<raw text>" per scannable added line
 # precisely the silently-disabled rule this file`s own header is about.
 CC_MASK=()
 cc_prose_view() {   # <file>
-  local f="$1"
+  local f="$1" nraw nprose
   CC_MASK=()
   # The pipeline`s status IS adb_md_prose`s (it is last), which is the one that can fail closed.
   git show "$HEADREV:$f" 2>/dev/null | adb_md_prose mask > "$WORK/prose" || return 1
   mapfile -t CC_MASK < "$WORK/prose"
+  # ONE OUTPUT LINE PER INPUT LINE, ASSERTED RATHER THAN TRUSTED. Every lookup below is
+  # `CC_MASK[lno - 1]`, so the whole conversion rests on that alignment — and its failure mode is
+  # SILENCE, not a crash: a prose view one line short makes every subsequent lookup read the wrong
+  # line, and a view that is EMPTY makes every line read "", which is zero references, zero
+  # decision refs and a confident PASS. That is indistinguishable in the log from a range with no
+  # claims in it, which is the exact shape this file`s header was written about.
+  #
+  # The filter documents the 1:1 invariant and check-common-lib.sh pins it, so this is a FORWARD
+  # guard on a contract that holds today, not a workaround for a known break — said plainly rather
+  # than implying it caught something. It cost one awk and it turns a future renumbering from a
+  # silent pass into a named failure.
+  #
+  # `awk END { print NR }` rather than `wc -l`, because a file whose last line carries no newline
+  # is one line short by wc`s counting and would fail this check spuriously.
+  nraw="$(git show "$HEADREV:$f" 2>/dev/null | awk 'END { print NR }')"
+  nprose="${#CC_MASK[@]}"
+  [ "$nraw" = "$nprose" ] || return 2
   return 0
 }
 
@@ -427,11 +444,17 @@ while IFS= read -r f; do
   case "$f" in
     *.md)
       CC_IS_MD=1
-      cc_prose_view "$f" || {
-        echo "check-claims: FATAL — the shared markdown filter failed on '$f'. This is NOT a pass:" >&2
-        echo "              with no prose view every rule below would scan nothing and report clean." >&2
-        exit 3
-      } ;;
+      cc_prose_view "$f"; _cc_pv=$?
+      case "$_cc_pv" in
+        0) : ;;
+        2) echo "check-claims: FATAL — the prose view of '$f' has a different line count than the file." >&2
+           echo "              Every lookup is by line number, so this is NOT a pass: it would silently" >&2
+           echo "              scan the wrong lines, or none at all." >&2
+           exit 3 ;;
+        *) echo "check-claims: FATAL — the shared markdown filter failed on '$f'. This is NOT a pass:" >&2
+           echo "              with no prose view every rule below would scan nothing and report clean." >&2
+           exit 3 ;;
+      esac ;;
   esac
   # MATERIALIZED, not piped. `done < <(cc_scan_file "$f")` discards the scanner`s exit status, so an
   # awk that died mid-file arrived as zero added lines — a file this lint never read, reported in
@@ -668,11 +691,12 @@ fi
 
 # --- what this run actually evaluated -----------------------------------------------------------
 # `md-structural` is new with #251 and is not decoration: it is the count of added markdown lines
-# the shared filter resolved to NOTHING — a fence body, a blockquote, indented code, or an HTML
-# comment. Before the conversion those lines were dropped inside the scanner, so `added-lines` read
-# like "added lines" while meaning "added lines a private parser let through". Reporting both keeps
-# D22's rule honest: a run that suddenly strips far more than it used to is now visible in the log
-# rather than indistinguishable from a range with fewer claims in it.
+# whose PROSE VIEW IS EMPTY — a fence body, a blockquote, indented code, an HTML comment, and also
+# an ordinary BLANK line, which resolves to nothing for the same reason and is not worth a second
+# counter to separate. Before the conversion the fenced ones were dropped inside the scanner, so
+# `added-lines` read like "added lines" while meaning "added lines a private parser let through".
+# Reporting both keeps D22's rule honest: a run that suddenly strips far more than it used to is
+# now visible in the log rather than indistinguishable from a range with fewer claims in it.
 printf 'check-claims: range=%s files=%d added-lines=%d md-structural=%d refs=%s/%d live-lookups=%d d-refs=%d dates=%d exempt=%d binary-skipped=%d path-skipped=%d\n' \
   "$RANGE" "$N_FILES" "$N_ADDED" "$N_MD_STRUCT" "$N_REF_DISTINCT" "$N_REF_OCC" "$N_REF_LOOKUPS" \
   "$N_DREF" "$N_DATE" "$N_EXEMPT" "$N_SKIP_BIN" "$N_SKIP_PATH"

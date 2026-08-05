@@ -660,6 +660,60 @@ commit "the same line WITHOUT the marker"
 cc --range "$BASE..probe"
 eq "$RC_" 1 "views: ...while the same line with no marker IS a violation"
 
+# =============================== the filter is NOT optional (#251) =============================
+# Since the conversion the `.md` rules have no structure model of their own. A common.sh that
+# PREDATES the filter loads perfectly well and simply has no `adb_md_prose` in it.
+#
+# WHAT THE PROBE IS AND IS NOT WORTH, measured rather than asserted: removing it does NOT open a
+# raw-markdown scan — the missing function makes the filter pipeline exit 127, so the run still
+# fails closed, at 3. What the probe buys is WHERE and WHEN: exit 2 before a single file is read,
+# naming a stale library, instead of exit 3 partway through blaming "the filter failed on
+# notes.md". This fixture therefore pins the CODE, and it was witnessed going red (2 -> 3) against
+# a copy with the probe deleted. Stated exactly, because a guard whose value is a better
+# diagnostic is worth having and is not worth overclaiming.
+#
+# 2 (a broken invocation) rather than 1 (a claim is wrong), because nothing has been judged.
+#
+# Doctored in the throwaway repo`s COPY of common.sh and restored immediately. The lint reads FILE
+# CONTENT from git objects, so a working-tree edit here changes only the library it sources — which
+# is exactly the surface under test.
+reset_branch
+printf 'Plain prose with no claims.\n' > "$REPO/notes.md"
+commit "a benign range, to isolate the library probe"
+cp "$REPO/scripts/lib/common.sh" "$work/common.sh.bak"
+printf '\nunset -f adb_md_prose\n' >> "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 2 "filter: a common.sh with no adb_md_prose is a hard failure, not a silent raw scan"
+has "$OUT" "adb_md_prose" "filter: ...and the diagnostic names the missing primitive"
+cp "$work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 0 "filter: ...and the same range is clean once the library is whole again"
+
+# THE 1:1 LINE INVARIANT, which every `CC_MASK[lno - 1]` lookup rests on. Its failure mode is
+# silence: a prose view one line short reads the WRONG line for everything after it, and an empty
+# one reads "" for every line — zero references, zero decision refs, and a confident PASS.
+#
+# It cannot be driven red from an input, because the invariant holds (check-common-lib.sh pins it).
+# So it is witnessed the way this repo witnesses a forward guard: a deliberately broken filter that
+# drops a line, in the throwaway copy. Without the check, the run below PASSES while scanning the
+# wrong lines; with it, it is a named failure.
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf 'This cites %s in ordinary prose.\n' "$D_MISSING"
+} > "$REPO/notes.md"
+commit "a real violation, to prove the broken filter would HIDE it"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "1:1: the range is genuinely a violation with the filter intact"
+cp "$REPO/scripts/lib/common.sh" "$work/common.sh.bak"
+# Drop the LAST line of the filter`s output — a renumbering no input can produce.
+printf '\nadb_md_prose() { LC_ALL=C awk "{ print \\"\\" }" | sed \x27$d\x27; }\n' \
+  >> "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 3 "1:1: a filter whose output is SHORT is caught, not silently scanned as empty"
+has "$OUT" "line count" "1:1: ...and the diagnostic says what is wrong"
+cp "$work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+
 # =============================== the commit walk must not stray onto the base ==================
 # `A...B` means two DIFFERENT things to the two git commands this lint uses: to `git diff` it is
 # "from the merge base to B", but to `git rev-list` it is the SYMMETRIC DIFFERENCE — which drags in

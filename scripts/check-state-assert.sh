@@ -480,6 +480,33 @@ has "$HOOK_OUT" "NOT being checked" "...but the gate reports that it is disabled
 has "$HOOK_OUT" "common.sh" "...and surfaces the linter's own diagnostic"
 mv "$tdir/lib/common.sh.bak" "$tdir/lib/common.sh"
 
+# --- A common.sh WITHOUT THE SHARED FILTER IS ALSO A BROKEN INSTALL (#251) -------------------
+# Since the conversion, `lint` has no structure model of its own — it is `_ADB_MD_AWK` or nothing.
+# A common.sh that PREDATES the filter loads perfectly well and simply has no `_ADB_MD_AWK` in it.
+#
+# WHAT THE PROBE BUYS, measured against a copy with its condition neutralized rather than assumed:
+# WITHOUT it the run does not scan unstripped prose — awk aborts with `calling undefined function
+# adb_md_run` and exits 2, which the Stop hook renders as the catch-all "the linter exited 2".
+# WITH it the exit is the documented broken-install 1, and the message names the library and the
+# missing primitive, which is what tells an operator to run `baseline update` rather than to go
+# reading awk. So this fixture pins the CODE and the DIAGNOSTIC, and it was witnessed going red
+# (2 -> 1) that way. Said exactly: the value here is a usable failure, not the difference between
+# failing and not.
+#
+# Doctored in the COPY under $tdir, never in the working tree: this suite reads the tree it is
+# testing (base/practices/self-review.md).
+cp "$tdir/lib/common.sh" "$tdir/lib/common.sh.bak"
+printf '\n_ADB_MD_AWK=""\n' >> "$tdir/lib/common.sh"
+LINT_OUT="${ printf 'PR #1 is still open.\n' | bash "$tdir/lib/state-assert.sh" lint 2>&1; }"; LINT_RC=$?  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "$LINT_RC" 1 "a common.sh with no shared filter fails the lint rather than scanning raw markdown"
+has "$LINT_OUT" "common.sh" "...and the diagnostic names the library, not a variable"
+has "$LINT_OUT" "_ADB_MD_AWK" "...and the missing primitive"
+# The Stop hook renders that as "claims are NOT being checked", never as a clean turn.
+HOOK_OUT="${ printf '%s' "${ transcript "$SHIPPED"; }" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?
+eq "$HOOK_RC" 0 "...and the hook does not wedge the session over it"
+has "$HOOK_OUT" "NOT being checked" "...but reports that the gate is disabled"
+mv "$tdir/lib/common.sh.bak" "$tdir/lib/common.sh"
+
 # --- EVERY CLAIM KIND GETS A COMMAND THAT CAN ANSWER IT (review round 1) ---------------------
 # The grammar flags CI and branch status too, and `observe` answers neither. Offering it for a CI
 # claim is advice that cannot be followed, which leaves "delete it" as the only real option even
