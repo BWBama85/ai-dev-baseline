@@ -1318,6 +1318,13 @@ eq "${ depsm '    ~~~' 'Depends on #5'; }" '5' \
 # written further LEFT — and this pins it rather than leaving it to be discovered.
 eq "${ depsm '- outer' '    - inner' '  ~~~' '  Depends on #5' '  ~~~' 'Depends on #7'; }" '7' \
    "UNDER: a markerless dedent leaves the column standing, and structure further left still counts"
+# ...and the STALE column must not reach the closer bound, which is the one place "leave it
+# standing" is not harmless. Unclamped, the inner item's 6 admitted a closer at 9, so the 6-space
+# delimiter below closed this fence EARLY — fabricating #5 and then reading the real closer as a
+# fresh opener, which ate #7. The parent commit got this body right; only the container column made
+# it reachable, so the clamp to the delimiter's own column ships with it (self-review find).
+eq "${ depsm '- outer' '    - inner' '  ~~~' '  content' '      ~~~' '  Depends on #5' '  ~~~' 'Depends on #7'; }" '7' \
+   "OVER/UNDER: a stale container column cannot widen the closer bound — it is clamped to the opener"
 eq "${ printf '%s\r\n' '- item' '    ~~~' '    Depends on #5' '    ~~~' 'Depends on #7' | run_rl deps-from-body; }" '7' \
    "UNDER: ...and all of it survives a CRLF body, where a closer arrives as \"~~~\\r\""
 

@@ -2504,9 +2504,12 @@ adb_drvfs_warn() {
 #   - Indented code INSIDE a list item is still not recognized (D27, unmoved by #252), so a line 4+
 #     past the item's content is scanned rather than stripped.
 #   - The two consumers that call `adb_md_fence_delim` directly rather than through `adb_md_block`
-#     (`skill-compose.sh`, `check-release-skill.sh`) pass no container column and therefore keep
-#     the top-level-only rule. That is the additive half of #252: an omitted `base` is 0, so their
-#     behaviour is byte-identical to before it.
+#     (`skill-compose.sh`, `check-release-skill.sh`) pass a container column of 0 and therefore keep
+#     the top-level-only rule. They are unchanged in every case but one, and the exception is worth
+#     stating rather than rounding off: the closer bound became container-relative, so a fence they
+#     open at indent 1-3 now needs its closer at indent <= 3 as well, where the old opener-relative
+#     bound allowed up to opener + 3. Every indented opener in the tree today (2-3 spaces, in
+#     `base/workflows/`) pairs with a closer at the same indent, so no file's reading moves.
 #   - Setext headings need lookahead past the line and are not detected — the ONE unrecognized
 #     block boundary, and therefore the one place a span can still pair across text CommonMark
 #     would have separated. `- - -` and `* * *` read as list items rather than thematic breaks,
@@ -2605,7 +2608,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     # boolean toggle on any ``` after 0-3 spaces — and the two had already drifted: a `~~~`-fenced
     # `### ` line was advertised as a composable anchor, and a ``` closing a longer run left the
     # toggle inverted for the whole rest of the file, hiding every later step.
-    function adb_md_fence_delim(line, base,   fn, at) {
+    function adb_md_fence_delim(line, base,   fn, at, cb) {
       if (md_fence_len) {                          # inside a fence: only its own closer matters
         fn = adb_md_close_run(line, md_fence_ch)
         if (fn >= md_fence_len && adb_md_after_close(line, fn) ~ /^[[:space:]]*$/) {
@@ -2616,18 +2619,28 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       }
       at = adb_md_content_at(line, base)
       if (at < 0) return 0                         # 4+ spaces: an indented block, never a fence
+      # THE OPENER'S CONTAINER COLUMN, CLAMPED TO THE DELIMITER'S OWN. `base` is the innermost list
+      # item still believed open, and because that state is one integer rather than a stack it can
+      # be STALE-DEEP after a dedent that carried no marker (`- outer` / `    - inner` / `  ~~~`
+      # leaves it at 6 while the fence really sits in `outer`, at 2). A container cannot begin to
+      # the RIGHT of its own content, so `at` is a hard ceiling on the true column, and taking the
+      # smaller of the two turns a stale reading into a merely conservative one.
+      #
+      # Self-review find, and it was a real regression rather than a tidiness point: unclamped, the
+      # stale 6 admitted a closer at 9, so a 6-space delimiter inside that fence closed it EARLY —
+      # fabricating an edge from the quoted line after it and then reading the real closer as a
+      # fresh opener, which swallowed every edge to end-of-body. The parent commit got that body
+      # right, so shipping it unclamped would have traded the bug this change fixes for a rarer one.
+      cb = (base < at) ? base : at
       # A backtick fence opener may not carry a backtick in its info string; a tilde one may. The
       # two probes are sequential, not parallel, because that asymmetry is the whole rule. The
       # other delimiter never closes the current fence — that is what makes ``` inside ~~~ content.
-      # `md_fence_base` remembers this opener's CONTAINER column so its closer can be matched
-      # relative to the same container — see adb_md_close_run for why that is not the delimiter's
-      # own column.
       fn = adb_md_runlen(line, at + 1, "`")
       if (fn >= 3 && index(substr(line, at + fn + 1), "`") == 0) {
-        md_fence_ch = "`"; md_fence_len = fn; md_fence_base = base; return 1
+        md_fence_ch = "`"; md_fence_len = fn; md_fence_base = cb; return 1
       }
       fn = adb_md_runlen(line, at + 1, "~")
-      if (fn >= 3) { md_fence_ch = "~"; md_fence_len = fn; md_fence_base = base; return 1 }
+      if (fn >= 3) { md_fence_ch = "~"; md_fence_len = fn; md_fence_base = cb; return 1 }
       return 0
     }
     # A line that is PROSE but is its own block: an ATX heading, or a thematic break. It still

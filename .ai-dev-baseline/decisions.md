@@ -2469,6 +2469,17 @@ limit: none of them is sufficient alone.
              which is not a declaration either. Both readings suppress; a stack and a single column
              cannot disagree about whether an edge exists.
 
+             THE STALE COLUMN IS CLAMPED WHERE IT WOULD OTHERWISE BITE. "Leave it standing" is
+             harmless for `adb_md_content_at`, by the argument above, but NOT for the closer bound:
+             self-review found that a markerless dedent (`- outer` / `    - inner` / `  ~~~`) left
+             the column at 6 while the fence really sat in `outer` at 2, admitting a closer at 9 —
+             so a 6-space delimiter closed that fence early, fabricated an edge from the quoted line
+             after it, and let the real closer read as a fresh opener that ate every edge to
+             end-of-body. The PARENT commit got that body right, so this would have traded #252's
+             bug for a rarer one. A container cannot begin to the right of its own content, so the
+             delimiter's column is a hard ceiling on the true one: `adb_md_fence_delim` stores
+             `min(base, at)`, which turns a stale reading into a merely conservative one.
+
              THE CONTAINER COLUMN AND THE DELIMITER COLUMN ARE DIFFERENT NUMBERS (fork 2), so
              `md_fence_at` became `md_fence_base` and bounds a closer at container + 3. Those were
              the same number until a fence could open at an item's content: `- item` / `    ~~~`
@@ -2480,13 +2491,18 @@ limit: none of them is sufficient alone.
              no longer accepts a closer at 4-6. Fixing it here rather than deferring is deliberate,
              because #252's own fixtures could not hold in both directions without it.
 
-             THE CHANGE IS ADDITIVE FOR DIRECT CONSUMERS (fork 3). An omitted `base` is 0, i.e.
-             exactly the top-level rule, so `skill-compose.sh` and `check-release-skill.sh` — which
-             call `adb_md_fence_delim` without ever driving `adb_md_block` — are byte-identical to
-             before. They scan skill files whose fences are top-level; every indented opener in the
-             tree today (2-3 spaces, in `base/workflows/`) pairs with a closer at the same indent
-             and is still matched. Extending them means driving the block pass, which is a change to
-             what those two files compose and guard, not to this filter.
+             DIRECT CONSUMERS KEEP THE TOP-LEVEL RULE (fork 3). `skill-compose.sh` and
+             `check-release-skill.sh` call `adb_md_fence_delim` without ever driving `adb_md_block`,
+             and now pass a container column of 0 explicitly rather than relying on awk's
+             uninitialized-parameter rule — which also says at the call site why they are
+             top-level-only. Stated exactly rather than flatteringly: this is NOT byte-identical
+             behaviour, and an earlier draft of this entry claimed it was. Fork 2 makes the closer
+             bound container-relative for everyone, so a fence these two open at indent 1-3 now
+             needs its closer at indent <= 3, where the old opener-relative bound allowed opener + 3.
+             What IS true is that no file in the tree moves: every indented opener today (2-3 spaces,
+             in `base/workflows/`) pairs with a closer at the same indent. Extending them to track
+             containers means driving the block pass, which changes what those two files compose and
+             guard, not this filter.
 
              D27's GUARD IS NOT MOVED. With `base` in play its fork now reads "4+ past the OPEN
              ITEM's content", which is genuinely item-relative indented code — and stripping it
@@ -2509,7 +2525,8 @@ limit: none of them is sufficient alone.
              non-CommonMark cases are retained on purpose. The defensible claim is that this was
              the remaining REPORTED list-continuation hole.
 
-             EVIDENCE, and ORDERING stated exactly as D27 asks. Seventeen of the new assertions
+             EVIDENCE, and ORDERING stated exactly as D27 asks. Seventeen of the first round of
+             assertions
              were run against the parent's `scripts/lib/common.sh` in a throwaway copy of the tree
              and observed RED — fifteen in `check-roadmap.sh`, two in `check-common-lib.sh` — while
              the assertions pinning deliberately-unchanged behaviour stayed green, which is the

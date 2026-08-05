@@ -39,14 +39,25 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     *code* relative to the item, and stripping it would delete a list continuation — the direction
     that marks a genuinely blocked bundle `ready`. A fixture pins that boundary as a decision
     rather than leaving it looking like an oversight.
-  - **Additive for the two consumers that call the fence predicate directly** (`skill-compose.sh`,
-    `check-release-skill.sh`): an omitted container column is 0, i.e. exactly the top-level rule,
-    so their behaviour is unchanged.
+  - **A stale container column cannot widen that bound.** The state is one integer, not a stack, so
+    a dedent carrying no marker leaves the inner item's column standing. Harmless for the indent
+    cutoff — a too-deep column still admits structure written further left — but *not* for the
+    closer bound, where self-review caught it closing a fence early and losing an edge the parent
+    commit got right. A container cannot begin to the right of its own content, so the bound is
+    clamped to the delimiter's own column.
+  - **The two consumers that call the fence predicate directly** (`skill-compose.sh`,
+    `check-release-skill.sh`) keep the top-level-only rule and now pass their container column
+    explicitly instead of relying on awk's uninitialized-parameter semantics. Their behaviour is
+    unchanged in every case but one, said plainly rather than rounded off: the closer bound became
+    container-relative for everyone, so a fence they open at indent 1–3 now needs its closer at
+    indent ≤ 3. Every indented opener in the tree today pairs with a closer at the same indent, so
+    no file's reading moves.
   - **Pre-existing, not a regression** — the same body yields the same two numbers before #136.
   - `scripts/check-roadmap.sh` § 6i gains fixtures for both delimiters, blockquotes, ordered and
-    nested markers, the closer-bound pair, CRLF, and the D27 boundary; `check-common-lib.sh` pins
-    the rule at the primitive. **Seventeen of the new assertions were observed red** against the
-    parent's library in a throwaway copy, while the ones pinning unchanged behaviour stayed green.
+    nested markers, the closer-bound pair, the stale-dedent shape, CRLF, and the D27 boundary;
+    `check-common-lib.sh` pins the rule at the primitive. **Seventeen of the first round of
+    assertions were observed red** against the parent's library in a throwaway copy, while the ones
+    pinning deliberately-unchanged behaviour stayed green.
 
 - **`/cleanup` could be made to delete a file nobody asked it to touch** (#273, D41).
   `cleanup-lib.sh state-scan` serialized one record per state file as `<kind>TAB<path>TAB<key>`
