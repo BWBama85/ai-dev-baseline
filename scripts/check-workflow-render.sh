@@ -234,6 +234,49 @@ else
   ok
 fi
 
+# --- 3c: the EMPTY-SLUG refusal, OBSERVED FAILING (#183) --------------------------------------
+# A guard is not done until it has been seen going red on an input it is supposed to reject, and
+# this one's failure mode is the quiet kind: if `adb_actions_app_slug` ever returned empty, the map
+# would substitute "" and the rendered skills would carry `(.app.slug // "") == ""` — which matches
+# exactly the check runs whose app CANNOT be identified, i.e. a confident `green` from a build
+# nobody attributed, baked into three shipped skills. Nothing else in this suite can catch that:
+# every other case runs the real, non-empty accessor. (Independent-review find: the refusal existed
+# and had never been watched working.)
+#
+# The fixture replaces the ACCESSOR in the copied library rather than editing anything tracked —
+# `render_fixture` already copies `common.sh` into a throwaway tree, so the override lands there.
+neg_slug="$WORK/neg-slug-src.md"
+cat > "$neg_slug" <<'EOF'
+---
+name: fixture
+description: t
+user-invocable: true
+---
+
+# /fixture
+Slug: {{ACTIONS_APP_SLUG}}
+EOF
+for broken in 'adb_actions_app_slug() { printf ""; }' 'adb_actions_app_slug() { return 1; }'; do
+  d="$WORK/neg-slug-$(printf '%s' "$broken" | cksum | cut -d' ' -f1)"
+  mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows"
+  cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+  cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+  # Appended AFTER the real definition, so it wins — and the bash-floor gate above it still loads.
+  printf '\n%s\n' "$broken" >> "$d/scripts/lib/common.sh"
+  printf '# index\n' > "$d/base/practices/00-index.md"
+  printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+  cp "$neg_slug" "$d/base/workflows/fixture.md"
+  bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+  no "$rc" "a broken adb_actions_app_slug [$broken] FAILS the build"
+  has "$(cat "$d/build.log" 2>/dev/null)" 'adb_actions_app_slug is unavailable or empty' \
+      "...and the error names the accessor rather than dying somewhere downstream"
+  if [ -f "$d/agents/claude/skills/fixture/SKILL.md" ]; then
+    bad "a skill was written despite the empty Actions slug [$broken]"
+  else
+    ok
+  fi
+done
+
 # --- 4: no committed skill ships an unresolved placeholder (EVERY agent's rendered tree) ------
 for a in claude codex gemini; do
   for sk in "$ROOT"/agents/"$a"/skills/*/SKILL.md; do

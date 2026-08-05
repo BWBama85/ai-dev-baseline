@@ -153,10 +153,13 @@ the declared one.** A branch protected by a repository **ruleset** reports a rea
 array through this endpoint, so that shape is classified *unreadable* and fails closed rather than
 being taken as "requires nothing".
 
-**What this still cannot see**, stated plainly: an **unprotected** branch declares no contexts, so a
+**What this still cannot see**, stated plainly. An **unprotected** branch declares no contexts, so a
 repo with external CI and no branch protection still reads `no-ci` when nothing has ever reported on
-the commit. No non-admin endpoint answers "does CI exist" for that shape. This is strictly narrower
-than the Actions-only probe it replaces, not a complete answer.
+the commit; no non-admin endpoint answers "does CI exist" for that shape. And required checks are
+matched by **context name** — GitHub's newer `checks` array can bind a context to an expected
+`app_id`, which this discards, so a same-named result from another provider satisfies the
+requirement. Both are the model `read_branch`, `live_contexts` and `required-drift` already use.
+This is strictly narrower than the Actions-only probe it replaces, not a complete answer.
 
 ### The escape hatch: `release-health` (#115, absorbing #113)  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->
 
@@ -179,15 +182,21 @@ It is deliberately narrow, and every one of these boundaries is regression-teste
 - it is evaluated **after** failing, still-running and wrong-commit checks, so it can never excuse a
   **red** branch, a **mid-CI** run, or **stale** evidence — those arms match first and win;
 - it can **never** excuse a branch whose required checks could not be **read**. An owner declaration
-  about *unreported* CI is not evidence about *unreadable* CI;
+  about *unreported* CI is not evidence about *unreadable* CI. Note this holds for **both**
+  unreported arms: with an unreadable list *and* active Actions workflows the Actions arm matches
+  first, so gating only the unreadable arm would leave the hatch open through the earlier door;
 - `skip-unreported` is the only valid value. Anything else — including a near-miss like `skip`, or
   two different values in one artifact — is **reported and ignored**, never silently treated as
   "off", because an owner who wrote it wrong would otherwise face a permanent `indeterminate` with
   nothing anywhere explaining it;
-- it is honoured **only in a maintainer-authored artifact.** An issue's author can keep editing its
-  body forever regardless of repo permissions, and this marker bypasses a release-safety refusal, so
-  `/roadmap` re-reads the artifact's `author_association` at the moment it acts on the marker rather
-  than trusting the check made when the artifact was adopted.
+- it is honoured **only from an artifact whose author has write access.** An issue's author can keep
+  editing its body forever regardless of repo permissions, and this marker bypasses a release-safety
+  refusal, so `/roadmap` checks the author's access at the moment it acts on the marker rather than
+  trusting the check made when the artifact was adopted. It reads
+  `collaborators/{user}/permission` and honours only `admin` or `write` — deliberately **not**
+  `author_association`, which artifact *adoption* uses and which does not mean what it looks like:
+  an organization `MEMBER` can hold read-only access, and `COLLABORATOR` covers read and triage. An
+  unreadable permission fails **closed**.
 
 It produces its own verdict word, `unreported-ok`, rather than reusing `skipped`. `skipped` is the
 **caller's** opt-out for a decision that is not about shippable code (`baseline release roll`, which

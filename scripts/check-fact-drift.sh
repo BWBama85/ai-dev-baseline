@@ -552,8 +552,12 @@ fact actions-slug-home   "fixed:adb_actions_app_slug" -- \
 # calls `adb_actions_app_slug` AND keeps a hard-coded literal next to it — exactly the state #183
 # removed from the workflow body and from the release driver. Anchored to a NON-comment line,
 # because several of these files quote the value in prose to explain the bug.
-fact actions-slug-nocopy 'absent:^[[:space:]]*[^#[:space:]].*"github-actions"' \
-  'fires:  aslug="github-actions"' -- \
+# EVERY QUOTING, not just the double-quoted one. A rule that only saw `"github-actions"` let
+# `'github-actions'` and a bare `github-actions` back in beside the accessor — three spellings of
+# the same copy, one of them caught. Same lesson as the negative pin in D22 that matched neither
+# real idiom. (Independent-review find.)
+fact actions-slug-nocopy "absent:^[[:space:]]*[^#[:space:]].*['\"]?github-actions['\"]?" \
+  'fires:  aslug=github-actions' -- \
   scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh \
   scripts/build.sh .claude/skills/release/release.sh base/workflows/roadmap.md
 # The build TOKEN and its mapping are one fact: a body that writes `{{ACTIONS_APP_SLUG}}` with no

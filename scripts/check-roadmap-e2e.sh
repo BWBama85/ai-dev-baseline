@@ -131,6 +131,13 @@ case "$sub" in
       */branches/*)
         fail_if branch
         emit "$F/branch.json" ;;
+      # #115: the artifact author's REPOSITORY PERMISSION, which authorizes the health opt-out. An
+      # ABSENT fixture models an unreadable permission (the endpoint itself needs push access, so a
+      # 403 is a real outcome) and must exit non-zero, so the snippet fails closed rather than
+      # reading an empty body as authority.
+      */collaborators/*/permission)
+        [ -f "$F/permission.json" ] || { echo "gh: Not Found" >&2; exit 1; }
+        emit "$F/permission.json" ;;
       *issues\?milestone=*)
         fail_if milestone
         emit "$F/milestone-issues.json" ;;
@@ -251,15 +258,25 @@ fix_default() {
   # The roadmap ARTIFACT as the readiness snippet reads it (#115): a body with NO `release-health`
   # marker, authored by a maintainer. Both fields matter — the marker decides whether the opt-out is
   # declared, `author_association` decides whether it is honoured.
-  artifact_fx '' OWNER
+  artifact_fx '' write
   health_green
 }
 # artifact_fx <body> <author_association> — the roadmap artifact issue, served through the stub's
 # per-number fixture. `--arg` rather than interpolation: a body carries newlines and quotes.
+# The AUTHOR'S REPOSITORY PERMISSION is what authorizes the opt-out, not the issue author's
+# association: an org `MEMBER` can hold read-only access and a `COLLABORATOR` can be read or triage,
+# so the association set admits accounts that could never push a line of code. `permission` is the
+# `collaborators/{user}/permission` answer the stub serves; empty models an unreadable one (a 403),
+# which must fail closed.
 artifact_fx() {
-  jq -n --arg b "$1" --arg a "$2" --argjson n "${ADB_ROADMAP_NUM:-31}" \
-     '{number:$n, state:"open", state_reason:null, body:$b, author_association:$a}' \
+  jq -n --arg b "$1" --argjson n "${ADB_ROADMAP_NUM:-31}" \
+     '{number:$n, state:"open", state_reason:null, body:$b, user:{login:"artifact-author"}}' \
      > "$FIX/issue-${ADB_ROADMAP_NUM:-31}.json"
+  if [ -n "${2-}" ]; then
+    printf '{"permission":"%s"}\n' "$2" > "$FIX/permission.json"
+  else
+    rm -f "$FIX/permission.json"
+  fi
 }
 
 # --- #78 branch-health fixtures ---------------------------------------------------------------
@@ -684,43 +701,64 @@ fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"
 readiness
 has "$OUT" "VERDICT=indeterminate" "a PR-only-CI repo is held at indeterminate without the opt-out"
 # ...and reaches a cut with it.
-fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" OWNER
+fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" write
 readiness
 has "$OUT" "HEALTH=unreported-ok" "...and the declared opt-out resolves to unreported-ok"
 has "$OUT" "VERDICT=met"          "...so a PR-only-CI repo CAN reach a cut (#115 acceptance)"
 hasnt "$OUT" "HEALTH=green"       "...without ever being reported as green"
 
-# AUTHORITY IS RE-VALIDATED AT THE POINT OF USE. This marker bypasses a release-safety refusal, and
-# an issue's author can keep editing its body forever regardless of repo permissions — so a marker
-# in a non-maintainer-authored artifact must be IGNORED, not obeyed.
-fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" CONTRIBUTOR
+# THE UNREADABLE CONTEXT LIST IS NOT EXCUSABLE, AND IT MUST BE TESTED WITH ACTIVE WORKFLOWS.
+# With `null` AND active workflows the ACTIONS arm matches first, so an opt-out gated only on the
+# later unreadable arm still excused it — a real fail-open the zero-workflow fixture could not see,
+# because it never reaches the Actions arm at all. (Independent-review find.)
+fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_ruleset; }"; artifact_fx "$OPTOUT_BODY" write
 readiness
-has "$OUT" "VERDICT=indeterminate" "an opt-out in a CONTRIBUTOR-authored artifact is NOT honoured"
-has "$OUT" "WARN:" "...and the run says so rather than silently ignoring it"
-for assoc in MEMBER COLLABORATOR; do
-  fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" "$assoc"
+has "$OUT" "VERDICT=indeterminate" "a RULESET-protected branch + active workflows + opt-out is STILL held"
+hasnt "$OUT" "HEALTH=unreported-ok" "...the opt-out verdict is never produced from an unreadable list"
+hasnt "$OUT" "VERDICT=met" "...and no cut is emitted"
+
+# AUTHORITY IS RE-VALIDATED AT THE POINT OF USE, AND IT IS THE REPOSITORY PERMISSION. An issue's
+# author can keep editing its body forever regardless of repo permissions, and this marker bypasses
+# a release-safety refusal — so it is honoured only from an artifact whose author could have changed
+# the code instead. `author_association` is NOT that check: an org MEMBER may hold read-only access
+# and a COLLABORATOR may be read or triage. (Independent-review find.)
+for perm in read triage none; do
+  fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" "$perm"
   readiness
-  has "$OUT" "VERDICT=met" "...while a $assoc-authored artifact IS honoured"
+  has "$OUT" "VERDICT=indeterminate" "an opt-out from a '$perm'-access author is NOT honoured"
+  has "$OUT" "WARN:" "...and the run says so rather than silently ignoring it"
 done
+for perm in write admin; do
+  fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" "$perm"
+  readiness
+  has "$OUT" "VERDICT=met" "...while a '$perm'-access author IS honoured"
+done
+# An UNREADABLE permission fails closed: the endpoint needs push access itself, so a 403 means
+# "authority could not be established", which is not a licence to assume it.
+fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" ""
+readiness
+has "$OUT" "VERDICT=indeterminate" "an unreadable author permission fails CLOSED (opt-out not applied)"
+has "$OUT" "WARN:" "...and says the permission could not be established"
+yes "$RC_" "...without hard-stopping the run (an unverifiable opt-out simply does not apply)"
 
 # The opt-out cannot excuse a branch that is actually broken — the whole safety property.
-fix_default; ms_drained; health_red; artifact_fx "$OPTOUT_BODY" OWNER
+fix_default; ms_drained; health_red; artifact_fx "$OPTOUT_BODY" write
 readiness
 has "$OUT" "VERDICT=not-green" "the opt-out never excuses a RED branch, even end to end"
-fix_default; ms_drained; health_running; artifact_fx "$OPTOUT_BODY" OWNER
+fix_default; ms_drained; health_running; artifact_fx "$OPTOUT_BODY" write
 readiness
 has "$OUT" "VERDICT=indeterminate" "...nor a still-running check"
-fix_default; ms_drained; health_stale; artifact_fx "$OPTOUT_BODY" OWNER
+fix_default; ms_drained; health_stale; artifact_fx "$OPTOUT_BODY" write
 readiness
 has "$OUT" "VERDICT=indeterminate" "...nor stale evidence from another commit"
-fix_default; ms_drained; health_set '[]' '[]' 0 "${ br_ruleset; }"; artifact_fx "$OPTOUT_BODY" OWNER
+fix_default; ms_drained; health_set '[]' '[]' 0 "${ br_ruleset; }"; artifact_fx "$OPTOUT_BODY" write
 readiness
 has "$OUT" "VERDICT=indeterminate" "...and NEVER a branch whose required checks could not be read"
 
 # A marker the predicate does not recognise refuses to excuse anything AND is reported — an owner
 # who wrote it wrong must not face a permanent indeterminate with nothing saying why.
 fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"
-artifact_fx '<!-- release-health: skip -->' OWNER
+artifact_fx '<!-- release-health: skip -->' write
 readiness
 has "$OUT" "VERDICT=indeterminate" "an unusable release-health value excuses nothing"
 has "$OUT" "WARN:" "...and is reported, not silently ignored"

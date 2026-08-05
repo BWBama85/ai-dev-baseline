@@ -272,9 +272,13 @@ same reader `required-drift` uses — so the two cannot disagree about a branch.
       evidence from another commit, or a branch whose required checks could not be read.
 - [ ] An **unrecognised** `release-health` value (or two different values) is **reported and
       ignored**, never silently treated as "off".
-- [ ] The opt-out is **ignored** in an artifact authored by a `CONTRIBUTOR`/`NONE` account, and the
+- [ ] The opt-out is **ignored** unless the artifact's author has `admin`/`write` access, and the
       run says so — the marker bypasses a release-safety refusal, and an issue's author can keep
-      editing its body regardless of repo permissions.
+      editing its body regardless of repo permissions. `read`, `triage` and `none` are refused;
+      an **unreadable** permission fails closed without hard-stopping the run.
+- [ ] The unreadable-context refusal holds **with active Actions workflows present** — that is the
+      only shape in which the Actions arm matches first, and it is where the opt-out was found
+      excusing an unreadable list.
 - [ ] Both new reads (branch protection, roadmap artifact) **hard-stop** on failure, each reporting
       **its own** diagnostic.
 - [ ] **A non-Actions provider** (Vercel/CircleCI/Cloudflare) reporting failure through the legacy

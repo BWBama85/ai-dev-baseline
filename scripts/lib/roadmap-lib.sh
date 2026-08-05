@@ -295,12 +295,26 @@ cmd_pr_targets_issue() {
 # a different door. Carrying the names lets this predicate ask the only question that settles it:
 # has every context this branch REQUIRES actually reported on this commit?
 #
-# WHAT THIS STILL CANNOT SEE, stated plainly rather than implied. An UNPROTECTED branch declares
-# no contexts, so a repo with external CI and no branch protection still reads `no-ci` when
-# nothing has reported. No non-admin endpoint answers "does CI exist" for that shape — the
-# admin-only protection endpoint would not either, since there is nothing to protect. This is
-# strictly narrower than the Actions-only probe it replaces, and the residue is documented in
-# docs/release-goal-convention.md rather than papered over.
+# WHAT THIS STILL CANNOT SEE — three residues, stated plainly rather than implied, because a
+# safety model that overstates itself is worse than none:
+#
+#   1. An UNPROTECTED branch declares no contexts, so a repo with external CI and no branch
+#      protection still reads `no-ci` when nothing has reported. No non-admin endpoint answers
+#      "does CI exist" for that shape — the admin-only protection endpoint would not either, since
+#      there is nothing to protect. #115's acceptance says "a non-Actions CI repo does not resolve
+#      to `no-ci`"; that now holds for a repo that DECLARES required contexts (the case its own
+#      reproduction describes) and does NOT hold for an unprotected one. Knowingly unmet, not
+#      overlooked.
+#   2. Required checks are matched by CONTEXT NAME. GitHub's newer `checks` array can additionally
+#      bind a context to an expected `app_id`, and that binding is discarded here — so a check or
+#      status from a DIFFERENT provider with the same name satisfies the requirement. This matches
+#      what `read_branch`, `live_contexts` and `required-drift` have always done (they read
+#      `contexts` too), so it is the repo's established model rather than a new gap, and it is not
+#      a regression: before this change the names were not consulted at all.
+#   3. A check run with no `name`, or a status with no `context`, still counts toward `$total` and
+#      can therefore reach `green` on a repo that requires nothing. Pre-existing, and unchanged by
+#      this predicate: such a result contributes nothing to the REPORTED set, so it can never
+#      satisfy a required context — the safe direction.
 #
 # THE ESCAPE HATCH (#115, absorbing #113). Correcting the existence probe INCREASES the population  # adb-claim-ok: #113 was consolidated into #115 and closed as superseded — history, not tracked work
 # that deadlocks: a repo whose workflows are `pull_request`-only has a non-empty required set and
@@ -449,6 +463,12 @@ cmd_branch_health() {
       elif $wrongsha > 0 then
              "indeterminate\n" + ($wrongsha|tostring) + " check(s) report a different commit than " + $sha
       # --- the two UNREPORTED arms; these are the only two the owner opt-out may excuse --------
+      # BOTH are gated on `$reqknown`, and that gate is load-bearing rather than defensive. Without
+      # it the ACTIONS arm below is reached with `required_contexts == null` (active workflows,
+      # nothing from Actions), and the opt-out excuses it — so an UNREADABLE context list authorized
+      # a release through a door the unreadable arm further down never got to close, because the
+      # Actions arm matches first. That is the exact fail-open this predicate exists to prevent, and
+      # it directly contradicted D45. Found by independent review; both arms now refuse.
       # Active workflows that produced no ACTIONS check run on this commit are unreported, and
       # that is true no matter what anything else said. Testing this before `green` is the whole
       # point: `$total` counts "somebody reported", not "everybody reported", so without this arm
@@ -460,7 +480,7 @@ cmd_branch_health() {
       #     plain "are there any check runs" test cannot tell apart from an Actions run.
       # Adding an unrelated passing result must never convert a refusal into a release.
       elif $wf > 0 and ($actions | length) == 0 then
-             (if $optout == 1 then "unreported-ok\ndeclared: " else "indeterminate\n" end)
+             (if $optout == 1 and $reqknown then "unreported-ok\ndeclared: " else "indeterminate\n" end)
              + ($wf|tostring) + " active workflow(s) exist but Actions has not reported on " + $sha
       # The SAME rule, generalized past Actions (#115). A context this branch requires that has not
       # reported is unreported CI, whoever was supposed to report it — and it is checked before
@@ -468,7 +488,7 @@ cmd_branch_health() {
       # must never stand in for the declared one. This is the arm that makes a CircleCI/Buildkite
       # repo behave like an Actions repo instead of like a repo with no CI.
       elif ($missing | length) > 0 then
-             (if $optout == 1 then "unreported-ok\ndeclared: " else "indeterminate\n" end)
+             (if $optout == 1 and $reqknown then "unreported-ok\ndeclared: " else "indeterminate\n" end)
              + ($missing | length | tostring) + " required context(s) have not reported on " + $sha
              + ": " + ($missing | join(", "))
       # --- fail-closed, and NOT excusable -----------------------------------------------------
@@ -483,13 +503,22 @@ cmd_branch_health() {
       elif $total > 0 then "green"
       # `no-ci` needs BOTH probes to say no, and `$reqknown` is what keeps an unreadable branch out.
       elif $wf == 0 and $reqknown and ($req | length) == 0 then "no-ci"
-      # UNREACHABLE under the arms above, and kept as the fail-closed default rather than deleted
-      # (#115 asked for this arm to be revived or removed, not left as dead code reading as a live
-      # safety net). Reaching it needs $total == 0 with $reqknown true, $missing empty — which
-      # forces $req empty — and $wf > 0 with $actions non-empty, but $actions is a subset of $mine
-      # so a non-empty $actions makes $total > 0. A jq `if` still needs a final `else`, and the only
-      # safe answer in an unclassifiable state is refusal: never `green`, never `no-ci`.
-      else "indeterminate\nno CI has reported on " + $sha
+      # #115 asked for the old `"indeterminate\nno CI has reported on "` arm to be REVIVED or
+      # DELETED, never left as dead code reading as a live safety net. It is DELETED: what stands
+      # here is not a verdict at all, it is an assertion.
+      #
+      # The state is unreachable, and here is the proof rather than an assurance. Reaching this
+      # needs $total == 0; $reqknown true (else the unreadable arm matched); $missing empty, which
+      # with nothing reported forces $req empty; and then the `no-ci` arm needs $wf > 0 to have
+      # been skipped — but $wf > 0 with $actions empty matched the Actions arm, so $actions is
+      # non-empty, and $actions is a subset of $mine, so $total > 0. Contradiction.
+      #
+      # A jq `if` still needs a final `else`, so the honest one RAISES. `branch-health` maps a jq
+      # error to `die` (exit 2), which every caller treats as a hard stop — so an input that ever
+      # reaches here refuses loudly instead of printing a verdict derived from a state the arm
+      # table cannot describe. Deliberately NOT `indeterminate`: that is a legitimate verdict a
+      # caller acts on, and using it here would be indistinguishable from a working refusal.
+      else error("unclassifiable health state: no arm matched for " + $sha)
       end
   ' 2>/dev/null)" || die "branch-health: could not parse the health JSON (malformed input)"
   [ -n "$out" ] || die "branch-health: could not parse the health JSON (malformed input)"
@@ -766,7 +795,7 @@ cmd_health_optout() {
     | grep -v '^[[:space:]]*$' \
     | LC_ALL=C grep -v "$_ADB_MD_MASKC" \
     | LC_ALL=C grep -v '`' \
-    | sort -u)"
+    | LC_ALL=C sort -u)"
   [ -n "$values" ] || { printf 'off\n'; return 0; }
   n="$(printf '%s\n' "$values" | grep -c .)"
   # TWO DIFFERENT VALUES ARE AMBIGUOUS, never "pick the good one". An artifact carrying both

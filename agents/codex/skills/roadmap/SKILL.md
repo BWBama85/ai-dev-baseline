@@ -488,21 +488,34 @@ if [ "$VERDICT" = "met" ]; then
   # AUTHORITY IS RE-VALIDATED AT THE POINT OF USE, not inherited. Step 3's adopt gate already
   # refuses an artifact opened by a non-maintainer, but that check ran once, possibly runs ago, and
   # this marker BYPASSES a release-safety refusal — the one place in this workflow where third-party
-  # text could authorize a cut. `author_association` is GitHub's own answer to "what standing does
-  # this account have", and OWNER/MEMBER/COLLABORATOR is the set that could have edited these
-  # workflows anyway. Anything else: ignore the marker, say so, and let health gate the cut.
+  # text could authorize a cut.
+  #
+  # AND IT ASKS FOR THE PERMISSION, NOT THE ASSOCIATION. `author_association` is what step 3 uses,
+  # and for adoption it is the right question; here it is the WRONG one, because it does not mean
+  # what it looks like. `MEMBER` says the author belongs to the ORGANIZATION — an org member can
+  # hold read-only access to this repo — and `COLLABORATOR` covers the read and triage roles too.
+  # So the association set admits accounts that cannot push a line of code but could arm a release
+  # cut by editing an issue body. `collaborators/{user}/permission` answers the question that
+  # actually matters, and only `admin` or `write` (which is what `maintain` reports as) may arm it.
+  #
+  # FAIL CLOSED on an unreadable permission: the endpoint needs push access itself, so a 403 means
+  # "this run cannot establish authority", which is not a licence to assume it. Do NOT hard-stop —
+  # an unverifiable opt-out is simply an opt-out that does not apply, and health still gates the cut.
   HEALTH_OPTOUT=0
   ART_JSON="$(gh api "repos/$REPO/issues/$ROADMAP_NUM")" \
     || { echo "ERROR: could not read roadmap artifact #$ROADMAP_NUM — hard stop"; exit 1; }
   OPTOUT_RAW="$(printf '%s' "$ART_JSON" | jq -r '.body // ""' | bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" health-optout)" \
     || { echo "ERROR: health-optout extraction failed — hard stop"; exit 1; }
-  ART_ASSOC="$(printf '%s' "$ART_JSON" | jq -r '.author_association // ""')" \
-    || { echo "ERROR: could not read #$ROADMAP_NUM's author association — hard stop"; exit 1; }
+  ART_AUTHOR="$(printf '%s' "$ART_JSON" | jq -r '.user.login // ""')" \
+    || { echo "ERROR: could not read #$ROADMAP_NUM's author — hard stop"; exit 1; }
   case "$OPTOUT_RAW" in
     skip-unreported)
-      case "$ART_ASSOC" in
-        OWNER|MEMBER|COLLABORATOR) HEALTH_OPTOUT=1 ;;
-        *) echo "WARN: roadmap #$ROADMAP_NUM declares release-health: skip-unreported, but it was opened by a $ART_ASSOC account — ignoring the opt-out. Move the marker to a maintainer-authored artifact." ;;
+      ART_PERM=""
+      [ -n "$ART_AUTHOR" ] && ART_PERM="$(gh api "repos/$REPO/collaborators/$ART_AUTHOR/permission" --jq '.permission' 2>/dev/null || echo '')"
+      case "$ART_PERM" in
+        admin|write) HEALTH_OPTOUT=1 ;;
+        '') echo "WARN: roadmap #$ROADMAP_NUM declares release-health: skip-unreported, but this run could not establish whether its author ($ART_AUTHOR) has write access — ignoring the opt-out (failing closed). Health will gate the cut." ;;
+        *)  echo "WARN: roadmap #$ROADMAP_NUM declares release-health: skip-unreported, but its author ($ART_AUTHOR) has '$ART_PERM' access, not write — ignoring the opt-out. This marker bypasses a release-safety refusal, so it is honoured only from an artifact its author could have changed the code with." ;;
       esac ;;
     off) : ;;
     # An unrecognised value refuses to excuse anything, exactly like `off` — but it is REPORTED,

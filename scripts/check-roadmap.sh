@@ -653,6 +653,21 @@ eq "${ health "${ hj "${ ck ci "$OTHER_SHA" completed success; }" '' "$REQ1"; }"
    "...never excuses stale evidence from another commit"
 eq "${ health "${ hj '' '' null; }" "$SHA" 0 1; }" indeterminate \
    "...and NEVER excuses unreadable protection (a declaration about UNREPORTED CI is not evidence about UNREADABLE CI)"
+# THE UNREADABLE CASE MUST BE TESTED WITH ACTIVE WORKFLOWS TOO, and this is the gap that hid a real
+# fail-open (independent-review find). With `null` AND active workflows the ACTIONS arm matches
+# FIRST — before the unreadable arm ever gets a chance — so gating only that later arm left the
+# opt-out excusing an unreadable context list through the earlier door. Zero-workflow fixtures
+# cannot see it: they never reach the Actions arm at all.
+for wfn in 1 2 3; do
+  eq "${ health "${ hj '' '' null; }" "$SHA" "$wfn" 1; }" indeterminate \
+     "unreadable protection + $wfn active workflow(s) + opt-out => STILL indeterminate (the Actions arm must not excuse it)"
+done
+eq "${ health "${ hj '' "${ st vercel success; }" null; }" "$SHA" 3 1; }" indeterminate \
+   "...even with an unrelated green status present"
+eq "${ health "${ hj "${ ck other "$SHA" completed success vercel; }" '' null; }" "$SHA" 3 1; }" indeterminate \
+   "...and even with a green check run from another Checks app"
+hasnt "${ health "${ hj '' '' null; }" "$SHA" 3 1; }" "unreported-ok" \
+   "...the opt-out verdict is never produced from an unreadable context list"
 # The opt-out invents nothing on a repo that is fine: it is consulted only on the unreported arms.
 eq "${ health "${ hj "${ ck ci "$SHA" completed success; }" '' '["ci"]'; }" "$SHA" 1 1; }" green \
    "the opt-out does not downgrade a genuinely green branch"
@@ -1072,7 +1087,11 @@ hasnt "$readiness_block" '== "github"' \
 for a in claude codex gemini; do
   sk="$ROOT/agents/$a/skills/roadmap/SKILL.md"
   if [ -f "$sk" ]; then
-    has "$(cat "$sk")" "== \"$ACTIONS_SLUG\"" \
+    # The QUOTED VALUE only — no `==`, no operator spacing. #183's whole complaint was a guard
+    # that pinned jq FORMATTING, and an assertion carrying `== "…"` still fails when a space around
+    # the operator moves: that would have narrowed the formatting dependence rather than removing
+    # it. What must be true is that the real slug reached the render. (Independent-review find.)
+    has "$(cat "$sk")" "\"$ACTIONS_SLUG\"" \
         "$a roadmap skill renders {{ACTIONS_APP_SLUG}} to the real Actions slug"
     hasnt "$(cat "$sk")" '{{ACTIONS_APP_SLUG}}' "$a roadmap skill ships no unresolved slug token"
   else

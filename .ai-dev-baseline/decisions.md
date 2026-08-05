@@ -2786,18 +2786,31 @@ limit: none of them is sufficient alone.
              knew only "N contexts are required" would be beaten by exactly that input: required
              `["ci/circleci: build"]`, one green Vercel status, nothing from CircleCI -> `green`.
              With the names the predicate can ask the only question that settles it, and the
-             subtraction is exact-value because GitHub's own context matching is a literal compare.
+             subtraction is exact-value because GitHub matches a required CONTEXT by literal name.
+             That is the whole of what is matched here, and it is narrower than what GitHub can
+             express: the newer `checks` array can additionally bind a context to an expected
+             `app_id`, so a same-named result from another provider satisfies the requirement. The
+             `contexts` list is what `read_branch`, `live_contexts` and `required-drift` have always
+             read, so this keeps the repo's one model rather than introducing a second — and it is
+             not a regression, since before this change the names were not consulted at all.
              Measured against this repo before committing to the stricter rule: all 27 required
              contexts reported on `main`'s HEAD, so `on: push` repos are unaffected.
 
              **(2) Fail-closed beats reachability where the premise itself is unreadable.** The
              tempting argument for excusing `null` is that protection-readability is orthogonal to
-             the results read, so the cut-safety question is still fully answered. It was rejected
-             because the population it would rescue is narrow and the precedent is bad: a
-             ruleset-protected repo whose CI is PR-only ACTIONS is already served by the Actions
-             arm (which the opt-out does excuse), so `null` only bites at zero Actions workflows
-             AND zero results AND unreadable protection. Letting an owner declaration override an
-             unreadable state is the shape `read_branch`'s `opaque` exists to refuse.
+             the results read, so the cut-safety question is still fully answered. It was rejected:
+             letting an owner declaration override an unreadable state is exactly the shape
+             `read_branch`'s `opaque` exists to refuse.
+
+             THE FIRST IMPLEMENTATION OF THIS DECISION DID NOT HOLD IT, and independent review
+             found it. Gating only the unreadable ARM is not the same as refusing an unreadable
+             LIST: with `required_contexts == null` AND active Actions workflows, the ACTIONS arm
+             matches first, so the opt-out excused precisely what this paragraph forbids. An early
+             draft of this entry even reasoned FROM that behaviour — "a ruleset-protected PR-only
+             Actions repo is already served by the Actions arm" — which described the defect rather
+             than the decision. Both unreported arms are now gated on `$reqknown`, and the pin
+             carries active workflows, the only fixture shape that can observe it. The cost is
+             real and accepted: a ruleset-protected repo with PR-only CI cannot use the hatch.
 
              **(3) Two authorities must not share one word.** `skipped` is documented as the opt-out
              for a caller whose decision is NOT about shippable code (`baseline release roll`, which
@@ -2808,18 +2821,27 @@ limit: none of them is sufficient alone.
              in `release-ready` and its pinned value set; the alternative was a permanently
              ambiguous banner at the exact moment a release is cut.
 
-             **(4) Adoption already answers it, once — and once is not where the risk is.** The
+             **(4) Adoption answers it once, and with the wrong field for this purpose.** The
              adopt gate refuses an artifact opened by a non-maintainer precisely because labelling
              an issue does not bring its body under maintainer control. That check is correct and
              sufficient for `## Decisions` rows, which only inform. This marker BYPASSES a refusal,
-             so it is re-checked at consumption: same field, same set (OWNER/MEMBER/COLLABORATOR),
-             one API read the snippet was already making for the body.
+             so it is re-checked at consumption — and NOT with `author_association`, which is what
+             adoption uses. Independent review showed that set does not mean what it looks like: an
+             organization `MEMBER` can hold read-only access to a repo, and `COLLABORATOR` covers
+             the read and triage roles, so it admits accounts that could never push a line of code
+             but could arm a release cut by editing an issue body. The consumption check therefore
+             asks `collaborators/{user}/permission` and honours only `admin` or `write`, failing
+             CLOSED when the permission cannot be read (that endpoint needs push access itself, so a
+             403 means authority could not be established — not a licence to assume it).
 
              SCOPE REFUSED: the marker-vocabulary generalization (#92, closed NOT_PLANNED) was not  <!-- adb-claim-ok: #92 is closed NOT_PLANNED; cited as the scope this change deliberately did NOT take on -->
              attempted — `health-optout` is a focused predicate in the shape `marker-title` and
              `release-command` already established. The unreachable arm #115 asked to disposition
-             is REVIVED as the fail-closed catch-all with its original message, and its
-             unreachability is now stated in the code rather than implied. The deliberate literals
+             is DELETED, not revived: a first pass kept its verdict text and documented the
+             unreachability, which review correctly called neither of the two things #115 asked
+             for. What stands in its place is an `error(...)` — an assertion, not a verdict — so a
+             state the arm table cannot describe refuses loudly (exit 2, a hard stop for every
+             caller) instead of printing an `indeterminate` indistinguishable from a working one. The deliberate literals
              in `check-roadmap.sh` 4d, `check-repo-settings.sh` and `check-common-lib.sh` were left
              alone: they are API-contract fixtures whose whole value is that they do NOT derive the
              slug.

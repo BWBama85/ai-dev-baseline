@@ -107,6 +107,24 @@ brc '{"protected":true,"protection":{"enabled":true}}'
 eq "$OUT" 'null' "protected with no readable context list is null"
 brc 'not json at all'
 eq "$OUT" 'null' "an unparseable body is null, never an empty set"
+# A CONTEXTS ARRAY WE CANNOT MAKE SENSE OF IS `opaque`, NOT AN EMPTY SET (independent-review find).
+# Checking only that `contexts` is an ARRAY let three shapes through, each of which then looked
+# authoritative downstream: `[null,5]` was stringified by `jq -r` into the plausible contexts
+# "null" and "5"; `[""]` was dropped to `[]`, which IS the authoritative "declares nothing" and can
+# reach `no-ci`; and neither could be caught later, because by then they were ordinary strings.
+for junk in '[null]' '[5]' '[null,5]' '["ci",5]' '[true]' '[["ci"]]' '[{"context":"ci"}]' '[""]' '["  "]' '["ci",""]'; do
+  brc "$(printf '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":%s}}}' "$junk")"
+  eq "$OUT" 'null' "a contexts array containing $junk is unreadable (null), never a set to act on"
+done
+# A context name CONTAINING A NEWLINE must round-trip as ONE context. The first cut serialized the
+# set as newline-delimited text, so `["a\nb"]` came back out as TWO required contexts, one of which
+# nothing can ever report — a phantom, and a permanent `indeterminate`.
+brc "$(jq -nc '{protected:true,protection:{enabled:true,required_status_checks:{contexts:["a\nb"]}}}')"
+eq "$OUT" '["a\nb"]' "a context containing a newline stays ONE context, escaped"
+eq "$(printf '%s' "$OUT" | jq -c 'length')" '1' "...and really is a single-element array"
+# Duplicates collapse, so the two consumers of the one classifier cannot disagree about the set.
+brc '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":["ci","ci"]}}}'
+eq "$OUT" '["ci"]' "a duplicated context is emitted once"
 # Whatever the answer, it must be ONE line of valid JSON: the caller feeds it straight to --argjson.
 for shape in '{"protected":false}' '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":["a","b"]}}}' 'garbage'; do
   brc "$shape"

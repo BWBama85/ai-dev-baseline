@@ -35,16 +35,29 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   class the Actions arm already prevents, re-entered through another door. A declared context that
   has not reported is `indeterminate`, naming it.
 
-  **Three fail-closed edges are pinned.** A **ruleset**-protected branch reports a *real* empty
+  **Four fail-closed edges are pinned.** A **ruleset**-protected branch reports a *real* empty
   `contexts` array through this endpoint, so it is classified **unreadable** rather than "requires
-  nothing" — read the other way it would reach `no-ci` and cut. A failing required context is
-  `not-green`, not merely unreported. And partial reporting (one of two required contexts) is still
-  unreported.
+  nothing" — read the other way it would reach `no-ci` and cut. A `contexts` array whose members are
+  not all non-empty strings is **also** unreadable: checking only the container let `[null, 5]` be
+  stringified into the plausible contexts `"null"` and `"5"`, and `[""]` be dropped to the
+  authoritative empty set (independent-review find). A failing required context is `not-green`, not
+  merely unreported. And partial reporting (one of two required contexts) is still unreported.
 
-  **What this still cannot see, stated rather than implied:** an **unprotected** branch declares no
+  The context set crosses between the two consumers as **JSON**, not newline-delimited text: the
+  first cut split a context legitimately containing a newline into two required contexts, one of
+  which nothing could ever report — a phantom, and a permanent `indeterminate`.
+
+  **What this still cannot see, stated rather than implied.** An **unprotected** branch declares no
   contexts, so a repo with external CI and no branch protection still reads `no-ci` when nothing has
-  ever reported. No non-admin endpoint answers that shape. This is strictly narrower than the
-  Actions-only probe it replaces, not a complete answer.
+  ever reported; no non-admin endpoint answers that shape. #115's acceptance says "a non-Actions CI
+  repo does not resolve to `no-ci`" — that now holds for a repo which **declares required contexts**
+  (the case its own reproduction describes) and does **not** hold for an unprotected one, which is
+  knowingly unmet rather than overlooked. Separately, required checks are matched by **context
+  name**, and GitHub's newer `checks` array can bind a context to an expected `app_id`, which this
+  discards; that matches what `read_branch`, `live_contexts` and `required-drift` have always read,
+  so it is the established model rather than a new gap, and not a regression — before this change
+  the names were not consulted at all. This is strictly narrower than the Actions-only probe it
+  replaces, not a complete answer.
 
 ### Added
 
@@ -68,11 +81,24 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   ignored** rather than silently treated as off, because an owner who wrote it wrong would otherwise
   face a permanent `indeterminate` with nothing explaining it.
 
-  **Its authority is re-validated where it is used.** An issue's author can keep editing its body
-  forever regardless of repo permissions, and this marker bypasses a release-safety refusal — so
-  `/roadmap` re-reads the artifact's `author_association` at the moment it acts on the marker,
-  rather than trusting the check made when the artifact was adopted. A marker in a
-  `CONTRIBUTOR`-authored artifact is ignored, and the run says so.
+  That last boundary took two attempts, and independent review found the first one open: both
+  unreported arms are gated on the context list being readable, because with an **unreadable** list
+  *and* active Actions workflows the **Actions** arm matches first — so gating only the later
+  unreadable arm let the opt-out excuse exactly what it was documented never to excuse. Both arms
+  now refuse, and the regression is pinned with active workflows present, the only fixture shape
+  that can see it.
+
+  **Its authority is re-validated where it is used, and it is the repository PERMISSION.** An
+  issue's author can keep editing its body forever regardless of repo permissions, and this marker
+  bypasses a release-safety refusal — so `/roadmap` checks the author's access at the moment it acts
+  on the marker, rather than trusting the check made when the artifact was adopted. It reads
+  `collaborators/{user}/permission` and honours only `admin` or `write`. Deliberately **not**
+  `author_association`, which is what artifact *adoption* uses and does not mean what it looks like:
+  an organization `MEMBER` can hold read-only access to a repo, and `COLLABORATOR` covers the read
+  and triage roles — so that set admits accounts which could never push a line of code but could arm
+  a release cut by editing an issue body (independent-review find). An unreadable permission fails
+  **closed**: the endpoint needs push access itself, so a 403 means authority could not be
+  established, which is not a licence to assume it.
 
   It produces its own word rather than reusing `skipped`: `skipped` is the **caller's** opt-out for
   a decision that is not about shippable code (`baseline release roll`, which runs *after* the cut),
@@ -122,9 +148,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   **refuses to render an empty value**, which would emit `(.app.slug // "") == ""` and match exactly
   the check runs whose app cannot be identified. The formatting assertion is **deleted**; what
   replaces it pins the token in the source and the real slug in all three rendered skills, so the
-  value is checked where it actually lands. #183 costed this against "`build.sh` does not source
-  `common.sh` today" — that stopped being true in #256, which added the bash-floor gate, so the
-  token adds no coupling the interpreter gate has not already paid for.
+  value is checked where it actually lands — as the QUOTED VALUE alone, carrying no `==` and no
+  operator spacing, so nothing about jq's formatting can fail it. #183 costed this against
+  "`build.sh` does not source `common.sh` today" — that stopped being true in #256, which added the
+  bash-floor gate, so the token adds no coupling the interpreter gate has not already paid for. The
+  empty-value refusal is itself **observed failing**, against fixtures whose `adb_actions_app_slug`
+  returns empty and fails outright.
 
   `.claude/skills/release/release.sh` carried a fourth copy of the literal, kept in sync by nothing
   at all; it already sources `common.sh`, so it now reads the accessor too. `check-fact-drift.sh`

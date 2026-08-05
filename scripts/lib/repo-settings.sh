@@ -598,8 +598,15 @@ BR_STATE=""       # checks | unprotected | opaque | error
 BR_CONTEXTS=""    # the live required contexts, sorted, one per line (empty when none)
 
 # _adb_rs_classify_branch — stdin: a 200 response BODY from `repos/{slug}/branches/{branch}`.
-# Prints the classification on line 1 (`checks` | `unprotected` | `opaque`) and, for `checks`
-# only, the required contexts on the following lines, LC_ALL=C-sorted.
+# Prints the classification on line 1 (`checks` | `unprotected` | `opaque`) and the required
+# contexts on line 2 as a COMPACT JSON ARRAY (`[]` for every state but `checks`).
+#
+# LINE 2 IS JSON, NOT ONE CONTEXT PER LINE, and that is a correctness requirement rather than a
+# convenience. A newline-delimited rendering cannot round-trip a value CONTAINING a newline: the
+# first draft emitted one context per line and `["a\nb"]` came back out as TWO required contexts,
+# one of which nothing can ever report — a phantom, and a permanent `indeterminate`. JSON is the
+# only encoding here that is closed under the values it carries. Each consumer renders from it:
+# `read_branch` needs sorted LINES for `comm`, `branch-required-contexts` passes the array through.
 #
 # SPLIT OUT FROM `read_branch` (#115) so the 200-body MODEL has ONE home. It now has two
 # consumers with different transports: `read_branch` below, which owns the HTTP read and maps a
@@ -617,7 +624,7 @@ _adb_rs_classify_branch() {
   # `.protected == false` is an AUTHORITATIVE "nothing protects this branch" — not an unreadable
   # state. Every discovered job is genuinely ungated there, which is real drift worth reporting.
   if printf '%s' "$body" | jq -e '.protected == false' >/dev/null 2>&1; then
-    printf 'unprotected\n'; return 0
+    printf 'unprotected\n[]\n'; return 0
   fi
   # Protected: the contexts array must be readable as an array AND the legacy protection block it
   # hangs off must actually be ENABLED. Both halves are load-bearing, and the second one is not
@@ -641,14 +648,26 @@ _adb_rs_classify_branch() {
   #
   # Sorted with LC_ALL=C to the same contract `live_contexts` produces, because both feed `comm`,
   # which silently yields WRONG SETS — not an error — if the two streams were collated differently.
+  # EVERY MEMBER MUST BE A NON-EMPTY STRING, not merely "contexts is an array". Checking only the
+  # container let three shapes through, each of which then LOOKED authoritative downstream:
+  # `[null, 5]` was stringified by `jq -r` into the plausible contexts "null" and "5"; `[""]` was
+  # dropped to an empty set, which is the AUTHORITATIVE "this branch declares nothing" and can
+  # reach `no-ci`; and neither could be caught later, because by then they were ordinary strings.
+  # A contexts array we cannot make sense of is exactly what `opaque` means — so it is classified
+  # that way here, at the one place that can still tell. (Independent-review find.)
   if printf '%s' "$body" \
        | jq -e '.protection.enabled == true
-                and (.protection.required_status_checks.contexts | type) == "array"' >/dev/null 2>&1; then
+                and (.protection.required_status_checks.contexts | type) == "array"
+                and (.protection.required_status_checks.contexts
+                     | all(type == "string" and (gsub("^\\s+|\\s+$"; "") | length > 0)))' >/dev/null 2>&1; then
     printf 'checks\n'
-    printf '%s' "$body" | jq -r '.protection.required_status_checks.contexts[]' 2>/dev/null | LC_ALL=C sort
+    # `unique` sorts as a side effect, and it sorts by JSON value order — which for strings is
+    # codepoint order, the same total order LC_ALL=C gives `read_branch`'s `comm` streams. Doing it
+    # here means both consumers see one canonical set rather than each imposing its own.
+    printf '%s' "$body" | jq -c '.protection.required_status_checks.contexts | unique' 2>/dev/null
     return 0
   fi
-  printf 'opaque\n'
+  printf 'opaque\n[]\n'
   return 0
 }
 
@@ -661,10 +680,11 @@ read_branch() {
   [ "$RS_STATUS" = "200" ] || { BR_STATE="error"; return 0; }
   out="$(printf '%s' "$RS_BODY" | _adb_rs_classify_branch)"
   BR_STATE="${out%%$'\n'*}"
-  # Everything after line 1 is the context list (empty for every state but `checks`). `sed 1d`
-  # rather than `${out#*$'\n'}`, which leaves the WHOLE string when there is no newline at all —
-  # a one-line `unprotected` answer would otherwise become a required context named "unprotected".
-  BR_CONTEXTS="$(printf '%s' "$out" | sed '1d')"
+  # Line 2 is the JSON array; render it to the one-per-line, LC_ALL=C-sorted form this reader has
+  # always published, because BR_CONTEXTS feeds `comm` (which silently yields WRONG SETS, not an
+  # error, if two streams were collated differently). The classifier already `unique`d, so this is
+  # a rendering, not a second decision.
+  BR_CONTEXTS="$(printf '%s' "$out" | sed -n '2p' | jq -r '.[]' 2>/dev/null | LC_ALL=C sort)"
   return 0
 }
 
@@ -1302,14 +1322,9 @@ cmd_branch_required_contexts() {
   out="$(_adb_rs_classify_branch)"
   state="${out%%$'\n'*}"
   case "$state" in
-    checks)
-      # `-R` + `-s` + `split`: build the array from the raw lines rather than interpolating them,
-      # so a context name carrying a quote, a backslash or a tab cannot break out of the JSON.
-      # An EMPTY context list must still print `[]` — `split("\n")` on "" yields `[""]`, so the
-      # blank-line filter is what keeps a checks-with-no-contexts branch from declaring a context
-      # named "" that nothing can ever report (a phantom, and a permanent `indeterminate`).
-      printf '%s' "$out" | sed '1d' \
-        | jq -R -s 'split("\n") | map(select(length > 0))' -c ;;
+    # Line 2 is already the canonical JSON array — pass it through rather than rebuilding it from
+    # text. Rebuilding is what split a context containing a newline into two phantom requirements.
+    checks)      printf '%s' "$out" | sed -n '2p' ;;
     unprotected) printf '[]\n' ;;
     *)           printf 'null\n' ;;
   esac
