@@ -2481,6 +2481,15 @@ limit: none of them is sufficient alone.
                  declaration either. It is NOT harmless for the closer bound, which is why that is
                  clamped (below).
 
+               - A COLUMN-0 BLOCK STARTER is not lazy, and the `md_para` qualifier alone treated it
+                 as though it were (review round 3). CommonMark's laziness covers continuation TEXT
+                 only, so a heading, blockquote, fence or HTML block at column 0 ends the item even
+                 mid-paragraph. Left unqualified, `- item` / `# Repro` / `    Depends on #5`
+                 fabricated an edge the parent correctly read as top-level indented code — the very
+                 over-match this decision exists to remove, reintroduced one rule later.
+                 `adb_md_col0_block` clears the column at each of those branches, excluding a MARKER
+                 line (`at == lead`), which opens an item rather than ending one.
+
                - STALE-SHALLOW was the one the draft missed. A lazy continuation — `- item` /
                  `lazy continuation` at column 0 — cleared the column to 0 while the item was still
                  open. A fence at column 2 then stored a bound of 3 and REJECTED its own valid
@@ -2488,9 +2497,13 @@ limit: none of them is sufficient alone.
                  direction, and no clamp can repair it because the state was already too small. The
                  laziness qualifier prevents it at the source.
 
-             A FENCE OPENED INSIDE AN ITEM ENDS WHEN THE ITEM DOES — a non-blank line at column 0,
-             scoped by `md_fence_base > 0` so a top-level unterminated fence still swallows to
-             end-of-body as it always has. Its OWN CLOSER IS TRIED FIRST: a list-nested fence is
+             A FENCE OPENED INSIDE AN ITEM ENDS WHEN THE ITEM DOES — a non-blank line written to
+             the LEFT of the fence's own container column (`lead < md_fence_base`), which needs no
+             separate `> 0` test since no lead is below zero, so a top-level unterminated fence
+             still swallows to end-of-body as it always has. COLUMN 0 IS NOT THE BOUNDARY, and an
+             earlier draft tested exactly that: an INDENTED item ends well before column 0, so
+             `  - item` / `      ~~~` / `      code` / `  Depends on #5` swallowed a real edge the
+             parent read correctly (review round 3). Its OWN CLOSER IS TRIED FIRST: a list-nested fence is
              most often closed by a delimiter written back at column 0, which satisfies both tests,
              and ending the container first consumed that line as a terminator and then re-read it
              as a fresh OPENER — reintroducing the swallow this rule exists to prevent. Without this
@@ -2563,6 +2576,12 @@ limit: none of them is sufficient alone.
                                      over-match      under-match
                  parent                     526               46
                  this change                389                2   (newly dropped: 0)
+
+             THE SWEEP DID NOT FIND EVERYTHING, and saying so is the point of recording it. Both
+             round-3 defects sit in shapes the generator never produces — a column-0 block starter
+             after a list paragraph, and an indented item ending before column 0 — so the numbers
+             above were IDENTICAL before and after fixing them. A generated corpus proves the axes
+             it varies and nothing else; the independent reviewer found what it could not see.
 
              Better in BOTH directions, and — the number that actually governs — ZERO shapes where
              this drops an edge the parent declared. Over-match blocks a ready bundle and is

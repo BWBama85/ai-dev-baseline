@@ -2667,6 +2667,13 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       }
       return 0
     }
+    # A column-0 BLOCK STARTER ends an open list item (#252, review round 3). CommonMark's
+    # laziness covers paragraph continuation TEXT only, so a heading, a blockquote, a fence or an
+    # HTML block written at column 0 closes the item even while its paragraph is open — and the
+    # `!md_para` guard alone kept the column alive across exactly those, so `- item` / `# Repro` /
+    # `    Depends on #5` fabricated an edge the parent correctly read as top-level indented code.
+    # `at == lead` excludes a MARKER line, which OPENS an item rather than ending one (`- <!--`).
+    function adb_md_col0_block(lead, at) { if (lead == 0 && at == lead) md_list_at = 0 }
     # Classify ONE line: 1 = structure (the consumer skips it), 0 = prose. Sets MD_LINE to the
     # CR-normalized line and MD_ALONE when the line is a block of its own.
     #
@@ -2684,20 +2691,26 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       # opened a fence that never closed, and `<!--` / `> -->` skipped its own closer as a
       # blockquote: both swallowed every edge after them, the under-match direction.
       if (md_html) { if (index(line, "-->")) md_html = 0; md_para = 0; return 1 }
-      # A FENCE OPENED INSIDE A LIST ITEM ENDS WHEN THAT ITEM DOES (#252, review round 2) — at a
-      # non-blank line written back at column 0. CommonMark closes an unterminated fenced block when
+      # A FENCE OPENED INSIDE A LIST ITEM ENDS WHEN THAT ITEM DOES (#252, review rounds 2-3) — at a
+      # non-blank line written to the LEFT of the fence's own container column. Column 0 is only the
+      # commonest case of that: an INDENTED item ends well before column 0, and testing `== 0` let
+      # `  - item` / `      ~~~` / `      code` / `  Depends on #5` swallow a real edge (review
+      # round 3). `lead < md_fence_base` covers both and needs no separate `> 0` test, since no
+      # lead is below zero — a top-level fence stores 0 and therefore never triggers it. CommonMark closes an unterminated fenced block when
       # its containing block ends, and without that half the container-relative closer bound is a
       # net LOSS: the bound correctly refuses an over-indented closer (CommonMark calls it content),
       # but the fence then ran to end-of-body and took every edge after it. Measured against a
-      # CommonMark reference parser over 1888 generated container shapes, adding this moved the
-      # filter from 361 over-matches / 46 under-matches to 249 / 42 — better in BOTH directions, and
-      # better than the parent's 526 / 46 in both as well.
+      # CommonMark reference parser over 1888 generated container shapes, the whole change moves the
+      # filter from the parent's 526 over-matches / 46 under-matches to 389 / 2, dropping no edge
+      # the parent declared.
       #
-      # `md_fence_base > 0` is what scopes it to a list-nested fence: a top-level opener stores 0,
-      # so the long-standing "an unterminated fence swallows to end-of-body" rule is untouched
-      # there. Falling THROUGH rather than returning is deliberate — the line that ended the
-      # container is ordinary content and still has to be classified, and the fall-through also
-      # clears `md_list_at` through the normal column-0 path below.
+      # That comparison is what scopes it to a list-nested fence: a top-level opener stores 0, and
+      # no lead is below zero, so the long-standing "an unterminated fence swallows to end-of-body"
+      # rule is untouched there. Falling THROUGH rather than returning is deliberate — the line that
+      # ended the container is ordinary content and still has to be classified. It does NOT
+      # necessarily clear `md_list_at`: a line at column 2 can end an indented item's fence, and the
+      # column then stays standing, which is the documented stale-deep direction rather than a
+      # second bug.
       #
       # `md_list_at` is passed to the delimiter check even though that call can only take the
       # in-a-fence branch, which never reads it: no call site is then left leaning on awk's
@@ -2709,7 +2722,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       # the-body shape this rule exists to prevent, reintroduced by the rule itself.
       if (md_fence_len) {
         if (adb_md_fence_delim(line, md_list_at)) { md_para = 0; return 1 }
-        if (!(md_fence_base > 0 && adb_md_lead(line) == 0 && line !~ /^[ \t]*$/)) {
+        if (!(adb_md_lead(line) < md_fence_base && line !~ /^[ \t]*$/)) {
           md_para = 0; return 1
         }
         md_fence_ch = ""; md_fence_len = 0; md_fence_base = 0
@@ -2763,7 +2776,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       # `<!--->` share dashes between opener and closer, so a search that starts after `<!--` calls
       # a CLOSED empty comment an unterminated block and swallows the rest of the body.
       if (substr(line, at + 1, 4) == "<!--" && index(substr(line, at + 3), "-->") == 0) {
-        md_html = 1; md_para = 0; return 1
+        adb_md_col0_block(lead, at); md_html = 1; md_para = 0; return 1
       }
       if (at > lead) {
         md_list_at = at
@@ -2783,11 +2796,11 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       else if (lead == 0 && !md_para) md_list_at = 0
       # `md_list_at`, not `base`: a fence written ON a marker line belongs to the item that marker
       # just opened, which is the shape #135 fixed (`- ```console`, closer at column 2).
-      if (adb_md_fence_delim(line, md_list_at)) { md_para = 0; return 1 }
+      if (adb_md_fence_delim(line, md_list_at)) { adb_md_col0_block(lead, at); md_para = 0; return 1 }
       # A blockquote nested under a list marker (`- > …`) is still quoted material (#135), so this
       # tests the CONTENT position rather than the first non-space character.
-      if (substr(line, at + 1, 1) == ">") { md_para = 0; return 1 }
-      if (adb_md_alone(line, at)) { MD_ALONE = 1; md_para = 0; return 0 }
+      if (substr(line, at + 1, 1) == ">") { adb_md_col0_block(lead, at); md_para = 0; return 1 }
+      if (adb_md_alone(line, at)) { adb_md_col0_block(lead, at); MD_ALONE = 1; md_para = 0; return 0 }
       md_para = 1
       return 0
     }

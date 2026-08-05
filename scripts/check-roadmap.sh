@@ -1329,6 +1329,31 @@ eq "${ depsm '- item' '   ~~~' '   Depends on #5' '      ~~~' 'Depends on #7'; }
    "UNDER: a column-0 line ENDS a list-nested fence, so an over-indented closer cannot eat the body"
 eq "${ depsm 'Depends on #9' '```' 'Depends on #5'; }" '9' \
    "UNDER: ...while a TOP-LEVEL unterminated fence still swallows to EOF (that rule is untouched)"
+# ...and "ends when the item does" means LEFT OF THE ITEM, not column 0. An INDENTED item ends well
+# before column 0, and testing `== 0` swallowed a real edge there (review round 3). Both delimiters,
+# and with the closer missing as well as over-indented, because either shape leaves the fence open.
+eq "${ depsm '  - item' '      ~~~' '      code' '  Depends on #5'; }" '5' \
+   "UNDER: a line LEFT of an indented item's content ends its fence — column 0 is not the boundary"
+eq "${ depsm '  - item' '      ~~~' '      code' '        ~~~' '  Depends on #5'; }" '5' \
+   "UNDER: ...including when an over-indented closer left the fence open"
+eq "${ depsm '  - item' '      ```' '      code' '  Depends on #5'; }" '5' \
+   "UNDER: ...for a backtick fence too"
+
+# A column-0 BLOCK STARTER ends the item even mid-paragraph (review round 3). CommonMark's laziness
+# covers continuation TEXT only, so the `md_para` qualifier above must not keep the column alive
+# across a heading, a blockquote, a fence or an HTML block written at column 0. Left unqualified it
+# fabricated an edge the PARENT read correctly as top-level indented code — the over-match this
+# whole change exists to remove, reintroduced one rule later.
+eq "${ depsm '- item' '# Repro' '    Depends on #5'; }" '' \
+   "OVER: a column-0 HEADING ends the item, so the indented line after it is code again"
+eq "${ depsm '- item' '> quote' '    Depends on #5'; }" '' \
+   "OVER: ...a column-0 blockquote too"
+eq "${ depsm '- item' '~~~' 'x' '~~~' '    Depends on #5'; }" '' \
+   "OVER: ...and a column-0 fence"
+eq "${ depsm '- item' '<!--' 'x' '-->' '    Depends on #5'; }" '' \
+   "OVER: ...and a column-0 HTML comment block"
+eq "${ depsm '- <!--' 'Depends on #9' '-->' 'Depends on #5'; }" '5' \
+   "UNDER: ...while a MARKER line is not a block starter, so a comment after one still OPENS an item"
 eq "${ depsm '    ~~~' 'Depends on #5'; }" '5' \
    "UNDER: with no list open at all, a 4-space delimiter is an indented block, not a fence"
 # The container state is ONE integer, not a stack: a dedent carrying no marker leaves the inner

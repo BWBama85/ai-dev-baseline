@@ -52,18 +52,27 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     was found by independent review; a column-0 line now closes the container only when no
     paragraph is open, which is CommonMark's own laziness rule and reuses state the filter already
     had.
-  - **A fence opened inside a list item ends when the item does** — a non-blank line at column 0.
-    Without this the container-relative closer bound is a net loss: it correctly refuses an
-    over-indented closer, and the fence then swallows every edge after it. The fence's own closer
-    is tried first, because a list-nested fence is usually closed by a delimiter written back at
-    column 0 and ending the container first re-read that line as a fresh opener. A **top-level**
-    unterminated fence still swallows to end-of-body, exactly as before.
+  - **A fence opened inside a list item ends when the item does** — a non-blank line written to the
+    *left of the fence's own container column*, not merely at column 0: an indented item ends well
+    before column 0, and testing `== 0` swallowed a real edge there. Without this rule the
+    container-relative closer bound is a net loss: it correctly refuses an over-indented closer, and
+    the fence then takes every edge after it. The fence's own closer is tried first, because a
+    list-nested fence is usually closed by a delimiter written back at column 0 and ending the
+    container first re-read that line as a fresh opener. A **top-level** unterminated fence still
+    swallows to end-of-body, exactly as before.
+  - **A column-0 block starter is not a lazy continuation.** Laziness covers continuation *text*, so
+    a heading, blockquote, fence or HTML block at column 0 ends the item even mid-paragraph. Without
+    that qualifier `- item` / `# Repro` / `    Depends on #5` fabricated an edge the previous rule
+    read correctly as top-level indented code — the over-match this whole change removes,
+    reintroduced one rule later. A *marker* line is excluded: it opens an item rather than ending one.
   - **Measured against a CommonMark reference parser**, not argued: 1888 generated container shapes
     classified by `markdown-it-py` in strict mode, each candidate line carrying a unique issue
     number. Over-match **526 → 389**, under-match **46 → 2**, and **zero** shapes where this drops
     an edge the parent declared. Both remaining under-matches are oracle artifacts (inline code
     spans, which the block-level oracle does not model). Two intermediate designs were rejected on
-    those numbers rather than on taste.
+    those numbers rather than on taste. **The sweep did not find everything**: both defects the
+    third review round caught sit in shapes the generator never produces, so those figures were
+    identical before and after fixing them.
   - **The two consumers that call the fence predicate directly** (`skill-compose.sh`,
     `check-release-skill.sh`) keep the top-level-only rule and now pass their container column
     explicitly instead of relying on awk's uninitialized-parameter semantics. Their behaviour is
