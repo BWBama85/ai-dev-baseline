@@ -1317,7 +1317,16 @@ eq "${ depsm '    ~~~' 'Depends on #5'; }" '5' \
 # item's column standing. That is the harmless direction — a too-deep column still admits structure
 # written further LEFT — and this pins it rather than leaving it to be discovered.
 eq "${ depsm '- outer' '    - inner' '  ~~~' '  Depends on #5' '  ~~~' 'Depends on #7'; }" '7' \
-   "UNDER: a markerless dedent leaves the column standing, and structure further left still counts"
+   "UNDER: a fence further LEFT than the standing column still counts (a negative offset passes)"
+# THAT ONE DOES NOT PIN THE STATE'S LIFETIME, and saying so is the point (review finding). A
+# two-space fence is recognized by every model in play — the parent, a container stack, one that
+# clears the state on dedent, and the one shipped — so it can only witness the negative-offset half
+# of the cutoff. THIS is the fixture that separates them: after a markerless dedent the column is
+# still the INNER item's 6, so a fence written at 6 is recognized. A stack would have popped to
+# `outer` and called that indented code (declaring #5), and so does the parent. Shipping the
+# one-integer model means shipping this answer, so it is pinned rather than left implicit.
+eq "${ depsm '- outer' '    - inner' '  text' '      ~~~' '      Depends on #5' '      ~~~' 'Depends on #7'; }" '7' \
+   "UNDER: the column really does stay standing — a fence AT the stale column is still structure"
 # ...and the STALE column must not reach the closer bound, which is the one place "leave it
 # standing" is not harmless. Unclamped, the inner item's 6 admitted a closer at 9, so the 6-space
 # delimiter below closed this fence EARLY — fabricating #5 and then reading the real closer as a

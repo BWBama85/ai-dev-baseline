@@ -2451,9 +2451,14 @@ limit: none of them is sufficient alone.
              so a non-zero value IS "a list is open" and the two can never drift apart.
 
              `adb_md_content_at` and `adb_md_fence_delim` take it as a `base` parameter, and the
-             behavioural change is one comparison:
+             indent cutoff becomes one comparison:
 
                  if (i - base > 3) return -1          # was: if (i > 3) return -1
+
+             THAT IS NOT THE WHOLE BEHAVIOURAL CHANGE, and an earlier draft of this entry said it
+             was (review finding). The closer bound moved independently — see fork 2 below — and it
+             moves for every caller, including the two that never track a container at all. Two
+             changes, stated as two.
 
              THE LIFETIME IS THE BOOLEAN'S, UNCHANGED (fork 1). A blank line preserves it, a
              column-0 non-marker line clears it, and a marker sets it to that marker's own content
@@ -2534,13 +2539,22 @@ limit: none of them is sufficient alone.
              corpus run is therefore evidence of SAFETY (nothing regressed across 210 real bodies),
              and the fixtures are the evidence of the fix.
 
-             ORDERING stated exactly as D27 asks. Seventeen of the first round of
-             assertions
-             were run against the parent's `scripts/lib/common.sh` in a throwaway copy of the tree
-             and observed RED — fifteen in `check-roadmap.sh`, two in `check-common-lib.sh` — while
-             the assertions pinning deliberately-unchanged behaviour stayed green, which is the
-             split that makes them witnesses rather than decoration. This entry lands in the SAME
-             commit as the code, so the diff cannot evidence that it was written first and nobody
-             should read it as evidenced; the red-at-parent fixtures are the part a reviewer can
-             check.
+             ORDERING stated exactly as D27 asks. Eighteen of the new assertions were run against
+             the parent's `scripts/lib/common.sh` in a throwaway copy of the tree and observed RED —
+             sixteen in `check-roadmap.sh`, two in `check-common-lib.sh` — while the assertions
+             pinning deliberately-unchanged behaviour stayed green, which is the split that makes
+             them witnesses rather than decoration.
+
+             TWO of them cannot be witnessed that way and were driven RED against deliberately wrong
+             builds instead, because the parent gets both bodies right and a red-at-parent run
+             therefore proves nothing about them. The closer-bound fixture was driven against a
+             build carrying the container column WITHOUT the clamp; the state-lifetime fixture
+             against one that clears the column on any markerless dedent, standing in for the
+             container stack this decision declined. A third fixture was found by review to pin
+             nothing at all — a two-space fence that every candidate model recognizes — and its
+             description now claims only the negative-offset half it actually witnesses.
+
+             This entry lands in the SAME commit as the code, so the diff cannot evidence that it
+             was written first and nobody should read it as evidenced; the red-at-parent fixtures
+             are the part a reviewer can check.
 - baseline-issue: #252

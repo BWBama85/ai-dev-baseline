@@ -19,7 +19,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   `/roadmap` emits until somebody edits the body. #135 had fixed only the delimiter written
   straight after the marker (`- ```console`).
   - **The filter now carries one integer**, `md_list_at` — the innermost open list item's content
-    column — and the whole behavioural change is `i - base > 3` where the cutoff read `i > 3`.
+    column — and the indent cutoff becomes `i - base > 3` where it read `i > 3`. That is not the
+    only behavioural change, which an earlier draft of this entry claimed: the closer bound below
+    moved independently, and it moved for every caller.
     `base` moves where indented-block territory *starts* and never changes the column the function
     returns, so a container column deeper than the true one can still admit structure written
     further left but can never hide it. That one-directional failure mode is why a single integer
@@ -58,9 +60,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     is the evidence of safety; the fixtures are the evidence of the fix.
   - `scripts/check-roadmap.sh` § 6i gains fixtures for both delimiters, blockquotes, ordered and
     nested markers, the closer-bound pair, the stale-dedent shape, CRLF, and the D27 boundary;
-    `check-common-lib.sh` pins the rule at the primitive. **Seventeen of the first round of
-    assertions were observed red** against the parent's library in a throwaway copy, while the ones
-    pinning deliberately-unchanged behaviour stayed green.
+    `check-common-lib.sh` pins the rule at the primitive. **Eighteen of the new assertions were
+    observed red** against the parent's library in a throwaway copy, while the ones pinning
+    deliberately-unchanged behaviour stayed green. Two more could not be witnessed that way — the
+    parent reads both bodies correctly — so they were driven red against deliberately wrong builds
+    instead: one carrying the container column without the clamp, one clearing the column on any
+    markerless dedent (standing in for the container stack D42 declined).
 
 - **`/cleanup` could be made to delete a file nobody asked it to touch** (#273, D41).
   `cleanup-lib.sh state-scan` serialized one record per state file as `<kind>TAB<path>TAB<key>`
