@@ -1259,6 +1259,68 @@ eq "${ deps '1234567890. > Depends on #5'; }" '5' \
 eq "${ deps '123456789. > Depends on #5'; }" '' "...while nine digits IS a marker"
 eq "${ deps '1.Depends on #5'; }" '5' "a marker needs a space after it"
 
+# STRUCTURE INDENTED TO A LIST ITEM'S CONTENT COLUMN (#252, D42). #135 fixed the delimiter written
+# straight after a marker (`- ```console`). This is the other half — the delimiter indented to the
+# item's CONTENT, which is the ordinary way to put an example inside a list. `adb_md_content_at`
+# read each line alone, so anything past column 3 was indented-block territory no matter which
+# container it sat in, and the block's contents were scanned as declarations.
+#
+# DIRECTION: OVER. A fabricated edge from a repro block holds a ready bundle out of every bundle
+# /roadmap emits until someone edits the body — #69's class, which is why this was a release-blocker.
+eq "${ depsm '- item' '    ~~~' '    Depends on #5' '    ~~~' 'Depends on #7'; }" '7' \
+   "OVER: a ~~~ fence indented to a list item's content column is a fence (the #252 repro)"
+eq "${ depsm '- item' "    $q3" '    Depends on #5' '' '    more' "    $q3" 'Depends on #7'; }" '7' \
+   "OVER: ...and a backtick one, written across the blank line that stops span-pairing masking it"
+eq "${ depsm '1. item' '    ~~~' '    Depends on #5' '    ~~~' 'Depends on #7'; }" '7' \
+   "OVER: ...under an ordered marker"
+eq "${ depsm '1.  item' '    ~~~' '    Depends on #5' '    ~~~' 'Depends on #7'; }" '7' \
+   "OVER: ...and under one whose padding puts the content column at 4"
+eq "${ depsm '- item' '     ~~~' '     Depends on #5' '     ~~~' 'Depends on #7'; }" '7' \
+   "OVER: ...at content column + 3, the deepest indent CommonMark still calls a fence"
+eq "${ depsm '  - item' '      ~~~' '      Depends on #5' '      ~~~' 'Depends on #7'; }" '7' \
+   "OVER: ...one nesting level down, where the content column is 4"
+eq "${ depsm '  1. item' '      ~~~' '      Depends on #5' '      ~~~' 'Depends on #7'; }" '7' \
+   "OVER: ...and a nested ORDERED item, whose column the marker width decides"
+eq "${ depsm '- item' '    > Depends on #5' 'Depends on #7'; }" '7' \
+   "OVER: a blockquote indented to the content column is quoted material, not this issue's claim"
+eq "${ depsm '  - item' '    > Depends on #5' 'Depends on #7'; }" '7' \
+   "OVER: ...including one sitting exactly ON a nested item's content column"
+eq "${ depsm '- item' "    $q3" '    Depends on #5'; }" '' \
+   "OVER: an unterminated fence inside an item swallows to EOF, as it does at top level"
+# THE CLOSER IS BOUND TO THE CONTAINER COLUMN, NOT THE DELIMITER'S OWN. Those were the same number
+# until a fence could open at an item's content: `- item` / `    ~~~` puts the container at 2 and
+# the delimiter at 4. Bounding at delimiter+3 accepted a closer 4 past the container — CommonMark
+# fence CONTENT — and that failed BOTH ways in one body: the early close fabricated an edge from
+# the quoted line after it, AND the real closer then read as a fresh opener and ate every edge to
+# end-of-body. So the last two here are one fixture pair, not two independent cases.
+eq "${ depsm '- item' '    ~~~' '    Depends on #5' '  ~~~' 'Depends on #7'; }" '7' \
+   "OVER: a closer written back at the item's own content column still closes"
+eq "${ depsm '- item' '    ~~~' '    Depends on #5' '     ~~~' 'Depends on #7'; }" '7' \
+   "OVER: ...and one at container + 3, the last eligible indent"
+eq "${ depsm '- item' '    ~~~' '      ~~~' '      Depends on #5' '    ~~~' 'Depends on #7'; }" '7' \
+   "OVER/UNDER: ...while one at container + 4 is CONTENT — it neither closes early nor drops #7"
+eq "${ depsm '   ~~~' 'Depends on #5' '   ~~~' 'Depends on #7'; }" '7' \
+   "OVER: the same bound at top level, where the container column is 0"
+eq "${ depsm '   ~~~' 'Depends on #5' '      ~~~' 'Depends on #7'; }" '' \
+   "OVER: ...so a 6-space would-be closer for a 3-space opener is content, and the fence runs on"
+
+# UNDER — the boundary D27 drew, which #252 deliberately does NOT move, plus the state's lifetime.
+# At content column + 4 the line is indented CODE relative to the item; recognizing that would mean
+# deleting a list continuation, the direction that marks a genuinely BLOCKED bundle `ready`.
+eq "${ depsm '- item' '      ~~~' '      Depends on #5' '      ~~~' 'Depends on #7'; }" '5 7' \
+   "UNDER: at content column + 4 the indent rule still refuses to strip (D27's guard, unmoved)"
+eq "${ depsm '  - item' 'Depends on #9' '    ~~~' '    Depends on #5' '    ~~~'; }" '5 9' \
+   "UNDER: a column-0 line CLOSES the container, so its content column stops applying"
+eq "${ depsm '    ~~~' 'Depends on #5'; }" '5' \
+   "UNDER: with no list open at all, a 4-space delimiter is an indented block, not a fence"
+# The container state is ONE integer, not a stack: a dedent carrying no marker leaves the inner
+# item's column standing. That is the harmless direction — a too-deep column still admits structure
+# written further LEFT — and this pins it rather than leaving it to be discovered.
+eq "${ depsm '- outer' '    - inner' '  ~~~' '  Depends on #5' '  ~~~' 'Depends on #7'; }" '7' \
+   "UNDER: a markerless dedent leaves the column standing, and structure further left still counts"
+eq "${ printf '%s\r\n' '- item' '    ~~~' '    Depends on #5' '    ~~~' 'Depends on #7' | run_rl deps-from-body; }" '7' \
+   "UNDER: ...and all of it survives a CRLF body, where a closer arrives as \"~~~\\r\""
+
 # An ESCAPED comment opener is prose DISPLAYING the delimiter, not markup. Treating it as real
 # armed the cross-line state, and an illustrative marker rarely carries a closer — so it swallowed
 # every edge and every recorded decision after it.

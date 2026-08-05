@@ -1269,6 +1269,21 @@ eq "${ mdp text '    indented\n'; }" '' "OVER: a top-level indented block is str
 eq "${ mdp text '- item\n    continued\n'; }" '- item
     continued' "UNDER: ...but an indented line under a list marker is prose (D27)"
 
+# CONTAINER COLUMN (#252, D42). Indentation inside a list means nothing except relative to the open
+# item's content column, so the filter carries that one integer. Asserted here at the primitive as
+# well as through `deps-from-body`, because the bug was in the filter and a consumer-only fixture
+# would attribute the next break to whichever consumer noticed it.
+eq "${ mdp text '- item\n    ~~~\n    x\n    ~~~\n'; }" '- item' \
+   "OVER: a fence indented to the item's content column is structure, and takes its contents with it"
+eq "${ mdp text '- item\n    > q\n'; }" '- item' \
+   "OVER: ...and so is a blockquote at that column"
+eq "${ mdp text '- item\n    ~~~\n    x\n    ~~~\n' | wc -l | tr -d ' '; }" 4 \
+   "...with the line count still 1:1, so no consumer's index shifts"
+eq "${ mdp text '- item\n      ~~~\n      x\n      ~~~\n' | wc -l | tr -d ' '; }" 4 \
+   "UNDER: at content column + 4 nothing is stripped (D27's guard) — same four lines..."
+eq "${ mdp text '- item\n      ~~~\n      x\n      ~~~\n' | grep -c .; }" 4 \
+   "...and all four still carry text, because that far in it is item-relative indented code"
+
 # MULTI-LINE SPANS — the reason the filter buffers at all (#136 §1).
 # Asserted with `wc -l`, not against a literal: `$( … )` strips trailing newlines, so comparing
 # two empty lines to '' would pass whether or not the second line survived at all.

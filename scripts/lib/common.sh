@@ -2488,9 +2488,25 @@ adb_drvfs_warn() {
 # what those consumers need: the schema documents its own marker BY EXAMPLE, and what separates
 # the example from a declaration is markup, never the value.
 #
+# CONTAINER STATE IS ONE INTEGER (#252, D42) — `md_list_at`, the content column of the innermost
+# open list item — because indentation inside a list is only meaningful relative to that column. A
+# fence or a blockquote indented TO it is structure at its own column; past it by 4 the line is
+# indented code relative to the item, where D27's refusal to strip still stands. That is a PARTIAL
+# reversal of D27's cost argument and no more: it buys the content column, not the container stack
+# (no depth, no pop on a markerless dedent) and not laziness tracking.
+#
 # WHAT IS NOT MODELLED, stated plainly rather than implied:
 #   - A leading TAB is not counted as indentation. CommonMark expands tabs to 4-column stops; this
 #     counts spaces only. The error is toward SCANNING (over-match), never toward deleting prose.
+#   - A list container is not a STACK. A markerless dedent leaves the innermost item's content
+#     column standing until a column-0 line clears it, so structure can be admitted up to 3 past a
+#     column the reader has already left. Never the reverse — see adb_md_content_at.
+#   - Indented code INSIDE a list item is still not recognized (D27, unmoved by #252), so a line 4+
+#     past the item's content is scanned rather than stripped.
+#   - The two consumers that call `adb_md_fence_delim` directly rather than through `adb_md_block`
+#     (`skill-compose.sh`, `check-release-skill.sh`) pass no container column and therefore keep
+#     the top-level-only rule. That is the additive half of #252: an omitted `base` is 0, so their
+#     behaviour is byte-identical to before it.
 #   - Setext headings need lookahead past the line and are not detected — the ONE unrecognized
 #     block boundary, and therefore the one place a span can still pair across text CommonMark
 #     would have separated. `- - -` and `* * *` read as list items rather than thematic breaks,
@@ -2511,15 +2527,31 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     function adb_md_runlen(s, pos, ch,   n) { n = 0; while (substr(s, pos + n, 1) == ch) n++; return n }
     # How many leading characters are CONTAINER, not content: indentation plus an optional list
     # marker (`- ` / `* ` / `+ ` / `1. ` / `1) `) and the spaces after it. Returns -1 when the line
-    # is indented past 3 with no marker — indented-block territory, which adb_md_block decides.
+    # is indented past 3 PAST `base` with no marker — indented-block territory, which adb_md_block
+    # decides.
     #
     # WHY (#135). Without this, a fence or a blockquote written INSIDE a list item is invisible:
     # `- ```console` puts the delimiter after the marker, so the block was scanned (fabricating an
     # edge) and its indented closer was then read as a NEW opener, swallowing every real edge after
     # the list. Placing an example in a list item is one of the most common shapes in an issue.
-    function adb_md_content_at(s,   i, c, j, nsp, nd) {
+    #
+    # `base` IS THE OTHER HALF OF THAT (#252, D42) — the content column of the open list item, so a
+    # delimiter indented TO that content (the ordinary way to write an example inside an item) is
+    # structure at its own column rather than an indented block. Reading each line alone put
+    # everything past column 3 in indented-block territory no matter which container it sat in, so
+    # `- item` / `    ~~~` / `    Depends on #5` / `    ~~~` declared #5 out of its own repro block.
+    #
+    # `base` MOVES WHERE INDENTED-BLOCK TERRITORY STARTS AND NOTHING ELSE — it never changes the
+    # column this returns, because marker detection already happens at the line's own first
+    # non-space character. That is what makes ONE integer enough where D27 priced a container
+    # stack: a base that is deeper than the true container still passes for a line written further
+    # LEFT (the difference goes negative), so a stale base can never HIDE structure, only admit it
+    # a little deeper than CommonMark would — where CommonMark says "indented code", which is not a
+    # declaration either. An omitted `base` is 0, i.e. exactly the top-level rule, which is what
+    # the two consumers that call the fence predicate directly still get.
+    function adb_md_content_at(s, base,   i, c, j, nsp, nd) {
       i = adb_md_lead(s)
-      if (i > 3) return -1
+      if (i - base > 3) return -1
       c = substr(s, i + 1, 1)
       if (c == "-" || c == "*" || c == "+") {
         j = i + 1                                   # 1-based position of the marker character
@@ -2544,14 +2576,23 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       return j + nsp
     }
     # The CLOSER of an open fence: the same delimiter, a run at least as long, nothing but
-    # whitespace after it, and indented no more than 3 past the OPENER's content column. That last
-    # clause is container context, and it is load-bearing in both directions: without it a
+    # whitespace after it, and indented no more than 3 past the opener's CONTAINER content column.
+    # That last clause is container context, and it is load-bearing in both directions: without it a
     # 4-space-indented backtick run *inside* a top-level fence closes it early (scanning quoted
     # text, then reading the real closer as a fresh opener), and with too little of it a
     # list-nested closer never matches and the fence swallows the rest of the body.
+    #
+    # THE CONTAINER COLUMN, NOT THE DELIMITER'S OWN (#252, D42). These were the same number until a
+    # fence could open at a list item's content: `- item` / `    ~~~` puts the container at 2 and
+    # the delimiter at 4, and bounding at delimiter+3 accepts a closer 4 past the container — which
+    # CommonMark calls fence CONTENT ("may be indented up to three spaces"). That failed BOTH ways
+    # in one body, which is why it is fixed here rather than deferred: the early close fabricated an
+    # edge from the quoted line after it, AND the real closer then read as a fresh opener and
+    # swallowed every edge to end-of-body. It also settles the top-level case that was always
+    # reachable — an opener at 3 no longer accepts a closer at 4-6.
     function adb_md_close_run(line, ch,   sp) {
       sp = adb_md_lead(line)
-      if (sp > md_fence_at + 3) return 0
+      if (sp > md_fence_base + 3) return 0
       return adb_md_runlen(line, sp + 1, ch)
     }
     function adb_md_after_close(line, n,   sp) { sp = adb_md_lead(line); return substr(line, sp + n + 1) }
@@ -2564,28 +2605,29 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     # boolean toggle on any ``` after 0-3 spaces — and the two had already drifted: a `~~~`-fenced
     # `### ` line was advertised as a composable anchor, and a ``` closing a longer run left the
     # toggle inverted for the whole rest of the file, hiding every later step.
-    function adb_md_fence_delim(line,   fn, at) {
+    function adb_md_fence_delim(line, base,   fn, at) {
       if (md_fence_len) {                          # inside a fence: only its own closer matters
         fn = adb_md_close_run(line, md_fence_ch)
         if (fn >= md_fence_len && adb_md_after_close(line, fn) ~ /^[[:space:]]*$/) {
-          md_fence_ch = ""; md_fence_len = 0; md_fence_at = 0
+          md_fence_ch = ""; md_fence_len = 0; md_fence_base = 0
           return 1
         }
         return 0
       }
-      at = adb_md_content_at(line)
+      at = adb_md_content_at(line, base)
       if (at < 0) return 0                         # 4+ spaces: an indented block, never a fence
       # A backtick fence opener may not carry a backtick in its info string; a tilde one may. The
       # two probes are sequential, not parallel, because that asymmetry is the whole rule. The
       # other delimiter never closes the current fence — that is what makes ``` inside ~~~ content.
-      # `md_fence_at` remembers this opener's column so its closer can be matched relative to the
-      # same container.
+      # `md_fence_base` remembers this opener's CONTAINER column so its closer can be matched
+      # relative to the same container — see adb_md_close_run for why that is not the delimiter's
+      # own column.
       fn = adb_md_runlen(line, at + 1, "`")
       if (fn >= 3 && index(substr(line, at + fn + 1), "`") == 0) {
-        md_fence_ch = "`"; md_fence_len = fn; md_fence_at = at; return 1
+        md_fence_ch = "`"; md_fence_len = fn; md_fence_base = base; return 1
       }
       fn = adb_md_runlen(line, at + 1, "~")
-      if (fn >= 3) { md_fence_ch = "~"; md_fence_len = fn; md_fence_at = at; return 1 }
+      if (fn >= 3) { md_fence_ch = "~"; md_fence_len = fn; md_fence_base = base; return 1 }
       return 0
     }
     # A line that is PROSE but is its own block: an ATX heading, or a thematic break. It still
@@ -2618,7 +2660,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     # A GitHub body submitted through the web UI is CRLF, and `gh` passes it through verbatim.
     # Without normalizing, a closer reads as "```\r", its must-be-blank tail is not blank, the
     # fence NEVER closes, and every edge in the rest of the body silently disappears.
-    function adb_md_block(line,   at, lead) {
+    function adb_md_block(line,   at, lead, base) {
       if (substr(line, length(line), 1) == MD_CR) line = substr(line, 1, length(line) - 1)
       MD_LINE = line; MD_ALONE = 0; MD_NEWPARA = 0
       # An HTML COMMENT THAT STARTS A LINE is a BLOCK, not an inline (CommonMark HTML block type 2):
@@ -2639,7 +2681,10 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
       }
       if (line ~ /^[ \t]*$/) { md_para = 0; return 1 }
       lead = adb_md_lead(line)
-      at = adb_md_content_at(line)
+      # The ENCLOSING container's content column, captured before this line can change it, so a
+      # marker line is measured against the item it sits in rather than against itself.
+      base = md_list_at
+      at = adb_md_content_at(line, base)
       if (at < 0) {
         # Indented 4+ with no list marker. THE §5 FORK, decided in D27: this OPENS an indented code
         # block only at top level, and only where a paragraph is not already open. Both guards are
@@ -2647,12 +2692,27 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
         # continuation inside a list item — a bare `^ {4}` rule DELETES real edges, which is the
         # under-match direction. CommonMark agrees on both: indented code cannot interrupt a
         # paragraph, and inside a list item whose content starts at column 2 it needs 2+4 spaces.
-        if (!md_para && !md_list) { md_icode = 1; return 1 }
+        # #252 REACHES HERE AND DELIBERATELY DOES NOT MOVE IT. With `base` in play this fork now
+        # means "4+ past the OPEN ITEM's content", i.e. genuinely indented code relative to that
+        # item — and stripping it would delete a list continuation, the direction D27 refused. So
+        # the item's own deep-indented lines stay scanned, exactly as before.
+        if (!md_para && !md_list_at) { md_icode = 1; return 1 }
         md_para = 1; return 0
       }
       # A list container suppresses indented-code detection until a column-0 line that is not
       # itself a marker closes it. Erring toward "still open" errs toward SCANNING, never toward
       # deleting prose.
+      #
+      # `md_list_at` IS that container (#252, D42): non-zero means a list is open, and its value is
+      # the innermost item's content column. It replaced a separate `md_list` boolean rather than
+      # joining one, the same way `md_fence_len` is itself the in-a-fence flag — a marker's content
+      # column is always >= 2, so the two can never drift apart. THE LIFETIME IS UNCHANGED from the
+      # boolean it replaces: a blank line preserves it, a column-0 non-marker line clears it, and a
+      # marker sets it to that marker's own content column (so a marker written further left
+      # dedents by simple assignment). What it deliberately does NOT do is pop on a dedent that
+      # carries no marker — that needs the container STACK D27 priced and refused, and the column
+      # left standing is the harmless direction (see adb_md_content_at: a too-deep base still
+      # admits structure written further left).
       # A comment whose `-->` is on the SAME line is NOT a block: it stays inline, so the prose
       # after it is still scanned. That is the one place this deliberately parts from CommonMark
       # (which makes the whole line HTML), because `<!-- x --> Depends on #7` declaring #7 is
@@ -2664,15 +2724,17 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
         md_html = 1; md_para = 0; return 1
       }
       if (at > lead) {
-        md_list = 1
+        md_list_at = at
         # A LIST MARKER STARTS A NEW BLOCK. Without this, two adjacent items are one buffer and
         # their backticks pair across the boundary — `- \`Depends on #5` / `- another \` item`
         # masked a real edge out of existence. Each item is its own container in CommonMark; only
         # its CONTINUATION lines belong to the same paragraph.
         MD_NEWPARA = 1
       }
-      else if (lead == 0) md_list = 0
-      if (adb_md_fence_delim(line)) { md_para = 0; return 1 }
+      else if (lead == 0) md_list_at = 0
+      # `md_list_at`, not `base`: a fence written ON a marker line belongs to the item that marker
+      # just opened, which is the shape #135 fixed (`- ```console`, closer at column 2).
+      if (adb_md_fence_delim(line, md_list_at)) { md_para = 0; return 1 }
       # A blockquote nested under a list marker (`- > …`) is still quoted material (#135), so this
       # tests the CONTENT position rather than the first non-space character.
       if (substr(line, at + 1, 1) == ">") { md_para = 0; return 1 }
@@ -2819,8 +2881,8 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     BEGIN {
       MD_CR = sprintf("%c", 13)
       MD_MASKC = sprintf("%c", 1)   # a byte no body carries; never printed, only matched against
-      md_fence_ch = ""; md_fence_len = 0; md_fence_at = 0
-      md_incomment = 0; md_icode = 0; md_para = 0; md_list = 0; md_html = 0
+      md_fence_ch = ""; md_fence_len = 0; md_fence_base = 0
+      md_incomment = 0; md_icode = 0; md_para = 0; md_list_at = 0; md_html = 0
       MDN = 0; MD_ALONE = 0; MD_NEWPARA = 0
     }
 AWKMD

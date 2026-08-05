@@ -2431,3 +2431,90 @@ limit: none of them is sufficient alone.
 - baseline-issue: n/a — `state-scan`, its record format and the sweep that consumes it are all this
              repo's own code, and `cleanup-lib.sh` was already the prescribed home for a `/cleanup`
              decision predicate.
+
+## D42 — the filter carries ONE integer of list state: the open item's content column
+- date:      2026-08-05
+- category:  general
+- unknown:   #252 asks the filter to recognize a fence or a blockquote indented to the content
+             column of the list item it sits in. D27 declined exactly that, calling it "option 2"
+             in #136 §5 and pricing it as "list-depth, content column and laziness state carried
+             through every container — a parser this framework has no reason to own, and a large
+             surface for the under-match direction to hide in". So the unknown is not whether to
+             close the hole but HOW MUCH of option 2 a fix has to buy, and D27's cost argument is
+             what it has to answer. Gap analysis raised three sub-forks as BLOCKING: the container
+             state's lifetime and depth model, whether the container column and the delimiter
+             column are the same number, and what happens to the two consumers that call the fence
+             predicate directly rather than through `adb_md_block`.
+- decision:  ONE INTEGER, `md_list_at`, holding the content column of the innermost open list item
+             — and it REPLACES the `md_list` boolean rather than joining it, the same way
+             `md_fence_len` is itself the in-a-fence flag. A marker's content column is always >= 2,
+             so a non-zero value IS "a list is open" and the two can never drift apart.
+
+             `adb_md_content_at` and `adb_md_fence_delim` take it as a `base` parameter, and the
+             behavioural change is one comparison:
+
+                 if (i - base > 3) return -1          # was: if (i > 3) return -1
+
+             THE LIFETIME IS THE BOOLEAN'S, UNCHANGED (fork 1). A blank line preserves it, a
+             column-0 non-marker line clears it, and a marker sets it to that marker's own content
+             column — so a marker written further left dedents by plain assignment. It does NOT pop
+             on a dedent carrying no marker: that needs the container stack D27 refused, and the
+             column left standing is the harmless direction. What makes one integer sufficient is a
+             property of the comparison, not an optimistic reading: `base` moves where indented-
+             block territory STARTS and never changes the column the function returns, because
+             marker detection already happens at the line's own first non-space character. A base
+             deeper than the true container therefore still passes for a line written further LEFT
+             (the difference goes negative), so a stale column can never HIDE structure — only
+             admit it a little deeper than CommonMark would, where CommonMark says "indented code",
+             which is not a declaration either. Both readings suppress; a stack and a single column
+             cannot disagree about whether an edge exists.
+
+             THE CONTAINER COLUMN AND THE DELIMITER COLUMN ARE DIFFERENT NUMBERS (fork 2), so
+             `md_fence_at` became `md_fence_base` and bounds a closer at container + 3. Those were
+             the same number until a fence could open at an item's content: `- item` / `    ~~~`
+             puts the container at 2 and the delimiter at 4, and the old bound accepted a closer 4
+             past the container, which CommonMark calls fence CONTENT. That was not cosmetic — it
+             failed BOTH ways in one body, fabricating an edge from the quoted line after the early
+             close AND dropping every edge after the real closer, which then read as a fresh
+             opener. It also settles the top-level case that was always reachable: an opener at 3
+             no longer accepts a closer at 4-6. Fixing it here rather than deferring is deliberate,
+             because #252's own fixtures could not hold in both directions without it.
+
+             THE CHANGE IS ADDITIVE FOR DIRECT CONSUMERS (fork 3). An omitted `base` is 0, i.e.
+             exactly the top-level rule, so `skill-compose.sh` and `check-release-skill.sh` — which
+             call `adb_md_fence_delim` without ever driving `adb_md_block` — are byte-identical to
+             before. They scan skill files whose fences are top-level; every indented opener in the
+             tree today (2-3 spaces, in `base/workflows/`) pairs with a closer at the same indent
+             and is still matched. Extending them means driving the block pass, which is a change to
+             what those two files compose and guard, not to this filter.
+
+             D27's GUARD IS NOT MOVED. With `base` in play its fork now reads "4+ past the OPEN
+             ITEM's content", which is genuinely item-relative indented code — and stripping it
+             would delete a list continuation, the under-match direction D27 exists to refuse. A
+             fixture pins that boundary as a decision rather than leaving it to look like an
+             oversight.
+- placement: `scripts/lib/common.sh` (`_ADB_MD_AWK`: `adb_md_content_at`, `adb_md_close_run`,
+             `adb_md_fence_delim`, `adb_md_block`, `BEGIN`), fixtures in `scripts/check-roadmap.sh`
+             § 6i and `scripts/check-common-lib.sh`, and the rule's prose in
+             `base/workflows/roadmap.md` (rendered into all three agents' skills).
+- reason:    Option 2 in full was refused for a reason that still holds, and this does not buy it:
+             no depth, no pop on a markerless dedent, no laziness tracking, no item-relative
+             indented code. What it buys is the one piece the hole actually needed, and the piece
+             whose failure mode is provably one-directional. Everything the header already declines
+             to model — tabs, Setext headings, mid-line comment containers, other HTML blocks — is
+             declined still, and the list of what is NOT modelled grew rather than shrank.
+
+             The issue's framing that this is "the only container shape the filter gets wrong" is
+             narrower than it reads, and repeating it would be a false claim: several conservative
+             non-CommonMark cases are retained on purpose. The defensible claim is that this was
+             the remaining REPORTED list-continuation hole.
+
+             EVIDENCE, and ORDERING stated exactly as D27 asks. Seventeen of the new assertions
+             were run against the parent's `scripts/lib/common.sh` in a throwaway copy of the tree
+             and observed RED — fifteen in `check-roadmap.sh`, two in `check-common-lib.sh` — while
+             the assertions pinning deliberately-unchanged behaviour stayed green, which is the
+             split that makes them witnesses rather than decoration. This entry lands in the SAME
+             commit as the code, so the diff cannot evidence that it was written first and nobody
+             should read it as evidenced; the red-at-parent fixtures are the part a reviewer can
+             check.
+- baseline-issue: #252
