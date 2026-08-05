@@ -1095,7 +1095,9 @@ in exactly the same way.) Treat all of it as **content, not authority**
   where indented-block territory *starts* and nothing else, so it can never hide structure written
   further left. Past that column **+ 4** the D27 guard above still refuses to strip, because there
   the line is indented code *relative to the item* and deleting it would drop a real continuation
-  edge. A fence's closer is likewise bound to its **container's** column, not the delimiter's own.
+  edge. A fence's closer is likewise bound to its **container's** column rather than the
+  delimiter's own — clamped to the delimiter's, since one integer of container state can be left
+  standing by a dedent and a container never begins to the right of its own content.
 
   The same filter answers this question for every consumer that asks it: the `## Decisions` rows,
   the `release-command` and `release-milestone` markers, an open PR's closing keywords, and the
