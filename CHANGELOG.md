@@ -9,6 +9,90 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **A fenced block indented to a list item's content column was scanned as prose** (#252, D42).
+  `adb_md_content_at` (`scripts/lib/common.sh`) computed a line's container content column from
+  **that line alone**, so everything past column 3 was indented-block territory no matter which
+  container it sat in. Putting an example inside a list item — one of the most ordinary shapes an
+  issue takes — therefore hid the fence and handed its contents to the scan:
+  `- item` / `    ~~~` / `    Depends on #5` / `    ~~~` declared **#5**. That is #69's over-match
+  class, and its cost is open-ended: one fabricated edge holds a ready bundle out of every bundle
+  `/roadmap` emits until somebody edits the body. #135 had fixed only the delimiter written
+  straight after the marker (`- ```console`).
+  - **The filter now carries one integer**, `md_list_at` — the innermost open list item's content
+    column — and the indent cutoff becomes `i - base > 3` where it read `i > 3`. That is not the
+    only behavioural change, which an earlier draft of this entry claimed: the closer bound below
+    moved independently, and it moved for every caller.
+    `base` moves where indented-block territory *starts* and never changes the column the function
+    returns, so a container column deeper than the true one can still admit structure written
+    further left but can never hide it. That one-directional failure mode is why a single integer
+    is enough where D27 priced a container stack — this buys the content column and nothing else:
+    no depth, no pop on a markerless dedent, no laziness tracking.
+  - **It REPLACES the `md_list` boolean rather than joining it**, the same way `md_fence_len` is
+    itself the in-a-fence flag: a marker's content column is always ≥ 2, so a non-zero `md_list_at`
+    *is* "a list is open" and a second variable that could drift out of step no longer exists.
+  - **A fence's closer is now bound to its container's column, not the delimiter's own.** Those
+    were the same number until a fence could open at an item's content, and the difference was not
+    cosmetic: the old bound accepted a closer 4 past the container (CommonMark fence *content*),
+    which failed both ways in one body — fabricating an edge from the quoted line after the early
+    close, *and* dropping every edge after the real closer, which then read as a fresh opener. It
+    also settles the top-level case that was always reachable: an opener indented 3 no longer
+    accepts a closer at 4–6.
+  - **D27's guard is unmoved, deliberately.** At the item's content column + 4 the line is indented
+    *code* relative to the item, and stripping it would delete a list continuation — the direction
+    that marks a genuinely blocked bundle `ready`. A fixture pins that boundary as a decision
+    rather than leaving it looking like an oversight.
+  - **Staleness is bounded in both directions**, and the state is one integer rather than a stack.
+    A markerless dedent leaves the column *too deep*: harmless for the indent cutoff (a too-deep
+    column still admits structure written further left) but not for the closer bound, where
+    self-review caught it closing a fence early and losing an edge the parent got right — so the
+    bound is clamped to the delimiter's own column, which a container can never begin to the right
+    of. A lazy continuation left it *too shallow*: `- item` / `lazy continuation` at column 0 used
+    to clear the column while the item was still open, so a fence at column 2 stored a bound of 3,
+    **rejected its own valid closer** and ran to end-of-body eating every edge after it. That one
+    was found by independent review; a column-0 line now closes the container only when no
+    paragraph is open, which is CommonMark's own laziness rule and reuses state the filter already
+    had.
+  - **A fence opened inside a list item ends when the item does** — a non-blank line written to the
+    *left of the fence's own container column*, not merely at column 0: an indented item ends well
+    before column 0, and testing `== 0` swallowed a real edge there. Without this rule the
+    container-relative closer bound is a net loss: it correctly refuses an over-indented closer, and
+    the fence then takes every edge after it. The fence's own closer is tried first, because a
+    list-nested fence is usually closed by a delimiter written back at column 0 and ending the
+    container first re-read that line as a fresh opener. A **top-level** unterminated fence still
+    swallows to end-of-body, exactly as before.
+  - **A column-0 block starter is not a lazy continuation.** Laziness covers continuation *text*, so
+    a heading, blockquote, fence or HTML block at column 0 ends the item even mid-paragraph. Without
+    that qualifier `- item` / `# Repro` / `    Depends on #5` fabricated an edge the previous rule
+    read correctly as top-level indented code — the over-match this whole change removes,
+    reintroduced one rule later. A *marker* line is excluded: it opens an item rather than ending one.
+  - **Measured against a CommonMark reference parser**, not argued: 1888 generated container shapes
+    classified by `markdown-it-py` in strict mode, each candidate line carrying a unique issue
+    number. Over-match **526 → 389**, under-match **46 → 2**, and **zero** shapes where this drops
+    an edge the parent declared. Both remaining under-matches are oracle artifacts (inline code
+    spans, which the block-level oracle does not model). Two intermediate designs were rejected on
+    those numbers rather than on taste. **The sweep did not find everything**: both defects the
+    third review round caught sit in shapes the generator never produces, so those figures were
+    identical before and after fixing them.
+  - **The two consumers that call the fence predicate directly** (`skill-compose.sh`,
+    `check-release-skill.sh`) keep the top-level-only rule and now pass their container column
+    explicitly instead of relying on awk's uninitialized-parameter semantics. Their behaviour is
+    unchanged in every case but one, said plainly rather than rounded off: the closer bound became
+    container-relative for everyone, so a fence they open at indent 1–3 now needs its closer at
+    indent ≤ 3. Every indented opener in the tree today pairs with a closer at the same indent, so
+    no file's reading moves.
+  - **Pre-existing, not a regression** — the same body yields the same two numbers before #136 —
+    and **latent rather than live**: `deps-from-body` over all 210 issue bodies in this tracker
+    produces an identical 30-edge set before and after, so no body's reading moved. The corpus run
+    is the evidence of safety; the fixtures are the evidence of the fix.
+  - `scripts/check-roadmap.sh` § 6i gains fixtures for both delimiters, blockquotes, ordered and
+    nested markers, the closer-bound pair, the stale-dedent shape, CRLF, and the D27 boundary;
+    `check-common-lib.sh` pins the rule at the primitive. **Nineteen of the new assertions were
+    observed red** against the parent's library in a throwaway copy, while the ones pinning
+    deliberately-unchanged behaviour stayed green. Others could not be witnessed that way — the
+    parent reads those bodies correctly — so each was driven red against a deliberately wrong build
+    instead: the closer-bound fixture against one carrying the container column without the clamp,
+    and both laziness fixtures against one whose column-0 rule drops the `md_para` qualifier.
+
 - **`/cleanup` could be made to delete a file nobody asked it to touch** (#273, D41).
   `cleanup-lib.sh state-scan` serialized one record per state file as `<kind>TAB<path>TAB<key>`
   with **no escaping**, and the sweep parses that with `IFS=<tab> read -r kind sfile key` before

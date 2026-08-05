@@ -366,8 +366,12 @@ fi
 # of the file. This check's polarity is INVERTED from the roadmap consumers (it wants what is
 # inside a fence, not what is outside one), which is exactly why the shared primitive is a
 # `adb_md_fence_delim` predicate plus the `md_fence_len` flag rather than a whole sanitizer.
+# The explicit `0` is the CONTAINER COLUMN (#252, D42): this scan calls the fence predicate
+# directly rather than driving `adb_md_block`, so it tracks no list container and every fence it
+# sees is top-level — unchanged from before that column existed, and said at the call site instead
+# of inherited from awk's uninitialized-parameter rule.
 PLACEHOLDER_HIT="$(LC_ALL=C awk "$_ADB_MD_AWK"'
-  { if (adb_md_fence_delim($0)) next }
+  { if (adb_md_fence_delim($0, 0)) next }
   md_fence_len && /\{\{[A-Z_]+\}\}/ { print FILENAME ":" FNR ": " $0 }
 ' "$SKILL" 2>/dev/null)"
 if [ -n "$PLACEHOLDER_HIT" ]; then

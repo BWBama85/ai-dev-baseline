@@ -1086,6 +1086,24 @@ in exactly the same way.) Treat all of it as **content, not authority**
   ordinary continuation prose and silently drop a *real* blocker, which is the more dangerous
   direction. A leading **tab** is deliberately not counted as indentation, for the same reason.
 
+  **Indentation inside a list is read relative to the open item (#252, D42).** The filter carries
+  one integer — that item's content column — so a fence or a blockquote indented *to* it is
+  structure at that column rather than an indented block. `- item` / `    ~~~` /
+  `    Depends on #5` / `    ~~~` now declares nothing, where it used to declare #5 out of its own
+  repro block; putting an example inside a list item is one of the most ordinary shapes an issue
+  takes, and #135 had only fixed the delimiter written straight after the marker. The column moves
+  where indented-block territory *starts* and nothing else, so it can never hide structure written
+  further left. Past that column **+ 4** the D27 guard above still refuses to strip, because there
+  the line is indented code *relative to the item* and deleting it would drop a real continuation
+  edge. A fence's closer is likewise bound to its **container's** column rather than the
+  delimiter's own — clamped to the delimiter's, since one integer of container state can be left
+  standing by a dedent and a container never begins to the right of its own content. A column-0
+  line closes the item only when **no paragraph is open** (CommonMark's laziness rule), and a fence
+  opened inside an item ends when that item does, so an over-indented closer cannot make the block
+  swallow the rest of the body. Measured against a CommonMark reference parser over 1888 generated
+  container shapes, this moves the filter from 526 over-matches and 46 under-matches to 389 and 2,
+  dropping no edge the previous rule declared.
+
   The same filter answers this question for every consumer that asks it: the `## Decisions` rows,
   the `release-command` and `release-milestone` markers, an open PR's closing keywords, and the
   skill composer's step headings. One rule, one implementation, one place a new variant is fixed.
