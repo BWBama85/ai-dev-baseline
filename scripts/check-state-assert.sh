@@ -363,9 +363,11 @@ eq "${ lint_rc 'Quoting ``PR #1 is still open`` but PR #2 is still open.'; }" 1 
 # `open`), which is what makes it a witness rather than decoration.
 #
 # ONE LINE PER ASSERTION, and that is not a style choice: the `adb-claim-ok:` escape is PER LINE, so
-# a wrapped `eq` puts the marker on the continuation while the fixture string — carrying `PR #1` —
-# sits on the line above, unexempted. The live claim lint caught exactly that here, which is the
-# trap check-claims.sh's own header names.
+# a wrapped `eq` puts the marker on the continuation while the fixture string — which carries a
+# pull-request reference — sits on the line above, unexempted. The live claim lint caught exactly
+# that here, which is the trap check-claims.sh's own header names. Note a code span does not help
+# in a .sh file: only `.md` gets a prose view, because the defect that motivated the lint was
+# itself written in a shell comment.
 eq "${ lint_rc 'The docs show ``PR ` #1 is still open`` as an example.'; }" 0 "a 2-tick span whose BODY holds a lone backtick declares nothing"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 # ...and the filter must not swallow live prose to achieve that: a real claim beside it still fires,
 # exactly once.

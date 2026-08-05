@@ -473,11 +473,17 @@ while IFS= read -r f; do
       N_EXEMPT=$((N_EXEMPT + 1)); continue
     fi
     # THE TWO VIEWS, and the separation is the point (see cc_prose_view). The rules read the
-    # filter`s MASK view of this line; the exemption above read the RAW one. An index past the end
-    # of CC_MASK is a line the filter emitted nothing for, which reads as empty — correct by
-    # construction for a trailing structural line.
+    # filter`s MASK view of this line; the exemption above read the RAW one.
+    #
+    # NO `-` DEFAULT ON THIS LOOKUP, deliberately. An earlier cut wrote `${CC_MASK[lno - 1]-}` and
+    # justified it as "correct for a trailing structural line" — which is simply false: the filter
+    # emits an EMPTY RECORD for every structural line, at its own index, and `mapfile` keeps it.
+    # So an out-of-range index cannot happen while the 1:1 invariant holds, and cannot mean
+    # anything good if it ever does. The default would have turned that into "" — silently
+    # scanning nothing, which is this file`s signature failure. Bare, `set -u` makes it an
+    # unbound-variable abort instead: loud, at the exact index that broke.
     if [ "$CC_IS_MD" -eq 1 ]; then
-      text="${CC_MASK[lno - 1]-}"
+      text="${CC_MASK[lno - 1]}"
       [ -n "$text" ] || N_MD_STRUCT=$((N_MD_STRUCT + 1))
     else
       text="$raw"
@@ -690,10 +696,13 @@ else
 fi
 
 # --- what this run actually evaluated -----------------------------------------------------------
-# `md-structural` is new with #251 and is not decoration: it is the count of added markdown lines
-# whose PROSE VIEW IS EMPTY — a fence body, a blockquote, indented code, an HTML comment, and also
-# an ordinary BLANK line, which resolves to nothing for the same reason and is not worth a second
-# counter to separate. Before the conversion the fenced ones were dropped inside the scanner, so
+# `md-structural` is new with #251 and is not decoration: it is the count of NON-EXEMPT added
+# markdown lines whose PROSE VIEW IS EMPTY — a fence body, a blockquote, indented code, an HTML
+# comment, and also an ordinary BLANK line, which resolves to nothing for the same reason and is
+# not worth a second counter to separate. "Non-exempt" is exact rather than incidental: an
+# `adb-claim-ok:` line returns above this point and is counted by `exempt` alone, so the two
+# figures never double-count the same line.
+# Before the conversion the fenced ones were dropped inside the scanner, so
 # `added-lines` read like "added lines" while meaning "added lines a private parser let through".
 # Reporting both keeps D22's rule honest: a run that suddenly strips far more than it used to is
 # now visible in the log rather than indistinguishable from a range with fewer claims in it.

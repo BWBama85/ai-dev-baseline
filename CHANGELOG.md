@@ -42,8 +42,8 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     now exits 3 rather than treating an empty prose view as a clean file; and `cc_scan_file`'s exit
     status is no longer discarded by a process substitution, where an awk that died mid-file arrived
     as zero added lines and reported in the same words a clean file uses. A new `md-structural=`
-    count makes the stripping visible in the log instead of indistinguishable from a range with
-    fewer claims in it.
+    count — non-exempt added markdown lines whose prose view is empty — makes the stripping visible
+    in the log instead of indistinguishable from a range with fewer claims in it.
 
 - **A fenced block indented to a list item's content column was scanned as prose** (#252, D42).
   `adb_md_content_at` (`scripts/lib/common.sh`) computed a line's container content column from

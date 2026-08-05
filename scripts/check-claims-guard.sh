@@ -714,6 +714,42 @@ eq "$RC_" 3 "1:1: a filter whose output is SHORT is caught, not silently scanned
 has "$OUT" "line count" "1:1: ...and the diagnostic says what is wrong"
 cp "$work/common.sh.bak" "$REPO/scripts/lib/common.sh"
 
+# A FILTER THAT FAILS OUTRIGHT is the third arm, and it is the one `adb_md_prose`'s nonce trailer
+# exists for: a killed or truncated run returns non-zero rather than a short clean result. The two
+# fixtures above cover a MISSING function and a SHORT one; this covers a present one that FAILS,
+# which is a different branch of the same `case` and was unwitnessed until review said so.
+reset_branch
+{
+  printf 'Intro.\n\n'
+  printf 'This cites %s in ordinary prose.\n' "$D_MISSING"
+} > "$REPO/notes.md"
+commit "a real violation the failing filter must not hide"
+cp "$REPO/scripts/lib/common.sh" "$work/common.sh.bak"
+printf '\nadb_md_prose() { return 1; }\n' >> "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 3 "filter: a filter that FAILS is exit 3, not an empty prose view scanned as clean"
+has "$OUT" "markdown filter failed" "filter: ...and the diagnostic names the filter and the file"
+cp "$work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+
+# AND THE ADDED-LINE SCANNER ITSELF. Its status used to be discarded by a process substitution, so
+# an awk that died mid-file arrived as zero added lines — a file never read, reported in the words
+# of a clean one. Driven here with a shim that fails ONLY `cc_scan_file`'s second awk (the one
+# invoked with a leading `-v want=`), over a NON-markdown file so the prose filter — whose own awk
+# also leads with `-v` — is never reached and cannot be what fails.
+reset_branch
+printf 'This cites %s from a shell file.\n' "$D_MISSING" > "$REPO/notes.txt"
+commit "a real violation in a non-markdown file"
+cc --range "$BASE..probe"
+eq "$RC_" 1 "scanner: the range is genuinely a violation with the scanner intact"
+cp "$REPO/scripts/lib/common.sh" "$work/common.sh.bak"
+printf '\nawk() { case "$1" in -v) return 3 ;; esac; command awk "$@"; }\n' \
+  >> "$REPO/scripts/lib/common.sh"
+cc --range "$BASE..probe"
+eq "$RC_" 3 "scanner: an added-line reader that DIES is exit 3, not zero added lines reported clean"
+has "$OUT" "could not scan" "scanner: ...and the diagnostic names the file it failed on"
+cp "$work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+rm -f "$REPO/notes.txt"
+
 # =============================== the commit walk must not stray onto the base ==================
 # `A...B` means two DIFFERENT things to the two git commands this lint uses: to `git diff` it is
 # "from the merge base to B", but to `git rev-list` it is the SYMMETRIC DIFFERENCE — which drags in
