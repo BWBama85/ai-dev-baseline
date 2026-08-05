@@ -840,6 +840,37 @@ fact bash-floor-bootstrap-carveout 'fixed:parseable' -- \
   scripts/lib/common.sh CLAUDE.md CONTRIBUTING.md .ai-dev-baseline/decisions.md
 fact bash-floor-observer-carveout 'fixed:EXEMPT_ENTRYPOINTS' -- scripts/check-bash-floor.sh
 
+# --- FACT: there is ONE workflow-YAML reader, and both consumers call it (#262, #102) -----------
+#
+# The structural half of #262, and it is the half prose cannot hold. Two files read
+# .github/workflows and want OPPOSITE things from it (provable check contexts vs every job on a
+# proven runner), and before the shared reader each carried its own job-boundary detection and its
+# own YAML scalar parser. They drifted before either shipped: `runs-on: "ubuntu-26.04 # …"` was
+# read correctly by one and reduced to the approved label by the other.
+#
+# Nothing stops the next divergence except a rule that FAILS when a consumer stops calling the
+# shared reader — because re-growing a local scanner is a silent change. Both files still pass their
+# own suites afterwards: each one's tests only ever prove that ITS filter behaves, and a private
+# parser that agrees with the shared one today is exactly what the last one looked like too.
+fact workflow-reader-home 'fixed:adb_wf_jobs' -- \
+  scripts/lib/common.sh scripts/lib/repo-settings.sh scripts/check-bash-floor.sh \
+  scripts/check-common-lib.sh
+fact workflow-reader-on 'fixed:adb_wf_on' -- \
+  scripts/lib/common.sh scripts/lib/repo-settings.sh scripts/check-common-lib.sh
+
+# The NEGATIVE half: the retired local scanners must not come back beside the shared call. A
+# presence check alone cannot catch a file that calls `adb_wf_jobs` AND keeps a private
+# `yaml_scalar` next to it, which is precisely how a superseded implementation survives a repoint.
+#
+# `function yaml_scalar` / `function flush_job` are the real retired spellings — both files defined
+# their scalar parser that way, and repo-settings.sh fused enumeration with its CHECK/SKIP verdict
+# in `flush_job`, the seam #262 had to cut. The witnesses are the literal lines that were deleted.
+fact workflow-scanner-stale \
+  'absent:^[[:space:]]*function[[:space:]]+(yaml_scalar|flush_job|scan_jobs_local)[[:space:]]*\(' \
+  'fires:    function yaml_scalar(s) {' \
+  'fires:    function flush_job() {' \
+  -- scripts/lib/repo-settings.sh scripts/check-bash-floor.sh
+
 # --- FACT: the Windows/WSL smoke job exists, and the docs that claim it agree (#2, D38) ---------
 #
 # THIS IS THE ENFORCEMENT HALF, and it deliberately does NOT live in check-bash-floor.sh. Review

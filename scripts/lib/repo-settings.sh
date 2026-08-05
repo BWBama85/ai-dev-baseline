@@ -40,14 +40,17 @@
 #   12 unsafe  — the repo has no PR-triggered CI at all: `--auto` would merge immediately
 #   13 unsafe  — a required context no workflow reports: an armed PR would wait forever
 #   14 unsafe  — a discovered job is not required: auto-merge could land a red build
-#   20 unknown — live state could not be read; FAIL CLOSED, never assume safe
+#   20 unknown — live state could not be read, OR check discovery failed on a workflow file
+#                (#102); FAIL CLOSED, never assume safe. Note this is deliberately NOT 12: a
+#                parser that could not read the CI must not report "this repo has no CI".
 #
 # `required-drift` (#122) answers ONE of those questions — "has a discovered job stayed
 # non-required?" — early enough to matter, and reuses the same two codes so a number never means
 # two things:
 #   0  in sync — every discovered job is required (or the repo has no discoverable CI, per #24)
 #   14 drift   — discovered job(s) are NOT required; names them + the one-command remedy
-#   20 unknown — live state could not be read, OR discovery contradicts it; FAIL CLOSED
+#   20 unknown — live state could not be read, discovery contradicts it, or discovery FAILED on a
+#                workflow file (#102); FAIL CLOSED
 #   (1        — missing/unauthenticated gh, or missing jq. Shared with every other subcommand:
 #              the tool preamble fails before any subcommand logic runs.)
 #
@@ -193,186 +196,171 @@ target_branch() {
 #   - a job calling a reusable workflow (`uses:`)       (its check names come from the callee)
 #   - a job whose `name:` interpolates `${{ … }}`       (not statically knowable)
 #
-# Indentation is the grammar: job keys sit at exactly 2 spaces INSIDE the `jobs:` block, job
-# properties at exactly 4. Scoping to `jobs:` is not a nicety — `on:` puts `push:` and
-# `pull_request:` at the very same 2-space indent, so a whole-file indent scan harvests those two
-# as "jobs" and requires contexts that can never report. This repo's own ci.yml is that case.
+# INDENTATION IS NOT THE GRAMMAR (#102, #262). This file used to pin job keys to exactly 2 spaces
+# and job properties to exactly 4, and pin the `on:` block the same way. A uniform 4-space workflow
+# is valid YAML that GitHub runs, and it was reported as `no pull_request trigger`, contributed
+# ZERO contexts, and exited 0 — the parser going blind with nothing to report it.
 #
-# Two passes per file: the file-level verdict is only complete at END (triggers can appear after
-# `jobs:`), and emitting a job from a file that turns out never to run on a PR is the phantom
-# context above. Two cheap passes over a few-KB file beat threading a buffer through every print.
+# The YAML reading now lives in ONE place, `adb_wf_on` / `adb_wf_jobs` in scripts/lib/common.sh,
+# shared with scripts/check-bash-floor.sh (#262: both files had their own scanner, and the two had
+# already drifted on how a quoted scalar ends). That reader tracks RELATIVE DEPTH, so 2-space,
+# 4-space and mixed files all read correctly. What stays here is the half that is genuinely this
+# file's own: the VERDICT — which triggers and which job shapes can be proven to report on every
+# PR. `check-bash-floor.sh` applies the exactly opposite filter to the same records.
+#
+# Scoping to the `jobs:` block is still not a nicety — `on:` puts `push:` and `pull_request:` at
+# the very same indent as job keys, so a whole-file indent scan harvests those two as "jobs" and
+# requires contexts that can never report. This repo's own ci.yml is that case; the shared reader
+# is block-scoped for exactly this reason.
+#
+# Two reads per file: the file-level verdict is only complete once the whole `on:` block is seen
+# (triggers can appear after `jobs:`), and emitting a job from a file that turns out never to run
+# on a PR is the phantom context above.
 
 # _adb_rs_file_verdict <file> <target-branch> -> "" when the file's jobs report on every PR to
 # <target-branch>, else the human-readable reason it was skipped.
+#
+# Returns 0 for a VERDICT (whether or not it skips) and 1 for a STRUCTURAL FAILURE — the reader
+# could not run, or the file has no `on:` block at all. Those are different facts and the caller
+# acts on them differently: a skip is routine and under-requires by design, a structural failure
+# means this parser cannot see the file and must not be allowed to report a clean, empty run.
+# Every GitHub workflow has an `on:` key — it is what makes the file a workflow — so its absence
+# is never a legitimate shape, only a read that went wrong.
 _adb_rs_file_verdict() {
-  awk -v target="$2" '
-    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
-    function unquote(s) {
-      if (s ~ /^".*"$/ || s ~ /^'"'"'.*'"'"'$/) s = substr(s, 2, length(s) - 2)
-      return s
-    }
-    # yaml_scalar: a plain YAML scalar as GitHub would read it. A quoted value ends at its closing
-    # quote (anything after is a comment); an UNQUOTED value ends at the first whitespace-preceded
-    # "#". Without this, `name: Build  # the main build job` becomes the required context
-    # "Build  # the main build job" — which nothing ever reports, blocking every PR forever.
-    function yaml_scalar(s) {
-      s = trim(s)
-      if (s ~ /^"/)  { sub(/^"/,  "", s); sub(/".*$/,  "", s); return s }
-      if (s ~ /^'"'"'/) { sub(/^'"'"'/, "", s); sub(/'"'"'.*$/, "", s); return s }
-      sub(/[[:space:]]+#.*$/, "", s)
-      return trim(s)
-    }
-    # Parse an inline YAML flow sequence "[a, b]" into the given array.
-    function flow_list(s, arr,   n, i, v, parts) {
-      sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
-      n = split(s, parts, ",")
-      for (i = 1; i <= n; i++) {
-        v = unquote(trim(parts[i]))
-        if (v ~ /^!/) neg_branch = 1
-        if (v != "") arr[v] = 1
-      }
-    }
-    /^[[:space:]]*(#|$)/ { next }
-    /^[^[:space:]]/ {
-      key = $0; sub(/:.*$/, "", key); sect = unquote(trim(key))
-      rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(rest)
-      # Inline forms: "on: push" and "on: [push, pull_request]".
-      if (sect == "on" && rest != "") {
-        if (rest ~ /^\[/) flow_list(rest, triggers); else triggers[yaml_scalar(rest)] = 1
-      }
-      trigger = ""; in_branches = 0; next
-    }
-    sect == "on" {
-      if ($0 ~ /^  [^[:space:]]/) {                       # a trigger name at 2 spaces
-        trigger = $0; sub(/:.*$/, "", trigger); trigger = unquote(trim(trigger))
-        triggers[trigger] = 1; in_branches = 0; in_types = 0
-        # An INLINE flow mapping carries the same filters the block form does:
-        # `pull_request: {types: [closed]}` is a real, valid trigger. Recording the trigger and
-        # skipping the rest of the line would treat every job as running on every PR.
-        rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(rest)
-        if ((trigger == "pull_request" || trigger == "pull_request_target") && rest ~ /^\{/) {
-          if (rest ~ /(paths|types|branches)/) inline_filter = 1
-        }
-        next
-      }
-      if (trigger == "pull_request" || trigger == "pull_request_target") {
-        if ($0 ~ /^    types:/) {
-          pr_types = 1
-          rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(rest)
-          if (rest ~ /^\[/) flow_list(rest, tps)
-          in_types = 1; in_branches = 0; next
-        }
-        if (in_types && $0 ~ /^      -[[:space:]]/) {
-          v = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); tps[yaml_scalar(v)] = 1; next
-        }
-        if ($0 !~ /^      /) in_types = 0
-        if ($0 ~ /^    (paths|paths-ignore):/) { pr_paths = 1;     in_branches = 0; next }
-        if ($0 ~ /^    branches-ignore:/)      { pr_br_ignore = 1; in_branches = 0; next }
-        if ($0 ~ /^    branches:/) {
-          pr_branches = 1
-          rest = $0; sub(/^[^:]*:/, "", rest); rest = trim(rest)
-          if (rest ~ /^\[/) flow_list(rest, brs)
-          in_branches = 1; next
-        }
-        if (in_branches && $0 ~ /^      -[[:space:]]/) {  # block-sequence branch entry
-          v = $0; sub(/^[[:space:]]*-[[:space:]]*/, "", v); v = yaml_scalar(v)
-          if (v ~ /^!/) neg_branch = 1
-          brs[v] = 1; next
-        }
-        if ($0 !~ /^      /) in_branches = 0
-      }
-      next
-    }
-    END {
-      if (!("pull_request" in triggers) && !("pull_request_target" in triggers)) {
-        print "no pull_request trigger"; exit
-      }
-      if (inline_filter) {
-        print "pull_request carries an inline flow-mapping filter (cannot prove it runs for every PR)"; exit
-      }
-      # A narrowed `types:` is the merge-cleanup workflow trap: `types: [closed]` runs only AFTER
-      # a PR closes, so as a required context it sits "expected — waiting" on every open PR
-      # forever. Require both `opened` (reports on the new PR) and `synchronize` (re-reports on
-      # every later push); anything narrower cannot gate a PR through its whole life.
-      if (pr_types && !(("opened" in tps) && ("synchronize" in tps))) {
-        print "pull_request narrows types: (needs both opened and synchronize to report on every PR)"; exit
-      }
-      if (pr_paths)     { print "pull_request carries a paths/paths-ignore filter (it does not run for every PR)"; exit }
-      if (pr_br_ignore) { print "pull_request carries a branches-ignore filter (cannot prove it runs for " target ")"; exit }
-      # A branches: filter is fine as long as it provably includes the target branch. "*" / "**"
-      # match it; an explicit list must name it. Anything else (a partial glob) is unprovable.
-      # GitHub evaluates branch patterns IN ORDER, so a later `!main` overrides an earlier `*`.
-      # Rather than reimplement that precedence, refuse to prove anything about a filter carrying
-      # a negation — `branches: ["*", "!main"]` looks inclusive here and excludes main in fact.
-      if (pr_branches && neg_branch) {
-        print "pull_request branches filter uses negative patterns (ordered precedence not evaluated)"; exit
-      }
-      if (pr_branches && !(target in brs) && !("*" in brs) && !("**" in brs)) {
-        print "pull_request branches filter does not provably include " target; exit
-      }
-    }
-  ' "$1"
+  local file="$1" target="$2" facts tag value tab
+  local on_block=0 pr=0 inline_filter=0 pr_types=0 pr_paths=0 pr_br_ignore=0 pr_branches=0
+  local neg_branch=0 have_opened=0 have_sync=0 branch_ok=0
+
+  facts="$(adb_wf_on "$file")" || {
+    printf 'the shared workflow reader failed on this file\n'
+    return 1
+  }
+  tab="$(printf '\t')"
+  # Split on the FIRST tab only. Every record in this grammar carries at most one free-text value
+  # and carries it LAST, so `read -r tag value` keeps that value byte-for-byte — a trigger name or
+  # a branch pattern containing a tab cannot truncate the record (see common.sh's grammar note).
+  while IFS="$tab" read -r tag value; do
+    case "$tag" in
+      ONBLOCK) [ "$value" = "1" ] && on_block=1 ;;
+      TRIGGER)
+        case "$value" in pull_request|pull_request_target) pr=1 ;; esac ;;
+      PRINLINEFILTER) inline_filter=1 ;;
+      PRFILTER)
+        case "$value" in
+          types)           pr_types=1 ;;
+          paths)           pr_paths=1 ;;
+          branches-ignore) pr_br_ignore=1 ;;
+          branches)        pr_branches=1 ;;
+        esac ;;
+      PRTYPE)
+        case "$value" in opened) have_opened=1 ;; synchronize) have_sync=1 ;; esac ;;
+      # NEGATION IS SCOPED TO BRANCH PATTERNS, which is where the rule below is about. The awk
+      # predecessor set this flag from ANY flow list it parsed, `types:` included, so a
+      # `types: ["!x"]` beside a perfectly ordinary `branches: [main]` refused to prove a file
+      # that GitHub runs on every PR. Only a branch pattern can carry the ordered precedence the
+      # rule cannot evaluate.
+      PRBRANCH)
+        case "$value" in
+          "!"*)                neg_branch=1 ;;
+          "$target"|'*'|'**')  branch_ok=1 ;;
+        esac ;;
+    esac
+  done <<EOF
+$facts
+EOF
+
+  [ "$on_block" -eq 1 ] || {
+    printf 'no on: block — this file is not a workflow this parser can read\n'; return 1
+  }
+
+  if [ "$pr" -eq 0 ]; then printf 'no pull_request trigger\n'; return 0; fi
+  if [ "$inline_filter" -eq 1 ]; then
+    printf 'pull_request carries an inline flow-mapping filter (cannot prove it runs for every PR)\n'; return 0
+  fi
+  # A narrowed `types:` is the merge-cleanup workflow trap: `types: [closed]` runs only AFTER a PR
+  # closes, so as a required context it sits "expected — waiting" on every open PR forever. Require
+  # both `opened` (reports on the new PR) and `synchronize` (re-reports on every later push);
+  # anything narrower cannot gate a PR through its whole life.
+  if [ "$pr_types" -eq 1 ] && { [ "$have_opened" -eq 0 ] || [ "$have_sync" -eq 0 ]; }; then
+    printf 'pull_request narrows types: (needs both opened and synchronize to report on every PR)\n'; return 0
+  fi
+  if [ "$pr_paths" -eq 1 ]; then
+    printf 'pull_request carries a paths/paths-ignore filter (it does not run for every PR)\n'; return 0
+  fi
+  if [ "$pr_br_ignore" -eq 1 ]; then
+    printf 'pull_request carries a branches-ignore filter (cannot prove it runs for %s)\n' "$target"; return 0
+  fi
+  # A branches: filter is fine as long as it provably includes the target branch. "*" / "**" match
+  # it; an explicit list must name it. GitHub evaluates branch patterns IN ORDER, so a later
+  # `!main` overrides an earlier `*`. Rather than reimplement that precedence, refuse to prove
+  # anything about a filter carrying a negation — `branches: ["*", "!main"]` looks inclusive here
+  # and excludes main in fact.
+  if [ "$pr_branches" -eq 1 ] && [ "$neg_branch" -eq 1 ]; then
+    printf 'pull_request branches filter uses negative patterns (ordered precedence not evaluated)\n'; return 0
+  fi
+  if [ "$pr_branches" -eq 1 ] && [ "$branch_ok" -eq 0 ]; then
+    printf 'pull_request branches filter does not provably include %s\n' "$target"; return 0
+  fi
+  return 0
 }
 
-# _adb_rs_jobs <file> -> TAB records "CHECK\t<context>" / "SKIP\t<job>\t<reason>".
+# _adb_rs_jobs <file> -> TAB records "CHECK\t<context>" / "SKIP\t<job>\t<reason>" on stdout.
+#
+# The VERDICT half only. Enumeration is `adb_wf_jobs`'s job, shared with check-bash-floor.sh, which
+# applies the exactly OPPOSITE filter to the same records (#262) — a matrix job is invisible to a
+# required context and still very much a job running on some runner.
+#
+# Exit codes, because the three failures below are three different things and collapsing them
+# would put the wrong sentence in front of the operator:
+#   0  records emitted (possibly all SKIP)
+#   1  the shared reader failed outright
+#   2  the file declares no `jobs:` block at all
+#   3  a `jobs:` block yielded ZERO jobs — always a parse failure, never a legitimate workflow
 _adb_rs_jobs() {
-  awk '
-    function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
-    function unquote(s) {
-      if (s ~ /^".*"$/ || s ~ /^'"'"'.*'"'"'$/) s = substr(s, 2, length(s) - 2)
-      return s
-    }
-    # yaml_scalar: a plain YAML scalar as GitHub would read it. A quoted value ends at its closing
-    # quote (anything after is a comment); an UNQUOTED value ends at the first whitespace-preceded
-    # "#". Without this, `name: Build  # the main build job` becomes the required context
-    # "Build  # the main build job" — which nothing ever reports, blocking every PR forever.
-    function yaml_scalar(s) {
-      s = trim(s)
-      if (s ~ /^"/)  { sub(/^"/,  "", s); sub(/".*$/,  "", s); return s }
-      if (s ~ /^'"'"'/) { sub(/^'"'"'/, "", s); sub(/'"'"'.*$/, "", s); return s }
-      sub(/[[:space:]]+#.*$/, "", s)
-      return trim(s)
-    }
-    function flush_job() {
-      if (job == "") return
-      if (job_uses)         printf "SKIP\t%s\tcalls a reusable workflow (its check names come from the callee)\n", job
-      else if (job_if)      printf "SKIP\t%s\thas a job-level if: (it may be skipped, and a required check that never reports blocks the PR forever)\n", job
-      else if (job_matrix)  printf "SKIP\t%s\tis a matrix job (its check-run names carry a matrix suffix)\n", job
-      else if (job_dynamic) printf "SKIP\t%s\thas a name: containing a ${{ }} expression (not statically knowable)\n", job
-      else                  printf "CHECK\t%s\n", (job_name != "" ? job_name : job)
-      job = ""
-    }
-    /^[[:space:]]*(#|$)/ { next }
-    /^[^[:space:]]/ {
-      flush_job()
-      key = $0; sub(/:.*$/, "", key); sect = unquote(trim(key)); next
-    }
-    sect == "jobs" {
-      if ($0 ~ /^  [^[:space:]]/) {                       # job key at exactly 2 spaces
-        flush_job()
-        job = $0; sub(/:.*$/, "", job); job = unquote(trim(job))
-        job_name = ""; job_if = 0; job_matrix = 0; job_uses = 0; job_dynamic = 0
-        next
-      }
-      if (job == "") next
-      # Exactly 4 spaces and no leading "-": the JOB name. A step name is "      - name:" at 6+
-      # spaces behind a dash, so it can never be mistaken for the job name here.
-      if ($0 ~ /^    name:/) {
-        v = $0; sub(/^[[:space:]]*name:/, "", v); v = yaml_scalar(v)
-        if (v ~ /\$\{\{/) job_dynamic = 1
-        job_name = v; next
-      }
-      if ($0 ~ /^    if:/)       { job_if = 1;     next }
-      if ($0 ~ /^    uses:/)     { job_uses = 1;   next }
-      # Under strategy:. Keyed on `matrix:` itself, so a bare `strategy: {fail-fast: false}` —
-      # which does NOT change the check-run name — is not skipped for nothing.
-      if ($0 ~ /^      matrix:/) { job_matrix = 1; next }
-      # Inline flow style: `strategy: {matrix: {...}}` on the job line itself.
-      if ($0 ~ /^    strategy:[[:space:]]*\{.*matrix/) { job_matrix = 1; next }
-      next
-    }
-    END { flush_job() }
-  ' "$1"
+  local file="$1" records tag n value tab i
+  local -a key name flags
+
+  records="$(adb_wf_jobs "$file")" || return 1
+  tab="$(printf '\t')"
+  local count=0 jobs_block=0
+  while IFS="$tab" read -r tag n value; do
+    case "$tag" in
+      JOBSBLOCK) [ "$n" = "1" ] && jobs_block=1 ;;
+      JOB)    key[$n]="$value"; flags[$n]=" "; count="$n" ;;
+      NAME)   name[$n]="$value" ;;
+      FLAG)   flags[$n]="${flags[$n]-} $value " ;;
+    esac
+  done <<EOF
+$records
+EOF
+
+  [ "$jobs_block" -eq 1 ] || return 2
+  [ "$count" -gt 0 ] || return 3
+
+  for (( i = 1; i <= count; i++ )); do
+    # Precedence matters only for the message: any one of these disqualifies the job, and naming
+    # the first reason found is what the operator acts on.
+    case "${flags[$i]-}" in
+      *" uses "*)
+        printf 'SKIP\t%s\tcalls a reusable workflow (its check names come from the callee)\n' "${key[$i]}" ;;
+      *" if "*)
+        printf 'SKIP\t%s\thas a job-level if: (it may be skipped, and a required check that never reports blocks the PR forever)\n' "${key[$i]}" ;;
+      *" matrix "*)
+        printf 'SKIP\t%s\tis a matrix job (its check-run names carry a matrix suffix)\n' "${key[$i]}" ;;
+      *" dynamic "*)
+        printf 'SKIP\t%s\thas a name: containing a ${{ }} expression (not statically knowable)\n' "${key[$i]}" ;;
+      # An inline flow-mapping job (`hidden: {runs-on: …, steps: […]}`) is a real job whose `name:`
+      # the shared reader does not decompose, so the context it reports cannot be proven. SKIPPED
+      # rather than emitted under its key: the key is only the context when the mapping carries no
+      # `name:`, and guessing wrong requires a context that never reports, which deadlocks every
+      # PR. The floor lint takes the opposite view of the same flag and fails LOUD on it, because
+      # for that question an unreadable job must not be silently absent.
+      *" inline "*)
+        printf 'SKIP\t%s\tis written as an inline flow mapping (its check name cannot be proven)\n' "${key[$i]}" ;;
+      *)
+        printf 'CHECK\t%s\n' "${name[$i]:-${key[$i]}}" ;;
+    esac
+  done
 }
 
 # workflow_dir — .github/workflows under the repo root the caller is in, unless --workflow-dir
@@ -386,29 +374,65 @@ workflow_dir() {
 }
 
 # discover_checks <branch> — the desired required-check contexts, one per line on stdout. Skips
-# (per file and per job) go to stderr so stdout stays machine-consumable. Returns 0 even when it
-# finds nothing: "this repo has no CI" is a legitimate state (#24), not an error — callers
-# distinguish empty output from failure.
+# (per file and per job) go to stderr so stdout stays machine-consumable.
+#
+# TWO DIFFERENT EMPTIES, and telling them apart is the whole of #102:
+#
+#   "this repo has no CI"       -> return 0. A legitimate state (#24), not an error. No workflow
+#                                  directory, no workflow files, or every file legitimately skipped.
+#   "this parser went blind"    -> return 1. A file IS there, it declares structure, and this code
+#                                  could not read it. Before #102 that was indistinguishable from
+#                                  the first case: a uniform 4-space `ci.yml` produced
+#                                  `no pull_request trigger`, zero contexts, and exit 0 — and the
+#                                  `required-drift` backstop that was supposed to catch the
+#                                  under-requirement could not, so `apply` reported success while
+#                                  gating nothing.
+#
+# THE STRUCTURAL CHECK RUNS ON EVERY FILE, including ones the verdict skipped. That is deliberate:
+# a file skipped as "no pull_request trigger" is exactly what a blind trigger parse looks like, so
+# checking only the files that PASSED would leave the #102 shape unexamined. Every GitHub workflow
+# has an `on:` key and a `jobs:` block with at least one job in it — those three facts are what
+# make the file a workflow — so a violation is never a legitimate shape, only a read that failed.
+#
+# Callers must CAPTURE THEN CHECK: `x="$(discover_checks …)"` propagates this status, but
+# `x="$(discover_checks … | sort -u)"` reports `sort`'s and throws the whole signal away.
 discover_checks() {
-  local branch="$1" dir f verdict jobs_out found=0
+  local branch="$1" dir f verdict jobs_out found=0 rc=0 vrc jrc
   dir="$(workflow_dir)"
   [ -d "$dir" ] || { printf 'repo-settings: no %s — treating this repo as having no CI\n' "$dir" >&2; return 0; }
   for f in "$dir"/*.yml "$dir"/*.yaml; do
     [ -f "$f" ] || continue          # filters an unmatched literal glob (no portable nullglob)
     found=1
-    verdict="$(_adb_rs_file_verdict "$f" "$branch")"
+    verdict="$(_adb_rs_file_verdict "$f" "$branch")"; vrc=$?
+    if [ "$vrc" -ne 0 ]; then
+      printf 'repo-settings: FAILED to read %s — %s. Discovery is unreliable for this repo; refusing to report a clean scan.\n' \
+        "${f##*/}" "$verdict" >&2
+      rc=1; continue
+    fi
+
+    # The jobs read happens even for a skipped file, for the structural check above. Capture the
+    # status BEFORE consuming the output: piping a command substitution straight into a loop
+    # discards it, and a crashed reader would then read as "this file declares no jobs".
+    jobs_out="$(_adb_rs_jobs "$f")"; jrc=$?
+    case "$jrc" in
+      0) : ;;
+      2) printf 'repo-settings: FAILED to read %s — it declares no jobs: block. Every workflow has one; refusing to report a clean scan.\n' \
+           "${f##*/}" >&2; rc=1; continue ;;
+      3) printf 'repo-settings: FAILED to read %s — it declares a jobs: block that yielded NO jobs. That combination is always a parse failure, never an empty workflow.\n' \
+           "${f##*/}" >&2; rc=1; continue ;;
+      *) printf 'repo-settings: FAILED to read %s — the shared workflow reader failed outright.\n' \
+           "${f##*/}" >&2; rc=1; continue ;;
+    esac
+
     if [ -n "$verdict" ]; then
       printf 'repo-settings: skipping %s — %s\n' "${f##*/}" "$verdict" >&2
       continue
     fi
+
     # Split on the FIRST tab only (read -r kind rest), never field-by-field: a job `name:` may
     # legally contain a tab inside a quoted scalar, and a tab-delimited multi-field read would
     # truncate it there — silently requiring a context that does not exist, which is the phantom
     # deadlock this whole file is built to avoid. `rest` keeps the name byte-for-byte.
-    jobs_out="$(_adb_rs_jobs "$f")"
-    if [ -z "$jobs_out" ]; then
-      printf 'repo-settings: WARNING %s declares jobs this parser could not read (unsupported indentation?) — it contributes NO required contexts\n' "${f##*/}" >&2
-    fi
     printf '%s\n' "$jobs_out" | while IFS="$(printf '\t')" read -r kind rest; do
       case "$kind" in
         CHECK) [ -n "$rest" ] && printf '%s\n' "$rest" ;;
@@ -418,7 +442,24 @@ discover_checks() {
     done
   done
   [ "$found" -eq 1 ] || printf 'repo-settings: no workflow files in %s — treating this repo as having no CI\n' "$dir" >&2
-  return 0
+  return "$rc"
+}
+
+# _adb_rs_discover <branch> — discovery into RS_WANT, sorted and deduped, RETURNING
+# discover_checks's own status.
+#
+# ONE home for the capture-then-check idiom, because every call site used to write
+# `want="$(discover_checks "$b" | LC_ALL=C sort -u)"` — and a pipeline's status is its LAST
+# command's, so that reports `sort`'s success and discards the discovery status entirely. With
+# #102's fail-loud return added and this left as it was, a blind parse would have gone right on
+# reporting a clean, empty desired set at all five call sites: the exact fail-open the return
+# value exists to close, one line below the fix. Four of the five are guards.
+RS_WANT=""
+_adb_rs_discover() {
+  local out rc
+  out="$(discover_checks "$1")"; rc=$?
+  RS_WANT="$(printf '%s\n' "$out" | sed '/^$/d' | LC_ALL=C sort -u)"
+  return "$rc"
 }
 
 # --- live protection state --------------------------------------------------------------------
@@ -830,7 +871,14 @@ cmd_apply() {
   fi
 
   dir="$(workflow_dir)"
-  ctx="$(discover_checks "$branch" | LC_ALL=C sort -u)"
+  # A blind parse must never reach a WRITE. Under-requiring is not a cosmetic loss here: `apply`
+  # would report success while gating nothing, and with `--prune` it would additionally DELETE the
+  # contexts that were still gating the repo. Refuse before either can happen.
+  _adb_rs_discover "$branch" || {
+    echo "ERROR: check discovery failed (see above) — refusing to write required checks from an unreliable scan" >&2
+    return 1
+  }
+  ctx="$RS_WANT"
 
   # Keep any required context we did not discover, unless --prune. See OPT_PRUNE: deleting an
   # external provider's check is silent damage, and this tool only knows about GitHub Actions.
@@ -890,12 +938,21 @@ cmd_apply() {
 
 cmd_status() {
   require_gh
-  local branch want got missing extra rc=0
+  local branch want got missing extra rc=0 disco_failed=0
   repo_json >/dev/null || { echo "ERROR: could not read this repo via gh (no resolvable remote, or no access)" >&2; exit 1; }
   branch="$(target_branch)" || { echo "ERROR: could not resolve the target branch" >&2; exit 1; }
   read_protection "$branch"
 
-  want="$(discover_checks "$branch" 2>/dev/null | LC_ALL=C sort -u)"
+  # Discovery's own stderr stays hidden here (this is a human-facing summary, and a per-job skip
+  # list would bury the verdict) — but a FAILED discovery is not a skip, so it is surfaced as
+  # drift in its own right rather than silently reported as "0 discovered contexts", which reads
+  # identically to a repo that legitimately has no CI.
+  if _adb_rs_discover "$branch" 2>/dev/null; then
+    want="$RS_WANT"
+  else
+    want="$RS_WANT"
+    disco_failed=1
+  fi
   got="$(live_contexts)"
 
   adb_info "Repo settings for $REPO_SLUG (branch '$branch'):"
@@ -910,6 +967,15 @@ cmd_status() {
       adb_info "  DRIFT: branch protection could not be read — treat every verdict below as unproven"
       rc=1 ;;
   esac
+
+  # Reported BEFORE the drift verdicts, because it invalidates them: with discovery unreliable,
+  # "discovered but NOT required" and "required but NOT discovered" are both computed against a
+  # desired set this tool could not build. Re-run `baseline repo checks` to see which file failed.
+  if [ "$disco_failed" -eq 1 ]; then
+    adb_info "  DRIFT: check discovery FAILED on at least one workflow file — the desired set below is"
+    adb_info "         incomplete, so every drift verdict after it is unproven. Run 'baseline repo checks'."
+    rc=1
+  fi
 
   # Drift, BOTH directions. The dangerous one is `extra`: a renamed job leaves the OLD context
   # required and never reported, which blocks every PR forever — GitHub validates nothing and
@@ -962,7 +1028,15 @@ cmd_automerge_ok() {
     return 10
   fi
   live="$(live_contexts)"
-  want="$(discover_checks "$branch" 2>/dev/null | LC_ALL=C sort -u)"
+  # FAIL CLOSED on an unreadable DESIRED set exactly as this guard already does on an unreadable
+  # LIVE one. Without this, a blind parse yields nwant=0 and the guard returns 12 ("no CI at all"),
+  # which is a confident claim about a repo whose CI it simply could not read — and 12 sends the
+  # operator to a different remedy entirely. 20 is the code that already means "fail closed".
+  if ! _adb_rs_discover "$branch" 2>/dev/null; then
+    echo "repo-settings: check discovery failed — cannot build the desired context set, refusing to arm auto-merge (run 'baseline repo checks')" >&2
+    return 20
+  fi
+  want="$RS_WANT"
   nlive="$(nlines "$live")"
   nwant="$(nlines "$want")"
 
@@ -1033,7 +1107,15 @@ cmd_required_drift() {
   # explanation for a job missing from the desired set, and this runs in CI where the log is the
   # whole diagnostic. Hiding them is how a parser that stopped seeing a job looks like a repo that
   # stopped having one.
-  want="$(discover_checks "$branch" | LC_ALL=C sort -u)"
+  # FAIL CLOSED, and this is the call site that most needs it: this lint EXISTS to catch a
+  # discovered job that stayed non-required, so a discovery that went blind produces nwant=0 and
+  # the lint returns 0 — reporting "in sync" about a comparison it never made. That is #102's
+  # exact shape one level up, and it is why the backstop that was supposed to catch #102 could not.
+  if ! _adb_rs_discover "$branch"; then
+    echo "repo-settings: check discovery failed — cannot compare discovered jobs against the required set (run 'baseline repo checks')" >&2
+    return 20
+  fi
+  want="$RS_WANT"
   nwant="$(nlines "$want")"
 
   # A repo with NO workflow files makes no claim this lint could contradict, so it exits before

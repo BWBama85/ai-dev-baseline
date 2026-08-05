@@ -3007,3 +3007,338 @@ adb_md_prose() {
   esac
   printf '%s' "${out%"$mark"}"
 }
+
+# --- workflow structure: the ONE reader of .github/workflows YAML (#262) -------
+#
+# "Which jobs does this workflow declare, and what is each one's metadata?" TWO places in this
+# repo have to answer that, and until now each answered it with its own awk scanner:
+#
+#   scripts/lib/repo-settings.sh  — which jobs report a PROVABLE CHECK CONTEXT, so it deliberately
+#                                   SKIPs matrix / `if:` / reusable / dynamic-name jobs.
+#   scripts/check-bash-floor.sh   — which jobs sit on a PROVEN bash >= 5.3 runner, so it must see
+#                                   EVERY job, precisely including the ones discovery skips.
+#
+# THE OPPOSITE FILTERS ARE LEGITIMATE AND STAY. What was duplicated — and what drifted — is
+# job-boundary detection and YAML scalar parsing. They had already diverged before either shipped:
+# `runs-on: "ubuntu-26.04 # not-the-label"` was read correctly by one (a quoted value ends at its
+# closing quote) and reduced to the approved label `ubuntu-26.04` by the other, which accepted a
+# job whose real runner label is the whole quoted string and which GitHub would never schedule.
+# This is the same shape, and the same remedy, as `_ADB_MD_AWK` (#136/#251, D43): one reader, and
+# every consumer adopts its semantics rather than keeping a private approximation.
+#
+# INDENTATION IS NOT THE GRAMMAR ANY MORE (#102). Both scanners pinned job keys to exactly 2
+# spaces and job properties to exactly 4. A uniform 4-space workflow is valid YAML that GitHub
+# runs happily, and discovery reported `skipping <file>.yml — no pull_request trigger`, contributed
+# ZERO contexts, and exited 0 — a parser going blind with nothing to report it. This reader tracks
+# RELATIVE DEPTH instead: a key opens a block, and that block's children are whatever column the
+# first content line inside it happens to sit at. No indent unit is detected or assumed, so a
+# 2-space file, a 4-space file, and a file that MIXES the two (2-space `on:`, 4-space `jobs:`) all
+# read correctly — the mixed case being the one an "detect the file's indent unit" heuristic gets
+# wrong, because there is no single unit to detect.
+#
+# THE RECORD GRAMMAR is one fact per line, TAB-separated, with the FREE-TEXT VALUE ALWAYS LAST:
+#
+#   adb_wf_on            ONBLOCK <0|1> · TRIGGER <name> · PRINLINEFILTER <trigger>
+#                        PRFILTER <types|branches|paths|branches-ignore> · PRTYPE <v> · PRBRANCH <v>
+#   adb_wf_jobs          JOBSBLOCK <0|1> · JOB <n> <key> · RANGE <n> <start> <end>
+#                        NAME <n> <v> · RUNSON <n> <v> · FLAG <n> <if|uses|matrix|dynamic|inline>
+#
+# VALUE-LAST IS THE WHOLE SERIALIZATION DESIGN, not a layout preference. A job `name:` may legally
+# contain a tab inside a quoted scalar, so a multi-column record would be truncated there by any
+# field-by-field read — silently requiring a context that does not exist, which is the phantom
+# deadlock repo-settings.sh exists to avoid. One free-text field per record, always last, means
+# `IFS=<tab> read -r tag n value` keeps it byte-for-byte with no per-call-site splitting rule. A
+# value can never contain a NEWLINE, because every value is read from one input line.
+#
+# RANGE is what lets the floor lint keep its STEP-level rules without re-deriving job boundaries:
+# it scans within the line range this reader assigned, rather than re-answering "where does this
+# job start" in its own words. That question having two answers is what #262 is about.
+#
+# Assigned via `read -r -d ''` for the same reason `_ADB_MD_AWK` is.
+IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
+    function adb_wf_lead(s,   i) { i = 0; while (substr(s, i + 1, 1) == " ") i++; return i }
+    function adb_wf_trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
+    function adb_wf_unquote(s) {
+      if (s ~ /^".*"$/ || s ~ /^'.*'$/) s = substr(s, 2, length(s) - 2)
+      return s
+    }
+    # A plain YAML scalar as GitHub reads it. QUOTE FIRST, THEN COMMENT — the order is the whole
+    # point, and getting it backwards is the drift #262 was filed for. A quoted value ends at its
+    # CLOSING QUOTE (anything after it is a comment); an UNQUOTED value ends at the first
+    # whitespace-preceded `#`. Strip the comment first and `runs-on: "ubuntu-26.04 # not-the-label"`
+    # becomes the approved label `ubuntu-26.04`, accepting a job that can never be scheduled; skip
+    # the comment rule and `name: Build  # the main build job` becomes a required context nothing
+    # ever reports, blocking every PR forever. Both halves are load-bearing, in opposite directions.
+    function adb_wf_scalar(s) {
+      s = adb_wf_trim(s)
+      if (s ~ /^"/) { sub(/^"/, "", s); sub(/".*$/, "", s); return s }
+      if (s ~ /^'/) { sub(/^'/, "", s); sub(/'.*$/, "", s); return s }
+      sub(/[[:space:]]+#.*$/, "", s)
+      return adb_wf_trim(s)
+    }
+    # A line carrying no content: blank, or a comment at any indent. Skipped everywhere rather than
+    # only at column 0, because a comment indented INSIDE a block would otherwise be taken for that
+    # block's first content line and set its child column to the comment's indent.
+    function adb_wf_blank(s) { return (s ~ /^[[:space:]]*$/ || s ~ /^[[:space:]]*#/) }
+    # The column this block's children sit at, or -1 for an empty/absent block. This is the
+    # indent-agnostic core: nothing is assumed about the unit, it is read off the file.
+    function adb_wf_childcol(at, lim,   i) {
+      for (i = at + 1; i <= lim; i++) {
+        if (adb_wf_blank(WFL[i])) continue
+        if (adb_wf_lead(WFL[i]) <= WFCOL[at]) return -1
+        return adb_wf_lead(WFL[i])
+      }
+      return -1
+    }
+    # The column a SEQUENCE under the key at `at` sits at, or -1. YAML allows a block sequence to
+    # be indented under its key OR to sit at the SAME column as it:
+    #
+    #     steps:            steps:
+    #       - name: x       - name: x
+    #
+    # Both are valid and GitHub runs both. Only the first is idiomatic, which is exactly why the
+    # second is worth handling here rather than in a consumer: a floor lint that cannot see a job's
+    # steps reports that job as unguarded, so the second spelling would turn a legitimate workflow
+    # red for a reason its author could not act on.
+    function adb_wf_seqcol(at, col, lim,   i) {
+      for (i = at + 1; i <= lim; i++) {
+        if (adb_wf_blank(WFL[i])) continue
+        if (adb_wf_lead(WFL[i]) > col) return adb_wf_lead(WFL[i])
+        if (adb_wf_lead(WFL[i]) == col && substr(WFL[i], col + 1, 1) == "-") return col
+        return -1
+      }
+      return -1
+    }
+    # The last line of the block opened at `at`, whose own key sits at column `col`.
+    function adb_wf_blockend(at, col, lim,   i) {
+      for (i = at + 1; i <= lim; i++) {
+        if (adb_wf_blank(WFL[i])) continue
+        if (adb_wf_lead(WFL[i]) <= col) return i - 1
+      }
+      return lim
+    }
+    # Does this line, with `col` leading spaces already accounted for, open a mapping key? A
+    # sequence entry (`- x`) is explicitly NOT one: `jobs:` is a mapping, so a dash there is
+    # malformed, and reading it as a job key would invent a job named `- x`.
+    function adb_wf_iskey(body) {
+      if (body ~ /^-/) return 0
+      return (body ~ /^("[^"]*"|'[^']*'|[^[:space:]:][^:]*):/)
+    }
+    function adb_wf_keyof(body,   k) { k = body; sub(/:.*$/, "", k); return adb_wf_unquote(adb_wf_trim(k)) }
+    function adb_wf_valof(body,   v) { v = body; sub(/^[^:]*:/, "", v); return adb_wf_trim(v) }
+    # Find the TOP-LEVEL key `want`, or 0. Records its column so adb_wf_childcol can use it.
+    function adb_wf_top(want,   i, k) {
+      for (i = 1; i <= WFN; i++) {
+        if (adb_wf_blank(WFL[i])) continue
+        if (adb_wf_lead(WFL[i]) != 0) continue
+        if (!adb_wf_iskey(WFL[i])) continue
+        k = adb_wf_keyof(WFL[i])
+        if (k == want) { WFCOL[i] = 0; return i }
+      }
+      return 0
+    }
+    # An inline flow sequence `[a, b]`, one record per entry under `tag`.
+    function adb_wf_flow(s, tag,   n, i, v, parts) {
+      sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
+      n = split(s, parts, ",")
+      for (i = 1; i <= n; i++) {
+        v = adb_wf_unquote(adb_wf_trim(parts[i]))
+        if (v != "") printf "%s\t%s\n", tag, v
+      }
+    }
+
+    # --- the `on:` block ---------------------------------------------------------------------
+    function adb_wf_on_emit(   at, rest, on_end, tc, i, body, trig, tv, tend, fc, m, fb, fk, fv,
+                               tag, send, ic, q, it) {
+      at = adb_wf_top("on")
+      if (at == 0) { print "ONBLOCK\t0"; return }
+      print "ONBLOCK\t1"
+      # The inline forms: `on: push` and `on: [push, pull_request]`.
+      rest = adb_wf_valof(WFL[at])
+      if (rest != "" && rest !~ /^#/) {
+        if (rest ~ /^\[/) adb_wf_flow(rest, "TRIGGER")
+        else printf "TRIGGER\t%s\n", adb_wf_scalar(rest)
+        return
+      }
+      on_end = adb_wf_blockend(at, 0, WFN)
+      tc = adb_wf_childcol(at, on_end)
+      if (tc < 0) return
+      for (i = at + 1; i <= on_end; i++) {
+        if (adb_wf_blank(WFL[i])) continue
+        if (adb_wf_lead(WFL[i]) != tc) continue
+        body = substr(WFL[i], tc + 1)
+        if (!adb_wf_iskey(body)) continue
+        trig = adb_wf_keyof(body)
+        printf "TRIGGER\t%s\n", trig
+        if (trig != "pull_request" && trig != "pull_request_target") continue
+        tv = adb_wf_valof(body)
+        # An INLINE flow mapping carries the same filters the block form does:
+        # `pull_request: {types: [closed]}` is a real, valid trigger, and recording the trigger
+        # while skipping the rest of the line would treat every job as running on every PR.
+        if (tv ~ /^\{/) {
+          if (tv ~ /(paths|types|branches)/) printf "PRINLINEFILTER\t%s\n", trig
+          continue
+        }
+        WFCOL[i] = tc
+        tend = adb_wf_blockend(i, tc, on_end)
+        fc = adb_wf_childcol(i, tend)
+        if (fc < 0) continue
+        for (m = i + 1; m <= tend; m++) {
+          if (adb_wf_blank(WFL[m])) continue
+          if (adb_wf_lead(WFL[m]) != fc) continue
+          fb = substr(WFL[m], fc + 1)
+          if (!adb_wf_iskey(fb)) continue
+          fk = adb_wf_keyof(fb); fv = adb_wf_valof(fb)
+          if (fk == "paths" || fk == "paths-ignore") { print "PRFILTER\tpaths"; continue }
+          if (fk == "branches-ignore") { print "PRFILTER\tbranches-ignore"; continue }
+          if (fk != "types" && fk != "branches") continue
+          printf "PRFILTER\t%s\n", fk
+          tag = (fk == "types" ? "PRTYPE" : "PRBRANCH")
+          if (fv ~ /^\[/) { adb_wf_flow(fv, tag); continue }
+          WFCOL[m] = fc
+          send = adb_wf_blockend(m, fc, tend)
+          ic = adb_wf_childcol(m, send)
+          if (ic < 0) continue
+          for (q = m + 1; q <= send; q++) {
+            if (adb_wf_blank(WFL[q])) continue
+            if (adb_wf_lead(WFL[q]) != ic) continue
+            it = substr(WFL[q], ic + 1)
+            if (it !~ /^-[[:space:]]/) continue
+            sub(/^-[[:space:]]*/, "", it)
+            printf "%s\t%s\n", tag, adb_wf_scalar(it)
+          }
+        }
+      }
+    }
+
+    # --- the `jobs:` block -------------------------------------------------------------------
+    function adb_wf_jobs_emit(   at, jobs_end, jc, i, n, body, j, pc, pk, pv, v, sc, m, sk, k,
+                                 JS, JK, JI, JE) {
+      at = adb_wf_top("jobs")
+      if (at == 0) { print "JOBSBLOCK\t0"; return }
+      print "JOBSBLOCK\t1"
+      jobs_end = adb_wf_blockend(at, 0, WFN)
+      jc = adb_wf_childcol(at, jobs_end)
+      if (jc < 0) return
+      n = 0
+      for (i = at + 1; i <= jobs_end; i++) {
+        if (adb_wf_blank(WFL[i])) continue
+        if (adb_wf_lead(WFL[i]) != jc) continue
+        body = substr(WFL[i], jc + 1)
+        if (!adb_wf_iskey(body)) continue
+        n++
+        JS[n] = i; JK[n] = adb_wf_keyof(body); JI[n] = adb_wf_valof(body)
+      }
+      for (j = 1; j <= n; j++) JE[j] = (j < n ? JS[j + 1] - 1 : jobs_end)
+      for (j = 1; j <= n; j++) {
+        printf "JOB\t%d\t%s\n", j, JK[j]
+        printf "RANGE\t%d\t%d\t%d\n", j, JS[j], JE[j]
+        # An inline flow mapping (`hidden: {runs-on: …, steps: […]}`) is a REAL job that this
+        # reader does not decompose. It is reported as a job carrying the `inline` flag rather
+        # than omitted, because invisible is the one outcome a floor lint may never produce:
+        # a consumer that cannot read it must fail loudly, not silently not see it.
+        if (JI[j] != "" && JI[j] !~ /^#/) printf "FLAG\t%d\tinline\n", j
+        WFCOL[JS[j]] = jc
+        pc = adb_wf_childcol(JS[j], JE[j])
+        if (pc < 0) continue
+        for (i = JS[j] + 1; i <= JE[j]; i++) {
+          if (adb_wf_blank(WFL[i])) continue
+          if (adb_wf_lead(WFL[i]) != pc) continue
+          body = substr(WFL[i], pc + 1)
+          if (!adb_wf_iskey(body)) continue
+          pk = adb_wf_keyof(body); pv = adb_wf_valof(body)
+          if (pk == "name") {
+            v = adb_wf_scalar(pv)
+            printf "NAME\t%d\t%s\n", j, v
+            if (v ~ /\$\{\{/) printf "FLAG\t%d\tdynamic\n", j
+          } else if (pk == "runs-on") {
+            printf "RUNSON\t%d\t%s\n", j, adb_wf_scalar(pv)
+          } else if (pk == "if") {
+            printf "FLAG\t%d\tif\n", j
+          } else if (pk == "uses") {
+            printf "FLAG\t%d\tuses\n", j
+          } else if (pk == "steps") {
+            # STEP BOUNDARIES ARE STRUCTURE, so they belong here and not in a consumer. The floor
+            # lint asks "does the job's FIRST step log `bash --version`?" (#257), and answering it
+            # needs the same indent-agnostic sequence reading every other question here needs — its
+            # predecessor pinned steps to exactly six spaces, so on a 4-space workflow it saw none
+            # and reported every job unguarded. What stays the consumer's own is the `run:` GRAMMAR
+            # (which invocations count as wiring the guard); only "where does step k begin" is here.
+            sc = adb_wf_seqcol(i, pc, JE[j])
+            if (sc < 0) continue
+            k = 0
+            for (m = i + 1; m <= JE[j]; m++) {
+              if (adb_wf_blank(WFL[m])) continue
+              if (adb_wf_lead(WFL[m]) < sc) break
+              if (adb_wf_lead(WFL[m]) != sc) continue
+              if (substr(WFL[m], sc + 1, 1) != "-") break
+              printf "STEP\t%d\t%d\t%d\n", j, ++k, m
+            }
+          } else if (pk == "strategy") {
+            # Keyed on `matrix:` itself, so a bare `strategy: {fail-fast: false}` — which does NOT
+            # change the check-run name — is never skipped for nothing. Both spellings: the inline
+            # flow mapping on the job line, and the block form one level down.
+            if (pv ~ /^\{/) {
+              if (pv ~ /matrix/) printf "FLAG\t%d\tmatrix\n", j
+              continue
+            }
+            WFCOL[i] = pc
+            sc = adb_wf_childcol(i, JE[j])
+            if (sc < 0) continue
+            for (m = i + 1; m <= JE[j]; m++) {
+              if (adb_wf_blank(WFL[m])) continue
+              if (adb_wf_lead(WFL[m]) <= pc) break
+              if (adb_wf_lead(WFL[m]) != sc) continue
+              sk = substr(WFL[m], sc + 1)
+              if (!adb_wf_iskey(sk)) continue
+              if (adb_wf_keyof(sk) == "matrix") { printf "FLAG\t%d\tmatrix\n", j; break }
+            }
+          }
+        }
+      }
+    }
+AWKWF
+
+# adb_wf_on <file> / adb_wf_jobs <file> — the `on:` facts / the job records for one workflow file,
+# in the grammar documented above, on stdout.
+#
+# FAIL-CLOSED, and that is the entire reason these are functions rather than an awk pipeline at
+# each call site. Both consumers ask a question whose dangerous answer is EMPTY: "which jobs does
+# this file declare" answered with nothing reads as a legitimately jobless file, and #102 is
+# precisely what that looks like in production — a parser going blind, contributing zero contexts,
+# exiting 0. So the awk program prints a per-invocation completion trailer and this checks for it:
+# a killed, truncated, or half-written run returns non-zero here, never a short clean-looking
+# result. The nonce is generated per call because a FIXED marker proves less than it appears to —
+# any output that happens to end in a constant satisfies a constant check.
+#
+# CRLF is tolerated (`sub(/\r$/, "")`): a workflow authored on Windows is one GitHub runs, and a
+# trailing carriage return would otherwise ride along inside every scalar this reader emits —
+# turning `ubuntu-26.04` into a label that matches no allowlist entry, for a file that is fine.
+_adb_wf_read() {
+  local mode="$1" file="$2" mark out rc
+  case "$mode" in
+    on|jobs) : ;;
+    *) printf 'common: FATAL — _adb_wf_read: mode must be on|jobs (got %s)\n' "$mode" >&2; return 2 ;;
+  esac
+  if [ -z "$file" ] || [ ! -r "$file" ]; then
+    printf 'common: FATAL — adb_wf_%s: cannot read workflow file: %s\n' "$mode" "${file:-<none>}" >&2
+    return 1
+  fi
+  mark="$(printf '\001ADB_WF_OK-%s-%s-%s' "$$" "${RANDOM:-0}" "${RANDOM:-0}")"
+  out="$(LC_ALL=C awk -v mode="$mode" -v ok="$mark" "$_ADB_WF_AWK"'
+    { sub(/\r$/, ""); WFL[++WFN] = $0 }
+    END {
+      if (mode == "on") adb_wf_on_emit(); else adb_wf_jobs_emit()
+      printf "%s\n", ok
+    }
+  ' "$file")"; rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  case "$out" in
+    *"$mark") : ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "${out%"$mark"}"
+}
+
+adb_wf_on()   { _adb_wf_read on   "${1:-}"; }
+adb_wf_jobs() { _adb_wf_read jobs "${1:-}"; }
