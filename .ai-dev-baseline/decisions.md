@@ -2681,9 +2681,9 @@ limit: none of them is sufficient alone.
              loud" means as a machine contract, given `discover_checks` deliberately returns 0 for
              a legitimately CI-less repo (#24) and four guards consume it.
 - decision:  (1) `scripts/lib/common.sh`, as an awk FUNCTION LIBRARY (`_ADB_WF_AWK`) plus two
-             wrappers (`adb_wf_on`, `adb_wf_jobs`) — the same shape D43/#136/#251 already chose for
-             `_ADB_MD_AWK`/`adb_md_prose`, which answers the identical question (N consumers, one
-             parser, opposite needs). (2) BOTH parsers become indent-agnostic, and neither detects
+             wrappers (`adb_wf_on`, `adb_wf_jobs`) — the shape #136 chose for
+             `_ADB_MD_AWK`/`adb_md_prose` and #251/D43 affirmed, answering the identical question
+             (N consumers, one parser, opposite needs). (2) BOTH parsers become indent-agnostic, and neither detects
              an indent "unit": the reader tracks RELATIVE DEPTH, so 2-space, 4-space and MIXED
              files all read. (3) The structural facts every workflow must have — an `on:` key, a
              `jobs:` block, at least one job — are checked on EVERY file, and a violation returns

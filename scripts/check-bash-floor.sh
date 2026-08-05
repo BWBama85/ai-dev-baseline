@@ -164,11 +164,7 @@ scan_jobs() {
   records="$(adb_wf_jobs "$1")" || return 1
   # Passed through the ENVIRONMENT, not `awk -v`: -v processes backslash escapes in the value, so a
   # job key or a runner label containing a backslash would arrive mangled. ENVIRON does not.
-  ADB_WF_RECORDS="$records" awk '
-    function unquote(s) {
-      if (s ~ /^".*"$/ || s ~ /^'"'"'[^'"'"']*'"'"'$/) s = substr(s, 2, length(s) - 2)
-      return s
-    }
+  ADB_WF_RECORDS="$records" awk "$_ADB_WF_AWK"'
     # The distro token a `wsl -d <name>` / `--distribution <name>` invocation names, unquoted, or
     # empty. Captured rather than merely matched because the two WSL steps must name the SAME
     # distro: without this the lint accepts a `bash --version` logged in distro A followed by the
@@ -177,7 +173,7 @@ scan_jobs() {
       if (match(s, /(-d|--distribution)[[:space:]]+[^[:space:]]+/)) {
         t = substr(s, RSTART, RLENGTH)
         sub(/^(-d|--distribution)[[:space:]]+/, "", t)
-        return unquote(t)
+        return adb_wf_unquote(t)
       }
       return ""
     }

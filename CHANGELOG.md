@@ -26,7 +26,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     and which GitHub would never schedule.
 
   The YAML reading now lives in **one** place — `_ADB_WF_AWK` + `adb_wf_on` / `adb_wf_jobs` in
-  `scripts/lib/common.sh`, the same shape D43 chose for the shared prose filter — and both
+  `scripts/lib/common.sh`, the shape #136 chose for the shared prose filter and D43 affirmed — and both
   consumers apply their own opposite filters on top of it (`repo-settings.sh` skips matrix / `if:`
   / reusable / dynamic-name jobs; `check-bash-floor.sh` must see precisely those). The reader
   hands over each job's line range and step boundaries, so the floor lint's step-level rules stay

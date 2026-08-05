@@ -947,12 +947,8 @@ cmd_status() {
   # list would bury the verdict) — but a FAILED discovery is not a skip, so it is surfaced as
   # drift in its own right rather than silently reported as "0 discovered contexts", which reads
   # identically to a repo that legitimately has no CI.
-  if _adb_rs_discover "$branch" 2>/dev/null; then
-    want="$RS_WANT"
-  else
-    want="$RS_WANT"
-    disco_failed=1
-  fi
+  _adb_rs_discover "$branch" 2>/dev/null || disco_failed=1
+  want="$RS_WANT"
   got="$(live_contexts)"
 
   adb_info "Repo settings for $REPO_SLUG (branch '$branch'):"
