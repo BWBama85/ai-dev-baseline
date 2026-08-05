@@ -428,6 +428,41 @@ eq "$RC" "1" "a crashed job scanner fails the lint (never a silent clean scan)"
 has "$OUT" "refusing to report a clean scan" "...and says it is refusing rather than passing"
 rm -rf "$work/awkstub"
 
+# --- a block scalar ends at ITS KEY'S column, not at a sequence dash --------------------------------
+# The block-scalar skip that closed the impersonation fail-open reached too far: anchored on the
+# DASH, it swallowed the entry's SIBLING keys, so a valid `- name: |` step had its real
+# `run: bash --version` skipped as scalar text and the lint failed a workflow that is fine.
+d="$work/blockkeycol"; mkdir -p "$d"
+{ printf 'name: CI\non:\n  pull_request:\n\njobs:\n'
+  printf '  linux-job:\n    runs-on: ubuntu-26.04\n    steps:\n'
+  printf '      - name: |\n          a multi-line step name\n        run: bash --version\n'
+  printf '      - name: floor\n        run: bash scripts/check-bash-floor.sh --runtime\n'
+} > "$d/ci.yml"
+emit_job "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "0" "a step whose sequence-entry line carries a block scalar still has its sibling keys read"
+
+# ...and closing that must NOT reopen the impersonation hole, in EITHER spelling. Both forms are
+# pinned because the fix turns on which pattern is tested first.
+d="$work/blockimperson"; mkdir -p "$d"
+{ printf 'name: CI\non:\n  pull_request:\n\njobs:\n'
+  printf '  linux-job:\n    runs-on: ubuntu-26.04\n    steps:\n'
+  printf '      - name: pretend\n        run: |\n'
+  printf '          run: bash --version\n          run: bash scripts/check-bash-floor.sh --runtime\n'
+} > "$d/ci.yml"
+emit_job "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "a plain 'run: |' block that merely PRINTS the guard still proves nothing"
+d="$work/blockimperson2"; mkdir -p "$d"
+{ printf 'name: CI\non:\n  pull_request:\n\njobs:\n'
+  printf '  linux-job:\n    runs-on: ubuntu-26.04\n    steps:\n'
+  printf '      - run: |\n'
+  printf '          run: bash --version\n          run: bash scripts/check-bash-floor.sh --runtime\n'
+} > "$d/ci.yml"
+emit_job "$d/ci.yml" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "...and neither does the DASH form '- run: |'"
+
 # --- the eight-field record must refuse what it cannot encode -------------------------------------
 # The shared reader's grammar is value-LAST so a tab inside a quoted scalar survives. THIS record
 # cannot be: it carries eight fields and static_lint splits them field-by-field. A tab inside a

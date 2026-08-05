@@ -3116,6 +3116,37 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
       sub(/[[:space:]]+#.*$/, "", s)
       return adb_wf_trim(s)
     }
+    # Does the inline flow mapping `s` carry any of the `|`-separated keys in `want` AT ITS TOP
+    # LEVEL? Depth- and quote-aware, because a substring test is not this question.
+    #
+    # `deploy: {runs-on: …, environment: {name: production}, steps: […]}` has no job `name:` — the
+    # check context is provably the key `deploy` — but a substring test sees the NESTED
+    # `environment.name` and concludes otherwise, so discovery skipped a real PR job and left it
+    # ungated. Nesting is the common case for `environment:`, so this is not an exotic input.
+    function adb_wf_flowmap_key(s, want,   n, i, c, depth, tok, q) {
+      n = length(s); depth = 0; tok = ""; q = ""
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (q != "") {
+          if (c == "\\" && q == "\"" && i < n) { i++; tok = tok substr(s, i, 1); continue }
+          if (c == q) { q = ""; continue }
+          tok = tok c
+          continue
+        }
+        if (c == "\"" || c == "'") { q = c; continue }
+        if (c == "{" || c == "[") { depth++; tok = ""; continue }
+        if (c == "}" || c == "]") { depth--; tok = ""; continue }
+        if (depth != 1) continue
+        if (c == ",") { tok = ""; continue }
+        if (c == ":") {
+          tok = adb_wf_trim(tok)
+          if (tok != "" && index("|" want "|", "|" tok "|") > 0) return 1
+          tok = ""; continue
+        }
+        tok = tok c
+      }
+      return 0
+    }
     # Is this value a BLOCK SCALAR HEADER (`|`, `>`, with any of the `-`/`+`/digit indicators)? Then
     # the real value is on the FOLLOWING lines and this reader — which reads one physical line per
     # value — does not have it.
@@ -3362,7 +3393,19 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
         #              nothing here is readable and the job is genuinely unprovable.
         if (JI[j] ~ /^\{/) {
           printf "FLAG\t%d\tinline\n", j
-          if (JI[j] !~ /(^|[{,[:space:]])("name"|'name'|name)[[:space:]]*:/) printf "FLAG\t%d\tunnamed\n", j
+          # `keyed` means: the check context PROVABLY is the job key. That needs more than "no
+          # `name:`" — an inline job carrying `if:`, `uses:` or a `strategy:` is disqualified for
+          # exactly the reasons the block-form path skips those, and emitting its key as a required
+          # context creates a phantom that never reports and deadlocks every PR. All four keys are
+          # therefore disqualifying, and the test is depth-aware so a nested `environment: {name:}`
+          # does not masquerade as a job name.
+          #
+          # `strategy:` disqualifies WHOLE, without looking for `matrix` inside it. A bare
+          # `strategy: {fail-fast: false}` does not change the check-run name and would be safe to
+          # require, but distinguishing that inside a flow mapping is more parsing than the shape is
+          # worth — and being wrong costs a phantom context, while being conservative costs one
+          # under-required job in a form almost nobody writes.
+          if (!adb_wf_flowmap_key(JI[j], "name|if|uses|strategy")) printf "FLAG\t%d\tkeyed\n", j
         } else if (JI[j] ~ /^\*/) {
           printf "FLAG\t%d\talias\n", j
         } else if (JI[j] != "" && JI[j] !~ /^#/ && JI[j] !~ /^&/) {

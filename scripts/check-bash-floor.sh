@@ -230,12 +230,28 @@ scan_jobs() {
     # and the whole point of the surrounding rules is EXECUTING, not APPEARING.
     #
     # A block scalar opens on a `<key>: |` / `<key>: >` line and owns every following line indented
-    # MORE than that key, which is YAML'"'"'s own rule and needs no indent unit to apply.
+    # MORE than THAT KEY, which is YAML'"'"'s own rule and needs no indent unit to apply.
+    #
+    # THE KEY'"'"'S COLUMN, NOT THE DASH'"'"'S. On a sequence-entry line the two differ, and using the dash
+    # swallowed the entry'"'"'s SIBLING KEYS: for
+    #     - name: |
+    #         some multi-line name
+    #       run: bash --version
+    # the dash sits at 6 and `run:` at 8, so everything deeper than 6 was skipped as scalar text and
+    # the real `run:` went unseen — the lint then reported a VALID workflow as not logging
+    # `bash --version`. Sibling keys sit at the key'"'"'s own column, so anchoring there ends the scalar
+    # exactly where YAML does.
     {
       lead = match($0, /[^ ]/) ? RSTART - 1 : 0
       if (inblock) { if ($0 ~ /^[[:space:]]*$/ || lead > blockcol) next; inblock = 0 }
-      if ($0 ~ /^[[:space:]]*[^:[:space:]][^:]*:[[:space:]]*[|>][0-9]*[-+]?[[:space:]]*$/ ||
-          $0 ~ /^[[:space:]]*-[[:space:]]+[^:[:space:]][^:]*:[[:space:]]*[|>][0-9]*[-+]?[[:space:]]*$/) {
+      # THE DASH FORM IS TESTED FIRST, and that ordering is load-bearing rather than stylistic: the
+      # plain-key pattern below ALSO matches a sequence entry (its `[^:[:space:]]` happily consumes
+      # the `-`), so with the arms the other way round the dash branch was unreachable and blockcol
+      # kept taking the dash'"'"'s column — which is the whole defect this is fixing.
+      if ($0 ~ /^[[:space:]]*-[[:space:]]+[^:[:space:]][^:]*:[[:space:]]*[|>][0-9]*[-+]?[[:space:]]*$/) {
+        match($0, /^[[:space:]]*-[[:space:]]+/)
+        inblock = 1; blockcol = RLENGTH
+      } else if ($0 ~ /^[[:space:]]*[^:[:space:]][^:]*:[[:space:]]*[|>][0-9]*[-+]?[[:space:]]*$/) {
         inblock = 1; blockcol = lead
       }
     }

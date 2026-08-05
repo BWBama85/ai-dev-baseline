@@ -363,7 +363,23 @@ printf 'on:\n  pull_request:\njobs:\n  plain: {runs-on: ubuntu-26.04}\n  named: 
 disco main
 eq "${ ctx; }" 'plain|' "an inline job with NO name: is required under its key"
 has "$ERR" "skipping job named" "...while one carrying a name: is skipped"
-has "$ERR" "cannot be proven" "...for the stated reason"
+has "$ERR" "cannot prove a check name" "...for the stated reason"
+
+#     An inline job is required under its key ONLY when that key is provably the context. A NESTED
+#     `environment: {name: …}` must not suppress it (a substring test did, leaving a real job
+#     ungated), and `if:`/`uses:`/`strategy:` inside the mapping must disqualify it exactly as the
+#     block-form arms do — requiring one of those under its key is a phantom that never reports.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  deploy: {runs-on: ubuntu-26.04, environment: {name: production}, steps: [x]}\n' > "$WF/nested.yml"
+disco main
+eq "${ ctx; }" 'deploy|' "an inline job whose only name: is NESTED is still required under its key"
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  conditional: {runs-on: x, if: false, steps: [y]}\n  matrixed: {runs-on: x, strategy: {matrix: {os: [p]}}, steps: [y]}\n  reusable: {uses: ./.github/workflows/o.yml}\n  plain: {runs-on: x, steps: [y]}\n' > "$WF/inlmeta.yml"
+disco main
+eq "${ ctx; }" 'plain|' "inline jobs carrying if:/strategy:/uses: are NOT required under their keys"
+has "$ERR" "skipping job conditional" "...and each is skipped by name"
+has "$ERR" "skipping job matrixed"    "...matrix too"
+has "$ERR" "skipping job reusable"    "...and the reusable one"
 
 # (c) YAML ANCHORS are ordinary jobs; ALIASES are not. Anchoring a job configuration is documented
 #     GitHub behaviour, and treating the anchor token as an inline mapping skipped a readable job.

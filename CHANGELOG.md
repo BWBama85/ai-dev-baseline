@@ -56,6 +56,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   `automerge-ok` and `required-drift` return **20** — never `12` ("this repo has no CI") or `0`
   ("in sync"). This means `repo-settings.sh` can now exit non-zero where it always exited 0.
 
+  A second review round found three more, all in that same first round's fixes: the block-scalar
+  skip anchored on a sequence **dash** rather than on its key, so a valid `- name: |` step had its
+  sibling `run:` swallowed and the lint failed a workflow that is fine; the inline-mapping
+  `name:` test was a substring search, so a nested `environment: {name: …}` suppressed the job
+  key's context and left a real PR job ungated; and an inline job carrying `if:` / `uses:` /
+  `strategy:` was required under its key even though the block-form path skips exactly those — a
+  phantom context that never reports. The inline test is depth- and quote-aware now, and all four
+  keys disqualify.
+
   Two fail-opens **in the guards themselves** were found by that same review and closed. A `run: |`
   block whose *content* merely printed `run: bash scripts/check-bash-floor.sh --runtime` satisfied
   the floor lint's guard-wiring and first-step-logging rules without the guard ever running — the

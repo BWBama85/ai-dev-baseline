@@ -1554,8 +1554,8 @@ has "${ wf anchor.yml; }" "FLAG|2|alias"          "an ALIAS is flagged — its c
 # PR CI ungated, which is the opposite error from a phantom context and just as real.
 printf 'on:\n  pull_request:\njobs:\n  plain: {runs-on: ubuntu-26.04}\n  named: {runs-on: ubuntu-26.04, name: Real Name}\n' > "$wfd/inline.yml"
 has "${ wf inline.yml; }" "FLAG|1|inline"   "an inline mapping is flagged for the floor lint either way"
-has "${ wf inline.yml; }" "FLAG|1|unnamed"  "...and an inline mapping with NO name: says so, so its key IS the context"
-hasnt "${ wf inline.yml; }" "FLAG|2|unnamed" "...while one carrying a name: does not"
+has "${ wf inline.yml; }" "FLAG|1|keyed"    "...and one whose key is PROVABLY the context says so"
+hasnt "${ wf inline.yml; }" "FLAG|2|keyed"  "...while one carrying a name: does not"
 
 # BLOCK AND FOLDED SCALARS. `name: >-` puts the text on the FOLLOWING lines, and emitting the header
 # produced the required context `>-` — a phantom that never reports and needs an admin token to
@@ -1580,6 +1580,22 @@ printf 'on:\n  pull_request:\n    branches:\n    - main\njobs:\n  a:\n    runs-o
 has "${ wfon seq3.yml; }" "PRBRANCH|main" "a branches: sequence at its key's OWN column is read"
 printf 'on:\n  pull_request:\n    types:\n    - opened\n    - synchronize\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/seq4.yml"
 has "${ wfon seq4.yml; }" "PRTYPE|synchronize" "a types: sequence at its key's OWN column is read"
+
+# THE INLINE-MAPPING KEY TEST IS DEPTH-AWARE, not a substring search. `environment: {name: …}` is
+# the common nesting, so a substring test suppressed `keyed` for an ordinary deploy job and left a
+# real PR job ungated. And `keyed` means the key is PROVABLY the context, so `if:`/`uses:`/
+# `strategy:` disqualify it too — requiring one of those under its key is a phantom context that
+# never reports, which is the deadlock, not the recoverable direction.
+printf 'on:\n  pull_request:\njobs:\n  deploy: {runs-on: ubuntu-26.04, environment: {name: production}, steps: [x]}\n' > "$wfd/nested.yml"
+has "${ wf nested.yml; }" "FLAG|1|keyed" "a NESTED name: does not suppress keyed — the context is still the job key"
+printf 'on:\n  pull_request:\njobs:\n  a: {runs-on: x, name: Real, steps: [y]}\n  b: {runs-on: x, "name": Q, steps: [y]}\n' > "$wfd/topname.yml"
+hasnt "${ wf topname.yml; }" "FLAG|1|keyed" "a TOP-LEVEL name: does suppress it"
+hasnt "${ wf topname.yml; }" "FLAG|2|keyed" "...including a QUOTED top-level name:"
+printf 'on:\n  pull_request:\njobs:\n  a: {runs-on: x, if: false, steps: [y]}\n  b: {runs-on: x, strategy: {matrix: {os: [p]}}, steps: [y]}\n  c: {uses: ./.github/workflows/o.yml}\n  d: {runs-on: x, steps: [y]}\n' > "$wfd/inlmeta.yml"
+hasnt "${ wf inlmeta.yml; }" "FLAG|1|keyed" "an inline job carrying if: is not keyed"
+hasnt "${ wf inlmeta.yml; }" "FLAG|2|keyed" "an inline job carrying strategy: is not keyed"
+hasnt "${ wf inlmeta.yml; }" "FLAG|3|keyed" "an inline job carrying uses: is not keyed"
+has   "${ wf inlmeta.yml; }" "FLAG|4|keyed" "...while a plain inline job still is"
 
 # A FLOW SEQUENCE SPLIT ON QUOTE-AWARE COMMAS. A branch pattern may contain a comma; splitting
 # blindly yields two malformed values and the real branch reads as excluded.

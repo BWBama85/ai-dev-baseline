@@ -353,18 +353,19 @@ EOF
         printf 'SKIP\t%s\thas a block-scalar name: (its text is on the following lines, so the context cannot be proven)\n' "${key[$i]}" ;;
       *" alias "*)
         printf 'SKIP\t%s\tis a YAML alias (its configuration lives at the anchor, not under this key)\n' "${key[$i]}" ;;
-      # An inline flow-mapping job (`hidden: {runs-on: …, steps: […]}`) is a real job. It is skipped
-      # ONLY when the mapping carries a `name:` — then the context is that name, which this reader
-      # does not decompose, and guessing the key instead requires a context that never reports and
-      # deadlocks every PR. With NO `name:` the context provably IS the key, so it is required
-      # exactly as a block-form job would be; skipping it there would leave valid PR CI ungated,
-      # which is the opposite error and just as real. The floor lint takes the opposite view of the
+      # An inline flow-mapping job (`hidden: {runs-on: …, steps: […]}`) is a real job, and it is
+      # required under its key ONLY when the reader could prove that key IS the check context —
+      # the `keyed` flag, which the reader withholds if the mapping carries `name:`, `if:`, `uses:`
+      # or `strategy:` at its top level. Those are the same disqualifiers the block-form arms above
+      # apply, and they must apply here too: an inline `{…, if: false, …}` required under its key is
+      # a context that never reports, which deadlocks every PR. Without `keyed` the job is skipped —
+      # under-requiring, the recoverable direction. The floor lint takes the opposite view of the
       # same `inline` flag and fails LOUD on it, because for its question an unreadable job must not
       # be silently absent.
       *" inline "*)
         case "${flags[$i]-}" in
-          *" unnamed "*) printf 'CHECK\t%s\n' "${key[$i]}" ;;
-          *) printf 'SKIP\t%s\tis an inline flow mapping carrying a name: (its check name cannot be proven)\n' "${key[$i]}" ;;
+          *" keyed "*) printf 'CHECK\t%s\n' "${key[$i]}" ;;
+          *) printf 'SKIP\t%s\tis an inline flow mapping this reader cannot prove a check name for\n' "${key[$i]}" ;;
         esac ;;
       *)
         printf 'CHECK\t%s\n' "${name[$i]:-${key[$i]}}" ;;
