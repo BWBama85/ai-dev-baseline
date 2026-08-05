@@ -25,9 +25,17 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **The marker's `.branch` was the same bug through a second door, and a worse one.** A filename
     cannot contain `/`, so that carrier was confined to names in the repo root (`CHANGELOG.md`,
     `install.sh`, `CLAUDE.md`); a marker's `.branch` is a JSON string that **can**, so it reached an
-    **absolute** path. Such a value is now treated as unreadable — which is honest rather than a
-    euphemism, since `git check-ref-format` rejects control characters and it was never a branch
-    name — so the key falls to `-`, then `unknown`, then keep.
+    **absolute** path. A value carrying any control character is now treated as unreadable — which
+    is honest rather than a euphemism, since `git check-ref-format` rejects exactly those and such a
+    value was never a branch name — so the key falls to `-`, then `unknown`, then keep.
+  - **That rejection happens inside `jq`, because the shell could not be trusted to see the value
+    it was judging.** Checking after `b="$(jq …)"` judges a string command substitution has already
+    *mutated*: it strips every trailing newline, so `"dead-branch\n"` arrived as the ordinary
+    `dead-branch` and — with no matching ref and no PR — would be classified **stale and deleted**;
+    and bash silently drops a JSON `\u0000` from a substitution while warning on stderr, both
+    corrupting the value and breaking the reader's quiet contract. Both were found by the
+    independent review and are covered by regressions, including one asserting the read stays
+    silent.
   - **But the marker RECORD survives that refusal**, and a fix that dropped it would have traded
     one bug for a worse one: `/cleanup` reads run liveness from the presence of a marker record, so
     dropping it reports "no run in flight" — the verdict that lets a **live** `/implement-issue`

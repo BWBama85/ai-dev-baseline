@@ -2304,7 +2304,7 @@ limit: none of them is sufficient alone.
              `cleanup-lib.sh` was already the prescribed home for a `/cleanup` decision predicate.
 
 ## D41 — `state-scan` refuses to serialize a name it cannot encode, and the marker record survives that refusal
-- date:      2026-08-05
+- date:      2026-08-04
 - category:  project-delta
 - unknown:   #273. `state-scan` serializes `<kind>TAB<path>TAB<key>NL` with no escaping, and the
              sweep parses it with `IFS=<tab> read -r kind sfile key` before handing `$sfile` to
@@ -2318,8 +2318,10 @@ limit: none of them is sufficient alone.
                 field is a `%q`-ENCODED rendering, and **exit stays 0**.
              2. The **state directory's own** path being unserializable is **fatal** (exit 2, no
                 stdout), because it poisons every record at once.
-             3. A marker's `.branch` carrying a delimiter is treated as **unreadable** — empty key
-                -> `-` -> `unknown` -> keep — and **the marker record is still emitted**.
+             3. A marker's `.branch` carrying **any control character** (codepoint < 0x20, i.e.
+                `git check-ref-format`'s own rule) is treated as **unreadable** — empty key -> `-`
+                -> `unknown` -> keep — and **the marker record is still emitted**. That rejection
+                happens **inside jq**, not in the shell.
 - placement: `scripts/lib/cleanup-lib.sh` (`_adb_cl_tsv_safe`, `_adb_cl_tsv_display`, the guard
              ahead of `state-scan`'s `case`, and `_adb_cl_marker_branch`); `base/workflows/cleanup.md`
              step 5 (the captured scan status and the `unsafe` NOTES loop); pinned in
@@ -2353,6 +2355,23 @@ limit: none of them is sufficient alone.
              from it was guaranteed to miss. `check-cleanup.sh` pins the surviving record, and that
              assertion was observed going red against a deliberately-written naive fix — it cannot
              go red against the pre-fix library, so it needed its own negative test.
+
+             **The marker-key rejection had to move INSIDE jq, and that is a correctness fix rather
+             than a style choice.** The first implementation checked the value in the shell, after
+             `b="$(jq -r '.branch // empty' …)"` — and `$(…)` *mutates the value on the way out*, so
+             a malformed marker was normalized into a well-formed one before anything could judge
+             it. Two live defects, both reproduced under bash 5.3 by the independent review:
+             command substitution strips **every** trailing newline, so `"dead-branch\n"` — not a
+             branch name — arrived as the perfectly ordinary `dead-branch`, was accepted, and with
+             no matching ref and no PR would be classified **stale and deleted**; and JSON permits
+             `\u0000`, which bash silently drops from a substitution (`"dead\u0000branch"` ->
+             `deadbranch`) *while warning on stderr*, breaking the reader's quiet-on-every-failure
+             contract in the same move. Neither is a forgery — they are the opposite failure, a
+             malformed marker quietly becoming a valid-looking one — and both are invisible to a
+             check that only ever sees the post-substitution string. jq now returns `empty` for any
+             codepoint < 0x20, so the bad bytes never reach the shell at all; the shell-side
+             predicate stays as a belt-and-braces re-check. Reverting to the shell-side form was
+             observed turning four assertions red, including the stderr-silence one.
 
              **Exit 0 for a file, exit 2 for the directory.** An unserializable filename is not a
              tooling failure; it is a file this subcommand declines to classify, which is the state

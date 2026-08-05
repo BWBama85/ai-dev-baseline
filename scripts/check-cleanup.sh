@@ -405,6 +405,14 @@ jq -e . "$MK_DIR/implement-issue-active.json" >/dev/null 2>&1
 yes $? "3b the marker fixture is VALID json — otherwise the refusal below is never reached"
 eq "${ jq -r '.branch' "$MK_DIR/implement-issue-active.json" | grep -c .; }" "2" \
    "3b …and its .branch really decodes to a value carrying a newline"
+# …AND the tabs, which are what put the absolute victim in the forged record's PATH field. Without
+# this the fixture still forges a record, but a single-field one that names nothing — so the whole
+# absolute-path carrier could be tested by a fixture that cannot express it. Deleting both `\\t`
+# escapes above was observed leaving the suite green before this assertion existed.
+eq "${ jq -r '.branch' "$MK_DIR/implement-issue-active.json" | grep -c "$TAB"; }" "1" \
+   "3b …and the TABs that place the victim in the forged record's path field"
+has "${ jq -r '.branch' "$MK_DIR/implement-issue-active.json"; }" "$VICTIM_ABS" \
+   "3b …naming an ABSOLUTE path, which is the half a filename carrier cannot reach"
 mscan="$(bash "$CL" state-scan "$MK_DIR")"
 msweepable="$(printf '%s\n' "$mscan" | while IFS="$TAB" read -r k sf _; do
   case "$k" in gaps|review|threads) printf '%s\n' "$sf" ;; esac
@@ -423,13 +431,37 @@ eq "${ printf '%s\n' "$mscan" | awk -F'\t' '$1=="marker"{n++} END{print n+0}'; }
 eq "$(bash "$CL" marker-branch "$MK_DIR/implement-issue-active.json")" "" \
    "3b marker-branch — the one reader both the scan and the delete-time re-read use — refuses it too"
 
+# --- the two values the SHELL would have normalized into well-formed ones ----------------------
+# Both were live defects found by the independent review: the rejection has to happen inside jq,
+# because `$(…)` MUTATES the value on the way out and a mutated value passes a check the original
+# would have failed. Neither is a forgery — they are the opposite failure, a malformed marker
+# quietly becoming a valid-looking one, which then classifies STALE and gets DELETED.
+mb() { printf '%s' "$1" > "$work/mb.json"; bash "$CL" marker-branch "$work/mb.json" 2>"$work/mb.err"; }
+# A TRAILING newline: command substitution strips every one of them, so `dead-branch\n` — not a
+# branch name — arrived as the perfectly ordinary `dead-branch`.
+eq "$(mb '{"branch":"dead-branch\n"}')" "" \
+   "3b a .branch ending in a newline is unreadable, not silently trimmed into a valid branch name"
+# A NUL: JSON permits \u0000, and bash drops the byte from a substitution — turning `dead\0branch`
+# into `deadbranch` — AND warns on stderr, breaking this reader's quiet-on-every-failure contract.
+eq "$(mb '{"branch":"dead\u0000branch"}')" "" \
+   "3b a .branch containing a NUL is unreadable, not silently spliced into a valid branch name"
+eq "$(cat "$work/mb.err")" "" \
+   "3b …and reading it stays SILENT — no shell warning leaks past the quiet contract"
+# The other direction, so the rejection cannot be "refuse everything": an ordinary name still reads.
+eq "$(mb '{"branch":"issue-42-ok"}')" "issue-42-ok" "3b …while an ordinary branch name still reads normally"
+eq "$(mb '{"branch":123}')" "" "3b …and a non-string .branch is unreadable rather than coerced"
+
 # --- the state directory's OWN path, which poisons every record at once ------------------------
 # Fatal rather than skipped: refusing file-by-file would leave an empty scan indistinguishable
 # from a clean, already-empty state dir, and a sweep that reports success while doing nothing is
 # the #106 class this library exists to remove.
 BAD_DIR="$work/"$'st\nate'; mkdir -p "$BAD_DIR"; : > "$BAD_DIR/gaps.md"
 bad_out="$(bash "$CL" state-scan "$BAD_DIR" 2>/dev/null)"; bad_rc=$?
-no "$bad_rc" "3b an unserializable state-dir path is a hard error, not a silent empty scan"
+# EXIT 2 EXACTLY, not merely non-zero. This library has no status 1 on purpose — its header says
+# so — because a caller that read 1 as a benign negative would delete on a tooling failure. `no
+# $rc` accepts anything non-zero, so swapping `die` for `return 1` was observed leaving the suite
+# green while D41, the CHANGELOG and the library contract all still claimed 2.
+eq "$bad_rc" "2" "3b an unserializable state-dir path exits 2 — the fail-closed status, not just non-zero"
 eq "$bad_out" "" "3b …and it emits no partial records to act on"
 
 # --- END TO END: the forged record must not survive the sweep's own parse loop -----------------
@@ -618,12 +650,34 @@ else
   # A `SCAN="$(… state-scan …)"` that ignores its status turns the state-dir refusal (exit 2, no
   # stdout) into an empty scan — which sweeps nothing and reads exactly like a clean state dir.
   # Pin the captured form, which is the only spelling that can tell those two apart.
-  has "$wfcode" 'if ! SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"; then' \
+  # `wfexec`, NOT `wfcode`: wfcode keeps shell comments, so commenting the real capture OUT while
+  # leaving its text on the line satisfied this pin exactly — observed green with no executable
+  # status check at all. Same class as the `-type l` pin that was satisfied by the comment saying
+  # `-type f` is wrong.
+  has "$wfexec" 'if ! SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"; then' \
      "6 the first scan's exit status is captured, so a refusal cannot read as an empty state dir"
+  # …and the pre-delete RE-SCAN gets the same treatment. Its failure paths emit nothing today, so
+  # an unchecked capture is safe *by implementation* rather than by contract — and this is the
+  # snapshot that drives `rm`. Command substitution keeps partial stdout on a non-zero exit, so a
+  # future mid-enumeration error would otherwise hand actionable records to the delete loop.
+  has "$wfexec" 'if ! SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"; then' \
+     "6 …and so is the pre-delete re-scan, structurally rather than by implementation detail"
+  eq "${ printf '%s\n' "$wfexec" | grep -c 'if ! SCAN="\$({{CLEANUP_LIB}} state-scan "\$STATE")"; then'; }" "2" \
+     "6 …i.e. BOTH scans, not just the one that happens to be reported"
   # The refusal message must not paste the state-dir path back in: that path is the thing carrying
   # a newline, so interpolating it moves the injection from the delete protocol into the report.
-  hasnt "$wfexec" 'REFUSED the state sweep — state-scan could not enumerate $STATE' \
-     "6 …and that message does not interpolate the unserializable path into the report"
+  # Pinned by asserting the line names NO path variable at all, rather than by forbidding the one
+  # spelling `$STATE` — rewriting it as `${STATE}` was observed leaving that narrower pin green.
+  # BOTH refusal messages, matched on the shared prefix — the re-scan grew one too, and a pin that
+  # only ever looked at the first would let the second reintroduce the interpolation.
+  refline="${ printf '%s\n' "$wfexec" | grep -F 'REFUSED the state'; }"
+  if [ -n "$refline" ]; then
+    hasnt "$refline" 'STATE' "6 …and that message interpolates no path variable, in any spelling"
+  else
+    bad "6 could not find the REFUSED lines in the workflow — the interpolation check asserted NOTHING"
+  fi
+  eq "${ printf '%s\n' "$refline" | grep -c .; }" "2" \
+     "6 …for BOTH refusals, so neither scan can quietly stop reporting one"
   # The label BOUND TO ITS BODY, the same way the review arm is pinned above: a bare `unsafe)`
   # survives a deleted body, and a bare NOTES line survives a renamed kind that matches no record
   # state-scan emits — a report arm that is present, correct and unreachable.
@@ -635,7 +689,26 @@ else
   eq "${ printf '%s\n' "$wfcode" | grep -c '\[ "$kind" = unsafe \]'; }" "1" \
      "6 …exactly once, not once per snapshot"
   # `unsafe` must never reach a delete: its path field is a %q-ENCODED rendering, not a real path.
-  hasnt "$wfexec" 'unsafe)' "6 …and no sweep arm treats 'unsafe' as a deletable kind"
+  # ASSERTED AS THE WHOLE ARM SET, not as the absence of an `unsafe)` label. Those are not the same
+  # claim, and the difference is the entire finding: a default `*) sweep_file "$sfile" ;;` deletes
+  # every unhandled kind — `unsafe`, `other`, `marker` — while containing no `unsafe)` anywhere, so
+  # adding one was observed leaving a `hasnt … 'unsafe)'` pin perfectly green. The delete set is an
+  # allowlist, so the test has to read it as one.
+  sweeparms="${ printf '%s\n' "$wfexec" | awk '
+    /case "\$kind" in/           { inb = 1; body = ""; arms = ""; next }
+    inb && /^[[:space:]]*esac/   { if (body ~ /sweep_file/) print arms; inb = 0; next }
+    inb {
+      body = body $0 "\n"
+      if ($0 ~ /^[[:space:]]*[A-Za-z*|_-]+\)[[:space:]]*$/) {
+        a = $0; gsub(/[[:space:]]/, "", a); sub(/\)$/, "", a); arms = arms a " "
+      }
+    }' ; }"
+  if [ -n "$sweeparms" ]; then
+    eq "$sweeparms" "gaps review threads " \
+       "6 the sweep loop's delete arms are EXACTLY gaps/review/threads — no default arm, so 'unsafe' cannot be deleted"
+  else
+    bad "6 could not read the sweep loop's case arms from the workflow — the allowlist check asserted NOTHING"
+  fi
   has "$wf" '{{CLEANUP_LIB}} clone-state' \
      "6 the switch/pull guard uses the clone classifier, not a porcelain-only test (rebase/bisect leave it clean)"
   hasnt "$wfcode" 'git pull --ff-only' \

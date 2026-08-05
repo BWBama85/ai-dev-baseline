@@ -507,7 +507,16 @@ markers it proved stale, and a delete that fails or finds a changed file forces 
 a race it is the safe one.
 
 ```bash
-SCAN="$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-scan "$STATE")"
+# Status-checked exactly like the first scan, and this is the snapshot that actually drives `rm`.
+# The library's deliberate failure path emits nothing before it dies, so an unchecked capture is
+# safe *by implementation* rather than *by contract* — but command substitution KEEPS partial
+# stdout on a non-zero exit, so a future mid-enumeration error would hand half a snapshot straight
+# to the delete loop. Fail closed structurally instead of relying on that staying true.
+if ! SCAN="$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-scan "$STATE")"; then
+  NOTES="${NOTES}REFUSED the state deletes — the pre-delete re-scan could not enumerate the state directory safely; nothing was swept
+"
+  SCAN=""
+fi
 LOCK=0
 if printf '%s\n' "$SCAN" | grep -q "^lock${TABC}"; then LOCK=1; fi
 # An `if`, not `… && RUN_NOW=keep`, for the reason given above the lock probe: an AND-list whose

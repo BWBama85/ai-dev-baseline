@@ -370,10 +370,29 @@ cmd_state_scan() {
 # (`RUN_NOW=keep`); a dropped marker reads as "no run in flight", which is precisely the verdict
 # that lets a LIVE run's gap and review artifacts be swept out from under it. Refusing the key
 # while keeping the record fails closed on both axes at once.
+# THE REJECTION HAPPENS INSIDE jq, and that placement is load-bearing rather than stylistic. Doing
+# it in the shell means going through `$(…)`, which MUTATES the value before it can be judged:
+#   - command substitution strips EVERY trailing newline, so `"dead-branch\n"` — not a branch name —
+#     arrives as the perfectly well-formed `dead-branch`, is accepted, and (with no such ref and no
+#     PR) is classified STALE and deleted. Normalizing a malformed marker into a valid-looking one
+#     is the opposite of failing closed;
+#   - JSON permits `\u0000`, and bash silently drops NUL bytes from a substitution *and* warns on
+#     stderr — mangling `"dead\u0000branch"` into `deadbranch` and breaking this function's
+#     quiet-on-every-failure contract in the same move.
+# Both were reproduced under bash 5.3 by the independent review of #273.
+#
+# The predicate is "any codepoint below 0x20", i.e. exactly `git check-ref-format`'s rule, which is
+# also the honest reason this counts as UNREADABLE rather than as a refusal: such a value is not a
+# branch name, so every ref query built from it was guaranteed to miss. `explode` is used instead
+# of a regex so the test does not depend on the regex engine's `\u` support.
 _adb_cl_marker_branch() {
   local b
   command -v jq >/dev/null 2>&1 || return 0
-  b="$(jq -r '.branch // empty' "$1" 2>/dev/null)" || return 0
+  b="$(jq -r 'if (.branch|type) == "string"
+                 and ((.branch | explode | map(select(. < 32)) | length) == 0)
+              then .branch else empty end' "$1" 2>/dev/null)" || return 0
+  # Belt and braces: jq has already excluded the delimiters, so this can only fire if that ever
+  # stops being true. A sanitizer that trusts its upstream is one upstream change from silence.
   _adb_cl_tsv_safe "$b" || return 0
   printf '%s' "$b"
 }
