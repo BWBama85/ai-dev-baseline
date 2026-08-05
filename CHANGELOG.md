@@ -9,6 +9,130 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`/roadmap` emitted a release cut against a branch nobody had checked, on any repo whose CI is
+  not GitHub Actions** (#115, consolidating #113, D45). `branch-health` distinguishes *"this repo  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->
+  has no CI"* (skip the gate and cut, the #24 degradation) from *"CI exists but has not reported"*
+  (fail closed) — and the only discriminator was `gh api repos/OWNER/REPO/actions/workflows`, which
+  enumerates **GitHub Actions and nothing else**. A CircleCI, Buildkite, Jenkins or Vercel repo has
+  zero Actions workflows, so it read as `no-ci`, the health condition was **skipped**, and the cut
+  was emitted. The change's own reasoning had applied exactly this argument to the *results* read
+  (it reads both the Checks API and the legacy commit-status API, because reading one "silently
+  ignores whole CI providers"); the **existence** probe still had the flaw that read was written to
+  avoid.
+
+  **`no-ci` now requires both probes to say no**: zero active Actions workflows **and** an
+  authoritative empty **required-status-context** set on the default branch. Required contexts are
+  provider-agnostic by construction — GitHub does not care who reports one — and they are read
+  through the ordinary contents-read branch endpoint, classified by the same reader `required-drift`
+  uses (#122), so the two can never disagree about a branch. The 200-body model is now one pure
+  classifier with two consumers: `read_branch`, and a new `repo-settings.sh
+  branch-required-contexts` subcommand that serves `/roadmap` from a body the workflow already
+  fetched.
+
+  **The names are carried, not a count**, and that is what closes the masking direction: a bare
+  "some contexts are required" flag would let one unrelated passing result satisfy "somebody
+  reported" and reach `green` while the declared provider had reported nothing — the same false-cut
+  class the Actions arm already prevents, re-entered through another door. A declared context that
+  has not reported is `indeterminate`, naming it.
+
+  **Three fail-closed edges are pinned.** A **ruleset**-protected branch reports a *real* empty
+  `contexts` array through this endpoint, so it is classified **unreadable** rather than "requires
+  nothing" — read the other way it would reach `no-ci` and cut. A failing required context is
+  `not-green`, not merely unreported. And partial reporting (one of two required contexts) is still
+  unreported.
+
+  **What this still cannot see, stated rather than implied:** an **unprotected** branch declares no
+  contexts, so a repo with external CI and no branch protection still reads `no-ci` when nothing has
+  ever reported. No non-admin endpoint answers that shape. This is strictly narrower than the
+  Actions-only probe it replaces, not a complete answer.
+
+### Added
+
+- **An owner-visible escape hatch for a repo whose CI never reports on the default branch** (#115,
+  absorbing #113, D45). Correcting the existence probe above **increases** the deadlock population:  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->
+  a repo whose workflows are `pull_request`-only has a non-empty required set and nothing on
+  default-branch HEAD, so it lands on an unreported arm every run, forever — requirements met, cut
+  never emitted, and no way to say so. Shipping the fix without the hatch would have made more repos
+  un-cuttable, not fewer, which is why they are one change.
+
+  `<!-- release-health: skip-unreported -->` in the roadmap artifact declares it. Health then
+  resolves to a new verdict, **`unreported-ok`**, which reaches `met` and emits the cut with a
+  banner that **names the declaration** instead of claiming the branch is green.
+
+  It is deliberately narrow, and every boundary is regression-tested: it applies **only** to the two
+  "declared but unreported" arms; it is evaluated **after** failing, still-running and wrong-commit
+  checks, so it can never excuse a red branch, a mid-CI run or stale evidence; and it can **never**
+  excuse a branch whose required checks could not be **read** — an owner declaration about
+  *unreported* CI is not evidence about *unreadable* CI. `skip-unreported` is the only valid value;
+  anything else (including a near-miss like `skip`, or two different values) is **reported and
+  ignored** rather than silently treated as off, because an owner who wrote it wrong would otherwise
+  face a permanent `indeterminate` with nothing explaining it.
+
+  **Its authority is re-validated where it is used.** An issue's author can keep editing its body
+  forever regardless of repo permissions, and this marker bypasses a release-safety refusal — so
+  `/roadmap` re-reads the artifact's `author_association` at the moment it acts on the marker,
+  rather than trusting the check made when the artifact was adopted. A marker in a
+  `CONTRIBUTOR`-authored artifact is ignored, and the run says so.
+
+  It produces its own word rather than reusing `skipped`: `skipped` is the **caller's** opt-out for
+  a decision that is not about shippable code (`baseline release roll`, which runs *after* the cut),
+  this is the **owner's**, about a decision that is. One word for both would leave a reader unable
+  to tell which authority let a release through.
+
+### Changed
+
+- **BREAKING (installed copies): `roadmap-lib.sh branch-health` takes three arguments and a third
+  stdin key** (#115). Symlinked installs pick this up on their next `git pull`, so a direct caller
+  that was not updated in the same change fails **loudly** — the arity check `die`s rather than
+  computing a verdict from a partial input.
+
+  | | before | after |
+  |---|---|---|
+  | arguments | `branch-health <sha> <active-workflows>` | `branch-health <sha> <active-workflows> <health-optout 0\|1>` |
+  | stdin | `{check_runs, statuses}` | `{check_runs, statuses, required_contexts}` |
+  | `required_contexts` | — | `[…]` declared · `[]` authoritatively none · `null` unreadable (fail closed) |
+  | verdicts | `green` · `not-green` · `indeterminate` · `no-ci` | …plus `unreported-ok` |
+
+  **Migration.** Get `required_contexts` from `repo-settings.sh branch-required-contexts` (pipe it
+  the ordinary `repos/{slug}/branches/{branch}` body) and splice it in with `--argjson`; pass `0`
+  for `<health-optout>` unless you are honouring the artifact marker. A missing key is an **error**,
+  never an empty collection — defaulting it would answer as though the branch authoritatively
+  declares nothing, which is a step on the path to `no-ci`. `release-ready` is unchanged apart from
+  accepting `unreported-ok` as a sixth health value.
+
+  Both in-tree callers moved with it: `/roadmap`'s readiness snippet, and this project's own
+  `.claude/skills/release/release.sh`. The release driver makes the same branch read so the run that
+  *emits* a cut and the run that *tags* it cannot disagree about a commit — but it passes `0` and
+  still accepts only `green|no-ci`, a deliberately **stricter** policy than `/roadmap`'s: it decides
+  whether to tag, having just watched the merge commit's checks settle, and a repo whose CI cannot
+  give it that evidence needs its own release skill (D14) rather than a hatch that lets this one tag
+  an unverified commit.
+
+- **The `/roadmap` workflow body derives the GitHub Actions app slug instead of restating it**
+  (#183). The body carried `github-actions` inline — it is prose an agent pastes into a shell, so it
+  can carry a value but can never source `common.sh` — and the only thing keeping that copy honest
+  was an assertion in `check-roadmap.sh` matching the rendered jq **character for character**.
+  That pinned *formatting*, not the value: dropping a space around `==`, writing `// ""`
+  differently, wrapping the line or renaming a jq variable failed the test for a reason unrelated to
+  correctness, and the natural repair was to edit the assertion — which is how a guard rots into a
+  rubber stamp.
+
+  `scripts/build.sh` now substitutes an agent-invariant `{{ACTIONS_APP_SLUG}}` token (the shape
+  `{{ARGS}}` already established), resolved from `adb_actions_app_slug` — the one home — and
+  **refuses to render an empty value**, which would emit `(.app.slug // "") == ""` and match exactly
+  the check runs whose app cannot be identified. The formatting assertion is **deleted**; what
+  replaces it pins the token in the source and the real slug in all three rendered skills, so the
+  value is checked where it actually lands. #183 costed this against "`build.sh` does not source
+  `common.sh` today" — that stopped being true in #256, which added the bash-floor gate, so the
+  token adds no coupling the interpreter gate has not already paid for.
+
+  `.claude/skills/release/release.sh` carried a fourth copy of the literal, kept in sync by nothing
+  at all; it already sources `common.sh`, so it now reads the accessor too. `check-fact-drift.sh`
+  gains an `absent:` rule — proven able to fail under `--mutation` — rejecting a hard-coded copy
+  reappearing beside the accessor.
+
+### Fixed
+
 - **A 4-space-indented workflow was invisible to check discovery, and nothing reported it**
   (#102, #262, D44). Both readers of `.github/workflows` treated indentation as the grammar — job
   keys at exactly 2 spaces, job properties at 4, steps at 6 — so a uniform 4-space workflow, which

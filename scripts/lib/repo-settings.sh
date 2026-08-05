@@ -29,6 +29,11 @@
 #   repo-settings.sh automerge-ok        # runtime guard: is it safe to arm auto-merge?
 #   repo-settings.sh required-drift      # CI lint: has a discovered job stayed non-required? (#122)
 #   repo-settings.sh merge-flag          # the `gh pr merge` flag this repo allows (--squash/…)
+#   repo-settings.sh branch-required-contexts
+#                                        # branch JSON on stdin -> the required contexts as a JSON
+#                                        # array, or `null` when the branch is protected by
+#                                        # something this endpoint cannot describe (#115). Pure:
+#                                        # jq only, no gh — /roadmap owns that read.
 #   (any subcommand) [--workflow-dir DIR]  # discover from DIR instead of ./.github/workflows —
 #                                        # e.g. the merged default-branch tree, not this branch
 #   repo-settings.sh -h | --help
@@ -592,19 +597,27 @@ shared_contexts() { LC_ALL=C comm -12 <(nz "$1") <(nz "$2"); }
 BR_STATE=""       # checks | unprotected | opaque | error
 BR_CONTEXTS=""    # the live required contexts, sorted, one per line (empty when none)
 
-# read_branch <branch> — classify the branch's required-check state via the contents-read endpoint.
-read_branch() {
-  local branch="$1" body
-  BR_STATE=""; BR_CONTEXTS=""
-  # -i so the HTTP status is inspectable; a 5xx or a network blip must never look like "no checks".
-  _adb_rs_api_i "repos/$REPO_SLUG/branches/$branch"
-  [ "$RS_STATUS" = "200" ] || { BR_STATE="error"; return 0; }
-  body="$RS_BODY"
+# _adb_rs_classify_branch — stdin: a 200 response BODY from `repos/{slug}/branches/{branch}`.
+# Prints the classification on line 1 (`checks` | `unprotected` | `opaque`) and, for `checks`
+# only, the required contexts on the following lines, LC_ALL=C-sorted.
+#
+# SPLIT OUT FROM `read_branch` (#115) so the 200-body MODEL has ONE home. It now has two
+# consumers with different transports: `read_branch` below, which owns the HTTP read and maps a
+# non-200 to `error`, and the `branch-required-contexts` subcommand, which serves /roadmap's
+# health gate from a body the workflow already fetched. Restating these three arms in the second
+# consumer is exactly the drift Golden Rule 4 forbids — and the arm that would rot first is the
+# ruleset one, whose whole point is that it is not obvious.
+#
+# NEVER returns non-zero: every input is classifiable, because "I could not classify this" IS
+# `opaque`. Callers distinguish transport failure themselves.
+_adb_rs_classify_branch() {
+  local body
+  body="$(cat)"
 
   # `.protected == false` is an AUTHORITATIVE "nothing protects this branch" — not an unreadable
   # state. Every discovered job is genuinely ungated there, which is real drift worth reporting.
   if printf '%s' "$body" | jq -e '.protected == false' >/dev/null 2>&1; then
-    BR_STATE="unprotected"; return 0
+    printf 'unprotected\n'; return 0
   fi
   # Protected: the contexts array must be readable as an array AND the legacy protection block it
   # hangs off must actually be ENABLED. Both halves are load-bearing, and the second one is not
@@ -631,11 +644,27 @@ read_branch() {
   if printf '%s' "$body" \
        | jq -e '.protection.enabled == true
                 and (.protection.required_status_checks.contexts | type) == "array"' >/dev/null 2>&1; then
-    BR_STATE="checks"
-    BR_CONTEXTS="$(printf '%s' "$body" | jq -r '.protection.required_status_checks.contexts[]' 2>/dev/null | LC_ALL=C sort)"
+    printf 'checks\n'
+    printf '%s' "$body" | jq -r '.protection.required_status_checks.contexts[]' 2>/dev/null | LC_ALL=C sort
     return 0
   fi
-  BR_STATE="opaque"
+  printf 'opaque\n'
+  return 0
+}
+
+# read_branch <branch> — classify the branch's required-check state via the contents-read endpoint.
+read_branch() {
+  local branch="$1" out
+  BR_STATE=""; BR_CONTEXTS=""
+  # -i so the HTTP status is inspectable; a 5xx or a network blip must never look like "no checks".
+  _adb_rs_api_i "repos/$REPO_SLUG/branches/$branch"
+  [ "$RS_STATUS" = "200" ] || { BR_STATE="error"; return 0; }
+  out="$(printf '%s' "$RS_BODY" | _adb_rs_classify_branch)"
+  BR_STATE="${out%%$'\n'*}"
+  # Everything after line 1 is the context list (empty for every state but `checks`). `sed 1d`
+  # rather than `${out#*$'\n'}`, which leaves the WHOLE string when there is no newline at all —
+  # a one-line `unprotected` answer would otherwise become a required context named "unprotected".
+  BR_CONTEXTS="$(printf '%s' "$out" | sed '1d')"
   return 0
 }
 
@@ -1240,6 +1269,52 @@ cmd_checks() {
   discover_checks "$branch"
 }
 
+# cmd_branch_required_contexts — stdin: a 200 body from `repos/{slug}/branches/{branch}`.
+# Prints ONE line of JSON: the required-status-context set as an array, or `null`.
+#
+# WHY THIS EXISTS (#115). `branch-health` used to infer "this repo has no CI" from
+# `actions/workflows`, an ACTIONS-ONLY inventory — so a CircleCI/Buildkite/Jenkins repo read as
+# `no-ci`, the health condition was skipped, and /roadmap emitted a release cut against a branch
+# nobody had checked. The required-context set is the provider-agnostic evidence: whoever reports
+# it, a declared context is a declaration that CI exists.
+#
+# THE OUTPUT IS JSON, not a word plus lines, because the consumer splices it straight into
+# `branch-health`'s stdin document with `--argjson`. A shell-side list would have to be re-quoted
+# into JSON at the call site, and a context name legitimately contains spaces, `/` and `:` — which
+# is precisely where a hand-rolled join goes wrong.
+#
+# THE THREE ANSWERS, and why `null` is not `[]`:
+#   [...]  `checks` — the branch declares these contexts. AUTHORITATIVE, even when empty.
+#   []     `unprotected`, or classic protection with checks off — AUTHORITATIVELY nothing declared.
+#   null   `opaque` — protected by something this endpoint does not describe (a repository
+#          RULESET), or a body that would not parse. NOT the same as "nothing is required":
+#          collapsing it to `[]` would let a ruleset-protected repo reach `no-ci` and cut on an
+#          unverified branch, which is the fail-open this whole change removes. `branch-health`
+#          fails closed on `null` and the owner opt-out deliberately cannot excuse it.
+#
+# PURE: jq only. No gh, no auth, no network — the caller owns the read, exactly as `branch-health`
+# and every other /roadmap predicate are pure. That is also what lets the offline suites drive it
+# with the same fixtures `read_branch` uses.
+cmd_branch_required_contexts() {
+  [ "$#" -eq 0 ] || { echo "repo-settings: branch-required-contexts takes no arguments (branch JSON on stdin)" >&2; exit 2; }
+  command -v jq >/dev/null 2>&1 || { echo "repo-settings: jq is required" >&2; exit 1; }
+  local out state
+  out="$(_adb_rs_classify_branch)"
+  state="${out%%$'\n'*}"
+  case "$state" in
+    checks)
+      # `-R` + `-s` + `split`: build the array from the raw lines rather than interpolating them,
+      # so a context name carrying a quote, a backslash or a tab cannot break out of the JSON.
+      # An EMPTY context list must still print `[]` — `split("\n")` on "" yields `[""]`, so the
+      # blank-line filter is what keeps a checks-with-no-contexts branch from declaring a context
+      # named "" that nothing can ever report (a phantom, and a permanent `indeterminate`).
+      printf '%s' "$out" | sed '1d' \
+        | jq -R -s 'split("\n") | map(select(length > 0))' -c ;;
+    unprotected) printf '[]\n' ;;
+    *)           printf 'null\n' ;;
+  esac
+}
+
 # --- arg parsing ---------------------------------------------------------------------------
 # Per-subcommand on purpose (the sibling release-convention.sh precedent): a shared parser would
 # make `status --dry-run` and `checks --strict` silently valid. Two parsers, ONE copy of each
@@ -1292,8 +1367,12 @@ case "$SUB" in
   automerge-ok)   parse_read_opts "$@";  cmd_automerge_ok ;;
   required-drift) parse_read_opts "$@";  cmd_required_drift ;;
   merge-flag)     parse_read_opts "$@";  cmd_merge_flag ;;
+  # Deliberately NOT through parse_read_opts: this one takes no options at all (the caller already
+  # chose the branch when it made the read), and accepting `--branch` would advertise a knob that
+  # cannot affect a body that is already on stdin.
+  branch-required-contexts) cmd_branch_required_contexts "$@" ;;
   apply)          parse_apply_opts "$@"; cmd_apply ;;
   -h|--help)      usage; exit 0 ;;
-  *) echo "repo-settings: unknown subcommand '$SUB' (expected 'checks', 'status', 'apply', 'automerge-ok', 'required-drift', or 'merge-flag')" >&2
+  *) echo "repo-settings: unknown subcommand '$SUB' (expected 'checks', 'status', 'apply', 'automerge-ok', 'required-drift', 'merge-flag', or 'branch-required-contexts')" >&2
      usage >&2; exit 2 ;;
 esac

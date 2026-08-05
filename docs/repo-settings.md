@@ -222,6 +222,43 @@ would report *every* discovered job as drifted — a repo-wide false positive th
 and teaches the operator to ignore the lint. A genuinely **unprotected** branch (`protected:
 false`) is different: that is an authoritative "nothing gates this", and it is real drift.
 
+### The same classification, for a second consumer: `branch-required-contexts` (#115)
+
+`/roadmap`'s release-health gate needs the same three-way answer for a different question — *does
+CI exist on this branch at all?* Its previous evidence was the **Actions-only** workflow inventory,
+so a CircleCI/Buildkite/Jenkins repo read as "no CI", the health condition was skipped, and the
+release cut went out against a branch nobody had checked. Required status contexts are the
+provider-agnostic evidence: GitHub does not care who reports one, so a declared context is a
+declaration that CI exists here.
+
+So the 200-body model above is now a **pure classifier with two consumers** — `read_branch`, which
+owns the HTTP read, and the `branch-required-contexts` subcommand, which serves `/roadmap` from a
+body the workflow already fetched:
+
+```console
+$ printf '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":["ci"]}}}' \
+    | repo-settings.sh branch-required-contexts
+["ci"]
+```
+
+| Branch shape | Prints | Means |
+|---|---|---|
+| protected, contexts readable | `["…"]` | these contexts are declared |
+| `protected: false`, or classic protection with checks off | `[]` | **authoritatively** nothing declared |
+| ruleset-protected, unreadable list, or an unparseable body | `null` | **unknown** — fail closed |
+
+The `[]` / `null` distinction is the whole safety property, and it is the same one that makes
+`opaque` fail closed above. `[]` combined with zero Actions workflows is what lets a genuinely
+CI-less repo release (#24). `null` must never reach that arm — a ruleset-protected branch reports a
+*real* empty `contexts` array, so a classifier that answered `[]` there would let `/roadmap` cut on
+a branch whose protection it could not read.
+
+It is **pure** (jq only — no `gh`, no auth, no network): the caller owns the read, exactly like
+every other `/roadmap` predicate, which is also what lets the offline suite drive it with the same
+fixtures `read_branch` uses. Splitting the classifier out rather than restating those three arms in
+a second place is Golden Rule 4 — and the arm that would have rotted first is the ruleset one,
+whose entire point is that it is not obvious.
+
 **Rulesets are the sharp edge here.** This endpoint's `protection` object is the *legacy*
 classic-protection view. A branch protected by a repository **ruleset** reports `protected: true`
 with `protection.enabled: false` and `contexts: []` — a real, empty array. Accepting that as an

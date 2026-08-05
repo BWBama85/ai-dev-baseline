@@ -530,13 +530,36 @@ fact branch-health-predicate "fixed:branch-health" -- \
 # state this fix removes. The negative pattern is anchored to a NON-comment line, because both
 # libraries quote the retired literal in prose to explain the bug.
 #
-# base/workflows/roadmap.md restates the value deliberately: it is prose an agent pastes into a
-# shell, so it can carry a value but never source a library. That is why it is pinned here rather
-# than deduplicated away.
+# `base/workflows/roadmap.md` USED TO restate the value and is pinned here no longer (#183). It is
+# still prose an agent pastes into a shell, so it still cannot source a library — but it no longer
+# has to carry a hand-written copy: it writes `{{ACTIONS_APP_SLUG}}` and `scripts/build.sh` derives
+# the value from the accessor at render time. Keeping it in this fact would now pin the RENDERED
+# value into the SOURCE, which is precisely the copy the token removed.
+#
+# `scripts/lib/common.sh` is therefore the last file that legitimately spells the literal — the one
+# home the accessor reads from.
 fact actions-slug-value  "fixed:github-actions" -- \
-  scripts/lib/common.sh base/workflows/roadmap.md
+  scripts/lib/common.sh
+# The ACCESSOR's consumers. `scripts/build.sh` joins them because the render is now one of them
+# (#183), and `.claude/skills/release/release.sh` because it stopped carrying its own copy of the
+# literal in the same change — it already sources common.sh, so the copy was never necessary, only
+# unnoticed. A file in this list that quietly reverted to a hard-coded value is what the `absent:`
+# rule below catches.
 fact actions-slug-home   "fixed:adb_actions_app_slug" -- \
-  scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh
+  scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh \
+  scripts/build.sh .claude/skills/release/release.sh
+# THE COPY MUST NOT COME BACK BESIDE THE ACCESSOR. Positive presence alone would pass a file that
+# calls `adb_actions_app_slug` AND keeps a hard-coded literal next to it — exactly the state #183
+# removed from the workflow body and from the release driver. Anchored to a NON-comment line,
+# because several of these files quote the value in prose to explain the bug.
+fact actions-slug-nocopy 'absent:^[[:space:]]*[^#[:space:]].*"github-actions"' \
+  'fires:  aslug="github-actions"' -- \
+  scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh \
+  scripts/build.sh .claude/skills/release/release.sh base/workflows/roadmap.md
+# The build TOKEN and its mapping are one fact: a body that writes `{{ACTIONS_APP_SLUG}}` with no
+# mapping in build.sh is a fail-loud build, but a mapping with no consumer is a silently dead knob.
+fact actions-slug-token  "fixed:{{ACTIONS_APP_SLUG}}" -- \
+  scripts/build.sh base/workflows/roadmap.md
 # The witness is the BRACKETED test, not a bare `slug == "github"` — and that is not a stylistic
 # choice. `[^#[:space:]]` consumes the line's first non-blank character, so the `(slug|aslug)`
 # group has to match somewhere AFTER it; a line that starts with the word `slug` therefore does not

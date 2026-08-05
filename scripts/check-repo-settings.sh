@@ -67,7 +67,58 @@ rsx --help;  yes "$RC_" "--help exits 0"
 rsx;         no  "$RC_" "no subcommand exits nonzero"
 rsx bogus;   no  "$RC_" "unknown subcommand exits nonzero"
 has "$OUT" "unknown subcommand 'bogus'" "unknown subcommand names itself"
-has "$OUT" "'checks', 'status', 'apply', 'automerge-ok', 'required-drift', or 'merge-flag'" "unknown subcommand lists every subcommand"
+has "$OUT" "'checks', 'status', 'apply', 'automerge-ok', 'required-drift', 'merge-flag', or 'branch-required-contexts'" "unknown subcommand lists every subcommand"
+
+# ============================ branch-required-contexts (#115) ============================
+# The provider-agnostic CI-existence evidence /roadmap's health gate reads. PURE — jq only, body on
+# stdin, no gh — so it is driven here with the SAME fixtures `read_branch` uses, which is the point
+# of factoring the 200-body model into one classifier: the two consumers cannot disagree about what
+# a ruleset-protected branch means.
+#
+# The distinction that carries the safety property is `[]` vs `null`. `[]` is an AUTHORITATIVE
+# "this branch declares nothing", and combined with zero Actions workflows it is what lets a
+# genuinely CI-less repo release (#24). `null` is "we could not tell", and it must never reach that
+# arm — a ruleset-protected branch reports a REAL empty `contexts` array, so a classifier that
+# answered `[]` there would let /roadmap cut on a branch whose protection it could not read.
+brc() { OUT="$(printf '%s' "$1" | bash "$RS" branch-required-contexts 2>&1)"; RC_=$?; }
+
+brc '{"protected":false}'
+eq "$OUT" '[]' "an UNPROTECTED branch authoritatively declares no contexts"; yes "$RC_" "...and exits 0"
+brc '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":[]}}}'
+eq "$OUT" '[]' "classic protection with required checks OFF is an authoritative empty set"
+brc '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":["ci"]}}}'
+eq "$OUT" '["ci"]' "a declared context comes back as a JSON array"
+# SORTED and de-quoted the same way `read_branch` produces BR_CONTEXTS, so the two consumers of the
+# one classifier cannot report different sets for the same branch.
+brc '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":["zeta","alpha"]}}}'
+eq "$OUT" '["alpha","zeta"]' "...LC_ALL=C-sorted, matching read_branch's own contract"
+# A context name legitimately contains spaces, `/` and `:` — and may contain a quote or a tab. The
+# output is built with jq from raw lines, never interpolated, so none of those can break the JSON
+# the caller is about to splice into a health document with --argjson.
+brc '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":["ci/circleci: build"]}}}'
+eq "$OUT" '["ci/circleci: build"]' "a context with a slash, colon and space survives intact"
+brc "$(jq -nc '{protected:true,protection:{enabled:true,required_status_checks:{contexts:["say \"hi\""]}}}')"
+eq "$OUT" '["say \"hi\""]' "...and one carrying a double quote is escaped, not broken out of"
+# THE THREE UNREADABLE SHAPES, all `null`. A ruleset-protected branch is the one that matters most:
+# `contexts` IS an array there, so an array-only test accepts it as "requires nothing".
+brc '{"protected":true,"protection":{"enabled":false,"required_status_checks":{"enforcement_level":"off","contexts":[]}}}'
+eq "$OUT" 'null' "a RULESET-protected branch is null (unknown), never an empty set"
+brc '{"protected":true,"protection":{"enabled":true}}'
+eq "$OUT" 'null' "protected with no readable context list is null"
+brc 'not json at all'
+eq "$OUT" 'null' "an unparseable body is null, never an empty set"
+# Whatever the answer, it must be ONE line of valid JSON: the caller feeds it straight to --argjson.
+for shape in '{"protected":false}' '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":["a","b"]}}}' 'garbage'; do
+  brc "$shape"
+  # `jq .`, NOT `jq -e .`: with -e a valid JSON `null` exits 1, so the null answer — the one that
+  # carries the fail-closed property — would read as "not JSON". The question here is parseability,
+  # not truthiness.
+  if printf '%s' "$OUT" | jq . >/dev/null 2>&1; then ok; else bad "branch-required-contexts emitted non-JSON for [$shape]: $OUT"; fi
+done
+rsx branch-required-contexts --branch main </dev/null
+no "$RC_" "branch-required-contexts takes no options (the caller already chose the branch when it read)"
+rsx branch-required-contexts extra </dev/null
+no "$RC_" "...and no positional arguments"
 
 # ============================ arg parsing (per-subcommand on purpose) ============================
 # A shared parser would make `status --dry-run` and `checks --strict` silently valid, so both

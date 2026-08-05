@@ -27,10 +27,12 @@
 #
 # Usage:
 #   roadmap-lib.sh pr-targets-issue <issue-number> <owner/repo>   # PR JSON on stdin
-#   roadmap-lib.sh branch-health <expected-sha> <active-workflows> # {check_runs,statuses} on stdin
+#   roadmap-lib.sh branch-health <expected-sha> <active-workflows> <health-optout 0|1>
+#                                     # {check_runs,statuses,required_contexts} on stdin
 #   roadmap-lib.sh release-ready <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1> <health>
 #   roadmap-lib.sh release-counts <blocker-label> [roadmap-issue-number]   # milestone JSON on stdin
 #   roadmap-lib.sh marker-title                                   # roadmap artifact body on stdin
+#   roadmap-lib.sh health-optout                                  # roadmap artifact body on stdin
 #   roadmap-lib.sh deps-from-body [self-issue-number]             # issue/decision body on stdin
 #   roadmap-lib.sh deps-ambiguous [self-issue-number]             # issue/decision body on stdin
 #   roadmap-lib.sh decisions                                      # roadmap artifact body on stdin
@@ -230,11 +232,16 @@ cmd_pr_targets_issue() {
 #
 #   green         every check that ran on the expected commit concluded non-failing.
 #   not-green     at least one check on that commit concluded in a failing state.
-#   indeterminate a check is still running, reports no conclusion, or belongs to a DIFFERENT
-#                 commit — i.e. the answer is unknown. The caller FAILS CLOSED on this.
-#   no-ci         this repo has no CI at all (no active workflows AND no checks on the commit),
-#                 so there is nothing to verify. The caller proceeds and says the check was
-#                 skipped — #24's "must not deadlock a repo that has no CI" degradation.
+#   indeterminate a check is still running, reports no conclusion, belongs to a DIFFERENT commit,
+#                 or CI is DECLARED here and has not reported — i.e. the answer is unknown. The
+#                 caller FAILS CLOSED on this.
+#   no-ci         this repo has no CI at all, so there is nothing to verify. The caller proceeds
+#                 and says the check was skipped — #24's "must not deadlock a repo that has no
+#                 CI" degradation. Requires POSITIVE evidence from BOTH probes (see below).
+#   unreported-ok CI is declared but reports nothing on the default branch, AND the roadmap
+#                 artifact declares that this is expected (#115, the PR-only-CI escape hatch).
+#                 A deliberate owner opt-out, reachable ONLY from the two unreported arms — never
+#                 from a failure, a running check, stale evidence, or unreadable protection.
 #
 # WHY NOT `gh run list --branch <default> --limit 1` (the shape #78's body suggested): that lists
 # workflow RUNS by branch, newest first, so it can answer with an unrelated scheduled workflow, a
@@ -251,16 +258,63 @@ cmd_pr_targets_issue() {
 #   <expected-sha>   the default branch's HEAD commit, resolved live by the caller. Every
 #                    check-run is matched against it: a check attached to another commit is stale
 #                    evidence, so it makes the answer `indeterminate`, never `green`.
-#   <active-workflows>  count of ACTIVE CI workflow definitions (0 = none configured). This is the
-#                    only thing that distinguishes "no CI exists" from "CI exists but has not
-#                    reported here yet" — `gh run list` returns `[]` for both, which is precisely
-#                    why it cannot be the discriminator.
+#   <active-workflows>  count of ACTIVE GitHub ACTIONS workflow definitions (0 = none). This is
+#                    ONE of the two existence probes, and it speaks only for Actions.
+#   <health-optout>  0|1. 1 = the roadmap artifact declares `release-health: skip-unreported`,
+#                    i.e. the owner states that this repo's CI legitimately never reports on the
+#                    default branch (#115, was #113). See "THE ESCAPE HATCH" below for exactly  # adb-claim-ok: #113 was consolidated into #115 and closed as superseded — history, not tracked work
+#                    which arms it may and may not excuse.
 #
-# stdin is ONE JSON object the caller assembles from its two reads, so this stays pure:
-#   {"check_runs": <.check_runs of the check-runs response>, "statuses": <.statuses of the status response>}
-# BOTH keys are REQUIRED and must be arrays. A missing key is an ERROR, not an empty collection:
-# defaulting it would turn an unreadable response into `no-ci`, which reaches `met` — a release
-# fabricated from a health read nobody could parse.
+# stdin is ONE JSON object the caller assembles from its reads, so this stays pure:
+#   {"check_runs": <.check_runs of the check-runs response>,
+#    "statuses":   <.statuses of the status response>,
+#    "required_contexts": <repo-settings.sh branch-required-contexts> }
+# ALL THREE keys are REQUIRED. `check_runs`/`statuses` must be arrays; `required_contexts` must be
+# an array OR null. A missing key is an ERROR, not an empty collection: defaulting it would turn
+# an unreadable response into `no-ci`, which reaches `met` — a release fabricated from a health
+# read nobody could parse.
+#
+# EXISTENCE IS TWO PROBES, AND `no-ci` NEEDS BOTH TO SAY NO (#115). Until this change the ONLY
+# discriminator between "no CI exists" and "CI exists but has not reported" was
+# `gh api repos/$REPO/actions/workflows` — which enumerates GitHub ACTIONS AND NOTHING ELSE. The
+# result was the mirror image of the flaw the RESULTS read was written to avoid: a repo whose CI
+# is CircleCI, Buildkite, Jenkins or Vercel has zero Actions workflows, so it read as `no-ci`,
+# the health condition was SKIPPED, and the cut went out against a branch nobody had checked.
+# Reproduced live: `{"check_runs":[],"statuses":[]}` + 0 workflows -> `no-ci` -> `met`.
+#
+# So `no-ci` now requires POSITIVE evidence from both:
+#   * `<active-workflows>` is 0                       (Actions declares nothing), AND
+#   * `required_contexts` is an AUTHORITATIVE `[]`    (the branch declares nothing).
+# `required_contexts` is provider-agnostic by construction: GitHub does not care who reports a
+# required status context, so a declared context is a declaration that CI exists here no matter
+# which vendor supplies it.
+#
+# WHY THE NAMES AND NOT A COUNT. A bare "some contexts are required" flag would let ONE unrelated
+# passing result satisfy `$total > 0` and reach `green` while the declared provider had reported
+# nothing — the exact false-cut class the Actions arm below exists to prevent, re-entered through
+# a different door. Carrying the names lets this predicate ask the only question that settles it:
+# has every context this branch REQUIRES actually reported on this commit?
+#
+# WHAT THIS STILL CANNOT SEE, stated plainly rather than implied. An UNPROTECTED branch declares
+# no contexts, so a repo with external CI and no branch protection still reads `no-ci` when
+# nothing has reported. No non-admin endpoint answers "does CI exist" for that shape — the
+# admin-only protection endpoint would not either, since there is nothing to protect. This is
+# strictly narrower than the Actions-only probe it replaces, and the residue is documented in
+# docs/release-goal-convention.md rather than papered over.
+#
+# THE ESCAPE HATCH (#115, absorbing #113). Correcting the existence probe INCREASES the population  # adb-claim-ok: #113 was consolidated into #115 and closed as superseded — history, not tracked work
+# that deadlocks: a repo whose workflows are `pull_request`-only has a non-empty required set and
+# nothing on default-branch HEAD, so it lands on an unreported arm forever and can never cut. The
+# owner opt-out is what makes that repo reachable again, and it is deliberately narrow:
+#   * it applies ONLY to the two "CI is declared but has not reported" arms;
+#   * it is tested AFTER failure, still-running and wrong-commit, so it can never excuse a RED
+#     branch, a mid-CI run, or stale evidence — those arms match first and win;
+#   * it can NEVER excuse `required_contexts == null`. That means "protected by something this
+#     endpoint cannot describe", i.e. we could not establish what CI is declared at all, and an
+#     owner declaration about UNREPORTED CI is not evidence about UNREADABLE CI. Fail closed.
+# The opt-out prints `unreported-ok`, NOT `skipped`: `skipped` is the caller-side opt-out for a
+# decision that is not about shippable code (`baseline release roll`, after the cut), and this one
+# very much is about shippable code. Collapsing them would make the two authorities indistinguishable.
 #
 # Check runs are attributed by `app.slug`: `github-actions` is GitHub Actions (the value comes from
 # `adb_actions_app_slug` in common.sh — the ONE home, #179), anything else is another Checks API
@@ -270,8 +324,8 @@ cmd_pr_targets_issue() {
 # A conclusion of `skipped` or `neutral` is NOT a failure — that is how GitHub itself scores a
 # required check, and treating a skipped job as red would wedge every repo with conditional jobs.
 cmd_branch_health() {
-  [ "$#" -eq 2 ] || die "branch-health: needs exactly 2 args: <expected-sha> <active-workflows> (check JSON on stdin)"
-  local sha="$1" workflows="$2" json out
+  [ "$#" -eq 3 ] || die "branch-health: needs exactly 3 args: <expected-sha> <active-workflows> <health-optout 0|1> (check JSON on stdin)"
+  local sha="$1" workflows="$2" optout="$3" json out
   # A SHA is required and must look like one: defaulting it would let a caller that failed to
   # resolve HEAD compare every check against the empty string and get a confident `green`.
   case "$sha" in
@@ -279,6 +333,14 @@ cmd_branch_health() {
   esac
   [ "${#sha}" -ge 7 ] || die "branch-health: <expected-sha> is too short to identify a commit (got '$sha')"
   is_uint "$workflows" || die "branch-health: <active-workflows> must be a non-negative integer (got '$workflows')"
+  # An UNRECOGNISED opt-out is an ERROR, never a quiet 0 and never a quiet 1. Reading a typo as 0
+  # would silently disarm an escape hatch the owner declared (the repo deadlocks and nobody knows
+  # why); reading it as 1 would arm one nobody declared, which is the direction that cuts a
+  # release. Fail loud instead of choosing which way to be wrong.
+  case "$optout" in
+    0|1) : ;;
+    *) die "branch-health: <health-optout> must be 0 or 1 (got '$optout')" ;;
+  esac
   command -v jq >/dev/null 2>&1 || die "branch-health: jq is required"
 
   json="$(cat)"
@@ -300,17 +362,31 @@ cmd_branch_health() {
   aslug="$(adb_actions_app_slug 2>/dev/null)" || aslug=""
   [ -n "$aslug" ] || die "branch-health: adb_actions_app_slug is unavailable or empty (broken install)"
   out="$(printf '%s' "$json" | jq -r --arg sha "$sha" --argjson wf "$workflows" \
+                                     --argjson optout "$optout" \
                                      --arg aslug "$aslug" '
     if type != "object" then error("not an object") else . end
-    # BOTH keys must be PRESENT and be arrays. Defaulting a missing key to [] would convert a
-    # malformed or truncated health response into "two empty collections", which reads as `no-ci`
-    # and lets release-ready return `met` — fabricating a release from a response nobody could
-    # parse. `no-ci` must mean "explicitly nothing reported", never "the shape was unreadable".
+    # ALL THREE keys must be PRESENT. Defaulting a missing key would convert a malformed or
+    # truncated health response into empty collections, which reads as `no-ci` and lets
+    # release-ready return `met` — fabricating a release from a response nobody could parse.
+    # `no-ci` must mean "explicitly nothing declared and nothing reported", never "the shape was
+    # unreadable". `required_contexts` is held to the same standard for the same reason, and it is
+    # the newest way to get this wrong: a caller that forgot to add the key would otherwise be
+    # answered as though the branch authoritatively declares nothing.
     | if (has("check_runs") | not) or (has("statuses") | not)
       then error("check_runs and statuses are both required") else . end
+    | if (has("required_contexts") | not)
+      then error("required_contexts is required (an array, or null when it could not be read)") else . end
     | .check_runs as $runs
     | .statuses  as $sts
     | if ($runs | type) != "array" or ($sts | type) != "array" then error("check_runs/statuses must be arrays") else . end
+    # null is a MEANINGFUL value here ("could not be classified"), so it is accepted while every
+    # other non-array shape is still an error. `$reqknown` is what the arms below branch on, so the
+    # null-vs-empty distinction is made ONCE, here, rather than re-derived per arm.
+    | .required_contexts as $reqraw
+    | if ($reqraw != null) and (($reqraw | type) != "array")
+      then error("required_contexts must be an array or null") else . end
+    | ($reqraw != null) as $reqknown
+    | (($reqraw // []) | map(select(type == "string"))) as $req
     # A check attached to a different commit is evidence about the WRONG build. Count it, and let
     # it force `indeterminate` below — dropping it silently could leave zero checks and read as
     # no-ci, inventing a pass out of a stale read.
@@ -347,12 +423,23 @@ cmd_branch_health() {
     # direction is safe here, because falling through leaves the verdict indeterminate, never green.
     | ([$mine[] | select((.app.slug // "") == $aslug)]) as $actions
     | (($mine | length) + ($sts | length)) as $total
+    # WHAT REPORTED, BY NAME — the provider-agnostic half of the existence model (#115). GitHub
+    # matches a required status context against a check run`s `name` OR a commit status`s
+    # `context`, so both surfaces feed one set. `unique` because a context may legitimately appear
+    # on both (a re-run, or a provider that mirrors itself), and a duplicate must not make the
+    # subtraction below disagree with itself.
+    | (([$mine[] | .name? // empty] + [$sts[] | .context? // empty]) | unique) as $reported
+    # Contexts this branch REQUIRES that have not reported on this commit. `$req - $reported` and
+    # not a membership loop: jq`s array subtraction is exact-value, which is what GitHub does too
+    # (context matching is a literal string compare, not a prefix or a glob).
+    | ($req - $reported) as $missing
     | if   ($bad | length) > 0 or ($stbad | length) > 0 then
              "not-green\nfailing: " + ([($bad[] | .name // "check"), ($stbad[] | .context // "status")] | join(", "))
       elif ($pending | length) > 0 or ($stpending | length) > 0 then
              "indeterminate\nstill running: " + ([($pending[] | .name // "check"), ($stpending[] | .context // "status")] | join(", "))
       elif $wrongsha > 0 then
              "indeterminate\n" + ($wrongsha|tostring) + " check(s) report a different commit than " + $sha
+      # --- the two UNREPORTED arms; these are the only two the owner opt-out may excuse --------
       # Active workflows that produced no ACTIONS check run on this commit are unreported, and
       # that is true no matter what anything else said. Testing this before `green` is the whole
       # point: `$total` counts "somebody reported", not "everybody reported", so without this arm
@@ -364,9 +451,35 @@ cmd_branch_health() {
       #     plain "are there any check runs" test cannot tell apart from an Actions run.
       # Adding an unrelated passing result must never convert a refusal into a release.
       elif $wf > 0 and ($actions | length) == 0 then
-             "indeterminate\n" + ($wf|tostring) + " active workflow(s) exist but Actions has not reported on " + $sha
+             (if $optout == 1 then "unreported-ok\ndeclared: " else "indeterminate\n" end)
+             + ($wf|tostring) + " active workflow(s) exist but Actions has not reported on " + $sha
+      # The SAME rule, generalized past Actions (#115). A context this branch requires that has not
+      # reported is unreported CI, whoever was supposed to report it — and it is checked before
+      # `green` for the identical reason the Actions arm is: an unrelated provider`s green result
+      # must never stand in for the declared one. This is the arm that makes a CircleCI/Buildkite
+      # repo behave like an Actions repo instead of like a repo with no CI.
+      elif ($missing | length) > 0 then
+             (if $optout == 1 then "unreported-ok\ndeclared: " else "indeterminate\n" end)
+             + ($missing | length | tostring) + " required context(s) have not reported on " + $sha
+             + ": " + ($missing | join(", "))
+      # --- fail-closed, and NOT excusable -----------------------------------------------------
+      # `required_contexts == null` means the branch is protected by something this endpoint cannot
+      # describe (a repository RULESET), or the body would not parse. With nothing reported either,
+      # we cannot tell "no CI here" from "CI that has not run", and the owner`s opt-out speaks to
+      # UNREPORTED CI, not to UNREADABLE CI — so it deliberately does not reach this arm. Placed
+      # after the two unreported arms so a repo whose Actions or required contexts DO settle the
+      # question is answered by that evidence rather than by the unreadable protection view.
+      elif ($reqknown | not) and $total == 0 then
+             "indeterminate\nthe required checks on this branch could not be read, so \"no CI\" cannot be concluded for " + $sha
       elif $total > 0 then "green"
-      elif $wf == 0 then "no-ci"
+      # `no-ci` needs BOTH probes to say no, and `$reqknown` is what keeps an unreadable branch out.
+      elif $wf == 0 and $reqknown and ($req | length) == 0 then "no-ci"
+      # UNREACHABLE under the arms above, and kept as the fail-closed default rather than deleted
+      # (#115 asked for this arm to be revived or removed, not left as dead code reading as a live
+      # safety net). Reaching it needs $total == 0 with $reqknown true, $missing empty — which
+      # forces $req empty — and $wf > 0 with $actions non-empty, but $actions is a subset of $mine
+      # so a non-empty $actions makes $total > 0. A jq `if` still needs a final `else`, and the only
+      # safe answer in an unclassifiable state is refusal: never `green`, never `no-ci`.
       else "indeterminate\nno CI has reported on " + $sha
       end
   ' 2>/dev/null)" || die "branch-health: could not parse the health JSON (malformed input)"
@@ -387,7 +500,7 @@ cmd_branch_health() {
 #   <open-issues>    open issues in the milestone (any label). Used in fallback mode.
 #   <canceled>       1 = a `release-blocker` in the milestone is closed as NOT_PLANNED.
 #   <health>         the default branch's live health, from `branch-health` (issue #78):
-#                    green | not-green | indeterminate | no-ci | skipped.
+#                    green | not-green | indeterminate | no-ci | unreported-ok | skipped.
 #
 # BOTH counts are passed and the LIBRARY selects between them. The caller could equally well
 # pass one pre-selected count, but then the mode rule above would live in prose an agent
@@ -402,6 +515,14 @@ cmd_branch_health() {
 # `baseline release roll`, which runs AFTER the cut and archives bookkeeping); the difference is
 # that the opt-out is written at the call site, where a reviewer can see it.
 #
+# `unreported-ok` IS A DIFFERENT OPT-OUT AND IS DELIBERATELY A DIFFERENT WORD (#115). It means the
+# decision IS about shippable code, the branch could not be verified because this repo's CI does
+# not report there, and the OWNER declared that in the roadmap artifact. Two authorities, two
+# spellings: `skipped` is chosen by the CALLER at the call site, `unreported-ok` is chosen by the
+# artifact and computed by `branch-health`, which alone decides that no failing, running or stale
+# check was present first. Reusing `skipped` for both would leave a reader unable to tell which
+# authority let a release through, and would let a caller hand-write the owner's decision.
+#
 # Verdicts, in precedence order (first match wins — every input maps to exactly one):
 #   unarmed — the milestone has no requirements yet. Neither ready nor "roadmap complete";
 #             an empty release set must never emit a cut.
@@ -415,7 +536,8 @@ cmd_branch_health() {
 #   indeterminate — requirements are satisfied but health could not be established. FAIL CLOSED:
 #                   an unknown build is treated as unshippable, never as green.
 #   met     — armed, satisfied, nothing canceled, and the branch is green (or there is no CI to
-#             check) → emit the release command.
+#             check, or the owner declared that this repo's CI does not report on the default
+#             branch) → emit the release command.
 #
 # Precedence rationale for the combinations that are not self-evident:
 #   unarmed + canceled       → unarmed. An empty milestone has nothing to cut regardless.
@@ -437,7 +559,7 @@ cmd_branch_health() {
 #                              adopted CI sees byte-identical behavior until it is actually
 #                              at the point of cutting.
 cmd_release_ready() {
-  [ "$#" -eq 6 ] || die "release-ready: needs exactly 6 args: <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1> <health green|not-green|indeterminate|no-ci|skipped>"
+  [ "$#" -eq 6 ] || die "release-ready: needs exactly 6 args: <label-exists 0|1> <armed 0|1> <open-blockers N> <open-issues N> <canceled 0|1> <health green|not-green|indeterminate|no-ci|unreported-ok|skipped>"
   local label_exists="$1" armed="$2" open_blockers="$3" open_issues="$4" canceled="$5" health="$6" count
   case "$label_exists" in 0|1) : ;; *) die "release-ready: <label-exists> must be 0 or 1 (got '$label_exists')" ;; esac
   case "$armed"        in 0|1) : ;; *) die "release-ready: <armed> must be 0 or 1 (got '$armed')" ;; esac
@@ -446,8 +568,8 @@ cmd_release_ready() {
   is_uint "$open_issues"   || die "release-ready: <open-issues> must be a non-negative integer (got '$open_issues')"
   # An UNRECOGNISED health value is an ERROR, never a pass. A typo must not fall through to `met`.
   case "$health" in
-    green|not-green|indeterminate|no-ci|skipped) : ;;
-    *) die "release-ready: <health> must be one of green|not-green|indeterminate|no-ci|skipped (got '$health')" ;;
+    green|not-green|indeterminate|no-ci|unreported-ok|skipped) : ;;
+    *) die "release-ready: <health> must be one of green|not-green|indeterminate|no-ci|unreported-ok|skipped (got '$health')" ;;
   esac
 
   # THE MODE SELECTION — the one thing this argument is for.
@@ -591,6 +713,64 @@ cmd_release_command() {
     | grep -vx 'your-release-skill' \
     | grep -vx 'CMD' \
     | sort -u
+  return 0
+}
+
+# --- health-optout ----------------------------------------------------------------------------
+# The PR-only-CI escape hatch (#115, absorbing #113), read from the roadmap artifact body on stdin.  # adb-claim-ok: #113 was consolidated into #115 and closed as superseded — history, not tracked work
+# Prints exactly one line:
+#
+#   off              no `release-health` marker declares anything -> health gates the cut as usual.
+#   skip-unreported  the owner declares that this repo`s CI never reports on the default branch,
+#                    so `branch-health`s two UNREPORTED arms may be excused. Nothing else is.
+#   invalid <value>  a marker is present but says something this predicate does not recognise, or
+#                    the artifact declares two different values.
+#
+# ALWAYS exits 0 for a computed answer (2 only on bad arguments), because "no marker" is a normal
+# state, not an error — the same contract `marker-title` and `release-command` keep.
+#
+# `invalid` IS ITS OWN ANSWER, and folding it into `off` would be the wrong kind of safe. Both
+# refuse to excuse anything, so neither can cut a release — but a silent `off` leaves an owner who
+# wrote `release-health: skip` staring at a permanent `indeterminate` with no clue why, which is
+# how a deliberate opt-out becomes a mystery deadlock. The caller reports it.
+#
+# ONLY PROSE DECLARES (#117/#136), exactly as the two markers above. This one needs it MORE than
+# they do, not less: the schema documents this marker by example, and the example carries the real
+# value — there is no placeholder like `NAME` or `your-skill` to carve out by value, so MARKUP is
+# the only thing separating documentation from a declaration. A code-spanned example in the
+# artifact must therefore read as `off`.
+cmd_health_optout() {
+  [ "$#" -eq 0 ] || die "health-optout: takes no arguments (roadmap artifact body on stdin)"
+  local prose values n
+  # FILTER, THEN PIPE — two statements. `filter || die | grep` parses as `filter || (die | grep)`,
+  # so the guard would run INSIDE the pipeline and a filter failure would read as "no marker
+  # declared": a fail-open on the exact path this guard exists to close.
+  prose="$(adb_md_prose mask --keep-comments)" \
+    || die "health-optout: the markdown prose filter failed (refusing to read an unfiltered body)"
+  # Same extraction shape as `release-command`: `grep -o` so two markers on ONE line surface as
+  # two values, `[^>]*` so a value cannot run past its own `-->` into a later comment, the mask
+  # byte dropped so a span-swallowed value is not a declaration, and a backticked value dropped
+  # because no legal value contains one.
+  values="$(printf '%s' "$prose" \
+    | grep -o '<!--[[:space:]]*release-health:[[:space:]]*[^>]*-->' \
+    | sed 's/.*release-health:[[:space:]]*//; s/-->$//; s/[[:space:]]*$//' \
+    | grep -v '^[[:space:]]*$' \
+    | LC_ALL=C grep -v "$_ADB_MD_MASKC" \
+    | LC_ALL=C grep -v '`' \
+    | sort -u)"
+  [ -n "$values" ] || { printf 'off\n'; return 0; }
+  n="$(printf '%s\n' "$values" | grep -c .)"
+  # TWO DIFFERENT VALUES ARE AMBIGUOUS, never "pick the good one". An artifact carrying both
+  # `skip-unreported` and something else does not tell us what the owner meant, and resolving it
+  # in favour of the value that excuses a release is the one direction that ships something.
+  if [ "$n" -ne 1 ]; then
+    printf 'invalid %s\n' "$(printf '%s\n' "$values" | tr '\n' ' ' | sed 's/ $//')"
+    return 0
+  fi
+  case "$values" in
+    skip-unreported) printf 'skip-unreported\n' ;;
+    *) printf 'invalid %s\n' "$values" ;;
+  esac
   return 0
 }
 
@@ -1334,6 +1514,7 @@ main() {
     release-counts)   cmd_release_counts "$@" ;;
     marker-title)     cmd_marker_title "$@" ;;
     release-command)  cmd_release_command "$@" ;;
+    health-optout)    cmd_health_optout "$@" ;;
     deps-from-body)   cmd_deps_from_body "$@" ;;
     deps-ambiguous)   cmd_deps_ambiguous "$@" ;;
     decisions)        cmd_decisions "$@" ;;

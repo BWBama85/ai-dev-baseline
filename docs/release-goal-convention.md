@@ -120,6 +120,9 @@ In release-readiness mode, every run `/roadmap`:
     unshippable, never optimistically as green.
   - **A repo with no CI at all** → the health condition is **skipped** and the cut is emitted,
     saying so. A project that never adopted CI must not be deadlocked out of ever releasing.
+  - **A repo whose CI never reports on the default branch**, where the owner has declared that with
+    `<!-- release-health: skip-unreported -->` → the condition is **skipped** and the cut is
+    emitted, **naming the declaration**. Never reported as green (#115).
 
 **How "green" is decided.** Health is evaluated against the **default branch's HEAD commit**, not
 against a run list: `gh run list --branch <default> --limit 1` lists runs newest-first across all
@@ -131,6 +134,65 @@ would silently ignore whole CI providers. The reduction to `green` / `not-green`
 `no-ci` is the shared `roadmap-lib.sh branch-health` predicate, regression-tested offline, so it
 cannot drift run to run. A `skipped` or `neutral` conclusion is *not* a failure — that is how GitHub
 itself scores a required check.
+
+**How "does this repo have CI at all?" is decided — two probes, and `no-ci` needs both to say no
+(#115).** This is the question that decides whether the health condition is *skipped* or the cut is
+*withheld*, so getting it wrong is expensive in both directions. Until #115 the only evidence was
+`gh api repos/OWNER/REPO/actions/workflows` — the count of active workflow **definitions** — which
+enumerates **GitHub Actions and nothing else**. So a repo whose CI is CircleCI, Buildkite, Jenkins
+or Vercel had zero Actions workflows, read as *"this repo has no CI"*, had the health condition
+skipped, and **the cut was emitted against a branch nobody had checked.** The second probe is the
+default branch's **required status contexts**, read through the ordinary (contents-read) branch
+endpoint: GitHub does not care *who* reports a required context, so a declared one is a declaration
+that CI exists here whoever supplies it. `no-ci` now requires **both** — zero active Actions
+workflows **and** an authoritative empty required-context set.
+
+A declared context that has **not** reported on the commit is `indeterminate`, for the same reason
+an unreported Actions workflow is: **an unrelated provider's green result must never stand in for
+the declared one.** A branch protected by a repository **ruleset** reports a real empty `contexts`
+array through this endpoint, so that shape is classified *unreadable* and fails closed rather than
+being taken as "requires nothing".
+
+**What this still cannot see**, stated plainly: an **unprotected** branch declares no contexts, so a
+repo with external CI and no branch protection still reads `no-ci` when nothing has ever reported on
+the commit. No non-admin endpoint answers "does CI exist" for that shape. This is strictly narrower
+than the Actions-only probe it replaces, not a complete answer.
+
+### The escape hatch: `release-health` (#115, absorbing #113)  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->
+
+Correcting the existence probe **increases** the population that deadlocks. A repo whose workflows
+are `pull_request`-only has a non-empty required-context set and nothing on default-branch HEAD, so
+it lands on an unreported arm **every run, forever** — requirements met, cut never emitted, no way
+to say so. That is why the opt-out ships in the same change:
+
+```markdown
+<!-- release-health: skip-unreported -->
+```
+
+Added to the roadmap artifact body, it declares that this repo's CI legitimately never reports on
+the default branch. Health then resolves to **`unreported-ok`**, which reaches `met` and emits the
+cut with a banner that names the declaration rather than claiming green.
+
+It is deliberately narrow, and every one of these boundaries is regression-tested:
+
+- it is consulted **only** on the two "CI is declared but has not reported" arms;
+- it is evaluated **after** failing, still-running and wrong-commit checks, so it can never excuse a
+  **red** branch, a **mid-CI** run, or **stale** evidence — those arms match first and win;
+- it can **never** excuse a branch whose required checks could not be **read**. An owner declaration
+  about *unreported* CI is not evidence about *unreadable* CI;
+- `skip-unreported` is the only valid value. Anything else — including a near-miss like `skip`, or
+  two different values in one artifact — is **reported and ignored**, never silently treated as
+  "off", because an owner who wrote it wrong would otherwise face a permanent `indeterminate` with
+  nothing anywhere explaining it;
+- it is honoured **only in a maintainer-authored artifact.** An issue's author can keep editing its
+  body forever regardless of repo permissions, and this marker bypasses a release-safety refusal, so
+  `/roadmap` re-reads the artifact's `author_association` at the moment it acts on the marker rather
+  than trusting the check made when the artifact was adopted.
+
+It produces its own verdict word, `unreported-ok`, rather than reusing `skipped`. `skipped` is the
+**caller's** opt-out for a decision that is not about shippable code (`baseline release roll`, which
+runs *after* the cut); this is the **owner's**, about a decision that very much is. One word for
+both would leave a reader unable to tell which authority let a release through.
 
 **`baseline release roll` deliberately does not gate on health.** It re-verifies the *requirements*
 live (fail-closed, as always) but passes `skipped` for the health input, explicitly at the call

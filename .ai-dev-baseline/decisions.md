@@ -2748,3 +2748,79 @@ limit: none of them is sufficient alone.
              are unsupported and documented as such, and both under-report — which skips a job
              rather than requiring one that can never report.
 - baseline-issue: #262, #102
+
+## D45 — `no-ci` needs two probes, and the escape hatch that keeps the fix from reducing reachability
+- date:      2026-08-05
+- category:  general
+- unknown:   #115 (consolidating #113) asks for `branch-health`'s CI-existence probe to become  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->
+             provider-agnostic using `read_branch` as the evidence source, and for an owner-visible
+             escape hatch for a repo whose CI never reports on the default branch. Gap analysis
+             raised four questions neither issue decides. (1) Whether "some contexts are required"
+             is enough, or the context NAMES must be carried — a count leaves the masking hole the
+             Actions arm exists to close. (2) Whether the owner opt-out may excuse an UNREADABLE
+             required-context list, not just an unreported one. (3) Whether the opt-out reuses the
+             existing `skipped` health value. (4) What authorizes a marker that bypasses a
+             release-safety refusal, given an issue's author can edit its body forever regardless
+             of repo permissions.
+- decision:  (1) Carry the NAMES. `required_contexts` joins `branch-health`'s stdin document as a
+             REQUIRED key (`array` | `null`), and a declared context that has not reported on the
+             commit is `indeterminate`. This makes the arity change ONCE (2 args -> 3) rather than
+             twice, which #115's API note asks for. (2) NO — `null` gets its own arm, is never
+             `no-ci`, and the opt-out deliberately cannot reach it. (3) A NEW verdict word,
+             `unreported-ok`; `release-ready` accepts it and it falls through to `met`. (4) The
+             existing adopt-time `author_association` gate is the authority, and it is RE-VALIDATED
+             at the point of use — `/roadmap` re-reads the artifact author's standing in the same
+             step that acts on the marker.
+- placement: `scripts/lib/roadmap-lib.sh` (`branch-health`, `release-ready`, the new
+             `health-optout` marker predicate), `scripts/lib/repo-settings.sh`
+             (`_adb_rs_classify_branch` + the `branch-required-contexts` subcommand),
+             `base/workflows/roadmap.md` (schema marker, readiness snippet, emissions),
+             `.claude/skills/release/release.sh`, fixtures in `scripts/check-roadmap.sh` +
+             `scripts/check-roadmap-e2e.sh` + `scripts/check-repo-settings.sh`, pins in
+             `scripts/check-fact-drift.sh`, and `docs/release-goal-convention.md` +
+             `docs/roadmap-acceptance.md` + `docs/repo-settings.md`
+- reason:    **(1) A count re-opens the hole through a second door.** The Actions arm exists because
+             `$total` counts "somebody reported", not "everybody reported" — one unrelated green
+             legacy status, or a check run from another Checks API app, would otherwise convert a
+             genuinely unreported build into a confident `green`. A provider-agnostic probe that
+             knew only "N contexts are required" would be beaten by exactly that input: required
+             `["ci/circleci: build"]`, one green Vercel status, nothing from CircleCI -> `green`.
+             With the names the predicate can ask the only question that settles it, and the
+             subtraction is exact-value because GitHub's own context matching is a literal compare.
+             Measured against this repo before committing to the stricter rule: all 27 required
+             contexts reported on `main`'s HEAD, so `on: push` repos are unaffected.
+
+             **(2) Fail-closed beats reachability where the premise itself is unreadable.** The
+             tempting argument for excusing `null` is that protection-readability is orthogonal to
+             the results read, so the cut-safety question is still fully answered. It was rejected
+             because the population it would rescue is narrow and the precedent is bad: a
+             ruleset-protected repo whose CI is PR-only ACTIONS is already served by the Actions
+             arm (which the opt-out does excuse), so `null` only bites at zero Actions workflows
+             AND zero results AND unreadable protection. Letting an owner declaration override an
+             unreadable state is the shape `read_branch`'s `opaque` exists to refuse.
+
+             **(3) Two authorities must not share one word.** `skipped` is documented as the opt-out
+             for a caller whose decision is NOT about shippable code (`baseline release roll`, which
+             runs after the cut). This one is about shippable code, is chosen by the artifact rather
+             than the call site, and is computed only after `branch-health` has ruled out failing,
+             running and stale checks. Reusing `skipped` would make the two indistinguishable in the
+             emission — and would let a caller hand-write the owner's decision. The cost is one arm
+             in `release-ready` and its pinned value set; the alternative was a permanently
+             ambiguous banner at the exact moment a release is cut.
+
+             **(4) Adoption already answers it, once — and once is not where the risk is.** The
+             adopt gate refuses an artifact opened by a non-maintainer precisely because labelling
+             an issue does not bring its body under maintainer control. That check is correct and
+             sufficient for `## Decisions` rows, which only inform. This marker BYPASSES a refusal,
+             so it is re-checked at consumption: same field, same set (OWNER/MEMBER/COLLABORATOR),
+             one API read the snippet was already making for the body.
+
+             SCOPE REFUSED: the marker-vocabulary generalization (#92, closed NOT_PLANNED) was not  <!-- adb-claim-ok: #92 is closed NOT_PLANNED; cited as the scope this change deliberately did NOT take on -->
+             attempted — `health-optout` is a focused predicate in the shape `marker-title` and
+             `release-command` already established. The unreachable arm #115 asked to disposition
+             is REVIVED as the fail-closed catch-all with its original message, and its
+             unreachability is now stated in the code rather than implied. The deliberate literals
+             in `check-roadmap.sh` 4d, `check-repo-settings.sh` and `check-common-lib.sh` were left
+             alone: they are API-contract fixtures whose whole value is that they do NOT derive the
+             slug.
+- baseline-issue: #115, #113, #183  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->

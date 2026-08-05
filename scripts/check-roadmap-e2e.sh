@@ -126,6 +126,11 @@ case "$sub" in
       */actions/workflows*)
         fail_if workflows
         emit "$F/workflows.json" ;;
+      # #115: the provider-agnostic existence probe. Ordered with the other health reads and BEFORE
+      # the bare `repos/OWNER/REPO` arms below, which would otherwise swallow it.
+      */branches/*)
+        fail_if branch
+        emit "$F/branch.json" ;;
       *issues\?milestone=*)
         fail_if milestone
         emit "$F/milestone-issues.json" ;;
@@ -135,9 +140,13 @@ case "$sub" in
       *issues\?state=open*)
         fail_if openissues
         emit "$F/open-issues.json" ;;
-      # A single issue by number — the canceled-prerequisite probe. Absent fixture => a normal
-      # completed close, which is the common case and must NOT read as canceled.
+      # A single issue by number — the canceled-prerequisite probe, and (#115) the roadmap ARTIFACT
+      # read, which the readiness snippet makes for the `release-health` opt-out marker and the
+      # author association that authorizes it. Both are served by the same per-number fixture, so
+      # the artifact is just `issue-<ROADMAP_NUM>.json`. Absent fixture => a normal completed close,
+      # which is the common case and must NOT read as canceled.
       */issues/[0-9]*)
+        fail_if artifact
         n="${url##*/issues/}"; n="${n%%\?*}"
         if [ -f "$F/issue-$n.json" ]; then emit "$F/issue-$n.json"
         else printf '{"number":%s,"state":"closed","state_reason":"completed"}\n' "$n" | { if [ -n "$jqexpr" ]; then jq -r "$jqexpr"; else cat; fi; }
@@ -196,6 +205,13 @@ run_snippet() {
     RC_=90; OUT=""; return 1
   fi
   code="${code//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
+  code="${code//\{\{REPO_SETTINGS_LIB\}\}/bash \"$ROOT/scripts/lib/repo-settings.sh\"}"
+  # {{ACTIONS_APP_SLUG}} is resolved THE WAY build.sh RESOLVES IT — from `adb_actions_app_slug`,
+  # the one home — not from a literal restated here. A hard-coded copy in this harness is exactly
+  # what let #179 ship: the fixtures agreed with the code about a value GitHub never returns, so
+  # the suite was green while `branch-health` could not reach `green` on any Actions repo. The
+  # LITERAL is pinned once, deliberately, in check-roadmap.sh section 4d and check-common-lib.sh.
+  code="${code//\{\{ACTIONS_APP_SLUG\}\}/$ACTIONS_SLUG}"
   # The preamble supplies exactly what an EARLIER step would have produced — the selected member,
   # the resolved milestone number, the artifact number, the configured gauge label. Nothing else:
   # anything a snippet needs beyond these it must resolve itself, which is the property the
@@ -232,7 +248,18 @@ fix_default() {
   printf '{"total_count":1}\n'           > "$FIX/search-milestone.json"
   printf '[]\n'                          > "$FIX/milestone-issues.json"
   printf '[{"number":8,"title":"Backlog"},{"number":9,"title":"Next release"}]\n' > "$FIX/milestones.json"
+  # The roadmap ARTIFACT as the readiness snippet reads it (#115): a body with NO `release-health`
+  # marker, authored by a maintainer. Both fields matter — the marker decides whether the opt-out is
+  # declared, `author_association` decides whether it is honoured.
+  artifact_fx '' OWNER
   health_green
+}
+# artifact_fx <body> <author_association> — the roadmap artifact issue, served through the stub's
+# per-number fixture. `--arg` rather than interpolation: a body carries newlines and quotes.
+artifact_fx() {
+  jq -n --arg b "$1" --arg a "$2" --argjson n "${ADB_ROADMAP_NUM:-31}" \
+     '{number:$n, state:"open", state_reason:null, body:$b, author_association:$a}' \
+     > "$FIX/issue-${ADB_ROADMAP_NUM:-31}.json"
 }
 
 # --- #78 branch-health fixtures ---------------------------------------------------------------
@@ -251,14 +278,27 @@ wf_arr() {
   done
   printf '[%s]' "$out"
 }
-# health_set <check-runs-json> <statuses-json> <active-workflow-count>
+# health_set <check-runs-json> <statuses-json> <active-workflow-count> [branch-json]
 # The commit-status fixture carries `sha` because that is where the snippet resolves HEAD from —
 # one request answering both "which commit" and "what do the non-Actions providers say".
+#
+# The BRANCH fixture is the provider-agnostic existence probe (#115). It defaults to an
+# authoritatively UNPROTECTED branch — declaring no required contexts — because that is what every
+# pre-#115 scenario implicitly assumed, so each keeps its original verdict and only the new cases
+# vary it. Pass `br_checks`/`br_ruleset` to model a branch that declares contexts or one whose
+# protection this endpoint cannot describe.
 health_set() {
   printf '{"check_runs":%s}\n' "$1"                          > "$FIX/check-runs.json"
   printf '{"sha":"%s","state":"x","statuses":%s}\n' "$E2E_SHA" "$2" > "$FIX/commit-status.json"
   printf '{"workflows":%s}\n' "${ wf_arr "$3"; }"               > "$FIX/workflows.json"
+  printf '%s\n' "${4:-${ br_unprotected; }}"                    > "$FIX/branch.json"
 }
+# The three branch-endpoint shapes, spelled once. `br_ruleset` is verbatim what github/docs and
+# vercel/next.js really return: `contexts` IS a real empty array there, which is why an array-only
+# test would read a ruleset-protected branch as "requires nothing" and let it reach `no-ci`.
+br_unprotected() { printf '{"protected":false}'; }
+br_checks()      { printf '{"protected":true,"protection":{"enabled":true,"required_status_checks":{"contexts":[%s]}}}' "$1"; }
+br_ruleset()     { printf '{"protected":true,"protection":{"enabled":false,"required_status_checks":{"enforcement_level":"off","contexts":[]}}}'; }
 # ck1 <status> <conclusion-json> [sha] [app-slug] — the single-check-run fixture the health cases
 # vary. The app slug defaults to the value an Actions-produced check run really carries, read from
 # its one home (common.sh) rather than restated — the hard-coded `github` that used to sit here
@@ -591,6 +631,118 @@ hasnt "$OUT" "VERDICT=met" "...and never reports met"
 fix_default; ms_drained; health_green; : > "$FIX/fail-workflows"
 readiness
 has "$OUT" "VERDICT=met" "with checks present the workflow inventory is never read (its failure cannot matter)"
+
+# ============================================================================================
+# 4c. THE PROVIDER-AGNOSTIC EXISTENCE PROBE + THE ESCAPE HATCH, end to end (#115, was #113)  # adb-claim-ok: #113 was consolidated into #115 and closed as superseded — history, not tracked work
+# ============================================================================================
+# check-roadmap.sh pins the ARM TABLE. What is proven here is the WIRING: that the snippet reads
+# the branch endpoint, classifies it through the shared reader, splices the result into the health
+# document, resolves the artifact marker, and passes the opt-out to the predicate. Every one of
+# those is a place a perfect predicate still yields a wrong verdict.
+
+# THE FAIL-OPEN #115 WAS FILED FOR, end to end. A non-Actions CI repo — zero Actions workflows,
+# nothing reported yet — used to read `no-ci` and EMIT THE CUT. Its required context is the
+# evidence that CI exists here.
+fix_default; ms_drained; health_set '[]' '[]' 0 "${ br_checks '"ci/circleci: build"'; }"
+readiness
+has "$OUT" "VERDICT=indeterminate" \
+  "a non-Actions CI repo with a required context does NOT resolve to no-ci (the #115 headline)"
+hasnt "$OUT" "VERDICT=met" "...so the cut is withheld instead of emitted against an unchecked branch"
+has "$OUT" "required context(s) have not reported" "...and the reason names the unreported context"
+
+# ...and that same repo IS green once its declared provider reports. The fix must not make
+# non-Actions CI un-releasable, only un-fabricatable.
+fix_default; ms_drained
+health_set '[]' '[{"context":"ci/circleci: build","state":"success"}]' 0 "${ br_checks '"ci/circleci: build"'; }"
+readiness
+has "$OUT" "VERDICT=met" "...while the same repo with its declared context reporting green cuts normally"
+
+# An unrelated green must not mask a silent declared provider — the masking law, generalized.
+fix_default; ms_drained
+health_set '[]' '[{"context":"vercel","state":"success"}]' 0 "${ br_checks '"ci/circleci: build"'; }"
+readiness
+has "$OUT" "VERDICT=indeterminate" "one unrelated green status never speaks for a silent required context"
+
+# A RULESET-protected branch reports a real empty `contexts` array. Read as "requires nothing" it
+# would reach `no-ci` and cut; it must fail closed instead.
+fix_default; ms_drained; health_set '[]' '[]' 0 "${ br_ruleset; }"
+readiness
+has "$OUT" "VERDICT=indeterminate" "a ruleset-protected branch is never read as 'requires nothing' => no-ci"
+has "$OUT" "could not be read" "...and says the required checks could not be read"
+
+# The genuinely CI-less repo still passes (#24): unprotected AND no workflows AND nothing reported.
+fix_default; ms_drained; health_no_ci
+readiness
+has "$OUT" "HEALTH=no-ci" "an unprotected repo with no workflows and no results is still a real no-ci"
+has "$OUT" "VERDICT=met"  "...and is not deadlocked out of releasing"
+
+# --- the escape hatch, wired ------------------------------------------------------------------
+OPTOUT_BODY='<!-- ai-dev-baseline:roadmap:v1 -->
+<!-- release-health: skip-unreported -->'
+# PR-only CI: required contexts declared, nothing on default-branch HEAD. Held without the marker.
+fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"
+readiness
+has "$OUT" "VERDICT=indeterminate" "a PR-only-CI repo is held at indeterminate without the opt-out"
+# ...and reaches a cut with it.
+fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" OWNER
+readiness
+has "$OUT" "HEALTH=unreported-ok" "...and the declared opt-out resolves to unreported-ok"
+has "$OUT" "VERDICT=met"          "...so a PR-only-CI repo CAN reach a cut (#115 acceptance)"
+hasnt "$OUT" "HEALTH=green"       "...without ever being reported as green"
+
+# AUTHORITY IS RE-VALIDATED AT THE POINT OF USE. This marker bypasses a release-safety refusal, and
+# an issue's author can keep editing its body forever regardless of repo permissions — so a marker
+# in a non-maintainer-authored artifact must be IGNORED, not obeyed.
+fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" CONTRIBUTOR
+readiness
+has "$OUT" "VERDICT=indeterminate" "an opt-out in a CONTRIBUTOR-authored artifact is NOT honoured"
+has "$OUT" "WARN:" "...and the run says so rather than silently ignoring it"
+for assoc in MEMBER COLLABORATOR; do
+  fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"; artifact_fx "$OPTOUT_BODY" "$assoc"
+  readiness
+  has "$OUT" "VERDICT=met" "...while a $assoc-authored artifact IS honoured"
+done
+
+# The opt-out cannot excuse a branch that is actually broken — the whole safety property.
+fix_default; ms_drained; health_red; artifact_fx "$OPTOUT_BODY" OWNER
+readiness
+has "$OUT" "VERDICT=not-green" "the opt-out never excuses a RED branch, even end to end"
+fix_default; ms_drained; health_running; artifact_fx "$OPTOUT_BODY" OWNER
+readiness
+has "$OUT" "VERDICT=indeterminate" "...nor a still-running check"
+fix_default; ms_drained; health_stale; artifact_fx "$OPTOUT_BODY" OWNER
+readiness
+has "$OUT" "VERDICT=indeterminate" "...nor stale evidence from another commit"
+fix_default; ms_drained; health_set '[]' '[]' 0 "${ br_ruleset; }"; artifact_fx "$OPTOUT_BODY" OWNER
+readiness
+has "$OUT" "VERDICT=indeterminate" "...and NEVER a branch whose required checks could not be read"
+
+# A marker the predicate does not recognise refuses to excuse anything AND is reported — an owner
+# who wrote it wrong must not face a permanent indeterminate with nothing saying why.
+fix_default; ms_drained; health_set '[]' '[]' 2 "${ br_checks '"ci"'; }"
+artifact_fx '<!-- release-health: skip -->' OWNER
+readiness
+has "$OUT" "VERDICT=indeterminate" "an unusable release-health value excuses nothing"
+has "$OUT" "WARN:" "...and is reported, not silently ignored"
+
+# BOTH new reads are separately checked, like every sibling: a failed read must hard-stop rather
+# than fall through to a verdict computed from a document it never saw.
+#
+# EACH ASSERTS ITS OWN DIAGNOSTIC, not merely "nonzero and not met". A stub arm that never matched,
+# an unresolved `{{TOKEN}}`, or a death on arity all produce a nonzero exit with no `met` in it —
+# so a bare `no "$RC_"` passes for whatever went wrong first and stops testing the injection it was
+# written for. Naming the expected message is what keeps these honest.
+fix_default; ms_drained; health_green; : > "$FIX/fail-branch"
+readiness
+no "$RC_" "a failing branch-protection read hard-stops instead of emitting a cut on unknown health"
+hasnt "$OUT" "VERDICT=met" "...and never reports met"
+has "$OUT" "could not read branch protection" "...failing for THAT read, not for an unrelated error"
+
+fix_default; ms_drained; health_green; : > "$FIX/fail-artifact"
+readiness
+no "$RC_" "a failing roadmap-artifact read hard-stops rather than proceeding with the opt-out unresolved"
+hasnt "$OUT" "VERDICT=met" "...and never reports met"
+has "$OUT" "could not read roadmap artifact" "...failing for THAT read, not for an unrelated error"
 
 # ============================================================================================
 # 5. DESTINATION GAUGE (acceptance §8)
@@ -1186,6 +1338,8 @@ for s in locate-artifact adopt-scan fresh-read readiness gauge autofix-unmilesto
   body="${body//\{\{SKILLS_USER_ROOT\}\}/\"\$HOME\/.claude\/skills\"}"
   body="${body//\{\{SKILL_PREFIX\}\}/\/}"
   body="${body//\{\{SKILL_EXTRA_KEY\}\}/user-invocable}"
+  body="${body//\{\{REPO_SETTINGS_LIB\}\}/bash \"$ROOT/scripts/lib/repo-settings.sh\"}"
+  body="${body//\{\{ACTIONS_APP_SLUG\}\}/$ACTIONS_SLUG}"
   printf '%s\n' "$body" > "$work/parse-$s.sh"
   if bash -n "$work/parse-$s.sh" 2>/dev/null; then ok; else
     bad "snippet '$s' is not valid bash: $(bash -n "$work/parse-$s.sh" 2>&1 | head -1)"
@@ -1200,6 +1354,8 @@ allsnips="${allsnips//\{\{SKILL_REGISTRY_PROBE\}\}/}"
 allsnips="${allsnips//\{\{SKILLS_USER_ROOT\}\}/}"
 allsnips="${allsnips//\{\{SKILL_PREFIX\}\}/}"
 allsnips="${allsnips//\{\{SKILL_EXTRA_KEY\}\}/}"
+allsnips="${allsnips//\{\{REPO_SETTINGS_LIB\}\}/}"
+allsnips="${allsnips//\{\{ACTIONS_APP_SLUG\}\}/}"
 hasnt "$allsnips" '{{' \
   "no executed snippet carries a placeholder outside the mapped vocabulary"
 
