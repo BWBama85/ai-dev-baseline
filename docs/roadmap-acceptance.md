@@ -238,10 +238,49 @@ consulted **only** at the would-be-`met` boundary.
       never as red (a mid-CI run must not read as a failure).
 - [ ] **A check attached to a different commit** → `indeterminate`. Stale evidence is never this
       branch's green.
-- [ ] **No CI at all** (no checks *and* no active workflows) → the condition is **skipped** and the
-      cut is emitted, saying so. A repo without CI is never deadlocked (#24).
+- [ ] **No CI at all** (no checks, no active workflows, *and* an authoritative empty required-context
+      set) → the condition is **skipped** and the cut is emitted, saying so. A repo without CI is
+      never deadlocked (#24).
 - [ ] **Active workflows that have not reported on this commit** → `indeterminate`, **not**
-      `no-ci`. (An empty run list means both; the active-workflow inventory is the discriminator.)
+      `no-ci`. (An empty run list means both; the active-workflow inventory is one discriminator.)
+
+### 9b-quater. The existence probe is provider-agnostic, and the PR-only escape hatch (#115) **[auto]**
+
+`no-ci` needs **both** probes to say no: zero active **Actions** workflows *and* an authoritative
+empty **required-context** set on the default branch. The context set is read through the ordinary
+contents-read branch endpoint and classified by `repo-settings.sh branch-required-contexts`, the
+same reader `required-drift` uses — so the two cannot disagree about a branch.
+
+- [ ] **A non-Actions CI repo does not resolve to `no-ci`.** Zero Actions workflows, a required
+      context declared, nothing reported on HEAD → `indeterminate` naming the unreported context —
+      **not** a cut. (This is #115's headline defect: it used to emit the release.)
+- [ ] …and that same repo **is** green once its declared context reports. The fix must not make
+      non-Actions CI un-releasable, only un-fabricatable.
+- [ ] **An unrelated green result never speaks for a silent declared context** — neither a legacy
+      status from another provider nor a check run from another Checks API app.
+- [ ] **Partial reporting is still unreported:** one of two required contexts is not "green".
+- [ ] A **failing** required context is `not-green`, not merely unreported (attribution never
+      rescues a failure).
+- [ ] A **ruleset-protected** branch (`protected:true`, `protection.enabled:false`, a real empty
+      `contexts` array) is classified **unreadable** and fails closed — never read as "requires
+      nothing", which would reach `no-ci` and cut on an unverified branch.
+- [ ] **A PR-only-CI repo can reach a cut, via a declared and documented opt-out.** With
+      `<!-- release-health: skip-unreported -->` in a maintainer-authored artifact, an unreported
+      arm resolves to `unreported-ok` → `met`, and the banner **names the declaration** rather than
+      claiming the branch is green.
+- [ ] The opt-out **never** excuses: a red branch, a still-running check, a pending status, stale
+      evidence from another commit, or a branch whose required checks could not be read.
+- [ ] An **unrecognised** `release-health` value (or two different values) is **reported and
+      ignored**, never silently treated as "off".
+- [ ] The opt-out is **ignored** unless the artifact's author has `admin`/`write` access, and the
+      run says so — the marker bypasses a release-safety refusal, and an issue's author can keep
+      editing its body regardless of repo permissions. `read`, `triage` and `none` are refused;
+      an **unreadable** permission fails closed without hard-stopping the run.
+- [ ] The unreadable-context refusal holds **with active Actions workflows present** — that is the
+      only shape in which the Actions arm matches first, and it is where the opt-out was found
+      excusing an unreadable list.
+- [ ] Both new reads (branch protection, roadmap artifact) **hard-stop** on failure, each reporting
+      **its own** diagnostic.
 - [ ] **A non-Actions provider** (Vercel/CircleCI/Cloudflare) reporting failure through the legacy
       status API still withholds the cut.
 - [ ] With **open blockers**, the verdict is `unmet` and health is **not read at all** — a repo

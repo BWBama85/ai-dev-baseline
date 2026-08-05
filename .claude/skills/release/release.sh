@@ -159,18 +159,45 @@ await_checks() {
 # The workflow inventory is consulted whenever GitHub Actions has NOT reported on this commit —
 # exactly as step 2 does. Hardcoding 0 tells branch-health "this repo has no CI", so a commit with
 # enough non-Actions checks would read `green` instead of the intended `indeterminate`.
+#
+# THE SECOND EXISTENCE PROBE IS READ HERE TOO (#115). `branch-health` now takes the branch's
+# required status contexts alongside the Actions inventory, and passing a hardcoded `null` would
+# have been cheaper — but this driver and /roadmap must never disagree about the same commit, and
+# `null` is the fail-closed "could not read" value, not "this driver did not look". So it makes the
+# same read from the same endpoint. The contexts belong to the DEFAULT BRANCH: this function is
+# also called on a merge commit, and required checks are a property of the branch, not of a sha.
+#
+# THE APP SLUG COMES FROM ITS ONE HOME. This file already sources common.sh, so the literal that
+# used to sit in the jq filter here — a fourth copy of `github-actions`, kept in sync by nothing at
+# all — is now `adb_actions_app_slug` passed as a typed --arg (#179, #183).
 health_of() {   # <sha> -> prints the verdict word
-  sha="$1"; sl="$(slug)"
+  # `dbr`, not `d`: this file scopes nothing, and `cmd_preflight` already uses `d` for the default
+  # branch. Reusing it here would have `health_of` reach back into a caller's variable — harmless
+  # today only because no current caller reads `d` afterwards, which is not a property to rely on.
+  sha="$1"; sl="$(slug)"; dbr="$(defbr)"
+  case "$dbr" in ''|null) return 1 ;; esac
   st="$(gh api --paginate "repos/$sl/commits/$sha/status?per_page=100")" || return 1
   ck="$(gh api --paginate "repos/$sl/commits/$sha/check-runs?per_page=100")" || return 1
+  brj="$(gh api "repos/$sl/branches/$dbr")" || return 1
+  req="$(printf '%s' "$brj" | bash "$LIB/repo-settings.sh" branch-required-contexts)" || return 1
   hin="$(printf '%s\n%s\n' "$ck" "$st" \
-    | jq -s -c '{check_runs: ([.[].check_runs // []] | add // []), statuses: ([.[].statuses // []] | add // [])}')" || return 1
+    | jq -s -c --argjson req "$req" \
+        '{check_runs: ([.[].check_runs // []] | add // []), statuses: ([.[].statuses // []] | add // []),
+          required_contexts: $req}')" || return 1
   wf=0
-  if [ "$(printf '%s' "$hin" | jq '[.check_runs[] | select((.app.slug // "") == "github-actions")] | length')" = "0" ]; then
+  if [ "$(printf '%s' "$hin" | jq --arg aslug "$(adb_actions_app_slug)" \
+            '[.check_runs[] | select((.app.slug // "") == $aslug)] | length')" = "0" ]; then
     wfj="$(gh api --paginate "repos/$sl/actions/workflows?per_page=100")" || return 1
     wf="$(printf '%s' "$wfj" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')" || return 1
   fi
-  printf '%s' "$hin" | bash "$LIB/roadmap-lib.sh" branch-health "$sha" "$wf" | sed -n '1p'
+  # `0` — this driver NEVER takes the owner opt-out, and that is a deliberate, stricter policy than
+  # /roadmap's, not an oversight. /roadmap decides whether to EMIT a cut; this decides whether to
+  # TAG one, having just watched the merge commit's checks settle. `release-health:
+  # skip-unreported` says "CI does not report on the default branch" — a repo in that state cannot
+  # give this driver the evidence `verify-merge` is built on, so it needs its own release skill
+  # (D14 already says every adopting repo owes itself one) rather than a hatch that lets THIS one
+  # tag an unverified commit.
+  printf '%s' "$hin" | bash "$LIB/roadmap-lib.sh" branch-health "$sha" "$wf" 0 | sed -n '1p'
 }
 
 # --- role guard -------------------------------------------------------------------------------------

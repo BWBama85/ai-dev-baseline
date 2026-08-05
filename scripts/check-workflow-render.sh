@@ -87,6 +87,7 @@ Auto-merge guard: {{REPO_SETTINGS_LIB}} automerge-ok
 Cleanup predicate: {{CLEANUP_LIB}} state-verdict threads open
 State observation: {{STATE_ASSERT_LIB}} observe pr 137
 Currency policy: {{CURRENCY_LIB}} check --trigger cleanup
+Actions slug: {{ACTIONS_APP_SLUG}} and again {{ACTIONS_APP_SLUG}}.
 I am {{CURRENT_AGENT}}.
 Track work: {{SUBTASK_PRIMITIVE}} some sub-tasks.
 Literal shell: echo "$HOME" and a bare $ARGUMENTS token.
@@ -107,6 +108,7 @@ if [ -f "$out" ]; then
   has "$body" 'Cleanup predicate: bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict'  "{{CLEANUP_LIB}} is a command prefix"
   has "$body" 'State observation: bash "$HOME/.claude/scripts/lib/state-assert.sh" observe' "{{STATE_ASSERT_LIB}} is a command prefix"
   has "$body" 'Currency policy: bash "$HOME/.claude/scripts/lib/currency-lib.sh" check'      "{{CURRENCY_LIB}} is a command prefix"
+  has "$body" 'Actions slug: github-actions and again github-actions.' "{{ACTIONS_APP_SLUG}} → the real Actions app slug (agent-invariant, and pinned as a LITERAL: deriving it here would make this test blind to the VALUE being wrong, which is how #179 shipped)"
   has "$body" 'I am claude.'                                                       "{{CURRENT_AGENT}} maps to claude"
   has "$body" 'Track work: TaskCreate some sub-tasks.'                             "{{SUBTASK_PRIMITIVE}} maps to TaskCreate"
   has "$body" 'Literal shell: echo "$HOME" and a bare $ARGUMENTS token.'           "non-placeholder \$HOME/\$ARGUMENTS text is untouched"
@@ -130,6 +132,7 @@ if [ -f "$cout" ]; then
   has "$cbody" 'Cleanup predicate: bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict'  "codex {{CLEANUP_LIB}} → the ~/.codex predicate"
   has "$cbody" 'State observation: bash "$HOME/.codex/scripts/lib/state-assert.sh" observe' "codex {{STATE_ASSERT_LIB}} is a command prefix"
   has "$cbody" 'Currency policy: bash "$HOME/.codex/scripts/lib/currency-lib.sh" check'      "codex {{CURRENCY_LIB}} → the ~/.codex policy"
+  has "$cbody" 'Actions slug: github-actions and again github-actions.' "codex {{ACTIONS_APP_SLUG}} → the real Actions app slug (agent-invariant, and pinned as a LITERAL: deriving it here would make this test blind to the VALUE being wrong, which is how #179 shipped)"
   has "$cbody" 'I am codex.'                                                        "codex {{CURRENT_AGENT}} → codex"
   has "$cbody" 'Track work: update_plan some sub-tasks.'                            "codex {{SUBTASK_PRIMITIVE}} → update_plan"
   has "$cbody" 'name: fixture'                                                      "codex synth frontmatter emits name"
@@ -154,6 +157,7 @@ if [ -f "$gout" ]; then
   has "$gbody" 'Cleanup predicate: bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict'  "gemini {{CLEANUP_LIB}} → the ~/.gemini predicate"
   has "$gbody" 'State observation: bash "$HOME/.gemini/scripts/lib/state-assert.sh" observe' "gemini {{STATE_ASSERT_LIB}} is a command prefix"
   has "$gbody" 'Currency policy: bash "$HOME/.gemini/scripts/lib/currency-lib.sh" check'      "gemini {{CURRENCY_LIB}} → the ~/.gemini policy"
+  has "$gbody" 'Actions slug: github-actions and again github-actions.' "gemini {{ACTIONS_APP_SLUG}} → the real Actions app slug (agent-invariant, and pinned as a LITERAL: deriving it here would make this test blind to the VALUE being wrong, which is how #179 shipped)"
   has "$gbody" 'I am gemini.'                                                       "gemini {{CURRENT_AGENT}} → gemini"
   has "$gbody" 'Track work: Create some sub-tasks.'                                 "gemini {{SUBTASK_PRIMITIVE}} → Create"
   has "$gbody" 'name: fixture'                                                      "gemini synth frontmatter emits name"
@@ -229,6 +233,49 @@ if [ -f "$d/agents/claude/skills/fixture/SKILL.md" ]; then
 else
   ok
 fi
+
+# --- 3c: the EMPTY-SLUG refusal, OBSERVED FAILING (#183) --------------------------------------
+# A guard is not done until it has been seen going red on an input it is supposed to reject, and
+# this one's failure mode is the quiet kind: if `adb_actions_app_slug` ever returned empty, the map
+# would substitute "" and the rendered skills would carry `(.app.slug // "") == ""` — which matches
+# exactly the check runs whose app CANNOT be identified, i.e. a confident `green` from a build
+# nobody attributed, baked into three shipped skills. Nothing else in this suite can catch that:
+# every other case runs the real, non-empty accessor. (Independent-review find: the refusal existed
+# and had never been watched working.)
+#
+# The fixture replaces the ACCESSOR in the copied library rather than editing anything tracked —
+# `render_fixture` already copies `common.sh` into a throwaway tree, so the override lands there.
+neg_slug="$WORK/neg-slug-src.md"
+cat > "$neg_slug" <<'EOF'
+---
+name: fixture
+description: t
+user-invocable: true
+---
+
+# /fixture
+Slug: {{ACTIONS_APP_SLUG}}
+EOF
+for broken in 'adb_actions_app_slug() { printf ""; }' 'adb_actions_app_slug() { return 1; }'; do
+  d="$WORK/neg-slug-$(printf '%s' "$broken" | cksum | cut -d' ' -f1)"
+  mkdir -p "$d/scripts/lib" "$d/base/practices" "$d/base/workflows"
+  cp "$ROOT/scripts/build.sh" "$d/scripts/build.sh"
+  cp "$ROOT/scripts/lib/common.sh" "$d/scripts/lib/common.sh"
+  # Appended AFTER the real definition, so it wins — and the bash-floor gate above it still loads.
+  printf '\n%s\n' "$broken" >> "$d/scripts/lib/common.sh"
+  printf '# index\n' > "$d/base/practices/00-index.md"
+  printf '# dummy practice\n' > "$d/base/practices/aaa.md"
+  cp "$neg_slug" "$d/base/workflows/fixture.md"
+  bash "$d/scripts/build.sh" >"$d/build.log" 2>&1; rc=$?
+  no "$rc" "a broken adb_actions_app_slug [$broken] FAILS the build"
+  has "$(cat "$d/build.log" 2>/dev/null)" 'adb_actions_app_slug is unavailable or empty' \
+      "...and the error names the accessor rather than dying somewhere downstream"
+  if [ -f "$d/agents/claude/skills/fixture/SKILL.md" ]; then
+    bad "a skill was written despite the empty Actions slug [$broken]"
+  else
+    ok
+  fi
+done
 
 # --- 4: no committed skill ships an unresolved placeholder (EVERY agent's rendered tree) ------
 for a in claude codex gemini; do

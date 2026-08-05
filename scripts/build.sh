@@ -93,7 +93,7 @@ render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 render_agent_skill() {
   local agent="$1" src="$2" name out tmp first fmname
   local args_to state_dir gate_run role_dispatch roadmap_lib repo_settings cleanup_lib currency_lib pr_review
-  local state_assert pr_watch
+  local state_assert pr_watch actions_app_slug
   local current_agent subtask fmmode
 
   # --- the per-agent MAP + MODE ------------------------------------------------------
@@ -120,6 +120,29 @@ render_agent_skill() {
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
   state_assert="bash \"\$HOME/.$agent/scripts/lib/state-assert.sh\""
   current_agent="$agent"
+  # AGENT-INVARIANT, like {{ARGS}} — this is a GitHub fact, not a per-agent token (#183). A
+  # workflow body is prose an agent pastes into a shell, so it can carry a VALUE but can never
+  # source `common.sh` to ask for one. Before this token it restated `github-actions` inline, and
+  # the only thing keeping that copy honest was an assertion in `check-roadmap.sh` matching the
+  # jq text CHARACTER FOR CHARACTER — so reformatting the filter, or renaming a jq variable, broke
+  # a test for a reason unrelated to correctness, and the natural repair was to edit the assertion.
+  # That is a guard rotting into a rubber stamp. Deriving the value at build time makes the doc
+  # track the constant the same way the libraries do via `--arg`.
+  #
+  # `adb_actions_app_slug` is already in scope: this file sources `scripts/lib/common.sh` at the
+  # top for the bash-floor gate. #183 costed this token against "build.sh does not source
+  # common.sh today"; that stopped being true in #256, so the token adds no coupling that the
+  # interpreter gate has not already paid for.
+  #
+  # REFUSE AN EMPTY RESULT. `lreplace` would happily substitute "" and emit
+  # `(.app.slug // "") == ""`, which matches exactly the check runs whose app CANNOT be identified
+  # — the fail-OPEN `branch-health` fails loud about at runtime, silently baked into three shipped
+  # skills instead. Same guard, same reason, one layer earlier.
+  actions_app_slug="$(adb_actions_app_slug 2>/dev/null)" || actions_app_slug=""
+  if [ -z "$actions_app_slug" ]; then
+    echo "build.sh: adb_actions_app_slug is unavailable or empty — refusing to render {{ACTIONS_APP_SLUG}} as an empty string (it would match unattributable check runs)" >&2
+    exit 3
+  fi
   # Where THIS agent discovers skills — project-local first, then the user-global root. The two
   # are not derivable from `.$agent/skills`: Antigravity/Gemini discovers under a `config/`
   # customization root (see adb_agent_manifest in common.sh), so a workflow that resolved a skill
@@ -229,7 +252,7 @@ render_agent_skill() {
       -v roadmap_lib="$roadmap_lib" -v repo_settings="$repo_settings" \
       -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib" \
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
-      -v pr_watch="$pr_watch" \
+      -v pr_watch="$pr_watch" -v actions_app_slug="$actions_app_slug" \
       -v current_agent="$current_agent" -v subtask="$subtask" \
       -v skills_subdirs="$skills_subdirs" -v skills_user_root="$skills_user_root" \
       -v skill_prefix="$skill_prefix" -v skill_extra_key="$skill_extra_key" \
@@ -290,6 +313,7 @@ render_agent_skill() {
       line = lreplace(line, "{{CLEANUP_LIB}}",      cleanup_lib)
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
       line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
+      line = lreplace(line, "{{ACTIONS_APP_SLUG}}", actions_app_slug)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
       line = lreplace(line, "{{SKILLS_SUBDIRS}}",   skills_subdirs)
       line = lreplace(line, "{{SKILLS_USER_ROOT}}", skills_user_root)
