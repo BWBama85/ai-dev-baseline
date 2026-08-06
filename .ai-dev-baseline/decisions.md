@@ -2953,7 +2953,7 @@ limit: none of them is sufficient alone.
              `scripts/check-cleanup.sh` (the containment guard, now EXECUTED) · `scripts/selfcheck.sh`.
 - reason:    Ownership made the READER safe; nothing made the PATH exclusive, and the path is what a
              second *start* attacks. Refusing is also the honest model of what the tool can do:
-             #159 (see a sibling agent live in this tree) and #206 (a shared atomic claim-release)
+             #159 (see a sibling agent live in this tree) and #206 (a shared atomic claim-release)  <!-- adb-claim-ok: both are cited as DECLINED work, which is the whole point of the sentence; they deliberately track nothing -->
              were both closed NOT_PLANNED, so no design here may assume host-terminal liveness — and
              none does. Every refusal is decided from an observable fact instead: a branch ref, a
              PR state, a lease, a file mode.
