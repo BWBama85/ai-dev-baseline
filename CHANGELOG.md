@@ -33,7 +33,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     `link`ing a fully-written temp file into place — create-or-fail like `O_EXCL`, but with no
     window in which the claim exists and is empty for a contender to read as corrupt and break.
     A session that loses the race for a **held** claim is refused having mutated nothing; breaking
-    an **expired** one removes a stale file, and is a `rename` contest so exactly one caller wins.
+    an **expired** one removes a stale file through a `rename` whose **operand is verified** (a bare
+    rename is exclusive about the move and says nothing about what it moved — that let a delayed
+    breaker take a successor's brand-new claim, reproducibly three winners). Identity and expiry are
+    read in one probe, and the run re-reads its own token after acquiring. The property is **at most
+    one** winner: under maximal contention all contenders can knock each other out and every one is
+    refused, which is a liveness degradation rather than a safety one.
     The marker is also re-identified immediately before the clear (`cleanup-lib.sh marker-identity`,
     the rule `/cleanup` already applies at its own delete), which **narrows** the replacement
     window rather than closing it — the read and the unlink are still two operations.
@@ -48,7 +53,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     `role-dispatch.sh` already owns and validates differently) and the next run breaks an expired
     one with a reported `NOTE`. A pre-#202 empty lock has no lease and is broken the same way — the
     migration path. `release` drops only the claim its caller holds, compared by a per-acquire
-    token, so a run whose lease expired cannot delete its successor's claim. Every unknown (no
+    token that `admit` prints and the workflow threads to every release site (without one it can
+    only compare session ids, which cannot tell a same-owner or ownerless successor apart — a limit
+    recorded rather than papered over). Every unknown (no
     `jq`, an unreadable marker, a `gh` that errors, an unreadable state directory) **refuses without
     deleting**: a starter that cannot read must not delete.
 

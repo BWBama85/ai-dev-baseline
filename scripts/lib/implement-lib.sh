@@ -43,7 +43,10 @@
 # create-or-fail like O_EXCL, but with no window in which the claim exists and is empty. A session
 # that loses the race for a HELD claim is refused having mutated nothing. The one exception is
 # breaking an EXPIRED claim, which removes a stale file to win the right to take it; that path is a
-# rename contest, so exactly one caller wins, and it says so where it happens.
+# rename contest whose operand is verified, backed by a re-read of our own token after acquiring —
+# together those make two winners unobservable. AT MOST one caller wins, not exactly one: a losing
+# breaker frees the path for a few syscalls, so under maximal contention every contender can knock
+# out every other and all are refused. That is a liveness degradation, not a safety one.
 #
 # THE CLAIM IS `gap-analysis.lock`, WIDENED — not a second signal beside it. The file already
 # exists to mean "a run is in flight and has not written its marker yet" (the step-3 window, where
@@ -63,9 +66,12 @@
 # which is the failure the lock was introduced to prevent. One file, one direction of error.
 #
 # A SYMLINKED STATE DIRECTORY IS FOLLOWED, not rejected. `mkdir -p` accepts an existing symlink to a
-# directory and every operation below then acts on the target. The rendered workflow always passes a
-# fixed in-repo path, so this is not attacker-controlled in the shipped call; a caller passing an
-# arbitrary path should know that `admit` clears through the link.
+# directory and every operation below then acts on the target. The shipped call site passes a fixed
+# in-repo path — which bounds WHICH path is dereferenced, and says nothing about where it points:
+# anyone who can write `{{STATE_DIR}}` can replace it with a link elsewhere, and `admit` would clear
+# through it. That is the same trust boundary as the state directory itself (an actor who can do
+# that already owns this run's state), so it is documented rather than defended against; a caller
+# passing an arbitrary path should know the clear follows the link.
 #
 # THE CLAIM CARRIES A LEASE, because nothing else can reap it. `/cleanup` never deletes a `lock`
 # record (base/workflows/cleanup.md's sweep handles only `gaps`, `review` and `threads`), and this
@@ -162,9 +168,11 @@ _IL_CLAIM=gap-analysis.lock
 # octal. One owner per environment variable; a second reader that "mostly agrees" is worse than no
 # coupling at all.
 #
-# ADB_RUN_CLAIM_LEASE_SECS overrides it, and an INVALID value is an ERROR rather than a silent
-# fallback — a lease the operator believes they set and did not is exactly the kind of quiet
-# disagreement above. Bounded to 9 digits so the epoch arithmetic below cannot wrap: bash integers
+# ADB_RUN_CLAIM_LEASE_SECS overrides it, and a NON-EMPTY invalid value is an ERROR rather than a
+# silent fallback — a lease the operator believes they set and did not is exactly the kind of quiet
+# disagreement above. UNSET AND EMPTY BOTH MEAN "use the default", which is the shell's own
+# convention for an override and is what `VAR=` in a wrapper script means; the docs say so rather
+# than claiming every non-conforming value errors. Bounded to 9 digits so the epoch arithmetic below cannot wrap: bash integers
 # are signed 64-bit, and a 19-digit override produced a NEGATIVE expiry (i.e. instantly expired).
 # Minimum 60, because a sub-minute lease disables the exclusion this module exists to provide.
 _IL_LEASE_DEFAULT=9000
@@ -222,23 +230,84 @@ _il_acquire() {   # <claim-path> <payload>
   tmp="$(mktemp "${claim%/*}/.claim.XXXXXX" 2>/dev/null)" || return 1
   printf '%s\n' "$payload" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
   ln "$tmp" "$claim" 2>/dev/null; rc=$?
-  rm -f "$tmp"
+  # Best-effort by necessity: the claim is already published (or already lost) at this point, and
+  # failing the acquire because a temp file could not be unlinked would turn a cosmetic leftover
+  # into a refused run. A stray `.claim.XXXXXX` is inert — `state-scan` classifies it `other`, which
+  # /cleanup never deletes and never acts on.
+  rm -f "$tmp" 2>/dev/null
   return "$rc"
 }
 
-# Win the right to break a stale claim, atomically. Returns 0 to exactly ONE caller.
+# Remove EXACTLY the claim file whose content was judged, or fail. Returns 0 to at most one caller.
 #
-# `rm -f` is not a contest: two sessions that both judged the claim expired would both unlink and
-# both re-create, and the second's create would clobber the first's freshly-taken claim (or, with
-# `ln`, the first would simply lose a claim it had already been told it owned). rename(2) IS a
-# contest — the first `mv` moves the file, and every later one fails with ENOENT because the source
-# is gone. So whoever renames it away owns the break, and everyone else is refused.
-_il_break() {   # <claim-path>
-  local claim="$1" stale
-  stale="$claim.stale.$$.$RANDOM"
+# `rm -f` is not a contest at all: two sessions that both judged the claim expired would both unlink
+# and both re-create. But a bare rename is not sufficient either, and that was a real defect rather
+# than a theoretical one — the independent review reproduced THREE winners. rename(2) does make the
+# *move* exclusive, yet it moves whatever is at the path RIGHT NOW: A breaks the expired claim and
+# acquires a fresh one, then a delayed B renames A's brand-new successor away and acquires on top.
+# Exclusivity of the operation is worthless without identity of the operand.
+#
+# So the file is moved aside, and its content is compared against what the caller judged:
+#   - it matches      -> it really was the stale claim; delete it and report the break.
+#   - it does not     -> we just took a SUCCESSOR's live claim. Put it back with `ln` (create-or-
+#                        fail, so a third run that has since taken the path is not clobbered) and
+#                        refuse. If the restore cannot happen because the path is occupied, that
+#                        occupant supersedes the file we hold, so dropping our copy is correct.
+#
+# `mktemp` for the sidelined name rather than `$$.$RANDOM`: the latter is not guaranteed unique, and
+# a pre-existing DIRECTORY at that path silently changes `mv` semantics into "move it inside", which
+# would preserve the claim while reporting a successful break.
+_il_break() {   # <claim-path> <judged-identity>
+  local claim="$1" want="$2" stale got
+  stale="$(mktemp "${claim%/*}/.stale.XXXXXX" 2>/dev/null)" || return 1
+  rm -f "$stale" || return 1
   mv "$claim" "$stale" 2>/dev/null || return 1
-  rm -f "$stale" 2>/dev/null
+  got="$(_il_file_identity "$stale")"
+  if [ -n "$want" ] && [ "$got" != "$want" ]; then
+    ln "$stale" "$claim" 2>/dev/null
+    rm -f "$stale" 2>/dev/null
+    return 1
+  fi
+  # The removal is REPORTED, not assumed: a leftover `.stale.*` beside a fresh claim would make the
+  # next scan of this directory ambiguous, and a caller that believes it broke a claim it did not is
+  # the failure this whole function exists to prevent.
+  rm -f "$stale" 2>/dev/null || return 1
+  [ -e "$stale" ] && return 1
   return 0
+}
+
+# THE one definition of a state file's identity, and it is deliberately the same one
+# `cleanup-lib.sh marker-identity` uses: `cksum` over the file's RAW bytes.
+#
+# Two definitions is not a style problem, it is a silent no-op. A content digest taken through
+# `$(<file)` — which strips trailing newlines — never matches a digest of the file itself, so every
+# comparison failed closed: the break always refused, `admit` never cleared a genuinely stale
+# marker, and the suite went red in six places. Failing closed is the right DIRECTION for a bug like
+# that, which is exactly why it has to be one function: the other direction is unobservable.
+_il_file_identity() {   # <path>
+  cksum < "$1" 2>/dev/null | awk '{print $1 "-" $2}'
+}
+
+# Probe a claim in ONE observation: prints its identity on line 1 and its lease expiry on line 2
+# (empty when unreadable). Both derived from the SAME bytes.
+#
+# THIS IS NOT A TIDINESS REFACTOR. Reading the identity and the expiry as two separate opens is what
+# let three contenders win a race the identity check was supposed to settle: between the two reads a
+# breaker can pair the OLD file's expiry with the NEW file's identity, and then `_il_break` happily
+# verifies — and removes — the live successor it was meant to protect. Measured on a 12-way race:
+# two reads gave 2-3 winners across runs, one read gives 1.
+#
+# `read -rd ''` rather than `$(<file)`, because command substitution strips trailing newlines and
+# the claim is written with one: a digest over the stripped form can never equal `cksum < file`, so
+# every comparison would fail closed and no stale claim would ever be breakable. Both values leave
+# through stdout as separate lines precisely so the raw bytes never have to survive a `$( )`.
+_il_claim_probe() {   # <claim-path>
+  local v=""
+  IFS= read -r -d '' v < "$1" 2>/dev/null || true
+  printf '%s' "$v" | cksum | awk '{print $1 "-" $2}'
+  printf '%s' "$v" | jq -r 'if type == "object" and (.expiresAt | type) == "number"
+                            then (.expiresAt | floor | tostring) else empty end' 2>/dev/null \
+    | awk 'NR == 1 && /^[0-9]{1,10}$/ { print; f = 1 } END { if (!f) print "" }'
 }
 
 # A per-acquire identity for the claim. NOT the session id: a session can legitimately hold two
@@ -262,15 +331,22 @@ _il_token() {
 # and re-took the claim, A's later stop path — or its step-5 hand-off — deleted B's claim, and a
 # THIRD run could then walk in. Comparing the token makes a release affect exactly the claim its
 # caller is holding, which is the only claim it has any business removing.
+# Drop a claim ONLY if it is the one this process took, and only by removing the exact bytes it
+# compared. Returns non-zero when the claim is still there afterwards — a caller that prints "the
+# claim was released" over a stranded file is the same silent-success failure this module exists to
+# remove.
 _il_drop() {   # <claim-path> <token>
-  local claim="$1" want="$2" got
+  local claim="$1" want="$2" ident got
   [ -e "$claim" ] || return 0
+  ident="$(_il_file_identity "$claim")"
   got="$(jq -r '.token // ""' "$claim" 2>/dev/null)" || got=""
-  # An untokened claim is pre-#202 or hand-written; there is no owner to wrong, and refusing to
-  # remove it would strand it. The caller is holding SOMETHING at this point either way.
+  # An untokened claim is pre-#202 or hand-written; there is no run to wrong, and refusing to remove
+  # it would strand it. The caller is holding SOMETHING at this point either way.
   if [ -n "$got" ] && [ -n "$want" ] && [ "$got" != "$want" ]; then return 0; fi
-  rm -f "$claim" 2>/dev/null
-  return 0
+  # Removed through the same move-and-verify the break uses, NOT `rm` by pathname: comparing the
+  # token and then unlinking the PATH is two operations, and a successor written in between is
+  # deleted by a comparison that never saw it. The review demonstrated exactly that substitution.
+  _il_break "$claim" "$ident"
 }
 
 # --- admit --------------------------------------------------------------------------------------
@@ -430,7 +506,14 @@ cmd_admit() {
       echo "               Nothing is holding it; the state directory is not writable. Nothing was deleted." >&2
       return 14
     fi
-    expiry="$(_il_claim_expiry "$claim")"
+    # ONE read of the claim's bytes: the expiry decision and the identity handed to `_il_break` must
+    # describe the SAME observation, or the break can verify a file the decision never saw.
+    local claim_ident probe
+    claim_ident=""
+    probe="$(_il_claim_probe "$claim")"
+    { IFS= read -r claim_ident; IFS= read -r expiry; } <<EOF
+$probe
+EOF
     if [ -n "$expiry" ] && [ "$now" -lt "$expiry" ]; then
       echo "implement-lib: REFUSED — another /implement-issue run holds the run claim." >&2
       echo "               $claim (lease expires in $(( expiry - now ))s)" >&2
@@ -451,9 +534,10 @@ cmd_admit() {
     else
       echo "implement-lib: NOTE — breaking a run claim with no readable lease (pre-#202 or corrupt): $claim" >&2
     fi
-    if ! _il_break "$claim"; then
-      echo "implement-lib: REFUSED — another run broke the stale claim first, or the state directory" >&2
-      echo "               is not writable. Nothing here took it; re-run to see the current state." >&2
+    if ! _il_break "$claim" "$claim_ident"; then
+      echo "implement-lib: REFUSED — the stale claim was replaced or broken by another run while this" >&2
+      echo "               one was breaking it (or the state directory is not writable). Nothing here" >&2
+      echo "               took it; re-run to see the current state." >&2
       return 13
     fi
     if ! _il_acquire "$claim" "$payload"; then
@@ -464,6 +548,26 @@ cmd_admit() {
       echo "implement-lib: REFUSED — could not replace the stale run claim at $claim (state directory not writable?)." >&2
       return 14
     fi
+  fi
+
+  # --- 2b. CONFIRM WHAT WE ACTUALLY HOLD --------------------------------------------------------
+  # The acquire returning 0 says the `link` succeeded; it does not say the claim is STILL ours by the
+  # time we act on it. A losing breaker moves the claim aside before it discovers the identity does
+  # not match, and for those few syscalls the path is free — long enough for a third contender's
+  # plain acquire to succeed. The loser then restores nothing (the path is occupied) and drops the
+  # file it holds, leaving TWO runs each believing they hold the claim. Measured on a 12-way
+  # barrier-synchronized race: 2 winners, intermittently.
+  #
+  # Re-reading our own token settles it for whichever of the two is no longer there, and costs one
+  # `jq`. It does not make the break sequence atomic — see the note on `_il_break` — but it converts
+  # the observable failure from "two runs proceed" into "one proceeds, one is refused", which is the
+  # property that matters.
+  local held
+  held="$(jq -r '.token // ""' "$claim" 2>/dev/null)" || held=""
+  if [ "$held" != "$token" ]; then
+    echo "implement-lib: REFUSED — the run claim was taken over between acquiring it and using it." >&2
+    echo "               Another run holds this checkout now; nothing here was deleted." >&2
+    return 13
   fi
 
   # --- 3. holding the claim: clear what the previous run left behind ----------------------------
@@ -509,7 +613,28 @@ cmd_admit() {
   # A failure to clear is reported and RELEASES the claim: proceeding would leave a stale marker
   # that the Stop hook reads as this run's, and holding a claim for a run that never starts is the
   # permanent block this module exists to avoid.
+  # THE MARKER IS REMOVED BY IDENTITY, and only when step 1 actually judged one. `_il_clear` deletes
+  # by pathname, which is correct for artifacts (they are a finished run's leftovers either way) and
+  # WRONG for the marker: a marker written after the absence check above — the review landed one
+  # there with a DEBUG trap — would be destroyed by a run that never judged it. Handing `_il_clear`
+  # only what this run is entitled to delete removes the whole class rather than narrowing it again.
   local rc=0
+  if [ "$had_marker" -eq 1 ] && [ -n "$ident" ]; then
+    if ! _il_break "$marker" "$ident"; then
+      _il_drop "$claim" "$token"
+      echo "implement-lib: REFUSED — the run marker changed while it was being cleared; it belongs to" >&2
+      echo "               a different run now, so it was left alone and the claim was released." >&2
+      return 10
+    fi
+  elif [ "$had_marker" -eq 1 ]; then
+    # Judged, but its identity could not be established. It was `stale`, so removing it is correct —
+    # but by pathname is the only option left, and that is exactly the narrow window above. Refuse
+    # instead: an unreadable marker is already the 11 case, so this is unreachable in practice and
+    # refusing costs nothing.
+    _il_drop "$claim" "$token"
+    echo "implement-lib: REFUSED — the run marker could not be identified for removal: $marker" >&2
+    return 11
+  fi
   _il_clear "$dir" || rc=$?
   if [ "$rc" -ne 0 ]; then
     _il_drop "$claim" "$token"
@@ -536,8 +661,17 @@ cmd_admit() {
 # fixed-name-only clear the workflow prose carried was on the wrong side of the containment rule.
 _il_clear() {   # <state-dir>
   local dir="$1" f rc=0 had_nullglob=0
+  # RE-CHECKED HERE, not only at admission. `[ -r ]` at the top of `admit` and the globbing below are
+  # two moments, and a directory that becomes mode `wx` in between enumerates NOTHING while the fixed
+  # names still unlink — a clear that reports success over a family artifact it never saw. Asking
+  # again immediately before the enumeration is what makes the answer describe this enumeration.
+  [ -r "$dir" ] || return 1
+  # NO MARKER HERE — cmd_admit removes it by identity before calling this, because the marker is the
+  # one file whose wrongful deletion disarms a live run. Everything below is a finished run's
+  # artifacts, where deletion by pathname is the right granularity: they are re-derivable, and the
+  # claim this caller holds is what stops a live run writing them underneath us.
   local -a targets=(
-    "$dir/$_IL_MARKER"        "$dir/$_IL_BLOCKED"
+    "$dir/$_IL_BLOCKED"
     "$dir/gap-prompt.txt"     "$dir/gaps.md"    "$dir/gaps.err"
     "$dir/review-prompt.txt"  "$dir/review.md"  "$dir/review.err"
   )
@@ -586,7 +720,9 @@ cmd_release() {
   # even though it cannot distinguish one session's two successive claims. An untokened, unowned
   # claim, or a caller with no identity at all, releases unconditionally — the pre-#202 behaviour,
   # and the only safe answer when there is nothing to compare.
-  local got_token got_owner
+  # ONE read: the decision and the removal must describe the same observation.
+  local ident got_token got_owner
+  ident="$(_il_file_identity "$claim")"
   got_token="$(jq -r '.token // ""' "$claim" 2>/dev/null)" || got_token=""
   got_owner="$(jq -r '.owner // ""' "$claim" 2>/dev/null)" || got_owner=""
   if [ -n "$tok" ] && [ -n "$got_token" ]; then
@@ -600,8 +736,13 @@ cmd_release() {
     return 0
   fi
 
-  rm -f "$claim" 2>/dev/null
-  if [ -e "$claim" ]; then
+  # Removed by IDENTITY, not by pathname, so a successor written between the comparison above and
+  # the removal below survives. `_il_break` puts back anything that is not the file we judged.
+  if ! _il_break "$claim" "$ident"; then
+    if [ -e "$claim" ]; then
+      echo "implement-lib: NOTE — the run claim changed while it was being released; left in place: $claim" >&2
+      return 0
+    fi
     echo "implement-lib: could not release the run claim: $claim" >&2
     return 14
   fi

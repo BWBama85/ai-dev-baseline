@@ -38,8 +38,8 @@ mode this invariant prevents — keep going.
 **One run per checkout per agent, and it is enforced (#202).** Two `/implement-issue` runs in one
 checkout share ONE HEAD — they fight over the checked-out branch whether or not their state files
 collide — so a second run is **refused**, not accommodated. Preflight asks `bash "$HOME/.gemini/scripts/lib/implement-lib.sh" admit`
-before it deletes anything; the run then holds a **run claim** (`gap-analysis.lock`, taken
-create-or-fail) until step 5 writes the marker that supersedes it. That boundary is what lets
+before it deletes anything; the run then holds a **run claim** (`gap-analysis.lock`, published
+create-or-fail as a complete file) until step 5 writes the marker that supersedes it. That boundary is what lets
 everything below treat "the marker exists" as "this run is live" (D40, D46).
 
 **"Per agent" is not a footnote.** The scope is this agent's `.gemini/state`, so what is enforced is
@@ -307,13 +307,19 @@ fi
 #
 # `admit` decides and, only when it decides yes, acquires the run claim and clears what a
 # FINISHED run left behind. Its rules — refuse unless the marker is provably stale, take the
-# claim with O_EXCL BEFORE deleting anything, fail closed on every unknown — live in one tested
+# claim create-or-fail BEFORE deleting anything, fail closed on every unknown — live in one tested
 # script rather than in this prose, because a decision written as prose is a decision nothing can
 # regression-test (`scripts/check-implement-lib.sh`).
 #
 # BRANCH ON THE EXIT CODE, never on stdout. Each code names a different next move, and collapsing
 # them would tell the operator to go looking for a live run when the real problem is a corrupt file.
-bash "$HOME/.gemini/scripts/lib/implement-lib.sh" admit .gemini/state; ADMIT=$?
+# CAPTURE THE TOKEN, not just the status. On success `admit` prints `admitted <token>`, and that
+# token is what lets every release below drop THIS run's claim and nothing else — without it a
+# release falls back to comparing session ids, which cannot tell one session's two successive claims
+# apart and, for an agent whose harness exposes no session id, cannot tell anything apart at all.
+ADMIT_OUT="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" admit .gemini/state)"; ADMIT=$?
+RUN_CLAIM_TOKEN=""
+[ "$ADMIT" -eq 0 ] && RUN_CLAIM_TOKEN="${ADMIT_OUT##* }"
 case "$ADMIT" in
   0)  : ;;   # admitted: the claim is held and stale state is cleared. Proceed.
   10) echo "STOP: another /implement-issue run is in flight in this checkout (see above)."; exit 1 ;;
@@ -379,7 +385,7 @@ in this checkout until its lease expires, for a run that got no further than rea
 ```bash
 for n in "${ISSUE_NUMS[@]}"; do
   gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state > "/tmp/issue-$n.json" \
-    || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release .gemini/state; echo "ERROR: issue #$n not found in this repo — verify repo scope"; exit 1; }
+    || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .gemini/state; echo "ERROR: issue #$n not found in this repo — verify repo scope"; exit 1; }
 done
 
 # WHO WROTE IT is part of the read (#214). `gh issue view` exposes `authorAssociation` on each
@@ -389,7 +395,7 @@ done
 # collapse into one anonymous blob, and a passer-by's comment reads exactly like the assignment.
 for n in "${ISSUE_NUMS[@]}"; do
   gh api "repos/{owner}/{repo}/issues/$n" --jq '.author_association' > "/tmp/issue-$n.assoc" \
-    || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release .gemini/state; echo "ERROR: could not read #$n's author association"; exit 1; }
+    || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .gemini/state; echo "ERROR: could not read #$n's author association"; exit 1; }
 done
 ```
 
@@ -402,7 +408,7 @@ issue so the owner can confirm (drop it, or re-open it intentionally) before you
 ```bash
 for n in "${ISSUE_NUMS[@]}"; do
   st="$(jq -r .state "/tmp/issue-$n.json")"
-  [ "$st" = "OPEN" ] || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release .gemini/state
+  [ "$st" = "OPEN" ] || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .gemini/state
     echo "ERROR: issue #$n is $st — stop and confirm with the owner before implementing (do not silently reopen already-shipped work)"; exit 1; }
 done
 ```
@@ -464,12 +470,12 @@ still inside that call's cap, and a later shell cannot `wait` on an earlier shel
 **Write the prompt to a file first.** A detached call cannot be fed from a shell
 variable in your current foreground call, so materialize it, *then* dispatch:
 
-**The lock is ALREADY HELD — do not take it here (#202).** It used to be acquired at the top of
+**The claim is ALREADY HELD — do not take it here (#202).** It used to be acquired at the top of
 this step, because a concurrent `/cleanup` classifies `gap-prompt.txt` as a gap artifact and, with
 no branch or run marker yet in existence (step 5 owns those), `LOCK=0` reads as a finished run's
 leftovers and deletes it. That is still exactly why the lock exists — but preflight now takes it,
 as this run's **claim**, and holds it across this whole pre-marker window. Taking it again would
-fail: the acquire is `O_EXCL`, and a second take is how `admit` detects a *concurrent run*.
+fail: the acquire is create-or-fail, and a second take is how `admit` detects a *concurrent run*.
 
 ```bash
 # 1. Write YOUR OWN instructions — the trusted half of the prompt. Everything here is authored by
@@ -513,9 +519,9 @@ for n in "${ISSUE_NUMS[@]}"; do
       [ "[ISSUE BODY — author: \(.author.login) (\($assoc))]\n\(.body // "")" ]
       + [ (.comments // [])[] | "[COMMENT — author: \(.author.login) (\(.authorAssociation // "NONE"))]\n\(.body // "")" ]
       | join("\n\n---\n\n")' "/tmp/issue-$n.json")" \
-    || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release .gemini/state; echo "ERROR: could not read issue #$n's text"; exit 1; }
+    || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .gemini/state; echo "ERROR: could not read issue #$n's text"; exit 1; }
   printf '%s' "$TEXT" | bash "$HOME/.gemini/scripts/lib/role-dispatch.sh" untrusted "github-issue #$n" >> .gemini/state/gap-prompt.txt \
-    || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release .gemini/state; echo "ERROR: could not contain issue #$n's text — do NOT fall back to pasting it raw"; exit 1; }
+    || { bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .gemini/state; echo "ERROR: could not contain issue #$n's text — do NOT fall back to pasting it raw"; exit 1; }
 done
 
 # 3. Dispatch via the harness's background facility, NOT a shell `&`.
@@ -544,8 +550,8 @@ the findings — or the failure classification — this run is about to act on.
 
 A run killed between the take and a release leaves the claim behind. That is deliberately
 fail-safe in the direction that matters — a stray claim only ever *preserves* artifacts — and it
-is bounded rather than permanent: the claim carries a **lease** (twice the dispatch backstop plus
-an hour), so the next run breaks it with a note instead of being refused forever. A **retry** of
+is bounded rather than permanent: the claim carries a **lease** (9000s / 2h30m), so the next run
+breaks it with a note instead of being refused forever. A **retry** of
 the dispatch re-runs only the prompt-and-dispatch block; it does not re-take the claim, which this
 run still holds.
 
@@ -600,7 +606,7 @@ bound problem, not as a silent agent swap.
   5, so nothing else will clear it: the claim pins its artifacts against `/cleanup` and refuses
   every later run in this checkout until its lease expires. Read the findings first, then release:
   ```bash
-  bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release .gemini/state
+  bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .gemini/state
   ```
 - **Epic/slice or anything declared out of scope** becomes a tracked issue **if it clears the
   bar** (`issues-and-scope.md`) — including the parent's own "Out of scope" list, whose entries
@@ -631,8 +637,14 @@ jq -n --arg branch "$BRANCH" --arg issue "$ISSUE_CSV" \
        + (if $owner == "" then {} else {owner:$owner} end)' \
    > .gemini/state/.marker.tmp \
   && mv .gemini/state/.marker.tmp .gemini/state/implement-issue-active.json \
-  && bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release .gemini/state \
   || { echo "ERROR: could not write the run marker — claim NOT released, so this run still holds the checkout"; exit 1; }
+
+# A SEPARATE statement, so its failure is reported as its own. Chained onto the `||` above, a
+# release that failed printed "could not write the run marker" over a marker that exists — sending
+# the operator to look at the wrong file. This failure is also not fatal: the marker is written, so
+# the run IS protected; the claim merely lingers until its lease expires.
+bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .gemini/state \
+  || echo "NOTE: the marker is written and this run is protected, but the run claim could not be released; it will expire on its own."
 ```
 
 **THE HAND-OFF.** The marker now exists, so *it* is this run's liveness signal — `/cleanup` keeps

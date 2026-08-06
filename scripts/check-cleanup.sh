@@ -746,8 +746,12 @@ else
   # --- #202: admission replaces the unconditional clear ----------------------------------------
   has "$iiexec" '{{IMPLEMENT_LIB}} admit {{STATE_DIR}}' \
      "6 /implement-issue asks admission before it touches state"
-  has "$iiexec" '{{IMPLEMENT_LIB}} release {{STATE_DIR}}' \
-     "6 …and releases the claim it holds until the marker supersedes it"
+  # `release --token "$RUN_CLAIM_TOKEN"`, not a bare release: a token the workflow never threads is
+  # a token that protects nothing, which is exactly what the independent review found. The COUNT
+  # equality (every release site passes it) is pinned in check-implement-lib.sh section 13; this
+  # asserts the form is present at all, so a revert cannot pass by deleting every release.
+  has "$iiexec" '{{IMPLEMENT_LIB}} release --token "$RUN_CLAIM_TOKEN" {{STATE_DIR}}' \
+     "6 …and releases the claim it holds until the marker supersedes it, by token"
   # THE BUG, pinned as a negative. An unconditional `rm -f` of either marker path is exactly what
   # let session B delete session A's live marker; `admit` clears them only after proving the run is
   # stale AND taking the claim. Both spellings, because the two files were cleared on one line.
@@ -773,7 +777,7 @@ else
   # to the harness's DETACHED facility, so a release appended to it drops the claim immediately
   # and leaves it unheld for the whole pass — the only window it exists for.
   iidisp="${ printf '%s\n' "$ii" | grep -n '{{ROLE_DISPATCH}} invoke gap_analysis' | head -n1 | cut -d: -f1; }"
-  iirel="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} release {{STATE_DIR}}' | tail -n1 | cut -d: -f1; }"
+  iirel="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} release --token' | tail -n1 | cut -d: -f1; }"
   iifence="${ printf '%s\n' "$ii" | awk -v d="${iidisp:-0}" 'NR > d && /^```$/ { print NR; exit }'; }"
   if [ -n "$iirel" ] && [ -n "$iifence" ] && [ "$iirel" -gt "$iifence" ]; then ok; else
     bad "6 the claim release must be in a separate fenced block after the detached dispatch (release@${iirel:-?} block-end@${iifence:-?})"
@@ -792,7 +796,7 @@ else
     bad "6 could not locate step 5 in implement-issue.md — the hand-off order asserted NOTHING"
   else
     ii5marker="${ printf '%s\n' "$ii5" | grep -n 'mv {{STATE_DIR}}/.marker.tmp {{STATE_DIR}}/implement-issue-active.json' | head -n1 | cut -d: -f1; }"
-    ii5rel="${ printf '%s\n' "$ii5" | grep -n '{{IMPLEMENT_LIB}} release {{STATE_DIR}}' | head -n1 | cut -d: -f1; }"
+    ii5rel="${ printf '%s\n' "$ii5" | grep -n '{{IMPLEMENT_LIB}} release --token' | head -n1 | cut -d: -f1; }"
     if [ -n "$ii5marker" ] && [ -n "$ii5rel" ] && [ "$ii5marker" -lt "$ii5rel" ]; then ok; else
       bad "6 step 5 must write the marker and THEN release the claim (marker@${ii5marker:-absent} release@${ii5rel:-absent})"
     fi

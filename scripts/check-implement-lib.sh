@@ -399,31 +399,67 @@ if exists "$d/.claude/state/gaps.md"; then ok; else bad "10 release must drop on
 # `rm -f` break it produced two winners — because there a contender is already reading the file's
 # contents to decide whether to break it. The complete-payload assertion after this case pins the
 # structural property directly.
-race_winners() {   # <state-dir> <n> [pre-seed]  -> prints the number of admits that returned 0
+# A START BARRIER, not just N background jobs. Without one the workers are staggered by however long
+# bash takes to fork each of them, which is comfortably longer than the window under test, and the
+# race degenerates into N sequential calls. Every worker spins until the gate file appears, so they
+# enter the acquire together.
+race_winners() {   # <state-dir> <n>  -> prints the number of admits that returned 0
   local sd="$1" n="$2" i wins=0
   local rdir="$sd/.race"; rm -rf "$rdir"; mkdir -p "$rdir"
   for (( i = 0; i < n; i++ )); do
-    ( cd "$sd/.." >/dev/null 2>&1 || exit 1
+    ( while [ ! -e "$rdir/go" ]; do :; done
+      cd "$sd/.." >/dev/null 2>&1 || exit 1
       if bash "$IL" admit "$sd" >"$rdir/out.$i" 2>&1; then : > "$rdir/win.$i"; fi ) &
   done
+  : > "$rdir/go"
   wait
   for i in "$rdir"/win.*; do [ -e "$i" ] && wins=$((wins + 1)); done
   rm -rf "$rdir"
   printf '%s' "$wins"
 }
 d="$(new_repo)"
-eq "$(race_winners "$d/.claude/state" 8)" "1" \
-   "12 eight simultaneous admits against an EMPTY state dir produce exactly ONE winner"
+eq "$(race_winners "$d/.claude/state" 12)" "1" \
+   "12 twelve simultaneous admits against an EMPTY state dir produce exactly ONE winner"
 eq "$(jq -r 'if (.token|type)=="string" and (.token|length) > 0 then "ok" else "bad" end' \
       "$d/.claude/state/gap-analysis.lock" 2>/dev/null)" "ok" \
    "12 …and the surviving claim is complete, never a half-written file another run could break"
 
-# The same contest over an EXPIRED claim. `rm -f` + re-create is not a contest — two breakers both
-# unlink and both create, and the loser clobbers a claim the winner was already told it owned. The
-# break is a rename, which exactly one caller wins.
+# The same contest over an EXPIRED claim, where the property is SAFETY and the assertion says so.
+#
+# At most one winner is the invariant: two runs proceeding is the bug, and `rm -f` + re-create
+# produced exactly that (2-3 winners, reproducibly). Breaking is a rename whose operand is verified,
+# plus a re-read of our own token after acquiring — together those make two winners unobservable.
+#
+# WHAT THIS RACE CAN AND CANNOT ISOLATE, measured rather than assumed. It pins the OBSERVABLE
+# property — two runs never both proceed — and it caught the real defect: `rm -f` breaking gave 2-3
+# winners reproducibly before the identity check and the post-acquire re-read existed. It is a poor
+# detector of the individual guards now, because the post-acquire re-read (step 2b) catches almost
+# everything the earlier ones miss. Measured over four runs each, with one guard disabled at a time:
+# disabling 2b's re-read failed 1/4; disabling `_il_break`'s identity check or reverting the acquire
+# to create-then-write passed 4/4, masked by 2b.
+#
+# So `_il_break`'s identity check and `cmd_release`'s are DEFENCE IN DEPTH whose individual
+# contribution is not separately observable from outside the process — reaching them needs a writer
+# scheduled inside a few syscalls, which a shell harness cannot arrange (the same limit section 7c
+# records). Saying that is better than implying this race pins them.
+#
+# NOT "exactly one", and that is a real property of the design rather than a weak test. A losing
+# breaker frees the claim path for the few syscalls before it discovers the identity does not match,
+# so under maximal contention every contender can knock out every other and ALL of them are refused.
+# That is a liveness degradation, not a safety one — the next run takes the claim cleanly — and it
+# is the trade taken instead of introducing a second lock file with its own stranding failure mode
+# (the permanent block #202 warns against). Twelve simultaneous breakers is also far past anything
+# reachable: a real checkout has one operator.
 d="$(new_repo)"; expired_claim "$d"
-eq "$(race_winners "$d/.claude/state" 8)" "1" \
-   "12 eight simultaneous breakers of one EXPIRED claim also produce exactly ONE winner"
+w="$(race_winners "$d/.claude/state" 12)"
+if [ "$w" -le 1 ]; then ok; else
+  bad "12 twelve simultaneous breakers of one EXPIRED claim produced $w winners — two runs proceeded"
+fi
+# …and at REALISTIC contention it must still be live, or "refuse everyone" would be an easy way to
+# pass the safety assertion above while never letting anyone in.
+d="$(new_repo)"; expired_claim "$d"
+eq "$(race_winners "$d/.claude/state" 2)" "1" \
+   "12 …and two contenders for an expired claim still produce exactly one WINNER, not zero"
 
 # ================= 13. release drops only what THIS run holds ==================================
 # An unconditional `rm` was a real hole: if this run's lease expires and another run legitimately
@@ -452,6 +488,52 @@ if exists "$d/.claude/state/gap-analysis.lock"; then
   bad "13 …while B's own release DOES drop it"
 else ok; fi
 
+# WHAT THE TOKENLESS FORM CANNOT DO, pinned as the limit it is rather than left to be discovered.
+# `release` is a FRESH PROCESS: it has no memory of the claim its run took, so the only thing it can
+# compare is what the file says. A successor written by a DIFFERENT session is caught by the owner
+# fallback (above). A successor whose claim carries the SAME owner, or no owner at all, is
+# genuinely indistinguishable from the caller's own claim — and is therefore released.
+#
+# That is not a defect to route around in the library; it is why the WORKFLOW passes `--token`, and
+# why the pin below asserts it does. Recording the limit here keeps a future reader from "fixing"
+# the fallback into refusing, which would strand a claim on every stop path for any harness that
+# exposes no session id.
+d="$(new_repo)"; admit "$d" CLAUDE_CODE_SESSION_ID=sess-A
+jq -n '{startedAt:1, expiresAt:9999999999, token:"tok-successor", owner:"sess-A"}' \
+   > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && env CLAUDE_CODE_SESSION_ID=sess-A bash "$IL" release .claude/state ) >/dev/null 2>&1
+if exists "$d/.claude/state/gap-analysis.lock"; then
+  bad "13 a same-owner successor is NOT distinguishable tokenlessly — if this now passes, the fallback changed and the limit note above is stale"
+else ok; fi
+# …and the token IS what tells them apart, on exactly that fixture.
+d="$(new_repo)"; admit "$d" CLAUDE_CODE_SESSION_ID=sess-A
+mine="$(jq -r .token "$d/.claude/state/gap-analysis.lock")"
+jq -n '{startedAt:1, expiresAt:9999999999, token:"tok-successor", owner:"sess-A"}' \
+   > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && env CLAUDE_CODE_SESSION_ID=sess-A bash "$IL" release --token "$mine" .claude/state ) >/dev/null 2>&1
+eq "$(jq -r .token "$d/.claude/state/gap-analysis.lock" 2>/dev/null)" "tok-successor" \
+   "13 …while --token distinguishes them on the SAME fixture, which is why the workflow passes it"
+
+# THE CALL SITES, pinned. A token the workflow never threads is a token that protects nothing, and
+# that was the review's finding: `admit` printed one and every release ignored it.
+WF="$ROOT/base/workflows/implement-issue.md"
+if [ ! -f "$WF" ]; then
+  bad "13 base/workflows/implement-issue.md not found — the call-site pin asserted NOTHING"
+else
+  wfexec="${ awk '/^```bash$/ { inb = 1; next } /^```$/ { inb = 0; next } inb' "$WF" \
+             | sed 's/[[:space:]]*#.*$//'; }"
+  has "$wfexec" 'ADMIT_OUT="$({{IMPLEMENT_LIB}} admit {{STATE_DIR}})"' \
+     "13 the workflow captures admit's stdout, not just its status"
+  # Matched against the RAW workflow, not the comment-stripped copy: `${ADMIT_OUT##* }` contains
+  # `##`, and the `sed 's/#.*$//'` that strips shell comments eats the parameter expansion with it.
+  # The pin was observed failing for exactly that reason, on a workflow that had the line.
+  has "$(cat "$WF")" 'RUN_CLAIM_TOKEN="${ADMIT_OUT##* }"' "13 …and extracts the token from it"
+  nrel="${ printf '%s\n' "$wfexec" | grep -c '{{IMPLEMENT_LIB}} release'; }"
+  ntok="${ printf '%s\n' "$wfexec" | grep -c '{{IMPLEMENT_LIB}} release --token "\$RUN_CLAIM_TOKEN"'; }"
+  eq "$ntok" "$nrel" "13 …and EVERY release site passes it ($ntok of $nrel)"
+  case "$nrel" in 0) bad "13 …but no release site was found at all, so that count proved nothing" ;; *) ok ;; esac
+fi
+
 # ================= 14. lease validation is an ERROR, never a silent default ====================
 # A lease the operator believes they set and did not is the quiet disagreement this validation
 # exists to remove — and one of these values used to be an arithmetic ERROR that still admitted.
@@ -463,6 +545,14 @@ for badlease in 0 30 abc -5 08x 12345678901234567890; do
     bad "14 …and no claim is taken on that path ('$badlease')"
   else ok; fi
 done
+# UNSET AND EMPTY BOTH MEAN "use the default", which is the shell's own convention for an override
+# and what `VAR=` in a wrapper means. Pinned because the module's docs used to claim that anything
+# not matching the grammar errors, which was false for the empty string.
+d="$(new_repo)"; admit "$d" ADB_RUN_CLAIM_LEASE_SECS=
+eq "$AD_RC" "0" "14 an EMPTY override means 'use the default', not 'invalid'"
+eq "$(jq -r 'if (.expiresAt - .startedAt) == 9000 then "9000" else "other" end' \
+      "$d/.claude/state/gap-analysis.lock" 2>/dev/null)" "9000" \
+   "14 …and the default really is 9000s, which is what every doc says"
 # A zero-PADDED value is decimal, not octal: `08` used to be an arithmetic error.
 d="$(new_repo)"; admit "$d" ADB_RUN_CLAIM_LEASE_SECS=0090
 eq "$AD_RC" "0" "14 a zero-padded lease is read as decimal, not octal"

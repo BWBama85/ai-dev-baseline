@@ -2883,7 +2883,17 @@ limit: none of them is sufficient alone.
                  creates the file at redirection time and fills it after, and a contender reading it
                  in between calls it corrupt and breaks it). A session that loses the race for a
                  HELD claim is refused having mutated nothing; breaking an EXPIRED claim removes a
-                 stale file, and is a `rename` contest so exactly one caller wins.
+                 stale file, and is a `rename` whose OPERAND IS VERIFIED — a bare rename is exclusive
+                 about the move and says nothing about what it moved, which let a delayed breaker
+                 rename a successor's brand-new claim away (the review reproduced three winners).
+                 Identity and expiry are read in ONE probe for the same reason: as two reads, a
+                 breaker could pair the old file's expiry with the new file's identity and verify
+                 the very claim it was meant to protect. After acquiring, the run re-reads its own
+                 token before acting, because a losing breaker frees the path for a few syscalls.
+                 The property is AT MOST one winner, not exactly one — under maximal contention all
+                 contenders can knock each other out and every one is refused, which is a liveness
+                 degradation rather than a safety one, and is the trade taken instead of adding a
+                 second lock file with its own stranding failure mode.
                  Check-then-act between two reads was the residual hole a plain guarded clear would
                  have left. And because a verdict still describes the marker *as it was read*, the
                  file is re-identified at the delete with `cleanup-lib.sh marker-identity` — the
@@ -2918,10 +2928,19 @@ limit: none of them is sufficient alone.
              branch; it is an expiry on a lease. A pre-#202 empty lock has no lease and is broken
              with a reported NOTE, which is the migration path and matches the unconditional clear
              it replaces.
-             **`release` drops only the claim this run holds**, compared by a per-acquire token (or,
-             absent one, the session id). An unconditional `rm` was a hole in the same family: if a
-             run's lease expired and a successor legitimately took over, the first run's later stop
-             path deleted the SUCCESSOR's claim and a third run walked in behind it.
+             **`release` drops only the claim its caller holds**, compared by a per-acquire `token`
+             that `admit` prints and the workflow threads to every release site. An unconditional
+             `rm` was a hole in the same family: if a run's lease expired and a successor
+             legitimately took over, the first run's later stop path deleted the SUCCESSOR's claim
+             and a third run walked in behind it.
+             **The tokenless fallback is weaker, and the limit is recorded rather than implied.**
+             `release` is a fresh process with no memory of what its run took, so without a token it
+             can only compare the claim's `owner` against the caller's session id. That catches a
+             successor from a DIFFERENT session; a successor carrying the same owner, or none at all
+             (the shape a harness with no session id writes), is indistinguishable and is released.
+             Refusing instead would strand a claim on every stop path for those harnesses, which is
+             worse — so the fix is that the workflow passes `--token`, and a test pins that every
+             release site does.
 - placement: `scripts/lib/implement-lib.sh` (new; the decision) · `base/workflows/implement-issue.md`
              (preflight, the step-2/4/5 release points, step 3's no-longer-taken lock, rendered to
              all three agents) · `scripts/build.sh` + `base/workflows/README.md` (the
