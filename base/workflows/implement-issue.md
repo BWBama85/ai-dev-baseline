@@ -358,8 +358,7 @@ issue and private-repo context, and `gaps.err`/`review.err` are an agent's whole
 stream. Left in place they also outlive their run — a later pass whose `gap_analysis` is unassigned,
 or whose only review slot is deferred or absent (step 8's rungs 2-3), never overwrites them, so the
 PREVIOUS run's findings sit there reading as this run's. (Bounding a captured stream's growth
-*within* a run is a separate concern, tracked in #141; the earlier gaps-only version of it, #123,
-was closed as not planned.)
+*within* a run is a separate concern, tracked in #141.)
 
 That set must **contain** the `gaps` and `review` arms of `cleanup-lib.sh state-scan`: a name
 `/cleanup` can sweep but this cannot clear is a stale artifact that a fresh run's marker makes read
