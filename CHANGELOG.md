@@ -47,17 +47,22 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
   Three properties are what make it a fix rather than a different failure:
 
-  - **It acquires before it clears.** A guarded clear alone is still check-then-act: two sessions
-    can both observe an empty state directory and both proceed. The claim is taken first, by
-    `link`ing a fully-written temp file into place — create-or-fail like `O_EXCL`, but with no
-    window in which the claim exists and is empty for a contender to read as corrupt and break.
-    A session that loses the race for a **held** claim is refused having mutated nothing; breaking
-    an **expired** one removes a stale file through a `rename` whose **operand is verified** (a bare
-    rename is exclusive about the move and says nothing about what it moved — that let a delayed
-    breaker take a successor's brand-new claim, reproducibly three winners). Identity and expiry are
-    read in one probe, and the run re-reads its own token after acquiring. The property is **at most
-    one** winner: under maximal contention all contenders can knock each other out and every one is
-    refused, which is a liveness degradation rather than a safety one.
+  - **Admission is single-threaded**, inside a `mkdir` lock on the state directory: one contender
+    decides, every other is refused having touched nothing. That replaced three rounds of making
+    each individual step safe, each of which looked sufficient — `rm -f` + re-create let two
+    breakers win; a `rename` made the move exclusive but not its *operand*, so a delayed breaker
+    took a successor's brand-new claim (three winners); verifying the operand and re-reading our own
+    token after acquiring still left the real hole, which **macOS CI found**: a losing breaker
+    *moves* the claim before it can know whose it is, and a third contender acquires in the few
+    syscalls while the path is free — after the first run has already passed its re-read. A window
+    that opens behind you cannot be closed by checking afterwards.
+
+    The lock is held for the duration of `admit` only (sub-second plus at most one `gh` call), never
+    for the run, and is **broken on age at 5 minutes** so a killed admission cannot block a
+    checkout. The per-step guards are kept as defence in depth, because `release` runs outside the
+    lock from another process: the claim is still published create-or-fail as a *complete* file
+    (`link`, not `set -C` + `>`, which leaves a window where it exists and is empty), and removals
+    still verify identity rather than trusting a pathname.
     The marker is also re-identified immediately before the clear (`cleanup-lib.sh marker-identity`,
     the rule `/cleanup` already applies at its own delete), which **narrows** the replacement
     window rather than closing it — the read and the unlink are still two operations.

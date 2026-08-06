@@ -430,46 +430,55 @@ eq "$(jq -r 'if (.token|type)=="string" and (.token|length) > 0 then "ok" else "
 # produced exactly that (2-3 winners, reproducibly). Breaking is a rename whose operand is verified,
 # plus a re-read of our own token after acquiring — together those make two winners unobservable.
 #
-# WHAT THIS RACE CAN AND CANNOT ISOLATE, measured rather than assumed. It pins the OBSERVABLE
-# property — two runs never both proceed — and it caught the real defect: `rm -f` breaking gave 2-3
-# winners reproducibly before the identity check and the post-acquire re-read existed. It is a poor
-# detector of the individual guards now, because the post-acquire re-read (step 2b) catches almost
-# everything the earlier ones miss. Measured over four runs each, with one guard disabled at a time:
-# disabling 2b's re-read failed 1/4; disabling `_il_break`'s identity check or reverting the acquire
-# to create-then-write passed 4/4, masked by 2b.
-#
-# So `_il_break`'s identity check and `cmd_release`'s are DEFENCE IN DEPTH whose individual
-# contribution is not separately observable from outside the process — reaching them needs a writer
-# scheduled inside a few syscalls, which a shell harness cannot arrange (the same limit section 7c
-# records). Saying that is better than implying this race pins them.
-#
-# NOT "exactly one", and that is a real property of the design rather than a weak test. A losing
-# breaker frees the claim path for the few syscalls before it discovers the identity does not match,
-# so under maximal contention every contender can knock out every other and ALL of them are refused.
-# That is a liveness degradation, not a safety one — the next run takes the claim cleanly — and it
-# is the trade taken instead of introducing a second lock file with its own stranding failure mode
-# (the permanent block #202 warns against). Twelve simultaneous breakers is also far past anything
-# reachable: a real checkout has one operator.
+# WHAT MAKES THIS DETERMINISTIC. Admission runs inside a `mkdir` lock, so the whole
+# read-judge-break-acquire-clear sequence is single-threaded per state directory: one contender
+# takes the lock and admits, every other is refused outright without touching anything. That is why
+# the assertion is EXACTLY one and holds under load — an earlier design, which tried to make each
+# individual step safe, could not say that. Its losing breaker moved the claim before it could know
+# whose it was, and a third contender acquired in the few syscalls while the path was free; macOS CI
+# found two winners.
+d="$(new_repo)"
+eq "$(race_winners "$d/.claude/state" 12)" "1" \
+   "12 twelve simultaneous admits against an EMPTY state dir produce exactly ONE winner"
+eq "$(jq -r 'if (.token|type)=="string" and (.token|length) > 0 then "ok" else "bad" end' \
+      "$d/.claude/state/gap-analysis.lock" 2>/dev/null)" "ok" \
+   "12 …and the surviving claim is complete, never a half-written file another run could break"
+
+# The same contest over an EXPIRED claim, which is the one that used to produce 2-3 winners: two
+# breakers both unlinking and both re-creating, then — after that was made a verified rename — a
+# third contender slipping into the window a losing breaker opens.
 d="$(new_repo)"; expired_claim "$d"
-w="$(race_winners "$d/.claude/state" 12)"
-if [ "$w" -le 1 ]; then ok; else
-  bad "12 twelve simultaneous breakers of one EXPIRED claim produced $w winners — two runs proceeded"
-fi
-# EVEN AT TWO CONTENDERS the answer is "at most one", and asserting `= 1` here was wrong about the
-# code rather than the code being wrong. Both breakers CAN lose: each frees the path for the few
-# syscalls before it discovers the identity does not match, and under CPU contention that window is
-# a scheduling quantum wide. Reproduced deterministically by running eight copies of this suite at
-# once — which is exactly what `selfcheck.sh` does, so the assertion failed there and passed
-# standalone.
-#
-# Liveness is proven where it can be proven without a race: section 7's sequential case, where a
-# lone run against an expired claim MUST admit. That is what stops "refuse everyone" from being an
-# easy way to pass the safety assertions here, and it is load-independent.
-d="$(new_repo)"; expired_claim "$d"
-w2="$(race_winners "$d/.claude/state" 2)"
-if [ "$w2" -le 1 ]; then ok; else
-  bad "12 two contenders for an expired claim produced $w2 winners — two runs proceeded"
-fi
+eq "$(race_winners "$d/.claude/state" 12)" "1" \
+   "12 twelve simultaneous breakers of one EXPIRED claim also produce exactly ONE winner"
+
+# THE LOCK IS RELEASED ON EVERY PATH, or the second run in any checkout would be refused forever.
+# Driven across a refusal (a live marker) as well as a success, because a `return` that skips the
+# unlock is exactly the shape that would only show up on the error path.
+d="$(new_repo)"; git -C "$d" branch issue-20-x; marker "$d" issue-20-x
+admit "$d"; eq "$AD_RC" "10" "12 a refused admission still happens"
+if [ -d "$d/.claude/state/.admit.lock" ]; then
+  bad "12 …and releases the admission lock on the way out"
+else ok; fi
+rm -f "$d/.claude/state/implement-issue-active.json"
+admit "$d"; eq "$AD_RC" "0" "12 …so the next admission in that directory is not blocked"
+if [ -d "$d/.claude/state/.admit.lock" ]; then
+  bad "12 …and the successful path releases it too"
+else ok; fi
+
+# An ABANDONED lock (a killed admission) is broken on age, so it cannot block a checkout forever —
+# the same permanent-block failure the claim's lease exists to prevent. Backdated rather than waited
+# for; the threshold is 5 minutes and no admission takes that long.
+d="$(new_repo)"
+mkdir -p "$d/.claude/state/.admit.lock"
+touch -t 202001010000 "$d/.claude/state/.admit.lock"
+admit "$d"
+eq "$AD_RC" "0" "12 an abandoned admission lock is broken on age, not honoured forever"
+has "$AD_OUT" "abandoned admission lock" "12 …and the break is reported, not silent"
+# A FRESH one is honoured, or the age rule would be no rule at all.
+d="$(new_repo)"; mkdir -p "$d/.claude/state/.admit.lock"
+admit "$d"
+eq "$AD_RC" "13" "12 …while a fresh lock is honoured"
+rm -rf "$d/.claude/state/.admit.lock"
 
 # ================= 13. release drops only what THIS run holds ==================================
 # An unconditional `rm` was a real hole: if this run's lease expires and another run legitimately

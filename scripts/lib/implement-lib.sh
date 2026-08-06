@@ -37,16 +37,27 @@
 # gathers the same three facts the same way `base/workflows/cleanup.md` does and asks that
 # predicate. It does NOT contain a second staleness rule, and must not grow one.
 #
-# ACQUIRE BEFORE YOU CLEAR. The check and the clear used to be two steps with a window between
-# them, so two sessions could both observe an empty state directory and both proceed. The claim is
-# therefore taken BEFORE anything is deleted, by `link`ing a fully-written temp file into place —
-# create-or-fail like O_EXCL, but with no window in which the claim exists and is empty. A session
-# that loses the race for a HELD claim is refused having mutated nothing. The one exception is
-# breaking an EXPIRED claim, which removes a stale file to win the right to take it; that path is a
-# rename contest whose operand is verified, backed by a re-read of our own token after acquiring —
-# together those make two winners unobservable. AT MOST one caller wins, not exactly one: a losing
-# breaker frees the path for a few syscalls, so under maximal contention every contender can knock
-# out every other and all are refused. That is a liveness degradation, not a safety one.
+# ADMISSION IS SINGLE-THREADED, and that is the load-bearing decision. Everything below —
+# read the marker, judge it, break a stale claim, acquire, clear — runs inside a `mkdir` lock on the
+# state directory. One contender takes it and decides; every other is refused outright, having
+# touched nothing.
+#
+# THAT REPLACED THREE ROUNDS OF MAKING EACH STEP INDIVIDUALLY SAFE, and the history is worth keeping
+# because each round looked sufficient. `rm -f` + re-create let two breakers both win. A `rename`
+# made the move exclusive but not its OPERAND, so a delayed breaker took a successor's brand-new
+# claim (three winners). Verifying the operand and re-reading our own token after acquiring still
+# left the real hole: a losing breaker MOVES the claim before it can know whose it is, and in those
+# few syscalls the path is free for a third contender — while the first run has already passed its
+# re-read. macOS CI found two winners there. No amount of checking after the fact closes a window
+# that opens behind you; the second breaker has to not exist.
+#
+# The per-step guards are KEPT as defence in depth (the acquire still publishes a complete file, the
+# break still verifies its operand, `release` still removes by identity) because `release` runs
+# OUTSIDE this lock, from a different process, at a different time.
+#
+# ACQUIRE BEFORE YOU CLEAR, still: the claim is taken before anything is deleted, by `link`ing a
+# fully-written temp file into place — create-or-fail like O_EXCL, but with no window in which the
+# claim exists and is empty for a contender to read as corrupt.
 #
 # THE CLAIM IS `gap-analysis.lock`, WIDENED — not a second signal beside it. The file already
 # exists to mean "a run is in flight and has not written its marker yet" (the step-3 window, where
@@ -349,8 +360,73 @@ _il_drop() {   # <claim-path> <token>
   _il_break "$claim" "$ident"
 }
 
+# --- the admission lock ---------------------------------------------------------------------------
+# `mkdir` is the one create-or-fail primitive POSIX gives us for a DIRECTORY, and unlike every
+# file-level trick it needs no second operation to be safe. Admission runs inside it, so the whole
+# read-judge-break-acquire-clear sequence is single-threaded per state directory.
+#
+# WHY THIS EXISTS RATHER THAN MORE CARE IN `_il_break`. Verifying the operand made the break refuse
+# to remove a successor, and re-reading our own token after acquiring caught a run whose claim had
+# already been taken — but neither closes the actual hole, and macOS CI found it: a losing breaker
+# MOVES the claim before it can know whose it is, and for those few syscalls the path is free. A
+# third contender acquires there, while the first run has ALREADY passed its re-read. Two winners,
+# and no amount of checking after the fact can fix a window that opens behind you. The fix has to
+# stop the second breaker existing at all.
+#
+# It is held only for the duration of `admit` — sub-second, plus at most one `gh pr view` — never
+# for the run. A crashed admit strands the directory, so it is broken on AGE, and 300s is chosen to
+# be far longer than any admit and far shorter than the claim lease it must not be confused with.
+# `state-scan` selects with `[ -f ]`, so a directory is invisible to /cleanup: nothing else needs to
+# learn about this name.
+_IL_ADMIT_LOCK=.admit.lock
+_il_admit_lock() {   # <state-dir>
+  local lock="$1/$_IL_ADMIT_LOCK"
+  mkdir "$lock" 2>/dev/null && return 0
+  # Stale? `find -mmin` is understood by both BSD and GNU find, which is the whole platform set.
+  if [ -d "$lock" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null)" ]; then
+    echo "implement-lib: NOTE — breaking an abandoned admission lock (>5 min old): $lock" >&2
+    rm -rf "$lock" 2>/dev/null
+    mkdir "$lock" 2>/dev/null && return 0
+  fi
+  return 1
+}
+# `${1:?}` so an empty argument can never make this `rm -rf /` + the lock name. The caller always
+# passes a real directory; the guard costs nothing and the failure mode it prevents is total.
+_il_admit_unlock() { rm -rf "${1:?}/$_IL_ADMIT_LOCK" 2>/dev/null; return 0; }
+
 # --- admit --------------------------------------------------------------------------------------
+# A thin wrapper: take the lock, run the real decision, drop the lock whatever it returned. Split in
+# two so every `return` inside the decision releases the lock without each one remembering to.
 cmd_admit() {
+  [ "$#" -eq 1 ] || { echo "implement-lib: admit needs exactly 1 arg: <state-dir>" >&2; exit 2; }
+  local dir="$1" rc
+  # The directory has to exist before a lock can be made inside it, and its readability decides
+  # whether a clear could even see what it is clearing — both are cheap and both are prerequisites
+  # for holding the lock at all.
+  mkdir -p "$dir" 2>/dev/null || {
+    echo "implement-lib: REFUSED — cannot create the state directory: $dir" >&2
+    return 14
+  }
+  if ! _il_admit_lock "$dir"; then
+    # A FAILED mkdir IS NOT A HELD LOCK. The same call fails when the directory is not writable, and
+    # reporting that as "another admission is running" sends the operator looking for a run that does
+    # not exist — the identical split the claim acquire already carries a few lines down.
+    if [ ! -d "$dir/$_IL_ADMIT_LOCK" ]; then
+      echo "implement-lib: REFUSED — could not create the admission lock in $dir." >&2
+      echo "               Nothing is holding it; the state directory is not writable. Nothing was deleted." >&2
+      return 14
+    fi
+    echo "implement-lib: REFUSED — another /implement-issue admission is running in this checkout." >&2
+    echo "               $dir/$_IL_ADMIT_LOCK is held. It is taken for under a second, so this means" >&2
+    echo "               a genuinely concurrent start; re-run to see the state it settles on." >&2
+    return 13
+  fi
+  _il_admit_decide "$dir"; rc=$?
+  _il_admit_unlock "$dir"
+  return "$rc"
+}
+
+_il_admit_decide() {
   [ "$#" -eq 1 ] || { echo "implement-lib: admit needs exactly 1 arg: <state-dir>" >&2; exit 2; }
   local dir="$1" marker="$1/$_IL_MARKER" claim="$1/$_IL_CLAIM" ident="" had_marker=0
 

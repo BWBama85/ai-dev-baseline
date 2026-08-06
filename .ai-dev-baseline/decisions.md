@@ -2877,7 +2877,20 @@ limit: none of them is sufficient alone.
                  ("preflight is the only cleaner, so an owner-aware preflight would leave a crashed
                  run uncleanable") was wrong, as #202's own comment says. `admit` gathers the same
                  three facts the same way `base/workflows/cleanup.md` does and asks that predicate.
-             (d) ACQUIRE BEFORE YOU CLEAR. The claim is taken BEFORE anything is deleted, by
+             (d) ADMISSION IS SINGLE-THREADED, inside a `mkdir` lock on the state directory. Three
+                 rounds of making each individual step safe were not enough, and each looked it:
+                 `rm -f` + re-create let two breakers win; a `rename` made the move exclusive but
+                 not its OPERAND, so a delayed breaker took a successor's claim (three winners);
+                 verifying the operand and re-reading our own token after acquiring still left the
+                 real hole, which macOS CI found — a losing breaker MOVES the claim before it can
+                 know whose it is, and a third contender acquires in the few syscalls while the path
+                 is free, after the first run has already passed its re-read. A window that opens
+                 behind you cannot be closed by checking afterwards. The lock is held for the
+                 duration of `admit` only (sub-second plus at most one `gh` call), never for the
+                 run, and is broken on age at 5 minutes so a killed admission cannot block a
+                 checkout. The per-step guards are kept as defence in depth because `release` runs
+                 outside the lock, from another process.
+                 ACQUIRE BEFORE YOU CLEAR, still. The claim is taken BEFORE anything is deleted, by
                  `link`ing a fully-written temp file into place — create-or-fail like `O_EXCL`, but
                  with no window in which the claim exists and is EMPTY (a `set -C` + `>` acquire
                  creates the file at redirection time and fills it after, and a contender reading it
@@ -2890,14 +2903,10 @@ limit: none of them is sufficient alone.
                  breaker could pair the old file's expiry with the new file's identity and verify
                  the very claim it was meant to protect. After acquiring, the run re-reads its own
                  token before acting, because a losing breaker frees the path for a few syscalls.
-                 The property is AT MOST one winner, not exactly one — under maximal contention all
-                 contenders can knock each other out and every one is refused, which is a liveness
-                 degradation rather than a safety one, and is the trade taken instead of adding a
-                 second lock file with its own stranding failure mode. It is reachable at TWO
-                 contenders under CPU load, not only at twelve — reproduced by running eight copies
-                 of the suite at once, which is what `selfcheck.sh` itself does — so the suite
-                 asserts SAFETY (`<= 1`) in every race and proves liveness where it can be proven
-                 without one: a lone run against an expired claim must admit.
+                 With the lock the property is EXACTLY one winner, and it holds under load: the
+                 suite races twelve contenders against both an empty directory and an expired claim
+                 and requires one of each, and is run under eight concurrent copies of itself —
+                 which is how the earlier two-winner and zero-winner outcomes were both reproduced.
                  Check-then-act between two reads was the residual hole a plain guarded clear would
                  have left. And because a verdict still describes the marker *as it was read*, the
                  file is re-identified at the delete with `cleanup-lib.sh marker-identity` — the
