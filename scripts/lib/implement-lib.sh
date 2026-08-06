@@ -54,6 +54,19 @@
 # a second liveness signal that can leak, be cleared late, and disagree with the first — which is
 # the trap D40 declined for review artifacts.
 #
+# THE TWO READERS DISAGREE ABOUT THE LEASE, AND THAT ASYMMETRY IS DELIBERATE. `/cleanup` treats the
+# file's mere PRESENCE as "a dispatch may be writing", with no notion of expiry; this module expires
+# it. The independent review of #202 flagged that as combining two lifetimes in one file, which is
+# a fair description — but the disagreement only ever resolves toward PRESERVING: a claim whose
+# lease has run out still stops `/cleanup` deleting gap artifacts, and the very next `admit` breaks
+# it. Teaching `/cleanup` the lease would let it delete artifacts a run might still be reading,
+# which is the failure the lock was introduced to prevent. One file, one direction of error.
+#
+# A SYMLINKED STATE DIRECTORY IS FOLLOWED, not rejected. `mkdir -p` accepts an existing symlink to a
+# directory and every operation below then acts on the target. The rendered workflow always passes a
+# fixed in-repo path, so this is not attacker-controlled in the shipped call; a caller passing an
+# arbitrary path should know that `admit` clears through the link.
+#
 # THE CLAIM CARRIES A LEASE, because nothing else can reap it. `/cleanup` never deletes a `lock`
 # record (base/workflows/cleanup.md's sweep handles only `gaps`, `review` and `threads`), and this
 # module no longer clears it unconditionally — so without an expiry, one killed run would refuse

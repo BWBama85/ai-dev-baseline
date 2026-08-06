@@ -871,7 +871,13 @@ else
   eq "$ilarms" "2" "6 both artifact families (gaps, review) were actually read from state-scan"
 
   # A failure to clear must REFUSE and release, never report success over artifacts it did not
-  # remove. A read-only state dir is the reproducible form of that.
+  # remove. A read-only state dir (mode 500) is the reproducible form of that.
+  #
+  # The OTHER permission shape — write-and-execute but NOT readable (mode 300), where fixed names
+  # unlink fine while globs enumerate nothing, so a clear silently misses the family — lives in
+  # check-implement-lib.sh section 15, beside the readability check that answers it. Named here
+  # because this is the block an auditor of the containment rule reads first, and its absence would
+  # otherwise look like an oversight.
   rod="$ilw/readonly"; rm -rf "$rod"; mkdir -p "$rod"
   : > "$rod/review.md"
   chmod 500 "$rod"
