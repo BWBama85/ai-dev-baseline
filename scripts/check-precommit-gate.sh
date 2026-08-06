@@ -240,6 +240,22 @@ jq -n --arg b "feat" '{branch:($b + "\n" + $b), issue:"240", phase:"x", owner:"s
 GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "newline in .branch → must not match the current branch on its first line"
 
+# 12c. A NON-STRING owner is corruption, not a second session. `@tsv` renders a JSON number
+#      happily, so `"owner": 123` decoded to the well-formed value "123", differed from this
+#      session's id, and SUPPRESSED the gate. A charset test cannot catch it — a real session id
+#      contains digits — so the type is checked in jq instead.
+for bad_owner in '123' 'true' '["a"]' '{"a":1}' 'null'; do
+  on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
+  jq -n --argjson o "$bad_owner" '{branch:"feat", issue:"240", phase:"x", owner:$o}' > "$marker_file"
+  GATE_SESSION="$SID_MINE"; run_gate
+  eq "$RC" "2" "non-string owner ($bad_owner) → corruption is not proof of another session"
+done
+# …and a non-string BRANCH likewise cannot be trusted to match.
+on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
+jq -n '{branch:42, issue:"240", phase:"x", owner:"someone-else"}' > "$marker_file"
+GATE_SESSION="$SID_MINE"; run_gate
+eq "$RC" "2" "non-string branch → enforce"
+
 # 13. A BROKEN INSTALL must not be silently spared by a planted marker. With common.sh absent the
 #     shared comparator does not exist, so ownership is unknowable — and the gate must fall
 #     through to its fail-loud path (#35) rather than treat "I cannot tell" as "not mine".

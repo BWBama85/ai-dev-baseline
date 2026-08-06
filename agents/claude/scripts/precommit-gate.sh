@@ -96,9 +96,16 @@ foreign_run_marker() {
   # field can shift. This is the same failure implement-issue-gate.sh pins for its own five-field
   # decode; the sibling learned it first (#180), and this decode is now held to the same bar.
   #
-  # A non-string .branch/.owner makes @tsv error, jq exits non-zero, and we enforce.
+  # BOTH FIELDS MUST BE JSON STRINGS, tested in jq rather than inferred afterwards. `@tsv` happily
+  # renders a NUMBER, so a marker carrying `"owner": 123` decoded to the perfectly well-formed
+  # value "123" — which then differed from this session's id and SUPPRESSED THE GATE. A charset
+  # test cannot catch that, because a session id legitimately contains digits (Claude Code's is a
+  # UUID). The type is what separates a real owner field from a corrupt one, and corruption must
+  # read as unknown. Emitting `empty` for a non-string leaves `raw` empty, which enforces.
   local tab; tab="$(printf '\t')"
-  raw="$(jq -r '[(.branch // ""), (.owner // "")] | @tsv' "$marker" 2>/dev/null)" || return 1
+  raw="$(jq -r 'if ((.branch|type) == "string") and ((.owner|type) == "string")
+                then [.branch, .owner] | @tsv else empty end' "$marker" 2>/dev/null)" || return 1
+  [ -n "$raw" ] || return 1                          # absent or non-string field -> enforce
   case "$raw" in *"$tab"*) : ;; *) return 1 ;; esac   # no delimiter -> cannot trust the decode
   m_branch="${raw%%"$tab"*}"
   m_owner="${raw#*"$tab"}"
