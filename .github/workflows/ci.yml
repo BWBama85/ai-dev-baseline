@@ -658,6 +658,15 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
+      - name: Install jq
+        # The precommit gate parses the /implement-issue run marker with jq to answer "does
+        # another session own this branch?" (#241), and the suite's ownership fixtures build
+        # markers the same way. Without jq the gate answers "unknown" and enforces — so a
+        # missing jq would not fail the job, it would quietly stop exercising the ownership
+        # path, which is the fail-silent shape this repo lints against. Installed explicitly,
+        # exactly as the implement-gate job already does.
+        run: sudo apt-get install -y jq
+
       - name: Stop-hook quality gate must fail loud on a missing library (#35)
         run: bash scripts/check-precommit-gate.sh
 

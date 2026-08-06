@@ -247,6 +247,133 @@ d="$work/scope-nochange"; mk_scope_repo "$d"
 adb_run_gates "$d" "" >/dev/null 2>&1
 if [ -f "$d/scope-ran" ]; then ok; else bad "scope: no change set → scoped gate runs (fail-safe)"; fi
 
+# --- per-gate cadence (#240) -------------------------------------------------
+# Every fixture gate here BOTH leaves a marker AND exits non-zero. That is what makes
+# "did it run?" observable in two independent ways at once: the marker proves execution,
+# and the run's exit status proves the runner SAW the failure. A fixture that merely
+# `exit 0`s would pass whether the gate ran or was skipped — the same blind spot case 8 of
+# check-precommit-gate.sh was rewritten to remove.
+mk_cadence_repo() {  # <dir> <cadence-for-'heavy'>
+  local dir="$1" cadence="$2"; mkdir -p "$dir"
+  { printf '[gates]\nheavy = "touch heavy-ran; exit 1"\nlight = "touch light-ran"\n'
+    [ -n "$cadence" ] && printf '\n[gates.cadence]\nheavy = "%s"\n' "$cadence"
+  } > "$dir/agents.toml"
+}
+ran()  { [ -f "$1/$2-ran" ]; }
+
+# A `full` gate is SKIPPED at turn-end: no marker, the skip is reported, and — because the
+# gate it skipped would have FAILED — the run is green. That last part is the real assertion:
+# it proves the skip happened before execution rather than after a swallowed failure.
+d="$work/cad-full-turnend"; mk_cadence_repo "$d" full
+err="$(adb_run_gates "$d" "" turn-end 2>&1)"; rc=$?
+yes "$rc" "cadence: a 'full' gate is not run at turn-end (a failing one cannot fail the run)"
+if ran "$d" heavy; then bad "cadence: 'full' gate must NOT execute at turn-end"; else ok; fi
+if ran "$d" light; then ok; else bad "cadence: an undeclared gate must still run at turn-end"; fi
+has "$err" 'skipped (cadence "full", this is a "turn-end" run)' "cadence: the turn-end skip names cadence AND context"
+
+# …and the same gate DOES run in a full run, where its failure must surface. If this case
+# ever passes while the one above also passes for the wrong reason, the marker files
+# disagree — which is why both are asserted rather than just the exit code.
+d="$work/cad-full-full"; mk_cadence_repo "$d" full
+adb_run_gates "$d" "" full >/dev/null 2>&1; rc=$?
+no "$rc" "cadence: a 'full' gate runs in a full run and its failure surfaces"
+if ran "$d" heavy; then ok; else bad "cadence: 'full' gate must execute in a full run"; fi
+
+# The mirror image, so the model is symmetric rather than a one-way special case.
+d="$work/cad-turnend-full"; mk_cadence_repo "$d" turn-end
+err="$(adb_run_gates "$d" "" full 2>&1)"; rc=$?
+yes "$rc" "cadence: a 'turn-end' gate is not run in a full run"
+if ran "$d" heavy; then bad "cadence: 'turn-end' gate must NOT execute in a full run"; else ok; fi
+has "$err" 'skipped (cadence "turn-end", this is a "full" run)' "cadence: the full-run skip is reported"
+
+d="$work/cad-turnend-turnend"; mk_cadence_repo "$d" turn-end
+adb_run_gates "$d" "" turn-end >/dev/null 2>&1
+if ran "$d" heavy; then ok; else bad "cadence: 'turn-end' gate must execute at turn-end"; fi
+
+# BACK-COMPATIBILITY, the criterion #240's test plan names explicitly: a repo with no
+# [gates.cadence] table behaves exactly as before in BOTH contexts.
+for ctx in turn-end full; do
+  d="$work/cad-none-$ctx"; mk_cadence_repo "$d" ""
+  adb_run_gates "$d" "" "$ctx" >/dev/null 2>&1; rc=$?
+  no "$rc" "cadence: undeclared gates still run and still fail in a '$ctx' run"
+  if ran "$d" heavy; then ok; else bad "cadence: an undeclared gate must run in a '$ctx' run"; fi
+done
+
+# An explicit "always" is the default spelled out, and must behave identically.
+d="$work/cad-always"; mk_cadence_repo "$d" always
+adb_run_gates "$d" "" turn-end >/dev/null 2>&1
+if ran "$d" heavy; then ok; else bad "cadence: an explicit 'always' runs at turn-end"; fi
+
+# A TYPO MUST NOT SILENTLY DISABLE A GATE. This is the direction that matters: the tempting
+# reading of an unknown value is "skip until you fix it", which turns a one-character mistake
+# into enforcement quietly off — indistinguishable from a passing gate (#35).
+d="$work/cad-typo"; mk_cadence_repo "$d" "pre-push"
+err="$(adb_run_gates "$d" "" turn-end 2>&1)"; rc=$?
+no "$rc" "cadence: an unrecognized cadence RUNS the gate (fails toward enforcement)"
+if ran "$d" heavy; then ok; else bad "cadence: an unrecognized cadence must not skip the gate"; fi
+has "$err" 'unrecognized cadence' "cadence: an unrecognized cadence is reported, not silent"
+
+# Case-insensitive, so a manifest written "Full" is not a silent typo of the above.
+d="$work/cad-case"; mk_cadence_repo "$d" "FULL"
+adb_run_gates "$d" "" turn-end >/dev/null 2>&1
+if ran "$d" heavy; then bad "cadence: values are case-insensitive ('FULL' == 'full')"; else ok; fi
+
+# An INVALID CALLER CONTEXT is a caller bug, not a config typo, and must fail loudly rather
+# than guess: both guesses are wrong (ignore the repo's cadence, or run nothing at all).
+d="$work/cad-badctx"; mk_cadence_repo "$d" full
+err="$(adb_run_gates "$d" "" bogus 2>&1)"; rc=$?
+eq "$rc" "2" "cadence: an unknown run context returns 2"
+has "$err" "unknown run context" "cadence: an unknown run context says so"
+if ran "$d" heavy || ran "$d" light; then bad "cadence: a bad context must run NOTHING"; else ok; fi
+
+# Cadence must not resurrect a gate the other two tables already decided, nor manufacture one.
+d="$work/cad-precedence"; mkdir -p "$d"
+cat > "$d/agents.toml" <<'EOF'
+[gates]
+off = ""
+
+[gates.state]
+naxis = "na"
+
+[gates.cadence]
+off    = "turn-end"
+naxis  = "turn-end"
+ghost  = "turn-end"
+EOF
+recs="$(_adb_gate_records "$d" 2>/dev/null)"
+has   "$recs" "disabled${TAB}off"  "cadence: a disabled gate stays disabled"
+has   "$recs" "na${TAB}naxis"      "cadence: an N/A gate stays N/A"
+hasnt "$recs" "ghost"              "cadence: a cadence-only key does not manufacture a gate"
+
+# Per-gate elapsed (#240): a slow gate must be attributable without a stopwatch.
+d="$work/cad-elapsed"; mkdir -p "$d"
+printf '[gates]\nquick = "true"\n' > "$d/agents.toml"
+err="$(adb_run_gates "$d" "" full 2>&1)"
+has "$err" 'gate "quick": ok (' "elapsed: a passing gate reports its elapsed seconds"
+d="$work/cad-elapsed-fail"; mkdir -p "$d"
+printf '[gates]\nbroken = "false"\n' > "$d/agents.toml"
+err="$(adb_run_gates "$d" "" full 2>&1)"
+has "$err" 'failed after ' "elapsed: a failing gate reports its elapsed seconds too"
+
+# --- an empty MIDDLE field must not shift the record (the #240 parse bug) -----
+# `IFS=<tab> read` collapses runs of tabs, so an empty `scope` silently ate the `cadence`
+# field and every gate was skipped in every context — enforcement off, from a reader that
+# still looked correct. Pinned end-to-end: a gate with NO scope and an explicit cadence.
+d="$work/cad-emptyscope"; mkdir -p "$d"
+printf '[gates]\nheavy = "touch heavy-ran"\n\n[gates.cadence]\nheavy = "full"\n' > "$d/agents.toml"
+adb_run_gates "$d" "" full >/dev/null 2>&1
+if ran "$d" heavy; then ok; else bad "record: an empty scope must not shift cadence out of position"; fi
+# …and the split itself, asserted directly on the empty-field shapes. Pre-initialised because
+# the values arrive through namerefs, which shellcheck cannot follow (SC2154).
+xstate=""; xlabel=""; xcmd=""; xscope=""; xcad=""
+_adb_rec_split "$(printf 'run\tL\tC\t\tfull')" xstate xlabel xcmd xscope xcad
+eq "$xstate${TAB}$xlabel${TAB}$xcmd${TAB}$xscope${TAB}$xcad" "run${TAB}L${TAB}C${TAB}${TAB}full" \
+   "split: empty scope keeps cadence in place"
+_adb_rec_split "$(printf 'run\tL\t\tapps/**\talways')" xstate xlabel xcmd xscope xcad
+eq "$xcmd"   ""        "split: an empty command does not shift scope"
+eq "$xscope" "apps/**" "split: scope survives an empty command"
+eq "$xcad"   "always"  "split: cadence survives an empty command"
+
 # --- dotted-table isolation (relies on the literal-table fix in common.sh) ----
 d="$work/dotted"; mkdir -p "$d"
 cat > "$d/agents.toml" <<'EOF'

@@ -155,29 +155,26 @@ this_session() {
 
 # Do two session ids permit acting? Usage: owners_compatible <id-a> <id-b>
 #
-# Returns 1 ONLY when BOTH ids are known and they differ — the one case that proves two different
-# sessions are involved. Every other combination returns 0 (go ahead), and that direction is
-# deliberate:
+# THE RULE AND ITS RATIONALE NOW LIVE IN ONE PLACE — adb_owners_compatible in common.sh —
+# because precommit-gate.sh needs the identical question answered the identical way (#241), and
+# two hand-rolled three-way comparisons are exactly the drift CLAUDE.md golden rule 4 forbids.
+# This is a thin alias, NOT a second implementation: `grep` for the logic finds it once.
 #
-#   - An id is absent. Either the file predates #180 or the driving agent's harness exposes no
-#     session id. Fall back to the branch-name behavior this gate has always had.
-#   - This host cannot identify its own session. Same fallback, same reason.
+# Two callers here, one rule: "is the active marker mine?" and "was this blocked file written by
+# the session that owns the marker?". Both are the same question about two ids.
 #
-# Failing toward ENFORCEMENT rather than toward inert is the whole point: a false "mine" costs one
-# misdirected hint, while a false "not mine" silently switches the no-stop-until-PR invariant off
-# for a run that still needs it. Note there is deliberately no pid fallback — the marker's writer
-# (a tool-call shell) and this hook cannot derive the same pid, so a pid would manufacture
-# mismatches rather than resolve them.
-#
-# Two callers, one rule: "is the active marker mine?" and "was this blocked file written by the
-# session that owns the marker?". Both are the same question about two ids, so they share it
-# rather than each spelling out the three-way comparison.
-owners_compatible() {
-  local a="$1" b="$2"
-  [ -n "$a" ] || return 0
-  [ -n "$b" ] || return 0
-  [ "$a" = "$b" ]
-}
+# The fallback below is the reason this wrapper exists at all. When common.sh is absent — the
+# incomplete-install path this file deliberately survives (see the loader above) — the shared
+# function is undefined, and calling a missing command returns 127, which `if owners_compatible
+# …` would read as "NOT compatible", i.e. FOREIGN. That inverts the failure direction: every
+# marker would look like someone else's and this gate would fall silent exactly when its install
+# is broken. Answering "compatible" instead falls back to the branch-name behavior this gate had
+# before #180, which ENFORCES.
+if command -v adb_owners_compatible >/dev/null 2>&1; then
+  owners_compatible() { adb_owners_compatible "$1" "$2"; }
+else
+  owners_compatible() { return 0; }
+fi
 
 # Verify a STORED PR reference against LIVE GitHub state (verify-before-asserting.md, #44):
 # a recorded prUrl proves a PR was OPENED, not that it still stands. Echoes exactly one word:

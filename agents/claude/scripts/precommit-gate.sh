@@ -42,6 +42,67 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -z "$repo_root" ] && exit 0
 cd "$repo_root" || exit 0
 
+# --- whose tree is this? (#241) ----------------------------------------------
+# A checkout is a directory, and nothing stops two sessions opening the same one. This gate's
+# inputs were purely git state, which carries no session identity, so a session that was merely
+# TALKING ran the full suite over another session's mid-edit tree at every turn-end — and, because
+# a red gate exits 2, could be blocked from ending its turn by work it did not write and must not
+# touch. Observed twice on 2026-07-31; the second time the bystander was told to rebuild and commit
+# nine generated files belonging to another session.
+#
+# THIS SITS BEFORE THE PROJECT-GATE `exec` DELIBERATELY. That second observation reported
+# `build-drift FAIL`, which is a check name in THIS repo's own .claude/scripts/precommit-gate.sh —
+# the project gate, not the global one. A check placed after the delegation would therefore miss
+# the very incident it is here to prevent, and would silently do nothing in every repo that uses
+# the documented escape hatch.
+#
+# IDENTITY COMES FROM THE ENVIRONMENT ONLY — never from the hook payload on stdin. Claude Code
+# publishes the session id both ways, and the sibling implement-issue-gate.sh reads the payload as
+# a fallback, but this gate must not: it `exec`s a project gate a few lines below, that child
+# INHERITS stdin, and docs/per-project-overrides.md documents the inherited payload as part of the
+# contract. Consuming it here to answer an optional question would leave every project gate at EOF
+# to buy an identity we can do without. A host that exposes no CLAUDE_CODE_SESSION_ID simply gets
+# "unknown", which is a documented, enforcing degradation — one rung shorter than the sibling
+# gate's, and stated rather than implied.
+#
+# EVERY UNKNOWN KEEPS TODAY'S BEHAVIOR (run the gates, block on red). The dangerous direction here
+# is not "gated once too often", it is "silently stopped gating": suppressing on unknown ownership
+# would make the gate advisory for virtually every ordinary dirty tree, since a marker exists only
+# during an /implement-issue run. That is the fail-silent class of #35 and docs/design-principles.md
+# §5, so the suppression is deliberately narrow — it fires only on POSITIVE proof that another
+# session owns this branch's run.
+#
+# NARROWER THAN THE ISSUE TITLE, and said plainly: this covers a foreign tree whose writer is
+# running /implement-issue on THIS branch. A session editing the tree without a tracked run leaves
+# no ownership evidence anywhere in git, so the bystander is still gated. Closing that gap needs
+# per-session tree baselines, which is a different and much larger design.
+foreign_run_marker() {
+  local marker=".claude/state/implement-issue-active.json" raw m_branch m_owner mine
+  [ -f "$marker" ] || return 1                       # no marker: the overwhelmingly common case
+  mine="${CLAUDE_CODE_SESSION_ID:-}"
+  [ -n "$mine" ] || return 1                         # cannot identify myself -> unknown -> enforce
+  command -v jq >/dev/null 2>&1 || return 1          # cannot read it -> unknown -> enforce
+  command -v adb_owners_compatible >/dev/null 2>&1 || return 1   # no shared predicate -> enforce
+  # ONE jq pass into a snapshot, so a concurrent write cannot hand back a mix of old and new
+  # fields. Pre-initialised because command substitution strips trailing newlines: a marker
+  # whose owner is absent yields one line, not two, and `set -u` would abort on the unread var.
+  m_branch=""; m_owner=""
+  raw="$(jq -r '.branch // "", .owner // ""' "$marker" 2>/dev/null)" || return 1
+  { read -r m_branch; read -r m_owner; } <<EOF
+$raw
+EOF
+  [ -n "$m_owner" ] || return 1                      # ownerless marker -> unknown -> enforce
+  # The marker must be about THE BRANCH THIS TURN IS ON. A foreign run parked on some other
+  # branch says nothing about the changes in front of us, and treating it as a blanket
+  # suppression would turn one unrelated run into a checkout-wide gate bypass.
+  [ -n "$m_branch" ] && [ "$m_branch" = "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" ] || return 1
+  adb_owners_compatible "$m_owner" "$mine" && return 1
+  printf 'precommit-gate: skipped — an /implement-issue run owned by another session (%.8s…) holds this branch.\n' "$m_owner" >&2
+  printf 'precommit-gate: its own turn-end gates that work; this session is not blocked by a tree it did not write (#241).\n' >&2
+  return 0
+}
+foreign_run_marker && exit 0
+
 # Defer to a project-local gate if one exists and it isn't this very file — by RUNNING it, not by
 # stepping aside. `exit 0` here was enforcement silently OFF (#240): nothing else invokes a project
 # gate. No project-level Stop hook is wired by install.sh, the adapter, or bin/baseline, so a repo
@@ -116,7 +177,14 @@ require_lib "$lib_dir/project-gates.sh" adb_run_gates
 # Pass the branch change set so a path-scoped gate ([gates.scope] in agents.toml) runs
 # only when it touches a matching file — the escape hatch that lets a repo express
 # apps/**-style scoping without forking this whole script.
-if adb_run_gates "$repo_root" "$changed"; then
+#
+# And declare the CONTEXT: this is the per-turn caller (#240). A gate declared
+# `[gates.cadence] <label> = "full"` is skipped here and reported, so a repo whose `test` gate is
+# its own CI mirror no longer re-runs CI at the end of every turn. Nothing else changes: a repo
+# with no [gates.cadence] table has every gate at the default `always` and behaves exactly as
+# before. This is the ONLY caller that passes `turn-end` — the workflows' in-loop
+# `project-gates.sh run` is a full run and still runs everything.
+if adb_run_gates "$repo_root" "$changed" turn-end; then
   exit 0
 fi
 
