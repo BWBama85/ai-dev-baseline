@@ -519,6 +519,24 @@ fact branch-health-predicate "fixed:branch-health" -- \
   docs/release-goal-convention.md docs/roadmap-acceptance.md \
   base/practices/verify-before-asserting.md
 
+# --- FACT: a closing keyword only fires from PROSE, and the field that proves it ----
+# A `Closes #N` inside a CODE SPAN or a fence closes nothing, silently: the PR merges, the issue
+# stays open, and no output anywhere says so. The practice used to claim the keyword fires
+# "anywhere in a PR body", which is what made a backticked one look safe — PR #294 shipped with
+# both keywords in code spans, GitHub's `closingIssuesReferences` came back EMPTY, and two
+# delivered `release-blocker` issues stayed open holding the release.
+#
+# The remedy is a live read of GitHub's own link set, and it is now stated in two places: the
+# practice (the rule) and implement-issue step 10 (the check that runs). Pin the FIELD NAME across
+# both — it is the whole mechanism, and a rename or a typo in either leaves one of them describing
+# a verification nobody performs.
+fact closing-refs-field "fixed:closingIssuesReferences" -- \
+  base/practices/git-and-prs.md base/workflows/implement-issue.md
+# ...and the SUPPRESSION rule itself must keep being stated where the keyword is written. Without
+# it the check above reads as belt-and-braces rather than as the thing that caught a real loss.
+fact closing-refs-prose-rule "fixed:code span" -- \
+  base/practices/git-and-prs.md base/workflows/implement-issue.md
+
 # --- FACT: the GitHub Actions app slug (#179) --------------------------------
 # `app.slug` is `github-actions`. The app's OWNER login is `github`, and BOTH consumers shipped
 # attributing against that near-miss: `branch-health` could then never return `green` on an Actions

@@ -956,6 +956,41 @@ PR body: summary; gap-analysis gaps + how addressed; self-review + reviewer find
 its own line), `Refs #N` for any sliced. After `gh pr create`, write `prUrl` and
 `phase=pr_opened` into the marker.
 
+**Write each closing keyword as BARE PROSE — never in a code span or a fenced block.** A
+backtick around it suppresses the close **silently**: the PR merges, the issue stays open,
+and nothing anywhere says so. Same "only prose declares" rule as the roadmap markers,
+biting the other way (`base/practices/git-and-prs.md`).
+
+**Then PROVE it registered, before the merge can happen.** The body is a *claim* about what
+GitHub will do on merge, and GitHub publishes the answer — so read it rather than trusting
+the text you just wrote (`verify-before-asserting.md`). This is cheap, and it catches every
+cause, not just the backtick one: a typo, a wrong repo qualifier, a keyword GitHub does not
+accept.
+
+```bash
+# ADB-SNIPPET: closing-refs
+# `closingIssuesReferences` is GitHub's OWN computed link set for this PR — the same field
+# `roadmap-lib.sh pr-targets-issue` trusts. Empty means NOTHING will close on merge.
+PR="$(jq -r .prUrl .gemini/state/implement-issue-active.json)"
+LINKED="$(gh pr view "$PR" --json closingIssuesReferences \
+            --jq '[.closingIssuesReferences[].number] | sort | join(",")')" \
+  || { echo "WARN: could not read the closing-issue link set for $PR — verify by hand"; LINKED="?"; }
+# WANT is the issues this PR FULLY resolves — the ones you wrote `Closes` for, which is not
+# necessarily every issue in $ISSUE_CSV (a sliced issue gets `Refs` and must NOT appear here).
+WANT="<comma-separated, sorted>"
+if [ "$LINKED" != "$WANT" ]; then
+  echo "ERROR: PR body closing keywords did not register. GitHub linked [$LINKED], expected [$WANT]."
+  echo "       A code span or fence around 'Closes #N' suppresses it. Fix the body NOW —"
+  echo "       after the merge the auto-close can never fire, and the issues stay open."
+fi
+```
+
+A mismatch is **fixed here, not reported at close-out**: edit the body with
+`gh pr edit "$PR" --body-file …` and re-read the link set until it matches. Once the PR
+merges the opportunity is gone — the close has to be done by hand, and on a repo using the
+release-goal convention those still-open issues hold the release (they are exactly the
+`release-blocker`s the run just delivered).
+
 **Every number in that body must already exist** — step 9 filed the deferrals precisely so
 this step has real numbers to cite. Do not write a follow-up's number here and file it in
 step 12; that is the ordering that put a nonexistent `#207` into three agents' shipped
