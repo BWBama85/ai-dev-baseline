@@ -265,6 +265,41 @@ GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "non-string branch → enforce"
 if gate_executed; then ok; else bad "non-string branch → the gate must actually RUN, not just return 2"; fi
 
+# 12f. A MALFORMED CURRENT identity must not be accepted as "me". The grammar was applied only to
+#      the marker's owner, so a contaminated CLAUDE_CODE_SESSION_ID was taken as this session's id,
+#      compared unequal against a perfectly valid marker owner, and read as PROOF OF ANOTHER
+#      SESSION — suppressing every gate at the moment our own identity was in fact unknown. Both
+#      sides of the comparison now go through the same check.
+for bad_sid in 'not a session id' 'MINE;rm -rf /' 'MINE
+BBBB' 'sid$(touch x)'; do
+  on_feature_change; arm_failing_gate; write_marker feat "$SID_OTHER"
+  GATE_SESSION="$bad_sid"; run_gate
+  eq "$RC" "2" "malformed CLAUDE_CODE_SESSION_ID → identity unknown → runs and blocks"
+  if gate_executed; then ok; else bad "malformed session id → the gate must actually RUN"; fi
+done
+GATE_SESSION=""
+
+# 12g. A COMPLETED run is not a live run. The workflow writes `phase=complete` at close-out, and
+#      the marker can outlive it — the owning session may exit before its Stop hook removes it, and
+#      that hook fail-closes on unverifiable PR state and KEEPS the marker. Nothing else can clear
+#      it (implement-issue-gate.sh leaves a foreign marker byte-identical, #180), so without this
+#      every other session on the branch would skip every gate until the age bound expired.
+on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
+jq -n --arg o "$SID_OTHER" '{branch:"feat", issue:"240", phase:"complete", owner:$o}' > "$marker_file"
+GATE_SESSION="$SID_MINE"; run_gate
+eq "$RC" "2" "phase=complete foreign marker → a finished run is not a live one → runs and blocks"
+if gate_executed; then ok; else bad "phase=complete marker → the gate must actually RUN"; fi
+hasnt "$OUT" "another session" "phase=complete → no claim that a run holds the branch"
+
+# …while a marker still IN FLIGHT continues to spare the bystander.
+for live_phase in branched implemented committed code_reviewed pushed pr_opened; do
+  on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
+  jq -n --arg o "$SID_OTHER" --arg p "$live_phase" \
+    '{branch:"feat", issue:"240", phase:$p, owner:$o}' > "$marker_file"
+  GATE_SESSION="$SID_MINE"; run_gate
+  eq "$RC" "0" "phase=$live_phase foreign marker → still a live run → spared"
+done
+
 # 12e. A STALE marker is not evidence of a live run. Without a bound, a crashed /implement-issue
 #      run leaves its marker behind and every later session on that branch is un-gated forever —
 #      and in a repo that also declares its gates `full`, turn-end enforcement would be gone

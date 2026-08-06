@@ -76,11 +76,23 @@ cd "$repo_root" || exit 0
 # running /implement-issue on THIS branch. A session editing the tree without a tracked run leaves
 # no ownership evidence anywhere in git, so the bystander is still gated. Closing that gap needs
 # per-session tree baselines, which is a different and much larger design.
+# Is this a plausible session id? Applied to BOTH sides of the comparison, which is the point:
+# checking only the marker's owner meant a MALFORMED current identity (environment contamination,
+# a future harness format) was accepted as "me", compared unequal against a perfectly valid marker
+# owner, and read as positive proof of another session — suppressing every gate at the moment this
+# session's identity was in fact unknown. Same grammar, same direction, both sides.
+plausible_session_id() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._:-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 foreign_run_marker() {
-  local marker=".claude/state/implement-issue-active.json" raw m_branch="" m_owner="" mine
+  local marker=".claude/state/implement-issue-active.json" raw rest m_branch="" m_owner="" m_phase="" mine
   [ -f "$marker" ] || return 1                       # no marker: the overwhelmingly common case
   mine="${CLAUDE_CODE_SESSION_ID:-}"
-  [ -n "$mine" ] || return 1                         # cannot identify myself -> unknown -> enforce
+  plausible_session_id "$mine" || return 1           # cannot identify MYSELF -> unknown -> enforce
   command -v jq >/dev/null 2>&1 || return 1          # cannot read it -> unknown -> enforce
   command -v adb_owners_compatible >/dev/null 2>&1 || return 1   # no shared predicate -> enforce
   # ONE jq pass into a snapshot, so a concurrent write cannot hand back a mix of old and new
@@ -104,11 +116,22 @@ foreign_run_marker() {
   # read as unknown. Emitting `empty` for a non-string leaves `raw` empty, which enforces.
   local tab; tab="$(printf '\t')"
   raw="$(jq -r 'if ((.branch|type) == "string") and ((.owner|type) == "string")
-                then [.branch, .owner] | @tsv else empty end' "$marker" 2>/dev/null)" || return 1
+                   and (((.phase|type) == "string") or (.phase == null))
+                then [.branch, .owner, (.phase // "")] | @tsv else empty end' "$marker" 2>/dev/null)" || return 1
   [ -n "$raw" ] || return 1                          # absent or non-string field -> enforce
-  case "$raw" in *"$tab"*) : ;; *) return 1 ;; esac   # no delimiter -> cannot trust the decode
-  m_branch="${raw%%"$tab"*}"
-  m_owner="${raw#*"$tab"}"
+  case "$raw" in *"$tab"*"$tab"*) : ;; *) return 1 ;; esac   # need both delimiters to decode
+  m_branch="${raw%%"$tab"*}"; rest="${raw#*"$tab"}"
+  m_owner="${rest%%"$tab"*}"
+  m_phase="${rest#*"$tab"}"
+
+  # A COMPLETED RUN IS NOT A LIVE RUN. The workflow writes `phase=complete` at close-out, and the
+  # marker can outlive that: the owning session may exit before its Stop hook removes it, and that
+  # hook fail-closes on unverifiable PR state (`pr_stored_state` returns `unverified` with no `gh`
+  # or on a network error) and so KEEPS the marker rather than deleting it. Nothing else can clear
+  # it either — implement-issue-gate.sh deliberately leaves a foreign marker byte-identical (#180,
+  # fixture L in check-implement-gate.sh). Without this arm, every other session on that branch
+  # would skip every gate until the age bound expired, on the strength of a run that had finished.
+  [ "$m_phase" = "complete" ] && return 1
   # POSITIVE PROOF MEANS A PLAUSIBLE ID, not merely a non-empty string. @tsv stops a field from
   # shifting, but it faithfully preserves a CORRUPT one — an owner of "<my-id>\nBBBB" survives as
   # a value that is genuinely not my id, and would therefore read as another session and suppress

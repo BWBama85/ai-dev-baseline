@@ -393,6 +393,20 @@ second copy of that logic drifts from the real one and silently stops
 matching the repo's own `agents.toml` (golden rule 4, and
 `design-principles.md`).
 
+**Pass `turn-end` as the third argument — a project Stop hook that omits it
+gets the cadence backwards.** `adb_run_gates` defaults to the `full` context,
+so a bare call from a Stop hook runs exactly the gates a repo declared *too
+expensive for a turn* and skips the ones it declared `turn-end`:
+
+```bash
+# in .claude/scripts/precommit-gate.sh, after building "$changed"
+. "$HOME/.claude/scripts/lib/project-gates.sh"
+adb_run_gates "$repo_root" "$changed" turn-end   # <- the context, not optional here
+```
+
+The changeset matters for the same reason: without it `[gates.scope]` cannot
+be evaluated and every scoped gate runs unconditionally.
+
 **A repo whose `/implement-issue` needs one extra sign-off line, nothing
 else:** carry just that line in
 `.claude/skills/implement-issue/overrides.md` (Override 2b) and
