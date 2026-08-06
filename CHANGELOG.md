@@ -9,6 +9,25 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The closing-keyword verification added in #295 could never succeed, so it halted every
+  `/implement-issue` run at its last step.** `gh pr view --json closingIssuesReferences` returns a
+  nested repository object shaped `{id, name, owner:{id, login}}` — `--json` selects *top-level* PR
+  fields, and `nameWithOwner` is not among the nested ones. The guard's
+  `select(.repository.nameWithOwner == $slug)` therefore compared `null` against the slug for every
+  entry, produced an empty link set, and reported *"the closing keywords did not register"* on a PR
+  whose body was perfectly correct.
+
+  Found by running it: this PR's own step 10 failed the check while GitHub had already computed the
+  link set as `[202]`. The slug is now rebuilt from `owner.login + "/" + name` — which is exactly
+  what `roadmap-lib.sh pr-targets-issue` has always done with the same field
+  (`scripts/lib/roadmap-lib.sh:206`), and which the snippet's own comment cites as its precedent. The
+  guard had the right idea and the wrong spelling, one module away from the correct one.
+
+  The same run surfaced a second cause of a false empty: **GitHub computes the link set
+  asynchronously**, so a read issued immediately after `gh pr create` legitimately comes back empty.
+  The guard now retries briefly before believing an empty answer — a body that really is wrong stays
+  empty through all of them.
+
 - **A second `/implement-issue` run in one checkout deleted the first run's live state before any
   ownership check could see it** (#202, D46). Preflight `rm -f`'d the run marker, the blocked
   marker and the gap-analysis lock **unconditionally**, so *starting* a run was itself the

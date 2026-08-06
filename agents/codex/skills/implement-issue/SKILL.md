@@ -1046,21 +1046,41 @@ accept.
 # already pins exactly that distinction for `pr-targets-issue` (scripts/check-roadmap.sh, "cross-
 # repo safety"), which matches on number AND repository; the same field deserves the same rule.
 PR="$(jq -r .prUrl .codex/state/implement-issue-active.json)"
+# WANT is the issues this PR FULLY resolves — the ones you wrote `Closes` for, which is not
+# necessarily every issue in $ISSUE_CSV (a sliced issue gets `Refs` and must NOT appear here).
+# Sorted NUMERICALLY, to match jq's `sort` on the numbers below. Set BEFORE the read loop, which
+# compares against it to decide whether the link set has settled.
+WANT="<comma-separated, numerically sorted>"
 SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
   || { echo "ERROR: cannot resolve this repo's slug — cannot verify the closing links"; exit 1; }
 # READ, then PARSE — two statements. A pipeline reports only its LAST command's status, so
 # `gh pr view … | jq` returns jq's, and a failed read would arrive as empty input and be parsed
 # into an empty link set: a read failure wearing "nothing is linked" as its answer.
-REFS_JSON="$(gh pr view "$PR" --json closingIssuesReferences)" \
-  || { echo "ERROR: could not read the closing-issue link set for $PR — fix or verify by hand BEFORE merging"; exit 1; }
-LINKED="$(printf '%s' "$REFS_JSON" | jq -r --arg slug "$SLUG" \
-            '[.closingIssuesReferences[]
-              | select(.repository.nameWithOwner == $slug) | .number] | sort | join(",")')" \
-  || { echo "ERROR: could not parse the closing-issue link set for $PR"; exit 1; }
-# WANT is the issues this PR FULLY resolves — the ones you wrote `Closes` for, which is not
-# necessarily every issue in $ISSUE_CSV (a sliced issue gets `Refs` and must NOT appear here).
-# Sorted NUMERICALLY, to match jq's `sort` on the numbers above.
-WANT="<comma-separated, numerically sorted>"
+# THE SLUG IS REBUILT FROM `owner.login` + `name`, because `closingIssuesReferences` does NOT
+# expose `nameWithOwner` on its nested repository object — `--json` selects top-level PR fields, and
+# the nested shape GitHub returns is `{id, name, owner:{id, login}}`. A `select(.repository
+# .nameWithOwner == $slug)` therefore compares `null` against the slug for EVERY entry, yields an
+# empty set, and reports "the closing keywords did not register" on a PR whose body is perfectly
+# correct — halting the run at the last step with a false alarm. Observed on PR #296, whose link set
+# GitHub had already computed as `[202]`.
+#
+# AND THE LINK SET LAGS `gh pr create`. GitHub computes it asynchronously, so a read issued
+# immediately after creating the PR legitimately comes back empty — also observed on #296. Retry
+# briefly before believing an empty answer; a body that really is wrong stays empty through all of
+# them, and a correct one resolves within a second or two. `WANT` empty (a PR that closes nothing)
+# skips the wait rather than sitting through it.
+LINKED=""
+for _try in 1 2 3 4 5; do
+  REFS_JSON="$(gh pr view "$PR" --json closingIssuesReferences)" \
+    || { echo "ERROR: could not read the closing-issue link set for $PR — fix or verify by hand BEFORE merging"; exit 1; }
+  LINKED="$(printf '%s' "$REFS_JSON" | jq -r --arg slug "$SLUG" \
+              '[.closingIssuesReferences[]
+                | select((.repository.owner.login + "/" + .repository.name) == $slug)
+                | .number] | sort | join(",")')" \
+    || { echo "ERROR: could not parse the closing-issue link set for $PR"; exit 1; }
+  [ "$LINKED" = "$WANT" ] && break
+  [ "$_try" = 5 ] || sleep 2
+done
 if [ "$LINKED" != "$WANT" ]; then
   echo "ERROR: PR body closing keywords did not register. GitHub linked [$LINKED] for $SLUG, expected [$WANT]."
   echo "       A code span or fence around 'Closes #N' suppresses it; a cross-repo qualifier"
