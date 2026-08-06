@@ -153,7 +153,7 @@ _il_acquire() {   # <claim-path> <payload>
 # --- admit --------------------------------------------------------------------------------------
 cmd_admit() {
   [ "$#" -eq 1 ] || { echo "implement-lib: admit needs exactly 1 arg: <state-dir>" >&2; exit 2; }
-  local dir="$1" marker="$1/$_IL_MARKER" claim="$1/$_IL_CLAIM"
+  local dir="$1" marker="$1/$_IL_MARKER" claim="$1/$_IL_CLAIM" ident=""
 
   # jq FIRST, and fatal. Every fact below is read through it; without it the marker is unreadable,
   # and an unreadable marker must never authorize its own deletion.
@@ -172,7 +172,18 @@ cmd_admit() {
   # Asked BEFORE the claim is taken and before anything is deleted, so a refusal here leaves the
   # checkout exactly as it was found.
   if [ -f "$marker" ]; then
-    local key lref rref prstate url mv
+    local key lref rref prstate url verdict
+    # THE IDENTITY OF THE FILE AS JUDGED, captured FIRST — before the branch read, the ref lookups
+    # and the `gh` round trip, all of which take time the marker can be replaced in. Capturing it
+    # after those reads fingerprints whatever arrived DURING them, so the delete-time comparison
+    # below would compare a replacement against itself and always match (observed: the mid-read
+    # replacement case passed with the capture one step later).
+    #
+    # A content digest and not `.branch`: retrying an issue whose branch was already swept writes
+    # the identical deterministic `issue-NN-slug`, so a branch-only comparison reports "unchanged"
+    # for a different, live run's marker. Same primitive and same reasoning as /cleanup's own
+    # delete-time re-read.
+    ident="$(bash "$_ADB_IL_CLEANUP_LIB" marker-identity "$marker" 2>/dev/null)" || ident=""
     # ONE reader for the marker's branch, shared with /cleanup's scan and its delete-time re-read.
     # An empty key means unreadable, which the fact-gathering below turns into `unknown` and the
     # predicate turns into `keep` — the same fail-closed path cleanup.md takes.
@@ -206,13 +217,13 @@ cmd_admit() {
       fi
     fi
 
-    if ! mv="$(bash "$_ADB_IL_CLEANUP_LIB" state-verdict marker "$prstate" "$lref" "$rref" 2>/dev/null)"; then
+    if ! verdict="$(bash "$_ADB_IL_CLEANUP_LIB" state-verdict marker "$prstate" "$lref" "$rref" 2>/dev/null)"; then
       echo "implement-lib: REFUSED — the run marker at $marker could not be classified." >&2
       echo "               Nothing was deleted. Inspect it, or remove it once you are sure no run is live." >&2
       return 11
     fi
 
-    if [ "$mv" = keep ]; then
+    if [ "$verdict" = keep ]; then
       # An unreadable marker gets its OWN code and its own sentence. The verdict is the same `keep`,
       # but the operator's next move is not: there is no branch to switch to and no PR to look up —
       # the file itself is what needs looking at. Collapsing the two would send them hunting for a
@@ -294,6 +305,27 @@ cmd_admit() {
   fi
 
   # --- 3. holding the claim: clear what the previous run left behind ----------------------------
+  # RE-VERIFY THE MARKER AT THE MOMENT OF THE DELETE. Step 1's verdict describes the file as it was
+  # read, and the acquire (plus a possible `gh` round trip) sits between that read and this delete.
+  # Holding the claim is what makes the window small — a competing run cannot get past `admit` while
+  # this claim is held, so it cannot reach step 5 and write a marker — but "small" is not "closed",
+  # and the failure it would cause is the exact one this module exists to prevent: deleting a live
+  # run's marker. So the rule /cleanup already follows applies here too, and for the same reason:
+  # a marker that is no longer the one that was judged is somebody else's, and this run stands down.
+  #
+  # An EMPTY identity is a mismatch, not a pass: an identity that cannot be established is not one
+  # that matches.
+  if [ -n "$ident" ]; then
+    local ident_now
+    ident_now="$(bash "$_ADB_IL_CLEANUP_LIB" marker-identity "$marker" 2>/dev/null)" || ident_now=""
+    if [ "$ident_now" != "$ident" ]; then
+      rm -f "$claim" 2>/dev/null
+      echo "implement-lib: REFUSED — the run marker changed between being judged stale and being cleared." >&2
+      echo "               It belongs to a different run now, so nothing was deleted and the claim was released." >&2
+      return 10
+    fi
+  fi
+
   # Reached only when no live run was found, so everything below is a FINISHED run's leftovers.
   # A failure to clear is reported and RELEASES the claim: proceeding would leave a stale marker
   # that the Stop hook reads as this run's, and holding a claim for a run that never starts is the

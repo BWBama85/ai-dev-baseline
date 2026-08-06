@@ -315,6 +315,11 @@ case "$ADMIT" in
   14) echo "STOP: {{STATE_DIR}} could not be cleared; the claim was released."; exit 1 ;;
   *)  echo "STOP: run admission failed (rc $ADMIT)."; exit 1 ;;
 esac
+
+# Defined HERE, where the claim starts, because that is exactly the scope it covers: from this line
+# until step 5's hand-off, every stop path owes a release. Defining it at its first use in step 2
+# would put the definition in a different fenced block from one of its callers.
+stop_run() { {{IMPLEMENT_LIB}} release {{STATE_DIR}}; echo "$1"; exit 1; }
 ```
 
 **A refusal is a legitimate, documented stop, and it is PRE-BRANCH.** No marker and no claim of
@@ -358,13 +363,12 @@ For **each** number, `gh issue view "$n"`. If any 404s or clearly describes a
 different codebase, **stop** and tell the user which repo it maps to
 (`repo-scope.md`) — do not implement against the wrong repo.
 
-**Every stop in this step RELEASES the run claim first.** You have held it since preflight, and
-these are the earliest paths that can end the run — a claim left behind here refuses every later
-run in this checkout until its lease expires, for a run that got no further than reading an issue:
+**Every stop in this step RELEASES the run claim first**, via preflight's `stop_run`. You have held
+the claim since preflight, and these are the earliest paths that can end the run — a claim left
+behind here refuses every later run in this checkout until its lease expires, for a run that got no
+further than reading an issue:
 
 ```bash
-stop_run() { {{IMPLEMENT_LIB}} release {{STATE_DIR}}; echo "$1"; exit 1; }
-
 for n in "${ISSUE_NUMS[@]}"; do
   gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state > "/tmp/issue-$n.json" \
     || stop_run "ERROR: issue #$n not found in this repo — verify repo scope"

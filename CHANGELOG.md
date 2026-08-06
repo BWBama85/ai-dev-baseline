@@ -30,7 +30,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
   - **It acquires before it clears, with `O_EXCL`.** A guarded clear alone is still check-then-act:
     two sessions can both observe an empty state directory and both proceed. The claim is taken
-    first, so the session that loses the race mutates **nothing**.
+    first, so the session that loses the race mutates **nothing** — and the marker is re-identified
+    at the delete (`cleanup-lib.sh marker-identity`, the rule `/cleanup` already applies at its own
+    delete), so a marker replaced between the verdict and the clear is left alone.
   - **It never consults `owner`.** A session is an *actor*, not a run: ownership is transferable,
     one session may invoke the workflow twice, and an absent `owner` reads as "compatible" — correct
     for a hook deciding whether to speak, wrong for a starter deciding whether to delete. A live

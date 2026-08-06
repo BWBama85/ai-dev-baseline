@@ -276,6 +276,41 @@ has "$AD_OUT" "no readable lease" "7 …and named as such, so the operator sees 
 d="$(new_repo)"; admit "$d"; admit "$d"
 eq "$AD_RC" "13" "7 an unexpired claim is refused, never broken"
 
+# ================= 7b. the marker is re-verified AT the delete =================================
+# Step 1's verdict describes the marker as it was READ; the acquire sits between that read and the
+# clear. Holding the claim keeps the window small — a competing run cannot get past admit — but the
+# failure it would cause is precisely the one this module exists to prevent, so the file is proven
+# to still be the one that was judged. Driven by a `gh` stub that REPLACES the marker mid-read,
+# which is the only way to land inside that window deterministically.
+d="$(new_repo)"; marker "$d" issue-12-x "https://github.com/o/r/pull/12"
+cat > "$shimbin/gh" <<SH
+#!/usr/bin/env bash
+# Simulate another run replacing the marker while this admit is asking about the PR.
+jq -n '{branch:"issue-12-x", issue:"12", phase:"branched", startedAt:"later"}' \\
+  > "$d/.claude/state/implement-issue-active.json"
+printf 'merged\n'
+SH
+chmod +x "$shimbin/gh"
+admit "$d"
+eq "$AD_RC" "10" "7b a marker replaced between the verdict and the delete is NOT cleared"
+if exists "$d/.claude/state/implement-issue-active.json"; then ok; else
+  bad "7b …the replacement marker survives, because it belongs to a different run"
+fi
+if exists "$d/.claude/state/gap-analysis.lock"; then
+  bad "7b …and the claim taken on the way there is released, not stranded"
+else ok; fi
+# Restore the ordinary shim for the cases below.
+cat > "$shimbin/gh" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view")
+    if [ "${SHIM_PR_VIEW_FAIL:-0}" = "1" ]; then echo "gh: could not resolve to a PullRequest" >&2; exit 1; fi
+    printf '%s\n' "${SHIM_PR_STATE:-}" ;;
+  *) echo "gh-shim: unhandled args: $*" >&2; exit 3 ;;
+esac
+SH
+chmod +x "$shimbin/gh"
+
 # ================= 8. ownership does NOT authorize deletion ====================================
 # A session is an ACTOR, not a run: ownership is transferable, one session can invoke the workflow
 # twice, and an absent owner reads as "compatible". So `admit` must not consult it — a live marker

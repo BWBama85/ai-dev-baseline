@@ -2880,7 +2880,13 @@ limit: none of them is sufficient alone.
              (d) ACQUIRE BEFORE YOU CLEAR, WITH `O_EXCL`. The claim is taken with `set -C` + `>`
                  BEFORE anything is deleted, so the session that loses the race mutates nothing.
                  Check-then-act between two reads was the residual hole a plain guarded clear would
-                 have left.
+                 have left. And because a verdict still describes the marker *as it was read*, the
+                 file is re-identified at the delete with `cleanup-lib.sh marker-identity` — the
+                 same primitive, and the same rule, `/cleanup` already applies at ITS delete. A
+                 marker that changed in between belongs to a different run, so this one stands down
+                 and releases. The identity is captured BEFORE the ref and `gh` reads, not after: a
+                 capture taken after them fingerprints whatever arrived during them and would
+                 compare a replacement against itself (observed while writing the test).
              The claim is the EXISTING `gap-analysis.lock`, widened rather than joined by a second
              file: it already means "a run is live and has not written its marker yet", and
              admission only moves its acquisition earlier (preflight instead of step 3) so it covers
