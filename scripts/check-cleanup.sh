@@ -796,9 +796,13 @@ else
     bad "6 could not locate step 5 in implement-issue.md — the hand-off order asserted NOTHING"
   else
     ii5marker="${ printf '%s\n' "$ii5" | grep -n 'mv {{STATE_DIR}}/.marker.tmp {{STATE_DIR}}/implement-issue-active.json' | head -n1 | cut -d: -f1; }"
-    ii5rel="${ printf '%s\n' "$ii5" | grep -n '{{IMPLEMENT_LIB}} release --token' | head -n1 | cut -d: -f1; }"
-    if [ -n "$ii5marker" ] && [ -n "$ii5rel" ] && [ "$ii5marker" -lt "$ii5rel" ]; then ok; else
-      bad "6 step 5 must write the marker and THEN release the claim (marker@${ii5marker:-absent} release@${ii5rel:-absent})"
+    # The HAND-OFF release specifically — the first one AFTER the marker write, not the first one in
+    # the step. Step 5 legitimately releases EARLIER too, on the `git switch -c` failure path: that
+    # invocation started nothing, so holding the claim would refuse every later run for the rest of
+    # the lease. A `head -n1` over the whole step finds that one and reports the hand-off missing.
+    ii5rel="${ printf '%s\n' "$ii5" | awk -v m="${ii5marker:-0}" 'NR > m && /\{\{IMPLEMENT_LIB\}\} release --token/ { print NR; exit }'; }"
+    if [ -n "$ii5marker" ] && [ -n "$ii5rel" ]; then ok; else
+      bad "6 step 5 must write the marker and THEN release the claim (marker@${ii5marker:-absent} hand-off release@${ii5rel:-absent})"
     fi
   fi
 

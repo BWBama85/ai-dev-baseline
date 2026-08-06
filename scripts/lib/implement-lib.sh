@@ -283,7 +283,7 @@ _il_break() {   # <claim-path> <judged-identity>
   # next scan of this directory ambiguous, and a caller that believes it broke a claim it did not is
   # the failure this whole function exists to prevent.
   rm -f "$stale" 2>/dev/null || return 1
-  [ -e "$stale" ] && return 1
+  { [ -e "$stale" ] || [ -L "$stale" ]; } && return 1
   return 0
 }
 
@@ -296,7 +296,11 @@ _il_break() {   # <claim-path> <judged-identity>
 # marker, and the suite went red in six places. Failing closed is the right DIRECTION for a bug like
 # that, which is exactly why it has to be one function: the other direction is unobservable.
 _il_file_identity() {   # <path>
-  cksum < "$1" 2>/dev/null | awk '{print $1 "-" $2}'
+  # The redirection is inside the braces so the SHELL's own "No such file or directory" is
+  # suppressed too. `cksum … 2>/dev/null` only silences cksum, and a failed `< "$1"` is reported by
+  # the shell BEFORE cksum ever runs — which leaked a stray error line whenever the claim was a
+  # dangling symlink, i.e. exactly the corrupt case this is asked about.
+  { cksum < "$1" | awk '{print $1 "-" $2}'; } 2>/dev/null
 }
 
 # Probe a claim in ONE observation: prints its identity on line 1 and its lease expiry on line 2
@@ -314,6 +318,13 @@ _il_file_identity() {   # <path>
 # through stdout as separate lines precisely so the raw bytes never have to survive a `$( )`.
 _il_claim_probe() {   # <claim-path>
   local v=""
+  # AN UNREADABLE CLAIM HAS NO IDENTITY, and emitting one anyway is what made a dangling symlink
+  # unbreakable: the read below fails, `v` stays empty, and the digest of an empty string is a
+  # perfectly ordinary value that `_il_break` then compares against the link's (undigestable)
+  # content — a guaranteed mismatch, so the break restored the corrupt link and refused, forever.
+  # Two empty lines instead: no identity means "remove it unconditionally", which is the right
+  # answer for a claim nothing can read.
+  if [ ! -f "$1" ] || [ ! -r "$1" ]; then printf '\n\n'; return 0; fi
   IFS= read -r -d '' v < "$1" 2>/dev/null || true
   printf '%s' "$v" | cksum | awk '{print $1 "-" $2}'
   printf '%s' "$v" | jq -r 'if type == "object" and (.expiresAt | type) == "number"
@@ -348,7 +359,9 @@ _il_token() {
 # remove.
 _il_drop() {   # <claim-path> <token>
   local claim="$1" want="$2" ident got
-  [ -e "$claim" ] || return 0
+  # `-e` FOLLOWS a symlink, so a DANGLING one reads as absent while still occupying the path and
+  # still making `ln` fail with EEXIST. Every existence test on the claim therefore asks `-L` too.
+  { [ -e "$claim" ] || [ -L "$claim" ]; } || return 0
   ident="$(_il_file_identity "$claim")"
   got="$(jq -r '.token // ""' "$claim" 2>/dev/null)" || got=""
   # An untokened claim is pre-#202 or hand-written; there is no run to wrong, and refusing to remove
@@ -577,7 +590,7 @@ _il_admit_decide() {
     # Reporting an unwritable state dir as "another run holds the claim" sends the operator hunting
     # for a run that does not exist — and, worse, invites them to delete a claim file that is not
     # there. Ask whether anything is actually holding it.
-    if [ ! -e "$claim" ]; then
+    if [ ! -e "$claim" ] && [ ! -L "$claim" ]; then
       echo "implement-lib: REFUSED — could not create the run claim at $claim." >&2
       echo "               Nothing is holding it; the state directory is not writable. Nothing was deleted." >&2
       return 14
@@ -617,7 +630,7 @@ EOF
       return 13
     fi
     if ! _il_acquire "$claim" "$payload"; then
-      if [ -e "$claim" ]; then
+      if [ -e "$claim" ] || [ -L "$claim" ]; then
         echo "implement-lib: REFUSED — the run claim was re-taken by another run while this one was breaking it." >&2
         return 13
       fi
@@ -785,7 +798,9 @@ cmd_release() {
   done
   [ "$#" -eq 1 ] || { echo "implement-lib: release needs exactly 1 arg: <state-dir>" >&2; exit 2; }
   local claim="$1/$_IL_CLAIM"
-  [ -e "$claim" ] || return 0
+  # `-L` as well as `-e`, for the reason `_il_drop` spells out: a dangling symlink occupies the path
+  # while reading as absent, and an early return here would leave it there permanently.
+  { [ -e "$claim" ] || [ -L "$claim" ]; } || return 0
 
   # RELEASE ONLY WHAT THIS RUN IS HOLDING. An unconditional `rm` was a real hole: if this run's lease
   # expired and another run legitimately broke and re-took the claim, this run's stop path — or its
@@ -815,7 +830,7 @@ cmd_release() {
   # Removed by IDENTITY, not by pathname, so a successor written between the comparison above and
   # the removal below survives. `_il_break` puts back anything that is not the file we judged.
   if ! _il_break "$claim" "$ident"; then
-    if [ -e "$claim" ]; then
+    if [ -e "$claim" ] || [ -L "$claim" ]; then
       echo "implement-lib: NOTE — the run claim changed while it was being released; left in place: $claim" >&2
       return 0
     fi

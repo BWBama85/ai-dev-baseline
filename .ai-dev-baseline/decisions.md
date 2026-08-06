@@ -3006,4 +3006,15 @@ limit: none of them is sufficient alone.
              run eight real processes against one directory, and the suite says which of them
              actually catches a non-atomic acquire (the EXPIRED-claim race) rather than implying the
              empty-directory race covers it.
+
+             **Three defects the PR review found, all the same shape — refusing forever rather than
+             admitting twice.** A dangling symlink at the claim path reads as absent to `-e` while
+             still making `ln` fail with `EEXIST`, so admission reported "not writable" and never
+             reached the break path; a failed `git switch -c` kept the claim over an invocation that
+             started nothing; and the claim token lived only in a shell variable while the releases
+             that need it sit in later fenced blocks that may run as separate shells. Every
+             existence test on the claim now asks `-L` too, an unreadable claim probes to NO identity
+             (so the break removes it unconditionally rather than comparing an empty-string digest
+             against an undigestable link), the branch-creation failure releases, and the workflow
+             prints the token and tells the agent to substitute its literal value.
 - baseline-issue: #202

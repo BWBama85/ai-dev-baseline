@@ -91,6 +91,16 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     permissions. Each prints the recovery — the branch to finish, `/cleanup`, or the file to
     delete.
 
+  Three further defects came from the PR review, and all three were the same shape — a guard that
+  refuses forever rather than one that lets two runs through. A **dangling symlink** at the claim
+  path read as *absent* to `-e` while still making `ln` fail with `EEXIST`, so admission reported
+  "not writable" and never reached the break path — blocked until someone removed the link by hand.
+  A failed `git switch -c` (the branch already exists) **kept** the claim, refusing every later run
+  for the rest of the lease over an invocation that started nothing. And the claim token lived only
+  in a shell variable, while the releases that need it sit in *later* fenced blocks the workflow
+  itself says may run as separate shells — so every release degraded to `--token ""`, and for an
+  agent whose harness exposes no session id the fallback compares nothing.
+
   Scope, stated rather than implied: `{{STATE_DIR}}` is per-agent, so this excludes a second run of
   the **same** agent and nothing more. A Claude run and a Codex run never collide on these paths at
   all; they collide on HEAD, and only partially — the branch check hard-errors once one of them has

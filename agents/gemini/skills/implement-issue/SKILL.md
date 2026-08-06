@@ -320,6 +320,7 @@ fi
 ADMIT_OUT="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" admit .gemini/state)"; ADMIT=$?
 RUN_CLAIM_TOKEN=""
 [ "$ADMIT" -eq 0 ] && RUN_CLAIM_TOKEN="${ADMIT_OUT##* }"
+[ "$ADMIT" -eq 0 ] && echo "RUN_CLAIM_TOKEN=$RUN_CLAIM_TOKEN"
 case "$ADMIT" in
   0)  : ;;   # admitted: the claim is held and stale state is cleared. Proceed.
   10) echo "STOP: another /implement-issue run is in flight in this checkout (see above)."; exit 1 ;;
@@ -336,6 +337,16 @@ esac
 helper function: a fenced block may be executed as its own shell, so a `stop_run()` defined here
 would simply not exist in step 2's block, and the release would silently not happen on the one path
 that most needs it. Two extra words per call site is the price of not depending on that.
+
+**`$RUN_CLAIM_TOKEN` IS A SHELL VARIABLE, AND SHELL VARIABLES DIE WITH THEIR BLOCK.** The releases
+below sit in *later* fenced blocks, and this workflow has just finished saying those may run as
+separate shells — so the variable can be unset by the time they run, every call degrades to
+`release --token ""`, and the fallback that then applies compares session ids, which for an agent
+whose harness exposes none compares nothing at all. **Read the token off the line the block above
+printed and substitute its LITERAL value into every `--token` below.** You are an agent carrying
+context between blocks; the variable is a convenience for the case where the shell happens to
+persist, not the mechanism. If you cannot see that line, re-read it — the claim carries it:
+`jq -r .token .gemini/state/gap-analysis.lock`.
 
 **A refusal is a legitimate, documented stop, and it is PRE-BRANCH.** No marker and no claim of
 your own exist yet, so there is nothing to pair a blocked file with — surface the message to the
@@ -625,8 +636,15 @@ BRANCH="issue-${ISSUE_DASH}-${SLUG}"
 # `git switch -c` (the branch already exists) or a failed `jq`/`mv` still falls through to the
 # release, and the run ends holding NEITHER a claim NOR a marker — the exact unprotected state this
 # whole step exists to hand off between.
+# A FAILED SWITCH RELEASES. This run never started: no branch, no marker, nothing for the claim to
+# protect — so holding it would refuse every later run in this checkout for the rest of the lease
+# (2h30m) over an invocation that did nothing. Keeping the claim is only correct AFTER the switch
+# succeeds and the marker write fails, which is the next command's `||` and is a different state:
+# there a branch exists and nothing else records it.
 git switch -c "$BRANCH" || {
-  echo "ERROR: could not create branch $BRANCH (does it already exist?) — claim NOT released"; exit 1; }
+  bash "$HOME/.gemini/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .gemini/state
+  echo "ERROR: could not create branch $BRANCH (does it already exist?) — claim released; nothing was started"
+  exit 1; }
 
 # `owner` is emitted only when the harness exposes a session id — an empty value writes NO key,
 # which the gate reads as "unowned" and enforces the pre-#180 way. See "owner" above.

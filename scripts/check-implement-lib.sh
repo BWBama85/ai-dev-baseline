@@ -547,6 +547,20 @@ else
   # `##`, and the `sed 's/#.*$//'` that strips shell comments eats the parameter expansion with it.
   # The pin was observed failing for exactly that reason, on a workflow that had the line.
   has "$(cat "$WF")" 'RUN_CLAIM_TOKEN="${ADMIT_OUT##* }"' "13 …and extracts the token from it"
+  # The token must survive a BLOCK BOUNDARY, not just the block that captured it: the releases sit in
+  # later fenced blocks, which this workflow itself says may run as separate shells. A shell variable
+  # alone therefore degrades every call to `release --token ""`. The block must PRINT the token, and
+  # the prose must tell the agent to substitute the literal.
+  has "$(cat "$WF")" 'echo "RUN_CLAIM_TOKEN=$RUN_CLAIM_TOKEN"' \
+     "13 …and PRINTS it, so it survives a block boundary the shell variable does not"
+  has "$(cat "$WF")" 'substitute its LITERAL value into every' \
+     "13 …and says to substitute the literal, since the agent is what carries it between blocks"
+  # A failed `git switch -c` never started a run, so it must RELEASE — holding the claim there
+  # refuses every later run for the rest of the lease over an invocation that did nothing.
+  ii5b="${ awk '/^### 5\. /{ inb = 1; next } inb && /^### /{ exit } inb' "$WF"; }"
+  has "$ii5b" 'git switch -c "$BRANCH" || {
+  {{IMPLEMENT_LIB}} release --token "$RUN_CLAIM_TOKEN" {{STATE_DIR}}' \
+     "13 …and a failed branch creation releases the claim rather than stranding it"
   nrel="${ printf '%s\n' "$wfexec" | grep -c '{{IMPLEMENT_LIB}} release'; }"
   ntok="${ printf '%s\n' "$wfexec" | grep -c '{{IMPLEMENT_LIB}} release --token "\$RUN_CLAIM_TOKEN"'; }"
   eq "$ntok" "$nrel" "13 …and EVERY release site passes it ($ntok of $nrel)"
@@ -598,6 +612,33 @@ if exists "$d/.claude/state/review-slot.md"; then ok; else
 fi
 if exists "$d/.claude/state/gap-analysis.lock"; then
   bad "15 …and no claim was taken, so the checkout is not left blocked"
+else ok; fi
+
+# ================= 16. a DANGLING SYMLINK at the claim path ====================================
+# `-e` follows a symlink, so a dangling one reads as ABSENT while still occupying the path and still
+# making `ln` fail with EEXIST. Admission therefore reported "not writable" (14) and never reached
+# the break path — and every retry repeated it, so the checkout was blocked until someone removed
+# the link by hand. `release` had the same `-e`-only early return.
+d="$(new_repo)"
+ln -s /nonexistent/target "$d/.claude/state/gap-analysis.lock"
+admit "$d"
+eq "$AD_RC" "0" "16 a dangling-symlink claim is reaped, not reported as an unwritable directory"
+has "$AD_OUT" "no readable lease" "16 …and reported as the corrupt claim it is"
+if [ -L "$d/.claude/state/gap-analysis.lock" ]; then
+  bad "16 …and the link itself is gone, replaced by a real claim"
+else ok; fi
+eq "$(jq -r 'if (.token|type)=="string" then "ok" else "bad" end' \
+      "$d/.claude/state/gap-analysis.lock" 2>/dev/null)" "ok" "16 …which is a well-formed claim"
+# NOTHING on stderr but the NOTE: a failed `< "$file"` is reported by the SHELL, not by `cksum`, so
+# a `cksum … 2>/dev/null` left a stray "No such file or directory" whenever the claim was dangling.
+eq "$(printf '%s\n' "$AD_OUT" | grep -c 'No such file or directory')" "0" \
+   "16 …with no stray shell error leaking from the identity read"
+# `release` must see it too, or a dangling link left by a crash would survive every stop path.
+d="$(new_repo)"
+ln -s /nonexistent/target "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && bash "$IL" release .claude/state ) >/dev/null 2>&1
+if [ -L "$d/.claude/state/gap-analysis.lock" ]; then
+  bad "16 release also removes a dangling-symlink claim rather than returning early on -e"
 else ok; fi
 
 # ================= 11. argument handling ========================================================
