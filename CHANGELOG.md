@@ -28,32 +28,50 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
   Three properties are what make it a fix rather than a different failure:
 
-  - **It acquires before it clears, with `O_EXCL`.** A guarded clear alone is still check-then-act:
-    two sessions can both observe an empty state directory and both proceed. The claim is taken
-    first, so the session that loses the race mutates **nothing** — and the marker is re-identified
-    at the delete (`cleanup-lib.sh marker-identity`, the rule `/cleanup` already applies at its own
-    delete), so a marker replaced between the verdict and the clear is left alone.
+  - **It acquires before it clears.** A guarded clear alone is still check-then-act: two sessions
+    can both observe an empty state directory and both proceed. The claim is taken first, by
+    `link`ing a fully-written temp file into place — create-or-fail like `O_EXCL`, but with no
+    window in which the claim exists and is empty for a contender to read as corrupt and break.
+    A session that loses the race for a **held** claim is refused having mutated nothing; breaking
+    an **expired** one removes a stale file, and is a `rename` contest so exactly one caller wins.
+    The marker is also re-identified immediately before the clear (`cleanup-lib.sh marker-identity`,
+    the rule `/cleanup` already applies at its own delete), which **narrows** the replacement
+    window rather than closing it — the read and the unlink are still two operations.
   - **It never consults `owner`.** A session is an *actor*, not a run: ownership is transferable,
     one session may invoke the workflow twice, and an absent `owner` reads as "compatible" — correct
     for a hook deciding whether to speak, wrong for a starter deciding whether to delete. A live
     marker refuses even the session that wrote it. `owner` governs enforcement; **staleness**
     governs deletion, asked of `cleanup-lib.sh state-verdict marker` rather than re-derived.
-  - **It cannot block a checkout permanently.** `/cleanup` never deletes a `lock` record and
-    preflight no longer clears one unconditionally, so the claim carries a **lease**
-    (`2 × ADB_DISPATCH_TIMEOUT_SECS + 3600`) and the next run breaks an expired one with a reported
-    `NOTE`. A pre-#202 empty lock has no lease and is broken the same way — the migration path.
-    Every unknown (no `jq`, an unreadable marker, a `gh` that errors, a directory outside a git
-    repo) **refuses without deleting**: a starter that cannot read must not delete.
+  - **No refusal blocks a checkout without saying what will clear it.** `/cleanup` never deletes a
+    `lock` record and preflight no longer clears one unconditionally, so the claim carries a
+    **lease** (9000s / 2h30m; a flat constant, not derived from `ADB_DISPATCH_TIMEOUT_SECS`, which
+    `role-dispatch.sh` already owns and validates differently) and the next run breaks an expired
+    one with a reported `NOTE`. A pre-#202 empty lock has no lease and is broken the same way — the
+    migration path. `release` drops only the claim its caller holds, compared by a per-acquire
+    token, so a run whose lease expired cannot delete its successor's claim. Every unknown (no
+    `jq`, an unreadable marker, a `gh` that errors, an unreadable state directory) **refuses without
+    deleting**: a starter that cannot read must not delete.
+
+    The lease is a **trade, not a free fix** — a run that outlives it can have its claim broken
+    while alive. The exposure is pre-marker only (after step 5 the marker refuses a second run
+    regardless), and 2h30m is far longer than that window can legitimately be. And some refusals do
+    **not** clear themselves: an abandoned marker whose branch ref survives is kept by `admit` and
+    by `/cleanup` alike, as are a malformed marker, a persistent `gh` failure, or wrong directory
+    permissions. Each prints the recovery — the branch to finish, `/cleanup`, or the file to
+    delete.
 
   Scope, stated rather than implied: `{{STATE_DIR}}` is per-agent, so this excludes a second run of
-  the **same** agent. A Claude run and a Codex run never collide on these paths at all, and the
-  second one's preflight already hard-errors on the branch check.
+  the **same** agent and nothing more. A Claude run and a Codex run never collide on these paths at
+  all; they collide on HEAD, and only partially — the branch check hard-errors once one of them has
+  switched away from the default branch, but two agents starting *concurrently* while both are
+  still on it both pass. This is not checkout-wide exclusion, and is not described as such.
 
-  Covered by a new `scripts/check-implement-lib.sh` (55 checks), an end-to-end case in
-  `scripts/check-implement-gate.sh` — run A's marker live, session B admits, and **A's continuation
-  gate must still fire** — and a rewritten containment guard in `check-cleanup.sh` that now *runs*
-  the clear against filenames derived from `state-scan`'s own arms instead of grepping the workflow
-  prose. All three were driven red on mutation before being called done.
+  Covered by a new `scripts/check-implement-lib.sh` — including eight real concurrent processes
+  racing for one claim — an end-to-end case in `scripts/check-implement-gate.sh` (run A's state
+  live, session B admits, and **A's continuation gate must still fire** over a byte-identical state
+  directory), and a rewritten containment guard in `check-cleanup.sh` that now *runs* the clear
+  against filenames derived from `state-scan`'s own arms instead of grepping the workflow prose.
+  All three were driven red on mutation before being called done.
 
 - **A closing keyword in a PR body fires only from PROSE — a code span silently suppressed it, and
   the practice said otherwise.** `git-and-prs.md` claimed `Closes #N` closes an issue "**anywhere**

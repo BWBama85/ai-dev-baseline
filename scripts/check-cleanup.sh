@@ -840,7 +840,7 @@ else
       kind="${ bash "$CL" state-scan "$d" | awk -F'\t' -v p="$d/$f" '$2 == p { print $1 }'; }"
       eq "$kind" "$armname" "6 fixture $f really is classified $armname by state-scan"
     done
-    out="${ ADB_RUN_CLAIM_LEASE_SECS=0 bash "$IL" admit "$d" 2>&1; }" || true
+    out="${ bash "$IL" admit "$d" 2>&1; }" || true
     for f in "${made[@]}"; do
       if [ -e "$d/$f" ] || [ -L "$d/$f" ]; then
         bad "6 admit left $f behind — /cleanup would sweep it but preflight cannot clear it ($out)"
@@ -858,7 +858,7 @@ else
       rm -rf "$d"; mkdir -p "$d"
       : > "$d/link-target"
       ln -s "$d/link-target" "$d/${lnpat//\*/link}"
-      ADB_RUN_CLAIM_LEASE_SECS=0 bash "$IL" admit "$d" >/dev/null 2>&1 || true
+      bash "$IL" admit "$d" >/dev/null 2>&1 || true
       if [ -e "$d/${lnpat//\*/link}" ] || [ -L "$d/${lnpat//\*/link}" ]; then
         bad "6 admit left the ${lnpat} SYMLINK behind, which state-scan's [ -f ] test follows"
       else
@@ -875,7 +875,7 @@ else
   rod="$ilw/readonly"; rm -rf "$rod"; mkdir -p "$rod"
   : > "$rod/review.md"
   chmod 500 "$rod"
-  ADB_RUN_CLAIM_LEASE_SECS=0 bash "$IL" admit "$rod" >/dev/null 2>&1; rorc=$?
+  bash "$IL" admit "$rod" >/dev/null 2>&1; rorc=$?
   chmod 700 "$rod"
   eq "$rorc" "14" "6 a clear that cannot remove a file REFUSES (14) instead of reporting a clean start"
   if [ -e "$rod/gap-analysis.lock" ]; then

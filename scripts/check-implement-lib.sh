@@ -7,10 +7,11 @@
 # could see it. `admit` refuses instead, and only clears once it has proved the previous run is dead
 # AND taken this run's claim.
 #
-# WHY EVERY CASE ASSERTS TWO THINGS. A guard's failure mode is silence, and this one's silence is
-# *deleting something*: an `admit` that wrongly returns 0 looks exactly like a healthy start. So no
-# case checks the exit code alone — each also asserts what survived. A refusal that returns 10 and
-# still cleared the artifacts is the bug wearing the fix's exit code.
+# WHY THE REFUSAL CASES ASSERT TWO THINGS. A guard's failure mode is silence, and this one's silence
+# is *deleting something*: an `admit` that wrongly returns 0 looks exactly like a healthy start. So
+# every case that expects a REFUSAL also asserts what survived — a refusal that returns 10 and still
+# cleared the artifacts is the bug wearing the fix's exit code. (Cases asserting an ADMIT check what
+# was cleared instead, which is the same question from the other side.)
 #
 # `gh` is stubbed by a shim on PATH driven by SHIM_* env vars, so the PR half of the staleness
 # question runs offline and deterministically. Every case builds its own fixture repo; the tracked
@@ -129,6 +130,15 @@ state_digest() {
     done )
 }
 exists() { [ -e "$1" ] || [ -L "$1" ]; }
+# A claim whose lease ran out long ago. The suite used to drive this with
+# `ADB_RUN_CLAIM_LEASE_SECS=0`, which the module now REJECTS as invalid — a sub-minute lease
+# disables the exclusion it exists to provide, so leaving that lever in place would have meant
+# shipping a footgun purely to make a test convenient. Forging the file is both more honest (it is
+# the state a killed run really leaves) and independent of the lease policy.
+expired_claim() {   # <repo> [token] [owner]
+  jq -n --arg t "${2:-forged-token}" --arg o "${3:-sess-dead}" \
+     '{startedAt:1, expiresAt:2, token:$t, owner:$o}' > "$1/.claude/state/gap-analysis.lock"
+}
 
 # ================= 1. the happy path ============================================================
 d="$(new_repo)"
@@ -188,18 +198,30 @@ if exists "$d/.claude/state/gap-analysis.lock"; then
 else ok; fi
 
 # ================= 4. what counts as LIVE ======================================================
+# Each of these seeds an artifact and asserts the WHOLE state directory is byte-identical
+# afterwards, not just that the exit code was 10. A refusal that returns the right code and still
+# clears the previous run's findings is the defect wearing the fix's signature, and only the digest
+# can see it.
+live_case() {   # <label> <setup-fn-body-already-run> ; expects $d seeded, runs admit with $@ env
+  local label="$1"; shift
+  printf 'seed\n' > "$d/.claude/state/gaps.md"
+  local before; before="$(state_digest "$d")"
+  admit "$d" "$@"
+  eq "$AD_RC" "10" "4 $label"
+  eq "$(state_digest "$d")" "$before" "4 …and nothing in the state dir was touched ($label)"
+}
 # Local ref only.
 d="$(new_repo)"; git -C "$d" branch issue-1-x; marker "$d" issue-1-x
-admit "$d"; eq "$AD_RC" "10" "4 a marker whose LOCAL branch still exists is live"
+live_case "a marker whose LOCAL branch still exists is live"
 # Remote-tracking ref only (the branch was pushed, then deleted locally).
 d="$(new_repo)"
 git -C "$d" update-ref refs/remotes/origin/issue-2-x "$(git -C "$d" rev-parse HEAD)"
 marker "$d" issue-2-x
-admit "$d"; eq "$AD_RC" "10" "4 a marker whose REMOTE ref still exists is live"
+live_case "a marker whose REMOTE ref still exists is live"
 # Both refs gone, but the PR is OPEN — an open PR outranks branch absence, because the branch may
 # have been tidied while the run is still going.
 d="$(new_repo)"; marker "$d" issue-3-x "https://github.com/o/r/pull/3"
-admit "$d" SHIM_PR_STATE=open; eq "$AD_RC" "10" "4 both refs gone but the PR is OPEN → still live"
+live_case "both refs gone but the PR is OPEN → still live" SHIM_PR_STATE=open
 
 # ================= 5. what counts as STALE (and is therefore cleared) ==========================
 d="$(new_repo)"; marker "$d" issue-4-x "https://github.com/o/r/pull/4"
@@ -241,8 +263,11 @@ has "$AD_OUT" "could not be read" "6 …and says so, rather than sending the ope
 # well-formed-looking name that no ref matches (which would classify STALE and delete).
 d="$(new_repo)"
 printf '{"branch":"dead\\u0000branch","issue":"9","phase":"branched"}' > "$d/.claude/state/implement-issue-active.json"
+printf 'keepme\n' > "$d/.claude/state/gaps.md"
+before="$(state_digest "$d")"
 admit "$d"
 eq "$AD_RC" "11" "6 a .branch holding a control character is unreadable, not a stale run"
+eq "$(state_digest "$d")" "$before" "6 …and nothing was deleted on that path either"
 # No jq: nothing can be read, so nothing may be deleted.
 d="$(new_repo)"; marker "$d" issue-8-x
 printf 'keepme\n' > "$d/.claude/state/gaps.md"
@@ -260,11 +285,9 @@ eq "$AD_RC" "10" "6 outside a git repo the refs are unknown, so the marker is no
 eq "$(state_digest "$d")" "$before" "6 …and it survives"
 
 # ================= 7. the lease is what makes a stranded claim recoverable =====================
-d="$(new_repo)"
-admit "$d" ADB_RUN_CLAIM_LEASE_SECS=0
-eq "$AD_RC" "0" "7 a zero-second lease still admits"
+d="$(new_repo)"; expired_claim "$d"
 admit "$d"
-eq "$AD_RC" "0" "7 …and the next run BREAKS the expired claim instead of being refused forever"
+eq "$AD_RC" "0" "7 an expired claim is BROKEN, not refused forever"
 has "$AD_OUT" "EXPIRED run claim" "7 …reporting the break rather than taking it silently"
 # A pre-#202 lock is an empty file with no lease. It must not block the checkout permanently: the
 # old behaviour for it was an unconditional clear, so breaking it is the migration path.
@@ -311,6 +334,23 @@ esac
 SH
 chmod +x "$shimbin/gh"
 
+# ================= 7c. a marker that APPEARS mid-admission is not this run's to delete =========
+# The mirror of 7b, and the easy one to miss: with NO marker at step 1 there is no identity to
+# compare, yet the clear deletes the marker path unconditionally, so a marker written in between
+# would be destroyed by a run that never judged it. `admit` guards it with an absence re-check.
+#
+# NOT COVERED BY A DETERMINISTIC CASE HERE, and saying so is better than a test that pretends.
+# 7b can be driven exactly because a marker with a `prUrl` makes `admit` call `gh`, which the shim
+# controls — that is a whole subprocess of window to plant a replacement in. The absence path calls
+# NOTHING external between the marker read and the clear (no marker means no branch read, no ref
+# lookup, no `gh`), so the window is a few instructions wide and a shell harness cannot land in it
+# reliably. A best-effort racer was written and discarded: it passed whether or not it won, which
+# is a test asserting nothing.
+#
+# What IS pinned deterministically is the guard's other half — that a marker present at step 1 and
+# changed by the clear is refused (7b) — and the same `_il_drop`/return-10 path serves both. The
+# residual is named in implement-lib.sh's own comment rather than claimed closed.
+
 # ================= 8. ownership does NOT authorize deletion ====================================
 # A session is an ACTOR, not a run: ownership is transferable, one session can invoke the workflow
 # twice, and an absent owner reads as "compatible". So `admit` must not consult it — a live marker
@@ -327,7 +367,7 @@ eq "$(state_digest "$d")" "$before" "8 …and its state is untouched"
 # ================= 9. a clear that cannot finish must not report a clean start =================
 d="$(new_repo)"; printf 'x\n' > "$d/.claude/state/review.md"
 chmod 500 "$d/.claude/state"
-admit "$d" ADB_RUN_CLAIM_LEASE_SECS=0
+admit "$d"
 chmod 700 "$d/.claude/state"
 eq "$AD_RC" "14" "9 an unwritable state dir REFUSES instead of starting over artifacts it did not clear"
 if exists "$d/.claude/state/gap-analysis.lock"; then
@@ -344,6 +384,112 @@ if exists "$d/.claude/state/gap-analysis.lock"; then bad "10 …and it is really
 d="$(new_repo)"; admit "$d"; printf 'f\n' > "$d/.claude/state/gaps.md"
 ( cd "$d" && bash "$IL" release .claude/state )
 if exists "$d/.claude/state/gaps.md"; then ok; else bad "10 release must drop only the claim, not the findings"; fi
+
+# ================= 12. REAL concurrency, not two sequential calls ==============================
+# The sequential case in section 2 proves only that a COMPLETED, unexpired claim blocks a later
+# call — which a plain check-then-act acquire also satisfies. What has to be true is that N
+# processes starting against the SAME EMPTY directory produce exactly one winner.
+#
+# WHAT THIS DOES AND DOES NOT OBSERVE, because a test that overstates its reach is the thing this
+# suite exists to prevent elsewhere. The empty-directory race is caught by create-or-fail alone, so
+# it does NOT by itself distinguish `link`-a-complete-file from create-then-write; the window in
+# which a create-then-write claim exists but is empty is a few instructions wide and is not
+# reliably reachable from a shell harness. The EXPIRED-claim race below is what actually fails
+# under both regressions — reverted to `set -C` + `>` it produced two winners, and reverted to an
+# `rm -f` break it produced two winners — because there a contender is already reading the file's
+# contents to decide whether to break it. The complete-payload assertion after this case pins the
+# structural property directly.
+race_winners() {   # <state-dir> <n> [pre-seed]  -> prints the number of admits that returned 0
+  local sd="$1" n="$2" i wins=0
+  local rdir="$sd/.race"; rm -rf "$rdir"; mkdir -p "$rdir"
+  for (( i = 0; i < n; i++ )); do
+    ( cd "$sd/.." >/dev/null 2>&1 || exit 1
+      if bash "$IL" admit "$sd" >"$rdir/out.$i" 2>&1; then : > "$rdir/win.$i"; fi ) &
+  done
+  wait
+  for i in "$rdir"/win.*; do [ -e "$i" ] && wins=$((wins + 1)); done
+  rm -rf "$rdir"
+  printf '%s' "$wins"
+}
+d="$(new_repo)"
+eq "$(race_winners "$d/.claude/state" 8)" "1" \
+   "12 eight simultaneous admits against an EMPTY state dir produce exactly ONE winner"
+eq "$(jq -r 'if (.token|type)=="string" and (.token|length) > 0 then "ok" else "bad" end' \
+      "$d/.claude/state/gap-analysis.lock" 2>/dev/null)" "ok" \
+   "12 …and the surviving claim is complete, never a half-written file another run could break"
+
+# The same contest over an EXPIRED claim. `rm -f` + re-create is not a contest — two breakers both
+# unlink and both create, and the loser clobbers a claim the winner was already told it owned. The
+# break is a rename, which exactly one caller wins.
+d="$(new_repo)"; expired_claim "$d"
+eq "$(race_winners "$d/.claude/state" 8)" "1" \
+   "12 eight simultaneous breakers of one EXPIRED claim also produce exactly ONE winner"
+
+# ================= 13. release drops only what THIS run holds ==================================
+# An unconditional `rm` was a real hole: if this run's lease expires and another run legitimately
+# breaks and re-takes the claim, this run's later stop path deletes the SUCCESSOR's claim and a
+# third run walks in behind it.
+d="$(new_repo)"; admit "$d" CLAUDE_CODE_SESSION_ID=sess-A
+eq "$AD_RC" "0" "13 run A takes the claim"
+tokA="$(jq -r .token "$d/.claude/state/gap-analysis.lock")"
+# B takes over (as it would after an expiry break).
+jq -n --arg t "tok-B" '{startedAt:1, expiresAt:9999999999, token:$t, owner:"sess-B"}' \
+   > "$d/.claude/state/gap-analysis.lock"
+( cd "$d" && bash "$IL" release --token "$tokA" .claude/state ) >/dev/null 2>&1
+if exists "$d/.claude/state/gap-analysis.lock"; then ok; else
+  bad "13 …and A's release must NOT delete B's claim (token mismatch)"
+fi
+eq "$(jq -r .token "$d/.claude/state/gap-analysis.lock")" "tok-B" "13 …B's claim is untouched"
+# Without a token, the session id answers the same question for the case that matters: a DIFFERENT
+# session took over.
+( cd "$d" && env CLAUDE_CODE_SESSION_ID=sess-A bash "$IL" release .claude/state ) >/dev/null 2>&1
+if exists "$d/.claude/state/gap-analysis.lock"; then ok; else
+  bad "13 …and the tokenless form falls back to the session id, which also refuses B's claim"
+fi
+# And it still releases what it really does hold.
+( cd "$d" && env CLAUDE_CODE_SESSION_ID=sess-B bash "$IL" release .claude/state ) >/dev/null 2>&1
+if exists "$d/.claude/state/gap-analysis.lock"; then
+  bad "13 …while B's own release DOES drop it"
+else ok; fi
+
+# ================= 14. lease validation is an ERROR, never a silent default ====================
+# A lease the operator believes they set and did not is the quiet disagreement this validation
+# exists to remove — and one of these values used to be an arithmetic ERROR that still admitted.
+for badlease in 0 30 abc -5 08x 12345678901234567890; do
+  d="$(new_repo)"
+  admit "$d" "ADB_RUN_CLAIM_LEASE_SECS=$badlease"
+  eq "$AD_RC" "12" "14 an invalid lease '$badlease' is refused, not silently defaulted"
+  if exists "$d/.claude/state/gap-analysis.lock"; then
+    bad "14 …and no claim is taken on that path ('$badlease')"
+  else ok; fi
+done
+# A zero-PADDED value is decimal, not octal: `08` used to be an arithmetic error.
+d="$(new_repo)"; admit "$d" ADB_RUN_CLAIM_LEASE_SECS=0090
+eq "$AD_RC" "0" "14 a zero-padded lease is read as decimal, not octal"
+# An expiry too large to compare safely reads as NO readable lease, so it is broken with a note
+# rather than trusted into the far future (or wrapped into the past).
+d="$(new_repo)"
+jq -n '{startedAt:1, expiresAt:999999999999999999999, token:"t"}' > "$d/.claude/state/gap-analysis.lock"
+admit "$d"
+eq "$AD_RC" "0" "14 an out-of-range expiresAt is not trusted as a valid lease"
+has "$AD_OUT" "no readable lease" "14 …it is reported as unreadable and broken"
+
+# ================= 15. a write-only state directory cannot be enumerated ======================
+# Mode `wx` — writable and searchable, NOT readable. Every FIXED path can still be created and
+# unlinked while glob expansion enumerates nothing, so `_il_clear` used to delete the names it knew,
+# return success, and report a clean start over a `review-slot.md` it never saw. Reproduced at 300.
+d="$(new_repo)"
+: > "$d/.claude/state/review-slot.md"
+chmod 300 "$d/.claude/state"
+admit "$d"
+chmod 700 "$d/.claude/state"
+eq "$AD_RC" "14" "15 an unreadable state dir REFUSES rather than clearing what it cannot enumerate"
+if exists "$d/.claude/state/review-slot.md"; then ok; else
+  bad "15 …and the file it could not see is still there, not silently half-cleared"
+fi
+if exists "$d/.claude/state/gap-analysis.lock"; then
+  bad "15 …and no claim was taken, so the checkout is not left blocked"
+else ok; fi
 
 # ================= 11. argument handling ========================================================
 bash "$IL" >/dev/null 2>&1;                 eq "$?" "2" "11 no subcommand is a usage error"

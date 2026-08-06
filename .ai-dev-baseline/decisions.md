@@ -2877,8 +2877,13 @@ limit: none of them is sufficient alone.
                  ("preflight is the only cleaner, so an owner-aware preflight would leave a crashed
                  run uncleanable") was wrong, as #202's own comment says. `admit` gathers the same
                  three facts the same way `base/workflows/cleanup.md` does and asks that predicate.
-             (d) ACQUIRE BEFORE YOU CLEAR, WITH `O_EXCL`. The claim is taken with `set -C` + `>`
-                 BEFORE anything is deleted, so the session that loses the race mutates nothing.
+             (d) ACQUIRE BEFORE YOU CLEAR. The claim is taken BEFORE anything is deleted, by
+                 `link`ing a fully-written temp file into place — create-or-fail like `O_EXCL`, but
+                 with no window in which the claim exists and is EMPTY (a `set -C` + `>` acquire
+                 creates the file at redirection time and fills it after, and a contender reading it
+                 in between calls it corrupt and breaks it). A session that loses the race for a
+                 HELD claim is refused having mutated nothing; breaking an EXPIRED claim removes a
+                 stale file, and is a `rename` contest so exactly one caller wins.
                  Check-then-act between two reads was the residual hole a plain guarded clear would
                  have left. And because a verdict still describes the marker *as it was read*, the
                  file is re-identified at the delete with `cleanup-lib.sh marker-identity` — the
@@ -2893,14 +2898,30 @@ limit: none of them is sufficient alone.
              that whole pre-marker window. `/cleanup` reads it unchanged, and holding it longer only
              ever preserves more. A second lock beside it could leak, be cleared late, and disagree
              with the first — the trap D40 declined for review artifacts.
-             It carries a **lease** (`2 × ADB_DISPATCH_TIMEOUT_SECS + 3600`, so 2h by default), and
-             that is the answer to the permanent-block risk #202 explicitly warns about: `/cleanup`
-             never deletes a `lock` record, and preflight no longer clears one unconditionally, so
-             without an expiry one killed run would refuse every later run in that checkout forever.
-             This is not "mtime as liveness" — the file's age is not evidence about a PR or a branch;
-             it is an expiry on a lease this framework's own dispatch timeout already bounds. A
-             pre-#202 empty lock has no lease and is broken with a reported NOTE, which is the
-             migration path and matches the unconditional clear it replaces.
+             It carries a **lease of 9000s (2h30m)** — a flat constant, deliberately NOT derived
+             from `ADB_DISPATCH_TIMEOUT_SECS`. Deriving it meant this module independently
+             interpreting a variable `role-dispatch.sh` already owns, and the two immediately
+             disagreed: role-dispatch rejects a zero or non-numeric value and falls back to 2700,
+             while the arithmetic here accepted `0` and choked on `08` as octal. One owner per
+             environment variable. `ADB_RUN_CLAIM_LEASE_SECS` overrides it, and an invalid value is
+             an ERROR rather than a silent fallback.
+             The lease is the answer to the permanent-block risk #202 warns about: `/cleanup` never
+             deletes a `lock` record, and preflight no longer clears one unconditionally, so without
+             an expiry one killed run would refuse every later run in that checkout forever.
+             **It is a real trade, not a free fix**: a run that outlives its lease CAN have its claim
+             broken while it is alive. Two things bound that, and neither removes it — the exposure
+             is PRE-MARKER only (once step 5 writes a marker, a second run is refused on the marker
+             regardless of the claim, and this run has released the claim anyway), and 9000s is far
+             longer than that window can legitimately be (one 45-minute dispatch, at most one retry,
+             plus reading). The alternative is the permanent block, which is worse.
+             This is not "mtime as liveness" — the file's age is not evidence about a PR or a
+             branch; it is an expiry on a lease. A pre-#202 empty lock has no lease and is broken
+             with a reported NOTE, which is the migration path and matches the unconditional clear
+             it replaces.
+             **`release` drops only the claim this run holds**, compared by a per-acquire token (or,
+             absent one, the session id). An unconditional `rm` was a hole in the same family: if a
+             run's lease expired and a successor legitimately took over, the first run's later stop
+             path deleted the SUCCESSOR's claim and a third run walked in behind it.
 - placement: `scripts/lib/implement-lib.sh` (new; the decision) · `base/workflows/implement-issue.md`
              (preflight, the step-2/4/5 release points, step 3's no-longer-taken lock, rendered to
              all three agents) · `scripts/build.sh` + `base/workflows/README.md` (the
@@ -2911,15 +2932,27 @@ limit: none of them is sufficient alone.
              second *start* attacks. Refusing is also the honest model of what the tool can do:
              #159 (see a sibling agent live in this tree) and #206 (a shared atomic claim-release)
              were both closed NOT_PLANNED, so no design here may assume host-terminal liveness — and
-             none does. Every refusal is instead decided from facts that resolve on their own: a
-             branch ref, a PR state, a lease. That is what keeps a refusal from becoming permanent.
+             none does. Every refusal is decided from an observable fact instead: a branch ref, a
+             PR state, a lease, a file mode.
+
+             **Not all of those resolve on their own, and claiming they do would be false.** A lease
+             expires and a merged PR's branch disappears, but an abandoned marker whose local or
+             remote ref survives is kept by `admit` AND by `/cleanup`, by design; so are a malformed
+             marker, an indefinitely-open PR with both refs gone, a persistent `git`/`gh` failure,
+             missing `jq`, and a state directory with the wrong permissions. Those need the
+             operator. The property this change actually keeps is narrower, and is the one worth
+             stating: **no refusal blocks a checkout without printing what will clear it** — the
+             message names the branch to finish, `/cleanup`, or the exact file to delete.
 
              **The scope is this agent's state directory, stated rather than implied.** `{{STATE_DIR}}`
              is `.claude/state` / `.codex/state` / `.gemini/state`, so this excludes a second run of
-             the SAME agent. A Claude run and a Codex run in one checkout never collide on these
-             paths at all; they still share HEAD, and the second one's preflight already hard-errors
-             on the branch check. Cross-agent exclusion would need a new shared state home and is
-             deliberately not invented here.
+             the SAME agent, and nothing more. A Claude run and a Codex run never collide on these
+             paths at all; they collide on HEAD, and only PARTIALLY — the branch check hard-errors
+             once one of them has switched away from the default branch, but two agents starting
+             CONCURRENTLY while both are still on it both pass, and whichever branches first moves
+             the other's HEAD underneath it. Cross-agent exclusion would need a new shared state
+             home and is deliberately not invented here. Nothing in this change may be described as
+             checkout-wide.
 
              **What is NOT closed, named rather than claimed.** The refusal is decided from
              staleness, which cannot tell a live run from an abandoned one whose branch still
@@ -2933,8 +2966,12 @@ limit: none of them is sufficient alone.
              grep the preflight PROSE for each pattern `state-scan` sweeps; the clear is a real
              script now, so it RUNS it — materializing one file per pattern derived from the
              library's own arms and requiring every one to be gone. Both suites were driven red on
-             mutation (removing the refusal, dropping `O_EXCL`, mapping an unreadable PR state to
-             `none`, letting ownership authorize the clear, and narrowing the clear set), because a
-             guard whose failure mode is *deleting something* is indistinguishable from a healthy
-             run until it is watched failing.
+             mutation — removing the refusal, reverting the acquire to create-then-write, reverting
+             the break to `rm -f`, making `release` unconditional, dropping the readability check,
+             mapping an unreadable PR state to `none`, letting ownership authorize the clear, and
+             narrowing the clear set — because a guard whose failure mode is *deleting something* is
+             indistinguishable from a healthy run until it is watched failing. The concurrency cases
+             run eight real processes against one directory, and the suite says which of them
+             actually catches a non-atomic acquire (the EXPIRED-claim race) rather than implying the
+             empty-directory race covers it.
 - baseline-issue: #202

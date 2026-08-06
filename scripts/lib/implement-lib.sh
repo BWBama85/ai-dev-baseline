@@ -16,11 +16,13 @@
 # by base/workflows/cleanup.md); this enforces it.
 #
 # WHAT "ONE CHECKOUT" MEANS HERE, EXACTLY. The state directory is per-agent — `.claude/state`,
-# `.codex/state`, `.gemini/state` — so this excludes a second run of the SAME agent. A Claude run
-# and a Codex run in one checkout never collide on these paths at all; they collide on HEAD, and
-# the second one's preflight already hard-errors ("not on <default> and '<branch>' is not provably
-# merged"). Cross-agent exclusion would need a new shared state home and is deliberately NOT
-# invented here — see D46.
+# `.codex/state`, `.gemini/state` — so this excludes a second run of the SAME agent, and nothing
+# more. A Claude run and a Codex run never collide on these paths at all; they collide on HEAD, and
+# only PARTIALLY: the branch check hard-errors ("not on <default> and '<branch>' is not provably
+# merged") once one of them has switched away from the default branch, but two agents starting
+# CONCURRENTLY while both are still on it both pass, and whichever branches first moves the other's
+# HEAD underneath it. Cross-agent exclusion would need a new shared state home and is deliberately
+# NOT invented here — see D46. Do not describe this module as checkout-wide.
 #
 # NO OWNERSHIP TEST, AND THAT IS THE POINT. `owner` names a SESSION, not a run: ownership is
 # explicitly transferable (D17c), one session can legitimately invoke the workflow twice, and
@@ -37,9 +39,11 @@
 #
 # ACQUIRE BEFORE YOU CLEAR. The check and the clear used to be two steps with a window between
 # them, so two sessions could both observe an empty state directory and both proceed. The claim is
-# therefore taken with O_EXCL (`set -C` + `>`) BEFORE anything is deleted: the session that loses
-# the race mutates NOTHING and is refused. This is check-then-act only in the sense that every
-# lock is — the winner is decided by the kernel, not by the order of two reads.
+# therefore taken BEFORE anything is deleted, by `link`ing a fully-written temp file into place —
+# create-or-fail like O_EXCL, but with no window in which the claim exists and is empty. A session
+# that loses the race for a HELD claim is refused having mutated nothing. The one exception is
+# breaking an EXPIRED claim, which removes a stale file to win the right to take it; that path is a
+# rename contest, so exactly one caller wins, and it says so where it happens.
 #
 # THE CLAIM IS `gap-analysis.lock`, WIDENED — not a second signal beside it. The file already
 # exists to mean "a run is in flight and has not written its marker yet" (the step-3 window, where
@@ -54,20 +58,38 @@
 # record (base/workflows/cleanup.md's sweep handles only `gaps`, `review` and `threads`), and this
 # module no longer clears it unconditionally — so without an expiry, one killed run would refuse
 # every later run in that checkout forever. That is the permanent block #202 explicitly warns
-# against. The lease is derived from the dispatch backstop the pre-marker window is actually
-# bounded by (`ADB_DISPATCH_TIMEOUT_SECS`, default 2700s): two dispatches plus an hour of reading.
-# This is NOT "mtime as liveness" — the file's age is not evidence about a PR or a branch, it is an
-# expiry on a lease this framework's own timeout already bounds.
+# against.
 #
-# EVERY UNKNOWN REFUSES, AND REFUSING NEVER DELETES. Missing jq, an unreadable marker, a `gh` that
-# errors: none of them can establish that the state belongs to a dead run, so none of them may
-# authorize clearing it. Each prints what it could not establish and the recovery for it. This is
-# the opposite direction from implement-issue-gate.sh, which no-ops when it cannot parse — correct
-# there (a hook that cannot read must not nag) and wrong here (a starter that cannot read must not
-# delete).
+# THE LEASE IS A REAL TRADE, NOT A FREE FIX, so state it plainly: a lease long enough to be safe is
+# still a lease, and a run that outlives it CAN have its claim broken while it is alive. Two things
+# bound the damage, and neither eliminates it:
+#   - the exposure is PRE-MARKER ONLY. `admit` asks about the marker FIRST, so once step 5 has
+#     written one, a second run is refused on the marker no matter what the claim says — and by then
+#     this run has released the claim anyway. The window the lease has to cover is exactly the
+#     window it is sized for.
+#   - 9000s (2h30m) is far longer than that window can legitimately be: one gap dispatch is bounded
+#     at 45 minutes by role-dispatch.sh, there is at most one retry, and reading the findings is
+#     minutes.
+# The alternative — no expiry — is the permanent block, which is worse and which the issue forbids.
+#
+# EVERY UNKNOWN REFUSES, AND NO REFUSAL DELETES RUN STATE. Missing jq, an unreadable marker, a `gh`
+# that errors: none of them can establish that the state belongs to a dead run, so none of them may
+# authorize clearing it. (The break path removes a *stale claim*, which is not run state and is the
+# thing it was invoked to reap.) Each prints what it could not establish and the recovery for it.
+# This is the opposite direction from implement-issue-gate.sh, which no-ops when it cannot parse —
+# correct there (a hook that cannot read must not nag) and wrong here (a starter that cannot read
+# must not delete).
+#
+# WHAT A REFUSAL DOES NOT PROMISE. Most refusals clear themselves as the world moves on — a branch
+# is deleted, a PR closes, a lease expires. Some do not, and need the operator: an abandoned marker
+# whose local or remote ref survives (kept by `/cleanup` too, by design), a malformed marker, an
+# indefinitely-open PR with both refs gone, a persistent `git`/`gh` failure, missing jq, or a state
+# directory whose permissions are wrong. Every one of those prints what to do. "Nothing is ever
+# permanently blocked" would be false; "no refusal blocks you without telling you how to clear it"
+# is the claim this module actually keeps.
 #
 # Exit status — the caller MUST branch on it, never on stdout:
-#   0   admitted. The claim is held and stale state has been cleared.
+#   0   admitted. The claim is held and stale state has been cleared; stdout is `admitted <token>`.
 #   10  REFUSED — an active run marker is not provably stale (a run is in flight, or unfinished).
 #   11  REFUSED — a marker exists but could not be read, so its identity cannot be established.
 #   12  REFUSED — a required tool (jq) is missing, so no fact can be established.
@@ -77,7 +99,7 @@
 #
 # Usage:
 #   implement-lib.sh admit   <state-dir>    # may a run start? acquire + clear when yes
-#   implement-lib.sh release <state-dir>    # drop this run's claim (idempotent)
+#   implement-lib.sh release [--token T] <state-dir>   # drop THIS run's claim (idempotent)
 #   implement-lib.sh -h | --help
 #
 # Requires: jq. `gh` and `git` are used when present; their absence fails CLOSED (refuse), never
@@ -116,18 +138,35 @@ _IL_BLOCKED=implement-issue-blocked.json
 _IL_CLAIM=gap-analysis.lock
 
 # --- the lease ----------------------------------------------------------------------------------
-# Seconds a claim stays valid. Derived from the bound the pre-marker window is ACTUALLY limited by:
-# role-dispatch.sh kills a hung dispatch at ADB_DISPATCH_TIMEOUT_SECS (default 2700), gap analysis
-# is at most one dispatch plus one retry, and the agent then reads the findings. Two dispatches plus
-# an hour is generous without being unbounded.
+# Seconds a claim stays valid: 9000 (2h30m), comfortably longer than the pre-marker window can
+# legitimately be. That window is bounded by role-dispatch.sh's dispatch backstop (45 minutes),
+# at most one gap dispatch plus one retry, plus the agent reading the findings.
 #
-# ADB_RUN_CLAIM_LEASE_SECS overrides it outright, including with 0 — which makes every claim
-# instantly expired and is how the test suite drives the break-and-reacquire path.
+# A FLAT CONSTANT, deliberately NOT derived from ADB_DISPATCH_TIMEOUT_SECS. Deriving it meant this
+# module independently interpreting a variable role-dispatch.sh already owns and validates — and the
+# two immediately disagreed: role-dispatch rejects a zero or non-numeric value and falls back to
+# 2700, while an arithmetic expression here accepted `0` (a 3600s lease) and choked on `08` as
+# octal. One owner per environment variable; a second reader that "mostly agrees" is worse than no
+# coupling at all.
+#
+# ADB_RUN_CLAIM_LEASE_SECS overrides it, and an INVALID value is an ERROR rather than a silent
+# fallback — a lease the operator believes they set and did not is exactly the kind of quiet
+# disagreement above. Bounded to 9 digits so the epoch arithmetic below cannot wrap: bash integers
+# are signed 64-bit, and a 19-digit override produced a NEGATIVE expiry (i.e. instantly expired).
+# Minimum 60, because a sub-minute lease disables the exclusion this module exists to provide.
+_IL_LEASE_DEFAULT=9000
 _il_lease_secs() {
-  local o="${ADB_RUN_CLAIM_LEASE_SECS:-}" d="${ADB_DISPATCH_TIMEOUT_SECS:-2700}"
-  case "$o" in '') : ;; *[!0-9]*) : ;; *) printf '%s' "$o"; return 0 ;; esac
-  case "$d" in ''|*[!0-9]*) d=2700 ;; esac
-  printf '%s' "$(( d * 2 + 3600 ))"
+  local o="${ADB_RUN_CLAIM_LEASE_SECS:-}"
+  [ -n "$o" ] || { printf '%s' "$_IL_LEASE_DEFAULT"; return 0; }
+  case "$o" in *[!0-9]*|'') return 1 ;; esac
+  # Length, not a glob of question marks: a `??????????*` case pattern is unparseable to shellcheck
+  # and unreadable to everyone else. Nine digits keeps `now + lease` far inside bash's signed 64-bit
+  # arithmetic, which a 19-digit value silently wraps NEGATIVE (i.e. instantly expired).
+  [ "${#o}" -le 9 ] || return 1
+  # `10#` so a zero-padded value is decimal, not octal: `08` is an arithmetic ERROR otherwise, and
+  # the error surfaced as a bogus lease rather than as a rejected input.
+  [ "$(( 10#$o ))" -ge 60 ] || return 1
+  printf '%s' "$(( 10#$o ))"
 }
 
 # The claim's expiry as an epoch integer, or NOTHING when it cannot be read.
@@ -138,22 +177,93 @@ _il_lease_secs() {
 # old behaviour for such a file was an unconditional clear, so treating it as expired is not a
 # regression — but it IS reported, so the operator sees a claim being broken rather than silently
 # taken.
+#
+# LENGTH-BOUNDED for the same reason the override is: the value is compared with `[ … -lt … ]`,
+# which is bash arithmetic, so a 25-digit `expiresAt` in a hand-written or corrupted claim wraps to
+# a negative number and reads as long expired. Refusing to parse it means "no readable lease", which
+# is reported rather than acted on silently.
 _il_claim_expiry() {
-  jq -r 'if type == "object" and (.expiresAt | type) == "number"
-         then (.expiresAt | floor | tostring) else empty end' "$1" 2>/dev/null
+  local v
+  v="$(jq -r 'if type == "object" and (.expiresAt | type) == "number"
+              then (.expiresAt | floor | tostring) else empty end' "$1" 2>/dev/null)" || return 0
+  case "$v" in ''|*[!0-9]*) return 0 ;; esac
+  # 10 digits covers every epoch second until the year 2286; more than that is not a timestamp, and
+  # it would wrap the comparison below into the distant past or future.
+  [ "${#v}" -le 10 ] || return 0
+  printf '%s' "$v"
 }
 
-# Take the claim, or fail because someone else holds it. O_EXCL via bash's noclobber, in a SUBSHELL
-# so `set -C` cannot leak into the caller's shell. The payload is written by the same redirection
-# that creates the file, so a winner never publishes an empty claim.
+# Take the claim, or fail because someone else holds it.
+#
+# WRITE THEN LINK, never create-then-write. `( set -C; printf … > "$claim" )` looked equivalent and
+# was not: bash CREATES the file at redirection time and `printf` fills it afterwards, so there is a
+# window in which the claim exists and is EMPTY. A contender reading it in that window finds no
+# lease, classifies it "pre-#202 or corrupt", unlinks it and takes the path — two live runs, from
+# the very primitive that exists to prevent them.
+#
+# `ln` has the same create-or-fail atomicity as O_EXCL (link(2) fails with EEXIST) but publishes a
+# file that is already complete, so no contender can ever observe a half-written claim. The temp
+# file is created in the SAME directory, because a hard link cannot cross filesystems.
 _il_acquire() {   # <claim-path> <payload>
-  ( set -C; printf '%s\n' "$2" > "$1" ) 2>/dev/null
+  local claim="$1" payload="$2" tmp rc
+  tmp="$(mktemp "${claim%/*}/.claim.XXXXXX" 2>/dev/null)" || return 1
+  printf '%s\n' "$payload" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  ln "$tmp" "$claim" 2>/dev/null; rc=$?
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# Win the right to break a stale claim, atomically. Returns 0 to exactly ONE caller.
+#
+# `rm -f` is not a contest: two sessions that both judged the claim expired would both unlink and
+# both re-create, and the second's create would clobber the first's freshly-taken claim (or, with
+# `ln`, the first would simply lose a claim it had already been told it owned). rename(2) IS a
+# contest — the first `mv` moves the file, and every later one fails with ENOENT because the source
+# is gone. So whoever renames it away owns the break, and everyone else is refused.
+_il_break() {   # <claim-path>
+  local claim="$1" stale
+  stale="$claim.stale.$$.$RANDOM"
+  mv "$claim" "$stale" 2>/dev/null || return 1
+  rm -f "$stale" 2>/dev/null
+  return 0
+}
+
+# A per-acquire identity for the claim. NOT the session id: a session can legitimately hold two
+# different claims over time — its own, and a successor's after an expiry break — so `owner` cannot
+# answer "is the claim sitting here the one I took?". Only something minted per acquire can.
+#
+# It has to be unguessable-ish rather than merely unique, because the file it identifies is world-
+# readable in a shared state directory; `$RANDOM` alone repeats across processes seeded the same way.
+# Cryptographic strength is not the bar (an adversary who can write this directory already owns the
+# run state) — not colliding is.
+_il_token() {
+  local t=""
+  t="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')"
+  [ -n "$t" ] || t="$$-$RANDOM-$RANDOM-${EPOCHSECONDS:-0}"
+  printf '%s' "$t"
+}
+
+# Drop a claim ONLY if it is the one this process took. Silent no-op otherwise.
+#
+# An unconditional `rm` here was a real hole: if run A's lease expired and run B legitimately broke
+# and re-took the claim, A's later stop path — or its step-5 hand-off — deleted B's claim, and a
+# THIRD run could then walk in. Comparing the token makes a release affect exactly the claim its
+# caller is holding, which is the only claim it has any business removing.
+_il_drop() {   # <claim-path> <token>
+  local claim="$1" want="$2" got
+  [ -e "$claim" ] || return 0
+  got="$(jq -r '.token // ""' "$claim" 2>/dev/null)" || got=""
+  # An untokened claim is pre-#202 or hand-written; there is no owner to wrong, and refusing to
+  # remove it would strand it. The caller is holding SOMETHING at this point either way.
+  if [ -n "$got" ] && [ -n "$want" ] && [ "$got" != "$want" ]; then return 0; fi
+  rm -f "$claim" 2>/dev/null
+  return 0
 }
 
 # --- admit --------------------------------------------------------------------------------------
 cmd_admit() {
   [ "$#" -eq 1 ] || { echo "implement-lib: admit needs exactly 1 arg: <state-dir>" >&2; exit 2; }
-  local dir="$1" marker="$1/$_IL_MARKER" claim="$1/$_IL_CLAIM" ident=""
+  local dir="$1" marker="$1/$_IL_MARKER" claim="$1/$_IL_CLAIM" ident="" had_marker=0
 
   # jq FIRST, and fatal. Every fact below is read through it; without it the marker is unreadable,
   # and an unreadable marker must never authorize its own deletion.
@@ -168,10 +278,36 @@ cmd_admit() {
     return 14
   }
 
+  # READABLE, not merely writable — and this is a real failure mode, not a formality. A directory
+  # with mode `wx` (writable and searchable, NOT readable) lets every FIXED path be created and
+  # unlinked while glob expansion enumerates NOTHING. With `nullglob`, the family patterns then
+  # contribute no targets, `_il_clear` deletes the names it knows and returns success, and `admit`
+  # reports a clean start over a `review-slot.md` it never saw — a stale artifact that this run's
+  # own marker will shortly make read as live. Reproduced at mode 300.
+  #
+  # The write test is separate and not folded in: `[ -w ]` is what the acquire needs, and reporting
+  # "not readable" for an unwritable directory would send the operator to fix the wrong bit.
+  if [ ! -r "$dir" ]; then
+    echo "implement-lib: REFUSED — the state directory is not readable: $dir" >&2
+    echo "               Its contents cannot be enumerated, so a clear here would silently miss" >&2
+    echo "               files /cleanup can still sweep. Fix its permissions; nothing was deleted." >&2
+    return 14
+  fi
+
+  # The lease is resolved BEFORE anything is read or taken, so an invalid override is reported as a
+  # configuration error rather than after the run has started acting.
+  local lease
+  if ! lease="$(_il_lease_secs)"; then
+    echo "implement-lib: REFUSED — ADB_RUN_CLAIM_LEASE_SECS is invalid: '${ADB_RUN_CLAIM_LEASE_SECS:-}'" >&2
+    echo "               Expected a decimal integer between 60 and 999999999 seconds." >&2
+    return 12
+  fi
+
   # --- 1. is a run already in flight? ------------------------------------------------------------
   # Asked BEFORE the claim is taken and before anything is deleted, so a refusal here leaves the
   # checkout exactly as it was found.
   if [ -f "$marker" ]; then
+    had_marker=1
     local key lref rref prstate url verdict
     # THE IDENTITY OF THE FILE AS JUDGED, captured FIRST — before the branch read, the ref lookups
     # and the `gh` round trip, all of which take time the marker can be replaced in. Capturing it
@@ -251,13 +387,19 @@ cmd_admit() {
   fi
 
   # --- 2. take the claim, atomically, BEFORE deleting anything ----------------------------------
-  # The session that loses this race has mutated nothing at all.
-  local lease payload now expiry
-  lease="$(_il_lease_secs)"
+  # A session that loses the race for a HELD claim has mutated nothing at all. (The break path below
+  # is the one exception, and it says so.)
+  local payload now expiry
   now="$(date -u +%s)"
-  payload="$(jq -cn --arg owner "${CLAUDE_CODE_SESSION_ID:-}" \
+  # THE TOKEN is what makes `release` safe. `owner` names a session, and a session can legitimately
+  # own two claims over time — its own earlier one, and a successor's after an expiry break — so it
+  # cannot answer "is this the claim I took?". A per-acquire random token can, and it is the only
+  # thing `release` compares.
+  local token
+  token="$(_il_token)"
+  payload="$(jq -cn --arg owner "${CLAUDE_CODE_SESSION_ID:-}" --arg token "$token" \
                     --argjson startedAt "$now" --argjson expiresAt "$(( now + lease ))" \
-                 '{startedAt:$startedAt, expiresAt:$expiresAt}
+                 '{startedAt:$startedAt, expiresAt:$expiresAt, token:$token}
                   + (if $owner == "" then {} else {owner:$owner} end)')" || payload=""
   [ -n "$payload" ] || {
     echo "implement-lib: REFUSED — could not compose the run claim (jq failed); nothing was deleted." >&2
@@ -265,11 +407,11 @@ cmd_admit() {
   }
 
   if ! _il_acquire "$claim" "$payload"; then
-    # A FAILED CREATE IS NOT A CONTENDED CLAIM. `set -C` refuses because the file exists; the same
-    # redirection also fails when the directory is not writable, and nothing else distinguishes the
-    # two. Reporting an unwritable state dir as "another run holds the claim" sends the operator
-    # hunting for a run that does not exist — and, worse, invites them to delete a claim file that
-    # is not there. Ask whether anything is actually holding it.
+    # A FAILED CREATE IS NOT A CONTENDED CLAIM. `link` refuses because the file exists; the same
+    # call also fails when the directory is not writable, and nothing else distinguishes the two.
+    # Reporting an unwritable state dir as "another run holds the claim" sends the operator hunting
+    # for a run that does not exist — and, worse, invites them to delete a claim file that is not
+    # there. Ask whether anything is actually holding it.
     if [ ! -e "$claim" ]; then
       echo "implement-lib: REFUSED — could not create the run claim at $claim." >&2
       echo "               Nothing is holding it; the state directory is not writable. Nothing was deleted." >&2
@@ -284,18 +426,25 @@ cmd_admit() {
       echo "               Wait for it, or delete $claim if you are certain it is dead." >&2
       return 13
     fi
-    # Expired, or unreadable (an empty pre-#202 lock). Break it — loudly — and re-take. The re-take
-    # is O_EXCL too, so if a third session broke it first, this one is refused rather than sharing.
+    # Expired, or carrying no readable lease (an empty pre-#202 lock). Break it — loudly.
+    #
+    # BY RENAME, NOT BY `rm`. Two sessions that both judged the claim expired would both unlink and
+    # both re-create, and the loser would clobber a claim the winner had already been told it owned.
+    # rename(2) is a contest exactly one caller wins; everyone else is refused here rather than
+    # sharing the checkout. This is the one path where a REFUSAL can still have mutated something —
+    # the winner removed a stale file — and that is the point of it.
     if [ -n "$expiry" ]; then
       echo "implement-lib: NOTE — breaking an EXPIRED run claim ($(( now - expiry ))s past its lease): $claim" >&2
     else
       echo "implement-lib: NOTE — breaking a run claim with no readable lease (pre-#202 or corrupt): $claim" >&2
     fi
-    rm -f "$claim" 2>/dev/null
+    if ! _il_break "$claim"; then
+      echo "implement-lib: REFUSED — another run broke the stale claim first, or the state directory" >&2
+      echo "               is not writable. Nothing here took it; re-run to see the current state." >&2
+      return 13
+    fi
     if ! _il_acquire "$claim" "$payload"; then
-      # Same split as above: the break may have failed because the directory is read-only, in which
-      # case the stale claim is still sitting there and no third run was ever involved.
-      if [ -e "$claim" ] && [ -n "$(_il_claim_expiry "$claim")" ]; then
+      if [ -e "$claim" ]; then
         echo "implement-lib: REFUSED — the run claim was re-taken by another run while this one was breaking it." >&2
         return 13
       fi
@@ -315,11 +464,28 @@ cmd_admit() {
   #
   # An EMPTY identity is a mismatch, not a pass: an identity that cannot be established is not one
   # that matches.
+  # THE ABSENCE CASE NEEDS THE SAME TREATMENT, and it is easy to miss because there is no identity
+  # to compare: if NO marker existed at step 1, `ident` is empty and the check below would not run —
+  # yet `_il_clear` deletes the marker path unconditionally, so a marker that appeared in between
+  # would be destroyed by a run that never judged it at all.
+  #
+  # This half has NO deterministic test, deliberately named rather than papered over: the absence
+  # path calls nothing external between the marker read and the clear (no marker means no branch
+  # read, no ref lookup, no `gh`), so the window is a few instructions wide and a shell harness
+  # cannot land in it. 7b's identity half IS driven, through the `gh` subprocess, and both halves
+  # exit through this same `_il_drop` + return-10 path. See check-implement-lib.sh section 7c.
+  if [ "$had_marker" -eq 0 ] && [ -f "$marker" ]; then
+    _il_drop "$claim" "$token"
+    echo "implement-lib: REFUSED — a run marker appeared while this admission was in progress." >&2
+    echo "               It was never judged, so it is not this run's to delete; the claim was released." >&2
+    return 10
+  fi
+
   if [ -n "$ident" ]; then
     local ident_now
     ident_now="$(bash "$_ADB_IL_CLEANUP_LIB" marker-identity "$marker" 2>/dev/null)" || ident_now=""
     if [ "$ident_now" != "$ident" ]; then
-      rm -f "$claim" 2>/dev/null
+      _il_drop "$claim" "$token"
       echo "implement-lib: REFUSED — the run marker changed between being judged stale and being cleared." >&2
       echo "               It belongs to a different run now, so nothing was deleted and the claim was released." >&2
       return 10
@@ -333,19 +499,19 @@ cmd_admit() {
   local rc=0
   _il_clear "$dir" || rc=$?
   if [ "$rc" -ne 0 ]; then
-    rm -f "$claim" 2>/dev/null
+    _il_drop "$claim" "$token"
     echo "implement-lib: REFUSED — could not clear stale run state from $dir (directory not writable?)." >&2
     echo "               The run claim was released; nothing is holding this checkout." >&2
     return 14
   fi
 
-  printf 'admitted\n'
+  printf 'admitted %s\n' "$token"
   return 0
 }
 
 # Remove every artifact a FINISHED run leaves behind, except the claim this run is holding.
 #
-# `nullglob` in a subshell, not `find`: the prose version had to use `find` because an unmatched
+# `nullglob`, not `find`: the prose version had to use `find` because an unmatched
 # glob ABORTS the command under zsh's default `nomatch` and macOS runs zsh — but this is a real
 # bash script with a 5.3 floor, so the shell option that makes globs safe is simply available.
 # `-e` rather than `-f` so a symlink is removed too: `state-scan` selects with `[ -f ]`, which
@@ -384,10 +550,46 @@ _il_clear() {   # <state-dir>
 # Idempotent by contract: every caller is a stop path, and a stop path that fails because there was
 # nothing to release is a worse failure than the one it is reporting.
 cmd_release() {
+  local tok=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --token) [ "$#" -ge 2 ] || { echo "implement-lib: --token needs a value" >&2; exit 2; }
+               tok="$2"; shift ;;
+      -*)      echo "implement-lib: release: unknown option '$1'" >&2; exit 2 ;;
+      *)       break ;;
+    esac
+    shift
+  done
   [ "$#" -eq 1 ] || { echo "implement-lib: release needs exactly 1 arg: <state-dir>" >&2; exit 2; }
-  rm -f "$1/$_IL_CLAIM" 2>/dev/null
-  if [ -e "$1/$_IL_CLAIM" ]; then
-    echo "implement-lib: could not release the run claim: $1/$_IL_CLAIM" >&2
+  local claim="$1/$_IL_CLAIM"
+  [ -e "$claim" ] || return 0
+
+  # RELEASE ONLY WHAT THIS RUN IS HOLDING. An unconditional `rm` was a real hole: if this run's lease
+  # expired and another run legitimately broke and re-took the claim, this run's stop path — or its
+  # step-5 hand-off — deleted the SUCCESSOR's claim, and a third run could then walk in behind it.
+  #
+  # `--token` is the exact comparison and is what a programmatic caller should pass. Without one,
+  # fall back to the session id, which answers the scenario above (a DIFFERENT session took over)
+  # even though it cannot distinguish one session's two successive claims. An untokened, unowned
+  # claim, or a caller with no identity at all, releases unconditionally — the pre-#202 behaviour,
+  # and the only safe answer when there is nothing to compare.
+  local got_token got_owner
+  got_token="$(jq -r '.token // ""' "$claim" 2>/dev/null)" || got_token=""
+  got_owner="$(jq -r '.owner // ""' "$claim" 2>/dev/null)" || got_owner=""
+  if [ -n "$tok" ] && [ -n "$got_token" ]; then
+    if [ "$tok" != "$got_token" ]; then
+      echo "implement-lib: NOTE — the run claim belongs to a different run; left in place: $claim" >&2
+      return 0
+    fi
+  elif [ -n "$got_owner" ] && [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] \
+       && [ "$got_owner" != "$CLAUDE_CODE_SESSION_ID" ]; then
+    echo "implement-lib: NOTE — the run claim belongs to another session; left in place: $claim" >&2
+    return 0
+  fi
+
+  rm -f "$claim" 2>/dev/null
+  if [ -e "$claim" ]; then
+    echo "implement-lib: could not release the run claim: $claim" >&2
     return 14
   fi
   return 0

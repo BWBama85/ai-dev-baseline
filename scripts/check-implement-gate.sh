@@ -522,7 +522,26 @@ if [ ! -f "$IL" ]; then
 else
   reset_case
   write_marker committed "" "$SID_A"
-  printf 'A findings\n' > "$repo/.claude/state/gaps.md"
+  # A FULL pre-state, not just the marker: run A owns gap findings, review findings and a blocked
+  # marker too, and an implementation that protected the marker while clearing the rest would still
+  # have destroyed the run. Checking only `gaps.md` existence was the narrower assertion this
+  # replaces.
+  printf 'A findings\n'  > "$repo/.claude/state/gaps.md"
+  printf 'A stream\n'    > "$repo/.claude/state/gaps.err"
+  printf 'A prompt\n'    > "$repo/.claude/state/gap-prompt.txt"
+  printf 'A review\n'    > "$repo/.claude/state/review.md"
+  printf 'A slot\n'      > "$repo/.claude/state/review-codex.md"
+  # A NON-MATCHING blocked marker on purpose: one that matched branch/issue would be a legitimate
+  # stop and the hook would (correctly) exit 0, testing the escape hatch instead of the invariant.
+  # This is still a file run A owns and whose bytes must survive B's attempt.
+  write_blocked other-branch 99 "$SID_A"
+  state_digest_a() {
+    ( cd "$repo/.claude/state" || exit 0
+      find . \( -type f -o -type l \) | LC_ALL=C sort | while IFS= read -r f; do
+        printf '%s:%s\n' "$f" "${ cksum < "$f" 2>/dev/null | awk '{print $1"-"$2}'; }"
+      done )
+  }
+  digest_before="${ state_digest_a; }"
   ident_before="${ cksum < "$marker_file" | awk '{print $1"-"$2}'; }"
 
   admit_out="$( cd "$repo" && env CLAUDE_CODE_SESSION_ID="$SID_B" PATH="$shimbin:$PATH" \
@@ -534,9 +553,8 @@ else
   # marker, and the hook's own delete-time guard compares content.
   eq "${ cksum < "$marker_file" | awk '{print $1"-"$2}'; }" "$ident_before" \
      "Y: A's marker survives B's attempt, byte for byte"
-  if [ -f "$repo/.claude/state/gaps.md" ]; then ok; else
-    bad "Y: …and so do A's gap findings, which B's preflight used to delete mid-dispatch"
-  fi
+  eq "${ state_digest_a; }" "$digest_before" \
+     "Y: …and so does EVERY other file A owns — gap findings, review findings, blocked marker"
 
   # And the invariant it exists to arm is still armed FOR A — which is the thing that was silently
   # switched off. A `0` here is the bug: the turn would be allowed to end with no PR.
@@ -550,7 +568,9 @@ else
   reset_case; GATE_SESSION="$SID_B"; SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
   run_gate
   eq "$RC" 0 "Y: the refused session is not told to continue A's run"
-  rm -f "$repo/.claude/state/gaps.md" "$repo/.claude/state/gap-analysis.lock"
+  rm -f "$repo/.claude/state/gaps.md" "$repo/.claude/state/gaps.err" \
+        "$repo/.claude/state/gap-prompt.txt" "$repo/.claude/state/review.md" \
+        "$repo/.claude/state/review-codex.md" "$repo/.claude/state/gap-analysis.lock"
 fi
 
 check_summary "implement-gate"
