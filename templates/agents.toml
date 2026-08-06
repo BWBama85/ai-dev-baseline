@@ -175,8 +175,9 @@ debug        = "claude"     # owns root-cause investigations.
 # workflows call the full runner before they push, so in practice it does run before a
 # workflow-driven push — but a `git push` you type yourself runs nothing.
 #
-# Unset behaves exactly as before. An unrecognized value WARNS AND RUNS the gate: a typo
-# must never quietly disable enforcement. Every skip is reported, and every gate that runs
-# reports its elapsed seconds.
+# Unset leaves gate SELECTION and EXIT STATUS exactly as before (the output gains an elapsed
+# line per passing gate). An unrecognized value WARNS AND RUNS the gate: a typo must never
+# quietly disable enforcement. Every cadence and scope skip is reported — a gate disabled with
+# `= ""` stays silently skipped, as it always has.
 # [gates.cadence]
 # test = "full"

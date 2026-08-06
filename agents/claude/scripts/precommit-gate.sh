@@ -113,9 +113,14 @@ foreign_run_marker() {
   # shifting, but it faithfully preserves a CORRUPT one — an owner of "<my-id>\nBBBB" survives as
   # a value that is genuinely not my id, and would therefore read as another session and suppress
   # the gate. Corruption is not evidence of a second session; it is evidence of a broken marker,
-  # and this whole check exists to fire only on proof. A session id is an opaque token from the
-  # harness (Claude Code's is a UUID), so anything carrying whitespace, a control character or a
-  # backslash escape is not one, and the honest answer is "unknown" -> enforce.
+  # and this whole check exists to fire only on proof.
+  #
+  # WHAT IS ACCEPTED IS A GRAMMAR, not "any opaque token", and the difference is worth stating
+  # rather than glossing: `[A-Za-z0-9._:-]+` covers a UUID (Claude Code's shape) and the usual
+  # token spellings, but a harness whose session id used Unicode or other punctuation would read
+  # as UNKNOWN and be gated rather than spared. That costs a bystander one gate run and can never
+  # disable enforcement, so it is the right way round to be wrong — and widening it is one line
+  # if another harness ever needs it.
   case "$m_owner" in
     ''|*[!A-Za-z0-9._:-]*) return 1 ;;
   esac
@@ -124,8 +129,31 @@ foreign_run_marker() {
   # suppression would turn one unrelated run into a checkout-wide gate bypass.
   [ -n "$m_branch" ] && [ "$m_branch" = "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" ] || return 1
   adb_owners_compatible "$m_owner" "$mine" && return 1
-  printf 'precommit-gate: skipped — an /implement-issue run owned by another session (%.8s…) holds this branch.\n' "$m_owner" >&2
-  printf 'precommit-gate: its own turn-end gates that work; this session is not blocked by a tree it did not write (#241).\n' >&2
+  # A MARKER IS NOT EVIDENCE OF A LIVE RUN FOREVER. A crashed or abandoned run leaves its marker
+  # behind, and without a bound this check would then disable turn-end gating on that branch
+  # indefinitely for every other session — permanently, if the repo also declares its gates
+  # `full`. That is the enforcement-off combination this whole design is trying not to create.
+  #
+  # The canonical staleness predicate is `cleanup-lib.sh state-verdict marker`, and it is
+  # deliberately NOT used here: it is a pure function whose `<pr-state>` argument the CALLER must
+  # obtain from a live `gh` query, and a Stop hook that runs at every turn-end cannot afford a
+  # network round trip. Age is the signal that is both offline and honest at this cadence. The
+  # workflow re-stamps this marker at every phase transition, so a live run keeps it fresh.
+  #
+  # 9000s (2h30m) matches the run-claim lease in implement-lib.sh (#202), for the same reason:
+  # comfortably longer than a legitimate quiet window, far shorter than "forever". The failure
+  # direction is deliberate — a genuinely long-running run that goes this long without a phase
+  # change simply stops sparing bystanders, which is the ENFORCING direction, not the silent one.
+  local age stale="${ADB_MARKER_STALE_SECS:-9000}"
+  case "$stale" in ''|*[!0-9]*) stale=9000 ;; esac
+  age="$(adb_age_secs "$marker")"
+  [ -n "$age" ] || return 1                          # cannot age it -> unknown -> enforce
+  [ "$age" -le "$stale" ] || return 1                # too old to prove a run is live -> enforce
+  # Says only what was READ. An earlier draft asserted that the other session "gates that work"
+  # and that this one "did not write it" — neither is established by a marker, which records who
+  # STARTED a run, not who made the changes now in the tree.
+  printf 'precommit-gate: skipped — .claude/state records an /implement-issue run on this branch owned\n' >&2
+  printf 'precommit-gate: by another session (%.8s…), last updated %ss ago. Gates are left to that run (#241).\n' "$m_owner" "$age" >&2
   return 0
 }
 foreign_run_marker && exit 0

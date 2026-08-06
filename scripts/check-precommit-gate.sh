@@ -207,21 +207,26 @@ if gate_executed; then ok; else bad "foreign marker on another branch → the ga
 #     turn the gate into an advisory for nearly every ordinary dirty tree.
 on_feature_change; arm_failing_gate; clear_marker; GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "no marker → unchanged (runs and blocks)"
+if gate_executed; then ok; else bad "no marker → the gate must actually RUN, not just return 2"; fi
 
 on_feature_change; arm_failing_gate; write_marker feat ""; GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "ownerless marker → unchanged (runs and blocks)"
+if gate_executed; then ok; else bad "ownerless marker → the gate must actually RUN, not just return 2"; fi
 
 on_feature_change; arm_failing_gate; write_marker feat "$SID_OTHER"; GATE_SESSION=""; run_gate
 eq "$RC" "2" "no CLAUDE_CODE_SESSION_ID → cannot identify myself → runs and blocks"
+if gate_executed; then ok; else bad "no session id → the gate must actually RUN, not just return 2"; fi
 
 on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
 printf '{not valid json' > "$marker_file"; GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "malformed marker → runs and blocks (never a universal bypass)"
+if gate_executed; then ok; else bad "malformed marker → the gate must actually RUN, not just return 2"; fi
 hasnt "$OUT" "another session" "malformed marker → no bogus foreign-owner claim"
 
 on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
 printf '' > "$marker_file"; GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "empty marker file → runs and blocks"
+if gate_executed; then ok; else bad "empty marker file → the gate must actually RUN, not just return 2"; fi
 
 # 12b. A NEWLINE INSIDE A FIELD must not re-aim the ownership decode. Both directions were live
 #      bugs in the first cut of this gate, and both failed toward SUPPRESSION — the gate turning
@@ -234,11 +239,13 @@ on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
 jq -n --arg o "$SID_MINE" '{branch:"feat", issue:"240", phase:"x", owner:($o + "\nBBBB")}' > "$marker_file"
 GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "newline in .owner → decode must not truncate my own id into a foreign one"
+if gate_executed; then ok; else bad "newline in .owner → the gate must actually RUN, not just return 2"; fi
 
 on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
 jq -n --arg b "feat" '{branch:($b + "\n" + $b), issue:"240", phase:"x", owner:"someone-else"}' > "$marker_file"
 GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "newline in .branch → must not match the current branch on its first line"
+if gate_executed; then ok; else bad "newline in .branch → the gate must actually RUN, not just return 2"; fi
 
 # 12c. A NON-STRING owner is corruption, not a second session. `@tsv` renders a JSON number
 #      happily, so `"owner": 123` decoded to the well-formed value "123", differed from this
@@ -249,12 +256,51 @@ for bad_owner in '123' 'true' '["a"]' '{"a":1}' 'null'; do
   jq -n --argjson o "$bad_owner" '{branch:"feat", issue:"240", phase:"x", owner:$o}' > "$marker_file"
   GATE_SESSION="$SID_MINE"; run_gate
   eq "$RC" "2" "non-string owner ($bad_owner) → corruption is not proof of another session"
+  if gate_executed; then ok; else bad "non-string owner ($bad_owner) → the gate must actually RUN"; fi
 done
 # …and a non-string BRANCH likewise cannot be trusted to match.
 on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
 jq -n '{branch:42, issue:"240", phase:"x", owner:"someone-else"}' > "$marker_file"
 GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "non-string branch → enforce"
+if gate_executed; then ok; else bad "non-string branch → the gate must actually RUN, not just return 2"; fi
+
+# 12e. A STALE marker is not evidence of a live run. Without a bound, a crashed /implement-issue
+#      run leaves its marker behind and every later session on that branch is un-gated forever —
+#      and in a repo that also declares its gates `full`, turn-end enforcement would be gone
+#      entirely. The bound is `ADB_MARKER_STALE_SECS` (default 9000, matching #202's run-claim
+#      lease); the fixture sets it to 1 and ages the marker rather than waiting.
+on_feature_change; arm_failing_gate; write_marker feat "$SID_OTHER"
+OUT="$(cd "$repo" && ADB_MARKER_STALE_SECS=99999 CLAUDE_CODE_SESSION_ID="$SID_MINE" \
+      bash "$gate/precommit-gate.sh" </dev/null 2>&1)"; RC=$?
+eq "$RC" "0" "fresh foreign marker → still spared (the bound has not fired)"
+
+on_feature_change; arm_failing_gate; write_marker feat "$SID_OTHER"
+touch -t 202001010000 "$marker_file"          # backdate well past any bound
+OUT="$(cd "$repo" && CLAUDE_CODE_SESSION_ID="$SID_MINE" \
+      bash "$gate/precommit-gate.sh" </dev/null 2>&1)"; RC=$?
+eq "$RC" "2" "STALE foreign marker → no longer proof of a live run → runs and blocks"
+if gate_executed; then ok; else bad "stale foreign marker → the gate must actually RUN"; fi
+hasnt "$OUT" "another session" "stale foreign marker → no claim that a run holds the branch"
+
+# 12d. NO `jq` → ownership is unknowable → enforce. Every other ownership fixture REQUIRES jq to
+#      build its marker, and CI now installs it explicitly, so nothing here exercised the
+#      `command -v jq` branch: a mutation that SUPPRESSED on a missing jq would have passed the
+#      whole suite. Proving it needs a PATH that genuinely lacks jq — shadowing does not work,
+#      because `command -v` falls straight through a directory, a non-executable file or a broken
+#      symlink to the real binary further along PATH. Hence a symlink farm of exactly the tools
+#      the gate and the gate-runner need, with jq deliberately absent.
+nojq="$work/nojq"; mkdir -p "$nojq"
+for _t in git sh bash sed awk sort date mktemp rm tail cat dirname touch true false uname grep tr head env; do
+  _p="$(command -v "$_t" 2>/dev/null)" && ln -sf "$_p" "$nojq/$_t"
+done
+if [ -e "$nojq/jq" ]; then bad "12d fixture is broken: jq leaked into the no-jq farm"; else
+  on_feature_change; arm_failing_gate; write_marker feat "$SID_OTHER"
+  OUT="$(cd "$repo" && PATH="$nojq" CLAUDE_CODE_SESSION_ID="$SID_MINE" \
+        bash "$gate/precommit-gate.sh" </dev/null 2>&1)"; RC=$?
+  eq "$RC" "2" "no jq → cannot read the marker → runs and blocks (never spared)"
+  if gate_executed; then ok; else bad "no jq → the gate must actually RUN, not just return 2"; fi
+fi
 
 # 13. A BROKEN INSTALL must not be silently spared by a planted marker. With common.sh absent the
 #     shared comparator does not exist, so ownership is unknowable — and the gate must fall
@@ -323,5 +369,24 @@ has "$(cat "$stdin_seen" 2>/dev/null || printf '')" "hook_event_name" \
     "the hook payload reaches the project gate intact (ownership must not eat stdin)"
 
 rm -rf "$repo/.claude" "$repo/agents.toml" "$gate_ran"
+
+# 16. STRUCTURAL: exactly one ownership comparison in the tree (#241's own acceptance criterion).
+# Every case above is behavioural, so re-introducing a private hand-rolled comparator in a second
+# gate would pass all of them while recreating precisely the drift the promotion removed. Only a
+# structural assertion can see that, so it is made here rather than assumed.
+defs="$(grep -rlE '^adb_owners_compatible\(\)' "$ROOT/scripts" "$ROOT/agents" 2>/dev/null | sort)"
+eq "$defs" "$ROOT/scripts/lib/common.sh" "ownership comparator is defined in exactly one file"
+
+# The three-way comparison itself must not be re-spelled anywhere else. `owners_compatible` may
+# exist as a thin alias, but its body has to DELEGATE — a copy of the logic is what this pins.
+alias_body="$(grep -cE '^[[:space:]]*owners_compatible\(\)[[:space:]]*\{[[:space:]]*adb_owners_compatible' \
+              "$ROOT/agents/claude/scripts/implement-issue-gate.sh")"
+eq "$alias_body" "1" "implement-issue-gate.sh DELEGATES to adb_owners_compatible (no second comparison)"
+
+# The comparison's own shape must appear nowhere else. Anchoring on the two `-n` guards that make
+# it a THREE-WAY answer — the part a re-implementation would have to reproduce and the part most
+# likely to be got subtly wrong — rather than on the final equality, which is ordinary shell.
+copies="$(grep -rlE '\[ -n "\$a" \] \|\| return 0' "$ROOT/scripts" "$ROOT/agents" 2>/dev/null | sort)"
+eq "$copies" "$ROOT/scripts/lib/common.sh" "the three-way ownership comparison is spelled in exactly one file"
 
 check_summary "precommit-gate"

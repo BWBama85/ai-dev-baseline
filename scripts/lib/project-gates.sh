@@ -46,7 +46,9 @@
 #     A gate runs iff  cadence == "always"  OR  cadence == <the caller's context>.
 #     An UNRECOGNIZED cadence warns and RUNS the gate: a typo must never be a silent skip,
 #     because a gate that quietly stops running is enforcement secretly off (#35, and
-#     docs/design-principles.md §5). Every skip is REPORTED for the same reason.
+#     docs/design-principles.md §5). Every CADENCE and SCOPE skip is REPORTED for the same
+#     reason. (A gate disabled with `= ""` stays silent, as it always has: that is an explicit
+#     "never run this", not a conditional skip whose absence would surprise anyone.)
 #
 # Detection is single-primary-ecosystem: the FIRST ecosystem (Node → Rust → Go → Python)
 # that yields at least one command wins, and the rest are skipped. A polyglot repo layers

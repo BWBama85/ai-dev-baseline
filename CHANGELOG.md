@@ -21,10 +21,22 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   ```
 
   `adb_run_gates` now takes a context (`turn-end` | `full`, default `full`); a gate runs iff its
-  cadence is `always` or matches the context. **A repo with no `[gates.cadence]` table is
-  unchanged in both contexts**, and an *unrecognized* value warns and **runs** the gate — a typo
-  must never quietly disable enforcement, since a gate that stops running looks exactly like one
-  that passed (#35).
+  cadence is `always` or matches the context. **A repo with no `[gates.cadence]` table runs the
+  same gates and exits the same way in both contexts** — the output does change, since a passing
+  gate now prints an elapsed line where it printed nothing before. An *unrecognized* value warns
+  and **runs** the gate: a typo must never quietly disable enforcement, since a gate that stops
+  running looks exactly like one that passed (#35).
+
+  **One of #240's acceptance criteria is deliberately not met**, and is called out rather than
+  quietly dropped: *"a gate that exceeds the hook timeout → the hook terminates it, exits with a
+  classified status, and the operator sees which gate was killed."* That cannot be built as
+  written — the 240s bound belongs to the Claude harness, which cancels the hook, and a cancelled
+  process cannot then report its own status. A separate **inner** deadline is a different feature
+  (it could not reuse `adb_run_bounded` unchanged, whose macOS grandchild limitation an arbitrary
+  `sh -c` gate would hit, and per-gate bounds leave the total unbounded anyway). The issue's own
+  open question asks for that to be split out once diagnosed; it is now diagnosed and split out.
+  The 18m55s that motivated it does not reproduce (#260/D37), so cadence answers the cost and
+  elapsed reporting answers attribution.
 
   The value is `full` rather than `pre-push` on purpose: nothing in this framework wires an
   automatic pre-push hook, so `pre-push` would have named a guarantee the gate model cannot make.
@@ -61,7 +73,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
   Narrower than the issue title, and stated plainly: this covers a foreign tree whose writer is
   running `/implement-issue` on that branch. A session editing the tree without a tracked run
-  leaves no ownership evidence anywhere in git, so a bystander is still gated there.
+  leaves no ownership evidence anywhere in git, so a bystander is still gated there. **A marker
+  also stops being evidence after 2h30m** (`ADB_MARKER_STALE_SECS`), because a crashed run would
+  otherwise leave its branch un-gated for every later session indefinitely — and a repo that also
+  declares its gates `full` would then have no turn-end enforcement at all. A long-running run
+  that goes that long without a phase change simply stops sparing bystanders, which is the
+  enforcing direction. The marker records who *started* a run, never who wrote the changes now in
+  the tree, so the skip message says only that.
 
 - **A newline inside a marker field re-aimed the ownership decode, toward switching the gate off.**
   Found in self-review, before the new check ever shipped. Reading `.branch` and `.owner` as two

@@ -257,17 +257,25 @@ each call the full runner before they push, so in practice a `full` gate does ru
 before a workflow-driven push — but that is those workflows' doing, not a
 guarantee the gate model can make. A `git push` you type yourself runs nothing.
 
-**Nothing changes on upgrade.** A repo with no `[gates.cadence]` table has every
-gate at `always`, and both contexts behave as they always have. An *unrecognized*
+**Gate selection and exit status are unchanged on upgrade.** A repo with no
+`[gates.cadence]` table has every gate at `always`, so the same gates run in both
+contexts and the run's exit status is what it always was. The *output* does
+change: a gate that passes now prints an elapsed line to stderr where it
+previously printed nothing, so anything parsing this runner's stderr should
+expect it. An *unrecognized*
 value warns and **runs** the gate rather than skipping it: a typo must never
 quietly disable enforcement, because a gate that stops running looks exactly like
 a gate that passed (see §5 of `design-principles.md`).
 
-**Every skip is reported**, with its reason:
+**Every cadence and scope skip is reported**, with its reason:
 
 ```
 adb: gate "test": skipped (cadence "full", this is a "turn-end" run)
 ```
+
+(A gate *disabled* with `= ""` stays silently skipped, as it always has — that is
+an explicit "never run this", not a conditional skip anyone needs telling about.
+A declared-N/A gate is reported.)
 
 Each gate that *does* run reports its elapsed time (`adb: gate "test": ok (12s)`),
 so a slow gate is attributable without a stopwatch.

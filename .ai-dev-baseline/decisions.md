@@ -3107,6 +3107,33 @@ limit: none of them is sufficient alone.
              `declare -p` chain analysis: this helper is private and both call sites pass literals,
              so the nameref-chaining seam needs a caller that does not exist. If it is ever made
              public it owes the fuller check.
+             **What the independent review changed.** Eight REQUIRED findings, all taken. The one
+             that altered behaviour: a same-branch foreign marker suppressed the gate with no
+             liveness bound, so a CRASHED run would have left its branch un-gated for every later
+             session indefinitely — and in a repo that also declared its gates `full`, turn-end
+             enforcement would have been gone entirely, which is the exact combination this design
+             exists to avoid. The suppression is now bounded by marker age
+             (`ADB_MARKER_STALE_SECS`, default 9000 to match #202's run-claim lease). The canonical
+             staleness predicate `cleanup-lib.sh state-verdict marker` is deliberately NOT used:
+             its `<pr-state>` argument must come from a live `gh` query, and a hook that fires at
+             every turn-end cannot afford a network round trip — age is the signal that is both
+             offline and honest at this cadence. The skip message was also over-claiming (that the
+             other session "gates that work", that this one "did not write it"); a marker records
+             who STARTED a run, not who made the changes, and it now says only that.
+
+             The rest were accuracy and test-strength: "every skip is reported" was false (a
+             DISABLED gate is silently skipped, by long-standing design) and is now scoped to
+             cadence and scope skips; "behaves exactly as before" was false for stderr consumers,
+             since a passing gate now prints an elapsed line, and is now scoped to selection and
+             exit status. Four test gaps were real — the no-`jq` path was unreachable by any
+             fixture (every ownership fixture NEEDS jq, so a mutation suppressing on a missing jq
+             would have passed; it now runs against a symlink farm that genuinely lacks it), the
+             unknown-ownership cases asserted only `rc=2` without proving the gate EXECUTED, the
+             elapsed assertions matched words rather than a measured number, and #241's own
+             "exactly one comparator" criterion was behavioural-only and is now pinned structurally.
+
+             **The timeout criterion is re-homed rather than dropped**: #297 (Backlog), which
+             records the diagnosis and depends on #141.
 - placement: `scripts/lib/project-gates.sh` (cadence + elapsed), `scripts/lib/common.sh`
              (`adb_owners_compatible`), `agents/claude/scripts/precommit-gate.sh` (ownership +
              the `turn-end` context), `agents.toml` `[gates.cadence]`, `templates/agents.toml`,

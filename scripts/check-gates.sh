@@ -313,10 +313,16 @@ no "$rc" "cadence: an unrecognized cadence RUNS the gate (fails toward enforceme
 if ran "$d" heavy; then ok; else bad "cadence: an unrecognized cadence must not skip the gate"; fi
 has "$err" 'unrecognized cadence' "cadence: an unrecognized cadence is reported, not silent"
 
-# Case-insensitive, so a manifest written "Full" is not a silent typo of the above.
+# Case-insensitive, so a manifest written "Full" is not a silent typo of the above. Asserted on
+# FOUR observations, not just the absent marker: dropping the uppercase gate's record entirely
+# would satisfy "heavy did not run" while breaking everything else about it.
 d="$work/cad-case"; mk_cadence_repo "$d" "FULL"
-adb_run_gates "$d" "" turn-end >/dev/null 2>&1
+err="$(adb_run_gates "$d" "" turn-end 2>&1)"; rc=$?
+yes "$rc" "cadence: 'FULL' is recognized, so the failing gate is skipped and the run is green"
 if ran "$d" heavy; then bad "cadence: values are case-insensitive ('FULL' == 'full')"; else ok; fi
+if ran "$d" light; then ok; else bad "cadence: the uppercase fixture's OTHER gate must still run"; fi
+has "$err" 'skipped (cadence "full"' "cadence: 'FULL' is normalized to lower case in the report"
+hasnt "$err" 'unrecognized cadence' "cadence: 'FULL' is not treated as a typo"
 
 # An INVALID CALLER CONTEXT is a caller bug, not a config typo, and must fail loudly rather
 # than guess: both guesses are wrong (ignore the repo's cadence, or run nothing at all).
@@ -346,10 +352,32 @@ has   "$recs" "na${TAB}naxis"      "cadence: an N/A gate stays N/A"
 hasnt "$recs" "ghost"              "cadence: a cadence-only key does not manufacture a gate"
 
 # Per-gate elapsed (#240): a slow gate must be attributable without a stopwatch.
+#
+# A `true`/`false` fixture proves only that the WORDS are printed — a hardcoded constant, or a
+# number that never advances, would satisfy that. So one gate deliberately sleeps past a
+# one-second boundary and the reported figure is read back and compared NUMERICALLY. That is what
+# distinguishes "elapsed is measured" from "elapsed is spelled".
 d="$work/cad-elapsed"; mkdir -p "$d"
 printf '[gates]\nquick = "true"\n' > "$d/agents.toml"
 err="$(adb_run_gates "$d" "" full 2>&1)"
 has "$err" 'gate "quick": ok (' "elapsed: a passing gate reports its elapsed seconds"
+
+d="$work/cad-elapsed-slow"; mkdir -p "$d"
+printf '[gates]\nslow = "sleep 1.2"\n' > "$d/agents.toml"
+err="$(adb_run_gates "$d" "" full 2>&1)"
+secs="$(printf '%s\n' "$err" | sed -n 's/.*gate "slow": ok (\([0-9][0-9]*\)s).*/\1/p')"
+case "$secs" in
+  ''|*[!0-9]*) bad "elapsed: could not read a numeric elapsed for a slow gate, got: $err" ;;
+  *) if [ "$secs" -ge 1 ]; then ok; else
+       bad "elapsed: a gate that slept >1s reported ${secs}s — the value is not measured"; fi ;;
+esac
+# …and a fast gate in the same run must NOT inherit that figure, which a shared or accumulating
+# timer would produce.
+d="$work/cad-elapsed-mixed"; mkdir -p "$d"
+printf '[gates]\naslow = "sleep 1.2"\nbfast = "true"\n' > "$d/agents.toml"
+err="$(adb_run_gates "$d" "" full 2>&1)"
+has "$err" 'gate "bfast": ok (0s)' "elapsed: each gate is timed independently, not cumulatively"
+
 d="$work/cad-elapsed-fail"; mkdir -p "$d"
 printf '[gates]\nbroken = "false"\n' > "$d/agents.toml"
 err="$(adb_run_gates "$d" "" full 2>&1)"
