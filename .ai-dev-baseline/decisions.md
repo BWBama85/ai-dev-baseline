@@ -2893,7 +2893,11 @@ limit: none of them is sufficient alone.
                  The property is AT MOST one winner, not exactly one — under maximal contention all
                  contenders can knock each other out and every one is refused, which is a liveness
                  degradation rather than a safety one, and is the trade taken instead of adding a
-                 second lock file with its own stranding failure mode.
+                 second lock file with its own stranding failure mode. It is reachable at TWO
+                 contenders under CPU load, not only at twelve — reproduced by running eight copies
+                 of the suite at once, which is what `selfcheck.sh` itself does — so the suite
+                 asserts SAFETY (`<= 1`) in every race and proves liveness where it can be proven
+                 without one: a lone run against an expired claim must admit.
                  Check-then-act between two reads was the residual hole a plain guarded clear would
                  have left. And because a verdict still describes the marker *as it was read*, the
                  file is re-identified at the delete with `cleanup-lib.sh marker-identity` — the

@@ -455,11 +455,21 @@ w="$(race_winners "$d/.claude/state" 12)"
 if [ "$w" -le 1 ]; then ok; else
   bad "12 twelve simultaneous breakers of one EXPIRED claim produced $w winners — two runs proceeded"
 fi
-# …and at REALISTIC contention it must still be live, or "refuse everyone" would be an easy way to
-# pass the safety assertion above while never letting anyone in.
+# EVEN AT TWO CONTENDERS the answer is "at most one", and asserting `= 1` here was wrong about the
+# code rather than the code being wrong. Both breakers CAN lose: each frees the path for the few
+# syscalls before it discovers the identity does not match, and under CPU contention that window is
+# a scheduling quantum wide. Reproduced deterministically by running eight copies of this suite at
+# once — which is exactly what `selfcheck.sh` does, so the assertion failed there and passed
+# standalone.
+#
+# Liveness is proven where it can be proven without a race: section 7's sequential case, where a
+# lone run against an expired claim MUST admit. That is what stops "refuse everyone" from being an
+# easy way to pass the safety assertions here, and it is load-independent.
 d="$(new_repo)"; expired_claim "$d"
-eq "$(race_winners "$d/.claude/state" 2)" "1" \
-   "12 …and two contenders for an expired claim still produce exactly one WINNER, not zero"
+w2="$(race_winners "$d/.claude/state" 2)"
+if [ "$w2" -le 1 ]; then ok; else
+  bad "12 two contenders for an expired claim produced $w2 winners — two runs proceeded"
+fi
 
 # ================= 13. release drops only what THIS run holds ==================================
 # An unconditional `rm` was a real hole: if this run's lease expires and another run legitimately
