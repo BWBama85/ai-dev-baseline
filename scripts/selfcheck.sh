@@ -479,8 +479,15 @@ add session-currency    bash scripts/check-session-currency.sh
 add precommit-gate      bash scripts/check-precommit-gate.sh
 
 # The implement-issue Stop hook must re-verify PR state LIVE and fail closed — never trust a
-# stored prUrl over a PR that was closed without merging (#44).
+# stored prUrl over a PR that was closed without merging (#44). Since #202 it also owns the
+# end-to-end case: a second session's admission attempt must leave run A's marker enforcing.
 add implement-gate      bash scripts/check-implement-gate.sh
+
+# Run admission (#202): a second /implement-issue run in one checkout is REFUSED, the claim is
+# acquired with O_EXCL before anything is deleted, and every unknown fails closed WITHOUT
+# deleting. The failure mode is a wrongly-successful start, so every case asserts what survived,
+# not just the exit code.
+add implement-lib       bash scripts/check-implement-lib.sh
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).

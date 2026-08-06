@@ -728,10 +728,13 @@ else
 fi
 
 # The lock is only a contract if BOTH sides implement it: /implement-issue must take and release
-# it around the dispatch, or /cleanup's `keep` arm can never fire.
+# it around the pre-marker window, or /cleanup's `keep` arm can never fire. Since #202 the take is
+# no longer a bare `: >` in step 3 — `implement-lib.sh admit` acquires it in PREFLIGHT, with
+# O_EXCL, as the run's claim — so what this section pins moved with it.
 II="$ROOT/base/workflows/implement-issue.md"
-if [ ! -f "$II" ]; then
-  bad "6 base/workflows/implement-issue.md not found"
+IL="$ROOT/scripts/lib/implement-lib.sh"
+if [ ! -f "$II" ] || [ ! -f "$IL" ]; then
+  bad "6 base/workflows/implement-issue.md or scripts/lib/implement-lib.sh not found"
 else
   ii="$(cat "$II")"
   # The EXECUTABLE half with shell comments dropped, for the same reason section 6 above builds
@@ -739,106 +742,161 @@ else
   # fail on the very comment documenting the avoidance.
   iiexec="${ awk '/^```bash$/ { inb = 1; next } /^```$/ { inb = 0; next } inb' "$II" \
              | sed 's/[[:space:]]*#.*$//'; }"
-  has "$ii" ': > {{STATE_DIR}}/gap-analysis.lock' "6 /implement-issue takes the lock before dispatching"
-  has "$ii" 'rm -f {{STATE_DIR}}/gap-analysis.lock' "6 /implement-issue releases the lock when the call terminates"
-  # ORDER is the contract. The lock must be taken BEFORE gap-prompt.txt exists: a /cleanup landing
-  # in between classifies that prompt as a gap artifact, sees no lock and no marker (step 5 owns
-  # markers), and deletes it — after which the dispatch's redirection fails and reads as a codex
-  # error. Writing the prompt with a file-write tool makes that window a whole agent turn.
-  iitake="${ printf '%s\n' "$ii" | grep -n ': > {{STATE_DIR}}/gap-analysis.lock' | head -n1 | cut -d: -f1; }"
+
+  # --- #202: admission replaces the unconditional clear ----------------------------------------
+  has "$iiexec" '{{IMPLEMENT_LIB}} admit {{STATE_DIR}}' \
+     "6 /implement-issue asks admission before it touches state"
+  # `release --token "$RUN_CLAIM_TOKEN"`, not a bare release: a token the workflow never threads is
+  # a token that protects nothing, which is exactly what the independent review found. The COUNT
+  # equality (every release site passes it) is pinned in check-implement-lib.sh section 13; this
+  # asserts the form is present at all, so a revert cannot pass by deleting every release.
+  has "$iiexec" '{{IMPLEMENT_LIB}} release --token "$RUN_CLAIM_TOKEN" {{STATE_DIR}}' \
+     "6 …and releases the claim it holds until the marker supersedes it, by token"
+  # THE BUG, pinned as a negative. An unconditional `rm -f` of either marker path is exactly what
+  # let session B delete session A's live marker; `admit` clears them only after proving the run is
+  # stale AND taking the claim. Both spellings, because the two files were cleared on one line.
+  hasnt "$iiexec" 'rm -f {{STATE_DIR}}/implement-issue-active.json' \
+     "6 …and preflight no longer unconditionally deletes the active marker (#202)"
+  hasnt "$iiexec" 'rm -f {{STATE_DIR}}/implement-issue-blocked.json' \
+     "6 …nor the blocked marker"
+  # The claim is taken ONCE, by admit. A second `: >` take in step 3 would now FAIL against its own
+  # O_EXCL acquire and read to an agent as a broken step.
+  hasnt "$iiexec" ': > {{STATE_DIR}}/gap-analysis.lock' \
+     "6 …and step 3 no longer re-takes the claim admit already holds"
+  # ORDER is still the contract, one step earlier: the claim must exist BEFORE gap-prompt.txt does,
+  # or a /cleanup landing in between classifies that prompt as a gap artifact, sees no lock and no
+  # marker (step 5 owns markers), and deletes it — after which the dispatch's redirection fails and
+  # reads as a codex error. Writing the prompt with a file-write tool makes that window a whole
+  # agent turn.
+  iitake="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} admit {{STATE_DIR}}' | head -n1 | cut -d: -f1; }"
   iiprompt="${ printf '%s\n' "$ii" | grep -n 'cat > {{STATE_DIR}}/gap-prompt.txt' | head -n1 | cut -d: -f1; }"
   if [ -n "$iitake" ] && [ -n "$iiprompt" ] && [ "$iitake" -lt "$iiprompt" ]; then ok; else
-    bad "6 the lock must be taken BEFORE gap-prompt.txt is written (take@${iitake:-?} prompt@${iiprompt:-?})"
+    bad "6 the claim must be taken BEFORE gap-prompt.txt is written (admit@${iitake:-?} prompt@${iiprompt:-?})"
   fi
   # The release must NOT sit in the same fenced block as the dispatch: that block is dispatched
-  # to the harness's DETACHED facility, so a release appended to it drops the lock immediately
+  # to the harness's DETACHED facility, so a release appended to it drops the claim immediately
   # and leaves it unheld for the whole pass — the only window it exists for.
   iidisp="${ printf '%s\n' "$ii" | grep -n '{{ROLE_DISPATCH}} invoke gap_analysis' | head -n1 | cut -d: -f1; }"
-  iirel="${ printf '%s\n' "$ii" | grep -n 'rm -f {{STATE_DIR}}/gap-analysis.lock' | tail -n1 | cut -d: -f1; }"
+  iirel="${ printf '%s\n' "$ii" | grep -n '{{IMPLEMENT_LIB}} release --token' | tail -n1 | cut -d: -f1; }"
   iifence="${ printf '%s\n' "$ii" | awk -v d="${iidisp:-0}" 'NR > d && /^```$/ { print NR; exit }'; }"
   if [ -n "$iirel" ] && [ -n "$iifence" ] && [ "$iirel" -gt "$iifence" ]; then ok; else
-    bad "6 the lock release must be in a separate fenced block after the detached dispatch (release@${iirel:-?} block-end@${iifence:-?})"
+    bad "6 the claim release must be in a separate fenced block after the detached dispatch (release@${iirel:-?} block-end@${iifence:-?})"
   fi
-
-  # --- #264: preflight clears the review family, in PREFLIGHT ---------------------------------
-  # A filename-presence pin would be worthless here: all three names already appear in this file at
-  # their step-8 WRITE sites, so `has "$ii" 'review.err'` passed before the fix existed and would
-  # keep passing after a revert. What is pinned is the `rm -f` LINE, and where it sits.
-  iiclear="${ printf '%s\n' "$ii" | grep -n 'rm -f {{STATE_DIR}}/review-prompt.txt' | head -n1 | cut -d: -f1; }"
-  iirevwrite="${ printf '%s\n' "$ii" | grep -n 'cat > {{STATE_DIR}}/review-prompt.txt' | head -n1 | cut -d: -f1; }"
-  if [ -n "$iiclear" ] && [ -n "$iirevwrite" ] && [ "$iiclear" -lt "$iirevwrite" ]; then ok; else
-    bad "6 preflight must clear review-prompt.txt BEFORE step 8 writes it (clear@${iiclear:-?} write@${iirevwrite:-?})"
-  fi
-  # …and it must be in PREFLIGHT, which is a stronger claim than "earlier than the write" and has
-  # to be asserted separately: a clear sitting one line ABOVE the step-8 write satisfies the test
-  # above while clearing nothing stale and truncating nothing useful. Anchoring on step 3's lock
-  # take puts it in step 1 — beside the marker and gap clears — without pinning a line number.
-  # Observed: without this, moving the clear down to step 8 left the suite green.
-  if [ -n "$iiclear" ] && [ -n "$iitake" ] && [ "$iiclear" -lt "$iitake" ]; then ok; else
-    bad "6 …and that clear belongs in PREFLIGHT, before step 3 dispatches (clear@${iiclear:-?} step3@${iitake:-?})"
-  fi
-  # Every name the `review` arm of state-scan can sweep must also be a name preflight clears. The
-  # two halves drifting apart is not cosmetic: a file /cleanup will delete but preflight will not
-  # refresh is a stale artifact that a NEW run's marker makes read as live — the exact
-  # stale-findings-look-current trap #264 is about, reintroduced through the back door.
-  # The whole preflight clear region, delimited by its own block rather than by a line offset — the
-  # `find` and the `rm -f` may legitimately sit in either order (they were swapped once already, so
-  # that a failed `rm` is the block's exit status instead of being masked by an empty `find`).
-  # COMMENTS STRIPPED, like `wfexec` above and for the identical reason: this block documents at
-  # length which spellings it avoids and why, so every assertion below would be satisfiable by the
-  # prose explaining the rule rather than by the code obeying it. That is not hypothetical — the
-  # `-type l` pin was observed passing against a `-type f`-only clear, matched by the very comment
-  # saying `-type f` alone is wrong.
-  iiclearline="${ awk '/^mkdir -p \{\{STATE_DIR\}\}/ { inb = 1 } inb; inb && /^```$/ { exit }' "$II" \
-                  | sed 's/[[:space:]]*#.*$//'; }"
-
-  # DERIVED FROM THE LIBRARY, not a second hardcoded list. Two hardcoded lists cannot detect that
-  # they disagree: adding `review-extra.json` to `state-scan`'s arm and nothing to preflight left
-  # this suite green, because no fixture named that file and the preflight assertions only ever
-  # asked about the five names someone had already thought of. Reading the arm's own patterns makes
-  # the assertion "every name the sweep can delete, preflight can clear" instead of "these five
-  # strings appear" — which is the property #264 actually needs.
-  revarm="${ sed -n 's/^      \(review[^)]*\))$/\1/p' "$CL" | head -n1; }"
-  if [ -n "$revarm" ]; then
-    IFS='|' read -r -a revpats <<< "$revarm"
-    check_enumerated "state-scan review family" "${revpats[@]}"
-    for rpat in "${revpats[@]}"; do
-      case "$rpat" in
-        # A glob member is covered by find's quoted -name; an exact member by the rm -f line.
-        *'*'*) has "$iiclearline" "-name '$rpat'"     "6 …and preflight covers the $rpat family state-scan sweeps" ;;
-        *)     has "$iiclearline" "{{STATE_DIR}}/$rpat" "6 …and preflight clears $rpat, which state-scan classifies review" ;;
-      esac
-    done
-  else
-    bad "6 could not read state-scan's review arm from cleanup-lib.sh — the set-equality check asserted NOTHING"
-  fi
-  # The two selectors must agree on symlinks too. `state-scan` picks files with `[ -f ]`, which
-  # FOLLOWS a link to a regular file; a bare `find -type f` does not match the link itself, so a
-  # `review-slot.md` symlink was classified `review` and left unclearable (observed).
-  has "$iiclearline" '-type l' "6 …including symlinks, which state-scan's [ -f ] test follows"
-  # NEITHER clear may mask the other, and ORDERING CANNOT ACHIEVE THAT — whichever command is last
-  # supplies the block's status and hides the other's failure. Both directions were shipped and
-  # both are wrong: `rm` last hid a `find` that could not enumerate a write-only (mode `wx`) state
-  # dir, `find` last hid an `rm` that could not delete in a read-only one. Pin the explicit capture,
-  # so a future reordering cannot quietly reintroduce either.
-  iifind="${ printf '%s\n' "$ii" | grep -n '^find {{STATE_DIR}} -maxdepth' | head -n1 | cut -d: -f1; }"
-  if [ -n "$iifind" ] && [ -n "$iiclear" ] && [ "$iifind" -lt "$iiclear" ]; then ok; else
-    bad "6 …and the family clear runs before the fixed-name one (find@${iifind:-?} rm@${iiclear:-?})"
-  fi
-  eq "${ printf '%s\n' "$iiclearline" | grep -c '|| CLEAR_RC=\$?'; }" "2" \
-     "6 …and BOTH clears capture their exit status, so neither can mask the other"
-  has "$iiclearline" '[ "$CLEAR_RC" -eq 0 ] ||' "6 …and preflight fails loudly when either could not clear"
-  # …and the family reaches `rm` ONLY through find's quoted `-name`, never as a shell path. zsh's
-  # default `nomatch` aborts the WHOLE command on an unmatched pattern, so a `{{STATE_DIR}}/review-*`
-  # argument makes the clear delete nothing at all on the common macOS path — the fix wearing the
-  # shape of the bug. Observed while writing this: zsh exits 1 with "no matches found" and all
-  # three files survive. Same class as the #125 zsh bug this suite already exists to catch.
+  # THE HAND-OFF ORDER. Step 5 must write the marker BEFORE releasing the claim: for the instant
+  # between them both signals are live, which over-preserves, whereas releasing first leaves
+  # exactly the uncovered window — no claim, no marker — that /cleanup reads as a finished run.
   #
-  # Matched on the TEMPLATED PATH rather than on `rm -f {{STATE_DIR}}/review-*`: the dangerous form
-  # puts the globs on a continuation line, where the contiguous `rm -f …` spelling never appears.
-  # (That exact form is caught today by the `-name` assertions above — it deletes the find — but a
-  # variant that keeps the find AND adds the glob would slip a substring pin.)
-  hasnt "$iiexec" '{{STATE_DIR}}/review-*' "6 …and never as a shell glob argument, which zsh's nomatch aborts"
+  # SCOPED TO STEP 5, and that scoping is the whole assertion. Anchoring on the first
+  # `mv …/.marker.tmp …` in the file matches the PHASE-UPDATE example in the state-protocol section
+  # near the top, after which step 2's and step 4's releases satisfy "a release comes later" — so
+  # deleting step 5's release entirely left this green (observed). Cut the section out first, then
+  # require both events inside it.
+  ii5="${ awk '/^### 5\. /{ inb = 1; next } inb && /^### /{ exit } inb' "$II"; }"
+  if [ -z "$ii5" ]; then
+    bad "6 could not locate step 5 in implement-issue.md — the hand-off order asserted NOTHING"
+  else
+    ii5marker="${ printf '%s\n' "$ii5" | grep -n 'mv {{STATE_DIR}}/.marker.tmp {{STATE_DIR}}/implement-issue-active.json' | head -n1 | cut -d: -f1; }"
+    # The HAND-OFF release specifically — the first one AFTER the marker write, not the first one in
+    # the step. Step 5 legitimately releases EARLIER too, on the `git switch -c` failure path: that
+    # invocation started nothing, so holding the claim would refuse every later run for the rest of
+    # the lease. A `head -n1` over the whole step finds that one and reports the hand-off missing.
+    ii5rel="${ printf '%s\n' "$ii5" | awk -v m="${ii5marker:-0}" 'NR > m && /\{\{IMPLEMENT_LIB\}\} release --token/ { print NR; exit }'; }"
+    if [ -n "$ii5marker" ] && [ -n "$ii5rel" ]; then ok; else
+      bad "6 step 5 must write the marker and THEN release the claim (marker@${ii5marker:-absent} hand-off release@${ii5rel:-absent})"
+    fi
+  fi
+
+  # --- #264/#202: everything /cleanup can sweep, admit can clear — EXECUTED --------------------
+  # This used to grep the preflight prose for each pattern. The clear is a real script now, so the
+  # containment is checked by RUNNING it: materialize one concrete file per pattern the `gaps` and
+  # `review` arms of `state-scan` recognise, admit into that directory, and require every one of
+  # them to be gone. A text pin can only ever assert that someone wrote the pattern down; this
+  # asserts the file is actually deleted, which is the property #264 needs.
+  #
+  # The patterns are DERIVED FROM THE LIBRARY, not a second hardcoded list. Two hardcoded lists
+  # cannot detect that they disagree: adding `review-extra.json` to `state-scan`'s arm and nothing
+  # to the clear left this suite green, because no fixture ever named that file.
+  ilw="$work/il"; mkdir -p "$ilw"
+  ilarms=0
+  for armname in gaps review; do
+    # Anchored on the arm's BODY (`printf 'gaps\t…`), not on its label: the gaps arm's label starts
+    # with `gap-prompt.txt` and the review arm's with `review-prompt.txt`, so neither begins with
+    # the kind it emits. Matching the emit line and reporting the label above it reads the pairing
+    # the classifier actually implements.
+    arm="${ awk -v k="$armname" '
+        /^      [a-z*][^)]*\)$/ { label = $0; sub(/^      /, "", label); sub(/\)$/, "", label); next }
+        $0 ~ ("printf '\''" k "\\\\t") { print label; exit }' "$CL"; }"
+    if [ -z "$arm" ]; then
+      bad "6 could not read state-scan's $armname arm from cleanup-lib.sh — the containment check asserted NOTHING"
+      continue
+    fi
+    ilarms=$((ilarms + 1))
+    IFS='|' read -r -a armpats <<< "$arm"
+    check_enumerated "state-scan $armname family" "${armpats[@]}"
+    d="$ilw/$armname"; rm -rf "$d"; mkdir -p "$d"
+    made=()
+    for pat in "${armpats[@]}"; do
+      # A glob member becomes a concrete name by substituting a token for `*`; an exact member is
+      # itself. Both must survive the round trip through state-scan's own classifier below.
+      f="${pat//\*/slot}"
+      : > "$d/$f"; made+=( "$f" )
+    done
+    # PROVE THE FIXTURE IS REAL before asserting anything about the clear. A name that state-scan
+    # does NOT classify as this kind makes the deletion assertion vacuous — it would pass for a
+    # file /cleanup was never going to sweep, which is the opposite of the property under test.
+    for f in "${made[@]}"; do
+      kind="${ bash "$CL" state-scan "$d" | awk -F'\t' -v p="$d/$f" '$2 == p { print $1 }'; }"
+      eq "$kind" "$armname" "6 fixture $f really is classified $armname by state-scan"
+    done
+    out="${ bash "$IL" admit "$d" 2>&1; }" || true
+    for f in "${made[@]}"; do
+      if [ -e "$d/$f" ] || [ -L "$d/$f" ]; then
+        bad "6 admit left $f behind — /cleanup would sweep it but preflight cannot clear it ($out)"
+      else
+        ok
+      fi
+    done
+    # …including a SYMLINK, which the two selectors disagree on unless both follow it. `state-scan`
+    # picks with `[ -f ]`, which follows a link to a regular file and classifies it; a clear that
+    # tested only `-f` would not match the link itself, leaving it sweepable and unclearable
+    # (observed on `review-slot.md` before the `-type l` arm existed).
+    lnpat=""
+    for pat in "${armpats[@]}"; do case "$pat" in *'*'*) lnpat="$pat"; break ;; esac; done
+    if [ -n "$lnpat" ]; then
+      rm -rf "$d"; mkdir -p "$d"
+      : > "$d/link-target"
+      ln -s "$d/link-target" "$d/${lnpat//\*/link}"
+      bash "$IL" admit "$d" >/dev/null 2>&1 || true
+      if [ -e "$d/${lnpat//\*/link}" ] || [ -L "$d/${lnpat//\*/link}" ]; then
+        bad "6 admit left the ${lnpat} SYMLINK behind, which state-scan's [ -f ] test follows"
+      else
+        ok
+      fi
+    else
+      bad "6 the $armname arm exposes no family glob — the symlink agreement check asserted NOTHING"
+    fi
+  done
+  eq "$ilarms" "2" "6 both artifact families (gaps, review) were actually read from state-scan"
+
+  # A failure to clear must REFUSE and release, never report success over artifacts it did not
+  # remove. A read-only state dir (mode 500) is the reproducible form of that.
+  #
+  # The OTHER permission shape — write-and-execute but NOT readable (mode 300), where fixed names
+  # unlink fine while globs enumerate nothing, so a clear silently misses the family — lives in
+  # check-implement-lib.sh section 15, beside the readability check that answers it. Named here
+  # because this is the block an auditor of the containment rule reads first, and its absence would
+  # otherwise look like an oversight.
+  rod="$ilw/readonly"; rm -rf "$rod"; mkdir -p "$rod"
+  : > "$rod/review.md"
+  chmod 500 "$rod"
+  bash "$IL" admit "$rod" >/dev/null 2>&1; rorc=$?
+  chmod 700 "$rod"
+  eq "$rorc" "14" "6 a clear that cannot remove a file REFUSES (14) instead of reporting a clean start"
+  if [ -e "$rod/gap-analysis.lock" ]; then
+    bad "6 …and releases the claim it took, so the checkout is not left blocked"
+  else
+    ok
+  fi
 fi
 
 # ==================== 7. the currency step, EXECUTED (#139) ==================================

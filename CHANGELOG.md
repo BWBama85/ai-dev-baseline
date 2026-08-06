@@ -9,6 +9,111 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The closing-keyword verification added in #295 could never succeed, so it halted every
+  `/implement-issue` run at its last step.** `gh pr view --json closingIssuesReferences` returns a
+  nested repository object shaped `{id, name, owner:{id, login}}` — `--json` selects *top-level* PR
+  fields, and `nameWithOwner` is not among the nested ones. The guard's
+  `select(.repository.nameWithOwner == $slug)` therefore compared `null` against the slug for every
+  entry, produced an empty link set, and reported *"the closing keywords did not register"* on a PR
+  whose body was perfectly correct.
+
+  Found by running it: this PR's own step 10 failed the check while GitHub had already computed the
+  link set as `[202]`. The slug is now rebuilt from `owner.login + "/" + name` — which is exactly
+  what `roadmap-lib.sh pr-targets-issue` has always done with the same field
+  (`scripts/lib/roadmap-lib.sh:206`), and which the snippet's own comment cites as its precedent. The
+  guard had the right idea and the wrong spelling, one module away from the correct one.
+
+  The same run surfaced a second cause of a false empty: **GitHub computes the link set
+  asynchronously**, so a read issued immediately after `gh pr create` legitimately comes back empty.
+  The guard now retries briefly before believing an empty answer — a body that really is wrong stays
+  empty through all of them.
+
+- **A second `/implement-issue` run in one checkout deleted the first run's live state before any
+  ownership check could see it** (#202, D46). Preflight `rm -f`'d the run marker, the blocked
+  marker and the gap-analysis lock **unconditionally**, so *starting* a run was itself the
+  destructive act: session B's preflight removed session A's live marker, after which A's Stop hook
+  found nothing and exited 0 — the no-stop-until-PR invariant silently off for a run that still
+  needed it. The same clear released A's live `gap-analysis.lock`, and a concurrent `/cleanup` then
+  classified A's `gaps.md` and `gap-prompt.txt` as a finished run's leftovers and deleted them
+  **mid-dispatch**, losing the findings of a 10-minute pass. #180 gave the marker an `owner` so the
+  hook refuses to act on a foreign one; it never gets the chance if the marker is already gone.
+
+  **The decision is to refuse a second run, not to accommodate one.** Two runs in one checkout share
+  ONE HEAD — they fight over the checked-out branch whether or not their state files collide — so
+  the per-run-path sketch in the issue would have made the state layer safe for a configuration that
+  still cannot work. Preflight now calls the new **`scripts/lib/implement-lib.sh admit`**, which
+  refuses unless the existing marker is *provably stale*, and the run holds a **claim** until step 5
+  writes the marker that supersedes it.
+
+  Three properties are what make it a fix rather than a different failure:
+
+  - **Admission is single-threaded**, inside a `mkdir` lock on the state directory: one contender
+    decides, every other is refused having touched nothing. That replaced three rounds of making
+    each individual step safe, each of which looked sufficient — `rm -f` + re-create let two
+    breakers win; a `rename` made the move exclusive but not its *operand*, so a delayed breaker
+    took a successor's brand-new claim (three winners); verifying the operand and re-reading our own
+    token after acquiring still left the real hole, which **macOS CI found**: a losing breaker
+    *moves* the claim before it can know whose it is, and a third contender acquires in the few
+    syscalls while the path is free — after the first run has already passed its re-read. A window
+    that opens behind you cannot be closed by checking afterwards.
+
+    The lock is held for the duration of `admit` only (sub-second plus at most one `gh` call), never
+    for the run, and is **broken on age at 5 minutes** so a killed admission cannot block a
+    checkout. The per-step guards are kept as defence in depth, because `release` runs outside the
+    lock from another process: the claim is still published create-or-fail as a *complete* file
+    (`link`, not `set -C` + `>`, which leaves a window where it exists and is empty), and removals
+    still verify identity rather than trusting a pathname.
+    The marker is also re-identified immediately before the clear (`cleanup-lib.sh marker-identity`,
+    the rule `/cleanup` already applies at its own delete), which **narrows** the replacement
+    window rather than closing it — the read and the unlink are still two operations.
+  - **It never consults `owner`.** A session is an *actor*, not a run: ownership is transferable,
+    one session may invoke the workflow twice, and an absent `owner` reads as "compatible" — correct
+    for a hook deciding whether to speak, wrong for a starter deciding whether to delete. A live
+    marker refuses even the session that wrote it. `owner` governs enforcement; **staleness**
+    governs deletion, asked of `cleanup-lib.sh state-verdict marker` rather than re-derived.
+  - **No refusal blocks a checkout without saying what will clear it.** `/cleanup` never deletes a
+    `lock` record and preflight no longer clears one unconditionally, so the claim carries a
+    **lease** (9000s / 2h30m; a flat constant, not derived from `ADB_DISPATCH_TIMEOUT_SECS`, which
+    `role-dispatch.sh` already owns and validates differently) and the next run breaks an expired
+    one with a reported `NOTE`. A pre-#202 empty lock has no lease and is broken the same way — the
+    migration path. `release` drops only the claim its caller holds, compared by a per-acquire
+    token that `admit` prints and the workflow threads to every release site (without one it can
+    only compare session ids, which cannot tell a same-owner or ownerless successor apart — a limit
+    recorded rather than papered over). Every unknown (no
+    `jq`, an unreadable marker, a `gh` that errors, an unreadable state directory) **refuses without
+    deleting**: a starter that cannot read must not delete.
+
+    The lease is a **trade, not a free fix** — a run that outlives it can have its claim broken
+    while alive. The exposure is pre-marker only (after step 5 the marker refuses a second run
+    regardless), and 2h30m is far longer than that window can legitimately be. And some refusals do
+    **not** clear themselves: an abandoned marker whose branch ref survives is kept by `admit` and
+    by `/cleanup` alike, as are a malformed marker, a persistent `gh` failure, or wrong directory
+    permissions. Each prints the recovery — the branch to finish, `/cleanup`, or the file to
+    delete.
+
+  Three further defects came from the PR review, and all three were the same shape — a guard that
+  refuses forever rather than one that lets two runs through. A **dangling symlink** at the claim
+  path read as *absent* to `-e` while still making `ln` fail with `EEXIST`, so admission reported
+  "not writable" and never reached the break path — blocked until someone removed the link by hand.
+  A failed `git switch -c` (the branch already exists) **kept** the claim, refusing every later run
+  for the rest of the lease over an invocation that started nothing. And the claim token lived only
+  in a shell variable, while the releases that need it sit in *later* fenced blocks the workflow
+  itself says may run as separate shells — so every release degraded to `--token ""`, and for an
+  agent whose harness exposes no session id the fallback compares nothing.
+
+  Scope, stated rather than implied: `{{STATE_DIR}}` is per-agent, so this excludes a second run of
+  the **same** agent and nothing more. A Claude run and a Codex run never collide on these paths at
+  all; they collide on HEAD, and only partially — the branch check hard-errors once one of them has
+  switched away from the default branch, but two agents starting *concurrently* while both are
+  still on it both pass. This is not checkout-wide exclusion, and is not described as such.
+
+  Covered by a new `scripts/check-implement-lib.sh` — including eight real concurrent processes
+  racing for one claim — an end-to-end case in `scripts/check-implement-gate.sh` (run A's state
+  live, session B admits, and **A's continuation gate must still fire** over a byte-identical state
+  directory), and a rewritten containment guard in `check-cleanup.sh` that now *runs* the clear
+  against filenames derived from `state-scan`'s own arms instead of grepping the workflow prose.
+  All three were driven red on mutation before being called done.
+
 - **A closing keyword in a PR body fires only from PROSE — a code span silently suppressed it, and
   the practice said otherwise.** `git-and-prs.md` claimed `Closes #N` closes an issue "**anywhere**
   in a PR body (prose, checklist, table)". That is false for a code span or a fenced block, and it

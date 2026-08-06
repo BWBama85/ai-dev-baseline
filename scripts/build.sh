@@ -93,7 +93,7 @@ render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 render_agent_skill() {
   local agent="$1" src="$2" name out tmp first fmname
   local args_to state_dir gate_run role_dispatch roadmap_lib repo_settings cleanup_lib currency_lib pr_review
-  local state_assert pr_watch actions_app_slug
+  local state_assert pr_watch actions_app_slug implement_lib
   local current_agent subtask fmmode
 
   # --- the per-agent MAP + MODE ------------------------------------------------------
@@ -117,6 +117,7 @@ render_agent_skill() {
   pr_review="bash \"\$HOME/.$agent/scripts/lib/pr-review.sh\""
   pr_watch="bash \"\$HOME/.$agent/scripts/lib/pr-watch.sh\""
   cleanup_lib="bash \"\$HOME/.$agent/scripts/lib/cleanup-lib.sh\""
+  implement_lib="bash \"\$HOME/.$agent/scripts/lib/implement-lib.sh\""
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
   state_assert="bash \"\$HOME/.$agent/scripts/lib/state-assert.sh\""
   current_agent="$agent"
@@ -251,6 +252,7 @@ render_agent_skill() {
       -v gate_run="$gate_run" -v role_dispatch="$role_dispatch" \
       -v roadmap_lib="$roadmap_lib" -v repo_settings="$repo_settings" \
       -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib" \
+      -v implement_lib="$implement_lib" \
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
       -v pr_watch="$pr_watch" -v actions_app_slug="$actions_app_slug" \
       -v current_agent="$current_agent" -v subtask="$subtask" \
@@ -311,6 +313,7 @@ render_agent_skill() {
       line = lreplace(line, "{{PR_REVIEW_LIB}}",    pr_review)
       line = lreplace(line, "{{PR_WATCH_LIB}}",     pr_watch)
       line = lreplace(line, "{{CLEANUP_LIB}}",      cleanup_lib)
+      line = lreplace(line, "{{IMPLEMENT_LIB}}",    implement_lib)
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
       line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
       line = lreplace(line, "{{ACTIONS_APP_SLUG}}", actions_app_slug)

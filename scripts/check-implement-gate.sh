@@ -504,4 +504,73 @@ run_gate
 eq "$RC" 2 "X2: closed stored PR + failed replacement lookup → keep going"
 has "$OUT" "could not be run" "X2: the closed arm warns that no replacement lookup succeeded"
 
+# --- #202: two live runs, one tree — the gate still enforces for A after B tries to start -------
+# The acceptance criterion this file owes #202. Everything above tests the hook in isolation; what
+# broke run A was a SECOND session's preflight, and the damage was only visible HERE — A's marker
+# gone, so the hook exits 0 and A's no-stop-until-PR invariant is silently off.
+#
+# So the case is end-to-end across the two components: run A's marker is live, session B runs the
+# real `implement-lib.sh admit`, and then the hook is asked whether A must keep going. Asserting
+# `admit`'s exit code alone would not catch it — that is check-implement-lib.sh's job — because the
+# failure mode is what the NEXT actor concludes from the state that survived.
+#
+# Under a refusal design there are never two markers, so "neither run loses its marker" is
+# necessarily "the one live marker survives, and still enforces".
+IL="$ROOT/scripts/lib/implement-lib.sh"
+if [ ! -f "$IL" ]; then
+  bad "Y: scripts/lib/implement-lib.sh not found — the two-live-runs case asserted NOTHING"
+else
+  reset_case
+  write_marker committed "" "$SID_A"
+  # A FULL pre-state, not just the marker: run A owns gap findings, review findings and a blocked
+  # marker too, and an implementation that protected the marker while clearing the rest would still
+  # have destroyed the run. Checking only `gaps.md` existence was the narrower assertion this
+  # replaces.
+  printf 'A findings\n'  > "$repo/.claude/state/gaps.md"
+  printf 'A stream\n'    > "$repo/.claude/state/gaps.err"
+  printf 'A prompt\n'    > "$repo/.claude/state/gap-prompt.txt"
+  printf 'A review\n'    > "$repo/.claude/state/review.md"
+  printf 'A slot\n'      > "$repo/.claude/state/review-codex.md"
+  # A NON-MATCHING blocked marker on purpose: one that matched branch/issue would be a legitimate
+  # stop and the hook would (correctly) exit 0, testing the escape hatch instead of the invariant.
+  # This is still a file run A owns and whose bytes must survive B's attempt.
+  write_blocked other-branch 99 "$SID_A"
+  state_digest_a() {
+    ( cd "$repo/.claude/state" || exit 0
+      find . \( -type f -o -type l \) | LC_ALL=C sort | while IFS= read -r f; do
+        printf '%s:%s\n' "$f" "${ cksum < "$f" 2>/dev/null | awk '{print $1"-"$2}'; }"
+      done )
+  }
+  digest_before="${ state_digest_a; }"
+  ident_before="${ cksum < "$marker_file" | awk '{print $1"-"$2}'; }"
+
+  admit_out="$( cd "$repo" && env CLAUDE_CODE_SESSION_ID="$SID_B" PATH="$shimbin:$PATH" \
+                SHIM_REPO_URL="$REPO_URL" bash "$IL" admit .claude/state 2>&1 )"; admit_rc=$?
+  eq "$admit_rc" 10 "Y: session B is refused while A's marker is live"
+  has "$admit_out" "already in flight" "Y: …and told why"
+
+  # THE POINT OF THE CASE. Byte identity, not mere existence: a rewritten marker would still be a
+  # marker, and the hook's own delete-time guard compares content.
+  eq "${ cksum < "$marker_file" | awk '{print $1"-"$2}'; }" "$ident_before" \
+     "Y: A's marker survives B's attempt, byte for byte"
+  eq "${ state_digest_a; }" "$digest_before" \
+     "Y: …and so does EVERY other file A owns — gap findings, review findings, blocked marker"
+
+  # And the invariant it exists to arm is still armed FOR A — which is the thing that was silently
+  # switched off. A `0` here is the bug: the turn would be allowed to end with no PR.
+  GATE_SESSION="$SID_A"; SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
+  run_gate
+  eq "$RC" 2 "Y: …and A's continuation gate still fires, rather than exiting 0 on a deleted marker"
+  has "$OUT" "has not opened a PR yet" "Y: …with A's own resume hint, naming A's run"
+
+  # B, meanwhile, must not have been handed A's run: the hook stays silent for the session that was
+  # refused. That is #180's rule still holding on top of #202's — the two guards compose.
+  reset_case; GATE_SESSION="$SID_B"; SHIM_REPO_URL="$REPO_URL"; SHIM_OPEN_PR_URL=""
+  run_gate
+  eq "$RC" 0 "Y: the refused session is not told to continue A's run"
+  rm -f "$repo/.claude/state/gaps.md" "$repo/.claude/state/gaps.err" \
+        "$repo/.claude/state/gap-prompt.txt" "$repo/.claude/state/review.md" \
+        "$repo/.claude/state/review-codex.md" "$repo/.claude/state/gap-analysis.lock"
+fi
+
 check_summary "implement-gate"
