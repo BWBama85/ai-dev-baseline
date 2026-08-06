@@ -2846,3 +2846,89 @@ limit: none of them is sufficient alone.
              alone: they are API-contract fixtures whose whole value is that they do NOT derive the
              slug.
 - baseline-issue: #115, #113, #183; the unprotected-branch residue is #293  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->
+
+## D46 — a second run in one checkout is REFUSED, and staleness (not ownership) authorizes the clear
+- date:      2026-08-06
+- category:  project-delta
+- unknown:   #202. `/implement-issue` writes its run state to fixed paths, and preflight `rm -f`'d
+             them unconditionally — so a second session's *start* deleted a first session's LIVE
+             marker before #180's ownership check could ever see it, silently switching off the
+             no-stop-until-PR invariant for a run that still needed it. The same clear released the
+             live `gap-analysis.lock`, after which a concurrent `/cleanup` deleted the findings of a
+             10-minute dispatch that was still running. The issue asked for the DECISION first:
+             support concurrent runs, or refuse them.
+- decision:  **Refuse.** Preflight calls `implement-lib.sh admit` before it touches anything; a
+             second run in the same checkout is turned away rather than accommodated. Four
+             sub-decisions carry the weight, because each picks a failure DIRECTION:
+             (a) NO PER-RUN STATE PATHS. The sketch in #202's body (`implement-issue-active-<runId>`)
+                 was rejected: two runs in one checkout share ONE HEAD, so they fight over the
+                 checked-out branch whether or not their files collide. Per-run paths would make the
+                 state layer safe for a configuration that still cannot work, at the cost of moving
+                 the Stop hook, `.marker.tmp`, `state-scan`, `/cleanup` and every rendered workflow.
+             (b) ADMISSION NEVER CONSULTS `owner`. A session is an ACTOR, not a run: ownership is
+                 transferable (D17c), one session may legitimately invoke the workflow twice, and
+                 `owners_compatible` reads an ABSENT owner as compatible — right for a hook deciding
+                 whether to speak, wrong for a starter deciding whether to delete. So `owner`
+                 governs enforcement and **staleness** governs deletion. A live marker refuses even
+                 the session that wrote it.
+             (c) STALENESS IS ASKED, NOT RE-DERIVED. `cleanup-lib.sh state-verdict marker` is
+                 already the one home for "is this run marker dead?", and `/cleanup` reaps a crashed
+                 run's marker with it today — which is why the deferral reason recorded in D17
+                 ("preflight is the only cleaner, so an owner-aware preflight would leave a crashed
+                 run uncleanable") was wrong, as #202's own comment says. `admit` gathers the same
+                 three facts the same way `base/workflows/cleanup.md` does and asks that predicate.
+             (d) ACQUIRE BEFORE YOU CLEAR, WITH `O_EXCL`. The claim is taken with `set -C` + `>`
+                 BEFORE anything is deleted, so the session that loses the race mutates nothing.
+                 Check-then-act between two reads was the residual hole a plain guarded clear would
+                 have left.
+             The claim is the EXISTING `gap-analysis.lock`, widened rather than joined by a second
+             file: it already means "a run is live and has not written its marker yet", and
+             admission only moves its acquisition earlier (preflight instead of step 3) so it covers
+             that whole pre-marker window. `/cleanup` reads it unchanged, and holding it longer only
+             ever preserves more. A second lock beside it could leak, be cleared late, and disagree
+             with the first — the trap D40 declined for review artifacts.
+             It carries a **lease** (`2 × ADB_DISPATCH_TIMEOUT_SECS + 3600`, so 2h by default), and
+             that is the answer to the permanent-block risk #202 explicitly warns about: `/cleanup`
+             never deletes a `lock` record, and preflight no longer clears one unconditionally, so
+             without an expiry one killed run would refuse every later run in that checkout forever.
+             This is not "mtime as liveness" — the file's age is not evidence about a PR or a branch;
+             it is an expiry on a lease this framework's own dispatch timeout already bounds. A
+             pre-#202 empty lock has no lease and is broken with a reported NOTE, which is the
+             migration path and matches the unconditional clear it replaces.
+- placement: `scripts/lib/implement-lib.sh` (new; the decision) · `base/workflows/implement-issue.md`
+             (preflight, the step-2/4/5 release points, step 3's no-longer-taken lock, rendered to
+             all three agents) · `scripts/build.sh` + `base/workflows/README.md` (the
+             `{{IMPLEMENT_LIB}}` placeholder) · `scripts/check-implement-lib.sh` (new suite) ·
+             `scripts/check-implement-gate.sh` (the end-to-end acceptance case) ·
+             `scripts/check-cleanup.sh` (the containment guard, now EXECUTED) · `scripts/selfcheck.sh`.
+- reason:    Ownership made the READER safe; nothing made the PATH exclusive, and the path is what a
+             second *start* attacks. Refusing is also the honest model of what the tool can do:
+             #159 (see a sibling agent live in this tree) and #206 (a shared atomic claim-release)
+             were both closed NOT_PLANNED, so no design here may assume host-terminal liveness — and
+             none does. Every refusal is instead decided from facts that resolve on their own: a
+             branch ref, a PR state, a lease. That is what keeps a refusal from becoming permanent.
+
+             **The scope is this agent's state directory, stated rather than implied.** `{{STATE_DIR}}`
+             is `.claude/state` / `.codex/state` / `.gemini/state`, so this excludes a second run of
+             the SAME agent. A Claude run and a Codex run in one checkout never collide on these
+             paths at all; they still share HEAD, and the second one's preflight already hard-errors
+             on the branch check. Cross-agent exclusion would need a new shared state home and is
+             deliberately not invented here.
+
+             **What is NOT closed, named rather than claimed.** The refusal is decided from
+             staleness, which cannot tell a live run from an abandoned one whose branch still
+             exists — so an abandoned run does block new runs in that checkout until `/cleanup`
+             reaps it or the operator removes the marker, and the refusal message names all three
+             ways out. That is the deliberate direction: the alternative is guessing a run is dead,
+             which is the fail-open this exists to remove. The window a lease covers is likewise
+             bounded, not eliminated.
+
+             **The test moved with the decision.** `check-cleanup.sh`'s containment guard used to
+             grep the preflight PROSE for each pattern `state-scan` sweeps; the clear is a real
+             script now, so it RUNS it — materializing one file per pattern derived from the
+             library's own arms and requiring every one to be gone. Both suites were driven red on
+             mutation (removing the refusal, dropping `O_EXCL`, mapping an unreadable PR state to
+             `none`, letting ownership authorize the clear, and narrowing the clear set), because a
+             guard whose failure mode is *deleting something* is indistinguishable from a healthy
+             run until it is watched failing.
+- baseline-issue: #202

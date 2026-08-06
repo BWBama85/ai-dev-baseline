@@ -9,6 +9,50 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **A second `/implement-issue` run in one checkout deleted the first run's live state before any
+  ownership check could see it** (#202, D46). Preflight `rm -f`'d the run marker, the blocked
+  marker and the gap-analysis lock **unconditionally**, so *starting* a run was itself the
+  destructive act: session B's preflight removed session A's live marker, after which A's Stop hook
+  found nothing and exited 0 — the no-stop-until-PR invariant silently off for a run that still
+  needed it. The same clear released A's live `gap-analysis.lock`, and a concurrent `/cleanup` then
+  classified A's `gaps.md` and `gap-prompt.txt` as a finished run's leftovers and deleted them
+  **mid-dispatch**, losing the findings of a 10-minute pass. #180 gave the marker an `owner` so the
+  hook refuses to act on a foreign one; it never gets the chance if the marker is already gone.
+
+  **The decision is to refuse a second run, not to accommodate one.** Two runs in one checkout share
+  ONE HEAD — they fight over the checked-out branch whether or not their state files collide — so
+  the per-run-path sketch in the issue would have made the state layer safe for a configuration that
+  still cannot work. Preflight now calls the new **`scripts/lib/implement-lib.sh admit`**, which
+  refuses unless the existing marker is *provably stale*, and the run holds a **claim** until step 5
+  writes the marker that supersedes it.
+
+  Three properties are what make it a fix rather than a different failure:
+
+  - **It acquires before it clears, with `O_EXCL`.** A guarded clear alone is still check-then-act:
+    two sessions can both observe an empty state directory and both proceed. The claim is taken
+    first, so the session that loses the race mutates **nothing**.
+  - **It never consults `owner`.** A session is an *actor*, not a run: ownership is transferable,
+    one session may invoke the workflow twice, and an absent `owner` reads as "compatible" — correct
+    for a hook deciding whether to speak, wrong for a starter deciding whether to delete. A live
+    marker refuses even the session that wrote it. `owner` governs enforcement; **staleness**
+    governs deletion, asked of `cleanup-lib.sh state-verdict marker` rather than re-derived.
+  - **It cannot block a checkout permanently.** `/cleanup` never deletes a `lock` record and
+    preflight no longer clears one unconditionally, so the claim carries a **lease**
+    (`2 × ADB_DISPATCH_TIMEOUT_SECS + 3600`) and the next run breaks an expired one with a reported
+    `NOTE`. A pre-#202 empty lock has no lease and is broken the same way — the migration path.
+    Every unknown (no `jq`, an unreadable marker, a `gh` that errors, a directory outside a git
+    repo) **refuses without deleting**: a starter that cannot read must not delete.
+
+  Scope, stated rather than implied: `{{STATE_DIR}}` is per-agent, so this excludes a second run of
+  the **same** agent. A Claude run and a Codex run never collide on these paths at all, and the
+  second one's preflight already hard-errors on the branch check.
+
+  Covered by a new `scripts/check-implement-lib.sh` (55 checks), an end-to-end case in
+  `scripts/check-implement-gate.sh` — run A's marker live, session B admits, and **A's continuation
+  gate must still fire** — and a rewritten containment guard in `check-cleanup.sh` that now *runs*
+  the clear against filenames derived from `state-scan`'s own arms instead of grepping the workflow
+  prose. All three were driven red on mutation before being called done.
+
 - **A closing keyword in a PR body fires only from PROSE — a code span silently suppressed it, and
   the practice said otherwise.** `git-and-prs.md` claimed `Closes #N` closes an issue "**anywhere**
   in a PR body (prose, checklist, table)". That is false for a code span or a fenced block, and it

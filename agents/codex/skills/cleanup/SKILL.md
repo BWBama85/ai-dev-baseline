@@ -401,10 +401,12 @@ done <<EOF
 $SCAN
 EOF
 
-# The gap-analysis lock, if present, means a gap dispatch is writing artifacts RIGHT NOW. Read it
-# from the SCAN, not from a second hardcoded path: the library already recognises the filename,
-# and a rename that updated only one of the two spellings would silently set LOCK=0 and delete a
-# live dispatch's findings — the exact failure the lock exists to prevent.
+# The gap-analysis lock, if present, means an /implement-issue run is live and has NOT yet written
+# its marker — it is that run's claim, taken in preflight (#202) and held until step 5, and a gap
+# dispatch may be writing artifacts under it RIGHT NOW. Read it from the SCAN, not from a second
+# hardcoded path: the library already recognises the filename, and a rename that updated only one
+# of the two spellings would silently set LOCK=0 and delete a live dispatch's findings — the exact
+# failure the lock exists to prevent.
 # An `if`, not `… && LOCK=1`: an AND-list whose test fails leaves the whole fenced block on exit
 # status 1, and "no lock present" is the overwhelmingly common case — so the agent would read a
 # perfectly healthy sweep as a failed step and could abandon it before any state is swept.
@@ -490,13 +492,15 @@ the window the gap lock exists for (step 3, before any marker) has no counterpar
 **one-active-run-per-checkout** boundary `/implement-issue` already declares, the marker is the
 in-flight signal for every review write.
 
-**Outside that boundary it is not, and a lock would not rescue it either.** A second run's
-preflight clears the fixed marker paths unconditionally, so it can delete a live run's marker
-(`/implement-issue`'s state protocol says so; tracked as #202) — after which that still-running
-first run reaches step 8 with no marker and this sweep would classify its live artifacts `stale`.
-A review lock would be cleared by exactly the same preflight, so it buys nothing here: the gap
-lock survives that path only because a *concurrent* run is not what it guards against. Two real
-runs in one checkout is #202's problem, not a hole this arm can close.
+**That boundary is now ENFORCED rather than merely declared (#202).** It used to be a promise the
+code did not keep: a second run's preflight cleared the fixed marker paths unconditionally, so it
+could delete a live run's marker, after which the still-running first run reached step 8 with no
+marker and this sweep classified its live artifacts `stale`. `/implement-issue`'s preflight now
+asks `implement-lib.sh admit` first, and a second run in the same checkout is **refused** — it
+deletes nothing. So the marker really is the in-flight signal for every review write this arm can
+see, and a review lock would still buy nothing: the gap lock is held from preflight to step 5 as
+the run's *claim*, covering the one window a marker cannot, and a second lock beside it could only
+leak and disagree.
 
 **But it is read from THIS scan, never from `$RUN`.** The rule above is not about locks
 specifically; it is that the signal governing a destructive delete must be true *at the delete*,

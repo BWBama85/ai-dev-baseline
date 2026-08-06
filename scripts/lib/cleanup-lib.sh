@@ -517,6 +517,11 @@ cmd_state_verdict() {
       # no marker to consult and the artifacts would otherwise read as a finished run's leftovers
       # — /cleanup would delete the findings of a dispatch that is still writing them. The lock
       # is the only positive in-flight signal available in that window.
+      #
+      # Since #202 that window is WIDER and the lock is taken EARLIER: `implement-lib.sh admit`
+      # acquires it in preflight, as the run's claim, and holds it until step 5 writes the marker.
+      # Nothing here changes — the file means the same thing (a pre-marker run is live), it is just
+      # true for more of the run, which only ever preserves more.
       case "$1" in 1) printf 'keep\n'; return 0 ;; esac
       # No lock: the artifacts belong to whatever run the marker describes. `none` (no marker at
       # all) is a FINISHED or never-branched run — with the lock proving no dispatch is in

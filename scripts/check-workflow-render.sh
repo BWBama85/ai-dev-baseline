@@ -85,6 +85,7 @@ Dispatch: {{ROLE_DISPATCH}} resolve review
 Roadmap predicate: {{ROADMAP_LIB}} release-ready 1 1 0 0 0
 Auto-merge guard: {{REPO_SETTINGS_LIB}} automerge-ok
 Cleanup predicate: {{CLEANUP_LIB}} state-verdict threads open
+Run admission: {{IMPLEMENT_LIB}} admit {{STATE_DIR}}
 State observation: {{STATE_ASSERT_LIB}} observe pr 137
 Currency policy: {{CURRENCY_LIB}} check --trigger cleanup
 Actions slug: {{ACTIONS_APP_SLUG}} and again {{ACTIONS_APP_SLUG}}.
@@ -106,6 +107,7 @@ if [ -f "$out" ]; then
   has "$body" 'Roadmap predicate: bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" release-ready' "{{ROADMAP_LIB}} is a command prefix"
   has "$body" 'Auto-merge guard: bash "$HOME/.claude/scripts/lib/repo-settings.sh" automerge-ok' "{{REPO_SETTINGS_LIB}} is a command prefix"
   has "$body" 'Cleanup predicate: bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict'  "{{CLEANUP_LIB}} is a command prefix"
+  has "$body" 'Run admission: bash "$HOME/.claude/scripts/lib/implement-lib.sh" admit .claude/state' "{{IMPLEMENT_LIB}} is a command prefix"
   has "$body" 'State observation: bash "$HOME/.claude/scripts/lib/state-assert.sh" observe' "{{STATE_ASSERT_LIB}} is a command prefix"
   has "$body" 'Currency policy: bash "$HOME/.claude/scripts/lib/currency-lib.sh" check'      "{{CURRENCY_LIB}} is a command prefix"
   has "$body" 'Actions slug: github-actions and again github-actions.' "{{ACTIONS_APP_SLUG}} → the real Actions app slug (agent-invariant, and pinned as a LITERAL: deriving it here would make this test blind to the VALUE being wrong, which is how #179 shipped)"
@@ -130,6 +132,7 @@ if [ -f "$cout" ]; then
   has "$cbody" 'Roadmap predicate: bash "$HOME/.codex/scripts/lib/roadmap-lib.sh" release-ready' "codex {{ROADMAP_LIB}} → the ~/.codex predicate"
   has "$cbody" 'Auto-merge guard: bash "$HOME/.codex/scripts/lib/repo-settings.sh" automerge-ok' "codex {{REPO_SETTINGS_LIB}} → the ~/.codex guard"
   has "$cbody" 'Cleanup predicate: bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict'  "codex {{CLEANUP_LIB}} → the ~/.codex predicate"
+  has "$cbody" 'Run admission: bash "$HOME/.codex/scripts/lib/implement-lib.sh" admit .codex/state' "codex {{IMPLEMENT_LIB}} → the ~/.codex admission guard"
   has "$cbody" 'State observation: bash "$HOME/.codex/scripts/lib/state-assert.sh" observe' "codex {{STATE_ASSERT_LIB}} is a command prefix"
   has "$cbody" 'Currency policy: bash "$HOME/.codex/scripts/lib/currency-lib.sh" check'      "codex {{CURRENCY_LIB}} → the ~/.codex policy"
   has "$cbody" 'Actions slug: github-actions and again github-actions.' "codex {{ACTIONS_APP_SLUG}} → the real Actions app slug (agent-invariant, and pinned as a LITERAL: deriving it here would make this test blind to the VALUE being wrong, which is how #179 shipped)"
@@ -155,6 +158,7 @@ if [ -f "$gout" ]; then
   has "$gbody" 'Roadmap predicate: bash "$HOME/.gemini/scripts/lib/roadmap-lib.sh" release-ready' "gemini {{ROADMAP_LIB}} → the ~/.gemini predicate"
   has "$gbody" 'Auto-merge guard: bash "$HOME/.gemini/scripts/lib/repo-settings.sh" automerge-ok' "gemini {{REPO_SETTINGS_LIB}} → the ~/.gemini guard"
   has "$gbody" 'Cleanup predicate: bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict'  "gemini {{CLEANUP_LIB}} → the ~/.gemini predicate"
+  has "$gbody" 'Run admission: bash "$HOME/.gemini/scripts/lib/implement-lib.sh" admit .gemini/state' "gemini {{IMPLEMENT_LIB}} → the ~/.gemini admission guard"
   has "$gbody" 'State observation: bash "$HOME/.gemini/scripts/lib/state-assert.sh" observe' "gemini {{STATE_ASSERT_LIB}} is a command prefix"
   has "$gbody" 'Currency policy: bash "$HOME/.gemini/scripts/lib/currency-lib.sh" check'      "gemini {{CURRENCY_LIB}} → the ~/.gemini policy"
   has "$gbody" 'Actions slug: github-actions and again github-actions.' "gemini {{ACTIONS_APP_SLUG}} → the real Actions app slug (agent-invariant, and pinned as a LITERAL: deriving it here would make this test blind to the VALUE being wrong, which is how #179 shipped)"
