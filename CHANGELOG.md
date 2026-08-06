@@ -9,6 +9,30 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **A closing keyword in a PR body fires only from PROSE — a code span silently suppressed it, and
+  the practice said otherwise.** `git-and-prs.md` claimed `Closes #N` closes an issue "**anywhere**
+  in a PR body (prose, checklist, table)". That is false for a code span or a fenced block, and it
+  is the sentence that made a backticked keyword look safe. Measured, not inferred: PR #294 merged
+  with both keywords written as `` `Closes #115` ``, GitHub's own `closingIssuesReferences` for it
+  came back **empty**, and the control (#292, bare prose) shows `[102, 262]`. Two delivered
+  `release-blocker` issues stayed open — which on a repo using the release-goal convention means
+  `/roadmap` reports the release **unmet** on blockers whose work is already on the default branch,
+  and readiness never converges until a human notices.
+
+  This is the same **"only prose declares"** rule the roadmap markers live by (#117/#136), biting
+  the other way: there, quoting an example protects you; here, quoting the keyword loses the close
+  and nothing anywhere says so.
+
+  **The fix is a verification, not a warning.** `/implement-issue` step 10 now reads
+  `closingIssuesReferences` back after `gh pr create` and compares it against the issues the run
+  meant to close, **before** the merge — because afterwards the auto-close can never fire. It
+  catches every cause, not just the backtick: a typo, a cross-repo qualifier, a keyword GitHub does
+  not accept. The comparison is **repository-scoped**, because `closingIssuesReferences` can carry
+  a cross-repo issue and a bare-number match would call `someone/other#115` a match for this repo's
+  `#115` — the distinction `pr-targets-issue` already pins. A mismatch **exits non-zero**, so the
+  run cannot walk into the auto-merge step having proved nothing. Both facts are pinned across
+  their two homes in `check-fact-drift.sh`.
+
 - **`/roadmap` emitted a release cut against a branch nobody had checked, on any repo whose CI is
   not GitHub Actions** (#115, consolidating #113, D45). `branch-health` distinguishes *"this repo  <!-- adb-claim-ok: #113 was consolidated INTO #115 and closed NOT_PLANNED as superseded; the reference is the history of this change, not tracked work -->
   has no CI"* (skip the gate and cut, the #24 degradation) from *"CI exists but has not reported"*
