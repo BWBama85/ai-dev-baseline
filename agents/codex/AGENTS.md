@@ -143,11 +143,36 @@ see the negative-testing method in `self-review.md`.
 
 ## PR body hygiene
 
-- **Closing keywords auto-close on merge.** `Closes #N` / `Fixes #N` / `Resolves
-  #N` **anywhere** in a PR body (prose, checklist, table) closes that issue when
-  the PR merges. Use them only for issues this PR fully resolves. For partial work
-  use **`Refs #N`** — and never write a closing keyword "illustratively," it will
-  still fire.
+- **Closing keywords auto-close on merge — but ONLY FROM PROSE.** `Closes #N` /
+  `Fixes #N` / `Resolves #N` in the **prose** of a PR body (including a checklist
+  or a table) closes that issue when the PR merges. Use them only for issues this
+  PR fully resolves. For partial work use **`Refs #N`** — and never write a
+  closing keyword "illustratively" in prose, it will still fire.
+
+  **A code span or a fenced block SUPPRESSES it, silently.** This is the same
+  "only prose declares" rule the roadmap markers already live by, and it bites in
+  the opposite direction: there, quoting an example protects you; here, quoting
+  the keyword *loses the close* and nothing says so. Writing
+
+  ```markdown
+  `Closes #115`
+  ```
+
+  merges a PR that closes nothing. Measured on this repo: PR #294's body spelled
+  both keywords in code spans, GitHub's own `closingIssuesReferences` came back
+  **empty**, and two delivered `release-blocker` issues stayed open — which on a
+  repo using the release-goal convention means readiness reports unmet blockers
+  for work already on the default branch, and never converges.
+
+  **So verify the link set instead of trusting the text** (`verify-before-asserting.md`
+  — the body is a claim about what will happen, and GitHub publishes the answer):
+
+  ```bash
+  gh pr view <N> --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'
+  ```
+
+  Empty, or missing an issue you meant to close, means the keyword did not
+  register — fix the body **before** the merge, or the close never happens at all.
 - Follow the project's commit/PR conventions (semantic subject, co-author
   trailer, milestone/labels) when it has them.
 

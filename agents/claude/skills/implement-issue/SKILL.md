@@ -954,6 +954,63 @@ PR body: summary; gap-analysis gaps + how addressed; self-review + reviewer find
 its own line), `Refs #N` for any sliced. After `gh pr create`, write `prUrl` and
 `phase=pr_opened` into the marker.
 
+**Write each closing keyword as BARE PROSE — never in a code span or a fenced block.** A
+backtick around it suppresses the close **silently**: the PR merges, the issue stays open,
+and nothing anywhere says so. Same "only prose declares" rule as the roadmap markers,
+biting the other way (`base/practices/git-and-prs.md`).
+
+**Then PROVE it registered, before the merge can happen.** The body is a *claim* about what
+GitHub will do on merge, and GitHub publishes the answer — so read it rather than trusting
+the text you just wrote (`verify-before-asserting.md`). This is cheap, and it catches every
+cause, not just the backtick one: a typo, a wrong repo qualifier, a keyword GitHub does not
+accept.
+
+```bash
+# ADB-SNIPPET: closing-refs
+# `closingIssuesReferences` is GitHub's OWN computed link set for this PR — the same field
+# `roadmap-lib.sh pr-targets-issue` trusts. Empty means NOTHING will close on merge.
+#
+# SCOPED TO THIS REPOSITORY, never a bare number. GitHub supports CROSS-REPO closing links, so a
+# body that wrote `Closes someone/other#115` puts `115` in this set while closing a STRANGER's
+# issue — and a bare-number comparison would call that a match and report success. This repo
+# already pins exactly that distinction for `pr-targets-issue` (scripts/check-roadmap.sh, "cross-
+# repo safety"), which matches on number AND repository; the same field deserves the same rule.
+PR="$(jq -r .prUrl .claude/state/implement-issue-active.json)"
+SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
+  || { echo "ERROR: cannot resolve this repo's slug — cannot verify the closing links"; exit 1; }
+# READ, then PARSE — two statements. A pipeline reports only its LAST command's status, so
+# `gh pr view … | jq` returns jq's, and a failed read would arrive as empty input and be parsed
+# into an empty link set: a read failure wearing "nothing is linked" as its answer.
+REFS_JSON="$(gh pr view "$PR" --json closingIssuesReferences)" \
+  || { echo "ERROR: could not read the closing-issue link set for $PR — fix or verify by hand BEFORE merging"; exit 1; }
+LINKED="$(printf '%s' "$REFS_JSON" | jq -r --arg slug "$SLUG" \
+            '[.closingIssuesReferences[]
+              | select(.repository.nameWithOwner == $slug) | .number] | sort | join(",")')" \
+  || { echo "ERROR: could not parse the closing-issue link set for $PR"; exit 1; }
+# WANT is the issues this PR FULLY resolves — the ones you wrote `Closes` for, which is not
+# necessarily every issue in $ISSUE_CSV (a sliced issue gets `Refs` and must NOT appear here).
+# Sorted NUMERICALLY, to match jq's `sort` on the numbers above.
+WANT="<comma-separated, numerically sorted>"
+if [ "$LINKED" != "$WANT" ]; then
+  echo "ERROR: PR body closing keywords did not register. GitHub linked [$LINKED] for $SLUG, expected [$WANT]."
+  echo "       A code span or fence around 'Closes #N' suppresses it; a cross-repo qualifier"
+  echo "       points it at another repository. Fix the body NOW — after the merge the"
+  echo "       auto-close can never fire, and the issues stay open."
+  exit 1
+fi
+```
+
+**That `exit 1` is the point of the check, not decoration.** A mismatch that only *printed* would
+leave the snippet exiting 0, and the run would walk straight into the auto-merge section below
+having proved nothing — the promised pre-merge guarantee reduced to a log line nobody gates on.
+Failing here is what stops the arm.
+
+A mismatch is **fixed here, not reported at close-out**: edit the body with
+`gh pr edit "$PR" --body-file …` and re-read the link set until it matches. Once the PR
+merges the opportunity is gone — the close has to be done by hand, and on a repo using the
+release-goal convention those still-open issues hold the release (they are exactly the
+`release-blocker`s the run just delivered).
+
 **Every number in that body must already exist** — step 9 filed the deferrals precisely so
 this step has real numbers to cite. Do not write a follow-up's number here and file it in
 step 12; that is the ordering that put a nonexistent `#207` into three agents' shipped
