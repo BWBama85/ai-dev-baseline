@@ -223,6 +223,23 @@ on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
 printf '' > "$marker_file"; GATE_SESSION="$SID_MINE"; run_gate
 eq "$RC" "2" "empty marker file → runs and blocks"
 
+# 12b. A NEWLINE INSIDE A FIELD must not re-aim the ownership decode. Both directions were live
+#      bugs in the first cut of this gate, and both failed toward SUPPRESSION — the gate turning
+#      itself off, which is the one direction that must never happen by accident:
+#        owner  = "AAAA\nBBBB" → decoded owner "AAAA", a truncation that is not my id
+#        branch = "<branch>\nevil" → the branch still MATCHED and the real owner was replaced by
+#                 "evil", the second line of the branch
+#      Same class implement-issue-gate.sh pins for its own decode (#180).
+on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
+jq -n --arg o "$SID_MINE" '{branch:"feat", issue:"240", phase:"x", owner:($o + "\nBBBB")}' > "$marker_file"
+GATE_SESSION="$SID_MINE"; run_gate
+eq "$RC" "2" "newline in .owner → decode must not truncate my own id into a foreign one"
+
+on_feature_change; arm_failing_gate; mkdir -p "$repo/.claude/state"
+jq -n --arg b "feat" '{branch:($b + "\n" + $b), issue:"240", phase:"x", owner:"someone-else"}' > "$marker_file"
+GATE_SESSION="$SID_MINE"; run_gate
+eq "$RC" "2" "newline in .branch → must not match the current branch on its first line"
+
 # 13. A BROKEN INSTALL must not be silently spared by a planted marker. With common.sh absent the
 #     shared comparator does not exist, so ownership is unknowable — and the gate must fall
 #     through to its fail-loud path (#35) rather than treat "I cannot tell" as "not mine".

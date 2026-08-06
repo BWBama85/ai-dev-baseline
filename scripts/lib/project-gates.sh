@@ -133,14 +133,36 @@ _adb_have() { command -v "$1" >/dev/null 2>&1; }
 # (D34, adb_sc_paths) and are safely inside the bash 5.3 floor.
 #
 # Usage: _adb_rec_split <record> <state-var> <label-var> <cmd-var> <scope-var> <cadence-var>
+# Output names are VALIDATED before `local -n` binds them, per this repo's D34 precedent: an
+# unvalidated name reaches `declare -n`, which EVALUATES an array subscript inside it, and this
+# library installs into every consumer's ~/.<agent>/scripts/lib. The reserved-prefix rule is a
+# PREFIX, not a list of today's locals — an enumeration is correct only until someone adds one,
+# and the name they add would then bind circularly and leave the caller's variable UNSET, which
+# is the silent failure this check exists to prevent.
+#
+# It stops there rather than reproducing adb_sc_paths' full `declare -p` chain analysis, and the
+# reason is a real difference and not fatigue: that function is a PUBLIC surface consumers call
+# with names of their choosing, whereas this one is `_`-prefixed and both of its call sites pass
+# literals a few lines below. The nameref-CHAINING seam needs a caller that does not exist here.
+# If this ever becomes public, it owes the fuller check.
 _adb_rec_split() {
-  local _rec="$1" _rest
-  local -n _o_state="$2" _o_label="$3" _o_cmd="$4" _o_scope="$5" _o_cadence="$6"
-  _o_state="${_rec%%"$_ADB_TAB"*}";   _rest="${_rec#*"$_ADB_TAB"}"
-  _o_label="${_rest%%"$_ADB_TAB"*}";  _rest="${_rest#*"$_ADB_TAB"}"
-  _o_cmd="${_rest%%"$_ADB_TAB"*}";    _rest="${_rest#*"$_ADB_TAB"}"
-  _o_scope="${_rest%%"$_ADB_TAB"*}"
-  _o_cadence="${_rest#*"$_ADB_TAB"}"
+  local _ars_rec="${1-}" _ars_rest _ars_v
+  for _ars_v in "${2-}" "${3-}" "${4-}" "${5-}" "${6-}"; do
+    case "$_ars_v" in
+      ''|*[!A-Za-z0-9_]*|[0-9]*)
+        printf 'project-gates: _adb_rec_split: "%s" is not a usable output variable name\n' "$_ars_v" >&2
+        return 2 ;;
+      _ars_*)
+        printf 'project-gates: _adb_rec_split: output name "%s" uses the reserved _ars_ prefix\n' "$_ars_v" >&2
+        return 2 ;;
+    esac
+  done
+  local -n _ars_o1="$2" _ars_o2="$3" _ars_o3="$4" _ars_o4="$5" _ars_o5="$6"
+  _ars_o1="${_ars_rec%%"$_ADB_TAB"*}";  _ars_rest="${_ars_rec#*"$_ADB_TAB"}"
+  _ars_o2="${_ars_rest%%"$_ADB_TAB"*}"; _ars_rest="${_ars_rest#*"$_ADB_TAB"}"
+  _ars_o3="${_ars_rest%%"$_ADB_TAB"*}"; _ars_rest="${_ars_rest#*"$_ADB_TAB"}"
+  _ars_o4="${_ars_rest%%"$_ADB_TAB"*}"
+  _ars_o5="${_ars_rest#*"$_ADB_TAB"}"
 }
 
 # A valid gate label: starts with a letter, then letters/digits/underscore/hyphen. This

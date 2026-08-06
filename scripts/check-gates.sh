@@ -374,6 +374,21 @@ eq "$xcmd"   ""        "split: an empty command does not shift scope"
 eq "$xscope" "apps/**" "split: scope survives an empty command"
 eq "$xcad"   "always"  "split: cadence survives an empty command"
 
+# Output names are validated before `local -n` binds them (D34): an unvalidated name reaches
+# `declare -n`, which evaluates an array subscript inside it, and this library ships to consumers.
+# A reserved-prefix name would otherwise bind circularly and leave the caller's variable UNSET —
+# a silent wrong answer rather than an error.
+_adb_rec_split "$(printf 'run\tL\tC\tsc\tfull')" _ars_o1 xlabel xcmd xscope xcad 2>/dev/null
+eq "$?" "2" "split: a reserved-prefix output name is refused, not bound circularly"
+# The payload writes into the suite's OWN scratch dir, never the repo root: when this guard is
+# absent the subscript really does execute (observed), and a relative path would litter the
+# developer's tracked tree with a file named by a failing test.
+_adb_rec_split "$(printf 'run\tL\tC\tsc\tfull')" "arr[\$(touch $work/pwned)]" xlabel xcmd xscope xcad 2>/dev/null
+eq "$?" "2" "split: a subscript-bearing output name is refused before declare -n evaluates it"
+if [ -e "$work/pwned" ]; then bad "split: a subscript output name EXECUTED (arbitrary command run)"; else ok; fi
+_adb_rec_split "$(printf 'run\tL\tC\tsc\tfull')" "" xlabel xcmd xscope xcad 2>/dev/null
+eq "$?" "2" "split: an empty output name is refused"
+
 # --- dotted-table isolation (relies on the literal-table fix in common.sh) ----
 d="$work/dotted"; mkdir -p "$d"
 cat > "$d/agents.toml" <<'EOF'

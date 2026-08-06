@@ -77,21 +77,41 @@ cd "$repo_root" || exit 0
 # no ownership evidence anywhere in git, so the bystander is still gated. Closing that gap needs
 # per-session tree baselines, which is a different and much larger design.
 foreign_run_marker() {
-  local marker=".claude/state/implement-issue-active.json" raw m_branch m_owner mine
+  local marker=".claude/state/implement-issue-active.json" raw m_branch="" m_owner="" mine
   [ -f "$marker" ] || return 1                       # no marker: the overwhelmingly common case
   mine="${CLAUDE_CODE_SESSION_ID:-}"
   [ -n "$mine" ] || return 1                         # cannot identify myself -> unknown -> enforce
   command -v jq >/dev/null 2>&1 || return 1          # cannot read it -> unknown -> enforce
   command -v adb_owners_compatible >/dev/null 2>&1 || return 1   # no shared predicate -> enforce
   # ONE jq pass into a snapshot, so a concurrent write cannot hand back a mix of old and new
-  # fields. Pre-initialised because command substitution strips trailing newlines: a marker
-  # whose owner is absent yields one line, not two, and `set -u` would abort on the unread var.
-  m_branch=""; m_owner=""
-  raw="$(jq -r '.branch // "", .owner // ""' "$marker" 2>/dev/null)" || return 1
-  { read -r m_branch; read -r m_owner; } <<EOF
-$raw
-EOF
-  [ -n "$m_owner" ] || return 1                      # ownerless marker -> unknown -> enforce
+  # fields — and @tsv rather than two newline-separated values, because a NEWLINE INSIDE A FIELD
+  # otherwise re-aims the whole decode. Measured on this implementation before the fix, and both
+  # directions failed toward SUPPRESSION, i.e. toward the gate switching itself off:
+  #
+  #   owner  = "AAAA\nBBBB"  ->  decoded owner "AAAA"   — a truncation that is not my id
+  #   branch = "feat\nevil"  ->  branch "feat" MATCHED, and the real owner was discarded in
+  #                             favour of "evil", the second line of the branch
+  #
+  # @tsv escapes tab and newline inside values, so no field can contain the delimiter and no
+  # field can shift. This is the same failure implement-issue-gate.sh pins for its own five-field
+  # decode; the sibling learned it first (#180), and this decode is now held to the same bar.
+  #
+  # A non-string .branch/.owner makes @tsv error, jq exits non-zero, and we enforce.
+  local tab; tab="$(printf '\t')"
+  raw="$(jq -r '[(.branch // ""), (.owner // "")] | @tsv' "$marker" 2>/dev/null)" || return 1
+  case "$raw" in *"$tab"*) : ;; *) return 1 ;; esac   # no delimiter -> cannot trust the decode
+  m_branch="${raw%%"$tab"*}"
+  m_owner="${raw#*"$tab"}"
+  # POSITIVE PROOF MEANS A PLAUSIBLE ID, not merely a non-empty string. @tsv stops a field from
+  # shifting, but it faithfully preserves a CORRUPT one — an owner of "<my-id>\nBBBB" survives as
+  # a value that is genuinely not my id, and would therefore read as another session and suppress
+  # the gate. Corruption is not evidence of a second session; it is evidence of a broken marker,
+  # and this whole check exists to fire only on proof. A session id is an opaque token from the
+  # harness (Claude Code's is a UUID), so anything carrying whitespace, a control character or a
+  # backslash escape is not one, and the honest answer is "unknown" -> enforce.
+  case "$m_owner" in
+    ''|*[!A-Za-z0-9._:-]*) return 1 ;;
+  esac
   # The marker must be about THE BRANCH THIS TURN IS ON. A foreign run parked on some other
   # branch says nothing about the changes in front of us, and treating it as a blanket
   # suppression would turn one unrelated run into a checkout-wide gate bypass.

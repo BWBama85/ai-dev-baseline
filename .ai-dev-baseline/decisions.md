@@ -3092,6 +3092,21 @@ limit: none of them is sufficient alone.
              the 240s bound is and is not. The 18m55s that motivated the ask does not reproduce
              (#260/D37 measured 273s serial, 66-72s parallel), so the cost problem is answered by
              cadence rather than by a kill.
+             **Two defects self-review found in this branch's own new code, both failing toward the
+             gate switching itself off.** First, reading `.branch`/`.owner` as two newline-separated
+             values let a newline INSIDE a field re-aim the decode — an owner of `<my-id>\nBBBB`
+             truncated to something that no longer matched me, and a branch of `feat\nevil` matched
+             `feat` while replacing the real owner with `evil`. `@tsv` fixes the shifting, and a
+             plausibility test on the decoded owner fixes what @tsv faithfully preserves: a corrupt
+             value is a broken marker, not proof of a second session, and only proof may suppress.
+             Second, `_adb_rec_split` bound caller-supplied names with `local -n` without validating
+             them; dropping the validation and re-running the suite showed the subscript in
+             `arr[$(touch pwned)]` ACTUALLY EXECUTING, confirming D34's arbitrary-command-execution
+             claim on new code in a library that installs into consumer repos. It adopts D34's
+             identifier-plus-reserved-prefix rule, and deliberately not that function's fuller
+             `declare -p` chain analysis: this helper is private and both call sites pass literals,
+             so the nameref-chaining seam needs a caller that does not exist. If it is ever made
+             public it owes the fuller check.
 - placement: `scripts/lib/project-gates.sh` (cadence + elapsed), `scripts/lib/common.sh`
              (`adb_owners_compatible`), `agents/claude/scripts/precommit-gate.sh` (ownership +
              the `turn-end` context), `agents.toml` `[gates.cadence]`, `templates/agents.toml`,

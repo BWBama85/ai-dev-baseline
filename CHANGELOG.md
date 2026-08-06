@@ -63,6 +63,17 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   running `/implement-issue` on that branch. A session editing the tree without a tracked run
   leaves no ownership evidence anywhere in git, so a bystander is still gated there.
 
+- **A newline inside a marker field re-aimed the ownership decode, toward switching the gate off.**
+  Found in self-review, before the new check ever shipped. Reading `.branch` and `.owner` as two
+  newline-separated values means a newline *inside* either one shifts the decode — and both
+  directions failed toward suppression: an owner of `<my-id>\nBBBB` decoded to a truncated
+  `<my-id>` that no longer matched me, and a branch of `feat\nevil` still matched `feat` on its
+  first line while replacing the real owner with `evil`. The decode now goes through `@tsv`, which
+  escapes both delimiters so no field can shift, and a decoded owner is additionally required to
+  *look* like a session id — corruption is evidence of a broken marker, not proof of a second
+  session, and only proof may suppress. Same class `implement-issue-gate.sh` already pins for its
+  own decode (#180).
+
 - **An empty middle field silently shifted every gate record** — found while adding cadence, and
   worth recording because the failure was invisible. Tab is an IFS *whitespace* character, so
   `IFS=<tab> read` collapses runs of tabs and drops empty middle fields. That was harmless while
