@@ -7,7 +7,76 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Changed
+
+- **CI runs every job once per ordinary branch update, and required-check drift hard-fails only
+  where it is a fact** (#165, supersedes #99, D48). <!-- adb-claim-ok: #99 was closed NOT_PLANNED as SUPERSEDED by #165, which absorbed it; the reference is this change's provenance, not tracked work --> (Once per *update* rather than "once per head
+  SHA" — reopening a PR or re-running a workflow can still produce a second run of the same SHA;
+  what is gone is the automatic duplicate from two triggers firing on one push.)
+  `.github/workflows/ci.yml` triggered on unfiltered `push:`
+  *and* `pull_request:`, so a same-repo branch fired both events and every job ran twice — measured
+  live on PR #296 as `total=54 distinct=27`. Branch protection matched by context name so it still
+  gated correctly; the cost was a straight doubling of CI minutes on every push.
+
+  ```yaml
+  on:
+    push:
+      branches: [main]
+    pull_request:
+  ```
+
+  Narrowing `push:` does **not** perturb check discovery — `_adb_rs_file_verdict` inspects only
+  `pull_request`/`pull_request_target` triggers — and this was verified rather than assumed by
+  running the real discovery over a before/after pair: 27 contexts either way, byte-identical.
+
+  That filter is what let the `required-drift` step be **split by event** instead of patched.
+  `required-drift` discovers jobs from the checked-out tree and reads required contexts from the
+  default branch, so on a push to `main` its answer is a **fact** and on a PR it is a **prediction**
+  about a merge that has not happened. #122 hard-failed on both, and the only way to make the
+  introducing PR green was `baseline repo apply` from the PR branch — which requires the context on
+  `main` before the job exists there. Abandon that PR and `main` is left requiring a context nothing
+  will ever report, blocking every merge until an admin prunes it. So the `push` arm keeps the hard
+  failure and the `pull_request` arm now **advises**, via a `::warning` and a job summary.
+
+  **This gives something up, and it is not a wash:** a PR can now add a red, non-required job and
+  merge. The backstop is the push arm going red the moment it lands, so the exposure is "merged but
+  not yet applied" rather than "never caught" — #165's explicit acceptance criterion, not an
+  oversight. **Only a proven `14` is softened**; a `20` (unreadable live state, or a workflow file
+  #102's parser could not read) still fails the PR.
+
+  The old `github.ref == refs/heads/<default>` disjunct in that step's `if:` is deleted, since
+  `event_name == 'push'` now already means the default branch. **Deleting it alone would have been a
+  bug** — it leaves one PR-only step and removes every hard failure in the file — which is why this
+  shipped as a split rather than the deletion the issue described.
+
+  One consequence worth stating: `branches:` excludes **tag** pushes, so a `v*` tag no longer runs
+  `ci.yml`. Nothing depended on it — `wsl-smoke.yml` carries its own `push: tags: ['v*']`, and
+  `/release` verifies the merge commit is green *before* it pushes the tag.
+
 ### Added
+
+- **`repo-settings.sh required-drift --porcelain`** (#165, D48) — same exit codes, but stdout
+  carries only the drifted context names, one per line, with no prose and deliberately **no
+  remedy**. The advisory CI arm needs the names; what it must not do is echo the human code-`14`
+  text, which ends in `baseline repo apply` — right on the default branch, and exactly the
+  instruction that strands a phantom context when followed from a PR branch. The four other read
+  subcommands **reject** the flag rather than accept it inert.
+
+  The library stays read-only: the advisory surface (`$GITHUB_STEP_SUMMARY`, a `::warning`) is
+  written by the workflow *step*, and neither needs any permission beyond the `contents: read` the
+  workflow already declares. `check-repo-settings.sh` pins the wiring **structurally** — it counts
+  the call sites, compares each arm's `if:` for equality, and parses the `push:` branch filter into
+  entries — because swapping the two `if:` conditions leaves every pinned literal in place while
+  inverting the entire design. It then **executes** the advisory step's shell under `bash -e`,
+  which is the only check that could catch the arm shipping as `…; rc=$?`: GitHub runs a Linux
+  `run:` step as `bash -e {0}`, and `set -uo pipefail` does not clear errexit, so the step would
+  have died at the capture with exit 14 — hard-failing the PR while every static assertion passed.
+
+  A job `name:` is branch-authored free text and reaches two surfaces that interpret it, so both
+  are escaped: the annotation applies the `actions/toolkit` `escapeData` rules (`%`, CR, LF), and
+  the job summary emits names in an **indented** code block rather than backtick spans, which a
+  name containing a backtick can close to inject rendered Markdown into a page a maintainer reads.
+
 
 - **`[gates.cadence]` — a gate can declare WHICH CALLER it runs for** (#240, D47). The Stop hook
   fires at the end of every turn, including turns that edit nothing, so a `test` gate pointed at a

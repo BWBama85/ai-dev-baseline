@@ -52,8 +52,12 @@ those. The rules below are specific to this repo's code.
    **Two CI steps are deliberately not mirrored** (D13, extended by D24), and both are the same
    shape — a verdict that depends on network, auth and externally-mutable state:
 
-   - the `repo-settings` job's `required-drift` step (#122), which reads this repo's **live**
-     branch protection to catch a newly added CI job that stayed non-required;
+   - the `repo-settings` job's `required-drift` steps (#122, #165) — **two** of them, which read
+     this repo's **live** branch protection to catch a CI job that stayed non-required. The `push`
+     arm hard-fails (on the default branch the comparison is a fact); the `pull_request` arm only
+     advises via `--porcelain` + a job summary (there it is a prediction, and hard-failing it is
+     what used to strand a phantom required context on `main`). `check-repo-settings.sh` pins that
+     wiring structurally, since swapping the two `if:` conditions inverts the design silently;
    - the `fact-drift` job's **live claim** step (#212), which resolves every `#N` an added line
      cites against the live tracker.
 

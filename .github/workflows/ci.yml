@@ -1,7 +1,33 @@
 name: CI
 
+# WHY `push:` IS FILTERED AND `pull_request:` IS NOT (#165, #99).  adb-claim-ok: #99 was closed NOT_PLANNED as SUPERSEDED by #165, which absorbed it; the reference is this change's provenance, not tracked work
+#
+# Both triggers unfiltered meant a same-repo branch fired BOTH events for one head SHA, so every
+# job ran TWICE. Measured live on PR #296: `gh pr checks` reported `total=54 distinct=27` — 27 jobs,
+# 54 check runs. Branch protection matches by context NAME so it still gated correctly; the cost was
+# a straight doubling of CI minutes on every push, plus an ambiguous "which run satisfied the
+# requirement".
+#
+# Narrowing `push:` to the default branch does NOT perturb check discovery, and that is load-bearing
+# rather than lucky: `_adb_rs_file_verdict` inspects only `pull_request`/`pull_request_target`
+# triggers, so a `push:` filter is invisible to it. Verified by running the real discovery over a
+# before/after pair — 27 contexts either way, byte-identical. Fork PRs are unaffected because
+# `on: push` never fires for a fork's branch in this repo.
+#
+# ONE THING IT DOES CHANGE, and it is not "zero risk": `branches:` excludes TAG pushes, so pushing a
+# `v*` tag no longer runs this file. Safe here, but for a narrower reason than "the release verifies
+# first": NOTHING EVER READ A TAG'S CHECK RUNS. `/release` settles and health-checks the MERGE COMMIT
+# (`release.sh verify-merge`), and `cmd_tag` then tags that same sha — so the evidence comes from the
+# push-to-`main` run, which still happens. (`cmd_tag` requires only VERSION and MERGE_SHA, so an
+# operator CAN reach it without running `verify-merge`; that was already true, and a tag-triggered
+# `ci.yml` run would not have gated it either, because no step consumed one.) `wsl-smoke.yml`
+# independently keeps its own `push: tags: ['v*']`, so the Windows leg still fires on a release.
+#
+# `main` is spelled literally because GitHub does not evaluate expressions in `on:`. If this repo's
+# default branch is ever renamed, this line has to move with it.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -568,34 +594,161 @@ jobs:
       - name: The bash-floor lint must be observed going RED on every rule it owns (#257)
         run: bash scripts/check-bash-floor-guard.sh
 
-      # The LIVE half of #122, and the only step in this file that talks to the API. Why it rides
-      # this job rather than taking its own, and why it reads the ordinary branch endpoint rather
+      # The LIVE half of #122, and the only steps in this file that talk to the API. Why they ride
+      # this job rather than taking their own, and why they read the ordinary branch endpoint rather
       # than /protection: docs/repo-settings.md, "Catching the drift early".
+      #
+      # TWO ARMS, BECAUSE THE COMPARISON MEANS DIFFERENT THINGS ON THE TWO EVENTS (#165).
+      # `required-drift` discovers jobs from the CHECKED-OUT tree and reads required contexts from
+      # the DEFAULT BRANCH. On a push to `main` those are the same tree, so the answer is a fact
+      # about the default branch and a hard failure is right. On a PR they are DIFFERENT trees, so
+      # the answer is a PREDICTION about a merge that has not happened — and #122 hard-failed on it.
+      #
+      # That prediction could only be made green by running `baseline repo apply` from the PR branch,
+      # which requires the context on `main` BEFORE the job exists there. Abandon that PR and `main`
+      # is left requiring a context nothing will ever report, which blocks every merge and needs an
+      # admin token to clear. Hard-failing a prediction is what created that trap, so the PR arm now
+      # ADVISES and the push arm enforces.
+      #
+      # WHAT THIS GIVES UP, stated plainly rather than discovered later: a PR can now add a job that
+      # is red and non-required, and merge. The backstop is the push arm below — `main` goes red the
+      # moment it lands — so the window is "merged but not yet applied" instead of "never caught".
+      # That trade is #165's explicit acceptance criterion, not an oversight. See D48.
       #
       # Local to CI, and stated nowhere else:
       #
       #   * a FORK PR's GITHUB_TOKEN is read-only but still carries the contents:read this needs,
       #     so the read succeeds there too — that path runs in the base repo's context and is fine;
-      #   * the `if` is not belt-and-braces. On a PUSH to a fork (a contributor who forked and
-      #     enabled Actions), `gh api repos/{owner}/{repo}` resolves to the FORK, whose default
-      #     branch has no protection — so the step would exit 14 and hand that contributor a red
-      #     build with a remedy only this repo's admin can run. The assertion is about THIS repo's
-      #     settings, so it only runs here.
+      #   * the repository guard is not belt-and-braces. On a PUSH to a fork (a contributor who
+      #     forked and enabled Actions), `gh api repos/{owner}/{repo}` resolves to the FORK, whose
+      #     default branch has no protection — so the step would exit 14 and hand that contributor a
+      #     red build with a remedy only this repo's admin can run. The assertion is about THIS
+      #     repo's settings, so it only runs here.
       #
-      #   * the event filter is not tidiness either. `push:` here is unfiltered (#99), so this
-      #     step would otherwise run for TAGS and maintenance branches — which check out the
-      #     PUSHED ref's workflow definitions while the live contexts always come from the
-      #     CURRENT default branch. Rename a job, prune the old context on the default branch,
-      #     then push a tag whose tree still carries the old name: exit 14, failing release CI
-      #     over a comparison that was never meaningful for that ref.
-      - name: Required-check drift — a discovered job must not silently stay non-required (#122)
+      #   * the `github.ref == refs/heads/<default>` disjunct that used to live here is GONE, and it
+      #     is redundant rather than merely tidied: it existed because `push:` was unfiltered, so
+      #     this step would otherwise run for TAGS and maintenance branches — which check out the
+      #     PUSHED ref's workflow definitions while the live contexts always come from the CURRENT
+      #     default branch. `on: push: branches: [main]` now excludes both, so `event_name == 'push'`
+      #     already means "the default branch". Deleting the disjunct ALONE would have been a bug —
+      #     it would leave one PR-only step and silently remove every hard failure — which is why
+      #     this is a split, not a deletion.
+      - name: Required-check drift on the default branch — a job here must not stay non-required (#122, #165)
         if: >-
           github.repository == 'BWBama85/ai-dev-baseline'
-          && (github.event_name == 'pull_request'
-              || github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+          && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/lib/repo-settings.sh required-drift
+
+      # The ADVISORY arm. It must never fail the job on drift — that is the whole point — but it is
+      # NOT a step that cannot fail: only a proven 14 is softened. A 20 (live state unreadable, or
+      # discovery CONTRADICTING it, or a workflow file this repo's parser could not read at all —
+      # #102) still fails, because that is not "your PR predicts drift", it is "the comparison could
+      # not be made", and #122's fail-closed rule is not something a rename of the step relaxes.
+      #
+      # `--porcelain` (#165) is what makes the advisory honest. The human code-14 text ends in
+      # `baseline repo apply`, and echoing that here would tell the operator to do the one thing
+      # that re-creates the abandoned-PR trap. Porcelain hands over the NAMES on stdout and no
+      # remedy at all, so this step writes the remedy that is right for a PR — wait for the merge.
+      #
+      # THE SURFACE IS WRITTEN HERE, NOT IN THE LIBRARY, which is #165's stated constraint:
+      # `repo-settings.sh` reads .github/workflows and writes only the two GitHub settings `apply`
+      # owns. `$GITHUB_STEP_SUMMARY` and `::warning` also need NO permission beyond the
+      # `contents: read` this workflow already declares — a PR comment would need
+      # `pull-requests: write`, which a fork PR's token does not get anyway. Not `pull_request_target`
+      # either: it would hand elevated credentials to a workflow that runs PR-authored code.
+      - name: Required-check drift this PR would introduce — advisory, never a hard failure (#165)
+        if: >-
+          github.repository == 'BWBama85/ai-dev-baseline'
+          && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # CAPTURE THEN CHECK, never `x="$(cmd | filter)"`: a pipeline reports its LAST command's
+          # status, which would throw away the 14/20 distinction this whole step is built on.
+          #
+          # AND `|| rc=$?`, NEVER `; rc=$?` — this arm's whole purpose dies on that semicolon.
+          # GitHub runs a Linux `run:` step as `bash -e {0}`, so errexit is ON before the first line
+          # of this block, and `set -uo pipefail` does not clear it. With `; rc=$?`, an assignment
+          # whose command substitution exits 14 trips errexit and kills the step AT THAT LINE: exit
+          # 14, no advisory written, the PR hard-failed — exactly the behaviour #165 removed, wearing
+          # the new code. `|| rc=$?` puts the command in a condition context, where errexit does not
+          # apply. Verified by running this block under `bash -e` against a stub; `check-repo-settings.sh`
+          # now executes it that way so the semicolon cannot come back.
+          rc=0
+          drifted="$(bash scripts/lib/repo-settings.sh required-drift --porcelain)" || rc=$?
+
+          if [ "$rc" -eq 0 ]; then
+            echo "No prospective required-check drift: every job this PR's tree discovers is already required on the default branch."
+            exit 0
+          fi
+          if [ "$rc" -ne 14 ]; then
+            echo "::error::required-drift could not complete (exit $rc). This is NOT the advisory path — the comparison failed or the live state was unreadable, so it fails closed. See the log above."
+            exit "$rc"
+          fi
+
+          # rc 14: a PREDICTION, reported as advice.
+          #
+          # EVERY NAME BELOW IS BRANCH-AUTHORED TEXT. A job `name:` is free text that arrives from
+          # the PR's own tree — on a fork PR, from a stranger — and it lands in two surfaces that
+          # both interpret their input. Neither is a shell injection (nothing is eval'd; that is
+          # tested), but both are content injections if pasted raw.
+          #
+          # Counted while joining, in one pass. The separate `printf | grep -c` this replaces was a
+          # second copy of the "how do you count lines" rule that `nlines` already owns in the
+          # library — and the library is not sourceable from here, so the fix is to not need the
+          # rule twice rather than to restate it.
+          #
+          # Joined in-shell, not with `paste -sd ', '`, which does NOT mean "join with a comma and a
+          # space": -d takes a LIST of delimiters used cyclically, so three names come back as
+          # `a,b c`. A name may itself contain a comma, so sed-ing commas is wrong differently.
+          n=0
+          joined=""
+          while IFS= read -r _name; do
+            [ -n "$_name" ] || continue
+            n=$((n + 1))
+            if [ -z "$joined" ]; then joined="$_name"; else joined="$joined, $_name"; fi
+          done <<< "$drifted"
+
+          # SURFACE 1 — the annotation. The runner DECODES %25/%0A/%0D in a workflow command's data,
+          # so a name containing a literal `%25` would surface as `%`, and one containing `%0A`
+          # would break the message across lines. Escape exactly as actions/toolkit's `escapeData`
+          # does — PERCENT FIRST, or the escapes introduced here would themselves be re-escaped.
+          esc="${joined//%/%25}"
+          esc="${esc//$'\r'/%0D}"
+          esc="${esc//$'\n'/%0A}"
+          echo "::warning title=Prospective required-check drift::$n job(s) discovered on this branch are not required on the default branch: $esc. This does NOT block the PR — see the job summary."
+
+          {
+            echo "### Prospective required-check drift ($n job(s))"
+            echo
+            echo "These jobs are discovered in **this branch's** tree but are **not** required on the default branch:"
+            echo
+            # SURFACE 2 — the job summary, which renders GitHub-flavored Markdown. Each name goes in
+            # an INDENTED code block (4 spaces), deliberately not a backtick span: a span is closed
+            # by the first matching backtick run, so a name like ``a` [x](http://evil) `b`` escapes
+            # it and injects a rendered link into a page a maintainer reads. An indented code block
+            # has NO closing delimiter for content to forge — it ends only at a non-indented line,
+            # and a name cannot contain a newline (the shared workflow reader emits one physical
+            # line per record). A fence would not do: ``` inside a name closes a ``` fence.
+            printf '%s\n' "$drifted" | sed 's/^/    /'
+            echo
+            echo "**This is advice, not a failure — nothing here blocks this PR.**"
+            echo
+            echo "**Do _not_ run \`baseline repo apply\` from this branch.** Doing so makes these contexts required"
+            echo "on the default branch before the jobs exist there, so every other open PR waits on a context it"
+            echo "does not report — and if this PR is abandoned, the default branch is left requiring something"
+            echo "nothing will ever report, which blocks every merge and needs an admin token to clear."
+            echo
+            echo "Instead: **merge this PR, let the default branch's own drift check go red, and apply then.**"
+            echo "That run is the enforcing one; this run is only the heads-up."
+            echo
+            echo "If a name above is already drifted on the default branch (rather than added by this PR), the"
+            echo "default branch's check is already reporting it — this list cannot tell the two apart, because"
+            echo "it compares this branch's whole tree against the live required set."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   baseline:
     name: baseline

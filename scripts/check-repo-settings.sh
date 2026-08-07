@@ -880,7 +880,10 @@ eq "$RC_" "20" "automerge-ok = 20 (fail closed) when protection cannot be read"
 has "$OUT" "refusing to arm" "code 20 refuses rather than assuming safe"
 
 # ============================ required-drift: the EARLY half of code 14 (#122) ============
-# `automerge-ok` learns this at merge time; this learns it on the PR that introduces the job. The
+# `automerge-ok` learns this at merge time; this learns it as soon as the job reaches the default
+# branch. (Until #165 it learned it on the PR that introduced the job — earlier, but only greenable
+# by requiring a context before the job existed anywhere, which is the trap D48 removes. The PR now
+# gets the same finding as advice; see the wiring assertions at the end of this file.) The
 # assertions below are grouped by the two ways it can be wrong, because they are NOT symmetric:
 # missing a real drift costs one ungated job, while a FALSE drift fails every PR in the repo and
 # teaches the operator to ignore the lint.
@@ -1074,6 +1077,82 @@ for st in 401 403 404 500; do
   hasnt "$OUT" "  - two" "HTTP $st does not manufacture drift"
 done
 
+# ============================ required-drift --porcelain (#165) ============
+# The PR arm of the drift step softens code 14 into an advisory, and it needs the drifted NAMES
+# without the code-14 prose — because that prose ends in `baseline repo apply`, which is the right
+# remedy on the default branch and the WRONG one from a PR branch: applying there makes the context
+# required before the job exists on the default branch, and an abandoned PR then leaves the branch
+# requiring something nothing will ever report. An advisory that repeated it would hand the operator
+# the exact hazard #165 removes. So the contract under test is "stdout is names, nothing else".
+#
+# STDOUT AND STDERR MUST BE READ SEPARATELY HERE, which `rsx_stub` cannot do — it merges them with
+# `2>&1`, so under it a remedy line leaking onto stdout is indistinguishable from the same line on
+# stderr, and this whole section would pass over the one defect it exists to catch.
+rsx_stub_split() {   # like rsx_stub, but OUT = stdout only and ERR_ = stderr only
+  STUB_CALLS="$work/calls.txt"; : > "$STUB_CALLS"
+  rm -f "$S/body.json"
+  OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" STUB_FAIL_WRITE="${STUB_FAIL_WRITE:-}" \
+         STUB_BRANCH_STATUS="${STUB_BRANCH_STATUS:-}" \
+         STUB_CHECKRUNS_STATUS="${STUB_CHECKRUNS_STATUS:-}" \
+         PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>"$work/err.txt")"; RC_=$?
+  ERR_="$(cat "$work/err.txt")"
+}
+
+# The verdict is UNCHANGED — a different rendering, never a different answer. If porcelain ever
+# returned 0 here, the advisory arm would report "no prospective drift" on a drifted tree.
+wf_two; repo_fx true true; branch_checks "one"
+rsx_stub_split required-drift --porcelain
+eq "$RC_" "14" "--porcelain keeps the 14 verdict (a rendering, not a softer answer)"
+eq "$OUT" "two" "--porcelain puts ONLY the drifted context name on stdout"
+hasnt "$OUT" "repo-settings:" "no prose reaches stdout — a sentence there would arrive as a context name"
+hasnt "$OUT" "baseline repo apply" "the branch-wrong remedy is NOT on stdout for a caller to echo"
+
+# The remedy must not merely move to stderr in this mode either: CI logs stderr, so an advisory run
+# that printed it would still tell the operator to apply from the PR branch.
+hasnt "$ERR_" "baseline repo apply" "...and it is withheld from stderr too, not just from stdout"
+
+# Two drifted jobs must arrive as two LINES, because the caller splices them into a list. A single
+# joined line would render one bullet naming two jobs.
+wf_two; repo_fx true true; branch_checks
+rsx_stub_split required-drift --porcelain
+eq "$RC_" "14" "--porcelain reports drift when the branch requires nothing at all"
+eq "$OUT" "$(printf 'one\ntwo')" "every drifted job is its own line"
+
+# THE IN-SYNC CASE IS THE ONE THAT SILENTLY BREAKS. `adb_info` prints to STDOUT, so without
+# suppression the clean run emits "…no drift" there and the caller reads a context literally named
+# `repo-settings: all 1 discovered job(s) are required…`. Empty stdout is the whole contract.
+wf_one; repo_fx true true; branch_checks "one"
+rsx_stub_split required-drift --porcelain
+eq "$RC_" "0" "--porcelain still passes an in-sync repo"
+eq "$OUT" "" "an in-sync run prints NOTHING on stdout (the info line would read as a context name)"
+
+# Same trap, second door: the #24 no-CI arm has its own info line on the same stream.
+wf_none; repo_fx true true; branch_unprotected
+rsx_stub_split required-drift --porcelain
+eq "$RC_" "0" "--porcelain still passes a repo with no discoverable CI (#24)"
+eq "$OUT" "" "the no-CI info line is suppressed too"
+
+# FAIL-CLOSED IS NOT SOFTENED. Only a proven 14 is a rendering choice; 20 means the state could not
+# be read or contradicts itself, and porcelain must not turn that into an empty, reassuring list.
+wf_two; repo_fx true true; branch_checks "one"
+STUB_BRANCH_STATUS=500 rsx_stub_split required-drift --porcelain
+eq "$RC_" "20" "--porcelain does NOT soften the fail-closed 20"
+eq "$OUT" "" "a fail-closed run emits no names (an empty list must not read as 'no drift')"
+
+# Without the flag, nothing changes — the human path is untouched by this feature.
+wf_two; repo_fx true true; branch_checks "one"
+rsx_stub required-drift
+has "$OUT" "baseline repo apply" "the NON-porcelain path still carries the human remedy"
+
+# SCOPED TO ONE SUBCOMMAND. An accepted-but-inert flag promises the output changed when it did not,
+# which is the same "knob that does nothing" this file refuses for `branch-required-contexts
+# --branch`. Symmetric with the apply-only options rejected above.
+for sub in checks status automerge-ok merge-flag; do
+  rsx_stub "$sub" --porcelain
+  no "$RC_" "$sub rejects the drift-only --porcelain"
+  has "$OUT" "only meaningful for 'required-drift'" "$sub says WHY --porcelain was rejected"
+done
+
 # ============================ merge-flag: the repo decides the method ============
 # A hardcoded --squash is REJECTED wherever squash merging is disabled, so the guard would say
 # "safe" and the merge command would still fail. Each method is independently configurable.
@@ -1163,5 +1242,224 @@ repo_fx true true; branch_checks "one"
 rsx_stub required-drift
 eq "$RC_" "0" "a 4-space repo whose job IS required reports no drift (it used to report nwant=0)"
 has "$OUT" "no drift" "...by matching, not by discovering nothing"
+
+# ============================ the CI WIRING of required-drift (#165) ============
+# Everything above proves the PREDICATE. This proves the two CALL SITES, and it exists because the
+# predicate being perfect is worth nothing if the workflow asks it the wrong question on the wrong
+# event — a failure mode that prints exactly what a healthy run prints.
+#
+# The `required-drift-wired` fact pin (check-fact-drift.sh) already catches the step being DELETED,
+# by pinning the literal invocation. It cannot catch the step being MIS-GATED: swap the two `if:`
+# conditions and both literals are still there, both steps still run, and the default branch is now
+# merely advised while pull requests are hard-failed — the exact inversion #165 shipped to fix, with
+# a green lint over it. Only structure catches that, so structure is what this asserts.
+#
+# COMMENTS ARE STRIPPED FIRST. The claim is about the YAML, and the prose above those steps
+# deliberately quotes both event names AND the retired `github.ref` disjunct in order to explain why
+# it went — so a grep that reads comments would report the retired form as still present and the
+# arms as both-events, failing on the documentation that exists to prevent the bug.
+# Emits, per step that invokes required-drift: <porcelain|plain> TAB <the WHOLE `if:` expression,
+# whitespace-normalized>. The condition is compared for EQUALITY by the callers below, not searched
+# for a token, because a token test answers the wrong question: `github.event_name == 'push' &&
+# false` contains the token and governs nothing, and a token test would report the arm as correctly
+# gated while it never runs. Equality also makes an ADDED disjunct a failure by construction, so the
+# retired `github.ref` clause cannot creep back under a passing grep.
+drift_wiring() {   # <ci.yml path> -> <porcelain|plain>\t<normalized if:>
+  awk '
+    /^[[:space:]]*#/ { next }                      # prose is not wiring
+    /^      - name:/ { flush(); block = ""; inif = 0 }
+    /^        [a-z]/ { inif = 0 }                  # any sibling key ends the if: block
+    /^        if:/   { inif = 1; cond = ""; sub(/^[[:space:]]*if:[[:space:]]*>?-?[[:space:]]*/, ""); if ($0 != "") cond = $0; next }
+    inif && /^          / { line = $0; sub(/^[[:space:]]+/, "", line); cond = (cond == "" ? line : cond " " line); next }
+    { block = block "\n" $0 }
+    END { flush() }
+    function flush(   p) {
+      if (block !~ /repo-settings\.sh required-drift/) return
+      p = (block ~ /required-drift --porcelain/) ? "porcelain" : "plain"
+      printf "%s\t%s\n", p, cond
+    }
+  ' "$1"
+}
+CI_YML="$ROOT/.github/workflows/ci.yml"
+
+# The `on:` block must FILTER push, or every job runs twice per head SHA again (#99/#165). Scoped to  adb-claim-ok: #99 was closed NOT_PLANNED as SUPERSEDED by #165, which absorbed it; the reference is this change's provenance, not tracked work
+# the `on:` block: `branches:` also appears under `pull_request:` filters in other repos' workflows,
+# and a bare file-wide grep would accept a filter on the wrong trigger entirely.
+#
+# Emits the push trigger's branch filter as ONE ENTRY PER LINE, handling both legal spellings:
+#
+#     push:                 push:
+#       branches: [main]      branches:
+#                               - main
+#
+# Accepting only the first would be a guard that fails on reformatting, and those get deleted rather
+# than fixed. But the entries are PARSED rather than grepped, which matters more: a substring test
+# for "main" is satisfied by `branches: [not-main]`, and one that does not strip comments is
+# satisfied by a `# branches: [main]` sitting above an unfiltered `push:`. Both leave every job
+# running twice while the guard reports success — the silent pass this section exists to prevent.
+# (A flow-style `on: {push: {...}}` one-liner would defeat this; this repo writes block YAML, and
+# rewriting it that way is a deliberate act that should revisit this check.)
+push_branch_entries() {
+  awk '
+    /^[[:space:]]*#/ { next }                       # a commented-out filter filters nothing
+    /^on:/           { inon = 1; next }
+    /^[^[:space:]]/  { inon = 0; inpush = 0; inbr = 0 }
+    inon && /^  push:/ { inpush = 1; next }
+    inon && /^  [^ ]/  { inpush = 0; inbr = 0 }
+    inpush && /^    branches:/ {
+      inbr = 1
+      rest = $0
+      sub(/^[[:space:]]*branches:[[:space:]]*/, "", rest)
+      if (rest ~ /^\[/) {                           # flow sequence: [a, b]
+        gsub(/^\[|\][[:space:]]*$/, "", rest)
+        k = split(rest, parts, /,/)
+        for (i = 1; i <= k; i++) {
+          gsub(/^[[:space:]\047"]+|[[:space:]\047"]+$/, "", parts[i])
+          if (parts[i] != "") print parts[i]
+        }
+      }
+      next
+    }
+    inbr && /^      -/ {                            # block sequence: - a
+      rest = $0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", rest)
+      gsub(/^[[:space:]\047"]+|[[:space:]\047"]+$/, "", rest)
+      if (rest != "") print rest
+      next
+    }
+    inbr && /^    [^ ]/ { inbr = 0 }
+  ' "$1"
+}
+# EXACT, not "contains". The filter this repo needs is precisely `[main]`; widening it is a
+# deliberate act that should come back through this assertion rather than slip past a substring
+# test. An unfiltered `push:` yields empty output, which is not "main" either.
+eq "$(push_branch_entries "$CI_YML")" "main" \
+   "ci.yml's push: is filtered to exactly the default branch, so a PR head gets ONE run of each job (#99)"  # adb-claim-ok: #99 was closed NOT_PLANNED as SUPERSEDED by #165, which absorbed it; the reference is this change's provenance, not tracked work
+
+# Exactly two call sites, one per arm. A third would mean an ungoverned copy; one means an arm was
+# lost, and losing the PUSH arm is silent — nothing else in this repo would fail.
+eq "$(drift_wiring "$CI_YML" | wc -l | tr -d ' ')" "2" "ci.yml wires required-drift exactly twice (one enforcing arm, one advisory)"
+
+# THE ENFORCING ARM IS THE PUSH ARM, and the condition must be EXACTLY this. Equality rather than a
+# token search: `… == 'push' && false` contains the token and governs nothing, and an extra disjunct
+# (the retired `github.ref` clause creeping back) would also pass a search. Both are caught here.
+_RS_GUARD="github.repository == 'BWBama85/ai-dev-baseline'"
+eq "$(drift_wiring "$CI_YML" | grep '^plain' | cut -f2)" "$_RS_GUARD && github.event_name == 'push'" \
+   "the hard-failing arm's if: is EXACTLY the repo guard AND event_name == push (nothing more, nothing less)"
+
+# THE ADVISORY ARM IS THE PR ARM, and it must ask for --porcelain: without it the step would have to
+# parse the human code-14 text, whose remedy (`baseline repo apply`) is wrong from a PR branch.
+eq "$(drift_wiring "$CI_YML" | grep '^porcelain' | cut -f2)" "$_RS_GUARD && github.event_name == 'pull_request'" \
+   "the advisory arm's if: is EXACTLY the repo guard AND event_name == pull_request"
+
+# The retired disjunct is excluded by the equalities above (an extra clause changes the string), but
+# assert its absence from the whole wiring too — it must be GONE, not merely unused. Left in place it
+# reads as load-bearing, and it is the clause whose deletion-in-isolation would have turned this step
+# PR-only and removed every hard failure in the file (gap analysis, BLOCKING 1).
+hasnt "$(drift_wiring "$CI_YML")" "github.ref" "the 'github.ref == refs/heads/<default>' disjunct is gone (push: is filtered now)"
+
+# The enforcing arm must actually INVOKE the library, not merely mention it. `run: echo bash
+# scripts/lib/repo-settings.sh required-drift` satisfies every containment test above while gating
+# nothing at all — the same shape as a guard that scans zero files.
+has "$(awk '/^      - name: Required-check drift on the default branch/ { g = 1 } g && /^        run:/ { print; exit }' "$CI_YML")" \
+    "run: bash scripts/lib/repo-settings.sh required-drift" \
+    "...and its run: line invokes the library directly, rather than merely naming it"
+
+# The advisory arm must not be able to fail the job on drift: it converts 14 into 0 and re-raises
+# everything else. Asserted on the extracted step text so a future edit that "simplifies" it back
+# into `set -e` + a plain call is caught.
+#
+# BOTH EXTRACTORS KEY OFF THE `--porcelain` INVOCATION, never off the step's NAME. Anchoring on the
+# word "advisory" in a `name:` makes a RENAME of a perfectly correct step fail this suite, and a
+# guard that fails on cosmetic edits gets deleted rather than fixed. The invocation is the thing
+# being asserted about, so it is also the right thing to find it by. The extraction is still
+# indentation-sensitive — a `run: |` body has to be de-indented to run — but that is checked rather
+# than assumed: an empty extraction FAILS loudly below instead of vacuously passing.
+adv_step="$(awk '/^      - name:/ { buf = ""; grab = 1 }
+                 grab { buf = buf $0 "\n" }
+                 /required-drift --porcelain/ { found = 1 }
+                 found && /GITHUB_STEP_SUMMARY"$/ { printf "%s", buf; exit }' "$CI_YML")"
+has "$adv_step" 'rc" -ne 14'      "the advisory arm re-raises every code EXCEPT 14 (20 stays fail-closed)"
+has "$adv_step" "GITHUB_STEP_SUMMARY" "...and writes its advisory from the STEP, keeping the library read-only"
+
+# ...and then RUN IT, under the shell GitHub actually uses. Everything above is a grep, and a grep
+# could not have caught the defect this exists for: the block once read `drifted="$(…)"; rc=$?`,
+# which is correct under `bash file` and FATAL under `bash -e file`. GitHub runs a Linux `run:` step
+# as `bash -e {0}`, and `set -uo pipefail` does not clear errexit — so on the drift path the
+# assignment tripped errexit and the step died at that line with exit 14, writing no advisory and
+# hard-failing the PR. That is the exact behaviour #165 removed, reintroduced by a semicolon, and
+# every static assertion above still passed.
+#
+# So the contract is executed, not described: extract the block verbatim, stub the library at each
+# exit code, and require the advisory path to exit 0 AND produce a summary — under `bash -e`.
+adv_body="$(printf '%s\n' "$adv_step" | awk '
+                 /^          set -uo pipefail$/ { emit = 1 }
+                 emit { sub(/^          /, ""); print }
+                 emit && /GITHUB_STEP_SUMMARY"$/ { exit }')"
+if [ -z "$adv_body" ]; then
+  check_note "could not extract the advisory step's shell body from ci.yml — the assertions below would vacuously pass."
+  check_note "  Look for: a step whose run: block calls 'required-drift --porcelain', opens with 'set -uo pipefail'"
+  check_note "  at 10-space indent, and closes with a line ending '} >> \"\$GITHUB_STEP_SUMMARY\"'."
+  check_fail
+else
+  adv_dir="$work/advisory"; mkdir -p "$adv_dir/scripts/lib"
+  printf '%s\n' "$adv_body" > "$adv_dir/adv.sh"
+  cat > "$adv_dir/scripts/lib/repo-settings.sh" <<'ADVSTUB'
+#!/usr/bin/env bash
+case "${STUB_MODE:-}" in
+  clean)      exit 0 ;;
+  drift)      printf '%s\n' "job one" "b,c" "three"; exit 14 ;;
+  hostile)    printf '%s\n' 'ev`il [x](http://example.invalid) `y' 'pct%25name' 'nl%0Aname'; exit 14 ;;
+  unreadable) echo "repo-settings: cannot read branch" >&2; exit 20 ;;
+  usage)      echo "repo-settings: unknown option" >&2; exit 2 ;;
+esac
+ADVSTUB
+  adv_run() {   # <mode> -> RC_ = the STEP's exit code, OUT = its stdout, with a fresh summary file
+    : > "$adv_dir/summary.md"
+    OUT="$(cd "$adv_dir" && STUB_MODE="$1" GITHUB_STEP_SUMMARY="$adv_dir/summary.md" \
+             bash -e adv.sh 2>&1)"; RC_=$?
+  }
+
+  # THE REGRESSION ITSELF. Under `bash -e`, drift must still exit 0 and still write the advisory.
+  adv_run drift
+  eq "$RC_" "0" "under 'bash -e' (GitHub's default shell) the advisory arm exits 0 on drift"
+  ok "[ -s '$adv_dir/summary.md' ]" "...and actually wrote the job summary rather than dying at the capture"
+  has "$OUT" "::warning" "...and emitted a warning annotation, not an error"
+  # The names must survive intact: one carries a space, one carries a comma. A `paste -sd ', '`
+  # join would render these three as `job one,b,c three`.
+  has "$OUT" "job one, b,c, three" "every drifted name is joined correctly (a comma IN a name is not a separator)"
+  has "$(cat "$adv_dir/summary.md")" '    b,c' "...and each is its own line of an INDENTED code block"
+
+  # BRANCH-AUTHORED TEXT REACHES BOTH SURFACES, and both interpret their input. A job `name:` is
+  # free text from the PR's own tree — on a fork PR, from a stranger — so the two escapes are
+  # asserted on the values that actually break them, not on well-behaved names.
+  adv_run hostile
+  eq "$RC_" "0" "a hostile job name is still only advice (it must not fail the PR either)"
+  # A backtick span is closed by the first matching run, so `a` [x](url) `b` would inject a RENDERED
+  # link into a page a maintainer reads. An indented code block has no delimiter to forge.
+  has "$(cat "$adv_dir/summary.md")" '    ev`il [x](http://example.invalid) `y' \
+      "a name carrying backticks + a markdown link is emitted VERBATIM, not rendered"
+  hasnt "$(cat "$adv_dir/summary.md")" '- `ev`' "...and is not wrapped in a code span it could close"
+  # The runner DECODES %25/%0A/%0D in a workflow command, so a literal `%25` in a name would come
+  # back as `%` and a `%0A` would split the annotation across lines.
+  has "$OUT" 'pct%2525name' "a literal %25 in a name is escaped, so the runner decodes it back to %25"
+  has "$OUT" 'nl%250Aname'  "...and a literal %0A cannot break the annotation across lines"
+
+  adv_run clean
+  eq "$RC_" "0" "an in-sync PR exits 0"
+  hasnt "$OUT" "::warning" "...with no annotation at all"
+
+  # FAIL-CLOSED SURVIVES. Only 14 is softened; everything else must still fail the PR.
+  adv_run unreadable
+  eq "$RC_" "20" "an unreadable live read still FAILS the PR (20 is not advice)"
+  has "$OUT" "::error" "...and says so as an error"
+  adv_run usage
+  eq "$RC_" "2" "a usage error still fails the PR (a renamed flag must not pass silently)"
+fi
+# Pinned as PRESENCE of the caution, not absence of the command — the advisory names
+# `baseline repo apply` on purpose, to say DON'T. Asserting the string were absent would fail on the
+# warning itself and, worse, would be satisfied by an advisory that simply said nothing about the
+# trap. What must survive an edit is the negation.
+has "$adv_step" 'Do _not_ run' "...and warns AGAINST applying from the PR branch (that is what strands a phantom context)"
 
 check_summary "repo-settings"

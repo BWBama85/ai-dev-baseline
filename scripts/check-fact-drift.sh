@@ -474,6 +474,21 @@ fact required-drift-lint "fixed:required-drift" -- \
 fact required-drift-wired "fixed:repo-settings.sh required-drift" -- \
   .github/workflows/ci.yml
 
+# The PR arm's machine-readable read (#165). Same three-surface contract as its parent: the library
+# IMPLEMENTS the flag, the CI step PASSES it, and the doc DOCUMENTS it, so a rename in one place is
+# drift. (A rename in the library alone does NOT go silent — the advisory arm re-raises exit 2, and
+# `check-repo-settings.sh` executes it against a stub to prove that. This pin is about the three
+# spellings agreeing, not about rescuing a failure mode that is already loud.)
+#
+# WHAT THIS PIN CANNOT DO, stated so nothing downstream over-credits it: it is a fixed-string
+# presence test, and `ci.yml` names the flag in COMMENTS as well as in the invocation — so removing
+# it from the real call while leaving the prose satisfies this rule. Likewise the sibling
+# `required-drift-wired` pin does not prove the STEPS exist, only that the string appears somewhere
+# in the file. Deletion and mis-gating are both caught by the structural assertions in
+# `scripts/check-repo-settings.sh`, which count the call sites and compare each `if:` for equality.
+fact required-drift-porcelain "fixed:--porcelain" -- \
+  scripts/lib/repo-settings.sh .github/workflows/ci.yml docs/repo-settings.md
+
 # --- FACT: the pre-arm review guard subcommand (#134) ------------------------
 # Identical contract shape, and identically silent when it breaks: the library IMPLEMENTS
 # `gate`, the workflow CALLS it before arming, and the doc DOCUMENTS its exit codes. Because a

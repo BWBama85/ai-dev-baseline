@@ -7,8 +7,10 @@ name: WSL smoke
 #
 # ITS OWN FILE, AND THAT IS LOAD-BEARING TWICE OVER:
 #
-#   1. `ci.yml` has only unfiltered `push:` and `pull_request:` triggers, so a `schedule:` added
-#      there would run ALL 27 of its jobs weekly to gain this one.
+#   1. a `schedule:` fires a whole workflow FILE, so adding one to `ci.yml` would run ALL 27 of its
+#      jobs weekly to gain this one. (Until #165 the reason was stated as `ci.yml` carrying only
+#      unfiltered triggers; that detail is now wrong — its `push:` is filtered to `main` — but it
+#      was never the load-bearing part. Trigger filtering cannot scope a `schedule:` to one job.)
 #   2. `scripts/lib/repo-settings.sh` discovery emits only jobs it can prove report on EVERY pull
 #      request, and skips any workflow with "no pull_request trigger". This file has none, so
 #      `repo-settings.sh` can never DISCOVER it or add it as a required context — which is exactly
