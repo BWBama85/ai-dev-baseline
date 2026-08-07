@@ -763,6 +763,88 @@ trapped="$(bash -c '. "$1"; trap "echo MINE" TERM; adb_run_bounded 5 1 true >/de
   _ "$PWD/scripts/lib/common.sh" 2>/dev/null)"
 has "$trapped" "MINE" "adb_run_bounded restores the caller's own TERM trap"
 
+# A GRANDCHILD dies with the bound, on BOTH paths (#141). This is the case the two paths used to
+# DISAGREE on while agreeing on status: both returned 124, and only one had actually cleaned up, so
+# no existing assertion could tell them apart. The suites above stop at the child — `sleep 31337`
+# is the WATCHER's fork, and check-role-dispatch's outer-termination case probes the dispatched
+# agent itself — so a single-PID kill passed every one of them.
+#
+# The victim IGNORES TERM deliberately. A child that dies on TERM takes its group down anyway, so a
+# probe built on one would pass against a single-PID kill and assert nothing. Only a leader that
+# survives TERM forces the escalation to reach the GROUP.
+#
+# THE GRANDCHILD IS IDENTIFIED BY THE PID IT RECORDS, not by scanning the process table for a name.
+# A name scan was tried first and is doubly unsound here: an orphan left by a PREVIOUS aborted run
+# still matches, so the guard fails on a tree that is actually fixed (observed — a stale
+# `ppid 1` survivor turned a passing case red), and the marker also has to be kept out of the
+# harness's own argv or the probe counts itself. Asking one recorded pid whether it is still alive
+# has neither failure mode. A ZOMBIE counts as dead: `kill -0` succeeds on one, and a grandchild
+# whose parent we just killed is reparented to init and reaped there.
+gcp="$work/gcprobe.sh"
+gcpid="$work/gcpid"
+cat > "$gcp" <<EOF
+#!/usr/bin/env bash
+trap '' TERM
+sleep 300 &
+echo \$! > "$gcpid"
+while :; do sleep 1; done
+EOF
+chmod +x "$gcp"
+
+gc_alive() {   # prints "alive" or "dead" for the grandchild this run recorded
+  local p state
+  p="$(cat "$gcpid" 2>/dev/null)"
+  case "$p" in ''|*[!0-9]*) printf 'dead'; return ;; esac
+  kill -0 "$p" 2>/dev/null || { printf 'dead'; return; }
+  state="$(ps -o state= -p "$p" 2>/dev/null | tr -d ' ')"
+  case "$state" in Z*) printf 'dead' ;; *) printf 'alive' ;; esac
+}
+gc_reset() { local p; p="$(cat "$gcpid" 2>/dev/null)"
+  case "$p" in ''|*[!0-9]*) : ;; *) kill -KILL "$p" 2>/dev/null || : ;; esac; rm -f "$gcpid"; }
+
+gc_reset
+ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 1 1 "$gcp" >/dev/null 2>&1
+eq "$?" "124" "watchdog: a TERM-ignoring child still returns 124 (the grandchild case)"
+sleep 1
+eq "$(gc_alive)" "dead" "watchdog: the bound reaps the child's GRANDCHILD, not just the child"
+gc_reset
+
+# The timeout binary already did this — that is what made the watchdog's behavior a DIVERGENCE
+# rather than a shared limitation — so assert it holds rather than assuming it, and skip honestly
+# where the binary is absent instead of reporting a case that never ran.
+if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; then
+  adb_run_bounded 1 1 "$gcp" >/dev/null 2>&1
+  eq "$?" "124" "timeout binary: a TERM-ignoring child still returns 124 (the grandchild case)"
+  sleep 1
+  eq "$(gc_alive)" "dead" "timeout binary: the bound reaps the grandchild too — the paths AGREE"
+  gc_reset
+else
+  check_note "no timeout/gtimeout binary — skipped the binary path's grandchild case"
+fi
+
+# Job control is borrowed for ONE command and handed straight back. This library is SOURCED, so
+# leaving `set -m` on would give a caller's shell a global setting it never asked for, and leaving
+# it on for the duration would change how that caller's own background jobs behave for up to the
+# whole bound. Both directions are asserted: a caller without job control must not acquire it, and
+# a caller WITH it must not lose it.
+monoff="$(bash -c '. "$1"; ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 true >/dev/null 2>&1
+                   case "$-" in *m*) echo on ;; *) echo off ;; esac' _ "$PWD/scripts/lib/common.sh" 2>/dev/null)"
+eq "$monoff" "off" "adb_run_bounded leaves job control OFF for a caller that had it off"
+monon="$(bash -c '. "$1"; set -m; ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 30 1 true >/dev/null 2>&1
+                  case "$-" in *m*) echo on ;; *) echo off ;; esac' _ "$PWD/scripts/lib/common.sh" 2>/dev/null)"
+eq "$monon" "on" "adb_run_bounded preserves job control for a caller that had it ON"
+
+# ...and under a caller that HAS job control, the bound must still report the child's real fate.
+# With `set -m`, plain `wait` returns when a job merely CHANGES STATUS — a stopped child hands back
+# 128+sig in 0s while it is still alive and running. Putting the child in its own process group is
+# what makes that newly reachable without an operator ^Z (a background group reading the tty takes
+# SIGTTIN), so the `wait -f` that answers it is part of THIS change and needs its own guard.
+stopped="$(bash -c '. "$1"; set -m
+  ( sleep 0.5; kill -STOP "$(cat "$2")" 2>/dev/null; sleep 2; kill -CONT "$(cat "$2")" 2>/dev/null ) &
+  ADB_NO_TIMEOUT_BIN=1 adb_run_bounded 6 1 bash -c "echo \$\$ > \"$2\"; sleep 4"; echo "rc=$?"' \
+  _ "$PWD/scripts/lib/common.sh" "$work/stoppid" 2>/dev/null)"
+eq "$stopped" "rc=0" "a STOPPED child is not mistaken for a finished one under a caller's job control"
+
 # --- adb_actions_app_slug: the ONE home for check-run provenance (#179) ----------------------
 # Two libraries decide "did GitHub Actions report here?" — roadmap-lib.sh (whose answer gates a
 # release cut) and repo-settings.sh (whose answer gates the required-check lint). They shipped

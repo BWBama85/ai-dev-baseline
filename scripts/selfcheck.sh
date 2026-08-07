@@ -673,9 +673,10 @@ declare -a SLOW=()          # "secs name", for the summary
 #
 # The worker is a subshell that forks `bash scripts/check-<x>.sh`, so signalling the pid alone
 # kills the subshell and REPARENTS the check to init, where it runs on unattended: a cancelled run
-# that leaves up to $JOBS suites still executing. That is the same divergence `adb_run_bounded`
-# documents for its watchdog path (#141), and the pool is where it is cheap to close: `set -m`
-# makes each worker its own process-group leader, so `kill -- -$pid` reaches the grandchildren too.
+# that leaves up to $JOBS suites still executing. That is the same orphaning `adb_run_bounded`'s
+# watchdog path had until #141, and the pool is where it is cheap to close: `set -m` makes each
+# worker its own process-group leader, so `kill -- -$pid` reaches the grandchildren too. This
+# pool solved it first; `adb_run_bounded` now reaps the same way, by the same rule.
 #
 # TERM, then grace, then KILL, matching `_adb_bounded_reap`: a bound that only sends TERM is not a
 # backstop, because anything that traps or ignores it survives.
