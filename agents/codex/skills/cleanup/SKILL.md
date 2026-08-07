@@ -534,7 +534,15 @@ GV="$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict gaps "$LOCK" 
 # both from one predicate — /implement-issue step 2 writes it before any marker exists, under the
 # claim, and step 8 still reads it after the marker has taken over. Asked under its own kind name
 # so this loop never appears to be consulting a gap verdict about a file that is not a gap artifact.
-IV="$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict issue "$LOCK" "$RUN")" || IV=keep
+#
+# BUT IT IS ASKED WITH `$RUN_NOW`, NOT `$RUN` — gaps' predicate, review's freshness, and the split
+# is the point. `$RUN` was decided during the marker pass, before live PR round trips; `$RUN_NOW`
+# comes from the re-scan two lines up. For gap artifacts the difference cannot bite: nothing reads
+# them after step 4, so the claim covers their whole live window. The snapshot is read again in
+# step 8, exactly like the review artifacts — so a run that reached step 5 between the marker pass
+# and this delete has a marker in the FRESH scan and a stale answer in `$RUN`, and passing the
+# stale one would sweep a live run's issue text out from under its own review dispatch.
+IV="$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict issue "$LOCK" "$RUN_NOW")" || IV=keep
 RV="$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict review "$RUN_NOW")" || RV=keep
 
 # rm failures are REPORTED, never swallowed. A read-only state dir would otherwise leave every

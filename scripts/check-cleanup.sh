@@ -321,6 +321,8 @@ S="$work/state"; mkdir -p "$S"
 : > "$S/issue-250.json.bak"
 : > "$S/issue-250.txt"
 : > "$S/issues-250.json"
+: > "$S/issue-250.assoc.json"
+: > "$S/issue-250.json.assoc"
 : > "$S/pr-body.md"
 : > "$S/some-other-skill.json"
 : > "$S/.marker.tmp"
@@ -361,6 +363,12 @@ eq "${ kindof issue-7.json; }"                 "issue"   "3 …including a singl
 eq "${ kindof issue-.json; }"                  "other"   "3 an issue-shaped name with NO number is NOT ours to delete"
 eq "${ kindof issue-abc.assoc; }"              "other"   "3 …nor one whose number is not a number"
 eq "${ kindof issue-250.json.bak; }"           "other"   "3 …nor a backup of one"
+# A DOUBLE SUFFIX, found in self-review. Stripping `.json` and then `.assoc` in sequence walks
+# `issue-250.assoc.json` all the way down to a bare `250` and classifies a name nothing writes as
+# SWEEPABLE. Both orderings are pinned, because only one of them was broken and a fix that swapped
+# the sequence would move the hole rather than close it.
+eq "${ kindof issue-250.assoc.json; }"         "other"   "3 …nor a double suffix (.assoc.json)"
+eq "${ kindof issue-250.json.assoc; }"         "other"   "3 …nor the other double suffix (.json.assoc)"
 eq "${ kindof issue-250.txt; }"                "other"   "3 …nor the family prefix with the wrong suffix"
 eq "${ kindof issues-250.json; }"              "other"   "3 …nor a longer word that merely starts with 'issue'"
 # Named explicitly because #264 puts it out of scope: pr-body.md is the AGENT's filename, not one
@@ -693,6 +701,18 @@ else
   # Same AND-list hazard the lock probe already carries a pin for: "no marker present" is the
   # common case right after a merge, so the compound form would leave a healthy sweep on status 1.
   hasnt "$wfcode" 'grep -q "^marker${TABC}" && RUN_NOW=keep' "6 the marker probe does not leave its block on a non-zero status"
+  # --- #250: the issue snapshot is swept, on gaps' PREDICATE and review's FRESHNESS ------------
+  # The snapshot spans both windows — written under the claim before any marker exists, read again
+  # in step 8 — so it needs the lock argument `review` does not have AND the fresh <run> `gaps`
+  # does not use. The negative is what has teeth: `state-verdict issue "$LOCK" "$RUN"` runs, prints
+  # a verdict, and passes every other assertion here while being able to sweep a live run's issue
+  # text out from under its own review dispatch.
+  has "$wfexec" 'state-verdict issue "$LOCK" "$RUN_NOW"' \
+     "6 the snapshot is decided from the claim AND the FRESH marker scan (#250)"
+  hasnt "$wfexec" 'state-verdict issue "$LOCK" "$RUN"' \
+     "6 …never from the pre-pass \$RUN, which is stale by the time the delete runs"
+  has "$wfcode" 'issue)
+      [ "$IV" = stale ] || continue' "6 …and the sweep loop's issue arm acts on that verdict"
   # The LARGE arm must gate on the review verdict, not the gap one — otherwise a kept review.err
   # is reported under a live GAP dispatch's liveness, naming the wrong run.
   has "$wfcode" 'review) [ "$RV" = keep ]' "6 a kept review stream is reported under its own verdict, not \$GV"

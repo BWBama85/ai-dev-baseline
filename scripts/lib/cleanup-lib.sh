@@ -357,7 +357,15 @@ cmd_state_scan() {
       # The key itself is not emitted — unlike a thread cache, nothing reads liveness per issue
       # number; the whole family shares the run's own liveness (see `state-verdict issue`).
       issue-*.json|issue-*.assoc)
-        n="${base#issue-}"; n="${n%.json}"; n="${n%.assoc}"
+        # ONE suffix stripped, chosen by which one the name actually ends in. Stripping both in
+        # sequence is wrong and was caught in self-review: `issue-250.assoc.json` loses `.json`,
+        # then loses `.assoc`, and arrives at a bare `250` — a name nothing writes, classified
+        # SWEEPABLE. An allowlist that accepts a name it cannot account for is not an allowlist.
+        n="${base#issue-}"
+        case "$base" in
+          *.json)  n="${n%.json}" ;;
+          *.assoc) n="${n%.assoc}" ;;
+        esac
         case "$n" in
           ''|*[!0-9]*) printf 'other\t%s\t-\n' "$f" ;;
           *)           printf 'issue\t%s\t-\n' "$f" ;;
@@ -533,6 +541,13 @@ cmd_state_verdict() {
     # same body is how two answers that must agree start disagreeing after one of them is edited;
     # giving it no name at all would make base/workflows/cleanup.md ask `gaps` about a file that is
     # not a gap artifact, which reads as a copy-paste slip rather than a decision.
+    #
+    # THE CALLER OWES `issue` MORE THAN IT OWES `gaps`, and the shared body cannot enforce it: the
+    # <run> word passed for `issue` must be read at the moment of the DELETE, the obligation the
+    # `review` arm below spells out. Gap artifacts are never read after step 4, so a <run> decided
+    # earlier in the sweep cannot be wrong about them in a way that matters; the snapshot is read
+    # again in step 8, so a run that reached step 5 mid-sweep must show up as live. cleanup.md
+    # passes `$RUN_NOW` here and `$RUN` to `gaps` for exactly that reason.
     gaps|issue)
       [ "$#" -eq 2 ] || die "state-verdict $kind: needs exactly 2 args: <lock 0|1> <run keep|stale|none>"
       # Both up front, for the reason given under `marker`: the lock short-circuits below, so
