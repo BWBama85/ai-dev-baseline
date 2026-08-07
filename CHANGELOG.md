@@ -73,9 +73,32 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   uncapped size exactly, and a test asserts that.
 
   Coverage was **observed failing** against a copy of the pre-fix tree: the watchdog grandchild
-  (`alive`→`dead`), the stopped child (`rc=145`→`rc=0`), and nine cap assertions. The
+  (`alive`→`dead`), the stopped child (`rc=145`→`rc=0`), and ten cap assertions. The
   timeout-binary grandchild case is green on both sides and is labelled an agreement pin rather
   than a regression detector.
+
+  Self-review then found four defects in the above, all fixed here and worth naming because three
+  of them are the failure mode this repo keeps paying for — a guard that cannot answer wrong:
+
+  - **The `-0` guard did not stop `-00`.** `case "$p" in ''|0|*[!0-9]*)` rejects the string `0` and
+    not the string `00`, and `kill -- -00` resolves to process group **0** — the caller's own shell
+    and everything in it, i.e. exactly what the guard exists to prevent. Both are now arithmetic
+    tests. `common.sh` had already been bitten twice by zero-padding defeating a literal arm (the
+    `secs` and `grace` clamps each say so); this is the same class where the cost is the session.
+    **`scripts/selfcheck.sh`'s `_cleanup` carried the identical gap in both of its loops** — it is
+    where the rule was copied from — and is fixed in the same change rather than filed.
+  - **The `timeout`-binary path shared the stopped-child exposure.** With a caller's job control
+    on, bash puts `timeout` in its own process group too, so `wait` could return early there as
+    well. `had_m` is now read once at the top of the function and both `wait`s use it.
+  - **The awk cap could pass through nothing.** A stream that emits no newline before the cap — a
+    `\r` progress spinner, or one very long line — hit the cap on record 1 and emitted zero bytes,
+    discarding the provenance header the head cap exists to keep. It now cuts that first line with
+    `substr`, so the knob is a byte cap as its name says.
+  - **Two test defects.** `rd_var` did not `env -u ADB_DISPATCH_LOG_MAX_BYTES`, so the
+    default-pin assertion could be defeated by the operator's own environment — the exact bug the
+    comment two lines above it warns about. And the "`0` disables" assertion compared a file
+    against a variable read from that same file, which is a tautology; rewritten against the capped
+    run, it now goes red pre-fix (`176022 vs capped 176022`) where before it passed.
 
 ### Changed
 

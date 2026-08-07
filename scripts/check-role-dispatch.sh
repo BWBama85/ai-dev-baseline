@@ -410,6 +410,7 @@ eq "$out_rc" "124" "the bash watchdog fallback also enforces the timeout"
 # the CLI dispatch, and exits 2 before printing anything.
 rd_var() { local v="$1"; shift
   env -u ADB_DISPATCH_TIMEOUT_SECS -u ADB_DISPATCH_KILL_GRACE_SECS -u ADB_DISPATCH_NO_TIMEOUT_BIN \
+    -u ADB_DISPATCH_LOG_MAX_BYTES \
     "$@" bash -c '. "$1" >/dev/null 2>&1; printf %s "${!2:-unset}"' rd_var "$RD" "$v"; }
 eq "${ rd_var _ADB_RD_TIMEOUT_SECS; }" "2700" "the no-environment default bound is 2700s (45-min hang backstop)"
 eq "${ rd_var _ADB_RD_TIMEOUT_SECS ADB_DISPATCH_TIMEOUT_SECS=99; }" "99" "ADB_DISPATCH_TIMEOUT_SECS still overrides the default"
@@ -599,9 +600,13 @@ has "$(cat "$work/capped.err")" "HEAD cap" "the notice states which END of the s
 eq "$out" "VERDICT: fine" "the agent's final message survives the cap untouched"
 
 # 0 DISABLES it. Without this, a value of 0 could just as easily read as "cap at zero bytes", which
-# would discard the whole stream — the opposite of the escape hatch an operator reaches for.
-if [ "$(wc -c < "$work/uncapped.err" | tr -d ' ')" -eq "$uncapped" ] && [ "$uncapped" -gt 100000 ]; then ok
-else bad "ADB_DISPATCH_LOG_MAX_BYTES=0 must leave the stream unbounded"; fi
+# would discard the whole stream — the opposite of the escape hatch an operator reaches for. So the
+# assertion is that the 0 run kept EVERYTHING the capped run threw away, and emitted no notice.
+# (Written against the CAPPED run rather than re-measuring `uncapped.err`: comparing that file to
+# the variable read from it is a tautology, which is a guard that cannot answer wrong.)
+if [ "$uncapped" -gt "$(( capped * 50 ))" ]; then ok
+else bad "ADB_DISPATCH_LOG_MAX_BYTES=0 must leave the stream unbounded ($uncapped vs capped $capped)"; fi
+hasnt "$(cat "$work/uncapped.err")" "capped at" "a disabled cap emits no truncation notice at all"
 
 # THE DISCARD COUNT IS EXACT, not an estimate. This is the whole reason the filter is awk and not
 # `head -c` + a drain: `head` over-reads into its buffer, so it loses an unknown number of bytes

@@ -3354,6 +3354,13 @@ limit: none of them is sufficient alone.
              nine cap assertions red without the cap. The timeout-binary grandchild case is green
              on BOTH sides and is named as an agreement pin, not a regression detector.
 
+             **Self-review found the `-0` guard did not actually guard.** `''|0|*[!0-9]*` rejects
+             the string `0` and not `00`, and `kill -- -00` resolves to group 0 — the caller's own
+             shell. Both sides are arithmetic now. The rule was copied from `selfcheck.sh`'s
+             `_cleanup`, which **carried the same gap in both loops** and is fixed here rather than
+             filed: a confirmed sibling of the same defect, in a file this change already touches
+             (`base/practices/debugging.md` — grep for the class, not the instance).
+
              **A first version of the grandchild guard was itself flaky and was rewritten.** It
              counted `ps -eo command` matches for a fixed argv marker, which a stale `ppid 1`
              orphan from an earlier aborted run also matched — turning a tree that was actually

@@ -554,7 +554,18 @@ _adb_rd_bounded() {
 # EOF and report a clean pass on a stream it silently truncated. awk counts every byte it discards,
 # so the notice is exact and is never omitted. LC_ALL=C makes `length()` count bytes, not
 # characters, so a multibyte stream cannot overshoot the cap.
+#
+# The counting is `length($0) + 1` per record, so it is exact for a newline-terminated stream and
+# over-reports by one byte for a stream whose final line has no newline (awk cannot distinguish
+# them, and `print` re-adds the separator either way). Stated rather than worked around: the number
+# is a debugging aid in a notice, and a byte of slack in it is not worth a second reader.
 # Usage: _adb_rd_cap_stream <max-bytes>
+#
+# THE FIRST LINE IS CUT MID-LINE IF IT ALONE EXCEEDS THE CAP. Without that, a stream that emits no
+# newline before the cap — a progress spinner using \r, or one very long line — hits `capped` on
+# record 1 and passes through NOTHING, reporting "capped at 0 bytes". Still bounded, but it throws
+# away the provenance header this cap is deliberately keeping. `substr` makes it a byte cap, which
+# is what the name and the knob both promise.
 _adb_rd_cap_stream() {
   LC_ALL=C awk -v max="$1" '
     BEGIN { kept = 0; capped = 0; dropped = 0 }
@@ -564,6 +575,12 @@ _adb_rd_cap_stream() {
         if (kept <= max) { print; fflush(); next }
         kept -= length($0) + 1
         capped = 1
+        if (kept == 0 && max > 0) {          # nothing emitted yet: cut this line at the cap
+          printf("%s", substr($0, 1, max)); fflush()
+          dropped += length($0) + 1 - max
+          kept = max
+          next
+        }
       }
       dropped += length($0) + 1
     }

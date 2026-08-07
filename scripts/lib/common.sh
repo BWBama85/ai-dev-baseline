@@ -1749,9 +1749,16 @@ adb_untrusted_block() {
 # GUARD THE PID BEFORE NEGATING IT. `kill -- -0` signals the CALLER'S OWN process group — the
 # operator's shell and everything in it — so a value that is not a positive integer must never
 # reach the `-$pid` form. `$!` cannot be 0 today; the cost of being wrong is the whole session.
+#
+# ARITHMETIC, not a literal `0)` arm, and that is not pedantry here: `-00` is not the string `0`,
+# so it slips past a literal arm — and `kill -- -00` resolves to process group 0, i.e. exactly the
+# caller's own group the guard exists to protect. This file has already been bitten twice by
+# zero-padding defeating a literal arm (the `secs` and `grace` clamps above both say so), and this
+# is the one place where the cost of that mistake is the whole session rather than a bad bound.
 # Usage: _adb_bounded_signal <signal> <pid>
 _adb_bounded_signal() {
-  case "${2:-}" in ''|0|*[!0-9]*) return 0 ;; esac
+  case "${2:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$2" -gt 0 ] 2>/dev/null || return 0
   kill -"$1" -- "-$2" 2>/dev/null
   kill -"$1" "$2" 2>/dev/null
   return 0
@@ -1774,7 +1781,14 @@ _adb_bounded_reap() {
 }
 
 adb_run_bounded() {
-  local secs="$1" grace="$2" tb="" t0 trc otrap; shift 2
+  local secs="$1" grace="$2" tb="" t0 trc otrap had_m=0; shift 2
+  # Does the CALLER already have job control on? Read ONCE, here, because BOTH paths need the
+  # answer: the watchdog path restores it after borrowing it (see the launch below), and BOTH
+  # `wait`s need `-f` under it. With job control enabled, plain `wait` returns when a job merely
+  # CHANGES STATUS — including being STOPPED — handing back 128+sig while the child is alive.
+  # That is not exclusive to the watchdog: with monitor mode on, bash puts the `timeout` binary in
+  # its own process group too, so the binary path is exposed to exactly the same early return.
+  case "$-" in *m*) had_m=1 ;; esac
   # Both degenerate graces break the escalation and neither fails loudly: `timeout -k 0` means
   # "no SIGKILL at all" to GNU timeout, so a zero grace would leave the binary path with no
   # escalation while the watchdog path treats 0 as "KILL immediately" — the same input making one
@@ -1802,7 +1816,10 @@ adb_run_bounded() {
     "$tb" -k "$grace" "$secs" "$@" <&0 &
     _ADB_BOUNDED_CHILD=$!
     trap '_adb_bounded_reap' TERM INT HUP
-    wait "$_ADB_BOUNDED_CHILD"; trc=$?
+    # `-f` only under the caller's job control — see the read at the top of this function, and the
+    # matching arm on the watchdog path for why the flag is conditional rather than always passed.
+    if [ "$had_m" -eq 1 ]; then wait -f "$_ADB_BOUNDED_CHILD"; trc=$?
+    else                        wait    "$_ADB_BOUNDED_CHILD"; trc=$?; fi
     trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
     unset _ADB_BOUNDED_CHILD
     # Normalize the bound-fired status. GNU timeout reports 124 when SIGTERM ended the child, but
@@ -1835,8 +1852,6 @@ adb_run_bounded() {
   #
   # `setsid` is not the mechanism: it is absent from a stock macOS, i.e. the very platform this
   # fallback exists for.
-  local had_m=0
-  case "$-" in *m*) had_m=1 ;; esac
   set -m
   "$@" <&0 & cmd_pid=$!
   [ "$had_m" -eq 1 ] || set +m

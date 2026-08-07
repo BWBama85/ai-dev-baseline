@@ -785,7 +785,7 @@ gcpid="$work/gcpid"
 cat > "$gcp" <<EOF
 #!/usr/bin/env bash
 trap '' TERM
-sleep 300 &
+sleep 60 &
 echo \$! > "$gcpid"
 while :; do sleep 1; done
 EOF

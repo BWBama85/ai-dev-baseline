@@ -687,7 +687,13 @@ _cleanup() {
     # i.e. the operator's shell and everything in it — so a key that is not a positive integer must
     # never reach the `-$p` form. `$!` cannot be 0 today; the cost of being wrong is the whole
     # session, which is worth one test.
-    case "$p" in ''|0|*[!0-9]*) continue ;; esac
+    #
+    # ARITHMETIC, not a literal `0)` arm: `-00` is not the string `0`, so it slips past one — and
+    # `kill -- -00` resolves to group 0, the very group this guard exists to protect. Found by
+    # self-review while giving `adb_run_bounded` the same reaping rule (#141); the same fix is on
+    # `_adb_bounded_signal` in common.sh, which is where the two now agree.
+    case "$p" in ''|*[!0-9]*) continue ;; esac
+    [ "$p" -gt 0 ] 2>/dev/null || continue
     kill -TERM -- "-$p" 2>/dev/null && had=1
     # ...and the bare pid too, because the group form only reaches a group if `set -m` actually
     # took effect. Where it did, the worker is already gone and this is a harmless ESRCH; where it
@@ -698,7 +704,8 @@ _cleanup() {
   if [ "$had" -eq 1 ]; then
     sleep 1
     for p in "${!LIVE[@]}"; do
-      case "$p" in ''|0|*[!0-9]*) continue ;; esac
+      case "$p" in ''|*[!0-9]*) continue ;; esac      # arithmetic, per the TERM loop's note on `-00`
+      [ "$p" -gt 0 ] 2>/dev/null || continue
       kill -KILL -- "-$p" 2>/dev/null
       kill -KILL "$p" 2>/dev/null
     done
