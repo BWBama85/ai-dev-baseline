@@ -3477,8 +3477,9 @@ limit: none of them is sufficient alone.
              `check-implement-lib.sh` pins that direction explicitly.
 
              **The guard was observed failing on the real superseded input, twice over.** Before
-             the rebuild, `check-tmp-paths.sh` reported all six `/tmp/issue-$n.*` sites in each of
-             the three rendered skills plus every other instance of the class; and its permanent
+             the rebuild, `check-tmp-paths.sh`'s part 1 reported six host-global resolutions — the
+             `.json` and the `.assoc` in each of the three rendered skills — and its part 2
+             reported every other instance of the class across the four scanned roots; and its permanent
              mutation harness re-injects the pre-fix spellings — `{{STATE_DIR}}` reverted in the
              source, `.claude/state` reverted in ONE render, the filename renamed away, and a fixed
              path added under each of the four scanned roots — into a COPY of the tree on every
