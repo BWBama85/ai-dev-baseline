@@ -140,6 +140,29 @@ case "$_ADB_RD_KILL_GRACE_SECS" in
   *)           [ "$_ADB_RD_KILL_GRACE_SECS" -eq 0 ] && _ADB_RD_KILL_GRACE_SECS=1 ;;
 esac
 
+# How many bytes of a dispatched agent's LOG STREAM this helper will pass through (#141).
+#
+# The stream is the agent's live exploration output, routed to stderr below so it is visible for
+# debugging and never mixed into stdout. Nothing bounded it: one gap-analysis run wrote 674 KB, the
+# run that implemented #84/#106 wrote 428 KB, and the run that implemented THIS issue wrote 766 KB.
+# /cleanup sweeps those artifacts BETWEEN runs (#84); what was still unbounded is a SINGLE run's.
+#
+# EVERY AGENT AND EVERY ROLE, not just gap-analysis. `review.err` is the same stream from the same
+# code path with the same growth, so capping one role would leave the identical defect in the other
+# and buy it role-specific plumbing — and a slot is dispatched by bare TOKEN (see below), which
+# carries no role to key a policy off anyway.
+#
+# 0 DISABLES the cap: an operator debugging a dispatch wants the whole stream, and "0 = unbounded"
+# is the only reading of zero that is useful here (contrast the BOUND above, where 0 is refused
+# because neither possible meaning is a backstop).
+_ADB_RD_LOG_MAX_BYTES="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}"
+case "$_ADB_RD_LOG_MAX_BYTES" in
+  ''|*[!0-9]*)
+    printf 'role-dispatch: ADB_DISPATCH_LOG_MAX_BYTES="%s" is not a whole number of bytes — using the %s default\n' \
+      "$_ADB_RD_LOG_MAX_BYTES" 262144 >&2
+    _ADB_RD_LOG_MAX_BYTES=262144 ;;
+esac
+
 # --- resolution --------------------------------------------------------------------------------
 
 # True iff $1 is EXACTLY a known agent token. Compares against each token rather than a
@@ -511,6 +534,89 @@ _adb_rd_bounded() {
   adb_run_bounded "$secs" "$_ADB_RD_KILL_GRACE_SECS" "$@"
 }
 
+# The capping filter: pass the first <max> bytes through, then DRAIN the rest and say how much was
+# dropped. Reads stdin, writes stdout.
+#
+# IT MUST DRAIN, NOT EXIT. A filter that stops reading at the cap closes the pipe, and the next
+# write from the agent takes SIGPIPE — so capping its log would KILL the dispatch it was only
+# supposed to trim. Draining costs nothing (the bytes are read and discarded) and keeps the agent's
+# own exit status the one this helper reports.
+#
+# A HEAD CAP, decided on evidence rather than taste. The obvious alternative is to keep the TAIL,
+# and for this stream it is the worse trade: codex's final message is captured separately by
+# --output-last-message, and measurement on the 766 KB stream above found that message duplicated
+# at byte 758388 — i.e. the tail is the one part already preserved IN FULL elsewhere. The head is
+# not: it carries the CLI version, model, reasoning effort and session id, which nothing else
+# records. A head cap also streams live, where a tail cap can emit nothing until EOF.
+#
+# awk, not `head -c` + `cat`: `head` OVER-READS into its buffer before exiting, so it both loses an
+# unknown number of bytes and — worse — can consume the entire remainder, leaving the drain to see
+# EOF and report a clean pass on a stream it silently truncated. awk counts every byte it discards,
+# so the notice is exact and is never omitted. LC_ALL=C makes `length()` count bytes, not
+# characters, so a multibyte stream cannot overshoot the cap.
+# Usage: _adb_rd_cap_stream <max-bytes>
+_adb_rd_cap_stream() {
+  LC_ALL=C awk -v max="$1" '
+    BEGIN { kept = 0; capped = 0; dropped = 0 }
+    {
+      if (!capped) {
+        kept += length($0) + 1
+        if (kept <= max) { print; fflush(); next }
+        kept -= length($0) + 1
+        capped = 1
+      }
+      dropped += length($0) + 1
+    }
+    END {
+      if (capped)
+        printf("\n[role-dispatch: agent log capped at %d of %d bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %d bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n", kept, max, dropped)
+    }'
+}
+
+# Run a bounded dispatch with its LOG stream capped, and return the agent's own status.
+#
+#   <log_stdout>  1 — the command's STDOUT is part of the log (codex, whose RESULT arrives via
+#                     --output-last-message, so its live stdout is exploration, not the answer)
+#                 0 — STDOUT is the RESULT and passes through UNCAPPED (claude/gemini, whose final
+#                     message IS stdout). Capping a result is data loss, not tidying.
+#
+# THE TOPOLOGY IS THE HARD PART, and a plain pipeline is the wrong one. `cmd | filter` puts the
+# LEFT side in a subshell, and `adb_run_bounded` installs its reap trap on the CALLING shell — so
+# the trap would protect a subshell that is not the one being signalled, and an outer TERM would go
+# back to orphaning the agent. A process substitution keeps the runner in THIS shell: the filter is
+# what gets forked, and it is the thing with nothing to protect.
+#
+# `exec {capfd}>` rather than a redirection on the command, because `$!` must be captured for the
+# procsub itself — and `adb_run_bounded` backgrounds its own child and watcher, overwriting `$!`
+# before the command returns. Without that pid there is nothing to `wait` on, and the notice above
+# can be lost to a race with our own exit.
+#
+# `{capfd}>&-` ON THE CALL closes the descriptor for the CHILD side, and it is worth its own line:
+# the watchdog's ticking `sleep` is deliberately allowed to outlive its watcher (see common.sh), so
+# an inherited write end keeps the pipe open after the agent is gone and `wait` blocks for a whole
+# tick. Measured: 5.0 s per dispatch with it, 0.05 s without.
+# Usage: _adb_rd_bounded_capped <log_stdout> <argv...>
+_adb_rd_bounded_capped() {
+  local log_stdout="$1"; shift
+  local rc capper capfd max="$_ADB_RD_LOG_MAX_BYTES"
+  if [ "$max" -eq 0 ]; then
+    if [ "$log_stdout" = 1 ]; then _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" >&2
+    else                           _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@"; fi
+    return $?
+  fi
+  exec {capfd}> >(_adb_rd_cap_stream "$max" >&2)
+  capper=$!
+  if [ "$log_stdout" = 1 ]; then
+    _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" >&"$capfd" 2>&1 {capfd}>&-
+  else
+    _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" 2>&"$capfd" {capfd}>&-
+  fi
+  rc=$?
+  exec {capfd}>&-
+  [ -n "$capper" ] && wait "$capper" 2>/dev/null
+  return "$rc"
+}
+
 # Classify a dispatch exit status in one line. Collapsing every non-zero rc into "the agent
 # failed" is precisely what let a too-small bound masquerade as a codex problem for three runs
 # (#93): our own backstop, an OUTER bound, and a genuine agent error each warrant a different
@@ -657,11 +763,13 @@ _adb_rd_invoke_agent() {
     # `$(<"$pf")` rather than `$(cat "$pf")` (#258): a builtin file read, no `cat` process. Both
     # strip trailing newlines identically, and the prompt is passed as one argv element either way.
     claude)
-      _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" claude -p "$(<"$pf")"
+      # log_stdout=0: stdout IS the final message, so it passes through uncapped; only the log
+      # stream on stderr is bounded.
+      _adb_rd_bounded_capped 0 claude -p "$(<"$pf")"
       return $?
       ;;
     gemini)
-      _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" agy -p "$(<"$pf")"
+      _adb_rd_bounded_capped 0 agy -p "$(<"$pf")"
       return $?
       ;;
     codex)
@@ -676,13 +784,16 @@ _adb_rd_invoke_agent() {
       # Omitting it entirely — rather than passing some "default" — is what preserves the
       # pre-#225 behaviour for every role that declares nothing: the CLI's own config governs,
       # exactly as before. `-c` is `codex exec`'s documented key=value override.
+      #
+      # log_stdout=1: codex's stdout is the LIVE STREAM, not the result — the result is the file
+      # --output-last-message writes — so stdout and stderr are one log and both are capped (#141).
       if [ -n "$effort" ]; then
-        _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" \
+        _adb_rd_bounded_capped 1 \
           codex exec --cd "$repo" -c model_reasoning_effort="$effort" \
-                     --output-last-message "$last" - < "$pf" >&2
+                     --output-last-message "$last" - < "$pf"
       else
-        _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" \
-          codex exec --cd "$repo" --output-last-message "$last" - < "$pf" >&2
+        _adb_rd_bounded_capped 1 \
+          codex exec --cd "$repo" --output-last-message "$last" - < "$pf"
       fi
       rc=$?
       if [ "$rc" -ne 0 ]; then rm -f "$last"; return "$rc"; fi

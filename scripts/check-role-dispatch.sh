@@ -557,6 +557,96 @@ else
 fi
 pkill -f '[q]qstub' >/dev/null 2>&1 || true
 
+# ==================== the captured log stream is BOUNDED (#141) ====================
+# The dispatched agent's exploration stream is routed to this helper's stderr, and the workflow
+# redirects that into `gaps.err` / `review.err`. Nothing capped it: one gap-analysis run wrote
+# 674 KB, and the run that implemented THIS issue wrote 766 KB. /cleanup sweeps those artifacts
+# BETWEEN runs (#84); a SINGLE run's stream is what these cases pin.
+#
+# A noisy stub, sized well past the caps used below so every case is genuinely over the line.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+last=""
+while [ "$#" -gt 0 ]; do [ "$1" = "--output-last-message" ] && { last="$2"; shift; }; shift; done
+cat >/dev/null
+i=0; while [ "$i" -lt 4000 ]; do printf 'exploring %05d wwwwwwwwwwwwwwwwwwwwwwwwwww\n' "$i"; i=$(( i + 1 )); done
+printf 'and some stderr noise\n' >&2
+[ -n "$last" ] && printf 'VERDICT: fine\n' > "$last"
+exit 0
+EOF
+chmod +x "$BIN/codex"
+set_repo '[roles]' 'gap_analysis = "codex"'
+
+# The uncapped size, measured rather than assumed — every bound below is compared against THIS, so
+# a stub that quietly stopped being noisy would otherwise make the whole section vacuously green.
+printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=0 bash "$RD" invoke gap_analysis \
+  >/dev/null 2>"$work/uncapped.err"
+uncapped="$(wc -c < "$work/uncapped.err" | tr -d ' ')"
+if [ "$uncapped" -gt 100000 ]; then ok; else bad "the noisy stub must produce a genuinely large stream (got $uncapped bytes)"; fi
+
+# THE CAP HOLDS. The bound is the cap plus this helper's OWN lines, which are deliberately outside
+# it — see the assertion two blocks down for why — so the comparison allows a small fixed margin
+# and nothing like the 100 KB+ the stream would otherwise carry.
+out="$(printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=1000 bash "$RD" invoke gap_analysis 2>"$work/capped.err")"
+capped="$(wc -c < "$work/capped.err" | tr -d ' ')"
+if [ "$capped" -lt 2000 ]; then ok; else bad "the log stream was not capped (got $capped bytes, cap was 1000)"; fi
+has "$(cat "$work/capped.err")" "capped at" "a capped stream SAYS it was capped, rather than truncating silently"
+has "$(cat "$work/capped.err")" "HEAD cap" "the notice states which END of the stream is missing"
+
+# THE RESULT IS NOT THE LOG. codex's final message arrives via --output-last-message, and capping
+# a result would be data loss rather than tidying. Asserted at the smallest cap used here, where a
+# leak into stdout would be unmistakable.
+eq "$out" "VERDICT: fine" "the agent's final message survives the cap untouched"
+
+# 0 DISABLES it. Without this, a value of 0 could just as easily read as "cap at zero bytes", which
+# would discard the whole stream — the opposite of the escape hatch an operator reaches for.
+if [ "$(wc -c < "$work/uncapped.err" | tr -d ' ')" -eq "$uncapped" ] && [ "$uncapped" -gt 100000 ]; then ok
+else bad "ADB_DISPATCH_LOG_MAX_BYTES=0 must leave the stream unbounded"; fi
+
+# THE DISCARD COUNT IS EXACT, not an estimate. This is the whole reason the filter is awk and not
+# `head -c` + a drain: `head` over-reads into its buffer, so it loses an unknown number of bytes
+# AND can swallow the entire remainder — leaving the drain to see EOF and report a clean pass on a
+# stream it silently truncated. kept + discarded must reconstruct the uncapped size exactly.
+kept="$(sed -n 's/.*capped at \([0-9][0-9]*\) of .*/\1/p' "$work/capped.err")"
+gone="$(sed -n 's/.*remaining \([0-9][0-9]*\) bytes were discarded.*/\1/p' "$work/capped.err")"
+if [ -n "$kept" ] && [ -n "$gone" ] && [ "$(( kept + gone ))" -eq "$uncapped" ]; then ok
+else bad "kept + discarded must equal the uncapped size ($kept + $gone != $uncapped)"; fi
+
+# A CAPPED STREAM MUST NOT SWALLOW THE DIAGNOSIS. `/implement-issue` is told to read the classified
+# line at the TAIL of gaps.err, so this helper's own lines are emitted OUTSIDE the cap and must
+# still arrive — and arrive last. They are O(1); the agent's stream is the unbounded thing. A cap
+# that included them would bound the file at the cost of deleting the one line that says why the
+# dispatch failed.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+i=0; while [ "$i" -lt 4000 ]; do printf 'exploring %05d wwwwwwwwwwwwwwwwwwwwwwwwwww\n' "$i"; i=$(( i + 1 )); done
+sleep 20
+EOF
+chmod +x "$BIN/codex"
+out_rc=0
+printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=500 ADB_DISPATCH_TIMEOUT_SECS=1 \
+  ADB_DISPATCH_KILL_GRACE_SECS=1 bash "$RD" invoke gap_analysis >/dev/null 2>"$work/late.err" || out_rc=$?
+eq "$out_rc" "124" "the bound still fires through the cap"
+has "$(tail -1 "$work/late.err")" "does NOT fall back" "the classified line is the LAST thing on stderr, after the cap notice"
+has "$(cat "$work/late.err")" "backstop" "the failure classification survives a capped stream"
+# ...and on the portable watchdog path too, which is where the process-group half of #141 landed.
+out_rc=0
+printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=500 ADB_DISPATCH_TIMEOUT_SECS=1 \
+  ADB_DISPATCH_KILL_GRACE_SECS=1 ADB_DISPATCH_NO_TIMEOUT_BIN=1 bash "$RD" invoke gap_analysis \
+  >/dev/null 2>"$work/late2.err" || out_rc=$?
+eq "$out_rc" "124" "the watchdog path also bounds and caps together"
+has "$(tail -1 "$work/late2.err")" "does NOT fall back" "watchdog path: the classified line still arrives last"
+
+# The knob itself: the committed default, an override, and a rejected value that says so rather
+# than silently running unbounded. Same shape as the bound/grace knobs above.
+eq "${ rd_var _ADB_RD_LOG_MAX_BYTES; }" "262144" "the no-environment default log cap is 262144 bytes (256 KiB)"
+eq "${ rd_var _ADB_RD_LOG_MAX_BYTES ADB_DISPATCH_LOG_MAX_BYTES=4096; }" "4096" "ADB_DISPATCH_LOG_MAX_BYTES overrides the default"
+eq "${ rd_var _ADB_RD_LOG_MAX_BYTES ADB_DISPATCH_LOG_MAX_BYTES=0; }" "0" "0 is a legal value (the documented disable), not a rejected one"
+eq "${ rd_var _ADB_RD_LOG_MAX_BYTES ADB_DISPATCH_LOG_MAX_BYTES=abc 2>/dev/null; }" "262144" "a non-numeric cap falls back to the default"
+cap_err="$(ADB_DISPATCH_LOG_MAX_BYTES=abc bash -c '. "$1" >/dev/null' rd_var "$RD" 2>&1)"
+has "$cap_err" "not a whole number of bytes" "a rejected cap says so on stderr rather than failing silently"
+
 # ============================ effort (declared, not inherited — #225) ============================
 # Two halves, and the second is the one that matters: the RESOLVER can return "medium" while the
 # flag never reaches the CLI, and a bound that is not passed is indistinguishable from a bound that

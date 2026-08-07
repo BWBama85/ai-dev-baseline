@@ -368,8 +368,12 @@ consumes afterwards, and they are the most sensitive files this workflow writes:
 issue and private-repo context, and `gaps.err`/`review.err` are an agent's whole exploration
 stream. Left in place they also outlive their run — a later pass whose `gap_analysis` is unassigned,
 or whose only review slot is deferred or absent (step 8's rungs 2-3), never overwrites them, so the
-PREVIOUS run's findings sit there reading as this run's. (Bounding a captured stream's growth
-*within* a run is a separate concern, tracked in #141.)
+PREVIOUS run's findings sit there reading as this run's. (A captured stream's growth *within* a
+run is a separate concern, and it is bounded at the source since #141: `role-dispatch.sh` caps a
+dispatched agent's log at `ADB_DISPATCH_LOG_MAX_BYTES` — 256 KiB by default, `0` to disable — so
+`gaps.err`/`review.err` no longer run to the 674 KB and 766 KB observed before it. The cap covers
+the AGENT's stream; the classified `role-dispatch:` line you are told to read at the tail is
+emitted outside it and always survives.)
 
 That set must **contain** the `gaps` and `review` arms of `cleanup-lib.sh state-scan`: a name
 `/cleanup` can sweep but this cannot clear is a stale artifact that a fresh run's marker makes read

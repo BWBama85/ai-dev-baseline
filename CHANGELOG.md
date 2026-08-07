@@ -7,6 +7,76 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Fixed
+
+- **The wall-clock bound reaps the whole process group on both paths, and a dispatched agent's log
+  is capped at the source** (#141, supersedes #123, D49).
+
+  `adb_run_bounded` (`scripts/lib/common.sh`) had two paths that agreed on **status** and diverged
+  on process **cleanup**. GNU `timeout` puts the child in its own process group and signals the
+  group; the portable watchdog signalled a single PID. So on a stock Mac — no `timeout`/`gtimeout`
+  on a non-interactive PATH, i.e. the exact host the fallback exists for — a **grandchild outlived
+  the bound**: `wait` returned, the caller got its 124, and the orphan kept running. Reproduced
+  with a child that traps TERM and blocks on a grandchild: watchdog `alive`, timeout binary `dead`,
+  both rc 124, so no caller could tell them apart. At `currency-lib.sh`'s 120 s bound on a
+  `git fetch`/`git pull` that orphan went on mutating a clone *after* the update was reported
+  failed — able to move HEAD or hold `.git/index.lock`.
+
+  The watchdog now borrows job control for exactly one command — `set -m`, the `&`, then restore
+  whatever `$-` said the caller had — so the child leads its own group, and both the deadline and
+  `_adb_bounded_reap` signal the **group** and then the bare pid. `setsid` is not the mechanism; it
+  is absent from stock macOS. This is `scripts/selfcheck.sh`'s existing `_cleanup` rule, `-0` guard
+  included (`kill -- -0` would signal the operator's own shell); that pool solved the same problem
+  one level up and its header had cited #141 as the open case.
+
+  One consequence needed its own fix. Under a caller that already has job control, plain `wait`
+  returns when a job merely **changes status** — measured returning **145 in 0 s with the child
+  alive and running** — and a naive re-wait loop **spins** (51 iterations in 0 s). Putting the
+  child in its own group makes that reachable without an operator `^Z`, since a background group
+  reading the terminal takes SIGTTIN. `wait -f` answers it, passed **only** when the caller had job
+  control on: `-f` is bash 5.1+, and on an interpreter that lacks it job control is off and plain
+  `wait` is already correct — so D30's "`common.sh` stays usable below the floor" is intact.
+
+  On top of that, `role-dispatch.sh` now caps the log stream it captures from a dispatched agent.
+  Nothing bounded it: one gap-analysis run wrote 674 KB, the run that implemented #84/#106 wrote
+  428 KB, and the run that implemented *this* issue wrote **766,399 bytes**. `/cleanup` sweeps those
+  artifacts *between* runs (#84); a single run's stream was still unbounded.
+
+  ```
+  ADB_DISPATCH_LOG_MAX_BYTES   default 262144 (256 KiB) · 0 disables · invalid warns and falls back
+  ```
+
+  Four choices the issue deliberately left open, and how they were settled:
+
+  - **Every agent and every role.** `review.err` is the same stream from the same code path with
+    the same growth, and a review slot is dispatched by bare *token*, which carries no role to key
+    a policy off. It lives in `role-dispatch.sh` — one consumer, and `common.sh` must stay
+    parseable below the floor (the `cpu_count` precedent).
+  - **A head cap, on evidence.** Keeping the tail was the recommendation; measurement rejected it.
+    codex's final message is captured separately by `--output-last-message`, and on the 766 KB
+    stream that message was found duplicated at byte 758,388 — the tail is the one part already
+    preserved in full elsewhere, while the head carries the CLI version, model, reasoning effort
+    and session id that nothing else records.
+  - **The cap bounds the agent's stream, not this helper's own lines.** `/implement-issue` is told
+    to read the classified `role-dispatch:` line at the *tail* of `gaps.err`; a cap that included
+    it would bound the file by deleting the one line saying why the dispatch failed. Those lines
+    are O(1), so the file is bounded by `cap + a small constant`.
+  - **A process substitution, not a pipeline.** A pipeline puts the left side in a subshell, and
+    `adb_run_bounded` installs its reap trap on the *calling* shell — the trap would guard a
+    subshell that is not the one being signalled. The filter also **drains** past the cap rather
+    than exiting, or the agent's next write takes SIGPIPE and capping a log would kill the
+    dispatch it was only meant to trim.
+
+  The filter is `awk`, not `head -c` plus a drain: `head` over-reads into its buffer, so it loses
+  an unknown number of bytes and can swallow the whole remainder — leaving the drain to see EOF and
+  report a clean pass on a stream it silently truncated. `kept + discarded` now reconstructs the
+  uncapped size exactly, and a test asserts that.
+
+  Coverage was **observed failing** against a copy of the pre-fix tree: the watchdog grandchild
+  (`alive`→`dead`), the stopped child (`rc=145`→`rc=0`), and nine cap assertions. The
+  timeout-binary grandchild case is green on both sides and is labelled an agreement pin rather
+  than a regression detector.
+
 ### Changed
 
 - **CI runs every job once per ordinary branch update, and required-check drift hard-fails only
