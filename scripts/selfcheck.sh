@@ -84,15 +84,19 @@ fail=0
 # What is deliberately NOT serialized, so the reasoning is auditable rather than re-derived:
 #
 #   * `check-release-skill.sh`'s `/tmp/adb-cl-*.$$` files. `$$` differs per check process, so
-#     siblings in this pool cannot collide. Replacing them with `mktemp` belongs to #250.
+#     siblings in this pool cannot collide. #250 SETTLED this rather than changed it: its
+#     acceptance criterion names `$$` as an acceptable per-run spelling alongside `mktemp`, so
+#     these files were never the defect — replacing them would be tidying, not a collision fix,
+#     and `scripts/check-tmp-paths.sh` accepts `$$` for exactly this reason.
 #   * `check-role-dispatch.sh`'s system-wide `pgrep -f 'sleep 31337'`. Only that one step ever
 #     stages such a process, and only one copy of it runs.
 #   * the destructive-git fixtures (`check-cleanup.sh`, `check-cleanup-enum.sh`): every one of
 #     them operates inside its own `mktemp -d` repo, never this one.
 #
-# TWO CONCURRENT SELFCHECK RUNS in one checkout are still not supported, and this change does not
-# make them so: they would both drive `build.sh` over the same tree. That is #250's territory and
-# is called out here so the omission is a decision rather than an oversight.
+# TWO CONCURRENT SELFCHECK RUNS in one checkout are still not supported, and neither #260 nor #250
+# made them so: they would both drive `build.sh` over the same TRACKED tree, which no temp-path
+# rule can separate. #250 was about run data landing on shared, guessable paths; a tracked working
+# tree is neither, so the two never met. Stated here so the omission stays a decision.
 PINNED_STEPS=(build-drift)
 
 # Concurrent git against ONE repo, made safe the documented way rather than by hoping. `git diff`
@@ -376,6 +380,14 @@ add workflow-shell      bash scripts/check-workflow-shell.sh
 # workflow that reads such text labels the read and that every workflow is classified. Its own
 # mutation harness proves the lint can go red rather than matching nothing.
 add injection           bash scripts/check-injection.sh
+
+# Run data may not land on a fixed, host-shared path (#250). /implement-issue's issue snapshot —
+# the untrusted body plus the `author_association` trust label — sat at a name derived from a
+# public issue number in a world-writable directory, written in step 2 and read back in steps 3
+# and 8. Two halves, each with a mutation harness: the snapshot's path resolves per CHECKOUT
+# (asserted by resolving the real markdown expression under two roots, in the source and in every
+# render), and no fixed shared-temp literal survives anywhere the four scanned roots reach.
+add tmp-paths           bash scripts/check-tmp-paths.sh
 
 add gate-detector       step_gate_detector
 

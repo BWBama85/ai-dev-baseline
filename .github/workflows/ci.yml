@@ -261,6 +261,12 @@ jobs:
       - name: Untrusted third-party text is labelled at every read site and contained at every hand-off (#214)
         run: bash scripts/check-injection.sh
 
+      # Fourth species, and it rides this job for the same reason as the two above: a new job is a
+      # new branch-protection context that `required-drift` then reports as gating nothing until
+      # someone edits protection by hand. It reads the same workflow bodies plus their renders.
+      - name: Run data lands on a per-checkout path, never a fixed shared-temp one (#250)
+        run: bash scripts/check-tmp-paths.sh
+
   gate-detector:
     name: gate-detector
     runs-on: ubuntu-26.04

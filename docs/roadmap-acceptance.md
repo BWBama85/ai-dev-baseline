@@ -145,10 +145,15 @@ gh pr edit <pr#> --body "Closes #1"
 With no tracker change between runs, run `/roadmap` twice and capture the artifact each time:
 
 ```bash
-gh issue view <roadmap#> --json body --jq .body > /tmp/r1.md
+# A per-run scratch dir, not fixed names: this comparison is run repeatedly, sometimes in two
+# checkouts at once, and a second run writing the same two paths makes the diff compare one run's
+# artifact against the other's — reporting drift that is not there, or hiding drift that is (#250).
+D="$(mktemp -d "${TMPDIR:-/tmp}/roadmap-determinism.XXXXXX")" || exit 1
+gh issue view <roadmap#> --json body --jq .body > "$D/r1.md"
 # …run /roadmap again…
-gh issue view <roadmap#> --json body --jq .body > /tmp/r2.md
-diff /tmp/r1.md /tmp/r2.md && echo "IDENTICAL"
+gh issue view <roadmap#> --json body --jq .body > "$D/r2.md"
+diff "$D/r1.md" "$D/r2.md" && echo "IDENTICAL"
+rm -rf "$D"
 ```
 
 - [ ] The artifact bodies are **byte-identical** and the emitted `Next:` batch is the same.

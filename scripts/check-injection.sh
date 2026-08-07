@@ -360,8 +360,14 @@ m_new_workflow()  { printf -- '---\nname: surprise\ndescription: d\n---\n# body\
 # lines, which only ever proved the token count could drop — it never produced an unsafe
 # concatenation. This one keeps the wrapper calls in place and appends a RAW paste beside them,
 # which is the regression an implementer would actually introduce.
+#
+# THE FIXTURE MIRRORS THE WORKFLOW'S OWN SPELLING, and #250 moved that spelling: the issue snapshot
+# now lives under `{{STATE_DIR}}`, not at a fixed `/tmp` path. The detector keys on `.body` plus
+# `prompt.txt` and would fire either way, so this line is not what makes the mutation work — but a
+# fixture that quotes a path production no longer uses stops being "the regression an implementer
+# would actually introduce" and starts being a museum piece, which is the coupling #250 named.
 m_raw_paste()     { awk '
-                      /^```bash$/ { print; print "jq -r .body /tmp/issue-1.json >> .claude/state/gap-prompt.txt"; next }
+                      /^```bash$/ { print; print "jq -r .body {{STATE_DIR}}/issue-1.json >> {{STATE_DIR}}/gap-prompt.txt"; next }
                       { print }' "$1/base/workflows/implement-issue.md" > "$1/x" \
                     && mv "$1/x" "$1/base/workflows/implement-issue.md"; }
 # A third-party read added to a workflow registered as ZERO. Without the discovery rule this passes.

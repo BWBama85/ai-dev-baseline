@@ -186,11 +186,17 @@ printf 'A stream\n'     > "$d/.claude/state/gaps.err"
 printf 'A prompt\n'     > "$d/.claude/state/gap-prompt.txt"
 printf 'A review\n'     > "$d/.claude/state/review.md"
 printf 'A slot\n'       > "$d/.claude/state/review-codex.md"
+# The issue SNAPSHOT (#250). It is the most sensitive thing run A holds — the untrusted issue body
+# and the `author_association` label that tells a dispatched agent whether the task came from a
+# maintainer — and step 8 reads it back long after the marker exists, so B destroying it would
+# corrupt A's review dispatch, not merely lose a re-derivable artifact.
+printf '{"state":"OPEN"}\n' > "$d/.claude/state/issue-99.json"
+printf 'OWNER\n'           > "$d/.claude/state/issue-99.assoc"
 before="$(state_digest "$d")"
 admit "$d" CLAUDE_CODE_SESSION_ID=sess-B
 eq "$AD_RC" "10" "3 a second run is REFUSED while run A's marker is live"
 eq "$(state_digest "$d")" "$before" \
-   "3 …and A keeps EVERY file byte-for-byte: marker, blocked marker, gap findings, review findings"
+   "3 …and A keeps EVERY file byte-for-byte: marker, blocked marker, gap findings, review findings, issue snapshot"
 has "$AD_OUT" "already in flight" "3 …and the refusal names the condition"
 has "$AD_OUT" "issue-99-live"     "3 …and the branch the operator has to go finish"
 if exists "$d/.claude/state/gap-analysis.lock"; then
@@ -228,12 +234,22 @@ d="$(new_repo)"; marker "$d" issue-4-x "https://github.com/o/r/pull/4"
 printf 'old\n' > "$d/.claude/state/gaps.md"
 printf 'old\n' > "$d/.claude/state/review-codex.err"
 printf '{}\n'  > "$d/.claude/state/implement-issue-blocked.json"
+printf 'old\n' > "$d/.claude/state/issue-4.json"
+printf 'NONE\n' > "$d/.claude/state/issue-4.assoc"
+# A name state-scan classifies `other` — so /cleanup would never sweep it, and the containment
+# rule runs only one way. It is cleared here because the clear glob is deliberately WIDER than the
+# scan arm; asserting it pins the direction, so a future narrowing of the clear to match the arm
+# exactly would strand this file rather than pass silently.
+printf 'old\n' > "$d/.claude/state/issue-notanumber.json"
 admit "$d" SHIM_PR_STATE=merged
 eq "$AD_RC" "0" "5 both refs gone and the PR MERGED → the previous run is finished, so admit"
 if exists "$d/.claude/state/implement-issue-active.json"; then bad "5 …and its marker is cleared"; else ok; fi
 if exists "$d/.claude/state/implement-issue-blocked.json"; then bad "5 …and its blocked marker with it"; else ok; fi
 if exists "$d/.claude/state/gaps.md"; then bad "5 …and its gap findings"; else ok; fi
 if exists "$d/.claude/state/review-codex.err"; then bad "5 …and its per-slot review stream"; else ok; fi
+if exists "$d/.claude/state/issue-4.json"; then bad "5 …and the issue snapshot it fetched (#250)"; else ok; fi
+if exists "$d/.claude/state/issue-4.assoc"; then bad "5 …and the provenance label beside it"; else ok; fi
+if exists "$d/.claude/state/issue-notanumber.json"; then bad "5 …and a snapshot-shaped name the scan arm does not claim"; else ok; fi
 # A run that never opened a PR and whose branch is gone is equally finished.
 d="$(new_repo)"; marker "$d" issue-5-x
 admit "$d"; eq "$AD_RC" "0" "5 no PR was ever recorded and both refs are gone → finished, so admit"

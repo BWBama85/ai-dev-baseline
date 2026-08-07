@@ -135,9 +135,12 @@ back. These do not, and they are the ones most likely to be typed casually — a
   **until gc prunes it**. Recovery is possible, not guaranteed — treat it as loss.
 
 **Prefer the non-destructive move.** `git stash push -- <path>` parks the change
-instead of deleting it, and `git diff HEAD > /tmp/x.patch` keeps a copy —
-`HEAD`, because a bare `git diff` captures only *unstaged* differences and would
-silently omit the staged snapshot you are about to overwrite. And when the goal is
+instead of deleting it, and `git diff HEAD > "$(mktemp "${TMPDIR:-/tmp}/wip.XXXXXX")"`
+keeps a copy — `HEAD`, because a bare `git diff` captures only *unstaged*
+differences and would silently omit the staged snapshot you are about to
+overwrite, and `mktemp` because a fixed name is the wrong shape for the one file
+here whose contents git cannot get back: a second shell doing the same thing
+truncates it, and the copy you reach for is the copy that is gone. And when the goal is
 to test something rather than to discard it, don't touch the tracked file at all —
 see the negative-testing method in `self-review.md`.
 

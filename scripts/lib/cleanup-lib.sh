@@ -33,6 +33,7 @@
 #   cleanup-lib.sh state-verdict  threads <pr-state>
 #   cleanup-lib.sh state-verdict  marker  <pr-state> <local-ref> <remote-ref>
 #   cleanup-lib.sh state-verdict  gaps    <lock 0|1> <run keep|stale|none>
+#   cleanup-lib.sh state-verdict  issue   <lock 0|1> <run keep|stale|none>
 #   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
 #   cleanup-lib.sh marker-branch   <marker-path>
 #   cleanup-lib.sh marker-identity <marker-path>
@@ -262,6 +263,7 @@ EOF
 #   lock     -               the gap-analysis in-flight lock
 #   gaps     -               a gap-analysis artifact (prompt, findings, captured stream)
 #   review   -               a code-review artifact (prompt, findings, captured stream)
+#   issue    -               an /implement-issue issue SNAPSHOT, `issue-<n>.json` / `issue-<n>.assoc`
 #   unsafe   -               a file whose NAME cannot be serialized (see #273 below); the path
 #                            field is a `%q`-ENCODED rendering, never a usable path
 #   other    -               ANYTHING ELSE
@@ -342,6 +344,24 @@ cmd_state_scan() {
       # sweep but preflight cannot clear is a stale file that a fresh run's marker makes look live.
       review-prompt.txt|review.md|review.err|review-*.md|review-*.err)
         printf 'review\t%s\t-\n' "$f"
+        ;;
+      # /implement-issue step 2's issue snapshot (#250) — the untrusted issue text and the
+      # `author_association` provenance label that decides whether a dispatched agent is told the
+      # task came from a maintainer or a stranger. They used to live at a fixed `/tmp` path, which
+      # is world-writable, shared by every checkout on the host, and outside every lifecycle this
+      # library models; under the state directory they get the same one both other families have.
+      #
+      # A DIGIT-ONLY key, exactly like the `threads` arm and for the same reason: this is a delete
+      # ALLOWLIST, so a name that cannot supply the issue number it claims to carry is simply not
+      # ours to delete. `issue-.json`, `issue-abc.assoc` and `issue-1.json.bak` all stay `other`.
+      # The key itself is not emitted — unlike a thread cache, nothing reads liveness per issue
+      # number; the whole family shares the run's own liveness (see `state-verdict issue`).
+      issue-*.json|issue-*.assoc)
+        n="${base#issue-}"; n="${n%.json}"; n="${n%.assoc}"
+        case "$n" in
+          ''|*[!0-9]*) printf 'other\t%s\t-\n' "$f" ;;
+          *)           printf 'issue\t%s\t-\n' "$f" ;;
+        esac
         ;;
       *)
         printf 'other\t%s\t-\n' "$f"
@@ -467,7 +487,7 @@ cmd_marker_identity() {
 # it belongs to has resolved, and a mtime rule would delete a slow run's state while preserving a
 # fast one's. Every fact below is a live PR state or a freshly-fetched ref.
 cmd_state_verdict() {
-  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|review)"
+  [ "$#" -ge 1 ] || die "state-verdict: needs a <kind> (threads|marker|gaps|issue|review)"
   local kind="$1"; shift
   case "$kind" in
     threads)
@@ -505,13 +525,21 @@ cmd_state_verdict() {
       case "$1" in unknown) printf 'keep\n'; return 0 ;; esac
       printf 'stale\n'
       ;;
-    gaps)
-      [ "$#" -eq 2 ] || die "state-verdict gaps: needs exactly 2 args: <lock 0|1> <run keep|stale|none>"
+    # ONE PREDICATE, TWO NAMES — never a second copy of it. The issue snapshot (#250) has exactly
+    # the gap artifacts' lifetime: /implement-issue step 2 writes it BEFORE the branch and the run
+    # marker exist, under the same claim `admit` took in preflight, and step 8 is still reading it
+    # long after the marker took over. So the same two facts decide both — is a pre-marker run
+    # holding the claim, and does a marker describe a live run. Giving `issue` its own arm with the
+    # same body is how two answers that must agree start disagreeing after one of them is edited;
+    # giving it no name at all would make base/workflows/cleanup.md ask `gaps` about a file that is
+    # not a gap artifact, which reads as a copy-paste slip rather than a decision.
+    gaps|issue)
+      [ "$#" -eq 2 ] || die "state-verdict $kind: needs exactly 2 args: <lock 0|1> <run keep|stale|none>"
       # Both up front, for the reason given under `marker`: the lock short-circuits below, so
       # validating <run> only where it is read would let `gaps 1 <typo>` print a confident `keep`.
-      case "$1" in 0|1) : ;; *) die "state-verdict gaps: <lock> must be 0 or 1 (got '$1')" ;; esac
+      case "$1" in 0|1) : ;; *) die "state-verdict $kind: <lock> must be 0 or 1 (got '$1')" ;; esac
       case "$2" in keep|stale|none) : ;;
-        *) die "state-verdict gaps: <run> must be keep|stale|none (got '$2')" ;; esac
+        *) die "state-verdict $kind: <run> must be keep|stale|none (got '$2')" ;; esac
       # THE LOCK OUTRANKS EVERYTHING. Gap analysis runs in /implement-issue step 3, BEFORE the
       # branch and the run marker exist (step 5 owns those), so during a live gap pass there is
       # no marker to consult and the artifacts would otherwise read as a finished run's leftovers
@@ -557,7 +585,7 @@ cmd_state_verdict() {
         *)    printf 'stale\n' ;;
       esac
       ;;
-    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|review)" ;;
+    *) die "state-verdict: unknown kind '$kind' (want threads|marker|gaps|issue|review)" ;;
   esac
 }
 

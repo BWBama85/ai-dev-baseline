@@ -748,6 +748,9 @@ EOF
 # The gap FAMILY (`gaps-*.md`, `gaps-*.err`) is cleared, not just the three fixed names. `state-scan`
 # has swept that family since #84 recorded a real run leaving `gaps-retry.{md,err}` behind, so the
 # fixed-name-only clear the workflow prose carried was on the wrong side of the containment rule.
+# The ISSUE SNAPSHOT family (`issue-*.json`, `issue-*.assoc`) joins it for the same reason since
+# #250 moved it out of `/tmp`; note the globs are anchored, so `implement-issue-active.json` is not
+# one of them and the marker keeps its by-identity removal in `cmd_admit`.
 _il_clear() {   # <state-dir>
   local dir="$1" f rc=0 had_nullglob=0
   # RE-CHECKED HERE, not only at admission. `[ -r ]` at the top of `admit` and the globbing below are
@@ -768,9 +771,17 @@ _il_clear() {   # <state-dir>
   # than arriving as a literal path that the loop below would then try to `rm`. The option is saved
   # and restored: this file may be sourced, and silently flipping a caller's globbing is the kind of
   # action-at-a-distance that surfaces somewhere else entirely.
+  #
+  # The ISSUE SNAPSHOT family (#250) is here for the containment rule, not for tidiness. Step 2's
+  # `issue-<n>.json`/`issue-<n>.assoc` hold the untrusted issue text and the provenance label, and
+  # `state-scan` now classifies them `issue` — so a name /cleanup can sweep that this could not
+  # clear would be exactly the stale-reads-as-live file the invariant forbids. The globs here are
+  # DELIBERATELY WIDER than that arm, which requires an all-digit number: clearing `issue-x.json`
+  # too is the safe direction (widening the clear is always safe; narrowing it strands a file).
   shopt -q nullglob && had_nullglob=1
   shopt -s nullglob
-  targets+=( "$dir"/gaps-*.md "$dir"/gaps-*.err "$dir"/review-*.md "$dir"/review-*.err )
+  targets+=( "$dir"/gaps-*.md "$dir"/gaps-*.err "$dir"/review-*.md "$dir"/review-*.err
+             "$dir"/issue-*.json "$dir"/issue-*.assoc )
   [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
   for f in "${targets[@]}"; do
     [ -e "$f" ] || [ -L "$f" ] || continue

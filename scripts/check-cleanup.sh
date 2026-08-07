@@ -223,6 +223,28 @@ sv gaps 0 bogus >/dev/null 2>&1; no $? "2c an unrecognised run word is an error"
 sv gaps 1 bogus >/dev/null 2>&1; no $? "2c …even when the lock would short-circuit the decision"
 sv nosuchkind 0 >/dev/null 2>&1; no $? "2c an unknown kind is an error"
 
+# --- 2c1. the issue snapshot: the SAME predicate as gaps, under its own name (#250) ------------
+# Step 2 writes the snapshot before any marker exists, under the claim admit took in preflight,
+# and step 8 is still reading it long after the marker took over — exactly the gap artifacts'
+# lifetime, so exactly their verdict. `cleanup-lib.sh` implements the two names with ONE arm on
+# purpose (two bodies that must agree are two bodies that will stop agreeing), and this block is
+# what proves the aliasing is real rather than asserted: every gaps case restated for `issue`, so
+# a future edit that splits the arm and changes one side fails here.
+eq "${ sv issue 1 none; }"  "keep"  "2c1 the claim keeps the snapshot with no marker at all"
+eq "${ sv issue 1 stale; }" "keep"  "2c1 …and outranks even a finished run's marker"
+eq "${ sv issue 0 keep; }"  "keep"  "2c1 a live run keeps its snapshot"
+eq "${ sv issue 0 stale; }" "stale" "2c1 a finished run's snapshot is swept"
+eq "${ sv issue 0 none; }"  "stale" "2c1 no claim and no marker means nothing owns it"
+sv issue 2 none >/dev/null 2>&1;  no $? "2c1 a non-boolean lock is an error"
+sv issue 0 bogus >/dev/null 2>&1; no $? "2c1 an unrecognised run word is an error"
+sv issue 1 bogus >/dev/null 2>&1; no $? "2c1 …even when the lock would short-circuit the decision"
+sv issue 0 >/dev/null 2>&1;       no $? "2c1 the review ARITY is refused, never silently re-read"
+# The diagnostic names the kind the CALLER asked for. A shared arm that reported `gaps` for an
+# `issue` typo sends the reader to the wrong line of base/workflows/cleanup.md. Called directly
+# rather than through `sv`, which discards stderr — and stderr is the whole assertion here.
+has "${ bash "$CL" state-verdict issue 0 bogus 2>&1 || true; }" "state-verdict issue:" \
+   "2c1 an error names the kind that was ASKED, not the arm it shares"
+
 # --- 2c2. review artifacts: the run marker alone, and NO lock argument (#264) -----------------
 # The deliberate asymmetry with `gaps`. Review is written in /implement-issue step 8, AFTER step 5
 # has written the marker and while the run's branch still exists, so the window the gap lock exists
@@ -291,6 +313,14 @@ S="$work/state"; mkdir -p "$S"
 : > "$S/review-foo.txt"
 : > "$S/review.md.bak"
 : > "$S/reviewer.md"
+: > "$S/issue-250.json"
+: > "$S/issue-250.assoc"
+: > "$S/issue-7.json"
+: > "$S/issue-.json"
+: > "$S/issue-abc.assoc"
+: > "$S/issue-250.json.bak"
+: > "$S/issue-250.txt"
+: > "$S/issues-250.json"
 : > "$S/pr-body.md"
 : > "$S/some-other-skill.json"
 : > "$S/.marker.tmp"
@@ -320,6 +350,19 @@ eq "${ kindof review.txt; }"                   "other"   "3 a review-shaped name
 eq "${ kindof review-foo.txt; }"               "other"   "3 …nor is a family prefix with the wrong suffix"
 eq "${ kindof review.md.bak; }"                "other"   "3 …nor a backup of one"
 eq "${ kindof reviewer.md; }"                  "other"   "3 …nor a longer word that merely starts with 'review'"
+# #250: the issue SNAPSHOT — step 2's untrusted body plus the `author_association` trust label —
+# which used to live at a fixed, host-shared temp path and so had no lifecycle here at all.
+eq "${ kindof issue-250.json; }"               "issue"   "3 the issue snapshot is classified (#250)"
+eq "${ kindof issue-250.assoc; }"              "issue"   "3 …and its provenance label, on the other suffix"
+eq "${ kindof issue-7.json; }"                 "issue"   "3 …including a single-digit issue number"
+# The same allowlist discipline the `threads` arm applies: a name that cannot supply the issue
+# number it claims to carry is not ours to delete. Each near-miss is its own case, because the
+# cheap way to widen an allowlist by accident is one glob that swallows a neighbour.
+eq "${ kindof issue-.json; }"                  "other"   "3 an issue-shaped name with NO number is NOT ours to delete"
+eq "${ kindof issue-abc.assoc; }"              "other"   "3 …nor one whose number is not a number"
+eq "${ kindof issue-250.json.bak; }"           "other"   "3 …nor a backup of one"
+eq "${ kindof issue-250.txt; }"                "other"   "3 …nor the family prefix with the wrong suffix"
+eq "${ kindof issues-250.json; }"              "other"   "3 …nor a longer word that merely starts with 'issue'"
 # Named explicitly because #264 puts it out of scope: pr-body.md is the AGENT's filename, not one
 # the shipped workflow writes, so the fix must not have quietly made it sweepable.
 eq "${ kindof pr-body.md; }"                   "other"   "3 pr-body.md stays 'other' — #264 scopes it out"
@@ -716,8 +759,8 @@ else
       }
     }' ; }"
   if [ -n "$sweeparms" ]; then
-    eq "$sweeparms" "gaps review threads " \
-       "6 the sweep loop's delete arms are EXACTLY gaps/review/threads — no default arm, so 'unsafe' cannot be deleted"
+    eq "$sweeparms" "gaps issue review threads " \
+       "6 the sweep loop's delete arms are EXACTLY gaps/issue/review/threads — no default arm, so 'unsafe' cannot be deleted"
   else
     bad "6 could not read the sweep loop's case arms from the workflow — the allowlist check asserted NOTHING"
   fi
@@ -816,9 +859,13 @@ else
   # The patterns are DERIVED FROM THE LIBRARY, not a second hardcoded list. Two hardcoded lists
   # cannot detect that they disagree: adding `review-extra.json` to `state-scan`'s arm and nothing
   # to the clear left this suite green, because no fixture ever named that file.
+  # `issue` joins `gaps` and `review` here for #250. Its family is the issue SNAPSHOT — the
+  # untrusted body and the `author_association` trust label — which moved out of a fixed, host-
+  # shared temp path into the state directory and therefore inherited the same obligation both
+  # older families carry: whatever /cleanup can sweep, admit must be able to clear.
   ilw="$work/il"; mkdir -p "$ilw"
   ilarms=0
-  for armname in gaps review; do
+  for armname in gaps issue review; do
     # Anchored on the arm's BODY (`printf 'gaps\t…`), not on its label: the gaps arm's label starts
     # with `gap-prompt.txt` and the review arm's with `review-prompt.txt`, so neither begins with
     # the kind it emits. Matching the emit line and reporting the label above it reads the pairing
@@ -838,7 +885,14 @@ else
     for pat in "${armpats[@]}"; do
       # A glob member becomes a concrete name by substituting a token for `*`; an exact member is
       # itself. Both must survive the round trip through state-scan's own classifier below.
-      f="${pat//\*/slot}"
+      #
+      # THE TOKEN IS NUMERIC, and that is a requirement of this loop rather than a taste: an arm
+      # may impose a KEY DISCIPLINE on the text its `*` stands for, and `issue-*.json` does — a
+      # digits-only number, so `issue-<word>.json` is deliberately `other` (#250, the same
+      # allowlist rule the `threads` arm has always applied). A word token made this loop generate
+      # a name that arm rejects, and the fixture-is-real assertion below caught it. A digit is a
+      # legal substitution for EVERY arm's `*`, so it is the one token that keeps this generic.
+      f="${pat//\*/1}"
       : > "$d/$f"; made+=( "$f" )
     done
     # PROVE THE FIXTURE IS REAL before asserting anything about the clear. A name that state-scan
@@ -865,9 +919,11 @@ else
     if [ -n "$lnpat" ]; then
       rm -rf "$d"; mkdir -p "$d"
       : > "$d/link-target"
-      ln -s "$d/link-target" "$d/${lnpat//\*/link}"
+      # Numeric, for the reason the fixture loop above gives — an arm may constrain what its `*`
+      # may stand for, and a link named outside that set would test a file /cleanup never sweeps.
+      ln -s "$d/link-target" "$d/${lnpat//\*/2}"
       bash "$IL" admit "$d" >/dev/null 2>&1 || true
-      if [ -e "$d/${lnpat//\*/link}" ] || [ -L "$d/${lnpat//\*/link}" ]; then
+      if [ -e "$d/${lnpat//\*/2}" ] || [ -L "$d/${lnpat//\*/2}" ]; then
         bad "6 admit left the ${lnpat} SYMLINK behind, which state-scan's [ -f ] test follows"
       else
         ok
@@ -876,7 +932,7 @@ else
       bad "6 the $armname arm exposes no family glob — the symlink agreement check asserted NOTHING"
     fi
   done
-  eq "$ilarms" "2" "6 both artifact families (gaps, review) were actually read from state-scan"
+  eq "$ilarms" "3" "6 all three artifact families (gaps, issue, review) were actually read from state-scan"
 
   # A failure to clear must REFUSE and release, never report success over artifacts it did not
   # remove. A read-only state dir (mode 500) is the reproducible form of that.

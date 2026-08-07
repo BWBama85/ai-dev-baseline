@@ -4,8 +4,8 @@ description: Draft and file a well-scoped GitHub issue. Enforces an 11-axis adve
 user-invocable: true
 effort: high
 # Triage-only skill: it drafts and files an issue but must never edit code. Write
-# is NOT denied — the skill writes the /tmp issue-body scratch consumed by
-# `gh issue create --body-file`.
+# is NOT denied — the skill writes the per-run `mktemp` issue-body scratch consumed
+# by `gh issue create --body-file`.
 disallowed-tools: Edit, NotebookEdit
 ---
 
@@ -144,7 +144,19 @@ If any gate fails, loop back. A thin issue shipped is worse than five extra minu
 
 ### 6. File the issue
 
-Use `gh issue create --title "..." --body-file /tmp/issue-body.md` or the heredoc pattern. Prefer `--body-file` when the body is multi-section — it avoids shell-escaping bugs.
+Write the body to a **per-run scratch file** and pass it with `--body-file`:
+
+```bash
+BODY="$(mktemp "${TMPDIR:-/tmp}/issue-body.XXXXXX")" || { echo "ERROR: cannot create scratch file"; exit 1; }
+# …write the drafted body into "$BODY"…
+gh issue create --title "..." --body-file "$BODY"
+rm -f "$BODY"
+```
+
+Prefer `--body-file` over an inline `--body` when the body is multi-section — it avoids
+shell-escaping bugs. **`mktemp`, never a fixed name.** A fixed path in the system temp directory is
+the same file for every checkout and every session on the host, so two drafts in flight at once
+silently overwrite each other and one issue gets filed with the other's body (#250).
 
 Title conventions:
 - Under ~70 characters.

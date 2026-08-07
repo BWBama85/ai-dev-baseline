@@ -9,6 +9,52 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The issue snapshot leaves the shared temp directory for `{{STATE_DIR}}`, and a lint keeps it
+  there** (#250, D50).
+
+  `/implement-issue` step 2 wrote `gh issue view` and the `author_association` label #214 added to
+  `/tmp/issue-<n>.json` and `/tmp/issue-<n>.assoc`, then read them back in step 3 and again in step
+  8. That directory is world-writable, shared by every checkout and every worktree on the host, and
+  both names were fully determined by a **public issue number**. So two runs on one issue — two
+  clones, two worktrees, two agents — shared both files and the second run's `>` truncated the
+  first's snapshot mid-run, with **no attacker required**. The minutes between the write and the
+  read were also a TOCTOU window on a **trust signal**: replace the `.assoc` and the dispatched
+  agent is told a stranger's text carries maintainer standing.
+
+  Both files now live in `{{STATE_DIR}}` — repo-relative and per-agent (`.<agent>/state`), which is
+  exactly the boundary `implement-lib.sh admit` already enforces (#202). **Flat, never a
+  subdirectory**: `state-scan` enumerates only regular files directly under the state directory, so
+  a tidy `issues/` would have been invisible to `/cleanup` and to `admit` alike.
+
+  **Moving it meant giving it a lifecycle, not just a new path.** `cleanup-lib.sh state-scan` gains
+  an `issue` kind (`issue-<digits>.{json,assoc}`, digit-only for the same allowlist reason the
+  `threads` arm is), `state-verdict` gains an `issue` name that **shares the `gaps` arm** because
+  the lifetime is identical — written before any marker exists, under the claim, still read after
+  the marker takes over — and `implement-lib.sh`'s clear takes the family so the containment
+  invariant still runs the safe way. `base/workflows/cleanup.md` sweeps it. Registering the scan
+  arm without the clear would have recreated the #264 trap; registering neither would have left
+  private issue bodies as permanent `other` debris.
+
+  A **latent bug on the read path** is fixed in the same change: both `.assoc` reads nested
+  `$(cat …)` inside a `jq --arg`, and a command substitution in argument position discards its
+  status — so a missing or unreadable label left `--arg assoc ""`, `jq` succeeded, and the
+  surrounding `||` never fired. The provenance annotation went out silently blank. It is its own
+  statement now, and an empty value is refused.
+
+  `scripts/check-tmp-paths.sh` is what stops the drift, in two halves, each with its own mutation
+  harness: the snapshot's path is resolved **out of the real markdown** — source and every rendered
+  skill — under two distinct roots and must differ, and no fixed shared-temp literal without
+  per-run entropy survives anywhere under `base/`, `scripts/`, `docs/` or `agents/`. It also fixes
+  the remaining instances of the class it defines: `create-issue.md`'s issue-body scratch,
+  `git-and-prs.md`'s recommended `.patch` copy (a fixed name for the one file git cannot get back),
+  `docs/roadmap-acceptance.md`'s determinism procedure, and `check-injection.sh`'s coupled fixture.
+
+  **What is claimed is collision isolation, and no more.** A process that can already write the
+  run's state directory can still replace the label; leaving the shared namespace removes reach,
+  not the need for integrity. `check-release-skill.sh`'s `$$`-suffixed files were surveyed and
+  **left alone** — the acceptance criterion names `$$` as a valid per-run spelling, so they were
+  never the defect, and `selfcheck.sh`'s note saying otherwise is corrected rather than acted on.
+
 - **The wall-clock bound reaps the whole process group on both paths, and a dispatched agent's log
   is capped at the source** (#141, supersedes #123, D49).  <!-- adb-claim-ok: #123 was closed NOT_PLANNED as SUPERSEDED by #141, which consolidated it; the reference is this change's provenance, not tracked work -->
 

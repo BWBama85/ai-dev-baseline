@@ -3426,3 +3426,92 @@ limit: none of them is sufficient alone.
              **#181's "ship this before the common.sh promotion sweep" is moot**: #181 was  <!-- adb-claim-ok: #181 was closed NOT_PLANNED; cited to record that this issue's stated sequencing constraint no longer applies, not as tracked work -->
              observed CLOSED as NOT_PLANNED (closedAt 2026-07-31T06:40:32Z), so the ordering
              constraint has nothing left to order against. <!-- adb-claim-ok: #181 was closed NOT_PLANNED; cited to record that this issue's stated sequencing constraint no longer applies, not as tracked work -->
+
+## D50 — run data lands under `{{STATE_DIR}}`, and `mktemp` was rejected on lifetime grounds
+- date:      2026-08-07
+- category:  project-delta
+- unknown:   #250 left the home for /implement-issue's issue snapshot open between two candidates —
+             a per-run `mktemp -d` or `{{STATE_DIR}}` — and said the two "should be decided together"
+             with #202's per-run state naming rather than in isolation.
+- decision:  `{{STATE_DIR}}`, with the snapshot registered as a first-class state family. #202 has
+             since landed and decided the model it was waiting on: exclusion is per checkout PER
+             AGENT, enforced by `implement-lib.sh admit`, and `{{STATE_DIR}}` renders to
+             `.<agent>/state` (`scripts/build.sh:112`) — the same boundary, so a fixed name inside
+             it cannot collide with anything `admit` permits to exist.
+
+             `mktemp -d` was rejected on evidence, not taste. The gap-analysis pass named two
+             defects it cannot avoid: the directory's identity is a SHELL VARIABLE, and this
+             workflow's own step 1 already warns that a later fenced block may run as a separate
+             shell — while the snapshot is written in step 2 and last read in step 8, an hour and
+             a dozen blocks later; and it has NO cleanup owner, because a trap in the creating
+             block either fires before step 8 or dies with that shell, and an external temp
+             directory sits outside the claim/marker model entirely, so every killed run leaks one
+             forever. `{{STATE_DIR}}` needs neither: the path is a constant, and `admit` plus
+             `/cleanup` already own the lifecycle.
+- placement: `base/workflows/implement-issue.md` (the 7 sites plus the containment prose);
+             `scripts/lib/cleanup-lib.sh` (`state-scan`'s `issue` arm, `state-verdict issue`);
+             `scripts/lib/implement-lib.sh` (`_il_clear`'s family globs);
+             `base/workflows/cleanup.md` (the sweep arm);
+             `scripts/check-tmp-paths.sh` + `scripts/selfcheck.sh` + `.github/workflows/ci.yml`
+             (the guard and its two wirings);
+             `scripts/check-cleanup.sh`, `scripts/check-implement-lib.sh`,
+             `scripts/check-injection.sh`, `scripts/check-common-lib.sh` (coverage).
+- reason:    A project-delta, not a general gap: the defect is in this repo's own workflow source
+             and shared libraries, and every piece of the fix landed in a home that already
+             existed. No new config surface was invented and no baseline rule was contradicted.
+- baseline-issue: #250
+- also:      **`state-verdict issue` SHARES the `gaps` arm rather than copying it.** The snapshot's
+             lifetime is the gap artifacts' lifetime exactly — written before any marker exists,
+             under the claim `admit` took in preflight, still read after the marker supersedes it —
+             so the same two facts decide both. Two bodies that must agree are two bodies that stop
+             agreeing after one is edited; the alias keeps one implementation while letting
+             `base/workflows/cleanup.md` ask under the name of the file it is actually deciding
+             about. `scripts/check-cleanup.sh` section 2c1 restates every `gaps` case for `issue`,
+             so a future split that changes one side fails there.
+
+             **The scan arm requires DIGITS and the clear glob does not, and that asymmetry is the
+             containment rule, not an oversight.** Everything `/cleanup` can sweep, `admit` must be
+             able to clear; widening the clear is always safe, narrowing it strands a file that a
+             fresh run's marker then makes read as live (the #264 trap). `issue-notanumber.json` is
+             therefore `other` to the sweep and still cleared by preflight, and
+             `check-implement-lib.sh` pins that direction explicitly.
+
+             **The guard was observed failing on the real superseded input, twice over.** Before
+             the rebuild, `check-tmp-paths.sh` reported all six `/tmp/issue-$n.*` sites in each of
+             the three rendered skills plus every other instance of the class; and its permanent
+             mutation harness re-injects the pre-fix spellings — `{{STATE_DIR}}` reverted in the
+             source, `.claude/state` reverted in ONE render, the filename renamed away, and a fixed
+             path added under each of the four scanned roots — into a COPY of the tree on every
+             run, requiring seven reds.
+
+             **Its own self-test caught two defects in it before anything else did.** `awk -v`
+             interprets backslash escapes in the assignment, so the entropy allowance passed as
+             `\$\$|\$RANDOM|XXXXXX` arrived as a regex whose `$$` is two end-of-string anchors —
+             and `/tmp/adb-cl-meta.$$`, the spelling #250's acceptance explicitly permits, was
+             reported as a violation. It is a tab-separated literal list matched with `index()`
+             now. The second was a false positive on its own source: every fixture has to produce
+             the exact text the scanner hunts, so the two literals are composed at runtime from
+             variables rather than typed — exempting the whole file would have hidden a real
+             regression introduced in it later, and marking each fixture line is impossible inside
+             a `for … in 'a' \` continuation and would make the marker fixture self-exempting
+             besides (the trap `check-claims-guard.sh` already records for `adb-claim-ok`).
+
+             **A `_il_clear` edit dropped the `review` arm from `state-scan` and `check-cleanup.sh`
+             caught it immediately** — five `review` fixtures fell to `other` in one run. Recorded
+             because it is the argument for those fixtures existing: the arm would otherwise have
+             shipped silently, and `/cleanup` would have stopped sweeping review artifacts while
+             reporting a clean run.
+
+             **A generic harness assumption was corrected rather than worked around.** The
+             containment loop builds a fixture per arm by substituting a token for `*`, and used
+             the word `slot` — which `issue-*.json`'s digit rule rejects, making the fixture name a
+             file `/cleanup` would never sweep and the deletion assertion vacuous. The token is
+             numeric now, which is legal for every arm's `*`, so the loop stays generic.
+
+             **Scope held where #250 drew it.** `check-release-skill.sh`'s `$$` files are named in
+             the acceptance criterion as an allowed spelling and were left alone (`selfcheck.sh`'s
+             note claiming they "belong to #250" is corrected to say so); `.github/workflows/ci.yml`
+             runs on an ephemeral single-tenant runner and is out of scope by the issue's own
+             survey. The two "fold in or drop" items were folded in, because the lint this change
+             adds defines them as violations — leaving them would have meant shipping a guard with
+             two exemptions on its first day.

@@ -477,11 +477,16 @@ rm -rf "$sbgit/rebase-merge"
 # (role-dispatch.sh, the SessionStart hook). A reader that spelled it differently — notably one
 # that honored XDG_CONFIG_HOME while the writer did not — would consult a file nobody writes, so
 # its config key would silently do nothing.
-eq "$( HOME=/tmp/fakehome; adb_global_manifest )" "/tmp/fakehome/.config/ai-dev-baseline/agents.toml" \
+# The two HOME values are STRING COMPOSITION INPUTS — `adb_global_manifest` concatenates and never
+# touches the filesystem, so nothing is created, read or removed here. They are deliberately NOT
+# under `/tmp`: the literal is arbitrary, and one that is not a real shared directory keeps this
+# file out of the fixed-`/tmp` lint's exemption list entirely (#250). An exemption nobody needs is
+# an exemption nobody has to keep re-justifying.
+eq "$( HOME=/nonexistent/fakehome; adb_global_manifest )" "/nonexistent/fakehome/.config/ai-dev-baseline/agents.toml" \
   "global manifest: \$HOME/.config/ai-dev-baseline/agents.toml"
 # shellcheck disable=SC2034  # XDG_CONFIG_HOME being unread by adb_global_manifest IS the assertion.
-eq "$( HOME=/tmp/fakehome XDG_CONFIG_HOME=/tmp/decoy; adb_global_manifest )" \
-  "/tmp/fakehome/.config/ai-dev-baseline/agents.toml" \
+eq "$( HOME=/nonexistent/fakehome XDG_CONFIG_HOME=/nonexistent/decoy; adb_global_manifest )" \
+  "/nonexistent/fakehome/.config/ai-dev-baseline/agents.toml" \
   "global manifest: XDG_CONFIG_HOME does not move it (the writer does not honor it either)"
 # The single-source claim, asserted against the actual files rather than trusted: neither the
 # writer nor the other reader may carry its own literal spelling any more. Uses the ok/bad
