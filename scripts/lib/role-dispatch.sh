@@ -140,6 +140,53 @@ case "$_ADB_RD_KILL_GRACE_SECS" in
   *)           [ "$_ADB_RD_KILL_GRACE_SECS" -eq 0 ] && _ADB_RD_KILL_GRACE_SECS=1 ;;
 esac
 
+# How many bytes of a dispatched agent's LOG STREAM this helper will pass through (#141).
+#
+# The stream is the agent's live exploration output, routed to stderr below so it is visible for
+# debugging and never mixed into stdout. Nothing bounded it: one gap-analysis run wrote 674 KB, the
+# run that implemented #84/#106 wrote 428 KB, and the run that implemented THIS issue wrote 766 KB.
+# /cleanup sweeps those artifacts BETWEEN runs (#84); what was still unbounded is a SINGLE run's.
+#
+# EVERY AGENT AND EVERY ROLE, not just gap-analysis. `review.err` is the same stream from the same
+# code path with the same growth, so capping one role would leave the identical defect in the other
+# and buy it role-specific plumbing — and a slot is dispatched by bare TOKEN (see below), which
+# carries no role to key a policy off anyway.
+#
+# 0 DISABLES the cap: an operator debugging a dispatch wants the whole stream, and "0 = unbounded"
+# is the only reading of zero that is useful here (contrast the BOUND above, where 0 is refused
+# because neither possible meaning is a backstop).
+_ADB_RD_LOG_MAX_BYTES="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}"
+# Digit-only is NOT sufficient: a 40-digit value is all digits and still outside bash's integer
+# range, where `[ "$max" -eq 0 ]` below dies with `integer expression expected` and awk would carry
+# the threshold through a float. Range is checked arithmetically, and the ceiling is a sanity bound
+# rather than a policy (anything past it is indistinguishable from "unbounded", which is `0`).
+#
+# The rejected value is TRUNCATED in the message. Echoing it whole let an arbitrarily long
+# environment value into the very artifact this knob exists to bound — the diagnostic undoing the
+# cap it was announcing.
+_adb_rd_bad_log_max() {
+  printf 'role-dispatch: ADB_DISPATCH_LOG_MAX_BYTES="%.40s" is not a whole number of bytes in range — using the %s default\n' \
+    "$1" 262144 >&2
+  _ADB_RD_LOG_MAX_BYTES=262144
+}
+case "$_ADB_RD_LOG_MAX_BYTES" in
+  ''|*[!0-9]*) _adb_rd_bad_log_max "$_ADB_RD_LOG_MAX_BYTES" ;;
+  *) if ! [ "$_ADB_RD_LOG_MAX_BYTES" -le 1073741824 ] 2>/dev/null; then
+       _adb_rd_bad_log_max "$_ADB_RD_LOG_MAX_BYTES"
+     fi ;;
+esac
+
+# How long the log filter gets to finish AFTER the agent exits, before we stop waiting for it.
+# This bounds a hang rather than tuning a budget: the filter normally sees EOF within milliseconds
+# of our closing the write end, and the only way it does not is a background descendant the agent
+# left holding that end open (see `_adb_rd_bounded_capped`). A TEST SEAM like the kill grace, not
+# an operator knob — nobody tunes this — so it is clamped rather than validated loudly.
+_ADB_RD_LOG_DRAIN_SECS="${ADB_DISPATCH_LOG_DRAIN_SECS:-10}"
+case "$_ADB_RD_LOG_DRAIN_SECS" in
+  ''|*[!0-9]*) _ADB_RD_LOG_DRAIN_SECS=10 ;;
+  *)           [ "$_ADB_RD_LOG_DRAIN_SECS" -eq 0 ] 2>/dev/null && _ADB_RD_LOG_DRAIN_SECS=1 ;;
+esac
+
 # --- resolution --------------------------------------------------------------------------------
 
 # True iff $1 is EXACTLY a known agent token. Compares against each token rather than a
@@ -511,6 +558,141 @@ _adb_rd_bounded() {
   adb_run_bounded "$secs" "$_ADB_RD_KILL_GRACE_SECS" "$@"
 }
 
+# The capping filter: pass the first <max> bytes through, then DRAIN the rest and say how much was
+# dropped. Reads stdin, writes stdout.
+#
+# IT MUST DRAIN, NOT EXIT. A filter that stops reading at the cap closes the pipe, and the next
+# write from the agent takes SIGPIPE — so capping its log would KILL the dispatch it was only
+# supposed to trim. Draining costs nothing (the bytes are read and discarded) and keeps the agent's
+# own exit status the one this helper reports.
+#
+# A HEAD CAP, decided on evidence rather than taste. The obvious alternative is to keep the TAIL,
+# and for this stream it is the worse trade: codex's final message is captured separately by
+# --output-last-message, and measurement on the 766 KB stream above found that message duplicated
+# at byte 758388 — i.e. the tail is the one part already preserved IN FULL elsewhere. The head is
+# not: it carries the CLI version, model, reasoning effort and session id, which nothing else
+# records. A head cap also streams live, where a tail cap can emit nothing until EOF.
+#
+# `dd bs=1`, and the two rejected alternatives are why.
+#
+#   `head -c` + a drain OVER-READS into its buffer before exiting. It loses an unknown number of
+#   bytes and — worse — can consume the entire remainder, leaving the drain to see EOF and report a
+#   clean pass on a stream it silently truncated.
+#
+#   `awk` shipped here first and was replaced after review. Being RECORD-oriented, it does not act
+#   until it sees a newline: a newline-free stream (a `\r` progress feed, one very long line) is
+#   buffered whole, so it emits none of the head bytes while the agent runs and its memory grows
+#   with the record — an indefinitely noisy stream could OOM the filter and SIGPIPE the agent it
+#   was meant to protect. It was also not binary-safe: BSD awk on macOS treats a NUL as
+#   end-of-string, so `ab\0cdef…` emitted `ab`, dropped the remainder, and printed NO notice.
+#
+# `dd bs=1` has none of those properties. It reads EXACTLY max bytes (so the drain's count is exact
+# rather than approximate), holds one byte at a time (so memory is flat on any input, newlines or
+# not), writes each byte as it arrives (so the head streams live), and is byte-transparent (so a
+# NUL is passed through rather than ending the stream). Measured: 0.21 s for a 256 KiB cap, and a
+# 5 MB newline-free stream handled in 0.23 s with flat memory.
+#
+# `wc -c` is BOTH the drain and the count, so "was anything discarded" and "how much" are one read
+# and cannot disagree. A stream shorter than the cap drains to 0 and prints no notice at all.
+# Usage: _adb_rd_cap_stream <max-bytes>
+_adb_rd_cap_stream() {
+  local max="$1" rest
+  dd bs=1 count="$max" 2>/dev/null
+  rest="$(wc -c)"
+  rest="${rest//[![:digit:]]/}"
+  [ "${rest:-0}" -gt 0 ] && printf '\n[role-dispatch: agent log capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n' "$max" "$rest"
+  return 0
+}
+
+# Run a bounded dispatch with its LOG stream capped, and return the agent's own status.
+#
+#   <log_stdout>  1 — the command's STDOUT is part of the log (codex, whose RESULT arrives via
+#                     --output-last-message, so its live stdout is exploration, not the answer)
+#                 0 — STDOUT is the RESULT and passes through UNCAPPED (claude/gemini, whose final
+#                     message IS stdout). Capping a result is data loss, not tidying.
+#
+# THE TOPOLOGY IS THE HARD PART, and a plain pipeline is the wrong one. `cmd | filter` puts the
+# LEFT side in a subshell, and `adb_run_bounded` installs its reap trap on the CALLING shell — so
+# the trap would protect a subshell that is not the one being signalled, and an outer TERM would go
+# back to orphaning the agent. A process substitution keeps the runner in THIS shell, and forks the
+# filter instead — the cheap process rather than the one the bound exists to police.
+#
+# WHAT THAT DOES NOT COVER, stated rather than glossed: the filter is a SIBLING of the bounded
+# command, not a member of its process group, so the bound does not reap it and neither does
+# `_adb_bounded_reap` — whose `exit 143` leaves the two lines below unrun. In practice the shell's
+# exit closes the write end, the filter sees EOF and flushes; what is genuinely not guaranteed is
+# ORDERING on that path, so a caller reading the artifact immediately after an outer kill can race
+# the filter's last write. Bounded and rare, but it is not "nothing to protect".
+#
+# `exec {capfd}>` rather than a redirection on the command, because `$!` must be captured for the
+# procsub itself — and `adb_run_bounded` backgrounds its own child and watcher, overwriting `$!`
+# before the command returns. Without that pid there is nothing to `wait` on, and the notice above
+# can be lost to a race with our own exit.
+#
+# `{capfd}>&-` ON THE CALL closes the descriptor for the CHILD side, and it is worth its own line:
+# the watchdog's ticking `sleep` is deliberately allowed to outlive its watcher (see common.sh), so
+# an inherited write end keeps the pipe open after the agent is gone and `wait` blocks for a whole
+# tick. Measured: 5.0 s per dispatch with it, 0.05 s without.
+# Usage: _adb_rd_bounded_capped <log_stdout> <argv...>
+_adb_rd_bounded_capped() {
+  local log_stdout="$1"; shift
+  local rc capper capfd max="$_ADB_RD_LOG_MAX_BYTES"
+  if [ "$max" -eq 0 ]; then
+    if [ "$log_stdout" = 1 ]; then _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" >&2
+    else                           _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@"; fi
+    return $?
+  fi
+  exec {capfd}> >(_adb_rd_cap_stream "$max" >&2)
+  capper=$!
+  if [ "$log_stdout" = 1 ]; then
+    _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" >&"$capfd" 2>&1 {capfd}>&-
+  else
+    _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" "$@" 2>&"$capfd" {capfd}>&-
+  fi
+  rc=$?
+  exec {capfd}>&-
+  # THE FILTER'S OWN STATUS IS CHECKED, not discarded. It used to be, and a filter that died took
+  # the whole log with it while this function still returned the agent's status — a dispatch that
+  # read as clean with its entire logging path gone. We still RETURN the agent's status (the agent
+  # really did run), but the failure is now said out loud instead of inferred from a quiet artifact.
+  #
+  # Note what a dead filter does to that status: the drain protects the agent from SIGPIPE while
+  # the filter is HEALTHY, not when it exits early, so an agent still writing when the filter dies
+  # takes SIGPIPE and this returns 141. That is a broken environment rather than a broken agent,
+  # which is exactly why the warning names the filter.
+  #
+  # AND THE WAIT IS BOUNDED, because an unbounded one is a hang this function would have INTRODUCED.
+  # Closing our write end is not the same as closing the pipe: if the agent left a background
+  # descendant that inherited its stdout/stderr, that descendant still holds the write end, the
+  # filter never sees EOF, and a plain `wait` blocks forever — AFTER `adb_run_bounded` has returned,
+  # so its bound no longer applies and nothing else would ever stop it. An agent that starts a dev
+  # server would hang the whole dispatch. The bound is ticked rather than slept in one go, for the
+  # reason common.sh's watchdog gives: killing the guard does not kill a `sleep` it already forked,
+  # so a single long sleep would leak an orphan per dispatch.
+  if [ -n "$capper" ]; then
+    local dflag dguard crc
+    dflag="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/adb-rd-drain-$$")"; rm -f "$dflag"
+    ( waited=0
+      while [ "$waited" -lt "$_ADB_RD_LOG_DRAIN_SECS" ]; do
+        kill -0 "$capper" 2>/dev/null || exit 0
+        sleep 1; waited=$(( waited + 1 ))
+      done
+      kill -0 "$capper" 2>/dev/null || exit 0
+      : > "$dflag"; kill -TERM "$capper" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+    dguard=$!
+    wait "$capper" 2>/dev/null; crc=$?
+    kill -TERM "$dguard" 2>/dev/null; wait "$dguard" 2>/dev/null
+    if [ -f "$dflag" ]; then
+      printf 'role-dispatch: WARNING — the agent exited but something it spawned still holds the log pipe open, so the log did not end after %ss; the filter was stopped and this dispatch'"'"'s log may be truncated. A background process the agent left running is the usual cause.\n' \
+        "$_ADB_RD_LOG_DRAIN_SECS" >&2
+    elif [ "$crc" -ne 0 ]; then
+      printf 'role-dispatch: WARNING — the log-capping filter failed (exit %s); this dispatch'"'"'s agent log is incomplete or missing, and an agent status of 141 means it took SIGPIPE from the dead filter rather than failing on its own.\n' "$crc" >&2
+    fi
+    rm -f "$dflag"
+  fi
+  return "$rc"
+}
+
 # Classify a dispatch exit status in one line. Collapsing every non-zero rc into "the agent
 # failed" is precisely what let a too-small bound masquerade as a codex problem for three runs
 # (#93): our own backstop, an OUTER bound, and a genuine agent error each warrant a different
@@ -657,11 +839,13 @@ _adb_rd_invoke_agent() {
     # `$(<"$pf")` rather than `$(cat "$pf")` (#258): a builtin file read, no `cat` process. Both
     # strip trailing newlines identically, and the prompt is passed as one argv element either way.
     claude)
-      _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" claude -p "$(<"$pf")"
+      # log_stdout=0: stdout IS the final message, so it passes through uncapped; only the log
+      # stream on stderr is bounded.
+      _adb_rd_bounded_capped 0 claude -p "$(<"$pf")"
       return $?
       ;;
     gemini)
-      _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" agy -p "$(<"$pf")"
+      _adb_rd_bounded_capped 0 agy -p "$(<"$pf")"
       return $?
       ;;
     codex)
@@ -676,13 +860,16 @@ _adb_rd_invoke_agent() {
       # Omitting it entirely — rather than passing some "default" — is what preserves the
       # pre-#225 behaviour for every role that declares nothing: the CLI's own config governs,
       # exactly as before. `-c` is `codex exec`'s documented key=value override.
+      #
+      # log_stdout=1: codex's stdout is the LIVE STREAM, not the result — the result is the file
+      # --output-last-message writes — so stdout and stderr are one log and both are capped (#141).
       if [ -n "$effort" ]; then
-        _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" \
+        _adb_rd_bounded_capped 1 \
           codex exec --cd "$repo" -c model_reasoning_effort="$effort" \
-                     --output-last-message "$last" - < "$pf" >&2
+                     --output-last-message "$last" - < "$pf"
       else
-        _adb_rd_bounded "$_ADB_RD_TIMEOUT_SECS" \
-          codex exec --cd "$repo" --output-last-message "$last" - < "$pf" >&2
+        _adb_rd_bounded_capped 1 \
+          codex exec --cd "$repo" --output-last-message "$last" - < "$pf"
       fi
       rc=$?
       if [ "$rc" -ne 0 ]; then rm -f "$last"; return "$rc"; fi

@@ -673,33 +673,35 @@ declare -a SLOW=()          # "secs name", for the summary
 #
 # The worker is a subshell that forks `bash scripts/check-<x>.sh`, so signalling the pid alone
 # kills the subshell and REPARENTS the check to init, where it runs on unattended: a cancelled run
-# that leaves up to $JOBS suites still executing. That is the same divergence `adb_run_bounded`
-# documents for its watchdog path (#141), and the pool is where it is cheap to close: `set -m`
-# makes each worker its own process-group leader, so `kill -- -$pid` reaches the grandchildren too.
+# that leaves up to $JOBS suites still executing. That is the same orphaning `adb_run_bounded`'s
+# watchdog path had until #141, and the pool is where it is cheap to close: `set -m` makes each
+# worker its own process-group leader, so `kill -- -$pid` reaches the grandchildren too. This
+# pool solved it first; `adb_run_bounded` now reaps the same way, by the same rule.
 #
 # TERM, then grace, then KILL, matching `_adb_bounded_reap`: a bound that only sends TERM is not a
 # backstop, because anything that traps or ignores it survives.
 _cleanup() {
   local p had=0
   for p in "${!LIVE[@]}"; do
-    # GUARD THE SUBSCRIPT BEFORE NEGATING IT. `kill -- -0` signals the CALLER'S OWN process group —
-    # i.e. the operator's shell and everything in it — so a key that is not a positive integer must
-    # never reach the `-$p` form. `$!` cannot be 0 today; the cost of being wrong is the whole
-    # session, which is worth one test.
-    case "$p" in ''|0|*[!0-9]*) continue ;; esac
-    kill -TERM -- "-$p" 2>/dev/null && had=1
-    # ...and the bare pid too, because the group form only reaches a group if `set -m` actually
-    # took effect. Where it did, the worker is already gone and this is a harmless ESRCH; where it
-    # did not, this is the only signal that lands. (A worker surviving cancellation is what
-    # check-selfcheck.sh's heartbeat case detects, so the two halves are not redundant claims.)
-    kill -TERM "$p" 2>/dev/null && had=1
+    # `_adb_bounded_signal` (scripts/lib/common.sh, sourced above) IS this rule: guard the pid,
+    # signal the GROUP, then the bare pid as the fallback for a worker whose `set -m` did not take.
+    # It used to be restated here, and the restatement is exactly what the one-home law is for —
+    # both copies shipped the same defect (`''|0|*[!0-9]*` lets `00` through, and `kill -- -00`
+    # resolves to group 0, the caller's own), and fixing one would have left the other. #141 gave
+    # `adb_run_bounded` the same reaping need, so the primitive now has two consumers and lives
+    # where the repo's law says: once, in common.sh.
+    case "$p" in ''|*[!0-9]*) continue ;; esac
+    [ "$p" -gt 0 ] 2>/dev/null || continue
+    # `had` gates the escalation below, so it must mean "we signalled something that existed".
+    # `_adb_bounded_signal` always returns 0 (it is a best-effort reaper), so liveness is asked
+    # here rather than read out of its status.
+    kill -0 "$p" 2>/dev/null && had=1
+    _adb_bounded_signal TERM "$p"
   done
   if [ "$had" -eq 1 ]; then
     sleep 1
     for p in "${!LIVE[@]}"; do
-      case "$p" in ''|0|*[!0-9]*) continue ;; esac
-      kill -KILL -- "-$p" 2>/dev/null
-      kill -KILL "$p" 2>/dev/null
+      _adb_bounded_signal KILL "$p"      # guards the pid itself; see the TERM loop
     done
   fi
   LIVE=()

@@ -1729,32 +1729,81 @@ adb_untrusted_block() {
 # deadlock rather than a late failure. `timeout -k` does the escalation for us; the watchdog path
 # does it by hand.
 #
-# KNOWN DIVERGENCE between the two paths — they agree on STATUS but not on process CLEANUP.
-# GNU `timeout` puts the child in its own process group and signals the GROUP; the watchdog
-# signals a single PID. So on the watchdog path (a stock Mac with no `timeout`/`gtimeout`) a
-# grandchild can OUTLIVE the bound: `wait` returns and the caller gets its 124, but the orphan
-# keeps running. For role-dispatch's 45-minute bound that is nearly unreachable. For
-# currency-lib's 120 s bound on a `git fetch`/`git pull` it is not, and the orphan mutates a
-# clone AFTER we have already reported the update as failed — it can move HEAD or hold
-# .git/index.lock. Tracked as #141; mitigated meanwhile by currency-lib setting git's own
-# stall/prompt bounds, so the wall-clock backstop is the last resort rather than the first.
+# BOTH paths also agree on process CLEANUP: each puts the child in its OWN PROCESS GROUP and
+# signals the GROUP, so a grandchild dies with the bound instead of outliving it. GNU `timeout`
+# does that for us; the watchdog path does it with `set -m` (see the launch below).
 #
 # Usage: adb_run_bounded <secs> <kill-grace-secs> <argv...>
+
+# Signal a bounded child AND everything it spawned: the process GROUP first, then the bare pid.
+#
+# BOTH, unconditionally, because the group form only reaches a group if `set -m` actually took
+# effect. Where it did, the leader is already gone and the bare kill is a harmless ESRCH; where it
+# did not, the bare kill is the only signal that lands. `scripts/selfcheck.sh`'s `_cleanup` reaps
+# its worker pool by exactly this rule — same problem, same answer.
+#
+# GUARD THE PID BEFORE NEGATING IT. `kill -- -0` signals the CALLER'S OWN process group — the
+# operator's shell and everything in it — so a value that is not a positive integer must never
+# reach the `-$pid` form. `$!` cannot be 0 today; the cost of being wrong is the whole session.
+#
+# ARITHMETIC, not a literal `0)` arm, and that is not pedantry here: `-00` is not the string `0`,
+# so it slips past a literal arm — and `kill -- -00` resolves to process group 0, i.e. exactly the
+# caller's own group the guard exists to protect. This file has already been bitten twice by
+# zero-padding defeating a literal arm (the `secs` and `grace` clamps above both say so), and this
+# is the one place where the cost of that mistake is the whole session rather than a bad bound.
+# Usage: _adb_bounded_signal <signal> <pid>
+_adb_bounded_signal() {
+  case "${2:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$2" -gt 0 ] 2>/dev/null || return 0
+  kill -"$1" -- "-$2" 2>/dev/null
+  kill -"$1" "$2" 2>/dev/null
+  return 0
+}
+
+# Does THIS interpreter's `wait` accept `-f`? (bash 5.1+.)
+#
+# Asked rather than assumed, because the tempting assumption is false: `-f` is only needed under
+# job control, and it is easy to reason that an interpreter old enough to lack it is one where job
+# control is off. Bash 3.2 supports `set -m` perfectly well — a 3.2 caller CAN turn it on, and
+# `wait -f` there fails with `invalid option` and status 2, which `adb_run_bounded` would return as
+# the child's status while the child keeps running. Verified on Apple's /bin/bash 3.2.57.
+#
+# Version-gated, not probed: a probe would have to background a real job to be meaningful, and
+# BASH_VERSINFO answers the question exactly. Below 5.1 the caller gets the pre-#141 behaviour —
+# `wait` may return early on a stopped job — which is a limitation, not a regression.
+_adb_bounded_waitf_ok() {
+  local maj="${BASH_VERSINFO[0]:-0}" min="${BASH_VERSINFO[1]:-0}"
+  case "$maj$min" in *[!0-9]*) return 1 ;; esac
+  [ "$maj" -gt 5 ] && return 0
+  [ "$maj" -eq 5 ] && [ "$min" -ge 1 ] && return 0
+  return 1
+}
 
 # Reap the in-flight child when OUR shell is terminated (an outer harness bound firing, a detached
 # job cancelled, an operator ^C). Without this, bash dies while blocked in `wait` and the child is
 # reparented to init, running out the FULL bound after the run was already cancelled. `timeout`
 # forwards the TERM to the command it manages, so terminating it is enough on that path.
+#
+# The GROUP form matters here too, not only in the watchdog's deadline: fixing only the deadline
+# would leave an outer TERM/INT/HUP killing the leader and orphaning its grandchildren — the same
+# bug one level up.
 _adb_bounded_reap() {
-  [ -n "${_ADB_BOUNDED_CHILD:-}" ] && kill -TERM "$_ADB_BOUNDED_CHILD" 2>/dev/null
+  [ -n "${_ADB_BOUNDED_CHILD:-}" ] && _adb_bounded_signal TERM "$_ADB_BOUNDED_CHILD"
   [ -n "${_ADB_BOUNDED_WATCHER:-}" ] && kill -TERM "$_ADB_BOUNDED_WATCHER" 2>/dev/null
   sleep 1
-  [ -n "${_ADB_BOUNDED_CHILD:-}" ] && kill -KILL "$_ADB_BOUNDED_CHILD" 2>/dev/null
+  [ -n "${_ADB_BOUNDED_CHILD:-}" ] && _adb_bounded_signal KILL "$_ADB_BOUNDED_CHILD"
   exit 143   # report as "terminated by an outer bound", which is exactly what happened
 }
 
 adb_run_bounded() {
-  local secs="$1" grace="$2" tb="" t0 trc otrap; shift 2
+  local secs="$1" grace="$2" tb="" t0 trc otrap had_m=0; shift 2
+  # Does the CALLER already have job control on? Read ONCE, here, because BOTH paths need the
+  # answer: the watchdog path restores it after borrowing it (see the launch below), and BOTH
+  # `wait`s need `-f` under it. With job control enabled, plain `wait` returns when a job merely
+  # CHANGES STATUS — including being STOPPED — handing back 128+sig while the child is alive.
+  # That is not exclusive to the watchdog: with monitor mode on, bash puts the `timeout` binary in
+  # its own process group too, so the binary path is exposed to exactly the same early return.
+  case "$-" in *m*) had_m=1 ;; esac
   # Both degenerate graces break the escalation and neither fails loudly: `timeout -k 0` means
   # "no SIGKILL at all" to GNU timeout, so a zero grace would leave the binary path with no
   # escalation while the watchdog path treats 0 as "KILL immediately" — the same input making one
@@ -1779,10 +1828,26 @@ adb_run_bounded() {
     t0=$SECONDS   # bash builtin: no fork, and `local` above keeps the arithmetic nesting-safe
     # Backgrounded + `wait` (rather than run in the foreground) so the reap trap has a PID to kill.
     # `<&0` for the same reason the watchdog path needs it — see below.
+    #
+    # JOB CONTROL HERE TOO, so `timeout` leads a group WE know the id of. `timeout` makes its own
+    # group and signals it, and the first cut of #141 simply trusted that — asserting the two paths
+    # agreed about grandchildren because they did on macOS. CI disagreed: on ubuntu-26.04 the very
+    # same probe (a child that IGNORES TERM, holding a grandchild) left the grandchild ALIVE on the
+    # binary path. Rather than reverse-engineer which coreutils build reaps what, this path now owns
+    # the guarantee: same `set -m` as below, so `$!` is a real pgid, and the sweep after the wait
+    # finishes whatever `timeout` did not.
+    local tb_had_m=0
+    case "$-" in *m*) tb_had_m=1 ;; esac
+    set -m
     "$tb" -k "$grace" "$secs" "$@" <&0 &
     _ADB_BOUNDED_CHILD=$!
+    [ "$tb_had_m" -eq 1 ] || set +m
+    local tb_pid="$_ADB_BOUNDED_CHILD"
     trap '_adb_bounded_reap' TERM INT HUP
-    wait "$_ADB_BOUNDED_CHILD"; trc=$?
+    # `-f` only under the caller's job control AND only where the interpreter has it — see the
+    # read at the top of this function and `_adb_bounded_waitf_ok`.
+    if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$_ADB_BOUNDED_CHILD"; trc=$?
+    else                                                 wait    "$_ADB_BOUNDED_CHILD"; trc=$?; fi
     trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
     unset _ADB_BOUNDED_CHILD
     # Normalize the bound-fired status. GNU timeout reports 124 when SIGTERM ended the child, but
@@ -1793,6 +1858,12 @@ adb_run_bounded() {
     # (GNU timeout) — a platform-dependent lie. Gated on elapsed >= the bound, so an unrelated
     # external SIGKILL arriving BEFORE the bound still reports 137 honestly.
     if [ "$trc" -eq 137 ] && [ "$(( SECONDS - t0 ))" -ge "$secs" ]; then trc=124; fi
+    # SWEEP THE GROUP, BUT ONLY WHEN THE BOUND FIRED. `timeout` has exited by now, so anything left
+    # in its group is a descendant that outlived the deadline — exactly the orphan this issue is
+    # about. Conditional on 124 because a command that finished ON ITS OWN may have deliberately
+    # left something running (the dev-server case), and killing that would make a bound into a
+    # reaper of successful work.
+    [ "$trc" -eq 124 ] && _adb_bounded_signal KILL "$tb_pid"
     return "$trc"
   fi
   local flag rc cmd_pid watcher tick
@@ -1801,7 +1872,23 @@ adb_run_bounded() {
   # redirected from /dev/null UNLESS it carries an explicit redirection. The caller's redirection
   # is on THIS function's invocation, not on the inner `&`, so without `<&0` a child fed its input
   # on stdin would read /dev/null instead.
+  # OWN PROCESS GROUP, via job control held for exactly one command (#141). A background job in a
+  # non-interactive shell inherits the SHELL's process group, so `kill -- -$cmd_pid` would name no
+  # group at all and the bound could only ever reach the child itself. `set -m` makes bash
+  # `setpgid` the next background job into a group it leads, which is what gives the deadline
+  # below a group to signal.
+  #
+  # SAVED AND RESTORED EXACTLY, and around the `&` ALONE. This is a sourced library: job control is
+  # shell-global, so leaving it on would hand a caller's shell a setting it never asked for — and
+  # leaving it on for the DURATION (up to 2700 s here) would also change how that caller's own
+  # background jobs behave. Restoring only when the caller did not already have it is what keeps a
+  # caller that DOES use job control untouched.
+  #
+  # `setsid` is not the mechanism: it is absent from a stock macOS, i.e. the very platform this
+  # fallback exists for.
+  set -m
   "$@" <&0 & cmd_pid=$!
+  [ "$had_m" -eq 1 ] || set +m
   _ADB_BOUNDED_CHILD=$cmd_pid
   # Flag BEFORE the TERM: a child that dies from the signal can be reaped and the `wait` below can
   # return before the flag write, which would return the child's signal status instead of 124.
@@ -1819,12 +1906,27 @@ adb_run_bounded() {
       sleep "$tick"; waited=$(( waited + tick ))
     done
     kill -0 "$cmd_pid" 2>/dev/null || exit 0
-    : > "$flag"; kill -TERM "$cmd_pid" 2>/dev/null
-    sleep "$grace"; kill -KILL "$cmd_pid" 2>/dev/null || : ; ) </dev/null >/dev/null 2>&1 &
+    : > "$flag"; _adb_bounded_signal TERM "$cmd_pid"
+    sleep "$grace"; _adb_bounded_signal KILL "$cmd_pid" ; ) </dev/null >/dev/null 2>&1 &
   watcher=$!
   _ADB_BOUNDED_WATCHER=$watcher
   trap '_adb_bounded_reap' TERM INT HUP
-  wait "$cmd_pid" 2>/dev/null; rc=$?
+  # `-f` ONLY when the CALLER already had job control on, and that condition is the whole point.
+  # With job control enabled, plain `wait` returns when a job merely CHANGES STATUS — including
+  # being STOPPED — so it hands back 128+sig while the child is still alive and running. Measured:
+  # rc 145 in 0 s with the child alive. Putting the child in its own process group makes that newly
+  # reachable without an operator ^Z, because a background group reading the controlling terminal
+  # takes SIGTTIN. `-f` waits for actual termination. selfcheck.sh's pool needs it for the same
+  # reason, and says so at its `wait -f -n -p`.
+  #
+  # TWO conditions, not one, and the second is not redundant. `-f` is bash 5.1+, and D30 keeps this
+  # file usable by an interpreter that has not yet reached adb_require_bash — but it is NOT true
+  # that such an interpreter necessarily has job control off. Bash 3.2 supports `set -m`, so a 3.2
+  # caller reaches this line with had_m=1, and an unguarded `wait -f` there fails with `invalid
+  # option` and status 2, returned as the child's status while the child runs on. Hence the
+  # capability check; below 5.1 the caller keeps the pre-#141 behaviour rather than a broken one.
+  if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$cmd_pid" 2>/dev/null; rc=$?
+  else                                                 wait    "$cmd_pid" 2>/dev/null; rc=$?; fi
   trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
   unset _ADB_BOUNDED_CHILD _ADB_BOUNDED_WATCHER
   kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null

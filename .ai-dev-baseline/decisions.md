@@ -3260,3 +3260,169 @@ limit: none of them is sufficient alone.
              distinct-name counting was written against; that counting stays, because a re-run
              duplicates a name on any repo and adopting repos may keep unfiltered triggers.
 - baseline-issue: #165 (supersedes #99) <!-- adb-claim-ok: #99 was closed NOT_PLANNED as SUPERSEDED by #165, which absorbed it; the reference is this change's provenance, not tracked work -->
+
+## D49 — the bound reaps a GROUP on both paths, and the log cap is a head cap outside the diagnosis
+- date:      2026-08-06
+- category:  project-delta
+- unknown:   #141 asked for two things whose CODE homes were never in doubt — the bounded-execution
+             primitive already lived in `common.sh`, dispatch-specific stream handling already
+             lived in `role-dispatch.sh`. What had no prescribed answer was the POLICY each needed:
+             the process-group MECHANISM, and the cap's scope, contract and topology. First, `adb_run_bounded`'s two
+             paths agreed on STATUS and diverged on process CLEANUP: GNU `timeout` signals a
+             process group, the portable watchdog signalled one PID, so on a stock Mac — the exact
+             host the fallback exists for — a grandchild outlived the bound while the caller got a
+             clean 124. Reproduced: watchdog `alive`, timeout binary `dead`, both rc 124. Second,
+             a single dispatch's captured stream had no bound at all. The issue named 674 KB and
+             428 KB; the gap-analysis pass for this very issue wrote **766,399 bytes**.
+
+             Neither had a prescribed home. The mechanism question was open (`setsid` is absent
+             from stock macOS, and `set -m` is shell-global in a SOURCED library with two live
+             callers), and the issue itself left the cap's scope, contract and topology
+             unresolved — it called the scope "an open question that gates #123's test matrix".  <!-- adb-claim-ok: #123 was closed NOT_PLANNED as SUPERSEDED by #141, which consolidated it; the reference is this change's provenance, not tracked work -->
+- decision:  **Process group via job control held for exactly one command.** `set -m`, the `&`,
+             then restore the caller's prior state — read from `$-`, so a caller that already had
+             job control keeps it and one that did not never acquires it. Signalling is
+             `_adb_bounded_signal`: the group form AND the bare pid, unconditionally, because the
+             group form only lands if `set -m` took effect; and a `''|0|*[!0-9]*` guard, because
+             `kill -- -0` signals the caller's own shell and everything in it.
+
+             This is **not a new invention** — `scripts/selfcheck.sh`'s `_cleanup` already reaps
+             its worker pool by exactly this rule, `-0` guard and dual form included. It was
+             written for the same problem one level up and its header cites #141 as the open
+             case. `adb_run_bounded` now matches it; the prose in both files is corrected so
+             neither still describes the divergence as live.
+
+             **`wait -f`, but only under a caller's job control.** With job control on, plain
+             `wait` returns when a job merely CHANGES STATUS — measured returning **145 in 0 s
+             with the child alive and running** — and a naive re-wait loop **spins** (51
+             iterations in 0 s, measured). Putting the child in its own group makes that newly
+             reachable without an operator ^Z, since a background group reading the tty takes
+             SIGTTIN, so the flag is part of this change rather than a tidy-up. It applies to
+             BOTH paths: with job control on, bash puts the `timeout` binary in its own group too,
+             so this was never watchdog-only.
+
+             It is gated on TWO conditions — job control on AND bash 5.1+ — and the second is not
+             redundant. The tempting single condition ("anything old enough to lack `-f` has job
+             control off") is FALSE: bash 3.2 supports `set -m`, so a 3.2 caller reaches that line
+             with had_m=1, and an unguarded `wait -f` fails there with `invalid option` and status
+             2 — returned as the child's status while the child runs on. Verified on Apple's
+             /bin/bash 3.2.57. D30 holds because the capability is CHECKED, not assumed.
+
+             **The cap: `ADB_DISPATCH_LOG_MAX_BYTES`, 256 KiB, `0` disables, invalid warns and
+             falls back.** Three sub-decisions the issue left open:
+
+             1. **Every agent and every role, in `role-dispatch.sh`.** `review.err` is the same
+                stream from the same code path with the same growth, so capping only
+                gap-analysis would leave the identical defect next door — and a review slot is
+                dispatched by bare TOKEN, which carries no role to key a policy off. Not
+                `common.sh`: one consumer, and that file must stay parseable below the floor
+                (D30) — the `cpu_count` precedent in `selfcheck.sh`. Not the workflow: too late,
+                and it would make every consumer re-implement it.
+             2. **A HEAD cap, decided on evidence.** Gap analysis recommended keeping the tail.
+                Measurement rejected it: codex's final message is captured separately by
+                `--output-last-message`, and on the 766 KB stream that message was found
+                duplicated at byte 758,388 — the tail is the one part already preserved IN FULL
+                elsewhere, while the head carries the CLI version, model, reasoning effort and
+                session id that nothing else records. A head cap also streams live.
+             3. **The cap bounds the AGENT's stream, NOT this helper's own lines.** Gap analysis
+                argued the cap must cover everything "or `gaps.err` can still exceed it". Refused
+                deliberately: `/implement-issue` is instructed to read the classified
+                `role-dispatch:` line at the TAIL of `gaps.err`, and a cap that included it would
+                bound the file by deleting the one line that says why the dispatch failed. Those
+                lines are O(1); the stream is the unbounded thing. The file is therefore bounded
+                by `cap + a small constant`, and that is the correct contract.
+
+             **The filter topology.** `exec {capfd}> >(_adb_rd_cap_stream …)`, not a pipeline: a
+             pipeline puts the LEFT side in a subshell, and `adb_run_bounded` installs its reap
+             trap on the CALLING shell — the trap would protect a subshell that is not the one
+             being signalled, re-orphaning the agent under an outer TERM. `exec` rather than a
+             redirection on the command, because `$!` must name the procsub and
+             `adb_run_bounded` overwrites `$!` with its own child and watcher. The filter DRAINS
+             past the cap instead of exiting, or the next agent write takes SIGPIPE and capping a
+             log would kill the dispatch. `{capfd}>&-` on the call closes the descriptor for the
+             child side: the watchdog's ticking `sleep` is deliberately allowed to outlive its
+             watcher, and an inherited write end held the pipe open for a whole tick — measured
+             5.0 s per dispatch, 0.05 s with the close.
+
+             **`dd bs=1` + `wc -c`, after awk was tried and rejected.** `head` over-reads into its buffer: it loses an
+             unknown number of bytes and can swallow the entire remainder, leaving the drain to
+             see EOF and report a clean pass on a stream it silently truncated. awk counts every
+             discarded byte, so the notice is never omitted; `LC_ALL=C` makes
+             `length()` count bytes so a multibyte stream cannot overshoot. The count is exact for
+             a NEWLINE-TERMINATED stream and over-reports by one for an unterminated final line —
+             documented rather than engineered away, being a debugging aid in a notice.
+
+             **awk was the first implementation and the review killed it.** Record-oriented, it
+             does not act until it sees a newline: a newline-free stream buffered whole, emitted
+             none of the head bytes while the agent ran, and grew without bound — an indefinitely
+             noisy stream could OOM the filter and SIGPIPE the agent it was meant to protect. It
+             was also not binary-safe (BSD awk treats a NUL as end-of-string: `ab\0cdef...` gave
+             `ab`, no remainder, NO notice — macOS only). `dd bs=1` reads exactly `max` bytes, holds
+             one byte, writes as it reads and is byte-transparent, so every one of those goes away
+             and the count becomes exact rather than off-by-one on an unterminated line. Measured
+             0.21 s for a 256 KiB cap; a 5 MB newline-free stream in 0.23 s with flat memory.
+
+             **The cap also introduced a hang, which is now bounded.** Closing our write end is not
+             closing the pipe: a background descendant that inherited the agent's stdout/stderr
+             holds it, the filter never sees EOF, and the wait blocks forever — AFTER
+             `adb_run_bounded` returned, so its bound no longer applies. `ADB_DISPATCH_LOG_DRAIN_SECS`
+             (10 s, ticked so it leaks no orphan) bounds it and reports why the log ended early.
+- placement: `scripts/lib/common.sh` (`_adb_bounded_signal`, the launch, the watcher, the reap,
+             the wait); `scripts/lib/role-dispatch.sh` (`_ADB_RD_LOG_MAX_BYTES`,
+             `_adb_rd_cap_stream`, `_adb_rd_bounded_capped`, the three agent arms);
+             `scripts/check-common-lib.sh` + `scripts/check-role-dispatch.sh` (coverage);
+             stale prose corrected in `scripts/selfcheck.sh` and
+             `base/workflows/implement-issue.md`.
+- reason:    A project-delta rather than a general gap: both are defects in this repo's own shared
+             library, fixed in the one home each already had. No new config surface was invented —
+             the cap knob follows the `ADB_DISPATCH_*` shape the bound and grace already use.
+- baseline-issue: #141 (supersedes #123)  <!-- adb-claim-ok: #123 was closed NOT_PLANNED as SUPERSEDED by #141, which consolidated it; the reference is this change's provenance, not tracked work -->
+- also:      **The guards were observed failing, against a copy of the pre-fix tree, never the
+             working tree.** Watchdog grandchild `alive`→`dead`; stopped child `rc=145`→`rc=0`;
+             nine cap assertions red without the cap. The timeout-binary grandchild case is green
+             on BOTH sides and is named as an agreement pin, not a regression detector.
+
+             **CI corrected a premise this entry had accepted.** The issue reported the
+             `timeout`-binary path as already reaping grandchildren, measured on macOS, and the
+             first cut encoded that as an "the paths AGREE" pin. On `ubuntu-26.04` the identical
+             probe left the grandchild ALIVE on that path. The lesson is not about coreutils
+             versions: a guarantee that matters should not rest on a third-party tool's undocumented
+             group semantics, so the binary path now takes `set -m` too and sweeps its group after
+             the wait. Conditional on the bound having fired — a command that finished on its own
+             may have deliberately left work running, and an unconditional sweep would kill it
+             (pinned by its own case, observed failing).
+
+             **Self-review found the `-0` guard did not actually guard.** `''|0|*[!0-9]*` rejects
+             the string `0` and not `00`, and `kill -- -00` resolves to group 0 — the caller's own
+             shell. Both sides are arithmetic now. The rule was copied from `selfcheck.sh`'s
+             `_cleanup`, which **carried the same gap in both loops** and is fixed here rather than
+             filed: a confirmed sibling of the same defect, in a file this change already touches
+             (`base/practices/debugging.md` — grep for the class, not the instance).
+
+             **A first version of the grandchild guard was itself flaky and was rewritten.** It
+             counted `ps -eo command` matches for a fixed argv marker, which a stale `ppid 1`
+             orphan from an earlier aborted run also matched — turning a tree that was actually
+             fixed red, and the marker had to be kept out of the harness's own argv besides. It
+             now asks one RECORDED pid whether it is alive, with a zombie counted as dead. That
+             failure is recorded because a name-scan probe is the obvious first thing to write.
+
+             **The independent codex review raised 23 findings; all were acted on.** Four were
+             already fixed by the self-review commit that preceded it (the timeout-path `wait`, the
+             `-00` guard, the tautological "0 disables" assertion, the missing `env -u`). The rest
+             produced the `wait -f` capability gate, the NUL guard, the filter-status warning, the
+             range check on the cap value, the truncated diagnostic, the `_cleanup` de-duplication,
+             and five test repairs (missing-evidence false pass, an unsynchronised STOP, nested
+             bare `bash` resolving to macOS 3.2, no prefix/NUL/CRLF/newline-free fixtures, and no
+             coverage of the `log_stdout=0` arm). Two were answered by wording rather than code:
+             the outer-reap ordering race is now stated instead of dismissed as "nothing to
+             protect", and the acceptance criterion that `gaps.err` "cannot exceed the cap" is
+             named as a deliberate deviation rather than reported as met.
+
+             **The one-home law was the review's sharpest point and it was right.** The first cut
+             "matched" `selfcheck.sh`'s `_cleanup` rule rather than sourcing it — and the proof
+             that this was duplication, not convergence, is that BOTH copies shipped the `-00`
+             defect and both had to be fixed. `_cleanup` now calls `_adb_bounded_signal`.
+
+             **#181's "ship this before the common.sh promotion sweep" is moot**: #181 was  <!-- adb-claim-ok: #181 was closed NOT_PLANNED; cited to record that this issue's stated sequencing constraint no longer applies, not as tracked work -->
+             observed CLOSED as NOT_PLANNED (closedAt 2026-07-31T06:40:32Z), so the ordering
+             constraint has nothing left to order against. <!-- adb-claim-ok: #181 was closed NOT_PLANNED; cited to record that this issue's stated sequencing constraint no longer applies, not as tracked work -->
