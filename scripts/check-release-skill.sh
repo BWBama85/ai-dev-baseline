@@ -190,12 +190,19 @@ eq "${ printf '%s\n%s\n' "${ runs 13 0; }" "${ runs_named d 13 0; }" | rc_of che
 eq "${ printf 'not json' | rc_of checks-settled 26; }" 2 "malformed JSON is an error, not settled"
 
 # THE TWO-TRIGGER REGRESSION (v2.0.0 — the bar was recorded on a commit class that cannot match).
-# `ci.yml` carries an unfiltered `push:` AND a `pull_request:` trigger, so a PR branch head receives
-# BOTH runs of every job and each name appears twice, while the merge commit on the default branch
-# receives only the `push:` run. Live numbers from the v2.0.0 cut: reviewed head 25cca85 = 54 runs
-# over 27 names; merge commit 1c02f24 = 27 runs over the SAME 27 names, all successful. Counting
-# raw runs made `verify-merge` demand >= 54 on a commit that can only ever have 27 — unreachable,
-# so it burned its full 90 iterations and refused to tag a genuinely green release.
+# A workflow carrying an unfiltered `push:` AND a `pull_request:` trigger gives a PR branch head
+# BOTH runs of every job, so each name appears twice, while the merge commit on the default branch
+# receives only the `push:` run. Live numbers from the v2.0.0 cut, when this repo's `ci.yml` was
+# shaped that way: reviewed head 25cca85 = 54 runs over 27 names; merge commit 1c02f24 = 27 runs
+# over the SAME 27 names, all successful. Counting raw runs made `verify-merge` demand >= 54 on a
+# commit that can only ever have 27 — unreachable, so it burned its full 90 iterations and refused
+# to tag a genuinely green release.
+#
+# THE FIXTURES BELOW STAY, and this repo's own trigger no longer produces the doubled shape (#165
+# filtered `push:` to `main`). They are not describing this repo — they are pinning the invariant
+# for any repo that runs this library, and a re-run duplicates a name everywhere regardless of
+# triggers. A test deleted because THIS repo stopped exercising the input is a test that was
+# guarding the wrong thing.
 #
 # The bar recorded from the PR head must therefore be the DISTINCT-NAME count...
 eq "${ dup_runs 27 | run checks-settled 0; }" "settled 27/0" "a doubled PR-head set counts its distinct names, not its runs"

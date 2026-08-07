@@ -27,7 +27,12 @@
 #                                        # discover (default: keep them — they are usually an
 #                                        # external provider, not a stale job)
 #   repo-settings.sh automerge-ok        # runtime guard: is it safe to arm auto-merge?
-#   repo-settings.sh required-drift      # CI lint: has a discovered job stayed non-required? (#122)
+#   repo-settings.sh required-drift [--porcelain]
+#                                        # CI lint: has a discovered job stayed non-required? (#122)
+#                                        # --porcelain: same exit codes, but stdout carries ONLY the
+#                                        # drifted context names (one per line) and no prose, so a
+#                                        # caller can name them without parsing — or repeating — a
+#                                        # remedy that is wrong for its branch (#165)
 #   repo-settings.sh merge-flag          # the `gh pr merge` flag this repo allows (--squash/…)
 #   repo-settings.sh branch-required-contexts
 #                                        # branch JSON on stdin -> the required contexts as a JSON
@@ -115,6 +120,24 @@ OPT_STRICT=0
 OPT_ENFORCE_ADMINS=0
 # Discover from another workflow tree (see workflow_dir).
 OPT_WORKFLOW_DIR=""
+# `required-drift --porcelain` (#165): STDOUT carries the drifted context names, one per line, and
+# NOTHING else — no prose, no remedy, no "in sync" chatter. `required-drift` ONLY; every other read
+# subcommand rejects it (see parse_read_opts), because a flag that is silently inert on four of the
+# five commands that accept it is exactly the knob-that-does-nothing this file refuses elsewhere.
+#
+# IT EXISTS TO STOP A CALLER PARSING PROSE, and specifically to stop one repeating a remedy that is
+# WRONG in its context. The human code-14 narrative ends in `baseline repo apply`, which is correct
+# on the default branch and actively harmful from a PR branch: applying there makes the context
+# required before the job exists on the default branch, and if the PR is then abandoned the branch
+# is left requiring something nothing will ever report (#165, docs/repo-settings.md "When it
+# fails"). A CI step that echoed that narrative as an "advisory" would be handing the operator the
+# hazard this whole change removes. So the step takes the NAMES from here and writes its own remedy.
+#
+# STILL READ-ONLY. This adds an output shape, not a write: the library goes on reading
+# .github/workflows and writing only the two GitHub settings `apply` owns. The advisory SURFACE — a
+# job summary, an annotation — is written by the workflow step, which is the boundary #165 asked to
+# preserve and the reason this is a print mode rather than a reporter.
+OPT_PORCELAIN=0
 # By default `apply` UNIONS the discovered contexts with whatever is already required, because a
 # required context this tool did not discover is usually an EXTERNAL provider (Codecov, CircleCI,
 # Vercel, a DCO check) that lives outside .github/workflows. Writing the discovered set absolutely
@@ -1152,6 +1175,19 @@ cmd_merge_flag() {
 # job, where the fix is one command. One comparison, one home: it calls the same
 # `ungated_contexts` both `status` and `automerge-ok` use, so the lint can never be shallower than
 # the guard it front-runs.
+# _adb_rs_drift_info — `adb_info`, except that under --porcelain it says nothing.
+#
+# `adb_info` prints to STDOUT (common.sh:43), and under --porcelain stdout is a DATA channel: one
+# context name per line, consumed by a caller that will splice it into an advisory. A single
+# "no drift" sentence landing there would arrive as a context named `repo-settings: all 27
+# discovered job(s)…` — so suppression here is what makes the contract "stdout is names" true,
+# not a cosmetic quiet flag. The diagnostics that matter are unaffected: every skip reason and
+# every fail-closed explanation already goes to STDERR and still does.
+_adb_rs_drift_info() {
+  [ "$OPT_PORCELAIN" -eq 1 ] && return 0
+  adb_info "$@"
+}
+
 cmd_required_drift() {
   require_gh
   local branch want ungated nwant
@@ -1182,7 +1218,7 @@ cmd_required_drift() {
   # .github/workflows) passing. Discovery finding nothing when files ARE present is a different
   # story, handled after the read.
   if [ "$nwant" -eq 0 ] && ! _adb_rs_has_workflow_files; then
-    adb_info "repo-settings: no workflow files to discover on '$branch' — nothing to require"
+    _adb_rs_drift_info "repo-settings: no workflow files to discover on '$branch' — nothing to require"
     return 0
   fi
 
@@ -1256,17 +1292,26 @@ cmd_required_drift() {
       # closed at the `shared` branch above rather than passing — deliberately the safe direction,
       # though the message there blames this repo's parser. #179 made that case reachable for the
       # first time (before it, the attribution literal was wrong, so the arm never fired).
-      adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch'; its $(nlines "$BR_CONTEXTS") required context(s) are not Actions-reported (external CI) — nothing to require"
+      _adb_rs_drift_info "repo-settings: no discoverable PR-triggered jobs on '$branch'; its $(nlines "$BR_CONTEXTS") required context(s) are not Actions-reported (external CI) — nothing to require"
       return 0
     fi
-    adb_info "repo-settings: no discoverable PR-triggered jobs on '$branch' — nothing to require"
+    _adb_rs_drift_info "repo-settings: no discoverable PR-triggered jobs on '$branch' — nothing to require"
     return 0
   fi
 
   ungated="$(ungated_contexts "$want" "$BR_CONTEXTS")"
   if [ -z "$ungated" ]; then
-    adb_info "repo-settings: all $nwant discovered job(s) are required on '$branch' — no drift"
+    _adb_rs_drift_info "repo-settings: all $nwant discovered job(s) are required on '$branch' — no drift"
     return 0
+  fi
+  # PORCELAIN: the names, on stdout, and nothing else. The exit code is still 14 — this is a
+  # different RENDERING of the same verdict, never a different verdict, so a caller cannot get a
+  # softer answer by asking for it in this shape. What is deliberately withheld is the REMEDY: it
+  # names `baseline repo apply`, which is right on the default branch and harmful from a PR branch,
+  # and the caller that asked for porcelain is the one that has to say something else instead.
+  if [ "$OPT_PORCELAIN" -eq 1 ]; then
+    printf '%s\n' "$ungated"
+    return 14
   fi
   if [ "$BR_STATE" = "unprotected" ]; then
     echo "repo-settings: branch '$branch' has NO protection, so none of its CI gates anything." >&2
@@ -1362,11 +1407,12 @@ parse_apply_opts() {
   done
 }
 
-parse_read_opts() {   # the read subcommands: --branch / --workflow-dir / --help only
+parse_read_opts() {   # the read subcommands: --branch / --workflow-dir / --porcelain / --help only
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --branch)       OPT_BRANCH="$(_adb_rs_valopt --branch "$#" "${2:-}")" || exit 2; shift ;;
       --workflow-dir) OPT_WORKFLOW_DIR="$(_adb_rs_valopt --workflow-dir "$#" "${2:-}")" || exit 2; shift ;;
+      --porcelain)    OPT_PORCELAIN=1 ;;
       -h|--help) usage; exit 0 ;;
       *) echo "repo-settings: unknown option '$1'" >&2; usage >&2; exit 2 ;;
     esac
@@ -1374,14 +1420,25 @@ parse_read_opts() {   # the read subcommands: --branch / --workflow-dir / --help
   done
 }
 
+# ONE parser, and the scoping is enforced here rather than by a second copy of it (golden rule 4).
+# `--porcelain` reshapes ONE command's stdout, so the four other read subcommands must REFUSE it,
+# not ignore it: an accepted-but-inert flag is a promise the output changed when it did not, and
+# `branch-required-contexts` already refuses `--branch` for exactly that reason. Symmetric with the
+# apply-only `--dry-run`/`--prune`, which `parse_read_opts` rejects as unknown.
+_adb_rs_no_porcelain() {
+  [ "$OPT_PORCELAIN" -eq 0 ] && return 0
+  echo "repo-settings: --porcelain is only meaningful for 'required-drift' (not '$1')" >&2
+  exit 2
+}
+
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 SUB="$1"; shift
 case "$SUB" in
-  checks)         parse_read_opts "$@";  cmd_checks ;;
-  status)         parse_read_opts "$@";  cmd_status ;;
-  automerge-ok)   parse_read_opts "$@";  cmd_automerge_ok ;;
+  checks)         parse_read_opts "$@";  _adb_rs_no_porcelain checks;       cmd_checks ;;
+  status)         parse_read_opts "$@";  _adb_rs_no_porcelain status;       cmd_status ;;
+  automerge-ok)   parse_read_opts "$@";  _adb_rs_no_porcelain automerge-ok; cmd_automerge_ok ;;
   required-drift) parse_read_opts "$@";  cmd_required_drift ;;
-  merge-flag)     parse_read_opts "$@";  cmd_merge_flag ;;
+  merge-flag)     parse_read_opts "$@";  _adb_rs_no_porcelain merge-flag;   cmd_merge_flag ;;
   # Deliberately NOT through parse_read_opts: this one takes no options at all (the caller already
   # chose the branch when it made the read), and accepting `--branch` would advertise a knob that
   # cannot affect a body that is already on stdin.

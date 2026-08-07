@@ -124,8 +124,10 @@ the *checkout* — CRLF from a Windows-side clone, `/mnt/c` DrvFs semantics — 
 `.github/workflows/wsl-smoke.yml` is **one job, in its own file**, on a weekly `schedule` plus
 `workflow_dispatch` plus `push: tags`. Two structural reasons it is not a job in `ci.yml`:
 
-1. `ci.yml` has only unfiltered `push:` and `pull_request:` triggers, so a `schedule:` there would
-   run **all 27** of its jobs weekly to gain this one.
+1. A `schedule:` fires a whole workflow **file**, so one added to `ci.yml` would run **all 27** of
+   its jobs weekly to gain this one — no trigger filter can scope a schedule to a single job. (This
+   used to be stated as "`ci.yml` has only unfiltered triggers"; since #165 its `push:` is filtered
+   to `main`, which changes that sentence without touching the reason.)
 2. `repo-settings.sh` discovery skips any workflow with **no `pull_request` trigger**, so this
    repo's own tooling can never *discover or add* a schedule-only file as a required context. Put
    the same job in `ci.yml` and it becomes both a per-PR cost *and* a discovered required context.

@@ -236,12 +236,21 @@ cmd_unreleased_entries() {
 # reason a bar recorded on one commit can be applied to another. `<expected>` is normally taken
 # from the reviewed PR head, and the tempting premise ("the same CI config produced both, so the
 # counts match") is FALSE whenever a workflow carries both an unfiltered `push:` and a
-# `pull_request:` trigger — as this repo's `ci.yml` does. A PR branch head then receives BOTH runs
-# and every job name appears TWICE, while the merge commit on the default branch receives only the
-# `push:` run. Measured live on v2.0.0: the reviewed head 25cca85 carried **54** check runs over
-# **27** distinct names; the merge commit 1c02f24 carried **27** runs over the SAME 27 names, all
-# successful. A raw-count bar of 54 is therefore unreachable on any merge commit in such a repo —
-# `verify-merge` spent its full 90 iterations and refused to tag a release that was genuinely green.
+# `pull_request:` trigger. A PR branch head then receives BOTH runs and every job name appears
+# TWICE, while the merge commit on the default branch receives only the `push:` run. Measured live
+# on v2.0.0, when this repo's own `ci.yml` was shaped that way: the reviewed head 25cca85 carried
+# **54** check runs over **27** distinct names; the merge commit 1c02f24 carried **27** runs over
+# the SAME 27 names, all successful. A raw-count bar of 54 is therefore unreachable on any merge
+# commit in such a repo — `verify-merge` spent its full 90 iterations and refused to tag a release
+# that was genuinely green.
+#
+# THIS REPO NO LONGER HAS THAT SHAPE, AND THE RULE IS UNCHANGED (#165). `ci.yml` now filters
+# `push:` to `main`, so a PR head here receives 27 runs over 27 names rather than 54 — the
+# asymmetry that produced the v2.0.0 regression is gone from *this* repo. Counting distinct names
+# stays correct for two reasons that never depended on it: a **re-run** duplicates a name on any
+# repo, and this library is the project-scoped `/release` every adopting repo is told to copy
+# (D7/D14) — and an adopting repo may well carry unfiltered triggers. A bar that is only right
+# under one trigger shape is the bug, not the fix.
 #
 # Distinct names are invariant across that trigger asymmetry while still catching hazard 2: an
 # incrementally-registering set has FEWER names, not fewer duplicates. A job that is genuinely

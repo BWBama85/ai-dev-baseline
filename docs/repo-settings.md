@@ -190,7 +190,11 @@ notices, auto-merge is simply unavailable. `roadmap-e2e` (added by PR #111) and 
 (PR #121) each sat ungated for several PRs that way.
 
 `baseline repo required-drift` asks the **same** question early enough for the fix to be one
-command, on the PR that introduces the job:
+command — on the **default branch**, the moment the job lands there, rather than at the next
+attempted merge. (It used to hard-fail on the *pull request* that introduced the job. That was
+earlier still, and it is what created the phantom-context trap described in *"Which event asks the
+question"* below: the only way to green that PR was to require a context before the job existed.
+The PR now gets the same finding as **advice**.)
 
 | Code | Meaning |
 |---|---|
@@ -205,6 +209,12 @@ the lint can never be shallower than the guard it front-runs.
 It is deliberately **narrow**. It does *not* fail on `allow_auto_merge` being off, on phantom
 contexts, or on an external provider's context — those are different problems with different
 remedies, and `status` already reports all of them.
+
+`required-drift --porcelain` returns the **same exit codes** and prints only the drifted context
+names, one per line, on stdout — no prose and, deliberately, no remedy. It exists so a caller can
+name the drifted jobs without parsing the human text, and specifically so the PR arm below does not
+repeat a remedy that is wrong for its branch (see *"Which event asks the question"*). It is the one
+subcommand that accepts the flag; the others reject it rather than accept it inert.
 
 ### Why it reads a different endpoint
 
@@ -341,10 +351,50 @@ branch.** Two consequences, and the second is the one to watch:
 2. If this PR is then **abandoned unmerged**, the default branch is left requiring a context that
    nothing will ever report, which blocks *every* merge. That is the phantom deadlock
    `automerge-ok` code `13` exists to name, and clearing it needs `apply --prune` with an admin
-   token — which CI does not have. So: if you apply for a PR you later abandon, prune before you
-   walk away. (A design that avoids the window entirely — hard-fail only on drift that exists on
-   the default branch *today*, and report a PR's prospective drift as advisory — is filed as a
-   follow-up rather than guessed at here.)
+   token — which CI does not have.
+
+### Which event asks the question decides what the answer means (#165)
+
+The window above is why this lint is wired as **two steps, not one**. `required-drift` discovers
+jobs from the **checked-out tree** and reads required contexts from the **default branch**, so the
+same command means two different things depending on which event ran it:
+
+| Event | The two sides | So the verdict is | And the step |
+|---|---|---|---|
+| `push` to the default branch | same tree | a **fact** about the default branch | **hard-fails** (code `14`) |
+| `pull_request` | different trees | a **prediction** about a merge that has not happened | **advises** (never fails on `14`) |
+
+#122 hard-failed on the prediction, and the only way to make that PR green was `baseline repo apply`
+from the PR branch — which is precisely how consequence 2 above gets created. **A guard whose only
+remedy manufactures a deadlock is the wrong guard**, so the hard failure moved to the event where
+the comparison is a fact.
+
+**What this gives up, stated plainly:** a PR can now add a job that is red and non-required and
+still merge. The backstop is the push arm — the default branch goes red the moment the job lands —
+so the exposure is *"merged but not yet applied"* rather than *"never caught"*. That is a deliberate
+trade (D48), not an oversight: the previous behaviour caught it earlier and, in catching it, created
+a deadlock that needed an admin token to clear.
+
+**`--porcelain` is what keeps the advisory honest.** The human code-`14` text ends in `baseline repo
+apply`; an advisory that echoed it would hand a PR author the exact hazard this design removes. So
+the PR arm asks for `required-drift --porcelain`, which prints **only the drifted context names on
+stdout** — no prose, no remedy, same exit codes — and the workflow step writes the remedy that is
+right for a PR: *wait for the merge*. The library stays read-only; the advisory surface
+(`$GITHUB_STEP_SUMMARY`, a `::warning` annotation) is written by the step, and neither needs any
+permission beyond the `contents: read` the workflow already declares.
+
+Two properties of the advisory arm are load-bearing and easy to erode:
+
+- **Only a proven `14` is softened.** A `20` — live state unreadable, discovery contradicting it, or
+  a workflow file the parser could not read at all (#102) — still fails the PR. "Your PR predicts
+  drift" and "the comparison could not be made" are different answers, and only the first is advice.
+- **It cannot tell pre-existing drift from drift this PR introduces.** It compares the PR branch's
+  whole tree against the live required set, so a name already drifted on the default branch appears
+  here too. The advisory says so rather than implying the PR caused it.
+
+`scripts/check-repo-settings.sh` pins this wiring structurally — two call sites, which event governs
+each, and that the retired `github.ref` disjunct is gone — because swapping the two `if:` conditions
+leaves every literal in place and inverts the whole design silently.
 
 ## The second guard: has review happened? (#134)
 

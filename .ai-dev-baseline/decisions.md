@@ -3148,3 +3148,115 @@ limit: none of them is sufficient alone.
              correct declaration for the general mechanism and what would take effect if the local
              gate were ever removed.
 - baseline-issue: #240, #241
+
+## D48 — the drift verdict is a fact on push and a prediction on a PR, and only a fact may hard-fail
+- date:      2026-08-06
+- category:  project-delta
+- unknown:   #122 put `required-drift` in CI so a newly added job could not silently stay
+             non-required, and it worked — but the step was wired to ONE question asked on TWO
+             events, and the baseline models neither "a guard whose verdict changes meaning with
+             its trigger" nor "a CI step that must report without failing". `required-drift`
+             discovers jobs from the CHECKED-OUT tree and reads required contexts from the DEFAULT
+             BRANCH. On a push to `main` those are one tree, so the answer is a fact. On a PR they
+             are two, so the answer is a prediction about a merge that has not happened — and #122
+             hard-failed on it.
+
+             That had an unmodelled tail. The only way to make the introducing PR green was
+             `baseline repo apply` FROM the PR branch, which requires the context on `main` before
+             the job exists there. Abandon that PR and `main` is left requiring a context nothing
+             will ever report: every merge blocked, clearable only with an admin token CI does not
+             have. `docs/repo-settings.md` shipped that as a documented operating caveat and said
+             the fix "is filed as a follow-up rather than guessed at here".
+- decision:  **Split the step by event.** The `push` arm keeps the hard failure; the
+             `pull_request` arm reports the same finding as advice and never fails on it. The
+             `github.ref == refs/heads/<default>` disjunct in the old `if:` is deleted, which is
+             sound only because #99's half of this issue landed first.  <!-- adb-claim-ok: #99 was closed NOT_PLANNED as SUPERSEDED by #165, which absorbed it; the reference is this change's provenance, not tracked work -->
+             `on: push: branches: [main]` makes `event_name == 'push'` already mean "the default
+             branch".
+
+             **Deleting that disjunct ALONE would have been a bug**, and the gap-analysis pass
+             flagged it as the single biggest risk: it leaves one PR-only step and removes every
+             hard failure in the file. The disjunct is redundant with respect to the SPLIT, not on
+             its own. Recorded because the issue text described the deletion without the split.
+
+             **`required-drift --porcelain`** (new): same exit codes, stdout carries only the
+             drifted context names, no prose and deliberately no remedy. The advisory step needs
+             the NAMES; what it must not do is echo the human code-14 text, which ends in
+             `baseline repo apply` — correct on the default branch, and the precise instruction
+             that strands a phantom context when followed from a PR branch. A caller that parsed
+             the prose would have repeated the hazard this entry exists to remove.
+
+             The flag is REFUSED by the other four read subcommands rather than accepted inert: it
+             reshapes one command's stdout, and an accepted-but-inert flag promises an output
+             change that did not happen (the same reason `branch-required-contexts` refuses
+             `--branch`).
+
+             **The advisory SURFACE is written by the workflow step, not the library** —
+             `$GITHUB_STEP_SUMMARY` plus a `::warning`. That preserves `repo-settings.sh`'s stated
+             boundary (it reads `.github/workflows` and writes only the two GitHub settings
+             `apply` owns), and both surfaces need no permission beyond the `contents: read` this
+             workflow already declares. A PR comment would need `pull-requests: write`, which a
+             fork PR's token does not get; `pull_request_target` was rejected outright, since it
+             hands elevated credentials to a workflow that runs PR-authored code.
+- placement: `.github/workflows/ci.yml` (the two arms + the `on: push` filter),
+             `scripts/lib/repo-settings.sh` (`--porcelain`), `scripts/check-repo-settings.sh`
+             (predicate + wiring assertions), `scripts/check-fact-drift.sh` (the three-surface
+             pin), `docs/repo-settings.md` ("Which event asks the question decides what the answer
+             means"), `CLAUDE.md` golden rule 3.
+- reason:    A guard whose only remedy manufactures a deadlock is the wrong guard. Moving the hard
+             failure to the event where the comparison is a FACT keeps #122's property — a job
+             that gates nothing gets caught, loudly, with a one-command fix — while removing the
+             window in which following the guard's own advice breaks the repo.
+
+             **WHAT THIS GIVES UP, because it is a real loss and not a wash.** A PR can now add a
+             job that is red and non-required and still merge; the first hard failure comes after
+             it lands. The exposure moves from "never caught" to "merged but not yet applied", and
+             the backstop is the push arm going red immediately. That is #165's own acceptance
+             criterion — "report a PR's prospective drift as advisory" — so it is an accepted
+             trade, not an oversight, and it is stated in `docs/repo-settings.md` rather than left
+             for someone to discover.
+
+             **Only a proven `14` is softened.** A `20` — live state unreadable, discovery
+             contradicting it, or a workflow file the parser could not read (#102) — still fails
+             the PR. "Your PR predicts drift" and "the comparison could not be made" are different
+             answers, and collapsing them would have bought the advisory by reintroducing the
+             fail-open #102 closed.
+
+             **The wiring is pinned STRUCTURALLY, and the fact pins do LESS than they look like
+             they do.** `required-drift-wired` is a fixed-string presence test over `ci.yml`, and
+             that file names the invocation in COMMENTS as well as in the two `run:` lines — so it
+             survives BOTH steps being deleted, and it survives the two `if:` conditions being
+             swapped, which would leave the default branch merely advised while pull requests are
+             hard-failed: the exact inversion of this decision, under a green lint. (The review
+             caught this entry over-crediting the pin with catching deletion; it does not.)
+
+             So `check-repo-settings.sh` carries the real guard: it COUNTS the call sites, compares
+             each arm's `if:` for EQUALITY (a token search passes `== 'push' && false`, and an
+             equality does not), requires the enforcing arm's `run:` to invoke the library rather
+             than merely name it, parses the `push:` branch filter into entries and compares them
+             exactly to `main` (a substring test is satisfied by `[not-main]`, and one that reads
+             comments is satisfied by a commented-out filter), and finally EXECUTES the advisory
+             step's shell under `bash -e` against a stub. Every one of those was observed going RED
+             on a copied tree.
+
+             The execution matters most, and it is why "structural" alone was not enough: the arm
+             first shipped as `drifted="$(…)"; rc=$?`, which is correct under `bash file` and fatal
+             under `bash -e file`. GitHub runs a Linux `run:` step as `bash -e {0}` and
+             `set -uo pipefail` does not clear errexit, so on the drift path the step died at that
+             line with exit 14 — no advisory, PR hard-failed, this decision inert — while every
+             static assertion still passed.
+- also:      D13 is AMENDED, not contradicted. It reasoned about "the live assertion" as one CI
+             step; there are now two, on the same job, reading the same live state. The hermetic
+             boundary it drew is untouched — `selfcheck` still runs the offline half through the
+             `gh` stub, and now the offline half covers the wiring as well as the predicate.
+
+             The `on: push` filter (#99, consolidated into #165) is what makes the disjunct <!-- adb-claim-ok: #99 was closed NOT_PLANNED as SUPERSEDED by #165, which absorbed it; the reference is this change's provenance, not tracked work -->
+             deletion legal, and it is not free: `branches:` excludes TAG pushes, so pushing a
+             `v*` tag no longer runs `ci.yml`. Safe here for two independent reasons —
+             `wsl-smoke.yml` carries its own `push: tags: ['v*']`, and `/release` verifies the
+             merge commit is green BEFORE it pushes the tag — but "zero risk" was the issue's
+             word, not this entry's. It also ends the doubled check-run shape on this repo's PR
+             heads (measured: `total=54 distinct=27` on PR #296), which `release-lib.sh`'s
+             distinct-name counting was written against; that counting stays, because a re-run
+             duplicates a name on any repo and adopting repos may keep unfiltered triggers.
+- baseline-issue: #165 (supersedes #99) <!-- adb-claim-ok: #99 was closed NOT_PLANNED as SUPERSEDED by #165, which absorbed it; the reference is this change's provenance, not tracked work -->
