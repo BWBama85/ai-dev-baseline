@@ -236,11 +236,13 @@ printf 'old\n' > "$d/.claude/state/review-codex.err"
 printf '{}\n'  > "$d/.claude/state/implement-issue-blocked.json"
 printf 'old\n' > "$d/.claude/state/issue-4.json"
 printf 'NONE\n' > "$d/.claude/state/issue-4.assoc"
-# A name state-scan classifies `other` — so /cleanup would never sweep it, and the containment
-# rule runs only one way. It is cleared here because the clear glob is deliberately WIDER than the
-# scan arm; asserting it pins the direction, so a future narrowing of the clear to match the arm
-# exactly would strand this file rather than pass silently.
-printf 'old\n' > "$d/.claude/state/issue-notanumber.json"
+# A name state-scan classifies `other`, which this clear must therefore LEAVE ALONE. The state
+# directory is shared — `/new-release` keeps `new-release.json` there, `/resolve-pr-threads` keeps
+# `threads-<N>.json` — and `issue-` is a prefix any future skill might pick, so a bare `issue-*`
+# glob would have /implement-issue's preflight silently delete a neighbour's file. Containment is
+# satisfied by equality; this pins the side of it that can destroy data.
+printf 'keepme\n' > "$d/.claude/state/issue-cache.json"
+printf 'keepme\n' > "$d/.claude/state/issue-notanumber.json"
 admit "$d" SHIM_PR_STATE=merged
 eq "$AD_RC" "0" "5 both refs gone and the PR MERGED → the previous run is finished, so admit"
 if exists "$d/.claude/state/implement-issue-active.json"; then bad "5 …and its marker is cleared"; else ok; fi
@@ -249,7 +251,10 @@ if exists "$d/.claude/state/gaps.md"; then bad "5 …and its gap findings"; else
 if exists "$d/.claude/state/review-codex.err"; then bad "5 …and its per-slot review stream"; else ok; fi
 if exists "$d/.claude/state/issue-4.json"; then bad "5 …and the issue snapshot it fetched (#250)"; else ok; fi
 if exists "$d/.claude/state/issue-4.assoc"; then bad "5 …and the provenance label beside it"; else ok; fi
-if exists "$d/.claude/state/issue-notanumber.json"; then bad "5 …and a snapshot-shaped name the scan arm does not claim"; else ok; fi
+if exists "$d/.claude/state/issue-notanumber.json"; then ok; else
+  bad "5 …but NOT a snapshot-shaped name the scan arm does not claim — that is another workflow's file"; fi
+if exists "$d/.claude/state/issue-cache.json"; then ok; else
+  bad "5 …nor a plausible neighbouring skill's cache under the same prefix"; fi
 # A run that never opened a PR and whose branch is gone is equally finished.
 d="$(new_repo)"; marker "$d" issue-5-x
 admit "$d"; eq "$AD_RC" "0" "5 no PR was ever recorded and both refs are gone → finished, so admit"

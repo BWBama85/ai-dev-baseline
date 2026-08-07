@@ -29,11 +29,20 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   **Moving it meant giving it a lifecycle, not just a new path.** `cleanup-lib.sh state-scan` gains
   an `issue` kind (`issue-<digits>.{json,assoc}`, digit-only for the same allowlist reason the
   `threads` arm is), `state-verdict` gains an `issue` name that **shares the `gaps` arm** because
-  the lifetime is identical — written before any marker exists, under the claim, still read after
-  the marker takes over — and `implement-lib.sh`'s clear takes the family so the containment
-  invariant still runs the safe way. `base/workflows/cleanup.md` sweeps it. Registering the scan
-  arm without the clear would have recreated the #264 trap; registering neither would have left
-  private issue bodies as permanent `other` debris.
+  the same two liveness signals decide both — a pre-marker run holding the claim, and a marker
+  describing a live run — and `implement-lib.sh`'s clear takes the family so the containment
+  invariant holds. `base/workflows/cleanup.md` sweeps it. Registering the scan arm without the
+  clear would have recreated the #264 trap; registering neither would have left private issue
+  bodies as permanent `other` debris.
+
+  The two are **not** interchangeable, and the difference is load-bearing in two places. The
+  snapshot is read again in step 8 while the gap artifacts are finished with after step 4, so the
+  sweep asks with `$RUN_NOW` — the fresh re-scan — where `gaps` asks with `$RUN`, or a run that
+  reached step 5 mid-sweep would have its issue text deleted from under its own review dispatch.
+  And the clear matches the scan arm's digit rule **exactly** rather than widening to `issue-*`:
+  this state directory is shared (`new-release.json`, `threads-<N>.json` live there too) and
+  `issue-` is a prefix any future skill might pick, so the "widening is always safe" rule that
+  holds for `gaps-*`/`review-*` does not hold here.
 
   A **latent bug on the read path** is fixed in the same change: both `.assoc` reads nested
   `$(cat …)` inside a `jq --arg`, and a command substitution in argument position discards its
@@ -41,13 +50,24 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   surrounding `||` never fired. The provenance annotation went out silently blank. It is its own
   statement now, and an empty value is refused.
 
-  `scripts/check-tmp-paths.sh` is what stops the drift, in two halves, each with its own mutation
-  harness: the snapshot's path is resolved **out of the real markdown** — source and every rendered
-  skill — under two distinct roots and must differ, and no fixed shared-temp literal without
-  per-run entropy survives anywhere under `base/`, `scripts/`, `docs/` or `agents/`. It also fixes
-  the remaining instances of the class it defines: `create-issue.md`'s issue-body scratch,
-  `git-and-prs.md`'s recommended `.patch` copy (a fixed name for the one file git cannot get back),
-  `docs/roadmap-acceptance.md`'s determinism procedure, and `check-injection.sh`'s coupled fixture.
+  `scripts/check-tmp-paths.sh` is what stops the drift. Every snapshot path is read **out of the
+  real markdown** — source and every rendered skill — and required to sit under that file's own
+  state directory, with both halves present in each; then two simulated checkouts write a sentinel
+  through the path the skill actually specifies and each must read its own back, which is #250's
+  acceptance criterion executed rather than described. A third part forbids any fixed shared-temp
+  literal without per-run entropy under `base/`, `scripts/`, `docs/` or `agents/`, and thirteen
+  mutations against a copy of the tree require every one of those to go red.
+
+  **That last part is lexical, and its limits are written into its header rather than left to be
+  discovered**: it cannot see a path built through a variable, cannot tell an unexpanded `$$` in
+  single quotes from a real one, and flags reads as well as writes on purpose — `adb-tmp-ok:
+  <reason>` is the intended answer for a legitimate fixed path, not a grudging exception.
+
+  It also fixes the remaining instances of the class it defines: `create-issue.md`'s issue-body
+  scratch, `git-and-prs.md`'s recommended `.patch` copy (a fixed name for the one file git cannot
+  get back — and it now **prints** the path, since a backup you cannot name is a backup you do not
+  have), `docs/roadmap-acceptance.md`'s determinism procedure, and `check-injection.sh`'s coupled
+  fixture. The two prose fixes also stopped masking their own exit status behind their cleanup.
 
   **What is claimed is collision isolation, and no more.** A process that can already write the
   run's state directory can still replace the label; leaving the shared namespace removes reach,

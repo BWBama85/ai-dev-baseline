@@ -748,9 +748,12 @@ EOF
 # The gap FAMILY (`gaps-*.md`, `gaps-*.err`) is cleared, not just the three fixed names. `state-scan`
 # has swept that family since #84 recorded a real run leaving `gaps-retry.{md,err}` behind, so the
 # fixed-name-only clear the workflow prose carried was on the wrong side of the containment rule.
-# The ISSUE SNAPSHOT family (`issue-*.json`, `issue-*.assoc`) joins it for the same reason since
-# #250 moved it out of `/tmp`; note the globs are anchored, so `implement-issue-active.json` is not
-# one of them and the marker keeps its by-identity removal in `cmd_admit`.
+# The ISSUE SNAPSHOT family (`issue-<digits>.json`, `issue-<digits>.assoc`) joins it for the same
+# reason since #250 moved it out of the shared temp directory — but with the scan arm's digit rule
+# applied rather than a bare glob, because this state directory is SHARED with other workflows and
+# `issue-` is a prefix any of them might pick. Note the globs are anchored, so
+# `implement-issue-active.json` is not one of them and the marker keeps its by-identity removal in
+# `cmd_admit`.
 _il_clear() {   # <state-dir>
   local dir="$1" f rc=0 had_nullglob=0
   # RE-CHECKED HERE, not only at admission. `[ -r ]` at the top of `admit` and the globbing below are
@@ -775,13 +778,35 @@ _il_clear() {   # <state-dir>
   # The ISSUE SNAPSHOT family (#250) is here for the containment rule, not for tidiness. Step 2's
   # `issue-<n>.json`/`issue-<n>.assoc` hold the untrusted issue text and the provenance label, and
   # `state-scan` now classifies them `issue` — so a name /cleanup can sweep that this could not
-  # clear would be exactly the stale-reads-as-live file the invariant forbids. The globs here are
-  # DELIBERATELY WIDER than that arm, which requires an all-digit number: clearing `issue-x.json`
-  # too is the safe direction (widening the clear is always safe; narrowing it strands a file).
+  # clear would be exactly the stale-reads-as-live file the invariant forbids.
+  #
+  # AND IT MATCHES THE SCAN ARM EXACTLY — same all-digit rule, not a wider glob. "Widening the
+  # clear is always safe" holds for `gaps-*`/`review-*`, whose prefixes nothing else writes; it is
+  # FALSE for `issue-*`, and the independent review was right to call it. This state directory is
+  # SHARED: `/new-release` keeps `new-release.json` there as durable history, `/resolve-pr-threads`
+  # keeps `threads-<N>.json`, and `issue-` is a prefix any future skill might plausibly pick. A
+  # glob that swallowed `issue-cache.json` would have this workflow's preflight silently delete
+  # another workflow's state — a fresh defect introduced by the fix for an old one. Equality is
+  # containment, so the invariant is satisfied either way; the narrow reading is the one that
+  # cannot destroy a neighbour's file.
   shopt -q nullglob && had_nullglob=1
   shopt -s nullglob
-  targets+=( "$dir"/gaps-*.md "$dir"/gaps-*.err "$dir"/review-*.md "$dir"/review-*.err
-             "$dir"/issue-*.json "$dir"/issue-*.assoc )
+  targets+=( "$dir"/gaps-*.md "$dir"/gaps-*.err "$dir"/review-*.md "$dir"/review-*.err )
+  local cand base num
+  for cand in "$dir"/issue-*.json "$dir"/issue-*.assoc; do
+    base="${cand##*/}"
+    num="${base#issue-}"
+    case "$base" in
+      *.json)  num="${num%.json}" ;;
+      *.assoc) num="${num%.assoc}" ;;
+    esac
+    # The scan arm's predicate, restated once here rather than approximated by a glob. A `case`
+    # pattern cannot express "one or more digits" — `issue-[0-9]*.json` still admits
+    # `issue-1abc.json` — so the two sides would have drifted apart on the very names this
+    # narrowing exists to protect.
+    case "$num" in ''|*[!0-9]*) continue ;; esac
+    targets+=( "$cand" )
+  done
   [ "$had_nullglob" -eq 1 ] || shopt -u nullglob
   for f in "${targets[@]}"; do
     [ -e "$f" ] || [ -L "$f" ] || continue

@@ -152,9 +152,17 @@ Write the body to a **per-run scratch file** and pass it with `--body-file`:
 ```bash
 BODY="$(mktemp "${TMPDIR:-/tmp}/issue-body.XXXXXX")" || { echo "ERROR: cannot create scratch file"; exit 1; }
 # …write the drafted body into "$BODY"…
-gh issue create --title "..." --body-file "$BODY"
+# THE CLEANUP MUST NOT BECOME THE BLOCK'S ANSWER. `gh issue create` followed by a bare `rm -f`
+# leaves the block on `rm`'s status, so a filing that FAILED exits 0 and reads to you as filed.
+# Capture the status, clean up, then re-report it.
+gh issue create --title "..." --body-file "$BODY"; rc=$?
 rm -f "$BODY"
+[ "$rc" -eq 0 ] || { echo "ERROR: gh issue create failed (rc $rc) — nothing was filed"; exit "$rc"; }
 ```
+
+A run killed between the write and the `rm` leaves one scratch file behind. That is accepted rather
+than trapped: `mktemp` gives it a unique name, so the leftover is inert — it can never be picked up
+as another run's draft, which is the failure a fixed name caused.
 
 Prefer `--body-file` over an inline `--body` when the body is multi-section — it avoids
 shell-escaping bugs. **`mktemp`, never a fixed name.** A fixed path in the system temp directory is

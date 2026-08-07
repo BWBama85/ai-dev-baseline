@@ -35,19 +35,39 @@
 #     directory. Leaving the shared temp directory removes a NAMESPACE any local account can reach;
 #     it does not authenticate the file's contents. Say that; do not imply more.
 #
-# THREE PARTS:
-#   1. the snapshot's path is per-checkout — asserted against the real markdown, source AND every
-#      rendered skill, by resolving it under two roots;
-#   2. no fixed shared-temp path anywhere in `base/`, `scripts/`, `docs/` or `agents/` — such a
-#      literal must carry per-run entropy (`$$`, `$RANDOM`, an `XXXXXX` mktemp template) or an
-#      explicit `adb-tmp-ok: <reason>` marker;
+# FOUR PARTS:
+#   1. every issue-snapshot path in the real markdown — source AND every rendered skill — sits
+#      under that file's own state directory (`{{STATE_DIR}}/` in the source, `.<agent>/state/` in
+#      a render), and BOTH halves of the snapshot are present in each;
+#   1b. the same property DEMONSTRATED: two simulated checkouts write their own sentinel through
+#      the path the skill actually specifies, and each must read its own back. This is #250's
+#      acceptance criterion in its own words;
+#   2. no fixed shared-temp path in `base/`, `scripts/`, `docs/` or `agents/` — such a literal
+#      must carry per-run entropy (`$$`, `$RANDOM`, or `XXXXXX` **on a line that calls mktemp**)
+#      or an explicit `adb-tmp-ok: <reason>` marker;
 #   3. a mutation harness that injects the PRE-FIX spellings into a COPY of the tree and requires
 #      each part to go red — because a scanner that matches nothing reports exactly what a clean
 #      run reports (base/practices/self-review.md).
 #
+# WHAT PART 2 DOES *NOT* CATCH, stated so the changelog cannot quietly outgrow it:
+#
+#   * a shared-temp path reached through a VARIABLE (`D="$TMPDIR"; … > "$D/fixed.log"`) or built by
+#     concatenation. This is a lexical scanner, not a shell evaluator;
+#   * `$$` or `$RANDOM` inside SINGLE quotes, where the shell never expands them. Detecting that
+#     needs a quoting model, and a wrong one produces false positives on legitimate lines — the
+#     failure mode this repo treats as worse than a miss;
+#   * a `#` that begins a string rather than a comment, in any non-Markdown file (see the stripping
+#     note on `scan_fixed_tmp`). Miss-only, never a false positive.
+#
+# IT DELIBERATELY FLAGS READS AS WELL AS WRITES, and that breadth is the design rather than an
+# accident: telling a read from a write needs the shell evaluator the bullets above rule out, and
+# a rule that guessed would miss the writes that matter. `adb-tmp-ok: <reason>` is the intended
+# answer for a legitimate fixed path — an external socket, a documented system file, a fixture —
+# not a grudging exception. It costs one line and leaves a searchable record of every one.
+#
 # DELIBERATELY OUT OF SCOPE, per #250's own survey: `.github/workflows/ci.yml`, whose one fixed
-# path runs on an ephemeral single-tenant runner with no concurrency to collide with. Only `.md`
-# and `.sh` under the four roots above are scanned, so that file is not reached.
+# path runs on an ephemeral single-tenant runner with no concurrency to collide with. It sits
+# outside the four scanned roots, so it is not reached.
 #
 # Usage: bash scripts/check-tmp-paths.sh   (exit 0 = pass, 1 = fail)
 
@@ -101,7 +121,7 @@ EXEMPT_RE="$MARK"':[[:space:]]*[^[:space:]]'
 # Per-run entropy: what makes a shared-temp name safe to write.
 #   $$        — the shell's pid, distinct per process (the spelling #250's acceptance names)
 #   $RANDOM   — bash's per-shell PRNG
-#   XXXXXX    — an mktemp template
+#   XXXXXX    — an mktemp template, and ONLY when `mktemp` is on the same line (see below)
 # The `"${TMPDIR:-/tmp}/name.XXXXXX"` idiom this repo already uses everywhere is doubly safe: the
 # closing brace means the hunted text never even appears, so the scanner has nothing to match.
 #
@@ -110,7 +130,13 @@ EXEMPT_RE="$MARK"':[[:space:]]*[^[:space:]]'
 # escapes in the assignment, so `\$\$` arrives as `$$`, which as a regex is two end-of-string
 # anchors rather than two dollar signs — and `/tmp/adb-cl-meta.$$`, the one spelling #250's
 # acceptance explicitly permits, was reported as a violation. Substring tests have no such layer.
-ENTROPY_MARKERS='$$	$RANDOM	XXXXXX'
+#
+# `XXXXXX` IS CONDITIONAL, because on its own it is not entropy at all: `printf x > /tmp/f.XXXXXX`
+# writes a file literally called `f.XXXXXX`, shared by every process on the host. The Xs are a
+# TEMPLATE only when `mktemp` consumes them, so the line must name `mktemp` too. The independent
+# review found this; it was a hole big enough to drive the original defect straight back through.
+ENTROPY_MARKERS='$$	$RANDOM'
+ENTROPY_TEMPLATE='XXXXXX'
 
 # The scanned roots. `agents/` is included even though it is generated: build-drift proves a render
 # is CURRENT, never that it is CORRECT, so a placeholder that resolved to something host-global
@@ -147,13 +173,21 @@ snapshot_tokens() {
   ' "$1" | sort -u
 }
 
-# resolve_under <root> <token> — the absolute path a shell running in <root> would open. This is
-# the whole assertion in one function: an absolute token ignores <root> entirely (that is the bug),
-# a relative one does not.
-resolve_under() {
-  case "$2" in
-    /*) printf '%s\n' "$2" ;;
-    *)  printf '%s/%s\n' "$1" "$2" ;;
+# state_prefix <tree> <file> — the ONE directory this file's snapshot tokens are allowed to sit in.
+# The source spells it `{{STATE_DIR}}/`; a rendered skill under `agents/<a>/` spells it
+# `.<a>/state/`, which is what `scripts/build.sh` resolves that placeholder to.
+#
+# AN ALLOWLIST, not "is the token relative". The first cut asked only whether a token began with
+# `/`, and the independent review found the hole immediately: `${TMPDIR:-/tmp}/issue-$n.json` is
+# textually relative, so it passed — while every shell opens the same host-global file. So does
+# `../shared/issue-$n.json`. Naming the one legal prefix answers both, and answers the question the
+# requirement actually asks: is this file inside the per-checkout, per-agent state directory
+# `implement-lib.sh admit` governs?
+state_prefix() {
+  local rel="${2#"$1"/}" agent
+  case "$rel" in
+    agents/*/skills/*) agent="${rel#agents/}"; agent="${agent%%/*}"; printf '.%s/state/' "$agent" ;;
+    *)                 printf '{{STATE_DIR}}/' ;;
   esac
 }
 
@@ -163,7 +197,7 @@ resolve_under() {
 P1_SITES=0
 P1_FILES=0
 part1() {
-  local tree="$1" f tok a b n total=0 files=0 rendered
+  local tree="$1" f tok pfx n njson nassoc total=0 files=0 rendered
   # The source plus every rendered skill. Enumerated from the filesystem rather than listed, so a
   # fourth agent joins the check by existing.
   local -a files_to_scan=( "$tree/base/workflows/implement-issue.md" )
@@ -174,34 +208,32 @@ part1() {
   for f in "${files_to_scan[@]}"; do
     [ -f "$f" ] || { printf 'missing file: %s\n' "${f#"$tree"/}"; continue; }
     files=$((files + 1))
-    n=0
+    pfx="${ state_prefix "$tree" "$f"; }"
+    n=0; njson=0; nassoc=0
     while IFS= read -r tok; do
       [ -n "$tok" ] || continue
       n=$((n + 1)); total=$((total + 1))
-      # `/A` and `/B` stand in for two checkouts. Real directories are unnecessary — nothing is
-      # opened; the question is purely whether the resolved NAMES can differ.
-      a="${ resolve_under /A "$tok"; }"
-      b="${ resolve_under /B "$tok"; }"
-      if [ "$a" = "$b" ]; then
-        printf '%s: the issue snapshot resolves to ONE host-global path [%s] — two checkouts share it\n' \
-          "${f#"$tree"/}" "$tok"
-      fi
+      case "$tok" in *.json) njson=$((njson + 1)) ;; *.assoc) nassoc=$((nassoc + 1)) ;; esac
+      case "$tok" in
+        "$pfx"*) : ;;
+        *) printf '%s: snapshot path [%s] is not under this render'"'"'s state dir [%s] — two checkouts can share it\n' \
+             "${f#"$tree"/}" "$tok" "$pfx" ;;
+      esac
     done <<EOF
 ${ snapshot_tokens "$f"; }
 EOF
-    # A file that contributes ZERO tokens is the vacuous-guard case: a rename would otherwise turn
-    # this whole part into a silent no-op that still prints PASS.
-    [ "$n" -gt 0 ] || printf '%s: NO issue-snapshot path found — the scanner matched nothing, so it proved nothing\n' "${f#"$tree"/}"
+    # BOTH HALVES, PER FILE — not a global site count. A total-only floor is satisfiable after an
+    # entire half of the snapshot disappears: rename every `.assoc` away and the `.json` tokens
+    # alone still clear it, so the provenance file — the trust label this whole change exists to
+    # protect — goes unchecked while the run reports PASS. The independent review found that; the
+    # per-file, per-suffix requirement is what replaced the floor.
+    [ "$n" -gt 0 ]      || printf '%s: NO issue-snapshot path found — the scanner matched nothing, so it proved nothing\n' "${f#"$tree"/}"
+    [ "$njson" -gt 0 ]  || printf '%s: no issue-snapshot .json path found\n'  "${f#"$tree"/}"
+    [ "$nassoc" -gt 0 ] || printf '%s: no issue-snapshot .assoc path (the provenance label) found\n' "${f#"$tree"/}"
   done
   [ "$files" -gt 0 ] || printf 'no implement-issue workflow or skill found at all\n'
   P1_SITES="$total"; P1_FILES="$files"
 }
-
-# The floor is deliberately low and is a VACUITY guard, not a spec: the exact site count moves
-# whenever the workflow's prose is edited, and pinning it exactly would make this file a
-# maintenance tax that teaches nothing. What must never happen is the set emptying out. Four trees
-# (source + three renders) x two filenames is the arithmetic; the floor sits at half of it.
-P1_FLOOR=4
 
 hits="${ part1 "$ROOT"; }"
 if [ -n "$hits" ]; then
@@ -213,10 +245,64 @@ else
 fi
 # SAY WHAT WAS CHECKED. A count is the difference between "nothing was wrong" and "nothing was
 # checked", and those read identically without it.
-printf 'check-tmp-paths: %s issue-snapshot path site(s) across %s file(s) resolve per-checkout\n' \
+printf 'check-tmp-paths: %s issue-snapshot path site(s) across %s file(s) sit under their state dir\n' \
   "$P1_SITES" "$P1_FILES"
-if [ "$P1_SITES" -lt "$P1_FLOOR" ]; then
-  bad "part 1 found only $P1_SITES snapshot site(s), floor is $P1_FLOOR — the scanner has stopped seeing them"
+
+# =============================================================================================
+# 1b. TWO CHECKOUTS, EXECUTED — the acceptance criterion's own words
+# =============================================================================================
+#
+# Part 1 is a property of the TEXT. This is the property of the BEHAVIOUR, and #250 asks for it by
+# name: "two concurrent runs on the same issue number do not observe each other's files".
+#
+# It takes the path expression out of the rendered skill, resolves `$n` to one issue number, and
+# has two simulated checkouts each write their own sentinel through it — then requires each to read
+# back its own. Under the shipped spelling the two land in `A/.claude/state/` and `B/.claude/state/`
+# and both sentinels survive; under any host-global spelling they are one file and the second write
+# destroys the first, which is exactly the collision the issue reported.
+#
+# THE TOPOLOGY IS NAMED, because "two concurrent runs" has three readings and only one of them is a
+# path question. This exercises TWO CHECKOUTS (equivalently, two agents in one checkout, which get
+# different state dirs). Two runs of ONE agent in ONE checkout are refused by `implement-lib.sh
+# admit` (#202) and are covered by `scripts/check-implement-lib.sh`; nothing about a filename can
+# help there, because they share one HEAD.
+#
+# NO `gh`, NO CONCURRENCY PRIMITIVE. The race needs neither: interleaving only decides WHICH run
+# loses, and sequential writes prove the same aliasing with a deterministic result. A test that
+# needed real concurrency to fail would be a flaky test of a property that is not timing-dependent.
+two_checkout_demo() {   # <tree> [issue-number] — print a diagnostic per violation; silence = clean
+  local tree="$1" num="${2:-250}" f tok resolved rel demo root got
+  demo="${ mktemp -d; }" || { printf 'could not create the two-checkout fixture\n'; return; }
+  for f in "$tree"/agents/*/skills/implement-issue/SKILL.md; do
+    [ -f "$f" ] || continue
+    rel="${f#"$tree"/}"
+    while IFS= read -r tok; do
+      [ -n "$tok" ] || continue
+      # `$n` is the workflow's own loop variable over ISSUE_NUMS; substitute one concrete number.
+      resolved="${tok//\$n/$num}"
+      for root in A B; do
+        mkdir -p "$demo/$root"
+        # A shell running in that checkout, opening exactly what the skill tells it to. An absolute
+        # token ignores the `cd` — which is the whole defect, made observable.
+        ( cd "$demo/$root" && mkdir -p "$(dirname "$resolved")" 2>/dev/null && printf '%s' "$root" > "$resolved" ) \
+          || { printf '%s: could not write [%s] from checkout %s\n' "$rel" "$resolved" "$root"; continue 2; }
+      done
+      # A wrote first, B second. If they alias, A now reads B's sentinel.
+      got="${ cd "$demo/A" && cat "$resolved" 2>/dev/null; }"
+      [ "$got" = "A" ] || printf '%s: checkout A read [%s] back as [%s] — the two runs share [%s]\n' \
+        "$rel" "$got" "${got:-<gone>}" "$resolved"
+    done <<EOF
+${ snapshot_tokens "$f"; }
+EOF
+  done
+  rm -rf "$demo"
+}
+
+hits="${ two_checkout_demo "$ROOT"; }"
+if [ -n "$hits" ]; then
+  bad_quiet
+  check_note "two checkouts observed each other's issue snapshot:"
+  printf '%s\n' "$hits" | sed 's/^/    /' >&2
 else
   ok
 fi
@@ -228,25 +314,35 @@ fi
 # The belt to part 1's braces. Part 1 knows one filename; this knows the CLASS, so a future fixed
 # path under any other name still fails.
 #
-# COMMENTS ARE STRIPPED IN `.sh` FILES ONLY, and the trade is stated rather than hidden: a `#`
-# inside a shell string is stripped too, so this can only cause a MISSED report, never a false one
-# — the same bargain `check-workflow-shell.sh` documents. Markdown is NOT stripped, because prose
-# is exactly where `create-issue.md`'s fixed issue-body path lived; a markdown line that must name
-# one carries the marker.
+# COMMENTS ARE STRIPPED IN EVERYTHING BUT MARKDOWN, and the trade is stated rather than hidden: a
+# `#` inside a string is stripped too, so this can only cause a MISSED report, never a false one —
+# the same bargain `check-workflow-shell.sh` documents. Markdown is NOT stripped, because prose is
+# exactly where `create-issue.md`'s fixed issue-body path lived and a leading `#` there is a
+# heading; a markdown line that must name a fixed path carries the marker instead.
 scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
-  local tree="$1" r
+  local tree="$1" r f
   local -a dirs=()
   for r in "${SCAN_ROOTS[@]}"; do [ -d "$tree/$r" ] && dirs+=( "$tree/$r" ); done
   [ "${#dirs[@]}" -gt 0 ] || return 0
-  # `find`, not a glob: base/ is two levels deep and scripts/ and agents/ have subdirectories.
-  find "${dirs[@]}" -type f \( -name '*.md' -o -name '*.sh' \) 2>/dev/null \
-    | LC_ALL=C sort \
-    | while IFS= read -r f; do
-        awk -v exempt="$EXEMPT_RE" -v markers="$ENTROPY_MARKERS" -v rel="${f#"$tree"/}" -v pfx="$TMP_LIT/" '
+  # EVERY regular text file, not just `*.md` and `*.sh`. The extension allowlist was the review's
+  # finding and it was right: `scripts/helper` with a shebang, `tool.bash`, and a shell command
+  # embedded in a `.yml` are all places this class lives, and every one of them was invisible while
+  # the changelog claimed the roots were covered. `grep -Iq` is the binary filter, so a future
+  # image or archive under these roots is skipped rather than scanned as mojibake.
+  #
+  # `-print0` and a NUL reader: `find`'s newline-delimited output splits a filename containing a
+  # newline into two nonexistent paths, and a violation inside such a file would be missed silently
+  # — the same class of quiet miss this whole file exists to prevent, one level up.
+  while IFS= read -r -d '' f; do
+    LC_ALL=C grep -Iq . "$f" 2>/dev/null || continue
+        awk -v exempt="$EXEMPT_RE" -v markers="$ENTROPY_MARKERS" -v tmpl="$ENTROPY_TEMPLATE" \
+            -v rel="${f#"$tree"/}" -v pfx="$TMP_LIT/" '
           BEGIN { nmk = split(markers, mk, "\t") }
-          # Substring tests, for the reason the ENTROPY_MARKERS comment gives.
-          function has_entropy(tok,   k) {
+          # Substring tests, for the reason the ENTROPY_MARKERS comment gives. `tmpl` is separate
+          # and CONDITIONAL: Xs are entropy only when mktemp expands them.
+          function has_entropy(tok, whole,   k) {
             for (k = 1; k <= nmk; k++) if (index(tok, mk[k]) > 0) return 1
+            if (index(tok, tmpl) > 0 && index(whole, "mktemp") > 0) return 1
             return 0
           }
           {
@@ -255,7 +351,12 @@ scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
             # written as a trailing shell comment would be removed before it could be seen.
             if (raw ~ exempt) next
             line = raw
-            if (rel ~ /\.sh$/) sub(/(^|[[:space:]])#.*$/, "", line)
+            # Comment stripping for everything EXCEPT Markdown. Markdown prose is where
+            # create-issue.md-s fixed issue-body path lived, and a leading `#` there is a heading,
+            # not a comment. Everywhere else `#` starts one — in shell, in YAML, in a Makefile —
+            # and the trade is the one check-workflow-shell.sh documents: a `#` inside a string is
+            # stripped too, which can only cause a MISS, never a false positive.
+            if (rel !~ /\.md$/) sub(/(^|[[:space:]])#.*$/, "", line)
             # A CONCRETE name under the shared temp dir: the prefix plus at least one character
             # from a filename charset. The charset deliberately EXCLUDES `<`, so a documentation
             # placeholder such as the literal prefix followed by an angle-bracketed name is not
@@ -266,7 +367,7 @@ scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
               rest = substr(line, i + length(pfx))
               if (match(rest, /^[A-Za-z0-9._$*{}@%+,=:-]+/)) {
                 tok = pfx substr(rest, 1, RLENGTH)
-                if (!has_entropy(tok)) { printf "%s:%d: %s\n", rel, FNR, raw; break }
+                if (!has_entropy(tok, raw)) { printf "%s:%d: %s\n", rel, FNR, raw; break }
                 line = substr(rest, RLENGTH + 1)
               } else {
                 line = rest
@@ -274,7 +375,7 @@ scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
             }
           }
         ' "$f"
-      done
+  done < <(find "${dirs[@]}" -type f -print0 2>/dev/null | LC_ALL=C sort -z)
 }
 
 hits="${ scan_fixed_tmp "$ROOT"; }"
@@ -300,7 +401,8 @@ for badline in "cat foo > $TMP_LIT/adb-fixed.log" \
                "jq . \"$TMP_LIT/issue-\$n.json\"" \
                "diff $TMP_LIT/r1.md $TMP_LIT/r2.md" \
                "gh issue create --body-file $TMP_LIT/issue-body.md" \
-               "printf x > \"$TMP_LIT/adb.\$USER.log\""; do
+               "printf x > \"$TMP_LIT/adb.\$USER.log\"" \
+               "printf x > $TMP_LIT/adb-literal.XXXXXX"; do
   i=$((i + 1))
   mk "scripts/bad$i.sh" "$badline"
   if [ -z "${ scan_fixed_tmp "$st"; }" ]; then
@@ -329,6 +431,7 @@ for goodline in 'f="$(mktemp "${TMPDIR:-/tmp}/adb.XXXXXX")"' \
                 "git remote add weird \"file://$TMP_LIT\"" \
                 "echo \"if the fix adds a $TMP_LIT/<name> file, state the atomicity contract\"" \
                 "# see $TMP_LIT/adb-selfcheck.log for the old spelling" \
+                "f=\"\$(mktemp $TMP_LIT/adb.XXXXXX)\"" \
                 "echo \"$TMP_LIT/deliberate.log\"   # $MARK: a stated reason"; do
   j=$((j + 1))
   mk "scripts/good$j.sh" "$goodline"
@@ -374,7 +477,13 @@ mutate_must_fail() {   # <label> <mutator-fn> <part-fn> <expected-substring>
   MUTATIONS=$((MUTATIONS + 1))
   copy="$work/copy-$MUTATIONS"
   rm -rf "$copy"
-  check_copy_worktree "$ROOT" "$copy" || { bad "$label: could not copy the tree"; return; }
+  # SUBTREES, not the whole worktree. Every mutator writes into one of the four scanned roots and
+  # every part reads only those, so the roots ARE the fixture — and `check_copy_worktree` would
+  # copy this repo's ~66 MB `.git` thirteen times to delete it thirteen times, which measured 63s
+  # against 6s. The shared helper is used rather than an open-coded `cp`, for the reason its own
+  # header gives: a hand-rolled copier is where the faithful-copy details drift.
+  check_copy_subtrees "$ROOT" "$copy" "${SCAN_ROOTS[@]}" \
+    || { bad "$label: could not copy the scanned roots"; return; }
   "$mutator" "$copy" || { bad "$label: mutation failed to apply"; rm -rf "$copy"; return; }
   out="${ "$part" "$copy"; }"
   if [ -z "$out" ]; then
@@ -395,6 +504,26 @@ rewrite() {
 WF=base/workflows/implement-issue.md
 SK=agents/claude/skills/implement-issue/SKILL.md
 
+# --- the FIXTURE itself, proved once ----------------------------------------------------------
+# `check_copy_subtrees` is new shared code, and a copier's failure mode is a fixture missing the
+# file each mutation targets. That does not arrive as "the copy is broken" — it arrives as thirteen
+# reports that "the scanner stayed SILENT on a broken tree", blaming the scanner for a tree that was
+# never broken because the mutator had nothing to edit. Proving the fixture once, up front, is what
+# keeps that misattribution from being the only signal.
+probe="$work/copyprobe"
+if check_copy_subtrees "$ROOT" "$probe" "${SCAN_ROOTS[@]}"; then
+  ok
+  for f in "$WF" "$SK" scripts/check-lib.sh docs/roadmap-acceptance.md; do
+    if [ -f "$probe/$f" ]; then ok; else bad "copier: $f is missing from the subtree fixture"; fi
+  done
+  # The contract says the copy is NOT a git repo. A `.git` that survived would make every mutated
+  # tree a second working copy of this repo, which is a different and much worse fixture.
+  if [ -e "$probe/.git" ]; then bad "copier: the fixture carries a .git, which the contract forbids"; else ok; fi
+else
+  bad "copier: could not build a subtree fixture at all"
+fi
+rm -rf "$probe"
+
 # THE REAL SUPERSEDED SPELLING, both halves of it. `{{STATE_DIR}}` in the source and the resolved
 # `.<agent>/state` in every render — a fix applied to only one of the two is the realistic
 # half-migration, so each is its own case.
@@ -409,24 +538,50 @@ m_tmp_in_base()  { printf '\nWrite the draft to `%s/issue-body.md` first.\n' "$T
 m_tmp_in_docs()  { printf '\n    gh issue view 1 > %s/r1.md\n' "$TMP_LIT" >> "$1/docs/roadmap-acceptance.md"; }
 m_tmp_in_agents(){ printf '\nWrite the draft to `%s/rendered-body.md` first.\n' "$TMP_LIT" >> "$1/$SK"; }
 
-# part1 reports through variables as well as stdout, so the harness needs both. A site count that
-# collapsed is a violation the diagnostic must name, or `m_no_sites` would be judged only by the
-# per-file message and the floor would go untested.
-part1_out() {
-  local h
-  P1_SITES=0; P1_FILES=0
-  h="${ part1 "$1"; }"
-  printf '%s' "$h"
-  [ "$P1_SITES" -ge "$P1_FLOOR" ] || printf '\nsnapshot site count collapsed to %s\n' "$P1_SITES"
-}
+# One half of the snapshot renamed away, leaving the other intact. This is the case a global site
+# COUNT could not see — four `.json` tokens alone cleared the old floor — so the per-file,
+# per-suffix requirement is what has to catch it, and this is the mutation that proves it does.
+m_drop_assoc()   { rewrite "$1/$WF" '{ gsub(/issue-\$n\.assoc/, "issue-association-$n.txt"); print }'; }
+# The `${TMPDIR:-/tmp}` hole part 1 used to have: textually relative, host-global in every shell.
+m_tmpdir_token() { rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, "${TMPDIR:-/tmp}/issue-$n"); print }'; }
+# A relative token that escapes the checkout. `../shared/…` is not absolute, so an is-it-relative
+# test passes it while two sibling checkouts open the same file.
+m_parent_escape(){ rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, "../shared/issue-$n"); print }'; }
+# `XXXXXX` with no `mktemp` on the line — Xs that are a literal filename, not a template.
+m_bare_template(){ printf '\nprintf x > %s/adb-literal.XXXXXX\n' "$TMP_LIT" >> "$1/scripts/check-lib.sh"; }
+# A fixed path in a file with NO recognised extension, which the old `*.md`/`*.sh` filter skipped.
+m_extensionless() { printf '#!/usr/bin/env bash\ncat x > %s/adb-helper.log\n' "$TMP_LIT" > "$1/scripts/adb-helper"; }
 
-mutate_must_fail "source reverted to the fixed temp path"   m_old_source     part1_out       "host-global path"
-mutate_must_fail "one RENDER reverted to the fixed path"    m_old_render     part1_out       "host-global path"
+# part1 writes its counts into variables and its violations to stdout; the harness reads stdout.
+part1_out()     { P1_SITES=0; P1_FILES=0; part1 "$1"; }
+# 1b's demonstration, driven over the mutated tree. Its own fixture roots live under mktemp, so a
+# mutated ABSOLUTE token must point somewhere harmless — see `m_shared_abs`.
+two_checkout_out() { two_checkout_demo "$1"; }
+
+# THE BEHAVIOURAL MUTATION. It does NOT reintroduce the literal shared-temp path, because this case
+# actually WRITES through the resolved token and a test that scribbled on the host's real temp
+# directory could collide with a live run of this very workflow. `/adb-tmp-shared-fixture/` is
+# absolute — which is the property under test, an unrooted path both checkouts resolve identically
+# — and `two_checkout_demo`'s `mkdir -p` fails on it for lack of permission, so the demo reports
+# the write failure rather than performing it. Either way the mutated tree goes RED, which is what
+# `mutate_must_fail` asserts; the literal shared-temp spelling is covered statically by part 2 and
+# by `m_old_render` above.
+m_shared_abs()   { [ -f "$1/$SK" ] || return 1
+                   rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, "/adb-tmp-shared-fixture/issue-$n"); print }'; }
+
+mutate_must_fail "source reverted to the fixed temp path"   m_old_source     part1_out       "is not under this render"
+mutate_must_fail "one RENDER reverted to the fixed path"    m_old_render     part1_out       "is not under this render"
+mutate_must_fail "a \${TMPDIR:-/tmp} token, textually relative" m_tmpdir_token part1_out      "is not under this render"
+mutate_must_fail "a ../ token that escapes the checkout"    m_parent_escape  part1_out       "is not under this render"
 mutate_must_fail "the snapshot filename renamed away"       m_no_sites       part1_out       "NO issue-snapshot path found"
+mutate_must_fail "ONE HALF renamed away (.assoc)"           m_drop_assoc     part1_out       "provenance label"
+mutate_must_fail "an unrooted path both checkouts resolve"  m_shared_abs     two_checkout_out "checkout A"
 mutate_must_fail "a fixed temp write added under scripts/"  m_tmp_in_script  scan_fixed_tmp  "$TMP_LIT/adb-regression.log"
 mutate_must_fail "a fixed temp path added under base/"      m_tmp_in_base    scan_fixed_tmp  "$TMP_LIT/issue-body.md"
 mutate_must_fail "a fixed temp path added under docs/"      m_tmp_in_docs    scan_fixed_tmp  "$TMP_LIT/r1.md"
 mutate_must_fail "a fixed temp path added under agents/"    m_tmp_in_agents  scan_fixed_tmp  "$TMP_LIT/rendered-body.md"
+mutate_must_fail "XXXXXX with no mktemp on the line"        m_bare_template  scan_fixed_tmp  "$TMP_LIT/adb-literal.XXXXXX"
+mutate_must_fail "a fixed path in an EXTENSIONLESS script"  m_extensionless  scan_fixed_tmp  "$TMP_LIT/adb-helper.log"
 
 printf 'check-tmp-paths: %s mutations required to go red\n' "$MUTATIONS"
 

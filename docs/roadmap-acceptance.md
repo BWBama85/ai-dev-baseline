@@ -149,11 +149,14 @@ With no tracker change between runs, run `/roadmap` twice and capture the artifa
 # checkouts at once, and a second run writing the same two paths makes the diff compare one run's
 # artifact against the other's — reporting drift that is not there, or hiding drift that is (#250).
 D="$(mktemp -d "${TMPDIR:-/tmp}/roadmap-determinism.XXXXXX")" || exit 1
-gh issue view <roadmap#> --json body --jq .body > "$D/r1.md"
+gh issue view <roadmap#> --json body --jq .body > "$D/r1.md" || { rm -rf "$D"; exit 1; }
 # …run /roadmap again…
-gh issue view <roadmap#> --json body --jq .body > "$D/r2.md"
-diff "$D/r1.md" "$D/r2.md" && echo "IDENTICAL"
+gh issue view <roadmap#> --json body --jq .body > "$D/r2.md" || { rm -rf "$D"; exit 1; }
+# The cleanup must not become the ANSWER. `diff … && echo` followed by a bare `rm -rf` leaves the
+# block on `rm`'s status, so a run that DID drift exits 0 and reads as identical.
+if diff "$D/r1.md" "$D/r2.md"; then echo "IDENTICAL"; rc=0; else echo "DRIFTED"; rc=1; fi
 rm -rf "$D"
+exit "$rc"
 ```
 
 - [ ] The artifact bodies are **byte-identical** and the emitted `Next:` batch is the same.
