@@ -33,9 +33,17 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   returns when a job merely **changes status** — measured returning **145 in 0 s with the child
   alive and running** — and a naive re-wait loop **spins** (51 iterations in 0 s). Putting the
   child in its own group makes that reachable without an operator `^Z`, since a background group
-  reading the terminal takes SIGTTIN. `wait -f` answers it, passed **only** when the caller had job
-  control on: `-f` is bash 5.1+, and on an interpreter that lacks it job control is off and plain
-  `wait` is already correct — so D30's "`common.sh` stays usable below the floor" is intact.
+  reading the terminal takes SIGTTIN. `wait -f` answers it, on **both** paths (with job control on,
+  bash puts the `timeout` binary in its own group too, so it was never watchdog-only).
+
+  `-f` is gated on **two** conditions, and the second is not redundant: the caller had job control
+  on, **and** the interpreter is bash 5.1+. The tempting single condition — "anything old enough to
+  lack `-f` has job control off" — is simply false. Bash 3.2 supports `set -m`, so a 3.2 caller
+  reaches that line with job control on, and an unguarded `wait -f` there fails with
+  `invalid option` and status **2**, which would be returned as the child's status while the child
+  ran on. Verified on Apple's `/bin/bash` 3.2.57. Below 5.1 the caller keeps the pre-#141 behaviour
+  rather than a broken one, and D30's "`common.sh` stays usable below the floor" holds because the
+  capability is *checked*, not assumed.
 
   On top of that, `role-dispatch.sh` now caps the log stream it captures from a dispatched agent.
   Nothing bounded it: one gap-analysis run wrote 674 KB, the run that implemented #84/#106 wrote
@@ -61,6 +69,14 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     to read the classified `role-dispatch:` line at the *tail* of `gaps.err`; a cap that included
     it would bound the file by deleting the one line saying why the dispatch failed. Those lines
     are O(1), so the file is bounded by `cap + a small constant`.
+
+    Stated plainly because it is a **deliberate deviation from the issue's wording**: the
+    acceptance criterion says "`gaps.err` cannot exceed the cap", and by this reading it can, by a
+    few hundred bytes of our own diagnostics. Bounding the *unbounded* thing is what the change is
+    for; deleting the diagnosis to satisfy the letter would make the artifact smaller and useless.
+    (One place where "small constant" was not true has been fixed: the invalid-value warning echoed
+    the rejected environment value in full, so a 5 KB `ADB_DISPATCH_LOG_MAX_BYTES` put 5 KB into the
+    artifact the knob exists to bound. It is truncated now.)
   - **A process substitution, not a pipeline.** A pipeline puts the left side in a subshell, and
     `adb_run_bounded` installs its reap trap on the *calling* shell — the trap would guard a
     subshell that is not the one being signalled. The filter also **drains** past the cap rather
@@ -69,8 +85,18 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
   The filter is `awk`, not `head -c` plus a drain: `head` over-reads into its buffer, so it loses
   an unknown number of bytes and can swallow the whole remainder — leaving the drain to see EOF and
-  report a clean pass on a stream it silently truncated. `kept + discarded` now reconstructs the
-  uncapped size exactly, and a test asserts that.
+  report a clean pass on a stream it silently truncated. `kept + discarded` reconstructs the
+  uncapped size exactly **for a newline-terminated stream**, and a test asserts that; for a final
+  line with no newline it over-reports by one byte, because awk cannot distinguish that case and
+  `print` re-adds the separator either way. The number is a debugging aid in a notice, so the byte
+  of slack is documented rather than engineered away.
+
+  `awk` needed one guard of its own. **BSD awk on macOS treats a NUL as end-of-string**: fed
+  `ab\0cdef…` it emitted `ab`, dropped everything after the NUL, and emitted *no* cap notice — the
+  exact "truncated stream indistinguishable from a complete one" this filter exists to prevent, and
+  visible only on macOS. A `tr -d '\000'` ahead of awk removes it; NUL carries no meaning in a
+  human-readable log. A NUL, a CRLF line and a newline-free stream are now all fixtures in the
+  suite.
 
   Coverage was **observed failing** against a copy of the pre-fix tree: the watchdog grandchild
   (`alive`→`dead`), the stopped child (`rc=145`→`rc=0`), and ten cap assertions. The

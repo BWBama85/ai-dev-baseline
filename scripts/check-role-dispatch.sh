@@ -643,6 +643,72 @@ printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=500 ADB_DISPATCH_TIMEOUT_SECS=1 \
 eq "$out_rc" "124" "the watchdog path also bounds and caps together"
 has "$(tail -1 "$work/late2.err")" "does NOT fall back" "watchdog path: the classified line still arrives last"
 
+# WHAT SURVIVES MUST BE THE INPUT'S PREFIX. Every assertion above is satisfied by a filter that
+# throws the whole stream away and prints the hard-coded notice: the size is small, the notice is
+# present, and `kept + dropped` still adds up if `kept` is 0. So the bytes themselves are checked —
+# a HEAD cap that does not retain the head is not the thing this change claims to have built.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+last=""
+while [ "$#" -gt 0 ]; do [ "$1" = "--output-last-message" ] && { last="$2"; shift; }; shift; done
+cat >/dev/null
+printf 'FIRSTLINE-provenance-header\n'
+printf 'SECONDLINE-model-and-effort\n'
+printf 'bin\000ary\n'                       # a NUL: BSD awk treats it as end-of-string
+printf 'crlf-line\r\n'
+i=0; while [ "$i" -lt 4000 ]; do printf 'noise %05d qqqqqqqqqqqqqqqq\n' "$i"; i=$(( i + 1 )); done
+printf 'TAILMARKER-must-not-survive-a-head-cap\n'
+[ -n "$last" ] && printf 'VERDICT: fine\n' > "$last"
+exit 0
+EOF
+chmod +x "$BIN/codex"
+printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=120 bash "$RD" invoke gap_analysis \
+  >/dev/null 2>"$work/prefix.err"
+has   "$(head -1 "$work/prefix.err")" "FIRSTLINE-provenance-header" "the cap keeps the HEAD of the stream (the provenance header)"
+hasnt "$(cat  "$work/prefix.err")"    "TAILMARKER"                  "...and drops the tail, which is what a head cap means"
+# A NUL must not silently end the stream. BSD awk treats it as a string terminator, so before
+# `tr -d` this dropped everything after it AND emitted no notice — a truncated log indistinguishable
+# from a complete one, on macOS only. The bytes AROUND the NUL must still come through.
+printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=100000 bash "$RD" invoke gap_analysis \
+  >/dev/null 2>"$work/nul.err"
+has "$(cat "$work/nul.err")" "binary"  "a NUL byte does not truncate the stream (BSD awk end-of-string)"
+has "$(cat "$work/nul.err")" "crlf-line" "a CRLF line survives the filter"
+has "$(cat "$work/nul.err")" "capped at" "a stream past the cap still reports it even after a NUL"
+
+# A stream with NO newline before the cap must still yield its first `max` bytes. Record-granular
+# capping returned ZERO bytes here — bounded, but throwing away the very head the cap exists to
+# keep, and reporting "capped at 0 bytes".
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+i=0; while [ "$i" -lt 400 ]; do printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; i=$(( i + 1 )); done
+printf '\n'
+exit 0
+EOF
+chmod +x "$BIN/codex"
+printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=64 bash "$RD" invoke gap_analysis \
+  >/dev/null 2>"$work/oneline.err"
+has "$(head -c 64 "$work/oneline.err")" "AAAAAAAAAA" "a newline-free stream is still cut AT the cap, not discarded whole"
+
+# EVERY AGENT, not just codex — the change claims the cap covers all of them, and claude/gemini
+# take the OTHER arm (`log_stdout=0`), where stdout is the RESULT and only stderr is capped. With
+# only a codex case, a regression in that arm stays green. `gemini` is used because its stub is a
+# plain `agy` on PATH; the assertion is about the arm, not the vendor.
+cat > "$BIN/agy" <<'EOF'
+#!/usr/bin/env bash
+i=0; while [ "$i" -lt 4000 ]; do printf 'gnoise %05d qqqqqqqqqqqqqqqq\n' "$i" >&2; i=$(( i + 1 )); done
+printf 'GEMINI-FINAL-MESSAGE\n'
+exit 0
+EOF
+chmod +x "$BIN/agy"
+set_repo '[roles]' 'gap_analysis = "gemini"'
+gout="$(printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=800 bash "$RD" invoke gap_analysis 2>"$work/gem.err")"
+eq "$gout" "GEMINI-FINAL-MESSAGE" "log_stdout=0 arm: stdout is the RESULT and is never capped"
+gcap="$(wc -c < "$work/gem.err" | tr -d ' ')"
+if [ "$gcap" -lt 2000 ]; then ok; else bad "log_stdout=0 arm: stderr must still be capped (got $gcap bytes)"; fi
+has "$(cat "$work/gem.err")" "capped at" "log_stdout=0 arm: the cap notice is emitted too"
+set_repo '[roles]' 'gap_analysis = "codex"'
+
 # The knob itself: the committed default, an override, and a rejected value that says so rather
 # than silently running unbounded. Same shape as the bound/grace knobs above.
 eq "${ rd_var _ADB_RD_LOG_MAX_BYTES; }" "262144" "the no-environment default log cap is 262144 bytes (256 KiB)"
@@ -651,6 +717,16 @@ eq "${ rd_var _ADB_RD_LOG_MAX_BYTES ADB_DISPATCH_LOG_MAX_BYTES=0; }" "0" "0 is a
 eq "${ rd_var _ADB_RD_LOG_MAX_BYTES ADB_DISPATCH_LOG_MAX_BYTES=abc 2>/dev/null; }" "262144" "a non-numeric cap falls back to the default"
 cap_err="$(ADB_DISPATCH_LOG_MAX_BYTES=abc bash -c '. "$1" >/dev/null' rd_var "$RD" 2>&1)"
 has "$cap_err" "not a whole number of bytes" "a rejected cap says so on stderr rather than failing silently"
+# All digits is NOT enough: a value past bash's integer range makes `[ "$max" -eq 0 ]` die with
+# `integer expression expected`, and awk would carry the threshold through a float.
+eq "${ rd_var _ADB_RD_LOG_MAX_BYTES ADB_DISPATCH_LOG_MAX_BYTES=99999999999999999999999999 2>/dev/null; }" \
+   "262144" "an all-digit value outside bash's integer range is rejected, not accepted"
+# ...and the complaint must not itself be unbounded. Echoing the rejected value whole put an
+# arbitrarily long environment string into the very artifact this knob exists to bound.
+long_err="$(ADB_DISPATCH_LOG_MAX_BYTES="$(printf 'x%.0s' $(seq 1 5000))" \
+  bash -c '. "$1" >/dev/null' rd_var "$RD" 2>&1)"
+if [ "${#long_err}" -lt 300 ]; then ok
+else bad "the rejected-value diagnostic must be truncated, not echo an unbounded env value (${#long_err} bytes)"; fi
 
 # ============================ effort (declared, not inherited — #225) ============================
 # Two halves, and the second is the one that matters: the RESOLVER can return "medium" while the

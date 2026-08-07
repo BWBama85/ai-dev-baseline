@@ -1731,11 +1731,7 @@ adb_untrusted_block() {
 #
 # BOTH paths also agree on process CLEANUP: each puts the child in its OWN PROCESS GROUP and
 # signals the GROUP, so a grandchild dies with the bound instead of outliving it. GNU `timeout`
-# does that for us; the watchdog path does it with `set -m` (see the launch below). Until #141 the
-# watchdog signalled a single PID, so on a stock Mac — the exact environment the fallback exists
-# for — `wait` returned 124 while an orphan kept running, and for currency-lib's 120 s bound on a
-# `git fetch`/`git pull` that orphan went on mutating a clone AFTER the update was reported failed,
-# able to move HEAD or hold .git/index.lock.
+# does that for us; the watchdog path does it with `set -m` (see the launch below).
 #
 # Usage: adb_run_bounded <secs> <kill-grace-secs> <argv...>
 
@@ -1762,6 +1758,25 @@ _adb_bounded_signal() {
   kill -"$1" -- "-$2" 2>/dev/null
   kill -"$1" "$2" 2>/dev/null
   return 0
+}
+
+# Does THIS interpreter's `wait` accept `-f`? (bash 5.1+.)
+#
+# Asked rather than assumed, because the tempting assumption is false: `-f` is only needed under
+# job control, and it is easy to reason that an interpreter old enough to lack it is one where job
+# control is off. Bash 3.2 supports `set -m` perfectly well — a 3.2 caller CAN turn it on, and
+# `wait -f` there fails with `invalid option` and status 2, which `adb_run_bounded` would return as
+# the child's status while the child keeps running. Verified on Apple's /bin/bash 3.2.57.
+#
+# Version-gated, not probed: a probe would have to background a real job to be meaningful, and
+# BASH_VERSINFO answers the question exactly. Below 5.1 the caller gets the pre-#141 behaviour —
+# `wait` may return early on a stopped job — which is a limitation, not a regression.
+_adb_bounded_waitf_ok() {
+  local maj="${BASH_VERSINFO[0]:-0}" min="${BASH_VERSINFO[1]:-0}"
+  case "$maj$min" in *[!0-9]*) return 1 ;; esac
+  [ "$maj" -gt 5 ] && return 0
+  [ "$maj" -eq 5 ] && [ "$min" -ge 1 ] && return 0
+  return 1
 }
 
 # Reap the in-flight child when OUR shell is terminated (an outer harness bound firing, a detached
@@ -1816,10 +1831,10 @@ adb_run_bounded() {
     "$tb" -k "$grace" "$secs" "$@" <&0 &
     _ADB_BOUNDED_CHILD=$!
     trap '_adb_bounded_reap' TERM INT HUP
-    # `-f` only under the caller's job control — see the read at the top of this function, and the
-    # matching arm on the watchdog path for why the flag is conditional rather than always passed.
-    if [ "$had_m" -eq 1 ]; then wait -f "$_ADB_BOUNDED_CHILD"; trc=$?
-    else                        wait    "$_ADB_BOUNDED_CHILD"; trc=$?; fi
+    # `-f` only under the caller's job control AND only where the interpreter has it — see the
+    # read at the top of this function and `_adb_bounded_waitf_ok`.
+    if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$_ADB_BOUNDED_CHILD"; trc=$?
+    else                                                 wait    "$_ADB_BOUNDED_CHILD"; trc=$?; fi
     trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
     unset _ADB_BOUNDED_CHILD
     # Normalize the bound-fired status. GNU timeout reports 124 when SIGTERM ended the child, but
@@ -1885,13 +1900,14 @@ adb_run_bounded() {
   # takes SIGTTIN. `-f` waits for actual termination. selfcheck.sh's pool needs it for the same
   # reason, and says so at its `wait -f -n -p`.
   #
-  # Conditional rather than unconditional so this stays correct BELOW the runtime floor: `-f` is
-  # bash 5.1+, and D30 keeps this file usable by an interpreter that has not yet reached
-  # adb_require_bash. When job control is off — every caller in this repo, and the default for any
-  # non-interactive shell — plain `wait` already blocks until termination (measured), so the flag
-  # is not merely unnecessary there, it is unreachable on the only interpreters that lack it.
-  if [ "$had_m" -eq 1 ]; then wait -f "$cmd_pid" 2>/dev/null; rc=$?
-  else                        wait    "$cmd_pid" 2>/dev/null; rc=$?; fi
+  # TWO conditions, not one, and the second is not redundant. `-f` is bash 5.1+, and D30 keeps this
+  # file usable by an interpreter that has not yet reached adb_require_bash — but it is NOT true
+  # that such an interpreter necessarily has job control off. Bash 3.2 supports `set -m`, so a 3.2
+  # caller reaches this line with had_m=1, and an unguarded `wait -f` there fails with `invalid
+  # option` and status 2, returned as the child's status while the child runs on. Hence the
+  # capability check; below 5.1 the caller keeps the pre-#141 behaviour rather than a broken one.
+  if [ "$had_m" -eq 1 ] && _adb_bounded_waitf_ok; then wait -f "$cmd_pid" 2>/dev/null; rc=$?
+  else                                                 wait    "$cmd_pid" 2>/dev/null; rc=$?; fi
   trap - TERM INT HUP; [ -n "$otrap" ] && eval "$otrap"
   unset _ADB_BOUNDED_CHILD _ADB_BOUNDED_WATCHER
   kill -TERM "$watcher" 2>/dev/null; wait "$watcher" 2>/dev/null

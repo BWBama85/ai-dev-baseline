@@ -156,11 +156,24 @@ esac
 # is the only reading of zero that is useful here (contrast the BOUND above, where 0 is refused
 # because neither possible meaning is a backstop).
 _ADB_RD_LOG_MAX_BYTES="${ADB_DISPATCH_LOG_MAX_BYTES:-262144}"
+# Digit-only is NOT sufficient: a 40-digit value is all digits and still outside bash's integer
+# range, where `[ "$max" -eq 0 ]` below dies with `integer expression expected` and awk would carry
+# the threshold through a float. Range is checked arithmetically, and the ceiling is a sanity bound
+# rather than a policy (anything past it is indistinguishable from "unbounded", which is `0`).
+#
+# The rejected value is TRUNCATED in the message. Echoing it whole let an arbitrarily long
+# environment value into the very artifact this knob exists to bound — the diagnostic undoing the
+# cap it was announcing.
+_adb_rd_bad_log_max() {
+  printf 'role-dispatch: ADB_DISPATCH_LOG_MAX_BYTES="%.40s" is not a whole number of bytes in range — using the %s default\n' \
+    "$1" 262144 >&2
+  _ADB_RD_LOG_MAX_BYTES=262144
+}
 case "$_ADB_RD_LOG_MAX_BYTES" in
-  ''|*[!0-9]*)
-    printf 'role-dispatch: ADB_DISPATCH_LOG_MAX_BYTES="%s" is not a whole number of bytes — using the %s default\n' \
-      "$_ADB_RD_LOG_MAX_BYTES" 262144 >&2
-    _ADB_RD_LOG_MAX_BYTES=262144 ;;
+  ''|*[!0-9]*) _adb_rd_bad_log_max "$_ADB_RD_LOG_MAX_BYTES" ;;
+  *) if ! [ "$_ADB_RD_LOG_MAX_BYTES" -le 1073741824 ] 2>/dev/null; then
+       _adb_rd_bad_log_max "$_ADB_RD_LOG_MAX_BYTES"
+     fi ;;
 esac
 
 # --- resolution --------------------------------------------------------------------------------
@@ -559,6 +572,13 @@ _adb_rd_bounded() {
 # over-reports by one byte for a stream whose final line has no newline (awk cannot distinguish
 # them, and `print` re-adds the separator either way). Stated rather than worked around: the number
 # is a debugging aid in a notice, and a byte of slack in it is not worth a second reader.
+#
+# `tr -d '\000'` FIRST, and it is not cosmetic. BSD awk on macOS treats a NUL as end-of-string:
+# fed `ab\0cdef…`, it emitted `ab` and silently dropped everything after the NUL — including the
+# cap notice, because the record never looked long enough to trip it. That is the precise failure
+# this filter exists to prevent (a truncated stream indistinguishable from a complete one), and it
+# would have appeared only on macOS. Dropping NULs is lossless for the thing being filtered: this
+# is a human-readable log, and a NUL carries no meaning in it.
 # Usage: _adb_rd_cap_stream <max-bytes>
 #
 # THE FIRST LINE IS CUT MID-LINE IF IT ALONE EXCEEDS THE CAP. Without that, a stream that emits no
@@ -567,7 +587,7 @@ _adb_rd_bounded() {
 # away the provenance header this cap is deliberately keeping. `substr` makes it a byte cap, which
 # is what the name and the knob both promise.
 _adb_rd_cap_stream() {
-  LC_ALL=C awk -v max="$1" '
+  LC_ALL=C tr -d '\000' | LC_ALL=C awk -v max="$1" '
     BEGIN { kept = 0; capped = 0; dropped = 0 }
     {
       if (!capped) {
@@ -600,8 +620,15 @@ _adb_rd_cap_stream() {
 # THE TOPOLOGY IS THE HARD PART, and a plain pipeline is the wrong one. `cmd | filter` puts the
 # LEFT side in a subshell, and `adb_run_bounded` installs its reap trap on the CALLING shell — so
 # the trap would protect a subshell that is not the one being signalled, and an outer TERM would go
-# back to orphaning the agent. A process substitution keeps the runner in THIS shell: the filter is
-# what gets forked, and it is the thing with nothing to protect.
+# back to orphaning the agent. A process substitution keeps the runner in THIS shell, and forks the
+# filter instead — the cheap process rather than the one the bound exists to police.
+#
+# WHAT THAT DOES NOT COVER, stated rather than glossed: the filter is a SIBLING of the bounded
+# command, not a member of its process group, so the bound does not reap it and neither does
+# `_adb_bounded_reap` — whose `exit 143` leaves the two lines below unrun. In practice the shell's
+# exit closes the write end, the filter sees EOF and flushes; what is genuinely not guaranteed is
+# ORDERING on that path, so a caller reading the artifact immediately after an outer kill can race
+# the filter's last write. Bounded and rare, but it is not "nothing to protect".
 #
 # `exec {capfd}>` rather than a redirection on the command, because `$!` must be captured for the
 # procsub itself — and `adb_run_bounded` backgrounds its own child and watcher, overwriting `$!`
@@ -630,7 +657,18 @@ _adb_rd_bounded_capped() {
   fi
   rc=$?
   exec {capfd}>&-
-  [ -n "$capper" ] && wait "$capper" 2>/dev/null
+  # THE FILTER'S OWN STATUS IS CHECKED, not discarded. It used to be, and a filter that died took
+  # the whole log with it while this function still returned the agent's status — a dispatch that
+  # read as clean with its entire logging path gone. We still RETURN the agent's status (the agent
+  # really did run), but the failure is now said out loud instead of inferred from a quiet artifact.
+  #
+  # Note what a dead filter does to that status: the drain protects the agent from SIGPIPE while
+  # the filter is HEALTHY, not when it exits early, so an agent still writing when the filter dies
+  # takes SIGPIPE and this returns 141. That is a broken environment rather than a broken agent,
+  # which is exactly why the warning names the filter.
+  if [ -n "$capper" ]; then
+    wait "$capper" 2>/dev/null || printf 'role-dispatch: WARNING — the log-capping filter failed (exit %s); this dispatch'\''s agent log is incomplete or missing, and an agent status of 141 means it took SIGPIPE from the dead filter rather than failing on its own.\n' "$?" >&2
+  fi
   return "$rc"
 }
 

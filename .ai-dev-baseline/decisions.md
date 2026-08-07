@@ -3264,7 +3264,10 @@ limit: none of them is sufficient alone.
 ## D49 — the bound reaps a GROUP on both paths, and the log cap is a head cap outside the diagnosis
 - date:      2026-08-06
 - category:  project-delta
-- unknown:   #141 asked for two things the baseline does not model. First, `adb_run_bounded`'s two
+- unknown:   #141 asked for two things whose CODE homes were never in doubt — the bounded-execution
+             primitive already lived in `common.sh`, dispatch-specific stream handling already
+             lived in `role-dispatch.sh`. What had no prescribed answer was the POLICY each needed:
+             the process-group MECHANISM, and the cap's scope, contract and topology. First, `adb_run_bounded`'s two
              paths agreed on STATUS and diverged on process CLEANUP: GNU `timeout` signals a
              process group, the portable watchdog signalled one PID, so on a stock Mac — the exact
              host the fallback exists for — a grandchild outlived the bound while the caller got a
@@ -3294,9 +3297,16 @@ limit: none of them is sufficient alone.
              with the child alive and running** — and a naive re-wait loop **spins** (51
              iterations in 0 s, measured). Putting the child in its own group makes that newly
              reachable without an operator ^Z, since a background group reading the tty takes
-             SIGTTIN, so the flag is part of this change rather than a tidy-up. It is
-             CONDITIONAL, which is what keeps D30 intact: `-f` is bash 5.1+, and on the
-             interpreters that lack it job control is off and plain `wait` is already correct.
+             SIGTTIN, so the flag is part of this change rather than a tidy-up. It applies to
+             BOTH paths: with job control on, bash puts the `timeout` binary in its own group too,
+             so this was never watchdog-only.
+
+             It is gated on TWO conditions — job control on AND bash 5.1+ — and the second is not
+             redundant. The tempting single condition ("anything old enough to lack `-f` has job
+             control off") is FALSE: bash 3.2 supports `set -m`, so a 3.2 caller reaches that line
+             with had_m=1, and an unguarded `wait -f` fails there with `invalid option` and status
+             2 — returned as the child's status while the child runs on. Verified on Apple's
+             /bin/bash 3.2.57. D30 holds because the capability is CHECKED, not assumed.
 
              **The cap: `ADB_DISPATCH_LOG_MAX_BYTES`, 256 KiB, `0` disables, invalid warns and
              falls back.** Three sub-decisions the issue left open:
@@ -3337,8 +3347,15 @@ limit: none of them is sufficient alone.
              **awk, not `head -c` + a drain.** `head` over-reads into its buffer: it loses an
              unknown number of bytes and can swallow the entire remainder, leaving the drain to
              see EOF and report a clean pass on a stream it silently truncated. awk counts every
-             discarded byte, so the notice is exact and never omitted; `LC_ALL=C` makes
-             `length()` count bytes so a multibyte stream cannot overshoot.
+             discarded byte, so the notice is never omitted; `LC_ALL=C` makes
+             `length()` count bytes so a multibyte stream cannot overshoot. The count is exact for
+             a NEWLINE-TERMINATED stream and over-reports by one for an unterminated final line —
+             documented rather than engineered away, being a debugging aid in a notice.
+
+             **And awk needed a guard of its own.** BSD awk on macOS treats a NUL as
+             end-of-string: fed `ab\0cdef...` it emitted `ab`, dropped the remainder, and emitted
+             NO notice — the exact silent truncation this filter exists to prevent, on one platform
+             only. `tr -d` ahead of awk removes it; a NUL carries no meaning in a readable log.
 - placement: `scripts/lib/common.sh` (`_adb_bounded_signal`, the launch, the watcher, the reap,
              the wait); `scripts/lib/role-dispatch.sh` (`_ADB_RD_LOG_MAX_BYTES`,
              `_adb_rd_cap_stream`, `_adb_rd_bounded_capped`, the three agent arms);
@@ -3367,6 +3384,23 @@ limit: none of them is sufficient alone.
              fixed red, and the marker had to be kept out of the harness's own argv besides. It
              now asks one RECORDED pid whether it is alive, with a zombie counted as dead. That
              failure is recorded because a name-scan probe is the obvious first thing to write.
+
+             **The independent codex review raised 23 findings; all were acted on.** Four were
+             already fixed by the self-review commit that preceded it (the timeout-path `wait`, the
+             `-00` guard, the tautological "0 disables" assertion, the missing `env -u`). The rest
+             produced the `wait -f` capability gate, the NUL guard, the filter-status warning, the
+             range check on the cap value, the truncated diagnostic, the `_cleanup` de-duplication,
+             and five test repairs (missing-evidence false pass, an unsynchronised STOP, nested
+             bare `bash` resolving to macOS 3.2, no prefix/NUL/CRLF/newline-free fixtures, and no
+             coverage of the `log_stdout=0` arm). Two were answered by wording rather than code:
+             the outer-reap ordering race is now stated instead of dismissed as "nothing to
+             protect", and the acceptance criterion that `gaps.err` "cannot exceed the cap" is
+             named as a deliberate deviation rather than reported as met.
+
+             **The one-home law was the review's sharpest point and it was right.** The first cut
+             "matched" `selfcheck.sh`'s `_cleanup` rule rather than sourcing it — and the proof
+             that this was duplication, not convergence, is that BOTH copies shipped the `-00`
+             defect and both had to be fixed. `_cleanup` now calls `_adb_bounded_signal`.
 
              **#181's "ship this before the common.sh promotion sweep" is moot**: #181 was
              observed CLOSED as NOT_PLANNED (closedAt 2026-07-31T06:40:32Z), so the ordering

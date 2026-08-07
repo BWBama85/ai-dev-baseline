@@ -683,31 +683,25 @@ declare -a SLOW=()          # "secs name", for the summary
 _cleanup() {
   local p had=0
   for p in "${!LIVE[@]}"; do
-    # GUARD THE SUBSCRIPT BEFORE NEGATING IT. `kill -- -0` signals the CALLER'S OWN process group —
-    # i.e. the operator's shell and everything in it — so a key that is not a positive integer must
-    # never reach the `-$p` form. `$!` cannot be 0 today; the cost of being wrong is the whole
-    # session, which is worth one test.
-    #
-    # ARITHMETIC, not a literal `0)` arm: `-00` is not the string `0`, so it slips past one — and
-    # `kill -- -00` resolves to group 0, the very group this guard exists to protect. Found by
-    # self-review while giving `adb_run_bounded` the same reaping rule (#141); the same fix is on
-    # `_adb_bounded_signal` in common.sh, which is where the two now agree.
+    # `_adb_bounded_signal` (scripts/lib/common.sh, sourced above) IS this rule: guard the pid,
+    # signal the GROUP, then the bare pid as the fallback for a worker whose `set -m` did not take.
+    # It used to be restated here, and the restatement is exactly what the one-home law is for —
+    # both copies shipped the same defect (`''|0|*[!0-9]*` lets `00` through, and `kill -- -00`
+    # resolves to group 0, the caller's own), and fixing one would have left the other. #141 gave
+    # `adb_run_bounded` the same reaping need, so the primitive now has two consumers and lives
+    # where the repo's law says: once, in common.sh.
     case "$p" in ''|*[!0-9]*) continue ;; esac
     [ "$p" -gt 0 ] 2>/dev/null || continue
-    kill -TERM -- "-$p" 2>/dev/null && had=1
-    # ...and the bare pid too, because the group form only reaches a group if `set -m` actually
-    # took effect. Where it did, the worker is already gone and this is a harmless ESRCH; where it
-    # did not, this is the only signal that lands. (A worker surviving cancellation is what
-    # check-selfcheck.sh's heartbeat case detects, so the two halves are not redundant claims.)
-    kill -TERM "$p" 2>/dev/null && had=1
+    # `had` gates the escalation below, so it must mean "we signalled something that existed".
+    # `_adb_bounded_signal` always returns 0 (it is a best-effort reaper), so liveness is asked
+    # here rather than read out of its status.
+    kill -0 "$p" 2>/dev/null && had=1
+    _adb_bounded_signal TERM "$p"
   done
   if [ "$had" -eq 1 ]; then
     sleep 1
     for p in "${!LIVE[@]}"; do
-      case "$p" in ''|*[!0-9]*) continue ;; esac      # arithmetic, per the TERM loop's note on `-00`
-      [ "$p" -gt 0 ] 2>/dev/null || continue
-      kill -KILL -- "-$p" 2>/dev/null
-      kill -KILL "$p" 2>/dev/null
+      _adb_bounded_signal KILL "$p"      # guards the pid itself; see the TERM loop
     done
   fi
   LIVE=()
