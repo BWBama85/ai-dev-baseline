@@ -119,23 +119,27 @@ MARK='adb-tmp-ok'
 EXEMPT_RE="$MARK"':[[:space:]]*[^[:space:]]'
 
 # Per-run entropy: what makes a shared-temp name safe to write.
-#   $$        — the shell's pid, distinct per process (the spelling #250's acceptance names)
-#   $RANDOM   — bash's per-shell PRNG
-#   XXXXXX    — an mktemp template, and ONLY when `mktemp` is on the same line (see below)
+#   $$          — the shell's pid, distinct per process (the spelling #250's acceptance names)
+#   $RANDOM     — bash's per-shell PRNG, as a WHOLE parameter (`$RANDOM` or `${RANDOM}`)
+#   XXXXXX      — an mktemp template, and only where `mktemp` actually consumes it
 # The `"${TMPDIR:-/tmp}/name.XXXXXX"` idiom this repo already uses everywhere is doubly safe: the
 # closing brace means the hunted text never even appears, so the scanner has nothing to match.
 #
-# TAB-SEPARATED LITERALS, matched with `index()`, NOT a regex. The first cut passed these to awk as
-# an alternation and the self-test caught it going wrong immediately: `awk -v` INTERPRETS backslash
-# escapes in the assignment, so `\$\$` arrives as `$$`, which as a regex is two end-of-string
-# anchors rather than two dollar signs — and `/tmp/adb-cl-meta.$$`, the one spelling #250's
-# acceptance explicitly permits, was reported as a violation. Substring tests have no such layer.
+# EACH RULE IS A PARSE, NOT A SUBSTRING TEST, and both spellings that made it one were found by
+# review after shipping green:
 #
-# `XXXXXX` IS CONDITIONAL, because on its own it is not entropy at all: `printf x > /tmp/f.XXXXXX`
-# writes a file literally called `f.XXXXXX`, shared by every process on the host. The Xs are a
-# TEMPLATE only when `mktemp` consumes them, so the line must name `mktemp` too. The independent
-# review found this; it was a hole big enough to drive the original defect straight back through.
-ENTROPY_MARKERS='$$	$RANDOM'
+#   * `/tmp/run.$RANDOM_SUFFIX` contains the characters `$RANDOM`, but the shell reads
+#     `$RANDOM_SUFFIX` — a DIFFERENT parameter, very likely unset and expanding to nothing, leaving
+#     the fixed name `/tmp/run.`. So `$RANDOM` counts only when the next character cannot continue
+#     an identifier, and `${RANDOM}` is accepted as its own spelling (a plain substring test misses
+#     that one entirely, since the braces break the sequence).
+#   * `/tmp/run.XXXXXX  # TODO: use mktemp` passed because `mktemp` appeared ANYWHERE on the line —
+#     and worse, on the UNSTRIPPED line, so a comment merely mentioning it was enough. The Xs are a
+#     template only when a real `mktemp` consumes them, so `mktemp` must appear on the comment-
+#     stripped line and BEFORE the token, which is where a command sits relative to its argument.
+#
+# `$$` stays a plain substring: `$$anything` is still the pid followed by literal text, so there is
+# no boundary to check and no ambiguity to resolve.
 ENTROPY_TEMPLATE='XXXXXX'
 
 # The scanned roots. `agents/` is included even though it is generated: build-drift proves a render
@@ -214,11 +218,17 @@ part1() {
       [ -n "$tok" ] || continue
       n=$((n + 1)); total=$((total + 1))
       case "$tok" in *.json) njson=$((njson + 1)) ;; *.assoc) nassoc=$((nassoc + 1)) ;; esac
-      case "$tok" in
-        "$pfx"*) : ;;
-        *) printf '%s: snapshot path [%s] is not under this render'"'"'s state dir [%s] — two checkouts can share it\n' \
-             "${f#"$tree"/}" "$tok" "$pfx" ;;
-      esac
+      # A DIRECT CHILD, not merely a descendant. `case "$tok" in "$pfx"*` was the first cut and the
+      # independent review found both ways through it: `.claude/state/issues/issue-$n.json` and
+      # `.claude/state/../shared/issue-$n.json` both begin with the prefix, both give each checkout
+      # a distinct file — so 1b's demonstration passes them too — and both defeat the lifecycle
+      # anyway, because `state-scan` enumerates ONLY regular files directly under the state dir.
+      # A snapshot one level down escapes `/cleanup` and `admit` alike, which is exactly the flat
+      # invariant the workflow states in prose and nothing was enforcing.
+      if [ "${tok%/*}/" != "$pfx" ]; then
+        printf '%s: snapshot path [%s] is not a DIRECT child of this render'"'"'s state dir [%s] — state-scan would never see it\n' \
+          "${f#"$tree"/}" "$tok" "$pfx"
+      fi
     done <<EOF
 ${ snapshot_tokens "$f"; }
 EOF
@@ -335,15 +345,31 @@ scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
   # — the same class of quiet miss this whole file exists to prevent, one level up.
   while IFS= read -r -d '' f; do
     LC_ALL=C grep -Iq . "$f" 2>/dev/null || continue
-        awk -v exempt="$EXEMPT_RE" -v markers="$ENTROPY_MARKERS" -v tmpl="$ENTROPY_TEMPLATE" \
+        awk -v exempt="$EXEMPT_RE" -v tmpl="$ENTROPY_TEMPLATE" \
             -v rel="${f#"$tree"/}" -v pfx="$TMP_LIT/" '
-          BEGIN { nmk = split(markers, mk, "\t") }
-          # Substring tests, for the reason the ENTROPY_MARKERS comment gives. `tmpl` is separate
-          # and CONDITIONAL: Xs are entropy only when mktemp expands them.
-          function has_entropy(tok, whole,   k) {
-            for (k = 1; k <= nmk; k++) if (index(tok, mk[k]) > 0) return 1
-            if (index(tok, tmpl) > 0 && index(whole, "mktemp") > 0) return 1
+          # `$$` — a plain substring; `$$anything` is still the pid plus literal text.
+          function has_pid(tok) { return index(tok, "$$") > 0 }
+          # `$RANDOM` as a WHOLE parameter. `${RANDOM}` is its own spelling and is accepted;
+          # `$RANDOM_SUFFIX` is a different parameter and is NOT.
+          function has_random(tok,   i, nxt) {
+            if (index(tok, "${RANDOM}") > 0) return 1
+            i = index(tok, "$RANDOM")
+            while (i > 0) {
+              nxt = substr(tok, i + 7, 1)
+              if (nxt == "" || nxt !~ /[A-Za-z0-9_]/) return 1
+              tok = substr(tok, i + 7)
+              i = index(tok, "$RANDOM")
+            }
             return 0
+          }
+          # `XXXXXX` is a TEMPLATE only where a real mktemp consumes it: on the comment-stripped
+          # line, and positioned BEFORE the token, which is where a command sits relative to its
+          # argument. `before` is the stripped text preceding this token.
+          function has_template(tok, before) {
+            return index(tok, tmpl) > 0 && index(before, "mktemp") > 0
+          }
+          function has_entropy(tok, before) {
+            return has_pid(tok) || has_random(tok) || has_template(tok, before)
           }
           {
             raw = $0
@@ -361,21 +387,47 @@ scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
             # from a filename charset. The charset deliberately EXCLUDES `<`, so a documentation
             # placeholder such as the literal prefix followed by an angle-bracketed name is not
             # mistaken for a real path.
+            # `seen` accumulates the stripped text consumed so far, so `has_template` can ask
+            # whether a `mktemp` appears BEFORE this token rather than anywhere on the line.
+            seen = ""
             while (1) {
               i = index(line, pfx)
               if (i == 0) break
+              seen = seen substr(line, 1, i - 1)
               rest = substr(line, i + length(pfx))
               if (match(rest, /^[A-Za-z0-9._$*{}@%+,=:-]+/)) {
                 tok = pfx substr(rest, 1, RLENGTH)
-                if (!has_entropy(tok, raw)) { printf "%s:%d: %s\n", rel, FNR, raw; break }
+                if (!has_entropy(tok, seen)) { printf "%s:%d: %s\n", rel, FNR, raw; break }
+                seen = seen pfx substr(rest, 1, RLENGTH)
                 line = substr(rest, RLENGTH + 1)
               } else {
+                seen = seen pfx
                 line = rest
               }
             }
           }
         ' "$f"
-  done < <(find "${dirs[@]}" -type f -print0 2>/dev/null | LC_ALL=C sort -z)
+  done < <(find "${dirs[@]}" -type f -print0 2>/dev/null | _tmp_nul_sort)
+}
+
+# Order the NUL-delimited stream, or pass it through unchanged where that is not possible.
+#
+# `sort -z` IS NOT POSIX. Review flagged it as GNU-only and unavailable to the `selfcheck-macos`
+# job, which deliberately keeps coreutils' `gnubin` off PATH. Measured rather than assumed: Apple's
+# `/usr/bin/sort` (2.3-Apple, macOS 26.5.1) round-trips `b\0a\0c\0` to `a\0b\0c\0` correctly,
+# so the stated failure does not occur on that build — but the runner's image is a different one,
+# and a required job going red on an option flag is not a thing to find out from CI.
+#
+# So PROBE, and probe the OUTPUT rather than the exit status: an implementation that accepted `-z`
+# and did something else would pass a status check and silently reorder nothing. Ordering is a
+# REPORT property only — the pass/fail verdict does not depend on it — so falling through to
+# `find`'s own order costs reproducible diagnostics and never a missed violation.
+_tmp_nul_sort() {
+  if [ "${_TMP_SORT_Z:-}" = "" ]; then
+    if [ "${ printf 'b\0a\0' | LC_ALL=C sort -z 2>/dev/null | tr '\0' ','; }" = "a,b," ]
+    then _TMP_SORT_Z=1; else _TMP_SORT_Z=0; fi
+  fi
+  if [ "$_TMP_SORT_Z" = 1 ]; then LC_ALL=C sort -z; else cat; fi
 }
 
 hits="${ scan_fixed_tmp "$ROOT"; }"
@@ -494,11 +546,14 @@ mutate_must_fail() {   # <label> <mutator-fn> <part-fn> <expected-substring>
   rm -rf "$copy"
 }
 
-# rewrite <file> <awk-program> — apply an awk transform in place, via a temp file and `mv`. Not
-# `sed -i`: its in-place flag takes an argument on BSD and none on GNU, and this repo runs on both.
+# rewrite <file> <awk-program> [awk-args…] — apply an awk transform in place, via a temp file and
+# `mv`. Not `sed -i`: its in-place flag takes an argument on BSD and none on GNU, and this repo
+# runs on both. Trailing arguments are passed to awk ahead of the program, so a mutator can hand a
+# value in with `-v` rather than splicing it into the program text.
 rewrite() {
   local f="$1" prog="$2"
-  awk "$prog" "$f" > "$f.adbtmp" && mv "$f.adbtmp" "$f"
+  shift 2
+  awk "$@" "$prog" "$f" > "$f.adbtmp" && mv "$f.adbtmp" "$f"
 }
 
 WF=base/workflows/implement-issue.md
@@ -547,10 +602,20 @@ m_tmpdir_token() { rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, "${TMP
 # A relative token that escapes the checkout. `../shared/…` is not absolute, so an is-it-relative
 # test passes it while two sibling checkouts open the same file.
 m_parent_escape(){ rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, "../shared/issue-$n"); print }'; }
+# The documented `issues/` shape — a SUBDIRECTORY of the state dir. This is the one the workflow's
+# own prose forbids and the one 1b cannot catch: each checkout still gets its own file, so the
+# behavioural demonstration passes, while `state-scan` (which enumerates direct children only)
+# never sees it and neither `/cleanup` nor `admit` can ever clear it.
+m_nested_dir()   { rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, ".claude/state/issues/issue-$n"); print }'; }
 # `XXXXXX` with no `mktemp` on the line — Xs that are a literal filename, not a template.
 m_bare_template(){ printf '\nprintf x > %s/adb-literal.XXXXXX\n' "$TMP_LIT" >> "$1/scripts/check-lib.sh"; }
 # A fixed path in a file with NO recognised extension, which the old `*.md`/`*.sh` filter skipped.
 m_extensionless() { printf '#!/usr/bin/env bash\ncat x > %s/adb-helper.log\n' "$TMP_LIT" > "$1/scripts/adb-helper"; }
+# `$RANDOM` as a PREFIX of a different parameter. The shell expands `$RANDOM_SUFFIX`, which is
+# almost certainly unset, leaving the fixed name `adb-pseudo.` — a substring test called it entropy.
+m_pseudo_random() { printf '\nprintf x > %s/adb-pseudo.$RANDOM_SUFFIX\n' "$TMP_LIT" >> "$1/scripts/check-lib.sh"; }
+# `mktemp` named only in a COMMENT beside a literal template. The Xs stay literal.
+m_mktemp_comment(){ printf '\nprintf x > %s/adb-todo.XXXXXX   # TODO: use mktemp here\n' "$TMP_LIT" >> "$1/scripts/check-lib.sh"; }
 
 # part1 writes its counts into variables and its violations to stdout; the harness reads stdout.
 part1_out()     { P1_SITES=0; P1_FILES=0; part1 "$1"; }
@@ -559,20 +624,26 @@ part1_out()     { P1_SITES=0; P1_FILES=0; part1 "$1"; }
 two_checkout_out() { two_checkout_demo "$1"; }
 
 # THE BEHAVIOURAL MUTATION. It does NOT reintroduce the literal shared-temp path, because this case
-# actually WRITES through the resolved token and a test that scribbled on the host's real temp
-# directory could collide with a live run of this very workflow. `/adb-tmp-shared-fixture/` is
-# absolute — which is the property under test, an unrooted path both checkouts resolve identically
-# — and `two_checkout_demo`'s `mkdir -p` fails on it for lack of permission, so the demo reports
-# the write failure rather than performing it. Either way the mutated tree goes RED, which is what
-# `mutate_must_fail` asserts; the literal shared-temp spelling is covered statically by part 2 and
-# by `m_old_render` above.
+# actually WRITES through the resolved token, and a test that scribbled on the host's real temp
+# directory could collide with a live run of this very workflow.
+#
+# THE ALIASED PATH LIVES INSIDE `$work`, and the first cut's `/adb-tmp-shared-fixture/` was a real
+# defect the independent review caught. That spelling leaned on `mkdir -p` failing for lack of
+# permission — which is not a property of the test, it is a property of WHO IS RUNNING IT. As root
+# (routine in a dev container, and this suite is a mandatory gate) the creation succeeds, the demo
+# writes outside `$work`, and the `rm -rf "$demo"` at the end of `two_checkout_demo` does not reach
+# it; if that path already existed the test would write into it. An absolute path under `$work` has
+# the property actually under test — both checkouts resolve it identically, so the aliasing is real
+# — and is removed by this suite's own EXIT trap whatever happens.
 m_shared_abs()   { [ -f "$1/$SK" ] || return 1
-                   rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, "/adb-tmp-shared-fixture/issue-$n"); print }'; }
+                   rewrite "$1/$SK" '{ gsub(/\.claude\/state\/issue-\$n/, W "/shared-fixture/issue-$n"); print }' \
+                     -v W="$work"; }
 
-mutate_must_fail "source reverted to the fixed temp path"   m_old_source     part1_out       "is not under this render"
-mutate_must_fail "one RENDER reverted to the fixed path"    m_old_render     part1_out       "is not under this render"
-mutate_must_fail "a \${TMPDIR:-/tmp} token, textually relative" m_tmpdir_token part1_out      "is not under this render"
-mutate_must_fail "a ../ token that escapes the checkout"    m_parent_escape  part1_out       "is not under this render"
+mutate_must_fail "source reverted to the fixed temp path"   m_old_source     part1_out       "is not a DIRECT child"
+mutate_must_fail "one RENDER reverted to the fixed path"    m_old_render     part1_out       "is not a DIRECT child"
+mutate_must_fail "a \${TMPDIR:-/tmp} token, textually relative" m_tmpdir_token part1_out      "is not a DIRECT child"
+mutate_must_fail "a ../ token that escapes the checkout"    m_parent_escape  part1_out       "is not a DIRECT child"
+mutate_must_fail "the forbidden issues/ SUBDIRECTORY shape"  m_nested_dir   part1_out       "is not a DIRECT child"
 mutate_must_fail "the snapshot filename renamed away"       m_no_sites       part1_out       "NO issue-snapshot path found"
 mutate_must_fail "ONE HALF renamed away (.assoc)"           m_drop_assoc     part1_out       "provenance label"
 mutate_must_fail "an unrooted path both checkouts resolve"  m_shared_abs     two_checkout_out "checkout A"
@@ -581,6 +652,8 @@ mutate_must_fail "a fixed temp path added under base/"      m_tmp_in_base    sca
 mutate_must_fail "a fixed temp path added under docs/"      m_tmp_in_docs    scan_fixed_tmp  "$TMP_LIT/r1.md"
 mutate_must_fail "a fixed temp path added under agents/"    m_tmp_in_agents  scan_fixed_tmp  "$TMP_LIT/rendered-body.md"
 mutate_must_fail "XXXXXX with no mktemp on the line"        m_bare_template  scan_fixed_tmp  "$TMP_LIT/adb-literal.XXXXXX"
+mutate_must_fail "\$RANDOM as a prefix of another parameter" m_pseudo_random scan_fixed_tmp  "$TMP_LIT/adb-pseudo."
+mutate_must_fail "mktemp named only in a trailing COMMENT"  m_mktemp_comment scan_fixed_tmp  "$TMP_LIT/adb-todo.XXXXXX"
 mutate_must_fail "a fixed path in an EXTENSIONLESS script"  m_extensionless  scan_fixed_tmp  "$TMP_LIT/adb-helper.log"
 
 printf 'check-tmp-paths: %s mutations required to go red\n' "$MUTATIONS"

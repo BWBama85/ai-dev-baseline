@@ -4,9 +4,14 @@
 # Local, per-workstation runtime state (never committed)
 *.local
 .local/
-# Skill runtime state (implement-issue markers, new-release/resolve-pr-threads
-# scratch) — this repo dogfoods its own skills, which write here.
+# Skill runtime state (implement-issue markers and issue snapshots, new-release /
+# resolve-pr-threads scratch) — this repo dogfoods its own skills, which write here.
+# EVERY rendered agent's state dir, not just Claude's (#250): /implement-issue step 2 writes the
+# untrusted issue body and its provenance label under {{STATE_DIR}}, which renders per agent, so a
+# Codex or Gemini run here would otherwise leave that content untracked in the working tree.
 .claude/state/
+.codex/state/
+.gemini/state/
 # Claude Code's own per-workstation runtime file. `.claude/` became a TRACKED tree when the
 # project-owned /release skill landed there (D14), so this needs to be ignored explicitly —
 # before that, nothing under .claude/ was tracked and it went unnoticed.

@@ -61,7 +61,19 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   **That last part is lexical, and its limits are written into its header rather than left to be
   discovered**: it cannot see a path built through a variable, cannot tell an unexpanded `$$` in
   single quotes from a real one, and flags reads as well as writes on purpose — `adb-tmp-ok:
-  <reason>` is the intended answer for a legitimate fixed path, not a grudging exception.
+  <reason>` is the intended answer for a legitimate fixed path, not a grudging exception. Within
+  those limits the entropy rules are a parse rather than a substring test: `$RANDOM` counts only as
+  a whole parameter (so `$RANDOM_SUFFIX`, which the shell reads as a different and probably-unset
+  name, does not), and `XXXXXX` counts only where a real `mktemp` precedes it on the
+  comment-stripped line.
+
+  **Moving the snapshot into the repo needed a matching `.gitignore` change**, which is the one
+  exposure the move itself created — in a shared temp directory the file could never be committed.
+  `bin/agent-init` ignored `.claude/state/` alone, so a Codex or Gemini run left the untrusted issue
+  body untracked in the working tree, one `git add -A` from being committed. It now derives the set
+  from `agents/<token>/` and ignores every rendered state directory; and because that only helps
+  repos initialized from now on, step 2 **refuses to write** unless `git check-ignore` confirms the
+  exact file shapes it is about to create are ignored.
 
   It also fixes the remaining instances of the class it defines: `create-issue.md`'s issue-body
   scratch, `git-and-prs.md`'s recommended `.patch` copy (a fixed name for the one file git cannot

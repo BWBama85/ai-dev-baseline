@@ -100,13 +100,33 @@ else
   echo "wrote agents.toml — edit [roles] to set who is primary / reviews / debugs"
 fi
 
-# 2. Ensure runtime state is gitignored (marker/blocked files live here)
-if [ -f .gitignore ] && grep -q '^\.claude/state/' .gitignore 2>/dev/null; then
-  :
-else
-  printf '\n# ai-dev-baseline runtime state\n.claude/state/\n' >> .gitignore
-  echo "added .claude/state/ to .gitignore"
-fi
+# 2. Ensure runtime state is gitignored — for EVERY rendered agent, not just Claude (#250).
+#
+# This used to add `.claude/state/` alone, which was adequate while the only thing a state dir held
+# was a marker file naming a branch. It is not adequate now: /implement-issue step 2 writes the
+# ISSUE SNAPSHOT there — the untrusted issue body, every comment, and the `author_association`
+# provenance label — and `{{STATE_DIR}}` renders PER AGENT (`.claude/state`, `.codex/state`,
+# `.gemini/state`). A Codex or Gemini run therefore dropped that content into the working tree as an
+# UNTRACKED file, one `git add -A` away from being committed. Before #250 the snapshot lived outside
+# the repo entirely, so moving it in is what created the exposure.
+#
+# THE SET IS DERIVED FROM `agents/<token>/`, the same tree scripts/build.sh renders into and the one
+# docs/adding-an-agent.md says you add — never a second hardcoded list that a fourth agent would
+# silently fall out of.
+for _adb_agent_dir in "$REPO"/agents/*/; do
+  [ -d "$_adb_agent_dir" ] || continue
+  _adb_agent="${_adb_agent_dir%/}"; _adb_agent="${_adb_agent##*/}"
+  _adb_state=".$_adb_agent/state/"
+  # Anchored, so a comment mentioning the path does not read as a rule. A WIDER existing rule
+  # (`.claude/`) is deliberately not detected: over-adding a redundant line is harmless, whereas a
+  # clever match that guessed wrong would leave untrusted issue text tracked.
+  if [ -f .gitignore ] && grep -qF -- "$_adb_state" .gitignore 2>/dev/null; then
+    continue
+  fi
+  printf '\n# ai-dev-baseline runtime state (%s)\n%s\n' "$_adb_agent" "$_adb_state" >> .gitignore
+  echo "added $_adb_state to .gitignore"
+done
+unset _adb_agent_dir _adb_agent _adb_state
 mkdir -p .claude/state
 
 # 3. Show the effective role map — the FULL repo → global default → built-in resolution, via the

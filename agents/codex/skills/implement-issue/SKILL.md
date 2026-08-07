@@ -416,6 +416,30 @@ writes.
 directory, so a tidy-looking `.codex/state/issues/` would be invisible to `/cleanup` and to
 `admit` alike — a snapshot nothing ever clears.
 
+**AND `.codex/state` MUST BE GITIGNORED BEFORE ANY OF IT IS WRITTEN.** Moving the snapshot into
+the repo is what makes this necessary — in `/tmp` it could never be committed. `bin/agent-init`
+now ignores every rendered agent's state directory, but a repo initialized before that only has
+`.claude/state/`, so a Codex or Gemini run there would drop the untrusted issue body into the
+working tree as an **untracked file**, one `git add -A` from being committed. Check, do not assume
+— same rule `/new-release` already applies to its own state file:
+
+```bash
+# ASK ABOUT THE FILES, not about the directory. `git check-ignore .codex/state` answers 1 — NOT
+# IGNORED — whenever that directory does not yet exist, because a `.../state/` rule carries a
+# trailing slash and git cannot match a directory rule against a path it cannot see is a directory.
+# It happens to exist by now (`admit` created it in preflight), so the bare form would pass — and
+# would go on passing for a reason unrelated to what it claims to check. Naming the two file shapes
+# this step actually writes is both robust and the precise question: will THESE be ignored?
+for _probe in issue-0.json issue-0.assoc; do
+  git check-ignore -q ".codex/state/$_probe" && continue
+  bash "$HOME/.codex/scripts/lib/implement-lib.sh" release --token "$RUN_CLAIM_TOKEN" .codex/state
+  echo "ERROR: .codex/state/$_probe would NOT be gitignored, and step 2 is about to write the"
+  echo "       untrusted issue body and its provenance label to exactly that path."
+  echo "       Add '.codex/state/' to .gitignore (or re-run 'bin/agent-init') and start again."
+  exit 1
+done
+```
+
 ```bash
 for n in "${ISSUE_NUMS[@]}"; do
   gh issue view "$n" --json number,title,body,labels,author,comments,milestone,state > ".codex/state/issue-$n.json" \

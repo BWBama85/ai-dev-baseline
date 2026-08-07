@@ -3589,3 +3589,45 @@ limit: none of them is sufficient alone.
              named roots — which for this suite are exactly the scanned ones — and the suite runs
              5.7s. The fixture is proved once up front, because a copier's failure mode is thirteen
              reports blaming the scanner for a tree the mutator never managed to break.
+
+             **A second independent review (the PR's async reviewer) raised 5 more; all 5 were real
+             and all are fixed.** Three were holes in the new guard that had shipped green: the
+             state-dir check accepted any DESCENDANT, so `.claude/state/issues/issue-$n.json` and
+             `.claude/state/../shared/issue-$n.json` both passed — and the two-checkout demo passes
+             them too, since each checkout still gets a distinct file, while `state-scan` (direct
+             children only) would never see either, defeating the flat invariant the workflow states
+             in prose; `$RANDOM` was a substring test, so `$RANDOM_SUFFIX` counted as entropy while
+             the shell reads a different, probably-unset parameter; and `XXXXXX` accepted `mktemp`
+             anywhere on the UNSTRIPPED line, so a trailing `# TODO: use mktemp` beside a literal
+             template counted. Each now has its own mutation case, taking the harness to sixteen.
+
+             **The fourth was the sharpest, and it is the exposure this change itself created.**
+             `bin/agent-init` ignores `.claude/state/` only, and `{{STATE_DIR}}` renders per agent —
+             so moving the snapshot from a shared temp directory INTO the repo meant a Codex or
+             Gemini run left the untrusted issue body untracked in the working tree, one `git add -A`
+             from being committed. In `/tmp` that was impossible. `agent-init` now derives the set
+             from `agents/<token>/` and ignores every rendered state dir, and since that helps only
+             repos initialized from now on, step 2 also REFUSES TO WRITE unless `git check-ignore`
+             confirms the exact file shapes are ignored. That guard probes FILE paths, not the
+             directory: a `.../state/` rule cannot match a directory path git cannot see is a
+             directory, so the obvious `check-ignore {{STATE_DIR}}` answers "not ignored" whenever
+             the directory does not yet exist — and would have passed here for a reason unrelated to
+             what it claims to check.
+
+             **The fifth was a fixture writing outside its own sandbox.** The behavioural mutation
+             aliased both checkouts onto `/adb-tmp-shared-fixture/` and leaned on `mkdir -p` failing
+             for lack of permission — which is a property of WHO RUNS THE SUITE, not of the test. As
+             root (routine in a dev container, and this is a mandatory gate) it succeeds, writes
+             outside `$work`, and the demo's own cleanup does not reach it. The aliased path is
+             inside `$work` now, so the EXIT trap removes it however the run ends.
+
+             **One review premise was checked and did not hold, and the fix landed anyway.** The P1
+             finding said Apple's `sort` rejects `-z`, which would make the required `selfcheck-macos`
+             job red for every change. Measured on this workstation — `/usr/bin/sort` 2.3-Apple,
+             macOS 26.5.1 — it round-trips NUL-delimited input correctly, so the stated failure does
+             not occur on that build. But the runner's image is a different build, `sort -z` is not
+             POSIX, and ordering here is a REPORT property that no verdict depends on. So the option
+             is PROBED (on its output, not its exit status — an implementation that accepted `-z` and
+             reordered nothing would pass a status check) and falls through to `find` order when
+             absent. Verified green under a stub `sort` that rejects `-z` exactly as the finding
+             described.

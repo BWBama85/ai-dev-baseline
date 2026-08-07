@@ -63,6 +63,36 @@ hasnt "$out" "working dir is below" "tidy: no working-dir note on a clean layout
 hasnt "$out" "NESTED"               "tidy: no nested note on a clean layout"
 hasnt "$out" "OUTSIDE this repo"    "tidy: no foreign-doc note on a clean layout"
 
+# --- (1b) EVERY rendered agent's state dir is gitignored, not just Claude's (#250) ------------
+# /implement-issue step 2 writes the untrusted issue body and its `author_association` provenance
+# label under `{{STATE_DIR}}`, which renders per agent. Ignoring `.claude/state/` alone left a
+# Codex or Gemini run dropping that content into the working tree as an UNTRACKED file, one
+# `git add -A` from being committed. Before #250 the snapshot lived in a shared temp directory, so
+# moving it into the repo is what created the exposure.
+#
+# ASSERTED THROUGH `git check-ignore`, not by grepping the file. A rule that is present but does
+# not actually match is the failure this exists to catch — and the probe names a FILE rather than
+# the directory, because a `.../state/` rule cannot match a directory path git cannot see is a
+# directory (which is why the workflow's own runtime guard probes file shapes too).
+tidy_agents=0
+for d in "$REPO"/agents/*/; do
+  [ -d "$d" ] || continue
+  a="${d%/}"; a="${a##*/}"; tidy_agents=$((tidy_agents + 1))
+  if git -C "$tidy" check-ignore -q ".$a/state/issue-0.json" 2>/dev/null; then ok; else
+    bad "tidy: .$a/state/ is not gitignored — a $a run would leave the issue body untracked in the tree"
+  fi
+done
+# The enumeration itself must not be empty, or every assertion above ran zero times and the whole
+# case is a silent pass — the vacuity shape this repo keeps paying for.
+if [ "$tidy_agents" -ge 3 ]; then ok; else
+  bad "tidy: only $tidy_agents agent(s) enumerated from agents/ — the ignore assertions covered almost nothing"
+fi
+# IDEMPOTENT: a second run must not re-append a rule it already wrote.
+before="${ grep -c 'state/' "$tidy/.gitignore"; }"
+run_init "$tidy" >/dev/null 2>&1
+after="${ grep -c 'state/' "$tidy/.gitignore"; }"
+eq "$after" "$before" "tidy: re-running agent-init does not duplicate the state-dir ignore rules"
+
 # --- (2) run from a subdirectory: agents.toml lands at the git ROOT -----------
 subrepo="$work/subrepo"; mkdir -p "$subrepo/a/b/c"; git init -q "$subrepo"
 out="${ run_init "$subrepo/a/b/c"; }"; rc=$?
