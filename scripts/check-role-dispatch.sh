@@ -612,7 +612,7 @@ hasnt "$(cat "$work/uncapped.err")" "capped at" "a disabled cap emits no truncat
 # `head -c` + a drain: `head` over-reads into its buffer, so it loses an unknown number of bytes
 # AND can swallow the entire remainder — leaving the drain to see EOF and report a clean pass on a
 # stream it silently truncated. kept + discarded must reconstruct the uncapped size exactly.
-kept="$(sed -n 's/.*capped at \([0-9][0-9]*\) of .*/\1/p' "$work/capped.err")"
+kept="$(sed -n 's/.*capped at \([0-9][0-9]*\) bytes (ADB.*/\1/p' "$work/capped.err")"
 gone="$(sed -n 's/.*remaining \([0-9][0-9]*\) bytes were discarded.*/\1/p' "$work/capped.err")"
 if [ -n "$kept" ] && [ -n "$gone" ] && [ "$(( kept + gone ))" -eq "$uncapped" ]; then ok
 else bad "kept + discarded must equal the uncapped size ($kept + $gone != $uncapped)"; fi
@@ -654,7 +654,7 @@ while [ "$#" -gt 0 ]; do [ "$1" = "--output-last-message" ] && { last="$2"; shif
 cat >/dev/null
 printf 'FIRSTLINE-provenance-header\n'
 printf 'SECONDLINE-model-and-effort\n'
-printf 'bin\000ary\n'                       # a NUL: BSD awk treats it as end-of-string
+printf 'NULBEFORE\000NULAFTER\n'            # a NUL mid-stream: BSD awk treated it as end-of-string
 printf 'crlf-line\r\n'
 i=0; while [ "$i" -lt 4000 ]; do printf 'noise %05d qqqqqqqqqqqqqqqq\n' "$i"; i=$(( i + 1 )); done
 printf 'TAILMARKER-must-not-survive-a-head-cap\n'
@@ -671,7 +671,7 @@ hasnt "$(cat  "$work/prefix.err")"    "TAILMARKER"                  "...and drop
 # from a complete one, on macOS only. The bytes AROUND the NUL must still come through.
 printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=100000 bash "$RD" invoke gap_analysis \
   >/dev/null 2>"$work/nul.err"
-has "$(cat "$work/nul.err")" "binary"  "a NUL byte does not truncate the stream (BSD awk end-of-string)"
+has "$(cat "$work/nul.err")" "NULAFTER" "a NUL byte does not truncate the stream (what killed the awk filter)"
 has "$(cat "$work/nul.err")" "crlf-line" "a CRLF line survives the filter"
 has "$(cat "$work/nul.err")" "capped at" "a stream past the cap still reports it even after a NUL"
 
@@ -689,6 +689,32 @@ chmod +x "$BIN/codex"
 printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=64 bash "$RD" invoke gap_analysis \
   >/dev/null 2>"$work/oneline.err"
 has "$(head -c 64 "$work/oneline.err")" "AAAAAAAAAA" "a newline-free stream is still cut AT the cap, not discarded whole"
+
+# A DESCENDANT THE AGENT LEFT BEHIND MUST NOT HANG THE DISPATCH. Closing our write end is not the
+# same as closing the pipe: a background process that inherited the agent's stdout/stderr still
+# holds it, so the filter never sees EOF. An unbounded wait there blocks forever — and it blocks
+# AFTER `adb_run_bounded` has returned, so its bound no longer applies and nothing else would ever
+# stop it. This is a hang the cap would have INTRODUCED; the outer `timeout` is what proves it is
+# gone, since a regression here does not fail an assertion, it wedges the suite.
+cat > "$BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+last=""
+while [ "$#" -gt 0 ]; do [ "$1" = "--output-last-message" ] && { last="$2"; shift; }; shift; done
+cat >/dev/null
+printf 'agent output before exiting\n'
+sleep 120 &                     # inherits stdout/stderr, so it holds the log pipe open
+[ -n "$last" ] && printf 'VERDICT: fine\n' > "$last"
+exit 0
+EOF
+chmod +x "$BIN/codex"
+hang_out="$(printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=100000 ADB_DISPATCH_LOG_DRAIN_SECS=2 \
+  timeout 60 bash "$RD" invoke gap_analysis 2>"$work/drain.err")"; hang_rc=$?
+eq "$hang_rc" "0" "a descendant holding the log pipe does not hang or fail the dispatch"
+eq "$hang_out" "VERDICT: fine" "...and the agent's final message still comes back"
+has "$(cat "$work/drain.err")" "still holds the log pipe open" \
+    "...and the bounded drain SAYS why the log ended early rather than truncating silently"
+has "$(cat "$work/drain.err")" "agent output before exiting" "...and what the agent did write is kept"
+pkill -f 'sleep 120' >/dev/null 2>&1 || true
 
 # EVERY AGENT, not just codex — the change claims the cap covers all of them, and claude/gemini
 # take the OTHER arm (`log_stdout=0`), where stdout is the RESULT and only stderr is capped. With

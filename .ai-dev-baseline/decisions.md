@@ -3344,7 +3344,7 @@ limit: none of them is sufficient alone.
              watcher, and an inherited write end held the pipe open for a whole tick — measured
              5.0 s per dispatch, 0.05 s with the close.
 
-             **awk, not `head -c` + a drain.** `head` over-reads into its buffer: it loses an
+             **`dd bs=1` + `wc -c`, after awk was tried and rejected.** `head` over-reads into its buffer: it loses an
              unknown number of bytes and can swallow the entire remainder, leaving the drain to
              see EOF and report a clean pass on a stream it silently truncated. awk counts every
              discarded byte, so the notice is never omitted; `LC_ALL=C` makes
@@ -3352,10 +3352,21 @@ limit: none of them is sufficient alone.
              a NEWLINE-TERMINATED stream and over-reports by one for an unterminated final line —
              documented rather than engineered away, being a debugging aid in a notice.
 
-             **And awk needed a guard of its own.** BSD awk on macOS treats a NUL as
-             end-of-string: fed `ab\0cdef...` it emitted `ab`, dropped the remainder, and emitted
-             NO notice — the exact silent truncation this filter exists to prevent, on one platform
-             only. `tr -d` ahead of awk removes it; a NUL carries no meaning in a readable log.
+             **awk was the first implementation and the review killed it.** Record-oriented, it
+             does not act until it sees a newline: a newline-free stream buffered whole, emitted
+             none of the head bytes while the agent ran, and grew without bound — an indefinitely
+             noisy stream could OOM the filter and SIGPIPE the agent it was meant to protect. It
+             was also not binary-safe (BSD awk treats a NUL as end-of-string: `ab\0cdef...` gave
+             `ab`, no remainder, NO notice — macOS only). `dd bs=1` reads exactly `max` bytes, holds
+             one byte, writes as it reads and is byte-transparent, so every one of those goes away
+             and the count becomes exact rather than off-by-one on an unterminated line. Measured
+             0.21 s for a 256 KiB cap; a 5 MB newline-free stream in 0.23 s with flat memory.
+
+             **The cap also introduced a hang, which is now bounded.** Closing our write end is not
+             closing the pipe: a background descendant that inherited the agent's stdout/stderr
+             holds it, the filter never sees EOF, and the wait blocks forever — AFTER
+             `adb_run_bounded` returned, so its bound no longer applies. `ADB_DISPATCH_LOG_DRAIN_SECS`
+             (10 s, ticked so it leaks no orphan) bounds it and reports why the log ended early.
 - placement: `scripts/lib/common.sh` (`_adb_bounded_signal`, the launch, the watcher, the reap,
              the wait); `scripts/lib/role-dispatch.sh` (`_ADB_RD_LOG_MAX_BYTES`,
              `_adb_rd_cap_stream`, `_adb_rd_bounded_capped`, the three agent arms);

@@ -176,6 +176,17 @@ case "$_ADB_RD_LOG_MAX_BYTES" in
      fi ;;
 esac
 
+# How long the log filter gets to finish AFTER the agent exits, before we stop waiting for it.
+# This bounds a hang rather than tuning a budget: the filter normally sees EOF within milliseconds
+# of our closing the write end, and the only way it does not is a background descendant the agent
+# left holding that end open (see `_adb_rd_bounded_capped`). A TEST SEAM like the kill grace, not
+# an operator knob — nobody tunes this — so it is clamped rather than validated loudly.
+_ADB_RD_LOG_DRAIN_SECS="${ADB_DISPATCH_LOG_DRAIN_SECS:-10}"
+case "$_ADB_RD_LOG_DRAIN_SECS" in
+  ''|*[!0-9]*) _ADB_RD_LOG_DRAIN_SECS=10 ;;
+  *)           [ "$_ADB_RD_LOG_DRAIN_SECS" -eq 0 ] 2>/dev/null && _ADB_RD_LOG_DRAIN_SECS=1 ;;
+esac
+
 # --- resolution --------------------------------------------------------------------------------
 
 # True iff $1 is EXACTLY a known agent token. Compares against each token rather than a
@@ -562,52 +573,35 @@ _adb_rd_bounded() {
 # not: it carries the CLI version, model, reasoning effort and session id, which nothing else
 # records. A head cap also streams live, where a tail cap can emit nothing until EOF.
 #
-# awk, not `head -c` + `cat`: `head` OVER-READS into its buffer before exiting, so it both loses an
-# unknown number of bytes and — worse — can consume the entire remainder, leaving the drain to see
-# EOF and report a clean pass on a stream it silently truncated. awk counts every byte it discards,
-# so the notice is exact and is never omitted. LC_ALL=C makes `length()` count bytes, not
-# characters, so a multibyte stream cannot overshoot the cap.
+# `dd bs=1`, and the two rejected alternatives are why.
 #
-# The counting is `length($0) + 1` per record, so it is exact for a newline-terminated stream and
-# over-reports by one byte for a stream whose final line has no newline (awk cannot distinguish
-# them, and `print` re-adds the separator either way). Stated rather than worked around: the number
-# is a debugging aid in a notice, and a byte of slack in it is not worth a second reader.
+#   `head -c` + a drain OVER-READS into its buffer before exiting. It loses an unknown number of
+#   bytes and — worse — can consume the entire remainder, leaving the drain to see EOF and report a
+#   clean pass on a stream it silently truncated.
 #
-# `tr -d '\000'` FIRST, and it is not cosmetic. BSD awk on macOS treats a NUL as end-of-string:
-# fed `ab\0cdef…`, it emitted `ab` and silently dropped everything after the NUL — including the
-# cap notice, because the record never looked long enough to trip it. That is the precise failure
-# this filter exists to prevent (a truncated stream indistinguishable from a complete one), and it
-# would have appeared only on macOS. Dropping NULs is lossless for the thing being filtered: this
-# is a human-readable log, and a NUL carries no meaning in it.
+#   `awk` shipped here first and was replaced after review. Being RECORD-oriented, it does not act
+#   until it sees a newline: a newline-free stream (a `\r` progress feed, one very long line) is
+#   buffered whole, so it emits none of the head bytes while the agent runs and its memory grows
+#   with the record — an indefinitely noisy stream could OOM the filter and SIGPIPE the agent it
+#   was meant to protect. It was also not binary-safe: BSD awk on macOS treats a NUL as
+#   end-of-string, so `ab\0cdef…` emitted `ab`, dropped the remainder, and printed NO notice.
+#
+# `dd bs=1` has none of those properties. It reads EXACTLY max bytes (so the drain's count is exact
+# rather than approximate), holds one byte at a time (so memory is flat on any input, newlines or
+# not), writes each byte as it arrives (so the head streams live), and is byte-transparent (so a
+# NUL is passed through rather than ending the stream). Measured: 0.21 s for a 256 KiB cap, and a
+# 5 MB newline-free stream handled in 0.23 s with flat memory.
+#
+# `wc -c` is BOTH the drain and the count, so "was anything discarded" and "how much" are one read
+# and cannot disagree. A stream shorter than the cap drains to 0 and prints no notice at all.
 # Usage: _adb_rd_cap_stream <max-bytes>
-#
-# THE FIRST LINE IS CUT MID-LINE IF IT ALONE EXCEEDS THE CAP. Without that, a stream that emits no
-# newline before the cap — a progress spinner using \r, or one very long line — hits `capped` on
-# record 1 and passes through NOTHING, reporting "capped at 0 bytes". Still bounded, but it throws
-# away the provenance header this cap is deliberately keeping. `substr` makes it a byte cap, which
-# is what the name and the knob both promise.
 _adb_rd_cap_stream() {
-  LC_ALL=C tr -d '\000' | LC_ALL=C awk -v max="$1" '
-    BEGIN { kept = 0; capped = 0; dropped = 0 }
-    {
-      if (!capped) {
-        kept += length($0) + 1
-        if (kept <= max) { print; fflush(); next }
-        kept -= length($0) + 1
-        capped = 1
-        if (kept == 0 && max > 0) {          # nothing emitted yet: cut this line at the cap
-          printf("%s", substr($0, 1, max)); fflush()
-          dropped += length($0) + 1 - max
-          kept = max
-          next
-        }
-      }
-      dropped += length($0) + 1
-    }
-    END {
-      if (capped)
-        printf("\n[role-dispatch: agent log capped at %d of %d bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %d bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n", kept, max, dropped)
-    }'
+  local max="$1" rest
+  dd bs=1 count="$max" 2>/dev/null
+  rest="$(wc -c)"
+  rest="${rest//[![:digit:]]/}"
+  [ "${rest:-0}" -gt 0 ] && printf '\n[role-dispatch: agent log capped at %s bytes (ADB_DISPATCH_LOG_MAX_BYTES); the remaining %s bytes were discarded. This is a HEAD cap — the END of the stream is missing.]\n' "$max" "$rest"
+  return 0
 }
 
 # Run a bounded dispatch with its LOG stream capped, and return the agent's own status.
@@ -666,8 +660,35 @@ _adb_rd_bounded_capped() {
   # the filter is HEALTHY, not when it exits early, so an agent still writing when the filter dies
   # takes SIGPIPE and this returns 141. That is a broken environment rather than a broken agent,
   # which is exactly why the warning names the filter.
+  #
+  # AND THE WAIT IS BOUNDED, because an unbounded one is a hang this function would have INTRODUCED.
+  # Closing our write end is not the same as closing the pipe: if the agent left a background
+  # descendant that inherited its stdout/stderr, that descendant still holds the write end, the
+  # filter never sees EOF, and a plain `wait` blocks forever — AFTER `adb_run_bounded` has returned,
+  # so its bound no longer applies and nothing else would ever stop it. An agent that starts a dev
+  # server would hang the whole dispatch. The bound is ticked rather than slept in one go, for the
+  # reason common.sh's watchdog gives: killing the guard does not kill a `sleep` it already forked,
+  # so a single long sleep would leak an orphan per dispatch.
   if [ -n "$capper" ]; then
-    wait "$capper" 2>/dev/null || printf 'role-dispatch: WARNING — the log-capping filter failed (exit %s); this dispatch'\''s agent log is incomplete or missing, and an agent status of 141 means it took SIGPIPE from the dead filter rather than failing on its own.\n' "$?" >&2
+    local dflag dguard crc
+    dflag="$(mktemp 2>/dev/null || printf '%s' "${TMPDIR:-/tmp}/adb-rd-drain-$$")"; rm -f "$dflag"
+    ( waited=0
+      while [ "$waited" -lt "$_ADB_RD_LOG_DRAIN_SECS" ]; do
+        kill -0 "$capper" 2>/dev/null || exit 0
+        sleep 1; waited=$(( waited + 1 ))
+      done
+      kill -0 "$capper" 2>/dev/null || exit 0
+      : > "$dflag"; kill -TERM "$capper" 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+    dguard=$!
+    wait "$capper" 2>/dev/null; crc=$?
+    kill -TERM "$dguard" 2>/dev/null; wait "$dguard" 2>/dev/null
+    if [ -f "$dflag" ]; then
+      printf 'role-dispatch: WARNING — the agent exited but something it spawned still holds the log pipe open, so the log did not end after %ss; the filter was stopped and this dispatch'"'"'s log may be truncated. A background process the agent left running is the usual cause.\n' \
+        "$_ADB_RD_LOG_DRAIN_SECS" >&2
+    elif [ "$crc" -ne 0 ]; then
+      printf 'role-dispatch: WARNING — the log-capping filter failed (exit %s); this dispatch'"'"'s agent log is incomplete or missing, and an agent status of 141 means it took SIGPIPE from the dead filter rather than failing on its own.\n' "$crc" >&2
+    fi
+    rm -f "$dflag"
   fi
   return "$rc"
 }

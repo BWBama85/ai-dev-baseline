@@ -83,20 +83,33 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     than exiting, or the agent's next write takes SIGPIPE and capping a log would kill the
     dispatch it was only meant to trim.
 
-  The filter is `awk`, not `head -c` plus a drain: `head` over-reads into its buffer, so it loses
-  an unknown number of bytes and can swallow the whole remainder — leaving the drain to see EOF and
-  report a clean pass on a stream it silently truncated. `kept + discarded` reconstructs the
-  uncapped size exactly **for a newline-terminated stream**, and a test asserts that; for a final
-  line with no newline it over-reports by one byte, because awk cannot distinguish that case and
-  `print` re-adds the separator either way. The number is a debugging aid in a notice, so the byte
-  of slack is documented rather than engineered away.
+  The filter is **`dd bs=1` plus `wc -c`**, and both alternatives were tried and rejected. `head -c`
+  over-reads into its buffer, so it loses an unknown number of bytes and can swallow the whole
+  remainder — leaving the drain to see EOF and report a clean pass on a stream it silently
+  truncated. **`awk` shipped here first and was replaced after review**: being record-oriented it
+  does not act until it sees a newline, so a newline-free stream (a `\r` progress feed, one very
+  long line) buffered whole — emitting none of the promised head bytes while the agent ran, and
+  growing without bound, so an indefinitely noisy stream could OOM the filter and SIGPIPE the very
+  agent it was meant to protect. It was also not binary-safe: BSD awk on macOS treats a NUL as
+  end-of-string, so `ab\0cdef…` emitted `ab`, dropped the remainder, and printed *no* cap notice —
+  on macOS only.
 
-  `awk` needed one guard of its own. **BSD awk on macOS treats a NUL as end-of-string**: fed
-  `ab\0cdef…` it emitted `ab`, dropped everything after the NUL, and emitted *no* cap notice — the
-  exact "truncated stream indistinguishable from a complete one" this filter exists to prevent, and
-  visible only on macOS. A `tr -d '\000'` ahead of awk removes it; NUL carries no meaning in a
-  human-readable log. A NUL, a CRLF line and a newline-free stream are now all fixtures in the
-  suite.
+  `dd bs=1` has none of those properties. It reads exactly `max` bytes (so the drain's count is
+  exact, not approximate), holds one byte at a time (flat memory on any input), writes as it reads
+  (the head streams live), and is byte-transparent (a NUL passes through instead of ending the
+  stream). Measured: **0.21 s** for a 256 KiB cap, and a 5 MB newline-free stream in **0.23 s**
+  with flat memory. `wc -c` is both the drain and the count, so "was anything discarded" and "how
+  much" are one read and cannot disagree. A NUL, a CRLF line and a newline-free stream are all
+  fixtures in the suite.
+
+  One more hang had to be closed, and it was one the cap itself **introduced**. Closing our write
+  end is not the same as closing the pipe: if the agent leaves a background descendant that
+  inherited its stdout/stderr, that descendant still holds the write end, the filter never sees
+  EOF, and waiting for it blocks **forever** — after `adb_run_bounded` has already returned, so its
+  bound no longer applies and nothing else would ever stop it. An agent that starts a dev server
+  would wedge the dispatch. The drain is now bounded (`ADB_DISPATCH_LOG_DRAIN_SECS`, 10 s), ticked
+  rather than slept in one go so it leaks no orphan, and it says why the log ended early instead of
+  truncating in silence.
 
   Coverage was **observed failing** against a copy of the pre-fix tree: the watchdog grandchild
   (`alive`→`dead`), the stopped child (`rc=145`→`rc=0`), and ten cap assertions. The
