@@ -3018,3 +3018,133 @@ limit: none of them is sufficient alone.
              against an undigestable link), the branch-creation failure releases, and the workflow
              prints the token and tells the agent to substitute its literal value.
 - baseline-issue: #202
+
+## D47 — cadence is a gate's CALLER, not a budget; and ownership suppresses only on positive proof
+- date:      2026-08-06
+- category:  general
+- unknown:   Two Stop-hook defects with one shape: the gate had no notion of WHEN it was being
+             asked to run (#240) and no notion of WHOSE tree it was gating (#241). `[gates]`
+             could say what a gate costs to run but not that a cost was wrong for a cadence, and
+             `[gates.scope]` could not stand in — a repo-wide CI mirror legitimately matches
+             almost any changed path. Meanwhile the gate's inputs were pure git state, which
+             carries no session identity, so a session that wrote nothing ran (and could be
+             blocked by) another session's mid-edit tree at every turn-end.
+- decision:  **#240 — a cadence key, spelled as a third `[gates.*]` sub-table.** `[gates.cadence]
+             <label> = always|full|turn-end`, default `always`, resolved in `_adb_resolve_record`
+             beside state and scope. `adb_run_gates` takes a third `context` argument
+             (`turn-end`|`full`, default `full`); a gate runs iff `cadence == always` or
+             `cadence == context`. The Stop hook is the only caller passing `turn-end`.
+
+             The issue offered four shapes and this is its option 1. The other three were
+             rejected on evidence: a seconds *budget* needs timing history that does not exist; a
+             shipped project-gate *template* answers "how do I fork?" when the point is not to
+             fork; *detect-and-warn* names the problem without giving anyone a way to fix it.
+
+             **The value is `full`, NOT `pre-push`, and that is a correctness point rather than a
+             naming preference.** There is no automatic pre-push path in this framework — nothing
+             wires a pre-push hook. `project-gates.sh run` is a manual/full invocation that the
+             workflows happen to call before they push. Naming the value `pre-push` would have
+             promised a guarantee the gate model cannot make, and a hand-typed `git push` would
+             have quietly broken it.
+
+             **#241 — suppress only on positive proof, never on absence of evidence.** The gate
+             no-ops when a run marker for THE CURRENT BRANCH is owned by a DIFFERENT session.
+             Every unknown — no marker, a marker for another branch, a malformed or ownerless
+             marker, no `jq`, no `CLAUDE_CODE_SESSION_ID` — keeps the pre-existing run-and-block
+             behaviour.
+
+             That is deliberately NARROWER than the issue's own preferred direction, which was
+             "when ownership is unknowable, prefer reporting over blocking". Taken literally that
+             disables the gate for nearly every ordinary dirty tree, because a marker exists only
+             during an `/implement-issue` run — the fail-silent class of #35 and §5 of
+             `design-principles.md`. It is not a judgement call in retrospect: mutating the
+             implementation to suppress on unknown ownership turns SEVEN pre-existing
+             fail-loud assertions red, including the #35 regression tests themselves.
+
+             **The ownership check sits BEFORE the project-gate `exec`, and reads identity from
+             the environment only.** Both halves are forced by evidence. The second observed
+             incident reported `build-drift FAIL` — a check name in this repo's OWN
+             `.claude/scripts/precommit-gate.sh` — so a check placed after the delegation would
+             miss the very case the issue documents, in every repo using the escape hatch. And
+             `docs/per-project-overrides.md` documents the `exec`'d project gate as inheriting
+             stdin (the hook payload), so consuming stdin to identify the session would break a
+             documented contract to answer an optional question. A host exposing no session id
+             therefore degrades to "unknown" → enforce: one rung shorter than
+             `implement-issue-gate.sh`, stated rather than implied.
+
+             **The comparator is promoted; the session-id READER is not.** `adb_owners_compatible`
+             moves to `common.sh` as the one home for "do these two ids permit acting". Its
+             callers keep their own identity discovery, because those differ by design — the
+             sibling gate may read the payload, this one must not. Only the pure comparator enters
+             `common.sh`, which must stay parseable below the bash floor (D30); nothing
+             version-sensitive was added to it.
+
+             **The timeout deliverable is rescoped, not delivered.** #240 asked for a gate that
+             exceeds the hook timeout to be "terminated with a classified status". That cannot be
+             built as asked: the 240s bound belongs to the Claude harness, which cancels the hook
+             — a killed process cannot then report its own status. A separate INNER deadline would
+             be a different feature, and reusing `adb_run_bounded` for it would inherit that
+             helper's documented macOS limitation (grandchildren outliving the bound), which an
+             arbitrary `sh -c` gate is especially likely to hit. Sequential gates each consuming a
+             per-gate allowance also leaves the TOTAL unbounded, so a per-gate timeout would not
+             even substitute for the harness bound. What ships instead is per-gate ELAPSED
+             reporting — which is what makes a slow gate attributable — plus documentation of what
+             the 240s bound is and is not. The 18m55s that motivated the ask does not reproduce
+             (#260/D37 measured 273s serial, 66-72s parallel), so the cost problem is answered by
+             cadence rather than by a kill.
+             **Two defects self-review found in this branch's own new code, both failing toward the
+             gate switching itself off.** First, reading `.branch`/`.owner` as two newline-separated
+             values let a newline INSIDE a field re-aim the decode — an owner of `<my-id>\nBBBB`
+             truncated to something that no longer matched me, and a branch of `feat\nevil` matched
+             `feat` while replacing the real owner with `evil`. `@tsv` fixes the shifting, and a
+             plausibility test on the decoded owner fixes what @tsv faithfully preserves: a corrupt
+             value is a broken marker, not proof of a second session, and only proof may suppress.
+             Second, `_adb_rec_split` bound caller-supplied names with `local -n` without validating
+             them; dropping the validation and re-running the suite showed the subscript in
+             `arr[$(touch pwned)]` ACTUALLY EXECUTING, confirming D34's arbitrary-command-execution
+             claim on new code in a library that installs into consumer repos. It adopts D34's
+             identifier-plus-reserved-prefix rule, and deliberately not that function's fuller
+             `declare -p` chain analysis: this helper is private and both call sites pass literals,
+             so the nameref-chaining seam needs a caller that does not exist. If it is ever made
+             public it owes the fuller check.
+             **What the independent review changed.** Eight REQUIRED findings, all taken. The one
+             that altered behaviour: a same-branch foreign marker suppressed the gate with no
+             liveness bound, so a CRASHED run would have left its branch un-gated for every later
+             session indefinitely — and in a repo that also declared its gates `full`, turn-end
+             enforcement would have been gone entirely, which is the exact combination this design
+             exists to avoid. The suppression is now bounded by marker age
+             (`ADB_MARKER_STALE_SECS`, default 9000 to match #202's run-claim lease). The canonical
+             staleness predicate `cleanup-lib.sh state-verdict marker` is deliberately NOT used:
+             its `<pr-state>` argument must come from a live `gh` query, and a hook that fires at
+             every turn-end cannot afford a network round trip — age is the signal that is both
+             offline and honest at this cadence. The skip message was also over-claiming (that the
+             other session "gates that work", that this one "did not write it"); a marker records
+             who STARTED a run, not who made the changes, and it now says only that.
+
+             The rest were accuracy and test-strength: "every skip is reported" was false (a
+             DISABLED gate is silently skipped, by long-standing design) and is now scoped to
+             cadence and scope skips; "behaves exactly as before" was false for stderr consumers,
+             since a passing gate now prints an elapsed line, and is now scoped to selection and
+             exit status. Four test gaps were real — the no-`jq` path was unreachable by any
+             fixture (every ownership fixture NEEDS jq, so a mutation suppressing on a missing jq
+             would have passed; it now runs against a symlink farm that genuinely lacks it), the
+             unknown-ownership cases asserted only `rc=2` without proving the gate EXECUTED, the
+             elapsed assertions matched words rather than a measured number, and #241's own
+             "exactly one comparator" criterion was behavioural-only and is now pinned structurally.
+
+             **The timeout criterion is re-homed rather than dropped**: #297 (Backlog), which
+             records the diagnosis and depends on #141.
+- placement: `scripts/lib/project-gates.sh` (cadence + elapsed), `scripts/lib/common.sh`
+             (`adb_owners_compatible`), `agents/claude/scripts/precommit-gate.sh` (ownership +
+             the `turn-end` context), `agents.toml` `[gates.cadence]`, `templates/agents.toml`,
+             `docs/per-project-overrides.md` §3a.
+- reason:    Both are general capabilities every adopting repo inherits, so they belong in the
+             shared gate model rather than in this repo's own gate script. D25 recorded the LOCAL
+             stopgap for #240 and said the general half stayed open; this is that half. This
+             repo's `.claude/scripts/precommit-gate.sh` deliberately REMAINS — its fast subset is
+             a different set of checks, not merely a cheaper cadence, and `[gates]` cannot express
+             a changed-file-scoped shellcheck. So the new `[gates.cadence] test = "full"` line in
+             this repo's manifest changes nothing about its turn-end behaviour today; it is the
+             correct declaration for the general mechanism and what would take effect if the local
+             gate were ever removed.
+- baseline-issue: #240, #241

@@ -1330,6 +1330,41 @@ EOF
   printf '%s' "$out"
 }
 
+# --- session ownership -------------------------------------------------------
+
+# Do two session ids permit acting? Usage: adb_owners_compatible <id-a> <id-b>
+#
+# Returns 1 ONLY when BOTH ids are known and they differ — the one case that proves two
+# different sessions are involved. Every other combination returns 0 (go ahead), and that
+# direction is deliberate:
+#
+#   - An id is absent. Either the state predates the `owner` field (#180) or the driving
+#     agent's harness exposes no session id.
+#   - The caller cannot identify its own session. Same answer, same reason.
+#
+# Failing toward ENFORCEMENT rather than toward inert is the whole point. A false "mine"
+# costs one misdirected hint or one gate run the session did not strictly need; a false
+# "not mine" silently switches a Stop-hook invariant off for a run that still needs it.
+# Note there is deliberately no pid fallback — a marker's writer (a tool-call shell) and a
+# hook are separate processes that cannot derive the same pid, so a pid would manufacture
+# mismatches rather than resolve them.
+#
+# THE ONE HOME for this question (CLAUDE.md golden rule 4: source the shared primitive,
+# never copy it). Two Stop hooks now ask it — implement-issue-gate.sh, about a run marker
+# it might act on (#180), and precommit-gate.sh, about a tree it might gate (#241) — and a
+# second hand-rolled three-way comparison is exactly the drift that rule exists to stop.
+#
+# Deliberately pure: no I/O, no `read`, no version-sensitive builtin. This file must stay
+# parseable below the bash floor (D30) because it carries adb_require_bash itself, so the
+# comparator lives here while each caller keeps its OWN session-id discovery — those differ
+# by design (precommit-gate.sh must not consume stdin; see its header).
+adb_owners_compatible() {
+  local a="$1" b="$2"
+  [ -n "$a" ] || return 0
+  [ -n "$b" ] || return 0
+  [ "$a" = "$b" ]
+}
+
 # --- git ---------------------------------------------------------------------
 
 # Resolve a repo's default branch: origin/HEAD → a local main/master → "main".

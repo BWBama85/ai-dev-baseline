@@ -24,6 +24,31 @@
 #     A scoped gate runs only when the change set touches a matching path. Scope is only
 #     evaluated when a change set is supplied (the Stop-hook precommit-gate supplies it);
 #     standalone `run` has no change set and therefore runs scoped gates unconditionally.
+#   * Per-gate CADENCE (which CALLER a gate participates in) — #240:
+#       [gates.cadence] <label> = "always" | "full" | "turn-end"
+#     There are two calling contexts, and one command was being asked to serve both with
+#     wildly different cost budgets. The Stop hook fires at the end of EVERY turn; a full
+#     run is the deliberate, occasional one. A repo whose `test` gate IS its CI mirror can
+#     now say so instead of re-running CI after every sentence the operator types.
+#         always   (default)  runs in both contexts — EXACTLY today's behavior, so a repo
+#                             with no [gates.cadence] table is unchanged by this feature.
+#         full                skipped at turn-end, runs in a full run.
+#         turn-end            runs at turn-end, skipped in a full run (a cheap smoke check
+#                             that would only duplicate work inside the real suite).
+#
+#     "full" DOES NOT MEAN "guaranteed before every push", and naming it `pre-push` would
+#     have been a lie: nothing in this baseline wires an automatic pre-push hook. What it
+#     means is exactly "excluded from the per-turn Stop hook, included in a full run".
+#     The workflows happen to call the full runner before they push, so in practice a
+#     `full` gate does run before a workflow-driven push — but that is those workflows'
+#     doing, not a guarantee this file can make.
+#
+#     A gate runs iff  cadence == "always"  OR  cadence == <the caller's context>.
+#     An UNRECOGNIZED cadence warns and RUNS the gate: a typo must never be a silent skip,
+#     because a gate that quietly stops running is enforcement secretly off (#35, and
+#     docs/design-principles.md §5). Every CADENCE and SCOPE skip is REPORTED for the same
+#     reason. (A gate disabled with `= ""` stays silent, as it always has: that is an explicit
+#     "never run this", not a conditional skip whose absence would surprise anyone.)
 #
 # Detection is single-primary-ecosystem: the FIRST ecosystem (Node → Rust → Go → Python)
 # that yields at least one command wins, and the rest are skipped. A polyglot repo layers
@@ -36,8 +61,11 @@
 #   bash project-gates.sh status [root]   # human-readable per-gate state (run/N/A/disabled)
 #   bash project-gates.sh run    [root]   # runs them; nonzero exit on any failure
 #
+# Standalone `run` takes the FULL context (see cadence above) — it is the deliberate,
+# occasional invocation, so it runs everything a bare `run` has always run.
+#
 # Sourced use (from precommit-gate.sh):
-#   . project-gates.sh   ;   adb_run_gates "$repo_root" "$changed_files"
+#   . project-gates.sh   ;   adb_run_gates "$repo_root" "$changed_files" turn-end
 #
 # The `detect` output stays a two-column "<label>\t<command>" contract (RUN gates only);
 # the richer per-gate state (N/A / disabled / scope) is surfaced by `status`, and consumed
@@ -88,6 +116,56 @@ _ADB_NL='
 _ADB_BUILTIN_AXES="typecheck lint test format"
 
 _adb_have() { command -v "$1" >/dev/null 2>&1; }
+
+# Split one tab-delimited gate record into five caller-named variables.
+#
+# WHY THIS EXISTS RATHER THAN `IFS="$_ADB_TAB" read -r state label cmd scope cadence`:
+# tab is an IFS *whitespace* character, and the shell collapses runs of IFS whitespace into
+# a single delimiter. An EMPTY MIDDLE FIELD therefore disappears, silently shifting every
+# later field one position left. With the old four-field record that was invisible — `scope`
+# was last, so an empty one merely read back as empty — but the moment `cadence` was
+# appended, a gate with no [gates.scope] parsed as scope=<cadence>, cadence=<empty>, and an
+# empty cadence matches neither "always" nor the context, so EVERY GATE WAS SKIPPED IN EVERY
+# CONTEXT. That is enforcement silently off (#35), produced by a reader that still looked
+# perfectly reasonable. `awk -F` does not collapse, which is why `status` kept printing the
+# right answer while `run` ran nothing — the two disagreed for a full round of testing.
+#
+# Parameter expansion cannot collapse anything, so the split is exact regardless of which
+# fields are empty. Namerefs are the repo's established idiom for an output-variable helper
+# (D34, adb_sc_paths) and are safely inside the bash 5.3 floor.
+#
+# Usage: _adb_rec_split <record> <state-var> <label-var> <cmd-var> <scope-var> <cadence-var>
+# Output names are VALIDATED before `local -n` binds them, per this repo's D34 precedent: an
+# unvalidated name reaches `declare -n`, which EVALUATES an array subscript inside it, and this
+# library installs into every consumer's ~/.<agent>/scripts/lib. The reserved-prefix rule is a
+# PREFIX, not a list of today's locals — an enumeration is correct only until someone adds one,
+# and the name they add would then bind circularly and leave the caller's variable UNSET, which
+# is the silent failure this check exists to prevent.
+#
+# It stops there rather than reproducing adb_sc_paths' full `declare -p` chain analysis, and the
+# reason is a real difference and not fatigue: that function is a PUBLIC surface consumers call
+# with names of their choosing, whereas this one is `_`-prefixed and both of its call sites pass
+# literals a few lines below. The nameref-CHAINING seam needs a caller that does not exist here.
+# If this ever becomes public, it owes the fuller check.
+_adb_rec_split() {
+  local _ars_rec="${1-}" _ars_rest _ars_v
+  for _ars_v in "${2-}" "${3-}" "${4-}" "${5-}" "${6-}"; do
+    case "$_ars_v" in
+      ''|*[!A-Za-z0-9_]*|[0-9]*)
+        printf 'project-gates: _adb_rec_split: "%s" is not a usable output variable name\n' "$_ars_v" >&2
+        return 2 ;;
+      _ars_*)
+        printf 'project-gates: _adb_rec_split: output name "%s" uses the reserved _ars_ prefix\n' "$_ars_v" >&2
+        return 2 ;;
+    esac
+  done
+  local -n _ars_o1="$2" _ars_o2="$3" _ars_o3="$4" _ars_o4="$5" _ars_o5="$6"
+  _ars_o1="${_ars_rec%%"$_ADB_TAB"*}";  _ars_rest="${_ars_rec#*"$_ADB_TAB"}"
+  _ars_o2="${_ars_rest%%"$_ADB_TAB"*}"; _ars_rest="${_ars_rest#*"$_ADB_TAB"}"
+  _ars_o3="${_ars_rest%%"$_ADB_TAB"*}"; _ars_rest="${_ars_rest#*"$_ADB_TAB"}"
+  _ars_o4="${_ars_rest%%"$_ADB_TAB"*}"
+  _ars_o5="${_ars_rest#*"$_ADB_TAB"}"
+}
 
 # A valid gate label: starts with a letter, then letters/digits/underscore/hyphen. This
 # keeps a label safe to use as an awk regex key, a TOML lookup, and a log filename.
@@ -153,16 +231,22 @@ _adb_pkg_has() {
 
 # --- gate records ------------------------------------------------------------
 # The internal representation is one tab-separated record per gate:
-#   <state>\t<label>\t<command>\t<scope>
+#   <state>\t<label>\t<command>\t<scope>\t<cadence>
 # state ∈ { run, na, disabled }. Undetected axes (nothing detected, no override, no
 # declared N/A) produce NO record — that is a detection miss, not a gate.
+#
+# `cadence` was appended rather than inserted, and every reader below was updated with it
+# (adb_detect_gates, adb_status_gates, adb_run_gates). That matters more than it looks: a
+# `read -r state label cmd scope` left un-updated does not fail, it silently packs the new
+# field onto the END of `scope` — turning every scoped gate's glob list into garbage that
+# matches nothing. Adding a field to this record means auditing all three readers.
 
 # Resolve one gate label (built-in or custom) against agents.toml and print its record,
 # or nothing when the label resolves to a detection miss.
 _adb_resolve_record() {
   local label="$1" default_cmd="$2" root="$3"
   local toml="$root/agents.toml"
-  local cmd="" state="" scope="" raw
+  local cmd="" state="" scope="" cadence="" raw
 
   _adb_valid_label "$label" || {
     printf 'project-gates: ignoring invalid gate label "%s"\n' "$label" >&2
@@ -196,12 +280,32 @@ _adb_resolve_record() {
     scope="$(adb_toml_unquote "$raw")"
   fi
 
+  # Cadence, likewise, only matters for a gate that actually runs — reading it for a
+  # disabled or N/A gate would let a stray [gates.cadence] entry change a record whose
+  # state is already decided (#240). Normalized to lower case here so the ONE comparison
+  # that consumes it (adb_run_gates) stays a plain string equality.
+  #
+  # An unrecognized value WARNS AND RUNS. It is tempting to treat a typo as "skip until
+  # you fix it", but that inverts the failure direction this repo has settled on: a gate
+  # that silently stops running is indistinguishable from a gate that passed, which is the
+  # fail-silent class #35 exists to prevent (docs/design-principles.md §5). A noisy gate
+  # that still runs is recoverable; a quiet one that does not is how enforcement goes off.
+  if [ "$state" = run ] && raw="$(adb_toml_get "$toml" gates.cadence "$label")"; then
+    cadence="$(adb_toml_unquote "$raw" | tr '[:upper:]' '[:lower:]')"
+    case "$cadence" in
+      ''|always|full|turn-end) : ;;
+      *) printf 'project-gates: gate "%s": unrecognized cadence "%s" (want always|full|turn-end) — running it in every context\n' "$label" "$cadence" >&2
+         cadence="always" ;;
+    esac
+  fi
+  [ -z "$cadence" ] && cadence="always"
+
   if _adb_has_tab "$label" || _adb_has_tab "$cmd" || _adb_has_tab "$scope"; then
     printf 'project-gates: ignoring gate "%s" (embedded tab in command/scope)\n' "$label" >&2
     return 0
   fi
 
-  printf '%s\t%s\t%s\t%s\n' "$state" "$label" "$cmd" "$scope"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$state" "$label" "$cmd" "$scope" "$cadence"
 }
 
 # Emit a built-in axis record. These four calls are the CANONICAL gate-axis list —
@@ -327,8 +431,14 @@ EOF
 # contract — N/A / disabled / scope live in `status`, not here.
 adb_detect_gates() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-  local state label cmd scope
-  _adb_gate_records "$root" | while IFS="$_ADB_TAB" read -r state label cmd scope; do
+  local rec state label cmd scope cadence
+  # Split exactly, even though only state/label/cmd are used here — see _adb_rec_split. A
+  # reader that "happens to work because the fields it needs are the non-empty leading ones"
+  # is the bug one field-append away. The two-column stdout contract is unchanged;
+  # selfcheck.sh's gate-detector step pins it exactly.
+  _adb_gate_records "$root" | while IFS= read -r rec; do
+    [ -z "$rec" ] && continue
+    _adb_rec_split "$rec" state label cmd scope cadence
     [ "$state" = run ] || continue
     printf '%s\t%s\n' "$label" "$cmd"
   done
@@ -338,9 +448,11 @@ adb_detect_gates() {
 adb_status_gates() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   local out
+  # A non-default cadence is shown, because "why did that gate not run at turn-end?" is
+  # otherwise unanswerable from `status` — the surface an operator reaches for first.
   out="$(_adb_gate_records "$root" | awk -F"$_ADB_TAB" '
-    { state=$1; label=$2; cmd=$3; scope=$4
-      if      (state=="run")      printf "%-12s run       %s%s\n", label, cmd, (scope!="" ? "   [scope: " scope "]" : "")
+    { state=$1; label=$2; cmd=$3; scope=$4; cadence=$5
+      if      (state=="run")      printf "%-12s run       %s%s%s\n", label, cmd, (scope!="" ? "   [scope: " scope "]" : ""), ((cadence!="" && cadence!="always") ? "   [cadence: " cadence "]" : "")
       else if (state=="na")       printf "%-12s N/A       (declared not-applicable)\n", label
       else if (state=="disabled") printf "%-12s disabled  (override \"\")\n", label
     }')"
@@ -353,11 +465,32 @@ adb_status_gates() {
 
 # Run every gate. Nonzero exit if any RUN gate fails (with a log tail on stderr). N/A and
 # disabled gates are skipped (N/A is reported); a scoped gate is skipped when a change set
-# is supplied and no changed path matches. Zero exit when no gates exist — a safe no-op in
-# unknown repos. Usage: adb_run_gates <root> [changeset]
+# is supplied and no changed path matches; a gate whose cadence excludes this caller's
+# context is skipped and SAID SO. Zero exit when no gates exist — a safe no-op in unknown
+# repos. Usage: adb_run_gates <root> [changeset] [context]
+#
+# <context> ∈ { turn-end, full }, default "full".
+#
+# THE DEFAULT IS WHAT KEEPS THIS BACKWARD-COMPATIBLE, and it is chosen deliberately rather
+# than for symmetry. Every pre-#240 caller passed at most two arguments and expected every
+# gate to run; defaulting to "full" (which excludes only `turn-end`-declared gates, of
+# which none can exist in a repo that has never heard of cadence) preserves that exactly.
+# Defaulting to "turn-end" instead would have silently disabled `full` gates for every
+# existing caller — the upgrade-time behavior change #240's test plan forbids.
+#
+# An INVALID context is a caller bug, not a config typo, so it fails loud (return 2) rather
+# than guessing: the two directions a guess could take are "run everything" (ignoring a
+# repo's declared cadence) and "run nothing" (enforcement off), and neither is safe to
+# pick on a caller's behalf.
 adb_run_gates() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   local changeset="${2:-}"
+  local context="${3:-full}"
+  case "$context" in
+    turn-end|full) : ;;
+    *) printf 'project-gates: FATAL — unknown run context "%s" (want turn-end|full)\n' "$context" >&2
+       return 2 ;;
+  esac
   local records; records="$(_adb_gate_records "$root")"
   [ -z "$records" ] && return 0
 
@@ -365,21 +498,39 @@ adb_run_gates() {
   # shared temp dir for logs but NEVER rm it on cleanup (rm -rf a shared /tmp is data loss).
   local tmp created=0
   if tmp="$(mktemp -d 2>/dev/null)"; then created=1; else tmp="${TMPDIR:-/tmp}"; fi
-  local failed="" state label cmd scope logf
-  while IFS="$_ADB_TAB" read -r state label cmd scope; do
+  local failed="" rec state label cmd scope cadence logf t0 elapsed
+  while IFS= read -r rec; do
+    [ -z "$rec" ] && continue
+    _adb_rec_split "$rec" state label cmd scope cadence
     [ -z "$label" ] && continue
     case "$state" in
       na)       printf 'adb: gate "%s": N/A (declared, skipped)\n' "$label" >&2; continue ;;
       disabled) continue ;;
     esac
+    # Cadence before scope: it is the cheaper question and the one whose answer does not
+    # depend on the change set, so a gate excluded from this context never has its globs
+    # walked. Both skips REPORT — an unexplained absence is the thing #240 asked to fix.
+    if [ "$cadence" != always ] && [ "$cadence" != "$context" ]; then
+      printf 'adb: gate "%s": skipped (cadence "%s", this is a "%s" run)\n' "$label" "$cadence" "$context" >&2
+      continue
+    fi
     if [ -n "$scope" ] && [ -n "$changeset" ] && ! _adb_path_in_scope "$scope" "$changeset"; then
       printf 'adb: gate "%s": skipped (scope "%s" matched no changed file)\n' "$label" "$scope" >&2
       continue
     fi
     logf="$tmp/adb-gate-$label.log"
-    if ! ( cd "$root" && sh -c "$cmd" ) >"$logf" 2>&1; then
+    # Per-gate elapsed (#240): the hook reported progress but never cost, so "which gate is
+    # slow?" needed a stopwatch. BASH_MONOSECONDS is monotonic — guaranteed by this repo's
+    # 5.3 floor — so a gate is not credited with negative time when the wall clock steps
+    # backward mid-run (NTP, a DST jump). It counts SECONDS since an arbitrary epoch, which
+    # is all a difference needs.
+    t0=$BASH_MONOSECONDS
+    if ( cd "$root" && sh -c "$cmd" ) >"$logf" 2>&1; then
+      printf 'adb: gate "%s": ok (%ss)\n' "$label" "$(( BASH_MONOSECONDS - t0 ))" >&2
+    else
+      elapsed=$(( BASH_MONOSECONDS - t0 ))
       tail -c 4000 "$logf" >&2 || true
-      printf '\nadb: gate "%s" failed (%s)\n' "$label" "$cmd" >&2
+      printf '\nadb: gate "%s" failed after %ss (%s)\n' "$label" "$elapsed" "$cmd" >&2
       failed="$failed$label "
     fi
   done <<EOF
@@ -399,7 +550,10 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
   case "${1:-}" in
     detect) adb_detect_gates "${2:-}" ;;
     status) adb_status_gates "${2:-}" ;;
-    run)    adb_run_gates    "${2:-}" ;;
-    *) echo "usage: project-gates.sh [detect|status|run] [root]" >&2; exit 2 ;;
+    # The changeset and context are forwarded so the runner is scriptable from the command
+    # line, not only from a sourced caller. Both default exactly as a bare `run` always
+    # behaved: no change set (scoped gates run) and the FULL context (every cadence runs).
+    run)    adb_run_gates    "${2:-}" "${3:-}" "${4:-full}" ;;
+    *) echo "usage: project-gates.sh [detect|status|run] [root] [changeset] [context]" >&2; exit 2 ;;
   esac
 fi

@@ -42,6 +42,145 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -z "$repo_root" ] && exit 0
 cd "$repo_root" || exit 0
 
+# --- whose tree is this? (#241) ----------------------------------------------
+# A checkout is a directory, and nothing stops two sessions opening the same one. This gate's
+# inputs were purely git state, which carries no session identity, so a session that was merely
+# TALKING ran the full suite over another session's mid-edit tree at every turn-end — and, because
+# a red gate exits 2, could be blocked from ending its turn by work it did not write and must not
+# touch. Observed twice on 2026-07-31; the second time the bystander was told to rebuild and commit
+# nine generated files belonging to another session.
+#
+# THIS SITS BEFORE THE PROJECT-GATE `exec` DELIBERATELY. That second observation reported
+# `build-drift FAIL`, which is a check name in THIS repo's own .claude/scripts/precommit-gate.sh —
+# the project gate, not the global one. A check placed after the delegation would therefore miss
+# the very incident it is here to prevent, and would silently do nothing in every repo that uses
+# the documented escape hatch.
+#
+# IDENTITY COMES FROM THE ENVIRONMENT ONLY — never from the hook payload on stdin. Claude Code
+# publishes the session id both ways, and the sibling implement-issue-gate.sh reads the payload as
+# a fallback, but this gate must not: it `exec`s a project gate a few lines below, that child
+# INHERITS stdin, and docs/per-project-overrides.md documents the inherited payload as part of the
+# contract. Consuming it here to answer an optional question would leave every project gate at EOF
+# to buy an identity we can do without. A host that exposes no CLAUDE_CODE_SESSION_ID simply gets
+# "unknown", which is a documented, enforcing degradation — one rung shorter than the sibling
+# gate's, and stated rather than implied.
+#
+# EVERY UNKNOWN KEEPS TODAY'S BEHAVIOR (run the gates, block on red). The dangerous direction here
+# is not "gated once too often", it is "silently stopped gating": suppressing on unknown ownership
+# would make the gate advisory for virtually every ordinary dirty tree, since a marker exists only
+# during an /implement-issue run. That is the fail-silent class of #35 and docs/design-principles.md
+# §5, so the suppression is deliberately narrow — it fires only on POSITIVE proof that another
+# session owns this branch's run.
+#
+# NARROWER THAN THE ISSUE TITLE, and said plainly: this covers a foreign tree whose writer is
+# running /implement-issue on THIS branch. A session editing the tree without a tracked run leaves
+# no ownership evidence anywhere in git, so the bystander is still gated. Closing that gap needs
+# per-session tree baselines, which is a different and much larger design.
+# Is this a plausible session id? Applied to BOTH sides of the comparison, which is the point:
+# checking only the marker's owner meant a MALFORMED current identity (environment contamination,
+# a future harness format) was accepted as "me", compared unequal against a perfectly valid marker
+# owner, and read as positive proof of another session — suppressing every gate at the moment this
+# session's identity was in fact unknown. Same grammar, same direction, both sides.
+plausible_session_id() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._:-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+foreign_run_marker() {
+  local marker=".claude/state/implement-issue-active.json" raw rest m_branch="" m_owner="" m_phase="" mine
+  [ -f "$marker" ] || return 1                       # no marker: the overwhelmingly common case
+  mine="${CLAUDE_CODE_SESSION_ID:-}"
+  plausible_session_id "$mine" || return 1           # cannot identify MYSELF -> unknown -> enforce
+  command -v jq >/dev/null 2>&1 || return 1          # cannot read it -> unknown -> enforce
+  command -v adb_owners_compatible >/dev/null 2>&1 || return 1   # no shared predicate -> enforce
+  # ONE jq pass into a snapshot, so a concurrent write cannot hand back a mix of old and new
+  # fields — and @tsv rather than two newline-separated values, because a NEWLINE INSIDE A FIELD
+  # otherwise re-aims the whole decode. Measured on this implementation before the fix, and both
+  # directions failed toward SUPPRESSION, i.e. toward the gate switching itself off:
+  #
+  #   owner  = "AAAA\nBBBB"  ->  decoded owner "AAAA"   — a truncation that is not my id
+  #   branch = "feat\nevil"  ->  branch "feat" MATCHED, and the real owner was discarded in
+  #                             favour of "evil", the second line of the branch
+  #
+  # @tsv escapes tab and newline inside values, so no field can contain the delimiter and no
+  # field can shift. This is the same failure implement-issue-gate.sh pins for its own five-field
+  # decode; the sibling learned it first (#180), and this decode is now held to the same bar.
+  #
+  # BOTH FIELDS MUST BE JSON STRINGS, tested in jq rather than inferred afterwards. `@tsv` happily
+  # renders a NUMBER, so a marker carrying `"owner": 123` decoded to the perfectly well-formed
+  # value "123" — which then differed from this session's id and SUPPRESSED THE GATE. A charset
+  # test cannot catch that, because a session id legitimately contains digits (Claude Code's is a
+  # UUID). The type is what separates a real owner field from a corrupt one, and corruption must
+  # read as unknown. Emitting `empty` for a non-string leaves `raw` empty, which enforces.
+  local tab; tab="$(printf '\t')"
+  raw="$(jq -r 'if ((.branch|type) == "string") and ((.owner|type) == "string")
+                   and (((.phase|type) == "string") or (.phase == null))
+                then [.branch, .owner, (.phase // "")] | @tsv else empty end' "$marker" 2>/dev/null)" || return 1
+  [ -n "$raw" ] || return 1                          # absent or non-string field -> enforce
+  case "$raw" in *"$tab"*"$tab"*) : ;; *) return 1 ;; esac   # need both delimiters to decode
+  m_branch="${raw%%"$tab"*}"; rest="${raw#*"$tab"}"
+  m_owner="${rest%%"$tab"*}"
+  m_phase="${rest#*"$tab"}"
+
+  # A COMPLETED RUN IS NOT A LIVE RUN. The workflow writes `phase=complete` at close-out, and the
+  # marker can outlive that: the owning session may exit before its Stop hook removes it, and that
+  # hook fail-closes on unverifiable PR state (`pr_stored_state` returns `unverified` with no `gh`
+  # or on a network error) and so KEEPS the marker rather than deleting it. Nothing else can clear
+  # it either — implement-issue-gate.sh deliberately leaves a foreign marker byte-identical (#180,
+  # fixture L in check-implement-gate.sh). Without this arm, every other session on that branch
+  # would skip every gate until the age bound expired, on the strength of a run that had finished.
+  [ "$m_phase" = "complete" ] && return 1
+  # POSITIVE PROOF MEANS A PLAUSIBLE ID, not merely a non-empty string. @tsv stops a field from
+  # shifting, but it faithfully preserves a CORRUPT one — an owner of "<my-id>\nBBBB" survives as
+  # a value that is genuinely not my id, and would therefore read as another session and suppress
+  # the gate. Corruption is not evidence of a second session; it is evidence of a broken marker,
+  # and this whole check exists to fire only on proof.
+  #
+  # WHAT IS ACCEPTED IS A GRAMMAR, not "any opaque token", and the difference is worth stating
+  # rather than glossing: `[A-Za-z0-9._:-]+` covers a UUID (Claude Code's shape) and the usual
+  # token spellings, but a harness whose session id used Unicode or other punctuation would read
+  # as UNKNOWN and be gated rather than spared. That costs a bystander one gate run and can never
+  # disable enforcement, so it is the right way round to be wrong — and widening it is one line
+  # if another harness ever needs it.
+  case "$m_owner" in
+    ''|*[!A-Za-z0-9._:-]*) return 1 ;;
+  esac
+  # The marker must be about THE BRANCH THIS TURN IS ON. A foreign run parked on some other
+  # branch says nothing about the changes in front of us, and treating it as a blanket
+  # suppression would turn one unrelated run into a checkout-wide gate bypass.
+  [ -n "$m_branch" ] && [ "$m_branch" = "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" ] || return 1
+  adb_owners_compatible "$m_owner" "$mine" && return 1
+  # A MARKER IS NOT EVIDENCE OF A LIVE RUN FOREVER. A crashed or abandoned run leaves its marker
+  # behind, and without a bound this check would then disable turn-end gating on that branch
+  # indefinitely for every other session — permanently, if the repo also declares its gates
+  # `full`. That is the enforcement-off combination this whole design is trying not to create.
+  #
+  # The canonical staleness predicate is `cleanup-lib.sh state-verdict marker`, and it is
+  # deliberately NOT used here: it is a pure function whose `<pr-state>` argument the CALLER must
+  # obtain from a live `gh` query, and a Stop hook that runs at every turn-end cannot afford a
+  # network round trip. Age is the signal that is both offline and honest at this cadence. The
+  # workflow re-stamps this marker at every phase transition, so a live run keeps it fresh.
+  #
+  # 9000s (2h30m) matches the run-claim lease in implement-lib.sh (#202), for the same reason:
+  # comfortably longer than a legitimate quiet window, far shorter than "forever". The failure
+  # direction is deliberate — a genuinely long-running run that goes this long without a phase
+  # change simply stops sparing bystanders, which is the ENFORCING direction, not the silent one.
+  local age stale="${ADB_MARKER_STALE_SECS:-9000}"
+  case "$stale" in ''|*[!0-9]*) stale=9000 ;; esac
+  age="$(adb_age_secs "$marker")"
+  [ -n "$age" ] || return 1                          # cannot age it -> unknown -> enforce
+  [ "$age" -le "$stale" ] || return 1                # too old to prove a run is live -> enforce
+  # Says only what was READ. An earlier draft asserted that the other session "gates that work"
+  # and that this one "did not write it" — neither is established by a marker, which records who
+  # STARTED a run, not who made the changes now in the tree.
+  printf 'precommit-gate: skipped — .claude/state records an /implement-issue run on this branch owned\n' >&2
+  printf 'precommit-gate: by another session (%.8s…), last updated %ss ago. Gates are left to that run (#241).\n' "$m_owner" "$age" >&2
+  return 0
+}
+foreign_run_marker && exit 0
+
 # Defer to a project-local gate if one exists and it isn't this very file — by RUNNING it, not by
 # stepping aside. `exit 0` here was enforcement silently OFF (#240): nothing else invokes a project
 # gate. No project-level Stop hook is wired by install.sh, the adapter, or bin/baseline, so a repo
@@ -116,7 +255,14 @@ require_lib "$lib_dir/project-gates.sh" adb_run_gates
 # Pass the branch change set so a path-scoped gate ([gates.scope] in agents.toml) runs
 # only when it touches a matching file — the escape hatch that lets a repo express
 # apps/**-style scoping without forking this whole script.
-if adb_run_gates "$repo_root" "$changed"; then
+#
+# And declare the CONTEXT: this is the per-turn caller (#240). A gate declared
+# `[gates.cadence] <label> = "full"` is skipped here and reported, so a repo whose `test` gate is
+# its own CI mirror no longer re-runs CI at the end of every turn. Nothing else changes: a repo
+# with no [gates.cadence] table has every gate at the default `always` and behaves exactly as
+# before. This is the ONLY caller that passes `turn-end` — the workflows' in-loop
+# `project-gates.sh run` is a full run and still runs everything.
+if adb_run_gates "$repo_root" "$changed" turn-end; then
   exit 0
 fi
 

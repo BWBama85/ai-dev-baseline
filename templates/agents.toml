@@ -158,3 +158,26 @@ debug        = "claude"     # owns root-cause investigations.
 # by the Stop-hook) touches a matching path — no forked gate script needed.
 # [gates.scope]
 # build = "apps/**,packages/**"
+
+# Optional: per-gate CADENCE — which caller a gate participates in.
+#
+# DO NOT POINT A PER-TURN GATE AT A FULL CI SUITE. The Stop hook fires at the end of EVERY
+# turn, including turns that change nothing, so a `test` gate wired to a repo-wide CI mirror
+# re-runs CI after every message. [gates.scope] cannot express the difference — a repo-wide
+# suite legitimately matches almost any changed path. This can:
+#
+#   always     (default)  runs in both contexts — exactly the pre-cadence behaviour
+#   full                  skipped at turn-end; runs in a full `project-gates.sh run`
+#   turn-end              runs at turn-end; skipped in a full run
+#
+# "full" is deliberately NOT called "pre-push": nothing here wires an automatic pre-push
+# hook. It means "excluded from the per-turn Stop hook, included in a full run". The
+# workflows call the full runner before they push, so in practice it does run before a
+# workflow-driven push — but a `git push` you type yourself runs nothing.
+#
+# Unset leaves gate SELECTION and EXIT STATUS exactly as before (the output gains an elapsed
+# line per passing gate). An unrecognized value WARNS AND RUNS the gate: a typo must never
+# quietly disable enforcement. Every cadence and scope skip is reported — a gate disabled with
+# `= ""` stays silently skipped, as it always has.
+# [gates.cadence]
+# test = "full"

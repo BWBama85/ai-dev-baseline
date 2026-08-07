@@ -7,7 +7,99 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **`[gates.cadence]` — a gate can declare WHICH CALLER it runs for** (#240, D47). The Stop hook
+  fires at the end of every turn, including turns that edit nothing, so a `test` gate pointed at a
+  repo-wide CI mirror re-ran CI after every message. `[gates.scope]` could not express the
+  difference — a repo-wide suite legitimately matches almost any changed path — and the only
+  documented escape was forking a whole gate script to state one scheduling fact.
+
+  ```toml
+  [gates.cadence]
+  test = "full"      # always (default) | full | turn-end
+  ```
+
+  `adb_run_gates` now takes a context (`turn-end` | `full`, default `full`); a gate runs iff its
+  cadence is `always` or matches the context. **A repo with no `[gates.cadence]` table runs the
+  same gates and exits the same way in both contexts** — the output does change, since a passing
+  gate now prints an elapsed line where it printed nothing before. An *unrecognized* value warns
+  and **runs** the gate: a typo must never quietly disable enforcement, since a gate that stops
+  running looks exactly like one that passed (#35).
+
+  **One of #240's acceptance criteria is deliberately not met**, and is called out rather than
+  quietly dropped: *"a gate that exceeds the hook timeout → the hook terminates it, exits with a
+  classified status, and the operator sees which gate was killed."* That cannot be built as
+  written — the 240s bound belongs to the Claude harness, which cancels the hook, and a cancelled
+  process cannot then report its own status. A separate **inner** deadline is a different feature
+  (it could not reuse `adb_run_bounded` unchanged, whose macOS grandchild limitation an arbitrary
+  `sh -c` gate would hit, and per-gate bounds leave the total unbounded anyway). The issue's own
+  open question asks for that to be split out once diagnosed; it is now diagnosed and split out.
+  The 18m55s that motivated it does not reproduce (#260/D37), so cadence answers the cost and
+  elapsed reporting answers attribution.
+
+  The value is `full` rather than `pre-push` on purpose: nothing in this framework wires an
+  automatic pre-push hook, so `pre-push` would have named a guarantee the gate model cannot make.
+  It means "excluded from the per-turn Stop hook, included in a full run".
+
+  Every gate that runs now also reports its **elapsed seconds**, and every skip reports its
+  reason, so a slow or absent gate is attributable without a stopwatch.
+
 ### Fixed
+
+- **A Stop-hook gate blocked one session's turn on another session's tree** (#241, D47).
+  `precommit-gate.sh` decided whether to gate purely from git state, which carries no session
+  identity. Two sessions sharing a checkout is routine, and the session that was merely *talking*
+  ran the full suite over the other's mid-edit work at every turn-end — and, because a red gate
+  exits 2, **could be blocked from ending its turn by code it did not write**. Observed twice on
+  2026-07-31; the second time the bystander was instructed to rebuild and commit nine generated
+  files belonging to another session.
+
+  The gate now no-ops when a run marker **for the current branch** is owned by a **different**
+  session, reusing the promoted `adb_owners_compatible` in `common.sh` rather than growing a
+  second comparator. Two details are load-bearing:
+
+  - **The check runs before the project-gate `exec`.** That second incident reported
+    `build-drift FAIL` — a check name in this repo's *own* project gate — so a check placed after
+    the delegation would have missed the exact case the issue documents.
+  - **Identity comes from `$CLAUDE_CODE_SESSION_ID` only, never the hook payload on stdin**, because
+    the `exec`'d project gate inherits that fd and the docs promise it does.
+
+  **Every unknown keeps blocking**: no marker, a marker for another branch, a malformed or
+  ownerless marker, no `jq`, or no session id. Suppressing on unknown ownership was the issue's
+  own suggested direction and is not what shipped — it would make the gate advisory for nearly
+  every ordinary dirty tree. Mutating the implementation that way turns seven pre-existing
+  fail-loud assertions red, including the #35 regression tests.
+
+  Narrower than the issue title, and stated plainly: this covers a foreign tree whose writer is
+  running `/implement-issue` on that branch. A session editing the tree without a tracked run
+  leaves no ownership evidence anywhere in git, so a bystander is still gated there. **A marker
+  also stops being evidence after 2h30m** (`ADB_MARKER_STALE_SECS`), because a crashed run would
+  otherwise leave its branch un-gated for every later session indefinitely — and a repo that also
+  declares its gates `full` would then have no turn-end enforcement at all. A long-running run
+  that goes that long without a phase change simply stops sparing bystanders, which is the
+  enforcing direction. The marker records who *started* a run, never who wrote the changes now in
+  the tree, so the skip message says only that.
+
+- **A newline inside a marker field re-aimed the ownership decode, toward switching the gate off.**
+  Found in self-review, before the new check ever shipped. Reading `.branch` and `.owner` as two
+  newline-separated values means a newline *inside* either one shifts the decode — and both
+  directions failed toward suppression: an owner of `<my-id>\nBBBB` decoded to a truncated
+  `<my-id>` that no longer matched me, and a branch of `feat\nevil` still matched `feat` on its
+  first line while replacing the real owner with `evil`. The decode now goes through `@tsv`, which
+  escapes both delimiters so no field can shift, and a decoded owner is additionally required to
+  *look* like a session id — corruption is evidence of a broken marker, not proof of a second
+  session, and only proof may suppress. Same class `implement-issue-gate.sh` already pins for its
+  own decode (#180).
+
+- **An empty middle field silently shifted every gate record** — found while adding cadence, and
+  worth recording because the failure was invisible. Tab is an IFS *whitespace* character, so
+  `IFS=<tab> read` collapses runs of tabs and drops empty middle fields. That was harmless while
+  `scope` was the last field; the moment `cadence` was appended, a gate with no `[gates.scope]`
+  parsed as `scope=<cadence>, cadence=<empty>` — and an empty cadence matches no context, so
+  **every gate was skipped in every context**. `awk -F` does not collapse, so `status` kept
+  printing the right answer while `run` ran nothing. Records are now split by explicit parameter
+  expansion (`_adb_rec_split`), which cannot collapse regardless of which fields are empty.
 
 - **The closing-keyword verification added in #295 could never succeed, so it halted every
   `/implement-issue` run at its last step.** `gh pr view --json closingIssuesReferences` returns a

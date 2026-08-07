@@ -220,6 +220,74 @@ skips a gate scoped to `apps/**` **without forking the gate script**.
 Standalone `project-gates.sh run` has no change set and runs scoped gates
 unconditionally (fail-safe).
 
+#### Per-gate cadence (which caller a gate runs for)
+
+**Don't point a per-turn gate at a full CI suite.** The Stop hook fires at the
+end of *every* turn, including turns that edit nothing. A `test` gate wired to a
+repo-wide CI mirror therefore re-runs CI after every message — this framework's
+own `test` gate is `scripts/selfcheck.sh`, and doing that at turn-end was
+measured at 66–72s a turn (and once observed far worse). `[gates.scope]` cannot
+express the difference, because a repo-wide suite legitimately matches almost any
+changed path. Cadence can:
+
+```toml
+[gates]
+test = "bash scripts/selfcheck.sh"   # the whole CI mirror
+
+[gates.cadence]
+test = "full"                        # not at every turn-end
+```
+
+There are two calling contexts, and a gate declares which it participates in:
+
+| value | behaviour |
+|---|---|
+| `always` *(default)* | runs in both contexts — **exactly** the pre-cadence behaviour |
+| `full` | skipped at turn-end; runs in a full `project-gates.sh run` |
+| `turn-end` | runs at turn-end; skipped in a full run |
+
+A gate runs iff `cadence == "always"` or `cadence == <the caller's context>`.
+Values are case-insensitive.
+
+**`full` does not mean "guaranteed before every push", and it is deliberately not
+spelled `pre-push`.** Nothing in this baseline wires an automatic pre-push hook.
+What it means is precisely *"excluded from the per-turn Stop hook, included in a
+full run"*. The `/implement-issue`, `/debug` and `/resolve-pr-threads` workflows
+each call the full runner before they push, so in practice a `full` gate does run
+before a workflow-driven push — but that is those workflows' doing, not a
+guarantee the gate model can make. A `git push` you type yourself runs nothing.
+
+**Gate selection and exit status are unchanged on upgrade.** A repo with no
+`[gates.cadence]` table has every gate at `always`, so the same gates run in both
+contexts and the run's exit status is what it always was. The *output* does
+change: a gate that passes now prints an elapsed line to stderr where it
+previously printed nothing, so anything parsing this runner's stderr should
+expect it. An *unrecognized*
+value warns and **runs** the gate rather than skipping it: a typo must never
+quietly disable enforcement, because a gate that stops running looks exactly like
+a gate that passed (see §5 of `design-principles.md`).
+
+**Every cadence and scope skip is reported**, with its reason:
+
+```
+adb: gate "test": skipped (cadence "full", this is a "turn-end" run)
+```
+
+(A gate *disabled* with `= ""` stays silently skipped, as it always has — that is
+an explicit "never run this", not a conditional skip anyone needs telling about.
+A declared-N/A gate is reported.)
+
+Each gate that *does* run reports its elapsed time (`adb: gate "test": ok (12s)`),
+so a slow gate is attributable without a stopwatch.
+
+**What bounds a gate's runtime is the harness, not this file.** The Claude Stop
+hook carries a `timeout` (240s as shipped) and the harness enforces it by
+cancelling the hook; a process killed that way cannot report its own status, so
+there is deliberately **no** per-gate kill here — a gate is never terminated
+mid-run and silently reported as anything. Cadence is the supported answer to
+"this gate is too expensive for every turn"; elapsed reporting is the supported
+answer to "which gate is slow".
+
 ### 3b. Shipping the repo's own gate script
 
 Every Stop-hook gate checks, before doing anything else, whether the repo
@@ -257,9 +325,11 @@ replacement script at that exact path and the global one steps aside
 entirely; nothing double-runs. (Note: **path-scoping no longer needs a
 fork** — express it with `[gates.scope]` in 3a instead.)
 
-Use `[gates]` when the commands, the gate set, N/A axes, or path-scoping are
-what differ; ship a repo-local gate script only when the *policy* itself
-(e.g. strict ordering between gates) needs to differ.
+Use `[gates]` when the commands, the gate set, N/A axes, path-scoping **or
+cadence** are what differ; ship a repo-local gate script only when the *policy*
+itself (e.g. strict ordering between gates) needs to differ. In particular,
+"this gate is too expensive to run every turn" is **no longer** a reason to fork
+— that is what `[gates.cadence]` in 3a is for.
 
 ## Concrete examples
 
@@ -303,11 +373,39 @@ lint      = "na"
 typecheck = "na"
 ```
 
+**A repo whose CI mirror is its `test` gate** (this framework itself):
+
+```toml
+[gates]
+test = "bash scripts/selfcheck.sh"
+
+[gates.cadence]
+test = "full"   # before a full run, not after every turn
+```
+
 **A repo that needs to run a database migration check before its normal
 gates, in an order `project-gates.sh` doesn't support:** ship
 `.claude/scripts/precommit-gate.sh` in the repo that runs the migration
-check and then re-uses (or reimplements) the standard gate list — the global
-Stop hook detects it and steps aside.
+check and then **sources `project-gates.sh` and calls `adb_run_gates`** for
+the standard list — the global Stop hook detects the project copy and `exec`s
+it. Re-use the shared runner rather than reimplementing the gate list: a
+second copy of that logic drifts from the real one and silently stops
+matching the repo's own `agents.toml` (golden rule 4, and
+`design-principles.md`).
+
+**Pass `turn-end` as the third argument — a project Stop hook that omits it
+gets the cadence backwards.** `adb_run_gates` defaults to the `full` context,
+so a bare call from a Stop hook runs exactly the gates a repo declared *too
+expensive for a turn* and skips the ones it declared `turn-end`:
+
+```bash
+# in .claude/scripts/precommit-gate.sh, after building "$changed"
+. "$HOME/.claude/scripts/lib/project-gates.sh"
+adb_run_gates "$repo_root" "$changed" turn-end   # <- the context, not optional here
+```
+
+The changeset matters for the same reason: without it `[gates.scope]` cannot
+be evaluated and every scoped gate runs unconditionally.
 
 **A repo whose `/implement-issue` needs one extra sign-off line, nothing
 else:** carry just that line in

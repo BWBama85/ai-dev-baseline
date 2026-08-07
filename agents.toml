@@ -58,6 +58,26 @@ bots = ["chatgpt-codex-connector"]
 [gates]
 test = "bash scripts/selfcheck.sh"
 
+# Cadence: this gate belongs to a FULL run, not to every turn-end (#240).
+#
+# `selfcheck.sh` is the whole offline CI mirror. Golden rule 3 puts it before every push, and
+# that is right; as the `test` axis of a per-turn Stop hook it meant re-running CI after every
+# message — measured at 66-72s parallel (#260) and once observed far worse. This declaration is
+# what the general fix for that looks like, and this repo dogfoods it.
+#
+# WHAT IT DOES NOT DO, so nobody reads more into it: it does not change this repo's turn-end
+# behaviour today. The global gate delegates to `.claude/scripts/precommit-gate.sh` (D25) before
+# it ever consults `[gates]`, and that script runs its own fast subset. This line is the correct
+# declaration for the general mechanism, and it is what would take effect if the local gate were
+# ever removed — enforcement stays cheap by declaration rather than by one repo's private script.
+#
+# `full` means "excluded from the per-turn hook, included in a full `project-gates.sh run`". It is
+# deliberately NOT called "pre-push": nothing in the baseline wires an automatic pre-push hook.
+# The workflows call the full runner before they push, so in practice it does run before a
+# workflow-driven push — but that is those workflows' doing, not a promise this file can make.
+[gates.cadence]
+test = "full"
+
 # The three remaining built-in axes have no toolchain in this stdlib-shell repo. Declare
 # them Not-Applicable (reported by `project-gates.sh status`, never a failure or a
 # detection miss) rather than leaving them to look like detection silently failed.
