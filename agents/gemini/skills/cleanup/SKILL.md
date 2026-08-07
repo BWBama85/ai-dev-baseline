@@ -478,7 +478,7 @@ $SCAN
 EOF
 ```
 
-**Then gap artifacts, review artifacts and thread caches.**
+**Then gap artifacts, the issue snapshot, review artifacts and thread caches.**
 
 **Re-scan before deleting anything.** `$SCAN` and `$LOCK` were captured at the top of this step,
 before a marker pass that makes live PR round trips — seconds, sometimes longer. A new
@@ -530,6 +530,19 @@ RUN_NOW=none
 if printf '%s\n' "$SCAN" | grep -q "^marker${TABC}"; then RUN_NOW=keep; fi
 
 GV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict gaps "$LOCK" "$RUN")" || GV=keep
+# The issue snapshot (#250) takes the SAME two facts as the gap artifacts, and the library answers
+# both from one predicate — /implement-issue step 2 writes it before any marker exists, under the
+# claim, and step 8 still reads it after the marker has taken over. Asked under its own kind name
+# so this loop never appears to be consulting a gap verdict about a file that is not a gap artifact.
+#
+# BUT IT IS ASKED WITH `$RUN_NOW`, NOT `$RUN` — gaps' predicate, review's freshness, and the split
+# is the point. `$RUN` was decided during the marker pass, before live PR round trips; `$RUN_NOW`
+# comes from the re-scan two lines up. For gap artifacts the difference cannot bite: nothing reads
+# them after step 4, so the claim covers their whole live window. The snapshot is read again in
+# step 8, exactly like the review artifacts — so a run that reached step 5 between the marker pass
+# and this delete has a marker in the FRESH scan and a stale answer in `$RUN`, and passing the
+# stale one would sweep a live run's issue text out from under its own review dispatch.
+IV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict issue "$LOCK" "$RUN_NOW")" || IV=keep
 RV="$(bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict review "$RUN_NOW")" || RV=keep
 
 # rm failures are REPORTED, never swallowed. A read-only state dir would otherwise leave every
@@ -549,6 +562,10 @@ while IFS="$TABC" read -r kind sfile key; do
   case "$kind" in
     gaps)
       [ "$GV" = stale ] || continue
+      sweep_file "$sfile"
+      ;;
+    issue)
+      [ "$IV" = stale ] || continue
       sweep_file "$sfile"
       ;;
     review)

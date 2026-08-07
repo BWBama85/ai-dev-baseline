@@ -217,6 +217,32 @@ check_copy_worktree() {
   rm -rf "$2/.git"
 }
 
+# check_copy_subtrees <src> <dst> <dir>… — the same throwaway copy, restricted to named top-level
+# directories. Use it when a suite's whole mutation surface is a known set of subtrees; use
+# check_copy_worktree when it is not, or when the code under test needs the repo's root files.
+#
+# THE COST IS THE REASON, and it is measured rather than assumed. `check_copy_worktree` copies the
+# repo CONTENTS — including `.git`, which on this repo is ~66 MB — and then deletes it. One copy is
+# unnoticeable; a mutation harness doing it a dozen times spends most of its wall clock in the
+# kernel moving a directory it is about to throw away. `check-tmp-paths.sh` ran 63s that way and
+# 6s copying only its four scanned roots (4.4 MB), which is the same fixture for its purposes.
+#
+# Same faithful-copier details as above (`cp -R` of the CONTENTS, so dotfiles, symlinks and modes
+# survive), and the same contract: the result is NOT a git repo, and a failure returns non-zero
+# without exiting. A named directory that does not exist in <src> is skipped, not an error — a
+# suite may legitimately list a root that only some trees carry.
+check_copy_subtrees() {
+  local src="$1" dst="$2" d
+  shift 2
+  [ "$#" -gt 0 ] || return 1
+  mkdir -p "$dst" || return 1
+  for d in "$@"; do
+    [ -d "$src/$d" ] || continue
+    mkdir -p "$dst/$d" || return 1
+    ( cd "$src/$d" && cp -R . "$dst/$d" ) || return 1
+  done
+}
+
 # check_git <dir> <git-args...> — run git in <dir> with a fixed throwaway identity and signing
 # OFF, so a contributor whose global config sets commit.gpgsign=true still gets clean, unsigned
 # fixture commits. Use for EVERY commit-producing fixture git call (this is what closes the

@@ -3426,3 +3426,208 @@ limit: none of them is sufficient alone.
              **#181's "ship this before the common.sh promotion sweep" is moot**: #181 was  <!-- adb-claim-ok: #181 was closed NOT_PLANNED; cited to record that this issue's stated sequencing constraint no longer applies, not as tracked work -->
              observed CLOSED as NOT_PLANNED (closedAt 2026-07-31T06:40:32Z), so the ordering
              constraint has nothing left to order against. <!-- adb-claim-ok: #181 was closed NOT_PLANNED; cited to record that this issue's stated sequencing constraint no longer applies, not as tracked work -->
+
+## D50 — run data lands under `{{STATE_DIR}}`, and `mktemp` was rejected on lifetime grounds
+- date:      2026-08-07
+- category:  project-delta
+- unknown:   #250 left the home for /implement-issue's issue snapshot open between two candidates —
+             a per-run `mktemp -d` or `{{STATE_DIR}}` — and said the two "should be decided together"
+             with #202's per-run state naming rather than in isolation.
+- decision:  `{{STATE_DIR}}`, with the snapshot registered as a first-class state family. #202 has
+             since landed and decided the model it was waiting on: exclusion is per checkout PER
+             AGENT, enforced by `implement-lib.sh admit`, and `{{STATE_DIR}}` renders to
+             `.<agent>/state` (`scripts/build.sh:112`) — the same boundary, so a fixed name inside
+             it cannot collide with anything `admit` permits to exist.
+
+             `mktemp -d` was rejected on cost, and the cost is real rather than fatal — the
+             independent review was right that the first draft of this entry overstated it. Two
+             problems have to be SOLVED for it to work, where `{{STATE_DIR}}` has neither: the
+             directory's identity is a SHELL VARIABLE, and this workflow's own step 1 already warns
+             that a later fenced block may run as a separate shell — while the snapshot is written
+             in step 2 and last read in step 8, an hour and a dozen blocks later; and it has no
+             cleanup owner inside the run, because a trap in the creating block either fires before
+             step 8 or dies with that shell. Both are answerable — a state-file pointer could carry
+             the identity across shells, and OS temp reaping eventually reclaims an orphan — but
+             the pointer is itself a second piece of run state needing its own lifecycle, which is
+             the thing `{{STATE_DIR}}` already provides. Simplicity decided it, not impossibility.
+- placement: `base/workflows/implement-issue.md` (the 7 sites plus the containment prose);
+             `scripts/lib/cleanup-lib.sh` (`state-scan`'s `issue` arm, `state-verdict issue`);
+             `scripts/lib/implement-lib.sh` (`_il_clear`'s family globs);
+             `base/workflows/cleanup.md` (the sweep arm);
+             `scripts/check-tmp-paths.sh` + `scripts/selfcheck.sh` + `.github/workflows/ci.yml`
+             (the guard and its two wirings);
+             `scripts/check-cleanup.sh`, `scripts/check-implement-lib.sh`,
+             `scripts/check-injection.sh`, `scripts/check-common-lib.sh` (coverage).
+- reason:    A project-delta, not a general gap: the defect is in this repo's own workflow source
+             and shared libraries, and every piece of the fix landed in a home that already
+             existed. No new config surface was invented and no baseline rule was contradicted.
+- baseline-issue: #250
+- also:      **`state-verdict issue` SHARES the `gaps` arm rather than copying it.** The same two
+             signals decide both — a pre-marker run holding the claim, and a marker describing a
+             live run — so one body answers for both. Two bodies that must agree are two bodies
+             that stop agreeing after one is edited; the alias keeps one implementation while
+             letting `base/workflows/cleanup.md` ask under the name of the file it is actually
+             deciding about. `scripts/check-cleanup.sh` section 2c1 restates every `gaps` case for
+             `issue`, so a future split that changes one side fails there.
+
+             **The LIFETIMES are not identical, though, and the first cut of this entry said they
+             were.** Gap artifacts stop being consumed after step 4; the snapshot is consumed again
+             in step 8. That is why the sweep asks `issue` with `$RUN_NOW` (the fresh re-scan) and
+             `gaps` with `$RUN` (the marker pass) — a run that reached step 5 mid-sweep is live in
+             one and stale in the other, and passing the stale answer would delete a live run's
+             issue text from under its own review dispatch. Gaps' PREDICATE, review's FRESHNESS.
+
+             **The clear matches the scan arm EXACTLY, and the first cut widening it was a defect
+             the independent review caught.** The containment rule is that everything `/cleanup`
+             can sweep, `admit` must be able to clear — and "widening the clear is always safe" is
+             true of `gaps-*` and `review-*`, whose prefixes nothing else writes. It is FALSE for
+             `issue-*`. This state directory is SHARED: `/new-release` keeps `new-release.json`
+             there as durable history and `/resolve-pr-threads` keeps `threads-<N>.json`, so a bare
+             `issue-*.json` glob would have this workflow's preflight silently delete a plausible
+             neighbour such as `issue-cache.json` — a fresh defect introduced by the fix for an old
+             one. Equality satisfies containment either way, and it is the reading that cannot
+             destroy another workflow's file. `check-implement-lib.sh` pins the destructive side.
+
+             **The guard was observed failing on the real superseded input, twice over.** Before
+             the rebuild, `check-tmp-paths.sh`'s part 1 reported six host-global resolutions — the
+             `.json` and the `.assoc` in each of the three rendered skills — and its part 2
+             reported every other instance of the class across the four scanned roots; and its
+             permanent mutation harness re-injects thirteen pre-fix and near-miss spellings into a
+             COPY of the tree on every run, requiring thirteen reds.
+
+             **Acceptance criterion 2 is met by EXECUTION, not by a string comparison.** The
+             independent review's sharpest point was that a textual mutation harness proves textual
+             detection and nothing about two runs observing one file. Part 1b now takes the path
+             expression out of the rendered skill, resolves `$n`, and has two simulated checkouts
+             each write their own sentinel through it and read it back — which fails on any
+             host-global spelling and passes on the shipped one. The topology is NAMED rather than
+             left to "two concurrent runs": this is TWO CHECKOUTS (equivalently two agents in one
+             checkout, which get different state dirs); two runs of ONE agent in ONE checkout are
+             refused by `admit` and covered by `check-implement-lib.sh`, and no filename can help
+             there because they share one HEAD.
+
+             **Its own self-test caught two defects in it before anything else did.** `awk -v`
+             interprets backslash escapes in the assignment, so the entropy allowance passed as
+             `\$\$|\$RANDOM|XXXXXX` arrived as a regex whose `$$` is two end-of-string anchors —
+             and `/tmp/adb-cl-meta.$$`, the spelling #250's acceptance explicitly permits, was
+             reported as a violation. It is a tab-separated literal list matched with `index()`
+             now. The second was a false positive on its own source: every fixture has to produce
+             the exact text the scanner hunts, so the two literals are composed at runtime from
+             variables rather than typed — exempting the whole file would have hidden a real
+             regression introduced in it later, and marking each fixture line is impossible inside
+             a `for … in 'a' \` continuation and would make the marker fixture self-exempting
+             besides (the trap `check-claims-guard.sh` already records for `adb-claim-ok`).
+
+             **A `_il_clear` edit dropped the `review` arm from `state-scan` and `check-cleanup.sh`
+             caught it immediately** — five `review` fixtures fell to `other` in one run. Recorded
+             because it is the argument for those fixtures existing: the arm would otherwise have
+             shipped silently, and `/cleanup` would have stopped sweeping review artifacts while
+             reporting a clean run.
+
+             **A generic harness assumption was corrected rather than worked around.** The
+             containment loop builds a fixture per arm by substituting a token for `*`, and used
+             the word `slot` — which `issue-*.json`'s digit rule rejects, making the fixture name a
+             file `/cleanup` would never sweep and the deletion assertion vacuous. The token is
+             numeric now, which is legal for every arm's `*`, so the loop stays generic.
+
+             **Scope held where #250 drew it.** `check-release-skill.sh`'s `$$` files are named in
+             the acceptance criterion as an allowed spelling and were left alone (`selfcheck.sh`'s
+             note claiming they "belong to #250" is corrected to say so); `.github/workflows/ci.yml`
+             runs on an ephemeral single-tenant runner and is out of scope by the issue's own
+             survey. The two "fold in or drop" items were folded in, because the lint this change
+             adds defines them as violations — leaving them would have meant shipping a guard with
+             two exemptions on its first day.
+
+             **The independent codex review raised 18 findings; every one was acted on.** Six were
+             real defects in code this change added and are fixed above: the `issue-*` clear glob
+             over-reaching in a SHARED state directory (the sharpest one — `issue-cache.json` from
+             any future skill would have been deleted by this workflow's preflight); part 1's
+             is-it-relative test passing `${TMPDIR:-/tmp}/issue-$n.json` and `../shared/issue-$n.json`,
+             both host-global; `XXXXXX` accepted as entropy without `mktemp` on the line, which is a
+             literal filename rather than a template; a global site FLOOR satisfiable after an entire
+             half of the snapshot is renamed away; the class scan limited to `*.md`/`*.sh`, so an
+             extensionless script or a shell command in a `.yml` was invisible while the changelog
+             claimed the roots were covered; and `find`'s newline-delimited output. Each now has its
+             own mutation case, taking the harness from seven reds to thirteen.
+
+             **Two more were defects in the prose this change wrote**, both the same shape: a
+             cleanup command becoming the block's exit status. `gh issue create … ; rm -f "$BODY"`
+             reported a FAILED filing as success, and `diff … && echo IDENTICAL; rm -rf "$D"`
+             reported DRIFTED as identical. A third — `git diff HEAD > "$(mktemp …)"` throwing away
+             the only handle on the backup — was the best finding in the set: a patch you cannot
+             name is a patch you do not have, which is the exact failure that practice exists to
+             prevent.
+
+             **Acceptance criterion 2 was correctly reported UNMET and now is not.** See part 1b
+             above; the review's point that a textual mutation harness proves textual detection was
+             right, and prose could not have answered it.
+
+             **Five were claim-integrity findings against this entry and the changelog**, all
+             upheld: "identical lifetimes" (they are not — hence `$RUN_NOW`), "widening the clear is
+             always safe" (not in a shared directory), the guard covering "anywhere" under the roots
+             (it has three named blind spots, now written into its own header), the mktemp rejection
+             stated as impossibility rather than cost, and the observation claim standing in for the
+             concurrency criterion. Every one is corrected in place rather than annotated.
+
+             **One was dispositioned rather than applied.** The review called the class lint
+             over-broad for flagging READS as well as writes. Telling one from the other needs a
+             shell evaluator, which is the same machinery its own correctly-identified blind spots
+             rule out — and a rule that guessed would miss writes. The breadth stands, the
+             `adb-tmp-ok: <reason>` escape is documented as the intended answer rather than a
+             grudging one, and the limits are stated in the header instead of discovered later.
+
+             **One was deferred to a filed issue: #305.** `/cleanup` deletes artifacts by stored
+             pathname, so a run that recreates the same fixed name between the pre-delete re-scan
+             and the `rm` loses its files. It is ONE defect with THREE sites (`gaps`, `review`,
+             `issue`), it predates this change in the two older arms, and the remedy — the identity
+             re-capture the `marker` arm already performs — is a change to `/cleanup`'s shared
+             delete discipline rather than to anything #250 asked for.
+
+             **A measured optimization came out of the same pass.** The mutation harness ran 63s
+             because `check_copy_worktree` copies this repo's ~66 MB `.git` and then deletes it,
+             thirteen times. `check_copy_subtrees` (new, in `scripts/check-lib.sh`) copies only the
+             named roots — which for this suite are exactly the scanned ones — and the suite runs
+             5.7s. The fixture is proved once up front, because a copier's failure mode is thirteen
+             reports blaming the scanner for a tree the mutator never managed to break.
+
+             **A second independent review (the PR's async reviewer) raised 5 more; all 5 were real
+             and all are fixed.** Three were holes in the new guard that had shipped green: the
+             state-dir check accepted any DESCENDANT, so `.claude/state/issues/issue-$n.json` and
+             `.claude/state/../shared/issue-$n.json` both passed — and the two-checkout demo passes
+             them too, since each checkout still gets a distinct file, while `state-scan` (direct
+             children only) would never see either, defeating the flat invariant the workflow states
+             in prose; `$RANDOM` was a substring test, so `$RANDOM_SUFFIX` counted as entropy while
+             the shell reads a different, probably-unset parameter; and `XXXXXX` accepted `mktemp`
+             anywhere on the UNSTRIPPED line, so a trailing `# TODO: use mktemp` beside a literal
+             template counted. Each now has its own mutation case, taking the harness to sixteen.
+
+             **The fourth was the sharpest, and it is the exposure this change itself created.**
+             `bin/agent-init` ignores `.claude/state/` only, and `{{STATE_DIR}}` renders per agent —
+             so moving the snapshot from a shared temp directory INTO the repo meant a Codex or
+             Gemini run left the untrusted issue body untracked in the working tree, one `git add -A`
+             from being committed. In `/tmp` that was impossible. `agent-init` now derives the set
+             from `agents/<token>/` and ignores every rendered state dir, and since that helps only
+             repos initialized from now on, step 2 also REFUSES TO WRITE unless `git check-ignore`
+             confirms the exact file shapes are ignored. That guard probes FILE paths, not the
+             directory: a `.../state/` rule cannot match a directory path git cannot see is a
+             directory, so the obvious `check-ignore {{STATE_DIR}}` answers "not ignored" whenever
+             the directory does not yet exist — and would have passed here for a reason unrelated to
+             what it claims to check.
+
+             **The fifth was a fixture writing outside its own sandbox.** The behavioural mutation
+             aliased both checkouts onto `/adb-tmp-shared-fixture/` and leaned on `mkdir -p` failing
+             for lack of permission — which is a property of WHO RUNS THE SUITE, not of the test. As
+             root (routine in a dev container, and this is a mandatory gate) it succeeds, writes
+             outside `$work`, and the demo's own cleanup does not reach it. The aliased path is
+             inside `$work` now, so the EXIT trap removes it however the run ends.
+
+             **One review premise was checked and did not hold, and the fix landed anyway.** The P1
+             finding said Apple's `sort` rejects `-z`, which would make the required `selfcheck-macos`
+             job red for every change. Measured on this workstation — `/usr/bin/sort` 2.3-Apple,
+             macOS 26.5.1 — it round-trips NUL-delimited input correctly, so the stated failure does
+             not occur on that build. But the runner's image is a different build, `sort -z` is not
+             POSIX, and ordering here is a REPORT property that no verdict depends on. So the option
+             is PROBED (on its output, not its exit status — an implementation that accepted `-z` and
+             reordered nothing would pass a status check) and falls through to `find` order when
+             absent. Verified green under a stub `sort` that rejects `-z` exactly as the finding
+             described.

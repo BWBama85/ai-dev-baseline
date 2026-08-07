@@ -9,6 +9,84 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The issue snapshot leaves the shared temp directory for `{{STATE_DIR}}`, and a lint keeps it
+  there** (#250, D50).
+
+  `/implement-issue` step 2 wrote `gh issue view` and the `author_association` label #214 added to
+  `/tmp/issue-<n>.json` and `/tmp/issue-<n>.assoc`, then read them back in step 3 and again in step
+  8. That directory is world-writable, shared by every checkout and every worktree on the host, and
+  both names were fully determined by a **public issue number**. So two runs on one issue — two
+  clones, two worktrees, two agents — shared both files and the second run's `>` truncated the
+  first's snapshot mid-run, with **no attacker required**. The minutes between the write and the
+  read were also a TOCTOU window on a **trust signal**: replace the `.assoc` and the dispatched
+  agent is told a stranger's text carries maintainer standing.
+
+  Both files now live in `{{STATE_DIR}}` — repo-relative and per-agent (`.<agent>/state`), which is
+  exactly the boundary `implement-lib.sh admit` already enforces (#202). **Flat, never a
+  subdirectory**: `state-scan` enumerates only regular files directly under the state directory, so
+  a tidy `issues/` would have been invisible to `/cleanup` and to `admit` alike.
+
+  **Moving it meant giving it a lifecycle, not just a new path.** `cleanup-lib.sh state-scan` gains
+  an `issue` kind (`issue-<digits>.{json,assoc}`, digit-only for the same allowlist reason the
+  `threads` arm is), `state-verdict` gains an `issue` name that **shares the `gaps` arm** because
+  the same two liveness signals decide both — a pre-marker run holding the claim, and a marker
+  describing a live run — and `implement-lib.sh`'s clear takes the family so the containment
+  invariant holds. `base/workflows/cleanup.md` sweeps it. Registering the scan arm without the
+  clear would have recreated the #264 trap; registering neither would have left private issue
+  bodies as permanent `other` debris.
+
+  The two are **not** interchangeable, and the difference is load-bearing in two places. The
+  snapshot is read again in step 8 while the gap artifacts are finished with after step 4, so the
+  sweep asks with `$RUN_NOW` — the fresh re-scan — where `gaps` asks with `$RUN`, or a run that
+  reached step 5 mid-sweep would have its issue text deleted from under its own review dispatch.
+  And the clear matches the scan arm's digit rule **exactly** rather than widening to `issue-*`:
+  this state directory is shared (`new-release.json`, `threads-<N>.json` live there too) and
+  `issue-` is a prefix any future skill might pick, so the "widening is always safe" rule that
+  holds for `gaps-*`/`review-*` does not hold here.
+
+  A **latent bug on the read path** is fixed in the same change: both `.assoc` reads nested
+  `$(cat …)` inside a `jq --arg`, and a command substitution in argument position discards its
+  status — so a missing or unreadable label left `--arg assoc ""`, `jq` succeeded, and the
+  surrounding `||` never fired. The provenance annotation went out silently blank. It is its own
+  statement now, and an empty value is refused.
+
+  `scripts/check-tmp-paths.sh` is what stops the drift. Every snapshot path is read **out of the
+  real markdown** — source and every rendered skill — and required to sit under that file's own
+  state directory, with both halves present in each; then two simulated checkouts write a sentinel
+  through the path the skill actually specifies and each must read its own back, which is #250's
+  acceptance criterion executed rather than described. A third part forbids any fixed shared-temp
+  literal without per-run entropy under `base/`, `scripts/`, `docs/` or `agents/`, and thirteen
+  mutations against a copy of the tree require every one of those to go red.
+
+  **That last part is lexical, and its limits are written into its header rather than left to be
+  discovered**: it cannot see a path built through a variable, cannot tell an unexpanded `$$` in
+  single quotes from a real one, and flags reads as well as writes on purpose — `adb-tmp-ok:
+  <reason>` is the intended answer for a legitimate fixed path, not a grudging exception. Within
+  those limits the entropy rules are a parse rather than a substring test: `$RANDOM` counts only as
+  a whole parameter (so `$RANDOM_SUFFIX`, which the shell reads as a different and probably-unset
+  name, does not), and `XXXXXX` counts only where a real `mktemp` precedes it on the
+  comment-stripped line.
+
+  **Moving the snapshot into the repo needed a matching `.gitignore` change**, which is the one
+  exposure the move itself created — in a shared temp directory the file could never be committed.
+  `bin/agent-init` ignored `.claude/state/` alone, so a Codex or Gemini run left the untrusted issue
+  body untracked in the working tree, one `git add -A` from being committed. It now derives the set
+  from `agents/<token>/` and ignores every rendered state directory; and because that only helps
+  repos initialized from now on, step 2 **refuses to write** unless `git check-ignore` confirms the
+  exact file shapes it is about to create are ignored.
+
+  It also fixes the remaining instances of the class it defines: `create-issue.md`'s issue-body
+  scratch, `git-and-prs.md`'s recommended `.patch` copy (a fixed name for the one file git cannot
+  get back — and it now **prints** the path, since a backup you cannot name is a backup you do not
+  have), `docs/roadmap-acceptance.md`'s determinism procedure, and `check-injection.sh`'s coupled
+  fixture. The two prose fixes also stopped masking their own exit status behind their cleanup.
+
+  **What is claimed is collision isolation, and no more.** A process that can already write the
+  run's state directory can still replace the label; leaving the shared namespace removes reach,
+  not the need for integrity. `check-release-skill.sh`'s `$$`-suffixed files were surveyed and
+  **left alone** — the acceptance criterion names `$$` as a valid per-run spelling, so they were
+  never the defect, and `selfcheck.sh`'s note saying otherwise is corrected rather than acted on.
+
 - **The wall-clock bound reaps the whole process group on both paths, and a dispatched agent's log
   is capped at the source** (#141, supersedes #123, D49).  <!-- adb-claim-ok: #123 was closed NOT_PLANNED as SUPERSEDED by #141, which consolidated it; the reference is this change's provenance, not tracked work -->
 
