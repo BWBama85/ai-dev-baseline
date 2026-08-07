@@ -3278,7 +3278,7 @@ limit: none of them is sufficient alone.
              Neither had a prescribed home. The mechanism question was open (`setsid` is absent
              from stock macOS, and `set -m` is shell-global in a SOURCED library with two live
              callers), and the issue itself left the cap's scope, contract and topology
-             unresolved — it called the scope "an open question that gates #123's test matrix".
+             unresolved — it called the scope "an open question that gates #123's test matrix".  <!-- adb-claim-ok: #123 was closed NOT_PLANNED as SUPERSEDED by #141, which consolidated it; the reference is this change's provenance, not tracked work -->
 - decision:  **Process group via job control held for exactly one command.** `set -m`, the `&`,
              then restore the caller's prior state — read from `$-`, so a caller that already had
              job control keeps it and one that did not never acquires it. Signalling is
@@ -3376,11 +3376,21 @@ limit: none of them is sufficient alone.
 - reason:    A project-delta rather than a general gap: both are defects in this repo's own shared
              library, fixed in the one home each already had. No new config surface was invented —
              the cap knob follows the `ADB_DISPATCH_*` shape the bound and grace already use.
-- baseline-issue: #141 (supersedes #123)
+- baseline-issue: #141 (supersedes #123)  <!-- adb-claim-ok: #123 was closed NOT_PLANNED as SUPERSEDED by #141, which consolidated it; the reference is this change's provenance, not tracked work -->
 - also:      **The guards were observed failing, against a copy of the pre-fix tree, never the
              working tree.** Watchdog grandchild `alive`→`dead`; stopped child `rc=145`→`rc=0`;
              nine cap assertions red without the cap. The timeout-binary grandchild case is green
              on BOTH sides and is named as an agreement pin, not a regression detector.
+
+             **CI corrected a premise this entry had accepted.** The issue reported the
+             `timeout`-binary path as already reaping grandchildren, measured on macOS, and the
+             first cut encoded that as an "the paths AGREE" pin. On `ubuntu-26.04` the identical
+             probe left the grandchild ALIVE on that path. The lesson is not about coreutils
+             versions: a guarantee that matters should not rest on a third-party tool's undocumented
+             group semantics, so the binary path now takes `set -m` too and sweeps its group after
+             the wait. Conditional on the bound having fired — a command that finished on its own
+             may have deliberately left work running, and an unconditional sweep would kill it
+             (pinned by its own case, observed failing).
 
              **Self-review found the `-0` guard did not actually guard.** `''|0|*[!0-9]*` rejects
              the string `0` and not `00`, and `kill -- -00` resolves to group 0 — the caller's own
@@ -3413,6 +3423,6 @@ limit: none of them is sufficient alone.
              that this was duplication, not convergence, is that BOTH copies shipped the `-00`
              defect and both had to be fixed. `_cleanup` now calls `_adb_bounded_signal`.
 
-             **#181's "ship this before the common.sh promotion sweep" is moot**: #181 was
+             **#181's "ship this before the common.sh promotion sweep" is moot**: #181 was  <!-- adb-claim-ok: #181 was closed NOT_PLANNED; cited to record that this issue's stated sequencing constraint no longer applies, not as tracked work -->
              observed CLOSED as NOT_PLANNED (closedAt 2026-07-31T06:40:32Z), so the ordering
              constraint has nothing left to order against. <!-- adb-claim-ok: #181 was closed NOT_PLANNED; cited to record that this issue's stated sequencing constraint no longer applies, not as tracked work -->

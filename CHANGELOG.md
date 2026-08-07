@@ -10,7 +10,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 ### Fixed
 
 - **The wall-clock bound reaps the whole process group on both paths, and a dispatched agent's log
-  is capped at the source** (#141, supersedes #123, D49).
+  is capped at the source** (#141, supersedes #123, D49).  <!-- adb-claim-ok: #123 was closed NOT_PLANNED as SUPERSEDED by #141, which consolidated it; the reference is this change's provenance, not tracked work -->
 
   `adb_run_bounded` (`scripts/lib/common.sh`) had two paths that agreed on **status** and diverged
   on process **cleanup**. GNU `timeout` puts the child in its own process group and signals the
@@ -21,6 +21,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   both rc 124, so no caller could tell them apart. At `currency-lib.sh`'s 120 s bound on a
   `git fetch`/`git pull` that orphan went on mutating a clone *after* the update was reported
   failed — able to move HEAD or hold `.git/index.lock`.
+
+  **Both paths own that guarantee now, rather than trusting `timeout` for it.** The first cut
+  asserted the two agreed about grandchildren because they did on macOS — and CI disagreed: on
+  `ubuntu-26.04` the identical probe left the grandchild **alive** on the `timeout`-binary path.
+  Rather than reverse-engineer which coreutils build reaps what, that path also runs under `set -m`
+  (so `$!` is a real pgid) and sweeps the group with SIGKILL after the wait. The sweep is
+  **conditional on the bound having fired**: a command that finished on its own may have
+  deliberately left something running, and killing that would turn a bound into a reaper of
+  successful work — a property with its own regression case.
 
   The watchdog now borrows job control for exactly one command — `set -m`, the `&`, then restore
   whatever `$-` said the caller had — so the child leads its own group, and both the deadline and

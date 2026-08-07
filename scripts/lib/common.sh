@@ -1828,8 +1828,21 @@ adb_run_bounded() {
     t0=$SECONDS   # bash builtin: no fork, and `local` above keeps the arithmetic nesting-safe
     # Backgrounded + `wait` (rather than run in the foreground) so the reap trap has a PID to kill.
     # `<&0` for the same reason the watchdog path needs it — see below.
+    #
+    # JOB CONTROL HERE TOO, so `timeout` leads a group WE know the id of. `timeout` makes its own
+    # group and signals it, and the first cut of #141 simply trusted that — asserting the two paths
+    # agreed about grandchildren because they did on macOS. CI disagreed: on ubuntu-26.04 the very
+    # same probe (a child that IGNORES TERM, holding a grandchild) left the grandchild ALIVE on the
+    # binary path. Rather than reverse-engineer which coreutils build reaps what, this path now owns
+    # the guarantee: same `set -m` as below, so `$!` is a real pgid, and the sweep after the wait
+    # finishes whatever `timeout` did not.
+    local tb_had_m=0
+    case "$-" in *m*) tb_had_m=1 ;; esac
+    set -m
     "$tb" -k "$grace" "$secs" "$@" <&0 &
     _ADB_BOUNDED_CHILD=$!
+    [ "$tb_had_m" -eq 1 ] || set +m
+    local tb_pid="$_ADB_BOUNDED_CHILD"
     trap '_adb_bounded_reap' TERM INT HUP
     # `-f` only under the caller's job control AND only where the interpreter has it — see the
     # read at the top of this function and `_adb_bounded_waitf_ok`.
@@ -1845,6 +1858,12 @@ adb_run_bounded() {
     # (GNU timeout) — a platform-dependent lie. Gated on elapsed >= the bound, so an unrelated
     # external SIGKILL arriving BEFORE the bound still reports 137 honestly.
     if [ "$trc" -eq 137 ] && [ "$(( SECONDS - t0 ))" -ge "$secs" ]; then trc=124; fi
+    # SWEEP THE GROUP, BUT ONLY WHEN THE BOUND FIRED. `timeout` has exited by now, so anything left
+    # in its group is a descendant that outlived the deadline — exactly the orphan this issue is
+    # about. Conditional on 124 because a command that finished ON ITS OWN may have deliberately
+    # left something running (the dev-server case), and killing that would make a bound into a
+    # reaper of successful work.
+    [ "$trc" -eq 124 ] && _adb_bounded_signal KILL "$tb_pid"
     return "$trc"
   fi
   local flag rc cmd_pid watcher tick

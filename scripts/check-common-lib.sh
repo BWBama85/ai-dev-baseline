@@ -828,6 +828,24 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
   if [ -s "$gcpid" ]; then ok; else bad "timeout binary: the probe never recorded a grandchild pid — the case did not run"; fi
   eq "$(gc_alive)" "dead" "timeout binary: the bound reaps the grandchild too — the paths AGREE"
   gc_reset
+
+  # THE SWEEP IS CONDITIONAL ON THE BOUND HAVING FIRED, and that is a property, not an accident.
+  # A command that finishes ON ITS OWN may have deliberately left something running — the review of
+  # PR #303 raised exactly this shape (an agent that starts a dev server) — and killing it would
+  # turn a wall-clock BOUND into a reaper of successful work. Without this case, making the sweep
+  # unconditional passes every other assertion here.
+  livepid="$work/livepid"; rm -f "$livepid"
+  adb_run_bounded 30 1 "$BASH" -c "sleep 45 & echo \$! > \"$livepid\"; exit 0" >/dev/null 2>&1
+  eq "$?" "0" "timeout binary: a command that finishes on its own still returns its own status"
+  sleep 1
+  survivor="$(cat "$livepid" 2>/dev/null)"
+  case "$survivor" in
+    ''|*[!0-9]*) bad "the clean-exit probe never recorded a background pid — the case did not run" ;;
+    *) if kill -0 "$survivor" 2>/dev/null; then ok
+       else bad "the sweep killed a SUCCESSFUL run's background work — it must only fire when the bound did"; fi
+       kill -KILL "$survivor" 2>/dev/null || : ;;
+  esac
+  rm -f "$livepid"
 else
   check_note "no timeout/gtimeout binary — skipped the binary path's grandchild case"
 fi
