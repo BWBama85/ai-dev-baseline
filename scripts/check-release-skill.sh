@@ -450,4 +450,38 @@ eq "${ drv tag --wrong-flag x; }"     2 "tag rejects an unknown flag"
 eq "${ drv tag --message-file /tmp/adb-empty-msg.$$; }" 1 "tag refuses an empty message file"
 rm -f /tmp/adb-empty-msg.$$
 
+# ============ the driver's own slug producer is validated (#218) ============
+# `release.sh` carries its OWN `slug()` — it lives outside `scripts/lib/` by D14, which is exactly
+# why a sweep of that directory reported "no additional producers" and missed it. Every consumer
+# concatenates the result into `repos/<slug>/...`, four of them in the tag/merge path.
+#
+# STRUCTURAL, and this file is the honest place to say why: the suite's subject is
+# `release-lib.sh`; `release.sh` dispatches on load, so its functions cannot be sourced and driven
+# here without the state and gh stubbing that #190 tracks. A pin that reads the source is weaker
+# than one that runs it, and it is what is available — a guard whose absence is silent still gets a
+# test, and the test admits its kind.
+drv="$(cat "$DRV")"
+slug_fn="$(awk '/^slug\(\) \{/,/^\}/' "$DRV")"
+if printf '%s' "$slug_fn" | grep -q 'adb_is_path_safe_repo_slug'; then ok; else
+  bad "release.sh slug() must validate through adb_is_path_safe_repo_slug before returning an API-supplied slug (#218)"
+fi
+# It must DELEGATE, never restate the rule: a hand-rolled charset test here would be a second copy
+# of a security predicate, which is the failure #218 exists to end.
+if printf '%s' "$slug_fn" | grep -qE '\[!A-Za-z0-9|\[\^A-Za-z0-9'; then
+  bad "release.sh slug() restates the charset rule instead of calling the shared predicate"
+else ok; fi
+# The diagnostic must be printed with printf, not echo: under `shopt -s xpg_echo`, echo decodes
+# %q's escape back into a real newline and re-forges the line the renderer just escaped.
+if printf '%s' "$slug_fn" | grep -qE '^\s*echo '; then
+  bad "release.sh slug() prints its diagnostic with echo — xpg_echo would undo adb_display_value's escaping"
+else ok; fi
+# And every consumer must CHECK it. An unchecked `sl="$(slug)"` inherits an empty slug and fails
+# several API calls later as an opaque error instead of naming the cause.
+# ANCHORED to a real assignment, so a COMMENT mentioning the idiom cannot be mistaken for a site.
+# (It was: the first cut of this check flagged its own explanatory comment above.)
+unchecked="$(printf '%s' "$drv" | grep -nE '^[[:space:]]*sl="\$\(slug\)"' | grep -v '||' || true)"
+if [ -z "$unchecked" ]; then ok; else
+  bad "release.sh has sl=\"\$(slug)\" site(s) that do not check the result: $unchecked"
+fi
+
 check_summary "release-skill"

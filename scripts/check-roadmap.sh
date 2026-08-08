@@ -2416,4 +2416,44 @@ has "$autofix_block" 'gh issue edit' \
 hasnt "$autofix_block" 'gh api --method POST' \
   "autofix never CREATES a milestone (that would invent a convention the repo never opted into)"
 
+# ============ slug-ok: the path-safe slug predicate, exposed to the prose (#218) ============
+# The workflow resolves `nameWithOwner` at SIX places and interpolates it into `repos/$REPO/...`
+# paths. Prose cannot source a library, so the rule reaches it as a subcommand — and this suite is
+# what keeps that exposure honest: a thin delegate that stopped delegating would be invisible.
+sk() { OUT="$(bash "$RL" slug-ok "$@" 2>&1)"; RC_=$?; }
+
+sk 'acme/widget';       yes "$RC_" "slug-ok accepts an ordinary owner/repo"
+sk 'acme/api..client';  yes "$RC_" "slug-ok accepts a repo NAMED api..client — dots are a name"
+sk 'a/b';               yes "$RC_" "slug-ok accepts the minimal pair"
+sk '.github/.github';   yes "$RC_" "slug-ok accepts GitHub's own dot-prefixed convention"
+for bad in 'acme/..' '../widget' 'acme/.' './widget' 'acme/widget/extra' 'acme' '' 'acme/wid get' \
+           'acme/wid?et' 'acme/wid%2fget' 'https://x/y' 'acme/wid#et'; do
+  sk "$bad"
+  no "$RC_" "slug-ok rejects '$bad'"
+  has "$OUT" "malformed repository slug" "...and says why for '$bad'"
+done
+# It DELEGATES rather than restating the rule: the verdicts above must agree with the predicate in
+# common.sh for every case, or there are two rules and one of them will be relaxed alone.
+for v in 'acme/widget' 'acme/api..client' 'acme/..' '../widget' 'acme' 'acme/wid get' '.github/.github'; do
+  bash "$RL" slug-ok "$v" >/dev/null 2>&1; sub_rc=$?
+  ( . scripts/lib/common.sh; adb_is_path_safe_repo_slug "$v" ) >/dev/null 2>&1; pred_rc=$?
+  eq "$sub_rc" "$pred_rc" "slug-ok agrees with adb_is_path_safe_repo_slug on '$v'"
+done
+# Arity is checked, so a caller that forgets the argument gets a usage error rather than a silent
+# pass on the empty string — the direction that matters for a guard.
+OUT="$(bash "$RL" slug-ok 2>&1)"; no "$?" "slug-ok with no argument is an error, never a pass"
+OUT="$(bash "$RL" slug-ok a/b c/d 2>&1)"; no "$?" "slug-ok with two arguments is an error"
+# The diagnostic renders the value onto ONE line: this is a rejected API value, so it is exactly
+# the one that may carry a newline and forge the line after it.
+OUT="$(bash "$RL" slug-ok "$(printf 'acme/wid\nget: FORGED')" 2>&1)"
+eq "$(printf '%s\n' "$OUT" | grep -c .)" "1" "slug-ok's diagnostic stays on one line"
+
+# THE WORKFLOW ACTUALLY CALLS IT, at every site that resolves a slug. Same species of guard as the
+# automerge-ok wiring check: the library can be perfect while the prose stops asking, and nothing
+# else in this suite would notice.
+WF="$ROOT/base/workflows/roadmap.md"
+n_reads="$(grep -c 'nameWithOwner' "$WF")"
+n_guards="$(grep -c 'slug-ok' "$WF")"
+eq "$n_guards" "$n_reads" "every nameWithOwner read in roadmap.md is followed by a slug-ok guard"
+
 check_summary "roadmap"

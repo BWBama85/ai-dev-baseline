@@ -359,6 +359,7 @@ REPO_VIEW="$(gh repo view --json nameWithOwner,defaultBranchRef --jq '.nameWithO
 $REPO_VIEW
 EOF
 [ -n "$REPO" ] || { echo "ERROR: cannot resolve repo"; exit 1; }
+bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" slug-ok "$REPO" || exit 1   # #218: API-supplied, and every read below builds `repos/$REPO/...`
 # `null` is what --jq prints for an absent defaultBranchRef (a commit-less repo). It is 4 non-empty
 # characters, so a bare -n test passes it through and every later read addresses `commits/null/...`.
 case "$DEFAULT_BRANCH" in
@@ -920,6 +921,7 @@ duplicated:
 # capped read: a pre-existing roadmap sitting past the cap would be missed, and this step would
 # then CREATE a second artifact — manufacturing the exact split-brain step 2 hard-stops on.
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" slug-ok "$REPO" || exit 1   # #218: API-supplied, and every read below builds `repos/$REPO/...`
 CANDS="$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" \
   --jq '.[] | select(has("pull_request") | not)
       | select((.body // "" | test("ai-dev-baseline:roadmap")) or (.title | test("^Roadmap")))
@@ -1363,6 +1365,7 @@ separately.
 # `backlog-milestone` marker, defaulting to `Backlog`); NO_AUTOFIX=1 for the --no-autofix run;
 # RELEASE_MODE=1 when the `release-milestone` marker resolved (release-readiness mode is ACTIVE).
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" slug-ok "$REPO" || exit 1   # #218: API-supplied, and every read below builds `repos/$REPO/...`
 : "${ROADMAP_NUM:?ERROR: ROADMAP_NUM (the roadmap artifact issue number) is unset — run step 2 first}"
 BACKLOG="${BACKLOG_TITLE:-Backlog}"
 # The `release-blocker` carve-out below belongs to the release-goal OVERLAY, so it is gated on the
@@ -1539,6 +1542,7 @@ or the tie-break in prose.** `compose-candidates` owns them so they are regressi
 # invocations that share no variables. Inputs that genuinely come from earlier steps are asserted,
 # never defaulted — a composition built on an empty milestone number would promote into nothing.
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" slug-ok "$REPO" || exit 1   # #218: API-supplied, and every read below builds `repos/$REPO/...`
 : "${M_NUM:?ERROR: M_NUM (the active release milestone NUMBER) is unset — resolve the marker first}"
 : "${ROADMAP_NUM:?ERROR: ROADMAP_NUM (the roadmap artifact issue number) is unset — run step 2 first}"
 # COMPOSE_EXCLUDE — the issues step 4 classified `tracker-only` or `owner-review`, space or newline
@@ -1815,6 +1819,7 @@ round-trips per member:
 # Self-contained: each fenced block re-resolves what it needs, because these steps may be run
 # as separate shell invocations that share no variables.
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || { echo "ERROR: cannot resolve repo"; exit 1; }
+bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" slug-ok "$REPO" || exit 1   # #218: API-supplied, and every read below builds `repos/$REPO/...`
 # Read and parse in SEPARATE steps: a pipeline reports only its last command's status, so
 # `gh api … | open-issues` would return 0 on a failed read (the parser sees empty stdin, which is
 # a legitimately empty repo) and the run would proceed against an empty open set.
@@ -1929,6 +1934,11 @@ Derive `N` live and **exactly** each run — no page-cap truncation — and excl
 ```bash
 # ADB-SNIPPET: gauge
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+# #218: API-supplied, and it is about to be interpolated into BOTH a `repos/$REPO/labels/...` path
+# AND a search query. The shape test is not enough in either position — `a/..` is a well-formed
+# owner/repo pair and a path traversal. This read has no `||` of its own, so the guard also covers
+# the empty case the other five sites catch there.
+bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" slug-ok "$REPO" || exit 1
 # LABEL is the artifact's `destination-label` marker value. It is OPTIONAL, so an unset/empty
 # value is the normal "no gauge configured" case and must short-circuit here — not blow up, and
 # not probe `repos/$REPO/labels/` with an empty name.

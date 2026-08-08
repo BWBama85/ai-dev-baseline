@@ -80,7 +80,25 @@ rset() { mkdir -p "$(dirname "$RS")"; printf '%s=%s\n' "$1" "$2" >> "$RS"; }
 need() { v="$(rs "$1")"; [ -n "$v" ] || die "$1 not recorded yet — $2"; printf '%s' "$v"; }
 
 have_gh() { command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"; command -v gh >/dev/null 2>&1; }
-slug()    { gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null; }
+# A THIRD PRODUCER of the same API-supplied value (#218), and the one a sweep of `scripts/lib`
+# misses because this file lives outside it. Every consumer below concatenates the result into a
+# `repos/<slug>/...` request path, so the shape test is not enough — `a/..` is a well-formed
+# owner/repo pair AND a path traversal. This file already sources common.sh, so the predicate and
+# the renderer both come from their one home rather than being restated here.
+#
+# Fails CLOSED: non-zero with empty output. The three `sl="$(slug)"` sites below now CHECK that
+# rather than inheriting it — an unchecked empty slug builds `repos//…`, which is safe (nothing
+# traverses) but fails several calls later as an opaque API error instead of naming the cause.
+slug() {
+  local s
+  s="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 1
+  adb_is_path_safe_repo_slug "$s" || {
+    printf 'release: gh reported a malformed repository slug (%s) — refusing to build a request path from it\n' \
+      "$(adb_display_value "$s")" >&2
+    return 1
+  }
+  printf '%s' "$s"
+}
 defbr()   { gh repo view --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null; }
 
 # --- portable version max -------------------------------------------------------------------------
@@ -174,7 +192,8 @@ health_of() {   # <sha> -> prints the verdict word
   # `dbr`, not `d`: this file scopes nothing, and `cmd_preflight` already uses `d` for the default
   # branch. Reusing it here would have `health_of` reach back into a caller's variable — harmless
   # today only because no current caller reads `d` afterwards, which is not a property to rely on.
-  sha="$1"; sl="$(slug)"; dbr="$(defbr)"
+  sha="$1"; sl="$(slug)" || return 1; dbr="$(defbr)"
+  [ -n "$sl" ] || return 1
   case "$dbr" in ''|null) return 1 ;; esac
   st="$(gh api --paginate "repos/$sl/commits/$sha/status?per_page=100")" || return 1
   ck="$(gh api --paginate "repos/$sl/commits/$sha/check-runs?per_page=100")" || return 1
@@ -234,7 +253,8 @@ cmd_preflight() {
 
 cmd_readiness() {
   have_gh || die "gh not found"
-  sl="$(slug)"; d="$(defbr)"; rm_lib="$LIB/roadmap-lib.sh"
+  sl="$(slug)" || die "cannot resolve this repo's slug"
+  d="$(defbr)"; rm_lib="$LIB/roadmap-lib.sh"
   list="$(gh issue list --label roadmap --state open --limit 50 --json number --jq '.[].number')"
   n="$(printf '%s\n' "$list" | sed '/^$/d' | wc -l | tr -d ' ')"
   [ "$n" = "1" ] || die "expected exactly 1 open roadmap-labelled issue, found $n — split brain"
@@ -401,7 +421,7 @@ cmd_roll() {
   # REVALIDATE the pin immediately before rolling. `baseline release roll` resolves the marker
   # itself, so a marker changed since the pin would make it rename, drain and close a DIFFERENT
   # milestone than the one this release was cut for.
-  sl="$(slug)"
+  sl="$(slug)" || die "cannot resolve this repo's slug"
   msj="$(gh api --paginate "repos/$sl/milestones?state=open&per_page=100")" || die "could not list milestones"
   now_m="$(printf '%s' "$msj" | jq -r -s --arg t "$pinned_ms" '[.[][] | select(.title == $t) | .number] | first // empty')"
   [ "$now_m" = "$pinned_m" ] \
