@@ -48,6 +48,29 @@ adb_info() { printf '%s\n' "$*"; }
 # own file rather than each carrying a copy. Usage: adb_usage <file>   (e.g. adb_usage "$0")
 adb_usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$1"; }
 
+# adb_display_value <value> — render a value onto ONE physical line, for a diagnostic that NAMES a
+# value it just rejected.
+#
+# THE VALUES THIS EXISTS FOR ARE THE ONES A GUARD REFUSED, so by construction they are the values
+# least likely to be well-behaved. A rejected slug read out of an API response may carry a newline
+# or a terminal control byte, and a diagnostic that echoes it raw lets it forge additional log
+# lines — turning "here is what I refused" into an attacker's own message in the operator's output.
+# Rejecting a value and then printing it unrendered re-opens, in the log, the hole the check just
+# closed.
+#
+# `%q` rather than a substitution chain, for the reason `_adb_cl_tsv_display` records: it escapes
+# the delimiters (a newline becomes `$'\n'`) AND the backslashes, so the encoding is unambiguous —
+# a value really containing the four characters `a\nb` and one containing a real newline do not
+# collapse to the same rendering.
+#
+# DELIBERATELY NOT the same function as `cleanup-lib.sh`'s `_adb_cl_tsv_display`, which shares the
+# `%q` step and then does something this must not: it RE-TESTS the encoding against the TSV
+# delimiters and substitutes a fixed token on failure, because its output is a machine-read record
+# whose format a stray delimiter would corrupt. Here the output is prose on stderr, where a fixed
+# token would destroy the only thing the line is for — telling the operator WHICH value was bad.
+# Two contracts, two functions; the shared part is one `printf`, which is not a primitive.
+adb_display_value() { printf '%q' "${1:-}"; }
+
 # --- symlink install / uninstall --------------------------------------------
 
 # Back up an existing path (unless it is already our correct symlink), then symlink.
@@ -315,14 +338,40 @@ adb_require_gh() {
 }
 
 # adb_repo_slug — print the current repo's owner/name, resolved from the gh remote and cached for
-# the process. Returns non-zero (printing nothing) when there is no resolvable GitHub remote.
+# the process. Returns non-zero (printing nothing) when there is no resolvable GitHub remote, or
+# when the value gh reports is not safe to interpolate into a request path.
+#
+# THE VALUE IS API-SUPPLIED, AND ITS ONE CONSUMER CONCATENATES IT INTO A REQUEST PATH (#218).
+# `release-convention.sh` builds ten `repos/$(repo_slug)/...` paths from what this returns, so this
+# getter is the producer boundary for every one of them — validating here is what keeps that rule
+# from having to be restated (and eventually missed) at each interpolation. `adb_is_repo_slug`
+# would NOT be enough in this position: `a/..` is a well-formed pair AND a path traversal, which is
+# the whole reason `adb_is_path_safe_repo_slug` exists.
+#
+# HARDENING THE GETTER ITSELF, rather than adding a validating wrapper beside it, because no caller
+# wants the raw value: this has exactly one production caller and it treats a failure as fatal. A
+# wrapper would leave the unvalidated getter as the shorter, more obvious spelling — the shape that
+# produced this issue in the first place.
+#
+# VALIDATED BEFORE THE CACHE IS COMMITTED, and that ordering is the whole correctness story. The
+# cache is consulted with `[ -z … ]`, so assigning first and checking after would leave the
+# REJECTED value in `_ADB_REPO_SLUG`: the first call returns non-zero, and the second one skips
+# resolution entirely and returns 0 with the bad slug — a fail-open one line below the guard. The
+# local `got` is what makes the rejection leave no trace.
 _ADB_REPO_SLUG=""
 adb_repo_slug() {
+  local got
   if [ -z "$_ADB_REPO_SLUG" ]; then
-    _ADB_REPO_SLUG="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \
+    got="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" \
       || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; return 1; }
-    [ -n "$_ADB_REPO_SLUG" ] \
+    [ -n "$got" ] \
       || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; return 1; }
+    # Rendered, never echoed raw: this is a rejected API value, so it is exactly the one that may
+    # carry a newline and forge the log line after it (see adb_display_value).
+    adb_is_path_safe_repo_slug "$got" \
+      || { echo "ERROR: gh reported a malformed repository slug ($(adb_display_value "$got")) — refusing to build a request path from it" >&2
+           return 1; }
+    _ADB_REPO_SLUG="$got"
   fi
   printf '%s' "$_ADB_REPO_SLUG"
 }

@@ -9,6 +9,44 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **Every API-supplied slug is refused at its producer before it can reach a request path — and
+  there were two producers, not one** (#218, D51).
+
+  #175 added `adb_is_path_safe_repo_slug` because `adb_is_repo_slug` answers a *shape* question
+  that is necessary and not sufficient once a slug is concatenated into a path: `a/..` is a
+  well-formed `owner/repo` pair **and** a path traversal. Only `pr-watch.sh head_anchor` used it.
+  `repo-settings.sh` built seven `repos/$REPO_SLUG/...` paths and `release-convention.sh` ten, none
+  validated — and four of `repo-settings.sh`'s are **writes**.
+
+  The issue proposed one chokepoint, `adb_repo_slug`. That is right for `release-convention.sh`,
+  whose ten sites all descend from the single checked assignment in `require_gh` — and it reaches
+  `repo-settings.sh` not at all: to save a round trip that module takes its slug from the
+  `.full_name` of the repo object it already fetches, so it needs its own boundary in `repo_json`.
+  Hardening only the shared getter would have left the module that decides whether **auto-merge may
+  be armed** exactly as it was, while looking like the fix.
+
+  **Each module keeps its own exit code**, because "fail closed with code 20" is not a rule this
+  repo has: `automerge-ok`, `merge-flag` and `required-drift` map a `repo_json` failure to 20,
+  `apply` and `status` map it to 1, and `release-convention.sh` has no numbered contract at all —
+  every failure there is `require_gh`'s `exit 1`. Both new guards therefore return the module's
+  *existing* failure, and emitting a uniform 20 would have given `apply` a code its contract does
+  not define.
+
+  **Validated before the cache is committed, in both.** Each getter is memoized behind `[ -z … ]`,
+  so assigning first and rejecting after would fail the first call and then return **0** with the
+  rejected slug on the second. The diagnostic renders the value through the new
+  `adb_display_value` (`%q`) rather than echoing it: the values this guard rejects are by
+  construction the ones that may carry a newline, and printing one raw lets it forge the log line
+  after it — re-opening in the operator's output the hole the check just closed.
+
+  Regression tests per module in #175's style, plus the two assertions that catch the plausible
+  wrong fixes: that a rejected slug is **not** cached, and that **exactly one** request was issued
+  (the read the slug itself came from) with none built from the bad value. All six mutations —
+  removing each guard, reordering each cache, and disabling the escaping — were **observed going
+  red** against a throwaway copy, each on its own assertion. `repo_json`'s ordering is pinned
+  **structurally**, because no caller can observe it today (verified: that reorder leaves the suite
+  green at 380/380) and a property whose inversion is silent is exactly the one that rots.
+
 - **The issue snapshot leaves the shared temp directory for `{{STATE_DIR}}`, and a lint keeps it
   there** (#250, D50).
 

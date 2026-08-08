@@ -163,12 +163,49 @@ require_gh() { adb_require_gh jq || exit 1; }
 # branch has no protection" and "you may not see its protection" — without the permission probe
 # the library would misread a permission error as "unprotected", stand protection up, and fail
 # mid-write having already changed something.
+#
+# THIS IS THE SECOND PRODUCER BOUNDARY, and it is the reason #218 could not be fixed in one place.
+# `adb_repo_slug` is the obvious chokepoint and it is NOT this module's: to save the round trip
+# named above, the slug is read from THIS response's `.full_name`, so hardening the shared getter
+# reaches `release-convention.sh` and nothing here. Seven `repos/$REPO_SLUG/...` paths are built
+# downstream, four of them WRITES (`:842`, `:849`, `:909`, `:1007`), so the validation has to
+# happen where the value is produced.
+#
+# `adb_is_path_safe_repo_slug`, not `adb_is_repo_slug`: `a/..` is a well-formed owner/repo pair and
+# a path traversal, and this value is API-supplied.
+#
+# VALIDATED BEFORE EITHER CACHE IS COMMITTED, for the same reason as `adb_repo_slug`: both globals
+# are guarded by `[ -z … ]`, so assigning them first and rejecting afterwards would make a SECOND
+# call skip resolution and return 0 with the bad `REPO_SLUG` still loaded. The locals are what keep
+# a rejected response from being cached at all.
+#
+# NO CALLER CAN OBSERVE THAT ORDERING TODAY, and saying so is more useful than implying it is
+# tested: every subcommand checks this function's status on its FIRST call and bails, so the wrong
+# order behaves identically — it fails open only once some future caller re-calls after a failure.
+# A behavioural test therefore cannot reach it, which is exactly why it would rot unnoticed, so
+# `check-repo-settings.sh` pins the order STRUCTURALLY instead. That is the same move the
+# `required-drift` CI wiring gets, and for the same reason: a design property whose inversion is
+# silent still gets a test, and the test admits what kind it is.
+#
+# RETURNS 1, exactly as every other failure here does, so each subcommand keeps its OWN mapping
+# rather than acquiring a new one: `automerge-ok`, `merge-flag` and `required-drift` already turn a
+# `repo_json` failure into 20 (fail closed, refuse to arm), while `apply` and `status` turn it into
+# 1. Emitting 20 from here would give `apply` an exit code its contract does not define.
 repo_json() {
+  local raw slug
   if [ -z "$REPO_JSON" ]; then
-    REPO_JSON="$(gh api 'repos/{owner}/{repo}' 2>/dev/null)" || return 1
-    [ -n "$REPO_JSON" ] || return 1
-    REPO_SLUG="$(printf '%s' "$REPO_JSON" | jq -r '.full_name // empty' 2>/dev/null)"
-    [ -n "$REPO_SLUG" ] || return 1
+    raw="$(gh api 'repos/{owner}/{repo}' 2>/dev/null)" || return 1
+    [ -n "$raw" ] || return 1
+    slug="$(printf '%s' "$raw" | jq -r '.full_name // empty' 2>/dev/null)"
+    [ -n "$slug" ] || return 1
+    # Rendered, never echoed raw — a rejected API value is the one most likely to carry a newline
+    # and forge the line after it (see adb_display_value in common.sh).
+    adb_is_path_safe_repo_slug "$slug" || {
+      echo "repo-settings: the API reported a malformed repository slug ($(adb_display_value "$slug")) — refusing to build a request path from it" >&2
+      return 1
+    }
+    REPO_JSON="$raw"
+    REPO_SLUG="$slug"
   fi
   printf '%s' "$REPO_JSON"
 }
