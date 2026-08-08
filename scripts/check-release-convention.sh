@@ -432,9 +432,12 @@ rm -f "$S/issue-99-labels.txt" "$SBIN/gh.close-race"
 for bad in 'acme/..' '../widget' 'acme/.' 'acme/widget/extra' 'acme' 'acme/wid get'; do
   fix_default
   STUB_SLUG="$bad" rcx_stub status
-  # 1, which is this module's ONLY fail-closed code: it has no numbered contract and every failure
-  # here exits 1 through require_gh. Emitting a 20 to match repo-settings.sh would have invented a
-  # code no caller of this module knows.
+  # 1 — the code `require_gh` already exits with, which is what a slug failure IS here. Stated
+  # narrowly on purpose: this module is not uniformly "exit 1", it reserves 2 for usage and
+  # argument errors (the assertions at the top of this file pin several). The claim is only that
+  # the MALFORMED-SLUG path maps to 1 for all three subcommands, because that is the path
+  # `require_gh` owns. Emitting a 20 to match repo-settings.sh would have invented a code no
+  # caller of this module knows.
   eq "$RC_" "1" "status exits 1 when gh reports the slug '$bad'"
   has "$OUT" "malformed repository slug" "...saying why, for '$bad'"
   eq "${ calls_of; }" "" "...and NOTHING was requested or mutated with '$bad'"

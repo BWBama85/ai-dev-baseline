@@ -168,16 +168,21 @@ require_gh() { adb_require_gh jq || exit 1; }
 # `adb_repo_slug` is the obvious chokepoint and it is NOT this module's: to save the round trip
 # named above, the slug is read from THIS response's `.full_name`, so hardening the shared getter
 # reaches `release-convention.sh` and nothing here. Seven `repos/$REPO_SLUG/...` paths are built
-# downstream, four of them WRITES (`:842`, `:849`, `:909`, `:1007`), so the validation has to
-# happen where the value is produced.
+# downstream — four of them WRITES, in `apply`'s protection PATCH/POST/PUT and its auto-merge PATCH
+# — so the validation has to happen where the value is produced. (Named by their subcommand rather
+# than by line number on purpose: an earlier draft of this comment cited four line numbers that its
+# own edit had already invalidated.)
 #
 # `adb_is_path_safe_repo_slug`, not `adb_is_repo_slug`: `a/..` is a well-formed owner/repo pair and
 # a path traversal, and this value is API-supplied.
 #
-# VALIDATED BEFORE EITHER CACHE IS COMMITTED, for the same reason as `adb_repo_slug`: both globals
-# are guarded by `[ -z … ]`, so assigning them first and rejecting afterwards would make a SECOND
-# call skip resolution and return 0 with the bad `REPO_SLUG` still loaded. The locals are what keep
-# a rejected response from being cached at all.
+# VALIDATED BEFORE THE CACHE IS COMMITTED, for the same reason as `adb_repo_slug`. Precisely:
+# `REPO_JSON` ALONE is the cache guard — the `[ -z … ]` below tests only it, and `REPO_SLUG` is
+# carried along with it rather than checked independently. So assigning `REPO_JSON` first and
+# rejecting afterwards would make a SECOND call skip resolution entirely and return 0 with the bad
+# `REPO_SLUG` still loaded. The locals are what keep a rejected response from being cached at all.
+# (Stated exactly because an earlier draft claimed BOTH globals gate the cache, which is false and
+# would have sent the next reader looking for a bypass that `REPO_SLUG` cannot produce on its own.)
 #
 # NO CALLER CAN OBSERVE THAT ORDERING TODAY, and saying so is more useful than implying it is
 # tested: every subcommand checks this function's status on its FIRST call and bails, so the wrong
@@ -199,9 +204,12 @@ repo_json() {
     slug="$(printf '%s' "$raw" | jq -r '.full_name // empty' 2>/dev/null)"
     [ -n "$slug" ] || return 1
     # Rendered, never echoed raw — a rejected API value is the one most likely to carry a newline
-    # and forge the line after it (see adb_display_value in common.sh).
+    # and forge the line after it (see adb_display_value in common.sh). `printf '%s\n'` rather than
+    # `echo` for the reason recorded there: under `shopt -s xpg_echo`, `echo` decodes `%q`'s `\n`
+    # back into a real newline and undoes the rendering.
     adb_is_path_safe_repo_slug "$slug" || {
-      echo "repo-settings: the API reported a malformed repository slug ($(adb_display_value "$slug")) — refusing to build a request path from it" >&2
+      printf 'repo-settings: the API reported a malformed repository slug (%s) — refusing to build a request path from it\n' \
+        "$(adb_display_value "$slug")" >&2
       return 1
     }
     REPO_JSON="$raw"

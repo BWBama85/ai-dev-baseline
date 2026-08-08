@@ -63,12 +63,17 @@ adb_usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }
 # a value really containing the four characters `a\nb` and one containing a real newline do not
 # collapse to the same rendering.
 #
-# DELIBERATELY NOT the same function as `cleanup-lib.sh`'s `_adb_cl_tsv_display`, which shares the
-# `%q` step and then does something this must not: it RE-TESTS the encoding against the TSV
-# delimiters and substitutes a fixed token on failure, because its output is a machine-read record
-# whose format a stray delimiter would corrupt. Here the output is prose on stderr, where a fixed
-# token would destroy the only thing the line is for — telling the operator WHICH value was bad.
-# Two contracts, two functions; the shared part is one `printf`, which is not a primitive.
+# THE ONE HOME FOR THE ENCODING. `cleanup-lib.sh`'s `_adb_cl_tsv_display` is a WRAPPER around this,
+# not a second copy of it: it re-tests the encoded value against the TSV delimiters and substitutes
+# a fixed token on failure, because its output is a machine-read record whose format a stray
+# delimiter would corrupt. Here the output is prose on stderr, where that fallback would destroy
+# the only thing the line is for — telling the operator WHICH value was bad. Two fallback
+# contracts justify two functions; they do not justify two encoders.
+#
+# CALLERS MUST PRINT IT WITH `printf`, NEVER `echo`. `%q` renders a newline as the two characters
+# `\` and `n`, and under `shopt -s xpg_echo` — a supported bash mode — `echo` decodes that straight
+# back into a real newline, undoing the whole point. The guarantee this function offers is only as
+# strong as the command that emits its result, so the requirement belongs here, next to it.
 adb_display_value() { printf '%q' "${1:-}"; }
 
 # --- symlink install / uninstall --------------------------------------------
@@ -368,8 +373,14 @@ adb_repo_slug() {
       || { echo "ERROR: not inside a GitHub repo (no resolvable remote)" >&2; return 1; }
     # Rendered, never echoed raw: this is a rejected API value, so it is exactly the one that may
     # carry a newline and forge the log line after it (see adb_display_value).
+    #
+    # `printf '%s\n'`, NOT `echo`, and that is not style. `%q` renders a newline as the two
+    # characters `\` and `n`; under `shopt -s xpg_echo` — a supported bash mode, and one a caller's
+    # shell may already have on — `echo` DECODES that back into a real newline and the forged line
+    # reappears. The renderer's one-line guarantee is only as good as the command that prints it.
     adb_is_path_safe_repo_slug "$got" \
-      || { echo "ERROR: gh reported a malformed repository slug ($(adb_display_value "$got")) — refusing to build a request path from it" >&2
+      || { printf 'ERROR: gh reported a malformed repository slug (%s) — refusing to build a request path from it\n' \
+             "$(adb_display_value "$got")" >&2
            return 1; }
     _ADB_REPO_SLUG="$got"
   fi

@@ -3632,18 +3632,34 @@ limit: none of them is sufficient alone.
              absent. Verified green under a stub `sort` that rejects `-z` exactly as the finding
              described.
 
-## D51 — the slug has TWO producers, and each module keeps its own fail-closed code
+## D51 — the slug has FOUR producers, and each module keeps its own fail-closed code
 - date:      2026-08-08
 - category:  project-delta
 - unknown:   #218 prescribed ONE chokepoint (`adb_repo_slug`) and ONE failure code (`20`) for
              routing every API-supplied slug through `adb_is_path_safe_repo_slug`. Both premises
              are false of this repo, and neither is false in a way that shows up as a test failure —
              a fix built on either would have looked complete and covered less than it claimed.
-- decision:  Validate at **both** producer boundaries, and return **each module's existing** code.
+- decision:  Validate at **every** producer boundary, and return **each module's existing** code.
 
-             **Two producers, not one.** `adb_repo_slug` is the obvious chokepoint and it has
-             exactly one production caller: `release-convention.sh:79`. That single checked
-             assignment (`REPO_SLUG="$(adb_repo_slug)" || exit 1`, run by `init`, `status` and
+             **Four producers, not one — and the count itself is the lesson.** The first pass found
+             two, because it swept `scripts/lib/`, `bin/` and `agents/*/scripts/`; independent
+             review found two more by not assuming the search space. `.claude/skills/release/
+             release.sh` carries its own `slug()` (outside `scripts/lib/` by D14's design), and
+             `base/workflows/roadmap.md` resolves `nameWithOwner` at SIX places — prose, which no
+             grep for a shell function would ever have surfaced. A rule that "exists in one place"
+             is only as good as the inventory of who bypasses it, and this inventory was wrong
+             twice: once in the issue, once in the fix that corrected the issue.
+
+             **The prose producer needed a mechanism, not just a call.** `roadmap.md` is pasted
+             into a shell and cannot source a library, so the rule reaches it as
+             `roadmap-lib.sh slug-ok` — a thin delegate, in the library whose charter is already
+             "/roadmap's decisions lifted out of the prose so they are testable". Restating the
+             charset and traversal rules in Markdown would have put a copy of a security predicate
+             where no test runs, which is the failure this whole issue is about. Same shape as
+             `role-dispatch.sh untrusted` exposing `adb_untrusted_block`.
+
+             **`adb_repo_slug` still has exactly one production caller:** `release-convention.sh:79`,
+             and that single checked assignment (`REPO_SLUG="$(adb_repo_slug)" || exit 1`, run by `init`, `status` and
              `roll` alike) is what all ten of that module's `repos/$(repo_slug)/...` sites descend
              from, so hardening the getter covers every one. It covers `repo-settings.sh` not at
              all: that module reads its slug from the `.full_name` of the repo object it already
@@ -3656,24 +3672,28 @@ limit: none of them is sufficient alone.
              wrapper would leave the unvalidated spelling as the shorter, more obvious one — the
              shape that produced this issue.
 
-             **Validation cannot live at the interpolations, in either module.** In
+             **Validation cannot live at the interpolations.** In
              `release-convention.sh` the accessor's status is discarded inside the string that
              quotes it (`"repos/$(repo_slug)/milestones"`), so a refusal there prints and the
              `gh api` call still goes out.
 
              **Each module keeps its own code**, because "the existing unreadable code (20)" is not
              a repo-wide fact. In `repo-settings.sh`, `automerge-ok` / `merge-flag` /
-             `required-drift` map a `repo_json` failure to 20 while `apply` / `status` map it to 1;
-             `release-convention.sh` has no numbered contract at all. Both guards therefore return
-             1 — the failure their module already defines — and each caller maps it as it always
-             has. A uniform 20 in the producer would have handed `apply` an exit code its contract
-             does not define.
+             `required-drift` map a `repo_json` failure to 20 while `apply` / `status` map it to 1.
+             In `release-convention.sh` the slug is resolved inside `require_gh`, so all three
+             subcommands surface a bad one as that function's `exit 1` — narrowly, because the
+             module is NOT uniformly "exit 1": it reserves 2 for usage and argument errors. Both
+             guards therefore return the failure their module already defines, and each caller maps
+             it as it always has. A uniform 20 in the producer would have handed `apply` an exit
+             code its contract does not define.
 
              **Both validate BEFORE committing the cache**, which is the whole correctness story
-             and not a style point: each getter is memoized behind `[ -z … ]`, so assigning first
-             and rejecting after fails the FIRST call and then returns 0 with the rejected slug on
-             the SECOND — a fail-open one line below the guard, invisible to every single-call
-             test.
+             and not a style point: assigning first and rejecting after fails the FIRST call and
+             then returns 0 with the rejected slug on the SECOND — a fail-open one line below the
+             guard, invisible to every single-call test. The guard is the memo variable in each
+             case, and only that one: `_ADB_REPO_SLUG` in the getter, and in `repo_json`
+             **`REPO_JSON` alone** — `REPO_SLUG` rides along with it rather than being tested
+             independently, so moving `REPO_SLUG` by itself cannot produce the bypass.
 
              **The diagnostic renders the value (`adb_display_value`, `%q`) rather than echoing
              it.** The values a guard rejects are by construction the least well-behaved, so a

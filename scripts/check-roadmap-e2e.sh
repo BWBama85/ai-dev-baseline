@@ -1255,12 +1255,20 @@ eq "${ promoted; }" "" "a bug whose prerequisite is excluded is not promoted eit
 has "$OUT" "#136 NOT promoted" "...and the drop is reported, never silent"
 
 # COMPOSE_EXCLUDE must be SET, even when empty — a silently-unset exclusion set is the bug above.
+#
+# This case builds the snippet by hand (rather than via run_snippet) precisely so it can OMIT
+# COMPOSE_EXCLUDE, so it must resolve {{ROADMAP_LIB}} itself the way run_snippet does. Without
+# that the snippet's own guards fail as `{{ROADMAP_LIB}}: command not found` and the run stops for
+# a reason that has nothing to do with the variable under test — which is what happened when #218
+# added a `slug-ok` guard ahead of this point.
 fix_default
 compose_issues '102!' 31
+_cc="${ snippet compose-candidates; }"
+_cc="${_cc//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
 OUT="$(PATH="$SBIN:$PATH" ADB_FIX="$FIX" bash -c "
   set -u
   M_NUM=9; ROADMAP_NUM=31; RELEASE_MODE=1
-  ${ snippet compose-candidates; }" 2>&1)"; RC_=$?
+  $_cc" 2>&1)"; RC_=$?
 no "$RC_" "an UNSET COMPOSE_EXCLUDE is a hard stop, not an empty set"
 has "$OUT" "COMPOSE_EXCLUDE" "...and the message names the variable"
 

@@ -10,7 +10,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 ### Fixed
 
 - **Every API-supplied slug is refused at its producer before it can reach a request path — and
-  there were two producers, not one** (#218, D51).
+  there were four producers, not one** (#218, D51).
 
   #175 added `adb_is_path_safe_repo_slug` because `adb_is_repo_slug` answers a *shape* question
   that is necessary and not sufficient once a slug is concatenated into a path: `a/..` is a
@@ -25,12 +25,22 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   Hardening only the shared getter would have left the module that decides whether **auto-merge may
   be armed** exactly as it was, while looking like the fix.
 
+  **Two more producers sit outside `scripts/lib/`, which is why a sweep of that directory reported
+  none.** `.claude/skills/release/release.sh` has its own `slug()` — now validating, with its three
+  `sl="$(slug)"` consumers checking the result instead of inheriting an empty one. And
+  `base/workflows/roadmap.md` resolves `nameWithOwner` at **six** places and interpolates it into
+  `repos/$REPO/...`; that one is prose an agent pastes into a shell, so it cannot source a library
+  and the rule reaches it as `roadmap-lib.sh slug-ok` — a thin delegate to the same predicate,
+  never a restatement of the charset rule in Markdown. `check-roadmap.sh` pins that it agrees with
+  `adb_is_path_safe_repo_slug` case-for-case, and that the guard count still equals the read count.
+
   **Each module keeps its own exit code**, because "fail closed with code 20" is not a rule this
   repo has: `automerge-ok`, `merge-flag` and `required-drift` map a `repo_json` failure to 20,
-  `apply` and `status` map it to 1, and `release-convention.sh` has no numbered contract at all —
-  every failure there is `require_gh`'s `exit 1`. Both new guards therefore return the module's
-  *existing* failure, and emitting a uniform 20 would have given `apply` a code its contract does
-  not define.
+  while `apply` and `status` map it to 1. In `release-convention.sh` the slug is resolved by
+  `require_gh`, so all three subcommands surface it as that function's `exit 1` — the module
+  reserves 2 for usage and argument errors, and this path is not one. Both new guards therefore
+  return the module's *existing* failure, and emitting a uniform 20 would have given `apply` a code
+  its contract does not define.
 
   **Validated before the cache is committed, in both.** Each getter is memoized behind `[ -z … ]`,
   so assigning first and rejecting after would fail the first call and then return **0** with the

@@ -750,6 +750,19 @@ eq "$(printf '%s\n' "$err" | grep -c .)" "1" "a newline in the rejected slug can
 has "$err" 'malformed repository slug' "...and the one line is still the real diagnostic"
 hasnt "$err" "$(printf '\nget: FORGED')" "...with the forged continuation escaped, not printed"
 
+# ...AND UNDER `xpg_echo`, which is the mode that defeats the obvious implementation. `%q` renders
+# the newline as the two characters `\` and `n`; `echo` under this shopt DECODES that back into a
+# real newline, so a diagnostic built with `echo` re-forges the line the renderer just escaped.
+# Testing only the default mode leaves the guard green against exactly the shell setting that
+# breaks it — the encoder is one line, and the command that PRINTS it is the other half.
+# Run in a child bash so the shopt cannot leak into the rest of this suite.
+err="$( PATH="$ghbin:$PATH" bash -c '
+  shopt -s xpg_echo
+  . scripts/lib/common.sh
+  adb_repo_slug 2>&1 >/dev/null' )"
+eq "$(printf '%s\n' "$err" | grep -c .)" "1" "...still ONE line with xpg_echo on, where echo would decode the escape"
+has "$err" 'malformed repository slug' "...and it is still the real diagnostic under xpg_echo"
+
 # ...but a repository whose NAME merely contains dots is a name, not a traversal, and must stay
 # resolvable. Over-rejecting it would make every release-convention command permanently fail for a
 # repo that was never dangerous — failure by availability rather than by safety, which is the kind
