@@ -15,12 +15,16 @@
 # placeholder MAP, not the write. So the hazard is exercised here, in a throwaway tree.
 #
 # AND IT IS OBSERVED FAILING, because a guard over a hazard nothing triggers reports a clean run
-# either way. Three mutations, one per line of the fix, each applied to a COPY of `build.sh` in a
-# fixture and each required to make the assertion above it go red:
+# either way. Three mutations, each applied to a COPY of `build.sh` in a fixture and each required
+# to make the assertion above it go red:
 #
-#   1. the naive `} > "$outfile"` publish  -> the sentinel doc is truncated mid-render;
-#   2. the unlink before the redirect gone -> a stale `.tmp` SYMLINK is published over the doc;
-#   3. the EXIT trap gone                  -> a failed render leaves its `.tmp` in the tree.
+#   1. the naive `} > "$outfile"` publish restored -> the sentinel doc is truncated mid-render;
+#   2. staging returned to a fixed `$dest.tmp`     -> a pre-existing `.tmp` symlink is followed and
+#                                                     published over the tracked doc;
+#   3. the EXIT trap removed                       -> a failed render leaves its temp in the tree.
+#
+# (Each mutation is one CHANGE to the publish mechanism, not necessarily one line: 1 and 2 each edit
+# two lines, because restoring the superseded shape takes two.)
 #
 # Every mutation VERIFIES ITS OWN EDIT APPLIED (exactly one matching line before, none after) and
 # fails loud otherwise: a sed that silently matches nothing would turn all three proofs into
@@ -58,11 +62,13 @@ ROOT="$PWD"
 work="$(mktemp -d)" || { echo "check-build-atomic: mktemp failed" >&2; exit 1; }
 check_exit_guard "check-build-atomic" "rm -rf \"$work\""
 
-# The bytes that must survive a failed render. Distinctive enough that finding them is proof the
-# destination was never opened, and finding anything else is proof it was.
-SENTINEL='ADB-SENTINEL-268-DO-NOT-TRUNCATE'
-# A string only a COMPLETE root-doc render contains — build.sh emits it as the last line. Its
-# absence from a non-sentinel file is what distinguishes "truncated" from merely "different".
+# The bytes that must survive a failed render, kept as a FILE so comparisons can be byte-exact.
+# `[ "$(cat f)" = "$SENTINEL" ]` cannot be: command substitution strips every trailing newline, so a
+# file with the right bytes and a missing — or doubled — final newline compares EQUAL. A dropped
+# final newline is one of the corruptions this suite exists to detect, so the comparison is `cmp`.
+SENTINEL="$work/sentinel"
+printf 'ADB-SENTINEL-268-DO-NOT-TRUNCATE\n' > "$SENTINEL"
+# A string only a COMPLETE root-doc render contains — build.sh emits it as the last line.
 TRAILER='Generated from base/practices'
 
 # --- fixtures ---------------------------------------------------------------------------------
@@ -108,12 +114,21 @@ break_render() { mkdir -p "$1/base/practices/90-boom.md"; }
 # run_build <fixture> — run the fixture's build.sh in it; log to <fixture>/build.log; return its rc.
 run_build() { ( cd "$1" && bash scripts/build.sh ) > "$1/build.log" 2>&1; }
 
-# tmps <fixture> — every sibling temp file left anywhere under the fixture, space-joined and
-# fixture-relative. The relative paths come from `cd`-ing rather than from stripping a prefix with
-# `sed`: the fixture path is a `mktemp -d` result, and interpolating any path into a sed script is
-# the escaping bug this repo keeps writing rules about — a `|` anywhere in `TMPDIR` would turn the
-# expression into a syntax error and this helper into one that reports "no temps" for every call.
-tmps() { ( cd "$1" 2>/dev/null && find . -name '*.tmp' -print 2>/dev/null | LC_ALL=C sort | tr '\n' ' ' ); }
+# tmps <fixture> — every staged temp left anywhere under the fixture, space-joined and relative.
+#
+# BOTH SPELLINGS. Staging is `mktemp "$dest.tmp.XXXXXX"`, so the live code leaves `…md.tmp.a1B2c3`;
+# mutation 2 restores the superseded fixed `…md.tmp`. A pattern matching only one of them would
+# report "no residue" for whichever shape it was not written for — a helper that answers clean by
+# not looking, which is the failure mode this whole file is about.
+#
+# The relative paths come from `cd`-ing rather than from stripping a prefix with `sed`: the fixture
+# path is a `mktemp -d` result, and interpolating any path into a sed script is the escaping bug
+# this repo keeps writing rules about — a `|` anywhere in `TMPDIR` would make the expression a
+# syntax error and this helper one that reports "no temps" for every call.
+tmps() {
+  ( cd "$1" 2>/dev/null && find . \( -name '*.tmp' -o -name '*.tmp.*' \) -print 2>/dev/null \
+      | LC_ALL=C sort | tr '\n' ' ' )
+}
 
 # --- the mutation primitive -------------------------------------------------------------------
 
@@ -121,9 +136,9 @@ tmps() { ( cd "$1" 2>/dev/null && find . -name '*.tmp' -print 2>/dev/null | LC_A
 #
 # Requires EXACTLY ONE line of <file> to equal <exact-line> before the edit and NONE after. Both
 # halves matter: without the first, a rename in build.sh turns the mutation into a no-op and the
-# "proof" becomes an assertion about unmodified code; without the second, a sed that matched but
-# did not substitute would do the same. Whole-line matching, because `rm -f "$build_tmp"` appears
-# both in render() and inside build_cleanup() and only one of them is being removed.
+# "proof" becomes an assertion about unmodified code; without the second, a sed that matched but did
+# not substitute would do the same. Whole-line matching, because these needles are substrings of one
+# another's neighbours and only one line is being changed.
 mutate_line() {
   local f="$1" line="$2" script="$3" label="$4" n
   n="$(grep -Fxc -- "$line" "$f")"
@@ -140,6 +155,19 @@ mutate_line() {
   return 0
 }
 
+# mutate_fixed_temp <build.sh> <label> — return staging to the superseded fixed `$dest.tmp` shape.
+# Two edits, because that is what restoring it takes: the unique name, and the mode it no longer
+# needs to set. `#` as the sed delimiter — the replaced line contains `||`, which would end a `|`.
+mutate_fixed_temp() {
+  local f="$1" label="$2" okc=1
+  mutate_line "$f" '  build_tmp="$(mktemp "$dest.tmp.XXXXXX")" || return 1' \
+    's#^  build_tmp="\$(mktemp "\$dest\.tmp\.XXXXXX")" || return 1$#  build_tmp="$dest.tmp"#' \
+    "$label" || okc=0
+  mutate_line "$f" '  chmod 644 "$build_tmp" || return 1' \
+    '\#^  chmod 644 "\$build_tmp" || return 1$#d' "$label" || okc=0
+  [ "$okc" -eq 1 ]
+}
+
 # ============================ 1. control: a clean build still works ============================
 # Not garnish. Every assertion below reads a failed build, and a fixture that cannot build at all
 # would satisfy most of them for the wrong reason.
@@ -150,13 +178,13 @@ yes "$rc" "control: a clean fixture builds successfully"
 [ -s "$d/agents/claude/CLAUDE.md" ] && ok || bad "control: the root doc was not written"
 has "$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)" "$TRAILER" "control: the root doc is a COMPLETE render"
 [ -s "$d/agents/claude/skills/fixture/SKILL.md" ] && ok || bad "control: the skill was not rendered"
-eq "$(tmps "$d")" "" "control: a successful build leaves no sibling temp file"
+eq "$(tmps "$d")" "" "control: a successful build leaves no staged temp"
 
 # ===================== 2. a failed render must not touch the destination ======================
 d="$work/atomic"
 mkfixture "$d" || bad "atomic: could not build the fixture"
 run_build "$d" || bad "atomic: the fixture's first (clean) build failed"
-printf '%s\n' "$SENTINEL" > "$d/agents/claude/CLAUDE.md"
+cp "$SENTINEL" "$d/agents/claude/CLAUDE.md"
 break_render "$d"
 run_build "$d"; rc=$?
 no "$rc" "a render that fails part-way fails the build"
@@ -164,9 +192,9 @@ no "$rc" "a render that fails part-way fails the build"
 # library, a syntax error — would leave the destination untouched too, and would satisfy the
 # assertion below while exercising nothing.
 has "$(cat "$d/build.log" 2>/dev/null)" "90-boom.md" "the build failed on the INJECTED fault, not on something else"
-eq "$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)" "$SENTINEL" \
-  "the tracked root doc is byte-exact after a failed render (never truncated)"
-eq "$(tmps "$d")" "" "a failed render leaves no sibling temp behind"
+cmp -s "$SENTINEL" "$d/agents/claude/CLAUDE.md" && ok \
+  || bad "the tracked root doc is NOT byte-exact after a failed render"
+eq "$(tmps "$d")" "" "a failed render leaves no staged temp behind"
 
 # ------- 2a. MUTATION: the pre-#268 truncate-and-write must destroy that same sentinel ---------
 # Without this, the assertion above is green on any build that fails early enough, and green
@@ -176,57 +204,64 @@ mkfixture "$d" || bad "mut-naive: could not build the fixture"
 mutated=1
 mutate_line "$d/scripts/build.sh" '  } > "$build_tmp"' 's|^  } > "\$build_tmp"$|  } > "$outfile"|' \
   "mut-naive" || mutated=0
-mutate_line "$d/scripts/build.sh" '  mv "$build_tmp" "$outfile"' '\|^  mv "\$build_tmp" "\$outfile"$|d' \
+mutate_line "$d/scripts/build.sh" '  build_publish "$outfile"' '\|^  build_publish "\$outfile"$|d' \
   "mut-naive" || mutated=0
 if [ "$mutated" -eq 1 ]; then
   run_build "$d" || bad "mut-naive: the mutated fixture's clean build failed — the mutation broke the script rather than changing its write shape"
-  printf '%s\n' "$SENTINEL" > "$d/agents/claude/CLAUDE.md"
+  cp "$SENTINEL" "$d/agents/claude/CLAUDE.md"
   break_render "$d"
   run_build "$d"; rc=$?
   no "$rc" "mut-naive: the mutated build still fails on the injected fault"
-  got="$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)"
-  if [ "$got" != "$SENTINEL" ]; then ok; else
+  if cmp -s "$SENTINEL" "$d/agents/claude/CLAUDE.md"; then
     bad "MUTATION 1 DID NOT FIRE: with the naive \`> \"\$outfile\"\` publish restored, the sentinel SURVIVED a failed render — this suite cannot tell the two write shapes apart and proves nothing"
-  fi
+  else ok; fi
   # ...and what it left is specifically a TORN file: the render got far enough to emit the first
   # practice and never reached the trailer. "Different from the sentinel" alone would also be
   # satisfied by an empty file, which is a weaker and less honest claim.
+  got="$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)"
   has "$got" "FIRST-PRACTICE-BODY" "mut-naive: what the naive publish leaves is a PARTIAL render"
   hasnt "$got" "$TRAILER" "mut-naive: ...missing the trailer a complete render ends with — i.e. truncated"
 fi
 
-# =============== 3. a stale or hostile sibling temp is never published over the doc ============
-# `>` writes THROUGH a symlink, so a leftover `CLAUDE.md.tmp` pointing elsewhere would be filled
-# with the render and then renamed onto the tracked root doc — replacing a generated file with a
-# link, and clobbering whatever it pointed at on the way.
-d="$work/stale"
-mkfixture "$d" || bad "stale: could not build the fixture"
-run_build "$d" || bad "stale: the fixture's first (clean) build failed"
-outside="$work/stale-outside.txt"
+# ========== 3. nothing sitting at the predictable `$dest.tmp` name can affect a build ==========
+# Staging is `mktemp "$dest.tmp.XXXXXX"`, so the fixed sibling name is not used at all. That is what
+# makes two concurrent builds safe — they cannot share a staged file, so neither can rename the
+# other's half-written one over the destination — and it is what closes the symlink hole, since
+# there is no "clear the path, then open it" window for anything to slip into. Both are asserted
+# here through their observable consequence: a pre-existing `CLAUDE.md.tmp` is left completely
+# alone, whatever it is.
+d="$work/fixedname"
+mkfixture "$d" || bad "fixedname: could not build the fixture"
+run_build "$d" || bad "fixedname: the fixture's first (clean) build failed"
+outside="$work/fixedname-outside.txt"
 printf 'OUTSIDE-UNTOUCHED\n' > "$outside"
-ln -s "$outside" "$d/agents/claude/CLAUDE.md.tmp"
+ln -s "$outside" "$d/agents/claude/CLAUDE.md.tmp"                 # a hostile/stale symlink
+printf 'PRE-EXISTING\n' > "$d/agents/codex/AGENTS.md.tmp"         # ...and a plain leftover
+mkdir -p "$d/agents/gemini/GEMINI.md.tmp/occupied"                # ...and one that cannot be removed
 run_build "$d"; rc=$?
-yes "$rc" "stale: a build with a leftover .tmp symlink still succeeds"
-[ ! -L "$d/agents/claude/CLAUDE.md" ] && ok || bad "the tracked root doc was REPLACED BY A SYMLINK from a stale .tmp"
-eq "$(cat "$outside")" "OUTSIDE-UNTOUCHED" "the stale symlink's target is never written through"
-has "$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)" "$TRAILER" "stale: the root doc is still a complete render"
+yes "$rc" "fixedname: a build succeeds regardless of what occupies the predictable temp name"
+[ ! -L "$d/agents/claude/CLAUDE.md" ] && ok || bad "the tracked root doc was REPLACED BY A SYMLINK sitting at the predictable temp name"
+eq "$(cat "$outside")" "OUTSIDE-UNTOUCHED" "a symlink at that name is never written through"
+eq "$(cat "$d/agents/codex/AGENTS.md.tmp" 2>/dev/null)" "PRE-EXISTING" "a plain file at that name is never consumed"
+[ -d "$d/agents/gemini/GEMINI.md.tmp/occupied" ] && ok || bad "a directory at that name was disturbed"
+has "$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)" "$TRAILER" "fixedname: the root doc is still a complete render"
 
-# ------- 3a. MUTATION: without the unlink, that symlink IS followed and published --------------
-d="$work/mut-nounlink"
-mkfixture "$d" || bad "mut-nounlink: could not build the fixture"
-if mutate_line "$d/scripts/build.sh" '  rm -f "$build_tmp"' '\|^  rm -f "\$build_tmp"$|d' "mut-nounlink"; then
-  run_build "$d" || bad "mut-nounlink: the mutated fixture's clean build failed"
-  outside2="$work/nounlink-outside.txt"
+# ------- 3a. MUTATION: with a fixed temp name, that symlink IS followed and published ----------
+d="$work/mut-fixed"
+mkfixture "$d" || bad "mut-fixed: could not build the fixture"
+if mutate_fixed_temp "$d/scripts/build.sh" "mut-fixed"; then
+  run_build "$d" || bad "mut-fixed: the mutated fixture's clean build failed"
+  outside2="$work/mut-fixed-outside.txt"
   printf 'OUTSIDE-UNTOUCHED\n' > "$outside2"
   ln -s "$outside2" "$d/agents/claude/CLAUDE.md.tmp"
-  run_build "$d" || bad "mut-nounlink: the mutated build failed unexpectedly"
+  run_build "$d" >/dev/null 2>&1
   if [ -L "$d/agents/claude/CLAUDE.md" ] || [ "$(cat "$outside2")" != "OUTSIDE-UNTOUCHED" ]; then ok; else
-    bad "MUTATION 2 DID NOT FIRE: with the unlink removed, the stale .tmp symlink was still not followed — assertion 3 proves nothing"
+    bad "MUTATION 2 DID NOT FIRE: with staging returned to a fixed \$dest.tmp, the pre-existing symlink was still not followed — assertion 3 proves nothing"
   fi
 fi
 
 # ================== 4. MUTATION: without the EXIT trap, a failed render leaks ==================
-# This is what proves the trap in assertion 2's "leaves no sibling temp behind" is load-bearing:
+# This is what proves the trap in assertion 2's "leaves no staged temp behind" is load-bearing:
 # render() has no cleanup of its own on the failure path, so the trap is the only thing removing it.
 d="$work/mut-notrap"
 mkfixture "$d" || bad "mut-notrap: could not build the fixture"
@@ -236,37 +271,29 @@ if mutate_line "$d/scripts/build.sh" 'trap build_cleanup EXIT' '\|^trap build_cl
   run_build "$d"; rc=$?
   no "$rc" "mut-notrap: the mutated build still fails on the injected fault"
   if [ -n "$(tmps "$d")" ]; then ok; else
-    bad "MUTATION 3 DID NOT FIRE: with the EXIT trap removed, a failed render still left no temp file — assertion 2's residue check proves nothing"
+    bad "MUTATION 3 DID NOT FIRE: with the EXIT trap removed, a failed render still left no temp — assertion 2's residue check proves nothing"
   fi
 fi
 
-# ============ 4b. something UNREMOVABLE in the temp path fails closed, never over it ===========
-# The unlink in section 3 is what makes the publish safe, so what it does when it CANNOT run is a
-# real branch, not a curiosity: a directory sitting at `CLAUDE.md.tmp` (a stale `mkdir`, an
-# unpacked archive) makes `rm -f` fail. The build must stop with the reason on stderr and the
-# tracked doc untouched — publishing over a path it could not clear is the one outcome that would
-# turn this fix into a different corruption.
-d="$work/blocked"
-mkfixture "$d" || bad "blocked: could not build the fixture"
-run_build "$d" || bad "blocked: the fixture's first (clean) build failed"
-printf '%s\n' "$SENTINEL" > "$d/agents/claude/CLAUDE.md"
-mkdir -p "$d/agents/claude/CLAUDE.md.tmp/occupied"
-run_build "$d"; rc=$?
-no "$rc" "an unremovable temp path fails the build"
-has "$(cat "$d/build.log" 2>/dev/null)" "CLAUDE.md.tmp" "...naming the path it could not clear"
-eq "$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)" "$SENTINEL" "...and the tracked doc is left untouched"
-# The trap's removal fails too, and must do so SILENTLY: a second `rm:` line buries the one that
-# explains the failure. Exactly one occurrence, not "at least one".
-#
-# COUNTED BY THE PATH, NOT BY `rm`'s MESSAGE. The two platforms this suite runs on word it
-# differently — GNU coreutils prints `Is a directory` (capital, it is strerror(EISDIR)) and BSD/macOS
-# prints `is a directory` — so matching the sentence would have passed on the workstation and failed
-# on the Linux runner. The path is the part both platforms agree on, and it is what the assertion
-# actually means.
-eq "$(grep -c 'CLAUDE\.md\.tmp' "$d/build.log" 2>/dev/null)" "1" \
-  "...and the failure is reported ONCE (best-effort cleanup does not echo it again)"
+# ============ 5. the published mode is CHOSEN, not inherited from the caller's umask ===========
+# `mktemp` creates 0600 and the truncate-and-write this replaced inherited the destination's mode,
+# so publishing straight from the temp would silently narrow every generated doc — while taking the
+# umask instead would let a permissive one produce group/world-writable instruction files. Git
+# records no difference among non-executable modes, so nothing else in this repo would ever notice.
+# Asserted under a HOSTILE umask at each extreme, which is the only way to tell "chosen" from
+# "happened to match".
+for um in 077 000; do
+  d="$work/mode-$um"
+  mkfixture "$d" || bad "mode($um): could not build the fixture"
+  ( cd "$d" && umask "$um" && bash scripts/build.sh ) > "$d/build.log" 2>&1 \
+    || bad "mode($um): the build failed"
+  eq "$(ls -l "$d/agents/claude/CLAUDE.md" 2>/dev/null | cut -c1-10)" "-rw-r--r--" \
+    "the published root doc is 644 under umask $um"
+  eq "$(ls -l "$d/agents/claude/skills/fixture/SKILL.md" 2>/dev/null | cut -c1-10)" "-rw-r--r--" \
+    "the published skill is 644 under umask $um"
+done
 
-# ================== 5. the skill path leaves no residue either ================================
+# ================== 6. the skill path leaves no residue either ================================
 # A PARITY PIN, and it is honest about what it is: the unresolved-placeholder path has always had
 # its own `rm -f`, so this assertion was green before #268 and stays green after. What it guards is
 # that the skill renderer keeps publishing without residue while its sibling changes around it —
@@ -276,6 +303,6 @@ mkfixture "$d" || bad "skill: could not build the fixture"
 printf 'An unmapped {{NOPE}} token.\n' >> "$d/base/workflows/fixture.md"
 run_build "$d"; rc=$?
 eq "$rc" "3" "an unmapped placeholder fails the build loud (rc 3)"
-eq "$(tmps "$d")" "" "...and leaves no sibling temp beside the skill trees"
+eq "$(tmps "$d")" "" "...and leaves no staged temp beside the skill trees"
 
 check_summary "check-build-atomic"

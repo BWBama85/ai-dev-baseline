@@ -29,45 +29,77 @@ root="$(cd "$here/.." && pwd)"
 practices="$root/base/practices"
 workflows="$root/base/workflows"
 
-# The temp file a render is part-way through, and the trap that removes it however this script ends
-# (#268). Both renderers publish by rename, so an abort leaves a `.tmp` beside a tracked file; that
-# file is not gitignored and neither `build-drift`'s untracked scan (skill trees only) nor
-# `check-tmp-paths.sh` (a content scan) would report it, so it would sit in the working tree as
-# untracked drift until someone noticed.
+# Publishing a generated file is ONE operation with two halves — stage a temp beside the
+# destination, then rename it into place (#268) — and both renderers call the same pair. Written
+# once rather than twice, because two copies of a write rule disagreeing is the entire subject of
+# this issue.
+#
+# THE TEMP NAME IS UNIQUE PER PROCESS, not a fixed `$dest.tmp`, and that is not tidiness. Two builds
+# over one checkout — a contributor running `build.sh` while selfcheck's `build-drift` step runs
+# one — would share a fixed name, and the interleaving PUBLISHES a torn file rather than preventing
+# one: A creates the temp, B clears the name and creates its own, A renames B's half-written file
+# over the destination. That is precisely the corruption this fix exists to remove, so it must not
+# leave a path back to it. `mktemp` also closes a hole a fixed name cannot: clearing a path and then
+# opening it are two operations, so anything that installs a symlink in between is followed by the
+# redirect and then renamed over the tracked file. `mktemp` creates with O_EXCL under a name nothing
+# can predict, so there is no window and no symlink to follow.
+#
+# The trap removes whatever is in flight however this script ends. Without it an abort leaves the
+# temp behind, and no guard here would name it: `.gitignore` does not cover it, `build-drift`'s
+# untracked scan looks only under the skill trees, and `check-tmp-paths.sh` is a content scan a
+# well-formed render fragment passes.
 #
 # A BARE `EXIT` TRAP IS ENOUGH, and that is measured rather than assumed. On bash 5.3.15 it runs
 # for SIGINT delivered the way a terminal delivers it (to the process group), for SIGTERM and for
 # SIGHUP, and the script still exits 130 / 143 / 129 — so the INT/TERM/HUP handlers that would have
 # to re-raise the signal to preserve that status buy nothing and can only get the status wrong. An
 # EXIT trap returning 0 does NOT overwrite a failing script's status either, so cleanup cannot mask
-# an errexit abort. SIGKILL and power loss remain untrappable; they leave a `.tmp` and, which is the
+# an errexit abort. SIGKILL and power loss remain untrappable; they leave a temp and, which is the
 # whole point, an INTACT tracked file.
 #
-# Cleanup is BEST-EFFORT and says nothing: if the removal fails, the command that already failed
-# has printed the reason (`rm: …: is a directory`), and a second identical line from the trap only
-# makes the real diagnostic harder to find. `|| :` for the same reason — a cleanup that cannot run
-# must not become the script's verdict.
+# Cleanup is BEST-EFFORT and says nothing: if the removal fails, the command that already failed has
+# printed the reason, and a second line from the trap only buries it. `|| :` for the same reason — a
+# cleanup that cannot run must not become the script's verdict.
 build_tmp=''
 build_cleanup() { if [ -n "$build_tmp" ]; then rm -f "$build_tmp" 2>/dev/null || :; fi; }
 trap build_cleanup EXIT
 
+# build_stage <destination> — create an exclusive temp beside it and record it in `build_tmp`.
+#
+# SETS A GLOBAL RATHER THAN PRINTING THE PATH, deliberately: `t="$(build_stage …)"` would run the
+# function in a SUBSHELL, so the assignment the trap depends on would be discarded at the closing
+# paren and an interrupted build would leak the very file this records. The caller reads
+# `$build_tmp`.
+#
+# The mode is CHOSEN, not inherited. `mktemp` creates 0600, and the truncate-and-write this replaces
+# inherited the destination's mode — so publishing straight from the temp would silently narrow
+# every generated doc. Taking the caller's umask instead is the same problem pointing the other way:
+# a permissive umask yields group- or world-writable instruction files, and since git records no
+# difference among non-executable modes, nothing in this repo would ever notice. 644 is what a fresh
+# checkout has, and it is the only value that does not depend on ambient state.
+build_stage() {
+  local dest="$1"
+  build_tmp="$(mktemp "$dest.tmp.XXXXXX")" || return 1
+  chmod 644 "$build_tmp" || return 1
+}
+
+# build_publish <destination> — rename the staged temp into place and drop the trap's record, so a
+# later failure in the same run cannot delete a file that is already published.
+build_publish() { mv "$build_tmp" "$1" && build_tmp=''; }
+
 render() {
   local outfile="$1" title="$2"
   mkdir -p "$(dirname "$outfile")"
-  # Render to a temp file and rename into place only on success — the same idiom, for the same
-  # reason, as render_agent_skill() below (#268). A plain `> "$outfile"` truncates the TRACKED root
-  # doc before the first byte is written, so any abort mid-render — ^C, a full disk, an OOM kill —
-  # leaves it half-rendered in the working tree, and the next `build-drift` reports drift rather
-  # than corruption. It is also read live: install.sh symlinks ~/.<agent>/CLAUDE.md at this path,
-  # so the truncate window is visible to a running agent session. A rename is atomic, so a reader
-  # sees the old file or the new one and never a torn one.
-  build_tmp="$outfile.tmp"
-  # A STALE OR HOSTILE `$outfile.tmp` WOULD BE FOLLOWED. `>` writes THROUGH a symlink, and the `mv`
-  # below would then rename that symlink over the tracked root doc — replacing a generated file
-  # with a link to wherever it pointed. Unlink first: `rm -f` removes the symlink itself, never its
-  # target. Anything it cannot remove (a directory of that name) aborts under errexit with rm's own
-  # message, which is the right outcome: publishing over it is not something to guess at.
-  rm -f "$build_tmp"
+  # Stage, render, publish — the same pair render_agent_skill() below uses (#268). A plain
+  # `> "$outfile"` truncates the TRACKED root doc before the first byte is written, so any abort
+  # mid-render — ^C, a full disk, an OOM kill — leaves it half-rendered in the working tree, and the
+  # next `build-drift` reports drift rather than corruption. It is also read live: install.sh
+  # symlinks each agent's own root doc at this path (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`,
+  # `~/.gemini/GEMINI.md`), so the truncate window was visible to a running agent session. A rename
+  # is atomic, so a reader of any ONE file sees the old contents or the new and never a torn mix.
+  # (Across the three files it is not atomic, and that is what keeps `build-drift` pinned to
+  # selfcheck's serial prologue — see that script's concurrency contract.)
+  build_stage "$outfile"
   {
     printf '<!-- GENERATED FILE — do not edit by hand.\n'
     printf '     Source: base/practices/*.md · Regenerate: scripts/build.sh\n'
@@ -86,8 +118,7 @@ render() {
     done
     printf '_Generated from base/practices. The multi-agent role model lives in base/roles.md._\n'
   } > "$build_tmp"
-  mv "$build_tmp" "$outfile"
-  build_tmp=''
+  build_publish "$outfile"
   echo "wrote ${outfile#"$root"/}"
 }
 
@@ -281,17 +312,15 @@ render_agent_skill() {
   # and a zero-byte file here would break the live installed skill. Writes only this
   # one file; never clears or recreates the skills directory.
   #
-  # Published through `build_tmp` so the EXIT trap covers this path too (#268). The `rm -f` on the
-  # unresolved-placeholder path below is the only cleanup this renderer used to have, so an awk
-  # failure or a ^C left a `SKILL.md.tmp` behind — where `build-drift`'s untracked scan DOES see it
-  # and reports it as "rendered skill(s) not committed", a message about the wrong problem. Making
-  # render() atomic without covering its sibling would have left the two write paths disagreeing
-  # about a hazard they both face, which is the asymmetry #268 exists to end.
-  tmp="$out.tmp"
-  build_tmp="$tmp"
-  # A stale or hostile `$out.tmp` would be written THROUGH and then renamed over the tracked skill —
-  # see render()'s note. Unlink first; `rm -f` removes a symlink itself, never its target.
-  rm -f "$tmp"
+  # Staged through the shared pair so this path gets the same unique temp and the same EXIT trap
+  # (#268). The `rm -f` on the unresolved-placeholder path below was the only cleanup this renderer
+  # had, so an awk failure or a ^C left a `SKILL.md.tmp` behind — where `build-drift`'s untracked
+  # scan DOES see it and reports it as "rendered skill(s) not committed", a message about the wrong
+  # problem. And its fixed sibling name carried the same collision and symlink hazards render() had;
+  # hardening one renderer and not the other would have left the two write paths disagreeing about a
+  # hazard they both face, which is the asymmetry #268 exists to end.
+  build_stage "$out"
+  tmp="$build_tmp"
   # The MAP is the four lreplace() calls below, fed the per-agent tokens via -v. Kept
   # literal (index/substr in awk, no regex) so tokens with $, ", and / substitute
   # cleanly. -v does no escape processing on these values (none contain backslashes),
@@ -391,8 +420,7 @@ render_agent_skill() {
     exit 3
   fi
 
-  mv "$tmp" "$out"
-  build_tmp=''
+  build_publish "$out"
   echo "wrote ${out#"$root"/}"
 }
 

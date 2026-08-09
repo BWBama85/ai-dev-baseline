@@ -71,10 +71,10 @@ fail=0
 #
 #   * it runs `scripts/build.sh`, which REWRITES tracked generated files in the working tree, and
 #   * those files are rewritten one at a time. Each individual file is now published by RENAME
-#     (#268) — both renderers write a sibling `.tmp` and `mv` it into place — so no single file is
-#     ever observable half-written. What #268 did NOT make atomic, and deliberately so, is the
-#     TRANSITION ACROSS FILES: a reader that starts while build.sh is part-way through sees a MIXED
-#     GENERATION — some of `agents/{claude,codex,gemini}/*` already renamed to the new render and
+#     (#268) — both renderers stage a uniquely-named sibling temp and `mv` it into place — so no
+#     single file is ever observable half-written. What #268 did NOT make atomic, and deliberately
+#     so, is the TRANSITION ACROSS FILES: a reader that starts while build.sh is part-way through
+#     sees a MIXED GENERATION — some of `agents/{claude,codex,gemini}/*` already renamed and
 #     the rest still carrying the old one. That is why fixing the torn-file defect did not retire
 #     this pin, and why it must not be read as having done so.
 #

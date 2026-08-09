@@ -18,13 +18,23 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   `build-drift` reports *drift*, not corruption, so a contributor who commits before noticing ships
   a half-rendered root doc. The skill renderer in the same file had done temp-then-`mv` since it was
   written, with a comment explaining exactly why. That asymmetry is what this closes. It also
-  matters live: `install.sh` symlinks `~/.<agent>/CLAUDE.md` at that path, so the truncate window
-  was visible to a running agent session reading its own root doc.
+  matters live: `install.sh` symlinks each agent's own root doc at that path —
+  `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md` — so the truncate window was
+  visible to a running agent session reading its own root doc.
 
-  **A rename needs two things the truncate did not**, and both are in the diff rather than
-  inherited silently:
+  **A rename needs three things the truncate did not**, and all three are in the diff rather than
+  inherited silently. Both renderers now call one shared `build_stage` / `build_publish` pair, so
+  there is one write rule rather than two copies of one:
 
-  - **an `EXIT` trap**, because publishing through a sibling `.tmp` means an abort leaves one — and
+  - **a unique per-process temp** (`mktemp "$dest.tmp.XXXXXX"`), not a fixed `$dest.tmp`. A fixed
+    sibling name is not merely untidy: two builds over one checkout — a contributor running
+    `build.sh` while selfcheck's `build-drift` step runs one — share it, and the interleaving
+    *publishes* a torn file rather than preventing one (A stages, B clears the name and stages its
+    own, A renames B's half-written file over the destination). `mktemp` also closes a hole a fixed
+    name cannot: clearing a path and opening it are two operations, so anything installing a symlink
+    in between is followed by the redirect and then renamed over the tracked file. O_EXCL under an
+    unpredictable name leaves no window and no symlink to follow.
+  - **an `EXIT` trap**, because publishing through a temp means an abort leaves one — and
     `.gitignore` does not cover it, `build-drift`'s untracked scan looks only under the skill trees,
     and `check-tmp-paths.sh` is a content scan a well-formed render fragment passes. A **bare** EXIT
     trap is enough, and that is measured, not assumed: on bash 5.3.15 it runs for SIGINT delivered
@@ -32,15 +42,17 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     script still exits 130 / 143 / 129 by itself — so the hand-written INT/TERM/HUP handlers that
     would have re-raised to preserve that status were declined as a way to get it wrong. SIGKILL
     stays untrappable, and there the residue is the correct outcome: the tracked file is intact.
-  - **an unlink before the redirect**, because `>` writes *through* a symlink. A stale or hostile
-    `CLAUDE.md.tmp` would have been filled with the render and then renamed over the tracked root
-    doc, replacing a generated file with a link and clobbering its target on the way — a hazard
-    that did not exist before, since the old code never wrote a sibling at all.
+  - **an explicitly chosen mode.** `mktemp` creates 0600 and the truncate-and-write it replaces
+    inherited the destination's, so publishing straight from the temp would silently narrow every
+    generated doc — while taking the umask instead lets a permissive one produce group- or
+    world-writable *instruction* files. That is demonstrated, not hypothetical: the new suite run
+    against the pre-#268 code reports `-rw-rw-rw-` under `umask 000`. Git records no difference
+    among non-executable modes, so nothing here would ever have noticed. `chmod 644` is the only
+    value that does not depend on ambient state.
 
-  Both reach the skill renderer too, because #268's stated aim is that the two write paths stop
+  All three reach the skill renderer too, because #268's stated aim is that the two write paths stop
   disagreeing about a hazard they both face; hardening one would have re-created the asymmetry
-  pointing the other way. **Mode preservation is declined, not overlooked** — a rename adopts the
-  temp's umask-derived mode, git records only the executable bit, and the reasoning is in D52.
+  pointing the other way.
 
   **What this does NOT do: retire `build-drift`'s serial prologue.** Each file is now unobservable
   half-written; the transition *across* files is still not atomic, so a reader that starts mid-build
@@ -55,9 +67,11 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   a failure without damaging the checkout it is checking. This faults a copied `build.sh` mid-render
   inside a `mktemp -d` fixture (a directory named like a practice, so the fault fires as any uid —
   a `chmod 000` file would be readable by root and silently not fire) and requires the destination
-  to survive byte-exact. Three mutations, one per line of the fix, each required to make the
-  assertion above it go red, and each verifying its own edit applied so a sed that stopped matching
-  fails loud rather than turning three proofs into assertions about unmodified code. Pooled in
+  to survive **byte-exact**, compared with `cmp` rather than `[ "$(cat f)" = … ]`, which strips
+  trailing newlines and so cannot see a dropped final one. Three mutations — the naive publish, a
+  fixed temp name, the trap removed — each required to make the assertion above it go red, and each
+  verifying its own edit applied so a sed that stopped matching fails loud rather than turning three
+  proofs into assertions about unmodified code. Pooled in
   `selfcheck.sh`, a step on CI's existing `build-drift` job — not a new job, which would be a
   branch-protection context `required-drift` then reports as gating nothing.
 
