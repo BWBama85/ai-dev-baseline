@@ -1035,8 +1035,21 @@ has "$gauge_block" 'REPO=' \
 # `set -u`. (Found by the e2e harness executing this snippet.)
 has "$gauge_block" 'LABEL="${LABEL:-}"' \
   "the gauge tolerates an unconfigured destination-label instead of exploding on it"
-has "$gauge_block" '[ -n "$LABEL" ] &&' \
+has "$gauge_block" '[ -n "$LABEL" ]' \
   "...and skips the probe entirely when none is configured"
+# ...AND THE REPO RESOLUTION SITS INSIDE THAT CONDITIONAL (#218 review). The slug guard was first
+# added ABOVE it, which converted an optional feature into a hard stop for the entire roadmap run:
+# with no `destination-label` configured, a `gh repo view` that merely failed — or returned
+# something malformed — exited the run over a request that would never have been made. Pinned by
+# ORDER, because both lines are present either way and only their relative position differs.
+g_label_at="$(printf '%s\n' "$gauge_block" | grep -nF 'LABEL="${LABEL:-}"' | head -1 | cut -d: -f1)"
+g_repo_at="$(printf '%s\n' "$gauge_block" | grep -nE '^[[:space:]]*REPO="' | head -1 | cut -d: -f1)"
+g_guard_at="$(printf '%s\n' "$gauge_block" | grep -nE '^[[:space:]]*\{\{ROADMAP_LIB\}\} slug-ok' | head -1 | cut -d: -f1)"
+if [ -n "$g_label_at" ] && [ -n "$g_repo_at" ] && [ -n "$g_guard_at" ] \
+   && [ "$g_label_at" -lt "$g_repo_at" ] && [ "$g_label_at" -lt "$g_guard_at" ]; then ok
+else
+  bad "the gauge must decide on LABEL BEFORE resolving/validating \$REPO, or an optional feature can fail the whole run (LABEL@${g_label_at:-none} REPO@${g_repo_at:-none} guard@${g_guard_at:-none})"
+fi
 readiness_block="${ wf_snippet readiness; }"
 has "$readiness_block" 'gh repo view' \
   "the readiness snippet resolves \$REPO itself (it may run as its own shell invocation)"
@@ -2452,8 +2465,28 @@ eq "$(printf '%s\n' "$OUT" | grep -c .)" "1" "slug-ok's diagnostic stays on one 
 # automerge-ok wiring check: the library can be perfect while the prose stops asking, and nothing
 # else in this suite would notice.
 WF="$ROOT/base/workflows/roadmap.md"
-n_reads="$(grep -c 'nameWithOwner' "$WF")"
-n_guards="$(grep -c 'slug-ok' "$WF")"
-eq "$n_guards" "$n_reads" "every nameWithOwner read in roadmap.md is followed by a slug-ok guard"
+# COMMENT LINES ARE STRIPPED FIRST, and that is not tidiness — it is the same defect this PR fixed
+# twice already. An unanchored count let a COMMENT that merely mentions `nameWithOwner` satisfy the
+# pin: adding one such comment took the tally from 6/6 to 7/7, still "balanced", while the code was
+# unchanged. A structural check that prose can satisfy is not a check.
+wf_code="$(grep -vE '^[[:space:]]*#' "$WF")"
+n_reads="$(printf '%s\n' "$wf_code" | grep -c 'nameWithOwner')"
+n_guards="$(printf '%s\n' "$wf_code" | grep -c 'slug-ok')"
+eq "$n_guards" "$n_reads" "every nameWithOwner read in roadmap.md is paired with a slug-ok guard"
+eq "$n_reads" "6" "...and there are still exactly 6 such reads (a new one needs its own guard)"
+
+# THE COMBINED READ IS CHECKED FOR LINE COUNT BEFORE IT IS SPLIT (#218 review). One request returns
+# the slug AND the default branch separated by a newline, so a newline INSIDE either value silently
+# re-partitions them: `nameWithOwner` = "victim/repo\nmain" yields a REPO that passes every
+# validation and a DEFAULT_BRANCH of `main`, with the real default branch discarded — every later
+# read then addresses a DIFFERENT REPOSITORY. `slug-ok` cannot see it, because the value it is
+# handed is clean by then. The line count is the only place the substitution is still visible.
+readiness_block="${ wf_snippet readiness; }"
+has "$readiness_block" 'expected exactly 2 lines' \
+  "the combined repo view is line-count checked before it is split"
+fr_check_at="$(printf '%s\n' "$readiness_block" | grep -nF 'expected exactly 2 lines' | head -1 | cut -d: -f1)"
+fr_split_at="$(printf '%s\n' "$readiness_block" | grep -nF 'IFS= read -r REPO' | head -1 | cut -d: -f1)"
+if [ -n "$fr_check_at" ] && [ -n "$fr_split_at" ] && [ "$fr_check_at" -lt "$fr_split_at" ]; then ok
+else bad "the 2-line check must precede the split, or it validates values already re-partitioned (check@${fr_check_at:-none} split@${fr_split_at:-none})"; fi
 
 check_summary "roadmap"

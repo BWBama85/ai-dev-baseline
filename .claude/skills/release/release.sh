@@ -86,9 +86,14 @@ have_gh() { command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PAT
 # owner/repo pair AND a path traversal. This file already sources common.sh, so the predicate and
 # the renderer both come from their one home rather than being restated here.
 #
-# Fails CLOSED: non-zero with empty output. The three `sl="$(slug)"` sites below now CHECK that
-# rather than inheriting it — an unchecked empty slug builds `repos//…`, which is safe (nothing
-# traverses) but fails several calls later as an opaque API error instead of naming the cause.
+# Fails CLOSED: non-zero with empty output, and EVERY consumer below checks that rather than
+# inheriting it. An unchecked empty slug builds `repos//…`, which is safe in the traversal sense —
+# nothing escapes — but it is not harmless: inside `await_checks`'s retry loop it polled an
+# unanswerable path 90 times over fifteen minutes and reported a timeout, hiding the real cause.
+#
+# "Every consumer" is the load-bearing word, and the first cut of this did not have it: the sweep
+# and its structural test covered only `sl="$(slug)"` ASSIGNMENTS and silently missed the inline
+# `$(slug)` interpolated straight into a request. The check now matches any use.
 slug() {
   local s
   s="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)" || return 1
@@ -140,9 +145,16 @@ inventory() {
 # Prints the settled count. Args: <sha> [min-expected]
 await_checks() {
   sha="$1"; min="${2:-0}"
+  # RESOLVED ONCE, AND CHECKED, BEFORE THE LOOP (#218 review). Inline `$(slug)` inside the loop
+  # discarded its status: a rejected or unresolvable slug became an EMPTY one, the request became
+  # `repos//commits/...`, and the `|| { sleep 10; continue; }` arm then retried that 90 times —
+  # fifteen minutes of polling a path that can never answer, reported as a timeout. `ac_sl`, not
+  # `sl`, because `sl` is a de-facto global that health_of / cmd_readiness / cmd_roll also use.
+  ac_sl="$(slug)" || return 1
+  [ -n "$ac_sl" ] || return 1
   stable=0; last=-1; i=0
   while [ "$i" -lt 90 ]; do
-    ck="$(gh api --paginate "repos/$(slug)/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || { sleep 10; i=$((i+1)); continue; }
+    ck="$(gh api --paginate "repos/$ac_sl/commits/$sha/check-runs?per_page=100" 2>/dev/null)" || { sleep 10; i=$((i+1)); continue; }
     out="$(printf '%s' "$ck" | bash "$RLIB" checks-settled "$min" 2>/dev/null)"; rc=$?
     case "$rc" in
       0)
@@ -248,7 +260,8 @@ cmd_preflight() {
   # AHEAD, so unpushed commits would ride into the release branch.
   [ "$(git -C "$ROOT" rev-parse HEAD)" = "$(git -C "$ROOT" rev-parse "origin/$d")" ] \
     || die "local $d is ahead of origin/$d — push or drop those commits first"
-  say "preflight ok: $(slug) on $d at $(git -C "$ROOT" rev-parse --short HEAD)"
+  pf_sl="$(slug)" || die "cannot resolve this repo's slug"
+  say "preflight ok: $pf_sl on $d at $(git -C "$ROOT" rev-parse --short HEAD)"
 }
 
 cmd_readiness() {
@@ -329,7 +342,8 @@ cmd_roll_preflight() {
 
 cmd_stamp_verify() {
   v="$(need VERSION 'run version-guard first')"
-  bash "$RLIB" changelog-verify "$v" "$(rs LAST)" "$(slug)" "$(date +%F)" < "$ROOT/CHANGELOG.md" \
+  sv_sl="$(slug)" || die "cannot resolve this repo's slug"
+  bash "$RLIB" changelog-verify "$v" "$(rs LAST)" "$sv_sl" "$(date +%F)" < "$ROOT/CHANGELOG.md" \
     || die "changelog stamp is wrong (reasons above)"
   say "changelog stamp verified for $v"
 }

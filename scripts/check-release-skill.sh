@@ -475,13 +475,24 @@ else ok; fi
 if printf '%s' "$slug_fn" | grep -qE '^\s*echo '; then
   bad "release.sh slug() prints its diagnostic with echo — xpg_echo would undo adb_display_value's escaping"
 else ok; fi
-# And every consumer must CHECK it. An unchecked `sl="$(slug)"` inherits an empty slug and fails
-# several API calls later as an opaque error instead of naming the cause.
-# ANCHORED to a real assignment, so a COMMENT mentioning the idiom cannot be mistaken for a site.
-# (It was: the first cut of this check flagged its own explanatory comment above.)
-unchecked="$(printf '%s' "$drv" | grep -nE '^[[:space:]]*sl="\$\(slug\)"' | grep -v '||' || true)"
+# And EVERY consumer must check it — not just the assignments.
+#
+# THIS CHECK'S FIRST CUT MATCHED ONLY `sl="$(slug)"`, and independent review found what that let
+# through: `await_checks` interpolated `$(slug)` DIRECTLY into a request path inside a retry loop,
+# so a rejected slug became `repos//commits/...` polled 90 times over fifteen minutes and reported
+# as a timeout. A guard scoped to one spelling of the thing it guards is the failure mode this
+# repo keeps writing down; the pattern now matches any `$(slug)` use.
+#
+# The accepted shapes are exactly two: an assignment that checks its status (`x="$(slug)" || …`),
+# and nothing else. A bare `$(slug)` anywhere — interpolated into a string, passed as an argument —
+# discards the status by construction and is what this rejects.
+#
+# Comment lines are stripped first, so prose mentioning the idiom cannot be read as a site (the
+# first cut of this check flagged its own explanatory comment).
+code_only="$(printf '%s\n' "$drv" | grep -vE '^[[:space:]]*#')"
+unchecked="$(printf '%s\n' "$code_only" | grep -nF '$(slug)' | grep -vE '="\$\(slug\)"[[:space:]]*(\|\||$)' || true)"
 if [ -z "$unchecked" ]; then ok; else
-  bad "release.sh has sl=\"\$(slug)\" site(s) that do not check the result: $unchecked"
+  bad "release.sh uses \$(slug) without checking its status: $unchecked"
 fi
 
 check_summary "release-skill"
