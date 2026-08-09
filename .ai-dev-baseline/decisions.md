@@ -3631,3 +3631,93 @@ limit: none of them is sufficient alone.
              reordered nothing would pass a status check) and falls through to `find` order when
              absent. Verified green under a stub `sort` that rejects `-z` exactly as the finding
              described.
+
+## D51 — the slug has FOUR producers, and each module keeps its own fail-closed code
+- date:      2026-08-08
+- category:  project-delta
+- unknown:   #218 prescribed ONE chokepoint (`adb_repo_slug`) and ONE failure code (`20`) for
+             routing every API-supplied slug through `adb_is_path_safe_repo_slug`. Both premises
+             are false of this repo, and neither is false in a way that shows up as a test failure —
+             a fix built on either would have looked complete and covered less than it claimed.
+- decision:  Validate at **every** producer boundary, and return **each module's existing** code.
+
+             **Four producers, not one — and the count itself is the lesson.** The first pass found
+             two, because it swept `scripts/lib/`, `bin/` and `agents/*/scripts/`; independent
+             review found two more by not assuming the search space. `.claude/skills/release/
+             release.sh` carries its own `slug()` (outside `scripts/lib/` by D14's design), and
+             `base/workflows/roadmap.md` resolves `nameWithOwner` at SIX places — prose, which no
+             grep for a shell function would ever have surfaced. A rule that "exists in one place"
+             is only as good as the inventory of who bypasses it, and this inventory was wrong
+             twice: once in the issue, once in the fix that corrected the issue.
+
+             **The prose producer needed a mechanism, not just a call.** `roadmap.md` is pasted
+             into a shell and cannot source a library, so the rule reaches it as
+             `roadmap-lib.sh slug-ok` — a thin delegate, in the library whose charter is already
+             "/roadmap's decisions lifted out of the prose so they are testable". Restating the
+             charset and traversal rules in Markdown would have put a copy of a security predicate
+             where no test runs, which is the failure this whole issue is about. Same shape as
+             `role-dispatch.sh untrusted` exposing `adb_untrusted_block`.
+
+             **`adb_repo_slug` still has exactly one production caller:** `release-convention.sh:79`,
+             and that single checked assignment (`REPO_SLUG="$(adb_repo_slug)" || exit 1`, run by `init`, `status` and
+             `roll` alike) is what all ten of that module's `repos/$(repo_slug)/...` sites descend
+             from, so hardening the getter covers every one. It covers `repo-settings.sh` not at
+             all: that module reads its slug from the `.full_name` of the repo object it already
+             fetches, deliberately, to avoid a second round trip on the one call that runs on every
+             `/implement-issue`. Its boundary is `repo_json`, and it is the module that decides
+             whether **auto-merge may be armed** — so a one-place fix would have hardened the
+             cheaper half and left the consequential one untouched while reading as done.
+
+             **The getter is hardened rather than wrapped.** No caller wants the raw value, and a
+             wrapper would leave the unvalidated spelling as the shorter, more obvious one — the
+             shape that produced this issue.
+
+             **Validation cannot live at the interpolations.** In
+             `release-convention.sh` the accessor's status is discarded inside the string that
+             quotes it (`"repos/$(repo_slug)/milestones"`), so a refusal there prints and the
+             `gh api` call still goes out.
+
+             **Each module keeps its own code**, because "the existing unreadable code (20)" is not
+             a repo-wide fact. In `repo-settings.sh`, `automerge-ok` / `merge-flag` /
+             `required-drift` map a `repo_json` failure to 20 while `apply` / `status` map it to 1.
+             In `release-convention.sh` the slug is resolved inside `require_gh`, so all three
+             subcommands surface a bad one as that function's `exit 1` — narrowly, because the
+             module is NOT uniformly "exit 1": it reserves 2 for usage and argument errors. Both
+             guards therefore return the failure their module already defines, and each caller maps
+             it as it always has. A uniform 20 in the producer would have handed `apply` an exit
+             code its contract does not define.
+
+             **Both validate BEFORE committing the cache**, which is the whole correctness story
+             and not a style point: assigning first and rejecting after fails the FIRST call and
+             then returns 0 with the rejected slug on the SECOND — a fail-open one line below the
+             guard, invisible to every single-call test. The guard is the memo variable in each
+             case, and only that one: `_ADB_REPO_SLUG` in the getter, and in `repo_json`
+             **`REPO_JSON` alone** — `REPO_SLUG` rides along with it rather than being tested
+             independently, so moving `REPO_SLUG` by itself cannot produce the bypass.
+
+             **The diagnostic renders the value (`adb_display_value`, `%q`) rather than echoing
+             it.** The values a guard rejects are by construction the least well-behaved, so a
+             newline in one forges the log line after it — re-opening in the operator's output the
+             hole the check just closed. Deliberately NOT shared with `cleanup-lib.sh`'s
+             `_adb_cl_tsv_display`, which adds a re-test and a fixed fallback token because it
+             guards a machine-read record format; here a fixed token would destroy the only thing
+             the line exists for. Two contracts; the shared part is one `printf`.
+- placement: `scripts/lib/common.sh` (`adb_repo_slug`, plus `adb_display_value` in the logging
+             section), `scripts/lib/repo-settings.sh` (`repo_json`). Regression tests in the three
+             owning suites — `scripts/check-common-lib.sh`, `scripts/check-repo-settings.sh`,
+             `scripts/check-release-convention.sh` — all already registered in `selfcheck.sh`.
+             `release-convention.sh` itself needed no edit, and its suite proves that transitively.
+- reason:    Both false premises are the kind that pass review: each is stated confidently in the
+             issue, each is true of the module a reader is most likely to open first, and neither
+             produces a red test when acted on literally. Recording them is the point — the next
+             person to add a gh-backed module will reach for "the chokepoint" and there will still
+             be two.
+- guard-observability: `adb_repo_slug`'s cache ordering is pinned BEHAVIOURALLY (a second call
+             after a rejection must also fail). `repo_json`'s cannot be: every subcommand checks
+             that function's status on its first call and bails, so the wrong order is
+             indistinguishable today — measured, not assumed, by running that exact reorder against
+             the suite and watching it stay green at 380/380. It is pinned STRUCTURALLY instead,
+             the same move the `required-drift` CI wiring gets, and the test says which kind it is.
+             All six mutations (each guard removed, each cache reordered, the escaping disabled)
+             were observed RED against a throwaway copy, each on its own assertion.
+- baseline-issue: n/a — this repo IS the baseline; #218 is the tracking issue.

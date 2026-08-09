@@ -450,4 +450,49 @@ eq "${ drv tag --wrong-flag x; }"     2 "tag rejects an unknown flag"
 eq "${ drv tag --message-file /tmp/adb-empty-msg.$$; }" 1 "tag refuses an empty message file"
 rm -f /tmp/adb-empty-msg.$$
 
+# ============ the driver's own slug producer is validated (#218) ============
+# `release.sh` carries its OWN `slug()` — it lives outside `scripts/lib/` by D14, which is exactly
+# why a sweep of that directory reported "no additional producers" and missed it. Every consumer
+# concatenates the result into `repos/<slug>/...`, four of them in the tag/merge path.
+#
+# STRUCTURAL, and this file is the honest place to say why: the suite's subject is
+# `release-lib.sh`; `release.sh` dispatches on load, so its functions cannot be sourced and driven
+# here without the state and gh stubbing that #190 tracks. A pin that reads the source is weaker
+# than one that runs it, and it is what is available — a guard whose absence is silent still gets a
+# test, and the test admits its kind.
+drv="$(cat "$DRV")"
+slug_fn="$(awk '/^slug\(\) \{/,/^\}/' "$DRV")"
+if printf '%s' "$slug_fn" | grep -q 'adb_is_path_safe_repo_slug'; then ok; else
+  bad "release.sh slug() must validate through adb_is_path_safe_repo_slug before returning an API-supplied slug (#218)"
+fi
+# It must DELEGATE, never restate the rule: a hand-rolled charset test here would be a second copy
+# of a security predicate, which is the failure #218 exists to end.
+if printf '%s' "$slug_fn" | grep -qE '\[!A-Za-z0-9|\[\^A-Za-z0-9'; then
+  bad "release.sh slug() restates the charset rule instead of calling the shared predicate"
+else ok; fi
+# The diagnostic must be printed with printf, not echo: under `shopt -s xpg_echo`, echo decodes
+# %q's escape back into a real newline and re-forges the line the renderer just escaped.
+if printf '%s' "$slug_fn" | grep -qE '^\s*echo '; then
+  bad "release.sh slug() prints its diagnostic with echo — xpg_echo would undo adb_display_value's escaping"
+else ok; fi
+# And EVERY consumer must check it — not just the assignments.
+#
+# THIS CHECK'S FIRST CUT MATCHED ONLY `sl="$(slug)"`, and independent review found what that let
+# through: `await_checks` interpolated `$(slug)` DIRECTLY into a request path inside a retry loop,
+# so a rejected slug became `repos//commits/...` polled 90 times over fifteen minutes and reported
+# as a timeout. A guard scoped to one spelling of the thing it guards is the failure mode this
+# repo keeps writing down; the pattern now matches any `$(slug)` use.
+#
+# The accepted shapes are exactly two: an assignment that checks its status (`x="$(slug)" || …`),
+# and nothing else. A bare `$(slug)` anywhere — interpolated into a string, passed as an argument —
+# discards the status by construction and is what this rejects.
+#
+# Comment lines are stripped first, so prose mentioning the idiom cannot be read as a site (the
+# first cut of this check flagged its own explanatory comment).
+code_only="$(printf '%s\n' "$drv" | grep -vE '^[[:space:]]*#')"
+unchecked="$(printf '%s\n' "$code_only" | grep -nF '$(slug)' | grep -vE '="\$\(slug\)"[[:space:]]*(\|\||$)' || true)"
+if [ -z "$unchecked" ]; then ok; else
+  bad "release.sh uses \$(slug) without checking its status: $unchecked"
+fi
+
 check_summary "release-skill"

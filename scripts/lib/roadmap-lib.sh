@@ -26,6 +26,7 @@
 # exactly the duplicate-work class this predicate exists to prevent.
 #
 # Usage:
+#   roadmap-lib.sh slug-ok <owner/repo>                           # safe to build a request path?
 #   roadmap-lib.sh pr-targets-issue <issue-number> <owner/repo>   # PR JSON on stdin
 #   roadmap-lib.sh branch-health <expected-sha> <active-workflows> <health-optout 0|1>
 #                                     # {check_runs,statuses,required_contexts} on stdin
@@ -1565,12 +1566,37 @@ cmd_compose_select() {
   return 0
 }
 
+# --- slug-ok -------------------------------------------------------------------------------
+# Exit 0 iff <value> is safe to interpolate into a `repos/<slug>/...` request path; 1 otherwise,
+# with a diagnostic naming the rejected value.
+#
+# A THIN EXPOSURE OF `adb_is_path_safe_repo_slug`, NOT A SECOND IMPLEMENTATION (#218). The rule has
+# exactly one home in `common.sh`; this subcommand exists only because the workflow that needs it
+# is PROSE AN AGENT PASTES INTO A SHELL and can receive a command, never a sourced library — the
+# same reason `role-dispatch.sh untrusted` exists for `adb_untrusted_block`. Restating the charset
+# and traversal rules in Markdown would put a copy of a security predicate somewhere no test runs.
+#
+# It belongs to THIS library rather than to a new one because this library's whole charter is
+# /roadmap's decisions, lifted out of the prose so they are regression-testable offline — and "is
+# this slug safe to build a path from" is a decision the prose was making implicitly by not asking.
+#
+# The diagnostic is rendered by `adb_display_value` and printed with `printf`, never `echo`: the
+# value being named is one a guard just rejected, so it is exactly the one that may carry a newline.
+cmd_slug_ok() {
+  [ "$#" -eq 1 ] || die "slug-ok: needs exactly 1 arg: <owner/repo>"
+  adb_is_path_safe_repo_slug "$1" && return 0
+  printf 'roadmap-lib: malformed repository slug (%s) — refusing to build a request path from it\n' \
+    "$(adb_display_value "$1")" >&2
+  return 1
+}
+
 # --- dispatch ------------------------------------------------------------------------------
 main() {
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   local sub="$1"; shift
   case "$sub" in
     -h|--help|help) usage; exit 0 ;;
+    slug-ok)          cmd_slug_ok "$@" ;;
     pr-targets-issue) cmd_pr_targets_issue "$@" ;;
     branch-health)    cmd_branch_health "$@" ;;
     release-ready)    cmd_release_ready "$@" ;;

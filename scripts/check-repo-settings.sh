@@ -550,6 +550,10 @@ for a in "$@"; do
   esac
   prev="$a"
 done
+# EVERY api call is recorded here, reads included — $STUB_CALLS deliberately records only
+# mutations, and #218 needs to assert that a REQUEST was never issued at all. Separate file, opt-in
+# via the env var, so no existing `calls_of` assertion changes.
+[ -n "${STUB_READS:-}" ] && printf '%s %s\n' "$method" "$url" >> "$STUB_READS"
 # `gh api -i` prefixes the response with its status line + headers, then a blank line. The library
 # parses that status to tell a real 404 from a transient failure, so the stub must reproduce it.
 emit() {   # <status-line> [<file>]
@@ -625,8 +629,9 @@ wf_two() { wf_one; printf 'name: Two\non:\n  pull_request:\njobs:\n  two:\n    r
 
 rsx_stub() {   # run against the stub with a fresh call log
   STUB_CALLS="$work/calls.txt"; : > "$STUB_CALLS"
+  STUB_READS="$work/reads.txt"; : > "$STUB_READS"
   rm -f "$S/body.json"
-  OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" STUB_FAIL_WRITE="${STUB_FAIL_WRITE:-}" \
+  OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" STUB_READS="$STUB_READS" STUB_FAIL_WRITE="${STUB_FAIL_WRITE:-}" \
          STUB_BRANCH_STATUS="${STUB_BRANCH_STATUS:-}" \
          STUB_CHECKRUNS_STATUS="${STUB_CHECKRUNS_STATUS:-}" \
          PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
@@ -1167,6 +1172,90 @@ merge_fx false false true;  rsx_stub merge-flag; eq "$OUT" "--rebase" "merge-fla
 merge_fx false false false; rsx_stub merge-flag
 eq "$RC_" "15" "merge-flag exits 15 when NO merge method is enabled"
 has "$OUT" "cannot be merged at all" "the no-method case explains itself"
+
+# ============ an API-supplied slug is refused before it reaches a request path (#218) ============
+# THIS MODULE HAS ITS OWN PRODUCER BOUNDARY, which is the whole reason #218 was not a one-place
+# fix. `adb_repo_slug` is the obvious chokepoint and this library does not use it: to save a round
+# trip it takes the slug from `.full_name` of the repo object it already fetches, so hardening the
+# shared getter reaches release-convention.sh and NOTHING here. Seven `repos/$REPO_SLUG/...` paths
+# are built downstream and four of them are WRITES.
+#
+# `.full_name` is the injection seam, so that is where the bad value goes in — not into a
+# hand-called predicate, which would prove only that the predicate works.
+slug_fx() {   # <full_name> — an otherwise perfectly healthy repo object
+  printf '{"full_name":"%s","default_branch":"main","allow_auto_merge":true,
+           "permissions":{"admin":true},"allow_squash_merge":true}\n' "$1" > "$S/repo.json"
+}
+reads_for() { grep -c . < "$STUB_READS"; }
+
+wf_one
+for bad in 'acme/..' '../widget' 'acme/.' './widget' 'acme/widget/extra' 'acme' 'acme/wid get' 'acme/wid?et'; do
+  slug_fx "$bad"
+  prot_checks "one"
+  rsx_stub automerge-ok
+  # 20 SPECIFICALLY, not merely non-zero: this guard's codes are a machine contract that
+  # /implement-issue step 10 switches on, and 20 is the one arm that means "unreadable, do not
+  # arm". Any of 10-14 would send the operator to a remedy for a problem they do not have.
+  eq "$RC_" "20" "automerge-ok = 20 (fail closed) when the API reports the slug '$bad'"
+  has "$OUT" "malformed repository slug" "...saying why, for '$bad'"
+  # THE GUARD PRECEDES THE REQUEST, and this is the assertion that proves it. A validation placed
+  # AFTER the interpolation would satisfy every exit-code check above while the traversal had
+  # already been sent. Exactly ONE api call is legitimate — the `repos/{owner}/{repo}` read the
+  # slug itself comes from, whose path gh expands locally and which carries no slug of ours.
+  eq "${ reads_for; }" "1" "...after exactly one request: the read the slug came from"
+  hasnt "$(cat "$STUB_READS")" "$bad" "...and no request was built from '$bad'"
+  eq "$(cat "$STUB_CALLS")" "" "...and nothing was mutated"
+done
+
+# The diagnostic NAMES the value, or the operator cannot act on it.
+slug_fx 'acme/..'; prot_checks "one"; rsx_stub automerge-ok
+has "$OUT" 'acme/..' "the diagnostic names the rejected slug"
+
+# EACH SUBCOMMAND KEEPS ITS OWN MAPPING. `repo_json` returns 1 like every other failure there, so
+# the guard commands turn it into 20 and the human-facing ones into 1 — the codes their contracts
+# already define. A shared "return 20" in the producer would have given `apply` and `status` an
+# exit code neither documents.
+slug_fx 'acme/..'; prot_checks "one"
+rsx_stub merge-flag;      eq "$RC_" "20" "merge-flag = 20 on a malformed slug (fail closed)"
+has "$OUT" "malformed repository slug" "...for the slug, not some other unreadable state"
+rsx_stub required-drift;  eq "$RC_" "20" "required-drift = 20 on a malformed slug (fail closed)"
+has "$OUT" "malformed repository slug" "...for the slug, not some other unreadable state"
+# The `has` on each of these two matters more than the code: 1 is also what a usage error exits
+# with, so a bare `eq "$RC_" "1"` would stay green if the run never got as far as the slug.
+rsx_stub status;          eq "$RC_" "1"  "status = 1 on a malformed slug — its own contract, not 20"
+has "$OUT" "malformed repository slug" "...and status stopped BECAUSE of the slug"
+rsx_stub apply;           eq "$RC_" "1"  "apply = 1 on a malformed slug — its own contract, not 20"
+has "$OUT" "malformed repository slug" "...and apply stopped BECAUSE of the slug"
+eq "$(cat "$STUB_CALLS")" "" "...and the WRITE path mutated nothing"
+
+# ...but a repository whose NAME merely contains dots is a name, not a traversal. Over-rejecting it
+# would make auto-merge permanently unarmable for a repo that was never dangerous — failure by
+# availability rather than by safety, which is the kind that ships unnoticed.
+slug_fx 'acme/api..client'; prot_checks "one"; wf_one
+rsx_stub automerge-ok
+eq "$RC_" "0" "a repository named 'api..client' still arms — dots are a name, not a traversal"
+
+# THE CACHE ORDERING INSIDE repo_json IS PINNED STRUCTURALLY, and this test is deliberately a
+# different KIND from the ones above — it reads source text, not behaviour. It has to be: every
+# subcommand checks `repo_json`'s status on its FIRST call and bails, so a version that committed
+# `REPO_JSON`/`REPO_SLUG` and validated afterwards passes every behavioural assertion in this file.
+# Verified, not assumed: that exact reordering was run against this whole suite and it stayed green
+# at 380/380.
+#
+# That is what makes the order worth pinning rather than worth dropping. Both globals are read
+# through `[ -z … ]`, so the wrong order is a latent fail-open that arms the moment any caller
+# re-calls after a failure — a change no reviewer would connect back to this function. A source pin
+# is a weak test and is the only one available here, which is the honest reason to write it down.
+rj="$(awk '/^repo_json\(\) \{/,/^\}/' "$RS")"
+# ANCHORED, so only a real CALL counts. An unanchored match would also find the predicate's name in
+# a comment, and a comment sitting above the assignments would let the pin pass while the actual
+# call had moved below them — a guard defeated by prose, which is the failure mode a structural
+# test is most prone to.
+v_at="$(printf '%s\n' "$rj" | grep -nE '^[[:space:]]*adb_is_path_safe_repo_slug' | head -1 | cut -d: -f1)"
+j_at="$(printf '%s\n' "$rj" | grep -nE '^[[:space:]]*REPO_JSON="' | head -1 | cut -d: -f1)"
+s_at="$(printf '%s\n' "$rj" | grep -nE '^[[:space:]]*REPO_SLUG="' | head -1 | cut -d: -f1)"
+if [ -n "$v_at" ] && [ -n "$j_at" ] && [ -n "$s_at" ] && [ "$v_at" -lt "$j_at" ] && [ "$v_at" -lt "$s_at" ]; then ok
+else bad "repo_json must validate the slug BEFORE committing REPO_JSON/REPO_SLUG (validate@${v_at:-none} REPO_JSON@${j_at:-none} REPO_SLUG@${s_at:-none})"; fi
 
 # ============================ drift guard: the workflow still calls the guard ============
 # The same species of guard check-roadmap.sh applies to /roadmap: if step 10 stops consulting

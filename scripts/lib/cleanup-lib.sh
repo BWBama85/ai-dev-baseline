@@ -116,9 +116,12 @@ _adb_cl_tsv_safe() { case "$1" in *"$TAB"*|*"$NL"*) return 1 ;; *) return 0 ;; e
 # very record format this exists to protect, and the output would look exactly like a clean one.
 # The fallback is a fixed token, which is useless to the operator and safe — the right trade when
 # the alternative is a silently-forged record.
+# THE ENCODER COMES FROM common.sh, which this file already sources (#218). What is local to this
+# function is the TSV contract — the re-test and the fixed fallback — not the `%q` step, and two
+# copies of an encoder are two things that can be fixed on one side only.
 _adb_cl_tsv_display() {
   local enc
-  enc="$(printf '%q' "$1")"
+  enc="$(adb_display_value "$1")"
   if _adb_cl_tsv_safe "$enc"; then printf '%s' "$enc"; else printf '<unrenderable-name>'; fi
 }
 

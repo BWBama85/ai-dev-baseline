@@ -1035,8 +1035,21 @@ has "$gauge_block" 'REPO=' \
 # `set -u`. (Found by the e2e harness executing this snippet.)
 has "$gauge_block" 'LABEL="${LABEL:-}"' \
   "the gauge tolerates an unconfigured destination-label instead of exploding on it"
-has "$gauge_block" '[ -n "$LABEL" ] &&' \
+has "$gauge_block" '[ -n "$LABEL" ]' \
   "...and skips the probe entirely when none is configured"
+# ...AND THE REPO RESOLUTION SITS INSIDE THAT CONDITIONAL (#218 review). The slug guard was first
+# added ABOVE it, which converted an optional feature into a hard stop for the entire roadmap run:
+# with no `destination-label` configured, a `gh repo view` that merely failed — or returned
+# something malformed — exited the run over a request that would never have been made. Pinned by
+# ORDER, because both lines are present either way and only their relative position differs.
+g_label_at="$(printf '%s\n' "$gauge_block" | grep -nF 'LABEL="${LABEL:-}"' | head -1 | cut -d: -f1)"
+g_repo_at="$(printf '%s\n' "$gauge_block" | grep -nE '^[[:space:]]*REPO="' | head -1 | cut -d: -f1)"
+g_guard_at="$(printf '%s\n' "$gauge_block" | grep -nE '^[[:space:]]*\{\{ROADMAP_LIB\}\} slug-ok' | head -1 | cut -d: -f1)"
+if [ -n "$g_label_at" ] && [ -n "$g_repo_at" ] && [ -n "$g_guard_at" ] \
+   && [ "$g_label_at" -lt "$g_repo_at" ] && [ "$g_label_at" -lt "$g_guard_at" ]; then ok
+else
+  bad "the gauge must decide on LABEL BEFORE resolving/validating \$REPO, or an optional feature can fail the whole run (LABEL@${g_label_at:-none} REPO@${g_repo_at:-none} guard@${g_guard_at:-none})"
+fi
 readiness_block="${ wf_snippet readiness; }"
 has "$readiness_block" 'gh repo view' \
   "the readiness snippet resolves \$REPO itself (it may run as its own shell invocation)"
@@ -2415,5 +2428,65 @@ has "$autofix_block" 'gh issue edit' \
   "the repair is a real tracker write"
 hasnt "$autofix_block" 'gh api --method POST' \
   "autofix never CREATES a milestone (that would invent a convention the repo never opted into)"
+
+# ============ slug-ok: the path-safe slug predicate, exposed to the prose (#218) ============
+# The workflow resolves `nameWithOwner` at SIX places and interpolates it into `repos/$REPO/...`
+# paths. Prose cannot source a library, so the rule reaches it as a subcommand — and this suite is
+# what keeps that exposure honest: a thin delegate that stopped delegating would be invisible.
+sk() { OUT="$(bash "$RL" slug-ok "$@" 2>&1)"; RC_=$?; }
+
+sk 'acme/widget';       yes "$RC_" "slug-ok accepts an ordinary owner/repo"
+sk 'acme/api..client';  yes "$RC_" "slug-ok accepts a repo NAMED api..client — dots are a name"
+sk 'a/b';               yes "$RC_" "slug-ok accepts the minimal pair"
+sk '.github/.github';   yes "$RC_" "slug-ok accepts GitHub's own dot-prefixed convention"
+for bad in 'acme/..' '../widget' 'acme/.' './widget' 'acme/widget/extra' 'acme' '' 'acme/wid get' \
+           'acme/wid?et' 'acme/wid%2fget' 'https://x/y' 'acme/wid#et'; do
+  sk "$bad"
+  no "$RC_" "slug-ok rejects '$bad'"
+  has "$OUT" "malformed repository slug" "...and says why for '$bad'"
+done
+# It DELEGATES rather than restating the rule: the verdicts above must agree with the predicate in
+# common.sh for every case, or there are two rules and one of them will be relaxed alone.
+for v in 'acme/widget' 'acme/api..client' 'acme/..' '../widget' 'acme' 'acme/wid get' '.github/.github'; do
+  bash "$RL" slug-ok "$v" >/dev/null 2>&1; sub_rc=$?
+  ( . scripts/lib/common.sh; adb_is_path_safe_repo_slug "$v" ) >/dev/null 2>&1; pred_rc=$?
+  eq "$sub_rc" "$pred_rc" "slug-ok agrees with adb_is_path_safe_repo_slug on '$v'"
+done
+# Arity is checked, so a caller that forgets the argument gets a usage error rather than a silent
+# pass on the empty string — the direction that matters for a guard.
+OUT="$(bash "$RL" slug-ok 2>&1)"; no "$?" "slug-ok with no argument is an error, never a pass"
+OUT="$(bash "$RL" slug-ok a/b c/d 2>&1)"; no "$?" "slug-ok with two arguments is an error"
+# The diagnostic renders the value onto ONE line: this is a rejected API value, so it is exactly
+# the one that may carry a newline and forge the line after it.
+OUT="$(bash "$RL" slug-ok "$(printf 'acme/wid\nget: FORGED')" 2>&1)"
+eq "$(printf '%s\n' "$OUT" | grep -c .)" "1" "slug-ok's diagnostic stays on one line"
+
+# THE WORKFLOW ACTUALLY CALLS IT, at every site that resolves a slug. Same species of guard as the
+# automerge-ok wiring check: the library can be perfect while the prose stops asking, and nothing
+# else in this suite would notice.
+WF="$ROOT/base/workflows/roadmap.md"
+# COMMENT LINES ARE STRIPPED FIRST, and that is not tidiness — it is the same defect this PR fixed
+# twice already. An unanchored count let a COMMENT that merely mentions `nameWithOwner` satisfy the
+# pin: adding one such comment took the tally from 6/6 to 7/7, still "balanced", while the code was
+# unchanged. A structural check that prose can satisfy is not a check.
+wf_code="$(grep -vE '^[[:space:]]*#' "$WF")"
+n_reads="$(printf '%s\n' "$wf_code" | grep -c 'nameWithOwner')"
+n_guards="$(printf '%s\n' "$wf_code" | grep -c 'slug-ok')"
+eq "$n_guards" "$n_reads" "every nameWithOwner read in roadmap.md is paired with a slug-ok guard"
+eq "$n_reads" "6" "...and there are still exactly 6 such reads (a new one needs its own guard)"
+
+# THE COMBINED READ IS CHECKED FOR LINE COUNT BEFORE IT IS SPLIT (#218 review). One request returns
+# the slug AND the default branch separated by a newline, so a newline INSIDE either value silently
+# re-partitions them: `nameWithOwner` = "victim/repo\nmain" yields a REPO that passes every
+# validation and a DEFAULT_BRANCH of `main`, with the real default branch discarded — every later
+# read then addresses a DIFFERENT REPOSITORY. `slug-ok` cannot see it, because the value it is
+# handed is clean by then. The line count is the only place the substitution is still visible.
+readiness_block="${ wf_snippet readiness; }"
+has "$readiness_block" 'expected exactly 2 lines' \
+  "the combined repo view is line-count checked before it is split"
+fr_check_at="$(printf '%s\n' "$readiness_block" | grep -nF 'expected exactly 2 lines' | head -1 | cut -d: -f1)"
+fr_split_at="$(printf '%s\n' "$readiness_block" | grep -nF 'IFS= read -r REPO' | head -1 | cut -d: -f1)"
+if [ -n "$fr_check_at" ] && [ -n "$fr_split_at" ] && [ "$fr_check_at" -lt "$fr_split_at" ]; then ok
+else bad "the 2-line check must precede the split, or it validates values already re-partitioned (check@${fr_check_at:-none} split@${fr_split_at:-none})"; fi
 
 check_summary "roadmap"

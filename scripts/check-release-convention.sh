@@ -115,7 +115,10 @@ for a in "$@"; do
 done
 case "${1:-}" in
   auth) exit 0 ;;
-  repo) printf '%s\n' "acme/widget"; exit 0 ;;
+  # STUB_SLUG is what `adb_repo_slug` reads. Overridable so #218's refusal can be driven through
+  # the REAL producing seam — this module never constructs the slug itself, it asks the shared
+  # getter, so injecting anywhere else would test a predicate rather than the path.
+  repo) printf '%s\n' "${STUB_SLUG:-acme/widget}"; exit 0 ;;
   issue)
     case "${2:-}" in
       list) sed -n 's/^\([0-9]*\)$/\1/p' "$S/roadmap-nums.txt" 2>/dev/null || printf '31\n' ;;
@@ -146,7 +149,7 @@ printf '31\n' > "$S/roadmap-nums.txt"
 # rcx_stub <args...> : run with the fixture-backed stub gh, fresh call log each time.
 rcx_stub() {
   STUB_CALLS="$work/calls.txt"; : > "$STUB_CALLS"
-  OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" PATH="$SBIN:$PATH" bash "$RC" "$@" 2>&1)"; RC_=$?
+  OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" STUB_SLUG="${STUB_SLUG:-}" PATH="$SBIN:$PATH" bash "$RC" "$@" 2>&1)"; RC_=$?
 }
 # rcx_auth <args...> : the SAME stub with its auth knob flipped, proving require_gh fails loud
 # (never a silent no-op). One stub, two behaviors — a second near-identical stub would be the
@@ -415,5 +418,44 @@ rcx_stub roll --version v1.1.0
 yes "$RC_" "the ordinary path still completes when nothing changed mid-run"
 has "${ calls_of; }" "move 99" "the leftover is moved when it is still a non-blocker at mutation time"
 rm -f "$S/issue-99-labels.txt" "$SBIN/gh.close-race"
+
+# ============ an API-supplied slug is refused before it reaches a request path (#218) ============
+# TEN `repos/$(repo_slug)/...` paths are built in this module, and NONE of them can be the place
+# this is checked: `repo_slug()`'s status is discarded inside the string it is interpolated into
+# (`"repos/$(repo_slug)/milestones"`), so a refusal there would print and the `gh api` call would
+# still go out. The one checked assignment is `REPO_SLUG="$(adb_repo_slug)" || exit 1` in
+# `require_gh`, which every subcommand runs first — so hardening the shared getter is what covers
+# all ten, and this suite's job is to prove that it does.
+#
+# Injected through `gh repo view`, the real producing seam, rather than by calling the predicate
+# directly — a hand-called predicate would prove only that the predicate works.
+for bad in 'acme/..' '../widget' 'acme/.' 'acme/widget/extra' 'acme' 'acme/wid get'; do
+  fix_default
+  STUB_SLUG="$bad" rcx_stub status
+  # 1 — the code `require_gh` already exits with, which is what a slug failure IS here. Stated
+  # narrowly on purpose: this module is not uniformly "exit 1", it reserves 2 for usage and
+  # argument errors (the assertions at the top of this file pin several). The claim is only that
+  # the MALFORMED-SLUG path maps to 1 for all three subcommands, because that is the path
+  # `require_gh` owns. Emitting a 20 to match repo-settings.sh would have invented a code no
+  # caller of this module knows.
+  eq "$RC_" "1" "status exits 1 when gh reports the slug '$bad'"
+  has "$OUT" "malformed repository slug" "...saying why, for '$bad'"
+  eq "${ calls_of; }" "" "...and NOTHING was requested or mutated with '$bad'"
+done
+fix_default; STUB_SLUG='acme/..' rcx_stub init
+eq "$RC_" "1" "init refuses the same slug — the guard is in require_gh, which every subcommand runs"
+eq "${ calls_of; }" "" "...and init created no milestone or label"
+fix_default; STUB_SLUG='acme/..' rcx_stub roll --version v1.1.0
+eq "$RC_" "1" "roll refuses it too — and roll is the subcommand that MUTATES milestones"
+eq "${ calls_of; }" "" "...having renamed, created, moved and closed nothing"
+# The diagnostic names the value, and it comes from the shared getter — one author for the message.
+fix_default; STUB_SLUG='acme/..' rcx_stub status
+has "$OUT" 'acme/..' "the diagnostic names the rejected slug"
+
+# ...but a repository whose NAME merely contains dots is a name, not a traversal, and the module
+# must stay usable there. Over-rejecting it would make every release command permanently fail for a
+# repo that was never dangerous.
+fix_default; STUB_SLUG='acme/api..client' rcx_stub roll --version v1.1.0 --dry-run
+yes "$RC_" "a repository named 'api..client' still rolls — dots are a name, not a traversal"
 
 check_summary "release-convention"

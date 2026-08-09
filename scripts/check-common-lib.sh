@@ -657,9 +657,15 @@ for hs in "${HOOK_SCRIPTS[@]}"; do
 done
 
 # --- adb_require_gh / adb_repo_slug (#87) ------------------------------------
-# Both are sourced by release-convention.sh AND repo-settings.sh, so a regression here breaks two
-# gh-backed modules at once. The contract that matters: they RETURN non-zero (never `exit`, which
-# would kill the caller's shell from inside a sourced function) and they say what is wrong.
+# `adb_require_gh` is sourced by release-convention.sh AND repo-settings.sh, so a regression in it
+# breaks two gh-backed modules at once. `adb_repo_slug` has exactly ONE production caller —
+# release-convention.sh:79 — because repo-settings.sh deliberately reads its slug from the
+# `.full_name` of the repo object it already fetches, to save a round trip (#218). Stating that
+# accurately matters here: this comment used to claim both modules called both functions, which is
+# the assumption that made #218 look like a one-place fix.
+#
+# The contract that matters for both: they RETURN non-zero (never `exit`, which would kill the
+# caller's shell from inside a sourced function) and they say what is wrong.
 ghbin="$work/ghbin"; mkdir -p "$ghbin"
 mk_gh() {   # <auth-rc> <slug-output>
   { printf '#!/usr/bin/env bash\n'
@@ -695,6 +701,75 @@ mk_gh 0 ""
 out="$( PATH="$ghbin:$PATH"; adb_repo_slug 2>/dev/null )"; rc=$?
 no "$rc" "adb_repo_slug fails when there is no resolvable remote"
 eq "$out" "" "adb_repo_slug prints nothing when it fails"
+
+# --- adb_repo_slug refuses a slug that is not safe in a URL PATH (#218) -------------------------
+# This getter is the PRODUCER BOUNDARY for release-convention.sh's ten `repos/$(repo_slug)/...`
+# paths, and validating at each of those interpolations is the rule that eventually gets missed.
+# `adb_is_repo_slug` would not be enough in this position: `acme/..` is a well-formed owner/repo
+# pair AND a path traversal, which is exactly why the path-safe sibling exists.
+#
+# The value is API-supplied (`gh repo view --json nameWithOwner`), so reaching one of these needs a
+# malformed or hostile response rather than user input — which is precisely why nothing else would
+# ever catch it.
+for bad in 'acme/..' '../widget' 'acme/.' './widget' 'acme/widget/extra' 'acme' 'acme/wid get' 'acme/wid?et' 'acme/wid%2fget'; do
+  mk_gh 0 "$bad"
+  out="$( PATH="$ghbin:$PATH"; adb_repo_slug 2>/dev/null )"; rc=$?
+  err="$( PATH="$ghbin:$PATH"; adb_repo_slug 2>&1 >/dev/null )"
+  no "$rc" "adb_repo_slug refuses the path-unsafe slug '$bad'"
+  eq "$out" "" "...and prints nothing on stdout for '$bad'"
+  has "$err" "malformed repository slug" "...saying why, for '$bad'"
+done
+# The diagnostic NAMES the value, or it tells the operator nothing they can act on.
+mk_gh 0 'acme/..'
+err="$( PATH="$ghbin:$PATH"; adb_repo_slug 2>&1 >/dev/null )"
+has "$err" 'acme/..' "the diagnostic names the rejected slug"
+
+# THE REJECTION LEAVES NO TRACE IN THE CACHE, and this is the assertion that would catch the
+# obvious wrong fix. Resolution is skipped whenever `_ADB_REPO_SLUG` is non-empty, so a version
+# that assigned the global and validated afterwards would fail the FIRST call and then return 0
+# with the rejected slug on the SECOND — a fail-open one line below the guard, and invisible to
+# every single-call test above.
+mk_gh 0 'acme/..'
+out="$( PATH="$ghbin:$PATH"; adb_repo_slug >/dev/null 2>&1; adb_repo_slug 2>/dev/null )"; rc=$?
+no "$rc" "a rejected slug is NOT cached — the second call fails too"
+eq "$out" "" "...and the second call still prints nothing"
+
+# A HOSTILE VALUE MUST NOT FORGE A SECOND LOG LINE. The values this guard rejects are, by
+# construction, the ones least likely to be well-behaved; echoing one raw into a diagnostic
+# re-opens in the operator's output the hole the check just closed. `adb_display_value` renders it
+# with `%q`, so a newline becomes `$'\n'` and the message stays on one line.
+{ printf '#!/usr/bin/env bash\n'
+  printf 'case "$1" in\n'
+  printf '  auth) exit 0 ;;\n'
+  printf '  repo) printf %%b "acme/wid\\nget: FORGED"; exit 0 ;;\n'
+  printf 'esac\nexit 0\n'
+} > "$ghbin/gh"
+chmod +x "$ghbin/gh"
+err="$( PATH="$ghbin:$PATH"; adb_repo_slug 2>&1 >/dev/null )"
+eq "$(printf '%s\n' "$err" | grep -c .)" "1" "a newline in the rejected slug cannot forge a second log line"
+has "$err" 'malformed repository slug' "...and the one line is still the real diagnostic"
+hasnt "$err" "$(printf '\nget: FORGED')" "...with the forged continuation escaped, not printed"
+
+# ...AND UNDER `xpg_echo`, which is the mode that defeats the obvious implementation. `%q` renders
+# the newline as the two characters `\` and `n`; `echo` under this shopt DECODES that back into a
+# real newline, so a diagnostic built with `echo` re-forges the line the renderer just escaped.
+# Testing only the default mode leaves the guard green against exactly the shell setting that
+# breaks it — the encoder is one line, and the command that PRINTS it is the other half.
+# Run in a child bash so the shopt cannot leak into the rest of this suite.
+err="$( PATH="$ghbin:$PATH" bash -c '
+  shopt -s xpg_echo
+  . scripts/lib/common.sh
+  adb_repo_slug 2>&1 >/dev/null' )"
+eq "$(printf '%s\n' "$err" | grep -c .)" "1" "...still ONE line with xpg_echo on, where echo would decode the escape"
+has "$err" 'malformed repository slug' "...and it is still the real diagnostic under xpg_echo"
+
+# ...but a repository whose NAME merely contains dots is a name, not a traversal, and must stay
+# resolvable. Over-rejecting it would make every release-convention command permanently fail for a
+# repo that was never dangerous — failure by availability rather than by safety, which is the kind
+# that ships unnoticed. Same rule `adb_is_path_safe_repo_slug`'s own tests pin.
+mk_gh 0 "acme/api..client"
+eq "$( PATH="$ghbin:$PATH"; adb_repo_slug 2>/dev/null )" "acme/api..client" \
+  "a repository named 'api..client' resolves — dots are a name, not a traversal"
 
 # ==================== adb_run_bounded (#139: promoted from role-dispatch) =====================
 # The mechanism was moved here so currency-lib.sh could share it instead of hand-rolling a second
