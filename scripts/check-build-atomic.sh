@@ -255,9 +255,15 @@ run_build "$d"; rc=$?
 no "$rc" "an unremovable temp path fails the build"
 has "$(cat "$d/build.log" 2>/dev/null)" "CLAUDE.md.tmp" "...naming the path it could not clear"
 eq "$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)" "$SENTINEL" "...and the tracked doc is left untouched"
-# The trap's removal fails too, and must do so SILENTLY: a second identical `rm:` line buries the
-# one that explains the failure. Exactly one occurrence, not "at least one".
-eq "$(grep -c 'is a directory' "$d/build.log" 2>/dev/null)" "1" \
+# The trap's removal fails too, and must do so SILENTLY: a second `rm:` line buries the one that
+# explains the failure. Exactly one occurrence, not "at least one".
+#
+# COUNTED BY THE PATH, NOT BY `rm`'s MESSAGE. The two platforms this suite runs on word it
+# differently — GNU coreutils prints `Is a directory` (capital, it is strerror(EISDIR)) and BSD/macOS
+# prints `is a directory` — so matching the sentence would have passed on the workstation and failed
+# on the Linux runner. The path is the part both platforms agree on, and it is what the assertion
+# actually means.
+eq "$(grep -c 'CLAUDE\.md\.tmp' "$d/build.log" 2>/dev/null)" "1" \
   "...and the failure is reported ONCE (best-effort cleanup does not echo it again)"
 
 # ================== 5. the skill path leaves no residue either ================================
