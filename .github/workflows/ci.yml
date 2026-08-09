@@ -169,6 +169,15 @@ jobs:
 
           exit "$rc"
 
+      # The step above proves the artifacts MATCH; this proves the WRITE that produced them cannot
+      # tear. It rides this job rather than taking one of its own for the reason the workflow-render
+      # job states: a new job is a new branch-protection context, which `required-drift` then reports
+      # as a discovered job gating nothing until someone edits protection by hand. It runs a copied
+      # build.sh in a `mktemp -d` fixture and never touches this checkout, so ordering after the
+      # drift comparison is safe.
+      - name: A failed render must not truncate the tracked file it was writing (#268)
+        run: bash scripts/check-build-atomic.sh
+
   skill-frontmatter:
     name: skill-frontmatter
     runs-on: ubuntu-26.04

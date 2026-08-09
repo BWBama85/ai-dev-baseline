@@ -9,6 +9,58 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`scripts/build.sh` publishes a generated file by rename, so an interrupted build can no longer
+  leave a truncated tracked one** (#268, D52).
+
+  `render()` wrote the three root docs with a plain `} > "$outfile"`, which truncates the
+  destination before the first byte is written. `^C`, a full disk or an OOM kill therefore left
+  `agents/claude/CLAUDE.md` half-rendered in the working tree — and nothing announced it: the next
+  `build-drift` reports *drift*, not corruption, so a contributor who commits before noticing ships
+  a half-rendered root doc. The skill renderer in the same file had done temp-then-`mv` since it was
+  written, with a comment explaining exactly why. That asymmetry is what this closes. It also
+  matters live: `install.sh` symlinks `~/.<agent>/CLAUDE.md` at that path, so the truncate window
+  was visible to a running agent session reading its own root doc.
+
+  **A rename needs two things the truncate did not**, and both are in the diff rather than
+  inherited silently:
+
+  - **an `EXIT` trap**, because publishing through a sibling `.tmp` means an abort leaves one — and
+    `.gitignore` does not cover it, `build-drift`'s untracked scan looks only under the skill trees,
+    and `check-tmp-paths.sh` is a content scan a well-formed render fragment passes. A **bare** EXIT
+    trap is enough, and that is measured, not assumed: on bash 5.3.15 it runs for SIGINT delivered
+    the way a terminal delivers it (to the process group), for SIGTERM and for SIGHUP, and the
+    script still exits 130 / 143 / 129 by itself — so the hand-written INT/TERM/HUP handlers that
+    would have re-raised to preserve that status were declined as a way to get it wrong. SIGKILL
+    stays untrappable, and there the residue is the correct outcome: the tracked file is intact.
+  - **an unlink before the redirect**, because `>` writes *through* a symlink. A stale or hostile
+    `CLAUDE.md.tmp` would have been filled with the render and then renamed over the tracked root
+    doc, replacing a generated file with a link and clobbering its target on the way — a hazard
+    that did not exist before, since the old code never wrote a sibling at all.
+
+  Both reach the skill renderer too, because #268's stated aim is that the two write paths stop
+  disagreeing about a hazard they both face; hardening one would have re-created the asymmetry
+  pointing the other way. **Mode preservation is declined, not overlooked** — a rename adopts the
+  temp's umask-derived mode, git records only the executable bit, and the reasoning is in D52.
+
+  **What this does NOT do: retire `build-drift`'s serial prologue.** Each file is now unobservable
+  half-written; the transition *across* files is still not atomic, so a reader that starts mid-build
+  sees a **mixed generation**. `scripts/selfcheck.sh`'s concurrency-contract header said the
+  opposite of the new code and is corrected in place; D37 and this file's #260 entry are dated
+  records of what was true then and are left alone.
+
+- **`scripts/check-build-atomic.sh`** (#268) — the guard for the above, and it is observed failing:
+  run against the pre-#268 `build.sh` the suite goes red, and what it prints is the truncated root
+  doc itself. `build-drift` could never have caught this — a *successful* build is exactly where the
+  two write shapes are indistinguishable, and it runs against the tracked tree, so it cannot inject
+  a failure without damaging the checkout it is checking. This faults a copied `build.sh` mid-render
+  inside a `mktemp -d` fixture (a directory named like a practice, so the fault fires as any uid —
+  a `chmod 000` file would be readable by root and silently not fire) and requires the destination
+  to survive byte-exact. Three mutations, one per line of the fix, each required to make the
+  assertion above it go red, and each verifying its own edit applied so a sed that stopped matching
+  fails loud rather than turning three proofs into assertions about unmodified code. Pooled in
+  `selfcheck.sh`, a step on CI's existing `build-drift` job — not a new job, which would be a
+  branch-protection context `required-drift` then reports as gating nothing.
+
 - **Every API-supplied slug is refused at its producer before it can reach a request path — and
   there were four producers, not one** (#218, D51).
 

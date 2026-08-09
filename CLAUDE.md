@@ -26,7 +26,7 @@ those. The rules below are specific to this repo's code.
    procedure + metadata (rendered into the Claude skills). `base/roles.md` is the
    multi-agent role model.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs
-   (shellcheck · build-drift · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
+   (shellcheck · build-drift · build-atomic · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
    pr-review · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · implement-lib · install-migration ·
    install-guard · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill · selfcheck-guard · install-dry-run). Fix red at the root — never push and
    hope (the CI-discipline practice applies to this repo too).
@@ -44,10 +44,13 @@ those. The rules below are specific to this repo's code.
      `name<TAB>command<TAB>pool|serial`.
 
    **`build-drift` is the one step pinned to a serial prologue**, because it runs `scripts/build.sh`,
-   which rewrites tracked generated files in place — every other step only reads the tree or works
-   inside its own `mktemp -d`. The full reasoning, including what is deliberately *not* serialized,
-   is in `scripts/selfcheck.sh`'s "concurrency contract" header. Two concurrent selfcheck runs in
-   one checkout are still unsupported (#250).
+   which rewrites tracked generated files — every other step only reads the tree or works inside its
+   own `mktemp -d`. Since #268 each individual file is published by **rename**, so no single one is
+   observable half-written; what is still not atomic is the transition *across* files, so a reader
+   that starts mid-build sees a **mixed generation**. That is why the fix did not retire the pin.
+   The full reasoning, including what is deliberately *not* serialized, is in
+   `scripts/selfcheck.sh`'s "concurrency contract" header. Two concurrent selfcheck runs in one
+   checkout are still unsupported (#250).
 
    **Two CI steps are deliberately not mirrored** (D13, extended by D24), and both are the same
    shape — a verdict that depends on network, auth and externally-mutable state:
@@ -131,6 +134,7 @@ those. The rules below are specific to this repo's code.
 | `scripts/build.sh` | Renders `base/practices` → root docs **and** `base/workflows` → every agent's skills (Claude · Codex · Gemini) |
 | `scripts/selfcheck.sh` · `scripts/check-*.sh` | Local CI mirror + standalone checks (common-lib · fact-drift · practice-index · release-role · release-skill). Since #260 the mirror is a step **registry** dispatched through a bounded `wait -n` pool — see golden rule 3 for the flags and the serial prologue |
 | `scripts/check-selfcheck.sh` | The runner above is a guard too, so it gets what guards get here (#260). A job pool's failure mode is silence — a dispatcher that drops a worker's status, or reaps a job and blames the wrong step, prints what a clean run prints — so this drives the **real** `selfcheck.sh` over a throwaway fixture of stub steps and requires a deliberately failing step to still fail the run, attributed by name and exit code. Also pins collect-all, output atomicity, the concurrency bound (both that it is respected *and* that the pool is genuinely concurrent), `--serial` ordering, the prologue running alone, and cancellation reaping workers instead of orphaning them. Never mutates the tracked tree |
+| `scripts/check-build-atomic.sh` | `build.sh` must publish a generated file by **rename**, never by truncating it in place (#268). `build-drift` proves the artifacts MATCH; it cannot prove anything about the write, because a *successful* build is exactly where the two shapes are indistinguishable — and it runs against the tracked tree, so it cannot inject a failure without damaging the checkout it is checking. This faults a copied `build.sh` mid-render inside a `mktemp -d` fixture and requires the destination to survive byte-exact. Observed failing: three mutations, one per line of the fix (naive publish · unlink dropped · EXIT trap dropped), each required to make the assertion above it go red, and each verifying its own edit applied. Never mutates the tracked tree |
 | `scripts/check-fact-drift.sh --mutation` · `scripts/check-fact-guard.sh` | The negative half of the anti-drift lint, **proven able to fail** (#213). A `absent:` rule declares the real superseded spellings it catches (`fires:<witness>`); `--mutation` injects each into a **copy** of every pinned file and requires the lint to come back red; `check-fact-guard.sh` drives both against deliberately broken rules so the guard rails are themselves observed failing. Never mutates the working tree |
 | `scripts/check-claims.sh` · `scripts/check-claims-guard.sh` | The claim lint (#212): every `#N` an added line cites resolves and is the kind it is cited as, every `D<N>` resolves to a decision heading, every added decision date is within a day of its commit. The `#N` half needs the network, so it is **CI-only** and `selfcheck` runs the rest (D13/D24). The guard suite drives every rule to RED against a stubbed `gh` and pins the invocation sites |
 | `install.sh` / `uninstall.sh` / `bin/agent-init` | Install contract |

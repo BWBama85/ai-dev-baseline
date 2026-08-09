@@ -79,7 +79,9 @@ out altogether.
 
 The steps, in declaration order: **shellcheck** (tracked `*.sh` + `bin/agent-init`),
 **build-drift** (rebuild + assert generated root docs **and** skills are current — not
-stale, untracked, or missing), **workflow-map** (each `base/workflows/<name>.md` maps 1:1
+stale, untracked, or missing), **build-atomic** (a render that fails part-way must leave the
+tracked file it was writing byte-exact — faulted in a throwaway fixture, with three mutations
+proving the assertion can go red), **workflow-map** (each `base/workflows/<name>.md` maps 1:1
 to a rendered skill, no orphans), **skill-frontmatter** (each `SKILL.md` has
 `name`/`description`/`user-invocable`), **gate-detector** + **gates** (`detect` no-ops
 cleanly, `badcmd` errors, full gate-model behavior), **common-lib** (unit-test the shared

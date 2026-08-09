@@ -3721,3 +3721,75 @@ limit: none of them is sufficient alone.
              All six mutations (each guard removed, each cache reordered, the escaping disabled)
              were observed RED against a throwaway copy, each on its own assertion.
 - baseline-issue: n/a — this repo IS the baseline; #218 is the tracking issue.
+
+## D52 — a rename replaces a truncate, and the two other lines that rename made necessary
+- date:      2026-08-09
+- category:  project-delta
+- unknown:   #268 asked for one change: give `render()` the temp-then-`mv` shape
+             `render_agent_skill()` already had, "reusing the existing idiom rather than inventing
+             a second one". Literal reuse is not sufficient, and the reason is that a rename does
+             not merely replace a truncate — it introduces a second file, and the existing idiom
+             has nothing to say about that file's lifetime or about what it might already be.
+- decision:  Publish by rename, and accept the two consequences rather than inherit them silently.
+
+             **1. An abort now leaves a `.tmp`, and nothing in this repo would report it.** The
+             defect is fixed the moment the destination stops being truncated, so the residue is
+             not a correctness question — but it is not nothing either. `.gitignore` does not
+             cover it, `build-drift`'s untracked scan looks only under the skill trees, and
+             `check-tmp-paths.sh` is a CONTENT scan that a well-formed render fragment passes. So
+             an interrupted build would leave an untracked file that no guard names, and the next
+             `/implement-issue` preflight would hard-error on a dirty tree without saying why.
+             One `trap build_cleanup EXIT` removes it.
+
+             **A bare `EXIT` trap is enough, and that is MEASURED.** The gap-analysis pass held
+             that it "is insufficient for direct TERM" and prescribed INT/TERM/HUP handlers exiting
+             130/143/129 by hand. On bash 5.3.15 that is false: the EXIT trap runs for SIGINT
+             delivered the way a terminal delivers it (to the process group), for SIGTERM and for
+             SIGHUP, and the script still exits 130 / 143 / 129 on its own. The prescribed handlers
+             would therefore add the one thing they exist to prevent — a hand-written status that
+             can be wrong. An EXIT trap returning 0 was also confirmed not to overwrite a failing
+             script's status, so cleanup cannot mask an errexit abort. SIGKILL and power loss stay
+             untrappable, and there the residue is the correct outcome: the tracked file is intact,
+             which is the entire guarantee.
+
+             **2. `>` follows a symlink, so the temp file must be unlinked before it is written.**
+             A stale or hostile `agents/claude/CLAUDE.md.tmp` pointing elsewhere would be filled
+             with the render and then RENAMED OVER the tracked root doc — replacing a generated
+             file with a link, and clobbering the link's target on the way. This hazard did not
+             exist before the fix, because the pre-#268 code never wrote a sibling at all. `rm -f`
+             removes a symlink itself rather than its target, and anything it cannot remove aborts
+             under errexit rather than being guessed at.
+
+             **The skill renderer gets both, for the reason the issue gives.** #268's stated aim is
+             that "the two write paths in one file stop disagreeing about a hazard they both face".
+             Hardening one and leaving the other would have re-created that asymmetry pointing the
+             other way. It is two lines there — joining the shared `build_tmp`, and the same
+             unlink — not a refactor into a shared primitive, which is explicitly out of scope.
+
+             **Mode is NOT preserved, deliberately.** A rename adopts the temp file's umask-derived
+             mode instead of the destination's. Declined rather than overlooked: git records only
+             the executable bit, so `build-drift` cannot see the difference; the files are read by
+             the user who built them, through symlinks that user installed; and the portable way to
+             copy a mode is several lines (BSD `chmod` has no `--reference`). Stated here so it is
+             a decision rather than a gap.
+- placement: `scripts/build.sh` (`render()`, `render_agent_skill()`, and the file-level trap);
+             `scripts/check-build-atomic.sh` (new, registered in `scripts/selfcheck.sh` as a POOLED
+             step and wired as a step on CI's existing `build-drift` job); a `build-atomic-wired`
+             pin in `scripts/check-fact-drift.sh`; the falsified claims in `scripts/selfcheck.sh`'s
+             concurrency-contract header and this repo's `CLAUDE.md`.
+- reason:    The issue named the change and, correctly, its scope; what it could not name is that
+             the safe version of a two-line fix is a five-line one. Writing the reasons down is the
+             point: the next reader sees a `rm -f` immediately before a redirect and an EXIT trap
+             covering both renderers, and neither is obvious from "make it atomic".
+- guard-observability: The suite is observed RED against the pre-#268 `build.sh` — the failure it
+             prints is the truncated root doc itself. Below that, each of the three lines of the
+             fix has its own mutation applied to a COPY in a fixture (naive publish · unlink
+             dropped · trap dropped), each required to make the assertion above it go red, and each
+             verifying its own edit applied (exactly one matching line before, none after) so a
+             sed that silently stopped matching fails loud instead of turning three proofs into
+             assertions about unmodified code. The `build-atomic-wired` pin was driven red from
+             both `selfcheck.sh` and `ci.yml` against a green tree copy. What is NOT proven: the
+             trap's coverage of the SKILL path specifically — inducing a non-placeholder failure
+             there needs a signal race, so that line rides the root-doc proof, and saying so is
+             better than implying a coverage that does not exist.
+- baseline-issue: n/a — this repo IS the baseline; #268 is the tracking issue.

@@ -280,9 +280,11 @@ real_pinned="$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$3 == "ser
 eq "$real_pinned" "build-drift " "the shipped runner's serial prologue is exactly build-drift"
 
 # ============================== 7b. FUNCTION-valued steps ====================================
-# Six of the shipped registry's forty commands are shell FUNCTIONS (`step_shellcheck`,
+# Six of the shipped registry's commands are shell FUNCTIONS (`step_shellcheck`,
 # `step_build_drift`, `step_workflow_map`, `step_skill_frontmatter`, `step_gate_detector`,
-# `step_install_dry_run`), not `bash scripts/check-*.sh`. Every stub above is external, so a
+# `step_install_dry_run`), not `bash scripts/check-*.sh`. (The total is deliberately not quoted
+# here: it was written as "forty" and the registry has grown past it twice since, so the number
+# was a claim that drifted while the six it qualifies did not.) Every stub above is external, so a
 # dispatcher that silently skipped every function-valued step — or lost its exit status, which is
 # the more likely bug since a function returns rather than exiting — would pass everything so far.
 # Register one in the copy and put it through both outcomes.

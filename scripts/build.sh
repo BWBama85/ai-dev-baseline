@@ -29,9 +29,40 @@ root="$(cd "$here/.." && pwd)"
 practices="$root/base/practices"
 workflows="$root/base/workflows"
 
+# The temp file a render is part-way through, and the trap that removes it however this script ends
+# (#268). Both renderers publish by rename, so an abort leaves a `.tmp` beside a tracked file; that
+# file is not gitignored and neither `build-drift`'s untracked scan (skill trees only) nor
+# `check-tmp-paths.sh` (a content scan) would report it, so it would sit in the working tree as
+# untracked drift until someone noticed.
+#
+# A BARE `EXIT` TRAP IS ENOUGH, and that is measured rather than assumed. On bash 5.3.15 it runs
+# for SIGINT delivered the way a terminal delivers it (to the process group), for SIGTERM and for
+# SIGHUP, and the script still exits 130 / 143 / 129 — so the INT/TERM/HUP handlers that would have
+# to re-raise the signal to preserve that status buy nothing and can only get the status wrong. An
+# EXIT trap returning 0 does NOT overwrite a failing script's status either, so cleanup cannot mask
+# an errexit abort. SIGKILL and power loss remain untrappable; they leave a `.tmp` and, which is the
+# whole point, an INTACT tracked file.
+build_tmp=''
+build_cleanup() { if [ -n "$build_tmp" ]; then rm -f "$build_tmp"; fi; }
+trap build_cleanup EXIT
+
 render() {
   local outfile="$1" title="$2"
   mkdir -p "$(dirname "$outfile")"
+  # Render to a temp file and rename into place only on success — the same idiom, for the same
+  # reason, as render_agent_skill() below (#268). A plain `> "$outfile"` truncates the TRACKED root
+  # doc before the first byte is written, so any abort mid-render — ^C, a full disk, an OOM kill —
+  # leaves it half-rendered in the working tree, and the next `build-drift` reports drift rather
+  # than corruption. It is also read live: install.sh symlinks ~/.<agent>/CLAUDE.md at this path,
+  # so the truncate window is visible to a running agent session. A rename is atomic, so a reader
+  # sees the old file or the new one and never a torn one.
+  build_tmp="$outfile.tmp"
+  # A STALE OR HOSTILE `$outfile.tmp` WOULD BE FOLLOWED. `>` writes THROUGH a symlink, and the `mv`
+  # below would then rename that symlink over the tracked root doc — replacing a generated file
+  # with a link to wherever it pointed. Unlink first: `rm -f` removes the symlink itself, never its
+  # target. Anything it cannot remove (a directory of that name) aborts under errexit with rm's own
+  # message, which is the right outcome: publishing over it is not something to guess at.
+  rm -f "$build_tmp"
   {
     printf '<!-- GENERATED FILE — do not edit by hand.\n'
     printf '     Source: base/practices/*.md · Regenerate: scripts/build.sh\n'
@@ -49,7 +80,9 @@ render() {
       printf '\n\n---\n\n'
     done
     printf '_Generated from base/practices. The multi-agent role model lives in base/roles.md._\n'
-  } > "$outfile"
+  } > "$build_tmp"
+  mv "$build_tmp" "$outfile"
+  build_tmp=''
   echo "wrote ${outfile#"$root"/}"
 }
 
@@ -242,7 +275,18 @@ render_agent_skill() {
   # never truncate the existing SKILL.md, since install.sh symlinks each skill dir
   # and a zero-byte file here would break the live installed skill. Writes only this
   # one file; never clears or recreates the skills directory.
+  #
+  # Published through `build_tmp` so the EXIT trap covers this path too (#268). The `rm -f` on the
+  # unresolved-placeholder path below is the only cleanup this renderer used to have, so an awk
+  # failure or a ^C left a `SKILL.md.tmp` behind — where `build-drift`'s untracked scan DOES see it
+  # and reports it as "rendered skill(s) not committed", a message about the wrong problem. Making
+  # render() atomic without covering its sibling would have left the two write paths disagreeing
+  # about a hazard they both face, which is the asymmetry #268 exists to end.
   tmp="$out.tmp"
+  build_tmp="$tmp"
+  # A stale or hostile `$out.tmp` would be written THROUGH and then renamed over the tracked skill —
+  # see render()'s note. Unlink first; `rm -f` removes a symlink itself, never its target.
+  rm -f "$tmp"
   # The MAP is the four lreplace() calls below, fed the per-agent tokens via -v. Kept
   # literal (index/substr in awk, no regex) so tokens with $, ", and / substitute
   # cleanly. -v does no escape processing on these values (none contain backslashes),
@@ -338,10 +382,12 @@ render_agent_skill() {
     echo "build.sh: unresolved placeholder(s) in the rendered '$agent' '$name' skill — every {{TOKEN}} used in a workflow body must have a mapping in build.sh's render_agent_skill:" >&2
     LC_ALL=C grep -Fn '{{' "$tmp" | sed 's/^/  /' >&2
     rm -f "$tmp"
+    build_tmp=''
     exit 3
   fi
 
   mv "$tmp" "$out"
+  build_tmp=''
   echo "wrote ${out#"$root"/}"
 }
 
