@@ -108,8 +108,12 @@ break_render() { mkdir -p "$1/base/practices/90-boom.md"; }
 # run_build <fixture> — run the fixture's build.sh in it; log to <fixture>/build.log; return its rc.
 run_build() { ( cd "$1" && bash scripts/build.sh ) > "$1/build.log" 2>&1; }
 
-# tmps <fixture> — every sibling temp file left anywhere under the fixture, newline-joined.
-tmps() { find "$1" -name '*.tmp' -print 2>/dev/null | sed "s|^$1/||" | LC_ALL=C sort | tr '\n' ' '; }
+# tmps <fixture> — every sibling temp file left anywhere under the fixture, space-joined and
+# fixture-relative. The relative paths come from `cd`-ing rather than from stripping a prefix with
+# `sed`: the fixture path is a `mktemp -d` result, and interpolating any path into a sed script is
+# the escaping bug this repo keeps writing rules about — a `|` anywhere in `TMPDIR` would turn the
+# expression into a syntax error and this helper into one that reports "no temps" for every call.
+tmps() { ( cd "$1" 2>/dev/null && find . -name '*.tmp' -print 2>/dev/null | LC_ALL=C sort | tr '\n' ' ' ); }
 
 # --- the mutation primitive -------------------------------------------------------------------
 
@@ -235,6 +239,26 @@ if mutate_line "$d/scripts/build.sh" 'trap build_cleanup EXIT' '\|^trap build_cl
     bad "MUTATION 3 DID NOT FIRE: with the EXIT trap removed, a failed render still left no temp file — assertion 2's residue check proves nothing"
   fi
 fi
+
+# ============ 4b. something UNREMOVABLE in the temp path fails closed, never over it ===========
+# The unlink in section 3 is what makes the publish safe, so what it does when it CANNOT run is a
+# real branch, not a curiosity: a directory sitting at `CLAUDE.md.tmp` (a stale `mkdir`, an
+# unpacked archive) makes `rm -f` fail. The build must stop with the reason on stderr and the
+# tracked doc untouched — publishing over a path it could not clear is the one outcome that would
+# turn this fix into a different corruption.
+d="$work/blocked"
+mkfixture "$d" || bad "blocked: could not build the fixture"
+run_build "$d" || bad "blocked: the fixture's first (clean) build failed"
+printf '%s\n' "$SENTINEL" > "$d/agents/claude/CLAUDE.md"
+mkdir -p "$d/agents/claude/CLAUDE.md.tmp/occupied"
+run_build "$d"; rc=$?
+no "$rc" "an unremovable temp path fails the build"
+has "$(cat "$d/build.log" 2>/dev/null)" "CLAUDE.md.tmp" "...naming the path it could not clear"
+eq "$(cat "$d/agents/claude/CLAUDE.md" 2>/dev/null)" "$SENTINEL" "...and the tracked doc is left untouched"
+# The trap's removal fails too, and must do so SILENTLY: a second identical `rm:` line buries the
+# one that explains the failure. Exactly one occurrence, not "at least one".
+eq "$(grep -c 'is a directory' "$d/build.log" 2>/dev/null)" "1" \
+  "...and the failure is reported ONCE (best-effort cleanup does not echo it again)"
 
 # ================== 5. the skill path leaves no residue either ================================
 # A PARITY PIN, and it is honest about what it is: the unresolved-placeholder path has always had

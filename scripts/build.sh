@@ -42,8 +42,13 @@ workflows="$root/base/workflows"
 # EXIT trap returning 0 does NOT overwrite a failing script's status either, so cleanup cannot mask
 # an errexit abort. SIGKILL and power loss remain untrappable; they leave a `.tmp` and, which is the
 # whole point, an INTACT tracked file.
+#
+# Cleanup is BEST-EFFORT and says nothing: if the removal fails, the command that already failed
+# has printed the reason (`rm: …: is a directory`), and a second identical line from the trap only
+# makes the real diagnostic harder to find. `|| :` for the same reason — a cleanup that cannot run
+# must not become the script's verdict.
 build_tmp=''
-build_cleanup() { if [ -n "$build_tmp" ]; then rm -f "$build_tmp"; fi; }
+build_cleanup() { if [ -n "$build_tmp" ]; then rm -f "$build_tmp" 2>/dev/null || :; fi; }
 trap build_cleanup EXIT
 
 render() {
