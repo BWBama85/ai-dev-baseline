@@ -373,10 +373,71 @@ case "$secs" in
 esac
 # …and a fast gate in the same run must NOT inherit that figure, which a shared or accumulating
 # timer would produce.
+#
+# ASSERT THE PROPERTY, NOT A LITERAL (#308). This used to pin the exact string `ok (0s)`, and
+# BASH_MONOSECONDS counts WHOLE seconds: two samples straddling a tick differ by 1 however little
+# happened between them, so a `true` gate legitimately reports `1s` and the assertion went red at
+# random. Measured on this very fixture, the timed window is 4-18 ms (mean ~8 ms; 16 busy spinners
+# on a 10-core box moved the mean only to ~9.5 ms). Over a uniformly distributed clock phase that
+# mean implies a straddle in ~0.8% of runs, about one in 125; #308 observed one in 400 by sampling.
+# Either way it is rare enough to read as a flake and frequent enough to cost a diagnosis on every
+# PR, twice over, since this suite runs on both hosted runners and `ci-discipline.md` forbids
+# re-running past it.
+#
+# The RELATION is what "not cumulative" means, and its detection is structural rather than
+# probabilistic: with one shared `t0` the fast gate's window CONTAINS the slow gate's, so its
+# reported figure comes back >= the slow gate's every time, for any sleep length.
+#
+# THE SLEEP IS 2.2s, AND SHORTENING IT SILENTLY DISARMS THIS. At 1.2s a cumulative timer reports
+# `bfast=1s` — the same reading a legitimate tick-straddle produces — so the bug and the flake are
+# indistinguishable and no tolerant form of this assertion can separate them. Past 2s the slow
+# gate's own figure is >= 2 by construction, which is why that is pinned below rather than assumed.
+#
+# That pin is asymmetric, and worth stating exactly rather than flatteringly: at 2.2s it NEVER
+# fires spuriously, because a 2.2s window spans two ticks whatever the phase. As a tripwire against
+# someone shortening the sleep it is only PROBABLE — back at 1.2s the slow gate still reads `2s`
+# whenever its window straddles two ticks, which is the fractional part, ~20% of runs. So it catches
+# that edit about four times in five, not always. The asymmetry is the right way round (a guard that
+# cries wolf is the defect this file is fixing), but it is a tripwire, not a proof.
+#
+# What is NOT claimed is determinism. A spurious failure now needs that ~10 ms window to inflate
+# past a full second, >55x the worst observed under deliberate CPU oversubscription. That bounds
+# the residual rather than removing it, which is all any wall-clock assertion can do — and the
+# alternatives are worse: a synthetic clock driven by a DEBUG trap would encode how many simple
+# commands sit between the two samples and break on any refactor of the loop, and grepping for the
+# assignment would test that elapsed is SPELLED, which is what the block above exists not to do.
+
+# Read ONE gate's reported elapsed out of a run's stderr. Anchored to the WHOLE line, because an
+# unanchored `.*gate "x": ok (…)` also matches that text quoted inside a gate's own captured
+# output; and the caller requires exactly one all-digit value PER GATE, because an empty or
+# two-line read fed into `[ … -lt … ]` fails as a shell arithmetic error rather than as the parse
+# failure it is.
+elapsed_of() { printf '%s\n' "$1" | sed -n 's/^adb: gate "'"$2"'": ok (\([0-9][0-9]*\)s)$/\1/p'; }
+
 d="$work/cad-elapsed-mixed"; mkdir -p "$d"
-printf '[gates]\naslow = "sleep 1.2"\nbfast = "true"\n' > "$d/agents.toml"
+printf '[gates]\naslow = "sleep 2.2"\nbfast = "true"\n' > "$d/agents.toml"
 err="$(adb_run_gates "$d" "" full 2>&1)"
-has "$err" 'gate "bfast": ok (0s)' "elapsed: each gate is timed independently, not cumulatively"
+slow_secs="$(elapsed_of "$err" aslow)"
+fast_secs="$(elapsed_of "$err" bfast)"
+# The `:` is a SEPARATOR, not decoration: concatenating the two readings lets one empty value hide
+# behind the other's digits — `""` and `"2"` join to `2`, which is all-digits, and the arithmetic
+# below then dies on the empty one. Held apart, `:0` and `2:` are each rejected by their own arm.
+# A two-line read carries a newline, which `[!0-9:]` catches wherever it lands.
+case "$slow_secs:$fast_secs" in
+  :*|*:|*[!0-9:]*) bad "elapsed: could not read exactly one numeric elapsed per gate, got: $err" ;;
+  *)
+    # The slow gate must run FIRST, or a cumulative timer would credit the fast gate with nothing
+    # and this whole fixture would pass while blind. Read the order off the output rather than
+    # trusting that the labels sort the way they were named to.
+    case "${err%%adb: gate \"bfast\"*}" in
+      *'gate "aslow": ok'*) ok ;;
+      *) bad "elapsed: the fixture's slow gate did not run first, so independence is untested: $err" ;;
+    esac
+    if [ "$slow_secs" -ge 2 ]; then ok; else
+      bad "elapsed: the fixture's slow gate reported ${slow_secs}s — it must read at least 2s, or a cumulative timer is indistinguishable from a tick-straddle"; fi
+    if [ "$fast_secs" -lt "$slow_secs" ]; then ok; else
+      bad "elapsed: each gate is timed independently, not cumulatively — the fast gate reported ${fast_secs}s against the slow gate's ${slow_secs}s"; fi ;;
+esac
 
 d="$work/cad-elapsed-fail"; mkdir -p "$d"
 printf '[gates]\nbroken = "false"\n' > "$d/agents.toml"

@@ -7,6 +7,46 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check-gates.sh`'s elapsed assertion now tests the property it names, instead of a literal that
+  was only ever true by luck** (#308).
+
+  `scripts/check-gates.sh` pinned the exact string `gate "bfast": ok (0s)`. That value comes from
+  `BASH_MONOSECONDS`, which counts **whole seconds**, so two samples straddling a tick differ by 1
+  however little happened between them — and a gate of `true` legitimately reported `1s`. The
+  assertion went red at random in a job that runs on every PR and on both hosted runners, on a claim
+  it was not testing; under this repo's own CI-discipline rule every occurrence costs a diagnosis
+  rather than a re-run.
+
+  **Measured, not estimated.** Instrumenting a copy of the runner with `EPOCHREALTIME` puts the fast
+  gate's timed window at **4-18 ms** (mean ~8 ms), and 16 busy spinners on a 10-core box moved the
+  mean only to ~9.5 ms. Over a uniformly distributed clock phase that mean implies a straddle in
+  ~0.8% of runs, about one in 125; #308 observed one in 400 by sampling. Sweeping the run's phase
+  against the clock reproduces the failure on demand rather than waiting for either rate.
+
+  - **The assertion is relational**: the fast gate's elapsed must be strictly less than the slow
+    gate's in the same run, which is what *"timed independently, not cumulatively"* means. Detection
+    is structural rather than probabilistic — with one shared `t0` the fast gate's window *contains*
+    the slow gate's, so its figure comes back `>=` every time, for any sleep length.
+  - **The fixture's slow gate sleeps 2.2s, not 1.2s, and that is load-bearing.** At 1.2s a
+    cumulative timer reports `1s` for the fast gate — the same reading a legitimate straddle
+    produces — so the bug and the flake are indistinguishable and no tolerant form of the assertion
+    can separate them. A sanity pin requires the slow gate's own figure to read at least 2s, and an
+    ordering pin requires the slow gate to run first — without the second, a reversed order would
+    leave the fixture passing while testing nothing. The sanity pin never fires spuriously at 2.2s,
+    but as a tripwire against a future edit shortening the sleep it is only probable (~80%), and the
+    comment says so rather than claiming a proof.
+  - **Determinism is bounded, not claimed.** A spurious failure now needs that ~10 ms window to
+    inflate past a full second, >55x the worst observed under deliberate CPU oversubscription.
+
+  All four assertions were **observed going red** against a `mktemp -d` copy of the tree: the real
+  cumulative-timer hoist, a shortened fixture, an unreadable elapsed format, and a reversed gate
+  order — which would otherwise leave the fixture passing while blind.
+
+  `scripts/lib/project-gates.sh` is unchanged. Second resolution is adequate for a human-facing
+  progress hint, and widening the clock to fix a test would be the wrong altitude.
+
 ## [2.1.0] - 2026-08-10
 
 The release that made this framework's own guards answer correctly. Most of what it fixes is a check
