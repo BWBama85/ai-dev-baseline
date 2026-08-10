@@ -1578,8 +1578,32 @@ reads_of() { LC_ALL=C tr '\n' '|' < "$STUB_READS"; }
 # both from one fixture, so no outcome check would expose the difference either. Both logs are
 # newline-delimited records, so joining with `|` and looking for a `|`-fenced whole record is exact
 # equality on one line while still tolerating any other lines in the log.
-read_is() { case "|$( reads_of )" in *"|$1|"*) ok ;; *) bad "$2 — request log: [$( reads_of )]" ;; esac; }
-call_is() { case "|$( calls_of )" in *"|$1|"*) ok ;; *) bad "$2 — call log: [$( calls_of )]" ;; esac; }
+#
+# THE QUOTES AROUND `$1` IN THE PATTERN ARE LOAD-BEARING, and they are the reason the predicate is
+# split out below rather than inlined twice. `case … in *"|$1|"*)` matches the EXPANSION literally;
+# written unquoted as `*|$1|*` the same line turns every glob metacharacter in the expected record
+# live, and the check-runs URL contains a `?` — so a logged `…check-runsXper_page=100` would pass an
+# assertion that reads as exact. Verified literal on bash 5.3.15 and 3.2.57 for `?`, `*` and `[…]`;
+# the self-test immediately below is what keeps it that way, because removing the quotes changes
+# nothing that any other assertion here could see. (Raised by the independent reviewer as a live
+# defect; it is not one as written, but the fragility it names is real and now has a guard.)
+log_has_record() {   # <expected whole record> <joined log> -> 0 when the log holds that record
+  case "|$2" in *"|$1|"*) return 0 ;; *) return 1 ;; esac
+}
+read_is() { if log_has_record "$1" "$( reads_of )"; then ok; else bad "$2 — request log: [$( reads_of )]"; fi; }
+call_is() { if log_has_record "$1" "$( calls_of )"; then ok; else bad "$2 — call log: [$( calls_of )]"; fi; }
+
+# Self-test the matcher before relying on it for 20 assertions. A matcher that silently degrades to
+# a glob is the classic guard-that-cannot-answer-wrong: every assertion still passes, and passes
+# MORE often, which is invisible.
+if log_has_record 'GET a?b'     '|GET a?b|';    then ok; else bad "log_has_record must match an exact record"; fi
+if log_has_record 'GET a?b'     '|GET aXb|';    then bad "log_has_record treats '?' as a glob — the pattern quoting was lost"; else ok; fi
+if log_has_record 'GET a*b'     '|GET aZZb|';   then bad "log_has_record treats '*' as a glob — the pattern quoting was lost"; else ok; fi
+if log_has_record 'GET a[xy]b'  '|GET axb|';    then bad "log_has_record treats '[…]' as a glob — the pattern quoting was lost"; else ok; fi
+# ...and it must anchor on WHOLE records, or a prefix of a longer URL would satisfy it — the exact
+# weakness that made the previous substring `has` unusable here.
+if log_has_record 'GET a/b'     '|GET a/b/c|';  then bad "log_has_record matched a PREFIX of a longer record"; else ok; fi
+if log_has_record 'GET a/b'     '|X|GET a/b|Y|'; then ok; else bad "log_has_record must find a record among others"; fi
 SL_ENC='branches/release%2Fv1'
 SL_RAW='branches/release/v1'
 
