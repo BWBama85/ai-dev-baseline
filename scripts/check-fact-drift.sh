@@ -838,6 +838,12 @@ fact fact-mutation-wired 'regex:^[^#]*check-fact-drift\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
 fact fact-guard-wired 'regex:^[^#]*check-fact-guard\.sh' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
+# Same shape, same reason (#268). This one guards a hazard that only appears when a build ABORTS,
+# so nothing about a normal green run would notice it had stopped being checked — the exact
+# silent-un-wiring this family exists to catch. Both sides pinned: dropping it from either the
+# local mirror or CI fails here.
+fact build-atomic-wired 'regex:^[^#]*check-build-atomic\.sh' -- \
+  scripts/selfcheck.sh .github/workflows/ci.yml
 
 # --- the bash floor: 5.3, and the 3.2 declaration it retired (#256/#261) ------
 #

@@ -3721,3 +3721,85 @@ limit: none of them is sufficient alone.
              All six mutations (each guard removed, each cache reordered, the escaping disabled)
              were observed RED against a throwaway copy, each on its own assertion.
 - baseline-issue: n/a — this repo IS the baseline; #218 is the tracking issue.
+
+## D52 — a rename replaces a truncate, and the three things a rename made necessary
+- date:      2026-08-09
+- category:  project-delta
+- unknown:   #268 asked for one change: give `render()` the temp-then-`mv` shape
+             `render_agent_skill()` already had, "reusing the existing idiom rather than inventing
+             a second one". Literal reuse is not sufficient, and the reason is that a rename does
+             not merely replace a truncate — it introduces a second file, and the existing idiom
+             has nothing to say about that file's NAME, its lifetime, or its mode.
+- decision:  Publish through one shared `build_stage` / `build_publish` pair, used by BOTH
+             renderers, and settle all three consequences rather than inherit them silently.
+
+             **1. The temp name is unique per process, not `$dest.tmp`.** The first cut reused the
+             existing fixed-sibling spelling, and independent review found that this leaves a path
+             straight back to the corruption being fixed: two builds over one checkout — a
+             contributor running `build.sh` while selfcheck's `build-drift` step runs one — share
+             the name, and the interleaving PUBLISHES a torn file. A stages, B clears the name and
+             stages its own, A renames B's half-written file over the destination. `mktemp` also
+             closes a hole the first cut's `rm -f` only appeared to close: clearing a path and
+             opening it are two operations, so a symlink installed between them is still followed.
+             Unlinking first defends against a STALE artifact, never a hostile one, and the first
+             cut's comments claimed otherwise. O_EXCL under an unpredictable name has no window.
+
+             **2. An abort leaves a temp, and nothing in this repo would report it.** The defect is
+             fixed the moment the destination stops being truncated, so the residue is not a
+             correctness question — but `.gitignore` does not cover it, `build-drift`'s untracked
+             scan looks only under the skill trees, and `check-tmp-paths.sh` is a CONTENT scan that
+             a well-formed render fragment passes (verified: a real half-rendered root doc left at
+             `agents/claude/CLAUDE.md.tmp` leaves that lint green and unmentioned). One
+             `trap build_cleanup EXIT` removes it.
+
+             **A bare `EXIT` trap is enough, and that is MEASURED.** The gap-analysis pass held
+             that it "is insufficient for direct TERM" and prescribed INT/TERM/HUP handlers exiting
+             130/143/129 by hand. On bash 5.3.15 that is false: the EXIT trap runs for SIGINT
+             delivered the way a terminal delivers it (to the process group), for SIGTERM and for
+             SIGHUP, and the script still exits 130 / 143 / 129 on its own. The prescribed handlers
+             would therefore add the one thing they exist to prevent — a hand-written status that
+             can be wrong. An EXIT trap returning 0 was also confirmed not to overwrite a failing
+             script's status, so cleanup cannot mask an errexit abort. Independent review confirmed
+             the measurement and the SIGINT qualification. SIGKILL and power loss stay untrappable,
+             and there the residue is the correct outcome: the tracked file is intact, which is the
+             entire guarantee.
+
+             **3. The mode is CHOSEN, not inherited — reversing the first cut's decision on
+             evidence.** That cut declined mode handling as unobservable. Two things falsified it.
+             `mktemp` creates 0600, so publishing straight from the temp would have silently
+             narrowed every generated doc; and inheriting the umask instead is the same problem
+             pointing the other way — review noted a permissive umask yields group- or
+             world-writable INSTRUCTION files, and running the new suite against the pre-#268 code
+             shows exactly that (`-rw-rw-rw-` under `umask 000`). Git records no difference among
+             non-executable modes, so no existing check here could ever have noticed. `chmod 644`
+             is the only value that does not depend on ambient state, and it is asserted under a
+             hostile umask at each extreme.
+
+             **What is NOT claimed.** A rename makes a reader of any ONE file see the old contents
+             or the new, never a torn mix. It does not make the three root docs update atomically
+             with respect to each other, which is why `build-drift` keeps its serial prologue.
+- placement: `scripts/build.sh` (`build_stage`, `build_publish`, the file-level trap, and both
+             renderers); `scripts/check-build-atomic.sh` (new, registered in `scripts/selfcheck.sh`
+             as a POOLED step and wired as a step on CI's existing `build-drift` job); a
+             `build-atomic-wired` pin in `scripts/check-fact-drift.sh`; the falsified claims in
+             `scripts/selfcheck.sh`'s concurrency-contract header and this repo's `CLAUDE.md`.
+- reason:    The issue named the change and, correctly, its scope; what it could not name is that
+             the safe version of a two-line fix is a shared helper with three decisions in it. Two
+             of those three were settled WRONG in the first cut and corrected by review — the fixed
+             temp name, and declining the mode — which is the strongest argument for writing them
+             down: each looked obviously fine, and each had a counter-example one layer down.
+- guard-observability: The suite is observed RED against the pre-#268 `build.sh` — the failure it
+             prints is the truncated root doc itself, plus the world-writable modes. Below that,
+             each change to the publish mechanism has its own mutation applied to a COPY in a
+             fixture (naive publish · fixed temp name · trap removed), each required to make the
+             assertion above it go red, and each verifying its own edit applied (exactly one
+             matching line before, none after) so a sed that silently stopped matching fails loud
+             instead of turning three proofs into assertions about unmodified code. Byte-exactness
+             is compared with `cmp`, not `[ "$(cat f)" = … ]`, which strips trailing newlines and
+             therefore cannot see a dropped final one — review found that hole. The
+             `build-atomic-wired` pin was driven red from both `selfcheck.sh` and `ci.yml` against a
+             green tree copy. What is NOT proven: the trap's coverage of the SKILL path
+             specifically — inducing a non-placeholder failure there needs a signal race, so that
+             path rides the root-doc proof, and saying so is better than implying a coverage that
+             does not exist.
+- baseline-issue: n/a — this repo IS the baseline; #268 is the tracking issue.

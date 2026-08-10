@@ -70,16 +70,19 @@ fail=0
 # `build-drift` is the ONE exception, and it earns the serial prologue:
 #
 #   * it runs `scripts/build.sh`, which REWRITES tracked generated files in the working tree, and
-#   * the root-doc render is a plain `> "$outfile"` truncate-and-write (scripts/build.sh:52), not
-#     a temp-then-rename — unlike the skill render in the same file, which does temp-then-mv. That
-#     asymmetry is a defect in its own right (an interrupted build leaves a truncated tracked file)
-#     and is tracked in #268; fixing it removes the torn-single-file case but NOT this pin, because
-#     the three root docs still do not update atomically with respect to each other.
+#   * those files are rewritten one at a time. Each individual file is now published by RENAME
+#     (#268) — both renderers stage a uniquely-named sibling temp and `mv` it into place — so no
+#     single file is ever observable half-written. What #268 did NOT make atomic, and deliberately
+#     so, is the TRANSITION ACROSS FILES: a reader that starts while build.sh is part-way through
+#     sees a MIXED GENERATION — some of `agents/{claude,codex,gemini}/*` already renamed and
+#     the rest still carrying the old one. That is why fixing the torn-file defect did not retire
+#     this pin, and why it must not be read as having done so.
 #
-# So while it runs, `agents/claude/CLAUDE.md` and its two siblings can be observed half-written —
-# by `workflow-map` and `skill-frontmatter` here, and by `fact-drift`, `injection`, `bash-floor`,
-# `roadmap`, `release-role`, `install-guard` and `install-dry-run`, all of which read that tree.
-# Running it alone, first, removes the whole class rather than one instance of it.
+# So while it runs, `agents/claude/CLAUDE.md` and its two siblings can be observed out of step with
+# each other and with the skills trees — by `workflow-map` and `skill-frontmatter` here, and by
+# `fact-drift`, `injection`, `bash-floor`, `roadmap`, `release-role`, `install-guard` and
+# `install-dry-run`, all of which read that tree. Running it alone, first, removes the whole class
+# rather than one instance of it.
 #
 # What is deliberately NOT serialized, so the reasoning is auditable rather than re-derived:
 #
@@ -354,6 +357,13 @@ step_install_dry_run() {
 add shellcheck          step_shellcheck
 
 add build-drift         step_build_drift
+
+# `build-drift` proves the generated artifacts MATCH what build.sh renders; it says nothing about
+# HOW they are written, because a successful build is exactly where the two write shapes are
+# indistinguishable — and it cannot inject a failure, since it runs against the tracked tree it is
+# checking. This runs a copied build.sh in a `mktemp -d` fixture, faults it mid-render, and requires
+# the destination to survive byte-exact (#268). POOLED: it never touches this checkout.
+add build-atomic        bash scripts/check-build-atomic.sh
 
 add workflow-map        step_workflow_map
 
