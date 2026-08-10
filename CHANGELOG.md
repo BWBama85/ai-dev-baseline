@@ -9,14 +9,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [2.1.0] - 2026-08-10
 
-The release that made this framework's own guards answer correctly. Most of what it fixes is a
-check that reported success without having checked: a release cut against a branch nobody had
-verified, a build published by truncating the file it was replacing, an ownership decode a newline
-could re-aim, a closing-keyword verification that could never succeed. The rest hardens the paths
-untrusted text travels — every API-supplied slug refused at its producer, a git ref encoded into one
-path segment, the run's issue snapshot moved out of the world-writable temp directory. Two
-configuration surfaces are new: `[gates.cadence]`, so a gate can declare which caller it runs for,
-and an owner escape hatch for a repo whose CI never reports on the default branch.
+The release that made this framework's own guards answer correctly. Most of what it fixes is a check
+that reported success without having checked: a release cut against an unverified branch, a build
+published by truncating the file it replaced, an ownership decode a newline could re-aim. The rest
+hardens the paths untrusted text travels — every API-supplied slug refused at its producer, a git ref
+encoded into one path segment, the issue snapshot moved out of the world-writable temp directory.
+New: `[gates.cadence]`, and an escape hatch for a repo whose CI never reports on the default branch.
 
 ### Fixed
 
