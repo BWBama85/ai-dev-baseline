@@ -173,6 +173,11 @@ require_gh() { adb_require_gh jq || exit 1; }
 # than by line number on purpose: an earlier draft of this comment cited four line numbers that its
 # own edit had already invalidated.)
 #
+# Six of those seven now compose their path through `_adb_rs_ref_path`, which #103 added for the
+# REF half of the same problem. That does not move this boundary: the builder encodes the ref and
+# concatenates the slug, so a malformed slug would still be interpolated raw. Two values, two
+# rules — the slug is validated here at its producer, the ref is encoded there at its consumer.
+#
 # `adb_is_path_safe_repo_slug`, not `adb_is_repo_slug`: `a/..` is a well-formed owner/repo pair and
 # a path traversal, and this value is API-supplied.
 #
@@ -240,6 +245,36 @@ target_branch() {
   local b; b="$(repo_field .default_branch)"
   [ -n "$b" ] && [ "$b" != "null" ] || return 1
   printf '%s' "$b"
+}
+
+# _adb_rs_ref_path <collection> <ref> [suffix] — THE ONE PLACE a git ref becomes part of an API
+# path: `repos/<slug>/<collection>/<percent-encoded ref><suffix>`. Returns non-zero, printing
+# nothing, when the ref cannot be encoded.
+#
+# SIX SITES BUILT THIS BY HAND (#103) — the protection GET, the ordinary branch GET, the
+# check-runs GET, and `apply`'s PATCH, POST and PUT — and a seventh and eighth PRINTED one for the
+# operator to paste. A branch legitimately named `release/v1` therefore reached
+# `branches/release/v1/protection`, and the fix has to be the shared builder rather than a point
+# patch: eight hand-written spellings are eight chances for the next one to be written raw.
+#
+# NOT `_adb_rs_branch_path`, though that is the obvious name and the one the issue reaches for.
+# One of the eight is `commits/{ref}/check-runs`, whose `{ref}` is a ref (a branch, tag or SHA) on
+# a DIFFERENT collection — a branch-only helper would have left exactly that site, the newest of
+# them, still interpolating raw. `<collection>` is a literal this file supplies, never operator
+# input, so it is not encoded.
+#
+# THE SUFFIX IS APPENDED AFTER THE ENCODED SEGMENT AND IS NOT ENCODED, which is what keeps
+# `/check-runs?per_page=100` a sub-resource plus a query string instead of one absurd path segment.
+# Encoding the whole endpoint is the obvious over-correction and it breaks pagination silently.
+#
+# ENCODING IS SCOPED TO THE PATH, and nothing else may consume the result. The RAW ref still drives
+# check discovery (a workflow's `branches:` filter matches `release/v1`, never `release%2Fv1`) and
+# every human-facing message. Swapping the encoded value in globally would leave the endpoints
+# right and the discovery wrong — a quieter bug than the one being fixed.
+_adb_rs_ref_path() {
+  local enc
+  enc="$(adb_url_path_segment "$2")" || return 1
+  printf 'repos/%s/%s/%s%s' "$REPO_SLUG" "$1" "$enc" "${3:-}"
 }
 
 # --- check discovery -------------------------------------------------------------------------
@@ -587,16 +622,21 @@ _adb_rs_api_i() {
 # "unprotected" — which would send `apply` down the stand-up-from-scratch path on a repo it cannot
 # actually read.
 read_protection() {
-  local branch="$1" status body admin
+  local branch="$1" status body admin path
+  PROT_JSON=""
   admin="$(repo_field .permissions.admin)" || admin=""
+  # An unbuildable path is UNREADABLE STATE, not "no protection" (#103). Classified `error` for the
+  # same reason a 5xx is: `unprotected` sends `apply` down the stand-up-from-scratch PUT, and doing
+  # that because the ref could not be encoded would replace a branch's real protection object over
+  # a local failure. Set before the read, so no stale PROT_JSON survives this arm.
+  path="$(_adb_rs_ref_path branches "$branch" /protection)" || { PROT_STATE="error"; return 0; }
   # -i so the HTTP STATUS is inspectable. Distinguishing 404 from every other failure is not a
   # nicety: an admin hitting a transient 5xx or a network blip would otherwise be classified
   # `unprotected`, and `apply` would then seed its full replacement PUT from PROT_DEFAULTS —
   # silently discarding the branch's real approval, dismissal, bypass and restriction settings.
   # Only a CONFIRMED 404 means "no protection here".
-  _adb_rs_api_i "repos/$REPO_SLUG/branches/$branch/protection"
+  _adb_rs_api_i "$path"
   status="$RS_STATUS"; body="$RS_BODY"
-  PROT_JSON=""
   case "$status" in
     200)
       PROT_JSON="$body"
@@ -741,10 +781,14 @@ _adb_rs_classify_branch() {
 
 # read_branch <branch> — classify the branch's required-check state via the contents-read endpoint.
 read_branch() {
-  local branch="$1" out
+  local branch="$1" out path
   BR_STATE=""; BR_CONTEXTS=""
+  # An unbuildable path joins the `error` arm, which `required-drift` already turns into a
+  # fail-closed 20 (#103). Reporting it as any readable state would let the drift lint pass on
+  # evidence it never fetched.
+  path="$(_adb_rs_ref_path branches "$branch")" || { BR_STATE="error"; return 0; }
   # -i so the HTTP status is inspectable; a 5xx or a network blip must never look like "no checks".
-  _adb_rs_api_i "repos/$REPO_SLUG/branches/$branch"
+  _adb_rs_api_i "$path"
   [ "$RS_STATUS" = "200" ] || { BR_STATE="error"; return 0; }
   out="$(printf '%s' "$RS_BODY" | _adb_rs_classify_branch)"
   BR_STATE="${out%%$'\n'*}"
@@ -775,7 +819,11 @@ _adb_rs_has_workflow_files() {
 # attributed at all?" must describe the same set of check runs, not two reads a push could
 # separate.  Returns non-zero only when the READ failed.
 _adb_rs_checkruns() {
-  gh api --paginate "repos/$REPO_SLUG/commits/$1/check-runs?per_page=100" 2>/dev/null
+  local path
+  # The `{ref}` here is a REF, not a branch — this is why the shared builder is ref-shaped. The
+  # query string rides in the suffix, unencoded, so pagination survives (#103).
+  path="$(_adb_rs_ref_path commits "$1" '/check-runs?per_page=100')" || return 1
+  gh api --paginate "$path" 2>/dev/null
 }
 
 # Provenance is TRI-STATE, and conflating any two of the states is a fail-open (#179):
@@ -877,21 +925,27 @@ PROT_DEFAULTS='{"required_pull_request_reviews":{"required_approving_review_coun
 # (required_signatures is deliberately absent from the PUT body: it is a separate endpoint, and a
 # PUT does not reset it.)
 write_required_checks() {
-  local branch="$1" ctx="$2" body base label
+  local branch="$1" ctx="$2" body base label prot
+  # Built ONCE, before the first write, and a failure refuses the whole function (#103). All three
+  # arms below hang off this path, so an arm-by-arm build would give a slashed branch three chances
+  # to be spelled differently — and this is the write side, where the wrong endpoint is not merely
+  # an unreadable answer.
+  prot="$(_adb_rs_ref_path branches "$branch" /protection)" \
+    || { echo "ERROR: could not build a request path for branch '$branch'" >&2; return 1; }
   case "$PROT_STATE" in
     protected-with-checks)
       body="$(contexts_json "$ctx")" \
         || { echo "ERROR: could not build the required_status_checks body" >&2; return 1; }
       adb_info "  required checks -> PATCH branches/$branch/protection/required_status_checks (narrow; nothing else touched)"
       run_gh "set required checks" "$body" \
-        api -X PATCH "repos/$REPO_SLUG/branches/$branch/protection/required_status_checks" --input - \
+        api -X PATCH "$prot/required_status_checks" --input - \
         || { echo "ERROR: could not set required status checks" >&2; return 1; }
       # The narrow PATCH cannot carry enforce_admins, so honor the flag through its own endpoint.
       # Without this the flag is a silent no-op on exactly the state a repo is in after its FIRST
       # successful apply — i.e. it would appear to work once and then quietly stop.
       if [ "$OPT_ENFORCE_ADMINS" -eq 1 ]; then
         adb_info "  enforce_admins -> POST branches/$branch/protection/enforce_admins"
-        run_gh "enforce admins" "" api -X POST "repos/$REPO_SLUG/branches/$branch/protection/enforce_admins" \
+        run_gh "enforce admins" "" api -X POST "$prot/enforce_admins" \
           || { echo "ERROR: could not enable enforce_admins" >&2; return 1; }
       fi
       ;;
@@ -951,7 +1005,7 @@ write_required_checks() {
         || { echo "ERROR: could not build the protection body" >&2; return 1; }
       adb_info "  required checks -> PUT branches/$branch/protection ($label)"
       run_gh "set required checks (full protection PUT)" "$body" \
-        api -X PUT "repos/$REPO_SLUG/branches/$branch/protection" --input - \
+        api -X PUT "$prot" --input - \
         || { echo "ERROR: could not set required status checks" >&2; return 1; }
       ;;
     *)
@@ -964,17 +1018,34 @@ write_required_checks() {
 # manual_commands <branch> — what to run by hand when we lack admin. Degrading to instructions is
 # the contract (#87): never block the run, never pretend it worked.
 manual_commands() {
-  local branch="$1"
+  local branch="$1" prot
+  # THESE TWO LINES ARE RUNNABLE COMMANDS, so they carry the ENCODED segment (#103) — handing an
+  # operator `branches/release/v1/protection` to paste is the same wrong-endpoint hazard, relocated
+  # into their terminal, where nothing here can fail closed on it. The PROSE around them keeps the
+  # raw name: it is for reading, and `release%2Fv1` is not what the branch is called.
+  #
   adb_info ""
   adb_info "No admin permission on $REPO_SLUG — nothing was changed."
   adb_info "Ask an admin to run this same command, which picks the right endpoint for you:"
   adb_info "  baseline repo apply"
   adb_info ""
+  # NO RAW FALLBACK (independent-review find). An earlier draft degraded to
+  # `repos/$REPO_SLUG/branches/$branch/protection` when the encoder refused — which is the precise
+  # raw interpolation this change exists to stop, handed to an operator to paste, in the one case
+  # (a ref that is not valid UTF-8) where it is genuinely unrepresentable. A tool that refuses to
+  # build a path and then prints it anyway has not refused. So the commands are OMITTED and the
+  # reason is named; `baseline repo apply` above is still the answer, and it fails closed too.
+  if ! prot="$(_adb_rs_ref_path branches "$branch" /protection)"; then
+    adb_info "The by-hand commands cannot be shown: '$branch' has no valid request-path encoding"
+    adb_info "(a branch name must be valid UTF-8 to become a URI path segment). Rename the branch,"
+    adb_info "or run the command above, which refuses the same way rather than guessing."
+    return 0
+  fi
   adb_info "By hand, the endpoint depends on the branch's current state (protection: $PROT_STATE):"
-  adb_info "  protected already -> gh api -X PATCH repos/$REPO_SLUG/branches/$branch/protection/required_status_checks \\"
+  adb_info "  protected already -> gh api -X PATCH $prot/required_status_checks \\"
   adb_info "                         -F strict=false -f 'contexts[]=<each name from: baseline repo checks>'"
   adb_info "  NOT protected yet -> that subresource 404s; POST the full object instead:"
-  adb_info "                       gh api -X PUT repos/$REPO_SLUG/branches/$branch/protection --input <body.json>"
+  adb_info "                       gh api -X PUT $prot --input <body.json>"
   adb_info "  then              -> gh api -X PATCH repos/$REPO_SLUG -F allow_auto_merge=true"
   adb_info "…in that order: required checks FIRST, or auto-merge lands PRs with nothing gating them."
 }
@@ -996,6 +1067,23 @@ cmd_apply() {
     manual_commands "$branch"
     return 1
   fi
+
+  # AN UNREADABLE PROTECTION STATE STOPS THE RUN BEFORE ANY WRITE, and this guard is load-bearing
+  # rather than defensive (independent-review find). `write_required_checks` refuses `error` and
+  # `forbidden` in its `*)` arm — but the NO-CI arm below never calls it, and then falls through to
+  # the `allow_auto_merge` PATCH. So a protection read that failed could still end in an outward
+  # mutation, on a repo whose protection this command could not see. That predates #103 (a 5xx did
+  # it too); what #103 adds is a second way in, so it is closed here rather than left for the next
+  # reader to rediscover.
+  #
+  # `error|forbidden` together, matching `automerge-ok`'s arm exactly: with admin true a 403 is
+  # still possible (a token scope, SSO), and "protected but not visible to me" is unreadable state,
+  # not permission to proceed. The non-admin case has already returned above.
+  case "$PROT_STATE" in
+    error|forbidden)
+      echo "ERROR: cannot read branch protection for '$branch' (state: $PROT_STATE) — refusing to change any setting" >&2
+      return 1 ;;
+  esac
 
   dir="$(workflow_dir)"
   # A blind parse must never reach a WRITE. Under-requiring is not a cosmetic loss here: `apply`

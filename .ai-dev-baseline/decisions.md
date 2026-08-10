@@ -3803,3 +3803,170 @@ limit: none of them is sufficient alone.
              path rides the root-doc proof, and saying so is better than implying a coverage that
              does not exist.
 - baseline-issue: n/a — this repo IS the baseline; #268 is the tracking issue.
+
+## D53 — a git ref crossing into an API path is ENCODED; both spellings work, and that was measured
+- date:      2026-08-10
+- category:  project-delta
+- unknown:   `scripts/lib/repo-settings.sh` interpolated the branch name raw into six API paths, so
+             `release/v1` built `branches/release/v1/protection` rather than one encoded segment.
+             #103 correctly refused to guess: several GitHub REST endpoints accept a raw slash and
+             others require `%2F`, this repo had no slashed branch to test against, and "fixing" it
+             from documentation risks breaking the path that already works.
+- decision:  Run the experiment first, then encode.
+
+             **The experiment, read-only, on branches that already existed.** The issue proposes
+             creating a `release/v1` branch; that turned out to be unnecessary — several repos the
+             owner administers already carry slashed branches, and public repos carry them at two
+             and four levels deep. So nothing was created, pushed or mutated to learn this. On
+             2026-08-09 with `gh` 2.95.0:
+
+             - `GET repos/{o}/{r}/branches/{b}` returned **200** for both `actions/inactive-collaborators`
+               and `actions%2Finactive-collaborators` (nodejs/node, one slash), and for
+               `automation/bors/auto` / `automation%2Fbors%2Fauto` (rust-lang/rust, two). Both
+               spellings returned the SAME `.name` and the same commit sha, so they addressed one
+               branch — status alone would not have shown that.
+             - `GET .../commits/{ref}/check-runs` returned 200 with an identical `total_count` for
+               both spellings (one slash).
+             - `GET .../branches/{b}/protection` — admin-only — returned
+               `404 {"message":"Branch not protected"}` for both spellings on a real
+               `release/11.11.0` (one slash) and on a real four-slash
+               `dependabot/composer/stacks/php-wordpress/all-minor-patch-…`, while a nonexistent
+               control returned `404 {"message":"Branch not found"}`. **That message pair is the
+               discriminator**: a bare 404 would have proved nothing, and on a repo where the token
+               lacks admin every one of these is an opaque `Not Found` — which is why the probe had
+               to run on repos the owner administers.
+             - `GET .../protection/required_status_checks`, the sub-resource `apply` PATCHes,
+               behaved identically (one slash).
+
+             **And the finished library was watched AT THE `gh` BOUNDARY** — not on the wire, and
+             the difference is worth stating: this observes the path the library HANDS to `gh`,
+             while the `GH_DEBUG=api` probes above observe what `gh` puts on the wire. Together they
+             cover both hops; separately, neither is the other. With an argument-logging shim in
+             front of the real `gh`,
+             `required-drift --branch release/v1` requested
+             `repos/BWBama85/ai-dev-baseline/branches/release%2Fv1` while the same command with no
+             `--branch` requested `.../branches/main`, byte-identical. That is the encoded path and
+             the no-op property observed through the real code path rather than through a stub.
+             (`GH_DEBUG=api` does NOT work for this — `_adb_rs_api_i` runs `gh api -i "$1" 2>/dev/null`,
+             so gh's own debug log is discarded before it can be read. The shim is the way in.)
+             It stays a recorded one-off rather than a test: it needs network and auth, and
+             `selfcheck` is hermetic by construction (D13/D24).
+             - `GH_DEBUG=api` confirms `gh` normalizes nothing: `/` goes on the wire as `/`, `%2F`
+               as `%2F`. So the answer is GitHub's, not the CLI's.
+
+             **Both accepted, so encoding is a choice — and the choice is encode**, per the issue's
+             own instruction for that outcome. The argument is not the slash. Git forbids space,
+             `~^:?*[` and `\` in a ref but ALLOWS `#`, `%`, `+`, `=`, `;`, `&` and any UTF-8, and a
+             raw `#` opens a URI fragment: `gh` was observed dropping it and everything after it, so
+             `branches/feat/#42/protection` silently asks about `branches/feat/`. A wrong answer with
+             a 200 status is worse than the 404 the slash case produced.
+
+             **`jq @uri`, not a shell character loop, and that is a correctness decision rather than
+             a style one.** Bash's `printf '%02X' "'é"` yields the CODEPOINT (`E9` — an invalid
+             UTF-8 escape) in a UTF-8 locale and the first BYTE (`C3`) under `LC_ALL=C`. A
+             hand-rolled encoder is therefore right on one runner and wrong on another, with nothing
+             in the output to tell them apart. `@uri` is byte-oriented and verified identical under
+             both; jq is already a hard requirement of every caller that builds one of these paths.
+
+             **The encoding checks its own fidelity, found in self-review.** `@uri`'s input is not
+             guaranteed to survive it: a git ref is a BYTE string (`git check-ref-format` bars ASCII
+             control characters, not high bytes) while jq's `--arg` is a JSON string, so `rel\xffv1`
+             arrives as U+FFFD and encodes to `rel%EF%BF%BDv1` — a different, unreachable branch,
+             returned with a ZERO status. Measured, not theorised. jq now emits its own view of the
+             input as a second line, that line is compared against the bytes that went in, and a
+             mismatch refuses. One invocation, not two: the round trip is an extra output line
+             rather than an extra process.
+
+             **An exact `.` or `..` segment is encoded rather than passed through.** `@uri` leaves
+             dots alone, so `--branch ..` built `repos/o/r/branches/../protection` and resolved one
+             level up — the traversal #218 refused for slugs, arriving through the ref door, and it
+             was observed in the pre-fix suite run. RFC 3986 removes dot segments BEFORE
+             percent-decoding, so `%2E%2E` is an ordinary name. Only the WHOLE segment counts;
+             `v1..v2` is a name and is pinned unchanged.
+
+             **What is NOT claimed.** The protection-endpoint measurement is a **GET**. The three
+             writes (`PATCH …/required_status_checks`, `POST …/enforce_admins`, `PUT …/protection`)
+             share those routes and were not exercised against the live API — issuing a write to
+             prove a route is not worth a mutation on someone's repository. What IS proven offline
+             is that this library now emits the encoded path on all three.
+- placement: `scripts/lib/common.sh` (`adb_url_path_segment`, the generic primitive, beside
+             `adb_is_path_safe_repo_slug` — the same "safe to build a request path from" question,
+             opposite remedy); `scripts/lib/repo-settings.sh` (`_adb_rs_ref_path`, and the six call
+             sites plus the two printed `gh api` commands); `scripts/check-common-lib.sh` and
+             `scripts/check-repo-settings.sh` (coverage); `docs/repo-settings.md` (the `--branch`
+             contract); `.claude/skills/release/release.sh` (its two ref-in-path sites, added on
+             review — it already sources `common.sh`, and it is the template D14 tells every
+             adopting repo to copy, so a raw interpolation there propagates by design).
+
+             NOT named `_adb_rs_branch_path`, though the issue reaches for that: one of the six is
+             `commits/{ref}/check-runs`, a different collection whose segment is a ref, and a
+             branch-only helper would have left exactly that site — the newest of them — raw.
+- reason:    The issue asked for an empirical answer and it deserved one, because the plausible
+             guesses point both ways. The measurement also changed what the fix is FOR: with both
+             spellings accepted, this was never a broken-endpoint bug, and shipping it as one would
+             have left the reader thinking a slash was the hazard. It is not — `#` is, and the
+             encoder is what covers the class rather than the instance.
+- guard-observability: Both suites were observed RED before being trusted, on the real superseded
+             input rather than a convenient one. The 20 new `check-repo-settings.sh` assertions were
+             run against the PRE-FIX library (a `git archive` copy, never the working tree) and 13
+             failed, each printing the raw path the old code really built — including
+             `branches/../protection`. The other seven are controls that MUST stay green there (the
+             byte-identical `main` path, the no-mutation check, the query-string guard), so they are
+             driven red separately, further down this entry. Six plausible-but-wrong encoders were spliced into copies and
+             each required to go red on its own assertion: slash-only substitution, a bash character
+             loop (caught only by the locale pair), a "don't double-encode" guard, a soft failure
+             that returns empty when jq is absent, no dot-segment handling, and bare `@uri` with no
+             fidelity round trip. Each mutation
+             verifies its own edit applied, so a splice that stopped matching fails loud instead of
+             asserting about unmodified code. The BYTE-IDENTITY control — an ordinary run contains no
+             `%` at all — was driven red separately by the plausible over-correction of encoding the
+             slug too. What is NOT covered: the live write verbs, per the note above; and the
+             UTF-8-locale half of the locale pair is skipped with a printed NOTE on a host that
+             generates no UTF-8 locale, rather than counting a pass it did not earn.
+- review:    The independent pass (codex) returned 6 REQUIRED + 4 OPTIONAL, and three of them were
+             defects the author's own self-review had missed — worth recording, because each is a
+             way this change could have shipped looking finished:
+
+             1. **`apply` could still mutate after an unreadable protection state.** The no-CI arm
+                skips `write_required_checks` (which refuses `error`) and falls through to the
+                `allow_auto_merge` PATCH. PREDATES #103 — a 5xx reached it too — but #103 adds a
+                second way in, so `cmd_apply` now refuses `error|forbidden` before any write.
+             2. **The non-admin path reconstructed the raw URL** when the encoder refused, and
+                PRINTED it as two runnable commands. A tool that refuses to build a path and then
+                prints it anyway has not refused; the commands are now withheld with the reason.
+             3. **The suite never tested an unbuildable path.** The section labelled "fail closed
+                when the path cannot be built" passed `..` — which the encoder deliberately
+                SUCCEEDS on. It could not have caught either defect above. It now uses invalid
+                UTF-8, the reachable failure, and asserts all four obligations separately: non-zero
+                exit, no request, no mutation, no runnable raw path printed.
+             4. **`has` is substring, not equality.** `has ".../branches/release%2Fv1"` is satisfied
+                by a request for `.../branches/release%2Fv1/protection` — a different endpoint — and
+                the stub answers both from one fixture, so no outcome check would have caught it.
+                Whole-record matchers (`read_is`/`call_is`) replace it, which also makes the
+                byte-identity control mean what its name says.
+             5. **The encoder refused a trailing newline**, because `$( )` strips one before the
+                round trip compares. No git ref can contain a newline, so no caller was affected —
+                but this is published as a generic primitive. A `.` sentinel inside the jq call
+                makes it total.
+
+             The four OPTIONAL findings were all claim-accuracy defects in this entry, the changelog
+             and the doc, and all four were correct: "nonexistent branch" (a branch literally named
+             `release%2Fv1` is legal and may exist), "no path that worked before changed at all"
+             (the slashed path's spelling did change), "Five" encoders where six are listed, and
+             "on the wire" for an observation taken at the `gh` boundary. All corrected above.
+- guard-observability-of-the-review-fixes: Each fix was reverted on a COPY and its new assertion
+             required to go red: the `cmd_apply` guard removed (the no-mutation assertion fires),
+             the raw fallback restored (the no-runnable-command assertion fires), the builder made
+             to append a suffix a substring match would swallow (the exact matcher fires where
+             `has` would not), and the sentinel dropped (the trailing-newline assertion fires).
+
+             **What is NOT tracked, said plainly:** both mutation harnesses are one-off runs from a
+             scratch directory, not committed checks. That is a deliberate call rather than an
+             omission — these unit tests assert concrete input→output pairs, so their failure mode
+             is a loud `FAIL`, not the silence that makes a GUARD unable to answer wrong. The repo's
+             own rule is to automate the observation where the rule set is CLOSED; the set of future
+             wrong encoders is open, so this stays a discipline. `check-build-atomic.sh` and
+             `check-fact-drift.sh --mutation` exist because their subjects fail silently; this one
+             does not.
+- baseline-issue: n/a — this repo IS the baseline; #103 is the tracking issue.
+                  Follow-up filed: #310 (D30's sub-floor carve-out is documented but never executed).

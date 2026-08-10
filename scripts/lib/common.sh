@@ -480,6 +480,83 @@ adb_is_path_safe_repo_slug() {
   return 0
 }
 
+# adb_url_path_segment <value> — percent-encode <value> for use as exactly ONE URI path segment.
+# Prints the encoded value; prints NOTHING and returns non-zero when it cannot encode.
+#
+# The sibling of `adb_is_path_safe_repo_slug` above, for the position that predicate cannot serve.
+# A slug is CHECKED because a malformed one means the response was wrong; a git ref is ENCODED
+# because a slash in it is perfectly legal and the caller still has to reach the right endpoint
+# (#103). Same rule — a value crossing into a request path is not a string — opposite remedy.
+#
+# WHAT THE MEASUREMENT SAID, so the next reader does not re-litigate it (D53). On 2026-08-09,
+# against real slashed branches, GitHub accepted BOTH `release/v1` and `release%2Fv1` on every
+# branch endpoint this repo calls, and both addressed the same branch. So encoding is not a repair
+# of a broken path — it is the form chosen because it is the one that stays correct for the
+# characters a slash is merely the most common of.
+#
+# `#` IS THE CHARACTER THAT MAKES THIS NON-OPTIONAL, not `/`. Git forbids space, `~^:?*[` and `\`
+# in a ref name, but ALLOWS `#`, `%`, `+`, `=`, `;`, `&` and any UTF-8. Interpolated raw, a `#`
+# opens a URI fragment: `gh` was observed dropping it and everything after it from the request, so
+# `branches/feat/#42/protection` silently asks about `branches/feat/`. That is a wrong answer, not
+# an error, and no status code reveals it.
+#
+# `jq @uri`, NOT A SHELL CHARACTER LOOP, and the reason is locale rather than brevity. Bash's
+# `printf '%02X' "'é"` yields the CODEPOINT (`E9`) in a UTF-8 locale and the first BYTE (`C3`)
+# under `LC_ALL=C` — so a hand-rolled loop emits invalid `%E9` on a developer workstation and
+# correct `%C3%A9` on a C-locale runner, or the reverse, depending on ambient state no test asserts.
+# `@uri` is byte-oriented and was verified to emit the same `r%C3%A9%2Fv1` under both. jq is already
+# a hard requirement of every caller that builds one of these paths.
+#
+# DELIBERATELY NOT IDEMPOTENT. `release%2Fv1` is itself a legal git branch name, so re-encoding it
+# to `release%252Fv1` is the CORRECT answer and a "don't double-encode" guard would be a bug: it
+# would address `release/v1` while the operator named a different branch. The contract is therefore
+# one-way — callers pass the RAW ref, exactly once, and never a pre-encoded one.
+#
+# AN EXACT `.` OR `..` SEGMENT IS ENCODED RATHER THAN PASSED THROUGH. `@uri` leaves dots alone
+# (they are unreserved), so `--branch ..` would build `repos/o/r/branches/../protection` and
+# resolve one level up — the traversal `adb_is_path_safe_repo_slug` refuses for slugs, arriving
+# through the other door. RFC 3986 removes dot segments BEFORE percent-decoding, so `%2E%2E` is an
+# ordinary (nonexistent) name rather than a traversal. Only the WHOLE segment matters: a branch
+# named `v1..v2` contains dots and is a name, not a path.
+#
+# THE ENCODING IS CHECKED FOR FIDELITY, because `@uri`'s input is not guaranteed to survive it. A
+# git ref is a BYTE STRING — `git check-ref-format` bars ASCII control characters but not high
+# bytes — while jq's `--arg` is a JSON string, so a ref carrying invalid UTF-8 arrives as U+FFFD and
+# `rel\xffv1` encodes to `rel%EF%BF%BDv1`: a DIFFERENT, unreachable branch, returned with a zero
+# status. That fails at the API rather than mutating the wrong branch, but "404" is a bad way to
+# learn your ref was rewritten. So jq emits the encoded form AND its own view of the input, the
+# second is compared against the bytes that went in, and a mismatch refuses. One invocation, not
+# two: the round trip is a second output line, not a second process.
+#
+# THE ROUND TRIP CARRIES A `.` SENTINEL, because command substitution strips EVERY trailing newline
+# and the comparison would otherwise be against a truncated value. `a\n` would come back as `a`,
+# mismatch, and be refused — a value this function can encode perfectly well. Appending one
+# character inside jq and removing exactly one with `${back%.}` makes the round trip lossless for
+# any input (a ref that genuinely ends in `.` still round-trips, because `%` strips one occurrence).
+# No git ref may contain a newline, so no CALLER here is affected — but this is published as a
+# generic path-segment encoder, and a generic contract with an unstated hole in it is the shape this
+# file's other primitives exist to avoid. (Independent-review find.)
+#
+# FAILS CLOSED, and that is load-bearing for a reason peculiar to this function: an empty return
+# spliced into `branches/<here>/protection` does not produce a broken URL, it produces a DIFFERENT
+# VALID ONE. Callers must test the status and treat a failure as unreadable state, never build the
+# path anyway.
+adb_url_path_segment() {
+  local raw="${1-}" out enc back
+  [ -n "$raw" ] || return 1
+  case "$raw" in
+    .)  printf '%%2E' ;      return 0 ;;
+    ..) printf '%%2E%%2E' ;  return 0 ;;
+  esac
+  command -v jq >/dev/null 2>&1 || return 1
+  out="$(jq -rn --arg v "$raw" '($v|@uri), ($v + ".")' 2>/dev/null)" || return 1
+  enc="${out%%$'\n'*}"
+  back="${out#*$'\n'}"
+  back="${back%.}"
+  [ -n "$enc" ] && [ "$back" = "$raw" ] || return 1
+  printf '%s' "$enc"
+}
+
 # adb_pr_slug <value> — the `owner/repo` a PR argument names, case-folded; nothing for a bare
 # number, and nothing for an argument whose slug does not parse to a well-formed pair. Used only to
 # CROSS-CHECK the argument against the repository a caller's reads actually addressed; a bare number

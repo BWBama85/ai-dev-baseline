@@ -127,6 +127,22 @@ The read-modify-write body carries **every** sub-object the live GET returns —
 bypass permission. Both are remapped from their GET shape (`{users:[{login}]}`) to their PUT shape
 (`{users:[login]}`).
 
+### `--branch` takes a raw git branch name (#103)
+
+Pass `release/v1`, never `release%2Fv1`. Every endpoint above builds its path through one helper,
+`_adb_rs_ref_path`, which percent-encodes the ref into a single path segment — so the encoding is
+this library's job, and pre-encoding it yourself asks about a **different branch**: the one whose
+name literally contains `%2F`. That name is legal git, so it may well exist; the encoder is
+deliberately not idempotent precisely because it cannot tell the two apart, and guessing is how you
+end up protecting the wrong branch.
+
+Measured against real slashed branches on 2026-08-09 with `gh` 2.95.0: GitHub accepts **both**
+`branches/release/v1/protection` and `branches/release%2Fv1/protection`, and both address the same
+branch. The encoded form is used anyway, because `/` is only the most common of the characters git
+permits in a ref and a URI path does not. `#` is the one that makes this non-optional — git allows
+it, and interpolated raw it opens a URI fragment that silently truncates the request. Full evidence
+and the reasoning are in `.ai-dev-baseline/decisions.md` (D53).
+
 ## External CI providers
 
 Discovery only reads `.github/workflows`, so a required context from Codecov, CircleCI, Vercel, or

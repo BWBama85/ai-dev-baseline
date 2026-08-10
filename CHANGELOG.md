@@ -9,6 +9,61 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **A branch name containing `/` now reaches the endpoint it names — one shared builder encodes the
+  ref, and the answer was measured rather than guessed** (#103, D53).
+
+  `scripts/lib/repo-settings.sh` interpolated the branch straight into six API paths, so
+  `release/v1` produced `branches/release/v1/protection` instead of one encoded path segment. #103
+  deliberately blocked on an experiment, because the plausible guesses point both ways and shipping
+  an encoding change verified only by reading docs risks breaking the path that already works.
+
+  **The experiment, run read-only against branches that already existed** — no branch was created
+  or pushed to learn this. On 2026-08-09 with `gh` 2.95.0, GitHub accepted **both** spellings on
+  every endpoint this library reads — the ordinary branch GET (at one and two slashes, returning the
+  same `.name` and sha for each spelling), `commits/{ref}/check-runs`, and both admin-only
+  protection reads (the second of those at four slashes). The discriminator for the admin-only pair
+  is the 404 *body*: a real slashed branch answers `Branch not protected`, a nonexistent control
+  answers `Branch not found`. `GH_DEBUG=api` confirms `gh` normalizes nothing, so the answer is
+  GitHub's. The three write verbs share those routes and were **not** exercised live — issuing a
+  write to prove a route is not worth a mutation on someone's repository.
+
+  **Both work, so encoding is a choice — and the slash is not the reason to make it.** Git forbids
+  space, `~^:?*[` and `\` in a ref but allows `#`, `%`, `+`, `=`, `;`, `&` and any UTF-8. A raw `#`
+  opens a URI fragment: `gh` was observed dropping it and everything after it, so
+  `branches/feat/#42/protection` silently asks about `branches/feat/` — a wrong answer carrying a
+  200, which is worse than the 404 a slash produced.
+
+  - **`adb_url_path_segment` (new, `scripts/lib/common.sh`)** — percent-encodes one path segment via
+    `jq @uri`. Not a shell character loop, and that is correctness rather than taste: bash's
+    `printf '%02X' "'é"` yields the codepoint (`E9`, an invalid UTF-8 escape) in a UTF-8 locale and
+    the first byte (`C3`) under `LC_ALL=C`, so a hand-rolled encoder is right on one runner and
+    wrong on another. Deliberately **not** idempotent — a literal `release%2Fv1` is itself a legal
+    git ref, so re-encoding it is the correct answer and a "don't double-encode" guard would quietly
+    address a different branch. It fails closed: an empty return spliced into
+    `branches/<here>/protection` yields not a broken URL but a *different valid one*. It also
+    **checks its own fidelity**, because `@uri`'s input is not guaranteed to survive it — a git ref
+    is a byte string while jq's `--arg` is a JSON string, so `rel\xffv1` would otherwise come back
+    as `rel%EF%BF%BDv1`, a different unreachable branch, with a zero status. jq emits the round trip
+    on a second line and a mismatch refuses.
+  - **`_adb_rs_ref_path` (new, `scripts/lib/repo-settings.sh`)** — the one place a ref joins a path.
+    Not `_adb_rs_branch_path`: one of the six sites is `commits/{ref}/check-runs`, a different
+    collection, and a branch-only helper would have left exactly that one raw. The query string
+    rides in an unencoded suffix, so pagination survives. The two printed `gh api` commands the
+    non-admin path hands the operator carry the encoded path too.
+  - **`--branch` takes a raw git branch name.** Encoding is the library's job; supplying `%2F`
+    yourself now names a different branch.
+  - **An exact `.` or `..` segment is neutralized.** `@uri` leaves dots alone, so `--branch ..` built
+    `repos/o/r/branches/../protection` and resolved one level up — the traversal #218 refused for
+    slugs, arriving through the ref door. A name that merely *contains* dots (`v1..v2`) is untouched.
+
+  **What did and did not change on the wire.** A branch name made only of unreserved characters —
+  every default branch this tool has ever been pointed at — is **byte-identical** through the
+  encoder, pinned by a control that compares whole request lines and asserts no `%` appears in an
+  ordinary run. A *slashed* name's request spelling does change, from `release/v1` to
+  `release%2Fv1`; the measurement above is what makes that safe rather than a leap, since both
+  address the same branch. So the honest claim is not "nothing changed" — it is that nothing an
+  existing caller sends changed, and the one spelling that did was measured first.
+
 - **`scripts/build.sh` publishes a generated file by rename, so an interrupted build can no longer
   leave a truncated tracked one** (#268, D52).
 
