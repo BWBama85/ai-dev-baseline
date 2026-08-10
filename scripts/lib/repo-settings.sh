@@ -1024,20 +1024,23 @@ manual_commands() {
   # into their terminal, where nothing here can fail closed on it. The PROSE around them keeps the
   # raw name: it is for reading, and `release%2Fv1` is not what the branch is called.
   #
-  # The fallback is the pre-#103 spelling, which the measurement recorded in D53 shows GitHub
-  # accepts for a slash — so it is still a correct command for the ordinary case, and it is a floor
-  # rather than a supported path. Two of the builder's three failure modes cannot occur by the time
-  # we are here (`require_gh` has proved jq exists; `target_branch` a non-empty branch). The third —
-  # a ref that is not valid UTF-8, which the encoder refuses rather than rewriting — can, and this
-  # line would then print the raw bytes. That is the right trade for a message: it names what the
-  # operator typed, and no request is issued from it.
-  prot="$(_adb_rs_ref_path branches "$branch" /protection)" \
-    || prot="repos/$REPO_SLUG/branches/$branch/protection"
   adb_info ""
   adb_info "No admin permission on $REPO_SLUG — nothing was changed."
   adb_info "Ask an admin to run this same command, which picks the right endpoint for you:"
   adb_info "  baseline repo apply"
   adb_info ""
+  # NO RAW FALLBACK (independent-review find). An earlier draft degraded to
+  # `repos/$REPO_SLUG/branches/$branch/protection` when the encoder refused — which is the precise
+  # raw interpolation this change exists to stop, handed to an operator to paste, in the one case
+  # (a ref that is not valid UTF-8) where it is genuinely unrepresentable. A tool that refuses to
+  # build a path and then prints it anyway has not refused. So the commands are OMITTED and the
+  # reason is named; `baseline repo apply` above is still the answer, and it fails closed too.
+  if ! prot="$(_adb_rs_ref_path branches "$branch" /protection)"; then
+    adb_info "The by-hand commands cannot be shown: '$branch' has no valid request-path encoding"
+    adb_info "(a branch name must be valid UTF-8 to become a URI path segment). Rename the branch,"
+    adb_info "or run the command above, which refuses the same way rather than guessing."
+    return 0
+  fi
   adb_info "By hand, the endpoint depends on the branch's current state (protection: $PROT_STATE):"
   adb_info "  protected already -> gh api -X PATCH $prot/required_status_checks \\"
   adb_info "                         -F strict=false -f 'contexts[]=<each name from: baseline repo checks>'"
@@ -1064,6 +1067,23 @@ cmd_apply() {
     manual_commands "$branch"
     return 1
   fi
+
+  # AN UNREADABLE PROTECTION STATE STOPS THE RUN BEFORE ANY WRITE, and this guard is load-bearing
+  # rather than defensive (independent-review find). `write_required_checks` refuses `error` and
+  # `forbidden` in its `*)` arm — but the NO-CI arm below never calls it, and then falls through to
+  # the `allow_auto_merge` PATCH. So a protection read that failed could still end in an outward
+  # mutation, on a repo whose protection this command could not see. That predates #103 (a 5xx did
+  # it too); what #103 adds is a second way in, so it is closed here rather than left for the next
+  # reader to rediscover.
+  #
+  # `error|forbidden` together, matching `automerge-ok`'s arm exactly: with admin true a 403 is
+  # still possible (a token scope, SSO), and "protected but not visible to me" is unreadable state,
+  # not permission to proceed. The non-admin case has already returned above.
+  case "$PROT_STATE" in
+    error|forbidden)
+      echo "ERROR: cannot read branch protection for '$branch' (state: $PROT_STATE) — refusing to change any setting" >&2
+      return 1 ;;
+  esac
 
   dir="$(workflow_dir)"
   # A blind parse must never reach a WRITE. Under-requiring is not a cosmetic loss here: `apply`

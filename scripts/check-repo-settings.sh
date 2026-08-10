@@ -676,7 +676,10 @@ checkruns_noapp()    { jq -n --args '{check_runs: [$ARGS.positional[] | {name: .
 rsx_auth() {   # the SAME stub, auth knob flipped — one stub, two behaviors
   OUT="$(S="$S" STUB_AUTH_FAIL=1 PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
-calls_of() { tr '\n' '|' < "$STUB_CALLS"; }
+# `LC_ALL=C` for the same reason `reads_of` carries it (see its note near the #103 section): a log
+# line can hold bytes that are not valid UTF-8, and `tr` then fails and truncates rather than
+# passing them through — quietly weakening every assertion that reads the result.
+calls_of() { LC_ALL=C tr '\n' '|' < "$STUB_CALLS"; }
 
 # --- fail-loud gh guard -----------------------------------------------------------------------
 wf_one; repo_fx true false; prot_nochecks
@@ -1564,7 +1567,19 @@ has "$adv_step" 'Do _not_ run' "...and warns AGAINST applying from the PR branch
 # same status, body and exit code whether the library encoded it or not: an outcome-shaped test
 # here is green against both implementations and proves nothing. What distinguishes them is the URL
 # that was requested, so that is what is asserted — exactly, and by absence as well as presence.
-reads_of() { tr '\n' '|' < "$STUB_READS"; }
+# `LC_ALL=C`, because a request log can legitimately contain bytes that are not valid UTF-8 — the
+# invalid-UTF-8 ref in group (8) is exactly such a case, and in a UTF-8 locale `tr` fails with
+# "Illegal byte sequence" and emits a TRUNCATED log, which silently weakens every assertion reading
+# it. Observed while negative-testing group (8) against a deliberately broken build.
+reads_of() { LC_ALL=C tr '\n' '|' < "$STUB_READS"; }
+# EXACT-LINE MATCHERS, because `has` is substring containment and that is not what these assertions
+# claim (independent-review find). `has "$(reads_of)" ".../branches/release%2Fv1"` is satisfied by a
+# request for `.../branches/release%2Fv1/protection` — a DIFFERENT endpoint — and the stub answers
+# both from one fixture, so no outcome check would expose the difference either. Both logs are
+# newline-delimited records, so joining with `|` and looking for a `|`-fenced whole record is exact
+# equality on one line while still tolerating any other lines in the log.
+read_is() { case "|$( reads_of )" in *"|$1|"*) ok ;; *) bad "$2 — request log: [$( reads_of )]" ;; esac; }
+call_is() { case "|$( calls_of )" in *"|$1|"*) ok ;; *) bad "$2 — call log: [$( calls_of )]" ;; esac; }
 SL_ENC='branches/release%2Fv1'
 SL_RAW='branches/release/v1'
 
@@ -1572,10 +1587,10 @@ SL_RAW='branches/release/v1'
 #     GET, the narrow required_status_checks PATCH, and the enforce_admins POST.
 wf_one; repo_fx true true; prot_checks "two"
 rsx_stub apply --branch release/v1 --enforce-admins
-has "${ reads_of; }"  "repos/acme/widget/$SL_ENC/protection"     "apply GETs the ENCODED protection path for 'release/v1'"
-has "${ calls_of; }"  "PATCH repos/acme/widget/$SL_ENC/protection/required_status_checks" \
+read_is "GET repos/acme/widget/$SL_ENC/protection"     "apply GETs the ENCODED protection path for 'release/v1'"
+call_is "PATCH repos/acme/widget/$SL_ENC/protection/required_status_checks" \
     "...PATCHes the encoded required_status_checks sub-resource"
-has "${ calls_of; }"  "POST repos/acme/widget/$SL_ENC/protection/enforce_admins" \
+call_is "POST repos/acme/widget/$SL_ENC/protection/enforce_admins" \
     "...and POSTs the encoded enforce_admins sub-resource"
 # ABSENCE MATTERS AS MUCH AS PRESENCE. A builder that emitted BOTH spellings — or one that encoded
 # the read and left a write raw — would satisfy every `has` above.
@@ -1586,14 +1601,16 @@ hasnt "${ reads_of; }$( calls_of; )" '%252F'   "...and none double-encoded it ei
 #     PROT_STATE selects a different endpoint, and the wide one is the one that replaces the object.
 wf_one; repo_fx true true; prot_nochecks
 rsx_stub apply --branch release/v1
-has "${ calls_of; }" "PUT repos/acme/widget/$SL_ENC/protection" "the full protection PUT uses the encoded path"
+call_is "PUT repos/acme/widget/$SL_ENC/protection" "the full protection PUT uses the encoded path"
 hasnt "${ calls_of; }" "PUT repos/acme/widget/$SL_RAW/protection" "...and not the raw one"
 
 # (3) the fifth site: the ordinary contents-read branch endpoint, which `required-drift` uses
 #     because a CI token can never call the admin-only one.
 wf_one; repo_fx true true; branch_checks "one"
 rsx_stub required-drift --branch release/v1
-has "${ reads_of; }" "GET repos/acme/widget/$SL_ENC" "required-drift reads the encoded ordinary branch endpoint"
+# EXACT, not substring: this is the endpoint whose path is a strict PREFIX of the protection one, so
+# a `has` here would be satisfied by a request for `.../protection` — a different endpoint entirely.
+read_is "GET repos/acme/widget/$SL_ENC" "required-drift reads the encoded ordinary branch endpoint"
 hasnt "${ reads_of; }" "GET repos/acme/widget/$SL_RAW" "...and not the raw one"
 
 # (4) the sixth site: `commits/{ref}/check-runs`. A DIFFERENT collection whose segment is a ref
@@ -1606,7 +1623,7 @@ printf 'name: Sched\non:\n  schedule:\n    - cron: "0 0 * * *"\njobs:\n  nightly
 repo_fx true true; branch_checks "ci/circleci: build"; checkruns_external "ci/circleci: build"
 rsx_stub required-drift --branch release/v1
 eq "$RC_" "0" "the check-runs scenario still reaches its documented external-CI pass"
-has "${ reads_of; }" 'repos/acme/widget/commits/release%2Fv1/check-runs?per_page=100' \
+read_is 'GET repos/acme/widget/commits/release%2Fv1/check-runs?per_page=100' \
     "the check-runs read encodes the REF and leaves the query string alone"
 # THE QUERY STRING IS THE TRAP HERE: encoding the whole endpoint instead of the segment turns
 # `?per_page=100` into part of one absurd path, and pagination breaks silently.
@@ -1628,17 +1645,70 @@ eq "$(cat "$STUB_CALLS")" "" "...while the non-admin run still mutates nothing"
 #     worked — the exact trade the issue said not to make. `main` is unreserved end to end.
 wf_one; repo_fx true true; prot_checks "two"
 rsx_stub apply --enforce-admins
-has "${ reads_of; }" 'repos/acme/widget/branches/main/protection' "the default branch is still spelled 'main'"
-has "${ calls_of; }" 'PATCH repos/acme/widget/branches/main/protection/required_status_checks' "...on the write path too"
-hasnt "${ reads_of; }$( calls_of; )" '%' "...and NOTHING in an ordinary run is percent-encoded at all"
+# EXACT records, so "byte-identical" is what is actually asserted. A substring `has` would accept an
+# appended or altered unescaped suffix and still pass, which makes the control weaker than its name
+# (independent-review find). The `%` check below stays, but as what it really is — the narrower
+# over-encoding guard — rather than as the proof of byte identity.
+read_is 'GET repos/acme/widget/branches/main/protection' "the default branch path is byte-identical: 'main'"
+call_is 'PATCH repos/acme/widget/branches/main/protection/required_status_checks' "...on the write path too"
+call_is 'POST repos/acme/widget/branches/main/protection/enforce_admins' "...and on the enforce_admins POST"
+hasnt "${ reads_of; }$( calls_of; )" '%' "...and no request in an ordinary run is percent-encoded at all"
 
-# (7) FAIL CLOSED WHEN THE PATH CANNOT BE BUILT. The encoder refuses an exact `..` segment, because
+# (7) NO TRAVERSING PATH. The encoder neutralizes an exact `..` segment, because
 #     `branches/../protection` resolves one level up — the traversal `adb_is_path_safe_repo_slug`
 #     refuses for slugs, arriving through the ref door. `--branch ..` must therefore reach the
 #     endpoint for a branch NAMED `..` (which cannot exist) and never the repo root.
+#
+#     NOTE WHAT THIS IS NOT: `..` ENCODES SUCCESSFULLY, so this exercises the dot arm, not the
+#     failure path. An earlier draft of this section was labelled "fail closed when the path cannot
+#     be built" and asserted only these two lines — a section that could not have caught a caller
+#     ignoring a real encoder failure, because it never produced one (independent-review find).
+#     Group (8) below is the actual failure case.
 wf_one; repo_fx true true; prot_checks "one"
 rsx_stub automerge-ok --branch ..
 hasnt "${ reads_of; }" 'branches/../protection' "an exact '..' branch never builds a traversing path"
-has   "${ reads_of; }" 'branches/%2E%2E/protection' "...it addresses a branch literally named '..' instead"
+read_is 'GET repos/acme/widget/branches/%2E%2E/protection' "...it addresses a branch literally named '..' instead"
+
+# (8) A GENUINELY UNBUILDABLE PATH — the failure case, which needs an input the encoder really
+#     REFUSES. A git ref is a byte string, so a ref carrying invalid UTF-8 is the reachable one:
+#     jq's `--arg` would rewrite it to U+FFFD, and the fidelity round trip refuses instead.
+#
+#     Every caller must then fail closed, and "fail closed" here has FOUR distinct obligations, all
+#     of which a wrong implementation can violate independently — so all four are asserted:
+#     a non-zero exit, NO request issued, NO mutation performed, and NO runnable raw path printed.
+#     The last two are the regressions this group exists for: `apply`'s no-CI arm used to skip the
+#     checks write and fall through to the `allow_auto_merge` PATCH (an outward mutation on a repo
+#     whose protection it could not read), and `manual_commands` used to degrade to
+#     `branches/<raw>/protection` — printing, for an operator to paste, the exact interpolation this
+#     whole change refuses to build.
+BAD_REF="$(printf 'rel\xffv1')"
+
+wf_one; repo_fx true true; prot_checks "one"
+rsx_stub automerge-ok --branch "$BAD_REF"
+eq "$RC_" "20" "automerge-ok = 20 (fail closed) when the ref has no request-path encoding"
+has "$OUT" "cannot read branch protection" "...saying the protection state is unreadable"
+
+# `apply` with admin and NO discovered CI — the arm that skips the checks write entirely.
+#
+# `repo_fx true false`, NOT `true true`, and the fixture is the whole test. With auto-merge already
+# ENABLED there is no PATCH to make, so "mutates NOTHING" holds no matter what the code does — the
+# assertion passes against the broken implementation and proves nothing. Verified by reverting the
+# guard on a copy: with `true true` the suite stayed green on this line, with `true false` it fires.
+# (That is the review's own lesson about outcome-shaped assertions, applied to the fix for it.)
+wf_none; repo_fx true false; prot_checks "one"
+rsx_stub apply --branch "$BAD_REF"
+eq "$RC_" "1" "apply = 1 (its own contract) on a ref with no request-path encoding"
+has "$OUT" "refusing to change any setting" "...saying it refused BEFORE any write, not after one failed"
+eq "$(cat "$STUB_CALLS")" "" "...and mutates NOTHING — not even allow_auto_merge, which needs no branch"
+hasnt "$(cat "$STUB_READS")" 'branches/rel' "...and never issued a request built from the raw bytes"
+
+# The non-admin path, which PRINTS commands rather than issuing them.
+wf_one; repo_fx false false; prot_checks "one"
+rsx_stub apply --branch "$BAD_REF"
+hasnt "$OUT" 'gh api -X PATCH repos/acme/widget/branches/rel' \
+    "the non-admin path prints NO runnable command built from an unencodable ref"
+hasnt "$OUT" 'gh api -X PUT repos/acme/widget/branches/rel' "...for either endpoint"
+has "$OUT" "no valid request-path encoding" "...and says why the commands are withheld"
+eq "$(cat "$STUB_CALLS")" "" "...while still mutating nothing"
 
 check_summary "repo-settings"

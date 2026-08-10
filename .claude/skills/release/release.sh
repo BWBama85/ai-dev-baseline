@@ -209,7 +209,13 @@ health_of() {   # <sha> -> prints the verdict word
   case "$dbr" in ''|null) return 1 ;; esac
   st="$(gh api --paginate "repos/$sl/commits/$sha/status?per_page=100")" || return 1
   ck="$(gh api --paginate "repos/$sl/commits/$sha/check-runs?per_page=100")" || return 1
-  brj="$(gh api "repos/$sl/branches/$dbr")" || return 1
+  # The ref is ENCODED into its path segment, never interpolated raw (#103, D53). This repo's
+  # default branch is `main`, so today the encoding is a no-op — but git permits `#`, `%` and `/`
+  # in a ref, a raw `#` truncates the request at a URI fragment, and this file is the template
+  # every adopting repo copies for its own `/release` (D14). `common.sh` is already sourced above,
+  # so this is the shared primitive, not a second spelling of it.
+  bpath="$(adb_url_path_segment "$dbr")" || return 1
+  brj="$(gh api "repos/$sl/branches/$bpath")" || return 1
   req="$(printf '%s' "$brj" | bash "$LIB/repo-settings.sh" branch-required-contexts)" || return 1
   hin="$(printf '%s\n%s\n' "$ck" "$st" \
     | jq -s -c --argjson req "$req" \
@@ -298,7 +304,10 @@ EOF
   verdict="$(bash "$rm_lib" release-ready "$le" "$armed" "$blockers" "$open_" "$canceled" skipped)" || die "readiness predicate failed"
   health=skipped
   if [ "$verdict" = "met" ]; then
-    head_sha="$(gh api "repos/$sl/commits/$d" --jq .sha)" || die "cannot resolve $d HEAD"
+    # Encoded, for the reason in `health_of` (#103). The sibling `commits/$sha/...` reads are left
+    # alone deliberately: their ref is a hex SHA, which is unreserved end to end.
+    dpath="$(adb_url_path_segment "$d")" || die "cannot encode '$d' into a request path"
+    head_sha="$(gh api "repos/$sl/commits/$dpath" --jq .sha)" || die "cannot resolve $d HEAD"
     health="$(health_of "$head_sha")" || die "branch-health failed — an unreadable build is never green"
     verdict="$(bash "$rm_lib" release-ready "$le" "$armed" "$blockers" "$open_" "$canceled" "$health")" || die "readiness predicate failed"
   fi

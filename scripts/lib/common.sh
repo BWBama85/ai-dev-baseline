@@ -528,6 +528,15 @@ adb_is_path_safe_repo_slug() {
 # second is compared against the bytes that went in, and a mismatch refuses. One invocation, not
 # two: the round trip is a second output line, not a second process.
 #
+# THE ROUND TRIP CARRIES A `.` SENTINEL, because command substitution strips EVERY trailing newline
+# and the comparison would otherwise be against a truncated value. `a\n` would come back as `a`,
+# mismatch, and be refused — a value this function can encode perfectly well. Appending one
+# character inside jq and removing exactly one with `${back%.}` makes the round trip lossless for
+# any input (a ref that genuinely ends in `.` still round-trips, because `%` strips one occurrence).
+# No git ref may contain a newline, so no CALLER here is affected — but this is published as a
+# generic path-segment encoder, and a generic contract with an unstated hole in it is the shape this
+# file's other primitives exist to avoid. (Independent-review find.)
+#
 # FAILS CLOSED, and that is load-bearing for a reason peculiar to this function: an empty return
 # spliced into `branches/<here>/protection` does not produce a broken URL, it produces a DIFFERENT
 # VALID ONE. Callers must test the status and treat a failure as unreadable state, never build the
@@ -540,9 +549,10 @@ adb_url_path_segment() {
     ..) printf '%%2E%%2E' ;  return 0 ;;
   esac
   command -v jq >/dev/null 2>&1 || return 1
-  out="$(jq -rn --arg v "$raw" '($v|@uri), $v' 2>/dev/null)" || return 1
+  out="$(jq -rn --arg v "$raw" '($v|@uri), ($v + ".")' 2>/dev/null)" || return 1
   enc="${out%%$'\n'*}"
   back="${out#*$'\n'}"
+  back="${back%.}"
   [ -n "$enc" ] && [ "$back" = "$raw" ] || return 1
   printf '%s' "$enc"
 }

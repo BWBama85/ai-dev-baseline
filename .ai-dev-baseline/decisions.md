@@ -3838,8 +3838,11 @@ limit: none of them is sufficient alone.
              - `GET .../protection/required_status_checks`, the sub-resource `apply` PATCHes,
                behaved identically (one slash).
 
-             **And the finished library was watched on the wire**, which the offline suite cannot
-             show: with an argument-logging shim in front of the real `gh`,
+             **And the finished library was watched AT THE `gh` BOUNDARY** — not on the wire, and
+             the difference is worth stating: this observes the path the library HANDS to `gh`,
+             while the `GH_DEBUG=api` probes above observe what `gh` puts on the wire. Together they
+             cover both hops; separately, neither is the other. With an argument-logging shim in
+             front of the real `gh`,
              `required-drift --branch release/v1` requested
              `repos/BWBama85/ai-dev-baseline/branches/release%2Fv1` while the same command with no
              `--branch` requested `.../branches/main`, byte-identical. That is the encoded path and
@@ -3891,7 +3894,9 @@ limit: none of them is sufficient alone.
              opposite remedy); `scripts/lib/repo-settings.sh` (`_adb_rs_ref_path`, and the six call
              sites plus the two printed `gh api` commands); `scripts/check-common-lib.sh` and
              `scripts/check-repo-settings.sh` (coverage); `docs/repo-settings.md` (the `--branch`
-             contract).
+             contract); `.claude/skills/release/release.sh` (its two ref-in-path sites, added on
+             review — it already sources `common.sh`, and it is the template D14 tells every
+             adopting repo to copy, so a raw interpolation there propagates by design).
 
              NOT named `_adb_rs_branch_path`, though the issue reaches for that: one of the six is
              `commits/{ref}/check-runs`, a different collection whose segment is a ref, and a
@@ -3907,7 +3912,7 @@ limit: none of them is sufficient alone.
              failed, each printing the raw path the old code really built — including
              `branches/../protection`. The other seven are controls that MUST stay green there (the
              byte-identical `main` path, the no-mutation check, the query-string guard), so they are
-             driven red separately, below. Five plausible-but-wrong encoders were spliced into copies and
+             driven red separately, further down this entry. Six plausible-but-wrong encoders were spliced into copies and
              each required to go red on its own assertion: slash-only substitution, a bash character
              loop (caught only by the locale pair), a "don't double-encode" guard, a soft failure
              that returns empty when jq is absent, no dot-segment handling, and bare `@uri` with no
@@ -3918,4 +3923,50 @@ limit: none of them is sufficient alone.
              slug too. What is NOT covered: the live write verbs, per the note above; and the
              UTF-8-locale half of the locale pair is skipped with a printed NOTE on a host that
              generates no UTF-8 locale, rather than counting a pass it did not earn.
+- review:    The independent pass (codex) returned 6 REQUIRED + 4 OPTIONAL, and three of them were
+             defects the author's own self-review had missed — worth recording, because each is a
+             way this change could have shipped looking finished:
+
+             1. **`apply` could still mutate after an unreadable protection state.** The no-CI arm
+                skips `write_required_checks` (which refuses `error`) and falls through to the
+                `allow_auto_merge` PATCH. PREDATES #103 — a 5xx reached it too — but #103 adds a
+                second way in, so `cmd_apply` now refuses `error|forbidden` before any write.
+             2. **The non-admin path reconstructed the raw URL** when the encoder refused, and
+                PRINTED it as two runnable commands. A tool that refuses to build a path and then
+                prints it anyway has not refused; the commands are now withheld with the reason.
+             3. **The suite never tested an unbuildable path.** The section labelled "fail closed
+                when the path cannot be built" passed `..` — which the encoder deliberately
+                SUCCEEDS on. It could not have caught either defect above. It now uses invalid
+                UTF-8, the reachable failure, and asserts all four obligations separately: non-zero
+                exit, no request, no mutation, no runnable raw path printed.
+             4. **`has` is substring, not equality.** `has ".../branches/release%2Fv1"` is satisfied
+                by a request for `.../branches/release%2Fv1/protection` — a different endpoint — and
+                the stub answers both from one fixture, so no outcome check would have caught it.
+                Whole-record matchers (`read_is`/`call_is`) replace it, which also makes the
+                byte-identity control mean what its name says.
+             5. **The encoder refused a trailing newline**, because `$( )` strips one before the
+                round trip compares. No git ref can contain a newline, so no caller was affected —
+                but this is published as a generic primitive. A `.` sentinel inside the jq call
+                makes it total.
+
+             The four OPTIONAL findings were all claim-accuracy defects in this entry, the changelog
+             and the doc, and all four were correct: "nonexistent branch" (a branch literally named
+             `release%2Fv1` is legal and may exist), "no path that worked before changed at all"
+             (the slashed path's spelling did change), "Five" encoders where six are listed, and
+             "on the wire" for an observation taken at the `gh` boundary. All corrected above.
+- guard-observability-of-the-review-fixes: Each fix was reverted on a COPY and its new assertion
+             required to go red: the `cmd_apply` guard removed (the no-mutation assertion fires),
+             the raw fallback restored (the no-runnable-command assertion fires), the builder made
+             to append a suffix a substring match would swallow (the exact matcher fires where
+             `has` would not), and the sentinel dropped (the trailing-newline assertion fires).
+
+             **What is NOT tracked, said plainly:** both mutation harnesses are one-off runs from a
+             scratch directory, not committed checks. That is a deliberate call rather than an
+             omission — these unit tests assert concrete input→output pairs, so their failure mode
+             is a loud `FAIL`, not the silence that makes a GUARD unable to answer wrong. The repo's
+             own rule is to automate the observation where the rule set is CLOSED; the set of future
+             wrong encoders is open, so this stays a discipline. `check-build-atomic.sh` and
+             `check-fact-drift.sh --mutation` exist because their subjects fail silently; this one
+             does not.
 - baseline-issue: n/a — this repo IS the baseline; #103 is the tracking issue.
+                  Follow-up filed: #310 (D30's sub-floor carve-out is documented but never executed).

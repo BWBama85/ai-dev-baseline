@@ -131,8 +131,10 @@ bypass permission. Both are remapped from their GET shape (`{users:[{login}]}`) 
 
 Pass `release/v1`, never `release%2Fv1`. Every endpoint above builds its path through one helper,
 `_adb_rs_ref_path`, which percent-encodes the ref into a single path segment — so the encoding is
-this library's job and doing it yourself asks about a *different*, nonexistent branch (a literal
-`%2F` is itself a legal git ref name, so the encoder is deliberately not idempotent).
+this library's job, and pre-encoding it yourself asks about a **different branch**: the one whose
+name literally contains `%2F`. That name is legal git, so it may well exist; the encoder is
+deliberately not idempotent precisely because it cannot tell the two apart, and guessing is how you
+end up protecting the wrong branch.
 
 Measured against real slashed branches on 2026-08-09 with `gh` 2.95.0: GitHub accepts **both**
 `branches/release/v1/protection` and `branches/release%2Fv1/protection`, and both address the same

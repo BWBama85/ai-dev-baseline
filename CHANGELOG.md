@@ -56,8 +56,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     `repos/o/r/branches/../protection` and resolved one level up — the traversal #218 refused for
     slugs, arriving through the ref door. A name that merely *contains* dots (`v1..v2`) is untouched.
 
-  An ordinary branch name is **byte-identical** through the encoder, so no path that worked before
-  changed at all — pinned by a control asserting that an ordinary run contains no `%` whatsoever.
+  **What did and did not change on the wire.** A branch name made only of unreserved characters —
+  every default branch this tool has ever been pointed at — is **byte-identical** through the
+  encoder, pinned by a control that compares whole request lines and asserts no `%` appears in an
+  ordinary run. A *slashed* name's request spelling does change, from `release/v1` to
+  `release%2Fv1`; the measurement above is what makes that safe rather than a leap, since both
+  address the same branch. So the honest claim is not "nothing changed" — it is that nothing an
+  existing caller sends changed, and the one spelling that did was measured first.
 
 - **`scripts/build.sh` publishes a generated file by rename, so an interrupted build can no longer
   leave a truncated tracked one** (#268, D52).

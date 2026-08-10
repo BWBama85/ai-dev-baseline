@@ -1143,6 +1143,21 @@ eq "$rc" "1" "adb_url_path_segment refuses a ref that is not valid UTF-8"
 eq "$out" ""  "...printing nothing, rather than the U+FFFD substitution jq would otherwise hand back"
 # The round trip must not over-reject: every legitimate value above still encodes, and a high byte
 # that IS valid UTF-8 is a name, not a corruption (the 'ré' pair in group 5 pins that direction).
+#
+# 10. AND IT MUST NOT OVER-REJECT A TRAILING NEWLINE. Command substitution strips EVERY trailing
+# newline, so a round trip read back through `$( )` sees `a` where `a\n` went in, mismatches, and
+# refuses a value this function encodes perfectly well. No git ref may contain a newline — so no
+# caller in this repo is affected — but this is published as a GENERIC path-segment encoder, and an
+# unstated hole in a generic contract is what the sentinel removes. `$'…'` here, not `$(printf …)`,
+# because the substitution would strip the very byte under test before the function ever saw it.
+# (Independent-review find.)
+eq "$(adb_url_path_segment $'a\nb')"  'a%0Ab'   "adb_url_path_segment encodes an interior newline"
+eq "$(adb_url_path_segment $'a\n')"   'a%0A'    "...and a TRAILING newline, which the round trip must not eat"
+eq "$(adb_url_path_segment $'\n')"    '%0A'     "...and a value that is only a newline"
+eq "$(adb_url_path_segment $'a\n\n')" 'a%0A%0A' "...and more than one of them"
+# The sentinel that makes those work must not corrupt a value legitimately ending in its own
+# character: `%` strips ONE trailing occurrence, so a real trailing `.` survives.
+eq "$(adb_url_path_segment 'v1.')" 'v1.' "a ref ending in '.' still round-trips (the sentinel strips one, not all)"
 
 # --- adb_pr_slug: three URL forms, case-folded, shape-checked ----------------------------------
 # THE SCHEME IS OPTIONAL, and that is the whole defect #173 closed: pr-review.sh matched only
