@@ -3891,10 +3891,12 @@ limit: none of them is sufficient alone.
              have left the reader thinking a slash was the hazard. It is not — `#` is, and the
              encoder is what covers the class rather than the instance.
 - guard-observability: Both suites were observed RED before being trusted, on the real superseded
-             input rather than a convenient one. The 13 new `check-repo-settings.sh` assertions were
-             run against the PRE-FIX library (a `git archive` copy, never the working tree) and all
-             13 failed, each printing the raw path the old code really built — including
-             `branches/../protection`. Five plausible-but-wrong encoders were spliced into copies and
+             input rather than a convenient one. The 20 new `check-repo-settings.sh` assertions were
+             run against the PRE-FIX library (a `git archive` copy, never the working tree) and 13
+             failed, each printing the raw path the old code really built — including
+             `branches/../protection`. The other seven are controls that MUST stay green there (the
+             byte-identical `main` path, the no-mutation check, the query-string guard), so they are
+             driven red separately, below. Five plausible-but-wrong encoders were spliced into copies and
              each required to go red on its own assertion: slash-only substitution, a bash character
              loop (caught only by the locale pair), a "don't double-encode" guard, a soft failure
              that returns empty when jq is absent, no dot-segment handling, and bare `@uri` with no
