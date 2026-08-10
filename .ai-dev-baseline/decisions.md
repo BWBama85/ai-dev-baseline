@@ -3837,6 +3837,17 @@ limit: none of them is sufficient alone.
                to run on repos the owner administers.
              - `GET .../protection/required_status_checks`, the sub-resource `apply` PATCHes,
                behaved identically (one slash).
+
+             **And the finished library was watched on the wire**, which the offline suite cannot
+             show: with an argument-logging shim in front of the real `gh`,
+             `required-drift --branch release/v1` requested
+             `repos/BWBama85/ai-dev-baseline/branches/release%2Fv1` while the same command with no
+             `--branch` requested `.../branches/main`, byte-identical. That is the encoded path and
+             the no-op property observed through the real code path rather than through a stub.
+             (`GH_DEBUG=api` does NOT work for this — `_adb_rs_api_i` runs `gh api -i "$1" 2>/dev/null`,
+             so gh's own debug log is discarded before it can be read. The shim is the way in.)
+             It stays a recorded one-off rather than a test: it needs network and auth, and
+             `selfcheck` is hermetic by construction (D13/D24).
              - `GH_DEBUG=api` confirms `gh` normalizes nothing: `/` goes on the wire as `/`, `%2F`
                as `%2F`. So the answer is GitHub's, not the CLI's.
 
