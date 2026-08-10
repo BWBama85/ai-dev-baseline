@@ -3970,3 +3970,87 @@ limit: none of them is sufficient alone.
              does not.
 - baseline-issue: n/a — this repo IS the baseline; #103 is the tracking issue.
                   Follow-up filed: #310 (D30's sub-floor carve-out is documented but never executed).
+
+## D54 — the below-floor rule moves INTO the lint, and what an executed carve-out can and cannot prove
+
+- date:      2026-08-10
+- category:  project-delta
+- unknown:   #310 asks for a mode that runs `bash -n scripts/lib/common.sh` under "the oldest
+             interpreter available on the host", so D30's carve-out is executed rather than
+             asserted in prose. Three things the issue could not settle from outside the code:
+             what that interpreter set IS, what a parse actually proves, and where the rule lives —
+             because D35 had already put a *source scan* for the same carve-out in
+             `check-bash-floor-guard.sh`, and a new mode needs the same three-file list.
+- decision:  A `--sub-floor [DIR]` mode carrying **two** rules, and the D35 predicate **moves into
+             it** — the guard keeps driving it red, exactly as it drives every other rule this lint
+             owns.
+
+             **The interpreter set is `adb_bash_candidates`**, filtered to strictly below the floor
+             and reduced to the NUMERICALLY oldest, through `adb_version_ge`. Not a filesystem
+             sweep, not a hardcoded `/bin/bash`, not `sort -V` (banned here), and not the
+             first-listed hit: that list is ordered for finding a modern re-exec TARGET — fixed
+             prefixes first, `command -v` last — which is the opposite question, so taking its first
+             sub-floor entry would pick whichever old bash happened to sit earliest in an ordering
+             built for something else.
+
+             **Parse alone was measured, and it is not enough.** Against a real `/bin/bash` 3.2.57
+             and a real 5.3.15: `bash -n` rejects the grammar bash grew after 3.2 —
+             `coproc NAME { … }`, `;&`, `;;&`, `|&` — anywhere in a file, function bodies included.
+             It ACCEPTS every construct D30 actually names: `${ command; }`, `mapfile`,
+             `declare -A`, `local -n`. So a parse-only mode would be a check that cannot answer
+             wrong on its own subject matter. Hence rule A (the source scan, which catches the
+             command-substitution case statically and interpreter-independently) and a **bootstrap
+             probe** beside the parse: source `common.sh` under the old interpreter and require
+             `adb_require_bash` reachable with NOTHING on stderr. The stderr half is not
+             decoration — `declare -A` at the top level prints `invalid option` on 3.2 and leaves
+             the source status at **0**, so an rc-only probe passes it.
+
+             **What is NOT claimed**, stated in the mode's own header: a 5.3-only construct inside a
+             FUNCTION BODY that is neither new grammar nor a command substitution is invisible to
+             both rules, because 3.2 parses it and sourcing never runs the body. This half proves
+             parseability and gate reachability. Full behavioural compatibility of every function in
+             `common.sh` is a third, much larger claim, and it is deliberately not made.
+
+             **It rides the BARE invocation**, not a new step and not a new job. That is what makes
+             it run at all: both hosted runners resolve a bash at or above the floor, so the only
+             per-PR environment with a real subject is `macos-latest`, which reaches this suite
+             through `selfcheck-macos`. A separately registered mode nobody invokes would skip on
+             Linux and never run on macOS — #310's defect, reintroduced one layer up. A new job
+             would add a branch-protection context, which this lint's own header argues against.
+
+             **A skip is stated and audited, never silent**: where nothing is below the floor the
+             mode names every candidate it probed with the version each reported, and its PASS line
+             says outright that the parse did not happen. Installing or building an old bash on
+             Linux to manufacture a subject was rejected — it turns a small offline check into
+             provisioning work for coverage macOS already supplies.
+- placement: `scripts/check-bash-floor.sh` (`SUB_FLOOR_FILES`, `sub_floor_subject`,
+             `sub_floor_funsubs`, `sub_floor_lint`, and the `--sub-floor` arm plus the bare case);
+             every rule driven to red in `scripts/check-bash-floor-guard.sh`; the third half named
+             in `CLAUDE.md` golden rule 4, `CONTRIBUTING.md` § Style, `docs/ci-runners.md` and
+             `scripts/selfcheck.sh`'s registry comment.
+- reason:    D35 placed the source scan in the guard because there was no mode to put it in, and its
+             recorded reason is about the scan being a SCAN rather than an execution — platform
+             independence — not about which file should hold it. Once `--sub-floor` needs the same
+             three-file list, leaving the predicate in the guard means TWO copies of the below-floor
+             set with nothing tying them together: add a fourth carve-out file and one list silently
+             does not move. That is the drift `docs/design-principles.md` forbids and the shared
+             workflow reader (#262) already settled once. The rule is unchanged and nothing it
+             caught is now uncaught — all four of its original cases are fixtures against the mode,
+             joined by the ones only an executing check can make.
+
+             The gap-analysis pass argued the D35 scan is additive and must not be deleted as
+             superseded by `bash -n`. That is right, and it is why rule A still exists at all: it is
+             relocated, not replaced, and the measurements above are the evidence for keeping it.
+- guard-observability: Eight mutations of the shipped mode, each applied to a COPY of the tree and
+             each required to make `check-bash-floor-guard.sh` go red: rule A's `check_fail`
+             dropped; selection taking the first-listed candidate instead of the oldest; the probe
+             comparing rc only and ignoring stderr; an unexecutable candidate degraded to a skip;
+             the stale-set rule made to `continue`; rule A suppressed whenever rule B has no
+             subject; the SKIP's note made to claim a parse it did not do; and rule A wired to
+             `common.sh` alone. The tracked tree was never mutated.
+
+             The stub interpreters the selection fixtures use report a fake version to the probe and
+             **delegate everything else to a real bash**, so `-n` and the bootstrap probe behave as
+             they do in production — a stub that faked those too would let the suite pass against a
+             mode that ran neither.
+- baseline-issue: n/a — this repo IS the baseline; #310 is the tracking issue.

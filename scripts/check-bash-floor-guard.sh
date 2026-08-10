@@ -11,10 +11,14 @@
 # rules (approved label · guard wired via `run:` · no `shell` key · no ADB_BASH_FLOOR in a workflow ·
 # per-file zero jobs · no workflow files · Linux present · macOS present · first step logs
 # `bash --version` · and the three WSL-class rules #2 added: the guard reached through
-# `wsl -d <distro>` · a WSL bash version logged at all · that log preceding the guard) and THREE
-# runtime ones ($BASH below floor · PATH bash below floor or absent · a malformed floor override) —
-# so each gets a fixture that must make the real lint come back red, plus a clean fixture proving
-# the lint is not simply red-always.
+# `wsl -d <distro>` · a WSL bash version logged at all · that log preceding the guard), THREE
+# runtime ones ($BASH below floor · PATH bash below floor or absent · a malformed floor override),
+# and — since #310 — SEVEN sub-floor ones (a 5.3 command substitution in any of the three carve-out
+# files · a file that will not parse under a sub-floor interpreter · a common.sh that sources
+# noisily · one that leaves adb_require_bash unreachable · a stale entry in the carve-out list · a
+# candidate that probes but cannot run · and the selection itself picking the numerically oldest
+# rather than the first-listed or the lexically smallest) — so each gets a fixture that must make
+# the real lint come back red, plus a clean fixture proving the lint is not simply red-always.
 #
 # Where a rule can be ISOLATED it is: a fixture that only fails through some OTHER rule proves
 # nothing about the rule it is named for. Review caught two of those here and they are fixed rather
@@ -631,67 +635,272 @@ if [ -x /bin/bash ] && [ "$sysv" = "3.2" ] && [ "$pathv" != "3.2" ]; then
   has "$out" "at /bin/bash" "runtime blames the interpreter that is executing, not the PATH one"
 fi
 
-# --- THE OBSERVER MUST STAY EVALUABLE BELOW THE FLOOR (#259) ----------------------------------
-# The third carve-out, alongside common.sh (D30) and the gate exemption itself (D31) — and the one
-# a modernization sweep is most likely to erase, because nothing in either file says it exists.
+# --- THE SUB-FLOOR HALF: the below-floor set must stay EVALUABLE (#259, #310) ------------------
+# The three carve-out files — common.sh (D30), the observer, and the check-lib.sh it sources (D35).
+# A modernization sweep is likelier to erase this than anything else in the repo, because the rule
+# lives nowhere the edit happens.
 #
 # The case immediately above executes the observer under /bin/bash precisely because that is the
-# situation it is built to diagnose. So the observer may not contain a construct that interpreter
-# cannot EXPAND. bash 5.3's `${ command; }` is the live example, and it is a nastier one than a
-# syntax error: 3.2 PARSES it happily — `bash -n` is clean — and then dies at expansion, replacing
-# the whole diagnostic with a single `bad substitution` line while still exiting 1. An rc-only
-# assertion would not notice.
+# situation it is built to diagnose. So none of the three may contain a construct that interpreter
+# cannot handle — and there are two distinct ways to break that, which is why `--sub-floor` carries
+# two rules and this section drives both:
 #
-# check-lib.sh is in scope transitively: the observer sources it before running any check. And
-# common.sh is in scope because D30 says so — it is the FIRST of the three, and leaving it out
-# would be the worst omission of the three, since every entry point sources it before it can
-# report anything at all.
+#   RULE A, the source scan. bash 5.3's command substitution is a nastier failure than a syntax
+#   error: 3.2 PARSES it happily — `bash -n` is clean — and then dies at expansion, replacing the
+#   whole diagnostic with a single `bad substitution` line while still exiting 1. An rc-only
+#   assertion would not notice, and rule B genuinely cannot see it.
 #
-# A SOURCE scan rather than an execution, deliberately. The case above only runs where /bin/bash is
-# genuinely 3.2, so it skips on every Linux runner; this must hold everywhere.
+#   RULE B, the parse and the bootstrap probe under a real sub-floor interpreter. This catches the
+#   grammar bash grew after 3.2 anywhere in a file, function bodies included, which rule A cannot.
 #
-# ONLY WHOLE-LINE COMMENTS ARE DROPPED, not everything after the first `#`. `sed 's/#.*//'` — the
-# idiom the `sort -V` ban uses — does not understand quoting, so a line like
-# `printf '#'; x=${ printf hi; }` is truncated at the QUOTED hash and the funsub after it becomes
-# invisible. That is a guard that can be made blind by ordinary code, so this drops only lines that
-# are entirely a comment, and a funsub sharing a line with a trailing comment is still seen. The
-# cost is that a `${ …; }` written inside a trailing comment would false-positive — loudly, which
-# is the safe direction, and the two files are checked below to confirm none does today.
-bf_above_floor() {   # <file> -> 0 if it contains a construct bash 3.2 cannot expand
-  grep -v '^[[:space:]]*#' "$1" | grep -q '\${[[:space:]|]'
+# THE PREDICATE MOVED (#310, D54). It used to live here, in this suite, as `bf_above_floor`. That
+# made the guard the only place the rule existed — and once `--sub-floor` needed the same list of
+# three files, keeping it here meant TWO copies of the below-floor set with nothing tying them
+# together. It is now one rule in the lint, driven red from here like every other rule this file
+# owns. Nothing it caught is uncaught: all four of its original cases are below, plus the ones only
+# an executing check can make.
+sf_lint() {   # sf_lint <dir> [env-assignments…] — run --sub-floor against a fixture, set SFRC/SFOUT
+  _sfd="$1"; shift
+  SFOUT="$(env "$@" bash "$LINT" --sub-floor "$_sfd" 2>&1)"
+  SFRC=$?
 }
-for _bf_f in "$LINT" scripts/check-lib.sh scripts/lib/common.sh; do
-  if bf_above_floor "$_bf_f"; then
-    bad "below-floor: $_bf_f uses \${ …; } / \${| …; }, which bash 3.2 cannot expand — and it runs there"
-  else
-    ok
-  fi
-done
-# ...and the predicate is watched going RED, on a COPY, because a check that cannot answer wrong is
-# worse than no check (self-review.md). Injected into a throwaway copy, never the tracked file.
-mkdir -p "$work/belowfloor"
-cp "$LINT" "$work/belowfloor/probe.sh"
-printf 'x=${ printf hi; }\n' >> "$work/belowfloor/probe.sh"
-if bf_above_floor "$work/belowfloor/probe.sh"; then ok; else
-  bad "below-floor: the scan did NOT fire on an injected \${ …; } — it is checking nothing"
+
+# sf_fixture <dir> — a throwaway tree carrying the three below-floor files at their real relative
+# paths, unmodified. Callers mutate ONE thing so a red result is attributable.
+#
+# THE `rm -rf` IS FENCED TO $work. This helper takes a path and deletes it, and the very next
+# assertions point the LINT at `.` — one transposed argument away from erasing the checkout this
+# suite is checking, including uncommitted work git could not get back (git-and-prs.md). A refusal
+# costs one line; the mistake costs the tree.
+sf_fixture() {
+  case "$1" in
+    "$work"/*) : ;;
+    *) bad "sub-floor: sf_fixture refused a path outside $work: $1"; return 1 ;;
+  esac
+  rm -rf "$1"
+  mkdir -p "$1/scripts/lib"
+  cp scripts/lib/common.sh        "$1/scripts/lib/common.sh"
+  cp "$LINT"                      "$1/scripts/check-bash-floor.sh"
+  cp scripts/check-lib.sh         "$1/scripts/check-lib.sh"
+}
+
+# sf_applied <file> <pattern> <label> — a mutation that did not land makes every assertion after it
+# pass for the wrong reason, and a guard suite that cannot tell "the rule fired" from "the fixture
+# was never broken" is the failure this whole file exists to prevent.
+sf_applied() {
+  if grep -Fq -- "$2" "$1"; then ok; else bad "sub-floor: the $3 mutation did NOT apply to $1"; fi
+}
+
+SFD="$work/subfloor"
+
+# THE CLEAN FIXTURE FIRST. Without it every assertion below is satisfied by a mode that returns 1
+# unconditionally.
+sf_fixture "$SFD"
+sf_lint "$SFD"
+eq "$SFRC" "0" "sub-floor: the clean three-file fixture passes"
+has "$SFOUT" "3 file(s) scanned" "sub-floor: and it says how many files it scanned"
+
+# THE TRACKED TREE ITSELF must satisfy the rule — the positive assertion the old in-suite loop made,
+# now made against the real mode rather than a private copy of its predicate.
+sf_lint "."
+eq "$SFRC" "0" "sub-floor: the real tracked below-floor set passes"
+
+# --- rule A: the source scan ---------------------------------------------------------------------
+# Injected into COPIES, never the tracked files (self-review.md: negative-test against a copy, and
+# git-and-prs.md on why putting a tracked file back is unrecoverable).
+sf_fixture "$SFD"
+printf 'ADB_PROBE=${ printf hi; }\n' >> "$SFD/scripts/lib/common.sh"
+sf_applied "$SFD/scripts/lib/common.sh" 'ADB_PROBE=${ printf hi; }' "injected command substitution"
+sf_lint "$SFD"
+eq "$SFRC" "1" "rule A: an injected 5.3 command substitution is caught"
+has "$SFOUT" "5.3 command substitution" "rule A: and the diagnostic says what it found"
+has "$SFOUT" "scripts/lib/common.sh" "rule A: and names the file it found it in"
+
+# EVERY FILE IN THE SET, not just common.sh. A scan wired to one path would pass all of the above
+# while leaving the other two carve-outs unchecked — and check-lib.sh is the one in scope only
+# transitively, so it is the one most likely to be dropped.
+sf_fixture "$SFD"
+printf 'ADB_PROBE=${ printf hi; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD"
+eq "$SFRC" "1" "rule A: it scans check-lib.sh too, not only common.sh"
+has "$SFOUT" "scripts/check-lib.sh" "rule A: and names it"
+
+# THE QUOTED-HASH CASE, which a naive `sed 's/#.*//'` cannot see: the stripper has no idea the `#`
+# is inside quotes, deletes the rest of the line, and the construct after it goes unreported — a
+# guard blinded by ordinary code rather than by a hostile input. Review found this originally.
+sf_fixture "$SFD"
+printf "printf '#'; ADB_PROBE=\${ printf hi; }\n" >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD"
+eq "$SFRC" "1" "rule A: a construct after a QUOTED '#' is still seen"
+
+# And it must NOT fire on ordinary parameter expansion, or it would be deleted within a week...
+sf_fixture "$SFD"
+printf 'ADB_Y="${HOME}${x:-d}${#z}"\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD"
+eq "$SFRC" "0" "rule A: ordinary \${VAR} expansion does not trip it"
+
+# ...nor on a whole-line comment DOCUMENTING the hazard, which all three files legitimately do.
+sf_fixture "$SFD"
+printf '# never write ADB_X=${ printf hi; } in this file\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD"
+eq "$SFRC" "0" "rule A: a whole-line comment explaining the rule does not trip it"
+
+# --- the fake-candidate seam ----------------------------------------------------------------------
+# Rule B needs a subject BELOW the floor, and a Linux runner has none — so most of what follows
+# would be macOS-only without a seam. `ADB_SUB_FLOOR_CANDIDATES` supplies the enumeration and
+# `ADB_BASH_FLOOR` raises the floor above the stubs' reported versions, which together give both
+# platforms the same assertions. The genuinely-3.2 cases are still run for real, further down.
+#
+# The stub DELEGATES everything except the version probe to a real bash, so `-n` and the bootstrap
+# probe behave exactly as they would in production. A stub that faked those too would let this
+# suite pass against a mode that never ran either.
+SELF_BASH="$(command -v bash 2>/dev/null || echo /bin/bash)"
+mkdir -p "$work/sfbin"
+
+# sf_stub <path> <reported-version> [delegate] — an interpreter that answers the VERSION PROBE with
+# <reported-version> and hands every other invocation to a real bash (or to <delegate>, for the
+# cannot-execute case). The probe is recognized by the `BASH_VERSINFO` in the program text, which is
+# how adb_bash_version_at asks.
+sf_stub() {
+  { printf '#!/bin/sh\n'
+    printf 'case "$1" in\n'
+    printf '  -c)\n'
+    printf '    case "$2" in\n'
+    printf '      *BASH_VERSINFO*) printf %%s "%s"; exit 0 ;;\n' "$2"
+    printf '    esac ;;\n'
+    printf 'esac\n'
+    printf 'exec "%s" "$@"\n' "${3:-$SELF_BASH}"
+  } > "$1"
+  chmod +x "$1"
+}
+
+# OLDEST, and the versions are chosen so the three plausible implementations DISAGREE: first-listed
+# is `newer`, lexically smallest is `10.0.0` (because "1" < "9" as text), and numerically oldest is
+# `9.9.9`. A fixture where they coincide proves nothing about which one shipped.
+sf_stub "$work/sfbin/newer" "10.0.0"
+sf_stub "$work/sfbin/older" "9.9.9"
+SF_CANDS="$work/sfbin/newer
+$work/sfbin/older"
+
+sf_fixture "$SFD"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+eq "$SFRC" "0" "selection: a stubbed candidate set still passes on a clean fixture"
+has "$SFOUT" "$work/sfbin/older (9.9.9)" "selection: the NUMERICALLY oldest candidate is chosen"
+hasnt "$SFOUT" "$work/sfbin/newer (10.0.0)" "selection: not the first-listed, and not the lexically smallest"
+
+# An unusable candidate is skipped rather than chosen or fatal: this list is a superset of what any
+# one host carries, so a path that is absent is ordinary. Listed FIRST, where a naive
+# implementation would take it.
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$work/sfbin/does-not-exist
+$SF_CANDS"
+eq "$SFRC" "0" "selection: an unusable candidate is skipped, not chosen"
+has "$SFOUT" "$work/sfbin/older (9.9.9)" "selection: and the oldest usable one is still picked"
+
+# Duplicates are ordinary — `command -v bash` routinely repeats a fixed prefix already listed above
+# it — and must not change the answer.
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS
+$work/sfbin/older"
+eq "$SFRC" "0" "selection: a duplicated candidate does not change the verdict"
+
+# A candidate that PROBES a version but cannot be executed FAILS CLOSED. Silently degrading to a
+# skip here would turn a broken subject into a green run, which is the one outcome a floor guard
+# may never produce.
+sf_stub "$work/sfbin/broken" "9.0.0" "/nonexistent/interpreter"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$work/sfbin/broken"
+eq "$SFRC" "1" "selection: a candidate that probes but cannot RUN fails closed"
+has "$SFOUT" "cannot be executed" "selection: and says so rather than blaming the file under test"
+# ...and the SUMMARY must name the right problem. Suppressing rule B by clearing the chosen
+# interpreter is the obvious implementation, and it makes this run announce "no interpreter below
+# the floor exists on this host" about a host that has one and cannot execute it. The verdict would
+# still be FAIL, so only this assertion separates a correct explanation from a misleading one.
+hasnt "$SFOUT" "no interpreter below the" \
+  "selection: a BROKEN interpreter is not reported as an ABSENT one"
+
+# --- rule B: the parse, portable through the seam --------------------------------------------------
+sf_fixture "$SFD"
+printf 'if then fi\n' >> "$SFD/scripts/lib/common.sh"
+sf_applied "$SFD/scripts/lib/common.sh" 'if then fi' "syntax-error"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+eq "$SFRC" "1" "rule B: a file that does not PARSE is caught"
+has "$SFOUT" "does not PARSE" "rule B: and says so"
+has "$SFOUT" "$work/sfbin/older (9.9.9)" "rule B: naming the interpreter and version it used"
+
+# --- rule B: the bootstrap probe, portable through the seam ----------------------------------------
+# NOTHING ON STDERR is half the assertion, and it is the half an exit-status test cannot make: a
+# file can source with status 0 while printing a diagnostic, which is exactly what an unsupported
+# builtin option does on 3.2.
+sf_fixture "$SFD"
+printf 'printf "adb-probe-noise\\n" >&2\n' >> "$SFD/scripts/lib/common.sh"
+sf_applied "$SFD/scripts/lib/common.sh" 'adb-probe-noise' "noisy-source"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+eq "$SFRC" "1" "probe: a common.sh that sources NOISILY is caught, even at status 0"
+has "$SFOUT" "adb-probe-noise" "probe: and the noise is quoted back as the diagnostic"
+
+# ...and the other half: the gate must actually be REACHABLE afterwards. A file that loads in
+# silence but leaves adb_require_bash undefined is D30's failure in its purest form.
+sf_fixture "$SFD"
+printf 'unset -f adb_require_bash\n' >> "$SFD/scripts/lib/common.sh"
+sf_applied "$SFD/scripts/lib/common.sh" 'unset -f adb_require_bash' "gate-removal"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+eq "$SFRC" "1" "probe: a common.sh that loads but leaves adb_require_bash unreachable is caught"
+
+# ONE DEFECT, ONE LINE: a file that fails to PARSE must not also be reported as failing to source —
+# it is the same finding wearing a second hat, and the mode says outright that the probe did not run.
+sf_fixture "$SFD"
+printf 'if then fi\n' >> "$SFD/scripts/lib/common.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+hasnt "$SFOUT" "does not leave adb_require_bash reachable" "probe: an unparseable file is not ALSO reported as unsourceable"
+has "$SFOUT" "probe NOT run" "probe: and the summary says the probe did not run, rather than implying it passed"
+
+# --- the stale-set rule ----------------------------------------------------------------------------
+# The list IS the carve-out. A named file that is not there means the lint is silently checking
+# fewer files than it claims, which is the shape every other rule in this file exists to refuse.
+sf_fixture "$SFD"
+rm -f "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD"
+eq "$SFRC" "1" "stale set: a named carve-out file that is missing is a failure, not a skip"
+has "$SFOUT" "is stale" "stale set: and the diagnostic points at the list rather than the tree"
+
+# --- the SKIP path ---------------------------------------------------------------------------------
+# A floor of 0.0 puts every interpreter on the host at or above it, so rule B has no subject. The
+# honest outcome is a stated skip that still returns 0 — and, crucially, one that does NOT claim to
+# have parsed anything. A silent pass here is the exact defect #310 filed.
+sf_fixture "$SFD"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "skip: no sub-floor interpreter is a stated SKIP, not a failure"
+has "$SFOUT" "SKIPPED" "skip: and it says SKIPPED out loud"
+has "$SFOUT" "Candidates probed" "skip: naming every candidate it looked at, so a skip is auditable"
+hasnt "$SFOUT" "parses and bootstraps under" "skip: and it never claims a parse it did not do"
+
+# THE SKIP MUST NOT SUPPRESS RULE A. That rule is interpreter-independent, so a host with no old
+# bash still gets it — otherwise every Linux runner would be checking nothing at all.
+sf_fixture "$SFD"
+printf 'ADB_PROBE=${ printf hi; }\n' >> "$SFD/scripts/lib/common.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "skip: rule A still runs when rule B has no subject"
+
+# --- the genuinely-3.2 cases -----------------------------------------------------------------------
+# Everything above proves the RULES fire. These prove they fire on the REAL hazard, under the real
+# interpreter D30 was written for. Guarded on /bin/bash actually being 3.2, so a Linux runner skips
+# rather than asserting something false — the same shape as the isolating $BASH case further up.
+if [ -x /bin/bash ] && [ "$sysv" = "3.2" ]; then
+  # bash-4 GRAMMAR inside a function body: 5.3 parses it, 3.2 does not, and rule A cannot see it.
+  # This is the case that makes the parse rule worth having.
+  sf_fixture "$SFD"
+  printf 'adb_probe_fn() { case x in a) : ;& b) : ;; esac; }\n' >> "$SFD/scripts/lib/common.sh"
+  sf_lint "$SFD"
+  eq "$SFRC" "1" "real 3.2: post-3.2 grammar in a function body is caught by the parse rule"
+  has "$SFOUT" "/bin/bash (3.2.57)" "real 3.2: and the real system interpreter is the one it used"
+
+  # AN EXPANSION FAILURE THAT PARSES CLEANLY AND EXITS 0. `declare -A` at the top level prints
+  # `invalid option` on 3.2 and leaves the source status at 0, so neither `bash -n` nor an rc test
+  # sees it. Only the probe's stderr half does — which is why that half exists.
+  sf_fixture "$SFD"
+  printf 'declare -A ADB_PROBE_MAP\n' >> "$SFD/scripts/lib/common.sh"
+  sf_lint "$SFD"
+  eq "$SFRC" "1" "real 3.2: an associative-array declaration is caught by the probe's stderr half"
+  has "$SFOUT" "invalid option" "real 3.2: and 3.2's own words are quoted back"
 fi
-# THE QUOTED-HASH CASE, which is the one a naive `sed 's/#.*//'` cannot see. Review found this:
-# the stripper has no idea the `#` is inside quotes, deletes the rest of the line, and the funsub
-# after it goes unreported — a guard blinded by ordinary code rather than by a hostile input.
-printf "printf '#'; x=\${ printf hi; }\n" > "$work/belowfloor/quotedhash.sh"
-if bf_above_floor "$work/belowfloor/quotedhash.sh"; then ok; else
-  bad "below-floor: a funsub after a QUOTED '#' is invisible to the scan — comment stripping is too greedy"
-fi
-# And it must not fire on ordinary parameter expansion, or it would be deleted within a week.
-printf 'y="${HOME}${x:-d}${#z}"\n' > "$work/belowfloor/ordinary.sh"
-if bf_above_floor "$work/belowfloor/ordinary.sh"; then
-  bad "below-floor: the scan fires on ordinary \${VAR} expansion — it would be unusable"
-else ok; fi
-# ...nor on a whole-line comment that DOCUMENTS the hazard, which all three files legitimately do.
-printf '# never write x=${ printf hi; } in this file\n' > "$work/belowfloor/prose.sh"
-if bf_above_floor "$work/belowfloor/prose.sh"; then
-  bad "below-floor: the scan fires on a whole-line comment explaining the rule"
-else ok; fi
 
 # ISOLATE the PATH rule the same way, and in the direction that actually bites: a CURRENT
 # interpreter executing the guard (so the $BASH rule is satisfied and cannot be what fails) while

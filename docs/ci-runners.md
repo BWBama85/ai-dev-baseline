@@ -4,8 +4,17 @@ This repo's runtime floor is **bash 5.3** (owner decision, 2026-08-01 — epic #
 CI does not execute is a claim, not a floor, so every CI job runs on a runner image this document
 records evidence for, and every job proves at runtime which interpreter it actually got.
 
-`scripts/check-bash-floor.sh` is the one home for both halves. This file is the *why*; the script
-is the *enforcement*.
+`scripts/check-bash-floor.sh` is the one home for all three halves — the runtime assertion, the
+static workflow lint, and the **sub-floor** half (#310) that proves the handful of files which must
+run on an *old* interpreter still can. This file is the *why*; the script is the *enforcement*.
+
+That third half is the floor's mirror image, and it is the one this document's runner table cannot
+speak for: both hosted runners resolve a bash at or above the floor, so **CI never takes the
+sub-floor path at all** — which is exactly the situation `adb_require_bash` exists for. `macos-latest`
+is the only per-PR environment carrying a real one (`/bin/bash`, permanently 3.2.57), and it reaches
+the check through `selfcheck-macos`. On Linux the half states a **SKIP** and names every interpreter
+it probed; running the parse under a 5.3 bash would prove nothing about D30 while looking exactly
+like a pass.
 
 ## The choice, and the evidence
 

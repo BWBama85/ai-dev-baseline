@@ -9,6 +9,43 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The bash-floor carve-out is now executed instead of asserted: `check-bash-floor.sh --sub-floor`**
+  (#310).
+
+  D30 makes `scripts/lib/common.sh` permanently exempt from the bash 5.3 floor — it holds
+  `adb_require_bash`, and a caller cannot reach that function until sourcing has finished — and D35
+  extends that to `check-bash-floor.sh` and `check-lib.sh`. **Nothing checked it.** The only pin was
+  `check-fact-drift.sh`'s `bash-floor-bootstrap-carveout` rule, which asserts the *word* "parseable"
+  still appears in the four documents explaining the carve-out. Both CI runners resolve a bash at or
+  above the floor, so the sub-floor path — the one situation the gate exists for — was never taken,
+  and a 5.3-only construct would have passed every job and then killed every entry point on a stock
+  macOS with a syntax error instead of the gate's actionable message.
+
+  - **Two rules, because the issue's own sketch is not sufficient — and that was measured, not
+    assumed.** Against a real `/bin/bash` 3.2.57 and a real 5.3.15, `bash -n` rejects post-3.2
+    grammar (`coproc NAME { … }`, `;&`, `;;&`, `|&`) anywhere in a file, but **accepts every
+    construct D30 names**: `${ command; }`, `mapfile`, `declare -A`, `local -n`. So the mode also
+    carries the source scan for 5.3 command substitutions (relocated from the guard, D54) and a
+    **bootstrap probe** that sources `common.sh` under the old interpreter and requires
+    `adb_require_bash` reachable with nothing on stderr. That stderr half is load-bearing:
+    `declare -A` at the top level prints `invalid option` on 3.2 and still leaves the source status
+    at **0**.
+  - **The subject is the numerically oldest interpreter below the floor**, taken from the existing
+    `adb_bash_candidates` / `adb_bash_version_at` / `adb_version_ge` primitives — not a hardcoded
+    `/bin/bash`, not the first-listed hit (that list is ordered for finding a modern re-exec
+    *target*, the opposite question), and not `sort -V`.
+  - **It rides the bare invocation**, which is what makes it run: `selfcheck-macos` is the only
+    per-PR job with a real 3.2.57. On Linux the mode states a **SKIP** and names every candidate it
+    probed with each version — a stated skip beats a pass that did not check — and its PASS line
+    says outright that no parse happened.
+  - **What it does not claim, said in its own header:** a 5.3-only construct inside a *function
+    body* that is neither new grammar nor a command substitution stays invisible to both rules.
+    This proves parseability and gate reachability, not that every function behaves on 3.2.
+  - **Observed failing**, per this repo's rule for new guards: eight mutations of the shipped mode —
+    including selection taking the first-listed candidate, the probe ignoring stderr, and the SKIP
+    claiming a parse it did not do — each applied to a **copy** of the tree and each required to
+    make `check-bash-floor-guard.sh` go red.
+
 - **`check-gates.sh`'s elapsed assertion now tests the property it names, instead of a literal that
   was only ever true by luck** (#308).
 

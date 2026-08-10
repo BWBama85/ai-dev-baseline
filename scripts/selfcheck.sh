@@ -478,6 +478,11 @@ add repo-settings       bash scripts/check-repo-settings.sh
 # --runtime asserts on the machine and on `command -v bash`, which is a CI-image question; the
 # entry gate has already settled the only part that governs whether this suite may run at all.
 #
+# Since #310 the bare form carries a THIRD half — `--sub-floor`, which proves the three files that
+# must stay evaluable BELOW the floor (D30/D35) actually do. It rides here rather than taking a step
+# of its own precisely so it reaches macOS: this suite is what `selfcheck-macos` runs, and that job
+# is the only per-PR environment with a real 3.2.57 to parse against. On Linux it states a SKIP.
+#
 # The bare invocation, ENDING the line, is what check-fact-drift.sh's `bash-entrypoint-lint-wired`
 # pin requires — see the registry header above on why these lines are unquoted.
 add bash-floor          bash scripts/check-bash-floor.sh

@@ -162,7 +162,17 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
       that upgrades its own interpreter has destroyed the observation (D31).
   - **`scripts/lib/common.sh` must stay parseable below the floor** — it holds the gate, and a
     caller cannot reach a function until sourcing finishes, so a 5.3-only construct there makes
-    the gate unreachable on exactly the hosts it exists for (D30).
+    the gate unreachable on exactly the hosts it exists for (D30). D35 extends that to
+    `check-bash-floor.sh` and `check-lib.sh`, on the rule *"does this code have to run in order to
+    report that the interpreter is too old"*.
+
+    **`check-bash-floor.sh --sub-floor` enforces it** rather than leaving it to prose (#310): a
+    source scan for 5.3 command substitutions everywhere, plus `bash -n` and a bootstrap probe
+    under the **oldest sub-floor interpreter** on the host. If you are on Linux it will say
+    **SKIP** — there is no interpreter below the floor to run it under, and `selfcheck-macos` is
+    what covers you. It proves the three files *parse* and that `adb_require_bash` stays
+    *reachable*; a `mapfile` or `declare -A` inside a function body still passes, so keep writing
+    those three files as if 3.2 were the target.
 - **Markdown practices/skills:** concise, imperative, agent-neutral where the content
   is shared; include a short "Why" only where it earns its place.
 - **Commits/PRs:** semantic subject, feature branch + PR, green CI. Never push to
