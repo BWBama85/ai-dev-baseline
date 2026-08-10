@@ -8,13 +8,17 @@ records evidence for, and every job proves at runtime which interpreter it actua
 static workflow lint, and the **sub-floor** half (#310) that proves the handful of files which must
 run on an *old* interpreter still can. This file is the *why*; the script is the *enforcement*.
 
-That third half is the floor's mirror image, and it is the one this document's runner table cannot
-speak for: both hosted runners resolve a bash at or above the floor, so **CI never takes the
-sub-floor path at all** — which is exactly the situation `adb_require_bash` exists for. `macos-latest`
-is the only per-PR environment carrying a real one (`/bin/bash`, permanently 3.2.57), and it reaches
-the check through `selfcheck-macos`. On Linux the half states a **SKIP** and names every interpreter
-it probed; running the parse under a 5.3 bash would prove nothing about D30 while looking exactly
-like a pass.
+That third half is the floor's mirror image, and the table above is about the wrong interpreter for
+it. Every job here *launches* on a bash at or above the floor — that is precisely what the table
+proves — so no job's own shell is ever the bootstrap case `adb_require_bash` exists for. The
+sub-floor half goes looking for an older interpreter **on the machine** instead, and `macos-latest`
+is the only per-PR environment that has one: `/bin/bash`, permanently 3.2.57. It reaches the check
+through `selfcheck-macos`, which runs the whole offline suite there, so the parse and evaluation
+probes really do run under 3.2 on that job.
+
+On the Ubuntu runner there is no bash below the floor at all, so the half states a **SKIP** and
+names every interpreter it probed. That is the honest answer rather than a gap: running the parse
+under a 5.3 bash would prove nothing about D30 while looking exactly like a pass.
 
 ## The choice, and the evidence
 

@@ -547,6 +547,11 @@ scripts/check-bash-floor.sh
 scripts/check-lib.sh
 "
 
+# A literal tab, built rather than typed: the two places that need one are a `case` pattern and a
+# parameter-expansion suffix, and a raw tab in either is invisible to a reader and easily eaten by
+# an editor.
+_ADB_SF_TAB="$(printf '\t')"
+
 # THE CANDIDATE SEAM, and it exists for the same reason ADB_BASH_FLOOR does: so the negative half of
 # this rule can be OBSERVED failing on a host that has no sub-floor bash. Newline-separated
 # interpreter paths replacing adb_bash_candidates. Without it, "the oldest candidate is selected,
@@ -580,12 +585,35 @@ sub_floor_subject() {
     [ -n "$_sf_c" ] || continue
     # Duplicates are ordinary, not exceptional: `command -v bash` routinely repeats a fixed prefix
     # already listed above it. Skipping them keeps the SKIP diagnostic readable and saves an exec.
+    # REFUSE A PATH THIS RECORD CANNOT ENCODE, rather than mangling it — the same rule scan_jobs
+    # applies above and D41 applies to state-scan. The verdict travels as "<path><TAB><version>" and
+    # the dedupe key is `|`-delimited, so a tab would truncate the chosen path at the split and a
+    # newline would forge a second record: either one selects or EXECUTES an interpreter other than
+    # the one that was probed. Unreachable for a real bash, refused rather than escaped because a
+    # guard must not quietly normalize an input it cannot represent.
+    case "$_sf_c" in
+      *"$_ADB_SF_TAB"*|*"|"*)
+        printf 'bash-floor: refusing candidate path containing a TAB or a "|" — it cannot be encoded here\n' >&2
+        continue ;;
+    esac
     case "$_sf_seen" in *"|$_sf_c|"*) continue ;; esac
     _sf_seen="$_sf_seen|$_sf_c|"
     _sf_v="$(adb_bash_version_at "$_sf_c" 2>/dev/null || true)"
     # Unusable candidate — absent, not executable, or it could not report a version. Not a subject,
     # and not a failure either: this list is a superset of what any one host carries.
     [ -n "$_sf_v" ] || continue
+    # VALIDATE THE REPORTED VERSION, for the same reason ADB_BASH_FLOOR is validated at the top of
+    # this file: `adb_version_ge` reads a non-numeric component as 0, so a candidate reporting `x`
+    # compares as 0.0.0, is judged BELOW the floor, and is chosen — while it may in fact deliver a
+    # 5.3. Review reproduced exactly that: the mode announced it had tested under an interpreter
+    # `(x)` and passed without any old bash being involved. A seam that can silently disable the
+    # assertion is worse than no seam, so an unparseable version makes the candidate UNUSABLE.
+    case "$_sf_v" in
+      ''|*[!0-9.]*|.*|*.|*..*)
+        printf 'bash-floor: candidate %s reported a non-numeric version %s — not usable as a sub-floor subject\n' \
+          "$_sf_c" "$(adb_display_value "$_sf_v")" >&2
+        continue ;;
+    esac
     adb_version_ge "$_sf_v" "$FLOOR" && continue
     if [ -z "$_sf_best" ] || adb_version_ge "$_sf_bestv" "$_sf_v"; then
       _sf_best="$_sf_c"; _sf_bestv="$_sf_v"
@@ -622,12 +650,25 @@ EOF
 # `printf '#'; x=<funsub>` is truncated at the QUOTED hash and the construct after it becomes
 # invisible. That is a guard blinded by ordinary code rather than by a hostile input, so only lines
 # that are ENTIRELY a comment are dropped, and one sharing a line with a trailing comment is still
-# seen. The cost is that writing the construct inside a trailing comment false-positives — loudly,
-# which is the safe direction. (The awk pattern below is written with the brace escaped so this
-# file, which is itself in the scanned set, does not match on its own source.)
+# seen. The cost is that writing the construct inside a trailing comment — or inside a STRING
+# LITERAL, which review reproduced — false-positives, loudly, which is the safe direction. Telling
+# the two apart needs a quote-aware parser, and D35 weighed exactly that trade and took the loud
+# one; a scan that can be blinded by ordinary code is the worse failure.
+#
+# THE OPENING BRACE MAY END THE LINE, and missing that was a real hole review found: bash 5.3
+# accepts
+#     value=${
+#       printf hi
+#     }
+# and a pattern requiring a space or a pipe AFTER the brace sees nothing on any line of it. Matching
+# end-of-line too is safe rather than merely convenient — a `${` that ends a line is an unterminated
+# expansion in every bash before 5.3, so there is no older spelling for it to collide with.
+#
+# (The awk pattern is written with the brace escaped so this file, which is itself in the scanned
+# set, does not match on its own source.)
 sub_floor_funsubs() {
   awk '/^[[:space:]]*#/ { next }
-       /\$\{[[:space:]|]/ { printf "    %d: %s\n", NR, $0; n++ }
+       /\$\{([[:space:]|]|$)/ { printf "    %d: %s\n", NR, $0; n++ }
        END { exit (n > 0 ? 0 : 1) }' "$1"
 }
 
@@ -638,7 +679,7 @@ SUB_FLOOR_NOTE="the below-floor carve-out (D30/D35) holds"
 
 sub_floor_lint() {
   root="${1:-.}"; root="${root%/}"; [ -n "$root" ] || root="."
-  sf_files=0 sf_parsed=0 sf_subj="" sf_subjv="" sf_pick="" sf_common_unparsed=0 sf_subj_dead=0
+  sf_files=0 sf_parsed=0 sf_probed=0 sf_subj="" sf_subjv="" sf_pick="" sf_unparsed="" sf_subj_dead=0
 
   # Resolved ONCE, before the loop: probing the candidate list per file would multiply the execs and
   # could, on a host being reconfigured underneath the run, parse two files under two interpreters
@@ -711,34 +752,74 @@ sub_floor_lint() {
         # report the identical defect a second time wearing a different hat. Recorded rather than
         # inferred from the fail count, because the probe must still run when common.sh PARSES and
         # fails at EXPANSION, which is the case rule B exists for.
-        case "$rel" in scripts/lib/common.sh) sf_common_unparsed=1 ;; esac
+        sf_unparsed="$sf_unparsed|$rel|"
       fi
     fi
   done <<EOF
 $SUB_FLOOR_FILES
 EOF
 
-  # RULE B, second half — the BOOTSTRAP PROBE, and it is the whole point of D30 rather than a bonus:
-  # parsing proves the file is readable, this proves the gate inside it is REACHABLE.
+  # RULE B, second half — the EVALUATION PROBE, and it is the whole point of D30 rather than a
+  # bonus: parsing proves a file is readable, this proves its top level actually RUNS on the old
+  # interpreter, and for common.sh that the gate inside it is REACHABLE afterwards.
   #
-  # ONE captured string carries both halves of the verdict. `2>&1` folds stderr in, so a file that
-  # sources with status 0 while printing a diagnostic — which is exactly what `declare -A` does on
-  # 3.2 — cannot pass, and the source's own exit status is never consulted (a sourced file returns
-  # its LAST command's status, which says nothing about whether it loaded; same idiom as
-  # project-gates.sh and this repo's other library probes). Anything other than the bare marker is
-  # a failure, and the noise is printed as the diagnostic.
-  if [ -n "$sf_subj" ] && [ "$sf_subj_dead" -eq 0 ] && [ "$sf_common_unparsed" -eq 0 ]; then
-    sf_common="$root/scripts/lib/common.sh"
-    # Guarded, so a missing common.sh is reported ONCE by the loop above rather than twice.
-    if [ -f "$sf_common" ]; then
-      sf_pout="$("$sf_subj" -c '. "$1"; command -v adb_require_bash >/dev/null && printf ADB_BOOTSTRAP_REACHABLE' \
-                 _ "$sf_common" 2>&1)"
-      if [ "$sf_pout" != "ADB_BOOTSTRAP_REACHABLE" ]; then
-        check_note "sourcing scripts/lib/common.sh under $sf_subj ($sf_subjv) does not leave adb_require_bash reachable and silent — the floor gate is UNREACHABLE on exactly the hosts it exists for (D30). The probe emitted:"
+  # ALL THREE FILES, not just common.sh. Review found the gap: a top-level `declare -A` in
+  # check-lib.sh or in this observer parses fine on 3.2 and then emits `invalid option` when the
+  # file is evaluated, and a probe wired to common.sh alone reports PASS. D35's property is about
+  # all three, so the probe has to be too.
+  #
+  # HOW each file is loaded differs, and it has to: the two libraries are SOURCED (that is how they
+  # are used), while this observer is EXECUTED and sourcing it would run a lint inside the lint. Its
+  # top level is reached instead through the usage path — an unrecognized flag evaluates every
+  # top-level statement and every function definition, then exits 2 — so the same question ("does
+  # the top level survive this interpreter") is asked of it in the way it is actually used.
+  #
+  # TWO INDEPENDENT CHANNELS, not one marker string. The first cut carried the verdict in a magic
+  # word on stdout with stderr folded in, and review showed the file under test could FORGE it: a
+  # copy ending `unset -f adb_require_bash; printf ADB_BOOTSTRAP_REACHABLE` passed with the gate
+  # absent. Reachability now rides the EXIT STATUS and silence rides output-emptiness, so producing
+  # the right status and no output is the only way through — and printing anything at all, which is
+  # what `declare -A` does on 3.2 while leaving the status at 0, still fails.
+  if [ -n "$sf_subj" ] && [ "$sf_subj_dead" -eq 0 ]; then
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      f="$root/$rel"
+      # Skipped for the two reasons that would otherwise report ONE defect twice: the file is
+      # missing (the loop above already said so), or it did not parse (so of course it will not run).
+      [ -f "$f" ] || continue
+      case "$sf_unparsed" in *"|$rel|"*) continue ;; esac
+
+      case "$rel" in
+        scripts/lib/common.sh)
+          sf_pout="$("$sf_subj" -c '. "$1"; command -v adb_require_bash >/dev/null; exit $?' _ "$f" 2>&1)"
+          sf_prc=$?
+          sf_what="leave adb_require_bash reachable"
+          ;;
+        scripts/check-bash-floor.sh)
+          # The usage arm: it evaluates the whole top level and exits 2 by design, so 2 is success
+          # here and the expected usage line is the only output allowed.
+          sf_pout="$("$sf_subj" "$f" --adb-sub-floor-probe 2>&1)"
+          [ "$?" -eq 2 ] && sf_prc=0 || sf_prc=1
+          case "$sf_pout" in "usage: bash scripts/check-bash-floor.sh"*) sf_pout="" ;; esac
+          sf_what="evaluate its top level"
+          ;;
+        *)
+          sf_pout="$("$sf_subj" -c '. "$1"' _ "$f" 2>&1)"
+          sf_prc=$?
+          sf_what="load"
+          ;;
+      esac
+
+      if [ "$sf_prc" -ne 0 ] || [ -n "$sf_pout" ]; then
+        check_note "$rel does not $sf_what cleanly under $sf_subj ($sf_subjv) — it must be EVALUABLE below the $FLOOR floor, because it is what reports that the interpreter is too old (D30/D35). Status $sf_prc, and it emitted:"
         printf '%s\n' "${sf_pout:-<nothing at all>}" | sed 's/^/    /' >&2
         check_fail
+      else
+        sf_probed=$((sf_probed + 1))
       fi
-    fi
+    done <<EOF
+$SUB_FLOOR_FILES
+EOF
   fi
 
   if [ "$sf_files" -eq 0 ]; then
@@ -758,10 +839,8 @@ EOF
   elif [ -n "$sf_subj" ]; then
     # The probe is named as RUN or as NOT RUN, never elided: "3 parsed" beside a silent probe reads
     # as a bootstrap that was proved, on the one run where it was not.
-    sf_probe="common.sh bootstrap-probed"
-    [ "$sf_common_unparsed" -eq 0 ] || sf_probe="the common.sh bootstrap probe NOT run (it did not parse)"
-    printf 'bash-floor: sub-floor  %d file(s) scanned; %d parsed, %s under %s (%s), the oldest sub-%s interpreter here\n' \
-      "$sf_files" "$sf_parsed" "$sf_probe" "$sf_subj" "$sf_subjv" "$FLOOR"
+    printf 'bash-floor: sub-floor  %d file(s) named; %d parsed and %d evaluated under %s (%s), the oldest sub-%s interpreter here\n' \
+      "$sf_files" "$sf_parsed" "$sf_probed" "$sf_subj" "$sf_subjv" "$FLOOR"
     SUB_FLOOR_NOTE="the below-floor carve-out parses and bootstraps under $sf_subj ($sf_subjv)"
   else
     printf 'bash-floor: sub-floor  %d file(s) scanned for un-expandable constructs; the PARSE and BOOTSTRAP PROBE were **SKIPPED** — no interpreter below the %s floor exists on this host, and running them under a >= %s bash would prove nothing about D30. Candidates probed:\n' \
@@ -1016,6 +1095,10 @@ case "${1:-}" in
     check_result "every entry point calls the bash >= $FLOOR runtime gate"
     ;;
   --sub-floor)
+    # EXTRA ARGUMENTS ARE A USAGE ERROR, not something to ignore. This mode's one argument selects
+    # the tree it checks, so `--sub-floor . typo` silently checking a different scope than the
+    # caller meant is the worst kind of quiet: a green run over the wrong tree.
+    [ "$#" -le 2 ] || { echo "usage: bash scripts/check-bash-floor.sh --sub-floor [DIR]" >&2; exit 2; }
     sub_floor_lint "${2:-.}"
     check_result "$SUB_FLOOR_NOTE"
     ;;

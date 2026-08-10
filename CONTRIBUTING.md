@@ -168,9 +168,9 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
 
     **`check-bash-floor.sh --sub-floor` enforces it** rather than leaving it to prose (#310): a
     source scan for 5.3 command substitutions everywhere, plus `bash -n` and a bootstrap probe
-    under the **oldest sub-floor interpreter** on the host. If you are on Linux it will say
-    **SKIP** — there is no interpreter below the floor to run it under, and `selfcheck-macos` is
-    what covers you. It proves the three files *parse* and that `adb_require_bash` stays
+    under the **oldest sub-floor interpreter** on the host. On a machine that has none — this
+    repo's Ubuntu runner, and most Linux boxes, though a host carrying an old bash at a candidate
+    path will select and use it — it says **SKIP**, and `selfcheck-macos` is what covers you. It proves the three files *parse* and that `adb_require_bash` stays
     *reachable*; a `mapfile` or `declare -A` inside a function body still passes, so keep writing
     those three files as if 3.2 were the target.
 - **Markdown practices/skills:** concise, imperative, agent-neutral where the content

@@ -14,20 +14,24 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
   D30 makes `scripts/lib/common.sh` permanently exempt from the bash 5.3 floor — it holds
   `adb_require_bash`, and a caller cannot reach that function until sourcing has finished — and D35
-  extends that to `check-bash-floor.sh` and `check-lib.sh`. **Nothing checked it.** The only pin was
-  `check-fact-drift.sh`'s `bash-floor-bootstrap-carveout` rule, which asserts the *word* "parseable"
-  still appears in the four documents explaining the carve-out. Both CI runners resolve a bash at or
-  above the floor, so the sub-floor path — the one situation the gate exists for — was never taken,
-  and a 5.3-only construct would have passed every job and then killed every entry point on a stock
-  macOS with a syntax error instead of the gate's actionable message.
+  extends that to `check-bash-floor.sh` and `check-lib.sh`. **Nothing executed that claim.** What
+  existed was a `check-fact-drift.sh` rule asserting the *word* "parseable" still appears in the four
+  documents explaining the carve-out and — stated precisely, because #310's own body omits it — a
+  source scan in `check-bash-floor-guard.sh` for ONE construct (`${ command; }`) across all three
+  files, with its own negative fixtures. That scan was real and is kept; what neither it nor the word
+  pin could do is run the files under an old interpreter. Every CI job *launches* on a bash at or
+  above the floor, so nothing ever did — and a 5.3-only construct outside that one spelling would
+  have passed every job and then killed every entry point on a stock macOS with a syntax error
+  instead of the gate's actionable message.
 
   - **Two rules, because the issue's own sketch is not sufficient — and that was measured, not
     assumed.** Against a real `/bin/bash` 3.2.57 and a real 5.3.15, `bash -n` rejects post-3.2
     grammar (`coproc NAME { … }`, `;&`, `;;&`, `|&`) anywhere in a file, but **accepts every
     construct D30 names**: `${ command; }`, `mapfile`, `declare -A`, `local -n`. So the mode also
     carries the source scan for 5.3 command substitutions (relocated from the guard, D54) and a
-    **bootstrap probe** that sources `common.sh` under the old interpreter and requires
-    `adb_require_bash` reachable with nothing on stderr. That stderr half is load-bearing:
+    **evaluation probe** that loads each of the three files under the old interpreter and requires
+    it to come back silent — plus, for `common.sh`, `adb_require_bash` still reachable. The silence
+    half is load-bearing:
     `declare -A` at the top level prints `invalid option` on 3.2 and still leaves the source status
     at **0**.
   - **The subject is the numerically oldest interpreter below the floor**, taken from the existing
@@ -35,9 +39,11 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     `/bin/bash`, not the first-listed hit (that list is ordered for finding a modern re-exec
     *target*, the opposite question), and not `sort -V`.
   - **It rides the bare invocation**, which is what makes it run: `selfcheck-macos` is the only
-    per-PR job with a real 3.2.57. On Linux the mode states a **SKIP** and names every candidate it
-    probed with each version — a stated skip beats a pass that did not check — and its PASS line
-    says outright that no parse happened.
+    per-PR job with a real 3.2.57, and the probes genuinely run under it there. Where a host has no
+    interpreter below the floor — this repo's Ubuntu runner, though that is not a fact about Linux
+    in general — the mode states a **SKIP**, names every candidate it probed with each version, and
+    says outright in its PASS line that no parse happened. A stated skip beats a pass that did not
+    check.
   - **What it does not claim, said in its own header:** a 5.3-only construct inside a *function
     body* that is neither new grammar nor a command substitution stays invisible to both rules.
     This proves parseability and gate reachability, not that every function behaves on 3.2.
@@ -46,10 +52,14 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     one — pointed at a path that does not exist it leaves nothing below the floor, so the new half
     reports a SKIP and the job goes green with rule B disabled everywhere. It is not a substring of
     `ADB_BASH_FLOOR`, so the single-token grep would never have matched it.
-  - **Observed failing**, per this repo's rule for new guards: ten mutations of the shipped mode —
-    including selection taking the first-listed candidate, the probe ignoring stderr, the SKIP
-    claiming a parse it did not do, and a broken interpreter reported as an absent one — each
-    applied to a **copy** of the tree and each required to make `check-bash-floor-guard.sh` go red.
+  - **Observed failing**, per this repo's rule for new guards: **seventeen** mutations of the
+    shipped rules — including selection taking the first-listed candidate, the probe ignoring
+    stderr or accepting a forgeable marker, candidate-version validation removed, the source scan
+    narrowed back so the multiline spelling escapes, the SKIP claiming a parse it did not do, a
+    broken interpreter reported as an absent one, and the fixture fence reduced to the lexical
+    prefix test `..` walks through — each applied to a **copy** of the tree and each required to
+    make `check-bash-floor-guard.sh` go red. Three of them exposed assertions that did not exist
+    yet, which is the point of running them.
 
 - **`check-gates.sh`'s elapsed assertion now tests the property it names, instead of a literal that
   was only ever true by luck** (#308).

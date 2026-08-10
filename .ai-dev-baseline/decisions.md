@@ -4043,24 +4043,84 @@ limit: none of them is sufficient alone.
              set with nothing tying them together: add a fourth carve-out file and one list silently
              does not move. That is the drift `docs/design-principles.md` forbids and the shared
              workflow reader (#262) already settled once. The rule is unchanged and nothing it
-             caught is now uncaught — all four of its original cases are fixtures against the mode,
+             caught is now uncaught — all four of its original cases are fixtures against the mode
+             (the review below found the observer's had been dropped in the move, and it is back),
              joined by the ones only an executing check can make.
 
              The gap-analysis pass argued the D35 scan is additive and must not be deleted as
              superseded by `bash -n`. That is right, and it is why rule A still exists at all: it is
              relocated, not replaced, and the measurements above are the evidence for keeping it.
-- guard-observability: TEN mutations of the shipped mode, each applied to a COPY of the tree and
+- guard-observability: SEVENTEEN mutations of the shipped rules, each applied to a COPY of the tree and
              each required to make `check-bash-floor-guard.sh` go red: rule A's `check_fail`
              dropped; selection taking the first-listed candidate instead of the numerically oldest;
              the probe comparing rc only and ignoring stderr; an unexecutable candidate degraded to
              a skip; that same candidate reported as ABSENT rather than broken; the stale-set rule
              made to `continue`; rule A suppressed whenever rule B has no subject; the SKIP's note
              made to claim a parse it did not do; rule A wired to `common.sh` alone; and the
-             workflow seam rule narrowed back to the single `ADB_BASH_FLOOR` token. The tracked tree
-             was never mutated.
+             workflow seam rule narrowed back to the single `ADB_BASH_FLOOR` token — plus the seven
+             the review round added: the probe wired to `common.sh` alone, the probe reverted to a
+             forgeable stdout marker, candidate-version validation deleted, rule A's pattern narrowed
+             so the multiline spelling escapes, the extra-argument refusal deleted, and the fixture
+             fence stripped of its `..` rejection and then reduced to the bare prefix test. The
+             tracked tree was never mutated.
+
+             THREE of those found no red at all on the first attempt — version validation, the
+             extra-argument refusal, and the fence — because no assertion covered them yet. That is
+             the entire argument for running the mutations rather than reasoning about coverage:
+             each of the three was a rule that had shipped, worked, and been checked by nothing.
 
              The stub interpreters the selection fixtures use report a fake version to the probe and
              **delegate everything else to a real bash**, so `-n` and the bootstrap probe behave as
              they do in production — a stub that faked those too would let the suite pass against a
              mode that ran neither.
+- review:    The independent pass reshaped the mode substantially, and every item below was
+             REPRODUCED before being fixed rather than taken on the reviewer's word.
+
+             **The probe covered one file, not three.** It sourced `common.sh` and asked for
+             `adb_require_bash`; a top-level `declare -A` in `check-lib.sh` or in the observer
+             parsed fine and reported PASS. D35's property is about all three, so the probe is now
+             per-file, and each file is loaded THE WAY IT IS USED: the two libraries are sourced,
+             while the observer — which cannot be sourced, because that would run a lint inside the
+             lint — is reached through its usage arm, which evaluates the whole top level and exits
+             2 by design.
+
+             **The verdict could be forged by the file under test.** It rode a magic word on stdout
+             with stderr folded into the same capture, so a copy ending
+             `unset -f adb_require_bash; printf ADB_BOOTSTRAP_REACHABLE` passed with the gate
+             ABSENT. Reachability now rides the exit status and silence rides output-emptiness —
+             two channels that cannot collide.
+
+             **A candidate's reported version was unvalidated**, which is the ADB_BASH_FLOOR
+             bypass in a second costume: `adb_version_ge` reads a non-numeric component as 0, so a
+             candidate reporting `x` compared as 0.0.0, was judged below the floor, was chosen, and
+             the mode announced it had tested under `(x)` while that candidate delegated to a 5.3.
+             An unparseable version now makes a candidate unusable, and a path carrying a tab or a
+             `|` is refused outright rather than mangled (D41's rule, same reasoning).
+
+             **Rule A missed the multiline spelling.** bash 5.3 accepts a command substitution
+             whose opening brace ends the line, and a pattern requiring a space AFTER the brace
+             sees nothing on any line of it. Matching end-of-line too is safe rather than merely
+             convenient: `${` at end of line is an unterminated expansion in every earlier bash.
+
+             **The guard had two holes and one unisolated assertion.** Rule A and rule B each had
+             fixtures for only some of the three files — mutating the implementation to skip the
+             observer, or to skip parsing `check-lib.sh`, left the whole suite green — so both now
+             loop over the set. And the headline rule-A assertion used `common.sh`, whose injected
+             construct ALSO fails the evaluation probe, so it stayed red with rule A deleted; the
+             isolating case runs with the floor lowered so no other rule can be what failed.
+
+             **Two claims in this PR's own prose were wrong**, which is the lens a lint cannot
+             cover. The changelog said "nothing checked it", repeating #310's body — but
+             `bf_above_floor` DID scan all three files for one construct and had negative fixtures.
+             And `docs/ci-runners.md` said "CI never takes the sub-floor path at all" one sentence
+             before explaining that `selfcheck-macos` does exactly that; the true statement is about
+             the interpreter each job LAUNCHES on. Both corrected.
+
+             **Three findings were dispositioned rather than fixed**, with reasons: rule A
+             false-positives on the construct inside a string literal (D35 weighed that trade and
+             took the loud direction — telling them apart needs the quote-aware parser it rejected);
+             the SKIP diagnostic re-probes candidates, so a host reconfigured mid-run could print a
+             version it did not select (a diagnostic-only inconsistency on a path that fails
+             nothing); and `sf_stub` interpolates its arguments into generated shell (they are
+             `mktemp` paths and literals this suite writes itself).
 - baseline-issue: n/a — this repo IS the baseline; #310 is the tracking issue.

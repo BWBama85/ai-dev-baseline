@@ -686,11 +686,29 @@ sf_lint() {   # sf_lint <dir> [env-assignments…] — run --sub-floor against a
 # assertions point the LINT at `.` — one transposed argument away from erasing the checkout this
 # suite is checking, including uncommitted work git could not get back (git-and-prs.md). A refusal
 # costs one line; the mistake costs the tree.
-sf_fixture() {
+#
+# `..` IS REFUSED SEPARATELY, because the prefix test alone is LEXICAL and review walked straight
+# through it: with `work=/tmp/guard-work`, the path `/tmp/guard-work/../outside` matches
+# `"$work"/*` and resolves to a sibling that `rm -rf` would then delete. A fence that can be
+# stepped over by two dots is not a fence.
+# The fence as its OWN predicate (0 = safe to delete, 1 = refused), so the assertions below can
+# drive it without `bad` recording a failure for a refusal that is the correct answer. A guard whose
+# safety check cannot be exercised is the shape this whole file exists to reject.
+sf_path_ok() {
   case "$1" in
-    "$work"/*) : ;;
-    *) bad "sub-floor: sf_fixture refused a path outside $work: $1"; return 1 ;;
+    *"/../"*|*"/..") return 1 ;;
   esac
+  case "$1" in
+    "$work"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+sf_fixture() {
+  if ! sf_path_ok "$1"; then
+    bad "sub-floor: sf_fixture refused an unsafe path: $1"
+    return 1
+  fi
   rm -rf "$1"
   mkdir -p "$1/scripts/lib"
   cp scripts/lib/common.sh        "$1/scripts/lib/common.sh"
@@ -707,12 +725,31 @@ sf_applied() {
 
 SFD="$work/subfloor"
 
+# THE FIXTURE FENCE ITSELF, exercised before anything relies on it. `sf_fixture` takes a path and
+# `rm -rf`s it, and the assertions below point the LINT at `.` — one transposed argument from
+# erasing the checkout, uncommitted work included. Review walked through the first version of this
+# fence: it was a lexical prefix test, and `$work/../outside` satisfies `"$work"/*` while resolving
+# to a sibling.
+sf_path_ok "$work/ok"                  ; yes $? "fence: a path under \$work is accepted"
+sf_path_ok "$work/a/b/c"               ; yes $? "fence: nested paths under \$work are accepted"
+sf_path_ok "${work}-sibling/x"         ; no  $? "fence: a path outside \$work is refused"
+sf_path_ok "$work/../outside"          ; no  $? "fence: \$work/../outside is refused, not accepted by prefix"
+sf_path_ok "$work/a/../../outside"     ; no  $? "fence: a deeper .. escape is refused"
+sf_path_ok "$work/.."                  ; no  $? "fence: a trailing .. is refused"
+sf_path_ok "."                         ; no  $? "fence: the working tree itself is refused"
+
+# EXTRA ARGUMENTS ARE A USAGE ERROR. This mode's one argument selects the tree it checks, so a
+# silently-ignored second one means a green run over a scope the caller did not choose.
+bash "$LINT" --sub-floor . unexpected >/dev/null 2>&1
+eq "$?" "2" "usage: --sub-floor rejects an extra argument rather than ignoring it"
+
+
 # THE CLEAN FIXTURE FIRST. Without it every assertion below is satisfied by a mode that returns 1
 # unconditionally.
 sf_fixture "$SFD"
 sf_lint "$SFD"
 eq "$SFRC" "0" "sub-floor: the clean three-file fixture passes"
-has "$SFOUT" "3 file(s) scanned" "sub-floor: and it says how many files it scanned"
+has "$SFOUT" "3 file(s) named" "sub-floor: and it says how many files it checked"
 
 # THE TRACKED TREE ITSELF must satisfy the rule — the positive assertion the old in-suite loop made,
 # now made against the real mode rather than a private copy of its predicate.
@@ -722,22 +759,41 @@ eq "$SFRC" "0" "sub-floor: the real tracked below-floor set passes"
 # --- rule A: the source scan ---------------------------------------------------------------------
 # Injected into COPIES, never the tracked files (self-review.md: negative-test against a copy, and
 # git-and-prs.md on why putting a tracked file back is unrecoverable).
-sf_fixture "$SFD"
-printf 'ADB_PROBE=${ printf hi; }\n' >> "$SFD/scripts/lib/common.sh"
-sf_applied "$SFD/scripts/lib/common.sh" 'ADB_PROBE=${ printf hi; }' "injected command substitution"
-sf_lint "$SFD"
-eq "$SFRC" "1" "rule A: an injected 5.3 command substitution is caught"
-has "$SFOUT" "5.3 command substitution" "rule A: and the diagnostic says what it found"
-has "$SFOUT" "scripts/lib/common.sh" "rule A: and names the file it found it in"
+#
+# EVERY FILE IN THE SET GETS ITS OWN FIXTURE, and that is not thoroughness for its own sake: review
+# mutated rule A to skip the observer and the whole suite still passed, because the only fixtures
+# were common.sh and check-lib.sh. A rule declared over three files needs three.
+#
+# ISOLATED, which is why common.sh is NOT the fixture that carries the headline assertion. A
+# top-level command substitution in common.sh ALSO fails the evaluation probe, so that fixture
+# stays red with rule A deleted entirely — green for the wrong reason. Each file below is checked
+# with rule A's own diagnostic, and the isolation is asserted where it can be.
+for _sf_target in scripts/check-lib.sh scripts/check-bash-floor.sh scripts/lib/common.sh; do
+  sf_fixture "$SFD"
+  printf 'ADB_PROBE=${ printf hi; }\n' >> "$SFD/$_sf_target"
+  sf_applied "$SFD/$_sf_target" 'ADB_PROBE=${ printf hi; }' "injected command substitution"
+  sf_lint "$SFD"
+  eq "$SFRC" "1" "rule A: an injected 5.3 command substitution in $_sf_target is caught"
+  has "$SFOUT" "5.3 command substitution" "rule A: and the diagnostic says what it found ($_sf_target)"
+  has "$SFOUT" "$_sf_target" "rule A: and names the file it found it in"
+done
 
-# EVERY FILE IN THE SET, not just common.sh. A scan wired to one path would pass all of the above
-# while leaving the other two carve-outs unchecked — and check-lib.sh is the one in scope only
-# transitively, so it is the one most likely to be dropped.
+# THE ISOLATING CASE. check-lib.sh is sourced by the observer but carries no gate, and a command
+# substitution in it PARSES on 3.2 — so rule A is the only rule that can fail here. If it were
+# deleted, this fixture would go green while every other rule still worked.
 sf_fixture "$SFD"
 printf 'ADB_PROBE=${ printf hi; }\n' >> "$SFD/scripts/check-lib.sh"
-sf_lint "$SFD"
-eq "$SFRC" "1" "rule A: it scans check-lib.sh too, not only common.sh"
-has "$SFOUT" "scripts/check-lib.sh" "rule A: and names it"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule A: fires ALONE — no sub-floor subject, so no other rule can be what failed"
+has "$SFOUT" "5.3 command substitution" "rule A: and it is rule A's own diagnostic that fired"
+
+# THE MULTILINE SPELLING, which a pattern requiring a space AFTER the brace cannot see. bash 5.3
+# accepts a command substitution whose brace ends the line; review reproduced a fixture the first
+# cut of this rule reported clean.
+sf_fixture "$SFD"
+printf 'ADB_PROBE=${\n  printf hi\n}\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule A: a MULTILINE command substitution is caught too"
 
 # THE QUOTED-HASH CASE, which a naive `sed 's/#.*//'` cannot see: the stripper has no idea the `#`
 # is inside quotes, deletes the rest of the line, and the construct after it goes unreported — a
@@ -747,9 +803,12 @@ printf "printf '#'; ADB_PROBE=\${ printf hi; }\n" >> "$SFD/scripts/check-lib.sh"
 sf_lint "$SFD"
 eq "$SFRC" "1" "rule A: a construct after a QUOTED '#' is still seen"
 
-# And it must NOT fire on ordinary parameter expansion, or it would be deleted within a week...
+# And it must NOT fire on ordinary parameter expansion, or it would be deleted within a week.
+# `set -u`-SAFE by construction: the observer sources check-lib.sh under `set -u`, so a `${#z}` on
+# an unset name is an unbound-variable ERROR, and this fixture would go red through the evaluation
+# probe while appearing to indict rule A. (That the probe catches it at all is the probe working.)
 sf_fixture "$SFD"
-printf 'ADB_Y="${HOME}${x:-d}${#z}"\n' >> "$SFD/scripts/check-lib.sh"
+printf 'ADB_Y="${HOME}${x:-d}${#HOME}"\n' >> "$SFD/scripts/check-lib.sh"
 sf_lint "$SFD"
 eq "$SFRC" "0" "rule A: ordinary \${VAR} expansion does not trip it"
 
@@ -816,6 +875,27 @@ sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS
 $work/sfbin/older"
 eq "$SFRC" "0" "selection: a duplicated candidate does not change the verdict"
 
+# A CANDIDATE REPORTING A NON-NUMERIC VERSION IS NOT USABLE. This is the ADB_BASH_FLOOR bypass in a
+# second costume, and review reproduced it: `adb_version_ge` reads a non-numeric component as 0, so
+# a candidate reporting `x` compares as 0.0.0, is judged BELOW the floor, and is chosen — while it
+# may in fact hand every real operation to a 5.3. The mode then announces it tested under `(x)` and
+# passes without any old bash being involved. Listed alongside a usable stub so the assertion is
+# about the REJECTION and not about the list being empty.
+sf_stub "$work/sfbin/junkver" "x"
+sf_fixture "$SFD"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$work/sfbin/junkver
+$SF_CANDS"
+eq "$SFRC" "0" "selection: a candidate reporting a non-numeric version does not break the run"
+has "$SFOUT" "non-numeric version" "selection: and the refusal says why"
+hasnt "$SFOUT" "$work/sfbin/junkver (x)" "selection: and that candidate is never chosen as the subject"
+has "$SFOUT" "$work/sfbin/older (9.9.9)" "selection: the oldest VALID candidate is used instead"
+
+# ...and with NOTHING else to fall back to, it must be a stated SKIP rather than a green run that
+# claims a subject it could not validate.
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$work/sfbin/junkver"
+eq "$SFRC" "0" "selection: a junk-version candidate alone leaves no subject"
+has "$SFOUT" "SKIPPED" "selection: and that is reported as a SKIP, not as a parse that happened"
+
 # A candidate that PROBES a version but cannot be executed FAILS CLOSED. Silently degrading to a
 # skip here would turn a broken subject into a green run, which is the one outcome a floor guard
 # may never produce.
@@ -831,40 +911,76 @@ hasnt "$SFOUT" "no interpreter below the" \
   "selection: a BROKEN interpreter is not reported as an ABSENT one"
 
 # --- rule B: the parse, portable through the seam --------------------------------------------------
-sf_fixture "$SFD"
-printf 'if then fi\n' >> "$SFD/scripts/lib/common.sh"
-sf_applied "$SFD/scripts/lib/common.sh" 'if then fi' "syntax-error"
-sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
-eq "$SFRC" "1" "rule B: a file that does not PARSE is caught"
-has "$SFOUT" "does not PARSE" "rule B: and says so"
-has "$SFOUT" "$work/sfbin/older (9.9.9)" "rule B: naming the interpreter and version it used"
+# ONE FIXTURE PER FILE, for the reason rule A's loop states: review mutated the implementation to
+# skip parsing check-lib.sh and the entire suite stayed green, because the only parse fixture was
+# common.sh. A rule declared over three files is only established by three.
+for _sf_target in scripts/lib/common.sh scripts/check-lib.sh scripts/check-bash-floor.sh; do
+  sf_fixture "$SFD"
+  printf 'if then fi\n' >> "$SFD/$_sf_target"
+  sf_applied "$SFD/$_sf_target" 'if then fi' "syntax-error"
+  sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+  eq "$SFRC" "1" "rule B: $_sf_target failing to PARSE is caught"
+  has "$SFOUT" "does not PARSE" "rule B: and says so ($_sf_target)"
+  has "$SFOUT" "$_sf_target" "rule B: naming the file that would not parse"
+  has "$SFOUT" "$work/sfbin/older (9.9.9)" "rule B: and the interpreter and version it used"
+done
 
-# --- rule B: the bootstrap probe, portable through the seam ----------------------------------------
-# NOTHING ON STDERR is half the assertion, and it is the half an exit-status test cannot make: a
-# file can source with status 0 while printing a diagnostic, which is exactly what an unsupported
-# builtin option does on 3.2.
-sf_fixture "$SFD"
-printf 'printf "adb-probe-noise\\n" >&2\n' >> "$SFD/scripts/lib/common.sh"
-sf_applied "$SFD/scripts/lib/common.sh" 'adb-probe-noise' "noisy-source"
-sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
-eq "$SFRC" "1" "probe: a common.sh that sources NOISILY is caught, even at status 0"
-has "$SFOUT" "adb-probe-noise" "probe: and the noise is quoted back as the diagnostic"
+# --- rule B: the evaluation probe, portable through the seam ---------------------------------------
+# NOTHING ON STDOUT OR STDERR is half the assertion, and it is the half an exit-status test cannot
+# make: a file can load with status 0 while printing a diagnostic, which is exactly what an
+# unsupported builtin option does on 3.2.
+#
+# ALL THREE FILES, because D35's property is about all three. Review found the probe wired to
+# common.sh alone, so a top-level `declare -A` in check-lib.sh or in the observer passed. The
+# observer is reached through its usage arm rather than by sourcing it — sourcing an executable
+# lint would run a lint inside the lint — so the injection has to land BEFORE its `case` dispatch
+# to be reachable at all, which is what the `sed` below guarantees and `sf_applied` confirms.
+for _sf_target in scripts/lib/common.sh scripts/check-lib.sh; do
+  sf_fixture "$SFD"
+  printf 'printf "adb-probe-noise\\n" >&2\n' >> "$SFD/$_sf_target"
+  sf_applied "$SFD/$_sf_target" 'adb-probe-noise' "noisy-load"
+  sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+  eq "$SFRC" "1" "probe: $_sf_target loading NOISILY is caught, even at status 0"
+  has "$SFOUT" "adb-probe-noise" "probe: and the noise is quoted back as the diagnostic ($_sf_target)"
+done
 
-# ...and the other half: the gate must actually be REACHABLE afterwards. A file that loads in
-# silence but leaves adb_require_bash undefined is D30's failure in its purest form.
+# THE OBSERVER, whose top level is reached through the usage arm. Injected after `check_init` so it
+# runs before the `case` exits — appending to the end of the file lands after an `exit` and is
+# unreachable on every interpreter, which would make this fixture pass for no reason at all.
+sf_fixture "$SFD"
+sed -i.bak 's/^check_init "bash-floor"$/check_init "bash-floor"\nprintf "adb-probe-noise\\n" >\&2/' \
+  "$SFD/scripts/check-bash-floor.sh" && rm -f "$SFD/scripts/check-bash-floor.sh.bak"
+sf_applied "$SFD/scripts/check-bash-floor.sh" 'adb-probe-noise' "observer top-level noise"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+eq "$SFRC" "1" "probe: the OBSERVER emitting at its top level is caught too"
+has "$SFOUT" "scripts/check-bash-floor.sh does not evaluate its top level" "probe: and names the observer"
+
+# ...and the other half, which only common.sh carries: the gate must actually be REACHABLE
+# afterwards. A file that loads in silence but leaves adb_require_bash undefined is D30's failure in
+# its purest form.
 sf_fixture "$SFD"
 printf 'unset -f adb_require_bash\n' >> "$SFD/scripts/lib/common.sh"
 sf_applied "$SFD/scripts/lib/common.sh" 'unset -f adb_require_bash' "gate-removal"
 sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
 eq "$SFRC" "1" "probe: a common.sh that loads but leaves adb_require_bash unreachable is caught"
 
-# ONE DEFECT, ONE LINE: a file that fails to PARSE must not also be reported as failing to source —
-# it is the same finding wearing a second hat, and the mode says outright that the probe did not run.
+# THE VERDICT CANNOT BE FORGED BY THE FILE UNDER TEST. The first cut carried it in a magic word on
+# stdout with stderr folded in, and this exact fixture passed with the gate absent. Reachability
+# rides the exit status and silence rides output-emptiness, so the marker has nothing to collide
+# with — but only this assertion keeps it that way.
+sf_fixture "$SFD"
+printf 'unset -f adb_require_bash\nprintf ADB_BOOTSTRAP_REACHABLE\n' >> "$SFD/scripts/lib/common.sh"
+sf_applied "$SFD/scripts/lib/common.sh" 'printf ADB_BOOTSTRAP_REACHABLE' "forged marker"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+eq "$SFRC" "1" "probe: the file under test cannot FORGE the reachability verdict"
+
+# ONE DEFECT, ONE LINE: a file that fails to PARSE must not also be reported as failing to load —
+# it is the same finding wearing a second hat.
 sf_fixture "$SFD"
 printf 'if then fi\n' >> "$SFD/scripts/lib/common.sh"
 sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
-hasnt "$SFOUT" "does not leave adb_require_bash reachable" "probe: an unparseable file is not ALSO reported as unsourceable"
-has "$SFOUT" "probe NOT run" "probe: and the summary says the probe did not run, rather than implying it passed"
+hasnt "$SFOUT" "does not leave adb_require_bash reachable" "probe: an unparseable file is not ALSO reported as unloadable"
+has "$SFOUT" "3 file(s) named; 2 parsed" "probe: and the counts say outright that one file was not parsed"
 
 # --- the stale-set rule ----------------------------------------------------------------------------
 # The list IS the carve-out. A named file that is not there means the lint is silently checking
