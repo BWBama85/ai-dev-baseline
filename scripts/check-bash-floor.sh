@@ -348,12 +348,18 @@ static_lint() {
       check_fail
     fi
 
-    # The floor override is a TEST seam (see the header). A workflow that sets it — at workflow, job
-    # or step level — turns every runtime assertion in that scope into a formality while this lint
-    # stays green, which is the one bypass the validation above cannot see from inside the guard.
-    if grep -q 'ADB_BASH_FLOOR' "$wf"; then
-      check_note "$wf sets ADB_BASH_FLOOR, which overrides the floor every runtime guard enforces:"
-      grep -n 'ADB_BASH_FLOOR' "$wf" | sed 's/^/    /' >&2
+    # BOTH TEST SEAMS, not just the floor (see the header). A workflow that sets one — at workflow,
+    # job or step level — turns the assertions in that scope into a formality while this lint stays
+    # green, which is the one bypass the validation above cannot see from inside the guard.
+    #
+    # ADB_SUB_FLOOR_CANDIDATES belongs here for exactly the same reason and is the sneakier of the
+    # two: pointing it at a path that does not exist leaves NO candidate below the floor, so the
+    # sub-floor half reports a SKIP and the job is green — rule B disabled everywhere, by one `env:`
+    # line, on a lint whose whole subject is bypasses of this shape. It is NOT a substring of
+    # ADB_BASH_FLOOR, so the old single-token grep would never have seen it.
+    if grep -Eq 'ADB_BASH_FLOOR|ADB_SUB_FLOOR_CANDIDATES' "$wf"; then
+      check_note "$wf sets a bash-floor TEST SEAM, which turns the guards in that scope into a formality:"
+      grep -En 'ADB_BASH_FLOOR|ADB_SUB_FLOOR_CANDIDATES' "$wf" | sed 's/^/    /' >&2
       check_fail
     fi
 

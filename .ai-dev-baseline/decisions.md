@@ -4018,6 +4018,14 @@ limit: none of them is sufficient alone.
              Linux and never run on macOS — #310's defect, reintroduced one layer up. A new job
              would add a branch-protection context, which this lint's own header argues against.
 
+             **The new seam is fenced out of CI the same way the old one is.** `ADB_SUB_FLOOR_CANDIDATES`
+             joins `ADB_BASH_FLOOR` in the static lint's workflow rule, because it is the same class
+             of bypass and the sneakier member of it: pointed at a nonexistent path it leaves no
+             candidate below the floor, so the half reports a SKIP and the job is green with rule B
+             disabled on every job in scope. It is not a substring of `ADB_BASH_FLOOR`, so the
+             single-token grep that rule used to be would never have matched it — which is why the
+             widening carries its own fixture rather than being assumed covered.
+
              **A skip is stated and audited, never silent**: where nothing is below the floor the
              mode names every candidate it probed with the version each reported, and its PASS line
              says outright that the parse did not happen. Installing or building an old bash on
@@ -4041,13 +4049,15 @@ limit: none of them is sufficient alone.
              The gap-analysis pass argued the D35 scan is additive and must not be deleted as
              superseded by `bash -n`. That is right, and it is why rule A still exists at all: it is
              relocated, not replaced, and the measurements above are the evidence for keeping it.
-- guard-observability: Eight mutations of the shipped mode, each applied to a COPY of the tree and
+- guard-observability: TEN mutations of the shipped mode, each applied to a COPY of the tree and
              each required to make `check-bash-floor-guard.sh` go red: rule A's `check_fail`
-             dropped; selection taking the first-listed candidate instead of the oldest; the probe
-             comparing rc only and ignoring stderr; an unexecutable candidate degraded to a skip;
-             the stale-set rule made to `continue`; rule A suppressed whenever rule B has no
-             subject; the SKIP's note made to claim a parse it did not do; and rule A wired to
-             `common.sh` alone. The tracked tree was never mutated.
+             dropped; selection taking the first-listed candidate instead of the numerically oldest;
+             the probe comparing rc only and ignoring stderr; an unexecutable candidate degraded to
+             a skip; that same candidate reported as ABSENT rather than broken; the stale-set rule
+             made to `continue`; rule A suppressed whenever rule B has no subject; the SKIP's note
+             made to claim a parse it did not do; rule A wired to `common.sh` alone; and the
+             workflow seam rule narrowed back to the single `ADB_BASH_FLOOR` token. The tracked tree
+             was never mutated.
 
              The stub interpreters the selection fixtures use report a fake version to the probe and
              **delegate everything else to a real bash**, so `-n` and the bootstrap probe behave as

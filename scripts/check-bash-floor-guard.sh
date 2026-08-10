@@ -8,7 +8,8 @@
 #
 # base/practices/self-review.md: "a new guard is not done until it has been observed failing", and
 # "automate the observation where the set is closed". The rule set here IS closed — TWELVE static
-# rules (approved label · guard wired via `run:` · no `shell` key · no ADB_BASH_FLOOR in a workflow ·
+# rules (approved label · guard wired via `run:` · no `shell` key · no bash-floor TEST SEAM in a
+# workflow, meaning EITHER of the two — ADB_BASH_FLOOR or, since #310, ADB_SUB_FLOOR_CANDIDATES ·
 # per-file zero jobs · no workflow files · Linux present · macOS present · first step logs
 # `bash --version` · and the three WSL-class rules #2 added: the guard reached through
 # `wsl -d <distro>` · a WSL bash version logged at all · that log preceding the guard), THREE
@@ -232,6 +233,19 @@ printf '    env:\n      ADB_BASH_FLOOR: 0.0\n' >> "$f"
 run_lint "$d"
 eq "$RC" "1" "fail-open (e): a workflow may not set ADB_BASH_FLOOR"
 has "$OUT" "ADB_BASH_FLOOR" "fail-open (e) names the override it found"
+
+# (e2) THE SECOND SEAM, added with the sub-floor half (#310). Pointing ADB_SUB_FLOOR_CANDIDATES at a
+#      path that does not exist leaves nothing below the floor, so that half reports a SKIP and the
+#      job goes green with rule B disabled on every job in scope. It is not a substring of
+#      ADB_BASH_FLOOR, so the single-token grep this rule used to be would never have matched it —
+#      which is why this fixture exists rather than being assumed covered by (e).
+d="$work/candenv"; f="${ new_wf "$d"; }"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+printf '    env:\n      ADB_SUB_FLOOR_CANDIDATES: /nonexistent/bash\n' >> "$f"
+run_lint "$d"
+eq "$RC" "1" "fail-open (e2): a workflow may not set ADB_SUB_FLOOR_CANDIDATES either"
+has "$OUT" "ADB_SUB_FLOOR_CANDIDATES" "fail-open (e2) names the seam it found"
 
 # --- three more the async PR reviewer reproduced, all "equivalent YAML spelling" bypasses ----------
 # Each PASSED after the first round of fixes. The lesson they share: a rule written against ONE

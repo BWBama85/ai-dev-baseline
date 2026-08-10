@@ -41,10 +41,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **What it does not claim, said in its own header:** a 5.3-only construct inside a *function
     body* that is neither new grammar nor a command substitution stays invisible to both rules.
     This proves parseability and gate reachability, not that every function behaves on 3.2.
-  - **Observed failing**, per this repo's rule for new guards: eight mutations of the shipped mode —
-    including selection taking the first-listed candidate, the probe ignoring stderr, and the SKIP
-    claiming a parse it did not do — each applied to a **copy** of the tree and each required to
-    make `check-bash-floor-guard.sh` go red.
+  - **The workflow seam rule now covers both seams.** The static lint already failed a workflow that
+    set `ADB_BASH_FLOOR`; `ADB_SUB_FLOOR_CANDIDATES` is the same class of bypass and is the sneakier
+    one — pointed at a path that does not exist it leaves nothing below the floor, so the new half
+    reports a SKIP and the job goes green with rule B disabled everywhere. It is not a substring of
+    `ADB_BASH_FLOOR`, so the single-token grep would never have matched it.
+  - **Observed failing**, per this repo's rule for new guards: ten mutations of the shipped mode —
+    including selection taking the first-listed candidate, the probe ignoring stderr, the SKIP
+    claiming a parse it did not do, and a broken interpreter reported as an absent one — each
+    applied to a **copy** of the tree and each required to make `check-bash-floor-guard.sh` go red.
 
 - **`check-gates.sh`'s elapsed assertion now tests the property it names, instead of a literal that
   was only ever true by luck** (#308).
