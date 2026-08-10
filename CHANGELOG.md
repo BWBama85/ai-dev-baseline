@@ -7,6 +7,17 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-10
+
+The release that made this framework's own guards answer correctly. Most of what it fixes is a
+check that reported success without having checked: a release cut against a branch nobody had
+verified, a build published by truncating the file it was replacing, an ownership decode a newline
+could re-aim, a closing-keyword verification that could never succeed. The rest hardens the paths
+untrusted text travels — every API-supplied slug refused at its producer, a git ref encoded into one
+path segment, the run's issue snapshot moved out of the world-writable temp directory. Two
+configuration surfaces are new: `[gates.cadence]`, so a gate can declare which caller it runs for,
+and an owner escape hatch for a repo whose CI never reports on the default branch.
+
 ### Fixed
 
 - **A branch name containing `/` now reaches the endpoint it names — one shared builder encodes the
@@ -2967,7 +2978,8 @@ Everything below landed before this tag; entries are grouped as they accumulated
   finish on partial or empty output. Clarifies that "advisory" is the standing of a
   **completed** finding, not license to skip the step.
 
-[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/BWBama85/ai-dev-baseline/releases/tag/v1.0.0
