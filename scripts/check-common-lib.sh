@@ -1048,6 +1048,102 @@ done
 # into adb_is_repo_slug, these two would agree and the sibling would be pointless indirection.
 if adb_is_repo_slug "acme/.."; then ok; else bad "adb_is_repo_slug is the SHAPE test and still accepts 'acme/..'"; fi
 
+# --- adb_url_path_segment: the other half of "safe to build a request path from" (#103) --------
+# A slug is CHECKED because a malformed one means the response was wrong. A git ref is ENCODED
+# because a slash in it is perfectly legal git and the caller must still reach the right endpoint.
+# These tests pin that difference, and each group below is a way the encoder can be wrong that no
+# other test in this repo would notice.
+
+# 1. THE NO-OP PROPERTY, and it is the most important one here. Every existing caller passes a
+# default branch, so if the encoder perturbed an ordinary name this change would break the path
+# that works today in order to fix one that (per D53's measurement) already worked. Byte-identical
+# for the whole RFC 3986 unreserved set.
+for v in "main" "develop" "trunk" "a.b-c_d~e" "Release-2.1" "v1..v2"; do
+  eq "$(adb_url_path_segment "$v")" "$v" "adb_url_path_segment leaves '$v' byte-identical"
+done
+
+# 2. The slash — the case the issue is named for, at one, two and four levels deep.
+eq "$(adb_url_path_segment 'release/v1')" 'release%2Fv1' "adb_url_path_segment: release/v1 -> release%2Fv1"
+eq "$(adb_url_path_segment 'automation/bors/auto')" 'automation%2Fbors%2Fauto' "...two slashes"
+eq "$(adb_url_path_segment 'dependabot/composer/stacks/php/all-minor')" \
+   'dependabot%2Fcomposer%2Fstacks%2Fphp%2Fall-minor' "...four slashes"
+
+# 3. NOT IDEMPOTENT, ON PURPOSE. `release%2Fv1` is itself a legal git branch name, so a
+# "don't double-encode" guard would silently address `release/v1` when the operator named a
+# different branch. Encoding is one-way; callers pass the raw ref exactly once.
+eq "$(adb_url_path_segment 'release%2Fv1')" 'release%252Fv1' \
+   "adb_url_path_segment re-encodes a literal '%2F' — a pre-encoded name is a DIFFERENT branch"
+
+# 4. `#` IS WHY ENCODING IS NOT OPTIONAL, and it is not the slash. Git forbids space, `~^:?*[` and
+# `\` in a ref but ALLOWS `#`, `%`, `+`, `=`, `;`, `&`. Interpolated raw, `#` opens a URI fragment
+# and everything after it is dropped from the request — a wrong answer with a 200 status.
+eq "$(adb_url_path_segment 'feat/#42')"  'feat%2F%2342' "adb_url_path_segment encodes '#' (a raw one truncates the path at a fragment)"
+eq "$(adb_url_path_segment 'a%b')"       'a%25b'        "...and a literal '%', which would otherwise start a bogus escape"
+eq "$(adb_url_path_segment 'a+b=c&d;e')" 'a%2Bb%3Dc%26d%3Be' "...and the sub-delimiters git permits"
+eq "$(adb_url_path_segment 'a b')"       'a%20b'        "...and a space"
+
+# 5. UTF-8 IS ENCODED PER BYTE, AND THE ANSWER MUST NOT DEPEND ON THE AMBIENT LOCALE. This is the
+# reason the implementation is `jq @uri` rather than a shell character loop: bash's
+# `printf '%02X' "'é"` yields the CODEPOINT (E9 — an invalid UTF-8 escape) in a UTF-8 locale and
+# the first BYTE (C3) under LC_ALL=C, so a hand-rolled loop is correct on one runner and wrong on
+# another with nothing to tell them apart. Asserting BOTH locales is what makes that regression
+# visible instead of environment-dependent.
+eq "$(adb_url_path_segment 'ré/v1')" 'r%C3%A9%2Fv1' "adb_url_path_segment encodes UTF-8 per byte"
+eq "$(LC_ALL=C adb_url_path_segment 'ré/v1')" 'r%C3%A9%2Fv1' "...identically under LC_ALL=C"
+# The UTF-8 half is asserted against a locale DETECTED at runtime, not a hardcoded `en_US.UTF-8`:
+# the hosted Linux runner does not necessarily generate it, and a locale the system silently
+# ignores makes this assertion pass while comparing C against C — green, and proving nothing. When
+# no UTF-8 locale exists the pair cannot differ, so the check SAYS it did not run rather than
+# counting a pass it did not earn.
+utf8_loc="$(locale -a 2>/dev/null | grep -iE '\.(utf-?8)$' | head -n1)"
+if [ -n "$utf8_loc" ]; then
+  eq "$(LC_ALL="$utf8_loc" adb_url_path_segment 'ré/v1')" 'r%C3%A9%2Fv1' "...and under a real UTF-8 locale ($utf8_loc)"
+else
+  printf 'common-lib: NOTE — no UTF-8 locale on this host; the locale-independence pair was not exercised\n' >&2
+fi
+
+# 6. AN EXACT DOT SEGMENT IS TRAVERSAL ARRIVING THROUGH THE OTHER DOOR. `@uri` leaves dots alone,
+# so `--branch ..` would build `repos/o/r/branches/../protection` and resolve one level up — the
+# same hazard `adb_is_path_safe_repo_slug` refuses for slugs. RFC 3986 removes dot segments BEFORE
+# percent-decoding, so `%2E%2E` is an ordinary (nonexistent) name. Only the WHOLE segment counts:
+# `v1..v2` is pinned unchanged in group 1 above, because over-rejecting a name costs availability.
+eq "$(adb_url_path_segment '.')"  '%2E'    "adb_url_path_segment neutralizes an exact '.' segment"
+eq "$(adb_url_path_segment '..')" '%2E%2E' "...and an exact '..' segment (traversal, not a name)"
+
+# 7. FAILS CLOSED, PRINTING NOTHING — the property the callers rely on. An empty return spliced
+# into `branches/<here>/protection` does not yield a broken URL, it yields a DIFFERENT VALID ONE,
+# so "returns non-zero" and "prints nothing" are both load-bearing and both asserted.
+out="$(adb_url_path_segment "")"; rc=$?
+eq "$rc" "1" "adb_url_path_segment refuses an empty ref"
+eq "$out" ""  "...printing nothing (an empty segment would silently address another endpoint)"
+out="$(adb_url_path_segment)"; rc=$?
+eq "$rc" "1" "adb_url_path_segment refuses a missing argument"
+eq "$out" ""  "...printing nothing"
+
+# 8. A MISSING jq IS A FAILURE, NOT AN EMPTY STRING. jq is a hard requirement of every caller that
+# builds one of these paths, but this function must not be the place that discovers that by
+# returning a path with a hole in it. Driven by emptying PATH inside the command substitution's own
+# subshell, so nothing leaks: the function needs only `command -v`, `jq` and the `printf` builtin.
+nojq="$work/nojq"; mkdir -p "$nojq"
+out="$(PATH="$nojq"; adb_url_path_segment 'release/v1')"; rc=$?
+eq "$rc" "1" "adb_url_path_segment fails loud when jq is absent"
+eq "$out" ""  "...printing nothing, rather than a path missing its ref"
+# ...but the dot-segment arm answers WITHOUT jq, and that is deliberate rather than accidental: it
+# is a pure literal, and a traversal must not become buildable just because a tool went missing.
+eq "$(PATH="$nojq"; adb_url_path_segment '..')" '%2E%2E' "...while the dot-segment arm still answers (no jq needed)"
+
+# 9. A REF THAT IS NOT VALID UTF-8 IS REFUSED, NOT SILENTLY REWRITTEN. A git ref is a byte string —
+# `git check-ref-format` bars ASCII control characters but not high bytes — while jq's `--arg` is a
+# JSON string, so `rel\xffv1` arrives as U+FFFD and encodes to `rel%EF%BF%BDv1`: a different,
+# unreachable branch, returned with a ZERO status. Verified to be exactly what bare `@uri` does, so
+# this pins the fidelity round trip rather than a hypothetical.
+bad_ref="$(printf 'rel\xffv1')"
+out="$(adb_url_path_segment "$bad_ref")"; rc=$?
+eq "$rc" "1" "adb_url_path_segment refuses a ref that is not valid UTF-8"
+eq "$out" ""  "...printing nothing, rather than the U+FFFD substitution jq would otherwise hand back"
+# The round trip must not over-reject: every legitimate value above still encodes, and a high byte
+# that IS valid UTF-8 is a name, not a corruption (the 'ré' pair in group 5 pins that direction).
+
 # --- adb_pr_slug: three URL forms, case-folded, shape-checked ----------------------------------
 # THE SCHEME IS OPTIONAL, and that is the whole defect #173 closed: pr-review.sh matched only
 # `scheme://…`, so a scheme-less browser copy-paste produced an empty slug, skipped the cross-repo

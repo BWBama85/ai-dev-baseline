@@ -1551,4 +1551,94 @@ fi
 # trap. What must survive an edit is the negation.
 has "$adv_step" 'Do _not_ run' "...and warns AGAINST applying from the PR branch (that is what strands a phantom context)"
 
+# ====================== #103: a slashed branch name reaches the right endpoint ==================
+#
+# `release/v1` is a perfectly ordinary git branch name, and six sites here used to interpolate it
+# raw — building `branches/release/v1/protection` rather than one encoded path segment. The
+# measurement recorded in D53 says GitHub accepts BOTH spellings, so this is not a repair of a
+# broken path; it is the encoded form being chosen, once, in one builder, because `/` is merely the
+# most common of the characters git permits and a URI path does not.
+#
+# THESE ASSERTIONS READ THE REQUEST LOG, NOT THE EXIT CODE, and that is the whole reason they can
+# fail. The stub answers `*/branches/*` from one fixture, so a slashed branch produces exactly the
+# same status, body and exit code whether the library encoded it or not: an outcome-shaped test
+# here is green against both implementations and proves nothing. What distinguishes them is the URL
+# that was requested, so that is what is asserted — exactly, and by absence as well as presence.
+reads_of() { tr '\n' '|' < "$STUB_READS"; }
+SL_ENC='branches/release%2Fv1'
+SL_RAW='branches/release/v1'
+
+# (1) protected-with-checks + --enforce-admins — three of the six sites in one run: the protection
+#     GET, the narrow required_status_checks PATCH, and the enforce_admins POST.
+wf_one; repo_fx true true; prot_checks "two"
+rsx_stub apply --branch release/v1 --enforce-admins
+has "${ reads_of; }"  "repos/acme/widget/$SL_ENC/protection"     "apply GETs the ENCODED protection path for 'release/v1'"
+has "${ calls_of; }"  "PATCH repos/acme/widget/$SL_ENC/protection/required_status_checks" \
+    "...PATCHes the encoded required_status_checks sub-resource"
+has "${ calls_of; }"  "POST repos/acme/widget/$SL_ENC/protection/enforce_admins" \
+    "...and POSTs the encoded enforce_admins sub-resource"
+# ABSENCE MATTERS AS MUCH AS PRESENCE. A builder that emitted BOTH spellings — or one that encoded
+# the read and left a write raw — would satisfy every `has` above.
+hasnt "${ reads_of; }$( calls_of; )" "$SL_RAW" "...and NO request anywhere used the raw 'release/v1' spelling"
+hasnt "${ reads_of; }$( calls_of; )" '%252F'   "...and none double-encoded it either"
+
+# (2) protected-no-checks — the fourth site, the destructive full PUT. Its own scenario because
+#     PROT_STATE selects a different endpoint, and the wide one is the one that replaces the object.
+wf_one; repo_fx true true; prot_nochecks
+rsx_stub apply --branch release/v1
+has "${ calls_of; }" "PUT repos/acme/widget/$SL_ENC/protection" "the full protection PUT uses the encoded path"
+hasnt "${ calls_of; }" "PUT repos/acme/widget/$SL_RAW/protection" "...and not the raw one"
+
+# (3) the fifth site: the ordinary contents-read branch endpoint, which `required-drift` uses
+#     because a CI token can never call the admin-only one.
+wf_one; repo_fx true true; branch_checks "one"
+rsx_stub required-drift --branch release/v1
+has "${ reads_of; }" "GET repos/acme/widget/$SL_ENC" "required-drift reads the encoded ordinary branch endpoint"
+hasnt "${ reads_of; }" "GET repos/acme/widget/$SL_RAW" "...and not the raw one"
+
+# (4) the sixth site: `commits/{ref}/check-runs`. A DIFFERENT collection whose segment is a ref
+#     rather than a branch — which is why the shared builder is ref-shaped, and why a
+#     branch-only helper would have left exactly this site (the newest of the six) raw.
+#     Reached the way the provenance tests reach it: workflow files present, discovery empty,
+#     contexts required.
+wf_reset
+printf 'name: Sched\non:\n  schedule:\n    - cron: "0 0 * * *"\njobs:\n  nightly:\n    runs-on: ubuntu-latest\n' > "$WF/sched.yml"
+repo_fx true true; branch_checks "ci/circleci: build"; checkruns_external "ci/circleci: build"
+rsx_stub required-drift --branch release/v1
+eq "$RC_" "0" "the check-runs scenario still reaches its documented external-CI pass"
+has "${ reads_of; }" 'repos/acme/widget/commits/release%2Fv1/check-runs?per_page=100' \
+    "the check-runs read encodes the REF and leaves the query string alone"
+# THE QUERY STRING IS THE TRAP HERE: encoding the whole endpoint instead of the segment turns
+# `?per_page=100` into part of one absurd path, and pagination breaks silently.
+hasnt "${ reads_of; }" '%3Fper_page' "...the '?' is NOT encoded — that would break pagination, silently"
+checkruns_none
+
+# (5) the two PRINTED commands. `manual_commands` degrades to instructions when the token lacks
+#     admin, and those lines are meant to be pasted — handing an operator the raw spelling would
+#     relocate the hazard into their terminal, where nothing here can fail closed on it.
+wf_one; repo_fx false false; prot_checks "one"
+rsx_stub apply --branch release/v1
+has "$OUT" "$SL_ENC/protection/required_status_checks" "the non-admin PATCH instruction carries the encoded path"
+has "$OUT" "gh api -X PUT repos/acme/widget/$SL_ENC/protection" "...and so does the PUT instruction"
+eq "$(cat "$STUB_CALLS")" "" "...while the non-admin run still mutates nothing"
+
+# (6) THE CONTROL, and the most important assertion in this section: an ordinary branch name must
+#     come out BYTE-IDENTICAL. Every existing caller passes a default branch, so an encoder that
+#     perturbed one would have broken the path that works today in order to fix one that already
+#     worked — the exact trade the issue said not to make. `main` is unreserved end to end.
+wf_one; repo_fx true true; prot_checks "two"
+rsx_stub apply --enforce-admins
+has "${ reads_of; }" 'repos/acme/widget/branches/main/protection' "the default branch is still spelled 'main'"
+has "${ calls_of; }" 'PATCH repos/acme/widget/branches/main/protection/required_status_checks' "...on the write path too"
+hasnt "${ reads_of; }$( calls_of; )" '%' "...and NOTHING in an ordinary run is percent-encoded at all"
+
+# (7) FAIL CLOSED WHEN THE PATH CANNOT BE BUILT. The encoder refuses an exact `..` segment, because
+#     `branches/../protection` resolves one level up — the traversal `adb_is_path_safe_repo_slug`
+#     refuses for slugs, arriving through the ref door. `--branch ..` must therefore reach the
+#     endpoint for a branch NAMED `..` (which cannot exist) and never the repo root.
+wf_one; repo_fx true true; prot_checks "one"
+rsx_stub automerge-ok --branch ..
+hasnt "${ reads_of; }" 'branches/../protection' "an exact '..' branch never builds a traversing path"
+has   "${ reads_of; }" 'branches/%2E%2E/protection' "...it addresses a branch literally named '..' instead"
+
 check_summary "repo-settings"
