@@ -9,6 +9,46 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **This repo's own Stop-hook gate fails loud on a broken library, and the real script is now
+  tested** (#299).
+
+  `.claude/scripts/precommit-gate.sh` — the turn-end gate D25 ships for this repository — loaded its
+  shared library with `. … || exit 0` and `command -v adb_default_branch … || exit 0`. A missing or
+  truncated `scripts/lib/common.sh` therefore made it **silently pass**, in exactly the words a clean
+  run uses, at the end of every turn. That is the inversion `agents/claude/scripts/precommit-gate.sh`
+  carries `fail_loud` for (#35) and the one §5 of `docs/design-principles.md` names outright: "no
+  gates detected" and "my own library is gone" must never look the same to a caller. The global
+  gate's fail-loud does **not** cover it — that gate `exec`s the project gate *before* reaching its
+  own library checks, and the project gate resolves this repo's copy rather than the installed one.
+
+  - **Three load failures, one blocking exit 2**, each with a message naming what is wrong and a
+    remedy appropriate to a **tracked** file (restore it) rather than to an installed symlink
+    (`baseline update`). The library is confirmed by **probing for the function**, never by the
+    source's exit status — a sourced file returns its last command's status, which is why a
+    truncated library sources cleanly, exits 0, and defines nothing.
+  - **A second site, the same missing-vs-corrupt bug.** The conditional bash-floor bootstrap tested
+    only that `common.sh` *exists*, so against a truncated one it called `adb_require_bash` as an
+    undefined command — `command not found`, its 127 discarded, and the floor left unenforced. It now
+    probes for the function too, keeping the top-level call `check-bash-floor.sh --entrypoints`
+    requires.
+  - **`set -u` is relaxed across the source, and that is a fix rather than a loosening.** An unbound
+    expansion while a library loads is fatal under `set -u` and kills the shell **outright** —
+    measured at **rc 1**, which is neither a pass nor this gate's blocking 2, and which no `||` can
+    catch because the shell is gone before the next word is read. The function probe decides instead.
+  - **The real script now has a fixture** (`scripts/check-precommit-gate.sh`, cases 17a-17k). Every
+    project-gate case before this substituted a two-line stub, so the fast subset D25 actually ships
+    had no coverage at all. The fixture is a throwaway copy of the worktree re-`git init`ed as
+    `main`, so the gate shells out to the real `build.sh` and the three real `check-*.sh`: a clean
+    tree on a feature branch carrying a **committed** delta exits 0 with all four checks observed
+    *PASSing* (the exit code alone cannot tell that from a gate that ran nothing), an edited practice
+    file reddens the real `build-drift` and exits 2 naming it, and the global gate's hand-off is
+    proven by output only the project gate can produce.
+  - **Observed failing on the real superseded input**, not on a convenient one: run against a copy of
+    the tree carrying the pre-fix gate, the new cases report **0** where they require 2 for both the
+    missing and the truncated library, **1** for the unbound expansion — and all three mutation
+    harnesses refuse to prove anything rather than passing silently. Three in-suite mutations pin
+    that permanently, one per bypass, so no single blanket edit can make them all vacuous.
+
 - **The bash-floor carve-out is now executed instead of asserted: `check-bash-floor.sh --sub-floor`**
   (#310).
 
