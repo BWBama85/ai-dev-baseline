@@ -9,6 +9,57 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`/cleanup` deletes state artifacts by identity, not by pathname, so a run that recreates the
+  same name between the pre-delete scan and the `rm` keeps its files** (#305).
+
+  The state sweep reached a verdict for a *record* and then handed that record's **path** to `rm`.
+  A fresh `/implement-issue` preflight clears the previous run's artifacts and writes its own at
+  the same fixed names, so a path judged stale could be occupied by a **live** run's file by the
+  time the delete loop reached it. The `marker` arm never had this — it re-captures the file's
+  identity immediately before deleting — but the `gaps`, `review`, `issue` (#250) and `threads`
+  arms did.
+
+  - **The window is not instantaneous.** The delete loop makes a live `pr_state` round trip per
+    `threads` record, so a later record's `rm` can run seconds behind the scan that judged it.
+    Reproduced against the workflow block itself: a swept `issue-<n>.json` was the one a live run
+    had just written.
+  - **A content digest cannot see it, so `file-identity` is a new primitive rather than a
+    strengthened `marker-identity`.** These replacements are routinely *byte-identical* —
+    `gh issue view` returns the same JSON for an unchanged issue, an `.assoc` holds one word, and
+    `gap-prompt.txt` is rebuilt deterministically from both — so `cksum` compares equal and the
+    file is deleted anyway. `file-identity` composes `<inode>-<mtime>-<crc>-<size>` and is
+    documented as best-effort. `marker-identity` is unchanged on purpose: `implement-lib.sh`
+    derives the claim's identity from a *single* read of its bytes, and a `stat` component cannot
+    come out of one read.
+  - **The identity comes FROM the scan.** `state-scan --with-identity` appends it as a fourth
+    field, computed in the same loop iteration that classified the file, because only that loop can
+    bind the two facts to one observation. Building the set in the caller — walk the finished
+    records, fingerprint each path — reads whatever occupies the path *afterwards*, so the
+    delete-time comparison compares a replacement against itself and matches; that was the first
+    implementation of this fix and the independent review was right to reject it. The flag is
+    opt-in so the three-variable readers are untouched: `read` folds every surplus field into the
+    last variable, which here is a marker's branch name and a thread cache's PR number.
+  - **What it does not close, stated rather than implied.** Two syscalls still separate the
+    re-capture from the `rm`, as in the marker arm; and `state-scan`'s glob expands before its
+    per-file loop, so a file replaced between the two is outside this. Both residuals are
+    microseconds wide, and neither is what keeps the sweep safe alone — the `lock` and `marker`
+    records in the same scan are. Moving the file aside and verifying the operand (what
+    `implement-lib.sh` does to break a claim) was rejected: it unlinks, however briefly, a file
+    just decided to belong to somebody else, and a crash mid-way strands a sidecar the sweep
+    classifies `other` and never removes.
+  - **A kept file is reported** in the existing `SKIPPED … kept` shape, which stays distinct from
+    `REFUSED … left in place` (an `rm` that genuinely failed).
+  - **The regression executes the real workflow block** via a new `ADB-SNIPPET: state-sweep`
+    marker, not a mirrored copy, with the race made deterministic by a library wrapper; a control
+    drives the same fixture through the pre-fix loop and requires it to lose the files. Reverses
+    the carve-out recorded in D40; see D55.
+  - **Also fixed in `marker-identity`, a confirmed sibling**: `cksum < "$f" 2>/dev/null` silences
+    *cksum*, but a failed redirection is the **shell's** diagnostic and is emitted before cksum
+    runs — so an unreadable-but-present file printed `…: Permission denied` into a sweep whose
+    output contract is terse, from inside a command substitution where it reads as a failed step.
+    Both spellings now redirect the whole pipeline, as `implement-lib.sh`'s `_il_file_identity`
+    already did.
+
 - **`/release`'s run-state guards can stop the release, and every one of them is now driven by a
   test** (#313).
 

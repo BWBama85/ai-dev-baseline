@@ -508,13 +508,57 @@ files. In every non-race case that is the same answer `$RUN` gives (the pass del
 markers it proved stale, and a delete that fails or finds a changed file forces `RUN=keep`), and in
 a race it is the safe one.
 
+**And a pathname is not an identity, so every arm that deletes carries the discipline the `marker`
+arm already has (#305).** A verdict is reached for a *record*, and the record holds a path — but a
+fresh `/implement-issue` preflight clears the previous run's artifacts and writes its own at those
+same fixed names, so a path judged stale can be occupied by a live run's file by the time `rm`
+reaches it. That window is not instantaneous: the delete loop makes a **live `pr_state` round trip
+per `threads` record**, so a later record's deletion can be seconds behind the scan that judged it.
+Reproduced against this very block before the fix: a swept `issue-<n>.json` was the one a live run
+had just written.
+
+**A content digest cannot see it, which is why this is `file-identity` and not `marker-identity`.**
+The replacement here is routinely *byte-identical* — `gh issue view` returns the same JSON for an
+unchanged issue, an `.assoc` holds one word, and `gap-prompt.txt` is rebuilt deterministically from
+both — so a digest compares equal and the file is deleted anyway. `file-identity` asks whether this
+is the same **file**, not the same bytes. The marker arm keeps its digest deliberately: a replaced
+marker always differs in content, and `implement-lib.sh` derives the very same value from a *single*
+read of the claim's bytes for a race of its own.
+
+**The identity comes FROM the scan, not from a pass over its output.** `state-scan --with-identity`
+appends it as a fourth field, computed in the same loop iteration that classified the file, because
+only that loop can bind the two facts to one observation. Deriving it here — walk the finished
+records, fingerprint each path — looks equivalent and is the bug wearing the fix's clothes: by then
+the path may already hold a successor, so the fingerprint describes *it*, and the delete-time
+comparison compares a replacement against itself and matches. That was the first implementation of
+this fix, and an independent review was right to reject it. The flag is opt-in so the three-variable
+readers above are untouched — `read` folds every surplus field into the last variable, which here is
+a marker's branch name and a thread cache's PR number.
+
+**What this does NOT claim.** Two syscalls still separate the re-capture from the `rm`, exactly as in
+the marker arm above. Closing that would mean moving the file aside and verifying the operand — what
+`implement-lib.sh` does to break a *claim* — and that trade is wrong here: it unlinks, however
+briefly, a file we have just decided belongs to somebody else and may be reading, and a crash mid-way
+strands a sidecar `state-scan` classifies `other` and therefore never sweeps. Nor is `state-scan` an
+atomic snapshot: its glob expands before its per-file loop, so a file replaced between that expansion
+and its own iteration is outside what this closes. Both residuals are microseconds wide, and neither
+is what keeps the sweep safe on its own — the `lock` and `marker` records in this same scan are.
+
 ```bash
+# ADB-SNIPPET: state-sweep
 # Status-checked exactly like the first scan, and this is the snapshot that actually drives `rm`.
 # The library's deliberate failure path emits nothing before it dies, so an unchecked capture is
 # safe *by implementation* rather than *by contract* — but command substitution KEEPS partial
 # stdout on a non-zero exit, so a future mid-enumeration error would hand half a snapshot straight
 # to the delete loop. Fail closed structurally instead of relying on that staying true.
-if ! SCAN="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-scan "$STATE")"; then
+# `--with-identity` (#305): the scan appends each file's identity as a FOURTH field, computed inside
+# the same enumeration pass that classified it. This is the snapshot that drives `rm`, and the delete
+# below refuses unless the file is still the one this record describes. Deriving that fourth field
+# HERE instead — walk the finished records, fingerprint each path — was the first implementation and
+# it is the bug wearing the fix's clothes: by then the path may already hold a successor, so the
+# fingerprint describes IT and the delete-time comparison matches. Only the scan can bind the
+# classification and the identity to one observation.
+if ! SCAN="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-scan --with-identity "$STATE")"; then
   NOTES="${NOTES}REFUSED the state deletes — the pre-delete re-scan could not enumerate the state directory safely; nothing was swept
 "
   SCAN=""
@@ -543,10 +587,28 @@ GV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict gaps "$LOCK"
 IV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict issue "$LOCK" "$RUN_NOW")" || IV=keep
 RV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict review "$RUN_NOW")" || RV=keep
 
-# rm failures are REPORTED, never swallowed. A read-only state dir would otherwise leave every
-# eligible file in place while the report showed a clean, successful no-op — precisely what the
-# output contract says must never happen to work left behind.
+# sweep_file <path> <identity-as-judged> — delete ONE file, but only if it is still the file the
+# verdict was about (#305).
+#
+# TWO OUTCOMES THAT ARE NOT THE SAME THING, and collapsing them would hide the one that matters:
+#   SKIPPED … kept              the file changed, vanished, or has no readable identity. Nothing was
+#                               attempted; it belongs to somebody else now.
+#   REFUSED … left in place     the file IS the judged one and `rm` failed anyway — a read-only
+#                               state dir. rm failures are REPORTED, never swallowed, or a sweep
+#                               that removed nothing would show a clean, successful no-op.
+#
+# EVERY unknown keeps, exactly as `state-verdict` does. An empty judged identity (the scan could not
+# fingerprint it) and an empty current one (it is gone, or unreadable now) both fail the comparison,
+# so neither can be mistaken for a match — an identity that cannot be established is not an identity
+# that agrees.
 sweep_file() {
+  local now
+  now="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" file-identity "$1")"
+  if [ -z "$2" ] || [ -z "$now" ] || [ "$now" != "$2" ]; then
+    NOTES="${NOTES}SKIPPED ${1##*/} — it is no longer the file that was judged; kept
+"
+    return 0
+  fi
   if rm -f "$1" 2>/dev/null && [ ! -e "$1" ]; then
     CLEARED="${CLEARED}${1##*/}
 "
@@ -556,24 +618,27 @@ sweep_file() {
   fi
 }
 
-while IFS="$TABC" read -r kind sfile key; do
+# FOUR fields: this scan was taken `--with-identity`, and that fourth column is the only thing
+# standing between a stale verdict and a live run's file. Reading three here would silently fold the
+# identity into `$key` — which the `threads` arm passes to `pr_state` as a PR number.
+while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)
       [ "$GV" = stale ] || continue
-      sweep_file "$sfile"
+      sweep_file "$sfile" "$ident"
       ;;
     issue)
       [ "$IV" = stale ] || continue
-      sweep_file "$sfile"
+      sweep_file "$sfile" "$ident"
       ;;
     review)
       [ "$RV" = stale ] || continue
-      sweep_file "$sfile"
+      sweep_file "$sfile" "$ident"
       ;;
     threads)
       TV="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict threads "$(pr_state "$key")")" || continue
       [ "$TV" = stale ] || continue
-      sweep_file "$sfile"
+      sweep_file "$sfile" "$ident"
       ;;
   esac
 done <<EOF
@@ -600,7 +665,10 @@ liveness would name the wrong file as belonging to a live run.
 #
 # An `if`, not a trailing AND-list, so a healthy run — every stream under the threshold — does not
 # leave this block, the LAST of the step, on exit status 1.
-while IFS="$TABC" read -r kind sfile key; do
+# Four fields again — this loop reads the SAME `--with-identity` scan. It ignores the identity, but
+# a three-variable `read` would leave `$key` holding `<key>TAB<identity>`, which is a trap for the
+# next person who adds an arm that uses it.
+while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)   [ "$GV" = keep ] || continue ;;
     review) [ "$RV" = keep ] || continue ;;
