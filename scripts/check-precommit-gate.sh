@@ -424,4 +424,288 @@ eq "$alias_body" "1" "implement-issue-gate.sh DELEGATES to adb_owners_compatible
 copies="$(grep -rlE '\[ -n "\$a" \] \|\| return 0' "$ROOT/scripts" "$ROOT/agents" 2>/dev/null | sort)"
 eq "$copies" "$ROOT/scripts/lib/common.sh" "the three-way ownership comparison is spelled in exactly one file"
 
+# --- 17. THIS REPOSITORY'S OWN PROJECT GATE (#299) ---------------------------
+# Everything above drives the GLOBAL gate, and every project-gate case there substitutes a
+# purpose-built stub — a marker-and-exit-0, an exit-2, a parameterized exit code, a stdin recorder.
+# Each is the right instrument for what it measures (the HAND-OFF), and none of them is this
+# repository's gate. So the fast subset D25 actually ships — changed-file shellcheck, build-drift,
+# workflow-render, practice-index, fact-drift — had no fixture at all: the gate that runs at the end
+# of EVERY turn in this repo could regress and nothing here would notice.
+#
+# THE REAL SCRIPT, NOT A STUB, AND REAL CHECKS, NOT STUBBED ONES. The fixture is a throwaway COPY
+# of this worktree re-`git init`ed as `main`, so `.claude/scripts/precommit-gate.sh` resolves its
+# library at `$(dirname "$0")/../../scripts/lib/common.sh` and shells out to `scripts/build.sh` and
+# the three `check-*.sh` exactly as it does in production. A stubbed subset would test this suite's
+# idea of the gate rather than the gate.
+#
+# NOTHING HERE TOUCHES THE TRACKED TREE. Every mutation — a deleted library, an edited practice
+# file, a gate reverted to its pre-#299 shape — lands inside `$work`, and the fixture's own git is
+# what restores it between cases (the negative-testing rule in base/practices/self-review.md).
+fx="$work/projrepo"
+
+# The clean baseline every case starts from. `git checkout -- .` is the destructive form the
+# practices warn about, and it is correct HERE and only here: `$fx` is a throwaway `mktemp -d`
+# fixture whose every byte came from a copy, so there is no unstaged work in it to lose.
+# DELEGATES to check-lib.sh's shared fixture-identity wrapper rather than re-spelling its `-c`
+# flags; this suite already sources it, and a private copy of the same identity is how a signing
+# default silently starts applying to one suite's fixtures and not another's.
+fx_git()   { check_git "$fx" "$@"; }
+# A FAILED RESET IS REPORTED, never swallowed. Every case below deliberately breaks the fixture and
+# relies on this to put it back; a reset that quietly failed would leave the NEXT case running
+# against a library it thinks it restored, and that case would then pass or fail for a reason
+# unrelated to its name — a suite silently measuring the wrong thing, which is the exact failure
+# shape everything here exists to catch.
+fx_reset() {
+  fx_git checkout -q -- . && fx_git clean -qfd >/dev/null 2>&1 && return 0
+  bad "project gate: could not restore the fixture — every case after this one is now unreliable"
+  return 1
+}
+
+# Run the REAL project gate with CWD inside the fixture; sets PRC and POUT.
+# stdin is pinned to /dev/null for the reason run_gate above pins it: the gate must not depend on
+# a hook payload, and a case that let the terminal's stdin through would hide it if it did.
+fx_gate() { POUT="$(cd "$fx" && bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?; }
+
+# fx_mutate <exact-line> <sed-script> <label> — revert one line of the FIXTURE's gate to a
+# superseded shape, through check-lib.sh's shared harness. Only the file is bound here; the
+# before/after discipline that makes a mutation a proof rather than a decoration lives in one home.
+fx_mutate() { check_mutate_line "$fx/.claude/scripts/precommit-gate.sh" "$@"; }
+
+fx_setup() {
+  check_copy_worktree "$ROOT" "$fx" || return 1
+  # The run-state directory is per-run data, and carrying it in would let a LIVE /implement-issue
+  # marker reach case 17h's global gate and suppress the very hand-off that case exists to observe.
+  # CONFIRMED GONE, not merely asked to go: an `rm -rf` that failed would leave 17h silently
+  # measuring a suppression instead of a hand-off, and reporting a pass for it.
+  rm -rf "$fx/.claude/state"
+  [ ! -e "$fx/.claude/state" ] || return 1
+  git init -q "$fx" || return 1
+  fx_git symbolic-ref HEAD refs/heads/main || return 1
+  # Render before the baseline commit, so the fixture is self-consistent no matter what state the
+  # developer's own worktree is in. Without this, running this suite with an un-rebuilt `base/`
+  # would fail case 17a — reporting a gate defect for a stale checkout.
+  ( cd "$fx" && bash scripts/build.sh ) >/dev/null 2>&1 || return 1
+  fx_git add -A || return 1
+  fx_git commit -q -m seed || return 1
+  # A feature branch carrying a COMMITTED delta. Both halves are load-bearing: on the default
+  # branch the gate no-ops at the branch test, and with no delta at all it no-ops at the empty
+  # change set — either way it would exit 0 having run nothing, and a "clean tree → 0" case built
+  # that way passes while proving the gate never executed a single check.
+  fx_git checkout -q -b feat || return 1
+  printf 'a committed delta, so the gate has something to look at\n' > "$fx/fixture-delta.txt"
+  fx_git add fixture-delta.txt || return 1
+  fx_git commit -q -m delta || return 1
+}
+
+if fx_setup; then
+  # 17a. The precondition the next case rests on, asserted rather than assumed.
+  #
+  # THE COMMAND'S STATUS IS CHECKED SEPARATELY FROM ITS OUTPUT. `eq "$(fx_git status --porcelain)"
+  # ""` discards the status, and a git that FAILED prints nothing on stdout — indistinguishable
+  # from a clean tree. The precondition would then be satisfied precisely when it could not be
+  # evaluated.
+  fx_status="$(fx_git status --porcelain)"; fx_status_rc=$?
+  eq "$fx_status_rc" "0" "project gate: the fixture's status is readable at all"
+  eq "$fx_status" ""     "project gate: the fixture's working tree is clean"
+  # Named, not merely non-empty: `hasnt "$x" ""` can never pass (every string contains the empty
+  # string), and an emptiness test written that way is a precondition that always reports failure.
+  has "$(fx_git diff --name-only main...HEAD)" "fixture-delta.txt" \
+      "project gate: the fixture branch carries a committed delta"
+
+  # 17b. Clean tree + feature branch + a delta → exit 0, with all four checks OBSERVED running.
+  # The exit code alone cannot tell "every check passed" from "the gate no-opped and ran nothing",
+  # which is the blind spot case 8 was rewritten to remove. The per-check PASS lines can.
+  # ONE assertion carrying the whole diagnostic, rather than an `eq` plus a `bad`: those would
+  # count the same defect twice, and the count is what check_summary reports.
+  fx_gate
+  if [ "$PRC" -eq 0 ]; then ok; else
+    bad "project gate: clean tree on a feature branch → want exit 0, got $PRC — the gate reported: $POUT"
+  fi
+  has "$POUT" "build-drift      PASS"    "project gate: build-drift actually RAN and passed"
+  has "$POUT" "workflow-render  PASS"    "project gate: workflow-render actually RAN and passed"
+  has "$POUT" "practice-index   PASS"    "project gate: practice-index actually RAN and passed"
+  has "$POUT" "fact-drift       PASS"    "project gate: fact-drift actually RAN and passed"
+
+  # 17c. A REAL red check → exit 2, attributed by name. Editing a practice file makes `build.sh`
+  # regenerate the three root docs, which is what the gate's own build-drift check compares — so
+  # this reddens the production check rather than a stand-in for it, and reddens exactly one.
+  printf '\nA sentence that exists only inside the throwaway fixture.\n' >> "$fx/base/practices/self-review.md"
+  fx_gate
+  eq "$PRC" "2" "project gate: a red check → exit 2 (blocks the stop)"
+  has "$POUT" "build-drift      FAIL" "project gate: the failing check is named, not just counted"
+  has "$POUT" "blocking stop"         "project gate: the block is explained on the way out"
+  # THE LAST CHECK, not a middle one. `build-drift` is first and `fact-drift` is last, so a gate
+  # that aborted straight after `practice-index` would satisfy an assertion naming that check while
+  # flatly contradicting the claim being made. Only the final line proves the subset ran to the end.
+  has "$POUT" "fact-drift       PASS" "project gate: one red check does not abort the rest of the subset"
+  fx_reset
+
+  # 17d. common.sh MISSING → FAIL LOUD (exit 2), not the silent exit 0 this shipped with. [#299 core]
+  rm -f "$fx/scripts/lib/common.sh"
+  fx_gate
+  eq "$PRC" "2" "project gate: common.sh missing → exit 2 (fail loud, never a silent pass)"
+  has "$POUT" "FATAL" "project gate: common.sh missing → the message is FATAL (loud)"
+  hasnt "$POUT" "build-drift" "project gate: a broken library stops the run BEFORE any check pretends to have run"
+
+  # 17e. …and loud on the DEFAULT branch too. A broken install is not an unfamiliar repo, so the
+  # library check has to precede the branch no-op — exactly as case 6 requires of the global gate.
+  #
+  # THE CHECKOUT IS ASSERTED, because this case is the one whose fixture failure is invisible: the
+  # missing-library gate returns 2 on EITHER branch, so a checkout that silently failed would leave
+  # the fixture on `feat` and this case would report that the default-branch path passed without
+  # ever having exercised it.
+  fx_git checkout -q main; eq "$?" "0" "project gate: the fixture reached the default branch"
+  eq "$(fx_git rev-parse --abbrev-ref HEAD)" "main" "project gate: …and is demonstrably on it"
+  fx_gate
+  eq "$PRC" "2" "project gate: common.sh missing + default branch → exit 2 (loud everywhere)"
+  fx_git checkout -q feat; eq "$?" "0" "project gate: the fixture returned to the feature branch"
+  fx_reset
+
+  # 17f. common.sh PRESENT but TRUNCATED → still exit 2. This is the case the function probe exists
+  # for and the one a `. lib || …` test cannot see: the file sources cleanly, exits 0, and defines
+  # nothing at all.
+  printf '# truncated by a partial write\n' > "$fx/scripts/lib/common.sh"
+  fx_gate
+  eq "$PRC" "2" "project gate: truncated common.sh → exit 2 (the source succeeded; the library is still gone)"
+  has "$POUT" "adb_default_branch" "project gate: the truncated-library message names the helper that is missing"
+  hasnt "$POUT" "build-drift" "project gate: a truncated library also stops before any check runs"
+  # …AND THE FLOOR BLOCK STAYS QUIET. This is the assertion that makes the second-site fix real: the
+  # bootstrap tested only that common.sh existed, so against this same input it called
+  # `adb_require_bash` as an undefined command. The exit code cannot see that — the load below
+  # supplies the 2 either way — so without this line the probe could be reverted and all of case
+  # 17f would stay green.
+  hasnt "$POUT" "command not found" "project gate: a truncated library does not make the floor bootstrap call a missing function"
+  fx_reset
+
+  # 17f2. common.sh present and NON-EMPTY but UNSOURCEABLE — a syntax error from a partial write.
+  # A third distinct failure, and the only one that exercises the source-STATUS branch: the file
+  # test passes, the source returns non-zero, and no function probe is ever reached. Without it that
+  # branch has never been observed blocking anything.
+  printf 'adb_default_branch() {\n' > "$fx/scripts/lib/common.sh"
+  fx_gate
+  eq "$PRC" "2" "project gate: unsourceable common.sh → exit 2"
+  has "$POUT" "failed to source" "project gate: …and the message distinguishes it from a missing or truncated file"
+  hasnt "$POUT" "build-drift" "project gate: an unsourceable library also stops before any check runs"
+  fx_reset
+
+  # 17f3. TRUNCATED AFTER THE DOUBLE-SOURCE GUARD — the case the other three cannot reach, and the
+  # one that made the source-status check vestigial in production. `common.sh` opens with
+  # `_ADB_COMMON_SH_LOADED` (:35-38), so a file that loads far enough to set the guard and define
+  # what the gate needs, and only THEN hits a syntax error, fails the bootstrap and makes the
+  # gate's own `.` a no-op returning 0. Both probes then pass on functions the partial load
+  # defined, and the gate ran the entire subset with the promised FATAL never firing.
+  #
+  # Appending an unterminated function body is exactly that shape: everything before it executes.
+  printf '\nadb_truncated_tail() {\n' >> "$fx/scripts/lib/common.sh"
+  fx_gate
+  eq "$PRC" "2" "project gate: common.sh truncated after the double-source guard → exit 2"
+  has "$POUT" "failed to source" "project gate: …reported as a load failure, not incidentally by some other check"
+  hasnt "$POUT" "build-drift" "project gate: …and the subset never runs on a partially-loaded library"
+  fx_reset
+
+  # 17g. An unbound expansion while the library loads must not DECIDE anything. Under `set -u` it
+  # killed the shell outright at rc 1 — neither this gate's blocking 2 nor a pass, and catchable by
+  # no `||`, because the shell is gone before the next word is read. With the load relaxed, the
+  # library still defines everything, so the honest answer is the ordinary green one.
+  printf '\n: "${ADB_CHECK_DEFINITELY_UNSET_XYZ}"\n' >> "$fx/scripts/lib/common.sh"
+  fx_gate
+  eq "$PRC" "0" "project gate: an unbound expansion at load time does not decide the gate's verdict"
+  # The LAST check again, for the same reason 17c names it: exit 0 plus the FIRST check's PASS is
+  # equally consistent with a gate that stopped right after it.
+  has "$POUT" "fact-drift       PASS" "project gate: …and the subset still runs to completion"
+  fx_reset
+
+  # 17h. THE PRODUCTION PATH. In real life nothing invokes the project gate directly — the global
+  # gate `exec`s it (#240). Asserting an exit code here would prove nothing, because "handed off"
+  # and "stepped aside" share it; the project gate's OWN check names are a string the global gate
+  # cannot produce, so they are what distinguishes the two.
+  handoff="$work/handoff"; mkdir -p "$handoff/lib"
+  cp "$ROOT/agents/claude/scripts/precommit-gate.sh" "$handoff/precommit-gate.sh"
+  cp "$ROOT/scripts/lib/common.sh" "$ROOT/scripts/lib/project-gates.sh" "$handoff/lib/"
+  HOUT="$(cd "$fx" && bash "$handoff/precommit-gate.sh" </dev/null 2>&1)"; HRC=$?
+  eq "$HRC" "0" "project gate: the global gate exits with the project gate's status"
+  has "$HOUT" "build-drift      PASS" "project gate: the global gate reaches THIS repo's real gate, not a stub"
+
+  # --- 17i-17k. The three assertions above are guards, so each is OBSERVED FAILING -------------
+  # A guard over a hazard nothing triggers reports a clean run either way. Each mutation returns
+  # ONE line of the fixture's gate to its pre-#299 shape and requires the case above it to come
+  # back with the old, wrong answer — which is what proves the case can answer wrong at all.
+
+  # 17i. The missing-library bypass restored → the silent exit 0 that shipped.
+  if fx_mutate '[ -f "$lib_common" ] || gate_fail_loud "shared library not found: scripts/lib/common.sh"' \
+       's#^\[ -f "\$lib_common" \] || gate_fail_loud .*$#[ -f "$lib_common" ] || exit 0#' \
+       "mut-missing"; then
+    rm -f "$fx/scripts/lib/common.sh"
+    fx_gate
+    eq "$PRC" "0" "mut-missing: the pre-#299 gate DOES silently pass on a missing library (so 17d can fail)"
+  fi
+  fx_reset
+
+  # 17j. The corrupt-library bypass restored → a truncated library silently passes too. Mutated
+  # separately from 17i because they are two different bypasses on two different lines, and one
+  # blanket edit could not tell which of them 17d and 17f each depend on.
+  if fx_mutate '  || gate_fail_loud "scripts/lib/common.sh loaded but did not define adb_default_branch (corrupt or truncated)"' \
+       's#^  || gate_fail_loud "scripts/lib/common.sh loaded.*$#  || exit 0#' \
+       "mut-corrupt"; then
+    printf '# truncated by a partial write\n' > "$fx/scripts/lib/common.sh"
+    fx_gate
+    eq "$PRC" "0" "mut-corrupt: the pre-#299 gate DOES silently pass on a truncated library (so 17f can fail)"
+  fi
+  fx_reset
+
+  # 17k. The floor block's `set +u` removed → the unbound expansion kills the gate again. The
+  # INDENTED spelling is the floor block's, and it is the one that fires: that source runs first,
+  # so the shell is already gone before the load below it is reached.
+  # `[+]`, NOT `\+`. The two BREs disagree about the escape and only one of them is a no-op: BSD
+  # reads `\+` as a literal plus, GNU reads it as the one-or-more QUANTIFIER on the preceding space,
+  # so on Linux this pattern meant "set, one-or-more spaces, u" and matched nothing at all. The
+  # mutation silently stopped mutating, which is precisely the state `check_mutate_line`'s
+  # post-condition exists to refuse — it caught this on CI after a local green. A bracket expression
+  # holding one ordinary character is the same in both, so it needs no escape and carries no dialect.
+  if fx_mutate '  set +u' 's#^  set [+]u$#  :#' "mut-setu"; then
+    printf '\n: "${ADB_CHECK_DEFINITELY_UNSET_XYZ}"\n' >> "$fx/scripts/lib/common.sh"
+    fx_gate
+    eq "$PRC" "1" "mut-setu: without the relaxation an unbound expansion kills the gate at rc 1 (so 17g can fail)"
+    hasnt "$POUT" "build-drift" "mut-setu: …having run nothing at all"
+  fi
+  fx_reset
+
+  # 17l. The source-STATUS guard removed → an unsourceable library falls through to the function
+  # probe, which reports the wrong cause. Distinct from 17i/17j because it is a third bypass on a
+  # third line, and 17f2 is the only case that depends on it.
+  if fx_mutate '[ "$lib_rc" -eq 0 ] || gate_fail_loud "shared library failed to source: scripts/lib/common.sh"' \
+       's#^\[ "\$lib_rc" -eq 0 \] || gate_fail_loud .*$#:#' "mut-srcstatus"; then
+    printf 'adb_default_branch() {\n' > "$fx/scripts/lib/common.sh"
+    fx_gate
+    hasnt "$POUT" "failed to source" "mut-srcstatus: without the status guard the source failure is mis-reported (so 17f2 can fail)"
+  fi
+  fx_reset
+
+  # 17n. The bootstrap-status override removed → the double-source guard hides the failure again,
+  # and the gate runs the whole subset on a partially-loaded library. Pins 17f3, which no other
+  # assertion here covers: every other broken-library case fails the FIRST load too, so all of them
+  # stay green with this line gone.
+  if fx_mutate '[ "${boot_rc:-0}" -eq 0 ] || lib_rc="$boot_rc"' \
+       's#^\[ "\${boot_rc:-0}" -eq 0 \] || lib_rc="\$boot_rc"$#:#' "mut-bootrc"; then
+    printf '\nadb_truncated_tail() {\n' >> "$fx/scripts/lib/common.sh"
+    fx_gate
+    hasnt "$POUT" "failed to source" "mut-bootrc: without the override the guarded re-source hides the failure (so 17f3 can fail)"
+    has "$POUT" "build-drift" "mut-bootrc: …and the subset runs on a partially-loaded library"
+  fi
+  fx_reset
+
+  # 17m. The floor block's function probe reverted to the unconditional call → `command not found`
+  # returns. This is the mutation that makes 17f's quiet-bootstrap assertion mean something: the
+  # gate still exits 2 either way, so nothing else in this suite would notice the regression.
+  if fx_mutate '  command -v adb_require_bash >/dev/null 2>&1 && adb_require_bash "$@"' \
+       's#^  command -v adb_require_bash .*$#  adb_require_bash "$@"#' "mut-floorprobe"; then
+    printf '# truncated by a partial write\n' > "$fx/scripts/lib/common.sh"
+    fx_gate
+    has "$POUT" "command not found" "mut-floorprobe: without the probe the bootstrap DOES call a missing function (so 17f can fail)"
+  fi
+  fx_reset
+else
+  bad "project-gate fixture setup failed — none of the #299 cases ran, which is not a pass"
+fi
+
 check_summary "precommit-gate"

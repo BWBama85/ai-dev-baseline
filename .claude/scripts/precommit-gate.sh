@@ -34,11 +34,27 @@ set -u
 #
 # The source is CONDITIONAL on purpose. This file has a deliberate broken-install posture of its
 # own a few lines below, and the floor gate is not entitled to override it — if the shared library
-# is missing, that decision stays with the machinery that already owns it.
+# cannot be loaded, that decision stays with the machinery that already owns it.
+#
+# BUT THE CONDITION IS "DID IT LOAD", NOT "DOES THE FILE EXIST" (#299). A file test alone models a
+# MISSING library and misses a CORRUPT one: a truncated common.sh exists, sources, and defines
+# nothing, so `adb_require_bash` ran as an undefined command — `command not found` on stderr, its
+# 127 discarded, and the gate carried on with the floor silently unenforced. That is the same
+# missing-vs-corrupt distinction the load below is about, one site earlier.
+#
+# `set +u` ACROSS THE SOURCE, for the reason check-precommit-gate.sh already writes down: an
+# unbound expansion while a library loads is fatal under `set -u` and kills the shell OUTRIGHT.
+# Measured at rc 1 — neither a pass nor this gate's blocking 2 — and no `||` can catch it, because
+# the shell is gone before the next word is read. Sourcing is not the place to enforce `set -u`;
+# it governs everything this gate actually does.
 if [ -f "$(dirname "$0")/../../scripts/lib/common.sh" ]; then
+  set +u
   # shellcheck source=/dev/null
   . "$(dirname "$0")/../../scripts/lib/common.sh"
-  adb_require_bash "$@"
+  # THIS status is the only one that observes a real load — see the load below, which cannot.
+  boot_rc=$?
+  set -u
+  command -v adb_require_bash >/dev/null 2>&1 && adb_require_bash "$@"
 fi
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -50,9 +66,62 @@ cd "$repo_root" || exit 0
 # whose default branch is not named `main` — it would classify the real default branch as a
 # feature branch and gate on it. adb_default_branch already models the local main/master fallback
 # and is the single home for this decision.
+#
+# THAT MAKES THE LIBRARY REQUIRED, SO A FAILED LOAD FAILS LOUD (exit 2) — never `exit 0` (#299).
+# These two lines used to read `. … || exit 0` and `command -v … || exit 0`, so a missing or
+# truncated common.sh made this gate SILENTLY PASS at the end of every turn, in exactly the words
+# a clean run uses. Nothing distinguished the two. That is enforcement secretly off — the
+# inversion the global gate's `fail_loud` exists to prevent (#35) and the one §5 of
+# docs/design-principles.md names outright: "no gates detected" (degrade) and "my own library is
+# gone" (fail loud) must never look the same to a caller.
+#
+# THE PRINTER IS LOCAL, and that is forced rather than a copy of convenience — golden rule 4's
+# "source the shared primitive, never copy it" cannot reach here, because the one thing this
+# function has to report is that `scripts/lib/common.sh` could not be loaded. A helper for that
+# cannot live in that file. The REMEDY differs from the global gate's for the same reason the code
+# does: that gate's library is an installed symlink repaired by `baseline update`, while this one
+# is a tracked file in this very repo.
+gate_fail_loud() {
+  printf '\nprecommit-gate: FATAL — %s\n' "$1" >&2
+  printf 'This is NOT a pass: the gate could not load its own dependency, so it checked NOTHING,\n' >&2
+  printf 'and the turn is BLOCKED. scripts/lib/common.sh is a TRACKED file in this repo — restore\n' >&2
+  printf 'it (git status -- scripts/lib/common.sh) and retry.\n' >&2
+  exit 2
+}
+lib_common="$repo_root/scripts/lib/common.sh"
+[ -f "$lib_common" ] || gate_fail_loud "shared library not found: scripts/lib/common.sh"
+# `set +u` across the source, and the status captured on its OWN line BEFORE `set -u` restores it
+# (`set -u` succeeds, which would overwrite `$?` with 0 and report every broken library as clean).
+# See the floor block above for why the relaxation is needed at all.
+set +u
 # shellcheck source=/dev/null
-. "$repo_root/scripts/lib/common.sh" || exit 0
-command -v adb_default_branch >/dev/null 2>&1 || exit 0
+. "$lib_common"
+lib_rc=$?
+set -u
+# THE FIRST LOAD IS THE AUTHORITATIVE ONE, and on the healthy path it is the ONLY one. `common.sh`
+# opens with a double-source guard (`_ADB_COMMON_SH_LOADED`, :35-38), so once the bootstrap above
+# has loaded it this `.` returns 0 through that guard WITHOUT reading the file again — `lib_rc`
+# then reports the guard, not the library.
+#
+# That is not a corner: the bootstrap runs on every ordinary invocation, so `lib_rc` is 0 by
+# construction almost always. A `common.sh` truncated AFTER the guard and after the two functions
+# this gate needs therefore failed the bootstrap, short-circuited here, satisfied both probes
+# (they were defined before the truncation) and ran the whole subset — the promised FATAL never
+# firing. Found in review on the PR for #299.
+#
+# So a non-zero bootstrap status OVERRIDES: either load failing is a failed load. `${boot_rc:-0}`
+# because the bootstrap is conditional — when it did not run, this source is a real one and its own
+# status is the honest answer.
+[ "${boot_rc:-0}" -eq 0 ] || lib_rc="$boot_rc"
+[ "$lib_rc" -eq 0 ] || gate_fail_loud "shared library failed to source: scripts/lib/common.sh"
+# AND THEN PROBE FOR THE FUNCTION, because the source's status above is necessary and NOT
+# SUFFICIENT. A sourced file returns its LAST command's status, so a zero says only that the last
+# thing in the file worked — not that the file loaded. A truncated library is precisely the case
+# that gap exists for: it sources cleanly, exits 0, and defines nothing at all. Both checks are
+# kept because they catch different corruptions (an unsourceable file vs. a sourceable empty one)
+# and report different causes.
+command -v adb_default_branch >/dev/null 2>&1 \
+  || gate_fail_loud "scripts/lib/common.sh loaded but did not define adb_default_branch (corrupt or truncated)"
 default_branch="$(adb_default_branch "$repo_root")"
 
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"

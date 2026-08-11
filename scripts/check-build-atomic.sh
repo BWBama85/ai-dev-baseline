@@ -132,28 +132,15 @@ tmps() {
 
 # --- the mutation primitive -------------------------------------------------------------------
 
-# mutate_line <file> <exact-line> <sed-script> <label>
+# mutate_line <file> <exact-line> <sed-script> <label> — a thin DELEGATION to check-lib.sh's
+# `check_mutate_line`, which is where this harness now lives.
 #
-# Requires EXACTLY ONE line of <file> to equal <exact-line> before the edit and NONE after. Both
-# halves matter: without the first, a rename in build.sh turns the mutation into a no-op and the
-# "proof" becomes an assertion about unmodified code; without the second, a sed that matched but did
-# not substitute would do the same. Whole-line matching, because these needles are substrings of one
-# another's neighbours and only one line is being changed.
-mutate_line() {
-  local f="$1" line="$2" script="$3" label="$4" n
-  n="$(grep -Fxc -- "$line" "$f")"
-  if [ "$n" -ne 1 ]; then
-    bad "$label: expected exactly 1 line [$line] in the copied build.sh, found $n — the mutation harness no longer describes the code it mutates, so it proves nothing"
-    return 1
-  fi
-  sed "$script" "$f" > "$f.mut" && mv "$f.mut" "$f" || { bad "$label: could not apply the mutation"; return 1; }
-  n="$(grep -Fxc -- "$line" "$f")"
-  if [ "$n" -ne 0 ]; then
-    bad "$label: the mutation left [$line] in place ($n remaining) — it did not take effect"
-    return 1
-  fi
-  return 0
-}
+# It was promoted when check-precommit-gate.sh needed the same discipline for #299: a second
+# byte-identical copy of a mutation harness is precisely the drift this repo's own law forbids, and
+# a harness that has silently diverged between two suites is worse than one home, because each
+# suite's proofs then rest on a different set of guarantees. The alias stays so the call sites below
+# keep reading in build.sh's own vocabulary — it must remain a DELEGATION, never a second copy.
+mutate_line() { check_mutate_line "$@"; }
 
 # mutate_fixed_temp <build.sh> <label> — return staging to the superseded fixed `$dest.tmp` shape.
 # Two edits, because that is what restoring it takes: the unique name, and the mode it no longer
