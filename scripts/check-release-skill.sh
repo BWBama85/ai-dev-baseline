@@ -729,13 +729,24 @@ fi
 # unconditionally — or one that never assigned at all. This is the case that cannot: `roll-preflight`
 # interpolates the value it read into the rollover's `--version`, so the recorded argv is proof that
 # `need` wrote `v9.9.9` through the nameref into its CALLER's `v`.
-rel_case 'VERSION=v9.9.9' roll-preflight
-eq "$REL_RC" 0  "roll-preflight/version pinned: succeeds when the value IS recorded"
-eq "$REL_BL" 'release
+#
+# THE EXPECTED ARGV HAS ONE HOME, and that is not tidiness — it is the defect this variable
+# replaces. The literal was written out twice, here and in M3's "did it still deliver?" test; when
+# the stub changed from `"$*"` to one-argument-per-line, this copy was updated and M3's was not. M3
+# then compared against a space-joined string the log can no longer produce, so it took the `else
+# ok` branch unconditionally and proved nothing — a mutation harness silently asserting nothing,
+# which is the exact shape this file exists to catch. Sharing the constant makes that drift
+# impossible, and the assertion below passing is what proves M3's comparison is live: the same
+# string, compared the same way, is known to match on unmutated code.
+ROLL_ARGV='release
 roll
 --version
 v9.9.9
---dry-run' "roll-preflight/version pinned: the value reaches the caller through the nameref, as its own argv word"
+--dry-run'
+rel_case 'VERSION=v9.9.9' roll-preflight
+eq "$REL_RC" 0  "roll-preflight/version pinned: succeeds when the value IS recorded"
+eq "$REL_BL" "$ROLL_ARGV" \
+   "roll-preflight/version pinned: the value reaches the caller through the nameref, as its own argv word"
 
 # --- MUTATION PROOF: the new assertions are required to go RED -------------------------------------
 # Against a COPY of the driver, never the tracked file (base/practices/self-review.md: editing the
@@ -804,7 +815,7 @@ if check_mutate_line "$FIX_DRV" \
      's|^  _need_dest="\$(rs "\$2")"$|  _need_dest=""|' \
      "M3 need never assigns"; then
   rel_case 'VERSION=v9.9.9' roll-preflight
-  if [ "$REL_BL" = 'release roll --version v9.9.9 --dry-run' ]; then
+  if [ "$REL_BL" = "$ROLL_ARGV" ]; then
     bad "M3: a need() that never assigns still delivered the value — the present-value case proves nothing"
   else ok; fi
 fi
