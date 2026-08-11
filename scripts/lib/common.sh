@@ -3527,6 +3527,10 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
     # with the last line consumed in WFFLOWEND. Returns 1 only when the collection actually CLOSED
     # within `lim`; 0 leaves WFFLOWTXT empty and the caller falls back to the opening line alone.
     #
+    # CALL IT ONLY WITH TEXT THAT OPENS A COLLECTION (`s ~ /^[[{]/` — every call site tests that).
+    # Handed anything else it finds no opening bracket, walks to `lim`, and refuses — safe, but it
+    # has read the rest of the file to say so.
+    #
     # THE RETURN VALUE IS THE WHOLE SAFETY ARGUMENT. A partial join is worse than no join: half a
     # `branches:` list reads as a filter that names some branches and not the target, which is
     # indistinguishable from a filter that genuinely excludes it. Refusing outright keeps the
@@ -3568,7 +3572,12 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
           if (c == "[" || c == "{") depth++
           else if (c == "]" || c == "}") {
             depth--
-            if (depth <= 0) { WFFLOWTXT = WFFLOWTXT keep; WFFLOWEND = i; return (depth == 0) }
+            # WFFLOWTXT IS PUBLISHED ONLY ON SUCCESS, on every exit from this function. Callers all
+            # branch on the return value, so leaving text behind on the `depth < 0` exit would be
+            # harmless TODAY and a trap for the next call site — the one that reads the buffer
+            # because it happens to be populated. Failure means empty, with no exception.
+            if (depth < 0) { WFFLOWTXT = ""; WFFLOWEND = at; return 0 }
+            if (depth == 0) { WFFLOWTXT = WFFLOWTXT keep; WFFLOWEND = i; return 1 }
           }
         }
         WFFLOWTXT = WFFLOWTXT keep " "
@@ -3760,6 +3769,12 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
       }
       for (j = 1; j <= n; j++) JE[j] = (j < n ? JS[j + 1] - 1 : jobs_end)
       for (j = 1; j <= n; j++) {
+        # RESET AT THE TOP OF THE ITERATION, not beside the loop that reads it. Two `continue`s sit
+        # between here and there (an inline mapping, and a job with no properties at all), so a
+        # reset further down is correct only for as long as nobody adds a third path that reads
+        # this before reaching it. That is a property of the current control flow, not of the
+        # variable, and it is not the kind of thing to leave a future edit to rediscover.
+        mergek = 0
         printf "JOB\t%d\t%s\n", j, JK[j]
         printf "RANGE\t%d\t%d\t%d\n", j, JS[j], JE[j]
         # WHAT SITS ON THE JOB-KEY LINE ITSELF, and the three cases are NOT interchangeable.
@@ -3806,7 +3821,6 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
         WFCOL[JS[j]] = jc
         pc = adb_wf_childcol(JS[j], JE[j])
         if (pc < 0) continue
-        mergek = 0
         for (i = JS[j] + 1; i <= JE[j]; i++) {
           if (adb_wf_blank(WFL[i])) continue
           if (adb_wf_lead(WFL[i]) != pc) continue

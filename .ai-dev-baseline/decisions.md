@@ -4309,4 +4309,8 @@ limit: none of them is sufficient alone.
              lets the `keyed` test see the whole mapping. The block-property loop is now skipped for
              an inline mapping outright: it had been reading flow-syntax fragments (`Real Name,`,
              `ubuntu-26.04,`) out of the body and emitting them as a check name and a runner label.
+- observed:  38 added assertions driven red against a copy of pre-fix `main` (22 · 15 · 1 across the
+             three suites), plus two mutations for the guards whose failure mode is silence: a span
+             that publishes its partial join (the all-or-nothing refusal), and a `<merge key>` label
+             applied without the `ro == ""` condition (its scope).
 - baseline-issue: n/a — this repo IS the baseline; #291 is the tracking issue.

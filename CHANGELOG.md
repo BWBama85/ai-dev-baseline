@@ -42,11 +42,18 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     rather than skipping it — and now names the cause, `runs on '<merge key>'` instead of an
     uninformative `'<none>'`, but only where `<none>` would have gone: a merging job that declares
     its own `runs-on:` is still judged on that label.
-  - **Every new assertion was observed failing.** The 19 that encode the fix were driven red against
-    a copy of the pre-fix tree; the guards whose failure mode is silence — the all-or-nothing refusal
-    and the scope of the `<merge key>` label — were each driven red by a targeted mutation of the one
-    line they protect. Also corrects the record grammar in `common.sh`'s header, which had drifted:
-    `STEP` and the `keyed` / `alias` / `blockname` / `blockrunner` flags were emitted and undocumented.
+  - **The new guards were observed failing.** 38 of the added assertions were driven red against a
+    copy of the pre-fix tree — 22 in `check-common-lib.sh`, 15 in `check-repo-settings.sh`, 1 in
+    `check-bash-floor-guard.sh` — and their failure output is the reproduction record (`JOB|2|runs-on`
+    for the phantom job, `NAME|1|Real Name,` for the flow-syntax fragment, `got [Base Name|alt|]` for
+    the phantom context). The rest are invariant guards that pass both ways by design: `RANGE`/`STEP`
+    line numbers, the anchor job, and the floor lint's verdict, which was already correctly red and
+    gained only a better diagnosis. The two whose failure mode is *silence* — the all-or-nothing
+    refusal, and the scope of the `<merge key>` label — were each driven red by a targeted mutation of
+    the single line they protect, since no pre-fix run exercises them.
+  - **Also corrects the record grammar** in `common.sh`'s header, which had drifted: `STEP` and the
+    `keyed` / `alias` / `blockname` / `blockrunner` flags were emitted by the code and absent from the
+    only place a consumer author could learn they exist.
 
 - **`/cleanup` deletes state artifacts by identity, not by pathname, so a run that recreates the
   same name between the pre-delete scan and the `rm` keeps its files** (#305).

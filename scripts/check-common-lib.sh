@@ -2016,6 +2016,27 @@ eq "${ adb_wf_jobs "$wfd/mergekey.yml" | grep -c 'merge'; }" "1" "the merge flag
 printf 'on:\n  pull_request:\n    <<: *filters\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mergeon.yml"
 has "${ wfon mergeon.yml; }" "PRFILTER|merge" "a <<: under pull_request is reported as a filter this reader cannot prove"
 
+# THE FLAG DOES NOT BLEED INTO THE NEXT JOB. It is per-job state in a function-wide variable, so a
+# job following a merging one is where a missed reset would show — and it would show as a SKIP of a
+# perfectly readable job, which is quiet.
+printf 'on:\n  pull_request:\njobs:\n  a:\n    <<: *x\n    runs-on: ubuntu-26.04\n  b:\n    runs-on: ubuntu-26.04\n' > "$wfd/mergeorder.yml"
+has   "${ wf mergeorder.yml; }" "FLAG|1|merge" "the merging job is flagged..."
+hasnt "${ wf mergeorder.yml; }" "FLAG|2|merge" "...and the job AFTER it is not"
+
+# A CLOSING BRACKET OUTDENTED PAST ITS BLOCK is malformed YAML, and the join must refuse rather than
+# reach for it: the bound is the trigger's own block, so this is the shape where "join across lines"
+# and "respect the block structure" disagree. Refusing lands on the under-reporting side.
+printf 'on:\n  pull_request:\n    branches: [\n      main\n  ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mloutdent.yml"
+has   "${ wfon mloutdent.yml; }" "PRFILTER|branches" "an outdented closing bracket still reports the filter..."
+hasnt "${ wfon mloutdent.yml; }" "PRBRANCH|main"     "...and invents no entries from a collection it could not close"
+
+# BYTES, NOT CHARACTERS. The reader runs under LC_ALL=C, so the joiner walks bytes; every delimiter
+# it tests for is ASCII and every UTF-8 continuation byte is >= 0x80, so a non-ASCII branch pattern
+# can neither be split nor truncated by the scan.
+printf 'on:\n  pull_request:\n    branches: [\n      "r\xc3\xa9l\xc3\xa9ase/na\xc3\xafve",\n      main\n    ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mluni.yml"
+has "${ wfon mluni.yml; }" "PRBRANCH|réléase/naïve" "a UTF-8 branch pattern survives the join byte-for-byte"
+has "${ wfon mluni.yml; }" "PRBRANCH|main"          "...and the entry after it is still read"
+
 # THE TWO CHANGES TOGETHER, in one file, because each keeps parser state (WFFLOWEND, the joined
 # text) that the other could inherit. RANGE and STEP are asserted by LINE NUMBER: the join must
 # never renumber, delete, or prejoin WFL, which is what the floor lint's step rules ride on.
