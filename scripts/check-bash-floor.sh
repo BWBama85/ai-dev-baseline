@@ -551,6 +551,9 @@ scripts/check-lib.sh
 # parameter-expansion suffix, and a raw tab in either is invisible to a reader and easily eaten by
 # an editor.
 _ADB_SF_TAB="$(printf '\t')"
+# A literal newline, built the only way a command substitution allows: the substitution strips
+# trailing newlines, so the sentinel character is appended and then removed.
+_ADB_SF_NL="$(printf '\nx')"; _ADB_SF_NL="${_ADB_SF_NL%x}"
 
 # THE CANDIDATE SEAM, and it exists for the same reason ADB_BASH_FLOOR does: so the negative half of
 # this rule can be OBSERVED failing on a host that has no sub-floor bash. Newline-separated
@@ -580,7 +583,7 @@ sub_floor_candidates() {
 # never `sort -V`, which this repo bans outright.
 sub_floor_subject() {
   _sf_cands="$(sub_floor_candidates)"
-  _sf_seen="" _sf_best="" _sf_bestv="" _sf_c="" _sf_v=""
+  _sf_seen="" _sf_best="" _sf_bestv="" _sf_c="" _sf_v="" _sf_refused=0
   while IFS= read -r _sf_c; do
     [ -n "$_sf_c" ] || continue
     # Duplicates are ordinary, not exceptional: `command -v bash` routinely repeats a fixed prefix
@@ -593,6 +596,12 @@ sub_floor_subject() {
     # guard must not quietly normalize an input it cannot represent.
     case "$_sf_c" in
       *"$_ADB_SF_TAB"*|*"|"*)
+        # REFUSED, AND REMEMBERED. Skipping alone is a fail-OPEN when this is the only sub-floor
+        # interpreter on the host: the run then reports "no interpreter below the floor exists",
+        # SKIPs both rules and exits 0, while a usable subject was sitting right there. The status
+        # below turns that case into a hard failure; a refusal alongside some other usable candidate
+        # stays a note, because the check still ran.
+        _sf_refused=1
         printf 'bash-floor: refusing candidate path containing a TAB or a "|" — it cannot be encoded here\n' >&2
         continue ;;
     esac
@@ -621,7 +630,13 @@ sub_floor_subject() {
   done <<EOF
 $_sf_cands
 EOF
-  [ -n "$_sf_best" ] || return 1
+  # THREE answers, not two: 0 = a subject, 1 = genuinely nothing below the floor, 3 = nothing
+  # USABLE but a candidate was refused as unencodable. The caller must tell 1 from 3 — the first is
+  # an honest SKIP, the second is a check that did not run and must not report success.
+  if [ -z "$_sf_best" ]; then
+    [ "$_sf_refused" -eq 0 ] || return 3
+    return 1
+  fi
   printf '%s\t%s\n' "$_sf_best" "$_sf_bestv"
 }
 
@@ -678,16 +693,30 @@ sub_floor_funsubs() {
 SUB_FLOOR_NOTE="the below-floor carve-out (D30/D35) holds"
 
 sub_floor_lint() {
-  root="${1:-.}"; root="${root%/}"; [ -n "$root" ] || root="."
-  sf_files=0 sf_parsed=0 sf_probed=0 sf_subj="" sf_subjv="" sf_pick="" sf_unparsed="" sf_subj_dead=0
+  # `/` IS A TARGET, not a trailing slash to strip. `${root%/}` empties it, the emptiness guard
+  # then rewrites it to `.` — and since this script has already cd'd to the repo root, `--sub-floor /`
+  # would report a clean scan OF THE CHECKOUT while the caller believes it scanned the filesystem
+  # root. A silently-wrong scope is the one result a scan may never produce.
+  root="${1:-.}"
+  case "$root" in
+    /)  : ;;
+    */) root="${root%/}" ;;
+  esac
+  [ -n "$root" ] || root="."
+  sf_files=0 sf_parsed=0 sf_probed=0 sf_subj="" sf_subjv="" sf_pick="" sf_unparsed="" sf_subj_dead=0 sf_unencodable=0
 
   # Resolved ONCE, before the loop: probing the candidate list per file would multiply the execs and
   # could, on a host being reconfigured underneath the run, parse two files under two interpreters
   # and report one.
-  if sf_pick="$(sub_floor_subject)"; then
-    sf_subj="${sf_pick%%	*}"
-    sf_subjv="${sf_pick#*	}"
-  fi
+  sf_pick="$(sub_floor_subject)"; sf_srv=$?
+  case "$sf_srv" in
+    0) sf_subj="${sf_pick%%	*}"
+       sf_subjv="${sf_pick#*	}" ;;
+    3) check_note "the only interpreter(s) below the $FLOOR floor sit at paths this check cannot encode (a TAB or a '|'), so the parse and evaluation rules could not run — refusing to report a clean scan"
+       check_fail
+       sf_unencodable=1 ;;
+    *) : ;;
+  esac
 
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
@@ -800,7 +829,19 @@ EOF
           # here and the expected usage line is the only output allowed.
           sf_pout="$("$sf_subj" "$f" --adb-sub-floor-probe 2>&1)"
           [ "$?" -eq 2 ] && sf_prc=0 || sf_prc=1
-          case "$sf_pout" in "usage: bash scripts/check-bash-floor.sh"*) sf_pout="" ;; esac
+          # STRIP THE USAGE LINE ONLY WHEN IT IS THE WHOLE OUTPUT. A bare `usage:…*` wildcard
+          # clears the entire capture the moment it matches the PREFIX, so anything the observer
+          # printed AFTER it — an EXIT-trap warning, a shutdown diagnostic — is discarded and the
+          # evaluation is counted clean. The usage arm prints exactly one line, and command
+          # substitution strips trailing newlines, so a capture that is just that line contains NO
+          # newline at all: the presence of one means there is more, and the more is what matters.
+          case "$sf_pout" in
+            "usage: bash scripts/check-bash-floor.sh"*)
+              case "$sf_pout" in
+                *"$_ADB_SF_NL"*) : ;;
+                *) sf_pout="" ;;
+              esac ;;
+          esac
           sf_what="evaluate its top level"
           ;;
         *)
@@ -842,11 +883,20 @@ EOF
     printf 'bash-floor: sub-floor  %d file(s) named; %d parsed and %d evaluated under %s (%s), the oldest sub-%s interpreter here\n' \
       "$sf_files" "$sf_parsed" "$sf_probed" "$sf_subj" "$sf_subjv" "$FLOOR"
     SUB_FLOOR_NOTE="the below-floor carve-out parses and bootstraps under $sf_subj ($sf_subjv)"
+  elif [ "$sf_unencodable" -eq 1 ]; then
+    # NOT a SKIP, and it must not read like one. A sub-floor interpreter DOES exist here; this
+    # check simply cannot name it safely. Printing the ordinary "none exists on this host" line
+    # would contradict the candidate list directly below it, which re-probes and shows the very
+    # version that was refused.
+    printf 'bash-floor: sub-floor  %d file(s) scanned for un-expandable constructs; the PARSE and EVALUATION PROBE could NOT run — every interpreter below the %s floor sits at a path this check cannot encode. Candidates probed:\n' \
+      "$sf_files" "$FLOOR"
+    sub_floor_candidate_report
+    SUB_FLOOR_NOTE="the below-floor set carries no 5.3 command substitution, but no sub-$FLOOR interpreter could be named safely"
   else
-    printf 'bash-floor: sub-floor  %d file(s) scanned for un-expandable constructs; the PARSE and BOOTSTRAP PROBE were **SKIPPED** — no interpreter below the %s floor exists on this host, and running them under a >= %s bash would prove nothing about D30. Candidates probed:\n' \
+    printf 'bash-floor: sub-floor  %d file(s) scanned for un-expandable constructs; the PARSE and EVALUATION PROBE were **SKIPPED** — no interpreter below the %s floor exists on this host, and running them under a >= %s bash would prove nothing about D30. Candidates probed:\n' \
       "$sf_files" "$FLOOR" "$FLOOR"
     sub_floor_candidate_report
-    SUB_FLOOR_NOTE="no 5.3 command substitution in the below-floor set (parse + bootstrap probe SKIPPED — no sub-$FLOOR interpreter on this host)"
+    SUB_FLOOR_NOTE="no 5.3 command substitution in the below-floor set (parse + evaluation probe SKIPPED — no sub-$FLOOR interpreter on this host)"
   fi
 }
 

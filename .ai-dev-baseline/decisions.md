@@ -4050,7 +4050,7 @@ limit: none of them is sufficient alone.
              The gap-analysis pass argued the D35 scan is additive and must not be deleted as
              superseded by `bash -n`. That is right, and it is why rule A still exists at all: it is
              relocated, not replaced, and the measurements above are the evidence for keeping it.
-- guard-observability: SEVENTEEN mutations of the shipped rules, each applied to a COPY of the tree and
+- guard-observability: TWENTY mutations of the shipped rules, each applied to a COPY of the tree and
              each required to make `check-bash-floor-guard.sh` go red: rule A's `check_fail`
              dropped; selection taking the first-listed candidate instead of the numerically oldest;
              the probe comparing rc only and ignoring stderr; an unexecutable candidate degraded to
@@ -4068,6 +4068,17 @@ limit: none of them is sufficient alone.
              extra-argument refusal, and the fence — because no assertion covered them yet. That is
              the entire argument for running the mutations rather than reasoning about coverage:
              each of the three was a rule that had shipped, worked, and been checked by nothing.
+
+             THE LAST THREE came from the async reviewer on the PR, and all three were the same
+             species — a rule that answers "clean" for a reason unrelated to the thing it checks.
+             The observer's usage line was stripped by a PREFIX wildcard, so an EXIT-trap warning
+             printed after it was discarded with it; `--sub-floor /` had its slash stripped, was
+             rewritten to `.` by the emptiness guard, and reported a clean scan OF THE CHECKOUT
+             under a caller who asked for the filesystem root; and a candidate path carrying a `|`
+             or a tab was merely SKIPPED, so a host whose only sub-floor interpreter sat at such a
+             path reported "no interpreter below the floor exists", disabled both rules and exited
+             0 — while the candidate list printed directly beneath it showed that interpreter's
+             below-floor version.
 
              The stub interpreters the selection fixtures use report a fake version to the probe and
              **delegate everything else to a real bash**, so `-n` and the bootstrap probe behave as

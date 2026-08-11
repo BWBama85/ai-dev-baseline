@@ -982,6 +982,46 @@ sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
 hasnt "$SFOUT" "does not leave adb_require_bash reachable" "probe: an unparseable file is not ALSO reported as unloadable"
 has "$SFOUT" "3 file(s) named; 2 parsed" "probe: and the counts say outright that one file was not parsed"
 
+# --- the three findings the async reviewer raised on PR #316 ---------------------------------------
+# Each was reproduced before being fixed, and each gets the fixture that keeps it fixed.
+
+# (i) THE USAGE LINE IS STRIPPED ONLY WHEN IT IS THE WHOLE OUTPUT. The observer's probe runs its
+#     usage arm, which prints one line and exits 2 — so that line has to be discarded. A prefix
+#     wildcard discards the ENTIRE capture the moment it matches, which means anything printed
+#     AFTER it (an EXIT trap, a shutdown warning) vanishes and the evaluation is counted clean.
+sf_fixture "$SFD"
+sed -i.bak 's/^check_init "bash-floor"$/check_init "bash-floor"\ntrap '"'"'printf "adb-exit-trap-noise\\n" >\&2'"'"' EXIT/' \
+  "$SFD/scripts/check-bash-floor.sh" && rm -f "$SFD/scripts/check-bash-floor.sh.bak"
+sf_applied "$SFD/scripts/check-bash-floor.sh" 'adb-exit-trap-noise' "EXIT-trap noise after the usage line"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
+eq "$SFRC" "1" "usage strip: output appended AFTER the usage line is not swallowed"
+has "$SFOUT" "adb-exit-trap-noise" "usage strip: and the appended output is quoted back"
+
+# (ii) `/` IS A SCAN TARGET, not a trailing slash. Stripping it empties the value, the emptiness
+#      guard rewrites it to `.`, and since the script has already cd'd to the repo root the run
+#      reports a clean scan OF THE CHECKOUT while the caller believes it scanned `/`.
+sf_lint "/"
+eq "$SFRC" "1" "root target: --sub-floor / scans / rather than aliasing to the repo root"
+has "$SFOUT" "not a file under /" "root target: and it says which scope it actually looked in"
+
+# (iii) AN UNENCODABLE CANDIDATE IS A FAILURE WHEN IT IS THE ONLY ONE. Skipping it alone is a
+#       fail-open: the run reports "no interpreter below the floor exists", SKIPs both rules and
+#       exits 0, while a usable subject was sitting right there — and the candidate list printed
+#       directly beneath contradicts the message by showing its below-floor version.
+mkdir -p "$work/sfbin-pipe|d"
+sf_stub "$work/sfbin-pipe|d/bash" "9.9.9"
+sf_fixture "$SFD"
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$work/sfbin-pipe|d/bash"
+eq "$SFRC" "1" "unencodable: the ONLY sub-floor candidate being unencodable fails, never SKIPs"
+has "$SFOUT" "cannot encode" "unencodable: and the diagnostic says why"
+hasnt "$SFOUT" "SKIPPED" "unencodable: it must not read as an ordinary skip — a subject DOES exist"
+
+# ...but a refusal alongside a usable candidate is only a note: the check still ran.
+sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$work/sfbin-pipe|d/bash
+$SF_CANDS"
+eq "$SFRC" "0" "unencodable: a refusal beside a usable candidate does not fail the run"
+has "$SFOUT" "$work/sfbin/older (9.9.9)" "unencodable: the usable candidate is still selected"
+
 # --- the stale-set rule ----------------------------------------------------------------------------
 # The list IS the carve-out. A named file that is not there means the lint is silently checking
 # fewer files than it claims, which is the shape every other rule in this file exists to refuse.

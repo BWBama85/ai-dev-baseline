@@ -52,14 +52,16 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     one — pointed at a path that does not exist it leaves nothing below the floor, so the new half
     reports a SKIP and the job goes green with rule B disabled everywhere. It is not a substring of
     `ADB_BASH_FLOOR`, so the single-token grep would never have matched it.
-  - **Observed failing**, per this repo's rule for new guards: **seventeen** mutations of the
+  - **Observed failing**, per this repo's rule for new guards: **twenty** mutations of the
     shipped rules — including selection taking the first-listed candidate, the probe ignoring
     stderr or accepting a forgeable marker, candidate-version validation removed, the source scan
     narrowed back so the multiline spelling escapes, the SKIP claiming a parse it did not do, a
     broken interpreter reported as an absent one, and the fixture fence reduced to the lexical
     prefix test `..` walks through — each applied to a **copy** of the tree and each required to
     make `check-bash-floor-guard.sh` go red. Three of them exposed assertions that did not exist
-    yet, which is the point of running them.
+    yet, which is the point of running them. The last three cover the async reviewer's findings on
+    the PR: a usage-line strip that swallowed anything appended after it, `--sub-floor /` aliasing
+    to the repo root, and an unencodable candidate path silently disabling both rules.
 
 - **`check-gates.sh`'s elapsed assertion now tests the property it names, instead of a literal that
   was only ever true by luck** (#308).
