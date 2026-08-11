@@ -97,6 +97,18 @@ those. The rules below are specific to this repo's code.
    - **`scripts/check-bash-floor.sh` does not call the gate** (D31). It is the observer;
      an observer that upgrades its own interpreter has destroyed the observation.
 
+   D35 widens the first carve-out to **three** files on the rule *"does this code have to
+   run in order to report that the interpreter is too old"* — `common.sh`, the observer,
+   and the `check-lib.sh` it sources. **`check-bash-floor.sh --sub-floor` executes that
+   claim** (#310, D54): a source scan for 5.3 command substitutions on every host, plus a
+   parse and an evaluation probe under the **oldest sub-floor interpreter** available,
+   with a stated SKIP where none exists. It rides the bare invocation, so `selfcheck-macos`
+   — the one per-PR job with a real 3.2.57 — is what actually exercises it. It proves each
+   file parses and that its **top level** runs silently there (and, for `common.sh`, that
+   `adb_require_bash` is reachable after). It does **not** prove every function behaves on
+   3.2: a `mapfile` or `declare -A` inside a **function body** is never executed by loading
+   the file, so that stays review's job.
+
    **Every other entry point calls the gate**, and `check-bash-floor.sh --entrypoints`
    fails the build if one does not — a new script cannot join the suite without it. On
    macOS a 5.3 is reachable only through `PATH`, which non-interactive shells routinely
