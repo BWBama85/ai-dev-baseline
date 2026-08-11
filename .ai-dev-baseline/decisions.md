@@ -4206,19 +4206,35 @@ limit: none of them is sufficient alone.
              goes through `adb_mtime`, which already owns the BSD/GNU `stat` split; the inode comes
              from POSIX `ls -i`. Any component failing yields NO identity, which never matches.
 
-             **(d) Captured WITH the re-scan, into a DERIVED record set.** A fingerprint taken later
-             describes whatever arrived in the meantime, so the comparison compares a replacement
-             against itself and always matches — the same late-capture defect `implement-lib.sh`
-             records having observed. `state-scan`'s `<kind>TAB<path>TAB<key>` format is deliberately
-             NOT extended: three other loops in step 5 parse it with three variables, and `read` puts
-             every surplus field in the last one, so a fourth field would land silently inside a
-             marker's branch name and a thread cache's PR number.
+             **(d) The identity is emitted BY the scan, under an opt-in `--with-identity`.** It was
+             built in the workflow first — walk the finished records, fingerprint each path — and the
+             independent review was right that "immediately after the scan" is not "with the scan":
+             by then the path may already hold a successor, so the fingerprint describes IT and the
+             delete-time comparison matches. Only the enumeration loop can bind the classification
+             and the identity to one observation of the file. The flag is OPT-IN because `read` folds
+             every surplus field into the last variable: an unconditional fourth column would arrive
+             silently inside a marker's branch name and a thread cache's PR number, which are the two
+             keys the sweep acts on. `file-identity` additionally reads the filesystem stamp either
+             side of the digest and refuses on disagreement — otherwise a successor arriving between
+             those two reads yields old-bytes + new-metadata, which for an IDENTICAL-bytes successor
+             is exactly its own true identity, and the guard fails open in the one case it exists for.
+
+             **(d2) The workflow's fenced blocks are run by the AGENT's shell, not by a floor-gated
+             entry point.** The first implementation built its record set with a here-document inside
+             `$( … )`. Bash 5.3 runs it; macOS's `/bin/bash` 3.2.57 mis-parses it and assigns the
+             loop's literal TEXT, so the sweep silently did nothing — and every "the file survived"
+             assertion passed, because a sweep that deletes nothing keeps everything. Only the
+             untouched-sentinel assertion caught it. `check-cleanup.sh` section 8b now pins its
+             interpreter so it measures the guard rather than the host, and 8e runs the same fixture
+             under `/bin/bash` on purpose. `base/practices/shell.md` already held inline contexts to
+             portable semantics; this is the first place it was enforced for a workflow block.
 
              **(e) The regression EXECUTES the workflow block** (`ADB-SNIPPET: state-sweep`), as
              `check-cleanup.sh` section 7 already does for the currency step — not the mirrored loop
              section 3b uses, which can pass forever after the prose it copies has been rewritten.
              The race is made deterministic by resolving `{{CLEANUP_LIB}}` to a wrapper that
-             substitutes the files on the last verdict call: after the identities are captured,
+             substitutes the files on the last pre-loop family verdict (`review`; each `threads`
+             record asks its own later, from inside the delete loop): after the identities are captured,
              before the delete loop. No sleep, no scheduler, no flake. A CONTROL runs the same
              fixture through the pre-#305 loop and requires it to lose the files — and asserts the
              substitution really happened, because "the unguarded loop deleted it" is otherwise

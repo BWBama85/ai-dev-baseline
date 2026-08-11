@@ -525,23 +525,24 @@ is the same **file**, not the same bytes. The marker arm keeps its digest delibe
 marker always differs in content, and `implement-lib.sh` derives the very same value from a *single*
 read of the claim's bytes for a race of its own.
 
-**Captured with the re-scan, before anything else runs.** The identity of a file judged at the scan
-has to be fingerprinted while the scan is still the truth — capturing it later fingerprints whatever
-arrived in the meantime, so the delete-time comparison compares a replacement against itself and
-always matches. So it is taken immediately after the re-scan, ahead of the three verdict calls and
-the whole delete loop, and the records that carry it are a *derived* set: `state-scan`'s record
-format is unchanged, because three other loops in this step read it with three variables and a
-fourth field would silently land in `$key`.
+**The identity comes FROM the scan, not from a pass over its output.** `state-scan --with-identity`
+appends it as a fourth field, computed in the same loop iteration that classified the file, because
+only that loop can bind the two facts to one observation. Deriving it here — walk the finished
+records, fingerprint each path — looks equivalent and is the bug wearing the fix's clothes: by then
+the path may already hold a successor, so the fingerprint describes *it*, and the delete-time
+comparison compares a replacement against itself and matches. That was the first implementation of
+this fix, and an independent review was right to reject it. The flag is opt-in so the three-variable
+readers above are untouched — `read` folds every surplus field into the last variable, which here is
+a marker's branch name and a thread cache's PR number.
 
-**What this does NOT claim.** Two syscalls still separate the re-capture from the `rm`, exactly as
-in the marker arm above. Closing that would mean moving the file aside and verifying the operand —
-what `implement-lib.sh` does to break a *claim* — and that trade is wrong here: it unlinks, however
+**What this does NOT claim.** Two syscalls still separate the re-capture from the `rm`, exactly as in
+the marker arm above. Closing that would mean moving the file aside and verifying the operand — what
+`implement-lib.sh` does to break a *claim* — and that trade is wrong here: it unlinks, however
 briefly, a file we have just decided belongs to somebody else and may be reading, and a crash mid-way
 strands a sidecar `state-scan` classifies `other` and therefore never sweeps. Nor is `state-scan` an
-atomic snapshot: its glob expands before its per-file loop, so a run that arrives *entirely* between
-that expansion and the identity capture is outside what this closes. That case needs a network round
-trip to fit inside a filesystem walk, and if the run had started any earlier its claim would be in
-this same scan — where `LOCK=1` keeps every artifact regardless.
+atomic snapshot: its glob expands before its per-file loop, so a file replaced between that expansion
+and its own iteration is outside what this closes. Both residuals are microseconds wide, and neither
+is what keeps the sweep safe on its own — the `lock` and `marker` records in this same scan are.
 
 ```bash
 # ADB-SNIPPET: state-sweep
@@ -550,39 +551,18 @@ this same scan — where `LOCK=1` keeps every artifact regardless.
 # safe *by implementation* rather than *by contract* — but command substitution KEEPS partial
 # stdout on a non-zero exit, so a future mid-enumeration error would hand half a snapshot straight
 # to the delete loop. Fail closed structurally instead of relying on that staying true.
-if ! SCAN="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-scan "$STATE")"; then
+# `--with-identity` (#305): the scan appends each file's identity as a FOURTH field, computed inside
+# the same enumeration pass that classified it. This is the snapshot that drives `rm`, and the delete
+# below refuses unless the file is still the one this record describes. Deriving that fourth field
+# HERE instead — walk the finished records, fingerprint each path — was the first implementation and
+# it is the bug wearing the fix's clothes: by then the path may already hold a successor, so the
+# fingerprint describes IT and the delete-time comparison matches. Only the scan can bind the
+# classification and the identity to one observation.
+if ! SCAN="$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-scan --with-identity "$STATE")"; then
   NOTES="${NOTES}REFUSED the state deletes — the pre-delete re-scan could not enumerate the state directory safely; nothing was swept
 "
   SCAN=""
 fi
-
-# THE IDENTITY OF EVERY DELETABLE FILE, AS JUDGED — captured HERE, immediately after the re-scan and
-# before anything else in this step runs (#305). Not inside the delete loop: by then the three
-# verdict calls and every earlier record's `pr_state` round trip have already happened, and a
-# fingerprint taken after a replacement lands describes the replacement, so the comparison below
-# would compare it against itself and match. This is the same "capture FIRST, before the reads that
-# take time" ordering the marker pass and `implement-lib.sh admit` both use, and both learned the
-# hard way.
-#
-# A DERIVED record set, so `state-scan`'s own `<kind>TAB<path>TAB<key>` format is untouched. Three
-# other loops in this step parse it with three variables, and `read` puts every surplus field in the
-# LAST one — a fourth field emitted by the scan would arrive silently inside `$key`, which is a
-# marker's branch name and a thread cache's PR number.
-#
-# Only the kinds this step deletes are carried. `marker` is absent because the marker pass above has
-# already run its own identity guard, `lock` and `other` because nothing here removes them, and
-# `unsafe` because its path field is an ENCODED rendering that must never reach a filesystem call.
-DELSET="$(while IFS="$TABC" read -r kind sfile key; do
-  case "$kind" in
-    gaps|issue|review|threads) : ;;
-    *) continue ;;
-  esac
-  printf '%s\t%s\t%s\t%s\n' "$kind" "$sfile" "$key" "$(bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" file-identity "$sfile")"
-done <<EOF
-$SCAN
-EOF
-)"
-
 LOCK=0
 if printf '%s\n' "$SCAN" | grep -q "^lock${TABC}"; then LOCK=1; fi
 # An `if`, not `… && RUN_NOW=keep`, for the reason given above the lock probe: an AND-list whose
@@ -638,8 +618,9 @@ sweep_file() {
   fi
 }
 
-# `$DELSET`, not `$SCAN`: the fourth field is the identity captured with the re-scan, and it is the
-# only thing standing between a stale verdict and a live run's file.
+# FOUR fields: this scan was taken `--with-identity`, and that fourth column is the only thing
+# standing between a stale verdict and a live run's file. Reading three here would silently fold the
+# identity into `$key` — which the `threads` arm passes to `pr_state` as a PR number.
 while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)
@@ -661,7 +642,7 @@ while IFS="$TABC" read -r kind sfile key ident; do
       ;;
   esac
 done <<EOF
-$DELSET
+$SCAN
 EOF
 ```
 
@@ -684,7 +665,10 @@ liveness would name the wrong file as belonging to a live run.
 #
 # An `if`, not a trailing AND-list, so a healthy run — every stream under the threshold — does not
 # leave this block, the LAST of the step, on exit status 1.
-while IFS="$TABC" read -r kind sfile key; do
+# Four fields again — this loop reads the SAME `--with-identity` scan. It ignores the identity, but
+# a three-variable `read` would leave `$key` holding `<key>TAB<identity>`, which is a trap for the
+# next person who adds an arm that uses it.
+while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)   [ "$GV" = keep ] || continue ;;
     review) [ "$RV" = keep ] || continue ;;

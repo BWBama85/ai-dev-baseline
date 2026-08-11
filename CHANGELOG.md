@@ -10,7 +10,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 ### Fixed
 
 - **`/cleanup` deletes state artifacts by identity, not by pathname, so a run that recreates the
-  same name mid-sweep keeps its files** (#305).
+  same name between the pre-delete scan and the `rm` keeps its files** (#305).
 
   The state sweep reached a verdict for a *record* and then handed that record's **path** to `rm`.
   A fresh `/implement-issue` preflight clears the previous run's artifacts and writes its own at
@@ -31,9 +31,22 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     documented as best-effort. `marker-identity` is unchanged on purpose: `implement-lib.sh`
     derives the claim's identity from a *single* read of its bytes, and a `stat` component cannot
     come out of one read.
-  - **Captured with the pre-delete re-scan**, ahead of the verdict calls, into a *derived* record
-    set — `state-scan`'s three-field format is untouched, because three other loops parse it with
-    three variables and `read` puts every surplus field in the last one.
+  - **The identity comes FROM the scan.** `state-scan --with-identity` appends it as a fourth
+    field, computed in the same loop iteration that classified the file, because only that loop can
+    bind the two facts to one observation. Building the set in the caller — walk the finished
+    records, fingerprint each path — reads whatever occupies the path *afterwards*, so the
+    delete-time comparison compares a replacement against itself and matches; that was the first
+    implementation of this fix and the independent review was right to reject it. The flag is
+    opt-in so the three-variable readers are untouched: `read` folds every surplus field into the
+    last variable, which here is a marker's branch name and a thread cache's PR number.
+  - **What it does not close, stated rather than implied.** Two syscalls still separate the
+    re-capture from the `rm`, as in the marker arm; and `state-scan`'s glob expands before its
+    per-file loop, so a file replaced between the two is outside this. Both residuals are
+    microseconds wide, and neither is what keeps the sweep safe alone — the `lock` and `marker`
+    records in the same scan are. Moving the file aside and verifying the operand (what
+    `implement-lib.sh` does to break a claim) was rejected: it unlinks, however briefly, a file
+    just decided to belong to somebody else, and a crash mid-way strands a sidecar the sweep
+    classifies `other` and never removes.
   - **A kept file is reported** in the existing `SKIPPED … kept` shape, which stays distinct from
     `REFUSED … left in place` (an `rm` that genuinely failed).
   - **The regression executes the real workflow block** via a new `ADB-SNIPPET: state-sweep`

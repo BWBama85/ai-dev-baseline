@@ -307,12 +307,16 @@ eq "$(bash "$CL" marker-identity "$work/fi.json")" "$MI1" \
    "2d2 THE REASON THIS EXISTS: a content digest is UNCHANGED by an identical-bytes recreation"
 hasnt "$(bash "$CL" file-identity "$work/fi.json")" "$FI1" \
    "2d2 …while file-identity changes, because it asks whether this is the same FILE"
-# An in-place `>` rewrite keeps the inode; the digest keeps its value only if the bytes match, so
-# mtime is what carries this case — and it is exactly how /implement-issue writes its snapshot.
-FI2="$(bash "$CL" file-identity "$work/fi.json")"
+# An in-place `>` rewrite keeps the INODE and, when the bytes are unchanged, the digest too — so
+# mtime is the only component left to carry it. That is exactly how /implement-issue writes its
+# snapshot, and an earlier version of this test only `touch`ed the file while claiming to rewrite it.
 touch -t 202601010000 "$work/fi.json"
-hasnt "$(bash "$CL" file-identity "$work/fi.json")" "$FI2" \
-   "2d2 …and changes on an in-place rewrite that keeps the inode"
+FI2="$(bash "$CL" file-identity "$work/fi.json")"
+FI2_INO="${FI2%%-*}"
+printf 'identical bytes\n' > "$work/fi.json"        # `>` truncates in place: same inode, same bytes
+FI3="$(bash "$CL" file-identity "$work/fi.json")"
+eq "${FI3%%-*}" "$FI2_INO" "2d2 an in-place rewrite really does keep the inode (else this proves nothing)"
+hasnt "$FI3" "$FI2" "2d2 …and file-identity changes anyway, on mtime alone"
 # Every unreadable shape yields NOTHING, which is the value that can never match — i.e. keep.
 eq "$(bash "$CL" file-identity "$work/nope.json")" "" "2d2 a missing file yields no identity (never matches)"
 ln -sfn "$work/nope.json" "$work/fi-dangling"
@@ -452,6 +456,49 @@ printf 'not json' > "$S/implement-issue-blocked.json"
 eq "$(bash "$CL" state-scan "$S" | awk -F'\t' '/implement-issue-blocked/{print $3}')" "-" \
    "3 an unreadable marker yields the '-' key, so it fails closed"
 eq "$(bash "$CL" state-scan "$work/does-not-exist")" "" "3 a missing state dir is an empty result, not an error"
+
+# --- 3a2. --with-identity: the fourth field, bound to the same enumeration pass (#305) ----------
+# The delete path needs to know whether the file it is about to remove is still the one that was
+# classified, and only this loop can bind those two facts to one observation of the file.
+WI="$work/wistate"; mkdir -p "$WI"
+printf 'g\n' > "$WI/gaps.md"
+printf 'i\n' > "$WI/issue-9.json"
+printf 'o\n' > "$WI/whatever.txt"
+wi_plain="${ bash "$CL" state-scan "$WI"; }"
+wi_ident="${ bash "$CL" state-scan --with-identity "$WI"; }"
+# THE DEFAULT IS UNCHANGED. Three other loops in the sweep parse this with three variables, and
+# `read` folds every surplus field into the last one — so an unconditional fourth column would
+# arrive silently inside a marker's branch name and a thread cache's PR number.
+eq "${ printf '%s\n' "$wi_plain" | awk -F'\t' 'NF != 3 { n++ } END { print n + 0 }'; }" "0" \
+   "3a2 the default record is still exactly three fields"
+eq "${ printf '%s\n' "$wi_ident" | awk -F'\t' 'NF != 4 { n++ } END { print n + 0 }'; }" "0" \
+   "3a2 --with-identity makes every record exactly four"
+eq "${ printf '%s\n' "$wi_ident" | wc -l | tr -d ' '; }" "${ printf '%s\n' "$wi_plain" | wc -l | tr -d ' '; }" \
+   "3a2 …and classifies exactly the same files"
+eq "${ printf '%s\n' "$wi_ident" | cut -f1-3; }" "$wi_plain" \
+   "3a2 …with the first three fields byte-identical to the default"
+# The fourth field must be the SAME answer `file-identity` gives, or the delete-time re-capture is
+# comparing against a value nothing else can reproduce.
+wi_row="${ printf '%s\n' "$wi_ident" | awk -F'\t' '$1 == "gaps" { print $4; exit }'; }"
+eq "$wi_row" "${ bash "$CL" file-identity "$WI/gaps.md"; }" \
+   "3a2 the identity field is file-identity's own answer for that path"
+[ -n "$wi_row" ] && ok || bad "3a2 …and is non-empty for a readable file"
+# `unsafe` carries a `%q`-ENCODED rendering rather than a usable path, so it is the one kind that
+# must never be fingerprinted — handing that string to a filesystem call is the #273 hole reopened.
+# Its own name rather than section 3b's $HOSTILE_NAME, which is defined below this point — a
+# forward reference would abort the suite under `set -u` before a single assertion ran.
+WI_UNSAFE=$'gaps.md\ngaps\tCHANGELOG.md\t-'
+: > "$WI/$WI_UNSAFE"
+eq "${ bash "$CL" state-scan --with-identity "$WI" | awk -F'\t' '$1 == "unsafe" { print $4; exit }'; }" "-" \
+   "3a2 an unsafe record's identity is the '-' sentinel, never a filesystem read of its encoded path"
+rm -f "$WI/$WI_UNSAFE"
+# `-` and not an empty column: a trailing empty field is the one that goes missing, and since
+# file-identity can never PRINT `-`, the sentinel is a value no re-capture will ever equal — the
+# caller's ordinary comparison fails closed on it with no special case to remember.
+hasnt "${ bash "$CL" file-identity "$WI/gaps.md"; }" "-
+" "3a2 file-identity never emits the bare sentinel itself"
+bash "$CL" state-scan --bogus "$WI" >/dev/null 2>&1; no $? "3a2 an unknown state-scan option is an error, not a silent default"
+bash "$CL" state-scan --with-identity >/dev/null 2>&1; no $? "3a2 --with-identity still requires the directory"
 
 # ================= 3b. the RECORD FORMAT itself cannot be forged (#273) =======================
 # The allowlist in section 3 is only a safety property if a record's FIELDS mean what they say.
@@ -746,9 +793,15 @@ else
   has "$wfcode" 'STATE="$ROOT/' "6 the state dir is anchored at the repo root, not the current directory"
   # $SCAN/$LOCK are captured before a marker pass that makes live PR round trips; a new run can
   # take the lock in that window and start writing the same gap filenames.
-  has "$wfcode" 'SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"' "6 the scan is re-taken before any destructive state delete"
-  eq "${ printf '%s\n' "$wfcode" | grep -c 'state-scan "\$STATE"'; }" "2" \
+  has "$wfcode" 'SCAN="$({{CLEANUP_LIB}} state-scan --with-identity "$STATE")"' \
+     "6 the scan is re-taken before any destructive state delete"
+  eq "${ printf '%s\n' "$wfcode" | grep -c '{{CLEANUP_LIB}} state-scan'; }" "2" \
      "6 …i.e. the lock governing a delete is the one true AT the delete, not at classification"
+  # …and it is the SECOND one that carries --with-identity. Only the delete path needs the fourth
+  # field, and putting it on the first scan would feed a 4-column record to three `read`s that bind
+  # three variables — folding the identity into `$key`, which is a marker's branch name.
+  eq "${ printf '%s\n' "$wfcode" | grep -c 'state-scan --with-identity'; }" "1" \
+     "6 …and exactly one of the two asks for identities"
   has "$wfcode" 'sweep_file' "6 state deletions report their failures instead of silently continuing"
   # --- #264: the review family is swept, and on ITS OWN liveness signal --------------------
   has "$wfcode" '{{CLEANUP_LIB}} state-verdict review' "6 review artifacts are decided through the library, not inline"
@@ -805,7 +858,7 @@ else
   # future mid-enumeration error would otherwise hand actionable records to the delete loop.
   has "$wfexec" 'if ! SCAN="$({{CLEANUP_LIB}} state-scan "$STATE")"; then' \
      "6 …and so is the pre-delete re-scan, structurally rather than by implementation detail"
-  eq "${ printf '%s\n' "$wfexec" | grep -c 'if ! SCAN="\$({{CLEANUP_LIB}} state-scan "\$STATE")"; then'; }" "2" \
+  eq "${ printf '%s\n' "$wfexec" | grep -c 'if ! SCAN="\$({{CLEANUP_LIB}} state-scan'; }" "2" \
      "6 …i.e. BOTH scans, not just the one that happens to be reported"
   # The refusal message must not paste the state-dir path back in: that path is the thing carrying
   # a newline, so interpolating it moves the injection from the delete protocol into the report.
@@ -960,7 +1013,7 @@ else
     # the classifier actually implements.
     arm="${ awk -v k="$armname" '
         /^      [a-z*][^)]*\)$/ { label = $0; sub(/^      /, "", label); sub(/\)$/, "", label); next }
-        $0 ~ ("printf '\''" k "\\\\t") { print label; exit }' "$CL"; }"
+        /_adb_cl_emit/ { for (i = 1; i <= NF; i++) if ($i == k) { print label; exit } }' "$CL"; }"
     if [ -z "$arm" ]; then
       bad "6 could not read state-scan's $armname arm from cleanup-lib.sh — the containment check asserted NOTHING"
       continue
@@ -1358,8 +1411,10 @@ has "$CU_SNIPPET" '|| true' "7 the currency capture absorbs a non-zero status (n
 # been rewritten, and the acceptance criteria for this issue are about what the SWEEP does.
 #
 # THE RACE IS MADE DETERMINISTIC, not raced. `{{CLEANUP_LIB}}` resolves to a wrapper that forwards
-# every call to the real library and, on the LAST verdict call, runs the replacement — a point that
-# is after the snippet has captured its identities and before its delete loop starts. No scheduler,
+# every call to the real library and, on the last PRE-LOOP family verdict (`review`), runs the
+# replacement — a point that is after the scan has captured its identities and before the delete loop
+# starts. Not "the last verdict call": each `threads` record asks `state-verdict threads` later, from
+# inside that loop. No scheduler,
 # no sleep, no flake. If a future edit moved the identity capture to AFTER the verdicts, the wrapper
 # would fingerprint the successor and this section would go red, which is the correct direction.
 #
@@ -1413,7 +1468,7 @@ sw_fixture "$SW/before"
 sw_scan="${ bash "$CL" state-scan "$SW/before"; }"
 # Each victim's identity AS JUDGED — captured here, while the scan is still the truth.
 declare -A sw_judged=()
-for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json; do
+for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json review.md; do
   sw_judged["$f"]="${ bash "$CL" file-identity "$SW/before/$f"; }"
 done
 bash "$SW/replace" "$SW/before"
@@ -1422,25 +1477,41 @@ bash "$SW/replace" "$SW/before"
 # /cleanup working correctly — so without this pair the control would pass while reproducing nothing
 # and 8b would be guarding a race the suite never creates. Observed: neutering the replacement left
 # the old control green.
-for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json; do
+# `review.md` is included, and its replacement is a DANGLING SYMLINK — so its judged identity must
+# become UNREADABLE rather than merely different. Omitting it left the one arm whose replacement has
+# a different shape unproven on both sides of this section.
+for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json review.md; do
   hasnt "${ bash "$CL" file-identity "$SW/before/$f"; }" "${sw_judged[$f]}" \
      "8a the fixture really does replace $f with a different file"
 done
+eq "${ bash "$CL" file-identity "$SW/before/review.md"; }" "" \
+   "8a …and review.md's replacement has no readable identity at all" 
 while IFS="$TAB" read -r sw_kind sw_file _; do
   case "$sw_kind" in gaps|issue|review|threads) rm -f "$sw_file" ;; esac
 done <<SWEOF
 $sw_scan
 SWEOF
+# `-e` FOLLOWS a symlink, so a dangling one reads as absent whether or not `rm` ran — for review.md
+# the question is whether the LINK survives, which is `-L`.
 for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json; do
   if [ -e "$SW/before/$f" ]; then
     bad "8a the control loop did not reproduce the race for $f — the fixture proves nothing"
   else ok; fi
 done
+if [ -L "$SW/before/review.md" ]; then
+  bad "8a the control loop did not reproduce the race for review.md — the fixture proves nothing"
+else ok; fi
 
 # --- 8b. the REAL sweep keeps every replacement, and still removes the untouched one -----------
 sw_fixture "$SW/after"
 sw_code="${SW_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$SW/cl\"}"
-sw_out="$(env STATE="$SW/after" RUN=none NOTES="" CLEARED="" bash -c '
+# `"$BASH"`, NEVER a bare `bash`. The suite re-execs itself into a 5.3 interpreter, but a nested
+# `bash -c` re-resolves from PATH — and on macOS that is /bin/bash 3.2, where this block once
+# silently produced NOTHING and the section failed for a reason that had nothing to do with the
+# guard. Section 8e below deliberately runs the same fixture under the OLD interpreter, which is
+# where a portability regression belongs; here the interpreter must be pinned or 8b is measuring
+# the host.
+sw_out="$(env STATE="$SW/after" RUN=none NOTES="" CLEARED="" "$BASH" -c '
 TABC="$(printf "\t")"
 pr_state() { printf "merged\n"; }   # a merged PR is what makes the threads cache sweepable
 '"$sw_code"'
@@ -1478,25 +1549,36 @@ hasnt "$sw_notes" 'REFUSED' "8c …and never as REFUSED, which means an rm that 
 
 # --- 8d. source-drift: the identity really is captured WITH the scan --------------------------
 # Late capture is the defect that looks identical to the fix. Fingerprinting a path after the
-# verdict calls (or inside the delete loop) describes whatever arrived in the meantime, so the
-# comparison compares a replacement against itself and always matches — a guard that runs, prints
-# nothing, and protects nothing. The order is asserted on line numbers because no behavioral test
-# can see it: with the wrapper firing at the verdicts, BOTH orders pass 8b.
+# verdict calls describes whatever arrived in the meantime, so the comparison compares a replacement
+# against itself and always matches — a guard that runs, prints nothing, and protects nothing. 8b
+# catches a capture moved AFTER the wrapper's hook (observed red); it cannot catch one moved between
+# the scan and the hook, which is what the structural pins here are for.
 sw_at() { printf '%s\n' "$SW_SNIPPET" | grep -n -- "$1" | head -n1 | cut -d: -f1; }
-sw_ident="${ sw_at 'DELSET="$(while'; }"
+sw_ident="${ sw_at 'state-scan --with-identity'; }"
 sw_verdict="${ sw_at 'state-verdict gaps'; }"
 sw_loop="${ sw_at 'sweep_file "$sfile" "$ident"'; }"
 if [ -n "$sw_ident" ] && [ -n "$sw_verdict" ] && [ "$sw_ident" -lt "$sw_verdict" ]; then ok; else
-  bad "8d the identity capture must precede the verdict calls (capture@${sw_ident:-?} verdict@${sw_verdict:-?})"
+  bad "8d the identity-bearing scan must precede the verdict calls (scan@${sw_ident:-?} verdict@${sw_verdict:-?})"
 fi
+# THE IDENTITY MUST COME FROM THE SCAN, not from a pass over its records. A derived set built here
+# fingerprints whatever occupies each path AFTERWARDS, which is the defect this issue is about,
+# reintroduced one layer up — and it passes 8b, because the wrapper fires later than either. Only a
+# structural pin can see the difference.
+# NARROW, and deliberately so: `sweep_file`'s delete-time re-capture (`file-identity "$1"`) is the
+# other half of the guard and must stay. What must never come back is fingerprinting a SCAN RECORD's
+# path — `file-identity "$sfile"` — which is the derived-set shape the review rejected.
+hasnt "${ printf '%s\n' "$SW_SNIPPET" | sed 's/[[:space:]]*#.*$//'; }" 'file-identity "$sfile"' \
+   "8d the workflow never fingerprints a scan record's path — the scan binds identity to classification"
+has "${ printf '%s\n' "$SW_SNIPPET" | sed 's/[[:space:]]*#.*$//'; }" 'file-identity "$1"' \
+   "8d …while the delete-time re-capture, the other half of the guard, is still there"
 if [ -n "$sw_loop" ] && [ -n "$sw_ident" ] && [ "$sw_loop" -gt "$sw_ident" ]; then ok; else
   bad "8d …and the delete loop must consume it (capture@${sw_ident:-?} sweep@${sw_loop:-?})"
 fi
-# The delete loop must read the DERIVED set. Iterating `$SCAN` again would leave `$ident` unset for
-# every record — `sweep_file` would then see an empty judged identity, keep everything, and the
-# sweep would be a silent no-op that passes 8b for the wrong reason.
-has "$SW_SNIPPET" 'done <<EOF
-$DELSET' "8d the delete loop iterates the identity-bearing set, not the raw scan"
+# The delete loop must read the identity-bearing scan. A plain `state-scan` here would leave
+# `$ident` empty for every record — `sweep_file` would then keep everything, and the sweep would be a
+# silent no-op that passes 8b's survival assertions for entirely the wrong reason.
+eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'state-scan --with-identity'; }" "1" \
+   "8d the pre-delete scan asks for identities"
 # Four variables, or the identity lands in `$key` and the threads arm queries a PR number that is
 # really a checksum.
 has "$SW_SNIPPET" 'read -r kind sfile key ident' "8d …and parses all four fields"
@@ -1508,5 +1590,74 @@ eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }
    "8d …and all four pass the judged identity to the delete"
 hasnt "${ printf '%s\n' "$SW_SNIPPET" | sed 's/[[:space:]]*#.*$//'; }" 'sweep_file "$sfile"
 ' "8d no arm still deletes by pathname alone"
+
+# --- 8e. the block must also run on the interpreter an AGENT will use --------------------------
+# The fenced blocks in a workflow are executed by the AGENT's shell, not by one of this repo's
+# floor-gated entry points — and on macOS a shell that has not picked up Homebrew's prefix is
+# /bin/bash 3.2.57. `base/practices/shell.md` holds inline contexts to portable semantics for
+# exactly this reason.
+#
+# THIS IS NOT THEORETICAL. The first version of this fix built its identity set with a here-document
+# inside `$( … )`. Bash 5.3 runs it; 3.2 mis-parses it and assigns the loop's literal TEXT, so the
+# whole sweep silently did nothing — and every survival assertion in 8b passed, because a sweep that
+# deletes nothing keeps everything. Only the untouched-sentinel assertion caught it. 8b now pins its
+# interpreter so it measures the guard rather than the host; this section is where the other
+# interpreter is exercised on purpose.
+#
+# `/bin/bash` and not a re-derivation of `adb_bash_candidates`' oldest entry: that selection already
+# has one home (`check-bash-floor.sh --sub-floor`) and a second copy of it here would be the drift
+# this repo bans. The question here is narrower anyway — "does it also work on the other interpreter
+# this host actually has?" — and when /bin/bash IS the suite's own interpreter there is nothing new
+# to learn, so the case announces a SKIP rather than passing silently.
+if [ -x /bin/bash ] && [ "${ /bin/bash -c 'printf %s "$BASH_VERSION"'; }" != "${BASH_VERSION}" ]; then
+  sw_fixture "$SW/old"
+  env STATE="$SW/old" RUN=none NOTES="" CLEARED="" /bin/bash -c '
+TABC="$(printf "\t")"
+pr_state() { printf "merged\n"; }
+'"${SW_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$SW/cl\"}" >/dev/null 2>&1
+  for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json; do
+    if [ -e "$SW/old/$f" ]; then ok; else
+      bad "8e under /bin/bash the sweep deleted $f, which a live run had just written"
+    fi
+  done
+  # The sentinel is what makes this section able to fail at all: a block that does not run deletes
+  # nothing, which satisfies every survival assertion above it.
+  if [ -e "$SW/old/gaps.md" ]; then
+    bad "8e under /bin/bash the block did not run — an untouched stale artifact survived (parse or portability failure)"
+  else ok; fi
+else
+  check_note "8e SKIPPED the old-interpreter pass: /bin/bash is absent, or is this suite's own interpreter (${BASH_VERSION})"
+fi
+
+# --- 8f. the two fail-closed inputs that are not a mismatch -----------------------------------
+# `sweep_file` keeps on THREE distinct inputs and only one of them is "the identity differs". The
+# other two are absences, and an implementation that tested only inequality would pass 8b while
+# deleting a file whose identity it never managed to read.
+sw_fixture "$SW/gone"
+# A file that VANISHES between the scan and the delete: `rm -f` would succeed and `[ ! -e ]` would
+# be true, so the pre-#305 code reported it CLEARED — a sweep claiming credit for a removal it did
+# not perform, on a path a live run may be about to write.
+cat > "$SW/gone-replace" <<'SWGONE'
+rm -f "$1/issue-7.json"
+SWGONE
+cat > "$SW/cl-gone" <<SWGW
+#!/usr/bin/env bash
+if [ "\$1" = state-verdict ] && [ "\$2" = review ]; then bash "$SW/gone-replace" "\$STATE" || exit 2; fi
+exec bash "$CL" "\$@"
+SWGW
+sw_gone_out="$(env STATE="$SW/gone" RUN=none NOTES="" CLEARED="" "$BASH" -c '
+TABC="$(printf "\t")"
+pr_state() { printf "merged\n"; }
+'"${SW_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$SW/cl-gone\"}"'
+printf "CLEARED<%s>\n" "$(printf "%s" "$CLEARED" | tr "\n" ";")"
+printf "NOTES<%s>\n"   "$(printf "%s" "$NOTES"   | tr "\n" ";")"' 2>&1)"
+sw_gone_cleared="${ printf '%s\n' "$sw_gone_out" | sed -n 's/^CLEARED<\(.*\)>$/\1/p' | head -n1; }"
+sw_gone_notes="${ printf '%s\n' "$sw_gone_out" | sed -n 's/^NOTES<\(.*\)>$/\1/p' | head -n1; }"
+hasnt "$sw_gone_cleared" 'issue-7.json' "8f a file that vanished mid-sweep is not reported as cleared by this run"
+has   "$sw_gone_notes"   'SKIPPED issue-7.json' "8f …it is reported as skipped, because its identity could not be re-read"
+# The other absence: the SCAN could not fingerprint it, so the judged identity is the `-` sentinel.
+# file-identity can never print `-`, so this can only ever compare unequal — keep.
+eq "${ bash "$CL" file-identity "$SW/gone/gaps.md"; }" "${ bash "$CL" state-scan --with-identity "$SW/gone" | awk -F'\t' '$1 == "gaps" && $2 ~ /gaps.md$/ { print $4; exit }'; }" \
+   "8f a judged identity and a re-captured one agree for an untouched file (the delete path is reachable at all)"
 
 check_summary "check-cleanup"

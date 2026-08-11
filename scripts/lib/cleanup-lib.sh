@@ -29,7 +29,7 @@
 #
 # Usage:
 #   cleanup-lib.sh branch-verdict <branch> <base-ref>          # merged-PR JSON on stdin
-#   cleanup-lib.sh state-scan     <state-dir>
+#   cleanup-lib.sh state-scan     [--with-identity] <state-dir>
 #   cleanup-lib.sh state-verdict  threads <pr-state>
 #   cleanup-lib.sh state-verdict  marker  <pr-state> <local-ref> <remote-ref>
 #   cleanup-lib.sh state-verdict  gaps    <lock 0|1> <run keep|stale|none>
@@ -124,6 +124,30 @@ _adb_cl_tsv_display() {
   local enc
   enc="$(adb_display_value "$1")"
   if _adb_cl_tsv_safe "$enc"; then printf '%s' "$enc"; else printf '<unrenderable-name>'; fi
+}
+
+# Serialize ONE record. The identity field is appended only when the caller asked for it, and it is
+# computed HERE, inside the same enumeration pass that classified the file. That binding is the whole
+# point (#305): a caller that walked the FINISHED record set and fingerprinted each path would be
+# describing whatever occupied it by then, so its delete-time comparison would compare a replacement
+# against itself and match. It was written that way first, in workflow prose, and the independent
+# review was right that "immediately after the scan" is not "with the scan".
+#
+# A `-` when no identity could be established, never an empty field — the same "none" spelling the
+# key field already uses, and a trailing empty column is the one that goes missing in an editor.
+# `file-identity` can never PRINT `-`, so the sentinel is a value no re-capture will ever equal: the
+# caller's ordinary "did it change?" comparison fails closed on it with no special case to remember.
+#
+# `unsafe` is the one kind never fingerprinted: its path field is a `%q`-ENCODED rendering rather
+# than a usable path, and it must not reach a filesystem call (#273).
+_adb_cl_emit() {   # <with-identity 0|1> <kind> <path> <key>
+  local id=""
+  if [ "$1" = 1 ]; then
+    [ "$2" = unsafe ] || id="$(cmd_file_identity "$3")"
+    printf '%s\t%s\t%s\t%s\n' "$2" "$3" "$4" "${id:--}"
+  else
+    printf '%s\t%s\t%s\n' "$2" "$3" "$4"
+  fi
 }
 
 # --- branch-verdict ---------------------------------------------------------------------------
@@ -261,6 +285,19 @@ EOF
 # Deterministic and offline (it reads the filesystem, so not pure). An absent directory prints
 # nothing and exits 0 — a repo that has never run a skill is a normal, empty result.
 #
+# `--with-identity` APPENDS A FOURTH FIELD, `file-identity`'s answer for that file or `-`:
+#   <kind>TAB<path>TAB<key>TAB<identity>
+# It exists because a delete has to know whether the file it is about to remove is still the file
+# that was classified (#305), and only this loop can bind those two facts to one observation of the
+# file. Building the same thing in a caller — walk the finished records, fingerprint each path —
+# reads whatever occupies the path AFTERWARDS, so the delete-time comparison compares a replacement
+# against itself and matches. That was the first implementation, and it was wrong.
+#
+# IT IS OPT-IN PRECISELY SO THE THREE-FIELD READERS ARE UNTOUCHED. `read -r kind sfile key` puts
+# every surplus field in the LAST variable, so an unconditional fourth column would arrive silently
+# inside a marker's branch name and a thread cache's PR number — the two keys the sweep acts on.
+# Callers that do not delete keep asking the question they always asked.
+#
 # Kinds, and the key each carries:
 #   threads  <pr-number>     a /resolve-pr-threads cache, `threads-<N>.json`
 #   marker   <branch>|-      an /implement-issue run marker; the key is its recorded branch
@@ -298,7 +335,15 @@ EOF
 # path (below): there, every record would be refused, and a scan that silently returns nothing is
 # a no-op wearing a success message — the #106 failure class this library exists to remove.
 cmd_state_scan() {
-  [ "$#" -eq 1 ] || die "state-scan: needs exactly 1 arg: <state-dir>"
+  local want_ident=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --with-identity) want_ident=1; shift ;;
+      --*) die "state-scan: unknown option '$1'" ;;
+      *) break ;;
+    esac
+  done
+  [ "$#" -eq 1 ] || die "state-scan: needs exactly 1 arg: <state-dir> (plus optional --with-identity)"
   local dir="$1" f base n key
   [ -d "$dir" ] || return 0
   # Checked ONCE, up front, and fatal. Every emitted path is "$dir/$base", so an unserializable
@@ -316,28 +361,28 @@ cmd_state_scan() {
     # emitted field is the full path, and `$dir` is already known safe from the check above, so
     # testing `$f` is testing exactly the bytes that would be written.
     if ! _adb_cl_tsv_safe "$f"; then
-      printf 'unsafe\t%s\t-\n' "$(_adb_cl_tsv_display "$base")"
+      _adb_cl_emit "$want_ident" unsafe "$(_adb_cl_tsv_display "$base")" '-'
       continue
     fi
     case "$base" in
       threads-*.json)
         n="${base#threads-}"; n="${n%.json}"
         case "$n" in
-          ''|*[!0-9]*) printf 'other\t%s\t-\n' "$f" ;;
-          *)           printf 'threads\t%s\t%s\n' "$f" "$n" ;;
+          ''|*[!0-9]*) _adb_cl_emit "$want_ident" other   "$f" '-' ;;
+          *)           _adb_cl_emit "$want_ident" threads "$f" "$n" ;;
         esac
         ;;
       implement-issue-active.json|implement-issue-blocked.json)
         key="$(_adb_cl_marker_branch "$f")"
-        printf 'marker\t%s\t%s\n' "$f" "${key:--}"
+        _adb_cl_emit "$want_ident" marker "$f" "${key:--}"
         ;;
       gap-analysis.lock)
-        printf 'lock\t%s\t-\n' "$f"
+        _adb_cl_emit "$want_ident" lock "$f" '-'
         ;;
       # The whole gap-analysis family, not just the two names /implement-issue writes today: a
       # past run left `gaps-retry.{md,err}` behind, and #84 names that debris explicitly.
       gap-prompt.txt|gaps.md|gaps.err|gaps-*.md|gaps-*.err)
-        printf 'gaps\t%s\t-\n' "$f"
+        _adb_cl_emit "$want_ident" gaps "$f" '-'
         ;;
       # /implement-issue step 8's review artifacts (#264), which had NEITHER half of the lifecycle
       # the gap set gets: preflight did not clear them and this scan classified them `other`, so
@@ -347,7 +392,7 @@ cmd_state_scan() {
       # in base/workflows/implement-issue.md is kept identical to this glob: a name this arm can
       # sweep but preflight cannot clear is a stale file that a fresh run's marker makes look live.
       review-prompt.txt|review.md|review.err|review-*.md|review-*.err)
-        printf 'review\t%s\t-\n' "$f"
+        _adb_cl_emit "$want_ident" review "$f" '-'
         ;;
       # /implement-issue step 2's issue snapshot (#250) — the untrusted issue text and the
       # `author_association` provenance label that decides whether a dispatched agent is told the
@@ -371,12 +416,12 @@ cmd_state_scan() {
           *.assoc) n="${n%.assoc}" ;;
         esac
         case "$n" in
-          ''|*[!0-9]*) printf 'other\t%s\t-\n' "$f" ;;
-          *)           printf 'issue\t%s\t-\n' "$f" ;;
+          ''|*[!0-9]*) _adb_cl_emit "$want_ident" other "$f" '-' ;;
+          *)           _adb_cl_emit "$want_ident" issue "$f" '-' ;;
         esac
         ;;
       *)
-        printf 'other\t%s\t-\n' "$f"
+        _adb_cl_emit "$want_ident" other "$f" '-'
         ;;
     esac
   done
@@ -474,18 +519,23 @@ cmd_marker_branch() {
 # `cksum` is POSIX and present on every platform this runs on. The digest only has to be stable
 # and change-detecting, never cryptographic — an adversary who can rewrite this file already owns
 # the state directory.
+# The raw content digest, in ONE place. Both identity subcommands below need it and neither may
+# spell it itself: the stderr rule this function encodes is a one-line detail that was already
+# fixed once, in `implement-lib.sh`'s `_il_file_identity`, and a second and third copy is how a
+# fix lands on one of them and not the others (it did — the duplicate was caught in review).
+#
 # THE REDIRECTION IS OUTSIDE THE PIPELINE, so the SHELL's own diagnostic is suppressed too.
 # `cksum … 2>/dev/null` silences only cksum, and a failed `< "$1"` is reported by the shell BEFORE
 # cksum ever runs — so an unreadable-but-present file (mode 000, or a marker owned by another user)
 # leaked `cleanup-lib.sh: line N: …: Permission denied` into the sweep's stderr. /cleanup's output
 # contract is terse by design (#84), and this line arrives from inside a command substitution in the
 # workflow, where it reads as a failure of the step rather than as a file it declined to fingerprint.
-# `implement-lib.sh`'s `_il_file_identity` already carries this fix and the reason; both spellings of
-# it now agree.
+_adb_cl_content_digest() { { cksum < "$1" | awk 'NF >= 2 { print $1 "-" $2 }'; } 2>/dev/null; }
+
 cmd_marker_identity() {
   [ "$#" -eq 1 ] || die "marker-identity: needs exactly 1 arg: <marker-path>"
   [ -f "$1" ] || return 0
-  { cksum < "$1" | awk 'NF >= 2 { print $1 "-" $2 }'; } 2>/dev/null
+  _adb_cl_content_digest "$1"
   return 0
 }
 
@@ -534,16 +584,17 @@ cmd_marker_identity() {
 # is digits (a naive `stat -f %m || stat -c %Y` exits ZERO on GNU while printing a filesystem stat).
 # ANY component failing yields NO identity at all rather than a partial one — a partial identity is
 # a comparison that silently stops testing what it names.
-cmd_file_identity() {
-  [ "$#" -eq 1 ] || die "file-identity: needs exactly 1 arg: <path>"
-  local ck ino mt
-  # `-f` and not `-e`: a dangling symlink, a directory and a socket all have no bytes to digest, and
-  # the empty answer they get here is the one that never matches, i.e. keep.
-  [ -f "$1" ] || return 0
-  # Redirected OUTSIDE the pipeline for the reason `marker-identity` above now spells out: a failed
-  # `< "$1"` is the SHELL's diagnostic, not cksum's, and `2>/dev/null` on cksum never sees it.
-  ck="$({ cksum < "$1" | awk 'NF >= 2 { print $1 "-" $2 }'; } 2>/dev/null)"
-  [ -n "$ck" ] || return 0
+#
+# THE METADATA IS READ TWICE AND MUST AGREE, which is not belt-and-braces — it closes a TORN read
+# that would otherwise fail OPEN. The digest comes from the file's bytes and the inode/mtime from
+# its pathname, so a successor arriving between those two reads yields old-bytes + new-metadata.
+# Ordinarily that composite matches neither file and the caller keeps, which is harmless; but when
+# the successor's bytes are IDENTICAL — the case this whole primitive exists for — old-bytes IS
+# new-bytes, so the torn value is exactly the successor's true identity and the delete-time
+# comparison happily matches it. Reading the metadata either side of the digest and refusing on any
+# disagreement turns that into no identity at all. Found by the independent review.
+_adb_cl_fs_stamp() {   # <path> -> "<inode>-<mtime>", or nothing
+  local ino mt
   # `--` so a path that begins with a dash is an operand, not an option.
   #
   # THE RECORD COUNT IS THE GUARD, not the digit test alone — and that distinction was caught by
@@ -558,7 +609,22 @@ cmd_file_identity() {
   case "$ino" in ''|*[!0-9]*) return 0 ;; esac
   mt="$(adb_mtime "$1")"
   [ -n "$mt" ] || return 0
-  printf '%s-%s-%s' "$ino" "$mt" "$ck"
+  printf '%s-%s' "$ino" "$mt"
+}
+
+cmd_file_identity() {
+  [ "$#" -eq 1 ] || die "file-identity: needs exactly 1 arg: <path>"
+  local ck fs1 fs2
+  # `-f` and not `-e`: a dangling symlink, a directory and a socket all have no bytes to digest, and
+  # the empty answer they get here is the one that never matches, i.e. keep.
+  [ -f "$1" ] || return 0
+  fs1="$(_adb_cl_fs_stamp "$1")"
+  [ -n "$fs1" ] || return 0
+  ck="$(_adb_cl_content_digest "$1")"
+  [ -n "$ck" ] || return 0
+  fs2="$(_adb_cl_fs_stamp "$1")"
+  [ "$fs1" = "$fs2" ] || return 0
+  printf '%s-%s' "$fs1" "$ck"
 }
 
 # --- state-verdict -----------------------------------------------------------------------------
