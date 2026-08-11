@@ -51,6 +51,8 @@ if [ -f "$(dirname "$0")/../../scripts/lib/common.sh" ]; then
   set +u
   # shellcheck source=/dev/null
   . "$(dirname "$0")/../../scripts/lib/common.sh"
+  # THIS status is the only one that observes a real load — see the load below, which cannot.
+  boot_rc=$?
   set -u
   command -v adb_require_bash >/dev/null 2>&1 && adb_require_bash "$@"
 fi
@@ -96,6 +98,21 @@ set +u
 . "$lib_common"
 lib_rc=$?
 set -u
+# THE FIRST LOAD IS THE AUTHORITATIVE ONE, and on the healthy path it is the ONLY one. `common.sh`
+# opens with a double-source guard (`_ADB_COMMON_SH_LOADED`, :35-38), so once the bootstrap above
+# has loaded it this `.` returns 0 through that guard WITHOUT reading the file again — `lib_rc`
+# then reports the guard, not the library.
+#
+# That is not a corner: the bootstrap runs on every ordinary invocation, so `lib_rc` is 0 by
+# construction almost always. A `common.sh` truncated AFTER the guard and after the two functions
+# this gate needs therefore failed the bootstrap, short-circuited here, satisfied both probes
+# (they were defined before the truncation) and ran the whole subset — the promised FATAL never
+# firing. Found in review on the PR for #299.
+#
+# So a non-zero bootstrap status OVERRIDES: either load failing is a failed load. `${boot_rc:-0}`
+# because the bootstrap is conditional — when it did not run, this source is a real one and its own
+# status is the honest answer.
+[ "${boot_rc:-0}" -eq 0 ] || lib_rc="$boot_rc"
 [ "$lib_rc" -eq 0 ] || gate_fail_loud "shared library failed to source: scripts/lib/common.sh"
 # AND THEN PROBE FOR THE FUNCTION, because the source's status above is necessary and NOT
 # SUFFICIENT. A sourced file returns its LAST command's status, so a zero says only that the last

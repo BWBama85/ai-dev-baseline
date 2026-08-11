@@ -588,6 +588,21 @@ if fx_setup; then
   hasnt "$POUT" "build-drift" "project gate: an unsourceable library also stops before any check runs"
   fx_reset
 
+  # 17f3. TRUNCATED AFTER THE DOUBLE-SOURCE GUARD — the case the other three cannot reach, and the
+  # one that made the source-status check vestigial in production. `common.sh` opens with
+  # `_ADB_COMMON_SH_LOADED` (:35-38), so a file that loads far enough to set the guard and define
+  # what the gate needs, and only THEN hits a syntax error, fails the bootstrap and makes the
+  # gate's own `.` a no-op returning 0. Both probes then pass on functions the partial load
+  # defined, and the gate ran the entire subset with the promised FATAL never firing.
+  #
+  # Appending an unterminated function body is exactly that shape: everything before it executes.
+  printf '\nadb_truncated_tail() {\n' >> "$fx/scripts/lib/common.sh"
+  fx_gate
+  eq "$PRC" "2" "project gate: common.sh truncated after the double-source guard → exit 2"
+  has "$POUT" "failed to source" "project gate: …reported as a load failure, not incidentally by some other check"
+  hasnt "$POUT" "build-drift" "project gate: …and the subset never runs on a partially-loaded library"
+  fx_reset
+
   # 17g. An unbound expansion while the library loads must not DECIDE anything. Under `set -u` it
   # killed the shell outright at rc 1 — neither this gate's blocking 2 nor a pass, and catchable by
   # no `||`, because the shell is gone before the next word is read. With the load relaxed, the
@@ -641,7 +656,13 @@ if fx_setup; then
   # 17k. The floor block's `set +u` removed → the unbound expansion kills the gate again. The
   # INDENTED spelling is the floor block's, and it is the one that fires: that source runs first,
   # so the shell is already gone before the load below it is reached.
-  if fx_mutate '  set +u' 's#^  set \+u$#  :#' "mut-setu"; then
+  # `[+]`, NOT `\+`. The two BREs disagree about the escape and only one of them is a no-op: BSD
+  # reads `\+` as a literal plus, GNU reads it as the one-or-more QUANTIFIER on the preceding space,
+  # so on Linux this pattern meant "set, one-or-more spaces, u" and matched nothing at all. The
+  # mutation silently stopped mutating, which is precisely the state `check_mutate_line`'s
+  # post-condition exists to refuse — it caught this on CI after a local green. A bracket expression
+  # holding one ordinary character is the same in both, so it needs no escape and carries no dialect.
+  if fx_mutate '  set +u' 's#^  set [+]u$#  :#' "mut-setu"; then
     printf '\n: "${ADB_CHECK_DEFINITELY_UNSET_XYZ}"\n' >> "$fx/scripts/lib/common.sh"
     fx_gate
     eq "$PRC" "1" "mut-setu: without the relaxation an unbound expansion kills the gate at rc 1 (so 17g can fail)"
@@ -657,6 +678,19 @@ if fx_setup; then
     printf 'adb_default_branch() {\n' > "$fx/scripts/lib/common.sh"
     fx_gate
     hasnt "$POUT" "failed to source" "mut-srcstatus: without the status guard the source failure is mis-reported (so 17f2 can fail)"
+  fi
+  fx_reset
+
+  # 17n. The bootstrap-status override removed → the double-source guard hides the failure again,
+  # and the gate runs the whole subset on a partially-loaded library. Pins 17f3, which no other
+  # assertion here covers: every other broken-library case fails the FIRST load too, so all of them
+  # stay green with this line gone.
+  if fx_mutate '[ "${boot_rc:-0}" -eq 0 ] || lib_rc="$boot_rc"' \
+       's#^\[ "\${boot_rc:-0}" -eq 0 \] || lib_rc="\$boot_rc"$#:#' "mut-bootrc"; then
+    printf '\nadb_truncated_tail() {\n' >> "$fx/scripts/lib/common.sh"
+    fx_gate
+    hasnt "$POUT" "failed to source" "mut-bootrc: without the override the guarded re-source hides the failure (so 17f3 can fail)"
+    has "$POUT" "build-drift" "mut-bootrc: …and the subset runs on a partially-loaded library"
   fi
   fx_reset
 
