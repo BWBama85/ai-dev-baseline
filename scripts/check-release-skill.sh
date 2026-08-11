@@ -59,6 +59,15 @@ DRV="$ROOT/.claude/skills/release/release.sh"
 
 [ -f "$RL" ] || { printf 'FAIL: %s missing\n' "$RL" >&2; exit 1; }
 
+# The throwaway root for the driver fixture built at the bottom of this file (#313), created here
+# so ONE EXIT trap covers the whole suite. `check_exit_guard` is what makes that trap fail closed:
+# a suite's exit status is its LAST command's, and only `check_summary` ever consults the `fail`
+# counter — so a truncating edit or a stray early `exit` would print every FAIL: line and still be
+# reported as passing. Installing our own bare `trap … EXIT` for the cleanup would have replaced
+# that guard rather than joined it, which is why the cleanup is passed IN.
+work="$(mktemp -d)"
+check_exit_guard "release-skill" "rm -rf \"$work\""
+
 run() { bash "$RL" "$@"; }          # stdout+stderr to caller, status preserved
 rc_of() { bash "$RL" "$@" >/dev/null 2>&1; printf '%s' "$?"; }
 
@@ -455,11 +464,20 @@ rm -f /tmp/adb-empty-msg.$$
 # why a sweep of that directory reported "no additional producers" and missed it. Every consumer
 # concatenates the result into `repos/<slug>/...`, four of them in the tag/merge path.
 #
-# STRUCTURAL, and this file is the honest place to say why: the suite's subject is
-# `release-lib.sh`; `release.sh` dispatches on load, so its functions cannot be sourced and driven
-# here without the state and gh stubbing that #190 tracks. A pin that reads the source is weaker
-# than one that runs it, and it is what is available — a guard whose absence is silent still gets a
-# test, and the test admits its kind.
+# STRUCTURAL, and this file is the honest place to say why — with the boundary redrawn by #313.
+#
+# The driver IS driven now: the last section of this file stands up a throwaway checkout with a
+# stubbed `gh` and its own run state, and runs `release.sh` for real. So "state and gh stubbing are
+# unavailable" is no longer true, and this comment used to say so.
+#
+# These three pins stay structural anyway, because they assert how the producer is WRITTEN rather
+# than what it returns: that it delegates to the shared charset predicate instead of restating it,
+# and that it prints its diagnostic with `printf`. A run cannot distinguish a delegated check from
+# a hand-rolled one that happens to agree, and the `echo`/`printf` hazard only appears under a
+# shell option this suite does not set. `release.sh` also still dispatches on load, so its
+# functions cannot be SOURCED and unit-tested one at a time; the fixture drives it as a PROCESS
+# instead, which reaches whole subcommands but not individual helpers. A pin that reads the source
+# is weaker than one that runs it; where that is what is available, the test says which kind it is.
 drv="$(cat "$DRV")"
 slug_fn="$(awk '/^slug\(\) \{/,/^\}/' "$DRV")"
 if printf '%s' "$slug_fn" | grep -q 'adb_is_path_safe_repo_slug'; then ok; else
@@ -494,5 +512,313 @@ unchecked="$(printf '%s\n' "$code_only" | grep -nF '$(slug)' | grep -vE '="\$\(s
 if [ -z "$unchecked" ]; then ok; else
   bad "release.sh uses \$(slug) without checking its status: $unchecked"
 fi
+
+# =================================================================================================
+# THE RUN-STATE GUARDS (#313) — structural shape, then the driver actually run.
+#
+# `need` reads a cross-step value or stops the release. It used to PRINT the value, so all eleven
+# of its call sites captured it with `v="$(need KEY hint)"` — and a command substitution is a
+# subshell, so `die`'s `exit 1` left only the subshell. The message reached stderr and the step
+# CARRIED ON with an empty string.
+#
+# Cutting v2.1.0, that turned "you skipped a step" into a fifteen-minute wrong answer:
+# `verify-merge` ran with neither MERGE_SHA nor EXPECTED_CHECKS recorded, `await_checks "" ""`
+# polled `repos/<slug>/commits//check-runs` 90 times at 10s intervals, and reported
+# "never reached a settled set of >= ". `cmd_roll`'s milestone pin-revalidation was defeated the
+# same way, by its own empty inputs: `[ "" = "" ]` passes.
+#
+# WHY EXIT CODE ALONE PROVES ALMOST NOTHING HERE, and why the oracle below is as strict as it is.
+# Run against the pre-fix driver, 11 of these 14 refusal cases STILL EXIT 1 — a later `die`, on a
+# later line, for a different reason — so a `yes`/`no` on the status would have been green for all
+# eleven. (The three that do not are the `roll-preflight` cases, which reach the rollover with an
+# empty `--version`; that is caught here by the no-rollover assertion, and in a real checkout by
+# `bin/baseline` refusing an empty version.) So each case requires the exit to be exactly 1, stdout
+# to be EMPTY, stderr to be EXACTLY the guard's own one line, no gh request issued at all, and no
+# rollover: the last two are what distinguish "stopped at the guard" from "stopped at a convenient
+# downstream failure".
+# =================================================================================================
+
+# --- structural: `need` is only ever reached as a direct statement --------------------------------
+# Two rules over comment-stripped source, both reported with what they counted. The first bans the
+# superseded spelling outright; the second is the completeness half — every `need` USE must be one
+# of the direct call sites, so a use in any other position (an argument, a pipeline, a `[ ]` test)
+# is caught even though it is not a `$( )`.
+#
+# Comments are stripped first because `release.sh`'s own header quotes the superseded spelling to
+# explain the bug, and the sibling `$(slug)` check above shipped its first cut flagging exactly
+# that kind of prose.
+#
+# SAY WHAT THESE DO NOT CATCH, rather than implying more — a scanner trusted past its reach is how
+# a green gate starts reading as evidence. This is a LEXICAL line scan, not a shell parser:
+#
+#   * it strips only WHOLE-LINE comments, so a trailing `# …` comment, a heredoc body, or any
+#     quoted string is still scanned — which is why `total` is anchored to command position rather
+#     than to the bare word (see below);
+#   * it cannot see a substitution split across lines — `x=$(` on one line and `need …` at the head
+#     of the next reads to it as a direct call;
+#   * `total` enumerates a SET of command-start contexts. It is a good set, not a proof of one.
+#
+# What covers all three is the driven suite below, where a driver that does not stop simply fails.
+# These rules are the cheap immediate half; the behaviour is the proof.
+need_subst_in() {   # <file> -> print offending lines; empty output = clean
+  grep -vE '^[[:space:]]*#' "$1" | grep -nE '\$\(need[[:space:]]|`need[[:space:]]' || true
+}
+need_counts_in() {  # <file> -> "<direct> <total>"
+  local code direct total
+  code="$(grep -vE '^[[:space:]]*#' "$1")"
+  # COMMAND POSITION, not merely "the word `need`". Anchoring on any non-word character before it
+  # counted `die "… — need exactly 1"` (release.sh's roadmap-title refusal) as a thirteenth call
+  # site, so `direct` and `total` could never agree and the rule failed on correct code.
+  #
+  # The set is the places a command can START: line head; after `; & | ( ) { }` or a backtick —
+  # which is what makes `$(need …)` and `` `need …` `` count, since both open with one of them; and
+  # after a RESERVED WORD. Review caught that last group missing: without it `if need …; then :; fi`
+  # lowered `direct` and `total` by one each, leaving the equality green while a call site vanished
+  # from the direct inventory. Neither the definition (`need() {`, no following space) nor the
+  # private nameref (`_need_dest`) can match.
+  total="$(printf '%s\n' "$code" \
+    | grep -cE '(^|[;&|(){}`]|[[:space:]](if|then|else|elif|do|while|until|time|!)[[:space:]])[[:space:]]*need[[:space:]]' || true)"
+  direct="$(printf '%s\n' "$code" | grep -cE '^[[:space:]]*need[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+[A-Z][A-Z0-9_]*[[:space:]]' || true)"
+  printf '%s %s' "$direct" "$total"
+}
+eq "$(need_subst_in "$DRV")" '' "release.sh never reaches need through a command substitution (#313)"
+read -r NEED_DIRECT NEED_TOTAL <<EOF
+$(need_counts_in "$DRV")
+EOF
+# A scanner that matched nothing reports exactly what a clean scan reports, so the count is
+# asserted non-zero before it is compared with anything.
+if [ "${NEED_TOTAL:-0}" -gt 0 ]; then ok; else
+  bad "the need-call scanner matched NOTHING in release.sh — it would report clean either way"
+fi
+eq "$NEED_DIRECT" "$NEED_TOTAL" "every need use in release.sh is a direct statement (found $NEED_DIRECT of $NEED_TOTAL)"
+
+# --- the fixture: a throwaway checkout, a refusing gh, and this run's own state -------------------
+# ROOTED IN ITS OWN `git init`, and that is load-bearing rather than tidy. `release.sh` derives
+# `ROOT` from `git rev-parse --show-toplevel` and puts its run state at
+# `$ROOT/.claude/state/release-run.env` — so driving the TRACKED script would read, and the failure
+# cases below would overwrite, a real in-progress release's state.
+#
+# Only `scripts` and `.claude/skills` are copied. `.claude` as a whole would drag in `.claude/state`
+# — gitignored, live, and the very file this suite must not inherit.
+FIX="$work/repo"
+if check_copy_subtrees "$ROOT" "$FIX" scripts .claude/skills \
+   && git -C "$FIX" init -q >/dev/null 2>&1 \
+   && mkdir -p "$FIX/.claude/state" "$FIX/bin" "$work/ghbin"; then ok; else
+  bad "could not build the release-driver fixture — every driven case below would prove nothing"
+fi
+FIX_DRV="$FIX/.claude/skills/release/release.sh"
+FIX_RS="$FIX/.claude/state/release-run.env"
+cp "$FIX_DRV" "$work/pristine-release.sh"
+printf 'a tag message\n' > "$work/msg.txt"
+
+# A RECORDING, REFUSING gh stub. Present, so `have_gh` passes; answers nothing, so `slug()` and
+# every gh-backed path refuse immediately.
+#
+# REFUSING IS WHAT KEEPS THIS SUITE FROM HANGING. Given a stub that ANSWERED, a regressed
+# `verify-merge` would enter `await_checks`'s 90 x 10s retry loop and this file would sit there for
+# fifteen minutes instead of going red — reproducing the bug rather than reporting it. Measured:
+# an answering stub blew a 2-minute bound; this one returns in well under a second.
+cat > "$work/ghbin/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_CALLS"
+case "${1:-}" in auth) exit 0 ;; esac
+exit 1
+STUB
+chmod +x "$work/ghbin/gh"
+
+# A recording `bin/baseline`, so the one PRESENT-VALUE case below can prove the value actually
+# arrived. Every missing-value case asserts this log stays empty, which is how "the guard stopped
+# the run" is told apart from "the rollover ran with an empty version".
+#
+# ONE ARGUMENT PER LINE, not `"$*"`. Flattening argv into a single space-joined string cannot tell
+# `--version v9.9.9` from `--version` followed by `v9.9.9` as one argument, nor an empty version
+# from a dropped one — so the present-value assertion would have been about a substring, not about
+# the argv it claims to check.
+cat > "$FIX/bin/baseline" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >> "$BASELINE_CALLS"
+STUB
+chmod +x "$FIX/bin/baseline"
+
+# rel_case <state> <args…> — write <state> as the run-state file (empty string = no file at all),
+# then run the fixture driver, capturing stdout and stderr SEPARATELY.
+#
+# Under `adb_run_bounded`, because a regression's signature is a wait, not a crash: 90x10s in
+# `await_checks` and 30 minutes in `pr-watch` are both reachable from these inputs. The bound
+# returns 124, which the `rc = 1` assertion rejects — a timeout must never be scored as "it
+# refused". `env`, not a variable prefix: assignments preceding a FUNCTION call persist in the
+# calling shell in bash, which would leave the stub on PATH for the rest of the suite.
+rel_case() {
+  local state="$1"; shift
+  : > "$work/gh-calls"; : > "$work/baseline-calls"
+  if [ -n "$state" ]; then printf '%s\n' "$state" > "$FIX_RS"; else rm -f "$FIX_RS"; fi
+  adb_run_bounded 60 5 env "PATH=$work/ghbin:$PATH" "GH_CALLS=$work/gh-calls" \
+      "BASELINE_CALLS=$work/baseline-calls" bash "$FIX_DRV" "$@" \
+      > "$work/out" 2> "$work/err"
+  REL_RC=$?
+  REL_OUT="$(cat "$work/out")"; REL_ERR="$(cat "$work/err")"
+  REL_GH="$(cat "$work/gh-calls")"; REL_BL="$(cat "$work/baseline-calls")"
+}
+
+# rel_guard <label> <expected-key-and-hint> <state> <args…> — the five-part oracle: exit exactly 1,
+# empty stdout, stderr equal to the guard's own single line, no gh request, no rollover.
+#
+# TWO MODES, because the matrix below is run TWICE. `REL_MODE=assert` requires the oracle to hold;
+# `REL_MODE=broken` requires it NOT to, and is what the M2 mutation uses to prove that every one of
+# these positions can actually go red rather than only the one position a single spot-check reaches.
+REL_MODE=assert
+rel_guard() {
+  local label="$1" want="$2" state="$3"; shift 3
+  rel_case "$state" "$@"
+  if [ "$REL_MODE" = "assert" ]; then
+    eq "$REL_RC"  1  "$label: exits 1"
+    eq "$REL_OUT" '' "$label: writes nothing to stdout"
+    eq "$REL_ERR" "release: $want" "$label: stops with its OWN message, and only that"
+    eq "$REL_GH"  '' "$label: issues no gh request — it stopped AT the guard"
+    eq "$REL_BL"  '' "$label: never reaches the rollover"
+  elif [ "$REL_RC" = "1" ] && [ "$REL_OUT" = "" ] && [ "$REL_ERR" = "release: $want" ] \
+       && [ "$REL_GH" = "" ] && [ "$REL_BL" = "" ]; then
+    bad "$label: satisfied the oracle even with need() unable to refuse — those assertions cannot go red"
+  else ok; fi
+}
+
+# guard_matrix — every guard position, in order. Twelve of them, plus the two empty-value spellings;
+# the earlier guard in each function is cleared with partial state so the later one is reachable at
+# all. A FUNCTION, not a straight-line list, so the M2 mutation can replay the identical set.
+guard_matrix() {
+  rel_guard "roll-preflight/no state" "VERSION not recorded yet — run version-guard first" '' roll-preflight
+  rel_guard "stamp-verify/no state"   "VERSION not recorded yet — run version-guard first" '' stamp-verify
+  rel_guard "await-review/no state"   "PR not recorded yet — run record-pr first"          '' await-review
+  rel_guard "merge/no state"          "PR not recorded yet — run record-pr first"          '' merge
+  rel_guard "merge/PR pinned"         "REVIEWED_SHA not recorded yet — run await-review first" 'PR=42' merge
+  rel_guard "verify-merge/no state"   "MERGE_SHA not recorded yet — run merge first"       '' verify-merge
+  rel_guard "verify-merge/sha pinned" "EXPECTED_CHECKS not recorded yet — run await-review first" 'MERGE_SHA=abc123' verify-merge
+  rel_guard "tag/no state"            "VERSION not recorded yet — run version-guard first" '' tag --message-file "$work/msg.txt"
+  rel_guard "tag/version pinned"      "MERGE_SHA not recorded yet — run merge first"       'VERSION=v9.9.9' tag --message-file "$work/msg.txt"
+  rel_guard "roll/no state"           "VERSION not recorded yet — run version-guard first" '' roll
+  rel_guard "roll/version pinned"     "M_NUM not recorded yet — run readiness first"       'VERSION=v9.9.9' roll
+  # The twelfth is NEW (#313). `cmd_readiness` writes M_NUM and MS_NAME together, so this state
+  # "cannot happen" — but the run state is an appended text file a resumed run can leave partial,
+  # and an empty MS_NAME does not merely propagate: it makes the milestone pin-revalidation compare
+  # `[ "" = "" ]` and PASS, waving through the roll it exists to refuse.
+  rel_guard "roll/milestone half-pinned" "MS_NAME not recorded yet — run readiness first" 'VERSION=v9.9.9
+M_NUM=7' roll
+  # A recorded key with an EMPTY value is the same missing state. `rs` greps `^KEY=` and cuts the
+  # value, so `VERSION=` yields the empty string exactly as an absent file does — and `tail -n1`
+  # means a LATER empty line overrides an earlier real one, which is the shape a partially
+  # rewritten state file actually has. Both must refuse.
+  rel_guard "roll-preflight/empty value" "VERSION not recorded yet — run version-guard first" 'VERSION=' roll-preflight
+  rel_guard "roll-preflight/emptied by a later line" "VERSION not recorded yet — run version-guard first" 'VERSION=v1.0.0
+VERSION=' roll-preflight
+}
+guard_matrix
+
+# --- a refused guard must not touch the run state --------------------------------------------------
+# `cmp -s` against a saved copy, not a checksum: a CRC is a collision away from calling two files
+# equal, and the point of this case is byte equality. It does NOT claim the file was never opened or
+# rewritten with identical bytes — only that its contents did not change.
+printf 'VERSION=v9.9.9\n' > "$FIX_RS"
+cp "$FIX_RS" "$work/rs-before"
+rel_case 'VERSION=v9.9.9' roll
+if cmp -s "$work/rs-before" "$FIX_RS"; then ok; else
+  bad "a refused guard changed the run state's bytes"
+fi
+
+# --- THE PRESENT-VALUE CASE: the nameref really delivers ------------------------------------------
+# Every case above is a REFUSAL, and all fourteen would still pass against a `need` that refused
+# unconditionally — or one that never assigned at all. This is the case that cannot: `roll-preflight`
+# interpolates the value it read into the rollover's `--version`, so the recorded argv is proof that
+# `need` wrote `v9.9.9` through the nameref into its CALLER's `v`.
+#
+# THE EXPECTED ARGV HAS ONE HOME, and that is not tidiness — it is the defect this variable
+# replaces. The literal was written out twice, here and in M3's "did it still deliver?" test; when
+# the stub changed from `"$*"` to one-argument-per-line, this copy was updated and M3's was not. M3
+# then compared against a space-joined string the log can no longer produce, so it took the `else
+# ok` branch unconditionally and proved nothing — a mutation harness silently asserting nothing,
+# which is the exact shape this file exists to catch. Sharing the constant makes that drift
+# impossible, and the assertion below passing is what proves M3's comparison is live: the same
+# string, compared the same way, is known to match on unmutated code.
+ROLL_ARGV='release
+roll
+--version
+v9.9.9
+--dry-run'
+rel_case 'VERSION=v9.9.9' roll-preflight
+eq "$REL_RC" 0  "roll-preflight/version pinned: succeeds when the value IS recorded"
+eq "$REL_BL" "$ROLL_ARGV" \
+   "roll-preflight/version pinned: the value reaches the caller through the nameref, as its own argv word"
+
+# --- MUTATION PROOF: the new assertions are required to go RED -------------------------------------
+# Against a COPY of the driver, never the tracked file (base/practices/self-review.md: editing the
+# real tree to test a check that reads the real tree is how uncommitted work gets discarded).
+# `check_mutate_line` refuses to proceed unless its edit demonstrably applied, so a mutation that
+# stops describing the code cannot quietly turn these into assertions about unmodified source.
+#
+# WHAT EACH ONE COVERS, stated so the coverage is not overread: M1 reddens both structural rules and
+# `verify-merge`'s behaviour; M2 replays the WHOLE matrix and requires every one of the fourteen
+# positions to stop satisfying the oracle; M3 reddens the present-value case. The run-state
+# byte-equality case above is not mutated — it is a property of a refusal that already has to hold.
+mut_restore() { cp "$work/pristine-release.sh" "$FIX_DRV"; }
+
+# M1 — restore ONE call site to the superseded `$( )` spelling. It must redden BOTH structural rules
+# and the behaviour of `verify-merge`, the subcommand whose 15-minute misdiagnosis is #313.
+#
+# THE MUTATION KEEPS THE NEW THREE-ARGUMENT SHAPE and only wraps it, which is the whole point:
+# review caught the first cut writing the OLD two-argument `$(need EXPECTED_CHECKS 'hint')`, which
+# makes today's `need` take `EXPECTED_CHECKS` as its DESTINATION and die on an unset `$3` under
+# `set -u`. That goes red for an argument-contract error, not because `die` exits only the subshell
+# — a mutation proving a different proposition than the one it is captioned with.
+#
+# EXPECTED_CHECKS, because `check_mutate_line` requires its needle to match exactly ONE line and
+# four of the twelve call sites are byte-identical to another (`need v VERSION …` appears four
+# times, `need pr PR …` and `need msha MERGE_SHA …` twice each). This one is unique, and it sits in
+# `cmd_verify_merge` — so `MERGE_SHA` is supplied below to get past the guard ahead of it.
+mut_restore
+if check_mutate_line "$FIX_DRV" \
+     "  need exp EXPECTED_CHECKS 'run await-review first'" \
+     "s|^  need exp EXPECTED_CHECKS 'run await-review first'\$|  exp=\"\$(need exp EXPECTED_CHECKS 'run await-review first')\"|" \
+     "M1 command-substitution call site"; then
+  if [ -n "$(need_subst_in "$FIX_DRV")" ]; then ok; else
+    bad "M1: the \$(need …) ban did NOT report the restored site — it cannot go red"
+  fi
+  read -r M1_DIRECT M1_TOTAL <<EOF
+$(need_counts_in "$FIX_DRV")
+EOF
+  if [ "$M1_DIRECT" != "$M1_TOTAL" ]; then ok; else
+    bad "M1: the direct-vs-total rule stayed green on a wrapped call site (got $M1_DIRECT of $M1_TOTAL)"
+  fi
+  rel_case 'MERGE_SHA=abc123' verify-merge
+  if [ "$REL_ERR" = "release: EXPECTED_CHECKS not recorded yet — run await-review first" ]; then
+    bad "M1: the mutated driver still stopped at the guard — the behavioural oracle proves nothing"
+  else ok; fi
+fi
+
+# M2 — delete the emptiness test inside `need`, leaving a helper that reads and never refuses, then
+# REPLAY THE ENTIRE MATRIX. Spot-checking one subcommand would have left thirteen positions whose
+# assertions were never shown capable of failing; `REL_MODE=broken` requires each of them to stop
+# satisfying the oracle.
+mut_restore
+if check_mutate_line "$FIX_DRV" \
+     '  [ -n "$_need_dest" ] || die "$2 not recorded yet — $3"' \
+     '/_need_dest.*|| die/d' \
+     "M2 need never refuses"; then
+  REL_MODE=broken
+  guard_matrix
+  REL_MODE=assert
+fi
+
+# M3 — make `need` refuse unconditionally. Every refusal case still passes; only the present-value
+# case can catch it, which is why that case exists.
+mut_restore
+if check_mutate_line "$FIX_DRV" \
+     '  _need_dest="$(rs "$2")"' \
+     's|^  _need_dest="\$(rs "\$2")"$|  _need_dest=""|' \
+     "M3 need never assigns"; then
+  rel_case 'VERSION=v9.9.9' roll-preflight
+  if [ "$REL_BL" = "$ROLL_ARGV" ]; then
+    bad "M3: a need() that never assigns still delivered the value — the present-value case proves nothing"
+  else ok; fi
+fi
+mut_restore
 
 check_summary "release-skill"
