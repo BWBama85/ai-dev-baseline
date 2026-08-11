@@ -9,6 +9,78 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`/release`'s run-state guards can stop the release, and every one of them is now driven by a
+  test** (#313).
+
+  `.claude/skills/release/release.sh` guards every out-of-order step with `need`, and `need` used
+  to **print** its value — so all eleven call sites captured it in a command substitution
+  (schematically `x="$(need KEY hint)"`, over six destinations: `v`, `pr`, `sha`, `msha`, `exp`,
+  `pinned_m`). A command substitution is a subshell, so `die`'s `exit 1` left only the subshell: the
+  message reached stderr, the assignment took the **empty string**, and the step carried on as
+  though the value were there. A guard whose failure mode is "print a line and continue" is worse
+  than no guard, because everything downstream then runs on empty inputs.
+
+  - **Measured, cutting v2.1.0.** `await-review` exited `10` and the PR was merged from the web UI,
+    so neither `EXPECTED_CHECKS` nor `MERGE_SHA` was ever recorded. `verify-merge` did not stop:
+    both values came back empty, `await_checks "" ""` polled `repos/<slug>/commits//check-runs`
+    **90 times at 10s intervals**, and reported `never reached a settled set of >= ` after
+    **fifteen minutes**. The real cause — *you skipped a step* — had been printed to stderr in the
+    first 20ms and buried. Same shape `slug()`'s header documents from #218, reached by a different
+    route.
+  - **`need` now writes through a nameref and is called as a plain command**, so `die` runs in the
+    caller's own shell and `exit 1` ends the run. The value has to reach the caller some way other
+    than stdout, because stdout is what forced the subshell. The private ref is `_need_dest` (a
+    nameref whose name equals its target is a circular reference bash refuses, and four sites are
+    legitimately named `v`; `_need_dest` is in turn refused by name, so the one destination the
+    helper cannot serve fails with a message instead of an unbound-variable trap), and each caller
+    declares its destination `local`. That last part is not decoration: ShellCheck cannot see through
+    a nameref, and with the seven declarations removed it reports **4 SC2154 diagnostics** over
+    `pr`, `exp`, `pinned_m` and `pinned_ms`. `v`, `sha` and `msha` escape
+    only because some *other* function in the file happens to assign those names — an accident of
+    naming rather than a property to build on, so all seven are declared uniformly.
+  - **`cmd_roll`'s milestone pin-revalidation was defeated by its own empty inputs**, and that is
+    the twelfth guard, newly added. `MS_NAME` was read with a bare `rs`, so an unpinned run made the
+    `jq` select milestones titled `""`, find none, and compare `[ "" = "" ]` — which **passes**. The
+    check written specifically so a changed marker cannot rename, drain and close a *different*
+    milestone than the one the release was cut for would have waved the roll through, having
+    verified nothing. (Contained only downstream: `bin/baseline release roll --version ""` refuses,
+    so no milestone was harmed.)
+  - **`scripts/check-release-skill.sh` now drives the driver**, in a throwaway checkout rooted in
+    its own `git init` — because `release.sh` derives its run-state path from
+    `git rev-parse --show-toplevel`, so testing the tracked script would read, and these failure
+    cases would overwrite, a real in-progress release's state. All **twelve** guard positions are
+    exercised in order, with partial state supplied to reach the later guard in each function, plus
+    a key recorded with an empty value and a key emptied by a later duplicate line.
+  - **Exit status alone proves almost nothing here, so the oracle is stricter.** Against the pre-fix
+    driver **11 of the 14** refusal cases still exit `1` — a later `die`, on a later line, for a
+    different reason — so a status assertion would have been green for all eleven. Each case now
+    requires exit exactly `1`, **empty stdout**, stderr equal to the guard's own single line, **no
+    `gh` request issued at all**, and no rollover; the last two separate "stopped at the guard" from
+    "stopped at a convenient downstream failure". Runs under `adb_run_bounded`, because a
+    regression's signature here is a *wait* (90x10s in `await_checks`, 30 minutes in `pr-watch`) and
+    a timeout must never score as a refusal.
+  - **One present-value case, because fourteen refusals cannot tell a working guard from a broken
+    one.** A `need` that refused unconditionally, or never assigned, would satisfy every case above.
+    `roll-preflight` with `VERSION` recorded interpolates what it read into the rollover's
+    `--version`, so the recorded argv — captured one argument per line, so it cannot be satisfied by
+    a substring — is proof the value reached the caller through the nameref.
+  - **Observed failing on the real superseded input.** Run against a copy of the tree carrying the
+    pre-fix driver, the new suite reports **30 failures**; the same copy with the fix reports **0**.
+    Three in-suite mutations then pin it permanently, and each states what it covers rather than
+    implying more: **M1** restores one call site to `$(need …)` — keeping the three-argument shape,
+    so it reproduces the subshell rather than an argument-contract error — and must redden both
+    structural rules *and* `verify-merge`'s behaviour; **M2** deletes the emptiness test so `need`
+    cannot refuse, and **replays the whole matrix**, requiring each of the fourteen positions to
+    stop satisfying the oracle; **M3** makes `need` never assign, which only the present-value case
+    can catch. Each refuses to prove anything rather than passing silently when its needle stops
+    matching.
+  - **A structural pin, honest about its reach.** Two rules ban the `$(need …)` spelling and require
+    every `need` in a recognized command position to be one of the direct call sites — including
+    after a reserved word, without which `if need …; then :; fi` lowered both counts equally and
+    stayed green. Both rules report what they counted, and both name what a lexical line scan cannot
+    see (quoted text, trailing comments, a substitution split across lines), because that is what
+    the driven cases are for.
+
 - **This repo's own Stop-hook gate fails loud on a broken library, and the real script is now
   tested** (#299).
 

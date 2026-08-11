@@ -77,7 +77,50 @@ say()  { printf '%s\n' "$*"; }
 # resumable, and what removes the "which block defined $VERSION" question entirely.
 rs()   { [ -f "$RS" ] && grep "^$1=" "$RS" 2>/dev/null | tail -n1 | cut -d= -f2- || true; }
 rset() { mkdir -p "$(dirname "$RS")"; printf '%s=%s\n' "$1" "$2" >> "$RS"; }
-need() { v="$(rs "$1")"; [ -n "$v" ] || die "$1 not recorded yet — $2"; printf '%s' "$v"; }
+
+# need <dest-var> <key> <hint> — read a cross-step value, or STOP THE SCRIPT.
+#
+# IT WRITES THROUGH A NAMEREF INSTEAD OF PRINTING, AND THAT IS THE WHOLE POINT (#313).
+#
+# It used to print its value, so every one of its eleven call sites captured it with a command
+# substitution — schematically `x="$(need KEY hint)"`, over six different destinations (`v`, `pr`,
+# `sha`, `msha`, `exp`, `pinned_m`) — and a command substitution is a SUBSHELL. `die`'s `exit 1`
+# left only that subshell: the message went to stderr, the assignment took the EMPTY STRING, and
+# the step carried on as though the value were there. A guard whose failure mode is "print a line
+# and continue" is worse than no guard, because every caller downstream then runs on empty inputs.
+#
+# Measured, cutting v2.1.0: `await-review` exited 10 and the PR was merged from the web UI, so
+# neither EXPECTED_CHECKS nor MERGE_SHA was ever recorded. `verify-merge` did not stop. Both values
+# came back empty, `await_checks "" ""` polled `repos/<slug>/commits//check-runs` 90 times at 10s
+# intervals, and reported "never reached a settled set of >= " after FIFTEEN MINUTES. The real
+# cause — you skipped a step — had been printed to stderr in the first 20ms and buried. That is the
+# same shape `slug()`'s header documents from #218, reached by a different route.
+#
+# Called as a PLAIN COMMAND, `die` runs in the caller's own shell and `exit 1` ends the run. The
+# nameref is what makes that possible: the value has to reach the caller some way other than
+# stdout, because stdout is what forced the subshell.
+#
+# `_need_dest`, not `v`: a nameref whose own name equals its target is a CIRCULAR REFERENCE and
+# bash refuses it, so a call site legitimately named `v` (four of them are) would break. And the
+# non-empty test reads the NAMEREF rather than `$2`'s value a second time — one read, one subject,
+# and no SC2034 for a variable that would otherwise only ever be assigned.
+#
+# That leaves `_need_dest` itself as the one destination name this helper cannot serve, so it is
+# REFUSED BY NAME rather than left as a trap: passed anyway, bash warns about the circular
+# reference and the run dies on an unbound variable under `set -u` — a confusing failure in place
+# of the controlled one this function exists to give.
+#
+# Callers declare their destination `local`, which is not decoration: ShellCheck cannot see through
+# a nameref, so an undeclared destination is "referenced but not assigned". Measured with the seven
+# declarations removed: 4 SC2154 diagnostics, over `pr`, `exp`, `pinned_m` and `pinned_ms`. `v`,
+# `sha` and `msha` escape only because some OTHER function in this file happens to assign those
+# names — an accident of naming, not a property to build on, which is why all seven are declared.
+need() {
+  [ "$1" != "_need_dest" ] || die "need: '_need_dest' is this helper's own nameref and cannot be a destination"
+  local -n _need_dest="$1"
+  _need_dest="$(rs "$2")"
+  [ -n "$_need_dest" ] || die "$2 not recorded yet — $3"
+}
 
 have_gh() { command -v gh >/dev/null 2>&1 || export PATH="/opt/homebrew/bin:$PATH"; command -v gh >/dev/null 2>&1; }
 # A THIRD PRODUCER of the same API-supplied value (#218), and the one a sweep of `scripts/lib`
@@ -344,13 +387,15 @@ cmd_version_guard() {
 }
 
 cmd_roll_preflight() {
-  v="$(need VERSION 'run version-guard first')"
+  local v
+  need v VERSION 'run version-guard first'
   bash "$ROOT/bin/baseline" release roll --version "$v" --dry-run \
     || die "the rollover would fail — fix it BEFORE cutting, not after"
 }
 
 cmd_stamp_verify() {
-  v="$(need VERSION 'run version-guard first')"
+  local v
+  need v VERSION 'run version-guard first'
   sv_sl="$(slug)" || die "cannot resolve this repo's slug"
   bash "$RLIB" changelog-verify "$v" "$(rs LAST)" "$sv_sl" "$(date +%F)" < "$ROOT/CHANGELOG.md" \
     || die "changelog stamp is wrong (reasons above)"
@@ -364,8 +409,9 @@ cmd_record_pr() {
 }
 
 cmd_await_review() {
+  local pr
   have_gh || die "gh not found"
-  pr="$(need PR 'run record-pr first')"
+  need pr PR 'run record-pr first'
   out="$(bash "$LIB/pr-watch.sh" wait --pr "$pr" --interval 30 --max-secs 1800)"; rc=$?
   sha="$(printf '%s\n' "$out" | tail -n1 | awk '{print $2}')"
   case "$rc" in
@@ -383,9 +429,10 @@ cmd_await_review() {
 }
 
 cmd_merge() {
+  local pr sha
   have_gh || die "gh not found"
-  pr="$(need PR 'run record-pr first')"
-  sha="$(need REVIEWED_SHA 'run await-review first')"
+  need pr PR 'run record-pr first'
+  need sha REVIEWED_SHA 'run await-review first'
   cmd_readiness   # re-verify against the PIN before an irreversible act
   flag="$(bash "$LIB/repo-settings.sh" merge-flag)" || flag="--squash"
   # --match-head-commit makes GitHub REJECT the merge if a commit landed after the reviewer passed.
@@ -399,9 +446,10 @@ cmd_merge() {
 }
 
 cmd_verify_merge() {
+  local msha exp
   have_gh || die "gh not found"
-  msha="$(need MERGE_SHA 'run merge first')"
-  exp="$(need EXPECTED_CHECKS 'run await-review first')"
+  need msha MERGE_SHA 'run merge first'
+  need exp EXPECTED_CHECKS 'run await-review first'
   total="$(await_checks "$msha" "$exp")" || die "$msha never reached a settled set of >= $exp — refusing to tag"
   h="$(health_of "$msha")" || die "branch-health failed"
   case "$h" in green|no-ci) : ;; *) die "$msha health is '$h' — refusing to tag" ;; esac
@@ -411,11 +459,12 @@ cmd_verify_merge() {
 }
 
 cmd_tag() {
+  local v msha
   [ "$#" -eq 2 ] && [ "$1" = "--message-file" ] || { usage >&2; exit 2; }
   msg="$2"
   [ -s "$msg" ] || die "tag message file is empty or missing: $msg"
-  v="$(need VERSION 'run version-guard first')"
-  msha="$(need MERGE_SHA 'run merge first')"
+  need v VERSION 'run version-guard first'
+  need msha MERGE_SHA 'run merge first'
   git -C "$ROOT" fetch --prune --tags origin >/dev/null 2>&1 || die "fetch failed"
   # Idempotent: a resumed run may already hold the tag. Require any existing one to point at the
   # SAME verified commit; never move a tag.
@@ -437,10 +486,18 @@ cmd_tag() {
 }
 
 cmd_roll() {
+  local v pinned_m pinned_ms
   have_gh || die "gh not found"
-  v="$(need VERSION 'run version-guard first')"
-  pinned_m="$(need M_NUM 'run readiness first')"
-  pinned_ms="$(rs MS_NAME)"
+  need v VERSION 'run version-guard first'
+  need pinned_m M_NUM 'run readiness first'
+  # GUARDED, not a bare `rs` (#313). `cmd_readiness` writes M_NUM and MS_NAME together, so an
+  # unpinned MS_NAME "cannot happen" — but the run state is an appended text file that a resumed or
+  # hand-edited run can leave partial, and this is the one place where an empty value does not
+  # merely propagate: it DEFEATS THE GUARD BELOW. With `pinned_ms` empty the jq selects milestones
+  # whose title equals "", finds none, yields "", and the comparison becomes `[ "" = "" ]`, which
+  # PASSES. The check written specifically so a changed marker cannot rename, drain and close the
+  # wrong milestone would wave the roll through, having verified nothing.
+  need pinned_ms MS_NAME 'run readiness first'
   # REVALIDATE the pin immediately before rolling. `baseline release roll` resolves the marker
   # itself, so a marker changed since the pin would make it rename, drain and close a DIFFERENT
   # milestone than the one this release was cut for.
