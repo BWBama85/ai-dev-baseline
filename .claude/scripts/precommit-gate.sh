@@ -97,10 +97,12 @@ set +u
 lib_rc=$?
 set -u
 [ "$lib_rc" -eq 0 ] || gate_fail_loud "shared library failed to source: scripts/lib/common.sh"
-# PROBE FOR THE FUNCTION, never the source's exit status: a sourced file returns its LAST
-# command's status, so `. lib || …` reports whatever that happened to be and says nothing about
-# whether the file loaded. A truncated library is precisely the case that distinction exists for —
-# it sources cleanly, exits 0, and defines nothing.
+# AND THEN PROBE FOR THE FUNCTION, because the source's status above is necessary and NOT
+# SUFFICIENT. A sourced file returns its LAST command's status, so a zero says only that the last
+# thing in the file worked — not that the file loaded. A truncated library is precisely the case
+# that gap exists for: it sources cleanly, exits 0, and defines nothing at all. Both checks are
+# kept because they catch different corruptions (an unsourceable file vs. a sourceable empty one)
+# and report different causes.
 command -v adb_default_branch >/dev/null 2>&1 \
   || gate_fail_loud "scripts/lib/common.sh loaded but did not define adb_default_branch (corrupt or truncated)"
 default_branch="$(adb_default_branch "$repo_root")"

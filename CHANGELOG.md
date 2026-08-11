@@ -21,11 +21,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   gate's fail-loud does **not** cover it — that gate `exec`s the project gate *before* reaching its
   own library checks, and the project gate resolves this repo's copy rather than the installed one.
 
-  - **Three load failures, one blocking exit 2**, each with a message naming what is wrong and a
-    remedy appropriate to a **tracked** file (restore it) rather than to an installed symlink
-    (`baseline update`). The library is confirmed by **probing for the function**, never by the
-    source's exit status — a sourced file returns its last command's status, which is why a
-    truncated library sources cleanly, exits 0, and defines nothing.
+  - **Three load failures, one blocking exit 2** — absent, unsourceable, and sourceable-but-empty —
+    each with a message naming which one it was and a remedy appropriate to a **tracked** file
+    (restore it) rather than to an installed symlink (`baseline update`). The source's status is
+    checked *and is not sufficient*: a sourced file returns its LAST command's status, so a zero
+    says only that the last thing in the file worked. A **function probe** is what catches the
+    truncated library that sources cleanly, exits 0, and defines nothing.
   - **A second site, the same missing-vs-corrupt bug.** The conditional bash-floor bootstrap tested
     only that `common.sh` *exists*, so against a truncated one it called `adb_require_bash` as an
     undefined command — `command not found`, its 127 discarded, and the floor left unenforced. It now
@@ -35,9 +36,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     expansion while a library loads is fatal under `set -u` and kills the shell **outright** —
     measured at **rc 1**, which is neither a pass nor this gate's blocking 2, and which no `||` can
     catch because the shell is gone before the next word is read. The function probe decides instead.
-  - **The real script now has a fixture** (`scripts/check-precommit-gate.sh`, cases 17a-17k). Every
-    project-gate case before this substituted a two-line stub, so the fast subset D25 actually ships
-    had no coverage at all. The fixture is a throwaway copy of the worktree re-`git init`ed as
+  - **The real script now has a fixture** (`scripts/check-precommit-gate.sh`, cases 17a-17m). Every
+    project-gate case before this substituted a purpose-built stub — right for measuring the
+    hand-off, and never this repository's gate — so the fast subset D25 actually ships had no
+    coverage at all. The fixture is a throwaway copy of the worktree re-`git init`ed as
     `main`, so the gate shells out to the real `build.sh` and the three real `check-*.sh`: a clean
     tree on a feature branch carrying a **committed** delta exits 0 with all four checks observed
     *PASSing* (the exit code alone cannot tell that from a gate that ran nothing), an edited practice
@@ -45,9 +47,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     proven by output only the project gate can produce.
   - **Observed failing on the real superseded input**, not on a convenient one: run against a copy of
     the tree carrying the pre-fix gate, the new cases report **0** where they require 2 for both the
-    missing and the truncated library, **1** for the unbound expansion — and all three mutation
-    harnesses refuse to prove anything rather than passing silently. Three in-suite mutations pin
-    that permanently, one per bypass, so no single blanket edit can make them all vacuous.
+    missing and the truncated library, **1** for the unbound expansion — and every mutation harness
+    refuses to prove anything rather than passing silently. **Five** in-suite mutations pin that
+    permanently, one per repaired bypass, so no single blanket edit can make them all vacuous. Two
+    of the five exist because an independent review found the corresponding assertions could not
+    fail: the source-status guard and the bootstrap's function probe are each invisible to the exit
+    code, since the load below supplies the same 2 either way.
+  - The mutation harness itself moved to `scripts/check-lib.sh` as `check_mutate_line`, the home
+    this repo's own law gives it, with `check-build-atomic.sh` — which established the discipline —
+    now delegating to it rather than carrying a second copy.
 
 - **The bash-floor carve-out is now executed instead of asserted: `check-bash-floor.sh --sub-floor`**
   (#310).

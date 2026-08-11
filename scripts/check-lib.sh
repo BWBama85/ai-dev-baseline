@@ -142,6 +142,37 @@ check_enumerated() {
   return 0
 }
 
+# check_mutate_line <file> <exact-line> <sed-script> <label> — revert ONE line of a fixture copy to
+# a superseded shape, refusing to proceed unless the edit demonstrably applied. Returns 0 when the
+# mutation took, else records ONE failure and returns 1.
+#
+# Requires EXACTLY ONE line of <file> to equal <exact-line> before the edit and NONE after. Both
+# halves matter, and both are the difference between a proof and a decoration: without the first, a
+# rename in the mutated file turns the mutation into a no-op and the "proof" silently becomes an
+# assertion about unmodified code; without the second, a sed that matched but did not substitute
+# does exactly the same. Whole-line matching, because these needles are routinely substrings of one
+# another's neighbours and only one line is meant to change.
+#
+# It lives here because TWO suites now drive mutations this way — check-build-atomic.sh, which
+# established the discipline, and check-precommit-gate.sh (#299) — and a byte-copied harness is the
+# thing this file exists to prevent. `sed` writes to a sibling and is renamed over the target rather
+# than using `-i`, whose spelling differs between BSD and GNU.
+check_mutate_line() {
+  local f="$1" line="$2" script="$3" label="$4" n
+  n="$(grep -Fxc -- "$line" "$f")"
+  if [ "$n" -ne 1 ]; then
+    bad "$label: expected exactly 1 line [$line] in ${f##*/}, found $n — the mutation no longer describes the code it mutates, so it would prove nothing"
+    return 1
+  fi
+  sed "$script" "$f" > "$f.mut" && mv "$f.mut" "$f" || { bad "$label: could not apply the mutation"; return 1; }
+  n="$(grep -Fxc -- "$line" "$f")"
+  if [ "$n" -ne 0 ]; then
+    bad "$label: the mutation left [$line] in place ($n remaining) — it did not take effect"
+    return 1
+  fi
+  return 0
+}
+
 # check_summary <name> — emit the terminal "<name>: N passed, M failed" line, then exit 1 if any
 # assertion failed, else print "<name>: PASS". Callers end with this instead of re-reading
 # $pass/$fail (which would trip SC2154, since ShellCheck does not follow the sourced file).
