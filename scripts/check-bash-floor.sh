@@ -870,11 +870,17 @@ EOF
     return
   fi
 
-  # SAY WHAT IT CHECKED, not merely whether it passed — and say which of the three situations this
-  # run was actually in, since "there was no old bash", "the old bash is broken" and "it all ran"
-  # send a reader three different places.
+  # SAY WHAT IT CHECKED, not merely whether it passed — and say which of the four situations this
+  # run was actually in, since "there was no old bash", "the old bash is broken", "its path cannot
+  # be encoded" and "it all ran" send a reader four different places.
+  #
+  # EVERY BRANCH OPENS WITH THE SAME `%d file(s) named`, and that is not cosmetic. The count means
+  # one thing — how many files the carve-out set names — so spelling it two ways made it a
+  # PLATFORM-DEPENDENT string: macOS has a sub-floor bash and took the "ran" branch, Linux has none
+  # and took the SKIP branch, and a guard assertion pinned to one of them passed locally and failed
+  # in CI on the other. One fact, one spelling.
   if [ "$sf_subj_dead" -eq 1 ]; then
-    printf 'bash-floor: sub-floor  %d file(s) scanned for un-expandable constructs; the PARSE and BOOTSTRAP PROBE could NOT be run — %s (%s) is the oldest sub-%s interpreter here and it cannot be executed\n' \
+    printf 'bash-floor: sub-floor  %d file(s) named; rule A ran on all of them; the PARSE and EVALUATION PROBE could NOT be run — %s (%s) is the oldest sub-%s interpreter here and it cannot be executed\n' \
       "$sf_files" "$sf_subj" "$sf_subjv" "$FLOOR"
     SUB_FLOOR_NOTE="the below-floor set carries no 5.3 command substitution, but its sub-$FLOOR interpreter $sf_subj could not be run"
   elif [ -n "$sf_subj" ]; then
@@ -888,12 +894,12 @@ EOF
     # check simply cannot name it safely. Printing the ordinary "none exists on this host" line
     # would contradict the candidate list directly below it, which re-probes and shows the very
     # version that was refused.
-    printf 'bash-floor: sub-floor  %d file(s) scanned for un-expandable constructs; the PARSE and EVALUATION PROBE could NOT run — every interpreter below the %s floor sits at a path this check cannot encode. Candidates probed:\n' \
+    printf 'bash-floor: sub-floor  %d file(s) named; rule A ran on all of them; the PARSE and EVALUATION PROBE could NOT run — every interpreter below the %s floor sits at a path this check cannot encode. Candidates probed:\n' \
       "$sf_files" "$FLOOR"
     sub_floor_candidate_report
     SUB_FLOOR_NOTE="the below-floor set carries no 5.3 command substitution, but no sub-$FLOOR interpreter could be named safely"
   else
-    printf 'bash-floor: sub-floor  %d file(s) scanned for un-expandable constructs; the PARSE and EVALUATION PROBE were **SKIPPED** — no interpreter below the %s floor exists on this host, and running them under a >= %s bash would prove nothing about D30. Candidates probed:\n' \
+    printf 'bash-floor: sub-floor  %d file(s) named; rule A ran on all of them; the PARSE and EVALUATION PROBE were **SKIPPED** — no interpreter below the %s floor exists on this host, and running them under a >= %s bash would prove nothing about D30. Candidates probed:\n' \
       "$sf_files" "$FLOOR" "$FLOOR"
     sub_floor_candidate_report
     SUB_FLOOR_NOTE="no 5.3 command substitution in the below-floor set (parse + evaluation probe SKIPPED — no sub-$FLOOR interpreter on this host)"

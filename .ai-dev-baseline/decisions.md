@@ -4080,6 +4080,18 @@ limit: none of them is sufficient alone.
              0 — while the candidate list printed directly beneath it showed that interpreter's
              below-floor version.
 
+             **And one more, found by CI rather than by any of the above.** The four summary
+             branches spelled their shared file count two different ways — `N file(s) named` in the
+             branch that ran the probes, `N file(s) scanned for un-expandable constructs` in the one
+             that skipped them. Which branch a host takes is a PLATFORM fact: macOS has a sub-floor
+             bash, ubuntu-26.04 has none. So a guard assertion pinned to one spelling passed on the
+             maintainer's machine and failed on the Linux runner, on a claim that was never about
+             the platform at all. One fact now has one spelling, both shapes are pinned through the
+             seams so neither depends on the host, and `check-bash-floor-guard.sh`'s header carries
+             the recipe for running the other platform's shape on a copy before pushing. This is the
+             `docs/ci-runners.md` caveat — a local green speaks for the OS you are sitting at —
+             collected in the one place it was most likely to be forgotten.
+
              The stub interpreters the selection fixtures use report a fake version to the probe and
              **delegate everything else to a real bash**, so `-n` and the bootstrap probe behave as
              they do in production — a stub that faked those too would let the suite pass against a

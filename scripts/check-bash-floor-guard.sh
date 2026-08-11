@@ -31,6 +31,23 @@
 # (base/practices/self-review.md, and git-and-prs.md on why that is unrecoverable).
 #
 # Usage: bash scripts/check-bash-floor-guard.sh   (exit 0 = every rule observed failing)
+#
+# THIS SUITE CAN PASS ON YOUR MACHINE AND FAIL ON THE OTHER RUNNER, and the sub-floor half is where
+# that bites: macOS carries a real sub-floor bash (/bin/bash 3.2.57) and runs the probes, while
+# ubuntu-26.04 has none and states a SKIP — two different summary branches from one unseamed call.
+# An assertion pinned to a phrase only one branch prints passes locally and fails in CI on a claim
+# that was never about the platform. That shipped once (#310).
+#
+# So before pushing a change to the sub-floor assertions, run the OTHER platform's shape too. On a
+# copy, never the tracked tree — stub `sysv` so the genuinely-3.2 blocks skip as they do on Linux,
+# and hand it a candidate list with nothing below the floor:
+#
+#   T="$(mktemp -d)"; cp -R scripts install.sh uninstall.sh .github agents bin "$T/"
+#   sed -i.bak 's/^sysv=.*/sysv="5.3"/' "$T/scripts/check-bash-floor-guard.sh"
+#   ADB_SUB_FLOOR_CANDIDATES="$(command -v bash)" bash "$T/scripts/check-bash-floor-guard.sh"
+#
+# The assertion count legitimately differs between the two (the 3.2-gated block); the FAIL count
+# must be zero in both.
 
 # bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
 #
@@ -746,10 +763,15 @@ eq "$?" "2" "usage: --sub-floor rejects an extra argument rather than ignoring i
 
 # THE CLEAN FIXTURE FIRST. Without it every assertion below is satisfied by a mode that returns 1
 # unconditionally.
+# NOTE this one runs with NO seam, so which summary branch it takes depends on the HOST — macOS has
+# a sub-floor bash and runs the probes, a Linux runner has none and states a SKIP. It may therefore
+# only assert what BOTH branches say. Pinning a phrase from one of them is precisely what shipped a
+# red CI job: it passed on the maintainer's macOS and failed on ubuntu-26.04, on a claim that was
+# never about the platform. Both shapes are pinned deterministically further down, through the seams.
 sf_fixture "$SFD"
 sf_lint "$SFD"
-eq "$SFRC" "0" "sub-floor: the clean three-file fixture passes"
-has "$SFOUT" "3 file(s) named" "sub-floor: and it says how many files it checked"
+eq "$SFRC" "0" "sub-floor: the clean three-file fixture passes on any host"
+has "$SFOUT" "3 file(s) named" "sub-floor: and every branch spells the file count the same way"
 
 # THE TRACKED TREE ITSELF must satisfy the rule — the positive assertion the old in-suite loop made,
 # now made against the real mode rather than a private copy of its predicate.
@@ -858,6 +880,10 @@ $work/sfbin/older"
 sf_fixture "$SFD"
 sf_lint "$SFD" ADB_BASH_FLOOR=99.0 ADB_SUB_FLOOR_CANDIDATES="$SF_CANDS"
 eq "$SFRC" "0" "selection: a stubbed candidate set still passes on a clean fixture"
+# THE "IT ALL RAN" SUMMARY, forced through the seam so this shape is pinned on EVERY runner and not
+# only on a host that happens to carry an old bash.
+has "$SFOUT" "3 file(s) named" "summary: the ran branch names the file count"
+has "$SFOUT" "3 parsed and 3 evaluated" "summary: and reports both counts separately"
 has "$SFOUT" "$work/sfbin/older (9.9.9)" "selection: the NUMERICALLY oldest candidate is chosen"
 hasnt "$SFOUT" "$work/sfbin/newer (10.0.0)" "selection: not the first-listed, and not the lexically smallest"
 
@@ -1039,6 +1065,10 @@ sf_fixture "$SFD"
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
 eq "$SFRC" "0" "skip: no sub-floor interpreter is a stated SKIP, not a failure"
 has "$SFOUT" "SKIPPED" "skip: and it says SKIPPED out loud"
+# ...and the SKIP branch opens with the SAME file-count phrasing as the ran branch. One fact, one
+# spelling — the alternative made a guard assertion silently platform-dependent.
+has "$SFOUT" "3 file(s) named" "skip: the skip branch names the file count identically"
+has "$SFOUT" "rule A ran on all of them" "skip: and says outright that rule A still ran"
 has "$SFOUT" "Candidates probed" "skip: naming every candidate it looked at, so a skip is auditable"
 hasnt "$SFOUT" "parses and bootstraps under" "skip: and it never claims a parse it did not do"
 
