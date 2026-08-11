@@ -482,14 +482,19 @@ has "$OUT" "runs on 'ubuntu-latest'" "...by its real label, not by '<merge key>'
 # A WRAPPED INLINE JOB MAPPING is still one job to this lint, and still fails loudly — the reader
 # does not decompose it, so its runner is unverifiable. Before the fix its BODY was read as block
 # properties, which handed this lint `ubuntu-26.04,` — a flow-syntax fragment as a runner label.
+# THE BODY SITS AT THE JOB COLUMN, which is what makes the job-count assertion mean something.
+# Review found the four-space version vacuous: indented past the job column, the body was never a
+# candidate for enumeration and the pre-fix scanner also reported three jobs. At the job column it
+# is exactly what the enumeration join prevents becoming a phantom fourth job.
 d="$work/mljobfloor"; f="${ new_wf "$d"; }"
-printf '  wrapped: {\n    runs-on: ubuntu-26.04,\n    steps: [x]\n  }\n' >> "$f"
+printf '  wrapped: {\n  runs-on: ubuntu-26.04,\n  steps: [x]\n  }\n' >> "$f"
 emit_job "$f" linux-job ubuntu-26.04 1
 emit_job "$f" macos-job macos-latest 1
 run_lint "$d"
 eq "$RC" "1" "a wrapped inline job mapping is reported rather than passed"
 has "$OUT" "runs on '<inline mapping>'" "...under the unmatchable label, never a flow-syntax fragment"
-has "$OUT" "3 job(s)" "...and its body is not enumerated as extra jobs"
+has "$OUT" "3 job(s)" "...and a body at the JOB COLUMN is not enumerated as a phantom fourth job"
+hasnt "$OUT" "'runs-on'" "...specifically, no job is invented from its first continuation line"
 
 # --- the scanner's own failure must PROPAGATE, not read as 'this file has no jobs' ------------------
 # The shared reader is fail-closed (a nonce completion trailer), and this asserts the lint honours

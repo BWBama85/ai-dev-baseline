@@ -528,13 +528,35 @@ has "$ERR" "skipping job named" "...by name"
 #     job was required under its key — a context that never reports, from a file that never runs.
 #     RESOLVING the merge would have been worse: the job gains a readable `name:` and no
 #     disqualifier, so discovery would require it MORE confidently.
+#     THE VERDICT IS FILE-WIDE, NOT PER-JOB, and the first cut of this fixture asserted the bug as
+#     correct: it required `Base Name` — the ANCHOR job — from a file GitHub cannot parse. One merge
+#     key stops the WHOLE workflow running, so every job in it is unreportable; skipping only the
+#     merging job recreates the phantom one job over. Found by independent review.
 wf_reset
 printf 'on:\n  pull_request:\njobs:\n  base: &base\n    name: Base Name\n    runs-on: ubuntu-26.04\n  alt:\n    <<: *base\n' > "$WF/mergekey.yml"
 disco main
-eq "${ ctx; }" 'Base Name|' "the ANCHOR job is still required under its real name..."
-has "$ERR" "skipping job alt" "...while the job merging a <<: key is skipped"
-has "$ERR" "GitHub Actions does not support" "...for the stated reason"
-hasnt "${ ctx; }" 'alt' "and its key never becomes a required context"
+eq "${ ctx; }" '' "ONE merge key disqualifies EVERY job in the file, including the anchor job"
+hasnt "${ ctx; }" 'Base Name' "...so the anchor's name never becomes a required context"
+hasnt "${ ctx; }" 'alt'       "...and neither does the merging job's key"
+has "$ERR" "skipping job base" "both jobs are skipped by name..."
+has "$ERR" "skipping job alt"  "...the merging one included"
+has "$ERR" "the whole file does not run" "...naming the file-wide reason"
+
+#     A file with a merge key must not poison a DIFFERENT file. The verdict is per workflow file, so
+#     a sibling workflow with no merge key keeps its contexts.
+printf 'name: Clean\non:\n  pull_request:\njobs:\n  untouched:\n    runs-on: ubuntu-26.04\n' > "$WF/clean.yml"
+disco main
+eq "${ ctx; }" 'untouched|' "a merge key in ONE file leaves a sibling workflow's jobs required"
+
+#     The INLINE spellings, which the block arms missed entirely.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  alt: {<<: *base, runs-on: ubuntu-26.04}\n' > "$WF/mergeinline.yml"
+disco main
+eq "${ ctx; }" '' "an INLINE job mapping carrying <<: is not required under its key"
+wf_reset
+printf 'on:\n  pull_request: {<<: *filters}\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/mergeoninline.yml"
+disco main
+eq "${ ctx; }" '' "an INLINE trigger mapping carrying <<: refuses the file, not reads as unfiltered"
 
 #     The trigger-level spelling: ignored, it left the trigger looking unfiltered, which is what
 #     made every job in the file required.

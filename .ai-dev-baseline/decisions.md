@@ -4271,8 +4271,10 @@ limit: none of them is sufficient alone.
              merge` under a trigger. Discovery skips them; the floor lint keeps its opposite filter
              and reports the job under the unmatchable label `<merge key>` — but only where `<none>`
              would have gone, so a merging job declaring its own `runs-on:` is still judged on it.
-             (3) `<<:` is special ONLY at those two sites; nothing else in the reader treats it
-             specially, and that is stated rather than left as an omission.
+             (3) `<<:` is reported at TWO LOCATIONS x TWO SPELLINGS -- a job property and a
+             `pull_request:` filter key, each in block and inline flow form -- with the inline pair
+             tested through the depth-aware `adb_wf_flowmap_key` rather than a substring.
+             (4) THE DISCOVERY VERDICT IS FILE-WIDE even though the reader reports per job.
 - placement: `scripts/lib/common.sh` (`adb_wf_flowspan`, the `<<:` arms, the header boundary and the
              corrected record grammar), `scripts/lib/repo-settings.sh` (both verdict halves),
              `scripts/check-bash-floor.sh` (the `<merge key>` label), fixtures in
@@ -4301,16 +4303,25 @@ limit: none of them is sufficient alone.
              was right that `RANGE`/`STEP` give each physical line ONE owner, so importing an
              anchor's steps would steal them from the anchor's own job and need a record-grammar
              redesign. Reporting rather than resolving removes the question entirely — which is
-             also why this is a ~40-line change rather than the ~80-line resolver that was
-             prototyped and discarded.
+             also why this is a small reporting change rather than the resolver the issue asked
+             for. (An earlier draft of this entry quoted line counts for both; review flagged the
+             figure for the discarded design as unverifiable from anything durable, and it is.)
+
+             **(5) PER-JOB REPORTING, FILE-WIDE VERDICT.** The two consumers need different scopes
+             from the same fact, and the first cut gave both the job's. One merge key is a syntax
+             error that stops the WHOLE workflow, so discovery skipping only the merging job left
+             its SIBLINGS required from a file that never runs -- the identical phantom, one job
+             over, with the fixture asserting it as correct. The floor lint genuinely does need it
+             per job, because it reports WHICH job it cannot read a runner for. So the reader stays
+             per-job and `repo-settings.sh` widens it. Found by independent review.
 
              **(4) THE JOB-KEY CALL SITE IS NOT DECORATION.** Joining in the ENUMERATION loop is
              what stops a flow body at the job column being enumerated as a phantom job, and what
              lets the `keyed` test see the whole mapping. The block-property loop is now skipped for
              an inline mapping outright: it had been reading flow-syntax fragments (`Real Name,`,
              `ubuntu-26.04,`) out of the body and emitting them as a check name and a runner label.
-- observed:  38 added assertions driven red against a copy of pre-fix `main` (22 · 15 · 1 across the
-             three suites), plus two mutations for the guards whose failure mode is silence: a span
-             that publishes its partial join (the all-or-nothing refusal), and a `<merge key>` label
-             applied without the `ro == ""` condition (its scope).
+- observed:  the added assertions encoding the fix driven red against a copy of pre-fix `main`,
+             plus ten targeted mutations for the guards no pre-fix run exercises -- each reverting
+             the single line its guard pins, each required to go red. Review found four assertions
+             that pinned nothing; each was rewritten until its mutation fired.
 - baseline-issue: n/a — this repo IS the baseline; #291 is the tracking issue.

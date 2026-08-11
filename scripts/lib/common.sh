@@ -3335,8 +3335,9 @@ adb_md_prose() {
 #
 # NO EMITTED VALUE CONTAINS A NEWLINE. That used to hold because every value came from one physical
 # line; since #291 a FLOW COLLECTION may be joined across lines, so the invariant is now held by the
-# JOIN — adb_wf_flowspan substitutes a single space for each line break, which is also what YAML
-# folding does. The invariant is unchanged; only the reason it holds is.
+# JOIN — adb_wf_flowspan replaces each line break with a single space, EXCEPT a break escaped by a
+# trailing backslash inside a double-quoted scalar, which folds to nothing. Both are YAML's own
+# rules. The invariant is unchanged; only the reason it holds is.
 #
 # It is a statement about the RECORD, not about YAML: a YAML scalar may legitimately span several
 # lines (`name: >-` with the text below it), and this reader simply does not have such a value. It
@@ -3354,8 +3355,17 @@ adb_md_prose() {
 #     carrying one is a syntax error there and never runs. Resolving it would hand discovery a
 #     readable `name:` and no disqualifier, i.e. a confident required context for a workflow that
 #     cannot report — the expensive direction. Unread, the job is skipped instead.
-#   - `<<:` is special ONLY as a job property and as a `pull_request:` filter key. Those are the two
-#     places it is reachable in what this reader looks at; anywhere else it is an ordinary key.
+#   - `<<:` is reported at TWO LOCATIONS × TWO SPELLINGS: as a job property and as a `pull_request:`
+#     filter key, each in its block form (`<<: *base` on its own line) and its inline flow form
+#     (`alt: {<<: *base, …}`, `pull_request: {<<: *filters}`). The inline pair is tested with the
+#     depth-aware adb_wf_flowmap_key, not a substring, so a `<<` nested deeper in the mapping is not
+#     mistaken for the mapping's own. Anywhere else `<<` is an ordinary key.
+#
+#     WHAT THE READER REPORTS IS PER JOB; THE VERDICT IS THE CONSUMER'S, AND FOR DISCOVERY IT IS
+#     FILE-WIDE. One merge key stops the whole workflow running, so repo-settings.sh skips every job
+#     in that file — skipping only the merging job leaves its SIBLINGS required from a file that
+#     never runs, which is the same phantom one job over. Per-job reporting is still correct here:
+#     the floor lint needs to know WHICH job it cannot read a runner for.
 #
 # RANGE is what lets the floor lint keep its STEP-level rules without re-deriving job boundaries:
 # it scans within the line range this reader assigned, rather than re-answering "where does this
@@ -3548,21 +3558,33 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
     #
     # JOINED WITH A SPACE, never a newline, so the record grammar's no-newline invariant survives a
     # multi-line source (see the header). A space is also what YAML folding does to a plain scalar
-    # broken across lines, so `[a,\n b]` and `[a, b]` produce identical entries.
+    # broken across lines, so `[a,\n b]` and `[a, b]` produce identical entries — with the one
+    # exception YAML itself makes, a break ESCAPED by a trailing backslash inside a double-quoted
+    # scalar, which folds to nothing (handled below).
     #
     # COMMENTS ARE STRIPPED PER LINE, and the `#` rule is YAML's rather than "the first hash": a `#`
     # only opens a comment when it is unquoted AND starts the text or follows whitespace. Getting
     # that backwards would truncate `branches: ["a#b"]` to `a`, quietly narrowing a filter.
-    function adb_wf_flowspan(at, s, lim,   i, j, n, c, depth, q, chunk, keep) {
+    function adb_wf_flowspan(at, s, lim,   i, j, n, c, depth, q, chunk, keep, esc) {
       WFFLOWTXT = ""; WFFLOWEND = at
       depth = 0; q = ""; i = at; chunk = s
       while (1) {
-        keep = ""; n = length(chunk)
+        keep = ""; esc = 0; n = length(chunk)
         for (j = 1; j <= n; j++) {
           c = substr(chunk, j, 1)
           if (q != "") {
+            # A BACKSLASH ENDING THE LINE inside a double-quoted scalar is YAML's ESCAPED LINE
+            # BREAK, and it folds to NOTHING rather than to a space. `"release\` / `candidate"` is
+            # the single scalar `releasecandidate`; joining it with a space produced
+            # `release\ candidate`, a branch pattern matching nothing — so a filter naming that
+            # target read as excluding it. Distinguished from an escaped backslash (`\\` mid-line,
+            # which is one literal backslash and DOES take the folding space) by testing for a
+            # following character rather than by inspecting the accumulated text afterwards.
+            if (c == "\\" && q == "\"") {
+              if (j < n) { keep = keep c substr(chunk, j + 1, 1); j++ } else esc = 1
+              continue
+            }
             keep = keep c
-            if (c == "\\" && q == "\"" && j < n) { j++; keep = keep substr(chunk, j, 1); continue }
             if (c == q) q = ""
             continue
           }
@@ -3580,7 +3602,10 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
             if (depth == 0) { WFFLOWTXT = WFFLOWTXT keep; WFFLOWEND = i; return 1 }
           }
         }
-        WFFLOWTXT = WFFLOWTXT keep " "
+        # THE LINE BREAK FOLDS TO A SPACE, EXCEPT WHEN IT WAS ESCAPED — both of which are what YAML
+        # itself does to a scalar broken across lines.
+        if (esc) WFFLOWTXT = WFFLOWTXT keep
+        else     WFFLOWTXT = WFFLOWTXT keep " "
         i++
         while (i <= lim && adb_wf_blank(WFL[i])) i++
         if (i > lim) { WFFLOWEND = at; WFFLOWTXT = ""; return 0 }
@@ -3697,6 +3722,12 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
           # jobs were REQUIRED. That is the over-requiring direction, so this one is not optional.
           # `i` advances past the mapping so its interior can never be re-read as a sibling trigger.
           if (adb_wf_flowspan(i, tv, on_end)) { tv = WFFLOWTXT; i = WFFLOWEND }
+          # THE INLINE SPELLING OF A MERGE KEY, tested BEFORE the filter words. `pull_request:
+          # {<<: *filters}` carries no filter word of its own, so it fell through as an ordinary
+          # unfiltered trigger — which is what makes every job in the file required, from a
+          # workflow GitHub never runs. Depth-aware via adb_wf_flowmap_key, so a `<<` nested inside
+          # some other mapping is not mistaken for this trigger merging one.
+          if (adb_wf_flowmap_key(tv, "<<")) { print "PRFILTER\tmerge"; continue }
           if (tv ~ /(paths|types|branches)/) printf "PRINLINEFILTER\t%s\n", trig
           continue
         }
@@ -3793,6 +3824,12 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
         #              nothing here is readable and the job is genuinely unprovable.
         if (JI[j] ~ /^\{/) {
           printf "FLAG\t%d\tinline\n", j
+          # AN INLINE JOB CAN MERGE TOO, and this arm is the only place it would be seen: the block
+          # property loop below is skipped for a flow mapping, so `alt: {<<: *base, runs-on: x}`
+          # produced `inline` + `keyed` and discovery required `alt`. Emitted BEFORE the keyed test
+          # so the two facts are independent — a merging inline job is disqualified whether or not
+          # its key would otherwise have been provable.
+          if (adb_wf_flowmap_key(JI[j], "<<")) printf "FLAG\t%d\tmerge\n", j
           # `keyed` means: the check context PROVABLY is the job key. That needs more than "no
           # `name:`" — an inline job carrying `if:`, `uses:` or a `strategy:` is disqualified for
           # exactly the reasons the block-form path skips those, and emitting its key as a required

@@ -1940,10 +1940,23 @@ printf 'on:\n  pull_request:\n    branches: [\n      main\n    ]\n    types: [\n
 has "${ wfon mlflow.yml; }" "PRBRANCH|main" "a branches: flow sequence spanning lines yields its entries"
 has "${ wfon mlflow.yml; }" "PRTYPE|opened" "...and so does a types: one"
 has "${ wfon mlflow.yml; }" "PRTYPE|synchronize" "...including an entry on its own line"
-# THE SIBLING FILTER AFTER IT still reads, which is what proves the scan RESUMES past the closing
-# bracket rather than either stopping there or re-entering the collection it just consumed.
+# THE SIBLING FILTER AFTER IT still reads.
+#
+# THIS DOES NOT PIN `m = WFFLOWEND` and does not claim to — review found the original wording
+# ("the scan resumes past the ]") vacuous for that, because the filter loop skips the interior lines
+# on indent anyway and would reach `types:` with or without the advance. What the advance actually
+# prevents needs an interior line AT THE FILTER COLUMN that parses as a key, which is the fixture
+# below this one.
 eq "${ adb_wf_on "$wfd/mlflow.yml" | grep -c '^PRFILTER	'; }" "2" \
-   "a filter written AFTER a multi-line one is still reached (the scan resumes past the ])"
+   "a filter written AFTER a multi-line one is still reached"
+
+# `m = WFFLOWEND` PINNED PROPERLY. A line inside the collection that sits at the filter column and
+# looks like a key is read as a SECOND filter unless the loop is advanced past the collection it
+# just consumed — inventing a `types:` filter that the workflow does not have, which narrows the
+# file's verdict on evidence that is really the interior of a branches: list.
+printf 'on:\n  pull_request:\n    branches: [\n    types: x\n    ]\n    paths: [z]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mladvance.yml"
+hasnt "${ wfon mladvance.yml; }" "PRFILTER|types" "a key-shaped line INSIDE a flow collection is not read as a filter"
+has   "${ wfon mladvance.yml; }" "PRFILTER|paths" "...and the real filter after the collection still is"
 
 # THE TOP-LEVEL `on:` FLOW SEQUENCE, whose closing bracket sits at COLUMN 0 — the case a
 # block-scoped bound cannot contain, because adb_wf_blockend ends the block at exactly such a line.
@@ -1963,7 +1976,10 @@ has "${ wfon mlmap.yml; }" "PRINLINEFILTER|pull_request" \
 printf 'on:\n  pull_request:\n    branches: [\n      "release,stable",   # the paired branch\n      "has#hash"\n    ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlquote.yml"
 has "${ wfon mlquote.yml; }" "PRBRANCH|release,stable" "a quoted comma still does not split an entry across lines"
 has "${ wfon mlquote.yml; }" "PRBRANCH|has#hash"       "a quoted # is kept, not read as a comment"
-hasnt "${ wfon mlquote.yml; }" "PRBRANCH|the"          "an end-of-line comment inside the collection is dropped"
+# MATCHED ON THE COMMENT'S OWN WORDS, not on `PRBRANCH|the`. Review found the latter vacuous:
+# without comment detection the emitted record is `PRBRANCH|# the paired branch`, so the `# ` sits
+# between the tag and `the` and the substring never matches. The text itself is what must be absent.
+hasnt "${ wfon mlquote.yml; }" "paired"                "an end-of-line comment inside the collection is dropped"
 
 # AN UNCLOSED COLLECTION MUST EMIT NOTHING EXTRA, and this is the assertion that makes the join
 # safe rather than merely useful. A PARTIAL join is worse than none: half a branches: list reads as
@@ -2008,8 +2024,25 @@ hasnt "${ wf mergekey.yml; }" "FLAG|1|merge"     "...and is not flagged for carr
 printf 'on:\n  pull_request:\njobs:\n  base: &base\n    runs-on: ubuntu-26.04\n  alt:\n    <<: *base\n    runs-on: macos-latest\n' > "$wfd/mergeown.yml"
 has "${ wf mergeown.yml; }" "FLAG|2|merge"        "a merging job is flagged even when it also declares its own keys"
 has "${ wf mergeown.yml; }" "RUNSON|2|macos-latest" "...and its OWN runs-on is still read"
-# ONCE PER JOB, so a consumer accumulator never reads two facts about one job.
-eq "${ adb_wf_jobs "$wfd/mergekey.yml" | grep -c 'merge'; }" "1" "the merge flag is emitted once"
+# ONCE PER JOB, so a consumer accumulator never reads two facts about one job. TWO `<<:` KEYS in the
+# fixture, because that is what the guard is about: review found the single-key version vacuous —
+# removing the `if (!mergek)` deduplication still emits exactly one record when there is only one
+# key to emit for. Duplicate keys are invalid YAML, which is precisely why the reader must not
+# assume they are absent.
+printf 'on:\n  pull_request:\njobs:\n  a:\n    <<: *x\n    <<: *y\n    runs-on: ubuntu-26.04\n' > "$wfd/mergedup.yml"
+eq "${ adb_wf_jobs "$wfd/mergedup.yml" | grep -c 'merge'; }" "1" "TWO <<: keys in one job still emit the flag once"
+# THE INLINE FLOW SPELLINGS, both of them. Independent review found that the two block arms missed
+# these entirely: `alt: {<<: *base, …}` came back `inline` + `keyed` and was required under its key,
+# and `pull_request: {<<: *filters}` came back as an ordinary UNFILTERED trigger — which is what
+# makes every job in the file required. Depth-aware, via the helper that already existed for exactly
+# this question, so a `<<` nested deeper inside the mapping is not mistaken for the mapping's own.
+printf 'on:\n  pull_request:\njobs:\n  alt: {<<: *base, runs-on: ubuntu-26.04}\n' > "$wfd/mergeinline.yml"
+has "${ wf mergeinline.yml; }" "FLAG|1|merge"  "an INLINE job mapping carrying <<: is flagged"
+has "${ wf mergeinline.yml; }" "FLAG|1|inline" "...alongside the inline flag, which is a separate fact"
+printf 'on:\n  pull_request: {<<: *filters}\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mergeoninline.yml"
+has   "${ wfon mergeoninline.yml; }" "PRFILTER|merge" "an INLINE trigger mapping carrying <<: is reported"
+hasnt "${ wfon mergeoninline.yml; }" "PRINLINEFILTER" "...as a merge, not as an ordinary inline filter"
+
 # THE TRIGGER-LEVEL SPELLING, the other place `<<:` is reachable in what this reader looks at.
 # Ignored, it left the trigger looking UNFILTERED — which is what makes every job in the file
 # required, from a workflow GitHub never runs.
@@ -2029,6 +2062,20 @@ hasnt "${ wf mergeorder.yml; }" "FLAG|2|merge" "...and the job AFTER it is not"
 printf 'on:\n  pull_request:\n    branches: [\n      main\n  ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mloutdent.yml"
 has   "${ wfon mloutdent.yml; }" "PRFILTER|branches" "an outdented closing bracket still reports the filter..."
 hasnt "${ wfon mloutdent.yml; }" "PRBRANCH|main"     "...and invents no entries from a collection it could not close"
+
+# AN ESCAPED LINE BREAK folds to NOTHING, which is YAML's own rule and not the joiner's default.
+# `"release\` / `candidate"` is the single scalar `releasecandidate`; joining it with the ordinary
+# folding space produced `release\ candidate`, a branch pattern matching nothing — so a filter
+# naming that target read as excluding it. Found by independent review, which also noted that the
+# "escape-aware" and "same as YAML folding" claims in the docs were false until this was fixed.
+printf 'on:\n  pull_request:\n    branches: [\n      "release\\\n      candidate"\n    ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlesc.yml"
+has   "${ wfon mlesc.yml; }" "PRBRANCH|releasecandidate" "a backslash-escaped line break inside a quoted scalar folds to nothing"
+hasnt "${ wfon mlesc.yml; }" "release\\ candidate"       "...not to the ordinary folding space"
+# AND AN ESCAPED BACKSLASH IS NOT AN ESCAPED LINE BREAK. `\\` mid-line is one literal backslash and
+# its line break still folds to a space — the distinction a test on the accumulated text (rather
+# than on whether a character followed) would get wrong.
+printf 'on:\n  pull_request:\n    branches: [\n      "a\\\\",\n      main\n    ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlescbs.yml"
+has "${ wfon mlescbs.yml; }" "PRBRANCH|main" "an escaped BACKSLASH at end of entry does not swallow the next line"
 
 # BYTES, NOT CHARACTERS. The reader runs under LC_ALL=C, so the joiner walks bytes; every delimiter
 # it tests for is ASCII and every UTF-8 continuation byte is >= 0x80, so a non-ASCII branch pattern

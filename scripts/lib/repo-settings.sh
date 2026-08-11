@@ -455,6 +455,27 @@ EOF
   [ "$jobs_block" -eq 1 ] || return 2
   [ "$count" -gt 0 ] || return 3
 
+  # A MERGE KEY ANYWHERE IN THE FILE DISQUALIFIES EVERY JOB IN IT, and this is a file-wide verdict
+  # rather than a per-job one because the fact is file-wide: GitHub Actions implements YAML 1.2,
+  # which has no `<<:`, so ONE merge key is a syntax error that stops the WHOLE workflow running.
+  #
+  # Skipping only the merging job recreated the exact phantom this change exists to remove, one job
+  # over. For `base: &base` + `alt: <<: *base`, skipping `alt` alone left `Base Name` in the required
+  # set — a context from a workflow that never runs, which never reports and needs an admin token to
+  # clear. The reader is right to report `merge` per job (the floor lint needs it that way); the
+  # VERDICT is this file's to make, and it belongs at file scope. Found by independent review, which
+  # also caught that the fixture asserted the phantom as correct.
+  local any_merge=0
+  for (( i = 1; i <= count; i++ )); do
+    case "${flags[$i]-}" in *" merge "*) any_merge=1; break ;; esac
+  done
+  if [ "$any_merge" -eq 1 ]; then
+    for (( i = 1; i <= count; i++ )); do
+      printf 'SKIP\t%s\tis in a workflow that merges a <<: key, which GitHub Actions does not support (the whole file does not run)\n' "${key[$i]}"
+    done
+    return 0
+  fi
+
   for (( i = 1; i <= count; i++ )); do
     # Precedence matters only for the message: any one of these disqualifies the job, and naming
     # the first reason found is what the operator acts on.
