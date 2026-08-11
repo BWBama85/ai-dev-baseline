@@ -40,6 +40,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     marker, not a mirrored copy, with the race made deterministic by a library wrapper; a control
     drives the same fixture through the pre-fix loop and requires it to lose the files. Reverses
     the carve-out recorded in D40; see D55.
+  - **Also fixed in `marker-identity`, a confirmed sibling**: `cksum < "$f" 2>/dev/null` silences
+    *cksum*, but a failed redirection is the **shell's** diagnostic and is emitted before cksum
+    runs — so an unreadable-but-present file printed `…: Permission denied` into a sweep whose
+    output contract is terse, from inside a command substitution where it reads as a failed step.
+    Both spellings now redirect the whole pipeline, as `implement-lib.sh`'s `_il_file_identity`
+    already did.
 
 - **`/release`'s run-state guards can stop the release, and every one of them is now driven by a
   test** (#313).

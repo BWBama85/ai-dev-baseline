@@ -474,10 +474,18 @@ cmd_marker_branch() {
 # `cksum` is POSIX and present on every platform this runs on. The digest only has to be stable
 # and change-detecting, never cryptographic — an adversary who can rewrite this file already owns
 # the state directory.
+# THE REDIRECTION IS OUTSIDE THE PIPELINE, so the SHELL's own diagnostic is suppressed too.
+# `cksum … 2>/dev/null` silences only cksum, and a failed `< "$1"` is reported by the shell BEFORE
+# cksum ever runs — so an unreadable-but-present file (mode 000, or a marker owned by another user)
+# leaked `cleanup-lib.sh: line N: …: Permission denied` into the sweep's stderr. /cleanup's output
+# contract is terse by design (#84), and this line arrives from inside a command substitution in the
+# workflow, where it reads as a failure of the step rather than as a file it declined to fingerprint.
+# `implement-lib.sh`'s `_il_file_identity` already carries this fix and the reason; both spellings of
+# it now agree.
 cmd_marker_identity() {
   [ "$#" -eq 1 ] || die "marker-identity: needs exactly 1 arg: <marker-path>"
   [ -f "$1" ] || return 0
-  cksum < "$1" 2>/dev/null | awk 'NF >= 2 { print $1 "-" $2 }'
+  { cksum < "$1" | awk 'NF >= 2 { print $1 "-" $2 }'; } 2>/dev/null
   return 0
 }
 
@@ -532,12 +540,21 @@ cmd_file_identity() {
   # `-f` and not `-e`: a dangling symlink, a directory and a socket all have no bytes to digest, and
   # the empty answer they get here is the one that never matches, i.e. keep.
   [ -f "$1" ] || return 0
-  ck="$(cksum < "$1" 2>/dev/null | awk 'NF >= 2 { print $1 "-" $2 }')"
+  # Redirected OUTSIDE the pipeline for the reason `marker-identity` above now spells out: a failed
+  # `< "$1"` is the SHELL's diagnostic, not cksum's, and `2>/dev/null` on cksum never sees it.
+  ck="$({ cksum < "$1" | awk 'NF >= 2 { print $1 "-" $2 }'; } 2>/dev/null)"
   [ -n "$ck" ] || return 0
-  # `--` so a path that begins with a dash is an operand, not an option. The digit test is what
-  # makes a multi-line answer — which is what `ls` prints for a name containing a newline — fail
-  # closed instead of arriving as a usable-looking identity.
-  ino="$(ls -i -- "$1" 2>/dev/null | awk 'NF >= 2 { print $1 }')"
+  # `--` so a path that begins with a dash is an operand, not an option.
+  #
+  # THE RECORD COUNT IS THE GUARD, not the digit test alone — and that distinction was caught by
+  # self-review after the comment here claimed the opposite. `ls -i` prints `<inode> <name>`, so a
+  # name containing a NEWLINE spills onto a second line; a bare `NF >= 2 { print $1 }` then takes the
+  # inode off line 1 and returns a perfectly usable identity, which is not failing closed however
+  # much the surrounding prose says it is. Requiring `ls` to have produced exactly ONE line yields
+  # nothing for that shape instead. Such a name cannot reach here through the sweep — `state-scan`
+  # refuses to serialize it and classifies it `unsafe` (#273) — but this is a public subcommand and a
+  # guard that only holds because of its caller is a guard one refactor from silence.
+  ino="$(ls -i -- "$1" 2>/dev/null | awk 'NR == 1 && NF >= 2 { i = $1 } END { if (NR == 1) print i }')"
   case "$ino" in ''|*[!0-9]*) return 0 ;; esac
   mt="$(adb_mtime "$1")"
   [ -n "$mt" ] || return 0

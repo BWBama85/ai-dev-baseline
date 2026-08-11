@@ -321,6 +321,39 @@ eq "$(bash "$CL" file-identity "$work")" "" "2d2 a directory yields no identity"
 bash "$CL" file-identity >/dev/null 2>&1;                no $? "2d2 file-identity requires a path"
 bash "$CL" file-identity a b >/dev/null 2>&1;            no $? "2d2 …and refuses a second argument"
 
+# A name carrying a NEWLINE spills `ls -i` onto a second line, and taking the inode off line 1 then
+# returns a perfectly usable identity — failing OPEN while the code around it says it fails closed.
+# Such a name cannot reach here through the sweep (`state-scan` calls it `unsafe`, #273), but this is
+# a public subcommand. Caught by self-review, against an earlier version that answered non-empty.
+printf 'x\n' > "$work/$(printf 'nl\nname.json')"
+eq "$(bash "$CL" file-identity "$work/$(printf 'nl\nname.json')" 2>/dev/null)" "" \
+   "2d2 a name containing a newline yields no identity, rather than one read off its first line"
+
+# NEITHER identity subcommand may leak the SHELL's own redirection diagnostic. `cksum … 2>/dev/null`
+# silences cksum, but a failed `< "$1"` is reported by the shell before cksum runs — so an
+# unreadable-but-present file printed `…: Permission denied` into a sweep whose output contract is
+# terse (#84), from inside a command substitution where it reads as a failed step. Both spellings now
+# redirect the whole pipeline, matching `implement-lib.sh`'s `_il_file_identity`.
+#
+# ROOT READS EVERYTHING, so the trigger does not exist for uid 0 and the assertion is announced as
+# skipped rather than quietly passing — a check that cannot fire must never look like one that did.
+printf 'x\n' > "$work/fi-noread.json"
+if [ "${ id -u; }" -ne 0 ] && chmod 000 "$work/fi-noread.json" 2>/dev/null \
+   && ! { : < "$work/fi-noread.json"; } 2>/dev/null; then
+  # `{ cmd >/dev/null; } 2>&1` and not the terser `2>&1 >/dev/null`: both capture stderr ALONE, but
+  # the terse form is SC2069, because it is far more often a typo for "capture both" than a
+  # deliberate swap. The braced form says which was meant.
+  eq "${ { bash "$CL" file-identity "$work/fi-noread.json" >/dev/null; } 2>&1; }" "" \
+     "2d2 file-identity emits nothing on stderr for an unreadable file"
+  eq "${ { bash "$CL" marker-identity "$work/fi-noread.json" >/dev/null; } 2>&1; }" "" \
+     "2d2 …and neither does marker-identity, which had the same leak"
+  eq "${ bash "$CL" file-identity "$work/fi-noread.json" 2>/dev/null; }" "" \
+     "2d2 …and an unreadable file still yields no identity"
+else
+  check_note "2d2 SKIPPED the unreadable-file stderr assertions: running as uid ${ id -u; }, which can read mode-000 files"
+fi
+chmod 644 "$work/fi-noread.json" 2>/dev/null || true
+
 # --- 2e. clone-state: the switch/pull guard ---------------------------------------------------
 # A clean `git status` is NOT proof it is safe to switch — this is what step 1 branches on.
 eq "$(bash "$CL" clone-state "$R" main)" "local-ok" "2e a clean clone on the default branch is safe to switch/pull"
