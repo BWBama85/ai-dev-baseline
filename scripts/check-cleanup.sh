@@ -286,6 +286,41 @@ hasnt "$(bash "$CL" marker-identity "$work/m-ok.json")" "$ID1" \
 eq "$(bash "$CL" marker-identity "$work/nope.json")" "" "2d a missing marker yields no identity (never matches)"
 bash "$CL" marker-identity >/dev/null 2>&1; no $? "2d marker-identity requires a path"
 
+# --- 2d2. file-identity: the ARTIFACT guard, which a content digest cannot be (#305) -----------
+# The two subcommands answer different questions and the difference is the whole bug. An artifact's
+# replacement is routinely BYTE-IDENTICAL — `gh issue view` returns the same JSON for an unchanged
+# issue, an `.assoc` holds one word — so a digest compares equal and the live run's file is deleted.
+#
+# The seeded file is dated into the past first, and that is the fixture being HONEST rather than
+# convenient: in the real race the judged file was written by a run that has already finished, so
+# its mtime really is older than its replacement's. Without it this pair would rest on inode
+# allocation alone, and a filesystem that reuses a just-freed inode within the same second would
+# make the assertion flap rather than fail.
+printf 'identical bytes\n' > "$work/fi.json"
+touch -t 202601010000 "$work/fi.json"
+FI1="$(bash "$CL" file-identity "$work/fi.json")"
+MI1="$(bash "$CL" marker-identity "$work/fi.json")"
+[ -n "$FI1" ] && ok || bad "2d2 file-identity produces an identity for a readable file"
+eq "$(bash "$CL" file-identity "$work/fi.json")" "$FI1" "2d2 file-identity is stable for an unchanged file"
+rm -f "$work/fi.json"; printf 'identical bytes\n' > "$work/fi.json"   # a fresh run, same bytes
+eq "$(bash "$CL" marker-identity "$work/fi.json")" "$MI1" \
+   "2d2 THE REASON THIS EXISTS: a content digest is UNCHANGED by an identical-bytes recreation"
+hasnt "$(bash "$CL" file-identity "$work/fi.json")" "$FI1" \
+   "2d2 …while file-identity changes, because it asks whether this is the same FILE"
+# An in-place `>` rewrite keeps the inode; the digest keeps its value only if the bytes match, so
+# mtime is what carries this case — and it is exactly how /implement-issue writes its snapshot.
+FI2="$(bash "$CL" file-identity "$work/fi.json")"
+touch -t 202601010000 "$work/fi.json"
+hasnt "$(bash "$CL" file-identity "$work/fi.json")" "$FI2" \
+   "2d2 …and changes on an in-place rewrite that keeps the inode"
+# Every unreadable shape yields NOTHING, which is the value that can never match — i.e. keep.
+eq "$(bash "$CL" file-identity "$work/nope.json")" "" "2d2 a missing file yields no identity (never matches)"
+ln -sfn "$work/nope.json" "$work/fi-dangling"
+eq "$(bash "$CL" file-identity "$work/fi-dangling")" "" "2d2 a dangling symlink yields no identity"
+eq "$(bash "$CL" file-identity "$work")" "" "2d2 a directory yields no identity"
+bash "$CL" file-identity >/dev/null 2>&1;                no $? "2d2 file-identity requires a path"
+bash "$CL" file-identity a b >/dev/null 2>&1;            no $? "2d2 …and refuses a second argument"
+
 # --- 2e. clone-state: the switch/pull guard ---------------------------------------------------
 # A clean `git status` is NOT proof it is safe to switch — this is what step 1 branches on.
 eq "$(bash "$CL" clone-state "$R" main)" "local-ok" "2e a clean clone on the default branch is safe to switch/pull"
@@ -1276,5 +1311,169 @@ fi
 # already contains five unrelated `|| true`s, so a whole-file match would stay green even if both
 # currency ones were deleted — a check that proves nothing is worse than no check.
 has "$CU_SNIPPET" '|| true' "7 the currency capture absorbs a non-zero status (never gates the sweep)"
+
+# ============ 8. the state sweep deletes by IDENTITY, not by pathname (#305) ==================
+# THE BUG: `/cleanup` reached a verdict for a RECORD and then handed that record's PATH to `rm`. A
+# fresh `/implement-issue` preflight clears the previous run's artifacts and writes its own at the
+# same fixed names, so a path judged stale can be occupied by a LIVE run's file by the time the
+# delete loop reaches it — and it deletes it. The `marker` arm never had this; it re-captures the
+# file's identity immediately before `rm`. The four deleting arms did not.
+#
+# THIS SECTION RUNS THE REAL WORKFLOW BLOCK, extracted by its ADB-SNIPPET marker, exactly as
+# section 7 runs the currency step. That is deliberate and it is the difference between this and
+# section 3b's mirrored loop: a copied comparison passes forever after the prose it copies has
+# been rewritten, and the acceptance criteria for this issue are about what the SWEEP does.
+#
+# THE RACE IS MADE DETERMINISTIC, not raced. `{{CLEANUP_LIB}}` resolves to a wrapper that forwards
+# every call to the real library and, on the LAST verdict call, runs the replacement — a point that
+# is after the snippet has captured its identities and before its delete loop starts. No scheduler,
+# no sleep, no flake. If a future edit moved the identity capture to AFTER the verdicts, the wrapper
+# would fingerprint the successor and this section would go red, which is the correct direction.
+#
+# AND THE FIXTURE PROVES ITSELF. Before asserting that the guarded sweep keeps the replacement, the
+# same fixture is driven through the pre-#305 loop — judge from a scan, delete by pathname — which
+# MUST delete it. A guard is not done until it has been observed failing (base/practices/
+# self-review.md), and an in-tree control is how that observation stops being a one-off.
+SW="$work/sweep305"
+mkdir -p "$SW"
+SW_SNIPPET="${ check_wf_snippet "$WF" state-sweep; }"
+[ -n "$SW_SNIPPET" ] || bad "8 snippet 'state-sweep' not found in base/workflows/cleanup.md (marker removed or renamed?)"
+
+# One file of every deletable kind, all belonging to a FINISHED run: no lock and no marker, so every
+# arm's verdict is `stale` and every one of them would delete.
+#
+# `touch -t` for the same reason section 2d2 uses it: the judged file was written by a run that has
+# already finished, so its mtime is genuinely older than the replacement's. Seeding it removes the
+# one way this fixture could flap — a filesystem reusing a just-freed inode inside one second.
+sw_fixture() {   # <state-dir>
+  rm -rf "${1:?}"; mkdir -p "$1"
+  printf 'the same issue json\n' > "$1/issue-7.json"     # replaced, IDENTICAL bytes
+  printf 'OWNER'                 > "$1/issue-7.assoc"    # replaced, IDENTICAL bytes
+  printf 'old prompt\n'          > "$1/gap-prompt.txt"   # replaced, IDENTICAL bytes
+  printf '{"n":1}\n'             > "$1/threads-7.json"   # rewritten IN PLACE (same inode)
+  printf 'old review\n'          > "$1/review.md"        # replaced by a DANGLING SYMLINK
+  printf 'sentinel\n'            > "$1/gaps.md"          # NEVER touched: this one must still die
+  touch -t 202601010000 "$1"/issue-7.json "$1"/issue-7.assoc "$1"/gap-prompt.txt \
+                        "$1"/threads-7.json "$1"/review.md "$1"/gaps.md
+}
+# The fresh /implement-issue run, in one script because the wrapper is a separate process. Every
+# shape a replacement can take, so no arm passes for a reason the others do not share.
+cat > "$SW/replace" <<'SWREP'
+d="$1"
+rm -f "$d/issue-7.json";   printf 'the same issue json\n' > "$d/issue-7.json"
+rm -f "$d/issue-7.assoc";  printf 'OWNER'                 > "$d/issue-7.assoc"
+rm -f "$d/gap-prompt.txt"; printf 'old prompt\n'          > "$d/gap-prompt.txt"
+printf '{"n":1}\n' > "$d/threads-7.json"        # `>` truncates IN PLACE: same inode, same bytes
+rm -f "$d/review.md"; ln -s "$d/nothing-here" "$d/review.md"   # identity becomes UNREADABLE
+SWREP
+cat > "$SW/cl" <<SWWRAP
+#!/usr/bin/env bash
+# \$STATE reaches here through the environment the snippet runs under.
+if [ "\$1" = state-verdict ] && [ "\$2" = review ]; then
+  bash "$SW/replace" "\$STATE" || exit 2
+fi
+exec bash "$CL" "\$@"
+SWWRAP
+
+# --- 8a. the CONTROL: the pre-#305 loop loses the live run's files ----------------------------
+sw_fixture "$SW/before"
+sw_scan="${ bash "$CL" state-scan "$SW/before"; }"
+# Each victim's identity AS JUDGED — captured here, while the scan is still the truth.
+declare -A sw_judged=()
+for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json; do
+  sw_judged["$f"]="${ bash "$CL" file-identity "$SW/before/$f"; }"
+done
+bash "$SW/replace" "$SW/before"
+# THE FIXTURE MUST ACTUALLY SUBSTITUTE, and this is asserted rather than assumed. "The unguarded
+# loop deleted it" is satisfied just as well by a loop deleting the ORIGINAL file — which is simply
+# /cleanup working correctly — so without this pair the control would pass while reproducing nothing
+# and 8b would be guarding a race the suite never creates. Observed: neutering the replacement left
+# the old control green.
+for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json; do
+  hasnt "${ bash "$CL" file-identity "$SW/before/$f"; }" "${sw_judged[$f]}" \
+     "8a the fixture really does replace $f with a different file"
+done
+while IFS="$TAB" read -r sw_kind sw_file _; do
+  case "$sw_kind" in gaps|issue|review|threads) rm -f "$sw_file" ;; esac
+done <<SWEOF
+$sw_scan
+SWEOF
+for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json; do
+  if [ -e "$SW/before/$f" ]; then
+    bad "8a the control loop did not reproduce the race for $f — the fixture proves nothing"
+  else ok; fi
+done
+
+# --- 8b. the REAL sweep keeps every replacement, and still removes the untouched one -----------
+sw_fixture "$SW/after"
+sw_code="${SW_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$SW/cl\"}"
+sw_out="$(env STATE="$SW/after" RUN=none NOTES="" CLEARED="" bash -c '
+TABC="$(printf "\t")"
+pr_state() { printf "merged\n"; }   # a merged PR is what makes the threads cache sweepable
+'"$sw_code"'
+printf "CLEARED<%s>\n" "$(printf "%s" "$CLEARED" | tr "\n" ";")"
+printf "NOTES<%s>\n"   "$(printf "%s" "$NOTES"   | tr "\n" ";")"' 2>&1)"
+sw_cleared="${ printf '%s\n' "$sw_out" | sed -n 's/^CLEARED<\(.*\)>$/\1/p' | head -n1; }"
+sw_notes="${ printf '%s\n' "$sw_out" | sed -n 's/^NOTES<\(.*\)>$/\1/p' | head -n1; }"
+
+for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json; do
+  if [ -e "$SW/after/$f" ]; then ok; else
+    bad "8b THE BUG: the sweep deleted $f, which a live run had just written at that path"
+  fi
+done
+# A replacement whose identity cannot be READ is the other half of failing closed: empty never
+# equals the judged value, so it keeps — it must not be mistaken for "unchanged".
+if [ -L "$SW/after/review.md" ]; then ok; else
+  bad "8b a replacement with an unreadable identity (a dangling symlink) was deleted"
+fi
+# …and the sweep must not have over-corrected into a no-op. `gaps.md` was never touched, so it is
+# exactly what /cleanup exists to remove.
+if [ -e "$SW/after/gaps.md" ]; then
+  bad "8b the sweep left an untouched stale artifact — the guard turned the sweep into a no-op"
+else ok; fi
+has "$sw_cleared" 'gaps.md' "8b …and the removal it DID make is reported as cleared"
+
+# --- 8c. a kept file is REPORTED, never silently retained --------------------------------------
+# The two outcomes are different facts and the output contract keeps them apart: `SKIPPED … kept`
+# means the file is not ours any more, `REFUSED … left in place` means it IS ours and `rm` failed.
+# Collapsing them would tell an operator to go fix directory permissions that are perfectly fine.
+for f in issue-7.json issue-7.assoc gap-prompt.txt threads-7.json review.md; do
+  has "$sw_notes" "SKIPPED $f" "8c the kept $f is reported, not silently retained"
+done
+has "$sw_notes"   'no longer the file that was judged; kept' "8c …in the SKIPPED … kept note shape"
+hasnt "$sw_notes" 'REFUSED' "8c …and never as REFUSED, which means an rm that actually failed"
+
+# --- 8d. source-drift: the identity really is captured WITH the scan --------------------------
+# Late capture is the defect that looks identical to the fix. Fingerprinting a path after the
+# verdict calls (or inside the delete loop) describes whatever arrived in the meantime, so the
+# comparison compares a replacement against itself and always matches — a guard that runs, prints
+# nothing, and protects nothing. The order is asserted on line numbers because no behavioral test
+# can see it: with the wrapper firing at the verdicts, BOTH orders pass 8b.
+sw_at() { printf '%s\n' "$SW_SNIPPET" | grep -n -- "$1" | head -n1 | cut -d: -f1; }
+sw_ident="${ sw_at 'DELSET="$(while'; }"
+sw_verdict="${ sw_at 'state-verdict gaps'; }"
+sw_loop="${ sw_at 'sweep_file "$sfile" "$ident"'; }"
+if [ -n "$sw_ident" ] && [ -n "$sw_verdict" ] && [ "$sw_ident" -lt "$sw_verdict" ]; then ok; else
+  bad "8d the identity capture must precede the verdict calls (capture@${sw_ident:-?} verdict@${sw_verdict:-?})"
+fi
+if [ -n "$sw_loop" ] && [ -n "$sw_ident" ] && [ "$sw_loop" -gt "$sw_ident" ]; then ok; else
+  bad "8d …and the delete loop must consume it (capture@${sw_ident:-?} sweep@${sw_loop:-?})"
+fi
+# The delete loop must read the DERIVED set. Iterating `$SCAN` again would leave `$ident` unset for
+# every record — `sweep_file` would then see an empty judged identity, keep everything, and the
+# sweep would be a silent no-op that passes 8b for the wrong reason.
+has "$SW_SNIPPET" 'done <<EOF
+$DELSET' "8d the delete loop iterates the identity-bearing set, not the raw scan"
+# Four variables, or the identity lands in `$key` and the threads arm queries a PR number that is
+# really a checksum.
+has "$SW_SNIPPET" 'read -r kind sfile key ident' "8d …and parses all four fields"
+# EVERY deleting arm, not just the one this issue was reported against.
+for arm in gaps issue review threads; do
+  has "$SW_SNIPPET" "    $arm)" "8d the $arm arm is present in the sweep"
+done
+eq "${ printf '%s\n' "$SW_SNIPPET" | grep -c 'sweep_file "\$sfile" "\$ident"'; }" "4" \
+   "8d …and all four pass the judged identity to the delete"
+hasnt "${ printf '%s\n' "$SW_SNIPPET" | sed 's/[[:space:]]*#.*$//'; }" 'sweep_file "$sfile"
+' "8d no arm still deletes by pathname alone"
 
 check_summary "check-cleanup"

@@ -4147,3 +4147,90 @@ limit: none of them is sufficient alone.
              nothing); and `sf_stub` interpolates its arguments into generated shell (they are
              `mktemp` paths and literals this suite writes itself).
 - baseline-issue: n/a — this repo IS the baseline; #310 is the tracking issue.
+
+## D55 — the sweep deletes by identity, D40's carve-out is reversed, and `marker-identity` does NOT become it
+
+- date:      2026-08-11
+- category:  project-delta
+- unknown:   #305. `/cleanup`'s state sweep reached a verdict for a RECORD and then handed that
+             record's PATH to `rm`. The `marker` arm never had that problem — it re-captures the
+             file's identity immediately before deleting — but the `gaps`, `review`, `issue` and
+             `threads` arms did. Three things the issue could not settle from outside the code: what
+             GUARANTEE the fix owes (a compare-then-`rm` is still two syscalls, and this repo has a
+             stronger move-and-verify primitive it uses elsewhere), what "stable identity" MEANS,
+             and where a permanent regression for a fix that lives in workflow prose can live.
+- decision:  **Identity-checked deletion in all four arms, a SECOND identity primitive beside the
+             existing one, and the regression executes the real prose.**
+
+             **(a) D40's carve-out is deliberately reversed, and this entry is the reversal.** D40
+             named this exact residual and declined to close it: *"True exclusion would need
+             delete-time file identity, which is what markers get and what their failure mode (a
+             disarmed continuation gate) justifies; a re-fetchable prompt does not."* Two things
+             have changed since. #250 moved the ISSUE SNAPSHOT into this lifecycle, and it is not a
+             re-fetchable prompt — `issue-<n>.assoc` carries the `author_association` provenance
+             label (#214), and `/implement-issue` steps 3 and 8 treat an absent or empty one as a
+             hard stop rather than re-fetching it. And D40's cost estimate was wrong in one respect:
+             it reasoned about "a window of milliseconds", but the delete loop makes a **live
+             `pr_state` round trip per `threads` record**, so a later record's `rm` runs seconds
+             behind the scan that judged it.
+
+             **(b) The guarantee is marker-equivalent, and move-and-verify was REJECTED on its
+             merits.** `implement-lib.sh` breaks a claim by moving it aside and verifying the
+             operand, because a `rename` is exclusive where a compare-then-unlink is not. That is
+             right for a *claim*, where the goal is exclusive acquisition. It is wrong here: it
+             unlinks — however briefly — a file we have just decided belongs to somebody else and
+             may be reading, and a crash mid-way strands a sidecar that `state-scan` classifies
+             `other` and therefore never sweeps. Trading a microsecond mis-delete window for a
+             microsecond ENOENT window on a file we chose to keep is not an improvement. The
+             two-syscall residual is named in the workflow rather than claimed closed.
+
+             **(c) `file-identity` is a NEW subcommand, not a strengthened `marker-identity`**, and
+             that is the finding the independent gap-analysis pass forced into the open. The two
+             answer different questions: `marker-identity` asks "are these the same BYTES", which is
+             correct for a marker (a replacement always carries a new `startedAt`, `owner` or
+             phase); the artifact arms need "is this the same FILE", because their replacement is
+             routinely byte-identical. Measured on this repo: an `issue-<n>.json` unlinked and
+             rewritten from an unchanged issue produced the IDENTICAL `cksum`, and so does an
+             `.assoc` holding one word and a deterministically rebuilt `gap-prompt.txt`. Folding the
+             two together was rejected because it would trade this bug for another: `implement-lib`
+             derives its claim identity from a SINGLE read of the file's bytes, precisely because
+             reading identity and lease as two opens let three contenders win one race — and a
+             `stat` component cannot come out of one read.
+
+             **The composite is `<inode>-<mtime>-<crc>-<size>` and is documented as BEST-EFFORT.**
+             Inode catches the recreate, mtime covers a filesystem that reuses a just-freed inode
+             (the judged file was written by a run that already finished, so it is genuinely older),
+             cksum catches a modification in place that keeps both. What remains — a same-second
+             recreate that reuses the inode AND produces identical bytes — is not what keeps the
+             sweep safe on its own; the lock and marker records in the same re-scan are. Portability
+             goes through `adb_mtime`, which already owns the BSD/GNU `stat` split; the inode comes
+             from POSIX `ls -i`. Any component failing yields NO identity, which never matches.
+
+             **(d) Captured WITH the re-scan, into a DERIVED record set.** A fingerprint taken later
+             describes whatever arrived in the meantime, so the comparison compares a replacement
+             against itself and always matches — the same late-capture defect `implement-lib.sh`
+             records having observed. `state-scan`'s `<kind>TAB<path>TAB<key>` format is deliberately
+             NOT extended: three other loops in step 5 parse it with three variables, and `read` puts
+             every surplus field in the last one, so a fourth field would land silently inside a
+             marker's branch name and a thread cache's PR number.
+
+             **(e) The regression EXECUTES the workflow block** (`ADB-SNIPPET: state-sweep`), as
+             `check-cleanup.sh` section 7 already does for the currency step — not the mirrored loop
+             section 3b uses, which can pass forever after the prose it copies has been rewritten.
+             The race is made deterministic by resolving `{{CLEANUP_LIB}}` to a wrapper that
+             substitutes the files on the last verdict call: after the identities are captured,
+             before the delete loop. No sleep, no scheduler, no flake. A CONTROL runs the same
+             fixture through the pre-#305 loop and requires it to lose the files — and asserts the
+             substitution really happened, because "the unguarded loop deleted it" is otherwise
+             satisfied by a loop deleting the ORIGINAL file, which is just /cleanup working. That
+             weakness was found by self-review and observed passing before it was closed.
+- placement: `scripts/lib/cleanup-lib.sh` (the prescribed home for a `/cleanup` decision predicate),
+             `base/workflows/cleanup.md` step 5, `scripts/check-cleanup.sh` sections 2d2 and 8.
+- reason:    Reversing a recorded decision needs a recorded reason, and the three sub-decisions
+             above are each a place where the obvious implementation is wrong in a way no test
+             would have shown: strengthening `marker-identity` breaks a different race, capturing
+             the identity one step later is a guard that protects nothing, and a mirrored regression
+             drifts. Five mutations were driven red against a COPY of the tree before this landed —
+             the pre-#305 loop, a content-digest-only identity, a late capture, a by-pathname
+             delete, and a neutered fixture.
+- baseline-issue: n/a — this repo IS the baseline; #305 is the tracking issue.

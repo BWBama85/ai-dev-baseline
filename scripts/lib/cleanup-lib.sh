@@ -37,6 +37,7 @@
 #   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
 #   cleanup-lib.sh marker-branch   <marker-path>
 #   cleanup-lib.sh marker-identity <marker-path>
+#   cleanup-lib.sh file-identity   <path>
 #   cleanup-lib.sh report [--tail <line>]                      # TSV "<category>\t<item>" on stdin
 #   cleanup-lib.sh state-line     <root> <default-branch>
 #   cleanup-lib.sh clone-state    <root> <default-branch>
@@ -480,6 +481,69 @@ cmd_marker_identity() {
   return 0
 }
 
+# --- file-identity ------------------------------------------------------------------------------
+# Print a stable identity for ANY state file, or nothing when it cannot be established. The sweep
+# captures this at the pre-delete re-scan and re-captures it immediately before `rm`; a change, or
+# an identity that cannot be read at either end, means the file is no longer the one that was
+# judged and it must be kept (#305).
+#
+# WHY THIS IS NOT `marker-identity`, WHICH ALREADY EXISTS. They answer different questions, and the
+# difference is the entire bug:
+#
+#   marker-identity  — "are these the same BYTES?"  A pure content digest.
+#   file-identity    — "is this the same FILE?"     The filesystem object AND its bytes.
+#
+# A content digest is structurally unable to answer the second question, and for the artifact
+# families it is the second question that matters, because their replacement is routinely
+# BYTE-IDENTICAL. `gh issue view` returns the same JSON for an unchanged issue, `issue-<n>.assoc`
+# holds a single word like `OWNER`, and `gap-prompt.txt` is rebuilt deterministically from that same
+# text. Reproduced on this repo before the fix: an `issue-305.json` unlinked and rewritten with the
+# same bytes produced the IDENTICAL `cksum`, so a digest-only guard compared equal and deleted a live
+# run's snapshot. A marker is the opposite case — a replacement carries a new `startedAt`, a new
+# `owner` or a new phase — which is why the digest was sufficient there and still is.
+#
+# AND `marker-identity` MUST NOT SIMPLY BE STRENGTHENED INTO THIS. `implement-lib.sh` compares
+# identities it derives from a SINGLE read of the claim's bytes (`_il_claim_probe`), because reading
+# the identity and the lease as two separate opens let three contenders win one race. An identity
+# with a `stat` component cannot come out of one read, so folding the two together would trade this
+# bug for that one. Two questions, two primitives, one home for both.
+#
+# THE COMPOSITE IS BEST-EFFORT AND SAID SO PLAINLY, because the alternative is a guarantee this
+# cannot keep. Three components, each defeating what the others miss:
+#   inode  — an unlink-and-recreate almost always lands on a new one. NOT guaranteed: a filesystem
+#            is free to reuse a just-freed inode, and some do.
+#   mtime  — whole seconds (that is all `stat` offers portably). The discriminator that covers inode
+#            reuse in practice: the file being judged was written by a run that has already
+#            finished, so its mtime is older than the replacement's by however long ago that was.
+#   cksum  — catches a modification IN PLACE, which keeps both of the above: a captured stream a
+#            live dispatch is still appending to.
+# What remains uncovered is a same-second recreate that also reuses the inode and produces identical
+# bytes. That residual is not what keeps the sweep safe on its own — the lock and marker records in
+# the same re-scan are (`state-verdict`), and they are read from the same snapshot this identity is.
+#
+# PORTABILITY: `ls -i` is POSIX and is how the inode is read on both CI runners; the mtime goes
+# through `adb_mtime`, which already owns the BSD/GNU `stat` split and validates that what came back
+# is digits (a naive `stat -f %m || stat -c %Y` exits ZERO on GNU while printing a filesystem stat).
+# ANY component failing yields NO identity at all rather than a partial one — a partial identity is
+# a comparison that silently stops testing what it names.
+cmd_file_identity() {
+  [ "$#" -eq 1 ] || die "file-identity: needs exactly 1 arg: <path>"
+  local ck ino mt
+  # `-f` and not `-e`: a dangling symlink, a directory and a socket all have no bytes to digest, and
+  # the empty answer they get here is the one that never matches, i.e. keep.
+  [ -f "$1" ] || return 0
+  ck="$(cksum < "$1" 2>/dev/null | awk 'NF >= 2 { print $1 "-" $2 }')"
+  [ -n "$ck" ] || return 0
+  # `--` so a path that begins with a dash is an operand, not an option. The digit test is what
+  # makes a multi-line answer — which is what `ls` prints for a name containing a newline — fail
+  # closed instead of arriving as a usable-looking identity.
+  ino="$(ls -i -- "$1" 2>/dev/null | awk 'NF >= 2 { print $1 }')"
+  case "$ino" in ''|*[!0-9]*) return 0 ;; esac
+  mt="$(adb_mtime "$1")"
+  [ -n "$mt" ] || return 0
+  printf '%s-%s-%s' "$ino" "$mt" "$ck"
+}
+
 # --- state-verdict -----------------------------------------------------------------------------
 # Decide whether ONE state file is `stale` (the sweep may delete it) or `keep`. Exit 0 with a
 # verdict; 2 on an unrecognised kind or signal.
@@ -773,6 +837,7 @@ main() {
     state-verdict)  cmd_state_verdict "$@" ;;
     marker-branch)   cmd_marker_branch "$@" ;;
     marker-identity) cmd_marker_identity "$@" ;;
+    file-identity)   cmd_file_identity "$@" ;;
     report)         cmd_report "$@" ;;
     state-line)     cmd_state_line "$@" ;;
     clone-state)    cmd_clone_state "$@" ;;

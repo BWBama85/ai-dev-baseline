@@ -9,6 +9,38 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`/cleanup` deletes state artifacts by identity, not by pathname, so a run that recreates the
+  same name mid-sweep keeps its files** (#305).
+
+  The state sweep reached a verdict for a *record* and then handed that record's **path** to `rm`.
+  A fresh `/implement-issue` preflight clears the previous run's artifacts and writes its own at
+  the same fixed names, so a path judged stale could be occupied by a **live** run's file by the
+  time the delete loop reached it. The `marker` arm never had this — it re-captures the file's
+  identity immediately before deleting — but the `gaps`, `review`, `issue` (#250) and `threads`
+  arms did.
+
+  - **The window is not instantaneous.** The delete loop makes a live `pr_state` round trip per
+    `threads` record, so a later record's `rm` can run seconds behind the scan that judged it.
+    Reproduced against the workflow block itself: a swept `issue-<n>.json` was the one a live run
+    had just written.
+  - **A content digest cannot see it, so `file-identity` is a new primitive rather than a
+    strengthened `marker-identity`.** These replacements are routinely *byte-identical* —
+    `gh issue view` returns the same JSON for an unchanged issue, an `.assoc` holds one word, and
+    `gap-prompt.txt` is rebuilt deterministically from both — so `cksum` compares equal and the
+    file is deleted anyway. `file-identity` composes `<inode>-<mtime>-<crc>-<size>` and is
+    documented as best-effort. `marker-identity` is unchanged on purpose: `implement-lib.sh`
+    derives the claim's identity from a *single* read of its bytes, and a `stat` component cannot
+    come out of one read.
+  - **Captured with the pre-delete re-scan**, ahead of the verdict calls, into a *derived* record
+    set — `state-scan`'s three-field format is untouched, because three other loops parse it with
+    three variables and `read` puts every surplus field in the last one.
+  - **A kept file is reported** in the existing `SKIPPED … kept` shape, which stays distinct from
+    `REFUSED … left in place` (an `rm` that genuinely failed).
+  - **The regression executes the real workflow block** via a new `ADB-SNIPPET: state-sweep`
+    marker, not a mirrored copy, with the race made deterministic by a library wrapper; a control
+    drives the same fixture through the pre-fix loop and requires it to lose the files. Reverses
+    the carve-out recorded in D40; see D55.
+
 - **`/release`'s run-state guards can stop the release, and every one of them is now driven by a
   test** (#313).
 
