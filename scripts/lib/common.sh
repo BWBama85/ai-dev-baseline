@@ -3315,9 +3315,17 @@ adb_md_prose() {
 # THE RECORD GRAMMAR is one fact per line, TAB-separated, with the FREE-TEXT VALUE ALWAYS LAST:
 #
 #   adb_wf_on            ONBLOCK <0|1> · TRIGGER <name> · PRINLINEFILTER <trigger>
-#                        PRFILTER <types|branches|paths|branches-ignore> · PRTYPE <v> · PRBRANCH <v>
+#                        PRFILTER <types|branches|paths|branches-ignore|merge>
+#                        PRTYPE <v> · PRBRANCH <v>
 #   adb_wf_jobs          JOBSBLOCK <0|1> · JOB <n> <key> · RANGE <n> <start> <end>
-#                        NAME <n> <v> · RUNSON <n> <v> · FLAG <n> <if|uses|matrix|dynamic|inline>
+#                        STEP <n> <k> <line> · NAME <n> <v> · RUNSON <n> <v>
+#                        FLAG <n> <if|uses|matrix|dynamic|inline|keyed|alias|merge|blockname|blockrunner>
+#
+# THE FLAG AND PRFILTER VOCABULARIES ARE LISTED IN FULL, and that is maintenance rather than
+# decoration: this block is the only place a consumer author can learn what may arrive, and it had
+# already drifted — `STEP`, and the `keyed` / `alias` / `blockname` / `blockrunner` flags, were
+# emitted by the code and absent from the grammar. A value nobody knows about is a value nobody
+# handles, and every one of these exists precisely to stop a consumer requiring something wrong.
 #
 # VALUE-LAST IS THE WHOLE SERIALIZATION DESIGN, not a layout preference. A job `name:` may legally
 # contain a tab inside a quoted scalar, so a multi-column record would be truncated there by any
@@ -3325,17 +3333,29 @@ adb_md_prose() {
 # deadlock repo-settings.sh exists to avoid. One free-text field per record, always last, means
 # `IFS=<tab> read -r tag n value` keeps it byte-for-byte with no per-call-site splitting rule.
 #
-# NO EMITTED VALUE CONTAINS A NEWLINE, because each is taken from one physical input line. That is a
-# statement about the RECORD, not about YAML: a YAML scalar may legitimately span several lines
-# (`name: >-` with the text below it), and this reader simply does not have such a value. It reports
-# those as unreadable — `FLAG <n> blockname` / `blockrunner` — rather than emitting the header text,
-# because `>-` as a required context is a phantom that never reports.
+# NO EMITTED VALUE CONTAINS A NEWLINE. That used to hold because every value came from one physical
+# line; since #291 a FLOW COLLECTION may be joined across lines, so the invariant is now held by the
+# JOIN — adb_wf_flowspan substitutes a single space for each line break, which is also what YAML
+# folding does. The invariant is unchanged; only the reason it holds is.
+#
+# It is a statement about the RECORD, not about YAML: a YAML scalar may legitimately span several
+# lines (`name: >-` with the text below it), and this reader simply does not have such a value. It
+# reports those as unreadable — `FLAG <n> blockname` / `blockrunner` — rather than emitting the
+# header text, because `>-` as a required context is a phantom that never reports.
 #
 # WHAT THIS READER IS NOT: a YAML parser. It reads the block-mapping and block/flow-sequence forms
 # GitHub workflows actually use, and it fails toward "unreadable" on the rest. Known and deliberate:
-# a flow collection spanning multiple physical lines is read only from its opening line, and merge
-# keys (`<<:`) are not resolved. Both directions under-report, which skips a job rather than
-# requiring one that cannot report.
+#
+#   - A flow collection is joined across physical lines only when it CLOSES; an unterminated one is
+#     read from its opening line alone, which under-reports (the file is skipped, never required
+#     under something wrong).
+#   - MERGE KEYS (`<<:`) ARE REPORTED, NEVER RESOLVED — `FLAG <n> merge` for a job, `PRFILTER merge`
+#     under a trigger. GitHub Actions implements YAML 1.2, which has no merge key, so a workflow
+#     carrying one is a syntax error there and never runs. Resolving it would hand discovery a
+#     readable `name:` and no disqualifier, i.e. a confident required context for a workflow that
+#     cannot report — the expensive direction. Unread, the job is skipped instead.
+#   - `<<:` is special ONLY as a job property and as a `pull_request:` filter key. Those are the two
+#     places it is reachable in what this reader looks at; anywhere else it is an ordinary key.
 #
 # RANGE is what lets the floor lint keep its STEP-level rules without re-deriving job boundaries:
 # it scans within the line range this reader assigned, rather than re-answering "where does this
@@ -3502,6 +3522,62 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
       }
       return 0
     }
+    # A FLOW COLLECTION THAT DOES NOT CLOSE ON ITS OPENING LINE (#291). Joins the physical lines of
+    # `[ … ]` / `{ … }` starting at line `at` with text `s`, and publishes the result in WFFLOWTXT
+    # with the last line consumed in WFFLOWEND. Returns 1 only when the collection actually CLOSED
+    # within `lim`; 0 leaves WFFLOWTXT empty and the caller falls back to the opening line alone.
+    #
+    # THE RETURN VALUE IS THE WHOLE SAFETY ARGUMENT. A partial join is worse than no join: half a
+    # `branches:` list reads as a filter that names some branches and not the target, which is
+    # indistinguishable from a filter that genuinely excludes it. Refusing outright keeps the
+    # unclosed case on the behaviour it already had — the file is skipped, never required wrongly.
+    #
+    # WHY THIS EXISTS. `on:`, `branches:` and `types:` were read from one physical line, so
+    #
+    #     branches: [
+    #       main
+    #     ]
+    #
+    # emitted `PRFILTER branches` with NO `PRBRANCH` records: discovery concluded the filter "does
+    # not provably include main" and dropped every job in the file. Valid YAML that GitHub runs,
+    # silently ungated.
+    #
+    # JOINED WITH A SPACE, never a newline, so the record grammar's no-newline invariant survives a
+    # multi-line source (see the header). A space is also what YAML folding does to a plain scalar
+    # broken across lines, so `[a,\n b]` and `[a, b]` produce identical entries.
+    #
+    # COMMENTS ARE STRIPPED PER LINE, and the `#` rule is YAML's rather than "the first hash": a `#`
+    # only opens a comment when it is unquoted AND starts the text or follows whitespace. Getting
+    # that backwards would truncate `branches: ["a#b"]` to `a`, quietly narrowing a filter.
+    function adb_wf_flowspan(at, s, lim,   i, j, n, c, depth, q, chunk, keep) {
+      WFFLOWTXT = ""; WFFLOWEND = at
+      depth = 0; q = ""; i = at; chunk = s
+      while (1) {
+        keep = ""; n = length(chunk)
+        for (j = 1; j <= n; j++) {
+          c = substr(chunk, j, 1)
+          if (q != "") {
+            keep = keep c
+            if (c == "\\" && q == "\"" && j < n) { j++; keep = keep substr(chunk, j, 1); continue }
+            if (c == q) q = ""
+            continue
+          }
+          if (c == "\"" || c == "'") { q = c; keep = keep c; continue }
+          if (c == "#" && (j == 1 || substr(chunk, j - 1, 1) ~ /[[:space:]]/)) break
+          keep = keep c
+          if (c == "[" || c == "{") depth++
+          else if (c == "]" || c == "}") {
+            depth--
+            if (depth <= 0) { WFFLOWTXT = WFFLOWTXT keep; WFFLOWEND = i; return (depth == 0) }
+          }
+        }
+        WFFLOWTXT = WFFLOWTXT keep " "
+        i++
+        while (i <= lim && adb_wf_blank(WFL[i])) i++
+        if (i > lim) { WFFLOWEND = at; WFFLOWTXT = ""; return 0 }
+        chunk = WFL[i]; sub(/^[[:space:]]+/, "", chunk)
+      }
+    }
     # An inline flow sequence `[a, b]`, one record per entry under `tag`.
     #
     # SPLIT ON QUOTE-AWARE COMMAS, not on every comma. `branches: ["release,stable"]` is one branch
@@ -3510,10 +3586,10 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
     # target" and its jobs stop being required. Rare, but the failure is silent and this is the one
     # home for the rule.
     #
-    # WHAT THIS DOES NOT DO: a flow collection spanning MULTIPLE physical lines is read only from its
-    # opening line. That direction is fail-safe — the entries are simply not seen, so a `branches:`
-    # filter cannot be proven to include the target and the file is SKIPPED rather than requiring
-    # something wrong — and it is stated here rather than left for a reader to discover.
+    # THE TEXT IT IS HANDED MAY HAVE COME FROM SEVERAL LINES (#291) — see adb_wf_flowspan, which
+    # joins them before this runs. This function still splits one string; what changed is who builds
+    # that string. An UNCLOSED collection never reaches here at all: the span refuses, and the caller
+    # falls back to the opening line alone, which under-reports exactly as it did before.
     function adb_wf_flow(s, tag,   n, i, c, cur, q, v) {
       sub(/^[[:space:]]*\[/, "", s); sub(/\][[:space:]]*(#.*)?$/, "", s)
       n = length(s); cur = ""; q = ""
@@ -3569,7 +3645,15 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
       # The inline forms: `on: push` and `on: [push, pull_request]`.
       rest = adb_wf_valof(WFL[at])
       if (rest != "" && rest !~ /^#/) {
-        if (rest ~ /^\[/) adb_wf_flow(rest, "TRIGGER")
+        # THE WHOLE FILE IS THE LIMIT HERE, not the `on:` block. A top-level flow sequence closes at
+        # column 0 — `on: [` … `]` — and adb_wf_blockend ends the block at exactly such a line, so
+        # the bound that looks natural is the one that cannot contain the closing bracket. Bracket
+        # balance is the real terminator; WFN only stops a runaway on malformed input, where the
+        # span refuses and this falls back to the opening line.
+        if (rest ~ /^\[/) {
+          if (adb_wf_flowspan(at, rest, WFN)) adb_wf_flow(WFFLOWTXT, "TRIGGER")
+          else adb_wf_flow(rest, "TRIGGER")
+        }
         else printf "TRIGGER\t%s\n", adb_wf_scalar(rest)
         return
       }
@@ -3598,6 +3682,12 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
         # `pull_request: {types: [closed]}` is a real, valid trigger, and recording the trigger
         # while skipping the rest of the line would treat every job as running on every PR.
         if (tv ~ /^\{/) {
+          # AND IT MAY SPAN LINES TOO (#291). `pull_request: {` with the filter below it carried no
+          # filter word on its opening line, so no PRINLINEFILTER was emitted and the block-form
+          # loop was skipped by the `continue` — the file then read as running on every PR and its
+          # jobs were REQUIRED. That is the over-requiring direction, so this one is not optional.
+          # `i` advances past the mapping so its interior can never be re-read as a sibling trigger.
+          if (adb_wf_flowspan(i, tv, on_end)) { tv = WFFLOWTXT; i = WFFLOWEND }
           if (tv ~ /(paths|types|branches)/) printf "PRINLINEFILTER\t%s\n", trig
           continue
         }
@@ -3613,10 +3703,24 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
           fk = adb_wf_keyof(fb); fv = adb_wf_valof(fb)
           if (fk == "paths" || fk == "paths-ignore") { print "PRFILTER\tpaths"; continue }
           if (fk == "branches-ignore") { print "PRFILTER\tbranches-ignore"; continue }
+          # A MERGE KEY UNDER THE TRIGGER (#291), reported for the same reason the job-level one is:
+          # GitHub Actions does not implement `<<:` (it shipped only what YAML 1.2 has), so the
+          # workflow does not run AT ALL. Ignoring the key left the trigger looking unfiltered, and
+          # an unfiltered trigger is what makes every job in the file REQUIRED — a set of contexts
+          # nothing will ever report. Reported here, refused as unprovable by the consumer.
+          if (fk == "<<") { print "PRFILTER\tmerge"; continue }
           if (fk != "types" && fk != "branches") continue
           printf "PRFILTER\t%s\n", fk
           tag = (fk == "types" ? "PRTYPE" : "PRBRANCH")
-          if (fv ~ /^\[/) { adb_wf_flow(fv, tag); continue }
+          # A MULTI-LINE FLOW SEQUENCE (#291) — the issue's headline case. Bounded by the trigger's
+          # own block, whose end DOES contain a closing bracket written at the filter key's column
+          # or deeper, which is where valid YAML has to put it (flow content in a block context is
+          # indented past its key). `m` advances so the closing line is not re-examined as a filter.
+          if (fv ~ /^\[/) {
+            if (adb_wf_flowspan(m, fv, tend)) { adb_wf_flow(WFFLOWTXT, tag); m = WFFLOWEND }
+            else adb_wf_flow(fv, tag)
+            continue
+          }
           # THROUGH THE SHARED SEQUENCE HELPER, so a `branches:` list whose dashes sit at the key's
           # own column reads exactly like an indented one. `steps:` already went through it and
           # these did not, which is a rule applied in one place and not its twin — and the
@@ -3631,7 +3735,7 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
 
     # --- the `jobs:` block -------------------------------------------------------------------
     function adb_wf_jobs_emit(   at, jobs_end, jc, i, n, body, j, pc, pk, pv, v, sc, m, sk, k,
-                                 JS, JK, JI, JE) {
+                                 mergek, JS, JK, JI, JE) {
       at = adb_wf_top("jobs")
       if (at == 0) { print "JOBSBLOCK\t0"; return }
       print "JOBSBLOCK\t1"
@@ -3646,6 +3750,13 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
         if (!adb_wf_iskey(body)) continue
         n++
         JS[n] = i; JK[n] = adb_wf_keyof(body); JI[n] = adb_wf_valof(body)
+        # A JOB WHOSE VALUE OPENS A FLOW COLLECTION OWNS EVERY LINE UP TO ITS CLOSE (#291), so the
+        # join happens HERE rather than at the point of use. Two things depend on that. The value
+        # the `keyed` test reads becomes the WHOLE mapping — `hidden: {` with `name: Real Name` on
+        # the next line answered "no top-level name:" from an opening brace and emitted `keyed`,
+        # requiring the job under its KEY when the check reports under its NAME. And a continuation
+        # line that happens to sit at the job column can no longer be enumerated as a second job.
+        if (JI[n] ~ /^[[{]/ && adb_wf_flowspan(i, JI[n], jobs_end)) { JI[n] = WFFLOWTXT; i = WFFLOWEND }
       }
       for (j = 1; j <= n; j++) JE[j] = (j < n ? JS[j + 1] - 1 : jobs_end)
       for (j = 1; j <= n; j++) {
@@ -3680,6 +3791,13 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
           # worth — and being wrong costs a phantom context, while being conservative costs one
           # under-required job in a form almost nobody writes.
           if (!adb_wf_flowmap_key(JI[j], "name|if|uses|strategy")) printf "FLAG\t%d\tkeyed\n", j
+          # NOT DECOMPOSED, and now that the mapping may span lines that has to be enforced rather
+          # than merely true by accident. A single-line mapping has no lines under it, so the block
+          # loop below found nothing; a multi-line one put `runs-on: ubuntu-26.04,` and
+          # `name: Real Name,` — trailing commas and all — through the block-property arms, emitting
+          # a runner label and a check name that are flow-syntax fragments. `inline` already tells
+          # each consumer what to do with a job this reader cannot read.
+          continue
         } else if (JI[j] ~ /^\*/) {
           printf "FLAG\t%d\talias\n", j
         } else if (JI[j] != "" && JI[j] !~ /^#/ && JI[j] !~ /^&/) {
@@ -3688,6 +3806,7 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
         WFCOL[JS[j]] = jc
         pc = adb_wf_childcol(JS[j], JE[j])
         if (pc < 0) continue
+        mergek = 0
         for (i = JS[j] + 1; i <= JE[j]; i++) {
           if (adb_wf_blank(WFL[i])) continue
           if (adb_wf_lead(WFL[i]) != pc) continue
@@ -3707,6 +3826,21 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
           } else if (pk == "runs-on") {
             if (adb_wf_isblock(pv)) { printf "FLAG\t%d\tblockrunner\n", j; continue }
             printf "RUNSON\t%d\t%s\n", j, adb_wf_scalar(pv)
+          } else if (pk == "<<") {
+            # A MERGE KEY, REPORTED RATHER THAN RESOLVED (#291). GitHub Actions supports YAML
+            # anchors and aliases but NOT merge keys: it shipped what YAML 1.2 specifies, and `<<:`
+            # is not in that spec. A workflow carrying one is a syntax error at GitHub, so it does
+            # not run — and this reader's job is to say which jobs can be PROVEN to report.
+            #
+            # RESOLVING IT WOULD BE THE WORSE BUG, which is why this is a flag and not an inherited
+            # value. Reading the anchor's properties gives the job a readable `name:` and no
+            # disqualifier, so discovery would confidently require a context from a workflow GitHub
+            # never runs — a phantom that never reports, and an admin token to clear. Unread, the
+            # job is skipped instead, which is the recoverable direction.
+            #
+            # ONCE PER JOB. A duplicate `<<:` is invalid YAML, but a repeated record would still
+            # read as two facts about one job in the consumers' accumulators.
+            if (!mergek) { printf "FLAG\t%d\tmerge\n", j; mergek = 1 }
           } else if (pk == "if") {
             printf "FLAG\t%d\tif\n", j
           } else if (pk == "uses") {

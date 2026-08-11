@@ -449,6 +449,48 @@ run_lint "$d"
 eq "$RC" "1" "opposite filter: a reusable-workflow job is enumerated and reported, not skipped"
 has "$OUT" "'called'" "...and named"
 
+# --- MERGE KEYS AND WRAPPED FLOW COLLECTIONS, from THIS consumer's side (#291) ----------------------
+# The sibling consumer SKIPS a job it cannot prove a check name for. This lint must do the opposite
+# and REPORT it: a job whose runner is unreadable is precisely a job running on an unproven runner,
+# and invisible is the one outcome a floor lint may never produce.
+d="$work/mergekey"; f="${ new_wf "$d"; }"
+{ printf '  base: &base\n    runs-on: ubuntu-26.04\n    steps:\n      - name: v\n        run: bash --version\n'
+  printf '      - name: g\n        run: bash scripts/check-bash-floor.sh --runtime\n'
+  printf '  alt:\n    <<: *base\n    steps:\n      - name: v\n        run: bash --version\n'
+  printf '      - name: g\n        run: bash scripts/check-bash-floor.sh --runtime\n'
+} >> "$f"
+emit_job "$f" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "a job whose runner arrives through a <<: merge key is reported, not silently absent"
+has "$OUT" "'alt'" "...and named"
+has "$OUT" "runs on '<merge key>'" "...with the CAUSE named, rather than an uninformative '<none>'"
+has "$OUT" "3 job(s)" "...and it is enumerated alongside the others, not skipped"
+
+# A job that merges AND declares its own runs-on has a runner this lint CAN read, so it is judged on
+# that label. Whether GitHub accepts the file's syntax is the sibling consumer's verdict; failing a
+# proven runner here would be this lint answering a question that is not its own.
+d="$work/mergeown"; f="${ new_wf "$d"; }"
+{ printf '  base: &base\n    runs-on: ubuntu-26.04\n'
+  printf '  alt:\n    <<: *base\n    runs-on: ubuntu-latest\n    steps:\n      - name: v\n        run: bash --version\n'
+  printf '      - name: g\n        run: bash scripts/check-bash-floor.sh --runtime\n'
+} >> "$f"
+emit_job "$f" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "a merging job that declares its OWN runner is judged on that runner"
+has "$OUT" "runs on 'ubuntu-latest'" "...by its real label, not by '<merge key>'"
+
+# A WRAPPED INLINE JOB MAPPING is still one job to this lint, and still fails loudly — the reader
+# does not decompose it, so its runner is unverifiable. Before the fix its BODY was read as block
+# properties, which handed this lint `ubuntu-26.04,` — a flow-syntax fragment as a runner label.
+d="$work/mljobfloor"; f="${ new_wf "$d"; }"
+printf '  wrapped: {\n    runs-on: ubuntu-26.04,\n    steps: [x]\n  }\n' >> "$f"
+emit_job "$f" linux-job ubuntu-26.04 1
+emit_job "$f" macos-job macos-latest 1
+run_lint "$d"
+eq "$RC" "1" "a wrapped inline job mapping is reported rather than passed"
+has "$OUT" "runs on '<inline mapping>'" "...under the unmatchable label, never a flow-syntax fragment"
+has "$OUT" "3 job(s)" "...and its body is not enumerated as extra jobs"
+
 # --- the scanner's own failure must PROPAGATE, not read as 'this file has no jobs' ------------------
 # The shared reader is fail-closed (a nonce completion trailer), and this asserts the lint honours
 # that rather than treating a crashed read as an empty one. A stub `awk` that exits non-zero stands

@@ -1929,6 +1929,121 @@ printf 'on:\n  pull_request:\n    branches: ["release,stable", main]\njobs:\n  a
 has "${ wfon comma.yml; }" "PRBRANCH|release,stable" "a comma INSIDE a quoted flow entry does not split it"
 has "${ wfon comma.yml; }" "PRBRANCH|main"           "...and the following entry is still read"
 
+# --- FLOW COLLECTIONS THAT SPAN PHYSICAL LINES (#291) -------------------------
+# Valid YAML that GitHub runs, previously read from the OPENING LINE ONLY. Each of these was
+# silently mis-answered rather than reported, so each gets a direct contract assertion here on top
+# of the consumer-verdict assertions in check-repo-settings.sh / check-bash-floor-guard.sh.
+
+# THE HEADLINE CASE. `branches:` yielded `PRFILTER branches` with NO `PRBRANCH`, so discovery
+# concluded the filter "does not provably include main" and dropped every job in the file.
+printf 'on:\n  pull_request:\n    branches: [\n      main\n    ]\n    types: [\n      opened,\n      synchronize\n    ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlflow.yml"
+has "${ wfon mlflow.yml; }" "PRBRANCH|main" "a branches: flow sequence spanning lines yields its entries"
+has "${ wfon mlflow.yml; }" "PRTYPE|opened" "...and so does a types: one"
+has "${ wfon mlflow.yml; }" "PRTYPE|synchronize" "...including an entry on its own line"
+# THE SIBLING FILTER AFTER IT still reads, which is what proves the scan RESUMES past the closing
+# bracket rather than either stopping there or re-entering the collection it just consumed.
+eq "${ adb_wf_on "$wfd/mlflow.yml" | grep -c '^PRFILTER	'; }" "2" \
+   "a filter written AFTER a multi-line one is still reached (the scan resumes past the ])"
+
+# THE TOP-LEVEL `on:` FLOW SEQUENCE, whose closing bracket sits at COLUMN 0 — the case a
+# block-scoped bound cannot contain, because adb_wf_blockend ends the block at exactly such a line.
+printf 'on: [\n  push,\n  pull_request\n]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlon.yml"
+has "${ wfon mlon.yml; }" "TRIGGER|push"         "a top-level 'on: [' spanning lines is read"
+has "${ wfon mlon.yml; }" "TRIGGER|pull_request" "...including the entry that closes it"
+
+# AN INLINE FLOW MAPPING FILTER spanning lines. This one fails in the OVER-requiring direction:
+# no filter word on the opening line meant no PRINLINEFILTER and a `continue` past the block form,
+# so the trigger read as unfiltered and every job in the file was REQUIRED.
+printf 'on:\n  pull_request: {\n    types: [closed]\n  }\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlmap.yml"
+has "${ wfon mlmap.yml; }" "PRINLINEFILTER|pull_request" \
+    "an inline flow-MAPPING filter spanning lines is reported (unreported, it read as unfiltered)"
+
+# QUOTING AND COMMENTS SURVIVE THE JOIN, in both directions. A comma inside quotes must not split,
+# and a `#` must open a comment only where YAML says it does — unquoted and after whitespace.
+printf 'on:\n  pull_request:\n    branches: [\n      "release,stable",   # the paired branch\n      "has#hash"\n    ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlquote.yml"
+has "${ wfon mlquote.yml; }" "PRBRANCH|release,stable" "a quoted comma still does not split an entry across lines"
+has "${ wfon mlquote.yml; }" "PRBRANCH|has#hash"       "a quoted # is kept, not read as a comment"
+hasnt "${ wfon mlquote.yml; }" "PRBRANCH|the"          "an end-of-line comment inside the collection is dropped"
+
+# AN UNCLOSED COLLECTION MUST EMIT NOTHING EXTRA, and this is the assertion that makes the join
+# safe rather than merely useful. A PARTIAL join is worse than none: half a branches: list reads as
+# a filter naming some branches and not the target, which is indistinguishable from one that
+# genuinely excludes it. Refusing keeps the malformed file on the behaviour it already had.
+printf 'on:\n  pull_request:\n    branches: [\n      main\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlopen.yml"
+has   "${ wfon mlopen.yml; }" "PRFILTER|branches" "an UNCLOSED flow sequence still reports the filter..."
+hasnt "${ wfon mlopen.yml; }" "PRBRANCH|main"     "...and emits no entries at all — never a partial list"
+
+# A JOB VALUE OPENING A FLOW MAPPING is joined in the ENUMERATION loop, which is what both fixes
+# below depend on. `keyed` means the check context PROVABLY is the job key, and answering that from
+# an opening brace said "no top-level name:" about a mapping whose very next line carries one.
+printf 'on:\n  pull_request:\njobs:\n  named: {\n    name: Real Name,\n    runs-on: ubuntu-26.04\n  }\n  plain: {\n    runs-on: ubuntu-26.04,\n    steps: [x]\n  }\n' > "$wfd/mljob.yml"
+has   "${ wf mljob.yml; }" "FLAG|1|inline" "a multi-line inline job mapping is still a visible, flagged job"
+hasnt "${ wf mljob.yml; }" "FLAG|1|keyed"  "...and one carrying a name: on a LATER line is NOT keyed (it used to be)"
+has   "${ wf mljob.yml; }" "FLAG|2|keyed"  "...while one that really has no name: still is"
+# AND ITS INTERIOR IS NOT DECOMPOSED. The block-property arms used to run over the flow body and
+# emit `Real Name,` / `ubuntu-26.04,` — flow-syntax fragments — as a check name and a runner label.
+hasnt "${ wf mljob.yml; }" "NAME|1|"   "no NAME record is scraped out of the flow body"
+hasnt "${ wf mljob.yml; }" "RUNSON|2|" "no RUNSON record is either"
+
+# A CONTINUATION LINE AT THE JOB COLUMN IS NOT A SECOND JOB. The flow body belongs to the job that
+# opened it, so enumeration resumes after the closing brace.
+printf 'on:\n  pull_request:\njobs:\n  wide: {\n  runs-on: ubuntu-26.04\n  }\n  real:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlwide.yml"
+eq "${ adb_wf_jobs "$wfd/mlwide.yml" | grep -c '^JOB	'; }" "2" \
+   "a flow-mapping body at the job column yields TWO jobs, not a phantom third named runs-on"
+has "${ wf mlwide.yml; }" "JOB|2|real" "...and the job after it is still enumerated"
+
+# --- MERGE KEYS ARE REPORTED, NEVER RESOLVED (#291) ---------------------------
+# GitHub Actions implements YAML 1.2, which has no merge key, so a workflow carrying `<<:` is a
+# syntax error there and never runs. RESOLVING it would be the worse bug: the job would gain a
+# readable name: and no disqualifier, so discovery would confidently require a context from a file
+# that cannot report. Flagged instead, so each consumer refuses it in its own direction.
+printf 'on:\n  pull_request:\njobs:\n  base: &base\n    name: Base Name\n    runs-on: ubuntu-26.04\n  alt:\n    <<: *base\n    steps:\n      - run: x\n' > "$wfd/mergekey.yml"
+has   "${ wf mergekey.yml; }" "FLAG|2|merge" "a job merging a <<: key is flagged"
+hasnt "${ wf mergekey.yml; }" "NAME|2|"      "...and NOTHING is inherited from the anchor — not the name"
+hasnt "${ wf mergekey.yml; }" "RUNSON|2|"    "...nor the runner"
+has   "${ wf mergekey.yml; }" "NAME|1|Base Name" "the ANCHOR job itself is unaffected and still reads normally"
+hasnt "${ wf mergekey.yml; }" "FLAG|1|merge"     "...and is not flagged for carrying the anchor"
+# A job that merges AND declares its own properties still reports them: the flag says the file will
+# not run, not that this reader stopped reading.
+printf 'on:\n  pull_request:\njobs:\n  base: &base\n    runs-on: ubuntu-26.04\n  alt:\n    <<: *base\n    runs-on: macos-latest\n' > "$wfd/mergeown.yml"
+has "${ wf mergeown.yml; }" "FLAG|2|merge"        "a merging job is flagged even when it also declares its own keys"
+has "${ wf mergeown.yml; }" "RUNSON|2|macos-latest" "...and its OWN runs-on is still read"
+# ONCE PER JOB, so a consumer accumulator never reads two facts about one job.
+eq "${ adb_wf_jobs "$wfd/mergekey.yml" | grep -c 'merge'; }" "1" "the merge flag is emitted once"
+# THE TRIGGER-LEVEL SPELLING, the other place `<<:` is reachable in what this reader looks at.
+# Ignored, it left the trigger looking UNFILTERED — which is what makes every job in the file
+# required, from a workflow GitHub never runs.
+printf 'on:\n  pull_request:\n    <<: *filters\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mergeon.yml"
+has "${ wfon mergeon.yml; }" "PRFILTER|merge" "a <<: under pull_request is reported as a filter this reader cannot prove"
+
+# THE TWO CHANGES TOGETHER, in one file, because each keeps parser state (WFFLOWEND, the joined
+# text) that the other could inherit. RANGE and STEP are asserted by LINE NUMBER: the join must
+# never renumber, delete, or prejoin WFL, which is what the floor lint's step rules ride on.
+cat > "$wfd/mlboth.yml" <<'EOF'
+on:
+  pull_request:
+    branches: [
+      main
+    ]
+jobs:
+  base: &base
+    name: Base
+    runs-on: ubuntu-26.04
+    steps:
+      - name: v
+        run: bash --version
+  alt:
+    <<: *base
+    steps:
+      - name: w
+        run: echo hi
+EOF
+has "${ wfon mlboth.yml; }" "PRBRANCH|main" "combined: the multi-line filter above anchored jobs still reads"
+has "${ wf mlboth.yml; }"   "RANGE|1|7|12"  "combined: the first job's RANGE is its real physical line span"
+has "${ wf mlboth.yml; }"   "RANGE|2|13|17" "combined: and so is the merging job's"
+has "${ wf mlboth.yml; }"   "STEP|1|1|11"   "combined: a STEP still points at the physical line it starts on"
+has "${ wf mlboth.yml; }"   "FLAG|2|merge"  "combined: the merge flag survives alongside the flow join"
+
 rm -rf "$wfstub" "$wfd"
 
 # THE REAL TREE, cross-checked against an INDEPENDENT counter. Every assertion above runs on a

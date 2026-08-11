@@ -4250,3 +4250,63 @@ limit: none of them is sufficient alone.
              the pre-#305 loop, a content-digest-only identity, a late capture, a by-pathname
              delete, and a neutered fixture.
 - baseline-issue: n/a — this repo IS the baseline; #305 is the tracking issue.
+
+## D56 — the reader JOINS wrapped flow collections and REPORTS merge keys, because resolving them requires MORE
+- date:      2026-08-11
+- category:  general
+- unknown:   #291 asks for two YAML shapes the shared workflow reader (`_ADB_WF_AWK`, D44) cannot
+             read: a flow collection spanning several physical lines, and merge keys (`<<:`), the
+             second "so a job that inherits its configuration through a merge key" has a readable
+             `runs-on`/`name`/`if`. The issue frames both as failing toward UNDER-reporting, "the
+             recoverable one", and asks for a fixture proving the reader "emits the values". Neither
+             the issue nor D44 decides what to do when the syntax in question is one GitHub Actions
+             does not implement, and the merge half additionally leaves override precedence,
+             chained/missing anchors, and inherited `steps` (which have no representable owner in
+             the `RANGE`/`STEP` model) undecided.
+- decision:  (1) Flow collections are JOINED across physical lines by a new `adb_wf_flowspan`, at
+             four call sites — the top-level `on:` value, the `pull_request:` inline mapping, the
+             `branches:`/`types:` values, and a job-key value — and the join is ALL-OR-NOTHING: an
+             unterminated collection is refused and the caller falls back to the opening line alone.
+             (2) Merge keys are REPORTED, NEVER RESOLVED: `FLAG <n> merge` for a job, `PRFILTER
+             merge` under a trigger. Discovery skips them; the floor lint keeps its opposite filter
+             and reports the job under the unmatchable label `<merge key>` — but only where `<none>`
+             would have gone, so a merging job declaring its own `runs-on:` is still judged on it.
+             (3) `<<:` is special ONLY at those two sites; nothing else in the reader treats it
+             specially, and that is stated rather than left as an omission.
+- placement: `scripts/lib/common.sh` (`adb_wf_flowspan`, the `<<:` arms, the header boundary and the
+             corrected record grammar), `scripts/lib/repo-settings.sh` (both verdict halves),
+             `scripts/check-bash-floor.sh` (the `<merge key>` label), fixtures in
+             `scripts/check-common-lib.sh` + `scripts/check-repo-settings.sh` +
+             `scripts/check-bash-floor-guard.sh`, and `docs/repo-settings.md`.
+- reason:    **(1) RESOLVING MERGE KEYS IS THE WORSE BUG, and the issue's premise is what hid that.**
+             GitHub Actions supports anchors and aliases but implements YAML 1.2, which has no merge
+             key; GitHub's stated position is that they provided "what's in the yaml 1.2 spec and
+             merge keys aren't in there". A workflow carrying `<<:` is therefore a syntax error at
+             GitHub and never runs. Resolving it would hand the job a readable `name:` and no
+             disqualifier, so discovery would require a context from a file that cannot report — a
+             phantom needing an admin token to clear. The issue's "both under-report" reading is
+             true of the READER and false of the VERDICT: reproduced before any code changed, a
+             `<<:` job was required as `CHECK alt`, and a wrapped inline job mapping answered
+             `keyed` from an opening brace and was required as `hidden` when its check reports as
+             `Real Name`. Both are the expensive direction. Owner decision, taken on that evidence.
+
+             **(2) ALL-OR-NOTHING IS THE SAFETY PROPERTY, not a simplification.** A partial join is
+             strictly worse than no join: half a `branches:` list reads as a filter naming some
+             branches and not the target, which is byte-for-byte what a filter that genuinely
+             excludes the target looks like. Refusing keeps the malformed file on the behaviour it
+             already had. The guard's failure mode is silence, so it was driven red by a mutation
+             that publishes the partial text.
+
+             **(3) THE INHERITED-`steps` PROBLEM DISSOLVES rather than being solved.** Gap analysis
+             was right that `RANGE`/`STEP` give each physical line ONE owner, so importing an
+             anchor's steps would steal them from the anchor's own job and need a record-grammar
+             redesign. Reporting rather than resolving removes the question entirely — which is
+             also why this is a ~40-line change rather than the ~80-line resolver that was
+             prototyped and discarded.
+
+             **(4) THE JOB-KEY CALL SITE IS NOT DECORATION.** Joining in the ENUMERATION loop is
+             what stops a flow body at the job column being enumerated as a phantom job, and what
+             lets the `keyed` test see the whole mapping. The block-property loop is now skipped for
+             an inline mapping outright: it had been reading flow-syntax fragments (`Real Name,`,
+             `ubuntu-26.04,`) out of the body and emitting them as a check name and a runner label.
+- baseline-issue: n/a — this repo IS the baseline; #291 is the tracking issue.

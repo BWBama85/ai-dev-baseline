@@ -220,6 +220,7 @@ scan_jobs() {
         } else if (tag == "FLAG") {
           j = body; sub(/\t.*$/, "", j); v = body; sub(/^[^\t]*\t/, "", v)
           if (v == "inline") INLINE[j + 0] = 1
+          else if (v == "merge") MERGE[j + 0] = 1
         }
       }
     }
@@ -301,6 +302,17 @@ scan_jobs() {
         # INVISIBLE is the one outcome a floor lint may never produce, so this fails LOUDLY on a
         # form it cannot verify instead of silently not seeing the job at all.
         if (INLINE[j]) ro = "<inline mapping>"
+        # A JOB WHOSE CONFIGURATION ARRIVES THROUGH A MERGE KEY (#291) names the cause instead of
+        # reporting a bare `<none>`, which is the same courtesy `<inline mapping>` already gets: the
+        # label is still unmatchable, so this job still FAILS loudly — invisible is the one outcome
+        # a floor lint may never produce — but the operator is told WHY the runner was unreadable
+        # rather than left to guess which of half a dozen shapes emitted nothing.
+        #
+        # ONLY WHERE `<none>` WOULD HAVE GONE. A job that merges a `<<:` AND declares its own
+        # `runs-on:` has a runner this lint can read, and reading it is the whole question here —
+        # whether GitHub accepts the syntax of the file is a verdict repo-settings.sh makes, not a
+        # reason to fail a proven runner in this lint.
+        if (ro == "" && MERGE[j]) ro = "<merge key>"
         if (ro == "") ro = "<none>"
         # REFUSE TO SERIALIZE A VALUE THIS RECORD CANNOT ENCODE. Unlike the shared reader'"'"'s grammar,
         # this record carries EIGHT fields and its consumer splits them field-by-field, so its free

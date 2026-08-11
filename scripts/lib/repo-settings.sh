@@ -337,7 +337,7 @@ _adb_rs_ref_path() {
 _adb_rs_file_verdict() {
   local file="$1" target="$2" facts tag value tab
   local on_block=0 pr=0 inline_filter=0 pr_types=0 pr_paths=0 pr_br_ignore=0 pr_branches=0
-  local neg_branch=0 have_opened=0 have_sync=0 branch_ok=0
+  local neg_branch=0 have_opened=0 have_sync=0 branch_ok=0 pr_merge=0
 
   facts="$(adb_wf_on "$file")" || {
     printf 'the shared workflow reader failed on this file\n'
@@ -359,6 +359,7 @@ _adb_rs_file_verdict() {
           paths)           pr_paths=1 ;;
           branches-ignore) pr_br_ignore=1 ;;
           branches)        pr_branches=1 ;;
+          merge)           pr_merge=1 ;;
         esac ;;
       PRTYPE)
         case "$value" in opened) have_opened=1 ;; synchronize) have_sync=1 ;; esac ;;
@@ -382,6 +383,15 @@ EOF
   }
 
   if [ "$pr" -eq 0 ]; then printf 'no pull_request trigger\n'; return 0; fi
+  # A MERGE KEY UNDER THE TRIGGER (#291). Checked before every filter rule below, because it is a
+  # statement about the whole FILE rather than about one filter: GitHub Actions implements YAML 1.2,
+  # which has no `<<:`, so a workflow carrying one is a syntax error there and never runs. Whatever
+  # the merged mapping was going to say about `branches:` or `types:` is therefore both unread and
+  # moot. Refusing to prove the file is the recoverable direction — the alternative is a trigger
+  # that looks unfiltered, which is exactly what makes every job in it REQUIRED and never reported.
+  if [ "$pr_merge" -eq 1 ]; then
+    printf 'pull_request merges a <<: key, which GitHub Actions does not support (the workflow does not run)\n'; return 0
+  fi
   if [ "$inline_filter" -eq 1 ]; then
     printf 'pull_request carries an inline flow-mapping filter (cannot prove it runs for every PR)\n'; return 0
   fi
@@ -449,6 +459,13 @@ EOF
     # Precedence matters only for the message: any one of these disqualifies the job, and naming
     # the first reason found is what the operator acts on.
     case "${flags[$i]-}" in
+      # FIRST, because it is the most fundamental of the disqualifiers: the others say this job's
+      # check name cannot be PROVEN, while this one says the workflow does not RUN. GitHub Actions
+      # ships YAML 1.2, which has no merge key, so `<<:` is a syntax error there. Requiring anything
+      # from such a file — under the job key, or under a name resolved from the anchor — is a context
+      # that never reports and takes an admin token to clear (#291).
+      *" merge "*)
+        printf 'SKIP\t%s\tmerges a <<: key, which GitHub Actions does not support (the workflow does not run)\n' "${key[$i]}" ;;
       *" uses "*)
         printf 'SKIP\t%s\tcalls a reusable workflow (its check names come from the callee)\n' "${key[$i]}" ;;
       *" if "*)
