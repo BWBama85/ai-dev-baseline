@@ -9,6 +9,65 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The shared workflow reader reads flow collections across physical lines, and reports merge keys
+  instead of ignoring them** (#291).
+
+  `adb_wf_on` / `adb_wf_jobs` (`scripts/lib/common.sh`) read one physical line per value, so two YAML
+  shapes went unread. Both were deferred from the #262/#102 run, where independent review found them.
+  Only the first is valid GitHub Actions YAML; the second is syntax Actions rejects, which is what
+  decides how it must be handled.
+
+  - **A flow collection spanning several lines** — `branches: [` / `main` / `]`, a wrapped `on: [`,
+    a `pull_request: {` filter, or an inline job mapping — is valid YAML that GitHub runs, and is
+    now joined before it is parsed by a new `adb_wf_flowspan`. The join is quote-, escape- and
+    comment-aware, and **all-or-nothing**: an unterminated collection is read from its opening line
+    alone, because a *partial* list is worse than none (half a `branches:` list is indistinguishable
+    from one that genuinely excludes the target). The record grammar's no-newline invariant is
+    unchanged; what changed is why it holds — each line break becomes one space, except a break
+    escaped by a trailing backslash inside a double-quoted scalar, which folds to nothing. Both are
+    YAML's own rules.
+  - **Merge keys (`<<:`) are reported, never resolved.** GitHub Actions supports anchors and aliases
+    but implements YAML **1.2**, which has no merge key — GitHub's own position is that they shipped
+    "what's in the yaml 1.2 spec and merge keys aren't in there" — so a workflow carrying one is a
+    syntax error there and never runs. The issue asked for them to be *resolved*; that is the worse
+    bug, because a resolved job gains a readable `name:` and no disqualifier, so discovery would
+    require a context from a file GitHub refuses to run. Reported at **two locations × two
+    spellings** — a job property and a `pull_request:` filter key, each in block and inline flow
+    form — with the inline pair tested depth-aware rather than by substring.
+  - **The discovery verdict is file-wide, and getting that wrong recreated the bug one job over.**
+    The reader reports `merge` per job, because the floor lint needs to know *which* job it cannot
+    read a runner for. Discovery must not: one merge key stops the whole workflow, so skipping only
+    the merging job left its siblings required from a file that never runs. The first cut did
+    exactly that, and its fixture asserted the phantom (`Base Name`) as the correct answer.
+  - **The issue's premise was half wrong, and the wrong half is the expensive one.** It records both
+    shapes as failing toward *under*-reporting, "the recoverable one". True of the reader; false of
+    the verdict. Reproduced before any code changed: a `<<:` job was required as `CHECK alt` — a
+    context whose real check name is the anchor's and which may never run at all — and a wrapped
+    inline job mapping emitted `keyed` from an opening brace, requiring `hidden` when the check
+    reports as `Real Name`. Both are phantom required contexts, which deadlock every PR.
+  - **Consumer verdicts move in both directions**, each pinned by its own fixture: discovery now
+    keeps a job whose `branches:` list wraps (it used to drop every job in the file) and skips the
+    two phantom cases above. The floor lint keeps the opposite filter — it still reports such a job
+    rather than skipping it — and now names the cause, `runs on '<merge key>'` instead of an
+    uninformative `'<none>'`, but only where `<none>` would have gone: a merging job that declares
+    its own `runs-on:` is still judged on that label.
+  - **The new guards were observed failing**, and the ones that could not be were rewritten. The
+    assertions encoding the fix were driven red against a copy of the pre-fix tree; their failure
+    output is the reproduction record (`JOB|2|runs-on` for the phantom job, `NAME|1|Real Name,` for
+    the flow-syntax fragment, `got [Base Name|alt|]` for the phantom context). The rest are invariant
+    guards that pass both ways by design — `RANGE`/`STEP` line numbers, the anchor job, and the floor
+    lint's verdict, which was already correctly red and gained only a better diagnosis.
+
+    Where no pre-fix run exercises a guard, a **targeted mutation of the single line it pins** stands
+    in; ten are driven red that way. Independent review found four assertions that pinned nothing —
+    a `m = WFFLOWEND` claim the loop satisfied on indent anyway, a `hasnt` whose substring could not
+    match the un-stripped comment it was meant to catch, a dedup guard whose fixture had only one key
+    to deduplicate, and a job-count guard whose fixture body was indented clear of the job column.
+    Each was rewritten until its mutation went red.
+  - **Also corrects the record grammar** in `common.sh`'s header, which had drifted: `STEP` and the
+    `keyed` / `alias` / `blockname` / `blockrunner` flags were emitted by the code and absent from the
+    only place a consumer author could learn they exist.
+
 - **`/cleanup` deletes state artifacts by identity, not by pathname, so a run that recreates the
   same name between the pre-delete scan and the `rm` keeps its files** (#305).
 

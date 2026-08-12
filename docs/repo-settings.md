@@ -54,7 +54,12 @@ Skipped on purpose:
 - a job whose `name:` interpolates `${{ … }}` — not statically knowable;
 - `pull_request:` narrowing `types:` to anything that lacks **both** `opened` and `synchronize` —
   the merge-cleanup workflow (`types: [closed]`) is the classic trap: it only runs *after* a PR
-  closes, so as a required context it would sit "waiting" on every open PR forever.
+  closes, so as a required context it would sit "waiting" on every open PR forever;
+- **every job in a workflow that carries a YAML merge key** (`<<:`) anywhere — in a job, or on the
+  `pull_request:` trigger, in either the block or the inline flow spelling. GitHub Actions supports
+  anchors and aliases but implements YAML **1.2**, which has no merge key, so a workflow using one
+  is a syntax error at GitHub and never runs at all. The verdict is **file-wide** for that reason:
+  skipping only the merging job leaves its siblings required from a file that never reports (#291).
 
 Discovery also refuses a `pull_request:` written as an inline flow mapping carrying a filter
 (`pull_request: {types: [closed]}`) and one whose `branches:` list uses **negative** patterns
@@ -68,11 +73,39 @@ than one (a two-space `on:` block above a four-space `jobs:` block is valid YAML
 Block sequences are read at both spellings — indented under their key, and at the key's own column
 (`branches:` followed by `- main` at the same indent is valid YAML, and GitHub runs it).
 
+Flow collections are read across **physical lines** (#291). A `branches:`, `types:` or `on:` list
+wrapped over several lines — or an inline job/trigger mapping written the same way — is joined
+before it is parsed, so
+
+```yaml
+on:
+  pull_request:
+    branches: [
+      main
+    ]
+```
+
+proves the target branch instead of reporting a filter with no entries. The join is quote-, escape-
+and comment-aware — a line break folds to a space, and a break **escaped** by a trailing backslash
+inside a double-quoted scalar folds to nothing, which are both YAML's own rules — and it is
+**all-or-nothing**: an unterminated collection is read from its opening line alone, because half a
+`branches:` list is indistinguishable from one that genuinely excludes the target.
+
 The reader is **not** a YAML parser, and the boundary is stated rather than left to be discovered:
-a flow collection spanning several physical lines is read only from its opening line, merge keys
-(`<<:`) are not resolved, and a block/folded scalar (`name: >-`) is reported as *unreadable* rather
-than approximated. Every one of those under-reports — the job is skipped, never required under a
-name that cannot report.
+an unterminated flow collection is read from its opening line, a block/folded scalar (`name: >-`) is
+reported as *unreadable* rather than approximated, and a **merge key is reported, never resolved**.
+Those first two under-report — the job is skipped, never required under a name that cannot report.
+
+Merge keys are worth spelling out, because two tempting fixes are both wrong. **Resolving** `<<: *base`
+would give the job a readable `name:` and no disqualifier, so discovery would require it **more**
+confidently — a required context on a workflow GitHub refuses to run, which never reports and takes
+an admin token to clear. And skipping only the **merging job** leaves its siblings required from the
+same unparseable file, which is the identical phantom one job over. So the reader reports the fact
+per job (`FLAG <n> merge`, `PRFILTER merge`) and discovery turns it into a file-wide skip.
+
+The floor lint takes the opposite view of the same flag, as it does for `inline`: it reports such a
+job under the unmatchable runner label `<merge key>` rather than letting it go silently absent —
+which is why the reader reports per job rather than emitting one file-level fact.
 
 This replaced a real fail-open. The parser used to pin job keys to exactly two spaces and job
 properties to four, so a uniform four-space workflow was reported as

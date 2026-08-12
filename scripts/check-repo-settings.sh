@@ -477,6 +477,95 @@ printf 'on:\n- push\n- pull_request\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' >
 disco main
 eq "${ ctx; }" 'a|' "an indentationless block-sequence 'on:' is recognized"
 
+# ==================== #291: multi-line flow collections, and merge keys ====================
+# The reader's own contract is asserted in check-common-lib.sh. What is asserted HERE is the half
+# that check cannot show: that discovery's VERDICT moves, and in which direction. These fail in
+# BOTH directions, which is why each gets its own fixture rather than one representative case.
+
+# (a) UNDER-REQUIRING. A `branches:`/`types:` list wrapped across lines yielded the filter record
+#     with NO entries, so the filter "did not provably include main" and every job in the file
+#     stopped being required — `apply` reporting success while gating nothing, which is the failure
+#     `required-drift` exists to catch arriving through the one input it cannot see.
+wf_reset
+printf 'name: A\non:\n  pull_request:\n    branches: [\n      main\n    ]\njobs:\n  wrapped:\n    runs-on: ubuntu-26.04\n' > "$WF/mlbranch.yml"
+disco main
+eq "${ ctx; }" 'wrapped|' "a branches: list wrapped across lines proves the target and KEEPS the job"
+hasnt "$ERR" "does not provably include" "...so the file is no longer skipped for a filter it could not read"
+
+wf_reset
+printf 'name: B\non:\n  pull_request:\n    types: [\n      opened,\n      synchronize\n    ]\njobs:\n  wrapped:\n    runs-on: ubuntu-26.04\n' > "$WF/mltypes.yml"
+disco main
+eq "${ ctx; }" 'wrapped|' "a types: list wrapped across lines proves opened+synchronize and keeps the job"
+
+#     The top-level trigger list, whose closing bracket sits at column 0.
+wf_reset
+printf 'name: C\non: [\n  push,\n  pull_request\n]\njobs:\n  wrapped:\n    runs-on: ubuntu-26.04\n' > "$WF/mlon.yml"
+disco main
+eq "${ ctx; }" 'wrapped|' "a top-level 'on: [' wrapped across lines is recognized as a PR trigger"
+hasnt "$ERR" "no pull_request trigger" "...rather than reported as having none"
+
+# (b) OVER-REQUIRING, which is the expensive direction and the one the issue did not predict. An
+#     inline flow-mapping filter spanning lines carried no filter word on its opening line, so the
+#     trigger read as UNFILTERED and its jobs were required — from a workflow that runs only on
+#     `closed`, i.e. contexts that sit "expected — waiting" on every open PR forever.
+wf_reset
+printf 'name: D\non:\n  pull_request: {\n    types: [closed]\n  }\njobs:\n  never-on-open:\n    runs-on: ubuntu-26.04\n' > "$WF/mlinlinemap.yml"
+disco main
+eq "${ ctx; }" '' "a wrapped inline flow-mapping filter is refused, not read as an unfiltered trigger"
+has "$ERR" "inline flow-mapping filter" "...naming the shape it cannot prove"
+
+#     And an inline JOB mapping spanning lines: `keyed` was decided from the opening brace, so a
+#     mapping whose `name:` sat one line down was required under its KEY while the check reports
+#     under its NAME.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  named: {\n    name: Real Name,\n    runs-on: ubuntu-26.04\n  }\n' > "$WF/mljob.yml"
+disco main
+eq "${ ctx; }" '' "a wrapped inline job carrying a name: is skipped, not required under its key"
+has "$ERR" "skipping job named" "...by name"
+
+# (c) MERGE KEYS. GitHub Actions ships YAML 1.2, which has no `<<:`, so a workflow carrying one is a
+#     syntax error there and never runs. `<<:` was read as an ordinary property and ignored, so the
+#     job was required under its key — a context that never reports, from a file that never runs.
+#     RESOLVING the merge would have been worse: the job gains a readable `name:` and no
+#     disqualifier, so discovery would require it MORE confidently.
+#     THE VERDICT IS FILE-WIDE, NOT PER-JOB, and the first cut of this fixture asserted the bug as
+#     correct: it required `Base Name` — the ANCHOR job — from a file GitHub cannot parse. One merge
+#     key stops the WHOLE workflow running, so every job in it is unreportable; skipping only the
+#     merging job recreates the phantom one job over. Found by independent review.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  base: &base\n    name: Base Name\n    runs-on: ubuntu-26.04\n  alt:\n    <<: *base\n' > "$WF/mergekey.yml"
+disco main
+eq "${ ctx; }" '' "ONE merge key disqualifies EVERY job in the file, including the anchor job"
+hasnt "${ ctx; }" 'Base Name' "...so the anchor's name never becomes a required context"
+hasnt "${ ctx; }" 'alt'       "...and neither does the merging job's key"
+has "$ERR" "skipping job base" "both jobs are skipped by name..."
+has "$ERR" "skipping job alt"  "...the merging one included"
+has "$ERR" "the whole file does not run" "...naming the file-wide reason"
+
+#     A file with a merge key must not poison a DIFFERENT file. The verdict is per workflow file, so
+#     a sibling workflow with no merge key keeps its contexts.
+printf 'name: Clean\non:\n  pull_request:\njobs:\n  untouched:\n    runs-on: ubuntu-26.04\n' > "$WF/clean.yml"
+disco main
+eq "${ ctx; }" 'untouched|' "a merge key in ONE file leaves a sibling workflow's jobs required"
+
+#     The INLINE spellings, which the block arms missed entirely.
+wf_reset
+printf 'on:\n  pull_request:\njobs:\n  alt: {<<: *base, runs-on: ubuntu-26.04}\n' > "$WF/mergeinline.yml"
+disco main
+eq "${ ctx; }" '' "an INLINE job mapping carrying <<: is not required under its key"
+wf_reset
+printf 'on:\n  pull_request: {<<: *filters}\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/mergeoninline.yml"
+disco main
+eq "${ ctx; }" '' "an INLINE trigger mapping carrying <<: refuses the file, not reads as unfiltered"
+
+#     The trigger-level spelling: ignored, it left the trigger looking unfiltered, which is what
+#     made every job in the file required.
+wf_reset
+printf 'on:\n  pull_request:\n    <<: *filters\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$WF/mergeon.yml"
+disco main
+eq "${ ctx; }" '' "a <<: under pull_request refuses the whole file rather than reading as unfiltered"
+has "$ERR" "does not support" "...naming the unsupported syntax"
+
 # ============================ #102: fail loud, never a silent clean scan ============================
 # "This repo has no CI" (#24, legitimate, exit 0) and "this parser went blind" (a failure) used to
 # be the same observable. Every workflow has an `on:` key and a `jobs:` block with at least one job

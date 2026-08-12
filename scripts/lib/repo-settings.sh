@@ -337,7 +337,7 @@ _adb_rs_ref_path() {
 _adb_rs_file_verdict() {
   local file="$1" target="$2" facts tag value tab
   local on_block=0 pr=0 inline_filter=0 pr_types=0 pr_paths=0 pr_br_ignore=0 pr_branches=0
-  local neg_branch=0 have_opened=0 have_sync=0 branch_ok=0
+  local neg_branch=0 have_opened=0 have_sync=0 branch_ok=0 pr_merge=0
 
   facts="$(adb_wf_on "$file")" || {
     printf 'the shared workflow reader failed on this file\n'
@@ -359,6 +359,7 @@ _adb_rs_file_verdict() {
           paths)           pr_paths=1 ;;
           branches-ignore) pr_br_ignore=1 ;;
           branches)        pr_branches=1 ;;
+          merge)           pr_merge=1 ;;
         esac ;;
       PRTYPE)
         case "$value" in opened) have_opened=1 ;; synchronize) have_sync=1 ;; esac ;;
@@ -382,6 +383,15 @@ EOF
   }
 
   if [ "$pr" -eq 0 ]; then printf 'no pull_request trigger\n'; return 0; fi
+  # A MERGE KEY UNDER THE TRIGGER (#291). Checked before every filter rule below, because it is a
+  # statement about the whole FILE rather than about one filter: GitHub Actions implements YAML 1.2,
+  # which has no `<<:`, so a workflow carrying one is a syntax error there and never runs. Whatever
+  # the merged mapping was going to say about `branches:` or `types:` is therefore both unread and
+  # moot. Refusing to prove the file is the recoverable direction — the alternative is a trigger
+  # that looks unfiltered, which is exactly what makes every job in it REQUIRED and never reported.
+  if [ "$pr_merge" -eq 1 ]; then
+    printf 'pull_request merges a <<: key, which GitHub Actions does not support (the workflow does not run)\n'; return 0
+  fi
   if [ "$inline_filter" -eq 1 ]; then
     printf 'pull_request carries an inline flow-mapping filter (cannot prove it runs for every PR)\n'; return 0
   fi
@@ -445,10 +455,38 @@ EOF
   [ "$jobs_block" -eq 1 ] || return 2
   [ "$count" -gt 0 ] || return 3
 
+  # A MERGE KEY ANYWHERE IN THE FILE DISQUALIFIES EVERY JOB IN IT, and this is a file-wide verdict
+  # rather than a per-job one because the fact is file-wide: GitHub Actions implements YAML 1.2,
+  # which has no `<<:`, so ONE merge key is a syntax error that stops the WHOLE workflow running.
+  #
+  # Skipping only the merging job recreated the exact phantom this change exists to remove, one job
+  # over. For `base: &base` + `alt: <<: *base`, skipping `alt` alone left `Base Name` in the required
+  # set — a context from a workflow that never runs, which never reports and needs an admin token to
+  # clear. The reader is right to report `merge` per job (the floor lint needs it that way); the
+  # VERDICT is this file's to make, and it belongs at file scope. Found by independent review, which
+  # also caught that the fixture asserted the phantom as correct.
+  local any_merge=0
+  for (( i = 1; i <= count; i++ )); do
+    case "${flags[$i]-}" in *" merge "*) any_merge=1; break ;; esac
+  done
+  if [ "$any_merge" -eq 1 ]; then
+    for (( i = 1; i <= count; i++ )); do
+      printf 'SKIP\t%s\tis in a workflow that merges a <<: key, which GitHub Actions does not support (the whole file does not run)\n' "${key[$i]}"
+    done
+    return 0
+  fi
+
   for (( i = 1; i <= count; i++ )); do
     # Precedence matters only for the message: any one of these disqualifies the job, and naming
     # the first reason found is what the operator acts on.
     case "${flags[$i]-}" in
+      # FIRST, because it is the most fundamental of the disqualifiers: the others say this job's
+      # check name cannot be PROVEN, while this one says the workflow does not RUN. GitHub Actions
+      # ships YAML 1.2, which has no merge key, so `<<:` is a syntax error there. Requiring anything
+      # from such a file — under the job key, or under a name resolved from the anchor — is a context
+      # that never reports and takes an admin token to clear (#291).
+      *" merge "*)
+        printf 'SKIP\t%s\tmerges a <<: key, which GitHub Actions does not support (the workflow does not run)\n' "${key[$i]}" ;;
       *" uses "*)
         printf 'SKIP\t%s\tcalls a reusable workflow (its check names come from the callee)\n' "${key[$i]}" ;;
       *" if "*)
