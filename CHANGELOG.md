@@ -58,6 +58,22 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     slice and is tracked as #326: it needs a general backup primitive that does not exist yet
     (`install.sh`'s pattern is `adb_link`'s, and is symlink-shaped).
 
+  A `--apply` run refuses a **symlinked ancestor** as well as a symlinked target: `mkdir -p` accepts
+  an existing symlink as the directory, so a repository shipping `.ai-dev-baseline` as one could
+  otherwise make an approved write land outside the project without winning any race. The content
+  write itself happens under `noclobber` rather than into a placeholder that is then reopened.
+
+  Whole-artifact comparison includes **symlinks and their targets**, not just regular files — a
+  project skill carrying the baseline's files plus its own symlink must not be recommended for
+  removal. A vendored `.<agent>/scripts/lib` is recognised as the single `lib` artifact the
+  manifest ships rather than fragmenting into a dozen escalations. The catch-all scan is
+  NUL-delimited, so a newline-bearing filename reaches the record-safety check whole instead of
+  being split into invented paths. The plan renders untrusted paths through `adb_display_value`,
+  since a legal filename may carry terminal control bytes. `pin-drift` revalidates a commit it
+  **read** — `pin-render`'s validation governs what this tool writes and says nothing about a
+  hand-edited pin, and one carrying `HEAD` produced an empty `HEAD..HEAD` range that reports no
+  drift at all.
+
   Every load-bearing decision carries a mutation in `check-adopt.sh`'s `--mutation` harness that
   must make the suite go red **on its own named assertion** — the standing-test form of "observed
   failing", rather than a claim in a commit message that nothing can re-run.

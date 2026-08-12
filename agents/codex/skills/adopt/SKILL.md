@@ -340,20 +340,47 @@ With `--apply`, and **only after showing the operator each artifact and getting 
 #
 # `set -o noclobber` + `>` is the atomic create-or-fail: the shell refuses if the path exists, in
 # one operation, and it refuses a symlink target as well. A subshell so the option does not leak.
+#
+# AND THE CONTENT IS WRITTEN UNDER noclobber, not into a placeholder created under it. Creating an
+# empty file and then reopening it with `cat > "$2"` gives back the whole race: between the two
+# commands another process can replace the path with a symlink, and the second redirect — which is
+# NOT protected — follows it out of the project. One redirect, one guarantee.
+#
+# EVERY PARENT MUST BE A REAL DIRECTORY, checked before the write. `mkdir -p` accepts an existing
+# SYMLINK as the directory, so a repository that ships `.ai-dev-baseline` as a symlink makes an
+# approved `--apply` write `upstream.toml` through it to anywhere on the filesystem — without
+# needing to win any race at all. `-L` on the final component does not see this; the ancestor is
+# where it hides.
+adopt_parent_ok() {  # <dest> — every component from $PROJECT down to the parent must be a real dir
+  local d; d="$(dirname "$1")"
+  while [ "$d" != "$PROJECT" ] && [ "$d" != "/" ] && [ "$d" != "." ]; do
+    if [ -L "$d" ]; then echo "REFUSE: $d is a symlink — /adopt will not write through a symlinked ancestor"; return 1; fi
+    d="$(dirname "$d")"
+  done
+  [ -L "$PROJECT" ] && { echo "REFUSE: the project root itself is a symlink"; return 1; }
+  return 0
+}
 adopt_create() {  # <src> <dest> <label>
+  adopt_parent_ok "$2" || return 0
   if [ -e "$2" ] || [ -L "$2" ]; then
     echo "SKIP: $3 already exists at $2 — /adopt never overwrites; diff it against $1 yourself"
     return 0
   fi
-  if ( set -o noclobber; : > "$2" ) 2>/dev/null; then
-    cat "$1" > "$2" && echo "wrote $2"
+  if ( set -o noclobber; cat "$1" > "$2" ) 2>/dev/null; then
+    echo "wrote $2"
   else
     echo "SKIP: $3 could not be created atomically at $2 (it appeared while /adopt was running) — nothing was overwritten"
   fi
 }
 adopt_create ".codex/state/adopt-agents.toml" "$PROJECT/agents.toml" "agents.toml"
-mkdir -p "$PROJECT/.ai-dev-baseline"
-adopt_create ".codex/state/adopt-upstream.toml" "$PROJECT/.ai-dev-baseline/upstream.toml" "the upstream pin"
+# The parent check runs BEFORE mkdir, so a pre-existing symlinked `.ai-dev-baseline` is refused
+# rather than silently accepted by `mkdir -p` and then written through.
+if [ -L "$PROJECT/.ai-dev-baseline" ]; then
+  echo "REFUSE: $PROJECT/.ai-dev-baseline is a symlink — /adopt will not write the pin through it"
+else
+  mkdir -p "$PROJECT/.ai-dev-baseline"
+  adopt_create ".codex/state/adopt-upstream.toml" "$PROJECT/.ai-dev-baseline/upstream.toml" "the upstream pin"
+fi
 ```
 
 Then, and only with the operator's agreement, the repo-settings half:

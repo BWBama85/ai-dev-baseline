@@ -236,6 +236,81 @@ eq "$(PATH="$CMPDIR:$PATH" cmp -s /dev/null /dev/null; echo $?)" 2 "the cmp stub
 eq "$(verdict skill yes "$(bash "$AD" delta skill "$S1" "$WORK/nope")" no)" escalate \
    "an unreadable baseline copy escalates rather than recommending anything"
 
+# --- 2c. review findings: symlinks, the vendored lib, filename safety, escaping, pin reads -------
+# Six defects an independent review found after the suite above was green. Each is asserted from the
+# side that costs something, and each carries a mutation row.
+
+# A SYMLINK IS PART OF A SKILL. `find -type f` omitted them, so a project skill holding the
+# baseline's regular files PLUS its own symlink compared `same` → `remove` → the symlink is deleted.
+# Identical class to the `helper.sh` bug this comparison was widened for, one step further out.
+SL="$WORK/skill-symlink"; mkdir -p "$SL/proj" "$SL/base" "$SL/target"
+printf 'body\n' > "$SL/proj/SKILL.md"; printf 'body\n' > "$SL/base/SKILL.md"
+printf 'data\n' > "$SL/target/real.txt"
+if ln -s "$SL/target/real.txt" "$SL/proj/extra" 2>/dev/null; then
+  eq "$(bash "$AD" delta skill "$SL/proj" "$SL/base")" differs \
+     "a project-only SYMLINK makes a skill differ (it must not be recommended for removal)"
+  ln -s "$SL/target/real.txt" "$SL/base/extra"
+  eq "$(bash "$AD" delta skill "$SL/proj" "$SL/base")" same "...and matching symlinks are same"
+  rm -f "$SL/base/extra"; ln -s "$SL/target/other.txt" "$SL/base/extra"
+  eq "$(bash "$AD" delta skill "$SL/proj" "$SL/base")" differs \
+     "...while the same NAME pointing somewhere else differs — the target is part of the identity"
+else
+  check_note "SKIP: symlinks unavailable here"; ok; ok; ok
+fi
+
+# A VENDORED `scripts/lib` IS ONE ARTIFACT, matching the single `lib` identity `shipped` emits.
+# Without this, the flat file loop skipped the directory and the catch-all emitted its ~14 members
+# as `other` — so a byte-identical vendored baseline library, the clearest possible `remove`, came
+# out as fourteen escalations that could never join against anything.
+VL="$WORK/vendored"; mkdir -p "$VL/.claude/scripts/lib"
+for f in common.sh cleanup-lib.sh roadmap-lib.sh; do printf 'x\n' > "$VL/.claude/scripts/lib/$f"; done
+vl_scan="$(bash "$AD" scan "$VL" --agents claude)"
+has   "$vl_scan" "lib${TAB}.claude/scripts/lib${TAB}lib${TAB}claude" "a vendored scripts/lib is emitted as ONE lib artifact"
+hasnt "$vl_scan" "other${TAB}.claude/scripts/lib/common.sh"          "...and its members are NOT re-emitted as individual escalations"
+
+# A NEWLINE-BEARING FILENAME must reach `_ad_emit` WHOLE. Split on newlines it became two or more
+# INVENTED paths, emitted as confident `other` records — so the record format's safety check, which
+# exists for exactly this input, never saw the real name and could not fire.
+NL="$WORK/newline-name"; mkdir -p "$NL/.claude"
+if printf 'x\n' > "$NL/.claude/$(printf 'we\nird').md" 2>/dev/null; then
+  nl_scan="$(bash "$AD" scan "$NL" --agents claude)"
+  has   "$nl_scan" "warning${TAB}" "a newline-bearing filename yields the promised warning"
+  hasnt "$nl_scan" "other${TAB}.claude/ird.md" "...not an INVENTED path that does not exist"
+else
+  check_note "SKIP: this filesystem refuses a newline in a filename"; ok; ok
+fi
+
+# THE PLAN RENDERS UNTRUSTED PATHS. `_ad_emit` accepts every byte but the two delimiters, so a legal
+# filename may carry a carriage return or an ANSI escape — and the plan goes straight to a terminal.
+cr_plan="$(printf 'keep\trootdoc\t%s\treason\n' "$(printf 'a\rEVIL')" | bash "$AD" plan)"
+hasnt "$cr_plan" "$(printf 'a\rEVIL')" "the plan must not print a raw control byte from a scanned path"
+has   "$cr_plan" 'a\rEVIL'             "...it renders the path instead"
+
+# `pin-drift` REVALIDATES A COMMIT IT READ. pin-render's validation governs what this tool WRITES
+# and says nothing about a pin that already existed or was hand-edited. `HEAD` produced
+# `git log HEAD..HEAD` — an empty range reporting no drift at all, the most reassuring wrong answer.
+PD="$WORK/pin-handedited"; mkdir -p "$PD"
+printf '[upstream]\nversion = "v1"\ncommit  = "HEAD"\nadopted = "2026-08-12"\nstack   = "shell"\nagents  = []\n' > "$PD/pin.toml"
+eq "$(bash "$AD" pin-drift "$PD/pin.toml" "$ROOT" >/dev/null 2>&1; echo $?)" 2 "pin-drift refuses a pin whose commit is HEAD"
+printf '[upstream]\nversion = "v1"\ncommit  = "abcdef1"\nadopted = "2026-08-12"\nstack   = "shell"\nagents  = []\n' > "$PD/pin.toml"
+eq "$(bash "$AD" pin-drift "$PD/pin.toml" "$ROOT" >/dev/null 2>&1; echo $?)" 2 "pin-drift refuses an ABBREVIATED commit read from a pin"
+
+# THE IGNORE AXIS RUNS WHEN THE AGENT DIR DOES NOT EXIST YET — the run that most needs the warning.
+# Its probes use `--no-index` precisely so they answer for a path that does not exist.
+NOD="$WORK/no-agent-dir"; git init -q "$NOD" >/dev/null 2>&1
+has "$(bash "$AD" hygiene "$NOD" --agents claude | grep '^ignore-risk' || true)" "is NOT gitignored" \
+    "the ignore axis runs even when .<agent>/ does not exist yet"
+
+# THE DEFAULT AGENT SET IS DERIVED from the installed baseline, not a third hardcoded literal.
+# Asserted structurally: every agent the baseline ships must be scannable by default.
+def_agents="$(bash "$AD" scan "$WORK" 2>&1; echo rc=$?)"
+has "$def_agents" "rc=0" "a default (no --agents) scan resolves its agent set without error"
+for a_dir in "$ROOT"/agents/*/; do
+  a_tok="${a_dir%/}"; a_tok="${a_tok##*/}"
+  yes "$(bash "$AD" scan "$WORK" --agents "$a_tok" >/dev/null 2>&1; echo $?)" \
+      "the baseline-shipped agent '$a_tok' is a valid scan target"
+done
+
 # --- 3. shipped: derived from the real manifest, never a second list -----------------------------
 # The value of `shipped` is that it cannot disagree with install.sh about what the baseline
 # installs. Asserting a hardcoded expected list here would recreate exactly the second list the
@@ -732,6 +807,27 @@ else
   eq "$(cat "$A2/proj/agents.toml")" "THE OPERATORS OWN MANIFEST" "apply REFUSES to overwrite an existing agents.toml"
   eq "$(cat "$A2/proj/.ai-dev-baseline/upstream.toml")" "THE OPERATORS OWN PIN" "apply REFUSES to overwrite an existing pin"
 
+  # Case 3b: a SYMLINKED PARENT. `mkdir -p` accepts an existing symlink as the directory, so a
+  # repository shipping `.ai-dev-baseline` as a symlink makes an approved --apply write the pin
+  # through it to anywhere on the filesystem — no race required, and `-L` on the final component
+  # cannot see it. Review found this one; it was the only P1 in the set.
+  A3b="$WORK/apply-symlink-parent"; mkdir -p "$A3b/state" "$A3b/proj" "$A3b/elsewhere"
+  printf 'PROPOSED_MANIFEST\n' > "$A3b/state/adopt-agents.toml"
+  printf 'PROPOSED_PIN\n'      > "$A3b/state/adopt-upstream.toml"
+  ln -s "$A3b/elsewhere" "$A3b/proj/.ai-dev-baseline"
+  ( cd "$A3b" && PROJECT="$A3b/proj" bash -c "$(printf '%s' "$APPLY" | sed "s#{{STATE_DIR}}#$A3b/state#g")" ) >/dev/null 2>&1
+  if [ -e "$A3b/elsewhere/upstream.toml" ]; then
+    bad "apply wrote the pin THROUGH a symlinked parent to $A3b/elsewhere — outside the project"
+  else ok; fi
+
+  # Case 4: the CONTENT write must happen under noclobber, not into a placeholder that is then
+  # reopened. Asserted on the SOURCE rather than by racing it: a race is not reproducible in a
+  # test, and the property is structural — one redirect, not two.
+  case "$APPLY" in
+    *'set -o noclobber; cat '*) ok ;;
+    *) bad "the apply block creates a placeholder under noclobber and reopens it — between the two commands the path can be replaced, and the second redirect is unprotected" ;;
+  esac
+
   # Case 3: a DANGLING SYMLINK at the target. `[ -e ]` reports it ABSENT (it follows the link and
   # finds nothing), so a `[ -e ] && … || cp` would write THROUGH it to an arbitrary path outside
   # the project. `-L` is what sees a symlink whether or not it resolves. Review caught this one.
@@ -915,6 +1011,27 @@ _mut_one() {  # <index>
       "${MUT_WIT[$i]}" > "$copy/verdict"
   fi
 }
+
+mut skill-ignores-symlinks \
+    'find . \( -type f -o -type l \) -print 2>/dev/null' \
+    'find . -type f -print 2>/dev/null' \
+    'a project-only SYMLINK makes a skill differ'
+mut scan-drops-vendored-lib \
+    '[ -d "$root/.$a/scripts/lib" ] && _ad_emit lib ".$a/scripts/lib" lib "$a"' \
+    ':' \
+    'a vendored scripts/lib is emitted as ONE lib artifact'
+mut plan-prints-raw-path \
+    'printf '"'"'%s. %s (%s) — %s\n'"'"' "$n" "$(adb_display_value "$adoptpath")" "$kind" "$reason"' \
+    'printf '"'"'%s. %s (%s) — %s\n'"'"' "$n" "$adoptpath" "$kind" "$reason"' \
+    'must not print a raw control byte'
+mut pin-drift-trusts-the-file \
+    '  _ad_check_commit "$commit" pin-drift' \
+    '  :' \
+    'pin-drift refuses a pin whose commit is HEAD'
+mut ignore-axis-needs-agent-dir \
+    '    _ad_ignore_axis "$root" "$a"' \
+    '    [ -d "$root/.$a" ] && _ad_ignore_axis "$root" "$a"' \
+    'runs even when .<agent>/ does not exist yet'
 
 run_mutations() {
   local i n name verdict why applied=0 red=0 running=0 jobs

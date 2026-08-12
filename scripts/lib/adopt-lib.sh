@@ -120,6 +120,53 @@ _ad_emit() {  # _ad_emit <kind> <field>… — print the record, or a warning na
   printf '\n'
 }
 
+# --- object-name validation -----------------------------------------------------------------------
+# The pin's `commit` is load-bearing — `pin-drift` feeds it to git — so it is validated both when
+# WRITTEN and when READ, and the rule lives in ONE place. It was previously spelled out twice, which
+# is the duplication this repo treats as a blocking review finding; it also made the two halves
+# independently mutable, so a harness row that disabled one silently left the other catching the
+# same inputs and the guard looked covered when it was not.
+#
+# FULL LENGTH, not merely "long enough": the pin's whole claim is that it recovers the inherited
+# tree EXACTLY, and an abbreviation is resolvable only while it stays unambiguous in a growing
+# repository — precisely the window the pin exists to outlive. 40 hex for SHA-1, 64 for SHA-256.
+_ad_check_commit() {  # <commit> <who>
+  local c="$1" who="$2"
+  case "$c" in
+    "") die "$who: <commit> must not be empty" ;;
+    *[!0-9a-fA-F]*) die "$who: <commit> must be a hex object name: $(adb_tsv_field_display "$c")" ;;
+  esac
+  case "${#c}" in
+    40|64) ;;
+    *) die "$who: <commit> must be a FULL object name (40 or 64 hex), not abbreviated: $c" ;;
+  esac
+}
+
+# --- the default agent set ------------------------------------------------------------------------
+# THE DEFAULT IS DERIVED FROM THE INSTALLED BASELINE, never a literal. `shipped` already reads its
+# agent set from `<baseline>/agents/*/` — the one home `docs/adding-an-agent.md` says you extend —
+# while `scan`, `hygiene` and `pin-render` each carried their own `claude,codex,gemini`. A fourth
+# agent added through the documented path would therefore have been scanned by none of them and
+# silently absent from the inventory, which is the "second hardcoded list" failure this file
+# already refuses for the shipped set. Review caught the asymmetry.
+#
+# It DEGRADES rather than failing: with no install reachable, the three shipped tokens are still a
+# better answer than none, and the caller can always pass `--agents` explicitly. That is the
+# graceful-degradation rule (design-principles §5) — an absent OPTIONAL input, not a broken install.
+_ad_default_agents() {
+  local root out=""
+  if root="$(adb_install_source 2>/dev/null)" && [ -n "$root" ] && [ -d "$root/agents" ]; then
+    while IFS= read -r a; do
+      [ -n "$a" ] || continue
+      [ -z "$out" ] || out="$out,"
+      out="$out$a"
+    done <<EOF
+$(_ad_agents_from_baseline "$root")
+EOF
+  fi
+  printf '%s\n' "${out:-claude,codex,gemini}"
+}
+
 # --- agent-token validation -----------------------------------------------------------------------
 # `--agents` is interpolated straight into a path (`$root/.$a`), so an unvalidated token escapes
 # the project directory. THE WITNESS IS `claude/../../sibling`, not `../..` — the code prepends a
@@ -285,8 +332,23 @@ _ad_cmp_files() {  # <a> <b> -> same | differs | unknown   (a single pair)
   esac
 }
 
-_ad_dir_manifest() {  # print the sorted relative file list of <dir>, or nothing on failure
-  ( cd "$1" 2>/dev/null && find . -type f -print 2>/dev/null | LC_ALL=C sort )
+# The sorted relative manifest of <dir>: every regular file AND every symlink, each tagged with
+# its type, and a symlink additionally carrying its TARGET.
+#
+# `-type f` ALONE WAS A DATA-LOSS BUG of exactly the shape that made this whole-directory
+# comparison necessary in the first place. A project skill holding the baseline's regular files
+# plus its own symlink produced an identical manifest, every compared pair matched, `delta` said
+# `same`, and the plan recommended removing a skill that still carried extra behaviour. Review
+# caught it — the second instance of the same class in this function.
+#
+# The TARGET is part of the identity, not decoration: two symlinks with the same name pointing at
+# different things are not the same artifact, and comparing only names would call them equal.
+_ad_dir_manifest() {  # print the sorted typed entry list of <dir>, or nothing on failure
+  ( cd "$1" 2>/dev/null || exit 0
+    find . \( -type f -o -type l \) -print 2>/dev/null | LC_ALL=C sort | while IFS= read -r e; do
+      if [ -L "$e" ]; then printf 'l %s -> %s\n' "$e" "$(readlink "$e")"
+      else printf 'f %s\n' "$e"; fi
+    done )
 }
 
 cmd_delta() {
@@ -302,8 +364,16 @@ cmd_delta() {
       [ "$pl" = "$bl" ] || { printf 'differs\n'; return 0; }
       # Same file set: now every pair must match. `unknown` on any pair wins over `same`, because
       # a directory is only provably identical when EVERY member was provably identical.
+      # The manifests already matched, so the entry lists (and every symlink TARGET in them) are
+      # equal — only the regular files still need their contents compared. A symlink is fully
+      # described by its target, which the manifest carried.
       while IFS= read -r rel; do
         [ -n "$rel" ] || continue
+        case "$rel" in
+          'l '*) continue ;;
+          'f '*) rel="${rel#f }" ;;
+          *) printf 'unknown\n'; return 0 ;;
+        esac
         verdict="$(_ad_cmp_files "$proj/$rel" "$base/$rel")"
         case "$verdict" in
           same) ;;
@@ -465,6 +535,7 @@ cmd_classify() {
 # product. `hygiene` reports on that boundary; `scan` simply does not cross it.
 cmd_scan() {
   local root="" agents="" a f d n rel
+  local -a _ad_others=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       # `-n "$2"` as well as the arity check: `--agents ""` passes `[ "$#" -ge 2 ]`, then falls
@@ -477,7 +548,7 @@ cmd_scan() {
   done
   [ -n "$root" ] || die "scan: needs <project-root>"
   [ -d "$root" ] || die "scan: not a directory: $root"
-  [ -n "$agents" ] || agents="claude,codex,gemini"
+  [ -n "$agents" ] || agents="$(_ad_default_agents)"
   _ad_check_agents "$agents" scan
 
   # THE AGENT IS THE FOURTH FIELD on every record, and `-` where the artifact is agent-neutral.
@@ -511,6 +582,17 @@ cmd_scan() {
       [ -f "$d/overrides.md" ] && _ad_emit override ".$a/skills/$n/overrides.md" overrides.md "$a"
       [ -f "$d/SKILL.md" ]     && _ad_emit skill    ".$a/skills/$n" "$n" "$a"
     done
+    # THE VENDORED SHARED LIBRARY IS ONE ARTIFACT, emitted before the flat file loop. `shipped`
+    # reports `lib` as a single identity (install.sh links the whole `scripts/lib` DIRECTORY), so a
+    # project that vendored a copy had no `scan` record that could ever join against it: the flat
+    # loop skips directories, and the catch-all below then emitted its ~14 members individually as
+    # `other`. A byte-identical vendored baseline library — the clearest possible `remove` — came
+    # out as fourteen escalations. Review caught it.
+    #
+    # `-d` and not `-e`: a SYMLINKED `scripts/lib` is the normal shape for a project that ran
+    # install.sh, and `-d` follows the link, so that case is reported as the `lib` artifact it is
+    # rather than falling through to the catch-all and vanishing.
+    [ -d "$root/.$a/scripts/lib" ] && _ad_emit lib ".$a/scripts/lib" lib "$a"
     for f in "$root/.$a"/scripts/*; do
       [ -f "$f" ] || continue
       n="${f##*/}"
@@ -528,9 +610,20 @@ cmd_scan() {
     # `other` classifies to `escalate` for an unmodelled kind, so these surface as questions.
     # THE RUN-STATE DIR IS EXCLUDED: it is regenerated scratch, gitignored, and is the one thing
     # under the agent dir that genuinely carries no adoption decision.
-    while IFS= read -r rel; do
+    # NUL-DELIMITED, so a filename carrying a NEWLINE reaches `_ad_emit` whole. Split on newlines,
+    # such a name became two or more INVENTED `rel` values — each a path that does not exist — and
+    # the scan emitted them as confident `other` records instead of the single `warning` the record
+    # format promises. `_ad_emit`'s safety check never saw the real name, so the guard that exists
+    # for exactly this input could not fire. Review caught it.
+    #
+    # `mapfile -d ''` rather than a pipeline, for the reason the credential axis learned: `-print0`
+    # output cannot survive a command substitution, because bash strips NUL bytes.
+    _ad_others=()
+    mapfile -d '' -t _ad_others < <(cd "$root" 2>/dev/null && find ".$a" -type f -print0 2>/dev/null | LC_ALL=C sort -z)
+    for rel in "${_ad_others[@]}"; do
       [ -n "$rel" ] || continue
       case "$rel" in
+        ".$a/scripts/lib/"*) continue ;;   # covered by the single `lib` artifact above
         ".$a/state/"*|".$a/settings.json") continue ;;
         ".$a/skills/"*/SKILL.md|".$a/skills/"*/overrides.md) continue ;;
         ".$a/scripts/"*) [ "${rel#".$a/scripts/"}" = "${rel##*/}" ] && continue ;;
@@ -546,9 +639,7 @@ cmd_scan() {
       # comparison of the skill itself, so re-emitting each of them would double-report.
       case "$rel" in ".$a/skills/"*) continue ;; esac
       _ad_emit other "$rel" "${rel##*/}" "$a"
-    done <<INNER
-$(cd "$root" 2>/dev/null && find ".$a" -type f -print 2>/dev/null | LC_ALL=C sort)
-INNER
+    done
   done <<EOF
 $(printf '%s\n' "$agents" | tr ',' '\n')
 EOF
@@ -729,6 +820,81 @@ cmd_stack() {
     && { printf 'shell\n'; return 0; }
   printf 'unknown\n'
 }
+# --- AXIS 4, as its own function -----------------------------------------------------------------
+# Extracted so it can run BEFORE the directory-existence check in `cmd_hygiene`. Its probes use
+# `--no-index` precisely so they answer for a path that does not exist yet, and gating it on
+# `.<agent>/` already existing meant the run that most needs the warning — adopting an agent
+# whose dot-directory has not been created — was the one run that never got it.
+_ad_ignore_axis() {  # <project-root> <agent>
+  local root="$1" a="$2" igrc igraw where
+  # AXIS 4 — a BROAD IGNORE that would swallow the runtime state dir. ASK GIT, never a
+  # hand-rolled matcher: precedence, negations and directory rules are git's semantics, and a
+  # reimplementation that got `!` wrong would report the opposite of the truth.
+  # `--no-index` so the probe answers for a path that does not exist yet.
+  if [ -d "$root/.git" ] || git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    # THE STATUS IS THREE-VALUED, and collapsing it is a fail-OPEN. `check-ignore` exits 0 for
+    # "ignored", 1 for "not ignored", and 128 for an ERROR — a bare repo, a broken index,
+    # permissions. Treating everything non-zero as "not ignored" turns a tooling failure into a
+    # confident claim about the project ("your state dir is exposed"), which is the stale/unproven
+    # assertion base/practices/verify-before-asserting.md forbids and the fail-closed direction
+    # this whole file claims to take. Caught by self-review, on a bare-repo fixture.
+    #
+    # THE DECISION IS MADE BY TWO PROBES, AND NO PATTERN TEXT IS EVER PARSED. That is the third
+    # and final shape of this check, and the previous two are worth recording because each was a
+    # different way of getting the same idea wrong:
+    #
+    #   1. Matching the whole `-v` line. The `<pathname>` column is the path just asked about, so
+    #      it ALWAYS contains `.<agent>/state` — every input looked like an explicit rule and the
+    #      axis was a permanent no-op.
+    #   2. Slicing the pattern out of `<source>:<line>:<pattern>` by stripping two colons. That
+    #      assumes `<source>` has none, and it is `core.excludesFile` — an arbitrary user path.
+    #      Review reproduced a colon-bearing excludes path that suppressed a real `*.json` finding.
+    #   (`-z` would separate the fields structurally, but its output cannot survive a command
+    #   substitution — bash strips NUL bytes — and `-z` additionally requires `--stdin`.)
+    #
+    # So stop parsing. THE QUESTION IS NOT "what does the rule look like" BUT "does the ignore
+    # cover the DIRECTORY, or only today's filenames" — and git answers that directly if you ask
+    # about two paths instead of one:
+    #
+    #   probe A: the real state file, `…/state/implement-issue-active.json`
+    #   probe B: a differently-shaped name in the same directory, matching no common
+    #            extension-based pattern
+    #
+    # A ignored AND B ignored  → the rule reaches the directory itself. Deliberate. Silent.
+    # A ignored AND B NOT      → the rule is extension-shaped and covers the state dir only by
+    #                            coincidence. That IS #29's finding: `*.json` hides today's state  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
+    #                            files and would not hide tomorrow's.
+    # A NOT ignored            → not ignored at all.
+    #
+    # No parsing, no delimiter, no assumption about any path's contents — and it tests the
+    # property the axis actually cares about rather than a proxy for it.
+    git -C "$root" check-ignore -q --no-index ".$a/state/implement-issue-active.json" 2>/dev/null
+    igrc=$?
+    if [ "$igrc" -eq 0 ]; then
+      git -C "$root" check-ignore -q --no-index ".$a/state/adb-adopt-probe" 2>/dev/null
+      igraw=$?
+      # The citation is display-only and never a decision input, so a mis-sliced `-v` line here
+      # can mislead nobody — it is printed verbatim for the operator to go and read.
+      where="$(git -C "$root" check-ignore -v --no-index ".$a/state/implement-issue-active.json" 2>/dev/null \
+                 | sed -n '1s/'"$TAB"'.*$//p')"
+      if [ "$igraw" -eq 0 ]; then
+        : # both probes ignored — the rule covers the directory. Correct, deliberate state.
+      elif [ "$igraw" -eq 1 ]; then
+        _ad_emit ignore-risk warn ".$a/state/" "reached only by a rule that does NOT cover the directory (see ${where:-your ignore files}) — it hides today's state filenames and would not hide a future one; run bin/agent-init so the rule names the directory"
+      else
+        _ad_emit ignore-risk warn ".$a/state/" "PARTIALLY DETERMINED — the state file is ignored, but the second probe failed (rc $igraw), so whether the rule covers the whole directory is unverified"
+      fi
+    elif [ "$igrc" -eq 1 ]; then
+      _ad_emit ignore-risk warn ".$a/state/" "is NOT gitignored — /implement-issue writes the untrusted issue body here; run bin/agent-init before adopting"
+    else
+      # Say what could not be established, not what is true. An operator who reads "could not be
+      # determined" goes and looks; one who reads "is NOT gitignored" about a repo that ignores
+      # it perfectly well learns to discount the axis.
+      _ad_emit ignore-risk warn ".$a/state/" "COULD NOT BE DETERMINED — git check-ignore failed (rc $igrc) rather than answering; check this by hand before trusting the rest of this axis"
+    fi
+  fi
+}
+
 
 # --- hygiene -------------------------------------------------------------------------------------
 # The four adoption-hygiene axes #29 contributed, as `<axis>TAB<severity>TAB<path>TAB<detail>`.  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
@@ -741,7 +907,7 @@ cmd_stack() {
 # applies to a log). A novel credential format will not be caught. Saying so is better than
 # implying a coverage this cannot have.
 cmd_hygiene() {
-  local root="" agents="" a f rel line where igrc igraw
+  local root="" agents="" a f rel line
   local -a _ad_tracked=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -752,7 +918,7 @@ cmd_hygiene() {
   done
   [ -n "$root" ] || die "hygiene: needs <project-root>"
   [ -d "$root" ] || die "hygiene: not a directory: $root"
-  [ -n "$agents" ] || agents="claude,codex,gemini"
+  [ -n "$agents" ] || agents="$(_ad_default_agents)"
   _ad_check_agents "$agents" hygiene
 
   # AXIS 1 — harness config vs PRODUCT CODE. Reported so the operator knows the scan stopped at
@@ -768,6 +934,17 @@ cmd_hygiene() {
 
   while IFS= read -r a; do
     [ -n "$a" ] || continue
+
+    # AXIS 4 RUNS FIRST, and OUTSIDE the directory-existence check below. Its `--no-index` probes
+    # are built for a path that does not exist yet, so gating it on `.<agent>/` already existing
+    # was backwards: adopting an agent whose dot-directory has not been created is exactly the run
+    # that most needs to be told the state dir is unignored, and it reported nothing. The run would
+    # then create `.<agent>/state` and write untrusted issue bodies into an untracked-but-visible
+    # directory. Review caught it.
+    _ad_ignore_axis "$root" "$a"
+
+    # The axes below genuinely need the directory to exist — they read files inside it.
+    [ -d "$root/.$a" ] || continue
 
     # AXIS 2 — config that may SHIP TO END USERS. A clone-and-run app's .claude/ travels with the
     # product, so a machine-local absolute path breaks on every other machine and a credential is
@@ -852,72 +1029,6 @@ cmd_hygiene() {
       _ad_emit precedence note ".$a/settings.json" "declares its own hooks — /adopt did NOT inspect the user-level layer, so the effective set is unverified here; compare them yourself before removing either"
     fi
 
-    # AXIS 4 — a BROAD IGNORE that would swallow the runtime state dir. ASK GIT, never a
-    # hand-rolled matcher: precedence, negations and directory rules are git's semantics, and a
-    # reimplementation that got `!` wrong would report the opposite of the truth.
-    # `--no-index` so the probe answers for a path that does not exist yet.
-    if [ -d "$root/.git" ] || git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
-      # THE STATUS IS THREE-VALUED, and collapsing it is a fail-OPEN. `check-ignore` exits 0 for
-      # "ignored", 1 for "not ignored", and 128 for an ERROR — a bare repo, a broken index,
-      # permissions. Treating everything non-zero as "not ignored" turns a tooling failure into a
-      # confident claim about the project ("your state dir is exposed"), which is the stale/unproven
-      # assertion base/practices/verify-before-asserting.md forbids and the fail-closed direction
-      # this whole file claims to take. Caught by self-review, on a bare-repo fixture.
-      #
-      # THE DECISION IS MADE BY TWO PROBES, AND NO PATTERN TEXT IS EVER PARSED. That is the third
-      # and final shape of this check, and the previous two are worth recording because each was a
-      # different way of getting the same idea wrong:
-      #
-      #   1. Matching the whole `-v` line. The `<pathname>` column is the path just asked about, so
-      #      it ALWAYS contains `.<agent>/state` — every input looked like an explicit rule and the
-      #      axis was a permanent no-op.
-      #   2. Slicing the pattern out of `<source>:<line>:<pattern>` by stripping two colons. That
-      #      assumes `<source>` has none, and it is `core.excludesFile` — an arbitrary user path.
-      #      Review reproduced a colon-bearing excludes path that suppressed a real `*.json` finding.
-      #   (`-z` would separate the fields structurally, but its output cannot survive a command
-      #   substitution — bash strips NUL bytes — and `-z` additionally requires `--stdin`.)
-      #
-      # So stop parsing. THE QUESTION IS NOT "what does the rule look like" BUT "does the ignore
-      # cover the DIRECTORY, or only today's filenames" — and git answers that directly if you ask
-      # about two paths instead of one:
-      #
-      #   probe A: the real state file, `…/state/implement-issue-active.json`
-      #   probe B: a differently-shaped name in the same directory, matching no common
-      #            extension-based pattern
-      #
-      # A ignored AND B ignored  → the rule reaches the directory itself. Deliberate. Silent.
-      # A ignored AND B NOT      → the rule is extension-shaped and covers the state dir only by
-      #                            coincidence. That IS #29's finding: `*.json` hides today's state  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
-      #                            files and would not hide tomorrow's.
-      # A NOT ignored            → not ignored at all.
-      #
-      # No parsing, no delimiter, no assumption about any path's contents — and it tests the
-      # property the axis actually cares about rather than a proxy for it.
-      git -C "$root" check-ignore -q --no-index ".$a/state/implement-issue-active.json" 2>/dev/null
-      igrc=$?
-      if [ "$igrc" -eq 0 ]; then
-        git -C "$root" check-ignore -q --no-index ".$a/state/adb-adopt-probe" 2>/dev/null
-        igraw=$?
-        # The citation is display-only and never a decision input, so a mis-sliced `-v` line here
-        # can mislead nobody — it is printed verbatim for the operator to go and read.
-        where="$(git -C "$root" check-ignore -v --no-index ".$a/state/implement-issue-active.json" 2>/dev/null \
-                   | sed -n '1s/'"$TAB"'.*$//p')"
-        if [ "$igraw" -eq 0 ]; then
-          : # both probes ignored — the rule covers the directory. Correct, deliberate state.
-        elif [ "$igraw" -eq 1 ]; then
-          _ad_emit ignore-risk warn ".$a/state/" "reached only by a rule that does NOT cover the directory (see ${where:-your ignore files}) — it hides today's state filenames and would not hide a future one; run bin/agent-init so the rule names the directory"
-        else
-          _ad_emit ignore-risk warn ".$a/state/" "PARTIALLY DETERMINED — the state file is ignored, but the second probe failed (rc $igraw), so whether the rule covers the whole directory is unverified"
-        fi
-      elif [ "$igrc" -eq 1 ]; then
-        _ad_emit ignore-risk warn ".$a/state/" "is NOT gitignored — /implement-issue writes the untrusted issue body here; run bin/agent-init before adopting"
-      else
-        # Say what could not be established, not what is true. An operator who reads "could not be
-        # determined" goes and looks; one who reads "is NOT gitignored" about a repo that ignores
-        # it perfectly well learns to discount the axis.
-        _ad_emit ignore-risk warn ".$a/state/" "COULD NOT BE DETERMINED — git check-ignore failed (rc $igrc) rather than answering; check this by hand before trusting the rest of this axis"
-      fi
-    fi
   done <<EOF
 $(printf '%s\n' "$agents" | tr ',' '\n')
 EOF
@@ -957,13 +1068,7 @@ cmd_pin_render() {
   # recovers the inherited tree EXACTLY — an abbreviated name is resolvable only while it stays
   # unambiguous in a growing repository, so a 7-character pin can become ambiguous years later,
   # which is precisely the window the pin exists to survive. 40 hex for SHA-1, 64 for SHA-256.
-  case "$commit" in
-    *[!0-9a-fA-F]*|"") die "pin-render: <commit> must be a hex object name: $(adb_tsv_field_display "$commit")" ;;
-  esac
-  case "${#commit}" in
-    40|64) ;;
-    *) die "pin-render: <commit> must be a FULL object name (40 or 64 hex), not abbreviated: $commit" ;;
-  esac
+  _ad_check_commit "$commit" pin-render
   # A REAL CALENDAR DATE, not merely the right shape. `2026-99-99` passed the pattern test and
   # would have been written into the pin as the adoption date.
   case "$adopted" in
@@ -1037,6 +1142,12 @@ cmd_pin_drift() {
   [ -d "$root" ] || die "pin-drift: not a directory: $root"
   commit="$(cmd_pin_read "$file" commit)" || die "pin-drift: could not read the pinned commit from $file"
   [ -n "$commit" ] || die "pin-drift: the pin carries no commit"
+  # REVALIDATED HERE, because `pin-render`'s validation governs what THIS TOOL writes and says
+  # nothing about a pin that already existed or was edited by hand. A pin carrying `HEAD` produced
+  # `git log HEAD..HEAD` — an empty range that reports no drift at all, which is the most
+  # reassuring possible wrong answer. Review caught the comment below assuming a guarantee that
+  # applied one function away.
+  _ad_check_commit "$commit" pin-drift
   # THE PATH IS SHELL-QUOTED, because this subcommand's OUTPUT IS A COMMAND. An unquoted path with
   # a space produces a command that silently targets the wrong directory, and one with a `;` or a
   # `$(…)` produces executable syntax in a line the operator is expected to paste into a shell.
@@ -1112,7 +1223,12 @@ cmd_plan() {
           "$n" "$(adb_display_value "$rec")"
         continue
       fi
-      printf '%s. %s (%s) — %s\n' "$n" "$adoptpath" "$kind" "$reason"
+      # THE PATH IS RENDERED, NOT PRINTED RAW. `_ad_emit` deliberately accepts every byte except
+      # the two record delimiters, so a legal filename may carry a carriage return or an ANSI
+      # escape — and this line goes straight to the operator's terminal. A scanned repository could
+      # forge plan lines or move the cursor. The malformed-record arm below already used
+      # `adb_display_value`; the ordinary arm is the one an attacker would actually reach.
+      printf '%s. %s (%s) — %s\n' "$n" "$(adb_display_value "$adoptpath")" "$kind" "$reason"
     done
     [ "$n" -gt 0 ] && printf '\n'
   done

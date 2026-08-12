@@ -1007,6 +1007,41 @@ jobs:
       - name: This project's own /release predicates must hold (D14)
         run: bash scripts/check-release-skill.sh
 
+  adopt:
+    name: adopt
+    runs-on: ubuntu-26.04
+    # The mutation harness runs the whole suite once per injected defect. Bounded-parallel it is
+    # ~165s locally; a hosted runner is slower and has fewer cores, so the ceiling is generous
+    # rather than tight — a timeout here would read as a real failure.
+    timeout-minutes: 20
+    steps:
+      # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
+      # us, in the log. A later step is what proves it clears the floor; this is what
+      # makes an image that silently changed its bash readable rather than mysterious.
+      - name: Log this runner's bash
+        run: bash --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
+
+      # THIS JOB EXISTS BECAUSE selfcheck ALONE IS NOT BOTH PLATFORMS. Registering the adopt steps
+      # in scripts/selfcheck.sh runs them inside the aggregate `selfcheck-macos` job and nowhere
+      # else — so a new cross-platform shell feature would have been exercised on macOS only,
+      # against this repo's own two-runner requirement (#257, D29). Review caught the gap.
+      #
+      # ONE job carrying BOTH invocations, matching `fact-drift`: a second job is a second required
+      # status context for branch protection to grow, which is a cost the split does not earn.
+      - name: /adopt predicates — classifier, hygiene axes, pin, and the read-only boundary (#20)
+        run: bash scripts/check-adopt.sh
+
+      # ...and the suite is a guard, so every load-bearing decision is injected with its own defect
+      # and must make it go red ON ITS OWN NAMED WITNESS. Red for the wrong reason is not evidence.
+      - name: /adopt guards must be able to fail — every decision mutated, each observed RED (#20)
+        run: bash scripts/check-adopt.sh --mutation
+
   practice-index:
     name: practice-index
     runs-on: ubuntu-26.04
