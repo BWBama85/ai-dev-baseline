@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ai-dev-baseline — /adopt decision predicates (issue #20, consolidating #21 and #29).
+# ai-dev-baseline — /adopt decision predicates (issue #20, consolidating #21 and #29).  (adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work / #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 #
 # /adopt brings the baseline into an EXISTING project: it inventories what that project already
 # has, classifies each artifact keep / remove / move / escalate, proposes an agents.toml, and
@@ -52,7 +52,7 @@
 #   adopt-lib.sh roles-infer <project-root>                 # propose [roles] from evidence
 #   adopt-lib.sh propose                                    # roles-infer TSV on stdin -> agents.toml
 #   adopt-lib.sh stack       <project-root>                 # the project's stack label
-#   adopt-lib.sh hygiene     <project-root> [--agents a,b]  # the four #29 axes
+#   adopt-lib.sh hygiene     <project-root> [--agents a,b]  # the four #29 axes  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 #   adopt-lib.sh pin-render  <version> <commit> <adopted-date> <stack> [agents]
 #   adopt-lib.sh pin-read    <pin-file> <key>
 #   adopt-lib.sh pin-drift   <pin-file> <baseline-root>     # the drift command, printed
@@ -460,7 +460,7 @@ cmd_classify() {
 #
 # THE SCAN IS BOUNDED TO CONFIG, NOT CODE. It descends only into each agent's own directory, the
 # root docs, agents.toml, .ai-dev-baseline/, and the two prior-framework artifacts. It never walks
-# `src/`, and #29's first axis is why: support-workstation's `src/lib/cli/` IS product code that
+# `src/`, and #29's first axis is why: support-workstation's `src/lib/cli/` IS product code that  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 # orchestrates agent CLIs, and a scan that classified it would be recommending changes to the
 # product. `hygiene` reports on that boundary; `scan` simply does not cross it.
 cmd_scan() {
@@ -581,7 +581,7 @@ _ad_role_hits() {  # <root> <role-regex> <agent> — files whose lines name BOTH
   # word here on purpose — `codex-exec` is the tool, `codex-adjacent` is prose about it, and
   # neither should match a bare token search that is trying to identify WHICH AGENT is named.
   local bounded="(^|[^A-Za-z0-9_-])${agent}([^A-Za-z0-9_-]|\$)"
-  # Config surfaces only, never src/ (#29 axis 1). A miss prints nothing and is not an error.
+  # Config surfaces only, never src/ (#29 axis 1). A miss prints nothing and is not an error.  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
   grep -rIl --exclude-dir=state -E "$rx" \
     "$root"/.claude "$root"/.codex "$root"/.gemini "$root"/CLAUDE.md "$root"/AGENTS.md "$root"/GEMINI.md \
     2>/dev/null \
@@ -691,7 +691,7 @@ HDR
 # have a recognisable stack with no runnable gate and vice versa. Deriving one from the other
 # would make the pin's stack field a function of which tools happen to be installed.
 #
-# AND WHAT THE FIELD MEANS, stated exactly, because #21's wording invites an overclaim: it records
+# AND WHAT THE FIELD MEANS, stated exactly, because #21's wording invites an overclaim: it records  (adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 # the STACK OF THE ADOPTED PROJECT. The baseline ships exactly ONE flavor today — there is no
 # php-wordpress variant to have applied — so this is the field that lets a future variant be
 # recorded and matched, not evidence that variants exist. #285 is where a variant would be consumed.
@@ -731,7 +731,7 @@ cmd_stack() {
 }
 
 # --- hygiene -------------------------------------------------------------------------------------
-# The four adoption-hygiene axes #29 contributed, as `<axis>TAB<severity>TAB<path>TAB<detail>`.
+# The four adoption-hygiene axes #29 contributed, as `<axis>TAB<severity>TAB<path>TAB<detail>`.  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 # Severity is `warn` or `note`; neither is a failure, and this subcommand exits 0 unless its
 # arguments are bad. These are things a human must look at, not verdicts.
 #
@@ -837,7 +837,7 @@ cmd_hygiene() {
     # is false in ordinary configurations: the Codex and Gemini adapters wire no global hooks at
     # all, and the Claude installer configures no global status line. So the axis was manufacturing
     # a factual finding about a layer it had not looked at — exactly the confidently-wrong answer
-    # #29 was filed about, committed by the check written to catch it. Review caught it.
+    # #29 was filed about, committed by the check written to catch it. Review caught it.  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
     #
     # Establishing the global side properly means reading ~/.<agent>/settings.json and knowing each
     # harness's resolution order. `adb_claude_hooks_state` answers part of it for Claude only, and
@@ -887,7 +887,7 @@ cmd_hygiene() {
       #
       # A ignored AND B ignored  → the rule reaches the directory itself. Deliberate. Silent.
       # A ignored AND B NOT      → the rule is extension-shaped and covers the state dir only by
-      #                            coincidence. That IS #29's finding: `*.json` hides today's state
+      #                            coincidence. That IS #29's finding: `*.json` hides today's state  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
       #                            files and would not hide tomorrow's.
       # A NOT ignored            → not ignored at all.
       #
@@ -925,7 +925,7 @@ EOF
 }
 
 # --- the upstream pin ----------------------------------------------------------------------------
-# `.ai-dev-baseline/upstream.toml` — the artifact #21 asked for, and the schema is fixed HERE
+# `.ai-dev-baseline/upstream.toml` — the artifact #21 asked for, and the schema is fixed HERE  (adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 # because #285 is going to consume it.
 #
 # WHY TOML, AND WHY THAT PATH. TOML because `adb_toml_get` already reads it and agents.toml
@@ -934,8 +934,8 @@ EOF
 # cross-agent project state (the decision log lives there); putting the pin under `.claude/` would
 # make a cross-agent fact Claude-owned, which is the mistake handling-the-unknown.md calls out.
 #
-# WHAT REPLACES #21's `.upstream` SNAPSHOT — and it is a substitution made on purpose, not an
-# omission. #21 asked for "a `.upstream` snapshot (or equivalent) so a project can diff local
+# WHAT REPLACES #21's `.upstream` SNAPSHOT — and it is a substitution made on purpose, not an  (adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
+# omission. #21 asked for "a `.upstream` snapshot (or equivalent) so a project can diff local  (adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 # drift against the baseline it inherited". A copied tree is the worse equivalent: it doubles
 # every file, goes stale silently, and answers "what did I inherit" with a copy that may itself
 # have drifted. A COMMIT is a better snapshot than a snapshot — the install is a symlink into a

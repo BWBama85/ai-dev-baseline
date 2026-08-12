@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — behavioral tests for the /adopt decision predicates (#20, consolidating
-# #21 and #29), plus a source-drift guard on the workflow that consumes them.
+# #21 and #29), plus a source-drift guard on the workflow that consumes them.  (adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work / #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 #
 # WHY THIS EXISTS. /adopt is prose an agent executes against somebody else's repository, and its
 # output is a recommendation a human then acts on. That is a different failure mode from
@@ -38,7 +38,7 @@
 #   - that the four surveyed repositories (getrich, unraid-cache-cleaner, support-workstation,
 #     bama-politics) still have the shapes these fixtures model. They are not in this repository
 #     and CI cannot see them. The fixtures reproduce the shapes those repos were DOCUMENTED to
-#     have in #20/#29; the live acceptance run is manual and is recorded in the PR, not here.
+#     have in #20/#29; the live acceptance run is manual and is recorded in the PR, not here.  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 #   - semantic parity between two differing files. `differs` is byte-inequality, deliberately, and
 #     no assertion here claims more.
 #   - that the credential axis catches an unfamiliar secret format. Its prefix list is closed.
@@ -256,7 +256,7 @@ eq "$(bash "$AD" shipped "$WORK" >/dev/null 2>&1; echo $?)" 2 "shipped on a non-
 # A fixture modelling getrich's documented shape: forked skills (one colliding with a baseline
 # skill, one not), duplicate hook scripts, a project statusLine, a stack root doc, no agents.toml,
 # and a prior framework's pin. Plus a `src/` tree that references an agent CLI — which the scan
-# must NOT descend into (#29 axis 1).
+# must NOT descend into (#29 axis 1).  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 FX="$WORK/getrich-shape"
 mkdir -p "$FX"/.claude/{skills/{implement-issue,release},scripts,state} "$FX/src/lib/cli"
 printf 'gap analysis is run by codex exec\n' > "$FX/.claude/skills/implement-issue/SKILL.md"
@@ -275,7 +275,10 @@ has "$scan" "skill${TAB}.claude/skills/release"               "scan finds a proj
 has "$scan" "script${TAB}.claude/scripts/precommit-gate.sh"   "scan finds the gate script"
 has "$scan" "settings${TAB}.claude/settings.json"             "scan finds settings.json"
 has "$scan" "foreign-pin${TAB}.claude/UPSTREAM_VERSION"       "scan finds a prior framework's pin"
-hasnt "$scan" "src/"        "scan must NOT descend into product code (#29 axis 1)"
+# The harness-vs-product axis. (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED
+# (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance,
+# not tracked work)
+hasnt "$scan" "src/"        "scan must NOT descend into product code (the harness-vs-product axis)"
 hasnt "$scan" "agents.toml" "scan must not invent a manifest that does not exist"
 
 # THE HARNESS-VS-PRODUCT BOUNDARY, asserted as its own case rather than inferred from the `hasnt`

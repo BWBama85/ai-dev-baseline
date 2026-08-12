@@ -10,7 +10,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 ### Added
 
 - **`/adopt` — bringing the baseline into a project that already has its own config** (#20,
-  consolidating #21 and #29; D60).
+  consolidating #21 and #29; D60).  <!-- adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work / #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
 
   There was no path for adopting the baseline into an **existing** project. Every real repo
   already has a `.claude/`, root docs, forked skills and hooks, so adoption means working out what
@@ -39,11 +39,11 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     collides with a shipped script by name and *is* the one legal home for custom gate policy —
     reverse those two arms and every adopting project is told to delete its own gate. Both
     orderings are pinned as regressions.
-  - **Four adoption-hygiene axes** (#29): the product-code boundary (`src/**` referencing an agent
+  - **Four adoption-hygiene axes** (#29): the product-code boundary (`src/**` referencing an agent  <!-- adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
     CLI is the *product*), tracked config that ships to end users, layered statusLine/hook
     precedence, and a broad ignore rule that reaches the runtime state dir only by accident. The
     credential probe matches a closed prefix list and prints the **prefix only** — never the value.
-  - **An upstream pin** (#21) at `.ai-dev-baseline/upstream.toml`, recording version, commit,
+  - **An upstream pin** (#21) at `.ai-dev-baseline/upstream.toml`, recording version, commit,  <!-- adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
     adoption date, stack and agents. Deliberately a **commit rather than a copied `.upstream`
     tree**: the install is a symlink into a git clone, so one 40-byte field recovers the inherited
     tree exactly and forever, while a snapshot doubles every file and goes stale silently.
@@ -51,7 +51,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     `ambiguous`; no signal yields `none`. Neither is ever filled in from the baseline's own
     defaults — an operator reads `agents.toml` later as a record of what *they* decided, so a
     guessed line is indistinguishable from a chosen one. Uninferred roles are emitted commented out.
-  - `delete_branch_on_merge` (#56, folded into #20) is **not** implemented: it contradicts D9's
+  - `delete_branch_on_merge` (#56, folded into #20) is **not** implemented: it contradicts D9's  <!-- adb-claim-ok: #56 was folded INTO #20 and closed NOT_PLANNED — the reference records why delete_branch_on_merge is deliberately NOT implemented, not tracked work -->
     two-setting bound, and widening that needs its own decision rather than a drive-by field in an
     adoption run. `adopt.md` carries the instruction not to add it.
   - **Executing** the plan — re-homing forks, deleting duplicates — is deliberately not in this

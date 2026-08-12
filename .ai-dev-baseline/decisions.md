@@ -4733,7 +4733,7 @@ limit: none of them is sufficient alone.
              *"ends at emit an ordered migration plan"*. Those are not three phrasings of one
              thing — a mutation engine and a report have different backup, idempotency, rollback
              and test contracts, and the gap-analysis pass flagged the inconsistency as its first
-             BLOCKING finding. The pin (#21, consolidated in) had the same problem one level down:
+             BLOCKING finding. The pin (#21, consolidated in) had the same problem one level down:  <!-- adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
              it alternated between a commit/tag, a complete `.upstream` snapshot tree, and a
              residual pin, with no artifact name, schema, or accepted ref forms anywhere.
 - decision:  The owner settled the boundary: **`/adopt` never deletes, moves, or edits a file in
@@ -4783,7 +4783,7 @@ limit: none of them is sufficient alone.
              config nobody asked it to touch. The owner's most recent word pointed the same
              direction as the cheaper error.
 
-             **The `.upstream` snapshot was replaced deliberately, not omitted.** #21 asked for
+             **The `.upstream` snapshot was replaced deliberately, not omitted.** #21 asked for  <!-- adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
              *"a `.upstream` snapshot (or equivalent)"*, and a copied tree is the worse equivalent:
              it doubles every file, goes stale silently, and answers *"what did I inherit"* with a
              copy that may itself have drifted. The install is a symlink into a real git clone, so
@@ -4797,11 +4797,11 @@ limit: none of them is sufficient alone.
              is no `php-wordpress` variant to have applied — so the field is what lets a future
              variant be recorded and matched, not evidence that variants exist.
 
-             **`delete_branch_on_merge` (#56, folded in) is deliberately NOT implemented.** It
+             **`delete_branch_on_merge` (#56, folded in) is deliberately NOT implemented.** It  <!-- adb-claim-ok: #56 was folded INTO #20 and closed NOT_PLANNED — the reference records why delete_branch_on_merge is deliberately NOT implemented, not tracked work -->
              contradicts D9's "bounded to exactly two settings", and #20's own comment says so:
              it needs *"a deliberate decision-log amendment or a separate `baseline repo hygiene`
              subcommand, not a drive-by `-F`"*. Amending D9 is not an adoption-scan decision, so
-             `adopt.md` instead carries an explicit instruction not to add a third field. #56 is
+             `adopt.md` instead carries an explicit instruction not to add a third field. #56 is  <!-- adb-claim-ok: #56 was folded INTO #20 and closed NOT_PLANNED — the reference records why delete_branch_on_merge is deliberately NOT implemented, not tracked work -->
              closed `NOT_PLANNED`; nothing is owed.
 
              **The classifier proves "duplicates the baseline" exactly one way: byte-identity of
