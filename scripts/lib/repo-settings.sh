@@ -54,12 +54,18 @@
 #                (#102); FAIL CLOSED, never assume safe. Note this is deliberately NOT 12: a
 #                parser that could not read the CI must not report "this repo has no CI".
 #
-# WHICH OF THESE A PLATFORM OUTAGE CAN PRODUCE: only 20, and only from the three API reads (#300).
-# 10-14 all compare a STATICALLY DISCOVERED job set against CONFIGURED branch protection, and an
-# incident moves neither — so 13 ("a required context no workflow reports") is a configuration
-# verdict that an outage cannot cause and cannot clear. Worth stating because the opposite was
-# assumed: the outage arm says so out loud (`_adb_rs_outage_hint`), and a run that never EXECUTED
-# is a different question again, answered by `ci-health.sh classify --run <id>`.
+# WHICH OF THESE A PLATFORM OUTAGE CAN PRODUCE (#300). NOT 10-14: every one of them compares a
+# STATICALLY DISCOVERED job set against CONFIGURED branch protection, and an incident moves neither
+# — so 13 ("a required context no workflow reports") is a configuration verdict an outage can
+# neither cause nor clear. Worth stating because the opposite was assumed.
+#
+# Of the codes this function returns, an outage reaches 20, from either of its two REST reads (the
+# repo object and branch protection), and the arm says so out loud (`_adb_rs_outage_hint`). But 20
+# is not the only way an incident surfaces here, and claiming it was is a mistake independent review
+# caught: `require_gh` runs `gh auth status` BEFORE this function is entered and `exit 1`s on
+# failure, so an API degraded enough to break authentication never reaches the exit-code table at
+# all. A run that never EXECUTED is a different question again, answered by
+# `ci-health.sh classify --run <id>`.
 #
 # `required-drift` (#122) answers ONE of those questions — "has a discovered job stayed
 # non-required?" — early enough to matter, and reuses the same two codes so a number never means

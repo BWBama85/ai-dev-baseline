@@ -4460,7 +4460,8 @@ limit: none of them is sufficient alone.
              question earns its own module with its own charter.
              (2) SCOPE C's PREMISE IS REFUTED. `automerge-ok` code 13 is `phantom_contexts(want,
              live)` — job names discovered STATICALLY from `.github/workflows` compared against the
-             branch's CONFIGURED required contexts (`scripts/lib/repo-settings.sh:1307`). It reads
+             branch's CONFIGURED required contexts (`phantom_contexts`, defined at
+             `scripts/lib/repo-settings.sh:727` and called from `cmd_automerge_ok`). It reads
              no run, job, check or annotation, so no outage can produce it and none can clear it.
              The arm an outage DOES reach is 20 (an API read failed), so that is where the second
              sentence went (`_adb_rs_outage_hint`), together with a header note and a docs
@@ -4479,8 +4480,20 @@ limit: none of them is sufficient alone.
              And it could not be sound: `branch-health` reads a COMMIT, and "did a runner ever pick
              this up" is a fact about a RUN. From a commit, a workflow that was never wired up and
              a job that was never acquired are byte-identical — nothing reported, either way. So
-             the honest split is that `branch-health` keeps answering `indeterminate` and the
-             WORKFLOW says which command can tell them apart.
+             the honest split is that `branch-health` keeps its verdicts and the WORKFLOW says
+             which command can tell them apart.
+
+             **AND THE ARM WAS THE WRONG ONE — corrected by independent review.** This decision
+             first claimed a never-acquired job reports NOTHING and therefore arrives as
+             `indeterminate`. It does not. GitHub creates the check run anyway and concludes it
+             `cancelled`, which `branch-health` scores as FAILING. Verified against the very commit
+             the issue cites: `03486b7856615427c350fd8e5e7c117f4d5c1db8` carries `ci` (cancelled)
+             and `quality` (success), and the shipped predicate answers `not-green / failing: ci`.
+             So the outage routes through `/roadmap`'s **not-green** arm, where the guidance now
+             sits — telling the agent to ask whether the failing check EXECUTED before calling it a
+             broken build. The `indeterminate` arm keeps a narrower note for a run that never
+             reported at all. The intuition that "never ran" implies "never reported" is exactly
+             backwards, and nothing but the live read would have caught it.
 
              **The pointer does NOT go on the reason line, and finding that out cost a test.** The
              first attempt appended it to both unreported arms, which broke `check-roadmap.sh`'s
@@ -4529,10 +4542,25 @@ limit: none of them is sufficient alone.
              is RECORDED as a fixture and classifies `never-ran` (23) quoting its runner-acquisition
              annotation; a recorded excerpt of a real red run of this repo's own CI (31460894856,
              `precommit-gate` failing after 8 steps) is the control and classifies `failed` (22).
-             116 assertions cover the whole truth table, the live arm through a stub `gh`, and the
-             enrichment boundary. The three mutations — truncation guard removed, `never-ran`
-             checked before the executed-failure arm, verdict word desynchronized from the exit
-             code — are each verified applied, each verified to still LOAD, and each required to
-             make a named assertion go red. That last check was added after M1 initially proved
-             nothing: a lone mutant copy died on a missing `common.sh` before classifying anything.
+             164 assertions cover the whole truth table, the live arm through a stub `gh`, and the
+             enrichment boundary. SIX mutations — the truncation guard, the executed-failure arm's
+             precedence, the verdict-to-exit-code mapping, the one-line sanitizer, the
+             missing-`steps` guard and the attempt anchoring — are each applied through the shared
+             `check_mutate_line`, each verified to still LOAD, and each required to make ONE NAMED
+             assertion go red. The load probe was added after M1 initially proved nothing: a lone
+             mutant copy died on a missing `common.sh` before classifying anything.
+
+             Nine further defects came from the independent review and are fixed here rather than
+             deferred, five of them fail-OPEN in the one direction this module must never be wrong
+             in: a missing `steps` field read as an empty one (23 from a field never read), a
+             missing `run.status` reaching `pending`, the jobs read un-anchored from the run's
+             attempt (a re-run landing mid-classification pairs an executed attempt with an empty
+             job list), pagination completeness measured by count alone (a repeated page keeps the
+             total right while dropping the job that disproves `never-ran`), and a future timestamp
+             producing a negative age. The rest were overclaims: `never-ran` advertised as an
+             INFRASTRUCTURE verdict when the same evidence is produced by a manual or concurrency
+             cancellation; `startup_failure` asserted to be "this diff and not the platform" when
+             GitHub documents that conclusion for check suites and it is the one arm here with no
+             recorded specimen; and the suite's own header claiming more mutation coverage than it
+             had. Each is recorded where it was wrong rather than silently rewritten.
 - baseline-issue: n/a — this repo IS the baseline; #300 is the tracking issue.

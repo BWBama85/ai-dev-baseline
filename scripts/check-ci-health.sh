@@ -34,9 +34,19 @@
 #      shape.
 #   5. THE ENRICHMENT BOUNDARY: the annotations read is enrichment, so a failure there must degrade
 #      the reason line and NOT the verdict — and `--no-annotations` must skip it entirely.
-#   6. THE MODULE IS OBSERVED FAILING (the `--mutation`-style section at the end). Three mutations
-#      of a COPY of the library — never the tracked tree (`base/practices/self-review.md`) — each
-#      verified applied, each required to make an assertion above go red.
+#   6. SIX SPECIFIC ASSERTIONS ARE OBSERVED FAILING (the mutation section at the end). Six
+#      mutations of a COPY of the library — never the tracked tree (`base/practices/self-review.md`)
+#      — each verified applied by the shared `check_mutate_line`, each verified to still LOAD, and
+#      each required to make ONE NAMED assertion above go red: the truncation guard, the
+#      executed-failure arm's precedence, the verdict-to-exit-code mapping, the one-line sanitizer,
+#      the missing-`steps` guard, and the attempt anchoring.
+#
+#      SAY WHAT THAT DOES NOT COVER, because "the assertions above are proven" would be a claim
+#      about all of them and it is not true. Pagination totals, live/pure equivalence, the
+#      annotation-failure isolation, the queue boundary, the API-read failures, `startup_failure`
+#      and the usage arm have assertions but no paired mutation — they are tested, not proven able
+#      to fail. Independent review named this gap; six is where the cost/benefit landed, and the
+#      six chosen are the ones whose failure mode is a WRONG VERDICT rather than a missing one.
 #
 # WHAT CANNOT BE TESTED HERE: that GitHub emits this shape during the next incident, and that a
 # runner-acquisition annotation always carries that wording. Both are vendor behaviour. The
@@ -132,7 +142,12 @@ verdict "$(doc "$NEVER_RUN_JSON" "$NEVER_JOBS_JSON" "[{\"name\":\"ci\",\"message
 has "$REASON" "NOT ONE of 1 non-passing job(s) executed a step" "...and the reason says nothing executed"
 has "$REASON" "ci (cancelled)" "...and names the job and its conclusion"
 has "$REASON" "not acquired by Runner of type hosted" "...and quotes the runner-acquisition annotation"
-has "$ERROUT" "nothing in this repo to de-flake" "...and refuses the de-flake issue issues-and-scope.md forbids"
+has "$ERROUT" "no test to de-flake" "...and refuses the de-flake issue issues-and-scope.md forbids"
+# THE ADVICE MUST NOT ASSERT AN OUTAGE. An empty step list is produced just as well by a manual
+# cancellation, a concurrency cancellation, a superseded run, or a self-hosted runner nobody
+# started — so "it will clear on its own" is a guess where "it did not run" is proof.
+has "$ERROUT" "it does not say why" "...and does NOT assert a provider outage"
+has "$ERROUT" "manual cancellation" "...and names the other causes that look identical"
 has "$ERROUT" "NOT green-by-retry" "...and says the re-run is not green-by-retry"
 
 verdict "$(doc "$RED_RUN_JSON" "$RED_JOBS_JSON")" failed 22 "the REAL red run of this repo's CI (31460894856)"
@@ -159,7 +174,12 @@ verdict "$(doc '{"status":"completed","conclusion":"neutral","created_at":"2026-
 # file they just edited.
 verdict "$(doc '{"status":"completed","conclusion":"startup_failure","created_at":"2026-08-06T19:34:34Z"}' "$J_NONE")" \
         failed 22 "startup_failure is REAL, not infrastructure"
-has "$REASON" "workflow definition itself could not start" "...and says why it is the diff"
+# THE CAUSAL CLAIM IS DELIBERATELY WEAK. This arm used to assert "which is this diff and not the
+# platform"; review pointed out that GitHub documents `startup_failure` for check suites while the
+# workflow-run conclusion list omits it, and that even where it appears it does not prove a
+# workflow-definition defect. Assert what it DOES say, and assert that it no longer overclaims.
+has "$REASON" "never got as far as running a job" "...and says no job ran"
+hasnt "$REASON" "not the platform" "...and no longer claims to have ruled the platform out"
 
 # Queue ageing, including the exact boundary. `>=` is the documented comparison, so the threshold
 # second itself is overdue; one second under it is not.
@@ -251,6 +271,43 @@ verdict "$(doc '{"status":"queued","conclusion":null,"created_at":"2026-08-06T19
         unknown 20 "an unparseable clock is unreadable"
 has "$REASON" "clock is not a UTC instant" "...and names the clock as the problem"
 
+# --- MISSING EVIDENCE IS NOT EVIDENCE (every one of these was a live fail-open) ---------------
+# All four were reproduced by independent review against the first version, and every one of them
+# manufactured this module's most consequential verdict out of a field that was never read. They
+# are grouped because they are one mistake wearing four hats.
+verdict "$(doc '{"conclusion":null}' "$J_NONE")" unknown 20 \
+        "a run with NO status is unreadable, not pending"
+has "$REASON" "carries no status" "...and says so"
+verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+               '{"total_count":1,"jobs":[{"id":1,"name":"a","status":"completed","conclusion":"failure"}]}')" \
+        unknown 20 "a failed job with NO steps FIELD is unreadable, not never-ran"
+has "$REASON" "MISSING step list is not an EMPTY one" "...and says exactly why"
+verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+               '{"total_count":1,"jobs":[{"id":1,"name":"a","status":"completed","conclusion":"failure","steps":null}]}')" \
+        unknown 20 "a job whose steps is null is unreadable, not never-ran"
+verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+               '{"total_count":1,"jobs":["not an object"]}')" \
+        unknown 20 "a non-object job entry is unreadable"
+# A FUTURE start time is a contradiction between the API and the clock, not a young run. The first
+# version printed `pending ... (-31527000s, under the threshold)` — a confident verdict from
+# nonsense. `adb_age_secs` refuses a negative age for the same reason.
+verdict "$(doc '{"status":"queued","conclusion":null,"created_at":"2027-08-06T19:00:00Z"}' "$J_NONE")" \
+        unknown 20 "a start time in the FUTURE is unreadable, not pending"
+has "$REASON" "future relative to the supplied clock" "...and names the contradiction"
+
+# --- what `never-ran` actually proves, stated in the sentence ---------------------------------
+# A successful shard that executed fully, beside a cancelled shard that never started. The FAILURE
+# still has no log, so 23 is right — but "nothing executed" would be a false sentence about this
+# run, and the first version said exactly that.
+verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+               '{"total_count":2,"jobs":[{"id":1,"name":"ok","status":"completed","conclusion":"success","steps":[{"name":"t"}]},{"id":2,"name":"idle","status":"completed","conclusion":"cancelled","steps":[]}]}')" \
+        never-ran 23 "an idle failing job beside an executed PASSING job is still never-ran"
+has "$REASON" "1 other job(s) in this run DID execute" \
+    "...and the reason says other jobs ran, rather than claiming nothing did"
+# ...and the plain case must NOT carry that clause, or it is decoration rather than a distinction.
+cd_ "$(doc "$NEVER_RUN_JSON" "$NEVER_JOBS_JSON")"
+hasnt "$REASON" "DID execute" "a run where genuinely nothing executed does not claim otherwise"
+
 # Malformed documents, at every level. Each must be 20 — never a verdict.
 for bad_doc in \
   '' \
@@ -306,6 +363,8 @@ case "$url" in
     [ "${STUB_FAIL_JOBS:-0}" = "1" ] && exit 1
     [ "${STUB_EMPTY_JOBS:-0}" = "1" ] && exit 0
     if [ "${STUB_JOBS_PAGES:-0}" = "1" ]; then cat "$S/jobs-p1.json"; cat "$S/jobs-p2.json"
+    elif [ "${STUB_JOBS_DUPE:-0}" = "1" ]; then cat "$S/jobs-p1.json"; cat "$S/jobs-p1.json"
+    elif [ "${STUB_JOBS_TOTALS:-0}" = "1" ]; then cat "$S/jobs-p1.json"; cat "$S/jobs-p2b.json"
     else cat "$S/jobs.json"; fi ;;
   repos/*/actions/runs/*)
     [ "${STUB_FAIL_RUN:-0}" = "1" ] && exit 1
@@ -360,6 +419,31 @@ STUB_JOBS_PAGES=1 live classify --run 31126981959 --repo BWBama85/thewilsonnet -
 eq "$LRC" "22" "live: two --paginate pages merge into one complete job list"
 has "$LOUT" "executed NO step: b" "live: ...and the second page's job is present in the verdict"
 
+# THE JOBS READ IS ANCHORED TO THE RUN'S OWN ATTEMPT. The plain `/jobs` endpoint defaults to
+# `filter=latest`, a MOVING target: a re-run landing between the two calls pairs attempt N's run
+# object with attempt N+1's empty job list, which is exactly the never-ran shape. Asserted as a
+# NEGATIVE too, because a verdict assertion alone passes against a version that reads the moving
+# endpoint and happens to get the same answer from a stub.
+live classify --run 31126981959 --repo BWBama85/thewilsonnet --no-annotations
+has "$(cat "$S/calls")" "/attempts/1/jobs" "live: the jobs read is anchored to the run's own attempt"
+hasnt "$(cat "$S/calls")" "runs/31126981959/jobs" "live: ...and the moving filter=latest endpoint is never used"
+# A run with no usable attempt number must NOT fall back to the moving endpoint — that is the same
+# race arriving through the error path.
+printf '%s' '{"id":1,"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' > "$S/run.json"
+live classify --run 1 --repo BWBama85/thewilsonnet --no-annotations
+eq "$LRC" "20" "live: a run with no run_attempt is 20, not a moving-endpoint fallback"
+hasnt "$(cat "$S/calls")" "jobs" "live: ...and no job read is attempted at all"
+printf '%s' "$NEVER_RUN_JSON" > "$S/run.json"
+
+# PAGINATION COMPLETENESS IS NOT A COUNT. A repeat of page 1 in place of page 2 keeps the total
+# right while dropping an executed job and duplicating an idle one — arriving at `never-ran` from
+# evidence that is missing the job which disproves it.
+printf '%s' '{"total_count":3,"jobs":[{"id":2,"name":"b","status":"completed","conclusion":"cancelled","steps":[]}]}' > "$S/jobs-p2b.json"
+STUB_JOBS_DUPE=1 live classify --run 31126981959 --repo BWBama85/thewilsonnet --no-annotations
+eq "$LRC" "20" "live: a duplicated page is unreadable, NOT never-ran"
+STUB_JOBS_TOTALS=1 live classify --run 31126981959 --repo BWBama85/thewilsonnet --no-annotations
+eq "$LRC" "20" "live: pages that disagree about total_count are unreadable"
+
 # Each live read failure is 20 — fail closed, never a verdict.
 STUB_FAIL_RUN=1  live classify --run 31126981959 --repo BWBama85/thewilsonnet
 eq "$LRC" "20" "live: an unreadable RUN is 20"
@@ -409,13 +493,19 @@ has "$LOUT" "ci-health.sh classify --run" "usage: --help documents the live invo
 # grep-assert family (`req_fixed`/`CHECK_FAIL`): only `check_summary` decides this suite's exit
 # status, and it consults `pass`/`fail` alone — so a `req_fixed` failure here would print a
 # diagnostic and be discarded unless every call site remembered to bridge the two counters.
+#
+# AND THEY ARE TOKEN-PRESENCE CHECKS, WHICH IS WEAKER THAN THEIR SUBJECTS SOUND. Each proves the
+# header still SPELLS a thing, not that the surrounding prose still means it — a rewrite that
+# reversed the charter while keeping the word would pass. They are worth having as rename tripwires
+# and are labelled accordingly; the behaviour they describe is pinned by the executable assertions
+# above, not here. (Independent review flagged the original labels as claiming more than this.)
 CHSRC="$(cat "$CH")"
-has "$CHSRC" "23 never-ran" "exit-code table documents never-ran"
-has "$CHSRC" "22 failed"    "exit-code table documents the real-failure code"
-has "$CHSRC" "24 queued"    "exit-code table documents the queued code"
-has "$CHSRC" "20 unknown"   "exit-code table documents the fail-closed code"
-has "$CHSRC" "branch-health" "the header states why this is not an arm of branch-health"
-has "$CHSRC" "repo-settings.sh" "the header states why this is not an arm of repo-settings"
+has "$CHSRC" "23 never-ran" "the header still spells the never-ran code"
+has "$CHSRC" "22 failed"    "the header still spells the real-failure code"
+has "$CHSRC" "24 queued"    "the header still spells the queued code"
+has "$CHSRC" "20 unknown"   "the header still spells the fail-closed code"
+has "$CHSRC" "branch-health" "the header still names branch-health (rename tripwire for the charter argument)"
+has "$CHSRC" "repo-settings.sh" "the header still names repo-settings.sh (rename tripwire for the charter argument)"
 # THE CHARTER. `pr-watch.sh` had to be kept out of `pr-review.sh` for exactly this reason: a guard
 # that grows a wait becomes a different thing, and nothing but a pin stops it. Asserted over the
 # EXECUTABLE lines only, so the header sentence that forbids polling does not satisfy the search
@@ -426,12 +516,12 @@ hasnt "$CHCODE" "while true" "ci-health never loops waiting"
 
 # The practice, the predicate and the classifier must agree that the third class exists.
 PRAC="$(cat base/practices/ci-discipline.md)"
-has "$PRAC" "never-ran" "the practice models the third class"
+has "$PRAC" "never-ran" "the practice still spells the third class"
 has "$PRAC" "issues-and-scope.md" "the practice cites issues-and-scope.md where it forbids the de-flake issue"
-has "$PRAC" "ci-health.sh classify --run" "the practice names the command that decides it"
+has "$PRAC" "ci-health.sh classify --run" "the practice still names the command that decides it"
 # Step 5 (never merge on a flaky re-run) must be SCOPED to results that exist — the carve-out #300
 # asks for. Without it the rule reads as forbidding the re-run of a job that produced no result.
-has "$PRAC" "of a result that exists" "the green-by-retry rule is scoped to results that exist"
+has "$PRAC" "of a result that exists" "the green-by-retry rule still carries its results-that-exist scope"
 
 # ============================ 6. the guard, OBSERVED FAILING ============================
 # A classifier's failure mode is a plausible wrong answer, so the assertions above are themselves
@@ -445,16 +535,19 @@ has "$PRAC" "of a result that exists" "the green-by-retry rule is scoped to resu
 # anything — and every "the assertion went red" test would then pass for the wrong reason,
 # reporting a broken install as a proven mutation. Found by running M1 and getting an empty
 # verdict. The copy also keeps the tracked tree untouched, which is the point.
-mutate() {   # mutate <label> <sed-expr> <witness-that-must-vanish>
-  local label="$1" expr="$2" witness="$3"
+#
+# THE APPLY-AND-PROVE-IT-TOOK STEP IS `check_mutate_line`, THE SHARED PRIMITIVE (check-lib.sh:160),
+# not a local reimplementation. Two suites already drive mutations this way, and it is strictly
+# stronger than the hand-rolled version this replaced: it requires EXACTLY ONE matching line before
+# the edit and NONE after, so a mutation that silently stopped describing the code it mutates fails
+# instead of quietly becoming an assertion about unmodified source. Only the two things it does not
+# model stay local — copying the whole lib tree, and the load probe below.
+mutate() {   # mutate <label> <exact-line> <sed-script>
+  local label="$1" line="$2" script="$3"
   rm -rf "$work/mutlib"
   cp -R "$ROOT/scripts/lib" "$work/mutlib" || { bad "$label: could not copy scripts/lib"; MUT_CH=""; return 1; }
   MUT_CH="$work/mutlib/ci-health.sh"
-  sed "$expr" "$CH" > "$MUT_CH" || { bad "$label: sed failed"; MUT_CH=""; return 1; }
-  if grep -Fq -- "$witness" "$MUT_CH"; then
-    bad "$label: the mutation did NOT apply (the original text is still present) — the assertion below would prove nothing"
-    MUT_CH=""; return 1
-  fi
+  check_mutate_line "$MUT_CH" "$line" "$script" "$label" || { MUT_CH=""; return 1; }
   # ...and the mutant must still LOAD. A copy that cannot run is indistinguishable, from every
   # assertion below, from a guard whose removal changed nothing.
   if ! printf '%s' "$(doc "$R_OK" "$J_NONE")" | bash "$MUT_CH" classify-doc >/dev/null 2>&1; then
@@ -468,8 +561,8 @@ mutate() {   # mutate <label> <sed-expr> <witness-that-must-vanish>
 # M1 — remove the truncation guard. The real hazard: a partial read then looks exactly like the
 # platform having run nothing, so the most dangerous verdict is reached from the least evidence.
 if mutate "M1 truncation guard removed" \
-          's@if ($jobsdoc.total_count) != ($jobs | length) then@if false then@' \
-          'if ($jobsdoc.total_count) != ($jobs | length) then'; then
+          '      elif ($jobsdoc.total_count) != ($jobs | length) then' \
+          's@elif ($jobsdoc.total_count) != ($jobs | length) then@elif false then@'; then
   cd_ "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
              '{"total_count":9,"jobs":[{"id":1,"name":"a","status":"completed","conclusion":"failure","steps":[]}]}')"
   if [ "$RC" = "20" ]; then bad "M1: the truncation assertion did NOT go red — it is not testing the guard"
@@ -481,8 +574,8 @@ MUT_CH=""
 # M2 — check never-ran BEFORE the executed-failure arm. A matrix with a real failure beside an
 # unacquired shard would then be reported as infrastructure, burying the genuine failure.
 if mutate "M2 never-ran wins over a real failure" \
-          's@elif ($bad_ran | length) > 0 then@elif false then@' \
-          'elif ($bad_ran | length) > 0 then'; then
+          '        elif ($bad_ran | length) > 0 then' \
+          's@elif ($bad_ran | length) > 0 then@elif false then@'; then
   cd_ "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' "$MIX")"
   if [ "$VERD" = "failed" ]; then bad "M2: the mixed-matrix assertion did NOT go red"
   else ok; fi
@@ -494,8 +587,8 @@ MUT_CH=""
 # a caller branches on the code, a human reads the word, and a mutant that prints `never-ran` while
 # returning 0 passes any test that looks at only one of them.
 if mutate "M3 verdict word and exit code desynchronized" \
-          's@      return 23 ;;@      return 0 ;;@' \
-          'return 23 ;;'; then
+          '      return 23 ;;' \
+          's@      return 23 ;;@      return 0 ;;@'; then
   cd_ "$(doc "$NEVER_RUN_JSON" "$NEVER_JOBS_JSON")"
   eq "$VERD" "never-ran" "M3: the mutant still PRINTS the right word"
   if [ "$RC" = "23" ]; then bad "M3: the exit-code assertion did NOT go red — the suite is only checking the word"
@@ -507,13 +600,42 @@ MUT_CH=""
 # passes through `s1` unchanged, so a `def s1: .` reads identically on every real repo and only
 # breaks on the one input nobody has locally. That is exactly the class this section exists for.
 if mutate "M4 the one-line sanitizer neutered" \
-          's@def s1: tostring | gsub("\[\\\\n\\\\r\\\\t\]+"; " ");@def s1: tostring;@' \
-          'gsub("[\\n\\r\\t]+"; " ")'; then
+          '    def s1: tostring | gsub("[\\n\\r\\t]+"; " ");' \
+          's@def s1: tostring | gsub(.*$@def s1: tostring;@'; then
   MOUT="$(printf '%s' "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' "$NASTY" "$NASTY_ANN")" \
           | bash "$MUT_CH" classify-doc 2>/dev/null)"
   if [ "$(printf '%s\n' "$MOUT" | wc -l | tr -d ' ')" = "2" ]; then
     bad "M4: the two-line-contract assertion did NOT go red — it is not testing the sanitizer"
   else ok; fi
+fi
+MUT_CH=""
+
+# M5 — restore `(.steps // [])`, the exact fail-open independent review found. A job whose `steps`
+# field never arrived then reads as a job that executed nothing, which is this module's most
+# consequential verdict manufactured out of an unread field. The most important mutation here.
+if mutate "M5 a missing steps array reads as an empty one" \
+          '      elif ($jobs | map((has("steps") | not) or ((.steps | type) != "array")) | any) then' \
+          's@elif ($jobs | map((has("steps") | not) or ((.steps | type) != "array")) | any) then@elif false then@'; then
+  MOUT="$(printf '%s' "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+                             '{"total_count":1,"jobs":[{"id":1,"name":"a","status":"completed","conclusion":"failure"}]}')" \
+          | bash "$MUT_CH" classify-doc 2>/dev/null)"; MRC=$?
+  if [ "$MRC" = "20" ]; then bad "M5: the missing-steps assertion did NOT go red"; else ok; fi
+  has "$MOUT" "never-ran" "M5: ...and without the guard an unread steps field really does read as never-ran"
+fi
+MUT_CH=""
+
+# M6 — point the jobs read back at the moving `filter=latest` endpoint. Its failure mode is a RACE,
+# so it is invisible to every assertion about a verdict; only the negative call-recording assertion
+# catches it, which is exactly why that assertion is written as a negative.
+if mutate "M6 the jobs read is un-anchored from the attempt" \
+          '  jobsraw="$(gh api --paginate "repos/$slug/actions/runs/$OPT_RUN/attempts/$attempt/jobs?per_page=100" 2>/dev/null)" \' \
+          's@/attempts/\$attempt/jobs@/jobs@'; then
+  live classify --run 31126981959 --repo BWBama85/thewilsonnet --no-annotations
+  case "$(cat "$S/calls")" in
+    *"/attempts/1/jobs"*) bad "M6: the attempt-anchoring assertion did NOT go red" ;;
+    *) ok ;;
+  esac
+  has "$(cat "$S/calls")" "runs/31126981959/jobs" "M6: ...and the mutant really does use the moving endpoint"
 fi
 MUT_CH=""
 

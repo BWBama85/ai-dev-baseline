@@ -49,9 +49,13 @@
 #                   scores a non-failing required check).
 #   22 failed     — REAL. At least one non-passing job executed at least one step, so a log exists
 #                   and the ordinary diagnose-the-diff protocol applies.
-#   23 never-ran  — INFRASTRUCTURE. The run concluded non-passing and NOT ONE non-passing job
-#                   executed a single step. Do not debug the diff; there is nothing in it to
-#                   diagnose. Do not file a de-flake issue; there is nothing in the repo to de-flake.
+#   23 never-ran  — The run concluded non-passing and NOT ONE non-passing job executed a single
+#                   step. Do not debug the diff; there is no log and nothing in it to diagnose. Do
+#                   not file a de-flake issue; there is no test to de-flake. Note what this does
+#                   NOT say: it does not say the PROVIDER failed. A manual cancellation, a
+#                   concurrency-group cancellation, a superseded run and a self-hosted runner
+#                   nobody started all produce identical evidence. "It did not run" is proven;
+#                   "it will clear on its own" is a guess, and the stderr advice says so.
 #   24 queued     — the run has NOT STARTED and has been queued for at least <queued-threshold>
 #                   seconds. Nothing has executed, so there is nothing to diagnose yet.
 #   25 pending    — the run has not concluded and is not overdue: in progress, or queued under the
@@ -60,11 +64,19 @@
 #                   list, or a shape no arm describes. FAIL CLOSED — see below.
 #   2  usage      — bad or missing arguments.
 #
-# THE ONE DIRECTION THIS MUST NEVER BE WRONG IN is answering `never-ran` for a run that DID execute.
-# That is the flattering answer — it says the red is not your fault — and it is the one that ships a
-# real failure past a human who stopped reading. So `never-ran` is returned only from POSITIVE
-# evidence that every non-passing job carries an empty `steps` array, and every uncertainty above it
-# resolves to 20. `verify-before-asserting.md` states the rule; this is the arm it governs.
+# THE ONE DIRECTION THIS MUST NEVER BE WRONG IN is answering `never-ran` when a job that DID NOT
+# PASS executed a step. That is the flattering answer — it says the red is not your fault — and it
+# is the one that ships a real failure past a human who stopped reading. So `never-ran` is returned
+# only from POSITIVE evidence that every non-passing job carries an explicit, empty `steps` array,
+# and every uncertainty resolves to 20. `verify-before-asserting.md` states the rule.
+#
+# THE INVARIANT IS SCOPED TO NON-PASSING JOBS, NOT TO THE RUN, and that scoping is deliberate rather
+# than a weakening. It first read "never-ran must never be returned for a run that DID execute",
+# which is a claim this module does not make and should not: a run whose successful shard executed
+# fully beside a cancelled shard that never started has still produced a failure with NO LOG, and
+# the right advice for it is this one. What would be wrong is the SENTENCE, so the reason line
+# reports how many other jobs did run rather than implying none did. (Independent review found the
+# over-broad wording by constructing exactly that document.)
 #
 # A FOURTH EXIT-CODE VOCABULARY, and that is the repo's model rather than a slip. D51 records it —
 # "the existing unreadable code (20) is not a repo-wide fact" — and `pr-watch.sh` states it outright
@@ -82,10 +94,15 @@
 # paragraph above forbids. The verdict therefore rests only on evidence about THIS run; the reason
 # line points a human at the status page, which is where that check belongs.
 #
-# THE LATEST ATTEMPT, and only that one. The run object reports the latest attempt and the jobs
-# endpoint defaults to `filter=latest`, so a re-run supersedes what came before. The reason line
-# prints `attempt N` so this is visible rather than assumed. Classifying an EARLIER attempt would
-# need `/attempts/N` and is out of scope.
+# ONE ATTEMPT, AND THE READS ARE ANCHORED TO IT. The run object reports the latest attempt, and the
+# jobs are then read from `/attempts/<that number>/jobs` rather than from the plain `/jobs`
+# endpoint. That is not tidiness: `/jobs` defaults to `filter=latest`, which is a MOVING target, so
+# a re-run landing between the two calls pairs attempt N's run object with attempt N+1's job list —
+# and a freshly started attempt's jobs are, for a few seconds, exactly the empty-step shape that
+# means `never-ran`. An executed, genuinely failed attempt would be reported as infrastructure.
+# Caught by independent review. A run reporting no usable `run_attempt` is 20, because the fallback
+# of "use the moving endpoint anyway" is that same race arriving through the error path. The reason
+# line prints `attempt N`, so which one was classified is visible rather than assumed.
 #
 # Requires: gh (authenticated) and jq for `classify`; jq only for `classify-doc`.
 
@@ -188,12 +205,28 @@ _ci_classify_doc() {
     | ($run.status // "") as $status
     | ($run.conclusion // null) as $concl
 
-    # A TRUNCATED JOB LIST IS UNREADABLE, NOT AN EMPTY ONE. This is the guard that keeps a partial
-    # read out of the `never-ran` arm: the whole test below is "no non-passing job executed a step",
-    # and a page that never arrived contributes zero jobs, zero steps and therefore looks exactly
-    # like the platform never running anything. Fail closed on the mismatch instead.
-    | if ($jobsdoc.total_count) != ($jobs | length) then
+    # --- three guards that all say the same thing: MISSING EVIDENCE IS NOT EVIDENCE -------------
+    # Every one of them protects the same arm. `never-ran` is decided by counting steps, and a step
+    # count of zero is produced just as readily by a field that never arrived as by a runner that
+    # never started. Each of these was a live fail-open, found by independent review.
+    #
+    # 1. A RUN WITH NO `status`. `($run.status // "")` fell through to the generic pending arm and
+    #    returned 25 with the sentence "attempt 1 is " — a verdict, printed confidently, about a
+    #    document that says nothing. Reproduced: `{run:{conclusion:null}, …}` -> 25.
+    | if (($run.status // null) | ((type != "string") or (. == ""))) then
+        "unknown\nthe run carries no status, so nothing about it can be established"
+    # 2. A TRUNCATED JOB LIST. A page that never arrived contributes zero jobs and zero steps, which
+    #    from here is indistinguishable from the platform having run nothing.
+      elif ($jobsdoc.total_count) != ($jobs | length) then
         "unknown\nthe job list is incomplete (the API reports \($jobsdoc.total_count) job(s), \($jobs | length) were read) — refusing to classify a partial read"
+      elif ($jobs | map(type != "object") | any) then
+        "unknown\nthe job list carries a non-object entry, so what executed cannot be established"
+    # 3. A JOB WITH NO `steps` ARRAY. This was the sharpest of the three: `(.steps // [])` read an
+    #    ABSENT field, a `null`, or any non-array as "this job executed nothing" and returned 23 —
+    #    manufacturing the module`s most consequential verdict out of a field that was never read.
+    #    Reproduced with a completed failed job carrying no `steps` key at all.
+      elif ($jobs | map((has("steps") | not) or ((.steps | type) != "array")) | any) then
+        "unknown\nat least one job carries no readable steps array — a MISSING step list is not an EMPTY one, so what executed cannot be established"
       else
 
     # --- the run has NOT concluded ------------------------------------------------------------
@@ -210,7 +243,14 @@ _ci_classify_doc() {
               "unknown\nthe supplied clock is not a UTC instant, so the queue age cannot be computed"
             else
               ((.now | fromdateiso8601) - ($since | fromdateiso8601)) as $age
-              | if $age >= .queued_threshold_secs then
+              # A NEGATIVE AGE IS A CONTRADICTION, NOT A YOUNG RUN. A run that claims to have
+              # started after the current clock means the API and the clock disagree, and the
+              # arithmetic below would report `-31527000s, under the threshold` — a confident
+              # `pending` derived from nonsense. `adb_age_secs` in common.sh refuses a negative age
+              # for the same reason; this is that rule, one layer in.
+              | if $age < 0 then
+                  "unknown\nthe run reports a start time in the future relative to the supplied clock, so its age cannot be trusted"
+                elif $age >= .queued_threshold_secs then
                   "queued\nattempt \($attempt) has been \($status | s1) for \($age | floor) seconds (threshold \(.queued_threshold_secs)) and has executed nothing"
                 else
                   "pending\nattempt \($attempt) is \($status | s1) (\($age | floor)s, under the \(.queued_threshold_secs)s threshold)"
@@ -228,13 +268,20 @@ _ci_classify_doc() {
     elif $concl == null then
       "unknown\nthe run reports status completed with no conclusion"
 
-    # A workflow that could not START is the WORKFLOW FILE, not the platform — an invalid YAML
-    # key, a bad `uses:` ref, an unresolvable reusable workflow. It produces no jobs at all, so
-    # without this arm it would fall through to the zero-jobs guard and be reported as
-    # unreadable, sending the operator to a status page instead of to the file they just edited.
-    # Deliberately classified REAL: this one IS the diff.
+    # A run that could not START produces no jobs at all, so without this arm it falls through to
+    # the zero-jobs guard and is reported as unreadable — sending the operator to a status page
+    # instead of to the workflow file. Classified `failed` because a log-less start failure is
+    # still something to READ (the run page names it), which is what separates 22 from 23.
+    #
+    # THE CAUSAL CLAIM IS DELIBERATELY WEAK, and it used to be too strong: this said "the workflow
+    # definition itself could not start, which is this diff and not the platform". Independent
+    # review pushed back and it was right twice over — GitHub documents `startup_failure` for check
+    # suites while the workflow-run conclusion list omits it, and even where it appears, "failed
+    # during startup" does not prove a workflow-definition defect. THIS ARM IS ALSO THE ONE SHAPE
+    # HERE WITH NO RECORDED SPECIMEN: 200 runs across two repos yielded only success/failure/null,
+    # so its fixture is hand-written and says so. Name what happened, point at both candidates.
     elif $concl == "startup_failure" then
-      "failed\nattempt \($attempt) concluded startup_failure — the workflow definition itself could not start, which is this diff and not the platform"
+      "failed\nattempt \($attempt) concluded startup_failure — it never got as far as running a job. Check the workflow file and the ref it was dispatched on; the run page states the reason"
 
     # Zero jobs on a concluded, non-passing run. NOT `never-ran`: "nothing executed" and "nothing
     # could be read about what executed" are different claims, and only the first one is evidence.
@@ -251,8 +298,12 @@ _ci_classify_doc() {
           | select( ((.status // "") != "completed")
                     or ((.conclusion // null) == null)
                     or ((.conclusion) | IN("success","skipped","neutral") | not) ) ] ) as $bad
-      | ( [ $bad[] | select((.steps // []) | length > 0) ] )  as $bad_ran
-      | ( [ $bad[] | select((.steps // []) | length == 0) ] ) as $bad_idle
+      | ( [ $bad[] | select(.steps | length > 0) ] )  as $bad_ran
+      | ( [ $bad[] | select(.steps | length == 0) ] ) as $bad_idle
+      # How much of the run executed AT ALL, which is a different question from how much of the
+      # FAILING part did. It is not used to decide anything — it is used to stop the reason line
+      # from claiming more than the evidence supports; see the never-ran arm.
+      | ( [ $jobs[] | select(.steps | length > 0) ] | length ) as $ran_any
       | if ($bad | length) == 0 then
           "unknown\nattempt \($attempt) concluded \($concl | s1) but every job passed, so the failure cannot be attributed"
 
@@ -270,15 +321,21 @@ _ci_classify_doc() {
                + ([$bad_idle[] | (.name // "job") | s1] | join(", "))
              else "" end)
 
-        # THE THIRD CLASS. Every non-passing job carries an empty `steps` array: nothing ran, so the
-        # red says nothing about the diff. The annotation is quoted when it was read, because it is
-        # what a human needs ("not acquired by Runner of type hosted"), but the verdict does not
-        # depend on it.
+        # THE THIRD CLASS. Every job that did not pass carries an empty `steps` array, so the red
+        # says nothing about the diff.
+        #
+        # WHAT THIS PROVES IS NARROWER THAN "THE RUN NEVER RAN", and the reason line now says which.
+        # A run can have a successful shard that executed fully beside a cancelled one that never
+        # started; the FAILURE still has no log, which is the whole point, but "nothing executed"
+        # would be a false sentence about that run. Independent review reproduced exactly that shape
+        # against the first version, and it is why the invariant in this file`s header is scoped to
+        # NON-PASSING jobs rather than to the run.
         else
           ( [ $anns[] | select((.messages // []) | length > 0)
               | "\((.name // "job") | s1): \([(.messages // [])[] | s1] | join("; "))" ] ) as $why
           | "never-ran\nattempt \($attempt) concluded \($concl | s1) and NOT ONE of \($bad_idle | length) non-passing job(s) executed a step: "
             + ([$bad_idle[] | "\((.name // "job") | s1) (\((.conclusion // .status // "?") | s1))"] | join(", "))
+            + (if $ran_any > 0 then " (\($ran_any) other job(s) in this run DID execute)" else "" end)
             + (if ($why | length) > 0 then " — annotation: " + ($why | join(" | ")) else "" end)
         end
     end
@@ -295,11 +352,18 @@ _ci_classify_doc() {
     green)     return 0 ;;
     failed)    return 22 ;;
     never-ran)
-      echo "ci-health: nothing executed, so there is nothing in this diff to diagnose and nothing in this repo to de-flake (base/practices/issues-and-scope.md)." >&2
-      echo "ci-health: check https://www.githubstatus.com/ and re-run once capacity returns. That is NOT green-by-retry — no earlier result is being overridden, because there was never a result." >&2
+      echo "ci-health: nothing that failed here executed a step, so there is nothing in this diff to diagnose and no test to de-flake (base/practices/issues-and-scope.md)." >&2
+      # WHAT THE EVIDENCE SUPPORTS, AND NOT ONE WORD MORE. This used to say "check githubstatus and
+      # re-run once capacity returns", which asserts a PROVIDER OUTAGE — and an empty step list is
+      # produced just as well by a manual cancellation, a concurrency-group cancellation, a run
+      # superseded by a newer one, or a self-hosted runner nobody brought up. Independent review
+      # caught the overclaim. "It did not run" is proven; "it will clear on its own" is not, and it
+      # is the flattering half.
+      echo "ci-health: the evidence says it did NOT run; it does not say why. A platform incident, an unacquired runner, a concurrency cancellation and a manual cancellation all look like this — check https://www.githubstatus.com/ and who cancelled it before assuming it clears on its own." >&2
+      echo "ci-health: a re-run here is NOT green-by-retry: no earlier result is being overridden, because there was never a result." >&2
       return 23 ;;
     queued)
-      echo "ci-health: the run has executed nothing yet. Check https://www.githubstatus.com/ and this repo's concurrency limits before diagnosing the diff." >&2
+      echo "ci-health: the run has executed nothing yet, so there is nothing to diagnose. A concurrency group can legitimately hold a run for hours — check https://www.githubstatus.com/ and this repo's concurrency limits before concluding anything." >&2
       return 24 ;;
     pending)   return 25 ;;
     unknown)
@@ -316,11 +380,13 @@ _ci_classify_doc() {
 
 # --- the live reads ------------------------------------------------------------------------------
 cmd_classify() {
-  local slug runraw jobsraw jobsdoc annraw doc now run_url
+  local slug runraw jobsraw jobsdoc annraw doc now run_url attempt
 
   [ -n "$OPT_RUN" ] || { echo "ci-health: classify requires --run <id>" >&2; return 2; }
   case "$OPT_RUN" in
-    ''|*[!0-9]*) echo "ci-health: --run must be a numeric workflow-run id (got '$OPT_RUN')" >&2; return 2 ;;
+    ''|*[!0-9]*)
+      printf 'ci-health: --run must be a numeric workflow-run id (got %s)\n' "$(adb_display_value "$OPT_RUN")" >&2
+      return 2 ;;
   esac
 
   adb_require_gh jq || return 20
@@ -344,23 +410,48 @@ cmd_classify() {
   [ -n "$runraw" ] \
     || { echo "ci-health: run $OPT_RUN in $slug returned an empty response body" >&2; return 20; }
 
-  # `--paginate` concatenates ONE document per page; `jq -s` slurps them into an array, and the
-  # merge below rebuilds the single `{total_count, jobs}` shape the classifier expects. The
-  # `total_count` of the FIRST page is the authoritative total — that is what the completeness
-  # guard in the classifier compares the merged array against.
-  jobsraw="$(gh api --paginate "repos/$slug/actions/runs/$OPT_RUN/jobs?per_page=100" 2>/dev/null)" \
-    || { echo "ci-health: could not read the jobs of run $OPT_RUN in $slug" >&2; return 20; }
+  # ANCHOR THE JOBS READ TO THE ATTEMPT THE RUN DOCUMENT DESCRIBES (independent-review find). The
+  # plain `/jobs` endpoint defaults to `filter=latest`, which is a MOVING target: a re-run landing
+  # between these two calls pairs attempt N's run object with attempt N+1's job list — and attempt
+  # N+1's jobs are, for a few seconds, exactly the empty-step shape that means `never-ran`. An
+  # executed, genuinely failed attempt would then be reported as infrastructure. `/attempts/<n>/jobs`
+  # is immutable once that attempt has concluded, so the pair can no longer disagree.
+  attempt="$(printf '%s' "$runraw" | jq -r '.run_attempt // empty' 2>/dev/null)"
+  case "$attempt" in
+    ''|*[!0-9]*)
+      # No usable attempt number is a fact this module could not establish, and the fallback of
+      # "use the moving endpoint anyway" is the race above, re-entered through the error path.
+      echo "ci-health: run $OPT_RUN in $slug reports no usable run_attempt — refusing to pair it with a moving job list" >&2
+      return 20 ;;
+  esac
+  jobsraw="$(gh api --paginate "repos/$slug/actions/runs/$OPT_RUN/attempts/$attempt/jobs?per_page=100" 2>/dev/null)" \
+    || { echo "ci-health: could not read the jobs of run $OPT_RUN attempt $attempt in $slug" >&2; return 20; }
   [ -n "$jobsraw" ] \
-    || { echo "ci-health: the jobs of run $OPT_RUN in $slug returned an empty response body" >&2; return 20; }
+    || { echo "ci-health: the jobs of run $OPT_RUN attempt $attempt in $slug returned an empty response body" >&2; return 20; }
+  # `--paginate` concatenates ONE document per page; `jq -s` slurps them into an array, and the
+  # merge below rebuilds the single `{total_count, jobs}` shape the classifier expects.
+  #
   # EVERY PAGE IS TYPE-CHECKED BEFORE IT IS MERGED. Iterating a non-object does not fail in jq — a
   # malformed page would flatten to nothing and silently shrink the job list, which is the same
   # partial read the completeness guard exists to catch, arriving through a door it cannot see.
+  #
+  # AND COMPLETENESS IS NOT A COUNT (independent-review find). Trusting only the first page's
+  # `total_count` and comparing lengths accepts a page SWAP: a repeat of page 1 in place of page 2
+  # keeps the total right while dropping an executed job and duplicating an idle one — arriving at
+  # `never-ran` from evidence that is missing the very job that disproves it. So every page must
+  # agree on the total, and the merged job ids must be unique.
   jobsdoc="$(printf '%s' "$jobsraw" | jq -s -c '
       if length == 0 then error("no pages") else . end
       | ( [ .[] | if type != "object" then error("page is not a JSON object") else . end ] ) as $pages
-      | { total_count: ($pages[0].total_count // error("a page carries no total_count")),
-          jobs: [ $pages[] | (.jobs // error("a page carries no jobs array"))[] ] }' 2>/dev/null)" \
-    || { echo "ci-health: could not parse the jobs of run $OPT_RUN in $slug" >&2; return 20; }
+      | ( $pages[0].total_count // error("a page carries no total_count") ) as $total
+      | if ([$pages[] | .total_count] | unique | length) != 1
+        then error("the pages disagree about total_count") else . end
+      | ( [ $pages[] | (.jobs // error("a page carries no jobs array"))[] ] ) as $all
+      | if ([$all[] | .id] | any(. == null)) then error("a job carries no id") else . end
+      | if (([$all[] | .id] | unique | length) != ($all | length))
+        then error("the merged job list repeats an id, so a page was served twice") else . end
+      | { total_count: $total, jobs: $all }' 2>/dev/null)" \
+    || { echo "ci-health: could not parse the jobs of run $OPT_RUN attempt $attempt in $slug (see the completeness rules in this file)" >&2; return 20; }
 
   # ANNOTATIONS ARE ENRICHMENT, so they are read LAST, only for the jobs that executed nothing, and
   # a failure here degrades the reason line rather than the verdict. Reading them for every job
@@ -443,12 +534,14 @@ parse_classify_opts() {
       --queued-threshold)
         [ "$#" -ge 2 ] || { echo "ci-health: --queued-threshold needs a value" >&2; exit 2; }
         case "$2" in
-          ''|*[!0-9]*) echo "ci-health: --queued-threshold must be a non-negative integer (got '$2')" >&2; exit 2 ;;
+          ''|*[!0-9]*)
+            printf 'ci-health: --queued-threshold must be a non-negative integer (got %s)\n' "$(adb_display_value "$2")" >&2
+            exit 2 ;;
         esac
         OPT_THRESHOLD="$2"; shift ;;
       --no-annotations) OPT_ANNOTATIONS=0 ;;
       -h|--help) usage; exit 0 ;;
-      *) echo "ci-health: unknown option '$1'" >&2; usage >&2; exit 2 ;;
+      *) printf 'ci-health: unknown option %s\n' "$(adb_display_value "$1")" >&2; usage >&2; exit 2 ;;
     esac
     shift
   done
@@ -462,5 +555,6 @@ case "$SUB" in
     [ "$#" -eq 0 ] || { echo "ci-health: classify-doc takes no arguments (document on stdin)" >&2; exit 2; }
     _ci_classify_doc ;;
   -h|--help)    usage; exit 0 ;;
-  *) echo "ci-health: unknown subcommand '$SUB' (expected 'classify' or 'classify-doc')" >&2; usage >&2; exit 2 ;;
+  *) printf 'ci-health: unknown subcommand %s (expected classify or classify-doc)\n' "$(adb_display_value "$SUB")" >&2
+     usage >&2; exit 2 ;;
 esac

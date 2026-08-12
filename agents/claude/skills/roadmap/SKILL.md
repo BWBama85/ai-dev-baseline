@@ -299,15 +299,27 @@ active release milestone; always **exclude the roadmap issue itself**.
    exists to prevent. So the last condition is repo health, read **live at the moment of assertion**
    (`base/practices/verify-before-asserting.md`) and evaluated by `branch-health`:
    - **green** → all checks on the default branch's HEAD commit concluded non-failing → proceed.
-   - **not-green** → withhold the cut and name the failing check. This is a `/debug` signal.
+   - **not-green** → withhold the cut and name the failing check. Normally a `/debug` signal —
+     **but ask whether the failing check actually RAN before you call it one** (#300). A job that
+     never acquired a runner still reports a check run, with conclusion `cancelled`, so it lands
+     **here**, scored as failing, and looks exactly like a broken build. Verified against the
+     2026-08-06 outage commit `03486b7`: its two check runs are `ci` (cancelled) and `quality`
+     (success), and the shipped predicate answers `not-green / failing: ci`.
+
+     ```bash
+     # The failing check names its run; classify it before diagnosing anything.
+     bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>   # 23 = nothing that failed executed a step
+     ```
+
+     **23** means there is no log and nothing in the diff to look at — withhold the cut, say the
+     branch is unverified rather than broken, and re-run. **22** means a real failure with a log,
+     which is the `/debug` signal. Reporting a never-ran job as a red build sends someone to bisect
+     a commit that was never compiled.
    - **indeterminate** → **fail closed.** A build whose state cannot be established is treated as
-     unshippable, never as green. **Say what kind of unestablished it is**, because two very
-     different situations land here and only one is a repo problem: a workflow that was never
-     wired up, and a run whose job was never acquired by a runner (#300). They are byte-identical
-     from a commit — nothing reported either way — so `branch-health` cannot separate them and does
-     not try. `bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>` can: **23** means nothing executed, which
-     clears on its own and needs no change here, and **22** means a real failure with a log to
-     read. Report which, rather than "unverifiable" alone.
+     unshippable, never as green. A run that never reported **at all** — one still queued, or one
+     whose check run never appeared — lands here rather than above, and the same command separates
+     it from a workflow that was never wired up: **24** is a queue that has executed nothing, while
+     a genuine wiring gap needs a repo change.
    - **no-ci** → the repo has no CI at all → **skip** the condition and say so, **naming the
      declaration**. A repo that never adopted CI must not be deadlocked out of ever releasing
      (#24) — but this is now something the owner **declares**, not something the probes infer

@@ -15,10 +15,11 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   `base/practices/ci-discipline.md` modelled every CI failure as exactly one of two things. During
   the GitHub Actions `major_outage` of 2026-08-06 a run concluded `failure` after 1h46m having
   executed **zero steps**, annotated *"The job was not acquired by Runner of type hosted even after
-  multiple attempts"*. Step 1 of that protocol — read the failure log — was unexecutable, and step 2
-  offered two boxes, neither of which fits. Worse, the closest of the two routes to "file a de-flake
-  issue", which `issues-and-scope.md` forbids on both of its questions: nobody does it, and nothing
-  in the repo breaks if nobody ever does. Two practices, opposite instructions, one event.
+  multiple attempts"*. That protocol's "read the failure log" step was unexecutable, and its
+  "classify" step offered two boxes, neither of which fits. Worse, the closer of the two routes to
+  "file a de-flake issue", which `issues-and-scope.md` forbids on both of its questions: nobody does
+  it, and nothing in the repo breaks if nobody ever does. Two practices, opposite instructions, one
+  event.
 
   - **`scripts/lib/ci-health.sh classify --run <id>`** answers it: `0` green · `22` a real failure
     (a non-passing job executed steps, so there is a log) · `23` **never-ran** · `24` queued past a
@@ -33,9 +34,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     non-passing job executed nothing. A truncated job list, a run with no jobs, a failure nothing
     can be attributed to, and every malformed response resolve to `20`, never to "probably the
     platform".
-  - **A mixed matrix is a REAL failure.** One shard failing an assertion beside three that never
-    acquired a runner is `22`, with the idle shards still named — reporting it as infrastructure
-    would bury two genuine failures behind "not your fault".
+  - **A mixed matrix is a REAL failure.** A shard failing an assertion beside one that never
+    acquired a runner is `22`, with the idle shard still named — reporting it as infrastructure
+    would bury a genuine failure behind "not your fault".
   - **`startup_failure` is the diff, not the platform** — a workflow that could not start produces
     no jobs at all, and without its own arm it would have been reported as unreadable.
   - **The practice now scopes green-by-retry to results that exist.** "Never merge on a flaky re-run
@@ -56,15 +57,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **The arm an outage actually reaches is `20`** (an API read failed), and it now says so: if the
     API itself is degraded this clears on its own, and nothing in the repo needs changing. The
     exit-code table and `docs/repo-settings.md` state which codes an incident can and cannot produce.
-  - **`branch-health` keeps its verdicts, and `/roadmap` gains the words.** A workflow that was
-    never wired up and a job that was never acquired are byte-identical *from a commit* — nothing
-    reported either way — so the predicate that reads a commit cannot separate them and does not
-    try. Both stay `indeterminate`, still fail-closed; adding an outage verdict there would have put
-    a transient, uncheckable claim into the enum `release-ready` maps to `met`. The pointer lives in
-    `base/workflows/roadmap.md`, which now tells the agent to say *which* kind of unestablished this
-    is, and **not** in the reason line: line 2 is a contract a caller parses (one is compared for
-    exact equality), and a fixed parenthetical there is 130 characters of the same advice on every
-    readiness check.
+  - **An unacquired job reads as a RED branch, not an unreported one — so `/roadmap`'s `not-green`
+    arm is where the guidance went.** The intuition is backwards: GitHub creates the check run
+    anyway and concludes it `cancelled`, which `branch-health` scores as failing. Verified against
+    the cited commit `03486b7` — check runs `ci` (cancelled) and `quality` (success), predicate
+    answers `not-green / failing: ci`. That arm now tells the agent to ask whether the failing check
+    **executed** before calling it a broken build, because reporting a never-ran job as a red build
+    sends someone to bisect a commit that was never compiled. `branch-health` keeps its verdict set:
+    an unverified branch must not cut either way, and a transient claim that cannot be checked from
+    a commit does not belong in the enum `release-ready` maps to `met`.
   - `/debug` and `docs/philosophy.md` restated the binary model and now carry the three-class one; a
     negative `fact-drift` pin with all three real superseded spellings keeps it from coming back.
 

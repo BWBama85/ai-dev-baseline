@@ -222,12 +222,16 @@ case (arming a PR that can never merge is worse than not arming it); `14` is a j
 gates nothing, which would let auto-merge land a red build — the exact hole this all exists to
 close.
 
-**A platform outage can produce only `20`, and only from the three API reads** (#300). Codes
-`10`–`14` compare a *statically discovered* job set against *configured* branch protection, and an
-incident moves neither — so `13` in particular is a configuration verdict that an outage cannot
-cause and cannot clear, and telling the operator to check a status page for it wastes the trip.
-The `20` arm says the opposite out loud: if the API itself is degraded, this clears on its own and
-nothing here needs changing.
+**A platform outage cannot produce `10`–`14`** (#300). Every one of them compares a *statically
+discovered* job set against *configured* branch protection, and an incident moves neither — so `13`
+in particular is a configuration verdict that an outage cannot cause and cannot clear, and telling
+the operator to check a status page for it wastes the trip. The `20` arm says the opposite out loud:
+if the API itself is degraded, this clears on its own and nothing here needs changing.
+
+Note the boundary precisely, because the tempting shorter claim ("an outage produces only `20`") is
+false: `require_gh` runs `gh auth status` **before** `automerge-ok` is entered and exits `1` on
+failure, so an API degraded enough to break authentication never reaches this table at all. Of the
+codes the table *does* define, `20` is the one an incident reaches.
 
 That is still a question about *settings*. Whether a **run** executed anything is a different
 question with its own home — `ci-health.sh classify --run <id>`, which returns `23` for a run that
