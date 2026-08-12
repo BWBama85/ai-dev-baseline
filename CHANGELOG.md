@@ -9,6 +9,94 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **The adoption completion contract, and a verifier that fails closed** (#81; D61).
+
+  `/adopt` (#20) answers *"what does this project already have, and what must be reconciled"*. It
+  never answered *"is this project now ready to **run** the loop"*, and the gap has a measured
+  failure mode rather than a theoretical one: one surveyed repo came out of adoption with a
+  `Next release` milestone holding **zero issues**, so `/roadmap` correctly emitted nothing and
+  adoption "succeeded" having produced a dead flow.
+
+  `scripts/lib/adopt-readiness.sh` is the contract and the verifier — twelve rungs, each a line
+  item from the issue's own checklist, each carrying the **owner** who must act on it (`agent` or
+  `owner`). That column is the half of *"names precisely what remains **and who must decide it**"*
+  a pass/fail cannot express, and it is why a read-only verifier is sufficient: a verdict that
+  repaired the `agent` rungs would still have to hand back the `owner` ones.
+
+  - **It fails closed.** A rung nobody reported is `unknown`, and `unknown` is never green —
+    `verdict` reads the *contract* rather than only its stdin, so a caller that forgets a fact
+    cannot shrink the contract to whatever it remembered (a shrunken contract is trivially green).
+    Every report states how many rungs it evaluated, because a verifier's failure mode is silence
+    and `0 of 12` must not read like a clean run. `red` (something remains) and `indeterminate`
+    (a fact could not be established) are separate verdicts with separate exit codes, because
+    they need different next moves.
+  - **It reports; it never repairs.** D60 bounds `/adopt` to a scan and #326 owns executing the
+    migration plan, so a verifier that fixed what it found would be that executor under another
+    name. The tracker writes the issue describes are already shipped — `/roadmap`'s step 4b sweeps
+    unmilestoned issues to `Backlog` idempotently — and this verifies them rather than
+    re-implementing them.
+  - **Detection is not working.** The gate rung is met only against a **receipt** that the gates
+    were executed at this commit, with this gate configuration, and passed; all three key it,
+    because each invalidates it for a different reason. `receipt run` is the only producer — a bare
+    `write` would have let a caller satisfy the rung by creating a file — and a *failing* run still
+    writes one, because "ran and went red" and "never ran" are different facts. A project with **no
+    detectable gate** is red and loud, deliberately inverting `project-gates.sh`'s own
+    emit-nothing-on-an-unknown-ecosystem contract: right for a gate runner, wrong for an adoption
+    that would otherwise finish with enforcement silently off.
+  - **A pre-existing milestone gets an answer, not a reclassification.** `Audit Results` appeared
+    in 3 of the 4 surveyed repos; GitHub's one-milestone rule makes issues parked there invisible
+    to release composition (80 in one repo). Each such milestone now needs a `milestone:<title>`
+    row in the roadmap artifact's `## Decisions` — the shipped, owner-authoritative table
+    `/roadmap` never rewrites. The rung checks that an answer **exists**, not which answer it is:
+    classifying the prose would add a grammar that can drift and buy nothing a read-only reporter
+    can act on. The one-milestone tension is not resolved; it is made *visible*, with each
+    milestone's open-issue count named.
+  - **Split for testability**, the same way `release-counts` / `release-ready` already are:
+    `probe` (filesystem only) and `tracker` (a JSON object in, rung records out) hold every rule
+    and are hermetic; `facts` is the one thin subcommand that touches the network and classifies
+    nothing. `status` composes all four and is the re-runnable entry point, reachable as
+    `baseline adopt status`.
+
+  **Every guard was observed failing** — 18 mutations against a tree copy, each required to make
+  the suite red on its *own* named witness. Three real fail-OPEN defects were caught that way, and
+  each would have reported a broken project as fine: a gate count that grepped a human-readable
+  table for `run:` (which it prints *without* a colon), so a repo with a real gate counted zero and
+  the axis reported N/A; a jq filter that dereferenced `.title` inside `$d | index(…)` where jq has
+  rebound `.`, whose abort a `2>/dev/null` swallowed into "every milestone is dispositioned" for a
+  project with 44 issues in an undispositioned one; and a `while read` that dropped the final
+  record of every `$(…)`-captured record set. None was visible by reading.
+
+  One checklist item is deliberately **absent**: the contract's *"project knowledge map (#33)"*
+  cannot be a rung, because #33 was closed `NOT_PLANNED` and requiring it would make the contract
+  permanently red for every project. The reason is recorded in the contract itself.
+  <!-- adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was dropped, and tracks nothing -->
+
+- **PHP quality gates, and an ecosystem set that grows by addition** (#81).
+
+  `project-gates.sh` detected Node, Rust, Go and Python only, so a PHP project was a *recognised*
+  project root with **zero gates** — `detect` printed nothing and exited 0, exactly as it does for
+  a directory containing no project at all. `adopt-lib.sh stack` already answered `php` for the
+  same tree, so the two libraries disagreed about whether the repo was even known. One of the four
+  surveyed adoption targets is a 139-issue PHP repo.
+
+  Detection is now an ordered **adapter registry** — the issue's *"extensible, not a fixed list"*.
+  A sixth ecosystem is one `_adb_eco_<name>` function plus one token in `_ADB_ECOSYSTEMS`, and the
+  existing four adapters moved verbatim with single-primary first-wins preserved byte-for-byte.
+  The PHP adapter prefers a declared `composer.json` script over an inferred binary and a
+  Composer-pinned `vendor/bin/<tool>` over the same tool on `PATH`, resolving `typecheck` to
+  PHPStan or Psalm, `test` to PHPUnit, `lint` to PHP_CodeSniffer, and `format` to
+  `php-cs-fixer --dry-run` — never an in-place fixer, because a gate that rewrites the tree is a
+  mutation wearing a verification's clothes.
+
+  **PHP is last, and that is the polyglot answer.** A WordPress plugin routinely carries both a
+  `composer.json` and a `package.json`; such a repo keeps its **Node** gates, because those are
+  commands the project itself declared, and layers PHP through the open-set `[gates]` override.
+  Putting PHP first — as `adopt-lib.sh stack` does, for a different question — would silently
+  replace declared gates with inferred ones for every already-adopted mixed repo. A repo with only
+  `composer.json` now gets gates instead of silence. `_adb_json_script_has` is extracted from
+  `_adb_pkg_has` so `composer.json` reuses that thrice-corrected parser rather than starting a
+  second copy of it.
+
 - **`/adopt` — bringing the baseline into a project that already has its own config** (#20,
   consolidating #21 and #29; D60).  <!-- adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work / #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
 

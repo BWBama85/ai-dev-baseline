@@ -4847,3 +4847,81 @@ limit: none of them is sufficient alone.
              non-mutation guard that never exercised the workflow's write paths — and both are the
              can't-fail shape this repo keeps paying for.
 - baseline-issue: n/a — this repo IS the baseline; #20 is the tracking issue.
+
+## D61 — readiness is a REPORT with an owner per rung, the gate rung needs a receipt, and a thematic milestone is answered rather than reclassified
+- date:      2026-08-12
+- category:  project-delta
+- unknown:   #81 asks adoption to "end ready-to-run — no stone left unturned" and lists a ten-item
+             completion contract, but four of its requirements admit materially different
+             implementations and the gap-analysis pass returned all four as BLOCKING.
+             **(a)** Does the verifier MUTATE? The issue says adoption must "propose a populated
+             first release", "sweep the remainder into Backlog" and leave "zero open issues in
+             limbo" — all of which are tracker writes — while D60 bounds `/adopt` to a scan that
+             creates only two files that do not yet exist, and #326 owns executing the plan.
+             **(b)** How can a re-runnable status command "execute each gate once" when
+             `project-gates.sh run` executes arbitrary project-configured commands and several
+             ecosystems' `format` gates rewrite files in place? "Re-running adoption changes
+             nothing" is one of the issue's own acceptance criteria.
+             **(c)** What happens to a pre-existing thematic milestone? GitHub gives an issue
+             exactly one milestone, so an issue cannot inhabit both `Audit Results` and a release;
+             the issue itself says the tension "is real and currently unresolved".
+             **(d)** Should PHP go first or last in a first-wins ecosystem chain, given that a
+             WordPress plugin carries both a `composer.json` and a `package.json` and
+             `adopt-lib.sh stack` already tests WordPress BEFORE node?
+- decision:  **(a) It reports; it never repairs — and every rung names an OWNER.** D60's boundary
+             holds unchanged, so `adopt-readiness.sh` is a reader. What makes that sufficient
+             rather than a cop-out is the `agent`/`owner` column: the issue's real requirement is
+             that an unmet contract "names precisely what remains **and who must decide it**", and
+             a verdict that repaired the `agent` rungs would still have to hand back the `owner`
+             ones. So the column carries the whole answer and nothing is mutated to get it. The
+             tracker writes the issue describes are already shipped elsewhere — `/roadmap`'s step
+             4b sweeps limbo idempotently — and this verifies them rather than re-implementing
+             them.
+             **(b) A RECEIPT, and `run` is its only producer.** The gate rung is met only against a
+             record that the gates executed at this HEAD, with this gate-configuration digest, and
+             passed; all three key it because each invalidates it for a different reason. Execution
+             is a separate, consent-gated act, so the observational path stays safe to run on a
+             repo you care about. The first draft exposed a bare `receipt write`, which would have
+             let a caller satisfy "detection is not working" by creating a file — the defect the
+             rung exists to catch, one level up. A FAILING run still writes a receipt, because "ran
+             and went red" and "never ran" are different facts with different remedies.
+             **(c) The milestone is ANSWERED, not reclassified.** A pre-existing milestone needs a
+             `milestone:<title>` row in the roadmap artifact's `## Decisions` — the shipped,
+             owner-authoritative table `/roadmap` never rewrites, and already the home for exactly
+             this kind of retirable tracker question. The rung asks whether an answer EXISTS, not
+             which answer it is: classifying the prose into backlog/theme/merge/leave would add a
+             grammar that can drift, and would buy nothing a read-only reporter can act on. The
+             one-milestone tension is therefore not resolved — it is made VISIBLE, with the open
+             issue count named, which is what the issue actually asks for ("never silently
+             ignored").
+             **(d) PHP is LAST, and the divergence from `stack` is deliberate.** The two answer
+             different questions: `stack` labels the project for the upstream pin (where "node" is
+             the wrong word for a WordPress plugin), while this decides which commands gate a
+             commit — and a mixed repo's `package.json` scripts are commands the project itself
+             declared. Putting PHP first would silently replace them for every already-adopted
+             mixed repo. `stack`'s WordPress probe is also a recursive grep, and this code runs at
+             every turn-end. What the issue's "extensible, not a fixed list" bought instead is the
+             adapter registry: a sixth ecosystem is one function plus one token in
+             `_ADB_ECOSYSTEMS`, with first-wins preserved byte-for-byte.
+             **One checklist item is dropped.** The contract's "project knowledge map (#33)" cannot
+             be a rung: #33 was closed NOT_PLANNED, so requiring it would make the contract
+             permanently red for every project. The contract records why, in the file itself.  <!-- adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was dropped, and tracks nothing -->
+- placement: `scripts/lib/adopt-readiness.sh` (the contract + predicates), `scripts/check-adopt-readiness.sh`
+             (the suite + 18-mutation harness), `scripts/lib/project-gates.sh` (the adapter
+             registry + PHP), `base/workflows/adopt.md` step 12, `bin/baseline adopt`.
+- reason:    Each of the four is a boundary the issue left open in a direction where guessing wrong
+             is expensive: (a) would have reversed a recorded decision by accident, (b) would have
+             made a verification pass mutate the tree it was verifying, (c) would have invented a
+             taxonomy migration nobody asked for, (d) would have changed gate behaviour for every
+             existing polyglot repo. Recording them is what lets the next reader see that the
+             narrow answers were chosen rather than defaulted into.
+             **What the suite changed, recorded because the direction is the point.** Three
+             fail-OPEN defects were caught by writing the negative half first, and every one of
+             them would have reported a broken project as fine: a gate count that grepped a
+             human-readable table for `run:` (which it prints without a colon) so a repo with a
+             real gate counted zero and reported N/A; a jq filter that dereferenced `.title` inside
+             `$d | index(…)` where jq has rebound `.`, whose abort a `2>/dev/null` swallowed into
+             "every milestone is dispositioned" for a project with 44 issues in an undispositioned
+             one; and a `while read` that dropped the final record of every `$(…)`-captured record
+             set. None was visible by reading. All three are pinned by mutations.
+- baseline-issue: n/a — this repo IS the baseline; #81 is the tracking issue.

@@ -83,10 +83,10 @@ TAB="$(printf '\t')"
 # It is NOT a severity. An `agent` rung left undone blocks exactly as hard as an `owner` one.
 #
 # ONE CHECKLIST ITEM IS DELIBERATELY ABSENT, and its absence is recorded rather than silent.
-# #81's list includes "Project knowledge map created (#33) for a foreign codebase". #33 was
-# closed NOT_PLANNED on 2026-07-31 — the knowledge map does not exist and is not planned — so a
-# rung requiring it could never go green for any project, which is a permanently red contract
-# rather than a contract. It is dropped, and this paragraph is why.  (adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was dropped, and tracks nothing)
+# #81's list includes "Project knowledge map created (#33) for a foreign codebase", and that  (adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was DROPPED; it tracks nothing)
+# issue was closed NOT_PLANNED on 2026-07-31 — the knowledge map does not exist and is not
+# planned — so a rung requiring it could never go green for any project, which is a permanently
+# red contract rather than a contract. It is dropped, and this paragraph is why.
 #
 # Adding a rung means adding a row here and a producer for it; `verdict` needs no change,
 # because it reads the contract rather than a second list of its own.

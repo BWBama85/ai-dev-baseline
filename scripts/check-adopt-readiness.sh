@@ -104,8 +104,8 @@ eq "$bad_rows" "0" "contract: every row is <rung>TAB<agent|owner>TAB<title>"
 # contract itself and die on a perfectly correct caller.
 dupes="$(printf '%s\n' "$out" | cut -f1 | sort | uniq -d | wc -l | tr -d ' ')"
 eq "$dupes" "0" "contract: rung names are unique"
-# #33 was closed NOT_PLANNED, so the knowledge-map checklist item must NOT be a rung — a rung
-# nothing can ever satisfy is a permanently red contract.  (adb-claim-ok: #33 was closed NOT_PLANNED — this asserts the ABSENCE of a rung for it; it tracks nothing)
+# The knowledge-map checklist item must NOT be a rung: its issue #33 was closed NOT_PLANNED, and  (adb-claim-ok: #33 was closed NOT_PLANNED — this asserts the ABSENCE of a rung for it; it tracks nothing)
+# a rung nothing can ever satisfy is a permanently red contract.
 hasnt "$out" "knowledge" "contract: no rung for the NOT_PLANNED knowledge map"
 ar contract extra >/dev/null 2>&1; eq $? 2 "contract: rejects arguments"
 
