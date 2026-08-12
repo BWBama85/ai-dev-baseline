@@ -52,13 +52,39 @@ adb_shape_all "$shape" warning | while IFS= read -r m; do
   echo "warning: $m" >&2
 done
 
+# REFUSE AN ABSENT ROOT EXPLICITLY, AND BEFORE THE in_git CHECK (#278, D59). `adb_repo_shape`
+# answers a path it cannot represent in its record format with a `warning` and NO facts at all —
+# printed just above, so the operator already has the reason. This branch turns that into a
+# refusal.
+#
+# IT IS CHECKED FIRST because the in_git test cannot speak for this case: with no facts emitted,
+# `in_git` is EMPTY, which is `!= "1"`, so the run would exit reporting "not inside a git repo"
+# about a directory that is a perfectly good git repo. A wrong reason sends the operator to run
+# `git init` in a repo that has one.
+#
+# AND IT IS ITS OWN TEST rather than a job left to `cd "$ROOT"` below, which only LOOKS like it
+# would catch this. `cd ""` is not portable: bash **5.3** rejects it ("null directory") — the
+# release that changed this, not 5.x generally — while bash 3.2, still the /bin/bash on every
+# macOS, SUCCEEDS and silently stays put, which would write agents.toml into whatever directory
+# the operator happened to be in. This project pins a 5.3 floor, so today that fallback does
+# refuse; it refuses by accident, with an empty path in its message, and an accident is not a
+# guard. Measured here: 3.2.57 returns 0 and stays, 5.3.15 returns non-zero.
+ROOT="$(adb_shape_val "$shape" root)"
+if [ -z "$ROOT" ]; then
+  echo "ERROR: refusing to initialize — this path cannot be represented in the repo-shape record" >&2
+  echo "  format, so the root it resolves to cannot be trusted (see the warning above)." >&2
+  echo "  A directory name containing a TAB or a NEWLINE is not supported: the record splits and" >&2
+  echo "  the parsed root silently becomes a DIFFERENT directory, which agent-init would then" >&2
+  echo "  write into. Rename the directory and run agent-init again." >&2
+  exit 1
+fi
+
 if [ "$(adb_shape_val "$shape" in_git)" != "1" ]; then
   echo "ERROR: not inside a git repo — agent-init is a per-project initializer for a git repo." >&2
   echo "  Run it anywhere inside your project's repo (it resolves the git root itself), or" >&2
   echo "  'git init' this directory first if it really is a standalone project." >&2
   exit 1
 fi
-ROOT="$(adb_shape_val "$shape" root)"
 
 # Surface any non-tidy repo shape BEFORE writing anything, so the operator sees exactly what
 # agent-init can and cannot manage. None of these are errors — but agent-init must never pretend

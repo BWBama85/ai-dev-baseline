@@ -7,6 +7,68 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Fixed
+
+- **A repo path containing a tab or newline made `agent-init` initialize a different, existing
+  directory — silently** (#278, D59).
+
+  `adb_repo_shape` emitted `<key>TAB<value>` records with the path unescaped, and `adb_shape_val`
+  read them back with `awk -F'\t'`. A directory name may legally contain a newline, so the `root`
+  record split and the accessor returned a **truncated** path — not a missing answer, but a
+  *different directory that frequently exists*. `bin/agent-init` uses that value as its write root.
+  Measured before the fix: run inside `…/project<NL>shadow`, `agent-init` exited **0**, printed
+  "wrote agents.toml", and left `agents.toml` plus three `.gitignore` rules in the innocent
+  `…/project` repository next door. The function's own comment called such paths "unsupported",
+  which is a declaration; the behaviour was a confident wrong answer.
+
+  - **The producer refuses instead of guessing.** An unrepresentable root yields exactly one
+    `warning` record and **nothing else** — no `in_git`, no `root`. The refusal is atomic because
+    every other fact is derived from that path, so a partial shape would describe a directory the
+    caller never named. Same call D41 made for `state-scan`'s state directory.
+  - **The check runs before canonicalization as well as after.** `$(cd … && pwd -P)` strips every
+    trailing newline, so a repo named `project<NL>` resolves to `project` — a *different, existing*
+    repo — before any check can see it. The capture in between now carries an `X` sentinel so the
+    trailing byte survives, and a safe-named symlink onto an unsafe physical target is caught by
+    the second check rather than silently accepted.
+  - **Every path is checked where it is emitted, because "an ancestor of a safe path is safe" is
+    false.** Self-review tried to break that shortcut and succeeded twice: `GIT_DIR`/`GIT_WORK_TREE`
+    redirect `--show-toplevel` to a tree that need not contain the start dir, so a *safe* working
+    directory yields an *unsafe* `root`; and `core.worktree` on an enclosing repo does the same to
+    `nested_in` while this repo's own root stays clean. Both are reproduced and pinned. The resolved
+    root refuses atomically; `nested_in` is dropped with a `warning` (it is a note about a
+    neighbour, and `parent_in_git` is still truthfully `1`).
+  - **`extra_doc` is suppressed per field, and the drop is announced.** Its path comes from
+    `git ls-files`, so it is an arbitrary tracked filename. A repo at a clean path could track
+    `packages/we<NL>ird/CLAUDE.md` and forge a record from inside an otherwise sound shape.
+    Refusing the whole shape for one bad doc would delete real facts, so the doc is dropped with a
+    `warning` instead of vanishing.
+  - **`bin/agent-init` refuses an absent `root` explicitly, and before the `in_git` test.** The
+    `cd "$ROOT"` below it only *looks* like it covers this: bash **5.3** rejects `cd ""` — that
+    specific release, not 5.x generally — while bash 3.2, still `/bin/bash` on every macOS,
+    succeeds and stays put. The 5.3 floor means today's fallback does refuse, for a reason
+    unrelated to the check it stands in for and with an empty path in its message. Checked before
+    `in_git` because an absent `in_git` is not `0`, and the old ordering reported "not inside a git
+    repo" about a perfectly good git repo.
+  - **The delimiter predicate now has one home.** `_adb_cl_tsv_safe` is promoted to
+    **`adb_tsv_field_safe`** in `common.sh` (with `adb_tsv_field_display` beside it), and
+    `cleanup-lib.sh` delegates to it while keeping its own state-record policy. D41 kept it private
+    on the explicit ground that `adb_repo_shape` had abstained; this is the change that spends that
+    premise.
+  - **`adb_agent_manifest` is deliberately not fixed here** (#324). It shares the record format,
+    but its consumers swallow the producer's status in heredoc command substitutions, and
+    `adb_link_manifest` was reproduced moving a real directory into backup *before* returning
+    non-zero. That needs status propagation through `install.sh`, `uninstall.sh`, every adapter and
+    `bin/baseline` — a second cross-library decision, which D59 declines to take silently.
+  - **Every new guard was observed failing.** Eleven mutations against a copy of the tree, each
+    verified applied and each required to turn red only the assertions that cover it. Three earned
+    their keep by exposing gaps rather than confirming coverage: disabling the pre-canonicalization
+    check surfaced a missing case (an unsafe path that does not *exist* forges records out of the
+    unreadable-start branch); removing the sentinel from the `git rev-parse` capture is caught by
+    exactly one assertion, a work tree whose name ends in a newline; and the independent review
+    replaced `adb_tsv_field_display`'s entire body with `:` and watched all 669 assertions **still
+    pass** — "one line", "no newline byte" and "passes the predicate" are all satisfied by the empty
+    string, so the renderer now has non-empty, escaped-content and driven-fallback assertions too.
+
 ### Added
 
 - **A CI failure has a third class — the job never ran — and it is now a tested command, not a
