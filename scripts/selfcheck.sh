@@ -443,6 +443,15 @@ add cleanup-enum        bash scripts/check-cleanup-enum.sh
 # for an open PR or an in-flight run), and the terse output contract (#84). Offline.
 add cleanup             bash scripts/check-cleanup.sh
 
+# Behavioral tests for the /adopt decision predicates (scripts/lib/adopt-lib.sh, #20): the
+# keep/remove/move/escalate classifier, tested from the side that costs something — a prescribed
+# home that COLLIDES with a baseline artifact must be `keep` (reverse those two arms and every
+# adopting project is told to delete its own precommit-gate policy), and a colliding artifact that
+# DIFFERS must be `move`, never `remove`. Plus the four hygiene axes, the role-inference "cannot
+# infer" result, the pin's validation and round-trip, and a byte-level assertion that no read-only
+# subcommand alters the project it scanned. Offline; every fixture is a mktemp -d tree.
+add adopt               bash scripts/check-adopt.sh
+
 # Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
 # targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness
 # (#71), plus a drift guard that the workflow still delegates to them (#45). Offline.

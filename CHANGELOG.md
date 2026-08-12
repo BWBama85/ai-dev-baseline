@@ -7,6 +7,51 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **`/adopt` — bringing the baseline into a project that already has its own config** (#20,
+  consolidating #21 and #29; D60).
+
+  There was no path for adopting the baseline into an **existing** project. Every real repo
+  already has a `.claude/`, root docs, forked skills and hooks, so adoption means working out what
+  now duplicates the baseline, what carries a delta that must be kept, and in what order to
+  reconcile them. A read-only sweep of four projects had produced that inventory by hand; this is
+  the workflow that produces it.
+
+  - **It never deletes, moves, or edits an existing file** — not with `--apply`, not with
+    confirmation. `remove` and `move` are words in a plan a human executes. The only writes are the
+    two artifacts that do not yet exist (`agents.toml`, `.ai-dev-baseline/upstream.toml`), each
+    refusing rather than overwriting, plus the already-shipped consent-gated `baseline repo apply`.
+    `check-adopt.sh` asserts byte-for-byte that no read-only subcommand alters the scanned project.
+  - **"Duplicates the baseline" has exactly one proof: byte-identity** against `adb_agent_manifest`'s
+    own shipped set — never a second hardcoded list, and never similarity. A colliding artifact that
+    *differs* classifies as `move` (re-home the delta), never `remove`; that difference is the
+    project's forked behavior. A **prescribed home** is tested *before* collision, because
+    `.claude/scripts/precommit-gate.sh` collides with a shipped script by name and *is* the one
+    legal home for custom gate policy — reverse those two arms and every adopting project is told
+    to delete its own gate. Both orderings are pinned as regressions.
+  - **Four adoption-hygiene axes** (#29): the product-code boundary (`src/**` referencing an agent
+    CLI is the *product*), tracked config that ships to end users, layered statusLine/hook
+    precedence, and a broad ignore rule that reaches the runtime state dir only by accident. The
+    credential probe matches a closed prefix list and prints the **prefix only** — never the value.
+  - **An upstream pin** (#21) at `.ai-dev-baseline/upstream.toml`, recording version, commit,
+    adoption date, stack and agents. Deliberately a **commit rather than a copied `.upstream`
+    tree**: the install is a symlink into a git clone, so one 40-byte field recovers the inherited
+    tree exactly and forever, while a snapshot doubles every file and goes stale silently.
+  - **Role inference that refuses to guess.** A signal naming two agents for one role yields
+    `ambiguous`; no signal yields `none`. Neither is ever filled in from the baseline's own
+    defaults — an operator reads `agents.toml` later as a record of what *they* decided, so a
+    guessed line is indistinguishable from a chosen one. Uninferred roles are emitted commented out.
+  - `delete_branch_on_merge` (#56, folded into #20) is **not** implemented: it contradicts D9's
+    two-setting bound, and widening that needs its own decision rather than a drive-by field in an
+    adoption run. `adopt.md` carries the instruction not to add it.
+
+  New: `scripts/lib/adopt-lib.sh`, `scripts/check-adopt.sh` (registered as the `adopt` selfcheck
+  step), `base/workflows/adopt.md` rendered to all three agents, and an `{{ADOPT_LIB}}` placeholder.
+  `/adopt` also joins the untrusted-content registry as the first workflow whose third-party text
+  arrives from the filesystem rather than the network — what it reads is other projects' `SKILL.md`
+  bodies, which are instructions to an agent by construction.
+
 ### Fixed
 
 - **A repo path containing a tab or newline made `agent-init` initialize a different, existing

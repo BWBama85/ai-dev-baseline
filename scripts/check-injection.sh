@@ -170,7 +170,16 @@ bash "$ROOT/scripts/lib/role-dispatch.sh" untrusted >/dev/null 2>&1; eq "$?" "2"
 #   cleanup          0 — DELIBERATE: it reads PR/branch STATE fields (`--json state`), never a body
 #                        or a comment. Recorded as zero rather than omitted, so "cleanup is absent
 #                        from the list" can never be mistaken for "nobody has looked at cleanup".
+#   adopt            1 — the scanned project's own agent config: root docs, SKILL.md bodies, hook
+#                        scripts, settings.json. NOT one, but worth stating why it is not zero: no
+#                        `gh` call fetches it and no stranger wrote it, so the (c2) discovery rule
+#                        below would never flag it. What makes it a read site is the CONTENT — a
+#                        SKILL.md is a file of instructions to an agent by construction, and
+#                        /adopt reads other projects' ones while holding repo tool access. That is
+#                        the highest-risk shape in this registry, and the only workflow here whose
+#                        untrusted text arrives from the filesystem rather than the network.
 REGISTRY='implement-issue 3
+adopt 1
 resolve-pr-threads 2
 roadmap 3
 debug 1
