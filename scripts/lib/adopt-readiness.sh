@@ -133,6 +133,9 @@ _ar_emit() {
   # GitHub API, where a newline is legal.
   detail="${detail//"$TAB"/ }"
   detail="${detail//$'\n'/ }"
+  # And the carriage return, which forges no record but DOES overwrite the line already printed —
+  # a milestone title ending in \r plus padding can blank the rung name it was reported under.
+  detail="${detail//$'\r'/ }"
   printf '%s\t%s\t%s\n' "$rung" "$status" "$detail"
 }
 
@@ -185,6 +188,25 @@ _ar_head_sha() {
   git -C "$1" rev-parse HEAD 2>/dev/null
 }
 
+# THE COMMIT IS NOT THE TREE, and keying on HEAD alone let a receipt outlive the bytes it was a
+# receipt for. Edit a tracked source file without committing and the root, the HEAD and the gate
+# configuration are all unchanged — so yesterday's passing run still validated against a tree the
+# gates have never seen. That is the single most valuable thing this receipt asserts, quietly
+# false. `--porcelain` covers tracked modifications, staged changes and untracked files, and its
+# digest joins the key: any uncommitted difference makes the receipt stale, which is exactly
+# right, because the gates would have to run again to say anything about it.
+#
+# A repo whose status cannot be read yields nothing, and the caller treats that as unanswerable
+# rather than as "clean" — the fail-closed direction, since "clean" is the flattering answer.
+_ar_worktree_digest() {
+  local root="$1" st
+  st="$(git -C "$root" status --porcelain 2>/dev/null)" || return 1
+  if command -v shasum >/dev/null 2>&1; then printf '%s' "$st" | shasum -a 256 | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then printf '%s' "$st" | sha256sum | cut -d' ' -f1
+  else return 1
+  fi
+}
+
 # THE RECEIPT IS WRITTEN BY THE RUN, NEVER BY A CALLER'S SAY-SO. The first version of this
 # exposed a bare `receipt write`, and that is the whole defect the gate rung exists to catch,
 # reintroduced one level up: a receipt asserting "the gates were executed" that nothing had
@@ -197,26 +219,44 @@ _ar_head_sha() {
 # one on the next `check`.
 cmd_receipt() {
   [ "$#" -eq 2 ] || die "receipt: needs <run|check> <project-root>"
-  local action="$1" root="$2" path sha digest
+  local action="$1" root="$2" path sha digest tree
   [ -d "$root" ] || die "receipt: not a directory: $root"
+  # CANONICALISE THE ROOT. The key compares this textually, so `.` and `/abs/path` name the same
+  # checkout and would not share a receipt — a pointless `stale` on every invocation that spelled
+  # the path differently. And a path this record format cannot represent is REFUSED rather than
+  # written: a tab or newline in the root would forge a field boundary and corrupt the receipt on
+  # read-back. `/adopt` never produces such a path (adb_repo_shape refuses it first, #278), but
+  # `receipt` is a public subcommand and takes whatever it is handed.
+  root="$(cd "$root" 2>/dev/null && pwd -P)" || die "receipt: cannot resolve $2"
+  case "$root" in *"$TAB"*|*"
+"*) die "receipt: the project root contains a tab or newline, which this record cannot represent" ;; esac
   path="$(_ar_receipt_path "$root")"
 
   case "$action" in
     run)
       sha="$(_ar_head_sha "$root")"    || die "receipt: cannot resolve HEAD in $root"
       digest="$(_ar_gate_digest "$root")" || die "receipt: cannot digest the gate configuration"
+      tree="$(_ar_worktree_digest "$root")" || die "receipt: cannot read the worktree status"
       mkdir -p "$(dirname "$path")" || die "receipt: cannot create $(dirname "$path")"
       local outcome=pass rc=0
-      # The gate runner's own output goes to the caller's stderr untouched — this is the one
-      # place an operator finds out WHY a gate failed, and swallowing it to keep the receipt
-      # tidy would be trading the diagnosis for the verdict.
-      bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" run "$root" || { outcome=fail; rc=1; }
-      # Staged then renamed: a half-written receipt read by a concurrent verdict would either
-      # parse as a different commit (harmless) or as a TRUNCATED digest that happens to prefix
-      # the real one (not harmless). A rename is atomic; a redirect is not.
-      printf '%s\t%s\t%s\t%s\n' "$root" "$sha" "$digest" "$outcome" > "$path.tmp" \
-        && mv "$path.tmp" "$path" \
-        || die "receipt: could not write $path"
+      # BOTH CADENCE CONTEXTS, and that is what makes "every detected gate was executed" true.
+      # `run` defaults to the `full` context, which SKIPS every gate declared `turn-end` (#240) —
+      # while `detect` lists those gates, so the probe counted them and the receipt claimed they
+      # had run. A repo with a `turn-end` gate got a green rung for a gate nothing executed.
+      # Running both contexts is the honest reading of the contract; a gate declared `always`
+      # runs in both, which costs a second execution and is the price of the claim being true.
+      bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" run "$root" "" full     || { outcome=fail; rc=1; }
+      bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" run "$root" "" turn-end || { outcome=fail; rc=1; }
+      # Staged then renamed, and the stage has a UNIQUE name. A fixed `$path.tmp` is shared by
+      # every concurrent writer — two runs can rename each other's file, so a caller publishes a
+      # result it never produced — and the redirect follows a pre-planted `$path.tmp` SYMLINK out
+      # of the state dir. `mktemp` in the destination directory removes both, and keeps the
+      # rename atomic by keeping it on one filesystem.
+      local tmp
+      tmp="$(mktemp "$(dirname "$path")/.adopt-receipt.XXXXXX")" || die "receipt: cannot stage a receipt"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$root" "$sha" "$digest" "$tree" "$outcome" > "$tmp" \
+        && mv "$tmp" "$path" \
+        || { rm -f "$tmp"; die "receipt: could not write $path"; }
       printf 'recorded %s at %s\n' "$outcome" "${sha:0:12}"
       return "$rc" ;;
     check) ;;
@@ -224,18 +264,20 @@ cmd_receipt() {
   esac
 
   [ -f "$path" ] || { printf 'none\n'; return 11; }
-  local r_root r_sha r_digest r_outcome
-  IFS="$TAB" read -r r_root r_sha r_digest r_outcome < "$path" || { printf 'none\n'; return 11; }
+  local r_root r_sha r_digest r_tree r_outcome
+  IFS="$TAB" read -r r_root r_sha r_digest r_tree r_outcome < "$path" || { printf 'none\n'; return 11; }
   # A receipt missing its outcome column is a receipt this version cannot interpret — an older
   # format, or a truncated file. Unreadable is `none`, never `ok`.
   case "$r_outcome" in pass|fail) ;; *) printf 'none (unreadable receipt)\n'; return 11 ;; esac
   sha="$(_ar_head_sha "$root")"       || { printf 'none\n'; return 11; }
   digest="$(_ar_gate_digest "$root")" || { printf 'none\n'; return 11; }
+  tree="$(_ar_worktree_digest "$root")" || { printf 'none\n'; return 11; }
   # Every field must match. Listing them separately rather than comparing a joined string keeps
   # the reason readable, and the reasons are genuinely different remedies.
   if [ "$r_root" != "$root" ];     then printf 'stale (recorded for a different checkout)\n'; return 10; fi
   if [ "$r_sha" != "$sha" ];       then printf 'stale (recorded at %s, HEAD is now %s)\n' "${r_sha:0:12}" "${sha:0:12}"; return 10; fi
   if [ "$r_digest" != "$digest" ]; then printf 'stale (the gate configuration changed since it was recorded)\n'; return 10; fi
+  if [ "$r_tree" != "$tree" ];     then printf 'stale (the working tree changed since it was recorded — the gates have not seen these bytes)\n'; return 10; fi
   if [ "$r_outcome" = fail ];      then printf 'failed (the gates ran at this commit and went RED)\n'; return 12; fi
   printf 'ok\n'
   return 0
@@ -268,20 +310,37 @@ cmd_probe() {
   # `adb_install_source` is the ONE home for "where is the baseline installed" (adopt-lib.sh
   # `shipped` uses the same reader). An absent install is not an unknown: it is a definite,
   # actionable no — run install.sh.
+  #
+  # IT CHECKS THE THREE THINGS A RUN ACTUALLY NEEDS, not just that a directory exists. The first
+  # version tested `[ -d "$HOME/.<agent>" ]` under a comment claiming it checked "the skills
+  # directory" — a directory that exists the moment anything writes state into it, so an agent
+  # with no install at all passed. The contract's words are "skills resolve, root doc present":
+  #
+  #   * the ROOT DOC, which is what carries the practices into the agent's context;
+  #   * the SKILLS TREE, which is what a `/adopt` or `/implement-issue` invocation resolves through;
+  #   * `scripts/lib`, because every workflow step shells into it and a partial install that
+  #     linked the docs but not the libraries fails at the first fenced block rather than at setup.
   local src a missing=""
   if src="$(adb_install_source)"; then
+    local doc
     for a in ${agents//,/ }; do
       case "$a" in
         ''|*[!a-z0-9-]*|-*) die "probe: invalid agent token '$a'" ;;
       esac
-      # The skills directory is what a workflow invocation actually resolves through, so its
-      # absence is what an operator would experience as "the skill is not there".
-      [ -d "$HOME/.$a" ] || missing="$missing $a"
+      case "$a" in
+        claude) doc=CLAUDE.md ;; codex) doc=AGENTS.md ;; gemini) doc=GEMINI.md ;;
+        # An agent this library does not model is not a failure — it is a fact it cannot check.
+        # Saying so beats inventing a filename and reporting its absence as the agent's problem.
+        *) missing="$missing $a(unknown-agent)"; continue ;;
+      esac
+      [ -e "$HOME/.$a/$doc" ]        || missing="$missing $a(root-doc)"
+      [ -d "$HOME/.$a/skills" ] || [ -d "$HOME/.$a/config/skills" ] || missing="$missing $a(skills)"
+      [ -d "$HOME/.$a/scripts/lib" ] || missing="$missing $a(scripts/lib)"
     done
     if [ -n "$missing" ]; then
-      _ar_emit harness todo "installed from $src, but no home directory for:${missing} — re-run install.sh for those agents"
+      _ar_emit harness todo "installed from $src, but these are absent:${missing} — re-run install.sh"
     else
-      _ar_emit harness ok "installed from $src"
+      _ar_emit harness ok "installed from $src; root doc, skills and scripts/lib resolve for: ${agents}"
     fi
   else
     _ar_emit harness todo "no baseline install found for any agent — run install.sh before adopting"
@@ -341,10 +400,18 @@ cmd_probe() {
   # answer and the exact inversion this rung exists to prevent. Asking `agents.toml` directly is
   # also the more faithful question: "or explicitly disabled with a recorded reason" is a claim
   # about what the manifest RECORDS, not about what a status table happens to print.
-  local grun gkeys
-  grun="$(bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" detect "$root" 2>/dev/null | grep -c . || true)"
+  # AND THE DETECTOR'S EXIT STATUS IS KEPT. Piping straight into `grep -c` discards it, so a
+  # detector that FAILED (a corrupt common.sh, an unreadable agents.toml — the fail-loud cases
+  # project-gates.sh added on purpose) counted zero and, if the manifest happened to carry any
+  # gate key, was reported as a deliberate N/A. A broken detector must never resolve to "the
+  # owner meant it".
+  local gdetect grun gkeys gstat
+  gdetect="$(bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" detect "$root" 2>/dev/null)"; gstat=$?
+  grun="$(printf '%s' "$gdetect" | grep -c . || true)"
   gkeys="$( { adb_toml_keys "$root/agents.toml" gates; adb_toml_keys "$root/agents.toml" gates.state; } 2>/dev/null | grep -c . || true)"
-  if [ "$grun" -eq 0 ] && [ "$gkeys" -eq 0 ]; then
+  if [ "$gstat" -ne 0 ]; then
+    _ar_emit gates unknown "the gate detector FAILED (exit $gstat) — this is not 'no gates', and it is not a recorded N/A; fix the detector or the manifest it reads"
+  elif [ "$grun" -eq 0 ] && [ "$gkeys" -eq 0 ]; then
     _ar_emit gates todo "NO GATE was detected, and agents.toml records no decision about gates — declare [gates] (a deliberate \"\" disables one, and [gates.state] declares an axis N/A). Adoption must not finish with enforcement silently off"
   elif [ "$grun" -eq 0 ]; then
     _ar_emit gates na "no gate runs, and agents.toml records that decision in $gkeys [gates]/[gates.state] key(s) — a recorded choice, not a detection miss"
@@ -359,9 +426,37 @@ cmd_probe() {
     esac
   fi
 
+  # A SECOND ECOSYSTEM THE PRIMARY ONE HID. Gate detection is single-primary first-wins, so a
+  # WordPress-shaped repo carrying both a package.json and a composer.json gets its Node gates
+  # and NO PHP ones. That is the right default (those Node commands are what the project itself
+  # declared) but it is invisible, and invisible is the thing this whole file exists to fix — the
+  # operator cannot layer the PHP gates through `[gates]` if nobody tells them the PHP is there.
+  # A NOTE, not a rung: it is information, not an unmet requirement.
+  #
+  # ON STDERR, and that is load-bearing rather than tidy. Stdout is the RECORD STREAM, and every
+  # line of it is parsed as `<rung>TAB<status>TAB<detail>` — so a `note` line here would reach
+  # `verdict`, fail `_ar_is_rung`, and kill the whole run with a usage error about a rung nobody
+  # wrote. Caught in review of this very block, which is the same lesson the newline fix taught
+  # one field lower down: anything that shares a channel with the records must be a record.
+  if [ -f "$root/composer.json" ] && [ "$grun" -gt 0 ] \
+     && ! printf '%s' "$gdetect" | grep -qE 'composer|php'; then
+    printf 'adopt-readiness: NOTE: %s also has a composer.json, but another ecosystem won gate detection (single-primary, first-wins), so its PHP gates are NOT running. Layer them through agents.toml [gates] if you want them.\n' "$root" >&2
+  fi
+
   # --- decisions -------------------------------------------------------------------------
+  # WHAT THIS CAN AND CANNOT ESTABLISH, said plainly rather than overclaimed. The contract item is
+  # "every unmodeled thing adoption hit is recorded here", and nothing offline can know what a
+  # given adoption run hit — that knowledge lives in the scan's `escalate` verdicts, which this
+  # library never sees. So the rung asserts the weaker, checkable thing: a decision log EXISTS,
+  # i.e. there is a home for those records in its one prescribed place. An empty one is reported
+  # `ok` WITH the caveat attached, because an adoption that genuinely hit no unknowns has an empty
+  # log legitimately, and failing it would be a rung no clean project could pass.
   if [ -f "$root/.ai-dev-baseline/decisions.md" ]; then
-    _ar_emit decisions ok "decision log present"
+    if grep -q '^## ' "$root/.ai-dev-baseline/decisions.md" 2>/dev/null; then
+      _ar_emit decisions ok "decision log present, with recorded entries"
+    else
+      _ar_emit decisions ok "decision log present but EMPTY — correct only if adoption hit no unknowns; cross-check the scan's 'escalate' findings yourself, which this rung cannot see"
+    fi
   else
     _ar_emit decisions todo "no .ai-dev-baseline/decisions.md — handling-the-unknown.md requires every unmodeled thing adoption hit to be recorded there"
   fi
@@ -380,13 +475,15 @@ cmd_probe() {
 #   release_milestone   "Next release"      the active release milestone's title
 #   backlog_milestone   "Backlog"
 #   blocker_label       true|false          does the release-blocker label exist
-#   armed               N                   issues in the release milestone (open + closed)
+#   slate_armed         true|false          release-counts' armed verdict for the release milestone
 #   unmilestoned        N                   open issues in no milestone
 #   roadmap_count       N                   open issues carrying the `roadmap` label
 #   dispositions        ["milestone:Audit Results", …]   retired question ids from ## Decisions
 #   settings            "ok"|"todo"|"unknown"|"na"  + settings_detail
-#   release_command     "…"                 the resolved release-command marker
+#   release_command     "…"                 the first declared release-command marker
+#   release_command_count N               how many were declared (>1 is AMBIGUOUS, and refused)
 cmd_tracker() {
+  local rc _rc
   [ "$#" -eq 0 ] || die "tracker: takes no arguments (facts JSON on stdin)"
   command -v jq >/dev/null 2>&1 || die "tracker: jq not found"
   local json
@@ -394,20 +491,91 @@ cmd_tracker() {
   [ -n "$json" ] || json='{}'
   printf '%s' "$json" | jq -e . >/dev/null 2>&1 || die "tracker: stdin is not valid JSON"
 
-  # One reader for the facts object, so every field is read the same way and a missing field is
-  # always the empty string rather than sometimes `null`.
-  q() { printf '%s' "$json" | jq -r "$1" 2>/dev/null; }
+  # TYPES ARE VALIDATED, NOT COERCED — and this replaces a `tostring` that produced THREE
+  # confirmed false greens, every one of them found by the independent review:
+  #
+  #   "blocker_label":"true"   (the STRING) -> tostring gives "true" -> milestones = ok
+  #   "milestones":null                     -> `// []` swallows it   -> dispositions = ok
+  #   "release_command":false               -> non-empty scalar      -> release = ok
+  #
+  # Each is a malformed fact reading as a satisfied rung, which is the exact direction this
+  # library exists to make impossible. `tostring` is the whole bug: it turns "is this fact what
+  # it claims to be" into "can this be printed", and everything can be printed.
+  #
+  # So each reader asks jq for the TYPE and returns nothing unless it matches. Absent and
+  # wrong-type both yield the empty string — both are `unknown` downstream, which is correct for
+  # both: one fact was not gathered, the other cannot be trusted, and neither is a pass. A
+  # wrong-type fact additionally sets `_bad`, so the report can say "malformed" rather than "not
+  # read" and the operator looks at the right thing.
+  # THE MISMATCH TRAVELS AS AN EXIT CODE, NOT A VARIABLE. The first version of this recorded
+  # wrong-type keys by appending to a `_bad` string inside `_fact` — and every caller reads
+  # `_fact` through `$( … )`, which is a SUBSHELL, so the assignment died with it and `_bad` was
+  # permanently empty. The "malformed" branch could therefore never fire: a check that silently
+  # never runs, which is the failure mode this whole file exists to reject, reintroduced in the
+  # code meant to report it. An exit status is the one thing a command substitution DOES carry
+  # back, so the distinction rides that instead.
+  #
+  #   0 = present and the right type   ·   1 = absent   ·   2 = present but WRONG type
+  #
+  # Absent and wrong-type are both `unknown` downstream — one fact was not gathered, the other
+  # cannot be trusted, and neither is a pass — but they send the operator to different places, so
+  # the report says which.
+  _fact() {  # <key> <json-type> — print the value iff present AND of that type
+    local k="$1" t="$2" present
+    present="$(printf '%s' "$json" | jq -r --arg k "$k" 'has($k)|tostring' 2>/dev/null)"
+    [ "$present" = true ] || return 1
+    printf '%s' "$json" | jq -e --arg k "$k" --arg t "$t" '.[$k]|type == $t' >/dev/null 2>&1 || return 2
+    printf '%s' "$json" | jq -r --arg k "$k" '.[$k] | if type=="string" then . else tostring end' 2>/dev/null
+  }
+  # A COUNT IS BOUNDED, because the shell's arithmetic is. An arbitrary digit string reaches
+  # `[ "$n" -eq 0 ]`, and bash answers `integer expected` on stderr and returns NON-ZERO — which
+  # falls through to the `else` arm and reports the rung SATISFIED. Reproduced by the review with
+  # 18446744073709551616. A fractional count is rejected for the same reason; 15 digits is far
+  # above any real tracker and safely inside a signed 64-bit shell integer.
+  _count() {  # <key> — print a non-negative integer count; 1 absent, 2 malformed
+    local v rc; v="$(_fact "$1" number)"; rc=$?
+    [ "$rc" -eq 0 ] || return "$rc"
+    case "$v" in ''|*[!0-9]*) return 2 ;; esac
+    [ "${#v}" -le 15 ] || return 2
+    printf '%s' "$v"
+  }
+  _why() {  # <rc> <key> <what-was-not-read> — "malformed" vs "not read", said precisely
+    if [ "$1" -eq 2 ]; then
+      printf 'the "%s" fact is MALFORMED (wrong JSON type or out of range) — do not read this as satisfied' "$2"
+    else
+      printf '%s' "$3"
+    fi
+  }
 
   # --- milestones ---
-  local rel bak blk
-  rel="$(q '.release_milestone // ""')"; bak="$(q '.backlog_milestone // ""')"
-  blk="$(q 'if has("blocker_label") then (.blocker_label|tostring) else "" end')"
-  if [ -z "$rel" ] || [ -z "$bak" ] || [ -z "$blk" ]; then
-    _ar_emit milestones unknown "the release-convention primitives were not read — run 'baseline release status'"
-  elif [ "$blk" != "true" ]; then
-    _ar_emit milestones todo "the release-blocker label is missing — run 'baseline release init'"
+  # THE MILESTONES MUST BE OBSERVED, not merely named. `release_milestone` is the title the
+  # caller ASKED about; on its own it proves nothing, and the first version treated those two
+  # non-empty strings as proof that both milestones exist — so a repo carrying the label but
+  # neither milestone reported `ok`. The observed list is what settles it.
+  local rel bak blk rc_rel rc_bak rc_blk rc_ms worst
+  rel="$(_fact release_milestone string)"; rc_rel=$?
+  bak="$(_fact backlog_milestone string)"; rc_bak=$?
+  blk="$(_fact blocker_label boolean)";    rc_blk=$?
+  _fact milestones array >/dev/null;       rc_ms=$?
+  # The WORST code wins the explanation: a malformed fact is more urgent than an absent one,
+  # because it means a producer is lying rather than merely silent.
+  worst=0
+  for _rc in "$rc_rel" "$rc_bak" "$rc_blk" "$rc_ms"; do [ "$_rc" -gt "$worst" ] && worst="$_rc"; done
+  if [ "$worst" -ne 0 ]; then
+    _ar_emit milestones unknown "$(_why "$worst" "one of release_milestone/backlog_milestone/blocker_label/milestones" "the release-convention primitives were not read — run 'baseline release status'")"
   else
-    _ar_emit milestones ok "release '$rel' + backlog '$bak' + the blocker label all exist"
+    local missing=""
+    printf '%s' "$json" | jq -e --arg m "$rel" '[(.milestones//[])[].title] | index($m) != null' >/dev/null 2>&1 \
+      || missing="$missing '$rel'"
+    printf '%s' "$json" | jq -e --arg m "$bak" '[(.milestones//[])[].title] | index($m) != null' >/dev/null 2>&1 \
+      || missing="$missing '$bak'"
+    if [ "$blk" != "true" ]; then
+      _ar_emit milestones todo "the release-blocker label is missing — run 'baseline release init'"
+    elif [ -n "$missing" ]; then
+      _ar_emit milestones todo "the label exists but these milestones do NOT:${missing} — run 'baseline release init'"
+    else
+      _ar_emit milestones ok "release '$rel' + backlog '$bak' + the blocker label were all observed"
+    fi
   fi
 
   # --- slate ---
@@ -415,21 +583,27 @@ cmd_tracker() {
   # readiness then reports "no requirements yet" and /roadmap emits nothing, so adoption
   # produced a flow that cannot move. Whether the RIGHT issues are in it is the owner's call —
   # which is exactly why this rung's owner is `owner` and its remedy is a proposal, not a fix.
+  #
+  # THE COUNT MUST EXCLUDE THE ROADMAP ARTIFACT, because `roadmap-lib.sh release-counts` — the
+  # one home for "is this milestone armed" — excludes it by number. A release milestone holding
+  # ONLY the roadmap issue would otherwise read as armed here and unarmed there, and the two
+  # disagreeing about the same milestone is worse than either answer alone. `cmd_facts` does the
+  # excluding, because it is the half that knows the artifact's number.
   local armed
-  armed="$(q 'if has("armed") then (.armed|tostring) else "" end')"
-  if [ -z "$armed" ] || ! printf '%s' "$armed" | grep -Eq '^[0-9]+$'; then
-    _ar_emit slate unknown "the release milestone's contents were not read"
-  elif [ "$armed" -eq 0 ]; then
-    _ar_emit slate todo "the release milestone holds ZERO issues, so /roadmap has nothing to emit — propose a first slate and let the owner approve it"
+  armed="$(_fact slate_armed boolean)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _ar_emit slate unknown "$(_why "$rc" slate_armed "the release milestone's contents were not tabulated")"
+  elif [ "$armed" != true ]; then
+    _ar_emit slate todo "the release milestone holds NO requirements, so /roadmap has nothing to emit — propose a first slate and let the owner approve it"
   else
-    _ar_emit slate ok "$armed issue(s) in the release milestone"
+    _ar_emit slate ok "the release milestone is armed (tabulated by roadmap-lib.sh release-counts, which excludes PRs and the roadmap artifact)"
   fi
 
   # --- unmilestoned ---
   local unm
-  unm="$(q 'if has("unmilestoned") then (.unmilestoned|tostring) else "" end')"
-  if [ -z "$unm" ] || ! printf '%s' "$unm" | grep -Eq '^[0-9]+$'; then
-    _ar_emit unmilestoned unknown "the unmilestoned open issues were not counted"
+  unm="$(_count unmilestoned)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _ar_emit unmilestoned unknown "$(_why "$rc" unmilestoned "the unmilestoned open issues were not counted")"
   elif [ "$unm" -gt 0 ]; then
     _ar_emit unmilestoned todo "$unm open issue(s) are in no milestone — /roadmap's step 4b autofix sweeps them to the backlog"
   else
@@ -451,10 +625,12 @@ cmd_tracker() {
   # this library is read-only, so it cannot act on the difference. What must be mechanical is
   # "has the owner answered for this milestone" — the issue's requirement is that a pre-existing
   # milestone is "never silently ignored", and silence is precisely what this detects.
-  local ms_n
-  ms_n="$(q 'if has("milestones") then (.milestones|length|tostring) else "" end')"
-  if [ -z "$ms_n" ]; then
-    _ar_emit dispositions unknown "the project's milestones were not read"
+  # `milestones` must be an ARRAY. `.milestones|length` accepted `null` (length 0) and a string
+  # (its character count), so `"milestones":null` produced an empty undecided-set and reported
+  # `ok` — a repo whose milestone read failed was told every milestone was dispositioned.
+  _fact milestones array >/dev/null; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _ar_emit dispositions unknown "$(_why "$rc" milestones "the project's milestones were not read")"
   else
     # The two convention milestones are dispositioned BY the convention itself; requiring a
     # decision row for `Next release` would demand the owner justify the thing they just
@@ -495,9 +671,9 @@ cmd_tracker() {
   # brain /roadmap hard-stops on, and it is reachable by adoption in the obvious way — a repo
   # that already had a planning issue, plus a bootstrapped one.
   local rc_n
-  rc_n="$(q 'if has("roadmap_count") then (.roadmap_count|tostring) else "" end')"
-  if [ -z "$rc_n" ] || ! printf '%s' "$rc_n" | grep -Eq '^[0-9]+$'; then
-    _ar_emit roadmap unknown "the roadmap artifact was not looked for"
+  rc_n="$(_count roadmap_count)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _ar_emit roadmap unknown "$(_why "$rc" roadmap_count "the roadmap artifact was not looked for")"
   elif [ "$rc_n" -eq 0 ]; then
     _ar_emit roadmap todo "no roadmap artifact — /roadmap bootstraps one on its first run"
   elif [ "$rc_n" -gt 1 ]; then
@@ -510,11 +686,19 @@ cmd_tracker() {
   # PASSED THROUGH, not re-derived. `repo-settings.sh` owns what a correctly configured repo
   # looks like and in what ORDER it must be applied (required checks before auto-merge, else a
   # PR can merge with nothing gating it). Restating any of that here would be a second model.
+  #
+  # WHAT IT DOES NOT COVER, stated rather than implied: `automerge-ok` is bounded to auto-merge
+  # and the required-check contexts. `delete_branch_on_merge` and conversation-resolution are
+  # deliberately NOT in it — `baseline repo apply` is bounded to exactly two settings by a
+  # recorded decision that says "do not add a third" — so this rung is narrower than #81's
+  # settings bullet. Widening it needs that decision reversed first, not a third reader here.
   local st sd
-  st="$(q '.settings // ""')"; sd="$(q '.settings_detail // ""')"
+  st="$(_fact settings string)"; rc=$?
+  sd="$(_fact settings_detail string)" || sd=""
+  [ "$rc" -eq 0 ] || st=""
   case "$st" in
     ok|todo|na|unknown) _ar_emit settings "$st" "${sd:-reported by repo-settings.sh}" ;;
-    "") _ar_emit settings unknown "repo settings were not read — run 'baseline repo status'" ;;
+    "") _ar_emit settings unknown "$(_why "$rc" settings "repo settings were not read — run 'baseline repo status'")" ;;
     *)  die "tracker: .settings must be ok|todo|na|unknown (got '$st')" ;;
   esac
 
@@ -524,10 +708,23 @@ cmd_tracker() {
   # one that read it and found no marker — so a transient `gh` failure told the operator to add a
   # marker their artifact may already carry. That is the shape verify-before-asserting.md forbids:
   # say what could not be established, not what is true. `has()` separates them.
-  local relcmd
-  if [ "$(q 'has("release_command")|tostring')" != "true" ]; then
-    _ar_emit release unknown "the roadmap artifact's release-command marker was not read"
-  elif relcmd="$(q '.release_command')" && [ -n "$relcmd" ] && [ "$relcmd" != null ]; then
+  #
+  # AND IT MUST BE A STRING. `"release_command":false` is neither absent nor a marker, and the
+  # first version accepted it as one because it was a non-empty scalar.
+  #
+  # AMBIGUITY IS ITS OWN ANSWER. `roadmap-lib.sh release-command` deliberately returns EVERY
+  # declared value so a caller can refuse a split declaration — `release-convention.sh status`
+  # reports exactly that as AMBIGUOUS. Taking `head -n1` threw that away and picked one at
+  # random, which is the one outcome worse than reporting the problem. `cmd_facts` now passes the
+  # count through.
+  local relcmd rc_count
+  rc_count="$(_count release_command_count)" || rc_count=""
+  relcmd="$(_fact release_command string)"; rc=$?
+  if [ -n "$rc_count" ] && [ "$rc_count" -gt 1 ]; then
+    _ar_emit release todo "the roadmap declares $rc_count release-command markers — /roadmap needs exactly one; retire the extras"
+  elif [ "$rc" -ne 0 ]; then
+    _ar_emit release unknown "$(_why "$rc" release_command "the roadmap artifact's release-command marker was not read")"
+  elif [ -n "$relcmd" ]; then
     _ar_emit release ok "release command resolves to '$relcmd'"
   else
     _ar_emit release todo "the roadmap declares no <!-- release-command: … --> marker, so a met release has nothing to emit (#3 makes release execution project-owned — every adopting repo owes itself one)"
@@ -625,9 +822,14 @@ cmd_verdict() {
 }
 
 # --- facts: the LIVE gatherer -----------------------------------------------------------------
-# The only part of this file that touches the network. It is deliberately thin — it reads and
-# assembles, it decides nothing — so that everything with a rule in it stays hermetic and
-# testable. `tracker` turns what this prints into rung records; `facts` never classifies.
+# The only part of this file that touches the network. It is deliberately thin: it reads, and
+# where a verdict is needed it DELEGATES to the reader that owns that verdict rather than forming
+# one — the armed decision to `roadmap-lib.sh release-counts`, the settings decision to
+# `repo-settings.sh automerge-ok`, the `## Decisions` rows to `roadmap-lib.sh decisions`. It
+# carries their answers across; it does not compute its own. (Saying it "classifies nothing"
+# would overstate that: mapping `automerge-ok`'s exit code onto ok/todo/na IS a classification —
+# it is just not a NEW model, which is the property that matters.) `tracker` turns what this
+# prints into rung records, and every rule with judgement in it lives there, offline and tested.
 #
 # IT LIVES HERE RATHER THAN IN THE WORKFLOW'S PROSE. The first draft of #81 spelled these reads
 # out in `adopt.md` as a fenced block, and this repo has a standing rule against that: a decision
@@ -654,32 +856,78 @@ cmd_facts() {
   command -v gh >/dev/null 2>&1 || die "facts: gh not found"
   command -v jq >/dev/null 2>&1 || die "facts: jq not found"
 
-  local repo ms_json ms unm rc_n armed relcmd labels dispo body roadmap_num
+  local repo ms_json ms unm rc_n relcmd labels dispo body roadmap_num
   repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
     || die "facts: cannot resolve the repository from $PWD"
 
-  # Milestones — OPEN ones, PAGINATED (#79). An unpaginated read silently drops the tail, and a
-  # dropped milestone is one this contract then never asks the owner about.
+  # Milestones — `state=all`, PAGINATED (#79). Two separate reasons, and the first was a real
+  # gap: a CLOSED milestone can still hold OPEN issues, and those issues are exactly as invisible
+  # to release composition as the ones in an open theme — so reading `state=open` let a closed
+  # `Audit Results` escape the disposition rung entirely, while the criterion says EVERY
+  # pre-existing milestone. And an unpaginated read silently drops the tail, which is one more
+  # milestone this contract would never ask the owner about.
   local out="{}"
-  if ms_json="$(gh api --paginate "repos/$repo/milestones?state=open&per_page=100" 2>/dev/null)"; then
-    if ms="$(printf '%s' "$ms_json" | jq -s '[ (add // [])[] | {title, open_issues} ]' 2>/dev/null)"; then
+  if ms_json="$(gh api --paginate "repos/$repo/milestones?state=all&per_page=100" 2>/dev/null)"; then
+    # A CLOSED milestone with zero open issues is genuinely settled and asking about it would be
+    # noise, so the disposition question is limited to milestones that still HOLD open work —
+    # which is the thing the criterion is actually about.
+    if ms="$(printf '%s' "$ms_json" | jq -s '[ (add // [])[] | select((.open_issues // 0) > 0 or .state == "open") | {title, open_issues} ]' 2>/dev/null)"; then
       out="$(printf '%s' "$out" | jq --argjson ms "$ms" '. + {milestones: $ms}')"
     fi
   fi
 
+  # SEARCH QUALIFIERS TAKE THEIR VALUE AS DATA, and a milestone title is project-supplied text.
+  # `milestone:"$rel"` interpolated the title straight into the query, so a supported custom name
+  # containing a quote or a backslash rewrites the query rather than filtering it. `release-
+  # convention.sh` already models this correctly: keep the filter fixed, pass the title as a
+  # parameter. Here that means asking the MILESTONE ENDPOINT for its number and counting against
+  # that, which needs no quoting at all — and is the same identifier `release-counts` works from.
+  _ghq() {  # <query> — total_count for a search, or nothing (the read is NOT defaulted to 0)
+    gh api -X GET search/issues -f q="$1" --jq '.total_count' 2>/dev/null
+  }
   # `is:issue`, because repos/…/issues returns pull requests too and would count them as work.
-  if unm="$(gh api -X GET search/issues -f q="repo:$repo is:issue is:open no:milestone" --jq '.total_count' 2>/dev/null)"; then
-    out="$(printf '%s' "$out" | jq --argjson n "${unm:-0}" '. + {unmilestoned: $n}')"
+  if unm="$(_ghq "repo:$repo is:issue is:open no:milestone")" && [ -n "$unm" ]; then
+    out="$(printf '%s' "$out" | jq --argjson n "$unm" '. + {unmilestoned: $n}')"
   fi
-  if rc_n="$(gh api -X GET search/issues -f q="repo:$repo is:issue is:open label:roadmap" --jq '.total_count' 2>/dev/null)"; then
-    out="$(printf '%s' "$out" | jq --argjson n "${rc_n:-0}" '. + {roadmap_count: $n}')"
+  if rc_n="$(_ghq "repo:$repo is:issue is:open label:roadmap")" && [ -n "$rc_n" ]; then
+    out="$(printf '%s' "$out" | jq --argjson n "$rc_n" '. + {roadmap_count: $n}')"
   fi
-  # ARMED COUNTS CLOSED ISSUES TOO. A milestone whose work is finished is still armed — it had
-  # requirements — and counting only open ones would report a nearly-done release as an empty
-  # one and send the owner to re-slate it.
-  if armed="$(gh api -X GET search/issues -f q="repo:$repo is:issue milestone:\"$rel\"" --jq '.total_count' 2>/dev/null)"; then
-    out="$(printf '%s' "$out" | jq --argjson n "${armed:-0}" '. + {armed: $n}')"
+
+  # The roadmap artifact's NUMBER, resolved once. It is needed twice: to read the artifact's body,
+  # and to EXCLUDE it from the armed count below.
+  roadmap_num="$(gh api -X GET search/issues -f q="repo:$repo is:issue is:open label:roadmap" \
+                   --jq '.items[0].number // empty' 2>/dev/null || true)"
+
+  # ARMED IS TABULATED BY `roadmap-lib.sh release-counts`, NOT COUNTED HERE. That predicate is the
+  # one home for "is this milestone armed", and its rules are load-bearing in ways a `total_count`
+  # cannot reproduce: it counts CLOSED issues too (a nearly-done release is still armed), it
+  # excludes pull requests, and it EXCLUDES THE ROADMAP ARTIFACT BY NUMBER. A milestone holding
+  # only the roadmap issue is unarmed there and would have been armed here — the two disagreeing
+  # about one milestone is worse than either answer alone, and re-deriving the rule is exactly
+  # what this repo's design principles forbid.
+  local ms_num
+  ms_num="$(gh api --paginate "repos/$repo/milestones?state=all&per_page=100" 2>/dev/null \
+              | jq -r -s --arg t "$rel" '[ (add // [])[] | select(.title == $t) | .number ] | first // empty' 2>/dev/null || true)"
+  if [ -n "${ms_num:-}" ]; then
+    local mi_json armed_flag
+    if mi_json="$(gh api --paginate "repos/$repo/issues?milestone=$ms_num&state=all&per_page=100" 2>/dev/null)"; then
+      # Field 1 of line 1 IS the armed verdict. Taking it whole is the point: `release-counts`
+      # owns what "armed" means, and the previous version called it only to discard its answer
+      # and re-count the list itself — which is the copy this delegation exists to remove.
+      armed_flag="$(printf '%s' "$mi_json" | bash "$(dirname "${BASH_SOURCE[0]:-$0}")/roadmap-lib.sh" \
+                      release-counts "$blk" "${roadmap_num:-0}" 2>/dev/null | sed -n '1p' | awk '{print $1}')" || armed_flag=""
+      case "$armed_flag" in
+        0) out="$(printf '%s' "$out" | jq '. + {slate_armed: false}')" ;;
+        1) out="$(printf '%s' "$out" | jq '. + {slate_armed: true}')" ;;
+        *) : ;;   # unreadable -> omit the fact -> `unknown` downstream, never a pass
+      esac
+    fi
+  elif printf '%s' "$out" | jq -e 'has("milestones")' >/dev/null 2>&1; then
+    # The milestone does not exist. That is a REAL, observed "not armed" rather than an unread
+    # fact — and the `milestones` rung reports its absence with the more actionable message.
+    out="$(printf '%s' "$out" | jq '. + {slate_armed: false}')"
   fi
+
   if labels="$(gh api --paginate "repos/$repo/labels?per_page=100" --jq '.[].name' 2>/dev/null)"; then
     local has=false
     printf '%s\n' "$labels" | grep -Fxq "$blk" && has=true
@@ -691,15 +939,21 @@ cmd_facts() {
   # the ONE home for that table's markdown filtering (fences, HTML comments and blockquotes are
   # stripped there, so a quoted example never retires a real question). A milestone disposition
   # is a row whose Question cell is `milestone:<title>`.
-  roadmap_num="$(gh api -X GET search/issues -f q="repo:$repo is:issue is:open label:roadmap" \
-                   --jq '.items[0].number // empty' 2>/dev/null || true)"
   if [ -n "${roadmap_num:-}" ] && body="$(gh issue view "$roadmap_num" --json body --jq .body 2>/dev/null)"; then
     if dispo="$(printf '%s' "$body" | bash "$(dirname "${BASH_SOURCE[0]:-$0}")/roadmap-lib.sh" decisions 2>/dev/null \
                   | jq -R -s 'split("\n") | map(select(length > 0))')"; then
       out="$(printf '%s' "$out" | jq --argjson d "$dispo" '. + {dispositions: $d}')"
     fi
-    if relcmd="$(printf '%s' "$body" | bash "$(dirname "${BASH_SOURCE[0]:-$0}")/roadmap-lib.sh" release-command 2>/dev/null | head -n1)"; then
-      [ -n "$relcmd" ] && out="$(printf '%s' "$out" | jq --arg c "$relcmd" '. + {release_command: $c}')"
+    # EVERY declared value, and the COUNT with it. `release-command` returns them all precisely so
+    # a split declaration can be REFUSED — `release-convention.sh status` reports that as
+    # AMBIGUOUS. `head -n1` discarded the ambiguity and picked one arbitrarily, which is the one
+    # outcome worse than reporting the problem.
+    local rc_all rc_count
+    if rc_all="$(printf '%s' "$body" | bash "$(dirname "${BASH_SOURCE[0]:-$0}")/roadmap-lib.sh" release-command 2>/dev/null)"; then
+      rc_count="$(printf '%s\n' "$rc_all" | sed '/^$/d' | wc -l | tr -d ' ')"
+      out="$(printf '%s' "$out" | jq --argjson n "${rc_count:-0}" '. + {release_command_count: $n}')"
+      relcmd="$(printf '%s\n' "$rc_all" | sed '/^$/d' | head -n1)"
+      out="$(printf '%s' "$out" | jq --arg c "${relcmd:-}" '. + {release_command: $c}')"
     fi
   fi
 
@@ -725,12 +979,25 @@ cmd_status() {
   local root="${1:-$PWD}"
   shift 2>/dev/null || true
   [ -d "$root" ] || die "status: not a directory: $root"
-  local probe facts
-  probe="$(cmd_probe "$root" "$@")" || die "status: the offline probe failed"
+  # THE OPTIONS ARE SPLIT AND FORWARDED, not all handed to `probe`. A repo initialised with
+  # `release-convention.sh --release-name` uses a milestone this command must be TOLD about;
+  # forwarding everything to `probe` meant `--release-milestone` reached the one subcommand that
+  # does not take it, so a custom-named release was unreportable through the documented entry
+  # point. Each option goes to the half that owns it.
+  local probe facts p_args=() f_args=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --release-milestone|--backlog-milestone|--blocker-label)
+        [ "$#" -ge 2 ] || die "status: $1 needs a value"; f_args+=("$1" "$2"); shift 2 ;;
+      --agents) [ "$#" -ge 2 ] || die "status: --agents needs a value"; p_args+=("$1" "$2"); shift 2 ;;
+      *) die "status: unknown argument $1" ;;
+    esac
+  done
+  probe="$(cmd_probe "$root" "${p_args[@]+"${p_args[@]}"}")" || die "status: the offline probe failed"
   # A FAILED LIVE READ IS NOT FATAL, and that is deliberate: the offline half is still worth
   # reporting, and every tracker rung it could not establish comes out `unknown` — which is
   # non-green, so nothing is glossed over by continuing.
-  facts="$( cd "$root" && cmd_facts 2>/dev/null )" || facts='{}'
+  facts="$( cd "$root" && cmd_facts "${f_args[@]+"${f_args[@]}"}" 2>/dev/null )" || facts='{}'
   { printf '%s\n' "$probe"; printf '%s' "$facts" | cmd_tracker; } | cmd_verdict
 }
 

@@ -259,6 +259,107 @@ ar receipt >/dev/null 2>&1;                eq $? 2 "receipt: rejects a missing a
 ar receipt bogus "$d" >/dev/null 2>&1;     eq $? 2 "receipt: rejects an unknown action"
 ar receipt check "$WORK/nope" >/dev/null 2>&1; eq $? 2 "receipt: rejects a non-directory"
 
+# THE COMMIT IS NOT THE TREE. Keying only on HEAD let a receipt outlive the bytes it was a
+# receipt for: edit a tracked file without committing and root, HEAD and gate config are all
+# unchanged, so yesterday's pass still validated against a tree the gates never saw. This is the
+# single most valuable thing the receipt asserts, and it was quietly false.
+d="$WORK/p-dirty"; mkrepo "$d"
+printf '[gates]\nbuild = "exit 0"\n' > "$d/agents.toml"
+check_git "$d" add agents.toml; check_git "$d" commit -qm gates
+ar receipt run "$d" >/dev/null 2>&1
+ar receipt check "$d" >/dev/null 2>&1; eq $? 0 "receipt: clean tree at the recorded HEAD is ok"
+printf 'uncommitted\n' >> "$d/README.md"
+ar receipt check "$d" >/dev/null 2>&1; eq $? 10 "receipt: an UNCOMMITTED edit makes the receipt stale"
+out="$(ar receipt check "$d")"; has "$out" "working tree changed" "receipt: the stale reason names the worktree"
+check_git "$d" checkout -- README.md
+ar receipt check "$d" >/dev/null 2>&1; eq $? 0 "receipt: reverting the edit restores the receipt"
+# An UNTRACKED file counts too — a gate that globs the tree sees it.
+printf 'x\n' > "$d/stray.txt"
+ar receipt check "$d" >/dev/null 2>&1; eq $? 10 "receipt: an UNTRACKED file makes the receipt stale"
+rm -f "$d/stray.txt"
+
+# EQUIVALENT PATHS SHARE A RECEIPT. The key compares text, so `.` and the absolute path named the
+# same checkout and did not match — a pointless `stale` on every differently-spelled invocation.
+( cd "$d" && ar receipt check . >/dev/null 2>&1 ); eq $? 0 "receipt: a relative path resolves to the same receipt"
+
+# CADENCE. `run` defaults to the `full` context, which SKIPS a `turn-end` gate — while `detect`
+# lists it, so the probe counted it and the receipt claimed it had run. A repo with a `turn-end`
+# gate got a green rung for a gate nothing executed.
+d="$WORK/p-cadence"; mkrepo "$d"
+printf '[gates]\nsmoke = "exit 7"\n[gates.cadence]\nsmoke = "turn-end"\n' > "$d/agents.toml"
+check_git "$d" add agents.toml; check_git "$d" commit -qm gates
+ar receipt run "$d" >/dev/null 2>&1; eq $? 1 "receipt: a failing turn-end gate is EXECUTED, not skipped"
+ar receipt check "$d" >/dev/null 2>&1; eq $? 12 "receipt: its failure is recorded, not reported as a pass"
+out="$(ar probe "$d")"
+has "$out" "gates${TAB}todo" "probe: a failing turn-end gate keeps the rung todo"
+
+# A BROKEN DETECTOR IS NOT A RECORDED DECISION. Piping `detect` straight into `grep -c` discarded
+# its exit status, so a detector that FAILED counted zero and — if the manifest carried any gate
+# key — was reported as a deliberate N/A. "The owner meant it" is the flattering reading.
+d="$WORK/p-detfail"; mkrepo "$d"
+printf '[gates.state]\ntest = "na"\n' > "$d/agents.toml"
+( PATH="$WORK/nogates-bin:$PATH"; mkdir -p "$WORK/nogates-bin"
+  # A stub project-gates.sh that fails, reached through the same dirname the library uses.
+  cp -R "$ROOT/scripts" "$WORK/detfail-scripts" >/dev/null 2>&1
+  printf '#!/bin/sh\nexit 3\n' > "$WORK/detfail-scripts/lib/project-gates.sh"
+  out="$(bash "$WORK/detfail-scripts/lib/adopt-readiness.sh" probe "$d" 2>/dev/null)"
+  case "$out" in *"gates${TAB}unknown"*) exit 0 ;; *) exit 1 ;; esac )
+yes $? "probe: a FAILED gate detector is unknown, never a recorded N/A"
+
+# THE POLYGLOT NOTE goes to stderr, never into the record stream — a `note` line on stdout would
+# reach `verdict`, fail the rung-name check, and kill the run on a rung nobody wrote.
+d="$WORK/p-mixed"; mkrepo "$d"
+printf '{"name":"a/b"}\n' > "$d/composer.json"
+printf '[gates]\nbuild = "exit 0"\n' > "$d/agents.toml"
+err="$(ar probe "$d" 2>&1 >/dev/null)"
+has "$err" "composer.json" "probe: a hidden PHP ecosystem is reported to the operator"
+outs="$(ar probe "$d" 2>/dev/null)"
+hasnt "$outs" "composer.json" "probe: that note is NOT a record on stdout"
+printf '%s\n' "$outs" | ar verdict >/dev/null 2>&1; rc=$?
+case "$rc" in 0|10|11) ok ;; *) bad "probe: the note must not make verdict fail (rc=$rc)" ;; esac
+
+# THE STAGED TEMP FILE MUST NOT BE GUESSABLE. A fixed `$path.tmp` is shared by every concurrent
+# writer — two runs can rename each other's file, so a caller publishes a result it never produced
+# — and the redirect FOLLOWS a pre-planted symlink out of the state dir. `mktemp` removes both.
+d="$WORK/p-symlink"; mkrepo "$d"
+printf '[gates]\nbuild = "exit 0"\n' > "$d/agents.toml"
+canary="$WORK/canary-outside-state"; printf 'untouched\n' > "$canary"
+ln -sf "$canary" "$ADB_STATE_DIR/.adopt-receipt.tmp"
+ar receipt run "$d" >/dev/null 2>&1
+eq "$(cat "$canary")" "untouched" "receipt: a pre-planted temp symlink is not written through"
+rm -f "$ADB_STATE_DIR/.adopt-receipt.tmp"
+
+# THE HARNESS RUNG CHECKS WHAT A RUN NEEDS, not that a directory exists. `$HOME/.<agent>` exists
+# the moment anything writes state into it, so testing only that reported an agent with no
+# install as fully harnessed. The contract's words are "skills resolve, root doc present".
+#
+# THE FIXTURE MUST RESOLVE AN INSTALL FIRST, and the first version of this did not — it pointed
+# HOME at an empty tree, so `adb_install_source` failed and the rung reported "no baseline
+# install" on BOTH sides of the mutation. The assertion could not distinguish anything: a
+# can't-fail guard, caught by the mutation harness refusing to accept it as a witness. So the
+# fixture builds a real install source, wires ONE agent completely, and leaves the second missing
+# only its root doc — which is exactly the difference the rung must see.
+fakeinstall="$WORK/fakeinstall"
+mkdir -p "$fakeinstall/agents/claude" "$fakeinstall/agents/codex"
+: > "$fakeinstall/install.sh"
+: > "$fakeinstall/agents/claude/CLAUDE.md"
+: > "$fakeinstall/agents/codex/AGENTS.md"
+fakehome="$WORK/fakehome"
+mkdir -p "$fakehome/.claude/skills" "$fakehome/.claude/scripts/lib" \
+         "$fakehome/.codex/skills"  "$fakehome/.codex/scripts/lib"
+ln -sf "$fakeinstall/agents/claude/CLAUDE.md" "$fakehome/.claude/CLAUDE.md"
+d="$WORK/p-harness"; mkrepo "$d"
+# claude alone is complete -> ok.
+out="$( HOME="$fakehome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "harness${TAB}ok" "probe: a completely installed agent makes the harness rung ok"
+# codex has its directories but NO root doc -> todo, naming what is absent.
+out="$( HOME="$fakehome" ar probe "$d" --agents claude,codex 2>/dev/null )"
+case "$out" in
+  *"harness${TAB}ok"*) bad "probe: an agent home with no root doc is todo, not ok" ;;
+  *) ok ;;
+esac
+has "$out" "codex(root-doc)" "probe: the harness rung names WHICH artifact is missing"
+
 # --- probe: argument validation -------------------------------------------------------------------
 ar probe >/dev/null 2>&1;                        eq $? 2 "probe: rejects a missing root"
 ar probe "$WORK/nope" >/dev/null 2>&1;           eq $? 2 "probe: rejects a non-directory"
@@ -281,21 +382,39 @@ for r in milestones slate unmilestoned dispositions roadmap settings release; do
 done
 
 # --- milestones
-out="$(tr_out '{"release_milestone":"Next release","backlog_milestone":"Backlog","blocker_label":false}')"
+# THE MILESTONES MUST BE OBSERVED IN THE LIST, not merely named. `release_milestone` is the title
+# the caller ASKED about; treating those strings as proof of existence let a repo carrying the
+# label but NEITHER milestone report `ok`.
+MS_BOTH='"milestones":[{"title":"Next release","open_issues":1},{"title":"Backlog","open_issues":1}]'
+out="$(tr_out "{\"release_milestone\":\"Next release\",\"backlog_milestone\":\"Backlog\",\"blocker_label\":false,$MS_BOTH}")"
 has "$out" "milestones${TAB}todo" "tracker: a missing blocker label is todo"
-out="$(tr_out '{"release_milestone":"Next release","backlog_milestone":"Backlog","blocker_label":true}')"
-has "$out" "milestones${TAB}ok" "tracker: both milestones + the label is ok"
+out="$(tr_out "{\"release_milestone\":\"Next release\",\"backlog_milestone\":\"Backlog\",\"blocker_label\":true,$MS_BOTH}")"
+has "$out" "milestones${TAB}ok" "tracker: both milestones observed + the label is ok"
+out="$(tr_out '{"release_milestone":"Next release","backlog_milestone":"Backlog","blocker_label":true,"milestones":[]}')"
+has "$out" "milestones${TAB}todo" "tracker: the label without the milestones is todo, NOT ok"
+has "$out" "do NOT" "tracker: the missing milestones are named"
+# The blocker label must be a BOOLEAN. The string "true" is a malformed fact, and coercing it
+# reported a repo with no label as fully configured.
+out="$(tr_out "{\"release_milestone\":\"Next release\",\"backlog_milestone\":\"Backlog\",\"blocker_label\":\"true\",$MS_BOTH}")"
+has "$out" "milestones${TAB}unknown" "tracker: a STRING blocker_label is malformed, not true"
+has "$out" "MALFORMED" "tracker: a wrong-type fact is reported as malformed, not as unread"
 
 # --- slate: the ZERO-ISSUE MILESTONE is #81's concrete dead-flow case.
-out="$(tr_out '{"armed":0}')"
-has "$out" "slate${TAB}todo" "tracker: an empty release milestone is todo"
-has "$out" "ZERO issues" "tracker: the empty-milestone case says so in words"
-out="$(tr_out '{"armed":3}')"
-has "$out" "slate${TAB}ok" "tracker: a non-empty release milestone is ok"
-# A non-numeric count is unknown, not zero. Coercing garbage to 0 would report a healthy repo's
-# milestone as empty and send the owner to re-slate a release that is already fine.
-out="$(tr_out '{"armed":"lots"}')"
-has "$out" "slate${TAB}unknown" "tracker: a non-numeric armed count is unknown, not zero"
+# ARMED IS `release-counts`' VERDICT, passed through as a boolean. The rung used to take a raw
+# count, which meant re-deriving a rule that predicate already owns — and getting it wrong: a
+# milestone holding only the ROADMAP ARTIFACT counted as armed here while `release-counts`
+# excludes the artifact by number and calls it unarmed. Two answers about one milestone.
+out="$(tr_out '{"slate_armed":false}')"
+has "$out" "slate${TAB}todo" "tracker: an unarmed release milestone is todo"
+has "$out" "NO requirements" "tracker: the empty-milestone case says so in words"
+out="$(tr_out '{"slate_armed":true}')"
+has "$out" "slate${TAB}ok" "tracker: an armed release milestone is ok"
+# A non-boolean is unknown, not false. Coercing garbage would report a healthy repo's milestone
+# as empty and send the owner to re-slate a release that is already fine.
+out="$(tr_out '{"slate_armed":"lots"}')"
+has "$out" "slate${TAB}unknown" "tracker: a non-boolean armed verdict is unknown, not false"
+out="$(tr_out '{"slate_armed":1}')"
+has "$out" "slate${TAB}unknown" "tracker: the NUMBER 1 is not the boolean true"
 
 # --- unmilestoned
 out="$(tr_out '{"unmilestoned":7}')"
@@ -385,12 +504,104 @@ out="$(tr_out '{}')"
 has "$out" "release${TAB}unknown" "tracker: an UNREAD release-command marker is unknown"
 out="$(tr_out '{"release_command":""}')"
 has "$out" "release${TAB}todo" "tracker: a marker read and found ABSENT is todo"
+# AMBIGUITY IS ITS OWN ANSWER. `release-command` returns every declared value precisely so a split
+# declaration can be refused; `head -n1` discarded that and picked one arbitrarily, which is worse
+# than reporting the problem.
+out="$(tr_out '{"release_command":"/release","release_command_count":2}')"
+has "$out" "release${TAB}todo" "tracker: two declared release-command markers are refused"
+has "$out" "exactly one" "tracker: the ambiguity is named"
+# A NON-STRING marker is malformed, not a marker. `false` is neither absent nor a command.
+out="$(tr_out '{"release_command":false}')"
+has "$out" "release${TAB}unknown" "tracker: a boolean release_command is malformed, not ok"
 
 # --- tracker input validation
 printf 'not json' | ar tracker >/dev/null 2>&1; eq $? 2 "tracker: invalid JSON is rejected"
 ar tracker extra </dev/null >/dev/null 2>&1;    eq $? 2 "tracker: rejects arguments"
 out="$(printf '' | ar tracker)"
 has "$out" "milestones${TAB}unknown" "tracker: empty stdin is every rung unknown, not a pass"
+
+# --- 4b. facts + status, driven through a STUBBED gh ----------------------------------------------
+# The live gatherer used to be untested on the grounds that it needs a real tracker. It does not:
+# `check-roadmap-e2e.sh` established the pattern of putting a `gh` stub on PATH, and the two
+# properties that matter here are exactly the ones a stub can prove —
+#
+#   1. A FAILED READ IS OMITTED, NEVER DEFAULTED. This is the whole reason `facts` is separate
+#      from `tracker`: a `gh` that errors must leave the field out, so the rung reads `unknown`.
+#      A `0` in its place would report a repo whose tracker could not be read as a repo with
+#      nothing in it — the flattering answer, and unrecoverable downstream because a zero is
+#      indistinguishable from a real zero.
+#   2. `status` COMPOSES, and its exit code is `verdict`'s. It is the documented re-runnable entry
+#      point (`baseline adopt status`); nothing previously executed it at all.
+#
+# What a stub cannot prove is that the QUERIES are the right ones — that stays a live concern, and
+# the header says so rather than implying this covers it.
+stub_gh() {  # <dir> <body>
+  mkdir -p "$1"
+  { printf '#!/bin/sh\n'; printf '%s\n' "$2"; } > "$1/gh"; chmod +x "$1/gh"
+}
+
+# EVERY gh call fails. Every tracker field must be absent, so every tracker rung is `unknown`.
+stub_gh "$WORK/gh-dead" 'exit 4'
+d="$WORK/facts-dead"; mkrepo "$d"
+out="$( cd "$d" && PATH="$WORK/gh-dead:$PATH" ar facts 2>/dev/null )"; rc=$?
+eq "$rc" "2" "facts: an unresolvable repository is a hard error, not an empty object"
+
+# `gh repo view` succeeds, everything else fails: the object must come back with NO counted
+# fields rather than zeros.
+stub_gh "$WORK/gh-partial" '
+case "$*" in
+  *"repo view"*) echo "acme/widget" ;;
+  *) exit 5 ;;
+esac'
+out="$( cd "$d" && PATH="$WORK/gh-partial:$PATH" ar facts 2>/dev/null )"
+printf '%s' "$out" | jq -e . >/dev/null 2>&1; yes $? "facts: a partial read still emits valid JSON"
+for k in unmilestoned roadmap_count slate_armed milestones; do
+  printf '%s' "$out" | jq -e --arg k "$k" 'has($k)' >/dev/null 2>&1
+  no $? "facts: '$k' is OMITTED when its read fails (never defaulted to 0)"
+done
+# ...and those omissions must surface as `unknown`, not as satisfied rungs.
+trk="$(printf '%s' "$out" | ar tracker)"
+for r in milestones slate unmilestoned dispositions roadmap release; do
+  case "$trk" in *"$r${TAB}unknown"*) ok ;; *) bad "facts->tracker: '$r' must be unknown after a failed read" ;; esac
+done
+
+# A MILESTONE TITLE IS DATA, NEVER QUERY SYNTAX. `milestone:"$rel"` interpolated a project-supplied
+# title straight into a search query, so a supported custom name containing a quote rewrote it.
+# The stub records every argument it is given; a title with a quote must not appear unescaped in a
+# `q=` search expression.
+stub_gh "$WORK/gh-record" '
+printf "%s\n" "$*" >> "'"$WORK"'/gh-args.log"
+case "$*" in
+  *"repo view"*) echo "acme/widget" ;;
+  *milestones*) echo "[]" ;;
+  *labels*) echo "" ;;
+  *) echo "0" ;;
+esac'
+: > "$WORK/gh-args.log"
+( cd "$d" && PATH="$WORK/gh-record:$PATH" ar facts --release-milestone 'Ship "now"' >/dev/null 2>&1 )
+if grep -q 'milestone:"Ship "now""' "$WORK/gh-args.log"; then
+  bad "facts: a quoted milestone title reached a search query unescaped"
+else ok; fi
+
+# `status` COMPOSES AND RETURNS verdict's CODE. A half-adopted project must be non-green through
+# the real entry point, not merely through hand-assembled records.
+d="$WORK/status-e2e"; mkrepo "$d"
+printf '[roles]\nprimary = "claude"\n[gates]\nbuild = "exit 0"\n' > "$d/agents.toml"
+check_git "$d" add agents.toml; check_git "$d" commit -qm gates
+out="$( cd "$d" && PATH="$WORK/gh-partial:$PATH" ar status . 2>/dev/null )"; rc=$?
+has "$out" "of 12 rungs evaluated" "status: composes into one report"
+has "$out" "VERDICT:" "status: renders a verdict"
+case "$rc" in 10|11) ok ;; *) bad "status: a half-adopted project must be non-green (rc=$rc)" ;; esac
+# A dead tracker must not make `status` fail loudly — the offline half is still worth reporting,
+# and every unread rung is `unknown`, which is already non-green.
+out="$( cd "$d" && PATH="$WORK/gh-dead:$PATH" ar status . 2>/dev/null )"; rc=$?
+has "$out" "VERDICT:" "status: still reports when the tracker cannot be read at all"
+case "$rc" in 10|11) ok ;; *) bad "status: an unreadable tracker must stay non-green (rc=$rc)" ;; esac
+# The custom-milestone options must be FORWARDED to facts rather than handed to probe, which does
+# not take them — a repo initialised with --release-name was unreportable through this entry point.
+( cd "$d" && PATH="$WORK/gh-partial:$PATH" ar status . --release-milestone 'v2026.08' >/dev/null 2>&1 )
+case "$?" in 10|11) ok ;; *) bad "status: --release-milestone must be accepted and forwarded" ;; esac
+( cd "$d" && ar status . --bogus >/dev/null 2>&1 ); eq $? 2 "status: an unknown option is rejected"
 
 # --- 5. end to end: probe + tracker -> verdict ----------------------------------------------------
 # The composition is the product, so it is asserted as one: a half-adopted project must come out
@@ -401,9 +612,10 @@ printf '[roles]\nprimary = "claude"\n[gates]\nbuild = "exit 0"\n' > "$d/agents.t
 mkdir -p "$d/.ai-dev-baseline"; printf '# decisions\n' > "$d/.ai-dev-baseline/decisions.md"
 ar receipt run "$d" >/dev/null 2>&1
 facts='{"release_milestone":"Next release","backlog_milestone":"Backlog","blocker_label":true,
-        "armed":4,"unmilestoned":0,"roadmap_count":1,
-        "milestones":[{"title":"Next release","open_issues":4}],"dispositions":[],
-        "settings":"ok","settings_detail":"applied","release_command":"/release"}'
+        "slate_armed":true,"unmilestoned":0,"roadmap_count":1,
+        "milestones":[{"title":"Next release","open_issues":4},{"title":"Backlog","open_issues":2}],
+        "dispositions":[],
+        "settings":"ok","settings_detail":"applied","release_command":"/release","release_command_count":1}'
 combined="$( { ar probe "$d"; printf '%s' "$facts" | ar tracker; } )"
 out="$(printf '%s' "$combined" | ar verdict)"; rc=$?
 has "$out" "12 of 12 rungs evaluated" "e2e: probe+tracker cover the whole contract"
@@ -412,9 +624,10 @@ eq "$rc" "0" "e2e: green exits 0"
 
 # ...and the same fixture with ONE thing undone must be red and must NAME it.
 facts_bad='{"release_milestone":"Next release","backlog_milestone":"Backlog","blocker_label":true,
-        "armed":0,"unmilestoned":0,"roadmap_count":1,
-        "milestones":[{"title":"Next release","open_issues":0}],"dispositions":[],
-        "settings":"ok","settings_detail":"applied","release_command":"/release"}'
+        "slate_armed":false,"unmilestoned":0,"roadmap_count":1,
+        "milestones":[{"title":"Next release","open_issues":0},{"title":"Backlog","open_issues":2}],
+        "dispositions":[],
+        "settings":"ok","settings_detail":"applied","release_command":"/release","release_command_count":1}'
 combined="$( { ar probe "$d"; printf '%s' "$facts_bad" | ar tracker; } )"
 out="$(printf '%s' "$combined" | ar verdict)"; rc=$?
 has "$out" "VERDICT: red" "e2e: an empty release milestone makes the whole contract red"
@@ -528,8 +741,8 @@ mut no-gate-is-silent \
     '_ar_emit gates na "NO GATE was detected' \
     'probe: NO detectable gate is todo (loud), not a silent pass'
 mut gate-count-greps-status \
-    'detect "$root" 2>/dev/null | grep -c . || true)' \
-    'status "$root" 2>/dev/null | grep -c "run:" || true)' \
+    'grun="$(printf '"'"'%s'"'"' "$gdetect" | grep -c . || true)"' \
+    'grun=0' \
     'probe: a detected gate with no receipt is todo'
 mut receipt-ignores-head \
     'if [ "$r_sha" != "$sha" ];' \
@@ -554,15 +767,15 @@ mut disposition-jq-rebinding-returns \
 mut disposition-jq-failure-unchecked \
     'if ! undecided="$(printf' \
     'if undecided="$(printf' \
-    'tracker: an unreadable milestone list is unknown, NOT all-dispositioned'
+    'tracker: an undispositioned thematic milestone is todo'
 mut disposition-convention-filter-drops-all \
     'select($m.title != $rel and $m.title != $bak)' \
     'select(false)' \
     'tracker: an undispositioned thematic milestone is todo'
-mut armed-garbage-coerced-to-ok \
-    'elif [ "$armed" -eq 0 ]; then' \
+mut armed-not-checked \
+    'elif [ "$armed" != true ]; then' \
     'elif false; then' \
-    'tracker: an empty release milestone is todo'
+    'tracker: an unarmed release milestone is todo'
 mut settings-typo-accepted \
     '*)  die "tracker: .settings must be' \
     '*)  _ar_emit settings ok "x" ;; esac; case x in y) die "tracker: .settings must be' \
@@ -576,9 +789,41 @@ mut gates-decision-read-from-status-text \
     'gkeys=1' \
     'probe: NO detectable gate is todo (loud), not a silent pass'
 mut release-absent-collapses-to-todo \
-    'if [ "$(q '"'"'has("release_command")|tostring'"'"')" != "true" ]; then' \
-    'if false; then' \
+    'relcmd="$(_fact release_command string)"; rc=$?' \
+    'relcmd=""; rc=0' \
     'tracker: an UNREAD release-command marker is unknown'
+mut receipt-ignores-the-worktree \
+    'if [ "$r_tree" != "$tree" ];' \
+    'if false;' \
+    'receipt: an UNCOMMITTED edit makes the receipt stale'
+mut receipt-skips-turn-end-gates \
+    'run "$root" "" turn-end || { outcome=fail; rc=1; }' \
+    'true' \
+    'receipt: a failing turn-end gate is EXECUTED, not skipped'
+mut receipt-shared-temp-name \
+    'tmp="$(mktemp "$(dirname "$path")/.adopt-receipt.XXXXXX")"' \
+    'tmp="$(dirname "$path")/.adopt-receipt.tmp"; :' \
+    'receipt: a pre-planted temp symlink is not written through'
+mut detector-failure-is-na \
+    'if [ "$gstat" -ne 0 ]; then' \
+    'if false; then' \
+    'probe: a FAILED gate detector is unknown, never a recorded N/A'
+mut harness-checks-only-the-directory \
+    '[ -e "$HOME/.$a/$doc" ]        || missing="$missing $a(root-doc)"' \
+    ':' \
+    'probe: an agent home with no root doc is todo, not ok'
+mut blocker-label-coerced \
+    'printf '"'"'%s'"'"' "$json" | jq -e --arg k "$k" --arg t "$t" '"'"'.[$k]|type == $t'"'"' >/dev/null 2>&1 || return 2' \
+    ':' \
+    'tracker: a STRING blocker_label is malformed, not true'
+mut milestones-not-observed \
+    'elif [ -n "$missing" ]; then' \
+    'elif false; then' \
+    'tracker: the label without the milestones is todo, NOT ok'
+mut release-ambiguity-ignored \
+    'if [ -n "$rc_count" ] && [ "$rc_count" -gt 1 ]; then' \
+    'if false; then' \
+    'tracker: two declared release-command markers are refused'
 mut roadmap-split-brain-ok \
     'elif [ "$rc_n" -gt 1 ]; then' \
     'elif false; then' \

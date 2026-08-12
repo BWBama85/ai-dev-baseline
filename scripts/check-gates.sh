@@ -535,6 +535,18 @@ out="$(adb_detect_gates "$d")"
 has "$out" "vendor/bin/phpstan analyse" "php: vendor/bin phpstan is the typecheck gate"
 has "$out" "vendor/bin/phpunit"         "php: vendor/bin phpunit is the test gate"
 
+# EVERY declared composer script is honoured, not just test/lint. The docs claim declared
+# commands beat inferred binaries; honouring only two of the four made that claim false for the
+# other two, and silently preferred an inferred phpstan over a script the project wrote.
+d="$work/php-scripts-all"; mkdir -p "$d"
+printf '{"scripts":{"typecheck":"phpstan analyse -c custom.neon","format:check":"php-cs-fixer check"}}\n' > "$d/composer.json"
+php_stub "$d/vendor/bin" phpstan php-cs-fixer
+( PATH="$work/php-bin-composer2:$PATH"; php_stub "$work/php-bin-composer2" composer
+  out="$(adb_detect_gates "$d")"
+  case "$out" in *"composer run-script typecheck"*) : ;; *) exit 1 ;; esac
+  case "$out" in *"composer run-script format:check"*) : ;; *) exit 1 ;; esac )
+yes $? "php: declared typecheck and format:check scripts beat the inferred binaries"
+
 # A declared composer script beats an inferred binary — the project stating its own command.
 d="$work/php-scripts"; mkdir -p "$d"
 printf '{"scripts":{"test":"phpunit --testdox","lint":"phpcs --standard=PSR12"}}\n' > "$d/composer.json"
@@ -571,6 +583,10 @@ printf '{"name":"a/b"}\n' > "$d/composer.json"
 php_stub "$d/vendor/bin" php-cs-fixer
 out="$(adb_detect_gates "$d")"
 has   "$out" "php-cs-fixer fix --dry-run" "php: format is --dry-run, never an in-place fix"
+# --dry-run covers the SOURCE files; PHP CS Fixer caches by default and writes .php-cs-fixer.cache
+# progressively, so without this the "non-mutating" gate still drops a file into the project —
+# which is what makes running it unattended unsafe in the first place.
+has   "$out" "--using-cache=no" "php: format does not write a cache file into the project"
 hasnt "$out" "phpcbf"                     "php: phpcbf (no check mode) is never a gate"
 
 # composer.json present but NOTHING runnable: the adapter must DECLINE rather than claim the

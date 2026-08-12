@@ -1051,7 +1051,7 @@ jobs:
       - name: adoption completion contract — the twelve rungs and the fail-closed verdict (#81)
         run: bash scripts/check-adopt-readiness.sh
 
-      - name: ...and its guards must be able to fail — 21 mutations, each observed RED (#81)
+      - name: ...and its guards must be able to fail — 29 mutations, each observed RED (#81)
         run: bash scripts/check-adopt-readiness.sh --mutation
 
   practice-index:

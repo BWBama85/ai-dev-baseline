@@ -57,7 +57,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     nothing. `status` composes all four and is the re-runnable entry point, reachable as
     `baseline adopt status`.
 
-  **Every guard was observed failing** — 21 mutations against a tree copy, each required to make
+  **Every guard was observed failing** — 29 mutations against a tree copy, each required to make
   the suite red on its *own* named witness. Writing the negative half first caught three defects
   the positive half never would have, and two of them would have reported a broken project as
   fine: a gate count that grepped a human-readable table for `run:` (which it prints *without* a
@@ -67,13 +67,25 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   an undispositioned one; and a `while read` that dropped the final record of every
   `$(…)`-captured record set.
 
-  The self-review pass then caught three more, all of the same family — a decision resting on
-  something with no contract: an equality against the gate table's *"no gates configured or
-  detected"* sentence (re-word it and a project with no gates reports as deliberately disabled);
-  a `// ""` that read an unreachable roadmap artifact exactly like one carrying no release-command
-  marker, telling the owner to add a marker they may already have; and a milestone title carrying
-  a newline, which forged a record boundary and killed the run on a "rung" nobody wrote. None of
-  the six was visible by reading.
+  The self-review pass caught three more of the same family — a decision resting on something with
+  no contract: an equality against the gate table's *"no gates configured or detected"* sentence
+  (re-word it and a project with no gates reports as deliberately disabled); a `// ""` that read an
+  unreachable roadmap artifact exactly like one carrying no release-command marker, telling the
+  owner to add a marker they may already have; and a milestone title carrying a newline, which
+  forged a record boundary and killed the run on a "rung" nobody wrote.
+
+  **The independent review then found more of the class than either pass had**, and its findings
+  are why the mutation count went 21 → 29 and the assertion count 124 → 169. Three further false
+  greens came from unvalidated JSON types — `"blocker_label":"true"` (the *string*),
+  `"milestones":null`, `"release_command":false` — each a malformed fact reading as a satisfied
+  rung. The receipt stayed valid across **uncommitted** edits to the very tree it certified, and
+  `receipt run` skipped `turn-end` gates while claiming every detected gate had run. The milestone
+  rung asserted the milestone *names* instead of observing them, so a repo with the label and
+  neither milestone passed. The armed count included the roadmap artifact that
+  `roadmap-lib.sh release-counts` excludes, so this verifier and `/roadmap` could disagree about
+  one milestone. `head -n1` discarded the release-command ambiguity its reader deliberately
+  surfaces. A milestone title reached a GitHub search query unescaped. And a gate detector that
+  *failed* was classified as a deliberate N/A. Every one is fixed and pinned by a mutation.
 
   One checklist item is deliberately **absent**: the contract's *"project knowledge map (#33)"*  <!-- adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was DROPPED; it tracks nothing -->
   cannot be a rung, because that issue was closed `NOT_PLANNED` and requiring it would make the
@@ -88,8 +100,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   surveyed adoption targets is a 139-issue PHP repo.
 
   Detection is now an ordered **adapter registry** — the issue's *"extensible, not a fixed list"*.
-  A sixth ecosystem is one `_adb_eco_<name>` function plus one token in `_ADB_ECOSYSTEMS`, and the
-  existing four adapters moved verbatim with single-primary first-wins preserved byte-for-byte.
+  The **next** ecosystem after these five is one `_adb_eco_<name>` function plus one token in
+  `_ADB_ECOSYSTEMS`. The existing four adapters were restructured into functions — not moved
+  verbatim — but every command string they resolve is unchanged, and single-primary first-wins is
+  preserved.
   The PHP adapter prefers a declared `composer.json` script over an inferred binary and a
   Composer-pinned `vendor/bin/<tool>` over the same tool on `PATH`, resolving `typecheck` to
   PHPStan or Psalm, `test` to PHPUnit, `lint` to PHP_CodeSniffer, and `format` to

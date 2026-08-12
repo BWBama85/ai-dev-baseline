@@ -4907,7 +4907,7 @@ limit: none of them is sufficient alone.
              be a rung: that issue was closed NOT_PLANNED, so requiring it would make the contract
              permanently red for every project. The contract records why, in the file itself.
 - placement: `scripts/lib/adopt-readiness.sh` (the contract + predicates), `scripts/check-adopt-readiness.sh`
-             (the suite + 21-mutation harness), `scripts/lib/project-gates.sh` (the adapter
+             (the suite + 29-mutation harness), `scripts/lib/project-gates.sh` (the adapter
              registry + PHP), `base/workflows/adopt.md` step 12, `bin/baseline adopt`.
 - reason:    Each of the four is a boundary the issue left open in a direction where guessing wrong
              is expensive: (a) would have reversed a recorded decision by accident, (b) would have
@@ -4915,13 +4915,27 @@ limit: none of them is sufficient alone.
              taxonomy migration nobody asked for, (d) would have changed gate behaviour for every
              existing polyglot repo. Recording them is what lets the next reader see that the
              narrow answers were chosen rather than defaulted into.
-             **What the suite changed, recorded because the direction is the point.** Three
-             fail-OPEN defects were caught by writing the negative half first, and every one of
-             them would have reported a broken project as fine: a gate count that grepped a
-             human-readable table for `run:` (which it prints without a colon) so a repo with a
-             real gate counted zero and reported N/A; a jq filter that dereferenced `.title` inside
-             `$d | index(…)` where jq has rebound `.`, whose abort a `2>/dev/null` swallowed into
-             "every milestone is dispositioned" for a project with 44 issues in an undispositioned
-             one; and a `while read` that dropped the final record of every `$(…)`-captured record
-             set. None was visible by reading. All three are pinned by mutations.
+             **What the negative half changed, recorded because the DIRECTION is the point.**
+             Writing the failing cases first caught three defects a positive-only suite never
+             would have. TWO were fail-OPEN — a broken project reported as fine: a gate count that
+             grepped a human-readable table for `run:` (which it prints without a colon) so a repo
+             with a real gate counted zero and reported N/A; and a jq filter that dereferenced
+             `.title` inside `$d | index(…)` where jq has rebound `.`, whose abort a `2>/dev/null`
+             swallowed into "every milestone is dispositioned" for a project with 44 issues in an
+             undispositioned one. The THIRD was fail-closed and still wrong: a `while read` that
+             dropped the final record of every `$(…)`-captured record set, so a complete set
+             reported "11 of 12 evaluated" and blamed the caller.
+             **And the independent review then found more of the same class than the suite had.**
+             Its 22 required findings included three reproduced false greens from unvalidated JSON
+             types (`"blocker_label":"true"`, `"milestones":null`, `"release_command":false`), a
+             receipt that stayed valid across UNCOMMITTED edits to the tree it certified, a
+             `receipt run` that skipped `turn-end` gates while claiming every detected gate had
+             run, a milestone rung that asserted the milestone NAMES rather than observing them, an
+             armed count that included the roadmap artifact `release-counts` excludes, a
+             `head -n1` that discarded release-command ambiguity the reader deliberately surfaces,
+             a milestone title interpolated unescaped into a GitHub search query, and a detector
+             FAILURE classified as a deliberate N/A. Every one is fixed and pinned; the mutation
+             count went 21 -> 29 and the assertion count 124 -> 169 as a direct result. The lesson
+             is not that review is useful — it is that "fail-closed" is a property of every input
+             path, and the paths this suite had not yet driven were exactly where it was false.
 - baseline-issue: n/a — this repo IS the baseline; #81 is the tracking issue.

@@ -28,12 +28,22 @@ Argument: `{{ARGS}}` — an optional path (defaults to the current repo), an opt
 `--apply`, not with confirmation, not ever. `remove` and `move` are words in a plan a *human*
 executes.
 
-**Two things sit outside that sentence, and both are named rather than implied.** It writes freely
+**Three things sit outside that sentence, and each is named rather than implied.** It writes freely
 inside its own `{{STATE_DIR}}` — that is per-run scratch, gitignored, regenerated on every run, and
 belongs to the agent rather than to the project; every workflow here does the same. And a
 `--apply` run may create the two files below. The boundary is about the **scanned project's own
 files**, and stating it as "never edits any file that already exists" was simply false, because the
 scratch files are overwritten on every run.
+
+**The third is the completion contract's gate rung (step 12), and it is the one that needs saying
+out loud** — because "not with confirmation, not ever" and "run the project's gates once, with
+consent" are in tension, and leaving that unresolved would make the boundary unreadable. Executing
+a gate is not editing a file: the gates this workflow runs are *verification* commands, and the
+detector deliberately resolves `format` to a checking invocation (`--dry-run`, `--using-cache=no`,
+`phpcs` rather than `phpcbf`) precisely so that running one changes nothing. But those commands come
+from the **scanned project's own `agents.toml`**, so this workflow cannot promise what an arbitrary
+one does. Hence the shape: it is **opt-in, consent-gated, and refusable**, a `todo` on that rung is
+an honest outcome, and the boundary above still holds for everything `/adopt` itself writes.
 
 The only writes it can perform **in the project** are the **two artifacts that do not yet exist**:
 
@@ -455,8 +465,9 @@ already owns it — `/adopt` gathers, it does not re-derive:
 # fail-direction that matters — a failed read must be OMITTED (so the rung is `unknown`), never
 # defaulted to zero (which would report a repo whose tracker could not be read as a repo with
 # nothing in it). That is a rule, and a rule written in prose is one an agent re-derives every
-# run and nothing can regression-test. `facts` is thin — it reads and assembles, it classifies
-# nothing — and `tracker` below, which holds all the rules, stays offline and tested.
+# run and nothing can regression-test. `facts` is thin — it reads, and where a verdict is needed
+# it delegates to the reader that owns it (release-counts, automerge-ok, decisions) rather than
+# forming a second one — and `tracker` below, which holds the rules, stays offline and tested.
 ( cd "$PROJECT" && {{ADOPT_READINESS}} facts ) > "{{STATE_DIR}}/readiness-facts.json"
 ```
 

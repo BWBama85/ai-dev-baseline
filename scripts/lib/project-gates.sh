@@ -65,8 +65,8 @@
 # where the override is genuinely insufficient — file it then, with the evidence.
 #
 # The order lives in ONE place — `_ADB_ECOSYSTEMS`, beside the `_adb_eco_<name>` adapters
-# (#81). That is what "extensible, not a fixed list" bought: a sixth ecosystem is a function
-# and a token, not a sixth `if` spliced into the middle of a record builder. It did NOT buy
+# (#81). That is what "extensible, not a fixed list" bought: the NEXT ecosystem after these five
+# is a function and a token, not another `if` spliced into the middle of a record builder. It did NOT buy
 # simultaneous multi-ecosystem gates; see `_adb_eco_php` for why PHP is last rather than
 # first, which is the polyglot question in its sharpest form.
 #
@@ -353,8 +353,10 @@ _adb_emit() { _adb_resolve_record "$1" "$2" "$3"; }
 # function plus one token in _ADB_ECOSYSTEMS, in the one place the order is written down.
 #
 # WHAT DID NOT CHANGE, deliberately: the semantics are still SINGLE-PRIMARY FIRST-WINS, and
-# the first four adapters are the previous blocks moved verbatim. Extensible is a statement
-# about how a sixth ecosystem gets added, not a licence to start running every detected
+# the first four adapters carry the previous blocks' logic and every one of their command
+# strings unchanged — restructured into functions, so "verbatim" would overstate it, but no
+# ecosystem's resolved command moved. Extensible is a statement
+# about how the NEXT ecosystem gets added, not a licence to start running every detected
 # ecosystem's gates — that is a behavioural change for every existing polyglot repo, and this
 # file's header has named it a follow-up since before #81.
 #
@@ -459,17 +461,25 @@ _adb_eco_php() {
   # A COMPOSER SCRIPT WINS over an inferred binary, mirroring the node adapter: a declared
   # script is the project stating its own command, and it may wrap flags, a config path or a
   # whole pipeline that a bare `phpunit` invocation would skip.
-  _adb_json_script_has "$root/composer.json" test  && d_test="composer run-script test"
-  _adb_json_script_has "$root/composer.json" lint  && d_lint="composer run-script lint"
+  _adb_json_script_has "$root/composer.json" test      && d_test="composer run-script test"
+  _adb_json_script_has "$root/composer.json" lint      && d_lint="composer run-script lint"
+  _adb_json_script_has "$root/composer.json" typecheck && d_typecheck="composer run-script typecheck"
+  # `format:check` first, matching the node adapter: a project that declares BOTH means the
+  # checking one here, since a gate must never rewrite the tree.
+  if   _adb_json_script_has "$root/composer.json" "format:check"; then d_format="composer run-script format:check"
+  elif _adb_json_script_has "$root/composer.json" format;         then d_format="composer run-script format"
+  fi
   # `composer` itself must exist for a declared script to be runnable. Without it the script
   # names are unusable and the binaries below are the only real answer, so drop them rather
   # than emitting a gate whose first act is "command not found".
-  _adb_have composer || { d_test=""; d_lint=""; }
+  _adb_have composer || { d_test=""; d_lint=""; d_typecheck=""; d_format=""; }
 
   # PHP has no compiler pass to borrow, so `typecheck` is a STATIC ANALYSER — PHPStan, then
   # Psalm. `--no-progress` because a gate's log is read after the fact, not watched.
-  if   t="$(_adb_php_tool "$root" phpstan)"; then d_typecheck="$t analyse --no-progress"
-  elif t="$(_adb_php_tool "$root" psalm)";   then d_typecheck="$t --no-progress"
+  if [ -z "$d_typecheck" ]; then
+    if   t="$(_adb_php_tool "$root" phpstan)"; then d_typecheck="$t analyse --no-progress"
+    elif t="$(_adb_php_tool "$root" psalm)";   then d_typecheck="$t --no-progress"
+    fi
   fi
   if [ -z "$d_lint" ] && t="$(_adb_php_tool "$root" phpcs)"; then d_lint="$t -q"; fi
   if [ -z "$d_test" ] && t="$(_adb_php_tool "$root" phpunit)"; then d_test="$t"; fi
@@ -479,8 +489,16 @@ _adb_eco_php() {
   # /adopt's boundary forbids and what makes the readiness verifier's gate-execution rung
   # unsafe to run unattended. `--dry-run` for php-cs-fixer; `phpcbf` has no check mode at all,
   # so its READ-ONLY sibling `phpcs` is what stands in.
-  if   t="$(_adb_php_tool "$root" php-cs-fixer)"; then d_format="$t fix --dry-run --diff"
-  elif [ -z "$d_lint" ] && t="$(_adb_php_tool "$root" phpcs)"; then d_format="$t -q"
+  #
+  # `--using-cache=no` IS PART OF "does not rewrite the tree". PHP CS Fixer caches by default and
+  # writes `.php-cs-fixer.cache` progressively — so `--dry-run` alone still leaves a file behind
+  # in the project, which is precisely the mutation this gate is chosen to avoid, and precisely
+  # what makes running it unattended unsafe. `--dry-run` covers the source files; this covers the
+  # cache.
+  if [ -z "$d_format" ]; then
+    if   t="$(_adb_php_tool "$root" php-cs-fixer)"; then d_format="$t fix --dry-run --diff --using-cache=no"
+    elif [ -z "$d_lint" ] && t="$(_adb_php_tool "$root" phpcs)"; then d_format="$t -q"
+    fi
   fi
   [ -n "$d_typecheck$d_lint$d_test$d_format" ]
 }
