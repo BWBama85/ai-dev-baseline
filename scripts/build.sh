@@ -189,6 +189,7 @@ render_agent_skill() {
   implement_lib="bash \"\$HOME/.$agent/scripts/lib/implement-lib.sh\""
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
   state_assert="bash \"\$HOME/.$agent/scripts/lib/state-assert.sh\""
+  ci_health="bash \"\$HOME/.$agent/scripts/lib/ci-health.sh\""
   current_agent="$agent"
   # AGENT-INVARIANT, like {{ARGS}} — this is a GitHub fact, not a per-agent token (#183). A
   # workflow body is prose an agent pastes into a shell, so it can carry a VALUE but can never
@@ -332,6 +333,7 @@ render_agent_skill() {
       -v cleanup_lib="$cleanup_lib" -v currency_lib="$currency_lib" \
       -v implement_lib="$implement_lib" \
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
+      -v ci_health="$ci_health" \
       -v pr_watch="$pr_watch" -v actions_app_slug="$actions_app_slug" \
       -v current_agent="$current_agent" -v subtask="$subtask" \
       -v skills_subdirs="$skills_subdirs" -v skills_user_root="$skills_user_root" \
@@ -394,6 +396,7 @@ render_agent_skill() {
       line = lreplace(line, "{{IMPLEMENT_LIB}}",    implement_lib)
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
       line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
+      line = lreplace(line, "{{CI_HEALTH_LIB}}",    ci_health)
       line = lreplace(line, "{{ACTIONS_APP_SLUG}}", actions_app_slug)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
       line = lreplace(line, "{{SKILLS_SUBDIRS}}",   skills_subdirs)

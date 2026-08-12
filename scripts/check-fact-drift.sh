@@ -1140,6 +1140,43 @@ fact wsl-smoke-asserts-nonroot-uid \
   "regex:^[[:space:]]*if[[:space:]]*\\(\\\$uid[[:space:]]+-eq[[:space:]]+'0'\\)[[:space:]]*\\{[[:space:]]*\$" \
   -- .github/workflows/wsl-smoke.yml
 
+# --- FACT: the CI-run classifier, and the binary failure model it replaces (#300) ---------------
+# BOTH DIRECTIONS, because each one alone passes the state this change removes.
+#
+# The POSITIVE half is the same contract shape as `branch-health` and `health-decl` above: the
+# library implements the predicate, a practice and two docs name it as the thing that answers "did
+# this run execute?", and two sibling libraries point at it from the reason lines an operator reads
+# when their own verdict is `indeterminate` or `20`. A rename in the library alone leaves every one
+# of those describing a command nobody can run — and unlike a workflow invocation, none of them
+# would fail loudly, because they are prose.
+fact ci-health-predicate "fixed:ci-health.sh classify" -- \
+  scripts/lib/ci-health.sh base/practices/ci-discipline.md \
+  scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh \
+  docs/philosophy.md docs/repo-settings.md
+# The build TOKEN and its mapping are one fact, exactly as `{{ACTIONS_APP_SLUG}}` is: a body that
+# writes the placeholder with no mapping is a fail-loud build, but a mapping with no consumer is a
+# silently dead knob.
+fact ci-health-token "fixed:{{CI_HEALTH_LIB}}" -- \
+  scripts/build.sh base/workflows/debug.md base/workflows/implement-issue.md base/workflows/roadmap.md
+#
+# The NEGATIVE half is the whole point of #300, and it is exactly the case this lint's header
+# describes: a file can carry the new three-class model AND keep the old binary sentence beside it,
+# satisfying the positive rule while still telling every reader that a CI failure is one of two
+# things. That is not hypothetical — the binary model was restated in THREE places, in three
+# different spellings, and only one of them was in the practice itself.
+#
+# ALL THREE REAL SPELLINGS ARE WITNESSES, and that is the lesson D22 paid for: a pattern that
+# catches three of four spellings is green on the fourth. These are the verbatim superseded lines,
+# one per file that carried one — `Classify: flaky or real` (the practice), `Classify flaky vs real`
+# (the /debug workflow) and `classify flaky vs. real` (the philosophy doc). Note the pattern is
+# deliberately narrow: it matches the two words ADJACENT, so the new "real, flaky, or never-ran"
+# spelling — which mentions both words in one clause — does not trip it.
+fact ci-failure-model-binary 'absent:flaky (or|vs\.?) real' \
+  'fires:2. **Classify: flaky or real.** A real failure reproduces; a flaky one is a' \
+  'fires:  (`base/practices/ci-discipline.md`). Classify flaky vs real with evidence first.' \
+  'fires:  classify flaky vs. real with evidence, fix real failures at the root, and' -- \
+  base/practices/ci-discipline.md base/workflows/debug.md docs/philosophy.md
+
 # --- what was actually evaluated ---------------------------------------------
 # A rule that scans nothing is already a hard failure inside fact(); these totals are the other
 # half of the same idea, and the half that survives a future edit fact() does not model. Zero rules

@@ -7,7 +7,63 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **A CI failure has a third class — the job never ran — and it is now a tested command, not a
+  paragraph** (#300, D58).
+
+  `base/practices/ci-discipline.md` modelled every CI failure as exactly one of two things. During
+  the GitHub Actions `major_outage` of 2026-08-06 a run concluded `failure` after 1h46m having
+  executed **zero steps**, annotated *"The job was not acquired by Runner of type hosted even after
+  multiple attempts"*. Step 1 of that protocol — read the failure log — was unexecutable, and step 2
+  offered two boxes, neither of which fits. Worse, the closest of the two routes to "file a de-flake
+  issue", which `issues-and-scope.md` forbids on both of its questions: nobody does it, and nothing
+  in the repo breaks if nobody ever does. Two practices, opposite instructions, one event.
+
+  - **`scripts/lib/ci-health.sh classify --run <id>`** answers it: `0` green · `22` a real failure
+    (a non-passing job executed steps, so there is a log) · `23` **never-ran** · `24` queued past a
+    threshold · `25` still pending · `20` unreadable · `2` usage. A pure `classify-doc` arm takes the
+    assembled document on stdin, so the decision is hermetically testable and the live path cannot
+    drift from it.
+  - **It decides on step counts, not on the annotation.** An empty `steps` array is structural; the
+    annotation is vendor wording that costs an API call per job. Annotations are read only for the
+    jobs that executed nothing, and a failure there degrades the reason line, never the verdict.
+  - **It fails closed in the direction that matters.** `never-ran` is the flattering answer — it says
+    the red is not your fault — so it is returned only from positive evidence that *every*
+    non-passing job executed nothing. A truncated job list, a run with no jobs, a failure nothing
+    can be attributed to, and every malformed response resolve to `20`, never to "probably the
+    platform".
+  - **A mixed matrix is a REAL failure.** One shard failing an assertion beside three that never
+    acquired a runner is `22`, with the idle shards still named — reporting it as infrastructure
+    would bury two genuine failures behind "not your fault".
+  - **`startup_failure` is the diff, not the platform** — a workflow that could not start produces
+    no jobs at all, and without its own arm it would have been reported as unreadable.
+  - **The practice now scopes green-by-retry to results that exist.** "Never merge on a flaky re-run
+    alone" is right for a job that ran and flapped; for one that executed zero steps the re-run is
+    the *first* run, and there is no earlier verdict being overridden.
+
 ### Fixed
+
+- **An outage and a permanent configuration gap no longer get the same words** (#300, D58).
+
+  The issue reported that `repo-settings.sh automerge-ok` returns `13` for both. **That premise is
+  false**, and it is refuted rather than implemented: code `13` is `phantom_contexts` — job names
+  discovered *statically* from `.github/workflows` against the branch's *configured* required
+  contexts — so it reads no run, job or check, and no incident can cause it or clear it. Teaching a
+  settings predicate to read run health would have been the charter violation `pr-review.sh` exists
+  to avoid, in order to distinguish a state that predicate cannot enter.
+
+  - **The arm an outage actually reaches is `20`** (an API read failed), and it now says so: if the
+    API itself is degraded this clears on its own, and nothing in the repo needs changing. The
+    exit-code table and `docs/repo-settings.md` state which codes an incident can and cannot produce.
+  - **`branch-health`'s two unreported arms name the possibility and keep their verdicts.** A
+    workflow that was never wired up and a job that was never acquired are byte-identical *from a
+    commit* — nothing reported either way — so the predicate that reads a commit cannot separate
+    them and does not try. Both stay `indeterminate`, still fail-closed, and the reason lines now
+    point at the command that can answer it. Adding an outage verdict there would have put a
+    transient, uncheckable claim into the enum `release-ready` maps to `met`.
+  - `/debug` and `docs/philosophy.md` restated the binary model and now carry the three-class one; a
+    negative `fact-drift` pin with all three real superseded spellings keeps it from coming back.
 
 - **`no-ci` is now DECLARED, never inferred — an unprotected branch with external CI no longer
   fabricates a release cut** (#293, D57).

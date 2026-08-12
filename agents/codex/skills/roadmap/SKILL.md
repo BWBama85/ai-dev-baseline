@@ -299,7 +299,13 @@ active release milestone; always **exclude the roadmap issue itself**.
    - **green** → all checks on the default branch's HEAD commit concluded non-failing → proceed.
    - **not-green** → withhold the cut and name the failing check. This is a `/debug` signal.
    - **indeterminate** → **fail closed.** A build whose state cannot be established is treated as
-     unshippable, never as green.
+     unshippable, never as green. **Say what kind of unestablished it is**, because two very
+     different situations land here and only one is a repo problem: a workflow that was never
+     wired up, and a run whose job was never acquired by a runner (#300). They are byte-identical
+     from a commit — nothing reported either way — so `branch-health` cannot separate them and does
+     not try. `bash "$HOME/.codex/scripts/lib/ci-health.sh" classify --run <id>` can: **23** means nothing executed, which
+     clears on its own and needs no change here, and **22** means a real failure with a log to
+     read. Report which, rather than "unverifiable" alone.
    - **no-ci** → the repo has no CI at all → **skip** the condition and say so, **naming the
      declaration**. A repo that never adopted CI must not be deadlocked out of ever releasing
      (#24) — but this is now something the owner **declares**, not something the probes infer

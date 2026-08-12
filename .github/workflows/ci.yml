@@ -406,6 +406,14 @@ jobs:
       - name: Unit-test the pre-arm review guard (#134)
         run: bash scripts/check-pr-review.sh
 
+      # Rides THIS job rather than taking its own, for the reason stated on the repo-settings job:
+      # a new job is a newly added non-required context, which is the drift `required-drift` exists
+      # to flag. This job is the natural host — it is the other stub-backed suite over a live
+      # GitHub-state predicate, and `ci-health` answers the question that sits next to "has review
+      # happened?": did the run that reported this state actually execute anything (#300)?
+      - name: Unit-test the CI-run classifier — did this run actually execute? (#300)
+        run: bash scripts/check-ci-health.sh
+
   pr-watch:
     name: pr-watch
     runs-on: ubuntu-26.04

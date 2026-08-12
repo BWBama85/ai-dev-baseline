@@ -54,6 +54,13 @@
 #                (#102); FAIL CLOSED, never assume safe. Note this is deliberately NOT 12: a
 #                parser that could not read the CI must not report "this repo has no CI".
 #
+# WHICH OF THESE A PLATFORM OUTAGE CAN PRODUCE: only 20, and only from the three API reads (#300).
+# 10-14 all compare a STATICALLY DISCOVERED job set against CONFIGURED branch protection, and an
+# incident moves neither — so 13 ("a required context no workflow reports") is a configuration
+# verdict that an outage cannot cause and cannot clear. Worth stating because the opposite was
+# assumed: the outage arm says so out loud (`_adb_rs_outage_hint`), and a run that never EXECUTED
+# is a different question again, answered by `ci-health.sh classify --run <id>`.
+#
 # `required-drift` (#122) answers ONE of those questions — "has a discovered job stayed
 # non-required?" — early enough to matter, and reuses the same two codes so a number never means
 # two things:
@@ -1254,14 +1261,27 @@ cmd_status() {
   return "$rc"
 }
 
+# _adb_rs_outage_hint — the second sentence every API-read failure in `automerge-ok` owes the
+# operator (#300). A failed read is the ONE arm of this guard a platform incident can actually
+# reach: everything else here compares a statically discovered job set against configured branch
+# protection, so no outage can move it. Code 13 in particular is a CONFIGURATION verdict — a
+# required context no discovered workflow reports — and reading it as "CI might be down" sends the
+# operator to a status page for a problem that will still be there when the incident clears.
+#
+# A function rather than three copies of the sentence, because three copies is how two of them
+# eventually say different things.
+_adb_rs_outage_hint() {
+  echo "repo-settings: if the API itself is degraded (see https://www.githubstatus.com/) this clears on its own — that is a platform incident, not a settings problem, and nothing here needs changing." >&2
+}
+
 # cmd_automerge_ok — the runtime guard /implement-issue calls BEFORE `gh pr merge --auto`. Every
 # reading is fresh (verify-before-asserting): a settings change since the last apply is exactly
 # what this must catch. Fails CLOSED — an unreadable state is 20, never 0.
 cmd_automerge_ok() {
   require_gh
   local branch nwant nlive want live phantom ungated
-  repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — refusing to arm auto-merge" >&2; return 20; }
-  branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — refusing to arm auto-merge" >&2; return 20; }
+  repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — refusing to arm auto-merge" >&2; _adb_rs_outage_hint; return 20; }
+  branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — refusing to arm auto-merge" >&2; _adb_rs_outage_hint; return 20; }
   read_protection "$branch"
   case "$PROT_STATE" in
     error|forbidden)
@@ -1269,6 +1289,7 @@ cmd_automerge_ok() {
       # not "unprotected". Reporting 11 here would send the operator to `baseline repo apply`,
       # which they have no permission to run.
       echo "repo-settings: cannot read branch protection on '$branch' — refusing to arm auto-merge" >&2
+      _adb_rs_outage_hint
       return 20 ;;
   esac
 

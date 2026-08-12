@@ -21,7 +21,11 @@ change anything, and you leave behind a regression test that would have caught i
 - **Guessing.** "Probably X" is a hypothesis to test, not a diagnosis to ship.
 - **Symptom-patching.** The line that throws is often not the line that's wrong.
 - **Flaky-CI gambling.** Never re-run a red job to get a lucky green
-  (`base/practices/ci-discipline.md`). Classify flaky vs real with evidence first.
+  (`base/practices/ci-discipline.md`). Classify **real, flaky, or never-ran** with
+  evidence first — and establish that the job executed a step at all before you
+  start reading it as a statement about the diff. A run that executed zero steps
+  (`bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>` → **23**) is a fact about the provider:
+  there is no log, nothing here to debug, and nothing to de-flake.
 
 ## Steps
 

@@ -4438,3 +4438,92 @@ limit: none of them is sufficient alone.
              The e2e suite independently caught the change through the real workflow snippet before
              it was updated, which is what proves the wiring and not just the predicate.
 - baseline-issue: n/a — this repo IS the baseline; #293 is the tracking issue, closing D45's first residue.
+
+## D58 — the third CI-failure class gets its own module, and Scope C's `automerge-ok` premise is refuted rather than implemented
+- date:      2026-08-11
+- category:  general
+- unknown:   #300 asks for a predicate that classifies a CI run as green / red-with-steps /
+             never-ran / queued-beyond-threshold / unreadable, and offers two homes for it — "a new
+             `ci-health.sh classify --run <id>` **(or an arm of the existing `roadmap-lib.sh
+             branch-health`)**". It also asks (Scope C) that `repo-settings.sh automerge-ok` stop
+             returning code 13 for "both a permanently-missing context and a platform outage".
+             Gap analysis flagged both as blocking: the home is undecided, and the `automerge-ok`
+             premise is FALSE in the shipped code. Neither is answered anywhere in the baseline.
+- decision:  A NEW `scripts/lib/ci-health.sh`, and Scope C delivered as WORDING on the arm an
+             outage can actually reach.
+             (1) HOME: a new module, not an arm of `branch-health`. `roadmap-lib.sh` states it is
+             the home for `/roadmap`'s decisions and that both its subcommands are PURE ("never
+             call gh"), so a live `--run` arm would break the property its whole suite rests on;
+             and `branch-health` asks a different question, aggregating every result attached to
+             one COMMIT while deliberately never selecting a run. This is the third instance of the
+             shape `pr-review.sh` (#134) and `pr-watch.sh` (#49) already settled: a per-entity live
+             question earns its own module with its own charter.
+             (2) SCOPE C's PREMISE IS REFUTED. `automerge-ok` code 13 is `phantom_contexts(want,
+             live)` — job names discovered STATICALLY from `.github/workflows` compared against the
+             branch's CONFIGURED required contexts (`scripts/lib/repo-settings.sh:1307`). It reads
+             no run, job, check or annotation, so no outage can produce it and none can clear it.
+             The arm an outage DOES reach is 20 (an API read failed), so that is where the second
+             sentence went (`_adb_rs_outage_hint`), together with a header note and a docs
+             paragraph saying which codes an incident can and cannot cause. `branch-health` gets
+             the same treatment: its two unreported arms now name the never-ran possibility in
+             their reason lines and point at the new command, and its VERDICT SET is unchanged.
+             (3) EXIT CODES: a fourth vocabulary, 0/22/23/24/25 with 20 and 2 shared.
+- placement: `scripts/lib/ci-health.sh` (installs automatically — every adapter symlinks the whole
+             `scripts/lib` dir); `scripts/check-ci-health.sh` registered in `scripts/selfcheck.sh`
+             and ridden on the existing `pr-review` CI job; the practice itself in
+             `base/practices/ci-discipline.md`; a `{{CI_HEALTH_LIB}}` placeholder in
+             `scripts/build.sh` for the three workflow bodies that cite it.
+- reason:    **Adding an outage verdict to `branch-health` would have been the expensive mistake.**
+             Its enum feeds `release-ready`, whose precedence table maps `no-ci` to `met`; a new
+             word propagates through that table, two docs, the release driver and every emission.
+             And it could not be sound: `branch-health` reads a COMMIT, and "did a runner ever pick
+             this up" is a fact about a RUN. From a commit, a workflow that was never wired up and
+             a job that was never acquired are byte-identical — nothing reported, either way. So
+             the honest split is that `branch-health` keeps answering `indeterminate` and says
+             which command can tell them apart.
+
+             **Refuting Scope C is delivering it, not declining it.** The bullet asks that an
+             outage and a permanent gap "want different words to the operator", and the words it
+             actually wanted were on a different code. Implementing it as written would have taught
+             a settings predicate to read run health — the charter violation `pr-review.sh` was
+             created to avoid — in order to distinguish a state that predicate cannot enter.
+
+             **The codes are module-local, and deliberately non-colliding anyway.** D51 records
+             that "the existing unreadable code (20) is not a repo-wide fact" and `pr-watch.sh`
+             warns the family against unifying its three vocabularies. That licenses reuse; it does
+             not require it. `automerge-ok` owns 10-14, `merge-flag` owns 15, `pr-review gate` owns
+             16-19 and 21, so this module starts at 22 — free numbers cost nothing and make a future
+             caller that branches on two of them impossible to get quietly wrong. `20` and `2` DO
+             match the family, because those two meanings are already shared by every module in it.
+
+             **`pending` (25) is a sixth code the issue did not ask for, and the table is not total
+             without it.** A run 30 seconds old is not green, not failed, not never-ran, not
+             overdue and perfectly readable; forcing it into any of the five would be a wrong
+             answer, and `20` would cry wolf on every healthy in-flight run.
+
+             **The decision rests on STEP COUNTS, not on the annotation.** The annotation is the
+             signal a human needs ("not acquired by Runner of type hosted") and the one the issue
+             leads with, but it is vendor wording, it costs one API call per job, and a classifier
+             that depended on it would weaken its verdict whenever that read failed. Empty `steps`
+             arrays are structural. Annotations are read only for the jobs that executed nothing,
+             only when the verdict is already `never-ran`, and a failure there degrades the
+             sentence rather than the answer.
+
+             **Provider status is deliberately not read.** `githubstatus.com` describes NOW, and
+             this classifies a run that concluded in the past: a green page hours later says nothing
+             about 19:34Z, and a red one would let a current incident relabel an unrelated old
+             failure as infrastructure — the exact fail-open direction the module forbids. The
+             practice tells a human to check it; no code does.
+- observed:  the guard was driven to RED on the real superseded input and on three mutations of a
+             COPY of `scripts/lib` (never the tracked tree). Run 31126981959 on
+             `BWBama85/thewilsonnet` — the 2026-08-06 Actions `major_outage` specimen #300 names —
+             is RECORDED as a fixture and classifies `never-ran` (23) quoting its runner-acquisition
+             annotation; a recorded excerpt of a real red run of this repo's own CI (31460894856,
+             `precommit-gate` failing after 8 steps) is the control and classifies `failed` (22).
+             116 assertions cover the whole truth table, the live arm through a stub `gh`, and the
+             enrichment boundary. The three mutations — truncation guard removed, `never-ran`
+             checked before the executed-failure arm, verdict word desynchronized from the exit
+             code — are each verified applied, each verified to still LOAD, and each required to
+             make a named assertion go red. That last check was added after M1 initially proved
+             nothing: a lone mutant copy died on a missing `common.sh` before classifying anything.
+- baseline-issue: n/a — this repo IS the baseline; #300 is the tracking issue.

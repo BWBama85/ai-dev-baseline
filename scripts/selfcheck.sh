@@ -454,6 +454,14 @@ add roadmap             bash scripts/check-roadmap.sh
 # the readiness pipeline, the gauge, and decision durability. Offline.
 add roadmap-e2e         bash scripts/check-roadmap-e2e.sh
 
+# Offline tests for the CI-run classifier (scripts/lib/ci-health.sh, #300): did this run actually
+# EXECUTE? Drives the guard over the RECORDED payloads of the real 2026-08-06 outage run and of a
+# real red run of this repo's own CI, exhausts the truth table through the pure arm, exercises the
+# live arm against a stub gh, and applies three mutations to a COPY of scripts/lib that each have
+# to make an assertion go red. Offline: every payload is frozen, so no live run and no provider
+# status page is contacted.
+add ci-health           bash scripts/check-ci-health.sh
+
 # Offline unit tests for the release-goal convention helper (scripts/lib/release-convention.sh,
 # #27): dispatch, arg-parsing, usage, and the fail-loud gh guard before any gh call.
 add release-convention  bash scripts/check-release-convention.sh

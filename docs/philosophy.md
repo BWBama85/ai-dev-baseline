@@ -73,9 +73,13 @@ happened and was expensive enough to codify a rule against:
   bash` script.
 - **Diagnose-before-rerun CI discipline** (`ci-discipline.md`) — re-running a
   red CI job as a first resort burns minutes, hides the real cause, and can
-  ship a latent bug on a lucky green. The rule: read the failure log,
-  classify flaky vs. real with evidence, fix real failures at the root, and
-  file an issue for anything genuinely flaky *before* re-running it.
+  ship a latent bug on a lucky green. The rule: establish the job actually ran,
+  read the failure log, classify **real, flaky, or never-ran** with evidence, fix
+  real failures at the root, and file an issue for anything genuinely flaky
+  *before* re-running it. A **never-ran** job — an outage, an unacquired runner —
+  executed zero steps, so it earns neither a diff investigation nor a de-flake
+  issue `issues-and-scope.md` would refuse; `ci-health.sh classify` decides that
+  one, fail-closed.
 - **Sweep-all-merged-branches cleanup** (`git-and-prs.md`, the `cleanup`
   skill) — a cleanup that deletes only the current task's branch and leaves
   dozens of merged branches behind is a failed cleanup. The `cleanup` skill

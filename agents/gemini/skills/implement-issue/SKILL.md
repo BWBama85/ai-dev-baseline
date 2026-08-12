@@ -1228,10 +1228,23 @@ case "$AM" in
   10) : ;;  # allow_auto_merge off       -> report: run 'baseline repo apply'
   11) : ;;  # CI but no required checks  -> report: arming would gate NOTHING
   12) : ;;  # no CI at all               -> report: --auto would merge immediately
-  13) : ;;  # a required context nothing reports -> an armed PR would WAIT FOREVER
+  13) : ;;  # a required context nothing reports -> an armed PR would WAIT FOREVER. A CONFIGURATION
+            # verdict, and NOT an outage (#300): it compares statically discovered jobs against
+            # configured protection, neither of which a platform incident moves. Do not send the
+            # operator to a status page for this one — it will still be there afterwards.
   14) : ;;  # a discovered job is NOT required     -> auto-merge could land a RED build
-  *)  : ;;  # 20/unknown                 -> report: live state unreadable, merge by hand
+  *)  : ;;  # 20/unknown -> report: live state unreadable, merge by hand. THIS is the arm an outage
+            # reaches, and the guard's own second line says so. Report it as "unreadable, and it may
+            # clear on its own", never as a repo problem to go fix.
 esac
+```
+
+**If a required check is RED rather than missing, ask whether it ran before you read it as a
+statement about this diff** (`base/practices/ci-discipline.md`). A run can conclude `failure`
+having executed zero steps, and then there is no log and nothing here to debug:
+
+```bash
+bash "$HOME/.gemini/scripts/lib/ci-health.sh" classify --run <id>   # 23 = never-ran · 22 = real, there is a log · 20 = unreadable
 ```
 
 **Never arm auto-merge when** a `implement-issue-blocked.json` marker **for this run**

@@ -222,6 +222,17 @@ case (arming a PR that can never merge is worse than not arming it); `14` is a j
 gates nothing, which would let auto-merge land a red build — the exact hole this all exists to
 close.
 
+**A platform outage can produce only `20`, and only from the three API reads** (#300). Codes
+`10`–`14` compare a *statically discovered* job set against *configured* branch protection, and an
+incident moves neither — so `13` in particular is a configuration verdict that an outage cannot
+cause and cannot clear, and telling the operator to check a status page for it wastes the trip.
+The `20` arm says the opposite out loud: if the API itself is degraded, this clears on its own and
+nothing here needs changing.
+
+That is still a question about *settings*. Whether a **run** executed anything is a different
+question with its own home — `ci-health.sh classify --run <id>`, which returns `23` for a run that
+concluded red having executed zero steps. See `base/practices/ci-discipline.md`.
+
 `baseline repo merge-flag` prints the `gh pr merge` flag the repo actually allows. Squash, merge,
 and rebase are three independently-configurable settings, so a hardcoded `--squash` is simply
 rejected wherever squash merging is disabled — the guard would say "safe" and the merge would
