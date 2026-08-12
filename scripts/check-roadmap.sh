@@ -1485,6 +1485,14 @@ eq "${ hd_why no-ci admin; }" '' "an honoured declaration explains nothing (ther
 eq "${ hd_why off admin; }"   '' "...and neither does an absent one"
 # A caller that did not pass `health-optout`'s output is a BUG, not an input to interpret: every
 # guess here resolves toward the flattering answer.
+# THE ANSWER IS AT MOST TWO LINES, STRUCTURALLY. Both callers take the reason with `sed -n 2p` or a
+# second `read`, so a value carrying a newline would spill onto line 3 and be silently truncated at
+# the point of display — in the one message whose job is to explain a refusal nothing else explains.
+# (Self-review find. `health-optout` cannot produce one today; the point is not to depend on that.)
+eq "${ bash "$RL" health-decl "invalid $(printf 'a\nb')" admin 2>/dev/null | wc -l | tr -d ' '; }" '2' \
+   "a marker value carrying a NEWLINE still yields exactly two lines"
+has "${ hd_why "invalid $(printf 'a\nb')" admin; }" "a b" \
+   "...with the value folded onto the reason line rather than truncated off it"
 run health-decl bogus admin;  eq "$RC_" 2 "a value that is not health-optout's output is an ERROR"
 run health-decl no-ci;        eq "$RC_" 2 "health-decl needs both arguments"
 run health-decl;              eq "$RC_" 2 "...and refuses none at all"

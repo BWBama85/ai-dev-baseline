@@ -513,7 +513,7 @@ if [ "$VERDICT" = "met" ]; then
     WF_COUNT="$(printf '%s' "$WF_JSON" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')" \
       || { echo "ERROR: could not parse the workflow inventory — hard stop"; exit 1; }
   fi
-  # THE OWNER DECLARATIONS (#115 absorbing #113, extended by #293). Two of them, and each keeps a
+  # THE OWNER DECLARATIONS (#115, extended by #293). Two of them, and each keeps a
   # population of repos reachable that a correction to the existence model would otherwise deadlock:
   # `skip-unreported` for a `pull_request`-only repo (required contexts, nothing on default-branch
   # HEAD, so it lands on an unreported arm forever), and `no-ci` for a repo that genuinely has none

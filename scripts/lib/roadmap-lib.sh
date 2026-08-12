@@ -990,6 +990,15 @@ cmd_health_optout() {
 cmd_health_decl() {
   [ "$#" -eq 2 ] || die "health-decl: needs exactly 2 args: <marker-value> <author-permission>"
   local marker="$1" perm="$2"
+  # LINE 2 IS ONE LINE, STRUCTURALLY — not by trusting the producer. Both values are echoed back in
+  # the reason, and both callers take the reason with `sed -n 2p` (or a second `read`), so a value
+  # carrying a newline would spill onto line 3 and be SILENTLY TRUNCATED at the point of display —
+  # in the one message whose whole job is to explain a refusal the owner cannot otherwise diagnose.
+  # `health-optout` cannot emit one today (`grep -o` matches within a line), and the permission is a
+  # JSON scalar, so this is about not depending on either of those staying true. A tab is folded for
+  # the same reason `state-scan` refuses one: it is a field separator elsewhere in this suite.
+  marker="$(printf '%s' "$marker" | tr '\n\t' '  ')"
+  perm="$(printf '%s' "$perm" | tr '\n\t' '  ')"
   case "$marker" in
     off) printf 'off\n'; return 0 ;;
     skip-unreported|no-ci) : ;;

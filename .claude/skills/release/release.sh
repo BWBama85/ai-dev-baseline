@@ -230,8 +230,10 @@ await_checks() {
 
 # --- branch health --------------------------------------------------------------------------------
 # The workflow inventory is consulted whenever GitHub Actions has NOT reported on this commit —
-# exactly as step 2 does. Hardcoding 0 tells branch-health "this repo has no CI", so a commit with
-# enough non-Actions checks would read `green` instead of the intended `indeterminate`.
+# exactly as step 2 does. Hardcoding the COUNT to 0 would tell branch-health that Actions declares
+# nothing here, so a commit with enough non-Actions checks would read `green` instead of the
+# intended `indeterminate`. (This paragraph is about the WORKFLOW COUNT, the second argument. The
+# third argument used to be a `0|1` opt-out flag and is now the `health-decl` word — see below.)
 #
 # THE SECOND EXISTENCE PROBE IS READ HERE TOO (#115). `branch-health` now takes the branch's
 # required status contexts alongside the Actions inventory, and passing a hardcoded `null` would
