@@ -278,8 +278,38 @@ same reader `required-drift` uses — so the two cannot disagree about a branch.
       claiming the branch is green.
 - [ ] The opt-out **never** excuses: a red branch, a still-running check, a pending status, stale
       evidence from another commit, or a branch whose required checks could not be read.
-- [ ] An **unrecognised** `release-health` value (or two different values) is **reported and
-      ignored**, never silently treated as "off".
+- [ ] An **unrecognised** `release-health` value (or two different values, **including the two
+      valid ones together**) is **reported and ignored**, never silently treated as "off".
+
+### 9b-quinquies. `no-ci` is declared, never inferred (#293) **[auto]**
+
+Both probes finding nothing is the **absence of a declaration, not a declaration of absence**: an
+unprotected branch has nowhere to declare a required context, so a repo with external CI and no
+branch protection is indistinguishable from a repo with no CI — and #115 cut releases on it.
+
+- [ ] **Nothing reported, no active workflows, an authoritative empty required set, and NOTHING
+      DECLARED → `indeterminate`, not `no-ci`.** `release-ready` fails closed on it, so no cut is
+      emitted. (This is the exact tuple that used to reach `met`.)
+- [ ] The refusal is **actionable**: it names `release-health: no-ci`, names `release-health:
+      skip-unreported` as the other possibility, and says *why* the probes cannot answer — from
+      there the two repos are indistinguishable, so the run may not pick one.
+- [ ] **A repo that genuinely has no CI is still not deadlocked (#24).** With
+      `<!-- release-health: no-ci -->` in a maintainer-authored artifact the same tuple resolves to
+      `no-ci` → `met`, and the banner names the declaration instead of asserting "no CI configured".
+- [ ] **`no-ci` never excuses positive evidence that CI exists** — not an active Actions workflow
+      that has not reported, not a declared required context that has not reported. A stale marker
+      therefore stops applying by itself once the repo adopts a workflow.
+- [ ] …and never a red branch, a running check, stale evidence, or an unreadable context list.
+- [ ] **`skip-unreported` on the no-evidence arm resolves to `unreported-ok`, not a deadlock.** A
+      PR-only repo on an *unprotected* branch lands there (nothing declares a context to go
+      missing), and answering `indeterminate` would strand the exact population #115's hatch exists
+      for.
+- [ ] The two declarations are **not interchangeable**: neither produces the other's verdict.
+- [ ] **The retired `0`/`1` third argument is an ERROR**, never mapped for compatibility — a stale
+      caller must stop the run rather than reach the new arm with a value it never chose.
+- [ ] The authority rule (`admin`/`write` only; unreadable fails closed; an unusable marker is
+      refused before authority is consulted) lives in **one** predicate that both `/roadmap` and the
+      release driver call, and is asserted offline with the permission as an argument.
 - [ ] The opt-out is **ignored** unless the artifact's author has `admin`/`write` access, and the
       run says so — the marker bypasses a release-safety refusal, and an issue's author can keep
       editing its body regardless of repo permissions. `read`, `triage` and `none` are refused;

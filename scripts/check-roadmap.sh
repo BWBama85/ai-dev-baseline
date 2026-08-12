@@ -85,15 +85,34 @@ targets() {
 # before #78 added the sixth input — those cases are about counts, not CI. The health cases pass
 # it explicitly. (The REQUIRED arity of the real subcommand is pinned separately, in 2g.)
 ready() { bash "$RL" release-ready "$1" "$2" "$3" "$4" "$5" "${6:-green}" 2>/dev/null; }
-# health <json> [sha] [workflows] [optout] — run branch-health, echo line 1 (the enum).
-# `optout` defaults to 0, so every pre-#115 case below keeps asserting exactly what it asserted:
-# the escape hatch is off unless a case turns it on.
+# health <json> [sha] [workflows] [decl] — run branch-health, echo line 1 (the enum).
+# `decl` defaults to `off`, so every pre-#115 case below keeps asserting exactly what it asserted:
+# no declaration applies unless a case makes one. It was `0` until #293 turned that argument from a
+# boolean into the marker word; the DEFAULT is what makes that a one-line change here, and the
+# retired spellings are asserted to be errors in 2j-quinquies rather than being silently accepted.
 health() {
-  printf '%s' "$1" | bash "$RL" branch-health "${2:-$SHA}" "${3:-1}" "${4:-0}" 2>/dev/null | sed -n '1p'
+  printf '%s' "$1" | bash "$RL" branch-health "${2:-$SHA}" "${3:-1}" "${4:-off}" 2>/dev/null | sed -n '1p'
 }
-# health_why <json> [sha] [workflows] [optout] — line 2 (the reason), for the cases that must explain.
+# health_why <json> [sha] [workflows] [decl] — line 2 (the reason), for the cases that must explain.
 health_why() {
-  printf '%s' "$1" | bash "$RL" branch-health "${2:-$SHA}" "${3:-1}" "${4:-0}" 2>/dev/null | sed -n '2p'
+  printf '%s' "$1" | bash "$RL" branch-health "${2:-$SHA}" "${3:-1}" "${4:-off}" 2>/dev/null | sed -n '2p'
+}
+# no_verdict <out> <label> — assert that a REFUSAL printed no verdict, by LINE and not by substring.
+# `hasnt "$OUT" "no-ci"` used to do this, and #293 broke it in the direction that matters: the
+# argument error now READS `must be one of off|skip-unreported|no-ci`, so a correct refusal contains
+# the string `no-ci` and a substring test fails a passing case. Weakening it to `hasnt` on something
+# else would be worse — the point of these cases is that a rejected input reaches NO arm, and a
+# verdict is always a whole line. So compare whole lines, and check every verdict word at once
+# rather than the two that happened to be spelled out before.
+no_verdict() {
+  local out="$1" label="$2" v
+  for v in green not-green indeterminate no-ci unreported-ok; do
+    case "$out" in
+      "$v"|"$v"$'\n'*|*$'\n'"$v"|*$'\n'"$v"$'\n'*)
+        bad "$label (a line of the output IS the verdict '$v')"; return 0 ;;
+    esac
+  done
+  ok
 }
 # run_health <args...> — stdin-taking capture, mirroring `run` for the non-stdin subcommands.
 # Callers pass EVERY argument explicitly: this is the validator harness, and a case that dies on
@@ -521,7 +540,7 @@ has "${ health_why "${ hj "${ ck ci "$OTHER_SHA" completed success; }" ''; }"; }
 
 # THE no-ci / indeterminate DISCRIMINATOR — the one #78 could not resolve from `gh run list`,
 # which returns [] for BOTH. The active-workflow count is what separates them.
-eq "${ health "${ hj '' ''; }" "$SHA" 0; }" no-ci "no checks AND no active workflows => no-ci (skip, per #24)"
+eq "${ health "${ hj '' ''; }" "$SHA" 0 no-ci; }" no-ci "no checks AND no active workflows AND the owner declares no CI => no-ci (skip, per #24)"
 eq "${ health "${ hj '' ''; }" "$SHA" 3; }" indeterminate \
    "no checks BUT 3 active workflows => indeterminate, NOT no-ci (fail closed)"
 has "${ health_why "${ hj '' ''; }" "$SHA" 3; }" "Actions has not reported" "...and explains the difference"
@@ -599,17 +618,17 @@ eq "${ health "${ hj "${ ck lint "$SHA" completed success; }" '' '["lint"]'; }" 
 eq "${ health "${ hj '' "${ st 'ci/circleci: build' failure; }" "$REQ1"; }" "$SHA" 0; }" not-green \
    "a FAILING required context is red (the failing arm outranks the unreported arm)"
 
-# `no-ci` NOW NEEDS BOTH PROBES TO SAY NO. Either one declaring CI is enough to refuse.
-eq "${ health "${ hj '' ''; }" "$SHA" 0; }" no-ci "0 workflows AND an authoritative empty required set => no-ci"
+# `no-ci` NEEDS BOTH PROBES TO SAY NO. Either one declaring CI is enough to refuse. (Since #293 it
+# needs the owner declaration too — asserted in 2j-quater; here the probes are the subject.)
+eq "${ health "${ hj '' ''; }" "$SHA" 0 no-ci; }" no-ci "0 workflows AND an authoritative empty required set => no-ci"
 # A NON-STRING MEMBER IS AN ERROR, NOT A MEMBER TO DROP (self-review find). Filtering it out looks
 # defensive and is fail-OPEN: `[5]` filters to `[]`, which is the AUTHORITATIVE "declares nothing",
 # so a context list nobody could read reaches `no-ci` — and `release-ready` maps that to `met`. It
 # really did print `no-ci` before this pin.
 for bad_req in '[5]' '[null]' '["ci",5]' '["ci",null]' '[{"context":"ci"}]' '[["ci"]]' '[true]'; do
-  run_health "${ hj '' '' "$bad_req"; }" "$SHA" 0 0
+  run_health "${ hj '' '' "$bad_req"; }" "$SHA" 0 off
   eq "$RC_" 2 "a non-string required_contexts member [$bad_req] is an ERROR"
-  hasnt "$OUT" "no-ci" "...and never reaches no-ci (which would reach 'met')"
-  hasnt "$OUT" "green" "...nor green"
+  no_verdict "$OUT" "...and reaches NO arm at all (no-ci would reach 'met')"
 done
 # A DUPLICATE must not be counted or named twice — `unique`, exactly as the reported set is.
 eq "${ health_why "${ hj '' '' '["ci","ci"]'; }" "$SHA" 0; }" \
@@ -633,25 +652,25 @@ eq "${ health "${ hj "${ ck ci "$SHA" completed failure; }" '' null; }" "$SHA" 1
 # --- THE ESCAPE HATCH: what it excuses, and everything it must not ---------------------------
 # A `pull_request`-only repo has required contexts and nothing on default-branch HEAD, so the
 # corrected probe above would deadlock it forever. This is the owner saying so out loud (#115).
-eq "${ health "${ hj '' '' "$REQ1"; }" "$SHA" 0 1; }" unreported-ok \
+eq "${ health "${ hj '' '' "$REQ1"; }" "$SHA" 0 skip-unreported; }" unreported-ok \
    "opt-out: a declared-but-silent required context becomes unreported-ok"
-has "${ health_why "${ hj '' '' "$REQ1"; }" "$SHA" 0 1; }" "declared" \
+has "${ health_why "${ hj '' '' "$REQ1"; }" "$SHA" 0 skip-unreported; }" "declared" \
    "...and the reason marks it as DECLARED, not as a fact about the repo"
-eq "${ health "${ hj '' ''; }" "$SHA" 3 1; }" unreported-ok \
+eq "${ health "${ hj '' ''; }" "$SHA" 3 skip-unreported; }" unreported-ok \
    "opt-out: PR-only ACTIONS workflows become unreported-ok too"
 # THE BOUNDARIES. Each of these must be UNCHANGED by the opt-out, because each is evidence the
 # branch is not shippable — and an escape hatch that excused them would ship broken code.
-eq "${ health "${ hj "${ ck ci "$SHA" completed failure; }" '' "$REQ1"; }" "$SHA" 3 1; }" not-green \
+eq "${ health "${ hj "${ ck ci "$SHA" completed failure; }" '' "$REQ1"; }" "$SHA" 3 skip-unreported; }" not-green \
    "the opt-out NEVER excuses a red branch"
-eq "${ health "${ hj '' "${ st vercel failure; }" "$REQ1"; }" "$SHA" 3 1; }" not-green \
+eq "${ health "${ hj '' "${ st vercel failure; }" "$REQ1"; }" "$SHA" 3 skip-unreported; }" not-green \
    "...including a red legacy status"
-eq "${ health "${ hj "${ ck ci "$SHA" in_progress null; }" '' "$REQ1"; }" "$SHA" 3 1; }" indeterminate \
+eq "${ health "${ hj "${ ck ci "$SHA" in_progress null; }" '' "$REQ1"; }" "$SHA" 3 skip-unreported; }" indeterminate \
    "...never excuses a still-running check"
-eq "${ health "${ hj '' "${ st vercel pending; }" "$REQ1"; }" "$SHA" 3 1; }" indeterminate \
+eq "${ health "${ hj '' "${ st vercel pending; }" "$REQ1"; }" "$SHA" 3 skip-unreported; }" indeterminate \
    "...nor a pending legacy status"
-eq "${ health "${ hj "${ ck ci "$OTHER_SHA" completed success; }" '' "$REQ1"; }" "$SHA" 3 1; }" indeterminate \
+eq "${ health "${ hj "${ ck ci "$OTHER_SHA" completed success; }" '' "$REQ1"; }" "$SHA" 3 skip-unreported; }" indeterminate \
    "...never excuses stale evidence from another commit"
-eq "${ health "${ hj '' '' null; }" "$SHA" 0 1; }" indeterminate \
+eq "${ health "${ hj '' '' null; }" "$SHA" 0 skip-unreported; }" indeterminate \
    "...and NEVER excuses unreadable protection (a declaration about UNREPORTED CI is not evidence about UNREADABLE CI)"
 # THE UNREADABLE CASE MUST BE TESTED WITH ACTIVE WORKFLOWS TOO, and this is the gap that hid a real
 # fail-open (independent-review find). With `null` AND active workflows the ACTIONS arm matches
@@ -659,28 +678,97 @@ eq "${ health "${ hj '' '' null; }" "$SHA" 0 1; }" indeterminate \
 # opt-out excusing an unreadable context list through the earlier door. Zero-workflow fixtures
 # cannot see it: they never reach the Actions arm at all.
 for wfn in 1 2 3; do
-  eq "${ health "${ hj '' '' null; }" "$SHA" "$wfn" 1; }" indeterminate \
+  eq "${ health "${ hj '' '' null; }" "$SHA" "$wfn" skip-unreported; }" indeterminate \
      "unreadable protection + $wfn active workflow(s) + opt-out => STILL indeterminate (the Actions arm must not excuse it)"
 done
-eq "${ health "${ hj '' "${ st vercel success; }" null; }" "$SHA" 3 1; }" indeterminate \
+eq "${ health "${ hj '' "${ st vercel success; }" null; }" "$SHA" 3 skip-unreported; }" indeterminate \
    "...even with an unrelated green status present"
-eq "${ health "${ hj "${ ck other "$SHA" completed success vercel; }" '' null; }" "$SHA" 3 1; }" indeterminate \
+eq "${ health "${ hj "${ ck other "$SHA" completed success vercel; }" '' null; }" "$SHA" 3 skip-unreported; }" indeterminate \
    "...and even with a green check run from another Checks app"
-hasnt "${ health "${ hj '' '' null; }" "$SHA" 3 1; }" "unreported-ok" \
+hasnt "${ health "${ hj '' '' null; }" "$SHA" 3 skip-unreported; }" "unreported-ok" \
    "...the opt-out verdict is never produced from an unreadable context list"
-# The opt-out invents nothing on a repo that is fine: it is consulted only on the unreported arms.
-eq "${ health "${ hj "${ ck ci "$SHA" completed success; }" '' '["ci"]'; }" "$SHA" 1 1; }" green \
+# The opt-out invents nothing on a repo that is fine: it is never consulted ahead of `green`.
+eq "${ health "${ hj "${ ck ci "$SHA" completed success; }" '' '["ci"]'; }" "$SHA" 1 skip-unreported; }" green \
    "the opt-out does not downgrade a genuinely green branch"
-eq "${ health "${ hj '' ''; }" "$SHA" 0 1; }" no-ci \
-   "...nor relabel a genuine no-ci repo"
+# ...and on the NO-EVIDENCE arm it answers `unreported-ok`, which is a #293 consequence worth
+# pinning rather than a detail. This exact repo — CircleCI, no branch protection, `pull_request`-only
+# — is the population #115's hatch exists for, and it lands HERE (nothing declares a context to go
+# missing), not on the two unreported arms. Answering `indeterminate` because the owner wrote the
+# other valid value would deadlock the very repo the hatch was built to keep releasable. It is the
+# owner's word that changes, not the outcome: this reached `met` before #293 too, as `no-ci`.
+eq "${ health "${ hj '' ''; }" "$SHA" 0 skip-unreported; }" unreported-ok \
+   "no evidence + skip-unreported => unreported-ok, never a deadlock (a PR-only repo on an unprotected branch)"
+has "${ health_why "${ hj '' ''; }" "$SHA" 0 skip-unreported; }" "declared" \
+   "...and the reason marks it DECLARED, never a fact about the repo"
 # `unreported-ok` is NOT `skipped`, and that is deliberate: `skipped` is the CALLER's opt-out for a
 # decision that is not about shippable code (`baseline release roll`), this is the OWNER's about a
 # decision that is. One word for both would leave a reader unable to tell which authority cut the
 # release — and would let a caller hand-write the owner's decision at the call site.
-eq "${ health "${ hj '' '' "$REQ1"; }" "$SHA" 0 1; }" unreported-ok "the opt-out verdict is its own word, never 'skipped'"
+eq "${ health "${ hj '' '' "$REQ1"; }" "$SHA" 0 skip-unreported; }" unreported-ok "the opt-out verdict is its own word, never 'skipped'"
 eq "${ ready 1 1 0 0 0 unreported-ok; }" met "release-ready accepts unreported-ok and reaches the cut"
 eq "${ ready 1 1 2 0 0 unreported-ok; }" unmet "...but open blockers still outrank it"
 eq "${ ready 1 1 0 0 1 unreported-ok; }" held "...and a canceled blocker still holds it"
+
+# ============================================================================================
+# 2j-quater. `no-ci` IS DECLARED, NEVER INFERRED (#293)
+# ============================================================================================
+# THE FAIL-OPEN THIS SECTION CLOSES, reproduced first so the pin below is anchored to the real
+# input rather than to a convenient one. #115 made `no-ci` require BOTH probes to find nothing, and
+# called that "positive evidence" — but an UNPROTECTED branch has nowhere to declare a required
+# context, so a CircleCI repo with no branch protection produces the identical empty tuple as a
+# repo with no CI at all. The issue's own reproduction, verbatim:
+#
+#   printf '{"check_runs":[],"statuses":[],"required_contexts":[]}' | branch-health <sha> 0 0
+#     -> no-ci   ->  release-ready 1 1 0 0 0 no-ci  ->  met   -> a cut against an unverified commit
+#
+# That is now `indeterminate`, and `release-ready` fails closed on it. THIS IS THE ONE ASSERTION
+# that would go back to `no-ci`/`met` against the pre-#293 library, so it is the one that proves
+# the change is real rather than decorative.
+eq "${ health "${ hj '' ''; }" "$SHA" 0 off; }" indeterminate \
+   "#293: no evidence anywhere and NOTHING DECLARED => indeterminate, never a fabricated no-ci"
+eq "${ ready 1 1 0 0 0 indeterminate; }" indeterminate \
+   "...and release-ready fails closed on it rather than emitting the cut"
+# The refusal has to be ACTIONABLE, or the fix converts a wrong cut into an unexplained deadlock —
+# which is the failure mode #24 is about. Name both remedies: from here the two repos are
+# indistinguishable, so the run cannot pick one.
+has "${ health_why "${ hj '' ''; }" "$SHA" 0 off; }" "release-health: no-ci" \
+   "...and the reason names the marker that settles it"
+has "${ health_why "${ hj '' ''; }" "$SHA" 0 off; }" "release-health: skip-unreported" \
+   "...and the other one too, since nothing here can tell the two repos apart"
+has "${ health_why "${ hj '' ''; }" "$SHA" 0 off; }" "unprotected" \
+   "...and says WHY the probes cannot answer, not merely that they did not"
+
+# THE DECLARATION EXCUSES ONE ARM AND NOT THE OTHERS. Every case below carries `no-ci` — the value
+# that reaches `met` — over an input that must refuse anyway. A declaration that could overrule
+# evidence would be strictly worse than the inference it replaced: the old bug at least required
+# the evidence to be absent.
+eq "${ health "${ hj "${ ck ci "$SHA" completed failure; }" ''; }" "$SHA" 0 no-ci; }" not-green \
+   "no-ci NEVER excuses a red branch"
+eq "${ health "${ hj '' "${ st vercel failure; }"; }" "$SHA" 0 no-ci; }" not-green \
+   "...including a red legacy status"
+eq "${ health "${ hj "${ ck ci "$SHA" in_progress null; }" ''; }" "$SHA" 0 no-ci; }" indeterminate \
+   "...never excuses a still-running check"
+eq "${ health "${ hj "${ ck ci "$OTHER_SHA" completed success; }" ''; }" "$SHA" 0 no-ci; }" indeterminate \
+   "...never excuses stale evidence from another commit"
+eq "${ health "${ hj '' '' null; }" "$SHA" 0 no-ci; }" indeterminate \
+   "...and NEVER excuses unreadable protection (a declaration about ABSENT CI is not evidence about UNREADABLE CI)"
+# ...and it must not excuse POSITIVE evidence that CI exists, which is what makes a STALE marker
+# self-limiting: the day this repo adds a workflow or a required context, the declaration stops
+# applying on its own rather than continuing to authorise cuts against unreported builds.
+for wfn in 1 2 3; do
+  eq "${ health "${ hj '' ''; }" "$SHA" "$wfn" no-ci; }" indeterminate \
+     "no-ci + $wfn active workflow(s) => indeterminate (Actions is positive evidence CI exists)"
+done
+eq "${ health "${ hj '' '' "$REQ1"; }" "$SHA" 0 no-ci; }" indeterminate \
+   "no-ci + a declared required context => indeterminate (the context is positive evidence too)"
+eq "${ health "${ hj '' "${ st vercel success; }"; }" "$SHA" 0 no-ci; }" green \
+   "...and it never relabels a branch that actually reported green"
+# The two declarations are contrary claims and must not be interchangeable: each reaches the arm it
+# was written for and neither reaches the other's.
+hasnt "${ health "${ hj '' '' "$REQ1"; }" "$SHA" 0 no-ci; }" "unreported-ok" \
+   "no-ci never produces the OTHER declaration's verdict"
+hasnt "${ health "${ hj '' ''; }" "$SHA" 0 skip-unreported; }" "no-ci" \
+   "...and skip-unreported never produces this one's"
 
 # --- 4d. THE API CONTRACT: what slug does GitHub Actions ACTUALLY stamp? (#179) --------------
 # These cases spell the literal out instead of deriving it from `adb_actions_app_slug`, and that is
@@ -725,33 +813,41 @@ for bad_json in '' 'not json' '[]' '"str"' '{"check_runs":{}}' '{"statuses":5}' 
                 '{"check_runs":[],"statuses":[],"required_contexts":5}' \
                 '{"check_runs":[],"statuses":[],"required_contexts":{}}' \
                 '{"check_runs":[],"statuses":[],"required_contexts":"ci"}'; do
-  run_health "$bad_json" "$SHA" 1 0
+  run_health "$bad_json" "$SHA" 1 off
   eq "$RC_" 2 "malformed health input [${bad_json:-<empty>}] is an ERROR"
-  hasnt "$OUT" "green" "[${bad_json:-<empty>}] never yields a green verdict"
-  hasnt "$OUT" "no-ci" "[${bad_json:-<empty>}] never yields no-ci (which would reach 'met')"
+  no_verdict "$OUT" "[${bad_json:-<empty>}] yields NO verdict (green or no-ci would reach 'met')"
 done
-# ...and with ALL THREE keys explicitly present and empty, `no-ci` is the correct, intended answer.
-eq "${ health "${ hj '' ''; }" "$SHA" 0; }" no-ci "three EXPLICIT empty collections are a real no-ci, not an error"
-run_health "${ hj '' ''; }" "" 1 0;      eq "$RC_" 2 "an empty sha is an ERROR (never compare against nothing)"
-run_health "${ hj '' ''; }" "zzz" 1 0;   eq "$RC_" 2 "a non-hex sha is an ERROR"
-run_health "${ hj '' ''; }" "abc" 1 0;   eq "$RC_" 2 "a too-short sha is an ERROR"
-run_health "${ hj '' ''; }" "$SHA" x 0;  eq "$RC_" 2 "a non-numeric workflow count is an ERROR"
+# ...and with ALL THREE keys explicitly present and empty — plus the declaration #293 now requires —
+# `no-ci` is the correct, intended answer, NOT an error. The declaration is what separates this case
+# from the loop above: both reach the same arm, and only a readable document may be answered at all.
+eq "${ health "${ hj '' ''; }" "$SHA" 0 no-ci; }" no-ci "three EXPLICIT empty collections are a real no-ci, not an error"
+run_health "${ hj '' ''; }" "" 1 off;      eq "$RC_" 2 "an empty sha is an ERROR (never compare against nothing)"
+run_health "${ hj '' ''; }" "zzz" 1 off;   eq "$RC_" 2 "a non-hex sha is an ERROR"
+run_health "${ hj '' ''; }" "abc" 1 off;   eq "$RC_" 2 "a too-short sha is an ERROR"
+run_health "${ hj '' ''; }" "$SHA" x off;  eq "$RC_" 2 "a non-numeric workflow count is an ERROR"
 has "$OUT" "non-negative integer" "...and it names the WORKFLOW COUNT, not arity"
-run_health "${ hj '' ''; }" "$SHA" -1 0; eq "$RC_" 2 "a negative workflow count is an ERROR"
-# The opt-out is a 0|1 flag and an unrecognised value is an ERROR in BOTH directions (#115): read
-# as 0 it silently disarms an escape hatch the owner declared (a permanent, unexplained
-# `indeterminate`); read as 1 it arms one nobody declared, which is the direction that cuts.
-for bad_optout in 2 x '' yes true -1 '0 '; do
-  run_health "${ hj '' ''; }" "$SHA" 1 "$bad_optout"
-  eq "$RC_" 2 "health-optout='$bad_optout' is an ERROR"
-  has "$OUT" "must be 0 or 1" "...and it names the OPT-OUT, not arity"
-  hasnt "$OUT" "no-ci" "health-optout='$bad_optout' never yields a verdict"
+run_health "${ hj '' ''; }" "$SHA" -1 off; eq "$RC_" 2 "a negative workflow count is an ERROR"
+# The declaration is a WORD and an unrecognised value is an ERROR in BOTH directions (#115, #293):
+# read as `off` it silently disarms a hatch the owner declared (a permanent, unexplained
+# `indeterminate`); read as a declaration it arms one nobody made, which is the direction that cuts.
+#
+# `0` AND `1` ARE IN THIS LIST ON PURPOSE, and they are the whole reason it is not just a rename.
+# They are the RETIRED spellings of this argument, so an unported caller — an installed workflow, a
+# copied `/release` driver — passes one of them. `1` meant "take the opt-out", and mapping it back
+# to `skip-unreported` for compatibility is the fail-open: a stale caller would then also be able
+# to reach the new NO-EVIDENCE arm with a value it never chose. Stopping the run is the only
+# reading that cannot be silently wrong.
+for bad_decl in 2 x '' yes true -1 'off ' 0 1 OFF NO-CI skip; do
+  run_health "${ hj '' ''; }" "$SHA" 1 "$bad_decl"
+  eq "$RC_" 2 "health-decl='$bad_decl' is an ERROR"
+  has "$OUT" "must be one of off|skip-unreported|no-ci" "...and it names the DECLARATION, not arity"
+  no_verdict "$OUT" "health-decl='$bad_decl' yields no verdict"
 done
 run_health "${ hj '' ''; }" "$SHA" 1;    eq "$RC_" 2 "the pre-#115 two-argument call is an ERROR (no silent fail-open)"
 has "$OUT" "exactly 3" "arity error states the arity"
-hasnt "$OUT" "no-ci" "...and the old call prints no verdict"
+no_verdict "$OUT" "...and the old call prints no verdict"
 run_health "${ hj '' ''; }" "$SHA";      eq "$RC_" 2 "too few args is an ERROR"
-run_health "${ hj '' ''; }" "$SHA" 1 0 EXTRA; eq "$RC_" 2 "extra args are an ERROR"
+run_health "${ hj '' ''; }" "$SHA" 1 off EXTRA; eq "$RC_" 2 "extra args are an ERROR"
 
 # SHA comparison is case-insensitive. GitHub returns lowercase and the workflow sources the
 # expected sha from the same API, so both sides match today — but a caller that got the sha
@@ -1122,14 +1218,24 @@ has "$readiness_block" 'required_contexts' \
   "...and feeds it to branch-health as part of the health document"
 has "$readiness_block" 'BRANCH_JSON=' \
   "the branch read is captured on its own status, never piped straight into the classifier"
-# The escape hatch is resolved from the artifact by the TESTED predicate, and its authority is
-# re-validated at the point of use — this marker bypasses a release-safety refusal.
+# The declarations are resolved from the artifact by TESTED predicates, and their authority is
+# re-validated at the point of use — these markers bypass a release-safety refusal.
 has "$readiness_block" 'health-optout' \
-  "the opt-out is read by the shared predicate, never by eye (#115)"
-has "$readiness_block" 'author_association' \
-  "...and the artifact author's standing is re-checked before the opt-out is honoured"
-has "$readiness_block" 'branch-health "$HEAD_SHA" "$WF_COUNT" "$HEALTH_OPTOUT"' \
-  "...and the resolved opt-out reaches the predicate (not dropped on the floor)"
+  "the marker is read by the shared predicate, never by eye (#115)"
+has "$readiness_block" 'health-decl' \
+  "...and the AUTHORITY rule is the shared predicate's too, not a second copy in this snippet (#293)"
+# The PERMISSION endpoint, not `author_association`. Pinning the association token matched only the
+# comment that explains why it is the wrong field — a pin that cannot fail. What must be true is
+# that the snippet asks the endpoint whose answer actually gates the declaration.
+has "$readiness_block" 'collaborators/$ART_AUTHOR/permission' \
+  "...and the artifact author's PERMISSION is re-read before a declaration is honoured"
+has "$readiness_block" 'branch-health "$HEAD_SHA" "$WF_COUNT" "$HEALTH_DECL"' \
+  "...and the resolved declaration reaches the predicate (not dropped on the floor)"
+# A refused declaration must SAY SO. Both refusals — an unusable value, and an author who cannot
+# push — leave the repo at a permanent `indeterminate`, and an owner with no explanation for it is
+# how a deliberate declaration becomes a mystery deadlock.
+has "$readiness_block" 'DECL_WHY' \
+  "...and a declaration that was NOT honoured is reported rather than silently dropped"
 has "$readiness_block" 'HEALTH=skipped' \
   "health starts at the honest 'skipped', never a fabricated green"
 has "$readiness_block" 'defaultBranchRef' \
@@ -1314,6 +1420,75 @@ eq "${ ho '\\<!-- release-health: skip-unreported -->\n<!-- release-health: skip
 # would ship with the escape hatch armed — the exact false activation the opt-in design forbids.
 eq "${ bash "$RL" health-optout < "$WF" 2>/dev/null; }" 'off' \
    "the workflow's own documented example does not read as a declaration"
+# ...and that has to keep holding now that the schema documents TWO values (#293). The block is
+# copied verbatim into every bootstrapped artifact, so a second example is a second chance to ship
+# a fresh roadmap with a declaration armed — and this one would arm `no-ci`, which reaches `met`.
+hasnt "${ bash "$RL" health-optout < "$WF" 2>/dev/null; }" 'no-ci' \
+   "...and specifically not as the no-ci one, which the schema now also documents by example"
+
+# --- 5b-bis. the SECOND value: `no-ci` (#293) -----------------------------------------------
+# The same grammar, asserted for the new value rather than assumed to be inherited from the shared
+# code path — a value-specific `case` arm is exactly where an inherited-grammar assumption breaks.
+eq "${ ho '<!-- release-health: no-ci -->\n'; }"      'no-ci' "a no-ci marker declares it"
+eq "${ ho '<!-- release-health:no-ci-->\n'; }"        'no-ci' "spacing around the value is optional here too"
+eq "${ ho '<!-- release-health: NO-CI -->\n'; }"      'invalid NO-CI' "...and the value is case-sensitive"
+eq "${ ho '<!-- release-health: noci -->\n'; }"       'invalid noci'  "...a near-miss is INVALID, not silently off"
+eq "${ ho '<!-- release-health: no-ci -->\n<!-- release-health: no-ci -->\n'; }" 'no-ci' \
+   "the SAME value twice is one declaration"
+eq "${ ho '```\n<!-- release-health: no-ci -->\n```\n'; }" 'off' "OVER: a FENCED no-ci example does not declare"
+eq "${ ho 'Docs: `<!-- release-health: no-ci -->`\n'; }"   'off' "OVER: ...nor a code-spanned one"
+eq "${ ho '\\<!-- release-health: no-ci -->\n'; }"         'off' "OVER: ...nor a backslash-escaped one"
+# THE TWO VALID VALUES TOGETHER ARE THE AMBIGUOUS CASE THAT NOW MATTERS. Before #293 an ambiguous
+# pair was one real value and one typo; now it is two CONTRARY claims about the same repo — "CI
+# exists and is silent" and "there is no CI" — and both reach `met` by different arms. Resolving it
+# either way invents an assertion the owner did not make.
+eq "${ ho '<!-- release-health: skip-unreported -->\n<!-- release-health: no-ci -->\n'; }" 'invalid no-ci skip-unreported' \
+   "both VALID values at once is ambiguous, never resolved to either"
+
+# ============================================================================================
+# 5c. HEALTH-DECL — marker + author permission -> the declaration branch-health accepts (#293)
+# ============================================================================================
+# The AUTHORITY rule, which used to live in /roadmap's snippet as prose. It moved into a predicate
+# when a second driver (`.claude/skills/release/release.sh`) gained a reason to consult the marker:
+# two hand-written copies of the rule standing between an editable issue body and a release cut is
+# the drift Golden Rule 4 forbids. Being a predicate is also what makes it assertable offline —
+# the permission is an argument here, not a live read.
+hd() { bash "$RL" health-decl "$1" "$2" 2>/dev/null | sed -n '1p'; }
+hd_why() { bash "$RL" health-decl "$1" "$2" 2>/dev/null | sed -n '2p'; }
+
+eq "${ hd off admin; }"              'off'   "no marker resolves to off whatever the permission says"
+eq "${ hd no-ci admin; }"            'no-ci' "an admin-authored no-ci declaration is honoured"
+eq "${ hd no-ci write; }"            'no-ci' "...and a write-authored one (which is what 'maintain' reports as)"
+eq "${ hd skip-unreported write; }"  'skip-unreported' "...and the same holds for the other value"
+# ONLY admin/write. `read` and `triage` are the roles `author_association` would have admitted as
+# `COLLABORATOR`, and an org `MEMBER` can hold read-only access — accounts that could never push a
+# line of code but could arm a release cut by editing an issue body.
+for p in read triage none pull; do
+  eq "${ hd no-ci "$p"; }" 'off' "a '$p'-access author cannot arm a declaration"
+  has "${ hd_why no-ci "$p"; }" "not write" "...and the refusal says why"
+done
+# FAIL CLOSED on an unreadable permission — the endpoint needs push access itself, so an empty
+# answer means authority could not be ESTABLISHED, which is not a licence to assume it.
+eq "${ hd no-ci ''; }" 'off' "an UNREADABLE permission fails closed"
+has "${ hd_why no-ci ''; }" "could not establish" "...and says the authority could not be established"
+eq "${ hd skip-unreported ''; }" 'off' "...for either value"
+# An unusable marker is refused BEFORE authority is consulted: a nonsense value from an admin is
+# still nonsense, and reporting "your author lacks access" would send the owner to fix the wrong
+# thing entirely.
+eq "${ hd 'invalid skip' admin; }" 'off' "an unusable marker is off even from an admin"
+has "${ hd_why 'invalid skip' admin; }" "unusable release-health marker (skip)" \
+   "...and the report quotes what was actually written, so the owner can find the typo"
+has "${ hd_why 'invalid skip' admin; }" "skip-unreported, no-ci" "...and lists BOTH valid values"
+# A HONOURED declaration prints NOTHING on line 2 — the caller prints line 2 as a warning, so a
+# reason emitted on the success path would report a refusal that did not happen.
+eq "${ hd_why no-ci admin; }" '' "an honoured declaration explains nothing (there is nothing to explain)"
+eq "${ hd_why off admin; }"   '' "...and neither does an absent one"
+# A caller that did not pass `health-optout`'s output is a BUG, not an input to interpret: every
+# guess here resolves toward the flattering answer.
+run health-decl bogus admin;  eq "$RC_" 2 "a value that is not health-optout's output is an ERROR"
+run health-decl no-ci;        eq "$RC_" 2 "health-decl needs both arguments"
+run health-decl;              eq "$RC_" 2 "...and refuses none at all"
+run health-decl no-ci admin EXTRA; eq "$RC_" 2 "...and extra arguments are an ERROR"
 
 # ============================================================================================
 # 6. DEPS-FROM-BODY — the dependency-edge rule, executable (#108)

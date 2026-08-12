@@ -581,10 +581,33 @@ fix_default; ms_drained; health_stale
 readiness
 has "$OUT" "VERDICT=indeterminate" "a green check on a DIFFERENT commit is never this branch's green"
 
+# #293, END TO END. Nothing reported, no workflows, an unprotected branch — and NOTHING DECLARED.
+# This exact fixture emitted the cut before #293, reported as "no CI configured", on a repo that may
+# well have had CircleCI: an unprotected branch declares no required contexts whether or not CI
+# exists, so the two are indistinguishable from here. It fails closed now, and the refusal names the
+# marker that settles it. This is the assertion that reverts if the arm ever goes back to inferring.
 fix_default; ms_drained; health_no_ci
 readiness
-has "$OUT" "HEALTH=no-ci"  "no checks AND no active workflows => no-ci"
-has "$OUT" "VERDICT=met"   "...and a repo with no CI is not deadlocked out of releasing (#24)"
+has "$OUT" "HEALTH=indeterminate" "no checks, no workflows, NOTHING DECLARED => indeterminate, not a fabricated no-ci (#293)"
+has "$OUT" "VERDICT=indeterminate" "...and the readiness verdict fails closed rather than emitting the cut"
+has "$OUT" "release-health: no-ci" "...and the run names the declaration that would settle it"
+# ...and WITH the declaration, the #24 degradation is exactly as it was — a repo that never adopted
+# CI still reaches the cut. What changed is who said so, and the banner now has something true to
+# say. The artifact is maintainer-authored, because a declaration bypasses a release-safety refusal.
+fix_default; ms_drained; health_no_ci
+artifact_fx '<!-- ai-dev-baseline:roadmap:v1 -->
+<!-- release-health: no-ci -->' write
+readiness
+has "$OUT" "HEALTH=no-ci"  "...and a DECLARED no-ci repo resolves to no-ci"
+has "$OUT" "VERDICT=met"   "...so a repo with no CI is still not deadlocked out of releasing (#24)"
+# The same declaration from an author who cannot push is NOT honoured — it would otherwise be a
+# release cut armed by anyone able to edit an issue body.
+fix_default; ms_drained; health_no_ci
+artifact_fx '<!-- ai-dev-baseline:roadmap:v1 -->
+<!-- release-health: no-ci -->' read
+readiness
+has "$OUT" "VERDICT=indeterminate" "...but a read-access author cannot arm it"
+has "$OUT" "WARN:" "...and the refusal is reported, not silent"
 
 fix_default; ms_drained; health_norun
 readiness
@@ -687,10 +710,14 @@ readiness
 has "$OUT" "VERDICT=indeterminate" "a ruleset-protected branch is never read as 'requires nothing' => no-ci"
 has "$OUT" "could not be read" "...and says the required checks could not be read"
 
-# The genuinely CI-less repo still passes (#24): unprotected AND no workflows AND nothing reported.
+# The genuinely CI-less repo still passes (#24) — unprotected AND no workflows AND nothing reported
+# AND the owner says so. That last conjunct is #293: the same three probes describe a CircleCI repo
+# with no branch protection just as well, so the declaration is the only thing that tells them apart.
 fix_default; ms_drained; health_no_ci
+artifact_fx '<!-- ai-dev-baseline:roadmap:v1 -->
+<!-- release-health: no-ci -->' write
 readiness
-has "$OUT" "HEALTH=no-ci" "an unprotected repo with no workflows and no results is still a real no-ci"
+has "$OUT" "HEALTH=no-ci" "an unprotected repo with no workflows, no results and a no-ci declaration is a real no-ci"
 has "$OUT" "VERDICT=met"  "...and is not deadlocked out of releasing"
 
 # --- the escape hatch, wired ------------------------------------------------------------------

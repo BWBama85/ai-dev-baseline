@@ -9,6 +9,47 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`no-ci` is now DECLARED, never inferred — an unprotected branch with external CI no longer
+  fabricates a release cut** (#293, D57).
+
+  `branch-health` treated "both existence probes found nothing" as positive evidence that a repo has
+  no CI. It is not: an **unprotected** default branch has nowhere to declare a required status
+  context, so a CircleCI/Buildkite/Jenkins repo with no branch protection produced the *identical*
+  empty answer as a repo with no CI at all — and `/roadmap` emitted the cut either way, reported as
+  `no CI configured`, which is a statement about the repo that is false. This is #115's original
+  defect surviving for a narrower repo shape, shipped knowingly and recorded in D45's residue list.
+
+  No non-admin read can separate the two: there is nothing to protect on an unprotected branch, and
+  a check-suites probe is blind to the legacy status providers, which is exactly the population. So
+  the default **inverts** — nothing found and nothing declared is now `indeterminate`, and the
+  refusal names the marker that settles it.
+
+  - **A second `release-health` value, `no-ci`**, declares that a repo genuinely has none. It
+    resolves to the `no-ci` verdict → `met`, with a banner naming the declaration. **#24 still
+    holds**: a repo that never adopted CI is not deadlocked, it adds one line, and the run prints
+    which line.
+  - **`no-ci` cannot excuse positive evidence that CI exists** — an unreported Actions workflow or
+    an unreported required context still refuses. A declaration may stand in for absent evidence and
+    never overrule present evidence, which is what makes a stale marker stop applying by itself the
+    day the repo adopts a workflow.
+  - **`skip-unreported` now reaches the no-evidence arm too**, printing `unreported-ok`. A PR-only
+    CircleCI repo on an unprotected branch lands there rather than on the two unreported arms, and
+    answering `indeterminate` would have deadlocked the exact population #115's hatch was built for.
+  - **`branch-health`'s third argument is a word, not a boolean**:
+    `<health-decl off|skip-unreported|no-ci>`. The retired `0`/`1` are a hard error rather than a
+    compatibility alias — mapping them back would let a stale caller reach the new arm carrying a
+    value it never chose.
+  - **The authority rule moved into `roadmap-lib.sh health-decl`**, a pure predicate over the marker
+    value and the artifact author's repo permission. It grew a second caller: with `no-ci` declared,
+    `.claude/skills/release/release.sh` must consult the marker or refuse to ever tag a CI-less
+    repo. It honours `no-ci` and still refuses `skip-unreported`, which describes a repo that cannot
+    give `verify-merge` the evidence it is built on.
+
+  The residue this closes is **removed** from `branch-health`'s header and
+  `docs/release-goal-convention.md` rather than narrowed — no arm reaches `no-ci` on evidence alone
+  any more. Every boundary is pinned in `check-roadmap.sh` (2j-quater, 5b-bis, 5c) and driven end to
+  end in `check-roadmap-e2e.sh`; four mutations of a throwaway tree copy were each observed going red.
+
 - **The shared workflow reader reads flow collections across physical lines, and reports merge keys
   instead of ignoring them** (#291).
 
