@@ -172,7 +172,8 @@ ecosystem can set all four keys explicitly and get full gate coverage
 skipped. A polyglot repo (e.g. `package.json` **and** `pyproject.toml`) gets
 the primary ecosystem's gates automatically and layers the second
 ecosystem's in via the open set below. Running every detected ecosystem's
-gates automatically is a tracked follow-up.
+gates automatically is deliberately out of scope — the open set is the
+supported answer for a polyglot repo, not a placeholder for one.
 
 **PHP is last, and a WordPress-shaped repo is why that matters to you.** A
 plugin or theme routinely carries a `composer.json` **and** a `package.json`

@@ -53,8 +53,16 @@
 # Detection is single-primary-ecosystem: the FIRST ecosystem (Node → Rust → Go → Python →
 # PHP) that yields at least one command wins, and the rest are skipped. A polyglot repo
 # layers the second ecosystem's gates via the open-set [gates] override (see
-# docs/per-project-overrides.md). Running every detected ecosystem's gates automatically
-# is tracked as a follow-up (pluggable multi-ecosystem adapters).
+# docs/per-project-overrides.md).
+#
+# Running every detected ecosystem's gates automatically is DELIBERATELY OUT OF SCOPE, and
+# that is a different sentence from the one this comment used to carry. It said the work was
+# "tracked as a follow-up"; no such issue has ever existed, and a reference to tracked work
+# that is not tracked is worse than an admitted gap — it stops anyone from filing it. Measured
+# against base/practices/issues-and-scope.md it does not clear the bar: the open-set [gates]
+# override is a documented escape that WORKS for the polyglot case, so nothing breaks while it
+# stands, and "what breaks if nobody ever does this?" has no answer. If that changes — a repo
+# where the override is genuinely insufficient — file it then, with the evidence.
 #
 # The order lives in ONE place — `_ADB_ECOSYSTEMS`, beside the `_adb_eco_<name>` adapters
 # (#81). That is what "extensible, not a fixed list" bought: a sixth ecosystem is a function
