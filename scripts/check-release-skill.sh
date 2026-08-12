@@ -402,6 +402,27 @@ fi
 req_fixed "$DRV" 'marker-title'      driver-uses-marker-title-predicate
 req_fixed "$DRV" 'release-ready'     driver-uses-readiness-predicate
 req_fixed "$DRV" 'branch-health'     driver-uses-branch-health-predicate
+# THE HEALTH DECLARATION, PINNED LINE BY LINE (#293). This suite is STATIC by design — it never
+# executes the driver — so "does the marker reach the predicate" can only be asserted as the
+# presence of the statements that carry it. Independent review found the first version of this
+# pinned only the token `health-decl`, which also appears in four comment lines: the call could be
+# deleted, or the resolution replaced with a hardcoded `off`, and the suite stayed green. Each pin
+# below is a load-bearing STATEMENT, so each of those mutations goes red.
+#
+# Why the driver consults the marker at all: before #293 `no-ci` was INFERRED, so a CI-less repo
+# reached `case green|no-ci` in verify-merge and tagged. Now it is DECLARED — a driver that passed
+# `off` unconditionally would answer `indeterminate` for that repo and refuse to ever tag it.
+req_fixed "$DRV" 'health-optout'                     driver-reads-the-marker-with-the-shared-predicate
+req_fixed "$DRV" 'health-decl "$hraw" "$hperm"'      driver-resolves-authority-with-the-shared-predicate
+req_fixed "$DRV" 'collaborators/$rauthor/permission' driver-rechecks-the-artifact-authors-permission
+req_fixed "$DRV" 'rset HEALTH_DECL'                  driver-pins-the-declaration-in-run-state
+req_fixed "$DRV" 'rs HEALTH_DECL'                    driver-consumes-the-pinned-declaration
+req_fixed "$DRV" 'branch-health "$sha" "$wf" "$hd"'  driver-passes-the-declaration-to-the-predicate
+# THE ASYMMETRY IS THE RELEASE-SAFETY HALF, and it is one line: `no-ci` is honoured, everything
+# else — `skip-unreported` above all — is flattened to `off`. Deleting it would let this driver TAG
+# a commit on a repo whose CI exists and simply never reported, which is precisely what D45 gave it
+# a stricter policy than /roadmap's to prevent.
+req_fixed "$DRV" '"$hd" = "no-ci"'                   driver-honours-only-no-ci-never-skip-unreported
 req_fixed "$DRV" 'match-head-commit' driver-pins-the-merge-to-the-reviewed-head
 req_fixed "$DRV" 'mergeCommit'       driver-tags-the-prs-own-merge-commit
 req_fixed "$DRV" 'adb_version_ge'    driver-uses-the-shared-comparator

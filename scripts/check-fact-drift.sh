@@ -534,6 +534,18 @@ fact branch-health-predicate "fixed:branch-health" -- \
   docs/release-goal-convention.md docs/roadmap-acceptance.md \
   base/practices/verify-before-asserting.md
 
+# --- FACT: the health-declaration AUTHORITY predicate (#293) -----------------
+# `health-decl` decides whether an owner's `release-health` marker may be honoured, and it is the
+# one thing standing between an editable issue body and a release cut. It earns a pin for the same
+# reason `branch-health` does, plus one this one has that the marker READER (`health-optout`,
+# unpinned) does not: it has TWO callers in two different drivers. A rename in the library makes
+# both of them die loudly — the dispatcher refuses an unknown subcommand — so the LOUD half needs
+# no pin. The silent half is the documentation, which would go on describing an authority check
+# nobody can run, in the one doc an adopting repo reads to decide whether to trust the marker.
+fact health-decl-predicate "fixed:health-decl" -- \
+  scripts/lib/roadmap-lib.sh base/workflows/roadmap.md \
+  .claude/skills/release/release.sh docs/release-goal-convention.md
+
 # --- FACT: a closing keyword only fires from PROSE, and the field that proves it ----
 # A `Closes #N` inside a CODE SPAN or a fence closes nothing, silently: the PR merges, the issue
 # stays open, and no output anywhere says so. The practice used to claim the keyword fires

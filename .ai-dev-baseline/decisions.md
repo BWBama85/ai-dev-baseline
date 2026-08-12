@@ -4325,3 +4325,116 @@ limit: none of them is sufficient alone.
              the single line its guard pins, each required to go red. Review found four assertions
              that pinned nothing; each was rewritten until its mutation fired.
 - baseline-issue: n/a — this repo IS the baseline; #291 is the tracking issue.
+
+## D57 — `no-ci` is DECLARED, not inferred: the default inverts, and the declaration that keeps #24 true
+- date:      2026-08-11
+- category:  general
+- unknown:   #293 reports that an UNPROTECTED default branch with external CI still resolves to
+             `no-ci`, so `/roadmap` emits a release cut against a commit nothing verified — #115's
+             original defect surviving for a narrower repo shape, shipped knowingly and recorded in
+             D45's residue list. The issue states plainly that the APPROACH is undecided and offers
+             three: an owner declaration that CI *does* exist (the mirror of #115's hatch), a
+             check-suites probe, or inverting the no-evidence default — the last "directly
+             contradicts #24", so it "needs #24 reopened or amended, not quietly overridden".
+             Gap analysis confirmed the choice is genuinely blocking and added the option none of
+             the three names: inverting the default *with* an inverse declaration for "no CI".
+- decision:  INVERT THE DEFAULT AND ADD THE SECOND DECLARATION — chosen by the owner from a costed
+             four-way. `branch-health`'s no-evidence arm keeps its condition and changes its OUTPUT:
+             with `release-health: no-ci` it prints `no-ci`; with `release-health: skip-unreported`
+             it prints `unreported-ok`; with neither it prints `indeterminate` and names both
+             remedies. The third argument stops being `<health-optout 0|1>` and becomes
+             `<health-decl off|skip-unreported|no-ci>`; the retired booleans are a hard error.
+             `health-optout` gains `no-ci` to its value set, and a new pure predicate `health-decl`
+             resolves marker + author permission into that argument. `.claude/skills/release/`
+             `release.sh` honours `no-ci` and still refuses `skip-unreported`.
+- placement: `scripts/lib/roadmap-lib.sh` (`branch-health`'s arm and argument, `health-optout`,
+             the new `health-decl`), `base/workflows/roadmap.md` (schema marker, readiness snippet,
+             condition table, emissions, marker-preservation prose),
+             `.claude/skills/release/release.sh` (`cmd_readiness` resolves and pins it, `health_of`
+             consumes it), `scripts/check-roadmap.sh` (2j-quater, 5b-bis, 5c, the widened validator),
+             `scripts/check-roadmap-e2e.sh`, `scripts/check-fact-drift.sh` (a `health-decl` pin),
+             `docs/release-goal-convention.md`, `docs/roadmap-acceptance.md` (9b-quinquies)
+- reason:    **The premise #115 shipped was false, and that is the whole of it.** Its header claimed
+             `no-ci` required "POSITIVE evidence from BOTH probes". An unprotected branch has nowhere
+             to declare a required context, so its empty answer is the ABSENCE of a declaration, not
+             a declaration of absence — and the two are byte-identical at the predicate. No
+             non-admin read separates them: there is nothing to protect, so the admin endpoint would
+             not help, and a check-suites probe is blind to the legacy status providers, which is
+             precisely the population (#293's option 2, rejected on that ground — it buys a third
+             live read on the cut path and still cannot answer).
+
+             **Fail-closed beats reachability where the premise itself is unanswerable**, which is
+             D45's own decision (2) applied one step further out. There it was an unreadable context
+             list; here it is an unanswerable existence question. Answering it in the direction that
+             ships code is the one direction that cannot be recovered from.
+
+             **The mirror hatch (#293's option 1) was rejected because it leaves the default
+             fail-open.** It is cheaper and changes nothing for existing repos, but acceptance
+             criterion 1 is unconditional and a repo that never adopts the marker keeps emitting
+             cuts against unverified commits. A safety model that only protects repos which opted in
+             is the shape this framework refuses everywhere else.
+
+             **#24 IS NOT CONTRADICTED, so it is not reopened.** Its text is about skills asserting
+             platform gating that does not exist; this change *removes* such an assertion — the run
+             no longer states "no CI configured" as a fact it derived. The sentence at risk was the
+             derived one, "a project that never adopted CI must not be deadlocked out of ever
+             releasing", and it still holds: one line in the roadmap artifact, and the refusal
+             prints that line. Deadlock means no way out, not one documented step.
+
+             **The blast radius is exactly the ambiguous population.** A repo with Actions, with a
+             required context, or with any result on the commit never reaches this arm — behaviour
+             is byte-identical there. Only "no workflows AND nothing required AND nothing reported"
+             changes, which is the set in which the old answer was a coin flip.
+
+             **`skip-unreported` had to reach this arm too, and missing that would have been a
+             regression.** A PR-only CircleCI repo on an unprotected branch lands HERE, not on the
+             two unreported arms — nothing declares a context to go missing. Answering
+             `indeterminate` for it would deadlock the exact population #115's hatch was built for.
+             It prints `unreported-ok`; the repo reached `met` before this change too, as `no-ci`,
+             so the reachability is unchanged and only the word is now true.
+
+             **`no-ci` must not excuse the unreported arms**, and that asymmetry is what makes a
+             stale marker self-limiting. Those arms match on positive evidence that CI exists —
+             active workflows, a declared context — which contradicts the declaration outright. A
+             declaration may stand in for absent evidence; it may never overrule present evidence.
+             So a declaring repo`s marker stops applying on its own once it declares an ACTIONS
+             workflow or a required context, or once anything reports on the commit. Stated exactly,
+             because independent review caught the general form ("adds a workflow") overclaiming:
+             the existence probes count Actions and required contexts, so adding an external
+             provider that is neither required nor reporting here leaves the repo in the same
+             ambiguous state the declaration exists to answer, and the marker keeps applying.
+
+             **`no-ci` keeps its verdict word rather than earning a third.** Its authority moved
+             (inferred → declared) but its meaning did not, and a new word would have propagated
+             through `release-ready`'s accepted set, its precedence table, both docs and every
+             emission to record a provenance change the banner already states in words. This is
+             deliberately the opposite call from D45(3), and the distinction is which thing changed:
+             there a NEW authority needed a word of its own, here an existing verdict changed only
+             where its authority comes from.
+
+             **The retired `0`/`1` are an ERROR, not a compatibility alias.** Mapping `1` back to
+             `skip-unreported` looks kind and is the fail-open: a stale caller would then also reach
+             the new no-evidence arm carrying a value it never chose. An unported caller stopping the
+             run is the only reading that cannot be silently wrong.
+
+             **The authority rule became a predicate because it grew a second caller.** It was prose
+             in `/roadmap`'s snippet while that workflow was the only consumer. With `no-ci`
+             declared, `release.sh` must consult the marker or refuse to ever tag a CI-less repo —
+             and two hand-written copies of the rule standing between an editable issue body and a
+             release cut is the drift Golden Rule 4 forbids. `health-decl` also makes the rule
+             assertable offline, with the permission as an argument rather than a live read.
+
+             **release.sh's asymmetry is decided, not inherited.** D45 gave that driver a stricter
+             policy than `/roadmap`'s, and the reasoning was specific to `skip-unreported`: a repo
+             whose CI never reports cannot give `verify-merge` the evidence it is built on. That
+             argument does not extend to `no-ci`, which asserts there is no evidence to withhold —
+             so refusing it there would not be strictness but a deadlock this change introduced,
+             turning a fail-open into a fail-shut for the one population #24 protects.
+- observed:  four mutations of a throwaway tree copy (`git ls-files | tar`), each verified applied
+             before the suite ran and each required to go red: the arm reverted to unconditional
+             `no-ci` (7 assertions, including the issue's own reproduction returning `no-ci` where
+             `indeterminate` is now required); the declaration widened to excuse the Actions arm
+             (3); `0`/`1` accepted as aliases (6); the authority set widened to `read`/`triage` (4).
+             The e2e suite independently caught the change through the real workflow snippet before
+             it was updated, which is what proves the wiring and not just the predicate.
+- baseline-issue: n/a — this repo IS the baseline; #293 is the tracking issue, closing D45's first residue.

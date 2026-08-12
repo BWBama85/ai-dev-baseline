@@ -230,8 +230,10 @@ await_checks() {
 
 # --- branch health --------------------------------------------------------------------------------
 # The workflow inventory is consulted whenever GitHub Actions has NOT reported on this commit —
-# exactly as step 2 does. Hardcoding 0 tells branch-health "this repo has no CI", so a commit with
-# enough non-Actions checks would read `green` instead of the intended `indeterminate`.
+# exactly as step 2 does. Hardcoding the COUNT to 0 would tell branch-health that Actions declares
+# nothing here, so a commit with enough non-Actions checks would read `green` instead of the
+# intended `indeterminate`. (This paragraph is about the WORKFLOW COUNT, the second argument. The
+# third argument used to be a `0|1` opt-out flag and is now the `health-decl` word — see below.)
 #
 # THE SECOND EXISTENCE PROBE IS READ HERE TOO (#115). `branch-health` now takes the branch's
 # required status contexts alongside the Actions inventory, and passing a hardcoded `null` would
@@ -270,14 +272,31 @@ health_of() {   # <sha> -> prints the verdict word
     wfj="$(gh api --paginate "repos/$sl/actions/workflows?per_page=100")" || return 1
     wf="$(printf '%s' "$wfj" | jq -s '[.[].workflows[]? | select(.state == "active")] | length')" || return 1
   fi
-  # `0` — this driver NEVER takes the owner opt-out, and that is a deliberate, stricter policy than
-  # /roadmap's, not an oversight. /roadmap decides whether to EMIT a cut; this decides whether to
-  # TAG one, having just watched the merge commit's checks settle. `release-health:
-  # skip-unreported` says "CI does not report on the default branch" — a repo in that state cannot
-  # give this driver the evidence `verify-merge` is built on, so it needs its own release skill
-  # (D14 already says every adopting repo owes itself one) rather than a hatch that lets THIS one
-  # tag an unverified commit.
-  printf '%s' "$hin" | bash "$LIB/roadmap-lib.sh" branch-health "$sha" "$wf" 0 | sed -n '1p'
+  # THE DECLARATION IS SPLIT, and each half is decided on its own merits (#293).
+  #
+  # `skip-unreported` is STILL refused here, and that is a deliberate, stricter policy than
+  # /roadmap's rather than an oversight. /roadmap decides whether to EMIT a cut; this decides
+  # whether to TAG one, having just watched the merge commit's checks settle. "CI does not report
+  # on the default branch" describes a repo that cannot give this driver the evidence
+  # `verify-merge` is built on, so it needs its own release skill (D14 already says every adopting
+  # repo owes itself one) rather than a hatch that lets THIS one tag an unverified commit.
+  #
+  # `no-ci` is HONOURED, because refusing it would not be strictness — it would be a deadlock this
+  # change introduced. Before #293 that verdict was inferred from the reads above, so a CI-less
+  # repo reached `case green|no-ci` in `verify_merge` and tagged. Now it is DECLARED, and a driver
+  # that passed `off` unconditionally would answer `indeterminate` for the same repo and refuse to
+  # ever tag it — turning a fail-open into a fail-shut for the one population #24 exists to
+  # protect. There is also nothing to be strict ABOUT: `skip-unreported` withholds evidence that
+  # exists, `no-ci` asserts there is none to withhold, and every arm carrying real evidence (a red
+  # check, a running one, a stale one, an unreadable context list) still matches first and wins.
+  #
+  # RESOLVED ONCE IN `cmd_readiness` AND PINNED IN RUN-STATE, not re-read here: `health_of` is
+  # called twice — once at readiness and once on the merge commit, in a later shell — and re-asking
+  # would let the answer change between the two. Absent (a run that predates the pin, or any path
+  # that reaches here without readiness) reads as `off`, the fail-closed direction.
+  hd="$(rs HEALTH_DECL)"; [ -n "$hd" ] || hd=off
+  [ "$hd" = "no-ci" ] || hd=off
+  printf '%s' "$hin" | bash "$LIB/roadmap-lib.sh" branch-health "$sha" "$wf" "$hd" | sed -n '1p'
 }
 
 # --- role guard -------------------------------------------------------------------------------------
@@ -321,7 +340,12 @@ cmd_readiness() {
   n="$(printf '%s\n' "$list" | sed '/^$/d' | wc -l | tr -d ' ')"
   [ "$n" = "1" ] || die "expected exactly 1 open roadmap-labelled issue, found $n — split brain"
   rnum="$(printf '%s\n' "$list" | sed '/^$/d' | head -n1)"
-  body="$(gh issue view "$rnum" --json body --jq .body)" || die "cannot read roadmap #$rnum"
+  # AUTHOR TOO, in the same read (#293). The `release-health` declaration is honoured only from an
+  # artifact whose author can push code, so the login is not optional context — it is half the
+  # authority check, and fetching it here costs nothing over the read already being made.
+  art="$(gh issue view "$rnum" --json body,author)" || die "cannot read roadmap #$rnum"
+  body="$(printf '%s' "$art" | jq -r '.body // ""')" || die "cannot read roadmap #$rnum body"
+  rauthor="$(printf '%s' "$art" | jq -r '.author.login // ""')" || die "cannot read roadmap #$rnum author"
   titles="$(printf '%s' "$body" | bash "$rm_lib" marker-title)" || die "marker-title failed"
   nt="$(printf '%s\n' "$titles" | sed '/^$/d' | wc -l | tr -d ' ')"
   [ "$nt" = "1" ] || die "roadmap #$rnum declares $nt release-milestone titles — need exactly 1"
@@ -347,6 +371,24 @@ EOF
   verdict="$(bash "$rm_lib" release-ready "$le" "$armed" "$blockers" "$open_" "$canceled" skipped)" || die "readiness predicate failed"
   health=skipped
   if [ "$verdict" = "met" ]; then
+    # THE OWNER HEALTH DECLARATION, resolved here and pinned for `health_of` (#293). Same two reads
+    # and the same shared predicate /roadmap uses — `health-decl` owns the authority rule so this
+    # driver and that workflow cannot disagree about whether a marker counts. Resolved inside the
+    # would-be-`met` branch for the same reason health is: a run that is not releasable anyway must
+    # not pay for reads it cannot act on. The permission lookup is skipped entirely when nothing is
+    # declared, and its failure is NOT fatal — an unestablishable authority is a declaration that
+    # does not apply, which `health-decl` turns into `off`.
+    hraw="$(printf '%s' "$body" | bash "$rm_lib" health-optout)" || die "health-optout failed"
+    hperm=""
+    case "$hraw" in
+      off) : ;;
+      *) [ -n "$rauthor" ] && hperm="$(gh api "repos/$sl/collaborators/$rauthor/permission" --jq '.permission' 2>/dev/null || echo '')" ;;
+    esac
+    hout="$(bash "$rm_lib" health-decl "$hraw" "$hperm")" || die "health-decl failed"
+    hdecl="$(printf '%s\n' "$hout" | sed -n '1p')"
+    hwhy="$(printf '%s\n' "$hout" | sed -n '2p')"
+    [ -n "$hwhy" ] && say "roadmap #$rnum: $hwhy"
+    rset HEALTH_DECL "$hdecl"
     # Encoded, for the reason in `health_of` (#103). The sibling `commits/$sha/...` reads are left
     # alone deliberately: their ref is a hex SHA, which is unreserved end to end.
     dpath="$(adb_url_path_segment "$d")" || die "cannot encode '$d' into a request path"
