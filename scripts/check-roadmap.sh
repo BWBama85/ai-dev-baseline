@@ -1220,9 +1220,14 @@ has "$readiness_block" 'BRANCH_JSON=' \
   "the branch read is captured on its own status, never piped straight into the classifier"
 # The declarations are resolved from the artifact by TESTED predicates, and their authority is
 # re-validated at the point of use — these markers bypass a release-safety refusal.
-has "$readiness_block" 'health-optout' \
+# PIN THE INVOCATIONS, NOT THE TOKENS. A bare `health-decl` matches the four comment lines that
+# EXPLAIN it, so deleting the call and keeping the prose left this green — the same defect this
+# block already corrected for `author_association` one assertion down, reintroduced by the change
+# that corrected it. (Independent-review find.) What must be true is that the snippet CALLS each
+# predicate, so match the call: the subcommand preceded by the library token the render substitutes.
+has "$readiness_block" '| {{ROADMAP_LIB}} health-optout' \
   "the marker is read by the shared predicate, never by eye (#115)"
-has "$readiness_block" 'health-decl' \
+has "$readiness_block" '{{ROADMAP_LIB}} health-decl "$OPTOUT_RAW" "$ART_PERM"' \
   "...and the AUTHORITY rule is the shared predicate's too, not a second copy in this snippet (#293)"
 # The PERMISSION endpoint, not `author_association`. Pinning the association token matched only the
 # comment that explains why it is the wrong field — a pin that cannot fail. What must be true is
@@ -1234,8 +1239,10 @@ has "$readiness_block" 'branch-health "$HEAD_SHA" "$WF_COUNT" "$HEALTH_DECL"' \
 # A refused declaration must SAY SO. Both refusals — an unusable value, and an author who cannot
 # push — leave the repo at a permanent `indeterminate`, and an owner with no explanation for it is
 # how a deliberate declaration becomes a mystery deadlock.
-has "$readiness_block" 'DECL_WHY' \
-  "...and a declaration that was NOT honoured is reported rather than silently dropped"
+# ...and the PRINT, not merely the variable: `DECL_WHY` alone stayed green with the `echo` deleted,
+# which is the whole failure this pins against — the reason exists and nobody sees it.
+has "$readiness_block" 'if [ -n "$DECL_WHY" ]; then echo' \
+  "...and a declaration that was NOT honoured is PRINTED, not merely read into a variable"
 has "$readiness_block" 'HEALTH=skipped' \
   "health starts at the honest 'skipped', never a fabricated green"
 has "$readiness_block" 'defaultBranchRef' \
@@ -1494,9 +1501,17 @@ eq "${ bash "$RL" health-decl "invalid $(printf 'a\nb')" admin 2>/dev/null | wc 
 has "${ hd_why "invalid $(printf 'a\nb')" admin; }" "a b" \
    "...with the value folded onto the reason line rather than truncated off it"
 run health-decl bogus admin;  eq "$RC_" 2 "a value that is not health-optout's output is an ERROR"
+has "$OUT" "must be health-optout" "...and it names the ARGUMENT, not the subcommand"
 run health-decl no-ci;        eq "$RC_" 2 "health-decl needs both arguments"
+has "$OUT" "exactly 2" "...and the arity error states the arity"
 run health-decl;              eq "$RC_" 2 "...and refuses none at all"
 run health-decl no-ci admin EXTRA; eq "$RC_" 2 "...and extra arguments are an ERROR"
+# THE FOUR `rc=2` ASSERTIONS ABOVE PASS AGAINST A LIBRARY THAT HAS NO `health-decl` AT ALL — the
+# dispatcher rejects an unknown subcommand with exit 2 as well, so on their own they prove only that
+# SOMETHING refused. (Independent-review find.) Each now also asserts its own diagnostic, which the
+# unknown-subcommand path cannot produce; and this is the positive control that separates the two,
+# since a library without the subcommand cannot answer it at all.
+eq "${ hd off admin; }" 'off' "...and the subcommand EXISTS: a valid call is answered, not refused"
 
 # ============================================================================================
 # 6. DEPS-FROM-BODY — the dependency-edge rule, executable (#108)

@@ -140,7 +140,10 @@ parse, and rewrite it deterministically:
      required checks could not be read at all. `no-ci` additionally cannot excuse an unreported
      Actions workflow or an unreported required context: those are POSITIVE evidence that CI
      exists, which contradicts the declaration outright — so a stale `no-ci` stops applying by
-     itself the day the repo adopts a workflow. Anything else, or BOTH values at once, is reported
+     itself once the repo declares an ACTIONS workflow or a required context, or once anything
+     reports on the commit. It does NOT self-limit on merely adding an external provider that is
+     neither required nor reporting here: that repo is back in the ambiguous state the declaration
+     exists to answer. Anything else, or BOTH values at once, is reported
      and ignored. Honoured only in a MAINTAINER-authored artifact — a declaration bypasses a
      release-safety refusal, so /roadmap re-checks the artifact author's repo permission before
      acting on it. -->

@@ -30,8 +30,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     which line.
   - **`no-ci` cannot excuse positive evidence that CI exists** — an unreported Actions workflow or
     an unreported required context still refuses. A declaration may stand in for absent evidence and
-    never overrule present evidence, which is what makes a stale marker stop applying by itself the
-    day the repo adopts a workflow.
+    never overrule present evidence, which is what makes a stale marker stop applying by itself once
+    the repo declares an **Actions** workflow or a required context, or once anything reports on the
+    commit. It does *not* self-limit on merely adding an external provider that is neither required
+    nor reporting there — that repo is back in the ambiguous state the declaration exists to answer.
   - **`skip-unreported` now reaches the no-evidence arm too**, printing `unreported-ok`. A PR-only
     CircleCI repo on an unprotected branch lands there rather than on the two unreported arms, and
     answering `indeterminate` would have deadlocked the exact population #115's hatch was built for.

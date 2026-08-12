@@ -298,7 +298,10 @@ branch protection is indistinguishable from a repo with no CI — and #115 cut r
       `no-ci` → `met`, and the banner names the declaration instead of asserting "no CI configured".
 - [ ] **`no-ci` never excuses positive evidence that CI exists** — not an active Actions workflow
       that has not reported, not a declared required context that has not reported. A stale marker
-      therefore stops applying by itself once the repo adopts a workflow.
+      therefore stops applying by itself once the repo declares an **Actions** workflow or a
+      required context, or once anything reports on the commit — **not** on merely adding an
+      external provider that is neither required nor reporting here, which is the same ambiguous
+      state the declaration exists to answer.
 - [ ] …and never a red branch, a running check, stale evidence, or an unreadable context list.
 - [ ] **`skip-unreported` on the no-evidence arm resolves to `unreported-ok`, not a deadlock.** A
       PR-only repo on an *unprotected* branch lands there (nothing declares a context to go

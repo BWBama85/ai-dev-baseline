@@ -218,8 +218,12 @@ says something true.
 `no-ci` is narrower still: it excuses **only** the no-evidence arm. It cannot excuse an unreported
 Actions workflow or an unreported required context, because those are **positive evidence that CI
 exists**, which contradicts the declaration outright — a declaration must never overrule the
-evidence it stands in for the absence of. So a `no-ci` marker that goes stale the day the repo adopts
-a workflow stops applying **by itself**.
+evidence it stands in for the absence of. So a stale `no-ci` marker stops applying **by itself** once
+the repo declares an **Actions** workflow or a required context, or once anything reports on the
+commit. Stated exactly, because the general form overclaims: the existence probes count Actions
+workflows and required contexts, so adding an external provider that is **neither required nor
+reporting here** leaves the repo in the same ambiguous state the declaration exists to answer, and
+the marker keeps applying.
 
 Both are deliberately narrow, and every one of these boundaries is regression-tested:
 

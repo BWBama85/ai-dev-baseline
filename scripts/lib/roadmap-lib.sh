@@ -367,7 +367,10 @@ cmd_pr_targets_issue() {
 #   `no-ci`. It deliberately does NOT excuse the unreported arms: those match on POSITIVE evidence
 #   that CI exists (active workflows, or a required context), which contradicts the declaration
 #   outright — a declaration must never overrule the evidence it is standing in for the absence of.
-#   So a `no-ci` artifact that goes stale the day the repo adopts Actions stops applying by itself.
+#   So a `no-ci` artifact stops applying by itself once the repo declares an ACTIONS workflow or a
+#   required context, or once anything reports on the commit. It does NOT self-limit on merely
+#   adding an external provider that is neither required nor reporting here — that repo is back in
+#   the ambiguous state this declaration exists to answer, which is the honest boundary.
 #
 # Both are deliberately narrow, and the boundaries are shared:
 #   * they are tested AFTER failure, still-running and wrong-commit, so neither can excuse a RED

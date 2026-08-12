@@ -4327,7 +4327,7 @@ limit: none of them is sufficient alone.
 - baseline-issue: n/a — this repo IS the baseline; #291 is the tracking issue.
 
 ## D57 — `no-ci` is DECLARED, not inferred: the default inverts, and the declaration that keeps #24 true
-- date:      2026-08-12
+- date:      2026-08-11
 - category:  general
 - unknown:   #293 reports that an UNPROTECTED default branch with external CI still resolves to
              `no-ci`, so `/roadmap` emits a release cut against a commit nothing verified — #115's
@@ -4397,7 +4397,12 @@ limit: none of them is sufficient alone.
              stale marker self-limiting. Those arms match on positive evidence that CI exists —
              active workflows, a declared context — which contradicts the declaration outright. A
              declaration may stand in for absent evidence; it may never overrule present evidence.
-             So the day a declaring repo adds a workflow, the marker stops applying on its own.
+             So a declaring repo`s marker stops applying on its own once it declares an ACTIONS
+             workflow or a required context, or once anything reports on the commit. Stated exactly,
+             because independent review caught the general form ("adds a workflow") overclaiming:
+             the existence probes count Actions and required contexts, so adding an external
+             provider that is neither required nor reporting here leaves the repo in the same
+             ambiguous state the declaration exists to answer, and the marker keeps applying.
 
              **`no-ci` keeps its verdict word rather than earning a third.** Its authority moved
              (inferred → declared) but its meaning did not, and a new word would have propagated
