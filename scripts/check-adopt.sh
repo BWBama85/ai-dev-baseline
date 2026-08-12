@@ -250,6 +250,27 @@ fi
 eq "$(bash "$AD" scan "$WORK/nope" >/dev/null 2>&1; echo $?)" 2 "scan of a missing dir exits 2"
 eq "$(bash "$AD" scan "$FX" --agents >/dev/null 2>&1; echo $?)" 2 "scan --agents with no value exits 2"
 
+# --- 4b. --agents is a PATH COMPONENT, so its tokens are validated ------------------------------
+# `--agents` is interpolated into `$root/.$a`, so an unvalidated token walks out of the project:
+# `--agents '../..'` made the scan read a sibling directory and report the result as the project's
+# own inventory. Read-only, so nothing was destroyed — but an operator acting on an inventory of
+# the WRONG directory is the failure this refusal exists to prevent, and it is the same class of
+# confidently-wrong answer D59 refused for a truncated repo root. Caught by self-review.
+#
+# Both subcommands that take the flag are asserted, because the validation was originally present
+# in `pin-render` alone and that asymmetry is exactly how it was missed.
+for badtok in '../..' 'a/b' '/etc' 'UPPER' '-lead' 'a b'; do
+  eq "$(bash "$AD" scan "$FX" --agents "$badtok" >/dev/null 2>&1; echo $?)" 2 \
+     "scan --agents rejects the traversal/invalid token [$badtok]"
+  eq "$(bash "$AD" hygiene "$FX" --agents "$badtok" >/dev/null 2>&1; echo $?)" 2 \
+     "hygiene --agents rejects the traversal/invalid token [$badtok]"
+done
+# An EXPLICIT empty value must not silently widen to "every agent" — it reads as "none".
+eq "$(bash "$AD" scan "$FX" --agents '' >/dev/null 2>&1; echo $?)" 2 "scan --agents '' is refused, not read as 'all'"
+eq "$(bash "$AD" hygiene "$FX" --agents '' >/dev/null 2>&1; echo $?)" 2 "hygiene --agents '' is refused"
+# ...and a legitimate token still works, so the guard is not simply rejecting everything.
+yes "$(bash "$AD" scan "$FX" --agents claude >/dev/null 2>&1; echo $?)" "a valid agent token is still accepted"
+
 # --- 5. the getrich inventory, end to end --------------------------------------------------------
 # #20's acceptance criterion, discharged against the SHAPE rather than the live repo (see the
 # header): remove the duplicate statusline/gate hook, keep the stack CLAUDE.md, keep the
@@ -369,6 +390,21 @@ has "$hy" "precedence${TAB}note"               "axis 3: a layered statusLine is 
 eq "$(bash "$AD" hygiene "$HY" | grep -c "^product-code${TAB}")" 1 \
    "axis 1 reports the product-code boundary once, not once per agent"
 
+# A NON-ASCII TRACKED FILENAME IS STILL SCANNED. `git ls-files` applies `core.quotePath` by
+# default, so such a file comes back C-quoted (`".claude/caf\303\251.md"`), the unquoted form does
+# not exist on disk, and the loop SILENTLY SKIPPED it. On this axis that is the worst failure
+# available: it is the one looking for credentials in files that ship to end users, and a skipped
+# file produces exactly the output a clean file produces. Reproduced during self-review; `-z` and a
+# NUL-delimited read are the fix. Both a path finding and a credential finding are asserted,
+# because the two probes read the file separately and either could regress alone.
+printf 'home is /Users/someone/Code/thing\n'      > "$HY/.claude/café.md"
+printf 'token: ghp_zyxwvutsrqponmlkjihgfedcba\n'  > "$HY/.claude/naïve.md"
+git -C "$HY" add -A >/dev/null 2>&1
+hy_utf="$(bash "$AD" hygiene "$HY" --agents claude)"
+has "$hy_utf" "café.md"  "a non-ASCII tracked filename is scanned, not silently skipped"
+has "$hy_utf" "naïve.md" "...and its credential probe runs too"
+hasnt "$hy_utf" 'caf\303\251' "the finding names the real path, not git's C-quoted form"
+
 # THE SECRET IS NEVER ECHOED. This is the assertion that matters most in this block:
 # base/practices/logging-and-secrets.md forbids emitting a credential, and a diagnostic pasted
 # into a PR body is exactly the durable, indexed place it must not land.
@@ -384,6 +420,16 @@ eq    "$(ig '.claude/state/')" ""                   "an explicit state rule is S
 has   "$(ig '')"              "is NOT gitignored"   "no rule at all is reported, and differently"
 
 eq "$(bash "$AD" hygiene "$WORK/nope" >/dev/null 2>&1; echo $?)" 2 "hygiene of a missing dir exits 2"
+
+# A git ERROR is not a finding about the project. `check-ignore` exits 0 for ignored, 1 for not
+# ignored, and 128 for a failure — and the first draft collapsed everything non-zero into "is NOT
+# gitignored", turning a broken git into a confident claim that the project's state dir was
+# exposed. A bare repo reproduces it: there is no worktree, so check-ignore cannot answer.
+BARE="$WORK/bare"; git init -q --bare "$BARE" >/dev/null 2>&1
+mkdir -p "$BARE/.claude/state"
+bare_out="$(bash "$AD" hygiene "$BARE" --agents claude | grep '^ignore-risk' || true)"
+has   "$bare_out" "COULD NOT BE DETERMINED" "a git ERROR is reported as undetermined, not as a fact"
+hasnt "$bare_out" "is NOT gitignored"       "a git ERROR must NOT be reported as 'not gitignored'"
 
 # --- 11. plan: the ORDERING is the decision ------------------------------------------------------
 # move strictly before remove is the assertion with teeth. Reversed, the plan has the operator
@@ -403,6 +449,13 @@ hasnt "$(printf 'keep\trootdoc\tCLAUDE.md\tr\n' | bash "$AD" plan)" "## remove" 
       "an empty verdict prints no heading"
 eq "$(printf '' | bash "$AD" plan)" "" "an empty inventory yields an empty plan, not an error"
 eq "$(bash "$AD" plan extra </dev/null >/dev/null 2>&1; echo $?)" 2 "plan takes no arguments"
+
+# A MALFORMED record is NAMED rather than rendered as blanks. A short record used to print
+# `1.  (skill) — `, formatted exactly like a real entry with an empty path and an empty reason —
+# a broken producer wearing the output of a working one.
+short="$(printf 'move\tskill\n' | bash "$AD" plan)"
+has   "$short" "MALFORMED RECORD" "a short record is named as malformed"
+hasnt "$short" "1.  (skill) — "   "a short record must not render as a blank-path entry"
 
 # --- 12. no subcommand mutates the project it is given ------------------------------------------
 # THE BOUNDARY, asserted mechanically rather than trusted to review. /adopt v1 never deletes,

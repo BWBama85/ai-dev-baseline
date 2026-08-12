@@ -116,6 +116,35 @@ _ad_emit() {  # _ad_emit <kind> <field>… — print the record, or a warning na
   printf '\n'
 }
 
+# --- agent-token validation -----------------------------------------------------------------------
+# `--agents` is interpolated straight into a path (`$root/.$a`), so an unvalidated token is a
+# directory traversal: `--agents '../..'` makes the scan read `$root/.../..` and report what it
+# finds there as if it belonged to the project it was pointed at. Read-only, so nothing is
+# destroyed — but an inventory that silently describes a DIFFERENT directory is the same class of
+# wrong answer D59 refused for `adb_repo_shape`, and the operator acts on this one.
+#
+# `pin-render` already validated its agent tokens with exactly this rule; `scan` and `hygiene` did
+# not, which is the asymmetry self-review caught. One helper now, so a third caller cannot
+# reintroduce it.
+#
+# The grammar is the one `agents/<token>/` can actually hold and `docs/adding-an-agent.md`
+# prescribes: lowercase alphanumerics and dashes. Rejecting is a hard error rather than a skip —
+# a silently-dropped agent would report an EMPTY inventory for it, which reads exactly like a
+# project that has no config for that agent.
+_ad_check_agents() {  # <comma-list> <subcommand-name-for-the-message>
+  local list="$1" who="$2" a seen=0
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    seen=1
+    case "$a" in
+      *[!a-z0-9-]*|-*) die "$who: invalid agent token: $(adb_tsv_field_display "$a") (expected lowercase letters, digits and dashes)" ;;
+    esac
+  done <<EOF
+$(printf '%s\n' "$list" | tr ',' '\n')
+EOF
+  [ "$seen" -eq 1 ] || die "$who: --agents was given no usable token"
+}
+
 # --- the agent set -------------------------------------------------------------------------------
 # Derived from `<baseline-root>/agents/*/`, never a second hardcoded list — the same rule
 # bin/agent-init follows for the gitignore set (#250) and for exactly the same reason: a fourth
@@ -332,7 +361,10 @@ cmd_scan() {
   local root="" agents="" a f d n
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --agents) [ "$#" -ge 2 ] || die "scan: --agents needs a value"; agents="$2"; shift 2 ;;
+      # `-n "$2"` as well as the arity check: `--agents ""` passes `[ "$#" -ge 2 ]`, then falls
+      # through to the default below and silently scans EVERY agent. An explicit empty value reads
+      # as "none" to whoever typed it; giving it the widest possible meaning is the worst reading.
+      --agents) [ "$#" -ge 2 ] && [ -n "$2" ] || die "scan: --agents needs a non-empty value"; agents="$2"; shift 2 ;;
       -*) die "scan: unknown option: $1" ;;
       *) [ -z "$root" ] || die "scan: takes exactly one <project-root>"; root="$1"; shift ;;
     esac
@@ -340,6 +372,7 @@ cmd_scan() {
   [ -n "$root" ] || die "scan: needs <project-root>"
   [ -d "$root" ] || die "scan: not a directory: $root"
   [ -n "$agents" ] || agents="claude,codex,gemini"
+  _ad_check_agents "$agents" scan
 
   # Root docs + the manifest + the decision log.
   for f in CLAUDE.md AGENTS.md GEMINI.md; do
@@ -535,10 +568,10 @@ cmd_stack() {
 # applies to a log). A novel credential format will not be caught. Saying so is better than
 # implying a coverage this cannot have.
 cmd_hygiene() {
-  local root="" agents="" a f rel line rule where
+  local root="" agents="" a f rel line rule where igrc
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --agents) [ "$#" -ge 2 ] || die "hygiene: --agents needs a value"; agents="$2"; shift 2 ;;
+      --agents) [ "$#" -ge 2 ] && [ -n "$2" ] || die "hygiene: --agents needs a non-empty value"; agents="$2"; shift 2 ;;
       -*) die "hygiene: unknown option: $1" ;;
       *) [ -z "$root" ] || die "hygiene: takes exactly one <project-root>"; root="$1"; shift ;;
     esac
@@ -546,6 +579,7 @@ cmd_hygiene() {
   [ -n "$root" ] || die "hygiene: needs <project-root>"
   [ -d "$root" ] || die "hygiene: not a directory: $root"
   [ -n "$agents" ] || agents="claude,codex,gemini"
+  _ad_check_agents "$agents" hygiene
 
   # AXIS 1 — harness config vs PRODUCT CODE. Reported so the operator knows the scan stopped at
   # the boundary; `scan` never descended here in the first place. support-workstation's
@@ -565,7 +599,18 @@ cmd_hygiene() {
     # product, so a machine-local absolute path breaks on every other machine and a credential is
     # published. Tracked files only: an untracked local file ships nowhere.
     [ -d "$root/.$a" ] || continue
-    while IFS= read -r rel; do
+    # `-z`, AND A NUL-DELIMITED READ. `git ls-files` applies `core.quotePath` by default, so a
+    # tracked file whose name carries any non-ASCII byte comes back as a C-quoted, escaped string
+    # — `".claude/caf\303\251.md"`. The unquoted form does not exist on disk, `[ -f ]` fails, and
+    # the file is SILENTLY SKIPPED. On this axis that is the worst possible failure: it is the one
+    # that looks for credentials in files that ship to end users, and a skipped file reports
+    # exactly what a clean file reports. Reproduced during self-review with a real non-ASCII
+    # filename; `-z` disables the quoting entirely, which is why it is the fix rather than an
+    # unescaper. Same `read -r -d ''` idiom base/practices/shell.md prescribes for `find -print0`.
+    #
+    # The pipeline puts the loop in a SUBSHELL, which is safe here only because the loop's whole
+    # effect is what it prints — nothing below reads a variable it sets.
+    git -C "$root" ls-files -z ".$a" 2>/dev/null | while IFS= read -r -d '' rel; do
       [ -n "$rel" ] || continue
       f="$root/$rel"
       [ -f "$f" ] || continue
@@ -587,9 +632,7 @@ cmd_hygiene() {
       if grep -qE 'BEGIN [A-Z ]*PRIVATE KEY' "$f" 2>/dev/null; then
         _ad_emit distributable warn "$rel" "contains a PEM private-key header in a TRACKED file — rotate it and move it out of the repo"
       fi
-    done <<EOF
-$(cd "$root" 2>/dev/null && git ls-files ".$a" 2>/dev/null)
-EOF
+    done
 
     # AXIS 3 — statusLine / hook PRECEDENCE. Reported as a fact about layering, never as a verdict
     # about which one wins: that is the harness's resolution order, this file has not verified it,
@@ -608,7 +651,15 @@ EOF
     # reimplementation that got `!` wrong would report the opposite of the truth.
     # `--no-index` so the probe answers for a path that does not exist yet.
     if [ -d "$root/.git" ] || git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
-      if line="$(git -C "$root" check-ignore -v --no-index ".$a/state/implement-issue-active.json" 2>/dev/null)"; then
+      # THE STATUS IS THREE-VALUED, and collapsing it is a fail-OPEN. `check-ignore` exits 0 for
+      # "ignored", 1 for "not ignored", and 128 for an ERROR — a bare repo, a broken index,
+      # permissions. Treating everything non-zero as "not ignored" turns a tooling failure into a
+      # confident claim about the project ("your state dir is exposed"), which is the stale/unproven
+      # assertion base/practices/verify-before-asserting.md forbids and the fail-closed direction
+      # this whole file claims to take. Caught by self-review, on a bare-repo fixture.
+      line="$(git -C "$root" check-ignore -v --no-index ".$a/state/implement-issue-active.json" 2>/dev/null)"
+      igrc=$?
+      if [ "$igrc" -eq 0 ]; then
         # `check-ignore -v` prints `<source>:<line>:<pattern><TAB><pathname>`, and ONLY the
         # <pattern> field may be examined. Matching the whole line is a guard that CANNOT FIRE:
         # the <pathname> column is the path we just asked about, so it always contains
@@ -636,8 +687,13 @@ EOF
           # swallows and nobody ever notices it went untracked-and-invisible.
           *) _ad_emit ignore-risk warn ".$a/state/" "reached only by the BROAD ignore rule '$rule' (at $where), not by a rule that names it — run bin/agent-init so the rule is deliberate" ;;
         esac
-      else
+      elif [ "$igrc" -eq 1 ]; then
         _ad_emit ignore-risk warn ".$a/state/" "is NOT gitignored — /implement-issue writes the untrusted issue body here; run bin/agent-init before adopting"
+      else
+        # Say what could not be established, not what is true. An operator who reads "could not be
+        # determined" goes and looks; one who reads "is NOT gitignored" about a repo that ignores
+        # it perfectly well learns to discount the axis.
+        _ad_emit ignore-risk warn ".$a/state/" "COULD NOT BE DETERMINED — git check-ignore failed (rc $igrc) rather than answering; check this by hand before trusting the rest of this axis"
       fi
     fi
   done <<EOF
@@ -762,10 +818,20 @@ cmd_plan() {
   for verdict in escalate move remove keep; do
     n=0
     for rec in "${records[@]}"; do
+      [ -n "$rec" ] || continue
       IFS="$TAB" read -r v kind adoptpath reason <<< "$rec"
       [ "$v" = "$verdict" ] || continue
       n=$((n + 1))
       [ "$n" -eq 1 ] && printf '## %s\n' "$verdict"
+      # A MALFORMED RECORD IS NAMED, not rendered as blanks. A short record used to print
+      # `1.  (skill) — `, an empty path and an empty reason formatted exactly like a real entry —
+      # so a producer that had started dropping fields looked like a project with a nameless
+      # artifact. That is the silent-guard shape: the failure wearing the output of a success.
+      if [ -z "$adoptpath" ] || [ -z "$reason" ]; then
+        printf '%s. MALFORMED RECORD — expected <verdict>TAB<kind>TAB<path>TAB<reason>, got: %s\n' \
+          "$n" "$(adb_display_value "$rec")"
+        continue
+      fi
       printf '%s. %s (%s) — %s\n' "$n" "$adoptpath" "$kind" "$reason"
     done
     [ "$n" -gt 0 ] && printf '\n'
