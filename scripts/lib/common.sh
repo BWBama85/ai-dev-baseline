@@ -76,6 +76,64 @@ adb_usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }
 # strong as the command that emits its result, so the requirement belongs here, next to it.
 adb_display_value() { printf '%q' "${1:-}"; }
 
+# adb_tsv_field_safe <value> — true (0) iff <value> can be a field in a TAB-separated,
+# newline-terminated record. False (1) iff it carries a raw TAB or NEWLINE.
+#
+# THE FAILURE THIS PREVENTS IS FORGERY, NOT CORRUPTION (#273, #278). A record written as
+# `<key>TAB<value>NL` and read back with awk/`read` does not become malformed when <value>
+# carries a delimiter — it becomes TWO records, the second one entirely attacker-chosen. The
+# reader cannot tell the forged line from a real one, because by then it IS a real one.
+#
+# ONE HOME, AND THE HISTORY IS THE POINT. D41 deliberately kept this predicate private to
+# `cleanup-lib.sh`, on the stated ground that the two obvious adopters in this file —
+# `adb_repo_shape` and `adb_agent_manifest` — declared tab/newline paths unsupported and
+# therefore did not want it: "a shared primitive whose obvious adopters deliberately abstain is
+# worse than a private one." #278 is the decision that spends that premise. `adb_repo_shape` now
+# refuses such paths, so the predicate has two real callers and one home is the rule again
+# (D59). What stays private to `cleanup-lib.sh` is its state-record POLICY — which fields are
+# checked, and what an unserializable one degrades to — never this test.
+#
+# THE DELIMITER SET IS EXACTLY TAB AND NEWLINE, and deliberately not the wider control class.
+# D41 records why the marker-key reader rejects every ASCII control character: there the value is
+# a git ref name, so a control byte additionally guarantees a lookup miss. Here the value is a
+# filesystem path, where every byte except NUL and `/` is legal and only the two delimiters can
+# forge a record. Borrowing the wider grammar would reject paths this format represents perfectly
+# well.
+#
+# LOCALS, NOT GLOBALS. `cleanup-lib.sh` carries file-scope `TAB`/`NL` constants; this file is
+# sourced by every script in the framework, so the same spelling here would publish two
+# single-letter-ish names into every caller's namespace. They are function-local for that reason,
+# not for style. `$'\t'`/`$'\n'` are bash 3.2 ANSI-C quoting, so this parses and runs below the
+# 5.3 floor (D30/D35) — which it must, because this file holds `adb_require_bash`.
+adb_tsv_field_safe() {
+  local tab nl
+  tab=$'\t'; nl=$'\n'
+  case "${1:-}" in
+    *"$tab"*|*"$nl"*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# adb_tsv_field_display <value> — render a value that FAILED the test above onto ONE physical
+# line, so a diagnostic naming the value it just rejected cannot re-open the hole in the reader's
+# own output.
+#
+# THE RESULT IS RE-TESTED rather than assumed, for the reason `_adb_cl_tsv_display` records: a
+# sanitizer's failure mode is silence, so an unchecked encoder that ever let a delimiter through
+# would hand the forged bytes to the very format this exists to protect, and the output would look
+# exactly like a clean one. The fallback is a fixed token — useless to the reader and safe, which
+# is the right trade when the alternative is a forged record.
+#
+# `cleanup-lib.sh`'s `_adb_cl_tsv_display` is NOT a duplicate of this: it substitutes its own
+# `<unrenderable-name>` token because its subject is always a filename. D41 already drew that
+# line — "two fallback contracts justify two functions; they do not justify two encoders" — and
+# the encoder both of them wrap is `adb_display_value`, above.
+adb_tsv_field_display() {
+  local enc
+  enc="$(adb_display_value "${1:-}")"
+  if adb_tsv_field_safe "$enc"; then printf '%s' "$enc"; else printf '<unrenderable-value>'; fi
+}
+
 # --- symlink install / uninstall --------------------------------------------
 
 # Back up an existing path (unless it is already our correct symlink), then symlink.
@@ -1568,27 +1626,77 @@ _adb_has_project_manifest() {
 #                    / or an enclosing repo — a doc higher up may exist but was not scanned.
 #   warning <msg>  a non-fatal problem (e.g. the start dir is unreadable) worth surfacing.
 #
+# ONE DEGRADED STATE, AND IT IS DECLARED RATHER THAN INFERRED (#278, D59). When the start path or
+# its physical resolution cannot be represented in this record format, the output is EXACTLY ONE
+# `warning` record and NOTHING ELSE — no `in_git`, no `root`. The refusal is atomic because the
+# poison is not confined to one field: every fact below is derived from that path, so a partial
+# shape would mean facts computed for a directory the caller never named. This is the same call
+# D41 made for `state-scan`, where the state directory's own path being unserializable is fatal
+# while a single unserializable filename is not.
+#
+# CONSUMERS MUST BRANCH ON `root` BEING EMPTY, and must not read `in_git` as the refusal signal:
+# an absent `in_git` is not `0`, and `0` still means "a real directory that is not a git repo".
+# `bin/agent-init` carries the reference handling.
+#
 # Every path is canonicalized PHYSICALLY (`pwd -P`, resolving symlinks) before comparison, because
 # `git rev-parse --show-toplevel` returns a physical path (on macOS `mktemp` gives /var/… while git
 # reports /private/var/…) — without this, cwd_is_root would mis-compare. The caller's own working
-# directory is never changed (all cd's run in subshells). Paths containing a TAB or newline are
-# unsupported (same assumption as adb_agent_manifest). A superproject's `git ls-files` cannot see
-# docs inside a submodule/gitlink — such nested docs are not enumerated by extra_doc.
+# directory is never changed (all cd's run in subshells).
+#
+# A path containing a TAB or NEWLINE is REFUSED, not emitted (#278, D59). It used to be merely
+# "unsupported" in this comment, which in practice meant the record split and `adb_shape_val`
+# returned a TRUNCATED path — and a truncated path is not a missing answer, it is a DIFFERENT
+# directory that frequently exists (`/w/project<NL>shadow` truncates to `/w/project`, an innocent
+# sibling). `bin/agent-init` uses this value as its write root, so the framework initialized a
+# directory the operator was not in, with no error. See the refusal block below for what is
+# refused atomically and what is suppressed per field.
+#
+# A superproject's `git ls-files` cannot see docs inside a submodule/gitlink — such nested docs are
+# not enumerated by extra_doc.
 # Usage: adb_repo_shape [start_dir]   (start_dir defaults to the current directory)
 adb_repo_shape() {
   local start="${1:-$PWD}" abs root parent parent_root in_git=0 parent_in_git=0 nested_in=""
   local dir depth max=8 doc up truncated rel base mdir
 
+  # THE GIVEN PATH IS CHECKED BEFORE IT IS RESOLVED, because resolution is lossy in exactly the
+  # direction that hides this bug. `$(…)` strips EVERY trailing newline, so a repo literally named
+  # `project<NL>` canonicalizes to `/w/project` — a different directory, and often an existing one
+  # — before a single record is emitted. A check placed after canonicalization inspects the
+  # already-corrupted value, finds it perfectly serializable, and passes.
+  if ! adb_tsv_field_safe "$start"; then
+    printf 'warning\tpath contains a tab or newline, which this record format cannot represent: %s\n' \
+      "$(adb_tsv_field_display "$start")"
+    return 0
+  fi
+
   # Canonicalize the start dir physically; a subshell keeps the caller's cwd intact. `--` guards a
   # leading-dash start (a general primitive may be handed one). An unresolvable start is a
   # `warning`, not a silent empty result.
-  abs="$(cd -- "$start" 2>/dev/null && pwd -P)"
+  #
+  # THE `X` SENTINEL MAKES THE CAPTURE LOSSLESS. `pwd -P` terminates its output with a newline and
+  # command substitution then strips every trailing newline it finds — so a directory whose name
+  # ENDS in a newline is silently indistinguishable from one that does not. Appending a fixed byte
+  # means the only bytes `$(…)` can strip are ones we put there: remove the sentinel, then remove
+  # exactly the ONE newline `pwd` added, and whatever remains is the real name. Without this, the
+  # check below cannot see the very case that motivated it — a safe-looking start resolving,
+  # through a symlink or a trailing newline, onto an unsafe physical path.
+  abs="$(cd -- "$start" 2>/dev/null && pwd -P && printf 'X')"
+  abs="${abs%X}"
+  abs="${abs%$'\n'}"
   if [ -z "$abs" ]; then
     printf 'in_git\t0\n'
     printf 'root\t%s\n' "$start"
     printf 'cwd_is_root\t1\n'
     printf 'parent_in_git\t0\n'
     printf 'warning\tstart directory does not exist or is unreadable: %s\n' "$start"
+    return 0
+  fi
+  # THE RESOLUTION IS CHECKED TOO, and this is a different question from the one above rather than
+  # a belt-and-braces repeat of it: a perfectly safe path can be a symlink whose PHYSICAL target
+  # carries a delimiter, and it is the physical path that gets emitted.
+  if ! adb_tsv_field_safe "$abs"; then
+    printf 'warning\tpath resolves to a physical location containing a tab or newline, which this record format cannot represent: %s\n' \
+      "$(adb_tsv_field_display "$abs")"
     return 0
   fi
   start="$abs"
@@ -1639,13 +1747,31 @@ adb_repo_shape() {
   # extra_doc: tracked root docs strictly below root that sit beside a project manifest. `-z`
   # output + shell filtering avoids an ambiguous CLAUDE.md pathspec; only .md is enumerated for
   # speed. Only printf's inside the pipe's subshell, so no state needs to survive it.
+  #
+  # THIS IS THE ONE PATH-BEARING KEY THAT CAN BE UNSAFE UNDER A PERFECTLY SAFE ROOT, which is why
+  # it is suppressed PER FIELD rather than covered by the atomic refusal above. Every other path
+  # emitted here — `root`, `nested_in`, `foreign_doc` — is `root` itself or one of its ancestors,
+  # and a path-prefix of a delimiter-free path cannot contain a delimiter. `rel` is different in
+  # kind: it comes from `git ls-files -z`, so it is an arbitrary TRACKED filename, and git permits
+  # a newline in one. A repo at a clean path can therefore track `packages/we<NL>ird/CLAUDE.md` and
+  # forge a record from inside an otherwise sound shape.
+  #
+  # DEGRADED, AND THE DEGRADATION IS VISIBLE: the offending doc is dropped from `extra_doc` and
+  # announced as a `warning`, so a consumer sees "one doc could not be reported" instead of a
+  # silently shorter list. Dropping it silently is the failure mode this whole issue is about.
   if [ "$in_git" -eq 1 ]; then
     git -C "$root" ls-files -z -- '*.md' 2>/dev/null | while IFS= read -r -d '' rel; do
       base="${rel##*/}"
       case "$base" in CLAUDE.md|AGENTS.md|GEMINI.md) : ;; *) continue ;; esac
       case "$rel" in */*) : ;; *) continue ;; esac   # strictly below root (has a path separator)
       mdir="$root/${rel%/*}"
-      _adb_has_project_manifest "$mdir" && printf 'extra_doc\t%s\n' "$root/$rel"
+      _adb_has_project_manifest "$mdir" || continue
+      if adb_tsv_field_safe "$rel"; then
+        printf 'extra_doc\t%s\n' "$root/$rel"
+      else
+        printf 'warning\tskipped an in-tree root doc whose path contains a tab or newline: %s\n' \
+          "$(adb_tsv_field_display "$root/$rel")"
+      fi
     done
   fi
   return 0

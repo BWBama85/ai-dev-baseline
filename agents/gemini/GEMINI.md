@@ -612,6 +612,17 @@ The shared `adb_repo_shape` primitive (`scripts/lib/common.sh`) reports these fa
 so tooling can tolerate the shape from one home rather than each re-deriving it;
 `bin/agent-init` consumes it.
 
+**The one shape that IS refused rather than surfaced: a path the reporter cannot
+name.** "Don't hard-fail" above is about layouts that are merely *awkward* — nested,
+untracked-parent, layered — where the root is known and only the boundary is in
+question. A directory whose name contains a **tab or newline** is a different problem:
+those are the record delimiters `adb_repo_shape` reports through, so the root does not
+arrive truncated-and-obviously-broken, it arrives as a **shorter path that frequently
+exists** — `/w/project<NL>shadow` reads back as `/w/project`, a real sibling. There is
+no "surface it and proceed" for that, because proceeding means operating on the wrong
+root, which is the thing this whole section forbids. So the primitive emits a `warning`
+and *no* facts, and `bin/agent-init` stops (#278).
+
 ## Why
 
 A whole session was once lost because the requested issues lived in a different

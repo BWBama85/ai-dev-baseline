@@ -80,13 +80,13 @@ usage() { adb_usage "$0"; }
 die() { printf 'cleanup-lib: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
-# A literal newline. NOT `NL="$(printf '\n')"`, which is the EMPTY STRING — command substitution
-# strips trailing newlines, so that spelling turns every `case "$x" in *"$NL"*)` below into a
-# substring test against "" that matches everything. Same trap check-cleanup.sh already documents
-# for the workflow's whole-line `grep -Fxq`. The literal-in-single-quotes form is the one that
-# works, and it is the idiom scripts/lib/project-gates.sh already uses.
-NL='
-'
+# The matching `NL` constant moved to `adb_tsv_field_safe` in common.sh with the predicate that was
+# its only remaining reader (#278, D59). The trap it carried is worth keeping written down, because
+# the shared function had to avoid it too: NOT `NL="$(printf '\n')"`, which is the EMPTY STRING —
+# command substitution strips trailing newlines, so that spelling turns `case "$x" in *"$NL"*)`
+# into a substring test against "" that matches everything. `$'\n'` (there) and the
+# literal-in-single-quotes form (the idiom scripts/lib/project-gates.sh uses) are the ones that
+# work. `TAB` stays: it is still this file's `IFS` for reading back its own records.
 
 # --- the record format's own safety (#273) ------------------------------------------------------
 # `state-scan` serializes one record per file as `<kind>TAB<path>TAB<key>NL`, and the consumer
@@ -104,7 +104,15 @@ NL='
 #
 # The fix is at the record format rather than per-arm, because the defect is in the serialization
 # and not in which `case` arm matched: the carrier above was classified `other`, the harmless kind.
-_adb_cl_tsv_safe() { case "$1" in *"$TAB"*|*"$NL"*) return 1 ;; *) return 0 ;; esac; }
+#
+# THE TEST ITSELF NOW LIVES IN common.sh, which this file already sources (#278, D59). D41 kept it
+# private here on the ground that the two obvious adopters — `adb_repo_shape` and
+# `adb_agent_manifest` — had declared such paths unsupported and did not want it. #278 is the
+# decision that changed that for `adb_repo_shape`, which now refuses them, so a second copy of the
+# predicate would be exactly the duplication this repo's "source the shared primitive, never copy
+# it" rule exists to prevent. What remains local is the POLICY, not the test: which fields this
+# library checks, and that an unserializable one becomes an `unsafe` record rather than a refusal.
+_adb_cl_tsv_safe() { adb_tsv_field_safe "$1"; }
 
 # Render a value that FAILED the test above onto ONE physical line, so a diagnostic naming it
 # cannot re-open the hole in the operator's output. `%q` is the right tool and not a hand-rolled

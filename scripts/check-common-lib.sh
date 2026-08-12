@@ -393,6 +393,123 @@ sh6="$(adb_repo_shape "$work/no/such/path")"
 eq "$(adb_shape_val "$sh6" in_git)" "0"     "shape: nonexistent start is not in_git"
 has "$(adb_shape_all "$sh6" warning)" "unreadable" "shape: nonexistent start emits a warning"
 
+# --- adb_tsv_field_safe / adb_tsv_field_display (#278) -----------------------
+# The shared record-field predicate D41 kept private to cleanup-lib.sh until adb_repo_shape
+# adopted it. BUILD THE BAD VALUES WITH $'…' LITERALS, never `"$(printf '\n')"` — command
+# substitution strips trailing newlines, so that spelling yields the EMPTY STRING and turns the
+# whole test into a substring match against "" that passes for every input. A predicate that
+# cannot fail is the exact shape self-review.md exists to catch.
+yes "$( adb_tsv_field_safe "/plain/path"; echo $? )"        "tsv-safe: an ordinary path is serializable"
+yes "$( adb_tsv_field_safe ""; echo $? )"                   "tsv-safe: the empty string is serializable"
+no  "$( adb_tsv_field_safe "a${ printf '\t'; }b"; echo $? )" "tsv-safe: a TAB is refused"
+# The predicate tests BYTES, not spellings: the five characters `$ ' \ n '` are not a newline, and
+# a value carrying them is perfectly serializable. This is also the shape adb_display_value emits,
+# so reading it as "unsafe" would make the renderer's output unrenderable.
+yes "$( adb_tsv_field_safe "a\$'\\n'b"; echo $? )"          "tsv-safe: the literal characters \$'\\n' are not a newline byte"
+# The three real carriers, spelled as actual bytes.
+tsv_tab="a	b"                                  # a real TAB between a and b
+tsv_mid="a
+b"                                             # a real NEWLINE between a and b
+tsv_trail="a
+"                                              # a TRAILING newline — the case $(…) erases
+no "$( adb_tsv_field_safe "$tsv_tab"; echo $? )"   "tsv-safe: a real tab byte is refused"
+no "$( adb_tsv_field_safe "$tsv_mid"; echo $? )"   "tsv-safe: a real internal newline is refused"
+no "$( adb_tsv_field_safe "$tsv_trail"; echo $? )" "tsv-safe: a real TRAILING newline is refused"
+# The renderer must put a refused value on ONE physical line, or a diagnostic naming it re-opens
+# the hole. Assert the line COUNT, not just the absence of a substring.
+eq "$(adb_tsv_field_display "$tsv_mid" | wc -l | tr -d ' ')" "0" "tsv-display: a newline value renders with no newline byte"
+eq "$(adb_tsv_field_display "$tsv_tab" | wc -l | tr -d ' ')" "0" "tsv-display: a tab value renders on one line"
+yes "$( adb_tsv_field_safe "$(adb_tsv_field_display "$tsv_mid")"; echo $? )" "tsv-display: its own output passes the predicate"
+
+# (7) A path this record format cannot represent is REFUSED, not truncated (#278, D59).
+#
+# The defect: `root<TAB>/w/project<NL>shadow` splits, and `adb_shape_val … root` returns
+# `/w/project` — not a missing answer but a DIFFERENT directory that exists. bin/agent-init used
+# that value as its write root. Each case below therefore asserts BOTH halves: no `root` is
+# emitted, AND nothing was silently substituted for it.
+#
+# Every unsafe name is built with a $'…' literal for the reason spelled out above.
+uns="$work/uns"; mkdir -p "$uns"
+sib="$uns/project"; mkdir -p "$sib"; git init -q "$sib"     # the innocent sibling a truncation lands on
+
+# (7a) internal newline — the issue's own reproduction.
+nl_repo="$uns/project"$'\nshadow'; mkdir -p "$nl_repo"; git init -q "$nl_repo"
+sh7a="$(adb_repo_shape "$nl_repo")"
+eq "$(adb_shape_val "$sh7a" root)"   ""  "shape/unsafe: a newline path emits NO root"
+eq "$(adb_shape_val "$sh7a" in_git)" ""  "shape/unsafe: a newline path emits no in_git either (atomic refusal)"
+has "$(adb_shape_all "$sh7a" warning)" "cannot represent" "shape/unsafe: the refusal is surfaced as a warning"
+# The whole point: the parsed root must not become the sibling.
+hasnt "$(adb_shape_val "$sh7a" root)" "$sib" "shape/unsafe: the truncated sibling is never returned as root"
+# ATOMIC means exactly one record. A count, because "the root key is absent" would also be true of
+# a shape that emitted six other facts about a directory the caller never named.
+eq "$(printf '%s\n' "$sh7a" | wc -l | tr -d ' ')" "1" "shape/unsafe: refusal emits exactly one record"
+eq "$(printf '%s\n' "$sh7a" | cut -f1)" "warning"     "shape/unsafe: and that record is the warning"
+
+# (7b) TAB — the issue names only newlines, but the record has two delimiters.
+tab_repo="$uns/tabbed"$'\tx'; mkdir -p "$tab_repo"; git init -q "$tab_repo"
+sh7b="$(adb_repo_shape "$tab_repo")"
+eq "$(adb_shape_val "$sh7b" root)" "" "shape/unsafe: a TAB path emits no root"
+has "$(adb_shape_all "$sh7b" warning)" "cannot represent" "shape/unsafe: a TAB path is refused too"
+
+# (7c) TRAILING newline — the case a post-canonicalization check CANNOT see, because
+# `abs="$(cd … && pwd -P)"` has already erased the byte by then. Without the sentinel-preserving
+# capture in adb_repo_shape this repo resolves to `$sib` and the shape reports a clean, wrong root.
+tr_repo="$uns/project"$'\n'; mkdir -p "$tr_repo"; git init -q "$tr_repo"
+sh7c="$(adb_repo_shape "$tr_repo")"
+eq "$(adb_shape_val "$sh7c" root)" "" "shape/unsafe: a TRAILING-newline path emits no root"
+hasnt "$(adb_shape_val "$sh7c" root)" "$sib" "shape/unsafe: a trailing newline does not resolve to the sibling"
+
+# (7d) A SAFE-named symlink whose PHYSICAL target is unsafe. The pre-resolution check passes here
+# by construction, so this is what proves the second, post-resolution check is load-bearing.
+ln -s "$nl_repo" "$uns/safe-link"
+sh7d="$(adb_repo_shape "$uns/safe-link")"
+eq "$(adb_shape_val "$sh7d" root)" "" "shape/unsafe: a safe symlink onto an unsafe physical path emits no root"
+has "$(adb_shape_all "$sh7d" warning)" "resolves to a physical location" "shape/unsafe: and says it was the RESOLUTION that failed"
+
+# (7f) The case that makes the SENTINEL capture load-bearing, and the only one that does. A safe
+# start passes the first check; its physical target ends in a newline, which `$(cd … && pwd -P)`
+# strips — so a plain capture yields `$sib`, the second check finds it perfectly serializable, and
+# the shape reports a clean root for a directory nobody named. Every other unsafe case is caught by
+# one of the two checks whether or not the capture preserves trailing bytes, so without this
+# assertion the `printf 'X'` sentinel could be deleted and the suite would stay green.
+ln -s "$tr_repo" "$uns/trail-link"
+sh7f="$(adb_repo_shape "$uns/trail-link")"
+eq "$(adb_shape_val "$sh7f" root)" "" "shape/unsafe: a safe symlink onto a TRAILING-newline target emits no root"
+hasnt "$(adb_shape_val "$sh7f" root)" "$sib" "shape/unsafe: and does not silently resolve to the sibling"
+
+# (7g) An unsafe path that does NOT EXIST. This is the case the pre-resolution check alone
+# catches, and it is why that check cannot be folded into the post-resolution one: a nonexistent
+# start never canonicalizes, so it falls through to the unreadable-start branch — which emits
+# `root<TAB>$start` and a warning naming `$start`, both RAW. A start carrying `<NL>in_git<TAB>1`
+# therefore FORGES two records on the way out of the very branch that exists to report an unknown.
+# Verified by mutation: disabling the pre-resolution check turns this case red and nothing else.
+ghost="$work/ghost"$'\nin_git\t1'
+sh7g="$(adb_repo_shape "$ghost")"
+eq "$(printf '%s\n' "$sh7g" | wc -l | tr -d ' ')" "1" "shape/unsafe: an unsafe NONEXISTENT path emits exactly one record"
+eq "$(printf '%s\n' "$sh7g" | cut -f1)" "warning" "shape/unsafe: and that record is the warning, not a raw root"
+eq "$(adb_shape_val "$sh7g" root)" "" "shape/unsafe: an unsafe nonexistent path emits no root"
+# The forgery this prevents, asserted directly: the injected `in_git<TAB>1` must not appear at all.
+eq "$(adb_shape_all "$sh7g" in_git | wc -l | tr -d ' ')" "0" "shape/unsafe: the injected in_git record is never emitted"
+
+# (7e) An unsafe tracked doc BELOW a perfectly safe root is suppressed per FIELD, not by refusing
+# the whole shape — `rel` comes from `git ls-files`, so it is the one path-bearing value that is
+# not a prefix of root. The good sibling doc must survive, or the fix would have cost a real fact.
+xd="$work/xdoc"; mkdir -p "$xd"; git init -q "$xd"
+mkdir -p "$xd/packages/good"; printf '{}\n' > "$xd/packages/good/package.json"; printf 'g\n' > "$xd/packages/good/CLAUDE.md"
+xd_bad="$xd/packages/we"$'\nird'; mkdir -p "$xd_bad"
+printf '{}\n' > "$xd_bad/package.json"; printf 'p\n' > "$xd_bad/CLAUDE.md"
+git -C "$xd" add -A
+sh7e="$(adb_repo_shape "$xd")"
+eq  "$(adb_shape_val "$sh7e" root)" "${ canon "$xd"; }" "shape/unsafe: a safe root with an unsafe doc below it still resolves"
+has "$(adb_shape_all "$sh7e" extra_doc)" "packages/good/CLAUDE.md" "shape/unsafe: the well-named extra_doc survives"
+hasnt "$(adb_shape_all "$sh7e" extra_doc)" "ird/CLAUDE.md" "shape/unsafe: the unserializable extra_doc is not emitted"
+has "$(adb_shape_all "$sh7e" warning)" "skipped an in-tree root doc" "shape/unsafe: dropping it is announced, never silent"
+# No forged records: every line must carry a key from the documented schema. A forged line would
+# arrive with an attacker-chosen key, so counting UNKNOWN keys is the assertion that catches it.
+eq "$(printf '%s\n' "$sh7e" | cut -f1 \
+      | grep -Evc '^(in_git|root|cwd_is_root|parent_in_git|nested_in|foreign_doc|extra_doc|scan_truncated|warning)$')" \
+   "0" "shape/unsafe: no record carries a key outside the schema (nothing was forged)"
+
 # --- adb_branch_sync_state ---------------------------------------------------
 # Drive every state with a LOCAL bare "origin" (file://, no network): one working
 # clone plus a second clone that advances origin, so behind/ahead/diverged are real.

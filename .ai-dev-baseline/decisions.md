@@ -4583,3 +4583,110 @@ limit: none of them is sufficient alone.
              unconditionally, so the guidance added to the prose above it was never reached — the
              emission now classifies first, and may only SOFTEN the verdict, never harden it.
 - baseline-issue: n/a — this repo IS the baseline; #300 is the tracking issue.
+
+## D59 — `adb_repo_shape` REFUSES a path it cannot represent, and D41's private validator is promoted because its stated premise is spent
+- date:      2026-08-12
+- category:  project-delta
+- unknown:   #278. `adb_repo_shape` emits `<key>TAB<value>` with the path unescaped and
+             `adb_shape_val` reads it with `awk -F'\t' '$1==k{print $2; exit}'`, so a directory
+             name containing a delimiter splits the record. The comment above the function called
+             such paths "unsupported", which is a declaration, not a behaviour — and the actual
+             behaviour was not "unsupported", it was **a different, existing directory**.
+             `bin/agent-init` uses that value as its write root. The issue asked which of three
+             options to take (refuse / escape / accept-and-declare) and required the answer to be
+             recorded rather than assumed, because D41 had explicitly deferred it.
+- decision:  **Refuse — option 1 — in four parts, plus one promotion.**
+             1. **The producer refuses ATOMICALLY when the root is unrepresentable**: exactly one
+                `warning` record and nothing else — no `in_git`, no `root`.
+             2. **The check runs BEFORE canonicalization as well as after**, and the capture in
+                between is made lossless with an `X` sentinel.
+             3. **`extra_doc` is suppressed PER FIELD**, not atomically, and the drop is announced.
+             4. **`bin/agent-init` refuses an absent `root` explicitly**, before the `in_git` test.
+             5. **`_adb_cl_tsv_safe` is promoted to `adb_tsv_field_safe` in `common.sh`** (with
+                `adb_tsv_field_display` beside it); `cleanup-lib.sh` keeps its policy and delegates
+                the test.
+- placement: `scripts/lib/common.sh` (`adb_tsv_field_safe`, `adb_tsv_field_display`,
+             `adb_repo_shape`); `scripts/lib/cleanup-lib.sh` (`_adb_cl_tsv_safe` delegates, its
+             now-unread `NL` constant removed); `bin/agent-init`; `base/practices/repo-scope.md`;
+             pinned in `scripts/check-common-lib.sh` (7a-7g) and `scripts/check-agent-init.sh` (7).
+- reason:    **"Unsupported" was never the observed behaviour, and that is the whole finding.** A
+             declared boundary is honest when crossing it produces an error. Here crossing it
+             produced a confident wrong answer: `/w/project<NL>shadow` reads back as `/w/project`,
+             which in the reproduction is not a fiction but an innocent sibling repository.
+             Measured on the pre-fix tree: `agent-init` run inside the unsafe repo exited **0**,
+             printed "wrote agents.toml", and left `agents.toml` plus three `.gitignore` rules in
+             a repository the operator had never named. A boundary whose violation is silent and
+             off-target is not a boundary; option 3 (declare it harder) was rejected for that
+             reason alone.
+
+             **Escaping (option 2) was rejected on blast radius, not on taste.** Every
+             `adb_shape_val`/`adb_shape_all` consumer would have to unescape, and the schema is
+             public to any adopting repo's tooling. The value of a represented tab/newline path is
+             hypothetical; the cost is a decoding contract at every call site forever.
+
+             **The refusal is ATOMIC for the root and PER-FIELD for `extra_doc`, and the split is
+             structural rather than a compromise.** Every other path emitted — `root`, `nested_in`,
+             `foreign_doc` — is `root` itself or one of its ancestors, and a path-prefix of a
+             delimiter-free path cannot contain a delimiter, so one check at the root covers them
+             all. `extra_doc` is the exception in kind: its `rel` comes from `git ls-files`, an
+             arbitrary tracked filename, and git permits a newline in one. A repo at a clean path
+             can therefore track `packages/we<NL>ird/CLAUDE.md` and forge a record from inside an
+             otherwise sound shape — reproduced before the fix. Refusing the whole shape for one
+             bad doc would delete real facts about a healthy repo; emitting it would forge. Drop
+             the doc, say so. Same call D41 made: the state directory is fatal, one filename is not.
+
+             **The pre-canonicalization check is NOT redundant with the post one, and a mutation
+             test is what settled it.** Disabling it left every ordinary case still caught, because
+             the sentinel-preserved capture keeps the delimiter visible in `abs`. What it uniquely
+             guards is the path that does not exist: a nonexistent start never canonicalizes, so it
+             falls into the unreadable-start branch, which emits `root<TAB>$start` and a warning
+             naming `$start` — both RAW. A start carrying `<NL>in_git<TAB>1` forges two records on
+             the way out of the branch whose entire job is to report an unknown. That case had no
+             test until the mutation exposed the gap; it has four now.
+
+             **The sentinel is load-bearing for exactly one case, which is why it needed its own.**
+             `$(cd -- "$start" && pwd -P)` strips every trailing newline, so a directory whose name
+             ENDS in one canonicalizes to a different path before any check can see it — and the
+             post-resolution check then finds that path perfectly serializable. A safe-named symlink
+             onto such a directory is the only input where the sentinel decides the outcome;
+             removing it turns that assertion, and only that one, red.
+
+             **`agent-init`'s guard is explicit because the fallback that appears to cover it is an
+             accident of the interpreter.** With no `root` emitted, `ROOT` is empty and the next
+             statement is `cd "$ROOT"`. On bash 5.x that fails ("null directory"); on bash 3.2 —
+             still `/bin/bash` on every macOS — it **succeeds and stays put**, which would write
+             `agents.toml` into whatever directory the operator was standing in. This project pins
+             a 5.3 floor, so today the fallback does refuse; it refuses for a reason unrelated to
+             the check it is standing in for, with an empty path in its message. The mutation
+             confirms the distinction rather than assuming it: deleting the explicit guard leaves
+             the exit-status assertion GREEN and turns the three diagnostic assertions red.
+             It is checked BEFORE `in_git` because an absent `in_git` is not `0`: the older ordering
+             would have reported "not inside a git repo" about a perfectly good git repo, sending
+             the operator to run `git init` in a repository that has one.
+
+             **D41's private validator is promoted, and this is a reversal with a stated trigger
+             rather than a drift.** D41 kept `_adb_cl_tsv_safe` out of `common.sh` on one explicit
+             ground: the two obvious adopters, `adb_repo_shape` and `adb_agent_manifest`, declared
+             such paths unsupported and therefore did not want it — "a shared primitive whose
+             obvious adopters deliberately abstain is worse than a private one." #278 is the
+             decision that makes `adb_repo_shape` stop abstaining. With two real callers, a second
+             copy would be exactly what this repo's "source the shared primitive, never copy it"
+             rule forbids. What did NOT move is the policy: which fields `cleanup-lib.sh` checks,
+             and that an unserializable one becomes an `unsafe` record rather than a refusal, stay
+             local to it. The delimiter set also stays narrow — TAB and NEWLINE, not D41's wider
+             ASCII-control class, because that wider class is justified there by `git
+             check-ref-format` rejecting control characters in a *ref name*; a filesystem path
+             legally contains every byte but NUL and `/`, so only the two delimiters can forge.
+
+             **`adb_agent_manifest` is deliberately NOT fixed here, and that is a scope decision
+             with its own reason.** It has the same shape, but it is a producer whose consumers
+             parse in three different ways (`adb_link_manifest`, `adb_unlink_manifest`, and `cut`
+             readers in `bin/baseline`), and the independent gap-analysis pass reproduced a
+             newline-bearing home path where `adb_link_manifest` returns non-zero only AFTER moving
+             a real directory into backup and replacing it with a symlink — i.e. a partial write,
+             not a clean refusal. Fixing it properly means atomic refusal plus status propagation
+             through `install.sh`, `uninstall.sh`, every adapter and `bin/baseline`, each of which
+             currently swallows the status in a heredoc command substitution. Folding that into
+             this PR would decide a second cross-library question silently, which is the exact
+             mistake D41 avoided by deferring THIS one. Filed separately (#324).
+- baseline-issue: n/a — this repo IS the baseline; #278 is the tracking issue.

@@ -227,4 +227,69 @@ for _cfg in 'review       = ["codex"]' 'review       = ["claude"]' 'review      
   eq "${ run_rung "$rr" "$RBIN:$BARE" | grep -c '^Review rung:'; }" "1" "rung: exactly one rung line for $_cfg"
 done
 
+# --- (7) a repo path this record format cannot represent is REFUSED, not written into (#278) -----
+#
+# THE FAILURE THIS PINS IS SILENT AND OFF-TARGET. `adb_repo_shape` emitted `root<TAB><path>` with
+# the path unescaped, so a directory named `project<NL>shadow` split the record and
+# `adb_shape_val … root` returned `/…/project` — a DIFFERENT directory that, in the reproduction,
+# exists and is itself a git repo. agent-init `cd`s to that value, so it initialized the innocent
+# sibling: measured before the fix, it exited 0, printed "wrote agents.toml", and left agents.toml
+# plus three .gitignore rules in a repository the operator had never mentioned.
+#
+# So the assertions are in two halves, and the second is the one that matters: a non-zero exit, AND
+# that NEITHER directory was touched. Checking only the exit status would pass an implementation
+# that refused loudly after already writing.
+unsafe_parent="$work/unsafe"; mkdir -p "$unsafe_parent"
+sibling="$unsafe_parent/project"; mkdir -p "$sibling"; git init -q "$sibling"
+printf 'do-not-touch\n' > "$sibling/SENTINEL"
+# $'…' literal, never "$(printf '\n')" — command substitution strips the trailing newline and
+# would silently build a perfectly ordinary directory name, leaving this whole case vacuous.
+unsafe_repo="$unsafe_parent/project"$'\nshadow'; mkdir -p "$unsafe_repo"; git init -q "$unsafe_repo"
+
+out="${ run_init "$unsafe_repo"; }"; rc=$?
+no "$rc" "unsafe: agent-init refuses a repo path containing a newline"
+has "$out" "cannot be represented" "unsafe: it says WHY it refused"
+has "$out" "TAB or a NEWLINE"      "unsafe: and names the unsupported characters"
+# The reason must reach the operator BEFORE the refusal, or the refusal is unexplained.
+has "$out" "warning:" "unsafe: the shape's warning is surfaced too"
+# It must NOT claim the repo is not a git repo — it is one. That was the message the in_git check
+# would have produced had the missing-root branch not been checked first, and it sends the operator
+# to run `git init` in a repository that already has one.
+hasnt "$out" "not inside a git repo" "unsafe: the diagnostic is not the misleading in_git one"
+
+# NOTHING WRITTEN — to the sibling the truncation resolves to...
+if [ -f "$sibling/agents.toml" ]; then
+  bad "unsafe: agents.toml was written into the SIBLING repo the truncated root names"
+else ok; fi
+if [ -f "$sibling/.gitignore" ]; then
+  bad "unsafe: .gitignore was written into the SIBLING repo the truncated root names"
+else ok; fi
+eq "$(cat "$sibling/SENTINEL")" "do-not-touch" "unsafe: the sibling's contents are untouched"
+# ...nor to the real repo, which agent-init cannot manage either.
+if [ -f "$unsafe_repo/agents.toml" ]; then
+  bad "unsafe: agents.toml was written into a repo whose path cannot be represented"
+else ok; fi
+
+# A TAB carries the same defect — the record has two delimiters, and the issue named only one.
+tab_repo="$unsafe_parent/tabbed"$'\tx'; mkdir -p "$tab_repo"; git init -q "$tab_repo"
+out="${ run_init "$tab_repo"; }"; rc=$?
+no "$rc" "unsafe: agent-init refuses a repo path containing a TAB"
+if [ -f "$tab_repo/agents.toml" ]; then bad "unsafe: wrote into a TAB-named repo"; else ok; fi
+
+# A TRAILING newline is the case a post-canonicalization check cannot see: `$(cd … && pwd -P)`
+# erases the byte, so the shape would resolve — cleanly and wrongly — to `$sibling`.
+trail_repo="$unsafe_parent/project"$'\n'; mkdir -p "$trail_repo"; git init -q "$trail_repo"
+out="${ run_init "$trail_repo"; }"; rc=$?
+no "$rc" "unsafe: agent-init refuses a TRAILING-newline repo path"
+if [ -f "$sibling/agents.toml" ]; then
+  bad "unsafe: a trailing newline resolved onto the sibling and initialized it"
+else ok; fi
+
+# A safe repo NEXT TO the unsafe ones still initializes normally — the refusal must be about the
+# path, not a blanket failure that would break every install.
+ok_repo="$unsafe_parent/fine"; mkdir -p "$ok_repo"; git init -q "$ok_repo"
+out="${ run_init "$ok_repo"; }"; rc=$?
+yes "$rc" "unsafe: a well-named neighbour still initializes"
+if [ -f "$ok_repo/agents.toml" ]; then ok; else bad "unsafe: the well-named neighbour got no agents.toml"; fi
+
 check_summary "agent-init"
