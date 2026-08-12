@@ -3,7 +3,7 @@
 # Source: base/workflows/adopt.md · Regenerate: scripts/build.sh
 # Edits here are overwritten on the next build.
 name: adopt
-description: Bring the baseline into an EXISTING project. Scans the config it already has, classifies every artifact keep / remove / move / escalate with evidence and parity caveats, infers an agents.toml from the project's own signals, flags four adoption-hygiene risks, and emits an ordered migration plan. Read-only by default — it never deletes, moves, or edits an existing file.
+description: Bring the baseline into an EXISTING project. Scans the config it already has, classifies every artifact keep / remove / move / escalate with evidence and parity caveats, infers an agents.toml from the project's own signals, flags four adoption-hygiene risks, and emits an ordered migration plan. It never deletes, moves, or edits a file in the project it scans; with --apply it may create only agents.toml and the upstream pin, and only when they do not already exist.
 argument-hint: "[path] [--agents claude,codex] [--apply]"
 allowed-tools: Bash, Read
 user-invocable: true
@@ -27,10 +27,18 @@ Argument: `$ARGUMENTS` — an optional path (defaults to the current repo), an o
 
 ## The boundary — read this before anything else
 
-**This workflow never deletes, moves, or edits a file that already exists.** Not with `--apply`,
-not with confirmation, not ever. `remove` and `move` are words in a plan a *human* executes.
+**This workflow never deletes, moves, or edits a file in the project it is scanning.** Not with
+`--apply`, not with confirmation, not ever. `remove` and `move` are words in a plan a *human*
+executes.
 
-The only writes it can perform are the **two artifacts that do not yet exist**:
+**Two things sit outside that sentence, and both are named rather than implied.** It writes freely
+inside its own `.claude/state` — that is per-run scratch, gitignored, regenerated on every run, and
+belongs to the agent rather than to the project; every workflow here does the same. And a
+`--apply` run may create the two files below. The boundary is about the **scanned project's own
+files**, and stating it as "never edits any file that already exists" was simply false, because the
+scratch files are overwritten on every run.
+
+The only writes it can perform **in the project** are the **two artifacts that do not yet exist**:
 
 | It may create | Only when |
 |---|---|
@@ -72,16 +80,20 @@ consumes it; adoption needs the same facts and must not re-derive them.
 
 ```bash
 # ADB-SNIPPET: resolve
-# The shape primitive is the ONE home for this resolution (base/practices/repo-scope.md).
+# THROUGH bash "$HOME/.claude/scripts/lib/adopt-lib.sh", never by sourcing an agent's common.sh directly. This skill renders for
+# every agent, and a fenced block naming `$HOME/.claude/...` works on Claude and breaks the Codex
+# and Gemini renders on any machine carrying only their own payload. The library's `resolve` /
+# `shape-field` subcommands are thin pass-throughs to `adb_repo_shape` — still the ONE home for the
+# resolution (base/practices/repo-scope.md) — and `bash "$HOME/.claude/scripts/lib/adopt-lib.sh"` is already mapped per agent.
+#
 # It REFUSES a path it cannot represent — a directory name containing a tab or newline — by
 # emitting a warning and NO facts, because the alternative is a silently truncated root that
 # frequently names a real sibling directory. An absent root is therefore a STOP, not a default.
-shape="$(bash -c '. "$HOME/.claude/scripts/lib/common.sh"; adb_repo_shape "$1"' _ "${TARGET:-$PWD}")"
-bash -c '. "$HOME/.claude/scripts/lib/common.sh"; adb_shape_all "$1" warning' _ "$shape" | while IFS= read -r m
-do
+SHAPE="$(bash "$HOME/.claude/scripts/lib/adopt-lib.sh" resolve "${TARGET:-$PWD}")"
+printf '%s' "$SHAPE" | bash "$HOME/.claude/scripts/lib/adopt-lib.sh" shape-field warning | while IFS= read -r m; do
   [ -n "$m" ] && echo "warning: $m" >&2
 done
-PROJECT="$(bash -c '. "$HOME/.claude/scripts/lib/common.sh"; adb_shape_val "$1" root' _ "$shape")"
+PROJECT="$(printf '%s' "$SHAPE" | bash "$HOME/.claude/scripts/lib/adopt-lib.sh" shape-field root)"
 [ -n "$PROJECT" ] || { echo "STOP: this path cannot be represented — /adopt will not guess a root"; exit 1; }
 ```
 
@@ -97,9 +109,18 @@ a second list that would drift the first time a skill was added.
 
 ```bash
 # ADB-SNIPPET: shipped
-BASELINE="$(bash -c '. "$HOME/.claude/scripts/lib/common.sh"; adb_install_source')" \
-  || { echo "STOP: no installed baseline found — /adopt compares against what is installed"; exit 1; }
+# Same agent-neutrality rule as step 1: `baseline` wraps `adb_install_source`, so no agent's path
+# is named here. It FAILS LOUD when no install is found rather than degrading — with nothing to
+# compare against, every collision test would answer "no" and the whole inventory would come back
+# `keep`, which is indistinguishable from a genuinely clean project.
+BASELINE="$(bash "$HOME/.claude/scripts/lib/adopt-lib.sh" baseline)" || exit 1
 bash "$HOME/.claude/scripts/lib/adopt-lib.sh" shipped "$BASELINE" > ".claude/state/adopt-shipped.tsv"
+# COUNT IT, and refuse an empty set. This is the "everything classifies as keep" failure mode named
+# under Failure modes below, caught at its source instead of inferred from a suspicious plan.
+SHIPPED_N="$(grep -c . ".claude/state/adopt-shipped.tsv" || true)"
+[ "${SHIPPED_N:-0}" -gt 0 ] \
+  || { echo "STOP: the baseline at $BASELINE reported ZERO shipped artifacts — every collision test would answer 'no' and the inventory would be a wall of false 'keep'"; exit 1; }
+echo "baseline artifacts: $SHIPPED_N"
 ```
 
 ### 3. Scan the project's adoption surface
@@ -110,8 +131,13 @@ mkdir -p ".claude/state"
 bash "$HOME/.claude/scripts/lib/adopt-lib.sh" scan "$PROJECT" ${AGENTS:+--agents "$AGENTS"} > ".claude/state/adopt-scan.tsv"
 ```
 
-Records are `<kind>TAB<relpath>TAB<name>`. A `warning` record means a filename carried a tab or a
+Records are `<kind>TAB<relpath>TAB<name>TAB<agent>`, where `agent` is `-` for an agent-neutral
+artifact (a root doc, `agents.toml`). A `warning` record means a filename carried a tab or a
 newline and could not be represented — report it and move on; the rest of the inventory is intact.
+
+An `other` record is a file under an agent directory that none of the modelled kinds recognise.
+It classifies to `escalate` on purpose: an artifact the baseline does not model must reach
+`handling-the-unknown.md`'s protocol rather than being silently left out of the inventory.
 
 **UNTRUSTED READ SITE — and it is an unusual one, so read the reason rather than pattern-matching
 the label.** Everything this workflow inventories is *another project's agent configuration*: root
@@ -151,12 +177,25 @@ decide the verdict yourself** — that decision has one home and it is tested.
 ```bash
 # ADB-SNIPPET: classify
 TABC="$(printf '\t')"
-while IFS="$TABC" read -r kind rel name; do
+while IFS="$TABC" read -r kind rel name agent; do
   [ "$kind" = warning ] && continue
+  # THE JOIN IS ON <kind, name, AGENT> — all three. Matching on kind and name alone takes the FIRST
+  # row, which is Claude's, so a byte-identical `.codex/skills/cleanup` was compared against
+  # Claude's copy of that skill and came back `differs`. Both sides already carry the agent; the
+  # lookup discarding it was the whole bug.
+  #
+  # An agent-neutral artifact (a root doc, agents.toml) carries `-` and matches on the first two
+  # fields only, because the baseline ships one per agent and the project has just the one.
+  #
   # `src` — NOT `path`. `path` is bound to $PATH in zsh, the default macOS shell, so assigning to
   # it empties the search path and every external command after it fails (shell.md, #126).
-  src="$(awk -F'\t' -v k="$kind" -v n="$name" '$1==k && $2==n {print $4; exit}' \
-           ".claude/state/adopt-shipped.tsv")"
+  if [ "$agent" = "-" ]; then
+    src="$(awk -F'\t' -v k="$kind" -v n="$name" '$1==k && $2==n {print $4; exit}' \
+             ".claude/state/adopt-shipped.tsv")"
+  else
+    src="$(awk -F'\t' -v k="$kind" -v n="$name" -v g="$agent" \
+             '$1==k && $2==n && $3==g {print $4; exit}' ".claude/state/adopt-shipped.tsv")"
+  fi
   coll=no;  [ -n "$src" ] && coll=yes
   presc=no; bash "$HOME/.claude/scripts/lib/adopt-lib.sh" prescribed "$kind" "$name" >/dev/null 2>&1 && presc=yes
   delta=unknown
@@ -293,23 +332,46 @@ With `--apply`, and **only after showing the operator each artifact and getting 
 
 ```bash
 # ADB-SNIPPET: apply
-# REFUSE rather than overwrite. An existing agents.toml is the operator's own configuration and
-# this workflow has no backup mechanism — so the absence check is the safety property, not a
-# convenience. Same for the pin.
-[ -e "$PROJECT/agents.toml" ] \
-  && echo "SKIP: agents.toml already exists — /adopt never overwrites; diff it against .claude/state/adopt-agents.toml yourself" \
-  || cp ".claude/state/adopt-agents.toml" "$PROJECT/agents.toml"
-[ -e "$PROJECT/.ai-dev-baseline/upstream.toml" ] \
-  && echo "SKIP: an upstream pin already exists — /adopt never overwrites" \
-  || { mkdir -p "$PROJECT/.ai-dev-baseline"; cp ".claude/state/adopt-upstream.toml" "$PROJECT/.ai-dev-baseline/upstream.toml"; }
+# THE CREATION IS ATOMIC, and `[ -e ] && cp` is not. Three separate holes closed here:
+#
+#   1. TOCTOU. Between `[ -e ]` answering "absent" and `cp` running, anything may create the
+#      target — and `cp` then overwrites the operator's file, which is the one thing this
+#      workflow promises never to do.
+#   2. A DANGLING SYMLINK passes `[ -e ]` as ABSENT (`-e` follows the link and finds nothing), so
+#      `cp` writes THROUGH it to wherever it points — an arbitrary path outside the project.
+#      `-L` is what sees a symlink whether or not it resolves.
+#   3. `cmd && A || B` is not if/else. When `A` fails, `B` runs too.
+#
+# `set -o noclobber` + `>` is the atomic create-or-fail: the shell refuses if the path exists, in
+# one operation, and it refuses a symlink target as well. A subshell so the option does not leak.
+adopt_create() {  # <src> <dest> <label>
+  if [ -e "$2" ] || [ -L "$2" ]; then
+    echo "SKIP: $3 already exists at $2 — /adopt never overwrites; diff it against $1 yourself"
+    return 0
+  fi
+  if ( set -o noclobber; : > "$2" ) 2>/dev/null; then
+    cat "$1" > "$2" && echo "wrote $2"
+  else
+    echo "SKIP: $3 could not be created atomically at $2 (it appeared while /adopt was running) — nothing was overwritten"
+  fi
+}
+adopt_create ".claude/state/adopt-agents.toml" "$PROJECT/agents.toml" "agents.toml"
+mkdir -p "$PROJECT/.ai-dev-baseline"
+adopt_create ".claude/state/adopt-upstream.toml" "$PROJECT/.ai-dev-baseline/upstream.toml" "the upstream pin"
 ```
 
 Then, and only with the operator's agreement, the repo-settings half:
 
 ```bash
 # ADB-SNIPPET: repo
-bash "$HOME/.claude/scripts/lib/repo-settings.sh" status      # show what would change BEFORE changing it
-bash "$HOME/.claude/scripts/lib/repo-settings.sh" apply       # required status checks, then allow_auto_merge
+# RUN THESE INSIDE $PROJECT. Both resolve the repository from the CURRENT DIRECTORY, so with an
+# explicit target path — `/adopt ../other-project --apply` — a bare invocation would read and then
+# MUTATE the settings of whatever repo the operator happens to be standing in, not the one being
+# adopted. That is an outward-facing change to the wrong GitHub repository, and it is silent.
+# The subshell keeps the cd from leaking into the rest of the run.
+( cd "$PROJECT" || exit 1
+  bash "$HOME/.claude/scripts/lib/repo-settings.sh" status      # show what would change BEFORE changing it
+  bash "$HOME/.claude/scripts/lib/repo-settings.sh" apply )     # required status checks, then allow_auto_merge
 ```
 
 `baseline repo apply` is bounded to exactly two settings by a recorded decision. **Do not add a
@@ -317,7 +379,9 @@ third** — not `delete_branch_on_merge`, not branch protection, however reasona
 moment. Widening it needs its own decision entry, not a drive-by field in an adoption run.
 
 Finally, `bin/agent-init` — run it if the project has no `agents.toml` and you did not write one,
-or if the `ignore-risk` axis fired: it is what makes the state-dir ignore rule deliberate.
+or if the `ignore-risk` axis fired: it is what makes the state-dir ignore rule deliberate. **Run it
+from inside `$PROJECT` too**, and for the same reason: it resolves the git root from the current
+directory, so from anywhere else it initializes a different repository.
 
 ### 12. Report
 

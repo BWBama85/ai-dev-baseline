@@ -452,6 +452,13 @@ add cleanup             bash scripts/check-cleanup.sh
 # subcommand alters the project it scanned. Offline; every fixture is a mktemp -d tree.
 add adopt               bash scripts/check-adopt.sh
 
+# ...and that suite is a guard, so it gets what guards get here: every load-bearing decision in
+# adopt-lib.sh is injected with its own defect in a TREE COPY, and the suite must come back red ON
+# ITS OWN NAMED ASSERTION. A mutation that goes red for the wrong reason is not evidence, so the
+# witness is matched against the failure text (#213's `fires:` contract). This replaces a commit
+# message's claim that mutations "were observed" with something the repo can re-run.
+add adopt-mutation      bash scripts/check-adopt.sh --mutation
+
 # Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
 # targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness
 # (#71), plus a drift guard that the workflow still delegates to them (#45). Offline.

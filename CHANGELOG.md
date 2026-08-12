@@ -18,18 +18,27 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   reconcile them. A read-only sweep of four projects had produced that inventory by hand; this is
   the workflow that produces it.
 
-  - **It never deletes, moves, or edits an existing file** — not with `--apply`, not with
-    confirmation. `remove` and `move` are words in a plan a human executes. The only writes are the
-    two artifacts that do not yet exist (`agents.toml`, `.ai-dev-baseline/upstream.toml`), each
-    refusing rather than overwriting, plus the already-shipped consent-gated `baseline repo apply`.
-    `check-adopt.sh` asserts byte-for-byte that no read-only subcommand alters the scanned project.
-  - **"Duplicates the baseline" has exactly one proof: byte-identity** against `adb_agent_manifest`'s
-    own shipped set — never a second hardcoded list, and never similarity. A colliding artifact that
-    *differs* classifies as `move` (re-home the delta), never `remove`; that difference is the
-    project's forked behavior. A **prescribed home** is tested *before* collision, because
-    `.claude/scripts/precommit-gate.sh` collides with a shipped script by name and *is* the one
-    legal home for custom gate policy — reverse those two arms and every adopting project is told
-    to delete its own gate. Both orderings are pinned as regressions.
+  - **It never deletes, moves, or edits a file in the project it scans** — not with `--apply`, not
+    with confirmation. `remove` and `move` are words in a plan a human executes. The only writes in
+    the project are the two artifacts that do not yet exist (`agents.toml`,
+    `.ai-dev-baseline/upstream.toml`); each is created with `set -o noclobber` (atomic create-or-fail,
+    not check-then-copy) and refuses a symlink target, so neither a race nor a **dangling** symlink
+    can turn the write into an overwrite of something outside the project. The remaining write is
+    the already-shipped consent-gated `baseline repo apply`, run inside the target repo rather than
+    the caller's. `check-adopt.sh` asserts byte-for-byte that no read-only subcommand alters the
+    scanned project, and **executes the workflow's own `apply` block** against fixtures to prove it
+    refuses. (The run does rewrite its own gitignored `{{STATE_DIR}}` scratch every invocation; the
+    boundary is about the project's files, and saying otherwise was an overclaim.)
+  - **"Duplicates the baseline" has exactly one proof: byte-identity of the whole artifact**
+    against `adb_agent_manifest`'s own shipped set — never a second hardcoded list, never
+    similarity, and for a skill never `SKILL.md` alone: a project skill with an identical `SKILL.md`
+    plus its own helper must not be recommended for removal. `cmp`'s third status (the comparison
+    *failed*) is `unknown`, not `differs`. A colliding artifact that *differs* classifies as `move`
+    (re-home the delta), never `remove`; that difference is the project's forked behavior. A
+    **prescribed home** is tested *before* collision, because `.claude/scripts/precommit-gate.sh`
+    collides with a shipped script by name and *is* the one legal home for custom gate policy —
+    reverse those two arms and every adopting project is told to delete its own gate. Both
+    orderings are pinned as regressions.
   - **Four adoption-hygiene axes** (#29): the product-code boundary (`src/**` referencing an agent
     CLI is the *product*), tracked config that ships to end users, layered statusLine/hook
     precedence, and a broad ignore rule that reaches the runtime state dir only by accident. The
@@ -45,6 +54,10 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - `delete_branch_on_merge` (#56, folded into #20) is **not** implemented: it contradicts D9's
     two-setting bound, and widening that needs its own decision rather than a drive-by field in an
     adoption run. `adopt.md` carries the instruction not to add it.
+
+  Every load-bearing decision carries a mutation in `check-adopt.sh`'s `--mutation` harness that
+  must make the suite go red **on its own named assertion** — the standing-test form of "observed
+  failing", rather than a claim in a commit message that nothing can re-run.
 
   New: `scripts/lib/adopt-lib.sh`, `scripts/check-adopt.sh` (registered as the `adopt` selfcheck
   step), `base/workflows/adopt.md` rendered to all three agents, and an `{{ADOPT_LIB}}` placeholder.

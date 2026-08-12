@@ -4736,12 +4736,25 @@ limit: none of them is sufficient alone.
              BLOCKING finding. The pin (#21, consolidated in) had the same problem one level down:
              it alternated between a commit/tag, a complete `.upstream` snapshot tree, and a
              residual pin, with no artifact name, schema, or accepted ref forms anywhere.
-- decision:  The owner settled the boundary: **`/adopt` never deletes, moves, or edits a file that
-             already exists** — not with `--apply`, not with confirmation. The only writes it can
-             perform are the two artifacts that do NOT yet exist (`agents.toml` and
-             `.ai-dev-baseline/upstream.toml`), plus the already-shipped consent-gated
-             `baseline repo apply`, which touches GitHub settings and nothing in the tree. Both
-             file writes refuse rather than overwrite when the target exists.
+- decision:  The owner settled the boundary: **`/adopt` never deletes, moves, or edits a file in
+             the project it is scanning** — not with `--apply`, not with confirmation. The only
+             writes it can perform IN THE PROJECT are the two artifacts that do NOT yet exist
+             (`agents.toml` and `.ai-dev-baseline/upstream.toml`), plus the already-shipped
+             consent-gated `baseline repo apply`, which touches GitHub settings and nothing in the
+             tree.
+
+             **Scoped to the scanned project, deliberately, because the unscoped sentence was
+             false.** This entry first read "never … edits a file that already exists", and review
+             pointed out that the run rewrites its own `{{STATE_DIR}}/adopt-*.tsv` scratch on every
+             invocation. That scratch is gitignored, per-run, agent-owned and regenerated — every
+             workflow here does the same — but a boundary claim that a reader can falsify in one
+             `ls` is worse than a narrower true one, so the claim is now the narrow true one.
+
+             **And the refusal is ATOMIC rather than check-then-copy.** `[ -e ] && … || cp` has
+             three defects review named: a TOCTOU window between the test and the copy; a DANGLING
+             SYMLINK passing `-e` as absent, so `cp` writes THROUGH it to a path outside the
+             project entirely; and `A && B || C` running `C` when `B` fails. The write is a
+             `set -o noclobber` create-or-fail, and the guard tests `-L` as well as `-e`.
 
              Two consequences follow and are the reason this is recorded rather than merely
              implemented. **No backup primitive was added.** The gap-analysis pass was right that
@@ -4791,10 +4804,19 @@ limit: none of them is sufficient alone.
              `adopt.md` instead carries an explicit instruction not to add a third field. #56 is
              closed `NOT_PLANNED`; nothing is owed.
 
-             **The classifier proves "duplicates the baseline" exactly one way: byte-identity.**
-             Not similarity, not a shared heading. That is deliberately narrow and will call a
-             lightly-edited fork `differs` — which routes to `move`, which loses nothing, whereas
-             the opposite error deletes a project's forked behavior. `prescribed` is tested BEFORE
+             **The classifier proves "duplicates the baseline" exactly one way: byte-identity of
+             the WHOLE artifact.** Not similarity, not a shared heading — and for a skill, not
+             `SKILL.md` alone. That last distinction is the one that had to be corrected: the first
+             implementation compared only `SKILL.md` while this entry claimed the unit was the
+             whole artifact, so a project skill with an identical `SKILL.md` plus its own
+             `helper.sh` answered `same`, which becomes `remove`, which deletes the helper. Review
+             reproduced it. The comparison is now the sorted relative file list plus every
+             corresponding pair, and `cmp`'s third status (>1, the comparison FAILED) is `unknown`
+             rather than `differs`.
+
+             The rule is deliberately narrow and will call a lightly-edited fork `differs` — which
+             routes to `move`, which loses nothing, whereas the opposite error deletes a project's
+             forked behavior. `prescribed` is tested BEFORE
              collision for the same reason: `.claude/scripts/precommit-gate.sh` collides with a
              shipped script by name AND is `handling-the-unknown.md`'s one legal home for custom
              gate policy, so a collision-first classifier would tell every adopting project to
@@ -4806,4 +4828,22 @@ limit: none of them is sufficient alone.
              bodies and root docs, which are *instructions to an agent by construction*, while the
              run holds repo tool access. No `gh` call fetches them, so the registry's discovery
              rule would never have flagged it; the row is classified `1` deliberately.
+             **What the independent review changed, recorded because the count is the point.** The
+             `codex` pass returned 19 required findings against the first three commits, and they
+             were not stylistic: a skill compared by `SKILL.md` alone (data loss), `cmp` errors read
+             as `differs`, `repo-settings apply` running against the CALLER's repository rather than
+             the target (an outward-facing mutation of the wrong GitHub repo), the workflow
+             hardcoding Claude's `common.sh` so the Codex and Gemini renders could not run, a
+             collision join that discarded the agent and compared every artifact against Claude's
+             copy, role inference matching `codex` inside `codexpert`, a `warning` record rendering
+             as a TOML key, `git ls-files` failures silently disabling the credential axis, an
+             ignore-pattern parse defeated by a colon in `core.excludesFile`, a precedence finding
+             asserting a global layer it never opened, TOML injection through an unvalidated
+             version string, an unquoted path in a command the operator is told to paste, node
+             beating WordPress in stack detection, foreign pins classified `keep` while the prose
+             said retire, and `plan` silently dropping unrecognised verdicts. Each is fixed and
+             pinned. Two of the review's findings were about the CHECKS rather than the code — a
+             delegation guard satisfied by prose that merely mentioned a subcommand, and a
+             non-mutation guard that never exercised the workflow's write paths — and both are the
+             can't-fail shape this repo keeps paying for.
 - baseline-issue: n/a — this repo IS the baseline; #20 is the tracking issue.

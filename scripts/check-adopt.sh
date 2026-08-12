@@ -43,7 +43,8 @@
 #     no assertion here claims more.
 #   - that the credential axis catches an unfamiliar secret format. Its prefix list is closed.
 #
-# Usage: bash scripts/check-adopt.sh   (exit 0 = all pass, 1 = a failure)
+# Usage: bash scripts/check-adopt.sh              (exit 0 = all pass, 1 = a failure)
+#        bash scripts/check-adopt.sh --mutation  (…and inject each defect, requiring RED)
 
 # bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
 #
@@ -75,6 +76,17 @@ PRACTICE="$ROOT/base/practices/handling-the-unknown.md"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 check_init "check-adopt"
+
+# ARGUMENTS ARE VALIDATED HERE, BEFORE the exit guard is armed. Exiting later — after
+# `check_exit_guard` is installed but before `check_summary` runs — makes the guard fire and report
+# "reported as passing (exit status was 2)", which is a true statement about a bad invocation
+# dressed up as a suite failure. A usage error should look like a usage error.
+MUTATE=0
+case "${1:-}" in
+  --mutation) MUTATE=1 ;;
+  "") : ;;
+  *) printf 'check-adopt: unknown argument: %s (expected --mutation, or no argument)\n' "$1" >&2; exit 2 ;;
+esac
 
 TAB="$(printf '\t')"
 WORK="$(mktemp -d)" || { echo "check-adopt: FATAL — cannot create a scratch dir" >&2; exit 1; }
@@ -159,6 +171,13 @@ else
   bad "base/practices/handling-the-unknown.md is missing — adopt-lib.sh's prescribed-home table has no source"
 fi
 
+# A FOREIGN FRAMEWORK'S PIN IS `move`, NOT `keep`. It has no baseline counterpart, so the
+# no-collision arm classified it `keep` — while the workflow's step 7 told the operator to RETIRE
+# it. The plan therefore preserved the one artifact the prose said must go, and the two halves of
+# the feature contradicted each other in writing. Review caught it.
+eq "$(verdict foreign-pin no unknown no)" move "a foreign framework pin is MOVE (reconcile then retire), never keep"
+eq "$(verdict foreign-pin no same    no)" move "...whatever its delta, since it has no baseline counterpart"
+
 # --- 2b. delta: the skill-is-a-directory trap, and unknown as a reachable answer ----------------
 # `delta` exists because the obvious inline `cmp -s` is WRONG for the commonest case. A skill's
 # shipped source is a directory; `cmp` on a directory returns non-zero, a workflow reads that as
@@ -179,6 +198,38 @@ eq "$(bash "$AD" delta script "$WORK" "$ROOT/install.sh")" unknown "a directory 
 eq "$(bash "$AD" delta script "$ROOT/install.sh" "$ROOT/install.sh")" same "a plain file compares byte-wise"
 eq "$(bash "$AD" delta script "$ROOT/install.sh" "$ROOT/uninstall.sh")" differs "two different files are differs"
 eq "$(bash "$AD" delta skill "$S1" >/dev/null 2>&1; echo $?)" 2 "delta with too few arguments exits 2"
+
+# THE SKILL COMPARISON IS THE WHOLE DIRECTORY. Comparing `SKILL.md` alone meant a project skill
+# with an identical SKILL.md plus its own helper answered `same`, which classify turns into
+# `remove`, which deletes the helper. Review reproduced it; this is the regression.
+SD="$WORK/skilldir"; mkdir -p "$SD/proj" "$SD/base"
+printf 'body\n' > "$SD/proj/SKILL.md"; printf 'body\n' > "$SD/base/SKILL.md"
+eq "$(bash "$AD" delta skill "$SD/proj" "$SD/base")" same "identical skill directories are same"
+printf '#!/bin/sh\n' > "$SD/proj/helper.sh"
+eq "$(bash "$AD" delta skill "$SD/proj" "$SD/base")" differs \
+   "an extra project-only file makes a skill differ (it must NOT be recommended for removal)"
+rm -f "$SD/proj/helper.sh"
+printf '#!/bin/sh\n' > "$SD/base/extra.sh"
+eq "$(bash "$AD" delta skill "$SD/proj" "$SD/base")" differs "an extra BASELINE file also differs"
+rm -f "$SD/base/extra.sh"
+printf 'other\n' > "$SD/proj/SKILL.md"
+eq "$(bash "$AD" delta skill "$SD/proj" "$SD/base")" differs "same file set, different contents -> differs"
+
+# `cmp` IS THREE-VALUED: 0 identical, 1 different, >1 the comparison FAILED. Reading >1 as
+# "differs" turns an I/O error into a confident `move`. An unreadable file is the reachable case.
+# ORDINARY INPUT CANNOT REACH THIS ARM, because the `-r` readability guard runs first — so the
+# branch is driven by SHADOWING `cmp` with a stub that exits 2. Same technique D59 records for
+# reaching `adb_tsv_field_display`'s fallback seam: a defensive branch no input can reach is still a
+# branch, and one that silently answered `differs` would turn an I/O failure into a confident
+# `move`. An unreadable file is NOT a substitute — it exits at the `-r` guard and never reaches
+# `cmp` at all, which is why the first version of this assertion could not fail.
+CMPDIR="$WORK/cmpstub"; mkdir -p "$CMPDIR"
+printf '#!/bin/sh\nexit 2\n' > "$CMPDIR/cmp"; chmod +x "$CMPDIR/cmp"
+eq "$(PATH="$CMPDIR:$PATH" bash "$AD" delta script "$ROOT/install.sh" "$ROOT/install.sh")" unknown \
+   "a cmp FAILURE (rc>1) is unknown, never differs"
+# ...and the stub is proven to be in effect, so a PATH that failed to shadow cmp cannot leave the
+# assertion above passing for the wrong reason.
+eq "$(PATH="$CMPDIR:$PATH" cmp -s /dev/null /dev/null; echo $?)" 2 "the cmp stub is actually on PATH"
 
 # AND THE PAIRING WITH classify, which is what actually ships the bug if it breaks: an `unknown`
 # delta must reach `escalate`, never a verdict.
@@ -247,6 +298,24 @@ else
   check_note "SKIP: this filesystem refuses a newline in a filename; the record-format refusal is unexercised"
 fi
 
+# AN UNMODELLED FILE UNDER THE AGENT DIR IS EMITTED AS `other`, which classifies to `escalate`.
+# Omitting it silently — the original behaviour — meant the artifact never reached `classify`, so it
+# never became `escalate`, so handling-the-unknown.md's protocol never ran on the one category it
+# exists for. Silence looked exactly like a project with nothing unusual in it. Review caught it.
+printf '{}\n'    > "$FX/.claude/settings.local.json"
+printf '# r\n'   > "$FX/.claude/rules.md"
+mkdir -p "$FX/.claude/state"; printf 'scratch\n' > "$FX/.claude/state/marker.json"
+oth="$(bash "$AD" scan "$FX" --agents claude)"
+has   "$oth" "other${TAB}.claude/rules.md"            "an unmodelled file under the agent dir is emitted as \`other\`"
+has   "$oth" "other${TAB}.claude/settings.local.json" "...including one the modelled arms nearly match"
+hasnt "$oth" ".claude/state/marker.json"              "but run-state scratch is NOT inventoried (it carries no adoption decision)"
+eq    "$(verdict other yes unknown no)" escalate      "and `other` routes to escalate, so it reaches the protocol"
+
+# THE AGENT IS ON EVERY RECORD, so the collision join can match on it. Without it the lookup took
+# the first row — Claude's — and compared a Codex artifact against Claude's copy.
+has "$oth" "skill${TAB}.claude/skills/implement-issue${TAB}implement-issue${TAB}claude" \
+    "every scan record carries the agent it belongs to"
+
 eq "$(bash "$AD" scan "$WORK/nope" >/dev/null 2>&1; echo $?)" 2 "scan of a missing dir exits 2"
 eq "$(bash "$AD" scan "$FX" --agents >/dev/null 2>&1; echo $?)" 2 "scan --agents with no value exits 2"
 
@@ -259,7 +328,12 @@ eq "$(bash "$AD" scan "$FX" --agents >/dev/null 2>&1; echo $?)" 2 "scan --agents
 #
 # Both subcommands that take the flag are asserted, because the validation was originally present
 # in `pin-render` alone and that asymmetry is exactly how it was missed.
-for badtok in '../..' 'a/b' '/etc' 'UPPER' '-lead' 'a b'; do
+# `claude/../../sibling` IS THE REAL WITNESS and leads the list. The code prepends a `.`, so a
+# bare `../..` builds `$root/...././..` — a component named `...` — which normalizes back to
+# `$root` and escapes nothing. Only a token that begins with a valid agent name and then climbs
+# actually leaves the project: `$root/.claude/../../sibling`. Review caught the earlier account
+# naming the wrong one.
+for badtok in 'claude/../../sibling' '../..' 'a/b' '/etc' 'UPPER' '-lead' 'a b'; do
   eq "$(bash "$AD" scan "$FX" --agents "$badtok" >/dev/null 2>&1; echo $?)" 2 \
      "scan --agents rejects the traversal/invalid token [$badtok]"
   eq "$(bash "$AD" hygiene "$FX" --agents "$badtok" >/dev/null 2>&1; echo $?)" 2 \
@@ -279,17 +353,16 @@ yes "$(bash "$AD" scan "$FX" --agents claude >/dev/null 2>&1; echo $?)" "a valid
 # The `same`/`differs` inputs are computed by comparing against the real shipped artifact, so this
 # exercises the pipeline the workflow actually runs rather than a hand-written verdict.
 cp "$ROOT/agents/claude/scripts/statusline.sh" "$FX/.claude/scripts/statusline.sh"   # a true duplicate
-delta_of() {  # <project-file> <baseline-file>
-  if [ ! -f "$2" ]; then printf 'unknown\n'
-  elif cmp -s "$1" "$2"; then printf 'same\n'
-  else printf 'differs\n'; fi
-}
-eq "$(delta_of "$FX/.claude/scripts/statusline.sh" "$ROOT/agents/claude/scripts/statusline.sh")" same \
-   "the copied statusline is byte-identical"
-eq "$(verdict script yes "$(delta_of "$FX/.claude/scripts/statusline.sh" "$ROOT/agents/claude/scripts/statusline.sh")" \
+# THE REAL `delta`, not a second implementation. A local `delta_of` here would be testing a copy
+# of the decision rather than the decision — and the two could disagree without any assertion
+# noticing, which is the whole failure this library/prose split exists to prevent. Review caught it.
+delta_of() { bash "$AD" delta "$1" "$2" "$3"; }
+eq "$(delta_of script "$FX/.claude/scripts/statusline.sh" "$ROOT/agents/claude/scripts/statusline.sh")" same \
+   "the copied statusline is byte-identical (via the real delta)"
+eq "$(verdict script yes "$(delta_of script "$FX/.claude/scripts/statusline.sh" "$ROOT/agents/claude/scripts/statusline.sh")" \
         "$(bash "$AD" prescribed script statusline.sh >/dev/null 2>&1 && echo yes || echo no)")" remove \
    "getrich: the duplicated statusline script is REMOVE"
-eq "$(verdict script yes "$(delta_of "$FX/.claude/scripts/precommit-gate.sh" "$ROOT/agents/claude/scripts/precommit-gate.sh")" \
+eq "$(verdict script yes "$(delta_of script "$FX/.claude/scripts/precommit-gate.sh" "$ROOT/agents/claude/scripts/precommit-gate.sh")" \
         "$(bash "$AD" prescribed script precommit-gate.sh >/dev/null 2>&1 && echo yes || echo no)")" keep \
    "getrich: the path-scoped precommit-gate is KEEP (removing it would lose apps/packages scoping)"
 eq "$(verdict rootdoc no unknown \
@@ -306,6 +379,24 @@ eq "$(bash "$AD" roles-infer "$EMPTY" | awk -F"$TAB" '$1=="gap_analysis"{print $
    "a project with no signal proposes NOTHING for gap_analysis"
 eq "$(bash "$AD" roles-infer "$EMPTY" | awk -F"$TAB" '$1=="review"{print $2}')" none \
    "...and nothing for review either"
+
+# THE AGENT TOKEN IS MATCHED ON WORD BOUNDARIES, not as a substring. `grep -qE codex` also matches
+# `codexpert`, so "gap analysis uses codexpert tooling" inferred `gap_analysis = codex` — flatly
+# contradicting this subcommand's claim to refuse to guess. Review reproduced it.
+#
+# THIS ASSERTION IS HERE BECAUSE THE MUTATION HARNESS FOUND IT MISSING. The defect was fixed and
+# verified by hand during development, and the verification never became a test — so reverting the
+# fix left the suite GREEN. A hand-check that does not land in the suite protects exactly one run.
+SUBSTR="$WORK/substring"; mkdir -p "$SUBSTR/.claude/skills/x"
+printf 'gap analysis uses codexpert tooling\n' > "$SUBSTR/.claude/skills/x/SKILL.md"
+eq "$(bash "$AD" roles-infer "$SUBSTR" | awk -F"$TAB" '$1=="gap_analysis"{print $2}')" none \
+   "a substring of a longer word must NOT infer that agent (codexpert is not codex)"
+printf 'gap analysis is run by codex exec\n' > "$SUBSTR/.claude/skills/x/SKILL.md"
+eq "$(bash "$AD" roles-infer "$SUBSTR" | awk -F"$TAB" '$1=="gap_analysis"{print $2}')" codex \
+   "...while the real token, delimited, still infers"
+printf 'gap analysis is run by codex-exec\n' > "$SUBSTR/.claude/skills/x/SKILL.md"
+eq "$(bash "$AD" roles-infer "$SUBSTR" | awk -F"$TAB" '$1=="gap_analysis"{print $2}')" none \
+   "...and a dash-joined identifier is NOT the bare token either"
 
 AMB="$WORK/ambiguous"; mkdir -p "$AMB/.claude/skills/x"
 printf 'the code-review pass runs codex exec\nthe code-review pass also runs gemini\n' > "$AMB/.claude/skills/x/SKILL.md"
@@ -326,6 +417,19 @@ eq "$(adb_toml_get "$WORK/proposed.toml" roles review >/dev/null 2>&1; echo $?)"
 eq "$(adb_toml_get "$WORK/proposed.toml" roles primary >/dev/null 2>&1; echo $?)" 1 \
    "primary is never inferred — it is a fact about the operator, not the repo"
 
+# A NON-ROLE RECORD MUST NEVER BECOME A TOML KEY. `roles-infer` shares `_ad_emit`, which on an
+# unrepresentable field emits a `warning` record — and `propose` rendered that as
+# `warning = "a gap_analysis field…"`, malformed TOML, while silently dropping the role it
+# replaced. Review reproduced it.
+warnprop="$(printf 'warning\ta gap_analysis field contains a tab\n' | bash "$AD" propose)"
+# ASSERT ON THE PARSED KEY SET, not on a guessed spacing. The first version tested for
+# `warning  =` — two spaces — while `printf %-13s` emits seven, so the assertion could not fire on
+# the very output it was written for. The mutation harness caught it: injecting the defect went red
+# on a SIBLING assertion, which is "caught by accident" and is what the witness check rejects.
+warnkeys="$(printf '%s\n' "$warnprop" | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=.*/\1/p')"
+hasnt "$warnkeys" "warning" "propose must never render a non-role record as a TOML key"
+has   "$warnprop" '# NOTE'  "...it surfaces the unusable record as a comment instead"
+
 # --- 8. stack: every label the pin accepts is reachable, and unknown is a real answer ------------
 mk() { mkdir -p "$WORK/stack-$1" && printf '%s' "${2:-}" > "$WORK/stack-$1/${3:-x}"; printf '%s' "$WORK/stack-$1"; }
 eq "$(bash "$AD" stack "$(mk node '{}' package.json)")"        node   "package.json -> node"
@@ -337,13 +441,26 @@ eq "$(bash "$AD" stack "$(mk py '' pyproject.toml)")"          python "pyproject
 eq "$(bash "$AD" stack "$(mk sh '#!/bin/sh' a.sh)")"           shell  "a bare shell repo -> shell"
 mkdir -p "$WORK/stack-none"
 eq "$(bash "$AD" stack "$WORK/stack-none")"                    unknown "an unrecognised project -> unknown, which is an ANSWER"
+# THE MOST SPECIFIC EVIDENCE WINS. A WordPress plugin routinely carries a package.json for its
+# asset build, and a node-first order recorded every one of them as `node` — the wrong ecosystem
+# in the pin. Review caught it.
+WP="$WORK/stack-wp"; mkdir -p "$WP"
+printf '{}\n' > "$WP/package.json"; printf '{}\n' > "$WP/composer.json"
+printf '<?php add_action("init", "x");\n' > "$WP/plugin.php"
+eq "$(bash "$AD" stack "$WP")" php-wordpress "a WordPress plugin carrying a package.json is php-wordpress, not node"
+rm -f "$WP/plugin.php"
+eq "$(bash "$AD" stack "$WP")" node "...and without the WP evidence it is node again (the WP test is the narrow one)"
+
 eq "$(bash "$AD" stack "$WORK/nope" >/dev/null 2>&1; echo $?)" 2 "stack of a missing dir exits 2"
 
 # EVERY label `stack` can print must be a label `pin-render` accepts. These are two enums in two
 # functions, and a stack the pin rejects would fail the run at the last step with a value the
 # scan itself produced.
+# A FULL object name, because `pin-render` now requires one — the pin's claim is that it recovers
+# the inherited tree exactly, and an abbreviated name can become ambiguous in a growing repo.
+FULLSHA="0123456789abcdef0123456789abcdef01234567"
 for s in node node-monorepo rust go python php php-wordpress shell unknown; do
-  yes "$(bash "$AD" pin-render v1 abcdef1234 2026-08-12 "$s" >/dev/null 2>&1; echo $?)" \
+  yes "$(bash "$AD" pin-render v1 "$FULLSHA" 2026-08-12 "$s" >/dev/null 2>&1; echo $?)" \
       "pin-render accepts the stack label '$s' that stack can emit"
 done
 
@@ -359,11 +476,33 @@ eq "$(bash "$AD" pin-read "$WORK/upstream.toml" agents | tr '\n' ',')" "claude,c
 # observed being refused. A pin that accepted "HEAD" or an empty string would produce a drift
 # command that silently compares the wrong thing.
 for badpin in "v1 zzzz 2026-08-12 shell" "v1 HEAD 2026-08-12 shell" "v1 '' 2026-08-12 shell" \
-              "v1 abc 2026-08-12 shell" "v1 abcdef1234 12-08-2026 shell" \
-              "v1 abcdef1234 2026-8-12 shell" "v1 abcdef1234 2026-08-12 cobol"; do
+              "v1 abc 2026-08-12 shell" "v1 abcdef1234 2026-08-12 shell" \
+              "v1 $FULLSHA 12-08-2026 shell" "v1 $FULLSHA 2026-8-12 shell" \
+              "v1 $FULLSHA 2026-99-99 shell" "v1 $FULLSHA 2026-13-01 shell" \
+              "v1 $FULLSHA 2026-08-12 cobol" "v1 $FULLSHA 2026-08-12 shell claude,claude" \
+              "v1 $FULLSHA 2026-08-12 shell -lead"; do
   # shellcheck disable=SC2086  # deliberate word splitting: each case is an argv
   eq "$(eval bash \"\$AD\" pin-render $badpin >/dev/null 2>&1; echo $?)" 2 "pin-render rejects [$badpin]"
 done
+# THE VERSION IS INTERPOLATED INTO TOML, and it comes from a git TAG — so it is validated too. A
+# quote or a newline produces malformed TOML at best and an injected extra key at worst, in a file
+# `adb_toml_get` is later trusted to read. Passed as real argv (not through `eval`) so the quote
+# reaches the validator rather than the test's own shell.
+eq "$(bash "$AD" pin-render 'v"x' "$FULLSHA" 2026-08-12 shell >/dev/null 2>&1; echo $?)" 2 \
+   "pin-render rejects a version containing a quote"
+eq "$(bash "$AD" pin-render "$(printf 'v1\nevil = 1')" "$FULLSHA" 2026-08-12 shell >/dev/null 2>&1; echo $?)" 2 \
+   "pin-render rejects a version containing a newline (a TOML key-injection shape)"
+yes "$(bash "$AD" pin-render 'v1.2.3-rc1+build.7' "$FULLSHA" 2026-08-12 shell >/dev/null 2>&1; echo $?)" \
+   "...but an ordinary semver-ish tag is still accepted"
+
+# `pin-drift` OUTPUT IS A COMMAND, so the path it names must be shell-quoted. Unquoted, a path with
+# a space silently targets the wrong directory and one with a `;` becomes executable syntax in a
+# line the operator is told to paste into a shell.
+QD="$WORK/qu ote;dir"; mkdir -p "$QD"
+bash "$AD" pin-render v1 "$FULLSHA" 2026-08-12 shell > "$QD/pin.toml"
+qdrift="$(bash "$AD" pin-drift "$QD/pin.toml" "$QD")"
+hasnt "$qdrift" "$QD log"  "pin-drift must not emit the raw unquoted path"
+has   "$qdrift" 'qu\ ote\;dir' "pin-drift shell-quotes the baseline path"
 eq "$(bash "$AD" pin-read "$WORK/upstream.toml" nope >/dev/null 2>&1; echo $?)" 2 "pin-read rejects an unknown key"
 eq "$(bash "$AD" pin-read "$WORK/missing.toml" commit >/dev/null 2>&1; echo $?)" 2 "pin-read on a missing file exits 2"
 
@@ -383,7 +522,7 @@ printf '.claude/state/\n' > "$HY/.gitignore"
 git -C "$HY" add -A >/dev/null 2>&1
 hy="$(bash "$AD" hygiene "$HY" --agents claude)"
 has "$hy" "product-code${TAB}note${TAB}src/"   "axis 1: product code is reported, not classified"
-has "$hy" "distributable${TAB}warn"            "axis 2: a machine-local path in a TRACKED file is reported"
+has "$hy" "distributable${TAB}warn"            "axis 2: the distributable axis reports a machine-local path in a TRACKED file"
 has "$hy" "precedence${TAB}note"               "axis 3: a layered statusLine is reported"
 
 # axis 1 fires ONCE for a three-agent scan, not once per agent.
@@ -415,9 +554,39 @@ hasnt "$hy" "ghp_abcdefghijklmnopqrstuvwxyz"     "axis 2 must NEVER echo the cre
 # pass, and a stuck predicate is exactly what shipped here first (it matched the pathname column
 # of `git check-ignore -v`, so every input looked explicit and the axis was a permanent no-op).
 ig() { printf '%s\n' "$1" > "$HY/.gitignore"; bash "$AD" hygiene "$HY" --agents claude | grep "^ignore-risk" || true; }
-has   "$(ig '*.json')"        "BROAD ignore rule"   "a blanket *.json IS reported (the unraid shape)"
-eq    "$(ig '.claude/state/')" ""                   "an explicit state rule is SILENT"
-has   "$(ig '')"              "is NOT gitignored"   "no rule at all is reported, and differently"
+has   "$(ig '*.json')"        "does NOT cover the directory" "a blanket *.json IS reported (the unraid shape)"
+eq    "$(ig '.claude/state/')" ""                              "an explicit state rule is SILENT"
+eq    "$(ig '.claude/')"       ""                              "a rule covering the whole agent dir is also SILENT"
+has   "$(ig '')"              "is NOT gitignored"              "no rule at all is reported, and differently"
+
+# THE COLON-BEARING EXCLUDES PATH. `core.excludesFile` is an arbitrary user path, so a version that
+# recovered the ignore PATTERN by stripping two colons out of `<source>:<line>:<pattern>` could be
+# fed a source path containing both colons and `/.claude/state` — and the mis-sliced "pattern" then
+# matched the explicit-rule arm, suppressing a real finding. Review reproduced exactly this. The
+# axis no longer parses any pattern text: it asks git about TWO paths and compares the answers.
+EXD="$HY/we:ird:/.claude/state"; mkdir -p "$EXD"
+printf '*.json\n' > "$EXD/ex"
+git -C "$HY" config core.excludesFile "$EXD/ex"
+: > "$HY/.gitignore"
+has "$(bash "$AD" hygiene "$HY" --agents claude | grep '^ignore-risk' || true)" "does NOT cover the directory" \
+    "a colon-bearing excludesFile cannot suppress the finding"
+git -C "$HY" config --unset core.excludesFile
+
+# A FAILED TRACKED-FILE READ MUST SAY SO, not report a clean scan. The credential axis can only
+# look at files `git ls-files` names, so when that read fails it inspects ZERO files — and piping it
+# straight into the loop made the pipeline's status the LOOP's, so a failure produced exactly the
+# output of a clean project. A NON-GIT directory is the reachable case: git has nothing to list.
+#
+# This assertion exists because the mutation harness found nothing covering it: removing the status
+# check left the suite GREEN. That is the harness earning its place — a coverage hole is invisible
+# to every passing assertion by construction.
+NOGIT="$WORK/not-a-repo"; mkdir -p "$NOGIT/.claude"
+printf 'home is /Users/someone/x/\n' > "$NOGIT/.claude/f.md"
+nogit_out="$(bash "$AD" hygiene "$NOGIT" --agents claude)"
+has "$nogit_out" "the distributable-config axis did NOT run" \
+    "a failed tracked-file read is REPORTED, never rendered as a clean scan"
+hasnt "$nogit_out" "distributable${TAB}warn" \
+    "...and it does not also claim a finding it could not have made"
 
 eq "$(bash "$AD" hygiene "$WORK/nope" >/dev/null 2>&1; echo $?)" 2 "hygiene of a missing dir exits 2"
 
@@ -453,6 +622,15 @@ eq "$(bash "$AD" plan extra </dev/null >/dev/null 2>&1; echo $?)" 2 "plan takes 
 # A MALFORMED record is NAMED rather than rendered as blanks. A short record used to print
 # `1.  (skill) — `, formatted exactly like a real entry with an empty path and an empty reason —
 # a broken producer wearing the output of a working one.
+# AN UNRECOGNISED VERDICT IS REPORTED, NOT DROPPED. The four-verdict loop only prints records
+# matching one of its own words, so a truncated or typo'd verdict produced NO output and NO error —
+# the artifact vanished from the plan. The malformed-record check could not catch it: that runs
+# only after a record has already matched a verdict. Review caught it.
+unk="$(printf 'mov\tskill\tforked\tr\nkeep\trootdoc\tCLAUDE.md\tr\n' | bash "$AD" plan)"
+has "$unk" "UNRECOGNISED"  "an UNRECOGNISED verdict is reported rather than silently dropped"
+has "$unk" "mov"           "...naming the record that carried it"
+has "$unk" "## keep"       "...without suppressing the sections that are valid"
+
 short="$(printf 'move\tskill\n' | bash "$AD" plan)"
 has   "$short" "MALFORMED RECORD" "a short record is named as malformed"
 hasnt "$short" "1.  (skill) — "   "a short record must not render as a blank-path entry"
@@ -477,14 +655,296 @@ eq "$after" "$before" "no read-only subcommand may alter one byte of the scanned
 # and started restating it inline would pass every assertion above while shipping the untested
 # copy this whole split exists to prevent.
 if [ -f "$WF" ]; then
-  for sub in scan classify prescribed delta roles-infer propose hygiene pin-render plan; do
-    if grep -Fq -- "adopt-lib.sh $sub" "$WF" || grep -Fq -- "ADOPT_LIB}} $sub" "$WF"; then ok
-    else bad "base/workflows/adopt.md no longer delegates '$sub' to adopt-lib.sh"; fi
+  # SEARCH THE FENCED BLOCKS ONLY, not the whole file. The prose around each step NAMES the
+  # subcommand it is about — "`{{ADOPT_LIB}} prescribed <kind> <name>` (exit 0 = yes)" sits in a
+  # bullet — so a whole-file `grep` stayed green after the real invocation was deleted from the
+  # code block. A guard satisfied by the documentation OF a call rather than by the call is exactly
+  # the can't-fail shape this suite exists to reject; review caught it.
+  wf_code="$(awk '/^```bash$/ { inb = 1; next } /^```/ { inb = 0; next } inb { print }' "$WF")"
+  for sub in scan classify prescribed delta roles-infer propose hygiene pin-render plan resolve baseline; do
+    case "$wf_code" in
+      *"adopt-lib.sh\" $sub"*|*"ADOPT_LIB}} $sub"*) ok ;;
+      *) bad "base/workflows/adopt.md no longer INVOKES '$sub' in a fenced block (prose mentioning it does not count)" ;;
+    esac
   done
+  # ...and the guard above is itself a guard, so prove it can fail: with the fenced blocks removed,
+  # the prose alone must NOT satisfy it. Without this, a future edit that widened the search back
+  # to the whole file would go unnoticed.
+  wf_prose="$(awk '/^```bash$/ { inb = 1; next } /^```/ { inb = 0; next } !inb { print }' "$WF")"
+  case "$wf_prose" in
+    *"ADOPT_LIB}} prescribed"*) ok ;;   # the prose really does mention it...
+    *) bad "the delegation guard's own premise is gone: adopt.md's PROSE no longer names a subcommand, so this check can no longer prove it ignores prose" ;;
+  esac
+  case "$wf_prose" in
+    *"ADOPT_LIB}} scan \"\$PROJECT\""*) bad "the delegation guard is reading prose as code" ;;
+    *) ok ;;
+  esac
   # The v1 boundary is a PROMISE THE WORKFLOW MAKES, so it is pinned in the workflow text too.
-  grep -Fq 'never deletes' "$WF" || bad "adopt.md must state the v1 boundary (it never deletes or moves)"
+  grep -Fq 'never deletes, moves, or edits a file in the project' "$WF" \
+    || bad "adopt.md must state the v1 boundary, scoped to the SCANNED PROJECT (an unscoped 'never edits any file' is false — the state dir is rewritten every run)"
 else
   bad "base/workflows/adopt.md is missing"
 fi
+
+# --- 14. the workflow's OWN write paths refuse rather than overwrite -----------------------------
+# The non-mutation assertion above covers the LIBRARY. It says nothing about the workflow, which is
+# where the only writes live — so the `apply` snippet is EXECUTED here, against fixtures, exactly as
+# base/workflows/roadmap.md's snippets are executed by check-roadmap-e2e.sh. A fenced block that
+# stopped refusing would otherwise be caught by nobody.
+APPLY="$(check_wf_snippet "$WF" apply)"
+if [ -z "$APPLY" ]; then
+  bad "adopt.md has no ADB-SNIPPET: apply block — the write path is undocumented and untestable"
+else
+  # Case 1: both targets ABSENT -> both created.
+  A1="$WORK/apply-fresh"; mkdir -p "$A1/state"
+  printf 'PROPOSED_MANIFEST\n' > "$A1/state/adopt-agents.toml"
+  printf 'PROPOSED_PIN\n'      > "$A1/state/adopt-upstream.toml"
+  mkdir -p "$A1/proj"
+  ( cd "$A1" && PROJECT="$A1/proj" bash -c "$(printf '%s' "$APPLY" | sed "s#{{STATE_DIR}}#$A1/state#g")" ) >/dev/null 2>&1
+  eq "$(cat "$A1/proj/agents.toml" 2>/dev/null)" "PROPOSED_MANIFEST" "apply CREATES agents.toml when absent"
+  eq "$(cat "$A1/proj/.ai-dev-baseline/upstream.toml" 2>/dev/null)" "PROPOSED_PIN" "apply CREATES the pin when absent"
+
+  # Case 2: both targets PRESENT -> both left byte-identical. This is the promise.
+  A2="$WORK/apply-existing"; mkdir -p "$A2/state" "$A2/proj/.ai-dev-baseline"
+  printf 'PROPOSED_MANIFEST\n' > "$A2/state/adopt-agents.toml"
+  printf 'PROPOSED_PIN\n'      > "$A2/state/adopt-upstream.toml"
+  printf 'THE OPERATORS OWN MANIFEST\n' > "$A2/proj/agents.toml"
+  printf 'THE OPERATORS OWN PIN\n'      > "$A2/proj/.ai-dev-baseline/upstream.toml"
+  ( cd "$A2" && PROJECT="$A2/proj" bash -c "$(printf '%s' "$APPLY" | sed "s#{{STATE_DIR}}#$A2/state#g")" ) >/dev/null 2>&1
+  eq "$(cat "$A2/proj/agents.toml")" "THE OPERATORS OWN MANIFEST" "apply REFUSES to overwrite an existing agents.toml"
+  eq "$(cat "$A2/proj/.ai-dev-baseline/upstream.toml")" "THE OPERATORS OWN PIN" "apply REFUSES to overwrite an existing pin"
+
+  # Case 3: a DANGLING SYMLINK at the target. `[ -e ]` reports it ABSENT (it follows the link and
+  # finds nothing), so a `[ -e ] && … || cp` would write THROUGH it to an arbitrary path outside
+  # the project. `-L` is what sees a symlink whether or not it resolves. Review caught this one.
+  A3="$WORK/apply-symlink"; mkdir -p "$A3/state" "$A3/proj" "$A3/outside"
+  printf 'PROPOSED_MANIFEST\n' > "$A3/state/adopt-agents.toml"
+  printf 'PROPOSED_PIN\n'      > "$A3/state/adopt-upstream.toml"
+  ln -s "$A3/outside/victim.toml" "$A3/proj/agents.toml"
+  ( cd "$A3" && PROJECT="$A3/proj" bash -c "$(printf '%s' "$APPLY" | sed "s#{{STATE_DIR}}#$A3/state#g")" ) >/dev/null 2>&1
+  if [ -e "$A3/outside/victim.toml" ]; then
+    bad "apply wrote THROUGH a dangling symlink to $A3/outside/victim.toml — outside the project entirely"
+  else ok; fi
+fi
+
+# --- the mutation harness (`--mutation`) --------------------------------------------------------
+# EVERY LOAD-BEARING DECISION IN adopt-lib.sh IS INJECTED WITH ITS OWN DEFECT, AND THE SUITE ABOVE
+# MUST COME BACK RED FOR EACH.
+#
+# WHY THIS EXISTS RATHER THAN A SENTENCE IN A COMMIT MESSAGE. The first commit here claimed "six
+# mutations were observed going red". That was true when it was written and completely
+# unverifiable afterwards: the mutations were ad-hoc shell run once by hand, so nothing in the
+# repository could reproduce them and no later edit could be caught weakening a guard back into
+# silence. Review flagged it, correctly, as a claim the diff does not support. This is the same
+# move `check-fact-drift.sh --mutation` and `check-fact-guard.sh` already make: turn "I checked
+# once" into a standing test.
+#
+# Each row names the defect and the ASSERTION that must catch it. A mutation that goes red for the
+# WRONG reason is not evidence, so the witness is matched against the failure text — that is the
+# `fires:<witness>` contract #213 established, applied here.
+#
+# Every mutation is applied to a COPY of the tree (self-review.md's copy rule). The working tree is
+# never touched, so this cannot be the thing that eats an uncommitted edit.
+# The table. `mut <name> <old-literal> <new-literal> <witness>` — FIXED STRINGS, not regexes.
+#
+# The first version of this table used `sed` expressions, and EIGHT OF TWENTY silently matched
+# nothing: every one of them contained a character that is special to sed, to the shell, or to the
+# heredoc it was written in, and a pattern that matches nothing is a mutation that tests nothing.
+# The harness's own "did the injection apply?" check is what caught that — which is the same
+# proof-by-observation this file demands of everything else, applied to itself. Literal strings and
+# an index/substr replacement remove the entire class: there is no escaping to get wrong.
+MUT_NAMES=(); MUT_OLD=(); MUT_NEW=(); MUT_WIT=()
+mut() { MUT_NAMES+=("$1"); MUT_OLD+=("$2"); MUT_NEW+=("$3"); MUT_WIT+=("$4"); }
+
+# Replace the FIRST occurrence of a literal, by index — never a regex.
+#
+# THE STRINGS ARRIVE THROUGH `ENVIRON`, NOT `-v`, and that is the whole reason two rows kept
+# reporting "did not apply" after their literals had been generated byte-exactly FROM THE SOURCE
+# FILE. `awk -v x=…` processes backslash escape sequences in the assignment: a literal containing
+# `\$` reached the program as `$`, and one containing `\n` arrived as a REAL NEWLINE that can never
+# match inside a single line. So the two rows whose source text happens to contain a backslash —
+# the role-boundary regex and the `pin-drift` printf — were the exact two that silently matched
+# nothing. `ENVIRON` performs no such processing, so the bytes arrive as written.
+#
+# Found by the harness's own did-it-apply check, three times in a row, on literals that were
+# provably correct. A "mutation" that matches nothing is a test that proves nothing, which is the
+# same silence this file exists to reject.
+_mut_apply() {  # <file> <old> <new>
+  MUT_OLD_S="$2" MUT_NEW_S="$3" awk '
+    BEGIN { old = ENVIRON["MUT_OLD_S"]; new = ENVIRON["MUT_NEW_S"] }
+    !hit { i = index($0, old); if (i) { $0 = substr($0, 1, i - 1) new substr($0, i + length(old)); hit = 1 } }
+    { print }
+  ' "$1"
+}
+
+mut prescribed-arm-order \
+    'if [ "$prescribed" = yes ]; then' \
+    'if [ "$prescribed" = SWAPPED ]; then' \
+    'a PRESCRIBED HOME that collides is keep'
+mut differs-becomes-remove \
+    "printf 'move%scollides with a baseline skill" \
+    "printf 'remove%scollides with a baseline skill" \
+    'collides but DIFFERS -> move, never remove'
+mut skill-compares-only-SKILL.md \
+    'pl="$(_ad_dir_manifest "$proj")"; bl="$(_ad_dir_manifest "$base")"' \
+    'pl=x; bl=x' \
+    'an extra project-only file makes a skill differ'
+mut cmp-error-becomes-differs \
+    "    *) printf 'unknown" \
+    "    *) printf 'differs" \
+    'a cmp FAILURE (rc>1) is unknown'
+mut role-token-substring \
+    'local bounded="(^|[^A-Za-z0-9_-])${agent}([^A-Za-z0-9_-]|\$)"' \
+    'local bounded="$agent"' \
+    'must NOT infer that agent'
+mut roles-default-instead-of-none \
+    '_ad_emit "$role" none "no signal' \
+    '_ad_emit "$role" codex "no signal' \
+    'a project with no signal proposes NOTHING'
+mut propose-renders-any-key \
+    'gap_analysis|review|debug|primary|release|issue_author) ;;' \
+    '*) ;;' \
+    'propose must never render a non-role record as a TOML key'
+mut plan-order-remove-before-move \
+    'for verdict in escalate move remove keep; do' \
+    'for verdict in escalate remove move keep; do' \
+    'plan ordering must be escalate < move < remove < keep'
+mut plan-drops-unknown-verdict \
+    '    bad_n=$((bad_n + 1))' \
+    '    continue' \
+    'an UNRECOGNISED verdict is reported'
+mut agent-token-unvalidated \
+    '*[!a-z0-9-]*|-*) die "$who: invalid agent token' \
+    'NEVERMATCHES) die "$who: invalid agent token' \
+    'rejects the traversal/invalid token'
+mut ignore-error-is-not-ignored \
+    'elif [ "$igrc" -eq 1 ]; then' \
+    'elif [ "$igrc" -ge 1 ]; then' \
+    'a git ERROR is reported as undetermined'
+mut ignore-second-probe-dropped \
+    'git -C "$root" check-ignore -q --no-index ".$a/state/adb-adopt-probe" 2>/dev/null' \
+    'true' \
+    'a blanket *.json IS reported'
+mut credential-value-echoed \
+    "| grep -oE '^(ghp_|gho_|ghu_|ghs_|github_pat_|sk-|xox[baprs]-|AKIA)' | head -n 1)\"" \
+    '| head -n 1)"' \
+    'must NEVER echo the credential itself'
+mut tracked-list-status-ignored \
+    'if ! git -C "$root" ls-files -z ".$a" >/dev/null 2>&1; then' \
+    'if false; then' \
+    'the distributable-config axis did NOT run'
+mut pin-accepts-short-commit \
+    '    40|64) ;;' \
+    '    40|64|10) ;;' \
+    'pin-render rejects'
+mut pin-version-unvalidated \
+    '*[!A-Za-z0-9._+-]*) die "pin-render: <version>' \
+    'NEVERMATCHES) die "pin-render: <version>' \
+    'rejects a version containing a quote'
+mut pin-drift-unquoted \
+    'printf '"'"'git -C %s log --oneline %s..HEAD\n'"'"' "$(adb_display_value "$root")" "$(adb_display_value "$commit")"' \
+    'printf '"'"'git -C %s log --oneline %s..HEAD\n'"'"' "$root" "$(adb_display_value "$commit")"' \
+    'pin-drift must not emit the raw unquoted path'
+mut foreign-pin-kept \
+    'if [ "$kind" = foreign-pin ]; then' \
+    'if false; then' \
+    'a foreign framework pin is MOVE'
+mut scan-drops-other \
+    '_ad_emit other "$rel" "${rel##*/}" "$a"' \
+    ':' \
+    'an unmodelled file under the agent dir is emitted as'
+mut stack-node-before-wordpress \
+    "if grep -rqIl --include='*.php' -e 'add_action' -e 'wp_enqueue' \"\$r\" 2>/dev/null; then" \
+    'if false; then' \
+    'is php-wordpress, not node'
+
+# One mutation, start to verdict. Writes a single line to `$copy/verdict`: `ok`, or `bad <reason>`.
+#
+# IT RETURNS ITS VERDICT THROUGH A FILE, not through `ok`/`bad`, because it runs in a BACKGROUND
+# SUBSHELL and a counter incremented there dies with it. That is the same fiction #259 records
+# (`scan_tree` reporting "0 labelled read sites" beside 45 passing assertions), and the fix is the
+# same: the parent does the counting, over results the child could not have discarded.
+_mut_one() {  # <index>
+  local i="$1" name copy out
+  name="${MUT_NAMES[$i]}"; copy="$WORK/mut-$i"
+  if ! check_copy_subtrees "$ROOT" "$copy" scripts base agents >/dev/null 2>&1; then
+    printf 'bad|could not copy the tree\n' > "$copy/verdict" 2>/dev/null; return
+  fi
+  cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$copy/" 2>/dev/null
+  if ! _mut_apply "$copy/scripts/lib/adopt-lib.sh" "${MUT_OLD[$i]}" "${MUT_NEW[$i]}" > "$copy/mutated"; then
+    printf 'bad|the rewrite failed\n' > "$copy/verdict"; return
+  fi
+  # VERIFY THE EDIT APPLIED. A literal that matches nothing produces an unchanged copy, the suite
+  # passes, and the harness would blame the guard for a mutation that never happened — the same
+  # silence it exists to detect, one level up. Ten of the first twenty rows failed exactly here,
+  # across three separate causes (sed metacharacters, then shell quoting, then `awk -v`'s escape
+  # processing). Without this check every one of them would have been reported as a passing test.
+  if cmp -s "$copy/mutated" "$copy/scripts/lib/adopt-lib.sh"; then
+    printf 'bad|the injection did not apply — this row tests NOTHING\n' > "$copy/verdict"; return
+  fi
+  mv "$copy/mutated" "$copy/scripts/lib/adopt-lib.sh"
+  out="$( cd "$copy" && bash scripts/check-adopt.sh 2>&1 )"
+  if printf '%s' "$out" | grep -q ' 0 failed'; then
+    printf 'bad|the suite stayed GREEN — nothing here can detect this defect\n' > "$copy/verdict"
+  elif printf '%s' "$out" | grep -Fq -- "${MUT_WIT[$i]}"; then
+    printf 'ok|applied\n' > "$copy/verdict"
+  else
+    printf 'bad|went red, but NOT on its witness (%s) — caught by accident, not by the assertion that claims to cover it\n' \
+      "${MUT_WIT[$i]}" > "$copy/verdict"
+  fi
+}
+
+run_mutations() {
+  local i n name verdict why applied=0 red=0 running=0 jobs
+  n="${#MUT_NAMES[@]}"
+  [ "$n" -gt 0 ] || { bad "the mutation table is empty — this harness proves nothing"; return; }
+
+  # A BOUNDED POOL, for the same reason `scripts/selfcheck.sh` runs its registry through one: each
+  # mutation costs a FULL suite run (~23s, dominated by ~200 subprocess invocations that each load
+  # common.sh), so twenty of them serially was measured at 658s — on its own more than double what
+  # the entire rest of the mirror costs, and a ten-fold regression against the ~70s #260 worked to
+  # reach. The work is embarrassingly parallel and each mutation owns its own tree copy, so nothing
+  # is shared but the CPU.
+  #
+  # Same bound as selfcheck's: min(cpu, 8). `wait -n` needs bash 4.3+; the floor here is 5.3.
+  jobs="$( { getconf _NPROCESSORS_ONLN || sysctl -n hw.ncpu || echo 4; } 2>/dev/null | head -n1 )"
+  case "$jobs" in ''|*[!0-9]*) jobs=4 ;; esac
+  [ "$jobs" -gt 8 ] && jobs=8
+  [ "$jobs" -lt 1 ] && jobs=1
+
+  for ((i = 0; i < n; i++)); do
+    mkdir -p "$WORK/mut-$i"
+    _mut_one "$i" &
+    running=$((running + 1))
+    if [ "$running" -ge "$jobs" ]; then wait -n; running=$((running - 1)); fi
+  done
+  wait
+
+  # THE PARENT SCORES, over every index — so a worker that died without writing a verdict is a
+  # FAILURE rather than a silently missing row. A pool that loses a result and reports the rest is
+  # exactly the dispatcher defect `check-selfcheck.sh` exists to catch.
+  for ((i = 0; i < n; i++)); do
+    name="${MUT_NAMES[$i]}"
+    if [ ! -f "$WORK/mut-$i/verdict" ]; then
+      bad "mutation '$name': produced NO verdict — its worker died without reporting"
+      continue
+    fi
+    IFS='|' read -r verdict why < "$WORK/mut-$i/verdict"
+    if [ "$verdict" = ok ]; then
+      ok; red=$((red + 1)); applied=$((applied + 1))
+    else
+      bad "mutation '$name': $why"
+      case "$why" in *"did not apply"*|*"could not copy"*|*"rewrite failed"*) : ;; *) applied=$((applied + 1)) ;; esac
+    fi
+  done
+  printf '\ncheck-adopt --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%d)\n' \
+    "$applied" "$n" "$red" "$jobs"
+  [ "$applied" -eq "$n" ] || bad "only $applied of $n mutations actually applied — the rest tested nothing"
+}
+
+# `--mutation`, matching `check-fact-drift.sh --mutation` — the established idiom here, and the
+# form `scripts/selfcheck.sh` can register as a step (its `add` takes a command's words, so an
+# env-var prefix would be executed as a command name).
+[ "$MUTATE" = "1" ] && run_mutations
 
 check_summary "check-adopt"
