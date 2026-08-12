@@ -4763,7 +4763,7 @@ limit: none of them is sufficient alone.
              collision, partial-failure, symlink, permission and rollback semantics. With no
              destructive path there is nothing to back up, so the primitive is not needed — and
              deferring it is not a gap, it is the boundary holding. Whoever implements the apply
-             phase owes that primitive first. **And `remove` is a word, not an action:** the
+             phase owes that primitive first, and that slice is tracked as #326. **And `remove` is a word, not an action:** the
              classifier prints it and `check-adopt.sh` asserts, byte-for-byte, that no read-only
              subcommand alters the scanned project.
 
