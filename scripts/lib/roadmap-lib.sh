@@ -399,6 +399,31 @@ cmd_pr_targets_issue() {
 #
 # A conclusion of `skipped` or `neutral` is NOT a failure — that is how GitHub itself scores a
 # required check, and treating a skipped job as red would wedge every repo with conditional jobs.
+#
+# A NEVER-ACQUIRED JOB LANDS ON `not-green`, NOT ON THE UNREPORTED ARMS (#300) — and getting that
+# backwards is the reason this paragraph exists. The intuition is that a job which never ran reports
+# nothing, so the outage would arrive as `indeterminate`. It does not. GitHub creates the check run
+# anyway and concludes it `cancelled`, which `$bad` scores as failing, so the branch reads RED.
+# Verified against the 2026-08-06 outage commit `03486b7856615427c350fd8e5e7c117f4d5c1db8`, whose
+# two check runs are `ci` (cancelled) and `quality` (success): the shipped predicate answers
+# `not-green / failing: ci`. Independent review caught the inverted claim; the first version of this
+# change had documented the wrong arm.
+#
+# The VERDICT is right either way — an unverified branch must not cut — so nothing here changes.
+# What changes is where the guidance lives: `base/workflows/roadmap.md`'s `not-green` arm now tells
+# the agent to ask whether the failing check EXECUTED before calling it a broken build, because
+# `ci-health.sh classify --run <id>` is what separates "red" from "never ran", and this predicate
+# cannot: it reads a COMMIT, and the distinction lives in a RUN's jobs and their step counts.
+#
+# Adding an outage verdict to this enum would in any case be wrong — it feeds `release-ready`, whose
+# precedence table maps verdicts to `met`, and a transient claim that cannot be checked from a
+# commit does not belong in it.
+#
+# AND THE POINTER IS NOT APPENDED TO THE REASON LINES, which was the first attempt. Line 2 is a
+# contract line a caller parses — `check-roadmap.sh` compares one of them for exact equality, to
+# prove a duplicated required context is named ONCE — so a fixed parenthetical there is both a
+# broken pin and 130 characters of the same advice printed on every invocation of a predicate that
+# runs on every `/roadmap` and every readiness check.
 cmd_branch_health() {
   [ "$#" -eq 3 ] || die "branch-health: needs exactly 3 args: <expected-sha> <active-workflows> <health-decl off|skip-unreported|no-ci> (check JSON on stdin)"
   local sha="$1" workflows="$2" decl="$3" json out

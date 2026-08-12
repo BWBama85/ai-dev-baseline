@@ -54,6 +54,19 @@
 #                (#102); FAIL CLOSED, never assume safe. Note this is deliberately NOT 12: a
 #                parser that could not read the CI must not report "this repo has no CI".
 #
+# WHICH OF THESE A PLATFORM OUTAGE CAN PRODUCE (#300). NOT 10-14: every one of them compares a
+# STATICALLY DISCOVERED job set against CONFIGURED branch protection, and an incident moves neither
+# — so 13 ("a required context no workflow reports") is a configuration verdict an outage can
+# neither cause nor clear. Worth stating because the opposite was assumed.
+#
+# Of the codes this function returns, an outage reaches 20, from either of its two REST reads (the
+# repo object and branch protection), and the arm says so out loud (`_adb_rs_outage_hint`). But 20
+# is not the only way an incident surfaces here, and claiming it was is a mistake independent review
+# caught: `require_gh` runs `gh auth status` BEFORE this function is entered and `exit 1`s on
+# failure, so an API degraded enough to break authentication never reaches the exit-code table at
+# all. A run that never EXECUTED is a different question again, answered by
+# `ci-health.sh classify --run <id>`.
+#
 # `required-drift` (#122) answers ONE of those questions — "has a discovered job stayed
 # non-required?" — early enough to matter, and reuses the same two codes so a number never means
 # two things:
@@ -1254,21 +1267,47 @@ cmd_status() {
   return "$rc"
 }
 
+# _adb_rs_outage_hint — the second sentence every API-read failure in `automerge-ok` owes the
+# operator (#300). A failed read is the ONE arm of this guard a platform incident can actually
+# reach: everything else here compares a statically discovered job set against configured branch
+# protection, so no outage can move it. Code 13 in particular is a CONFIGURATION verdict — a
+# required context no discovered workflow reports — and reading it as "CI might be down" sends the
+# operator to a status page for a problem that will still be there when the incident clears.
+#
+# A function rather than three copies of the sentence, because three copies is how two of them
+# eventually say different things.
+#
+# AND IT IS NOT EMITTED ON EVERY 20 — that was the first version's mistake. `PROT_STATE=forbidden`
+# means the protection exists and this token may not read it, which does NOT clear on its own and
+# DOES need something changed (a token scope, a repo permission). Telling that operator to watch a
+# status page and change nothing is the exact inverse of the remedy, and on a repo where the token
+# is simply under-scoped it is advice that never stops being wrong. So the caller picks: this hint
+# is for a read that failed for an UNKNOWN reason, and `forbidden` gets its own line.
+_adb_rs_outage_hint() {
+  echo "repo-settings: if the API itself is degraded (see https://www.githubstatus.com/) this clears on its own — that is a platform incident, not a settings problem, and nothing here needs changing." >&2
+}
+
 # cmd_automerge_ok — the runtime guard /implement-issue calls BEFORE `gh pr merge --auto`. Every
 # reading is fresh (verify-before-asserting): a settings change since the last apply is exactly
 # what this must catch. Fails CLOSED — an unreadable state is 20, never 0.
 cmd_automerge_ok() {
   require_gh
   local branch nwant nlive want live phantom ungated
-  repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — refusing to arm auto-merge" >&2; return 20; }
-  branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — refusing to arm auto-merge" >&2; return 20; }
+  repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — refusing to arm auto-merge" >&2; _adb_rs_outage_hint; return 20; }
+  branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — refusing to arm auto-merge" >&2; _adb_rs_outage_hint; return 20; }
   read_protection "$branch"
   case "$PROT_STATE" in
-    error|forbidden)
+    forbidden)
       # `forbidden` means the protection exists but we may not read it — that is "unreadable",
       # not "unprotected". Reporting 11 here would send the operator to `baseline repo apply`,
-      # which they have no permission to run.
+      # which they have no permission to run. And it is NOT the outage arm: this one is diagnosed,
+      # it will not clear on its own, and something does have to change.
+      echo "repo-settings: cannot read branch protection on '$branch' — the API answered FORBIDDEN, so this token lacks the permission to read it" >&2
+      echo "repo-settings: that does NOT clear on its own — widen the token's scope or the account's repo permission. Refusing to arm auto-merge." >&2
+      return 20 ;;
+    error)
       echo "repo-settings: cannot read branch protection on '$branch' — refusing to arm auto-merge" >&2
+      _adb_rs_outage_hint
       return 20 ;;
   esac
 

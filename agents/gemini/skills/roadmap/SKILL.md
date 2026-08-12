@@ -297,9 +297,27 @@ active release milestone; always **exclude the roadmap issue itself**.
    exists to prevent. So the last condition is repo health, read **live at the moment of assertion**
    (`base/practices/verify-before-asserting.md`) and evaluated by `branch-health`:
    - **green** → all checks on the default branch's HEAD commit concluded non-failing → proceed.
-   - **not-green** → withhold the cut and name the failing check. This is a `/debug` signal.
+   - **not-green** → withhold the cut and name the failing check. Normally a `/debug` signal —
+     **but ask whether the failing check actually RAN before you call it one** (#300). A job that
+     never acquired a runner still reports a check run, with conclusion `cancelled`, so it lands
+     **here**, scored as failing, and looks exactly like a broken build. Verified against the
+     2026-08-06 outage commit `03486b7`: its two check runs are `ci` (cancelled) and `quality`
+     (success), and the shipped predicate answers `not-green / failing: ci`.
+
+     ```bash
+     # The failing check names its run; classify it before diagnosing anything.
+     bash "$HOME/.gemini/scripts/lib/ci-health.sh" classify --run <id>   # 23 = nothing that failed executed a step
+     ```
+
+     **23** means there is no log and nothing in the diff to look at — withhold the cut, say the
+     branch is unverified rather than broken, and re-run. **22** means a real failure with a log,
+     which is the `/debug` signal. Reporting a never-ran job as a red build sends someone to bisect
+     a commit that was never compiled.
    - **indeterminate** → **fail closed.** A build whose state cannot be established is treated as
-     unshippable, never as green.
+     unshippable, never as green. A run that never reported **at all** — one still queued, or one
+     whose check run never appeared — lands here rather than above, and the same command separates
+     it from a workflow that was never wired up: **24** is a queue that has executed nothing, while
+     a genuine wiring gap needs a repo change.
    - **no-ci** → the repo has no CI at all → **skip** the condition and say so, **naming the
      declaration**. A repo that never adopted CI must not be deadlocked out of ever releasing
      (#24) — but this is now something the owner **declares**, not something the probes infer
@@ -609,13 +627,42 @@ Each verdict has exactly one emission, and every one of them ends with its actio
   This line prints on **every** run the hold holds. It is a verdict, not a question, so no
   `## Decisions` row retires it — only the tracker edit named above clears it.
 - `not-green` → requirements are met but the branch is **red**. Withhold the cut and name the
-  failing check (that is what `HEALTH_WHY` carries). This is a `/debug` signal, not a cut signal:
+  failing check (that is what `HEALTH_WHY` carries). Usually a `/debug` signal — **but classify the
+  failing check before you emit that, because a job that never ran lands here too** (#300):
+
+  ```bash
+  # HEALTH_WHY names the failing check; find the run that produced it and ask whether it EXECUTED.
+  # No run id, or an unreadable classification, means emit the /debug line below unchanged — this
+  # step may soften the emission, never harden it.
+  CI_RUN="$(gh run list --branch "$DEFAULT_BRANCH" --commit "$HEAD_SHA" \
+              --json databaseId,conclusion --jq '[.[]|select(.conclusion=="failure" or .conclusion=="cancelled")][0].databaseId' 2>/dev/null || echo '')"
+  CI_CLASS=0
+  if [ -n "$CI_RUN" ]; then
+    bash "$HOME/.gemini/scripts/lib/ci-health.sh" classify --run "$CI_RUN" >/dev/null 2>&1; CI_CLASS=$?
+  fi
+  ```
+
+  **`CI_CLASS` = 23** → nothing that failed executed a step. The branch is **unverified, not
+  broken**, and `/debug` has no log to work from:
+
+  ```text
+  ⛔ Requirements met, but main's CI never executed — not ready to cut.
+  Why:  release held — failing: ci, and ci-health classified run <id> as never-ran (no step executed).
+  Next: none — re-run the failing check on main (this is not green-by-retry; nothing ran), then re-run.
+  ```
+
+  **Anything else** (22, or unclassifiable) → the ordinary red-build emission:
 
   ```text
   ⛔ Requirements met, but main is not green — not ready to cut.
   Why:  release held — failing: shellcheck. A drained checklist is not a shippable build.
   Next: none — /debug the failing check on main, then re-run.
   ```
+
+  **The classifier may only soften this emission, never harden it.** It cannot turn a red branch
+  into a cut — both arms still withhold — so an unreadable classification costs the operator a
+  wrong `/debug` suggestion, while a *hardening* one could hold a release on a guess. That is why
+  `CI_CLASS` defaults to `0` and every failure path falls through to the `/debug` line.
 
 - `indeterminate` → requirements are met but health could **not** be established (a check still
   running, or CI that has never reported on this commit). **Fail closed** — say why, and never
