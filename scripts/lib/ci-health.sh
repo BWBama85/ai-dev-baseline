@@ -9,10 +9,10 @@
 # Measured, on `BWBama85/thewilsonnet` during the 2026-08-06 GitHub Actions `major_outage`: run
 # 31126981959 concluded `failure` after 1h46m with ONE job, conclusion `cancelled`, `steps: []`, and
 # the annotation "The job was not acquired by Runner of type hosted even after multiple attempts".
-# There is no failure log to read, so step 1 of that protocol is unexecutable and step 2 offered two
-# boxes, neither of which fits. Both wrong answers were live: debugging your own diff against a run
-# that executed zero lines, and filing a de-flake issue that `issues-and-scope.md` forbids (nobody
-# does it; nothing in the repo breaks if nobody ever does).
+# There is no failure log to read, so that protocol's "read the failure log" step was unexecutable
+# and its "classify" step offered two boxes, neither of which fits. Both wrong answers were live:
+# debugging your own diff against a run that executed zero lines, and filing a de-flake issue that
+# `issues-and-scope.md` forbids (nobody does it; nothing in the repo breaks if nobody ever does).
 #
 # This module is the classification, as a tested command rather than a fourth paragraph of prose —
 # the same move that turned the dependency-edge rule, the release-readiness ladder and `/cleanup`'s
@@ -155,6 +155,19 @@ _ci_classify_doc() {
   # NOTE: no apostrophe anywhere inside this program — it is a single-quoted shell string, and one
   # stray apostrophe closes it and turns the rest of the file into a syntax error.
   out="$(printf '%s' "$doc" | jq -r '
+    # EVERY API-SUPPLIED STRING THAT REACHES THE REASON LINE GOES THROUGH `s1` FIRST. stdout is a
+    # TWO-LINE contract — verdict on line 1, reason on line 2 — and a job name is the one field
+    # here whose content this code does not control. A workflow may legitimately write
+    # `name: >` with a folded block scalar, and GitHub returns the embedded newline verbatim: the
+    # reason then spans three lines, a caller reading line 2 gets a truncated sentence, and a
+    # caller reading line 3 gets a fragment of a job name where it expects nothing at all.
+    # Found by self-review, reproduced with a name carrying a literal newline.
+    def s1: tostring | gsub("[\\n\\r\\t]+"; " ");
+    # A timestamp must LOOK like one before it is arithmetic. `fromdateiso8601` raises on a value it
+    # cannot parse, which this function maps to a generic "malformed input" — fail-closed, but it
+    # tells the operator nothing about WHICH field was wrong. Checking the shape first buys a
+    # specific reason for the one class of malformation the API can realistically produce.
+    def isinstant: (type == "string") and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$");
     if type != "object" then error("the document is not an object") else . end
     | if (has("run") | not) or (has("jobs") | not)
       then error("run and jobs are both required") else . end
@@ -190,26 +203,28 @@ _ci_classify_doc() {
       # overdue: a long `in_progress` build is a slow build, not an outage, and calling it one
       # would hand every heavy test suite the excuse this module exists to ration.
       ( if ($status | IN("queued","waiting","requested","pending")) then
-          ( ($run.run_started_at // $run.created_at // "") ) as $since
-          | if $since == "" then
-              "unknown\nthe run has not started and carries no timestamp to age it against"
+          ( ($run.run_started_at // $run.created_at // null) ) as $since
+          | if ($since | isinstant | not) then
+              "unknown\nthe run has not started and carries no usable UTC timestamp to age it against"
+            elif (.now | isinstant | not) then
+              "unknown\nthe supplied clock is not a UTC instant, so the queue age cannot be computed"
             else
               ((.now | fromdateiso8601) - ($since | fromdateiso8601)) as $age
               | if $age >= .queued_threshold_secs then
-                  "queued\nattempt \($attempt) has been \($status) for \($age | floor) seconds (threshold \(.queued_threshold_secs)) and has executed nothing"
+                  "queued\nattempt \($attempt) has been \($status | s1) for \($age | floor) seconds (threshold \(.queued_threshold_secs)) and has executed nothing"
                 else
-                  "pending\nattempt \($attempt) is \($status) (\($age | floor)s, under the \(.queued_threshold_secs)s threshold)"
+                  "pending\nattempt \($attempt) is \($status | s1) (\($age | floor)s, under the \(.queued_threshold_secs)s threshold)"
                 end
             end
         else
-          "pending\nattempt \($attempt) is \($status)"
+          "pending\nattempt \($attempt) is \($status | s1)"
         end )
 
     # --- the run concluded --------------------------------------------------------------------
     # `skipped` and `neutral` are NOT failures — that is how GitHub scores a required check, and
     # treating a fully-skipped run as red would flag every repo with conditional workflows.
     elif ($concl != null) and ($concl | IN("success","skipped","neutral")) then
-      "green\nattempt \($attempt) concluded \($concl)"
+      "green\nattempt \($attempt) concluded \($concl | s1)"
     elif $concl == null then
       "unknown\nthe run reports status completed with no conclusion"
 
@@ -226,7 +241,7 @@ _ci_classify_doc() {
     # A successfully-read `total_count: 0` and a response that lost its array are indistinguishable
     # from here, so this fails closed.
     elif ($jobs | length) == 0 then
-      "unknown\nattempt \($attempt) concluded \($concl) with no jobs to inspect, so what executed cannot be established"
+      "unknown\nattempt \($attempt) concluded \($concl | s1) with no jobs to inspect, so what executed cannot be established"
 
     else
       # A job is NON-PASSING if it did not conclude in a state GitHub scores as non-failing. A job
@@ -239,7 +254,7 @@ _ci_classify_doc() {
       | ( [ $bad[] | select((.steps // []) | length > 0) ] )  as $bad_ran
       | ( [ $bad[] | select((.steps // []) | length == 0) ] ) as $bad_idle
       | if ($bad | length) == 0 then
-          "unknown\nattempt \($attempt) concluded \($concl) but every job passed, so the failure cannot be attributed"
+          "unknown\nattempt \($attempt) concluded \($concl | s1) but every job passed, so the failure cannot be attributed"
 
         # AT LEAST ONE non-passing job executed a step, so a log exists and the diff is in scope.
         # This is checked BEFORE `never-ran` on purpose: a matrix in which three shards never
@@ -248,11 +263,11 @@ _ci_classify_doc() {
         # genuine failures. The idle shards are still NAMED, because a half-run matrix is
         # something the operator has to know about to read the result correctly.
         elif ($bad_ran | length) > 0 then
-          "failed\nattempt \($attempt) concluded \($concl); executed and did not pass: "
-          + ([$bad_ran[] | "\(.name // "job") (\(.conclusion // .status // "?"))"] | join(", "))
+          "failed\nattempt \($attempt) concluded \($concl | s1); executed and did not pass: "
+          + ([$bad_ran[] | "\((.name // "job") | s1) (\((.conclusion // .status // "?") | s1))"] | join(", "))
           + (if ($bad_idle | length) > 0 then
                " — and \($bad_idle | length) job(s) executed NO step: "
-               + ([$bad_idle[] | .name // "job"] | join(", "))
+               + ([$bad_idle[] | (.name // "job") | s1] | join(", "))
              else "" end)
 
         # THE THIRD CLASS. Every non-passing job carries an empty `steps` array: nothing ran, so the
@@ -261,9 +276,9 @@ _ci_classify_doc() {
         # depend on it.
         else
           ( [ $anns[] | select((.messages // []) | length > 0)
-              | "\(.name // "job"): \((.messages // []) | join("; "))" ] ) as $why
-          | "never-ran\nattempt \($attempt) concluded \($concl) and NOT ONE of \($bad_idle | length) non-passing job(s) executed a step: "
-            + ([$bad_idle[] | "\(.name // "job") (\(.conclusion // .status // "?"))"] | join(", "))
+              | "\((.name // "job") | s1): \([(.messages // [])[] | s1] | join("; "))" ] ) as $why
+          | "never-ran\nattempt \($attempt) concluded \($concl | s1) and NOT ONE of \($bad_idle | length) non-passing job(s) executed a step: "
+            + ([$bad_idle[] | "\((.name // "job") | s1) (\((.conclusion // .status // "?") | s1))"] | join(", "))
             + (if ($why | length) > 0 then " — annotation: " + ($why | join(" | ")) else "" end)
         end
     end
@@ -301,7 +316,7 @@ _ci_classify_doc() {
 
 # --- the live reads ------------------------------------------------------------------------------
 cmd_classify() {
-  local slug runraw jobsraw jobsdoc annraw doc now idle_names
+  local slug runraw jobsraw jobsdoc annraw doc now run_url
 
   [ -n "$OPT_RUN" ] || { echo "ci-health: classify requires --run <id>" >&2; return 2; }
   case "$OPT_RUN" in
@@ -353,6 +368,12 @@ cmd_classify() {
   annraw='[]'
   if [ "$OPT_ANNOTATIONS" -eq 1 ]; then
     annraw="$(_ci_annotations "$slug" "$jobsdoc")" || annraw='[]'
+    # BELT TO THE BRACES ABOVE, and not decoration. `--argjson annotations ""` is a jq ERROR, so an
+    # empty capture here would fail the document assembly and return 20 — turning a hiccup in the
+    # enrichment read into a verdict failure, which is precisely the coupling the paragraph above
+    # says cannot happen. The helper always prints something today; this is what keeps that from
+    # being load-bearing.
+    [ -n "$annraw" ] || annraw='[]'
   fi
 
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -367,8 +388,17 @@ cmd_classify() {
     || { echo "ci-health: could not assemble the run document" >&2; return 20; }
 
   # Emitted for a human before the verdict, because a run id is not something anyone recognises.
-  idle_names="$(printf '%s' "$runraw" | jq -r '.html_url // ""' 2>/dev/null)"
-  [ -n "$idle_names" ] && echo "ci-health: classifying $idle_names" >&2
+  # SHAPE-CHECKED FIRST: this is an API-supplied string going straight into a log line, and one
+  # carrying a newline would forge the line after it. Every other API value in this file is either
+  # validated (the slug) or routed through the one-line sanitizer in the jq program; this one is
+  # neither, so it is only printed when it looks like a URL and contains no whitespace at all.
+  run_url="$(printf '%s' "$runraw" | jq -r '.html_url // ""' 2>/dev/null)"
+  case "$run_url" in
+    https://*[[:space:]]*|http://*[[:space:]]*) run_url="" ;;
+    https://*|http://*) : ;;
+    *) run_url="" ;;
+  esac
+  [ -n "$run_url" ] && echo "ci-health: classifying $run_url" >&2
 
   printf '%s' "$doc" | _ci_classify_doc
 }

@@ -118,10 +118,15 @@ lucky green). Diagnose first, always.
 The third class is here because the two-box model was **measurably wrong** during
 the GitHub Actions `major_outage` of 2026-08-06. A run concluded `failure` after
 1h46m having executed zero steps, with the runner-acquisition annotation above and
-an empty step list; a sibling workflow on the same commit succeeded. Step 2 was
-unexecutable — there was no log — and step 3 offered two boxes, neither of which
-fit. "Resource artifact" is the closest of the two and routes to step 5, so the
-letter of this practice mandated filing a de-flake issue that `issues-and-scope.md`
-forbids. Two practices, opposite instructions, for one event. The override had to
-be made by hand and said out loud, and every agent meeting the next outage would
-have had to re-derive it — or follow the letter and file the noise.
+an empty step list; a sibling workflow on the same commit succeeded. "Read the
+failure log" was unexecutable — there was no log — and "classify" offered two
+boxes, neither of which fit. "Resource artifact" is the closer of the two, and it
+routes to the de-flake issue, so the letter of this practice mandated filing
+something `issues-and-scope.md` forbids. Two practices, opposite instructions, for
+one event. The override had to be made by hand and said out loud, and every agent
+meeting the next outage would have had to re-derive it — or follow the letter and
+file the noise.
+
+(Step numbers are deliberately absent from that account: it describes the protocol
+as it stood *before* the third class was added, and the steps have renumbered since.
+Naming them survives the next edit; a number silently stops meaning what it meant.)

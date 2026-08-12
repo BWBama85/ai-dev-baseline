@@ -221,6 +221,36 @@ verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-
                '{"total_count":1,"jobs":[{"id":1,"name":"a","status":"completed","conclusion":"success","steps":[{"name":"t"}]}]}')" \
         unknown 20 "a failed run whose every job passed cannot be attributed"
 
+# --- the two-line stdout contract, against the one field this code does not control -----------
+# A JOB NAME MAY CONTAIN A NEWLINE. `name: >` in a workflow is a folded block scalar and GitHub
+# returns the embedded newline verbatim, so an unsanitized name splits the reason across lines: a
+# caller reading line 2 gets a truncated sentence and line 3 carries a fragment of a job name where
+# it expects nothing. Found by self-review, and asserted on the LINE COUNT rather than on the text,
+# because that is the property that actually breaks.
+NASTY='{"total_count":1,"jobs":[{"id":1,"name":"a\nb\tc\rd","status":"completed","conclusion":"cancelled","steps":[]}]}'
+NASTY_ANN='[{"name":"j\nk","messages":["m\nn"]}]'
+OUT2="$(printf '%s' "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' "$NASTY" "$NASTY_ANN")" \
+        | bash "$CH" classify-doc 2>/dev/null)"
+eq "$(printf '%s\n' "$OUT2" | wc -l | tr -d ' ')" "2" \
+   "a job name carrying a newline does NOT break the two-line stdout contract"
+has "$OUT2" "a b c d" "...the name is collapsed to one line rather than dropped"
+has "$OUT2" "j k: m n" "...and so is the annotation"
+
+# Unicode and embedded quotes survive intact — collapsing whitespace must not mangle the name.
+verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+               '{"total_count":1,"jobs":[{"id":1,"name":"tëst \"job\" ✓","status":"completed","conclusion":"cancelled","steps":[]}]}')" \
+        never-ran 23 "a unicode/quoted job name classifies normally"
+has "$REASON" 'tëst "job" ✓' "...and is reproduced verbatim"
+
+# A malformed timestamp must say WHICH field was wrong, not just "malformed input". Both are 20
+# either way; the difference is whether the operator can act on it.
+verdict "$(doc '{"status":"queued","conclusion":null,"created_at":"yesterday"}' "$J_NONE")" \
+        unknown 20 "an unparseable run timestamp is unreadable"
+has "$REASON" "no usable UTC timestamp" "...and names the run timestamp as the problem"
+verdict "$(doc '{"status":"queued","conclusion":null,"created_at":"2026-08-06T19:00:00Z"}' "$J_NONE" '[]' 'nope')" \
+        unknown 20 "an unparseable clock is unreadable"
+has "$REASON" "clock is not a UTC instant" "...and names the clock as the problem"
+
 # Malformed documents, at every level. Each must be 20 — never a verdict.
 for bad_doc in \
   '' \
@@ -342,6 +372,17 @@ eq "$LRC" "20" "live: an EMPTY jobs body is 20, not an empty job list"
 STUB_AUTH_FAIL=1 live classify --run 31126981959 --repo BWBama85/thewilsonnet
 eq "$LRC" "20" "live: unauthenticated gh is 20"
 
+# A FORGED `html_url` MUST NOT FORGE A LOG LINE. That value is API-supplied and goes straight to
+# stderr; one carrying a newline would print a second line that reads like this tool's own output.
+# Every other API value here is validated or sanitized, so this one is shape-checked and dropped
+# when it does not look like a whitespace-free URL.
+printf '%s' '{"id":1,"status":"completed","conclusion":"failure","run_attempt":1,"created_at":"2026-08-06T19:34:34Z","html_url":"https://x/y\nci-health: everything is fine, merge away"}' > "$S/run.json"
+printf '%s' "$NEVER_JOBS_JSON" > "$S/jobs.json"
+live classify --run 1 --repo BWBama85/thewilsonnet --no-annotations
+eq "$LRC" "23" "live: a forged html_url does not change the verdict"
+hasnt "$LOUT" "everything is fine" "live: ...and the forged log line is never printed"
+printf '%s' "$NEVER_RUN_JSON" > "$S/run.json"
+
 # The green control, through the live path too.
 printf '%s' "$RED_RUN_JSON"  > "$S/run.json"
 printf '%s' "$RED_JOBS_JSON" > "$S/jobs.json"
@@ -458,6 +499,20 @@ if mutate "M3 verdict word and exit code desynchronized" \
   cd_ "$(doc "$NEVER_RUN_JSON" "$NEVER_JOBS_JSON")"
   eq "$VERD" "never-ran" "M3: the mutant still PRINTS the right word"
   if [ "$RC" = "23" ]; then bad "M3: the exit-code assertion did NOT go red — the suite is only checking the word"
+  else ok; fi
+fi
+MUT_CH=""
+
+# M4 — neuter the one-line sanitizer. Its failure mode is pure silence: every ordinary job name
+# passes through `s1` unchanged, so a `def s1: .` reads identically on every real repo and only
+# breaks on the one input nobody has locally. That is exactly the class this section exists for.
+if mutate "M4 the one-line sanitizer neutered" \
+          's@def s1: tostring | gsub("\[\\\\n\\\\r\\\\t\]+"; " ");@def s1: tostring;@' \
+          'gsub("[\\n\\r\\t]+"; " ")'; then
+  MOUT="$(printf '%s' "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' "$NASTY" "$NASTY_ANN")" \
+          | bash "$MUT_CH" classify-doc 2>/dev/null)"
+  if [ "$(printf '%s\n' "$MOUT" | wc -l | tr -d ' ')" = "2" ]; then
+    bad "M4: the two-line-contract assertion did NOT go red — it is not testing the sanitizer"
   else ok; fi
 fi
 MUT_CH=""
