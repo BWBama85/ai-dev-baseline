@@ -61,11 +61,15 @@ the baseline does not yet have. Say so when you report; do not imply the plan ap
 3. four **hygiene findings** — product-code boundary, distributable config, layered precedence,
    and a broad ignore rule that swallows the runtime state dir;
 4. an **upstream pin** recording which baseline this project inherited;
-5. an **ordered migration plan** — escalations first, then re-homing, then removal.
+5. an **ordered migration plan** — escalations first, then re-homing, then removal;
+6. a **completion-contract verdict** (#81) — green, or a precise list of what remains **and who
+   must decide it**. It is fail-closed: a rung nobody could report is `unknown`, never a pass.
 
-Every decision above is made by one tested predicate library, `bash "$HOME/.claude/scripts/lib/adopt-lib.sh"`
-(`scripts/lib/adopt-lib.sh`, regression-tested by `scripts/check-adopt.sh`). This document tells
-you *what the answers mean and what to do with them*; it does not restate how they are computed.
+Every decision above is made by one of two tested predicate libraries — `bash "$HOME/.claude/scripts/lib/adopt-lib.sh"`
+(`scripts/lib/adopt-lib.sh`, regression-tested by `scripts/check-adopt.sh`) for 1–5, and
+`bash "$HOME/.claude/scripts/lib/adopt-readiness.sh"` (`scripts/lib/adopt-readiness.sh`, regression-tested by
+`scripts/check-adopt-readiness.sh`) for 6. This document tells you *what the answers mean and
+what to do with them*; it does not restate how they are computed.
 
 ---
 
@@ -410,11 +414,115 @@ or if the `ignore-risk` axis fired: it is what makes the state-dir ignore rule d
 from inside `$PROJECT` too**, and for the same reason: it resolves the git root from the current
 directory, so from anywhere else it initializes a different repository.
 
-### 12. Report
+### 12. The completion contract — is this project actually ready to run? (#81)
+
+Everything above answers *"what does this project already have, and what must be reconciled"*.
+It does **not** answer *"can this project now run the loop"*, and adoption has repeatedly ended
+with the second question unasked: machinery installed, and the hardest decisions — which issues
+are in the next release, what happens to pre-existing milestones, whether the gates actually
+execute — left to whoever noticed they were missing. The measured failure is not a crash. One
+surveyed repo came out of adoption with a `Next release` milestone holding **zero issues**, so
+`/roadmap` correctly emitted nothing and adoption "succeeded" having produced a dead flow.
+
+So `/adopt` finishes by verifying a **contract**, and it is **fail-closed**: a rung nobody
+reported is `unknown`, and `unknown` is never green.
+
+**This step reports. It never repairs.** The boundary at the top of this file is unchanged —
+every rung is an observation plus the **owner** who must act on it, which is what makes the
+report usable rather than merely correct.
+
+```bash
+# ADB-SNIPPET: contract
+# The contract itself, so a reader can see what is being asked before seeing the answers.
+bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" contract
+```
+
+**The offline half first** — the rungs decidable from the filesystem alone:
+
+```bash
+# ADB-SNIPPET: readiness-probe
+bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" probe "$PROJECT" --agents "$AGENTS" > ".claude/state/readiness-probe.tsv"
+```
+
+**Then the tracker half.** These need live reads, and every one comes from the reader that
+already owns it — `/adopt` gathers, it does not re-derive:
+
+```bash
+# ADB-SNIPPET: readiness-facts
+# RUN IT INSIDE $PROJECT. `facts` resolves the repository from the CURRENT DIRECTORY, so with an
+# explicit target path — `/adopt ../other-project` — a bare invocation would report on whatever
+# repo the operator happens to be standing in. Same reason as step 11's repo block; the subshell
+# keeps the cd from leaking.
+#
+# WHY THIS IS A SUBCOMMAND AND NOT A `gh` BLOCK IN THIS FILE. Every read here has a
+# fail-direction that matters — a failed read must be OMITTED (so the rung is `unknown`), never
+# defaulted to zero (which would report a repo whose tracker could not be read as a repo with
+# nothing in it). That is a rule, and a rule written in prose is one an agent re-derives every
+# run and nothing can regression-test. `facts` is thin — it reads and assembles, it classifies
+# nothing — and `tracker` below, which holds all the rules, stays offline and tested.
+( cd "$PROJECT" && bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" facts ) > ".claude/state/readiness-facts.json"
+```
+
+```bash
+# ADB-SNIPPET: readiness-tracker
+# `dispositions` in that JSON is the set of retired question ids from the roadmap artifact's
+# ## Decisions section — the owner-authoritative table /roadmap never rewrites. A pre-existing
+# milestone is dispositioned by a row whose Question cell reads `milestone:<title>`.
+bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" tracker < ".claude/state/readiness-facts.json" > ".claude/state/readiness-tracker.tsv"
+```
+
+**Then the verdict**, over both halves at once:
+
+```bash
+# ADB-SNIPPET: readiness-verdict
+cat ".claude/state/readiness-probe.tsv" ".claude/state/readiness-tracker.tsv" \
+  | bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" verdict
+# 0 green · 10 red (something remains) · 11 indeterminate (a fact could not be established) · 2 usage
+```
+
+Outside an adoption run, the same contract is re-checkable any time in one command — it composes
+exactly the four steps above and returns `verdict`'s exit code unchanged:
+
+```bash
+# ADB-SNIPPET: readiness-status
+baseline adopt status          # or: bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" status <project-root>
+```
+
+**Report the verdict word, never a summary of your own.** `green` means every rung was met;
+`red` means the report's OUTSTANDING list is what remains; `indeterminate` means a fact could not
+be established, which is *not* the same as nothing being wrong. Say which, and pass the report
+through — it already names each rung's owner.
+
+#### The gate rung, and why it needs your consent
+
+`gates` is the one rung that cannot be settled by looking. **Detection is not working**: a gate
+that is detected but errors is a silent no-op, so the rung is met only against a **receipt** that
+the gates were *executed* at this commit, with this gate configuration, and passed.
+
+Producing that receipt means running the project's own configured commands, and in several
+ecosystems a `format` gate rewrites files in place. That is a mutation, so **ask before you run
+it** and skip it without argument if the answer is no — a `todo` on this rung is an honest
+outcome, and it is the one #81 asks for over a silent pass:
+
+```bash
+# ADB-SNIPPET: readiness-gates
+# ONLY WITH EXPLICIT CONSENT. It executes the SCANNED PROJECT's commands, in that project.
+bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" receipt run "$PROJECT"
+```
+
+If no gate is detected at all, the rung is **red and loud**. That is a deliberate inversion of
+`project-gates.sh`'s own contract, which emits nothing for an unrecognized ecosystem and exits 0
+— correct for a gate runner asked about an unknown repo, and wrong for an adoption, where it
+means the project just shipped with enforcement silently off. The remedy is an explicit
+`agents.toml [gates]` decision, and a deliberate `""` disable or a `[gates.state] … = "na"`
+**counts** — a recorded decision is not a gap.
+
+### 13. Report
 
 State, in this order: the resolved shape and **what was outside your reach**; the inventory counts
 per verdict; every `move` with its parity caveat; every hygiene finding; every `escalate` as a
-question for the owner; and the ordered plan.
+question for the owner; the ordered plan; and the **completion-contract verdict** with its
+outstanding and undetermined rungs.
 
 End by saying plainly **what was written and what was not** — that the plan's `move` and `remove`
 steps are the operator's to execute, and that this run did not perform them.

@@ -68,8 +68,17 @@ single source; both trace back to it.
 known one.** The baseline installs into projects it has never seen.
 
 - `scripts/lib/project-gates.sh` *detects* gates for whole ecosystems (Node, Rust, Go,
-  Python) rather than naming individual repos, and **emits nothing** on an ecosystem it
-  doesn't recognize — a safe no-op, never a wrong guess.
+  Python, PHP) rather than naming individual repos, and **emits nothing** on an ecosystem it
+  doesn't recognize — a safe no-op, never a wrong guess. Each ecosystem is one
+  `_adb_eco_<name>` adapter plus one token in the `_ADB_ECOSYSTEMS` order, so the set grows
+  by addition rather than by editing a record builder (#81).
+
+  **"Emits nothing is a safe no-op" holds for the gate RUNNER and stops there.** A gate
+  runner asked about a repo it does not recognize should stay quiet; an *adoption* that
+  ends with zero gates has silently shipped a project with no enforcement, and the two
+  need opposite defaults. `adopt-readiness.sh` is where the second one lives: the same
+  empty detection that `run` treats as a clean exit is a **red rung** there, named out
+  loud as an owner decision. Do not "fix" one by changing the other.
 - The practices are written in terms of what *an agent* should do, not what a particular
   agent does. Agent-specific wiring lives in `agents/<token>/`, never in `base/`.
 

@@ -149,9 +149,9 @@ compose:
 `scripts/lib/project-gates.sh` auto-detects gates for the
 common ecosystems (Node via `package.json` + lockfile → `pnpm`/`npm`/`yarn`/
 `bun`; Rust via `Cargo.toml`; Go via `go.mod`; Python via `pyproject.toml`/
-`setup.py`/`setup.cfg`/`requirements.txt`). A project's `agents.toml` can
-override any of the four built-in labels — `typecheck`, `lint`, `test`,
-`format` — individually:
+`setup.py`/`setup.cfg`/`requirements.txt`; PHP via `composer.json`). A
+project's `agents.toml` can override any of the four built-in labels —
+`typecheck`, `lint`, `test`, `format` — individually:
 
 ```toml
 [gates]
@@ -168,11 +168,28 @@ ecosystem can set all four keys explicitly and get full gate coverage
 `project-gates.sh` would never have found on its own.
 
 **Detection is single-primary-ecosystem.** The first ecosystem (Node → Rust
-→ Go → Python) that yields at least one command wins; the rest are skipped.
-A polyglot repo (e.g. `package.json` **and** `pyproject.toml`) gets the
-primary ecosystem's gates automatically and layers the second ecosystem's in
-via the open set below. Running every detected ecosystem's gates
-automatically is a tracked follow-up.
+→ Go → Python → PHP) that yields at least one command wins; the rest are
+skipped. A polyglot repo (e.g. `package.json` **and** `pyproject.toml`) gets
+the primary ecosystem's gates automatically and layers the second
+ecosystem's in via the open set below. Running every detected ecosystem's
+gates automatically is a tracked follow-up.
+
+**PHP is last, and a WordPress-shaped repo is why that matters to you.** A
+plugin or theme routinely carries a `composer.json` **and** a `package.json`
+for its asset build. Such a repo keeps its **Node** gates — those are
+commands the project itself declared — and its PHP gates are the polyglot
+case above: add them through the open set. A repo with only `composer.json`
+is detected as PHP directly. (`/adopt`'s `stack` classifier answers
+`php-wordpress` for the same tree, and the difference is deliberate: that
+one labels the project for the upstream pin, while this one decides which
+commands gate a commit.)
+
+The PHP adapter prefers a **declared `composer.json` script** (`test`,
+`lint`) over an inferred binary, and prefers a Composer-pinned
+`vendor/bin/<tool>` over the same tool on `PATH`. It resolves `typecheck` to
+PHPStan or Psalm, `test` to PHPUnit, `lint` to PHP_CodeSniffer, and `format`
+to `php-cs-fixer --dry-run` — never an in-place fixer, because a gate that
+rewrites the tree is a mutation wearing a verification's clothes.
 
 #### Gates are an open set (`build`, `guards`, …)
 

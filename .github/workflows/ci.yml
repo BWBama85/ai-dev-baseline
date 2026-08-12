@@ -1042,6 +1042,16 @@ jobs:
       - name: /adopt guards must be able to fail — every decision mutated, each observed RED (#20)
         run: bash scripts/check-adopt.sh --mutation
 
+      # The completion contract rides THIS job rather than a new one, for the reason stated above:
+      # a second job is a second required status context for branch protection to grow, and this
+      # split does not earn one. Same two invocations, same both-platform reasoning — registering
+      # only in selfcheck.sh would exercise these on macOS alone.
+      - name: adoption completion contract — the twelve rungs and the fail-closed verdict (#81)
+        run: bash scripts/check-adopt-readiness.sh
+
+      - name: ...and its guards must be able to fail — 18 mutations, each observed RED (#81)
+        run: bash scripts/check-adopt-readiness.sh --mutation
+
   practice-index:
     name: practice-index
     runs-on: ubuntu-26.04

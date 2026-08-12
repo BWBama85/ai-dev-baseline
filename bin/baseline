@@ -20,6 +20,10 @@
 #   baseline release …         # the optional release-goal convention in this repo: 'init' /
 #                              #   'status' to stand it up, 'roll' to roll the milestone after a
 #                              #   release is cut (issues #27/#74; 'baseline release -h' for more)
+#   baseline adopt status      # the ADOPTION COMPLETION CONTRACT (#81): is this project actually
+#                              #   ready to run the loop? Twelve rungs, fail-closed — a fact that
+#                              #   could not be established is never a pass. Re-runnable any time;
+#                              #   exits 0 green / 10 red / 11 indeterminate
 #   baseline -h | --help
 #
 # `update` never touches unsafe state: it fast-forwards ONLY when the install-source
@@ -105,6 +109,15 @@ fi
 if [ "${1:-}" = "repo" ]; then
   shift
   exec bash "$REPO/scripts/lib/repo-settings.sh" "$@"
+fi
+
+# Delegate the adoption completion contract to its library (#81) — same reasoning as the three
+# above, and one more: `status` reads the PROJECT's tracker through `gh`, resolved from the
+# current directory, so dispatching after the wrong-clone guard would make it answer about the
+# install-source clone instead of the repo the operator is standing in.
+if [ "${1:-}" = "adopt" ]; then
+  shift
+  exec bash "$REPO/scripts/lib/adopt-readiness.sh" "$@"
 fi
 
 # --- discovery ---------------------------------------------------------------
@@ -373,7 +386,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ "$ACTION" != "update" ]; then
-  echo "baseline: expected a subcommand ('update', 'skill-compose', 'release', or 'repo')" >&2; echo >&2; usage >&2; exit 2
+  echo "baseline: expected a subcommand ('update', 'skill-compose', 'release', 'repo', or 'adopt')" >&2; echo >&2; usage >&2; exit 2
 fi
 
 # --- resolve the install-source clone ----------------------------------------
