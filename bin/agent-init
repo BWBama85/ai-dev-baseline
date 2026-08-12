@@ -68,7 +68,8 @@ done
 # agents.toml into whatever directory the operator happened to be in. This project pins a 5.3
 # floor, so today that fallback happens to refuse; it refuses by accident, with an empty path in
 # its message, and an accident is not a guard.
-if [ -z "$(adb_shape_val "$shape" root)" ]; then
+ROOT="$(adb_shape_val "$shape" root)"
+if [ -z "$ROOT" ]; then
   echo "ERROR: refusing to initialize — this path cannot be represented in the repo-shape record" >&2
   echo "  format, so the root it resolves to cannot be trusted (see the warning above)." >&2
   echo "  A directory name containing a TAB or a NEWLINE is not supported: the record splits and" >&2
@@ -83,7 +84,6 @@ if [ "$(adb_shape_val "$shape" in_git)" != "1" ]; then
   echo "  'git init' this directory first if it really is a standalone project." >&2
   exit 1
 fi
-ROOT="$(adb_shape_val "$shape" root)"
 
 # Surface any non-tidy repo shape BEFORE writing anything, so the operator sees exactly what
 # agent-init can and cannot manage. None of these are errors — but agent-init must never pretend

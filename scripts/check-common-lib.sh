@@ -491,6 +491,44 @@ eq "$(adb_shape_val "$sh7g" root)" "" "shape/unsafe: an unsafe nonexistent path 
 # The forgery this prevents, asserted directly: the injected `in_git<TAB>1` must not appear at all.
 eq "$(adb_shape_all "$sh7g" in_git | wc -l | tr -d ' ')" "0" "shape/unsafe: the injected in_git record is never emitted"
 
+# (7h) The RESOLVED ROOT is unsafe while the start dir is perfectly safe. This is the case that
+# refutes the tempting shortcut "root is start or an ancestor of it, so a safe start implies a safe
+# root". `GIT_DIR`/`GIT_WORK_TREE` redirect git's answer to a tree that need not contain the start
+# dir at all, so `--show-toplevel` returns the unsafe work tree from a clean working directory —
+# and pre-guard, that path was emitted, split, and handed to agent-init as its write root.
+wt_safe="$work/wt-safe"; mkdir -p "$wt_safe"
+wt_bad="$work/worktree"$'\nredirect'; mkdir -p "$wt_bad"; git init -q "$wt_bad"
+sh7h="$( GIT_DIR="$wt_bad/.git" GIT_WORK_TREE="$wt_bad" adb_repo_shape "$wt_safe" )"
+eq "$(adb_shape_val "$sh7h" root)" "" "shape/unsafe: an unsafe RESOLVED root emits no root"
+eq "$(printf '%s\n' "$sh7h" | wc -l | tr -d ' ')" "1" "shape/unsafe: an unsafe resolved root refuses atomically"
+has "$sh7h" "resolved repository root" "shape/unsafe: and says it was the RESOLVED root that failed"
+
+# (7j) The same redirection onto a work tree whose name ENDS in a newline. This is what makes the
+# sentinel on the `git rev-parse` capture load-bearing: git terminates its answer with a newline
+# and `$(…)` strips every trailing one, so without the sentinel this root arrives already
+# shortened into a DIFFERENT path and then passes the check above looking entirely ordinary.
+wt_trail="$work/worktree"$'\n'; mkdir -p "$wt_trail"; git init -q "$wt_trail"
+sh7j="$( GIT_DIR="$wt_trail/.git" GIT_WORK_TREE="$wt_trail" adb_repo_shape "$wt_safe" )"
+eq "$(adb_shape_val "$sh7j" root)" "" "shape/unsafe: a TRAILING-newline resolved root emits no root"
+hasnt "$(adb_shape_val "$sh7j" root)" "$work/worktree" "shape/unsafe: and is not silently shortened into the sibling path"
+
+# (7i) The ENCLOSING repo's root is unsafe while this repo's root is safe — a second, independent
+# git query, redirected by `core.worktree` on the outer repo. Suppressed per FIELD, because
+# `nested_in` is a note about a neighbour and this repo's own facts are sound.
+nst_outer="$work/nst-outer"; mkdir -p "$nst_outer"; git init -q "$nst_outer"
+nst_bad="$work/nst-redirected"$'\nwt'; mkdir -p "$nst_bad"
+git -C "$nst_outer" config core.worktree "$nst_bad"
+nst_inner="$nst_outer/inner"; mkdir -p "$nst_inner"; git init -q "$nst_inner"
+sh7i="$(adb_repo_shape "$nst_inner")"
+eq  "$(adb_shape_val "$sh7i" root)" "${ canon "$nst_inner"; }" "shape/unsafe: an unnameable ENCLOSING repo does not cost this repo its root"
+eq  "$(adb_shape_val "$sh7i" nested_in)" "" "shape/unsafe: the unnameable enclosing root is not emitted as nested_in"
+has "$(adb_shape_all "$sh7i" warning)" "enclosing repository root" "shape/unsafe: and dropping it is announced"
+eq  "$(adb_shape_val "$sh7i" parent_in_git)" "1" "shape/unsafe: parent_in_git is still 1 — the fact is unaffected"
+# No forged records from either redirection.
+eq "$(printf '%s\n' "$sh7i" | cut -f1 \
+      | grep -Evc '^(in_git|root|cwd_is_root|parent_in_git|nested_in|foreign_doc|extra_doc|scan_truncated|warning)$')" \
+   "0" "shape/unsafe: an unnameable enclosing root forges no record"
+
 # (7e) An unsafe tracked doc BELOW a perfectly safe root is suppressed per FIELD, not by refusing
 # the whole shape — `rel` comes from `git ls-files`, so it is the one path-bearing value that is
 # not a prefix of root. The good sibling doc must survive, or the fix would have cost a real fact.

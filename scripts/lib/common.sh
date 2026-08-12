@@ -1703,10 +1703,31 @@ adb_repo_shape() {
 
   # `git -C <physical dir> rev-parse --show-toplevel` returns a physical (symlink-resolved) path,
   # so — because `start` is already physical — root and parent_root need no further `pwd -P`.
-  if root="$(git -C "$start" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$root" ]; then
+  #
+  # SAME SENTINEL AS ABOVE, for the same reason: git terminates its answer with a newline and
+  # `$(…)` strips every trailing one, so a work tree whose directory name ENDS in a newline would
+  # arrive here already shortened into a different path — and would then pass the check below
+  # looking perfectly ordinary.
+  if root="$(git -C "$start" rev-parse --show-toplevel 2>/dev/null && printf 'X')" \
+     && root="${root%X}" && root="${root%$'\n'}" && [ -n "$root" ]; then
     in_git=1
   else
     root="$start"
+  fi
+  # THE RESOLVED ROOT IS CHECKED ON ITS OWN, and this is NOT redundant with the two checks above.
+  # It is tempting to argue that `root` is `start` or one of its ancestors, so a delimiter-free
+  # start implies a delimiter-free root — that argument is FALSE, and self-review caught it by
+  # trying to break it. `GIT_DIR`/`GIT_WORK_TREE` in the environment (and `core.worktree` in a
+  # config) redirect git's answer to a tree that need not contain `start` at all: from a perfectly
+  # safe working directory, `--show-toplevel` then returns the unsafe work tree, the record splits,
+  # and `adb_shape_val root` hands `bin/agent-init` a truncated path to write into. Reproduced.
+  #
+  # ATOMIC, like the two above: every fact below is derived from `root`, so there is nothing
+  # honest to report once it cannot be named.
+  if ! adb_tsv_field_safe "$root"; then
+    printf 'warning\tthe resolved repository root contains a tab or newline, which this record format cannot represent: %s\n' \
+      "$(adb_tsv_field_display "$root")"
+    return 0
   fi
   printf 'in_git\t%s\n' "$in_git"
   printf 'root\t%s\n' "$root"
@@ -1716,13 +1737,32 @@ adb_repo_shape() {
   # Is root's parent inside ANY git repo? If so and that repo's top-level differs from root, root
   # is NESTED inside it. (root's own .git lives below parent, so a parent match is always a
   # DIFFERENT, enclosing repo — never root itself.) Compute the flag once, emit once.
+  #
+  # `nested_in` GETS ITS OWN CHECK, because the enclosing repo is a SECOND git query and answers
+  # independently of the first: an outer repo carrying `core.worktree = /some/unsafe<NL>path`
+  # reports that path as its top-level while `root` — resolved from a different repo — stays
+  # perfectly safe. Reproduced during self-review, which is also why the "an ancestor of a safe
+  # path is safe" shortcut is not used anywhere in this function.
+  #
+  # SUPPRESSED PER FIELD rather than atomically, unlike `root`: `nested_in` is a note about a
+  # neighbouring repository, and nothing else here is derived from it except the foreign_doc walk's
+  # stop condition — which simply falls through to the depth bound and reports `scan_truncated`.
+  # Refusing the whole shape would discard sound facts about a repo that is itself fine.
+  # `parent_in_git` still reports 1: the parent IS in a git repo, and that fact is unaffected by
+  # our inability to name it.
   parent_in_git=0
   if [ "$in_git" -eq 1 ] && [ "$parent" != "$root" ] \
-     && parent_root="$(git -C "$parent" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$parent_root" ]; then
+     && parent_root="$(git -C "$parent" rev-parse --show-toplevel 2>/dev/null && printf 'X')" \
+     && parent_root="${parent_root%X}" && parent_root="${parent_root%$'\n'}" && [ -n "$parent_root" ]; then
     parent_in_git=1
     if [ "$parent_root" != "$root" ]; then
-      nested_in="$parent_root"
-      printf 'nested_in\t%s\n' "$parent_root"
+      if adb_tsv_field_safe "$parent_root"; then
+        nested_in="$parent_root"
+        printf 'nested_in\t%s\n' "$parent_root"
+      else
+        printf 'warning\tthe enclosing repository root contains a tab or newline and cannot be named: %s\n' \
+          "$(adb_tsv_field_display "$parent_root")"
+      fi
     fi
   fi
   printf 'parent_in_git\t%s\n' "$parent_in_git"

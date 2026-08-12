@@ -4624,11 +4624,27 @@ limit: none of them is sufficient alone.
              public to any adopting repo's tooling. The value of a represented tab/newline path is
              hypothetical; the cost is a decoding contract at every call site forever.
 
-             **The refusal is ATOMIC for the root and PER-FIELD for `extra_doc`, and the split is
-             structural rather than a compromise.** Every other path emitted — `root`, `nested_in`,
-             `foreign_doc` — is `root` itself or one of its ancestors, and a path-prefix of a
-             delimiter-free path cannot contain a delimiter, so one check at the root covers them
-             all. `extra_doc` is the exception in kind: its `rel` comes from `git ls-files`, an
+             **"An ancestor of a safe path is safe" is FALSE, and the first draft of this fix
+             relied on it.** The reasoning was that `root`, `nested_in` and `foreign_doc` are all
+             `root` or one of its ancestors, so a single check on the start path covers them. The
+             mandatory self-review pass tried to break that and broke it twice, both reproduced:
+             `GIT_DIR`/`GIT_WORK_TREE` in the environment redirect `--show-toplevel` to a tree that
+             need not contain the start dir at all, so a perfectly safe working directory yields an
+             UNSAFE `root`; and `core.worktree` on an enclosing repo does the same to `nested_in`
+             while this repo's own root stays clean. Git answers each query independently, and a
+             redirected answer is not an ancestor of anything. So the rule is now positional rather
+             than inferential — **every path is checked where it is emitted** — and both git
+             captures carry the sentinel, because `$(…)` shortens a work tree whose name ends in a
+             newline before any check can see it. `foreign_doc` is the one value the ancestor
+             argument still covers, and it holds there only because its directory is derived from
+             `root` by `dirname` alone, with no further git query.
+
+             **The refusal is ATOMIC for the root and PER-FIELD for the notes, and the split is
+             structural rather than a compromise.** An unnameable `root` poisons every fact below
+             it, so there is nothing honest left to report. An unnameable `nested_in` is a note
+             about a NEIGHBOURING repository: this repo's own facts are sound, and `parent_in_git`
+             is still truthfully `1` — the parent IS in a git repo; we merely cannot name it.
+             `extra_doc` is the same kind: its `rel` comes from `git ls-files`, an
              arbitrary tracked filename, and git permits a newline in one. A repo at a clean path
              can therefore track `packages/we<NL>ird/CLAUDE.md` and forge a record from inside an
              otherwise sound shape — reproduced before the fix. Refusing the whole shape for one

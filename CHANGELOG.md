@@ -30,11 +30,18 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     repo — before any check can see it. The capture in between now carries an `X` sentinel so the
     trailing byte survives, and a safe-named symlink onto an unsafe physical target is caught by
     the second check rather than silently accepted.
+  - **Every path is checked where it is emitted, because "an ancestor of a safe path is safe" is
+    false.** Self-review tried to break that shortcut and succeeded twice: `GIT_DIR`/`GIT_WORK_TREE`
+    redirect `--show-toplevel` to a tree that need not contain the start dir, so a *safe* working
+    directory yields an *unsafe* `root`; and `core.worktree` on an enclosing repo does the same to
+    `nested_in` while this repo's own root stays clean. Both are reproduced and pinned. The resolved
+    root refuses atomically; `nested_in` is dropped with a `warning` (it is a note about a
+    neighbour, and `parent_in_git` is still truthfully `1`).
   - **`extra_doc` is suppressed per field, and the drop is announced.** Its path comes from
-    `git ls-files`, so it is an arbitrary tracked filename — the one path-bearing value that is not
-    a prefix of `root`. A repo at a clean path could track `packages/we<NL>ird/CLAUDE.md` and forge
-    a record from inside an otherwise sound shape. Refusing the whole shape for one bad doc would
-    delete real facts, so the doc is dropped with a `warning` instead of vanishing.
+    `git ls-files`, so it is an arbitrary tracked filename. A repo at a clean path could track
+    `packages/we<NL>ird/CLAUDE.md` and forge a record from inside an otherwise sound shape.
+    Refusing the whole shape for one bad doc would delete real facts, so the doc is dropped with a
+    `warning` instead of vanishing.
   - **`bin/agent-init` refuses an absent `root` explicitly, and before the `in_git` test.** The
     `cd "$ROOT"` below it only *looks* like it covers this: bash 5.x rejects `cd ""`, but bash 3.2
     — still `/bin/bash` on every macOS — succeeds and stays put. The 5.3 floor means today's
@@ -51,9 +58,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     `adb_link_manifest` was reproduced moving a real directory into backup *before* returning
     non-zero. That needs status propagation through `install.sh`, `uninstall.sh`, every adapter and
     `bin/baseline` — a second cross-library decision, which D59 declines to take silently.
-  - **Every new guard was observed failing.** Six mutations, each turning red only the assertions
-    that cover it; one of them exposed a missing case (an unsafe path that does not *exist* forges
-    records out of the unreadable-start branch), which now has four assertions of its own.
+  - **Every new guard was observed failing.** Nine mutations against a copy of the tree, each
+    verified applied and each required to turn red only the assertions that cover it. Two of them
+    earned their keep: disabling the pre-canonicalization check exposed a missing case (an unsafe
+    path that does not *exist* forges records out of the unreadable-start branch), and removing the
+    sentinel from the `git rev-parse` capture is caught by exactly one assertion — a work tree whose
+    name ends in a newline.
 
 ### Added
 
