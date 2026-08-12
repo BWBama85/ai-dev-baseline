@@ -276,8 +276,7 @@ out="$(tr_out '{}')"
 for r in milestones slate unmilestoned dispositions roadmap settings release; do
   case "$out" in
     *"$r${TAB}unknown"*) ok ;;
-    # `release` is the one deliberate exception and is asserted separately below.
-    *) if [ "$r" = release ]; then ok; else bad "tracker: '$r' must be unknown when its fact is absent"; fi ;;
+    *) bad "tracker: '$r' must be unknown when its fact is absent" ;;
   esac
 done
 
@@ -338,6 +337,19 @@ out="$(tr_out '{"release_milestone":"Next release","backlog_milestone":"Backlog"
 has "$out" "dispositions${TAB}unknown" "tracker: an unreadable milestone list is unknown, NOT all-dispositioned"
 hasnt "$out" "dispositions${TAB}ok" "tracker: an unreadable milestone list never reports ok"
 
+# A MILESTONE TITLE CARRYING A NEWLINE must not forge a record boundary. The detail field
+# interpolates titles straight out of the GitHub API, where a newline is legal, and an
+# un-neutralised one splits the record in two: the tail arrives at `verdict` as its own line whose
+# first field is a fragment of prose, and the whole run dies on a "rung" nobody wrote. Asserted by
+# feeding the output THROUGH verdict, because that is where the damage would appear.
+facts="$(printf '%s' '{"release_milestone":"Next release","backlog_milestone":"Backlog",
+        "milestones":[{"title":"Audit\nResults","open_issues":3}],"dispositions":[]}')"
+out="$(tr_out "$facts")"
+n="$(printf '%s\n' "$out" | grep -c .)"
+eq "$n" "7" "tracker: a newline in a milestone title does not forge an extra record"
+rc=0; printf '%s\n' "$out" | ar verdict >/dev/null 2>&1 || rc=$?
+eq "$rc" "10" "tracker: a newline-bearing title still reaches a clean red verdict, not a usage error"
+
 # A version-named milestone (`v2026.08`, real in one surveyed repo) is a pre-existing milestone
 # like any other and must be dispositioned rather than silently accepted for looking release-ish.
 facts='{"release_milestone":"Next release","backlog_milestone":"Backlog",
@@ -365,8 +377,14 @@ eq $? 2 "tracker: an unrecognized settings verdict is rejected, not accepted"
 # --- release
 out="$(tr_out '{"release_command":"/release"}')"
 has "$out" "release${TAB}ok" "tracker: a resolved release command is ok"
+# ABSENT vs EMPTY. A caller that could not reach the roadmap artifact must NOT be reported the
+# same as one that read it and found no marker — the first is `unknown` ("I could not tell"), the
+# second is `todo` ("go add one"). Collapsing them sent the operator to add a marker their
+# artifact may already carry, which is the stale-assertion shape verify-before-asserting forbids.
 out="$(tr_out '{}')"
-has "$out" "release${TAB}todo" "tracker: no release-command marker is todo"
+has "$out" "release${TAB}unknown" "tracker: an UNREAD release-command marker is unknown"
+out="$(tr_out '{"release_command":""}')"
+has "$out" "release${TAB}todo" "tracker: a marker read and found ABSENT is todo"
 
 # --- tracker input validation
 printf 'not json' | ar tracker >/dev/null 2>&1; eq $? 2 "tracker: invalid JSON is rejected"
@@ -549,6 +567,18 @@ mut settings-typo-accepted \
     '*)  die "tracker: .settings must be' \
     '*)  _ar_emit settings ok "x" ;; esac; case x in y) die "tracker: .settings must be' \
     'tracker: an unrecognized settings verdict is rejected, not accepted'
+mut newline-forges-a-record \
+    'detail="${detail//$'"'"'\n'"'"'/ }"' \
+    'detail="$detail"' \
+    'tracker: a newline in a milestone title does not forge an extra record'
+mut gates-decision-read-from-status-text \
+    'gkeys="$( { adb_toml_keys "$root/agents.toml" gates; adb_toml_keys "$root/agents.toml" gates.state; } 2>/dev/null | grep -c . || true)"' \
+    'gkeys=1' \
+    'probe: NO detectable gate is todo (loud), not a silent pass'
+mut release-absent-collapses-to-todo \
+    'if [ "$(q '"'"'has("release_command")|tostring'"'"')" != "true" ]; then' \
+    'if false; then' \
+    'tracker: an UNREAD release-command marker is unknown'
 mut roadmap-split-brain-ok \
     'elif [ "$rc_n" -gt 1 ]; then' \
     'elif false; then' \

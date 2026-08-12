@@ -57,14 +57,23 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     nothing. `status` composes all four and is the re-runnable entry point, reachable as
     `baseline adopt status`.
 
-  **Every guard was observed failing** — 18 mutations against a tree copy, each required to make
-  the suite red on its *own* named witness. Three real fail-OPEN defects were caught that way, and
-  each would have reported a broken project as fine: a gate count that grepped a human-readable
-  table for `run:` (which it prints *without* a colon), so a repo with a real gate counted zero and
-  the axis reported N/A; a jq filter that dereferenced `.title` inside `$d | index(…)` where jq has
-  rebound `.`, whose abort a `2>/dev/null` swallowed into "every milestone is dispositioned" for a
-  project with 44 issues in an undispositioned one; and a `while read` that dropped the final
-  record of every `$(…)`-captured record set. None was visible by reading.
+  **Every guard was observed failing** — 21 mutations against a tree copy, each required to make
+  the suite red on its *own* named witness. Writing the negative half first caught three defects
+  the positive half never would have, and two of them would have reported a broken project as
+  fine: a gate count that grepped a human-readable table for `run:` (which it prints *without* a
+  colon), so a repo with a real gate counted zero and the axis reported N/A; a jq filter that
+  dereferenced `.title` inside `$d | index(…)` where jq has rebound `.`, whose abort a
+  `2>/dev/null` swallowed into "every milestone is dispositioned" for a project with 44 issues in
+  an undispositioned one; and a `while read` that dropped the final record of every
+  `$(…)`-captured record set.
+
+  The self-review pass then caught three more, all of the same family — a decision resting on
+  something with no contract: an equality against the gate table's *"no gates configured or
+  detected"* sentence (re-word it and a project with no gates reports as deliberately disabled);
+  a `// ""` that read an unreachable roadmap artifact exactly like one carrying no release-command
+  marker, telling the owner to add a marker they may already have; and a milestone title carrying
+  a newline, which forged a record boundary and killed the run on a "rung" nobody wrote. None of
+  the six was visible by reading.
 
   One checklist item is deliberately **absent**: the contract's *"project knowledge map (#33)"*  <!-- adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was DROPPED; it tracks nothing -->
   cannot be a rung, because that issue was closed `NOT_PLANNED` and requiring it would make the

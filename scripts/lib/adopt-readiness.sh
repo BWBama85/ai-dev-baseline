@@ -124,10 +124,15 @@ _ar_is_rung() {
 # where the evidence goes, so a red rung reads as an instruction rather than a label.
 _ar_emit() {
   local rung="$1" status="$2" detail="${3:-}"
-  # A tab in the detail would forge the delimiter and shift the record. Nothing this file
-  # produces contains one, but a detail can carry an interpolated path or milestone title from
-  # the scanned project, and that project is not ours.
+  # BOTH delimiters are neutralised, and the newline is the one that matters more. A tab forges a
+  # field boundary and shifts the record; a NEWLINE forges a RECORD boundary — the tail of the
+  # detail then arrives at `verdict` as its own line, whose first field is some fragment of prose
+  # that is not a rung name, and the whole run dies with a usage error naming a "rung" the
+  # operator never wrote. Neither is hypothetical: a detail interpolates milestone titles and
+  # filesystem paths out of the SCANNED PROJECT, which is not ours and whose titles come from the
+  # GitHub API, where a newline is legal.
   detail="${detail//"$TAB"/ }"
+  detail="${detail//$'\n'/ }"
   printf '%s\t%s\t%s\n' "$rung" "$status" "$detail"
 }
 
@@ -319,20 +324,30 @@ cmd_probe() {
   # and the run that produced it looked identical to a clean one. #81 asks for exactly this
   # inversion — "when no gate can be detected, say so loudly and require an explicit
   # agents.toml [gates] decision (including a deliberate "" disable)".
-  # COUNT THROUGH `detect`, NOT BY GREPPING `status`. `status` is a human-readable table whose
-  # columns are free to be re-laid-out; `detect` has a documented two-column
-  # `<label>TAB<command>` contract listing RUN gates and nothing else. The first version of this
-  # counted `grep -c 'run:'` against `status`, which prints `run` without a colon — so it
-  # counted ZERO for a repo with a real gate and reported the whole axis N/A. A verifier that
-  # miscounts toward "nothing to do" is the precise failure this file exists to prevent, and it
-  # got in through a display string.
-  local gstatus grun
-  gstatus="$(bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" status "$root" 2>/dev/null)" || gstatus=""
+  # NO DISPLAY STRING DECIDES ANYTHING HERE, and that rule cost two bugs to learn. This block
+  # asks two questions, each of a surface with a real contract:
+  #
+  #   how many gates RUN?          -> `detect`, whose `<label>TAB<command>` two-column output is
+  #                                   a documented contract listing RUN gates and nothing else.
+  #   is there a RECORDED DECISION -> `agents.toml`'s [gates] / [gates.state] keys, read with the
+  #   about gates?                    shared `adb_toml_keys` primitive.
+  #
+  # The first version counted `grep -c 'run:'` against `status`, which prints `run` WITHOUT a
+  # colon, so a repo with a real gate counted zero and the axis reported N/A. The fix for that
+  # left a second copy of the same mistake one line below — `[ "$gstatus" = "no gates configured
+  # or detected" ]`, an equality against a sentence whose wording nothing pins. Re-word that
+  # sentence and this test silently stops matching; the run then falls through to the `grun -eq 0`
+  # arm and reports a project with NO gates as "explicitly disabled", which is the flattering
+  # answer and the exact inversion this rung exists to prevent. Asking `agents.toml` directly is
+  # also the more faithful question: "or explicitly disabled with a recorded reason" is a claim
+  # about what the manifest RECORDS, not about what a status table happens to print.
+  local grun gkeys
   grun="$(bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" detect "$root" 2>/dev/null | grep -c . || true)"
-  if [ -z "$gstatus" ] || [ "$gstatus" = "no gates configured or detected" ]; then
-    _ar_emit gates todo "NO GATE was detected or configured for this project — declare [gates] in agents.toml (a deliberate \"\" disables one, and [gates.state] declares an axis N/A). Adoption must not finish with enforcement silently off"
+  gkeys="$( { adb_toml_keys "$root/agents.toml" gates; adb_toml_keys "$root/agents.toml" gates.state; } 2>/dev/null | grep -c . || true)"
+  if [ "$grun" -eq 0 ] && [ "$gkeys" -eq 0 ]; then
+    _ar_emit gates todo "NO GATE was detected, and agents.toml records no decision about gates — declare [gates] (a deliberate \"\" disables one, and [gates.state] declares an axis N/A). Adoption must not finish with enforcement silently off"
   elif [ "$grun" -eq 0 ]; then
-    _ar_emit gates na "every gate is explicitly disabled or declared N/A — a recorded decision, not a detection miss"
+    _ar_emit gates na "no gate runs, and agents.toml records that decision in $gkeys [gates]/[gates.state] key(s) — a recorded choice, not a detection miss"
   else
     local rc; local receipt
     receipt="$(cmd_receipt check "$root")"; rc=$?
@@ -504,12 +519,18 @@ cmd_tracker() {
   esac
 
   # --- release ---
+  # ABSENT AND EMPTY ARE DIFFERENT, and collapsing them was a real defect in the first draft.
+  # `.release_command // ""` reads a caller that could not reach the roadmap artifact exactly like
+  # one that read it and found no marker — so a transient `gh` failure told the operator to add a
+  # marker their artifact may already carry. That is the shape verify-before-asserting.md forbids:
+  # say what could not be established, not what is true. `has()` separates them.
   local relcmd
-  relcmd="$(q '.release_command // ""')"
-  if [ -z "$relcmd" ]; then
-    _ar_emit release todo "the roadmap declares no <!-- release-command: … --> marker, so a met release has nothing to emit (#3 makes release execution project-owned — every adopting repo owes itself one)"
-  else
+  if [ "$(q 'has("release_command")|tostring')" != "true" ]; then
+    _ar_emit release unknown "the roadmap artifact's release-command marker was not read"
+  elif relcmd="$(q '.release_command')" && [ -n "$relcmd" ] && [ "$relcmd" != null ]; then
     _ar_emit release ok "release command resolves to '$relcmd'"
+  else
+    _ar_emit release todo "the roadmap declares no <!-- release-command: … --> marker, so a met release has nothing to emit (#3 makes release execution project-owned — every adopting repo owes itself one)"
   fi
 }
 
