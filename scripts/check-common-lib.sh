@@ -2077,6 +2077,22 @@ hasnt "${ wfon mlesc.yml; }" "release\\ candidate"       "...not to the ordinary
 printf 'on:\n  pull_request:\n    branches: [\n      "a\\\\",\n      main\n    ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlescbs.yml"
 has "${ wfon mlescbs.yml; }" "PRBRANCH|main" "an escaped BACKSLASH at end of entry does not swallow the next line"
 
+# A `#` INSIDE A QUOTE IS CONTENT, INCLUDING AT THE START OF A CONTINUATION LINE. The blank/comment
+# skip that walks to the next line is only correct OUTSIDE a quote: `"release\` / `#candidate"` is
+# the branch pattern `release#candidate`, and skipping that second line left the scanner still
+# inside the quote, so the span never found its closing delimiter and emitted NO entries — the file
+# then "did not provably include" the target and every job in it was dropped. That is #291's own
+# headline failure, reintroduced by the continuation loop of its fix. Found by the PR reviewer.
+printf 'on:\n  pull_request:\n    branches: [\n      "release\\\n      #candidate"\n    ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlhashcont.yml"
+has "${ wfon mlhashcont.yml; }" "PRBRANCH|release#candidate" \
+    "a continuation line starting with # INSIDE a quote is scalar content, not a comment"
+# THE OTHER DIRECTION, so the fix cannot be "stop skipping comments". A genuine comment line inside
+# a flow collection — outside any quote — must still be dropped.
+printf 'on:\n  pull_request:\n    branches: [\n      main,\n      # a real comment\n      dev\n    ]\njobs:\n  a:\n    runs-on: ubuntu-26.04\n' > "$wfd/mlcmtline.yml"
+has   "${ wfon mlcmtline.yml; }" "PRBRANCH|main"    "a whole-line comment inside a collection does not stop the scan..."
+has   "${ wfon mlcmtline.yml; }" "PRBRANCH|dev"     "...and the entry after it is still read"
+hasnt "${ wfon mlcmtline.yml; }" "real comment"     "...while the comment text itself never becomes an entry"
+
 # BYTES, NOT CHARACTERS. The reader runs under LC_ALL=C, so the joiner walks bytes; every delimiter
 # it tests for is ASCII and every UTF-8 continuation byte is >= 0x80, so a non-ASCII branch pattern
 # can neither be split nor truncated by the scan.

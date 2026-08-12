@@ -3607,7 +3607,15 @@ IFS= read -r -d '' _ADB_WF_AWK <<'AWKWF' || true
         if (esc) WFFLOWTXT = WFFLOWTXT keep
         else     WFFLOWTXT = WFFLOWTXT keep " "
         i++
-        while (i <= lim && adb_wf_blank(WFL[i])) i++
+        # SKIP BLANKS AND COMMENTS ONLY WHILE OUTSIDE A QUOTE. Inside one, a line whose first
+        # non-space character is `#` is scalar CONTENT, not a comment — `"release\` / `#candidate"`
+        # is the branch pattern `release#candidate` — and skipping it left the scanner still inside
+        # the quote, so the span never found its closing delimiter, refused, and emitted no
+        # PRBRANCH at all. A repo targeting that branch then had the whole workflow skipped: the
+        # exact silent under-requirement this change exists to remove, reintroduced by its own
+        # continuation loop. Found by the PR reviewer; self-review had seen the line and wrongly
+        # judged it too exotic to matter.
+        while (i <= lim && q == "" && adb_wf_blank(WFL[i])) i++
         if (i > lim) { WFFLOWEND = at; WFFLOWTXT = ""; return 0 }
         chunk = WFL[i]; sub(/^[[:space:]]+/, "", chunk)
       }
