@@ -56,12 +56,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **The arm an outage actually reaches is `20`** (an API read failed), and it now says so: if the
     API itself is degraded this clears on its own, and nothing in the repo needs changing. The
     exit-code table and `docs/repo-settings.md` state which codes an incident can and cannot produce.
-  - **`branch-health`'s two unreported arms name the possibility and keep their verdicts.** A
-    workflow that was never wired up and a job that was never acquired are byte-identical *from a
-    commit* — nothing reported either way — so the predicate that reads a commit cannot separate
-    them and does not try. Both stay `indeterminate`, still fail-closed, and the reason lines now
-    point at the command that can answer it. Adding an outage verdict there would have put a
-    transient, uncheckable claim into the enum `release-ready` maps to `met`.
+  - **`branch-health` keeps its verdicts, and `/roadmap` gains the words.** A workflow that was
+    never wired up and a job that was never acquired are byte-identical *from a commit* — nothing
+    reported either way — so the predicate that reads a commit cannot separate them and does not
+    try. Both stay `indeterminate`, still fail-closed; adding an outage verdict there would have put
+    a transient, uncheckable claim into the enum `release-ready` maps to `met`. The pointer lives in
+    `base/workflows/roadmap.md`, which now tells the agent to say *which* kind of unestablished this
+    is, and **not** in the reason line: line 2 is a contract a caller parses (one is compared for
+    exact equality), and a fixed parenthetical there is 130 characters of the same advice on every
+    readiness check.
   - `/debug` and `docs/philosophy.md` restated the binary model and now carry the three-class one; a
     negative `fact-drift` pin with all three real superseded spellings keeps it from coming back.
 

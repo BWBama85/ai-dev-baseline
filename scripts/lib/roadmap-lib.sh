@@ -400,14 +400,21 @@ cmd_pr_targets_issue() {
 # A conclusion of `skipped` or `neutral` is NOT a failure — that is how GitHub itself scores a
 # required check, and treating a skipped job as red would wedge every repo with conditional jobs.
 #
-# THE TWO UNREPORTED ARMS ARE ALSO WHAT A PLATFORM OUTAGE LOOKS LIKE (#300), and their reason lines
-# now say so. A run whose job was never acquired by a runner reports NOTHING — byte-identical, from
-# here, to a workflow that was never wired up. This predicate cannot tell them apart and must not
-# try: it reads a COMMIT, and the distinction lives in a RUN (its jobs and their step counts), which
-# is `ci-health.sh classify --run <id>`. So the verdict set is deliberately UNCHANGED — both are
-# still `indeterminate`, still fail-closed, still unshippable — and only the words change, pointing
-# at the command that can answer it. Adding an outage verdict here would put a transient,
-# unverifiable-from-a-commit claim into the enum `release-ready` maps to `met`.
+# THE TWO UNREPORTED ARMS ARE ALSO WHAT A PLATFORM OUTAGE LOOKS LIKE (#300). A run whose job was
+# never acquired by a runner reports NOTHING — byte-identical, from here, to a workflow that was
+# never wired up. This predicate cannot tell them apart and must not try: it reads a COMMIT, and the
+# distinction lives in a RUN (its jobs and their step counts), which is
+# `ci-health.sh classify --run <id>`. So the verdict set is deliberately UNCHANGED — both are still
+# `indeterminate`, still fail-closed, still unshippable. Adding an outage verdict here would put a
+# transient, unverifiable-from-a-commit claim into the enum `release-ready` maps to `met`.
+#
+# AND THE POINTER IS NOT APPENDED TO THE REASON LINES, which was the first attempt. Line 2 is a
+# contract line a caller parses — `check-roadmap.sh` compares one of them for exact equality, to
+# prove a duplicated required context is named ONCE — so a fixed parenthetical there is both a
+# broken pin and 130 characters of the same advice printed on every invocation of a predicate that
+# runs on every `/roadmap` and every readiness check. The operator-facing words belong where the
+# operator reads them: `base/workflows/roadmap.md`, which tells the agent to say WHICH kind of
+# unestablished this is and how to find out.
 cmd_branch_health() {
   [ "$#" -eq 3 ] || die "branch-health: needs exactly 3 args: <expected-sha> <active-workflows> <health-decl off|skip-unreported|no-ci> (check JSON on stdin)"
   local sha="$1" workflows="$2" decl="$3" json out
@@ -563,8 +570,6 @@ cmd_branch_health() {
       elif $wf > 0 and ($actions | length) == 0 then
              (if $decl == "skip-unreported" and $reqknown then "unreported-ok\ndeclared: " else "indeterminate\n" end)
              + ($wf|tostring) + " active workflow(s) exist but Actions has not reported on " + $sha
-             + (if $decl == "skip-unreported" and $reqknown then "" else
-                  " (a run that never acquired a runner reports nothing either — classify it with ci-health.sh classify --run <id> before treating this as a repo problem)" end)
       # The SAME rule, generalized past Actions (#115). A context this branch requires that has not
       # reported is unreported CI, whoever was supposed to report it — and it is checked before
       # `green` for the identical reason the Actions arm is: an unrelated provider`s green result
@@ -574,8 +579,6 @@ cmd_branch_health() {
              (if $decl == "skip-unreported" and $reqknown then "unreported-ok\ndeclared: " else "indeterminate\n" end)
              + ($missing | length | tostring) + " required context(s) have not reported on " + $sha
              + ": " + ($missing | join(", "))
-             + (if $decl == "skip-unreported" and $reqknown then "" else
-                  " (a run that never acquired a runner reports nothing either — classify it with ci-health.sh classify --run <id> before treating this as a repo problem)" end)
       # --- fail-closed, and NOT excusable -----------------------------------------------------
       # `required_contexts == null` means the branch is protected by something this endpoint cannot
       # describe (a repository RULESET), or the body would not parse. With nothing reported either,

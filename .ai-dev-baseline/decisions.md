@@ -4464,9 +4464,9 @@ limit: none of them is sufficient alone.
              no run, job, check or annotation, so no outage can produce it and none can clear it.
              The arm an outage DOES reach is 20 (an API read failed), so that is where the second
              sentence went (`_adb_rs_outage_hint`), together with a header note and a docs
-             paragraph saying which codes an incident can and cannot cause. `branch-health` gets
-             the same treatment: its two unreported arms now name the never-ran possibility in
-             their reason lines and point at the new command, and its VERDICT SET is unchanged.
+             paragraph saying which codes an incident can and cannot cause. `branch-health` keeps
+             its VERDICT SET and its reason lines unchanged; the words go into
+             `base/workflows/roadmap.md`, which is where the operator reads them.
              (3) EXIT CODES: a fourth vocabulary, 0/22/23/24/25 with 20 and 2 shared.
 - placement: `scripts/lib/ci-health.sh` (installs automatically — every adapter symlinks the whole
              `scripts/lib` dir); `scripts/check-ci-health.sh` registered in `scripts/selfcheck.sh`
@@ -4479,8 +4479,17 @@ limit: none of them is sufficient alone.
              And it could not be sound: `branch-health` reads a COMMIT, and "did a runner ever pick
              this up" is a fact about a RUN. From a commit, a workflow that was never wired up and
              a job that was never acquired are byte-identical — nothing reported, either way. So
-             the honest split is that `branch-health` keeps answering `indeterminate` and says
-             which command can tell them apart.
+             the honest split is that `branch-health` keeps answering `indeterminate` and the
+             WORKFLOW says which command can tell them apart.
+
+             **The pointer does NOT go on the reason line, and finding that out cost a test.** The
+             first attempt appended it to both unreported arms, which broke `check-roadmap.sh`'s
+             exact-equality assertion that a duplicated required context is named ONCE. That pin is
+             the evidence the line is a machine-read contract rather than prose — and the suffix
+             would also have printed 130 characters of identical advice on every `/roadmap` and
+             every readiness check, for a case that arises during an outage. Editing the test to
+             accommodate it was available and refused: the operator reads the workflow's report, and
+             `base/workflows/roadmap.md` is where that report is composed.
 
              **Refuting Scope C is delivering it, not declining it.** The bullet asks that an
              outage and a permanent gap "want different words to the operator", and the words it
