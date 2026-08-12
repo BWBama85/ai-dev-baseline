@@ -634,12 +634,17 @@ has "$out" "VERDICT: red" "e2e: an empty release milestone makes the whole contr
 has "$out" "[owner] slate" "e2e: the red rung is named with its owner"
 eq "$rc" "10" "e2e: red exits 10"
 
-# IDEMPOTENT: #81 requires that re-running adoption changes nothing. Two consecutive runs over an
-# unchanged fixture must produce byte-identical reports — a verifier whose output drifts run to
-# run cannot be used to decide anything.
+# IDEMPOTENT: #81 requires that re-running adoption changes nothing. TWO things are asserted,
+# because report-equality alone cannot establish it — a MUTATING verifier can emit identical
+# reports run after run, so that assertion would have passed for exactly the implementation this
+# rung forbids. The tree hash is what actually carries the property; the report equality is the
+# weaker, separate claim that the output is deterministic.
+tree_before="$(cd "$d" && find . -path ./.git -prune -o -type f -print | sort | xargs shasum 2>/dev/null | shasum)"
 a="$( { ar probe "$d"; printf '%s' "$facts" | ar tracker; } | ar verdict)"
 b="$( { ar probe "$d"; printf '%s' "$facts" | ar tracker; } | ar verdict)"
-eq "$a" "$b" "e2e: two consecutive runs produce identical reports (idempotent)"
+tree_after="$(cd "$d" && find . -path ./.git -prune -o -type f -print | sort | xargs shasum 2>/dev/null | shasum)"
+eq "$a" "$b" "e2e: two consecutive runs produce identical reports (deterministic)"
+eq "$tree_after" "$tree_before" "e2e: two consecutive runs leave the project byte-identical (idempotent)"
 
 # --- 6. the library never mutates the project it is given -----------------------------------------
 # `probe`, `tracker` and `verdict` are READS. D60 bounds /adopt to a scan, and a verifier that
