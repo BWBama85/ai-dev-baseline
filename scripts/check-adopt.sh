@@ -309,7 +309,22 @@ oth="$(bash "$AD" scan "$FX" --agents claude)"
 has   "$oth" "other${TAB}.claude/rules.md"            "an unmodelled file under the agent dir is emitted as \`other\`"
 has   "$oth" "other${TAB}.claude/settings.local.json" "...including one the modelled arms nearly match"
 hasnt "$oth" ".claude/state/marker.json"              "but run-state scratch is NOT inventoried (it carries no adoption decision)"
-eq    "$(verdict other yes unknown no)" escalate      "and `other` routes to escalate, so it reaches the protocol"
+# OS file-manager artifacts are excluded, and ONLY those — a real scan reported `.DS_Store` as an
+# artifact to keep, which is a question with no answer. The exclusion stays narrow on purpose:
+# anything broader reintroduces the silent omission the `other` kind exists to fix.
+printf '\0\0' > "$FX/.claude/.DS_Store"
+printf 'lock\n'  > "$FX/.claude/scheduled_tasks.lock"
+oth2="$(bash "$AD" scan "$FX" --agents claude)"
+hasnt "$oth2" ".DS_Store"            "an OS file-manager artifact is not inventoried"
+has   "$oth2" "scheduled_tasks.lock" "...but a lock file still is — the exclusion is narrow, not a tidiness filter"
+# `other` ESCALATES ON THE INPUT IT ACTUALLY GETS, which is collision=NO — the baseline ships
+# nothing of an unmodelled identity, so `yes` is unreachable for this kind. The first version of
+# this assertion passed `yes` and therefore proved nothing about the real path: in production every
+# `other` record fell through to the no-collision `keep` arm and was reported as "project-specific,
+# adoption does not touch it". Found by re-running the live acceptance scan, not by this suite.
+eq    "$(verdict other no  unknown no)" escalate      "\`other\` escalates on collision=no — the input it actually receives"
+eq    "$(verdict other no  same    no)" escalate      "...regardless of delta"
+eq    "$(verdict other yes unknown no)" escalate      "...and on the unreachable collision=yes too"
 
 # THE AGENT IS ON EVERY RECORD, so the collision join can match on it. Without it the lookup took
 # the first row — Claude's — and compared a Codex artifact against Claude's copy.
@@ -849,6 +864,10 @@ mut foreign-pin-kept \
     'if [ "$kind" = foreign-pin ]; then' \
     'if false; then' \
     'a foreign framework pin is MOVE'
+mut other-classified-as-keep \
+    'if [ "$kind" = other ]; then' \
+    'if false; then' \
+    'escalates on collision=no'
 mut scan-drops-other \
     '_ad_emit other "$rel" "${rel##*/}" "$a"' \
     ':' \

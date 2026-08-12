@@ -402,6 +402,20 @@ cmd_classify() {
   # Review caught it. `move` is the right verdict on the merits too: the old pin's *content* (which
   # baseline generation this project came from) has to be reconciled into `upstream.toml` before it
   # can be dropped, which is exactly what `move` means everywhere else in this table.
+  # `other` IS AN UNMODELLED KIND BY DEFINITION, so it escalates whatever its collision state —
+  # and it is tested here, before the collision arm, because that ordering is the entire point.
+  # An `other` artifact never collides (the baseline ships nothing of that identity), so it fell
+  # into the no-collision `keep` arm and every unmodelled file was reported as "project-specific,
+  # adoption does not touch it". That is the silent-omission defect the `other` kind was ADDED to
+  # fix, wearing a verdict instead of a silence — strictly worse, because the inventory now
+  # asserted a decision about a file nobody had classified.
+  #
+  # Caught by re-running the live acceptance scan after the classifier changed; the unit test that
+  # was supposed to cover it asserted `collision=yes`, an input this kind cannot have.
+  if [ "$kind" = other ]; then
+    printf 'escalate%sthe baseline does not model this artifact — classify it per handling-the-unknown.md (general / project-delta / deviation), place it in that bucket'"'"'s prescribed home, and record the decision; do not improvise\n' "$TAB"
+    return 0
+  fi
   if [ "$kind" = foreign-pin ]; then
     printf 'move%sthis is a PRIOR framework'"'"'s adoption artifact, not project content — reconcile what it records into .ai-dev-baseline/upstream.toml and retire it, so the project ends with ONE upstream rather than two stacked frameworks\n' "$TAB"
     return 0
@@ -520,6 +534,13 @@ cmd_scan() {
         ".$a/state/"*|".$a/settings.json") continue ;;
         ".$a/skills/"*/SKILL.md|".$a/skills/"*/overrides.md) continue ;;
         ".$a/scripts/"*) [ "${rel#".$a/scripts/"}" = "${rel##*/}" ] && continue ;;
+        # OS FILE-MANAGER ARTIFACTS, and ONLY those. `.DS_Store` and `Thumbs.db` are written by
+        # Finder and Explorer and are definitionally not adoption config, so escalating them asks
+        # the operator a question with no answer. The exclusion is deliberately this narrow:
+        # everything else stays, including lock files and a project's own hook fixtures, because
+        # "it looked like noise to me" is how the silent omission this whole arm exists to fix
+        # comes back. Observed on a real scan, which reported `.DS_Store` as an artifact to keep.
+        */.DS_Store|*/Thumbs.db) continue ;;
       esac
       # A skill directory's OTHER members are already covered by the whole-directory `delta`
       # comparison of the skill itself, so re-emitting each of them would double-report.
