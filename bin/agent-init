@@ -63,11 +63,12 @@ done
 # `git init` in a repo that has one.
 #
 # AND IT IS ITS OWN TEST rather than a job left to `cd "$ROOT"` below, which only LOOKS like it
-# would catch this. `cd ""` is not portable: bash 5.x rejects it ("null directory"), and bash
-# 3.2 — still the /bin/bash on every macOS — SUCCEEDS and silently stays put, which would write
-# agents.toml into whatever directory the operator happened to be in. This project pins a 5.3
-# floor, so today that fallback happens to refuse; it refuses by accident, with an empty path in
-# its message, and an accident is not a guard.
+# would catch this. `cd ""` is not portable: bash **5.3** rejects it ("null directory") — the
+# release that changed this, not 5.x generally — while bash 3.2, still the /bin/bash on every
+# macOS, SUCCEEDS and silently stays put, which would write agents.toml into whatever directory
+# the operator happened to be in. This project pins a 5.3 floor, so today that fallback does
+# refuse; it refuses by accident, with an empty path in its message, and an accident is not a
+# guard. Measured here: 3.2.57 returns 0 and stays, 5.3.15 returns non-zero.
 ROOT="$(adb_shape_val "$shape" root)"
 if [ -z "$ROOT" ]; then
   echo "ERROR: refusing to initialize — this path cannot be represented in the repo-shape record" >&2

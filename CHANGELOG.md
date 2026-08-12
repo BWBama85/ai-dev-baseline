@@ -43,11 +43,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     Refusing the whole shape for one bad doc would delete real facts, so the doc is dropped with a
     `warning` instead of vanishing.
   - **`bin/agent-init` refuses an absent `root` explicitly, and before the `in_git` test.** The
-    `cd "$ROOT"` below it only *looks* like it covers this: bash 5.x rejects `cd ""`, but bash 3.2
-    — still `/bin/bash` on every macOS — succeeds and stays put. The 5.3 floor means today's
-    fallback does refuse, for a reason unrelated to the check it stands in for and with an empty
-    path in its message. Checked before `in_git` because an absent `in_git` is not `0`, and the old
-    ordering reported "not inside a git repo" about a perfectly good git repo.
+    `cd "$ROOT"` below it only *looks* like it covers this: bash **5.3** rejects `cd ""` — that
+    specific release, not 5.x generally — while bash 3.2, still `/bin/bash` on every macOS,
+    succeeds and stays put. The 5.3 floor means today's fallback does refuse, for a reason
+    unrelated to the check it stands in for and with an empty path in its message. Checked before
+    `in_git` because an absent `in_git` is not `0`, and the old ordering reported "not inside a git
+    repo" about a perfectly good git repo.
   - **The delimiter predicate now has one home.** `_adb_cl_tsv_safe` is promoted to
     **`adb_tsv_field_safe`** in `common.sh` (with `adb_tsv_field_display` beside it), and
     `cleanup-lib.sh` delegates to it while keeping its own state-record policy. D41 kept it private
@@ -58,12 +59,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     `adb_link_manifest` was reproduced moving a real directory into backup *before* returning
     non-zero. That needs status propagation through `install.sh`, `uninstall.sh`, every adapter and
     `bin/baseline` — a second cross-library decision, which D59 declines to take silently.
-  - **Every new guard was observed failing.** Nine mutations against a copy of the tree, each
-    verified applied and each required to turn red only the assertions that cover it. Two of them
-    earned their keep: disabling the pre-canonicalization check exposed a missing case (an unsafe
-    path that does not *exist* forges records out of the unreadable-start branch), and removing the
-    sentinel from the `git rev-parse` capture is caught by exactly one assertion — a work tree whose
-    name ends in a newline.
+  - **Every new guard was observed failing.** Eleven mutations against a copy of the tree, each
+    verified applied and each required to turn red only the assertions that cover it. Three earned
+    their keep by exposing gaps rather than confirming coverage: disabling the pre-canonicalization
+    check surfaced a missing case (an unsafe path that does not *exist* forges records out of the
+    unreadable-start branch); removing the sentinel from the `git rev-parse` capture is caught by
+    exactly one assertion, a work tree whose name ends in a newline; and the independent review
+    replaced `adb_tsv_field_display`'s entire body with `:` and watched all 669 assertions **still
+    pass** — "one line", "no newline byte" and "passes the predicate" are all satisfied by the empty
+    string, so the renderer now has non-empty, escaped-content and driven-fallback assertions too.
 
 ### Added
 

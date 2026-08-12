@@ -4669,7 +4669,9 @@ limit: none of them is sufficient alone.
 
              **`agent-init`'s guard is explicit because the fallback that appears to cover it is an
              accident of the interpreter.** With no `root` emitted, `ROOT` is empty and the next
-             statement is `cd "$ROOT"`. On bash 5.x that fails ("null directory"); on bash 3.2 —
+             statement is `cd "$ROOT"`. On bash **5.3** that fails ("null directory") — the release
+             that introduced the behaviour, not 5.x generally, and the review was right to narrow
+             it; measured here, 3.2.57 returns 0 and 5.3.15 returns non-zero. On bash 3.2 —
              still `/bin/bash` on every macOS — it **succeeds and stays put**, which would write
              `agents.toml` into whatever directory the operator was standing in. This project pins
              a 5.3 floor, so today the fallback does refuse; it refuses for a reason unrelated to
@@ -4705,4 +4707,17 @@ limit: none of them is sufficient alone.
              currently swallows the status in a heredoc command substitution. Folding that into
              this PR would decide a second cross-library question silently, which is the exact
              mistake D41 avoided by deferring THIS one. Filed separately (#324).
+             **The renderer's own guard was vacuous, and only an adversarial reviewer found it.**
+             `adb_tsv_field_display` was pinned with three assertions — renders on one line, carries
+             no newline byte, and its output passes the predicate. **Every one of those is satisfied
+             by the empty string.** The independent review replaced the function's entire body with
+             `:` and watched all 669 assertions pass, then removed only the re-test/fallback and
+             watched them pass again. This is the exact failure `self-review.md` describes — a guard
+             whose failure mode is silence, pinned by assertions that silence satisfies — committed
+             in the same change that added two other guards *because* of that practice. It now also
+             asserts non-emptiness, that the escaped representation is actually present (as the
+             two-character `\n`/`\t` sequence, since bash 3.2 renders `a<NL>b` as `a$'\n'b` and 5.3
+             as `$'a\nb'`, and pinning either spelling would fail on the other CI runner), and it
+             drives the fallback seam by shadowing the encoder — the only way to reach a branch that
+             ordinary input cannot, `%q` being unable to emit a raw delimiter.
 - baseline-issue: n/a — this repo IS the baseline; #278 is the tracking issue.

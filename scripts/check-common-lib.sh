@@ -417,9 +417,35 @@ no "$( adb_tsv_field_safe "$tsv_mid"; echo $? )"   "tsv-safe: a real internal ne
 no "$( adb_tsv_field_safe "$tsv_trail"; echo $? )" "tsv-safe: a real TRAILING newline is refused"
 # The renderer must put a refused value on ONE physical line, or a diagnostic naming it re-opens
 # the hole. Assert the line COUNT, not just the absence of a substring.
-eq "$(adb_tsv_field_display "$tsv_mid" | wc -l | tr -d ' ')" "0" "tsv-display: a newline value renders with no newline byte"
-eq "$(adb_tsv_field_display "$tsv_tab" | wc -l | tr -d ' ')" "0" "tsv-display: a tab value renders on one line"
-yes "$( adb_tsv_field_safe "$(adb_tsv_field_display "$tsv_mid")"; echo $? )" "tsv-display: its own output passes the predicate"
+#
+# AND ASSERT IT PRODUCED SOMETHING. "Zero newline bytes", "one line" and "passes the predicate" are
+# ALL satisfied by the empty string, so those three alone describe a function whose body is `:`.
+# That is not hypothetical: the independent review replaced this function's entire body with `:`
+# and every one of the suite's 669 assertions still passed. A guard whose failure mode is silence
+# needs an assertion that silence cannot satisfy, which is what the non-empty and content checks
+# below are for.
+disp_mid="$(adb_tsv_field_display "$tsv_mid")"
+disp_tab="$(adb_tsv_field_display "$tsv_tab")"
+eq "$(printf '%s' "$disp_mid" | wc -l | tr -d ' ')" "0" "tsv-display: a newline value renders with no newline byte"
+eq "$(printf '%s' "$disp_tab" | wc -l | tr -d ' ')" "0" "tsv-display: a tab value renders on one line"
+yes "$( adb_tsv_field_safe "$disp_mid"; echo $? )" "tsv-display: its own output passes the predicate"
+if [ -n "$disp_mid" ]; then ok; else bad "tsv-display: renders something — an empty result is not a rendering"; fi
+if [ -n "$disp_tab" ]; then ok; else bad "tsv-display: renders something for a tab value too"; fi
+# The ESCAPED representation must actually be there. Asserted as the two-character `\n` sequence
+# rather than an exact string, because bash 3.2 renders `a<NL>b` as `a$'\n'b` and 5.3 renders it as
+# `$'a\nb'` — pinning either spelling would fail on the other platform CI runs (D29).
+has "$disp_mid" '\n' "tsv-display: the newline appears in escaped form"
+has "$disp_mid" 'a'  "tsv-display: and the surrounding content survives (left)"
+has "$disp_mid" 'b'  "tsv-display: and the surrounding content survives (right)"
+has "$disp_tab" '\t' "tsv-display: a tab appears in escaped form"
+# THE FALLBACK SEAM. `%q` should never emit a raw delimiter, so the re-test is belt-and-braces and
+# is unreachable through ordinary input — which is precisely why it needs a driven fixture rather
+# than a hopeful comment. Shadowing the encoder inside a subshell is what makes the seam reachable:
+# without this, the re-test could be deleted and nothing would notice.
+eq "$( adb_display_value() { printf 'a\nb'; }; adb_tsv_field_display "x" )" "<unrenderable-value>" \
+   "tsv-display: an encoder that returns an unsafe value falls back to the fixed token"
+eq "$( adb_display_value() { printf 'safe-enough'; }; adb_tsv_field_display "x" )" "safe-enough" \
+   "tsv-display: and a safe encoding is passed through unchanged"
 
 # (7) A path this record format cannot represent is REFUSED, not truncated (#278, D59).
 #
