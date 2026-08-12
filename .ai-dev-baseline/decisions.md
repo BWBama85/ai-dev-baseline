@@ -4721,3 +4721,129 @@ limit: none of them is sufficient alone.
              drives the fallback seam by shadowing the encoder — the only way to reach a branch that
              ordinary input cannot, `%q` being unable to emit a raw delimiter.
 - baseline-issue: n/a — this repo IS the baseline; #278 is the tracking issue.
+
+## D60 — `/adopt` v1 is a SCAN that writes only what does not exist, and the pin is a commit rather than a snapshot
+- date:      2026-08-12
+- category:  project-delta
+- unknown:   #20 asked for an adoption flow, and its own text specified three incompatible
+             boundaries. The body says *"never mutate without approval; back up everything (mirror
+             `install.sh`'s backup pattern)"*; the 2026-07-28 comment scopes v1 to *"read-only
+             inventory → proposed `agents.toml` → repo settings applied with consent"*; the
+             2026-08-05 comment says the issue *"keeps ownership of the read-only scan"* and
+             *"ends at emit an ordered migration plan"*. Those are not three phrasings of one
+             thing — a mutation engine and a report have different backup, idempotency, rollback
+             and test contracts, and the gap-analysis pass flagged the inconsistency as its first
+             BLOCKING finding. The pin (#21, consolidated in) had the same problem one level down:  <!-- adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
+             it alternated between a commit/tag, a complete `.upstream` snapshot tree, and a
+             residual pin, with no artifact name, schema, or accepted ref forms anywhere.
+- decision:  The owner settled the boundary: **`/adopt` never deletes, moves, or edits a file in
+             the project it is scanning** — not with `--apply`, not with confirmation. The only
+             writes it can perform IN THE PROJECT are the two artifacts that do NOT yet exist
+             (`agents.toml` and `.ai-dev-baseline/upstream.toml`), plus the already-shipped
+             consent-gated `baseline repo apply`, which touches GitHub settings and nothing in the
+             tree.
+
+             **Scoped to the scanned project, deliberately, because the unscoped sentence was
+             false.** This entry first read "never … edits a file that already exists", and review
+             pointed out that the run rewrites its own `{{STATE_DIR}}/adopt-*.tsv` scratch on every
+             invocation. That scratch is gitignored, per-run, agent-owned and regenerated — every
+             workflow here does the same — but a boundary claim that a reader can falsify in one
+             `ls` is worse than a narrower true one, so the claim is now the narrow true one.
+
+             **And the refusal is ATOMIC rather than check-then-copy.** `[ -e ] && … || cp` has
+             three defects review named: a TOCTOU window between the test and the copy; a DANGLING
+             SYMLINK passing `-e` as absent, so `cp` writes THROUGH it to a path outside the
+             project entirely; and `A && B || C` running `C` when `B` fails. The write is a
+             `set -o noclobber` create-or-fail, and the guard tests `-L` as well as `-e`.
+
+             Two consequences follow and are the reason this is recorded rather than merely
+             implemented. **No backup primitive was added.** The gap-analysis pass was right that
+             copying `install.sh`'s backup logic into `adopt-lib.sh` would violate the one-home
+             rule, and that a general backup-only primitive for arbitrary project files needs
+             collision, partial-failure, symlink, permission and rollback semantics. With no
+             destructive path there is nothing to back up, so the primitive is not needed — and
+             deferring it is not a gap, it is the boundary holding. Whoever implements the apply
+             phase owes that primitive first, and that slice is tracked as #326. **And `remove` is a word, not an action:** the
+             classifier prints it and `check-adopt.sh` asserts, byte-for-byte, that no read-only
+             subcommand alters the scanned project.
+
+             For the pin: the artifact is `.ai-dev-baseline/upstream.toml`, TOML because
+             `adb_toml_get` already reads that syntax and `agents.toml` already is one; that
+             directory because it is the tracked, agent-neutral home the decision log already
+             uses, and a cross-agent fact under `.claude/` would be Claude-owned by accident. The
+             schema is `[upstream]` with `version`, `commit`, `adopted`, `stack`, `agents`.
+             `commit` is validated as hex and is load-bearing.
+- placement: `scripts/lib/adopt-lib.sh` (the predicates + the pin schema in its header),
+             `scripts/check-adopt.sh` (the regression suite), `base/workflows/adopt.md` (the
+             procedure), `scripts/selfcheck.sh` (the `adopt` step), `scripts/check-injection.sh`
+             (the untrusted-content registry row).
+- reason:    **The asymmetry of being wrong decided it.** Building only the scan when the owner
+             wanted apply costs a follow-up on top of work that was needed either way; building
+             apply when they wanted a scan means a tool that deletes files from real project
+             config nobody asked it to touch. The owner's most recent word pointed the same
+             direction as the cheaper error.
+
+             **The `.upstream` snapshot was replaced deliberately, not omitted.** #21 asked for  <!-- adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
+             *"a `.upstream` snapshot (or equivalent)"*, and a copied tree is the worse equivalent:
+             it doubles every file, goes stale silently, and answers *"what did I inherit"* with a
+             copy that may itself have drifted. The install is a symlink into a real git clone, so
+             a **commit is a better snapshot than a snapshot** — one 40-byte field recovers the
+             inherited tree exactly, forever. `pin-drift` prints the two commands that do it. A
+             release-pinned per-project install, where no clone is present, is a different
+             distribution model and is #285's problem, not this field's.
+
+             **What `stack` claims, exactly, because the wording invites an overclaim.** It records
+             the stack of the ADOPTED PROJECT. The baseline ships exactly one flavor today — there
+             is no `php-wordpress` variant to have applied — so the field is what lets a future
+             variant be recorded and matched, not evidence that variants exist.
+
+             **`delete_branch_on_merge` (#56, folded in) is deliberately NOT implemented.** It  <!-- adb-claim-ok: #56 was folded INTO #20 and closed NOT_PLANNED — the reference records why delete_branch_on_merge is deliberately NOT implemented, not tracked work -->
+             contradicts D9's "bounded to exactly two settings", and #20's own comment says so:
+             it needs *"a deliberate decision-log amendment or a separate `baseline repo hygiene`
+             subcommand, not a drive-by `-F`"*. Amending D9 is not an adoption-scan decision, so
+             `adopt.md` instead carries an explicit instruction not to add a third field. #56 is  <!-- adb-claim-ok: #56 was folded INTO #20 and closed NOT_PLANNED — the reference records why delete_branch_on_merge is deliberately NOT implemented, not tracked work -->
+             closed `NOT_PLANNED`; nothing is owed.
+
+             **The classifier proves "duplicates the baseline" exactly one way: byte-identity of
+             the WHOLE artifact.** Not similarity, not a shared heading — and for a skill, not
+             `SKILL.md` alone. That last distinction is the one that had to be corrected: the first
+             implementation compared only `SKILL.md` while this entry claimed the unit was the
+             whole artifact, so a project skill with an identical `SKILL.md` plus its own
+             `helper.sh` answered `same`, which becomes `remove`, which deletes the helper. Review
+             reproduced it. The comparison is now the sorted relative file list plus every
+             corresponding pair, and `cmp`'s third status (>1, the comparison FAILED) is `unknown`
+             rather than `differs`.
+
+             The rule is deliberately narrow and will call a lightly-edited fork `differs` — which
+             routes to `move`, which loses nothing, whereas the opposite error deletes a project's
+             forked behavior. `prescribed` is tested BEFORE
+             collision for the same reason: `.claude/scripts/precommit-gate.sh` collides with a
+             shipped script by name AND is `handling-the-unknown.md`'s one legal home for custom
+             gate policy, so a collision-first classifier would tell every adopting project to
+             delete its own gate policy. Both orderings are pinned as regressions.
+
+             **`/adopt` is the first workflow in the untrusted-content registry whose third-party
+             text arrives from the filesystem rather than the network** — and it is the sharpest
+             case in that registry, not the mildest. What it reads is another project's `SKILL.md`
+             bodies and root docs, which are *instructions to an agent by construction*, while the
+             run holds repo tool access. No `gh` call fetches them, so the registry's discovery
+             rule would never have flagged it; the row is classified `1` deliberately.
+             **What the independent review changed, recorded because the count is the point.** The
+             `codex` pass returned 19 required findings against the first three commits, and they
+             were not stylistic: a skill compared by `SKILL.md` alone (data loss), `cmp` errors read
+             as `differs`, `repo-settings apply` running against the CALLER's repository rather than
+             the target (an outward-facing mutation of the wrong GitHub repo), the workflow
+             hardcoding Claude's `common.sh` so the Codex and Gemini renders could not run, a
+             collision join that discarded the agent and compared every artifact against Claude's
+             copy, role inference matching `codex` inside `codexpert`, a `warning` record rendering
+             as a TOML key, `git ls-files` failures silently disabling the credential axis, an
+             ignore-pattern parse defeated by a colon in `core.excludesFile`, a precedence finding
+             asserting a global layer it never opened, TOML injection through an unvalidated
+             version string, an unquoted path in a command the operator is told to paste, node
+             beating WordPress in stack detection, foreign pins classified `keep` while the prose
+             said retire, and `plan` silently dropping unrecognised verdicts. Each is fixed and
+             pinned. Two of the review's findings were about the CHECKS rather than the code — a
+             delegation guard satisfied by prose that merely mentioned a subcommand, and a
+             non-mutation guard that never exercised the workflow's write paths — and both are the
+             can't-fail shape this repo keeps paying for.
+- baseline-issue: n/a — this repo IS the baseline; #20 is the tracking issue.

@@ -7,6 +7,83 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **`/adopt` — bringing the baseline into a project that already has its own config** (#20,
+  consolidating #21 and #29; D60).  <!-- adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work / #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
+
+  There was no path for adopting the baseline into an **existing** project. Every real repo
+  already has a `.claude/`, root docs, forked skills and hooks, so adoption means working out what
+  now duplicates the baseline, what carries a delta that must be kept, and in what order to
+  reconcile them. A read-only sweep of four projects had produced that inventory by hand; this is
+  the workflow that produces it.
+
+  - **It never deletes, moves, or edits a file in the project it scans** — not with `--apply`, not
+    with confirmation. `remove` and `move` are words in a plan a human executes. The only writes in
+    the project are the two artifacts that do not yet exist (`agents.toml`,
+    `.ai-dev-baseline/upstream.toml`); each is created with `set -o noclobber` (atomic create-or-fail,
+    not check-then-copy) and refuses a symlink target, so neither a race nor a **dangling** symlink
+    can turn the write into an overwrite of something outside the project. The remaining write is
+    the already-shipped consent-gated `baseline repo apply`, run inside the target repo rather than
+    the caller's. `check-adopt.sh` asserts byte-for-byte that no read-only subcommand alters the
+    scanned project, and **executes the workflow's own `apply` block** against fixtures to prove it
+    refuses. (The run does rewrite its own gitignored `{{STATE_DIR}}` scratch every invocation; the
+    boundary is about the project's files, and saying otherwise was an overclaim.)
+  - **"Duplicates the baseline" has exactly one proof: byte-identity of the whole artifact**
+    against `adb_agent_manifest`'s own shipped set — never a second hardcoded list, never
+    similarity, and for a skill never `SKILL.md` alone: a project skill with an identical `SKILL.md`
+    plus its own helper must not be recommended for removal. `cmp`'s third status (the comparison
+    *failed*) is `unknown`, not `differs`. A colliding artifact that *differs* classifies as `move`
+    (re-home the delta), never `remove`; that difference is the project's forked behavior. A
+    **prescribed home** is tested *before* collision, because `.claude/scripts/precommit-gate.sh`
+    collides with a shipped script by name and *is* the one legal home for custom gate policy —
+    reverse those two arms and every adopting project is told to delete its own gate. Both
+    orderings are pinned as regressions.
+  - **Four adoption-hygiene axes** (#29): the product-code boundary (`src/**` referencing an agent  <!-- adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
+    CLI is the *product*), tracked config that ships to end users, layered statusLine/hook
+    precedence, and a broad ignore rule that reaches the runtime state dir only by accident. The
+    credential probe matches a closed prefix list and prints the **prefix only** — never the value.
+  - **An upstream pin** (#21) at `.ai-dev-baseline/upstream.toml`, recording version, commit,  <!-- adb-claim-ok: #21 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work -->
+    adoption date, stack and agents. Deliberately a **commit rather than a copied `.upstream`
+    tree**: the install is a symlink into a git clone, so one 40-byte field recovers the inherited
+    tree exactly and forever, while a snapshot doubles every file and goes stale silently.
+  - **Role inference that refuses to guess.** A signal naming two agents for one role yields
+    `ambiguous`; no signal yields `none`. Neither is ever filled in from the baseline's own
+    defaults — an operator reads `agents.toml` later as a record of what *they* decided, so a
+    guessed line is indistinguishable from a chosen one. Uninferred roles are emitted commented out.
+  - `delete_branch_on_merge` (#56, folded into #20) is **not** implemented: it contradicts D9's  <!-- adb-claim-ok: #56 was folded INTO #20 and closed NOT_PLANNED — the reference records why delete_branch_on_merge is deliberately NOT implemented, not tracked work -->
+    two-setting bound, and widening that needs its own decision rather than a drive-by field in an
+    adoption run. `adopt.md` carries the instruction not to add it.
+  - **Executing** the plan — re-homing forks, deleting duplicates — is deliberately not in this
+    slice and is tracked as #326: it needs a general backup primitive that does not exist yet
+    (`install.sh`'s pattern is `adb_link`'s, and is symlink-shaped).
+
+  A `--apply` run refuses a **symlinked ancestor** as well as a symlinked target: `mkdir -p` accepts
+  an existing symlink as the directory, so a repository shipping `.ai-dev-baseline` as one could
+  otherwise make an approved write land outside the project without winning any race. The content
+  write itself happens under `noclobber` rather than into a placeholder that is then reopened.
+
+  Whole-artifact comparison includes **symlinks and their targets**, not just regular files — a
+  project skill carrying the baseline's files plus its own symlink must not be recommended for
+  removal. A vendored `.<agent>/scripts/lib` is recognised as the single `lib` artifact the
+  manifest ships rather than fragmenting into a dozen escalations. The catch-all scan is
+  NUL-delimited, so a newline-bearing filename reaches the record-safety check whole instead of
+  being split into invented paths. The plan renders untrusted paths through `adb_display_value`,
+  since a legal filename may carry terminal control bytes. `pin-drift` revalidates a commit it
+  **read** — `pin-render`'s validation governs what this tool writes and says nothing about a
+  hand-edited pin, and one carrying `HEAD` produced an empty `HEAD..HEAD` range that reports no
+  drift at all.
+
+  Every load-bearing decision carries a mutation in `check-adopt.sh`'s `--mutation` harness that
+  must make the suite go red **on its own named assertion** — the standing-test form of "observed
+  failing", rather than a claim in a commit message that nothing can re-run.
+
+  New: `scripts/lib/adopt-lib.sh`, `scripts/check-adopt.sh` (registered as the `adopt` selfcheck
+  step), `base/workflows/adopt.md` rendered to all three agents, and an `{{ADOPT_LIB}}` placeholder.
+  `/adopt` also joins the untrusted-content registry as the first workflow whose third-party text
+  arrives from the filesystem rather than the network — what it reads is other projects' `SKILL.md`
+  bodies, which are instructions to an agent by construction.
+
 ### Fixed
 
 - **A repo path containing a tab or newline made `agent-init` initialize a different, existing

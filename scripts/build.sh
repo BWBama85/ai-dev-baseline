@@ -162,7 +162,7 @@ render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 render_agent_skill() {
   local agent="$1" src="$2" name out tmp first fmname
   local args_to state_dir gate_run role_dispatch roadmap_lib repo_settings cleanup_lib currency_lib pr_review
-  local state_assert pr_watch actions_app_slug implement_lib
+  local state_assert pr_watch actions_app_slug implement_lib adopt_lib
   local current_agent subtask fmmode
 
   # --- the per-agent MAP + MODE ------------------------------------------------------
@@ -190,6 +190,7 @@ render_agent_skill() {
   currency_lib="bash \"\$HOME/.$agent/scripts/lib/currency-lib.sh\""
   state_assert="bash \"\$HOME/.$agent/scripts/lib/state-assert.sh\""
   ci_health="bash \"\$HOME/.$agent/scripts/lib/ci-health.sh\""
+  adopt_lib="bash \"\$HOME/.$agent/scripts/lib/adopt-lib.sh\""
   current_agent="$agent"
   # AGENT-INVARIANT, like {{ARGS}} — this is a GitHub fact, not a per-agent token (#183). A
   # workflow body is prose an agent pastes into a shell, so it can carry a VALUE but can never
@@ -334,6 +335,7 @@ render_agent_skill() {
       -v implement_lib="$implement_lib" \
       -v pr_review="$pr_review" -v state_assert="$state_assert" \
       -v ci_health="$ci_health" \
+      -v adopt_lib="$adopt_lib" \
       -v pr_watch="$pr_watch" -v actions_app_slug="$actions_app_slug" \
       -v current_agent="$current_agent" -v subtask="$subtask" \
       -v skills_subdirs="$skills_subdirs" -v skills_user_root="$skills_user_root" \
@@ -397,6 +399,7 @@ render_agent_skill() {
       line = lreplace(line, "{{CURRENCY_LIB}}",     currency_lib)
       line = lreplace(line, "{{STATE_ASSERT_LIB}}", state_assert)
       line = lreplace(line, "{{CI_HEALTH_LIB}}",    ci_health)
+      line = lreplace(line, "{{ADOPT_LIB}}",        adopt_lib)
       line = lreplace(line, "{{ACTIONS_APP_SLUG}}", actions_app_slug)
       line = lreplace(line, "{{CURRENT_AGENT}}",    current_agent)
       line = lreplace(line, "{{SKILLS_SUBDIRS}}",   skills_subdirs)

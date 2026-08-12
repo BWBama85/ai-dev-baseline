@@ -88,6 +88,7 @@ Cleanup predicate: {{CLEANUP_LIB}} state-verdict threads open
 Run admission: {{IMPLEMENT_LIB}} admit {{STATE_DIR}}
 State observation: {{STATE_ASSERT_LIB}} observe pr 137
 Currency policy: {{CURRENCY_LIB}} check --trigger cleanup
+Adoption scan: {{ADOPT_LIB}} scan .
 Actions slug: {{ACTIONS_APP_SLUG}} and again {{ACTIONS_APP_SLUG}}.
 I am {{CURRENT_AGENT}}.
 Track work: {{SUBTASK_PRIMITIVE}} some sub-tasks.
@@ -109,6 +110,7 @@ if [ -f "$out" ]; then
   has "$body" 'Cleanup predicate: bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" state-verdict'  "{{CLEANUP_LIB}} is a command prefix"
   has "$body" 'Run admission: bash "$HOME/.claude/scripts/lib/implement-lib.sh" admit .claude/state' "{{IMPLEMENT_LIB}} is a command prefix"
   has "$body" 'State observation: bash "$HOME/.claude/scripts/lib/state-assert.sh" observe' "{{STATE_ASSERT_LIB}} is a command prefix"
+  has "$body" 'Adoption scan: bash "$HOME/.claude/scripts/lib/adopt-lib.sh" scan'           "{{ADOPT_LIB}} is a command prefix"
   has "$body" 'Currency policy: bash "$HOME/.claude/scripts/lib/currency-lib.sh" check'      "{{CURRENCY_LIB}} is a command prefix"
   has "$body" 'Actions slug: github-actions and again github-actions.' "{{ACTIONS_APP_SLUG}} → the real Actions app slug (agent-invariant, and pinned as a LITERAL: deriving it here would make this test blind to the VALUE being wrong, which is how #179 shipped)"
   has "$body" 'I am claude.'                                                       "{{CURRENT_AGENT}} maps to claude"
@@ -134,6 +136,7 @@ if [ -f "$cout" ]; then
   has "$cbody" 'Cleanup predicate: bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-verdict'  "codex {{CLEANUP_LIB}} → the ~/.codex predicate"
   has "$cbody" 'Run admission: bash "$HOME/.codex/scripts/lib/implement-lib.sh" admit .codex/state' "codex {{IMPLEMENT_LIB}} → the ~/.codex admission guard"
   has "$cbody" 'State observation: bash "$HOME/.codex/scripts/lib/state-assert.sh" observe' "codex {{STATE_ASSERT_LIB}} is a command prefix"
+  has "$cbody" 'Adoption scan: bash "$HOME/.codex/scripts/lib/adopt-lib.sh" scan'           "codex {{ADOPT_LIB}} → the ~/.codex library"
   has "$cbody" 'Currency policy: bash "$HOME/.codex/scripts/lib/currency-lib.sh" check'      "codex {{CURRENCY_LIB}} → the ~/.codex policy"
   has "$cbody" 'Actions slug: github-actions and again github-actions.' "codex {{ACTIONS_APP_SLUG}} → the real Actions app slug (agent-invariant, and pinned as a LITERAL: deriving it here would make this test blind to the VALUE being wrong, which is how #179 shipped)"
   has "$cbody" 'I am codex.'                                                        "codex {{CURRENT_AGENT}} → codex"
@@ -160,6 +163,7 @@ if [ -f "$gout" ]; then
   has "$gbody" 'Cleanup predicate: bash "$HOME/.gemini/scripts/lib/cleanup-lib.sh" state-verdict'  "gemini {{CLEANUP_LIB}} → the ~/.gemini predicate"
   has "$gbody" 'Run admission: bash "$HOME/.gemini/scripts/lib/implement-lib.sh" admit .gemini/state' "gemini {{IMPLEMENT_LIB}} → the ~/.gemini admission guard"
   has "$gbody" 'State observation: bash "$HOME/.gemini/scripts/lib/state-assert.sh" observe' "gemini {{STATE_ASSERT_LIB}} is a command prefix"
+  has "$gbody" 'Adoption scan: bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" scan'           "gemini {{ADOPT_LIB}} → the ~/.gemini library"
   has "$gbody" 'Currency policy: bash "$HOME/.gemini/scripts/lib/currency-lib.sh" check'      "gemini {{CURRENCY_LIB}} → the ~/.gemini policy"
   has "$gbody" 'Actions slug: github-actions and again github-actions.' "gemini {{ACTIONS_APP_SLUG}} → the real Actions app slug (agent-invariant, and pinned as a LITERAL: deriving it here would make this test blind to the VALUE being wrong, which is how #179 shipped)"
   has "$gbody" 'I am gemini.'                                                       "gemini {{CURRENT_AGENT}} → gemini"
