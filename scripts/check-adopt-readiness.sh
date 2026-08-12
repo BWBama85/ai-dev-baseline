@@ -425,7 +425,8 @@ eq "$after" "$before" "read-only: probe/tracker do not alter the scanned project
 ar receipt run "$d" >/dev/null 2>&1
 after="$(cd "$d" && find . -path ./.git -prune -o -type f -print | sort | xargs shasum 2>/dev/null | shasum)"
 eq "$after" "$before" "read-only: the receipt is written outside the project"
-[ -f "$ADB_STATE_DIR/adopt-gate-receipt.tsv" ]; yes $? "read-only: the receipt lands in the state dir"
+if [ -f "$ADB_STATE_DIR/adopt-gate-receipt.tsv" ]; then ok
+else bad "read-only: the receipt lands in the state dir"; fi
 
 # --- 7. the workflow still delegates to this library ----------------------------------------------
 # A source-drift guard, matching check-adopt.sh's: the predicates are only reachable if the
