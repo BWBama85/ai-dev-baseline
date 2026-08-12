@@ -4903,9 +4903,9 @@ limit: none of them is sufficient alone.
              every turn-end. What the issue's "extensible, not a fixed list" bought instead is the
              adapter registry: a sixth ecosystem is one function plus one token in
              `_ADB_ECOSYSTEMS`, with first-wins preserved byte-for-byte.
-             **One checklist item is dropped.** The contract's "project knowledge map (#33)" cannot
-             be a rung: #33 was closed NOT_PLANNED, so requiring it would make the contract
-             permanently red for every project. The contract records why, in the file itself.  <!-- adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was dropped, and tracks nothing -->
+             **One checklist item is dropped.** The contract's "project knowledge map (#33)" cannot  <!-- adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was DROPPED; it tracks nothing -->
+             be a rung: that issue was closed NOT_PLANNED, so requiring it would make the contract
+             permanently red for every project. The contract records why, in the file itself.
 - placement: `scripts/lib/adopt-readiness.sh` (the contract + predicates), `scripts/check-adopt-readiness.sh`
              (the suite + 18-mutation harness), `scripts/lib/project-gates.sh` (the adapter
              registry + PHP), `base/workflows/adopt.md` step 12, `bin/baseline adopt`.

@@ -66,10 +66,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   project with 44 issues in an undispositioned one; and a `while read` that dropped the final
   record of every `$(…)`-captured record set. None was visible by reading.
 
-  One checklist item is deliberately **absent**: the contract's *"project knowledge map (#33)"*
-  cannot be a rung, because #33 was closed `NOT_PLANNED` and requiring it would make the contract
-  permanently red for every project. The reason is recorded in the contract itself.
-  <!-- adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was dropped, and tracks nothing -->
+  One checklist item is deliberately **absent**: the contract's *"project knowledge map (#33)"*  <!-- adb-claim-ok: #33 was closed NOT_PLANNED — the reference records why a checklist item was DROPPED; it tracks nothing -->
+  cannot be a rung, because that issue was closed `NOT_PLANNED` and requiring it would make the
+  contract permanently red for every project. The reason is recorded in the contract itself.
 
 - **PHP quality gates, and an ecosystem set that grows by addition** (#81).
 
