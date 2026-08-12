@@ -627,13 +627,42 @@ Each verdict has exactly one emission, and every one of them ends with its actio
   This line prints on **every** run the hold holds. It is a verdict, not a question, so no
   `## Decisions` row retires it — only the tracker edit named above clears it.
 - `not-green` → requirements are met but the branch is **red**. Withhold the cut and name the
-  failing check (that is what `HEALTH_WHY` carries). This is a `/debug` signal, not a cut signal:
+  failing check (that is what `HEALTH_WHY` carries). Usually a `/debug` signal — **but classify the
+  failing check before you emit that, because a job that never ran lands here too** (#300):
+
+  ```bash
+  # HEALTH_WHY names the failing check; find the run that produced it and ask whether it EXECUTED.
+  # No run id, or an unreadable classification, means emit the /debug line below unchanged — this
+  # step may soften the emission, never harden it.
+  CI_RUN="$(gh run list --branch "$DEFAULT_BRANCH" --commit "$HEAD_SHA" \
+              --json databaseId,conclusion --jq '[.[]|select(.conclusion=="failure" or .conclusion=="cancelled")][0].databaseId' 2>/dev/null || echo '')"
+  CI_CLASS=0
+  if [ -n "$CI_RUN" ]; then
+    bash "$HOME/.codex/scripts/lib/ci-health.sh" classify --run "$CI_RUN" >/dev/null 2>&1; CI_CLASS=$?
+  fi
+  ```
+
+  **`CI_CLASS` = 23** → nothing that failed executed a step. The branch is **unverified, not
+  broken**, and `/debug` has no log to work from:
+
+  ```text
+  ⛔ Requirements met, but main's CI never executed — not ready to cut.
+  Why:  release held — failing: ci, and ci-health classified run <id> as never-ran (no step executed).
+  Next: none — re-run the failing check on main (this is not green-by-retry; nothing ran), then re-run.
+  ```
+
+  **Anything else** (22, or unclassifiable) → the ordinary red-build emission:
 
   ```text
   ⛔ Requirements met, but main is not green — not ready to cut.
   Why:  release held — failing: shellcheck. A drained checklist is not a shippable build.
   Next: none — /debug the failing check on main, then re-run.
   ```
+
+  **The classifier may only soften this emission, never harden it.** It cannot turn a red branch
+  into a cut — both arms still withhold — so an unreadable classification costs the operator a
+  wrong `/debug` suggestion, while a *hardening* one could hold a release on a guess. That is why
+  `CI_CLASS` defaults to `0` and every failure path falls through to the `/debug` line.
 
 - `indeterminate` → requirements are met but health could **not** be established (a check still
   running, or CI that has never reported on this commit). **Fail closed** — say why, and never

@@ -1276,6 +1276,13 @@ cmd_status() {
 #
 # A function rather than three copies of the sentence, because three copies is how two of them
 # eventually say different things.
+#
+# AND IT IS NOT EMITTED ON EVERY 20 — that was the first version's mistake. `PROT_STATE=forbidden`
+# means the protection exists and this token may not read it, which does NOT clear on its own and
+# DOES need something changed (a token scope, a repo permission). Telling that operator to watch a
+# status page and change nothing is the exact inverse of the remedy, and on a repo where the token
+# is simply under-scoped it is advice that never stops being wrong. So the caller picks: this hint
+# is for a read that failed for an UNKNOWN reason, and `forbidden` gets its own line.
 _adb_rs_outage_hint() {
   echo "repo-settings: if the API itself is degraded (see https://www.githubstatus.com/) this clears on its own — that is a platform incident, not a settings problem, and nothing here needs changing." >&2
 }
@@ -1290,10 +1297,15 @@ cmd_automerge_ok() {
   branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — refusing to arm auto-merge" >&2; _adb_rs_outage_hint; return 20; }
   read_protection "$branch"
   case "$PROT_STATE" in
-    error|forbidden)
+    forbidden)
       # `forbidden` means the protection exists but we may not read it — that is "unreadable",
       # not "unprotected". Reporting 11 here would send the operator to `baseline repo apply`,
-      # which they have no permission to run.
+      # which they have no permission to run. And it is NOT the outage arm: this one is diagnosed,
+      # it will not clear on its own, and something does have to change.
+      echo "repo-settings: cannot read branch protection on '$branch' — the API answered FORBIDDEN, so this token lacks the permission to read it" >&2
+      echo "repo-settings: that does NOT clear on its own — widen the token's scope or the account's repo permission. Refusing to arm auto-merge." >&2
+      return 20 ;;
+    error)
       echo "repo-settings: cannot read branch protection on '$branch' — refusing to arm auto-merge" >&2
       _adb_rs_outage_hint
       return 20 ;;

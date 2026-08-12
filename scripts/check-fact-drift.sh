@@ -1149,10 +1149,18 @@ fact wsl-smoke-asserts-nonroot-uid \
 # when their own verdict is `indeterminate` or `20`. A rename in the library alone leaves every one
 # of those describing a command nobody can run — and unlike a workflow invocation, none of them
 # would fail loudly, because they are prose.
-fact ci-health-predicate "fixed:ci-health.sh classify" -- \
+# TWO TOKENS, NOT ONE — because the practice now spells the invocation BY PATH
+# (`bash "$HOME/.<agent>/scripts/lib/ci-health.sh" classify --run <id>`, since nothing puts the
+# library on PATH), so the contiguous `ci-health.sh classify` a single rule pinned no longer occurs
+# anywhere a reader would look. Splitting the module name from the subcommand pins both renames
+# independently and stops the rule from depending on how the two happen to be spaced.
+fact ci-health-module "fixed:ci-health.sh" -- \
   scripts/lib/ci-health.sh base/practices/ci-discipline.md \
   scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh \
   docs/philosophy.md docs/repo-settings.md
+fact ci-health-subcommand "fixed:classify --run" -- \
+  scripts/lib/ci-health.sh base/practices/ci-discipline.md \
+  scripts/lib/roadmap-lib.sh scripts/lib/repo-settings.sh docs/repo-settings.md
 # The build TOKEN and its mapping are one fact, exactly as `{{ACTIONS_APP_SLUG}}` is: a body that
 # writes the placeholder with no mapping is a fail-loud build, but a mapping with no consumer is a
 # silently dead knob.

@@ -31,17 +31,29 @@ bug.
 
 ## The third class: the job never ran
 
-**A platform outage, an unacquired runner, a cancelled queue.** Zero steps
-executed, no code was touched, and the red carries no information about the diff.
-This is not flaky and it is not real — it is a fact about the *provider*, and both
-of the other two boxes give actively wrong advice for it.
+**Zero steps executed, no code was touched, and the red carries no information
+about the diff.** This is not flaky and it is not real, and both of the other two
+boxes give actively wrong advice for it.
+
+**What the class asserts is the EXECUTION FACT, and nothing about the cause.** A
+platform outage produces it; so does an unacquired runner, a concurrency group
+cancelling the run, a newer run superseding it, a self-hosted runner nobody
+started, and a human clicking Cancel. Those are not interchangeable: if *your own
+change* altered a concurrency key or a workflow trigger such that the job is
+cancelled before startup, re-running repeats it forever, and "don't inspect the
+diff" is then exactly the wrong advice. So *"it did not run"* is what you may
+conclude from the evidence below; *"the provider did it"* needs its own evidence,
+and the response section says which parts depend on which.
 
 ### Detection
 
-The machine-checkable signal is **step execution**, and it is one command:
+The machine-checkable signal is **step execution**, and it is one command —
+`ci-health.sh`, shipped in this baseline's shared library:
 
-```
-ci-health.sh classify --run <id>
+```sh
+# The library installs beside the other shared primitives, at ~/.<agent>/scripts/lib/.
+# It is NOT on PATH: invoke it by path, the same way every workflow here does.
+bash "$HOME/.claude/scripts/lib/ci-health.sh" classify --run <id>   # …/.codex/… or …/.gemini/… for those agents
 ```
 
 It prints a verdict word and a one-line reason, and its exit code is the
@@ -53,40 +65,47 @@ because that is the flattering answer and the one that ships a real failure past
 reader who stopped reading.
 
 The run id comes from whatever surfaced the red — `gh run list`, or the URL in
-`gh pr checks`. Each agent's workflow carries the path for its own install; this
-document states the rule, not the path.
+`gh pr checks`.
 
-Corroborating signals, for a human reading the same event:
+Corroborating signals, for a human reading the same event. **The first is what the
+command decides on; the rest are what distinguish a provider cause from the others,
+and none of them is implied by the first:**
 
-- **Zero executed steps** on every job that did not pass (this is what the command
-  above decides on).
+- **Zero executed steps** on every job that did not pass.
 - **A runner-acquisition or cancellation annotation** — e.g. *"The job was not
   acquired by Runner of type hosted even after multiple attempts"*. It appears on
-  the job's annotations, **not** in any log, which is why step 2 finds nothing.
+  the job's annotations, **not** in any log, which is why the log step finds
+  nothing. This one names a cause; read it before assuming one.
 - **Provider status not `operational`** (`githubstatus.com`). Check this yourself:
-  it describes *now*, so no tool can use it to classify a run that concluded
-  hours ago without letting a current incident relabel an unrelated old failure.
-- **A run stuck `queued`** long past what this repo's CI normally takes. Note that
-  a concurrency group can legitimately hold a run for hours, so a long queue is a
+  it describes *now*, so no tool can use it to classify a run that concluded hours
+  ago without letting a current incident relabel an unrelated old failure.
+- **A run stuck `queued`** long past what this repo's CI normally takes. A
+  concurrency group can legitimately hold a run for hours, so a long queue is a
   reason to look, not a verdict on its own.
+- **Whether your own diff touched CI configuration** — a `concurrency:` key, a
+  trigger, a `cancel-in-progress`. If it did, the cancellation may be yours, and
+  this is the one branch of this class where the diff *is* in scope.
 
 ### Response
 
-- **Do not debug the diff.** Nothing in it executed. Reading `ci: failure` as a
-  code failure and bisecting your own change against a run that touched no code is
-  the expensive mistake this class exists to prevent.
-- **Do not file a de-flake issue.** Step 5 mandates one for a flaky test; it does
-  **not** apply here, and `issues-and-scope.md` returns *don't file* on both of its
-  questions — *who does this?* nobody, the cause is the provider's; *what breaks if
-  nobody ever does?* nothing in the repo. There is no test to de-flake. Filing
-  anyway puts noise into the tracker whose documented problem is having been
-  flooded with issues nobody would do.
-- **Re-run once capacity returns**, and say plainly that this is **not**
-  green-by-retry: no earlier result is being overridden, because there was never a
-  result.
-- **Say which class it was**, in the PR or the report. "CI was red and I re-ran it"
-  and "CI never executed and I ran it" are different claims, and only the second
-  one is honest here.
+- **Do not debug the diff for the failure itself.** Nothing in it executed, so
+  bisecting your change against a run that touched no code is the expensive
+  mistake this class exists to prevent. The exception is the last signal above: if
+  the diff changed CI configuration, read *that* change — not the application code.
+- **Do not file a de-flake issue.** The flaky step mandates one for a test that
+  ran and flapped; it does **not** apply here, and `issues-and-scope.md` returns
+  *don't file* on both of its questions — *who does this?* nobody, unless the cause
+  turns out to be yours; *what breaks if nobody ever does?* nothing in the repo,
+  because there is no test to de-flake. Filing anyway puts noise into the tracker
+  whose documented problem is having been flooded with issues nobody would do.
+- **Re-run**, and say plainly that this is **not** green-by-retry: no earlier
+  result is being overridden, because there was never a result. If the *same* run
+  never executes twice in a row and the status page is clean, stop re-running and
+  look for a cause you own — a repeat is evidence against the outage reading.
+- **Say which class it was, and how confident you are about the cause.** "CI was
+  red and I re-ran it", "CI never executed and I ran it", and "CI never executed,
+  the annotation says the runner was never acquired" are three different claims.
+  Make the one the evidence supports.
 
 ### What this class does NOT license
 

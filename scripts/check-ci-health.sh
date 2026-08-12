@@ -288,6 +288,42 @@ verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-
 verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
                '{"total_count":1,"jobs":["not an object"]}')" \
         unknown 20 "a non-object job entry is unreadable"
+# A JOB WITH NO READABLE OUTCOME is the same mistake as the missing `steps` field, one field over —
+# and the fix for that one walked straight past it. The non-passing test matches on
+# `status != "completed"`, so a job carrying NEITHER `status` NOR `conclusion` satisfies it and
+# joins the idle set: `never-ran` from a truncated job object, printing its own outcome as `?`.
+verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+               '{"total_count":1,"jobs":[{"id":1,"name":"a","steps":[]}]}')" \
+        unknown 20 "a job with NO status is unreadable, not never-ran"
+has "$REASON" "no recognised status" "...and says the outcome could not be read"
+verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+               '{"total_count":1,"jobs":[{"id":1,"name":"a","status":"completed","steps":[]}]}')" \
+        unknown 20 "a COMPLETED job with no conclusion is unreadable, not never-ran"
+verdict "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+               '{"total_count":1,"jobs":[{"id":1,"name":"a","status":"nonsense","conclusion":"failure","steps":[]}]}')" \
+        unknown 20 "a job whose status is not a recognised value is unreadable"
+
+# A NOT-YET-STARTED RUN WHOSE JOBS HAVE EXECUTED STEPS is a contradictory snapshot, and a REACHABLE
+# one: the run is read first and its jobs in a second call, so a long-queued run acquired between
+# the two produces exactly this. 24's whole sentence is "has executed nothing".
+verdict "$(doc '{"status":"queued","conclusion":null,"created_at":"2026-08-06T19:00:00Z"}' \
+               '{"total_count":1,"jobs":[{"id":1,"name":"a","status":"in_progress","conclusion":null,"steps":[{"name":"s"}]}]}' \
+               '[]' '2026-08-06T21:00:00Z')" \
+        unknown 20 "a queued run whose jobs already executed is a contradictory snapshot"
+has "$REASON" "contradictory snapshot" "...and says so"
+# ...but an in_progress run with executed jobs is ORDINARY, not contradictory.
+verdict "$(doc '{"status":"in_progress","conclusion":null,"created_at":"2026-08-06T19:00:00Z"}' \
+               '{"total_count":1,"jobs":[{"id":1,"name":"a","status":"in_progress","conclusion":null,"steps":[{"name":"s"}]}]}' \
+               '[]' '2026-08-06T21:00:00Z')" \
+        pending 25 "an in_progress run with executed jobs is ordinary pending"
+
+# AN UNRECOGNISED RUN STATUS IS UNREADABLE, NOT "ask again later". A bare `else` onto pending
+# printed `pending / attempt 1 is garbage` — a legitimate verdict invented for a value the
+# classifier does not understand, leaving a caller polling forever.
+verdict "$(doc '{"status":"garbage","conclusion":null,"created_at":"2026-08-06T19:00:00Z"}' "$J_NONE")" \
+        unknown 20 "an unrecognised run status is unreadable, not pending"
+has "$REASON" "does not recognise" "...and names the value it could not read"
+
 # A FUTURE start time is a contradiction between the API and the clock, not a young run. The first
 # version printed `pending ... (-31527000s, under the threshold)` — a confident verdict from
 # nonsense. `adb_age_secs` refuses a negative age for the same reason.
@@ -518,7 +554,19 @@ hasnt "$CHCODE" "while true" "ci-health never loops waiting"
 PRAC="$(cat base/practices/ci-discipline.md)"
 has "$PRAC" "never-ran" "the practice still spells the third class"
 has "$PRAC" "issues-and-scope.md" "the practice cites issues-and-scope.md where it forbids the de-flake issue"
-has "$PRAC" "ci-health.sh classify --run" "the practice still names the command that decides it"
+has "$PRAC" "ci-health.sh" "the practice still names the module that decides it"
+has "$PRAC" "classify --run" "...and its subcommand"
+# THE INVOCATION MUST BE ONE THAT RESOLVES. The library installs to ~/.<agent>/scripts/lib and is
+# never put on PATH, so a bare `ci-health.sh classify …` in the most-read document in the baseline
+# is `command not found` for anyone outside the three workflows that carry a rendered path.
+has "$PRAC" "scripts/lib/ci-health.sh" "...spelled as an installed path, not a bare command"
+has "$PRAC" "NOT on PATH" "...and says why the path is written out"
+# THE CLASS ASSERTS AN EXECUTION FACT, NOT A CAUSE. The practice claimed a zero-step run was "a fact
+# about the provider"; a concurrency-key change in the diff itself produces identical evidence, and
+# for that case "do not inspect the diff" makes the failure repeat forever.
+has "$PRAC" "EXECUTION FACT" "the practice scopes the class to the execution fact"
+has "$PRAC" "concurrency" "...and names a cause the diff itself can own"
+hasnt "$PRAC" "it is a fact about the *provider*" "...and no longer attributes every zero-step run to the provider"
 # Step 5 (never merge on a flaky re-run) must be SCOPED to results that exist — the carve-out #300
 # asks for. Without it the rule reads as forbidding the re-run of a job that produced no result.
 has "$PRAC" "of a result that exists" "the green-by-retry rule still carries its results-that-exist scope"
@@ -636,6 +684,23 @@ if mutate "M6 the jobs read is un-anchored from the attempt" \
     *) ok ;;
   esac
   has "$(cat "$S/calls")" "runs/31126981959/jobs" "M6: ...and the mutant really does use the moving endpoint"
+fi
+MUT_CH=""
+
+# M7 — remove the readable-outcome guard, the P1 the PR review found. This is M5's sibling: a job
+# carrying neither `status` nor `conclusion` satisfies the non-passing test on its first clause and
+# joins the idle set, so a truncated job object manufactures 23 and prints its own outcome as `?`.
+# Two adjacent fields, the same fail-open, and the fix for one did not cover the other — which is
+# exactly why both get a mutation rather than a shared assurance.
+if mutate "M7 the readable-job-outcome guard removed" \
+          '      elif ($jobs | map((.status // null) | IN("queued","in_progress","completed","waiting","requested","pending") | not) | any) then' \
+          's@elif ($jobs | map((.status // null) | IN("queued","in_progress","completed","waiting","requested","pending") | not) | any) then@elif false then@'; then
+  MOUT="$(printf '%s' "$(doc '{"status":"completed","conclusion":"failure","created_at":"2026-08-06T19:34:34Z"}' \
+                             '{"total_count":1,"jobs":[{"id":1,"name":"a","steps":[]}]}')" \
+          | bash "$MUT_CH" classify-doc 2>/dev/null)"; MRC=$?
+  if [ "$MRC" = "20" ]; then bad "M7: the readable-outcome assertion did NOT go red"; else ok; fi
+  has "$MOUT" "never-ran" "M7: ...and without the guard a job with no outcome really does reach never-ran"
+  has "$MOUT" "(?)" "M7: ...printing the outcome it could not read as a question mark"
 fi
 MUT_CH=""
 

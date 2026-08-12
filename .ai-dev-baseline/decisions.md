@@ -4542,12 +4542,12 @@ limit: none of them is sufficient alone.
              is RECORDED as a fixture and classifies `never-ran` (23) quoting its runner-acquisition
              annotation; a recorded excerpt of a real red run of this repo's own CI (31460894856,
              `precommit-gate` failing after 8 steps) is the control and classifies `failed` (22).
-             164 assertions cover the whole truth table, the live arm through a stub `gh`, and the
+             189 assertions cover the whole truth table, the live arm through a stub `gh`, and the
              enrichment boundary. SIX mutations — the truncation guard, the executed-failure arm's
              precedence, the verdict-to-exit-code mapping, the one-line sanitizer, the
              missing-`steps` guard and the attempt anchoring — are each applied through the shared
              `check_mutate_line`, each verified to still LOAD, and each required to make ONE NAMED
-             assertion go red. The load probe was added after M1 initially proved nothing: a lone
+             assertion go red (a seventh, M7, was added in the PR-review round). The load probe was added after M1 initially proved nothing: a lone
              mutant copy died on a missing `common.sh` before classifying anything.
 
              Nine further defects came from the independent review and are fixed here rather than
@@ -4563,4 +4563,23 @@ limit: none of them is sufficient alone.
              GitHub documents that conclusion for check suites and it is the one arm here with no
              recorded specimen; and the suite's own header claiming more mutation coverage than it
              had. Each is recorded where it was wrong rather than silently rewritten.
+
+             A SECOND review round, on the opened PR, found seven more — and two of them are the
+             same fail-open one field over, which is the finding worth keeping. The missing-`steps`
+             guard did not cover a job carrying neither `status` nor `conclusion`: that job
+             satisfies the non-passing test on its first clause, joins the idle set, and reaches
+             `never-ran` printing its own outcome as `?` — the module admitting in its output that
+             it could not read what it had just classified. Both fields are now required and both
+             have their own mutation (M5, M7), because the fix for one demonstrably did not imply
+             the other. The rest: a queued run whose jobs already carry executed steps is a
+             contradictory snapshot (20, not the flattering 24) and is reachable through the same
+             two-read window the attempt anchoring does NOT close; an unrecognised run status
+             reached `pending` instead of 20; the outage hint was emitted on `PROT_STATE=forbidden`,
+             where the remedy is a token scope and the advice said nothing needs changing; the
+             practice still called a zero-step run "a fact about the provider" when a concurrency
+             key in the diff itself produces identical evidence; the practice's command was
+             unrunnable as written (the library installs to `~/.<agent>/scripts/lib` and is never
+             on PATH); and `/roadmap`'s `not-green` EMISSION still said "/debug the failing check"
+             unconditionally, so the guidance added to the prose above it was never reached — the
+             emission now classifies first, and may only SOFTEN the verdict, never harden it.
 - baseline-issue: n/a — this repo IS the baseline; #300 is the tracking issue.

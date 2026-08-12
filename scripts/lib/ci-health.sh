@@ -227,6 +227,17 @@ _ci_classify_doc() {
     #    Reproduced with a completed failed job carrying no `steps` key at all.
       elif ($jobs | map((has("steps") | not) or ((.steps | type) != "array")) | any) then
         "unknown\nat least one job carries no readable steps array — a MISSING step list is not an EMPTY one, so what executed cannot be established"
+    # 4. A JOB WITH NO READABLE OUTCOME — the same mistake as (3), one field over, and the one the
+    #    fix for (3) walked straight past. The non-passing test is `status != "completed" OR
+    #    conclusion is null OR conclusion not in (success,skipped,neutral)`, so a job carrying
+    #    NEITHER field satisfies it on the first clause and joins the idle set: a truncated job
+    #    object with `steps: []` reached `never-ran` and printed its outcome as `?`, which is the
+    #    module admitting in the output that it could not read what it just classified. A job must
+    #    have a status this code recognises, and a completed one must have a conclusion.
+      elif ($jobs | map((.status // null) | IN("queued","in_progress","completed","waiting","requested","pending") | not) | any) then
+        "unknown\nat least one job carries no recognised status, so its outcome cannot be read"
+      elif ($jobs | map((.status == "completed") and (((.conclusion // null) | type) != "string")) | any) then
+        "unknown\nat least one completed job carries no conclusion, so its outcome cannot be read"
       else
 
     # --- the run has NOT concluded ------------------------------------------------------------
@@ -236,6 +247,16 @@ _ci_classify_doc() {
       # overdue: a long `in_progress` build is a slow build, not an outage, and calling it one
       # would hand every heavy test suite the excuse this module exists to ration.
       ( if ($status | IN("queued","waiting","requested","pending")) then
+          # A NOT-YET-STARTED RUN WHOSE JOBS HAVE EXECUTED STEPS IS A CONTRADICTION, and it is a
+          # REACHABLE one rather than a theoretical shape: `cmd_classify` reads the run first and
+          # its jobs in a second call, so a long-queued run acquired between the two reads produces
+          # exactly this snapshot. Anchoring the jobs read to the attempt (which this module does)
+          # fixes a DIFFERENT race and not this one. Without this arm the answer is 24, whose whole
+          # sentence is "has executed nothing" — the flattering verdict, asserted against evidence
+          # sitting in the same document that it did.
+          if ([ $jobs[] | select(.steps | length > 0) ] | length) > 0 then
+            "unknown\nthe run reports \($status | s1) while its jobs already carry executed steps — a contradictory snapshot, most likely read across a state change"
+          else
           ( ($run.run_started_at // $run.created_at // null) ) as $since
           | if ($since | isinstant | not) then
               "unknown\nthe run has not started and carries no usable UTC timestamp to age it against"
@@ -256,8 +277,16 @@ _ci_classify_doc() {
                   "pending\nattempt \($attempt) is \($status | s1) (\($age | floor)s, under the \(.queued_threshold_secs)s threshold)"
                 end
             end
+          end
+        # `in_progress` is the ONLY other status this module recognises as legitimately unfinished.
+        elif $status == "in_progress" then
+          "pending\nattempt \($attempt) is in_progress"
+        # ANYTHING ELSE IS UNREADABLE, NOT "ask again later". This used to be a bare `else` onto
+        # `pending`, so `status: "garbage"` printed `pending / attempt 1 is garbage` — a legitimate
+        # verdict, invented for a value the classifier does not understand, that leaves a caller
+        # polling forever instead of surfacing an unreadable response or a new API state.
         else
-          "pending\nattempt \($attempt) is \($status | s1)"
+          "unknown\nthe run reports a status this classifier does not recognise: \($status | s1)"
         end )
 
     # --- the run concluded --------------------------------------------------------------------
