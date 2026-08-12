@@ -108,6 +108,18 @@ eq "$(verdict script yes differs yes)" keep "a PRESCRIBED HOME that collides is 
 # An unmodelled kind is escalate, not an error and not a guess.
 eq "$(verdict frobnicator yes same no)" escalate "an unmodelled kind -> escalate"
 
+# A `move` MUST NAME A DESTINATION THAT EXISTS FOR THAT KIND. The first live run against a real
+# adopted project returned `move` for a 294-line forked Stop hook and told the operator to re-home
+# it "to overrides.md" — a mechanism that exists for skills and does NOT exist for scripts. An
+# instruction naming a home that is not there is worse than none: it reads as authoritative and
+# leaves the operator improvising, which is the drift handling-the-unknown.md exists to stop.
+reason() { bash "$AD" classify "$1" yes differs no | cut -f2; }
+has   "$(reason skill)"   "overrides.md"      "a forked SKILL is pointed at the compose-override mechanism"
+hasnt "$(reason script)"  "overrides.md"      "a forked SCRIPT must NOT be pointed at a mechanism that does not exist for it"
+has   "$(reason script)"  "agents.toml"       "a forked SCRIPT is pointed at the config surface that does exist"
+has   "$(reason rootdoc)" "per-project-overrides" "a duplicating ROOT DOC is pointed at the precedence rule"
+has   "$(reason other)"   "handling-the-unknown"  "an unmodelled kind's move says to classify it, not to improvise a home"
+
 # --- 1b. classify: every rejectable argument is observed being REJECTED --------------------------
 # The enum is closed, so the harness injects each invalid form rather than spot-checking one. A
 # predicate that accepted a typo'd enum would answer a question nobody asked: `delta=diffres`

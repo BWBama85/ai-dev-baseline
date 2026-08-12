@@ -297,7 +297,24 @@ cmd_classify() {
     same)
       printf 'remove%sbyte-identical to the baseline artifact it shadows — the global install already provides it, so removing costs nothing\n' "$TAB" ;;
     differs)
-      printf 'move%scollides with a baseline artifact BUT differs — re-home the delta (a forked skill to overrides.md, a gate command to [gates]) before the fork goes; removing it as-is would lose behavior\n' "$TAB" ;;
+      # THE DESTINATION DEPENDS ON THE KIND, and a generic sentence here is a real cost rather
+      # than a wording nit. The first live run against a real adopted project returned `move` for
+      # a 294-line forked Stop hook and advised re-homing it "to overrides.md" — a mechanism that
+      # exists for skills and does not exist for hook scripts. An operator following that finds no
+      # such path and is left to improvise, which is the drift handling-the-unknown.md exists to
+      # stop. Each kind gets the destination it actually has.
+      case "$kind" in
+        skill)
+          printf 'move%scollides with a baseline skill BUT differs — carry ONLY the delta in .<agent>/skills/<name>/overrides.md and recompose (baseline skill-compose), then the fork can go; deleting it as-is loses whatever it changed\n' "$TAB" ;;
+        script)
+          # No compose mechanism exists for a hook script, so the honest instruction is to diff
+          # and confirm — not to name a home that does not exist.
+          printf 'move%scollides with a baseline script BUT differs, and there is NO compose-override mechanism for scripts — diff it against the baseline copy, move anything project-specific into agents.toml [gates]/[gates.scope] or the repo'"'"'s own precommit-gate.sh, and only then delete it\n' "$TAB" ;;
+        rootdoc)
+          printf 'move%sduplicates baseline practice text — trim only the lines the baseline already states; a root doc should restate a baseline rule ONLY where it CHANGES it (docs/per-project-overrides.md)\n' "$TAB" ;;
+        *)
+          printf 'move%scollides with a baseline artifact BUT differs — re-home the delta before the fork goes; deleting it as-is would lose behavior. This kind has no prescribed destination: classify it per handling-the-unknown.md rather than improvising one\n' "$TAB" ;;
+      esac ;;
     unknown)
       printf 'escalate%scollides with a baseline artifact and the difference could not be established — do not guess (handling-the-unknown.md bucket 4)\n' "$TAB" ;;
   esac
