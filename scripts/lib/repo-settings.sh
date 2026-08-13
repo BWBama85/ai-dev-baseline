@@ -1664,7 +1664,15 @@ cmd_reconcile() {
 
   # The verdict, from the lint that owns it. Captured in a SUBSHELL so --porcelain's stdout reshape
   # cannot leak into this command's own output, and so the option stays local to the call.
-  drifted="$( OPT_PORCELAIN=1; cmd_required_drift 2>/dev/null )"; rc=$?
+  #
+  # STDERR IS DELIBERATELY NOT REDIRECTED. A `2>/dev/null` here reads as tidiness and is a real
+  # loss: on the 20 arm below, the lint's stderr is the ONLY statement of which fact could not be
+  # established (opaque protection, a contradicted discovery, an unreadable branch), and this
+  # command then writes nothing while explaining nothing. The cost is discovery's per-file
+  # "skipping <file> — <reason>" lines on the happy path, which `required-drift` itself refuses to
+  # swallow for exactly this reason (see its own note): a parser that stopped seeing a job looks
+  # identical to a repo that stopped having one.
+  drifted="$( OPT_PORCELAIN=1; cmd_required_drift )"; rc=$?
   case "$rc" in
     0)  adb_info "repo-settings: required checks on '$branch' are already in sync — nothing to reconcile"
         return 0 ;;

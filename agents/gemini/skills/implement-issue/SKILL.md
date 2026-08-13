@@ -322,7 +322,15 @@ fi
 #
 # NON-FATAL, ALWAYS. Nothing here can stop the run: a repo that has not opted in, cannot be read, or
 # is not admin still gets its issue implemented. Report the code in step 11 and carry on.
-bash "$HOME/.gemini/scripts/lib/repo-settings.sh" reconcile; RECONCILE=$?
+# `|| RECONCILE=$?`, NEVER `; RECONCILE=$?` — this repo has already shipped that bug once, in the
+# PR advisory arm of ci.yml, and `scripts/check-repo-settings.sh` now executes that block under
+# `bash -e` so it cannot come back. The same hazard is here: under errexit a non-zero exit trips the
+# shell AT THIS LINE, before the assignment or the case runs, and the "non-fatal" promise above
+# becomes a preflight that dies. It would fire on the MOST COMMON path, not an exotic one — 17 is
+# what every repo that has not opted in returns. `||` puts the command in a condition context, where
+# errexit does not apply.
+RECONCILE=0
+bash "$HOME/.gemini/scripts/lib/repo-settings.sh" reconcile || RECONCILE=$?
 case "$RECONCILE" in
   0)  : ;;   # in sync, or reconciled AND verified by re-reading — its own output says which
   16) : ;;   # HEAD is not the default tip. Unexpected HERE (the sync block just put us there), so

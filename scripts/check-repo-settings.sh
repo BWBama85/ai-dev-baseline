@@ -2120,7 +2120,11 @@ WFI="base/workflows/implement-issue.md"
 wf_recon="${ check_wf_snippet "$WFI" reconcile; }"
 if [ -n "$wf_recon" ]; then ok; else bad "implement-issue.md lost its '# ADB-SNIPPET: reconcile' marker"; fi
 has "$wf_recon" '{{REPO_SETTINGS_LIB}} reconcile' "preflight calls reconcile through the library placeholder"
-hasnt "$wf_recon" 'exit' "the preflight reconcile block contains no exit — it can never abort the run"
+# COMMENTS STRIPPED FIRST. The bare substring test this replaces matched the word "errexit" in the
+# block's own explanation of why it uses `|| VAR=$?`, so documenting the hazard tripped the guard
+# against the hazard. The claim is about the CODE containing no `exit` command, so ask the code.
+_recon_code="${ printf '%s\n' "$wf_recon" | sed 's/#.*$//'; }"
+hasnt "$_recon_code" 'exit' "the preflight reconcile block contains no exit — it can never abort the run"
 # The marker must not drag the NEXT snippet in behind it: both live in this file, and an extractor
 # that ran past the fence would make this test execute preflight's admission step as a side effect.
 hasnt "$wf_recon" 'ADB-SNIPPET: admission' "the reconcile snippet ends at its own fence"
@@ -2130,10 +2134,18 @@ cat > "$work/rs-recon-stub.sh" <<'EOF'
 exit "${STUB_RECONCILE_RC:-0}"
 EOF
 chmod +x "$work/rs-recon-stub.sh"
+_body="${wf_recon//\{\{REPO_SETTINGS_LIB\}\}/bash \"$work/rs-recon-stub.sh\"}"
+printf '%s\n' "$_body" > "$work/recon-block.sh"
 for _code in 0 16 17 18 20 2; do
-  _body="${wf_recon//\{\{REPO_SETTINGS_LIB\}\}/bash \"$work/rs-recon-stub.sh\"}"
-  STUB_RECONCILE_RC="$_code" bash -c "$_body" >/dev/null 2>&1
+  STUB_RECONCILE_RC="$_code" bash "$work/recon-block.sh" >/dev/null 2>&1
   eq "$?" "0" "preflight survives reconcile exit $_code — the run is never aborted by a settings read"
+  # AND UNDER ERREXIT, which is the shape that actually regressed here before. `cmd; VAR=$?` looks
+  # correct under `bash file` and is FATAL under `bash -e file`: errexit fires at the command, so the
+  # assignment and the whole case never run and preflight dies. It would fire on the COMMON path —
+  # 17 is what every repo that has not opted in returns — so this is asserted for every code, not
+  # just the interesting ones. Same regression, same pin, as the ci.yml advisory arm above.
+  STUB_RECONCILE_RC="$_code" bash -e "$work/recon-block.sh" >/dev/null 2>&1
+  eq "$?" "0" "...and survives it under 'bash -e', where '; VAR=\$?' would have killed the run"
 done
 # And no unresolved placeholder may survive the render, or the block dies with 'command not found'
 # on the one line whose whole job is to be non-fatal.
