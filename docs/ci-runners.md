@@ -156,9 +156,12 @@ Actions workspace instead fails two ways that review reproduced: the `/mnt/<driv
 clone carries tags but no `origin/<default>` and `check-claims.sh` exits 2 with "cannot resolve a
 default-branch base".
 
-**Not `release:`.** This repo versions by pushed git tag and never publishes a GitHub Release object,
-so a `release:` trigger would fire zero times — a leg that never runs is the silent-guard failure
-mode, not a leg.
+**Not `release:`.** This repo now *does* publish a GitHub Release (#284, D62), so the original reason
+for this line — "a `release:` trigger would fire zero times, and a leg that never runs is the
+silent-guard failure mode" — no longer holds. The trigger stays off anyway, for a reason that never
+depended on it: a Release is published from a tag whose merge commit this suite has **already** run
+against, so a `release:` leg would re-run the same offline suite on the same tree and report the same
+answer. It would add a second verdict about a commit that already has one, not coverage.
 
 **And it runs as an ordinary user, which is a correctness requirement rather than hygiene** (#271,
 D39). `wsl --install --no-launch` provisions **no user**, so an unprovisioned distro's default is

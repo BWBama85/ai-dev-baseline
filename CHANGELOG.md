@@ -9,6 +9,59 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **`/release` publishes an actual GitHub Release, reversing the tag-only decision** (#284; D62).
+
+  Four tags existed and `gh release list` returned nothing. `SKILL.md` said so on purpose — twice —
+  and called adding a publish step "a decision change". This is that decision change: a tag carries
+  no notes a human reads, no checksum, and nothing `curl` can fetch, so the release-pinned install
+  slice (#285) had no source to install *from* and every adopter kept cloning the development repo
+  and tracking `main`.
+
+  `release.sh publish` is step 11; `roll` renumbers to 12 and now **refuses without the publish
+  receipt**, because `roll` deletes the run state as its last act — a release rolled before it was
+  published can only ever be published through the backfill path afterwards.
+
+  - **The notes are the tag's own message, byte for byte.** Not the changelog and not a regenerated
+    summary: `publish` reads the annotation off the tag object, which is the one place that prose
+    durably lives and the only one that still exists for a backfill years later.
+  - **`git tag -a` now passes `--cleanup=verbatim`, and that fixes a live defect.** Git's default
+    cleanup treats a `#`-leading line as commentary and **deletes it** — in Markdown that is a
+    heading. Measured on a throwaway repo: an 80-byte message containing one
+    `# A markdown heading line` was stored as **54 bytes**, with the line simply gone and nothing
+    said. Every tag this repo has cut went through that.
+  - **Two assets, and "reproducible" is claimed exactly as far as it holds.** A `git archive` of the
+    tagged tree plus `SHA256SUMS`. `git archive` fixes every entry's mtime/uid/gid/mode from the
+    commit and `gzip -n` drops the name and timestamp, so runs of the same gzip agree — measured,
+    byte-identical. Across *other* gzip implementations they may not, which is why the digest is
+    published rather than the property merely asserted. What goes *in* the artifact is #285's
+    decision; this owns only that a checksummed, regenerable one is published at all.
+  - **Idempotent in the three states a release can be in.** `gh release create` with assets
+    internally creates a draft, uploads, then publishes — so an interrupted upload leaves a **draft**,
+    and that is the state that must converge rather than produce a second release. absent → create;
+    draft → upload only what is missing, verify, publish; published → verify only. A published
+    release that does not match is a **refusal, not a repair**: `--clobber` deletes an asset before
+    replacing it, so "fixing it up" has a window with neither.
+  - **It verifies by reading back**, because a create that exits 0 is not evidence the release says
+    the right thing. It re-reads the release, compares the body against the tag message byte for
+    byte, requires the asset set to match exactly, and re-downloads both assets to re-hash them.
+  - **It can never create a tag.** `--verify-tag` is the backstop under a `git ls-remote` guard:
+    `gh release create <tag>` with no such tag on the remote mints one from the default branch's
+    head, which is a permanent object this skill's own rules forbid moving.
+  - **Backfilling** (`publish --version vX.Y.Z`) pins on the peeled remote tag rather than run state,
+    defaults to **not** Latest, and writes nothing back — a backfill run in a checkout with a release
+    in flight must not stamp `PUBLISHED` over that release's state. `v2.1.0` and `v2.0.0` are
+    backfilled; `v1.0.0` is a **lightweight** tag, so it carries no message and is refused by the
+    same rule that protects every other caller.
+
+  `scripts/check-release-skill.sh` grows from 169 assertions to 267, over a fixture that stands up a
+  real repo, a real bare `origin`, a tag created **by the driver**, and a *simulating* `gh` that keeps
+  release state on disk. That last part is what makes "re-running changes nothing" an assertion
+  rather than a hope. Every new guard was **observed failing** on its own witness — the first cut of
+  the fixture created the tag itself, which made the byte-identity assertions a statement about the
+  fixture instead of about `cmd_tag`: deleting `--cleanup=verbatim` and re-running came back
+  **261 passed, 0 failed**. Driving `release.sh tag` put the flag under test, and the same deletion
+  is caught now.
+
 - **The adoption completion contract, and a verifier that fails closed** (#81; D61).
 
   `/adopt` (#20) answers *"what does this project already have, and what must be reconciled"*. It

@@ -43,6 +43,7 @@
 #   release.sh merge
 #   release.sh verify-merge
 #   release.sh tag --message-file <path>
+#   release.sh publish [--version <vX.Y.Z>] [--latest|--no-latest] [--dry-run]
 #   release.sh roll
 #   release.sh state          # dump the run state
 #
@@ -515,7 +516,17 @@ cmd_tag() {
   else
     # -F, never an inline -m: the release paragraph is Markdown and routinely contains backticks,
     # which a double-quoted -m would run as command substitution.
-    git -C "$ROOT" tag -a "$v" "$msha" -F "$msg" || die "could not create tag $v"
+    #
+    # --cleanup=verbatim, because the DEFAULT SILENTLY DELETES CONTENT (#284). `git tag`'s default
+    # cleanup strips `#`-leading lines as commentary — and this message is Markdown, where `#` opens
+    # a heading. Measured on a throwaway repo: an 80-byte message containing one
+    # `# A markdown heading line` was stored as 54 bytes, with that line simply gone. Nothing warns.
+    #
+    # It is also what makes the annotation byte-identical to this file, which is the property
+    # `publish` depends on: the release notes are read back out of the tag, so "the notes are the
+    # tag message" and "the notes are what the operator wrote" are the same sentence only under
+    # verbatim.
+    git -C "$ROOT" tag -a "$v" "$msha" --cleanup=verbatim -F "$msg" || die "could not create tag $v"
   fi
   git -C "$ROOT" push origin "$v" || die "could not push $v — re-run this command to retry"
   # --exit-code is REQUIRED: plain ls-remote exits 0 with EMPTY output on no match, so the
@@ -527,8 +538,271 @@ cmd_tag() {
   say "tagged: $v -> $msha (verified on origin)"
 }
 
+# --- publish ------------------------------------------------------------------------------------
+# Publishes the GitHub Release for a tag this driver already pushed and verified (#284, D62).
+#
+# WHAT REVERSED. SKILL.md used to state, twice, that this repo versions by git tag only and that
+# adding a publish step was "a decision change". It is now that decision change: three tags existed
+# with zero Releases, so nothing a downstream project could pull or pin against existed either.
+#
+# THIS STEP NEVER CREATES A TAG, and `--verify-tag` is what enforces it rather than a comment.
+# `gh release create <tag>` with no such tag on the remote CREATES ONE from the default branch's
+# current head — which would mint a permanent tag pointing at whatever main happened to be, under a
+# skill whose own rule is that a pushed tag never moves. Every path below refuses before it gets
+# there, and the flag is the backstop for the paths nobody thought of.
+#
+# TWO MODES, and the second one must not touch the first one's state:
+#
+#   * NORMAL (no --version) — the in-run step. Reads VERSION and MERGE_SHA from the run state and
+#     requires origin's tag to peel to exactly that verified merge commit.
+#   * BACKFILL (--version vX.Y.Z) — publishes a release for a historically pushed tag. It CANNOT
+#     use the run state: `version-guard` rejects a used version, and `roll` deletes the state file
+#     outright, so a tag cut months ago has neither VERSION nor MERGE_SHA. It therefore pins on the
+#     PEELED REMOTE TAG instead, and writes NOTHING back — a backfill run in a checkout that has a
+#     release in flight must not stamp PUBLISHED over that release's state.
+#
+# IDEMPOTENT AND RESUMABLE, in the three states a release can actually be in. `gh release create`
+# with assets internally creates a draft, uploads, then publishes, so an interrupted upload leaves a
+# DRAFT — which is exactly the state that must converge rather than produce a second release.
+#
+#   absent    -> create (assets and notes in one call)
+#   draft     -> upload only the assets that are missing, verify, then publish
+#   published -> verify only. NEVER edit, delete or --clobber.
+#
+# A mismatch on an already-published release is a REFUSAL, not a repair. `gh release upload
+# --clobber` deletes the existing asset before replacing it, so "fix it up" is a path that can end
+# with neither the old asset nor the new one. If a published release does not match what this step
+# would produce, something outside this step wrote it, and that is the operator's to look at.
+cmd_publish() {
+  local v msha
+  have_gh || die "gh not found"
+  command -v jq >/dev/null 2>&1 || die "jq not found"
+
+  pub_ver=""; pub_latest=""; pub_dry=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --version)   [ "$#" -ge 2 ] || { usage >&2; exit 2; }; pub_ver="$2"; shift 2 ;;
+      --latest)    pub_latest=true;  shift ;;
+      --no-latest) pub_latest=false; shift ;;
+      --dry-run)   pub_dry=1; shift ;;
+      *) usage >&2; exit 2 ;;
+    esac
+  done
+
+  if [ -n "$pub_ver" ]; then
+    # VALIDATED, not merely accepted. This value reaches `git ls-remote`, a `repos/<slug>/...`
+    # request path and an asset FILENAME. `version-ok` is the wrong predicate — it also enforces
+    # unused-and-newer, which every legitimate backfill target fails by definition — so the format
+    # half was split out rather than the check skipped.
+    bash "$RLIB" version-format "$pub_ver" >/dev/null || die "not a version: $pub_ver"
+    v="$pub_ver"; pub_backfill=1
+    [ -n "$pub_latest" ] || pub_latest=false
+  else
+    need v VERSION 'run version-guard first'
+    need msha MERGE_SHA 'run merge first'
+    pub_backfill=0
+    [ -n "$pub_latest" ] || pub_latest=true
+  fi
+
+  # AFTER the state guards, not before them. `[roles].release` decides whether this AGENT may cut a
+  # release at all, and it is asserted here because publishing is the second irreversible act in the
+  # procedure — but a run invoked with no state at all has a more specific thing to say first, and
+  # "you skipped version-guard" is more useful than a role verdict on a run that was never going to
+  # get as far as needing one.
+  assert_role
+
+  pub_sl="$(slug)" || die "cannot resolve this repo's slug"
+  [ -n "$pub_sl" ] || die "cannot resolve this repo's slug"
+
+  git -C "$ROOT" fetch --prune --tags origin >/dev/null 2>&1 || die "fetch failed"
+  # --exit-code, for the reason cmd_tag already documents: a plain ls-remote exits 0 with EMPTY
+  # output on no match, so the existence check would pass on a tag that was never published.
+  git -C "$ROOT" ls-remote --exit-code --tags origin "refs/tags/$v" >/dev/null \
+    || die "$v is not on origin — run the tag step first; publish never creates a tag"
+  # `^{}` resolves ONLY for an annotated tag, so an empty answer is also the lightweight-tag
+  # refusal. That matters here more than anywhere else: a lightweight tag has no message, and the
+  # message is the release notes.
+  pub_sha="$(git -C "$ROOT" ls-remote --tags origin "refs/tags/$v^{}" | awk '{print $1}')"
+  [ -n "$pub_sha" ] || die "origin's $v is not an ANNOTATED tag — its message is the release notes"
+  git -C "$ROOT" rev-parse -q --verify "refs/tags/$v" >/dev/null 2>&1 \
+    || die "$v is not present locally after fetch — cannot read its message"
+  [ "$(git -C "$ROOT" rev-list -n1 "$v")" = "$pub_sha" ] \
+    || die "local $v does not point where origin's does — refusing to publish notes from a divergent tag"
+  if [ "$pub_backfill" -eq 0 ]; then
+    [ "$pub_sha" = "$msha" ] \
+      || die "origin's $v points at $pub_sha, not the verified merge commit $msha — refusing to publish"
+  fi
+  # ON THE DEFAULT BRANCH, checked in BOTH modes. In the normal path this is true by construction;
+  # in a backfill it is the only thing standing between "publish v2.0.0" and publishing a release
+  # for a tag that was pushed off a branch nobody merged.
+  pub_dbr="$(defbr)"; case "$pub_dbr" in ''|null) die "cannot resolve the default branch" ;; esac
+  git -C "$ROOT" merge-base --is-ancestor "$pub_sha" "origin/$pub_dbr" 2>/dev/null \
+    || die "$v points at $pub_sha, which is not an ancestor of origin/$pub_dbr — refusing to publish an off-branch commit"
+
+  pub_tmp="$(mktemp -d)" || die "cannot create a working directory"
+  trap 'if [ -n "${pub_tmp:-}" ]; then rm -rf "$pub_tmp"; fi' EXIT
+  # `#` IS AN ASSET-LABEL DELIMITER to `gh release upload`, not part of the path. A TMPDIR
+  # containing one would silently truncate every asset path at it and upload something else, or
+  # nothing. Refusing is cheap; guessing is not.
+  case "$pub_tmp" in *'#'*) die "TMPDIR contains '#', which gh reads as an asset label delimiter — set TMPDIR elsewhere" ;; esac
+
+  # --- the notes: the tag's own message, byte for byte ------------------------------------------
+  git -C "$ROOT" cat-file tag "$v" > "$pub_tmp/tag-object" || die "cannot read $v's tag object"
+  bash "$RLIB" tag-message < "$pub_tmp/tag-object" > "$pub_tmp/notes.md"; pub_rc=$?
+  case "$pub_rc" in
+    0) : ;;
+    12) die "$v is a SIGNED tag — its signature sits inside the message and would land in the release notes" ;;
+    13) die "$v's message is empty — the release notes ARE the tag message" ;;
+    *) die "could not extract $v's tag message (rc $pub_rc)" ;;
+  esac
+  [ -s "$pub_tmp/notes.md" ] || die "$v's extracted message is empty"
+
+  # --- the artifact -----------------------------------------------------------------------------
+  # A source archive of the TAGGED COMMIT, plus its SHA-256. #285 owns what an adopting project
+  # actually installs; this owns that something reproducible and checksummed is published at all,
+  # so the artifact is deliberately the least-committal one available — the tree at the tag, which
+  # commits to no subset and which #285 can add to without undoing anything.
+  #
+  # REPRODUCIBLE means regenerable byte-identically from the tag by the two commands below:
+  # `git archive` takes every entry's mtime from the commit and fixes uid/gid/permissions, and
+  # `gzip -n` omits the filename and timestamp that would otherwise vary per run. It does NOT mean
+  # byte-identical across arbitrary gzip implementations, and saying so is the point of publishing
+  # the digest rather than asserting the property.
+  #
+  # TWO STATEMENTS, NOT A PIPELINE. A pipeline reports only its LAST command's status, so
+  # `git archive | gzip > f` returns gzip's — a failed archive would arrive as a valid, empty
+  # tarball with a green exit code, get checksummed, and be published as the release payload.
+  pub_bare="${v#v}"
+  pub_prefix="ai-dev-baseline-$pub_bare"
+  pub_tar="$pub_tmp/$pub_prefix.tar.gz"
+  pub_sums="$pub_tmp/SHA256SUMS"
+  git -C "$ROOT" archive --format=tar --prefix="$pub_prefix/" "$pub_sha" > "$pub_tmp/archive.tar" \
+    || die "could not build the source archive for $v"
+  gzip -n -9 -c "$pub_tmp/archive.tar" > "$pub_tar" || die "could not compress the source archive for $v"
+  pub_digest="$(bash "$RLIB" sha256 "$pub_tar")" || die "could not checksum the source archive"
+  printf '%s  %s\n' "$pub_digest" "$pub_prefix.tar.gz" > "$pub_sums" || die "could not write SHA256SUMS"
+
+  # --- what already exists ----------------------------------------------------------------------
+  # A LISTING, never `releases/tags/<tag>`. That lookup exits non-zero for "no such release" AND for
+  # an expired token, a 5xx and a dropped connection — so reading its status as "absent" creates a
+  # SECOND release every time GitHub hiccups. A listing either succeeds, and absence from it is a
+  # fact, or fails, and this dies.
+  pub_rels="$(gh api --paginate "repos/$pub_sl/releases?per_page=100")" \
+    || die "could not list $pub_sl's releases — a failed read is never 'no release exists'"
+  pub_state_out="$(printf '%s' "$pub_rels" | bash "$RLIB" release-state "$v")"; pub_rc=$?
+  case "$pub_rc" in
+    0)  pub_state=absent ;;
+    10) pub_state=draft ;;
+    11) pub_state=published ;;
+    14) die "$pub_sl has more than one release for $v (${pub_state_out}) — resolve that by hand" ;;
+    *)  die "could not classify $v's release state (rc $pub_rc): ${pub_state_out:-<no output>}" ;;
+  esac
+
+  if [ "$pub_dry" -eq 1 ]; then
+    say "would publish $v to $pub_sl"
+    say "  current state: $pub_state"
+    say "  commit:        $pub_sha"
+    say "  mark latest:   $pub_latest"
+    say "  notes:         $(wc -c < "$pub_tmp/notes.md" | tr -d ' ') bytes from the tag annotation"
+    say "  asset:         $pub_prefix.tar.gz  sha256:$pub_digest"
+    say "  asset:         SHA256SUMS"
+    return 0
+  fi
+
+  case "$pub_state" in
+    absent)
+      pub_flag="--latest"; [ "$pub_latest" = "true" ] || pub_flag="--latest=false"
+      gh release create "$v" -R "$pub_sl" --verify-tag --title "$v" \
+         --notes-file "$pub_tmp/notes.md" "$pub_flag" "$pub_tar" "$pub_sums" \
+        || die "could not create the release for $v — re-run this command; it resumes"
+      ;;
+    draft)
+      say "an unpublished DRAFT release exists for $v — resuming it"
+      for pub_a in "$pub_tar" "$pub_sums"; do
+        pub_an="${pub_a##*/}"
+        if printf '%s' "$pub_rels" | jq -e -s --arg t "$v" --arg n "$pub_an" \
+             '[.[][] | select(.tag_name == $t) | .assets[]? | select(.name == $n)] | length > 0' >/dev/null 2>&1; then
+          say "  already uploaded: $pub_an"
+        else
+          # NO --clobber. It deletes the existing asset before replacing it, so a failure between
+          # the two leaves neither. Only genuinely missing assets are uploaded; a same-named asset
+          # that differs is caught by the verification below and refused.
+          gh release upload "$v" -R "$pub_sl" "$pub_a" \
+            || die "could not upload $pub_an — re-run this command; it resumes"
+        fi
+      done
+      ;;
+    published)
+      say "a published release already exists for $v — verifying it rather than rewriting it"
+      ;;
+  esac
+
+  publish_verify "$pub_sl" "$v" "$pub_tmp" "$pub_prefix"
+
+  if [ "$pub_state" = "draft" ]; then
+    gh release edit "$v" -R "$pub_sl" --draft=false >/dev/null \
+      || die "assets verified but the release could not be published — re-run this command"
+    say "published the resumed draft for $v"
+  fi
+
+  # RECORDED ONLY IN THE NORMAL PATH. A backfill has no run of its own, and stamping PUBLISHED
+  # would tell an unrelated in-flight release that its publish step had already happened.
+  if [ "$pub_backfill" -eq 0 ]; then rset PUBLISHED "$v"; fi
+  say "release $v published at $pub_sl -> $pub_sha ($pub_prefix.tar.gz sha256:$pub_digest)"
+}
+
+# publish_verify <slug> <tag> <tmpdir> <prefix> — read the release BACK and prove it is the one
+# this step would produce. Args: <slug> <tag> <tmpdir> <asset-prefix>.
+#
+# A create that exits 0 is not evidence the release says what it should. This re-reads it, compares
+# the stored body against the notes file BYTE FOR BYTE, and re-hashes every asset after downloading
+# it — the checksum is the product being published, so verifying it by asking GitHub what it thinks
+# the checksum is would be verifying nothing.
+#
+# THE ASSET SET IS COMPARED EXACTLY, extras included. An asset this step did not upload is evidence
+# the release is not the one it produces, and blessing it would let a hand-edited release pass.
+publish_verify() {
+  vf_sl="$1"; vf_v="$2"; vf_tmp="$3"; vf_prefix="$4"
+  vf_rels="$(gh api --paginate "repos/$vf_sl/releases?per_page=100")" \
+    || die "could not re-read $vf_sl's releases to verify $vf_v"
+  vf_rel="$(printf '%s' "$vf_rels" | jq -s -c --arg t "$vf_v" '[.[][] | select(.tag_name == $t)] | first // empty')" \
+    || die "could not parse the release for $vf_v"
+  [ -n "$vf_rel" ] || die "$vf_v has no release after the publish step ran — nothing was created"
+
+  # READ, then PARSE — two statements. `jq -j` so no trailing newline is invented; the body we sent
+  # already carries the tag message's own final newline, and `jq -r` would add a second.
+  printf '%s' "$vf_rel" | jq -j '.body // ""' > "$vf_tmp/body.raw" \
+    || die "could not read $vf_v's published body"
+  # GitHub may store a body with CRLF line endings. Our notes never contain CR — they come from a
+  # git tag object — so stripping it from the PLATFORM's copy only is a normalization in one
+  # direction, and it is named here rather than left as an unexplained difference.
+  tr -d '\r' < "$vf_tmp/body.raw" > "$vf_tmp/body.txt" || die "could not normalize $vf_v's published body"
+  cmp -s "$vf_tmp/notes.md" "$vf_tmp/body.txt" \
+    || die "$vf_v's release notes are not the tag message — refusing to treat this release as ours"
+
+  vf_want="$(printf '%s\n%s\n' "$vf_prefix.tar.gz" SHA256SUMS | sort)"
+  vf_have="$(printf '%s' "$vf_rel" | jq -r '[.assets[]?.name] | .[]' | sort)" \
+    || die "could not read $vf_v's asset list"
+  [ "$vf_want" = "$vf_have" ] \
+    || die "$vf_v's assets are [$(printf '%s' "$vf_have" | tr '\n' ' ')], expected [$(printf '%s' "$vf_want" | tr '\n' ' ')]"
+
+  mkdir -p "$vf_tmp/dl" || die "cannot create a download directory"
+  # --clobber here is about the LOCAL temp copy, not a remote asset: it lets a resumed verification
+  # overwrite a partial download. Nothing on GitHub is touched by this command.
+  gh release download "$vf_v" -R "$vf_sl" --dir "$vf_tmp/dl" --clobber >/dev/null \
+    || die "could not download $vf_v's assets to verify them"
+  for vf_n in "$vf_prefix.tar.gz" SHA256SUMS; do
+    [ -f "$vf_tmp/dl/$vf_n" ] || die "$vf_v's asset $vf_n did not download"
+    vf_a="$(bash "$RLIB" sha256 "$vf_tmp/dl/$vf_n")" || die "could not checksum the downloaded $vf_n"
+    vf_b="$(bash "$RLIB" sha256 "$vf_tmp/$vf_n")" || die "could not checksum the local $vf_n"
+    [ "$vf_a" = "$vf_b" ] \
+      || die "$vf_v's published $vf_n does not match the artifact built from the tag ($vf_a vs $vf_b)"
+  done
+  say "verified $vf_v: notes match the tag message, 2 assets match their local digests"
+}
+
 cmd_roll() {
-  local v pinned_m pinned_ms
+  local v pinned_m pinned_ms pub
   have_gh || die "gh not found"
   need v VERSION 'run version-guard first'
   need pinned_m M_NUM 'run readiness first'
@@ -540,6 +814,14 @@ cmd_roll() {
   # PASSES. The check written specifically so a changed marker cannot rename, drain and close the
   # wrong milestone would wave the roll through, having verified nothing.
   need pinned_ms MS_NAME 'run readiness first'
+  # PUBLISH IS UPSTREAM OF THIS, AND THIS IS WHERE THAT ORDER IS ENFORCED (#284). `cmd_roll` deletes
+  # the run state as its last act, so a release rolled before it was published loses VERSION and
+  # MERGE_SHA and can only ever be published through the backfill path afterwards. Requiring the
+  # receipt here is what makes "publish is step 11, roll is step 12" a property rather than a row in
+  # a table — and comparing it to VERSION catches the partial-state shape MS_NAME's guard exists for.
+  need pub PUBLISHED 'run publish first'
+  [ "$pub" = "$v" ] \
+    || die "PUBLISHED records '$pub', not the pinned '$v' — re-run publish for $v before rolling"
   # REVALIDATE the pin immediately before rolling. `baseline release roll` resolves the marker
   # itself, so a marker changed since the pin would make it rename, drain and close a DIFFERENT
   # milestone than the one this release was cut for.
@@ -570,6 +852,7 @@ main() {
     merge)          cmd_merge "$@" ;;
     verify-merge)   cmd_verify_merge "$@" ;;
     tag)            cmd_tag "$@" ;;
+    publish)        cmd_publish "$@" ;;
     roll)           cmd_roll "$@" ;;
     state)          cmd_state "$@" ;;
     -h|--help)      usage ;;

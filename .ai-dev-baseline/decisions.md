@@ -4939,3 +4939,71 @@ limit: none of them is sufficient alone.
              is not that review is useful — it is that "fail-closed" is a property of every input
              path, and the paths this suite had not yet driven were exactly where it was false.
 - baseline-issue: n/a — this repo IS the baseline; #81 is the tracking issue.
+
+## D62 — the tag-only decision is REVERSED, the notes are read back out of the tag, and a backfill never touches run state
+- date:      2026-08-13
+- category:  project-delta
+- unknown:   #284 asks `/release` to publish a GitHub Release, which `.claude/skills/release/SKILL.md`
+             stated twice that it never does — "this repo versions by git tag only … Adding one is a
+             decision change". Reversing a recorded decision is itself a decision, and the
+             gap-analysis pass returned six BLOCKING findings under it.
+             **(a)** The artifact requirement is CYCLIC. #284 must "attach a reproducible artifact —
+             the payload an adopting project installs", while deferring its shape to #285, which
+             depends on #284.
+             **(b)** "Notes byte-identical to the tag message" has two subjects — the file the
+             operator wrote, and the annotation git stored — and they are not the same string.
+             **(c)** A historical backfill cannot use the run-state model at all: `version-guard`
+             rejects a used version and `roll` deletes the state file, so a tag cut months ago has
+             neither `VERSION` nor `MERGE_SHA`, and its message file is long gone.
+             **(d)** "Re-running against an already-published tag changes nothing" and "a failed
+             upload resumes" are in tension until a release's identity is defined.
+             **(e)** The backfill target had drifted: the issue calls `v2.0.0` current, and `v2.1.0`
+             had since been cut.
+- decision:  **(a) A `git archive` of the tagged tree, plus `SHA256SUMS` — the least-committal
+             artifact available.** It commits to no subset of the tree, so #285 can add or replace
+             the real payload without undoing anything, and it is regenerable from the tag by two
+             published commands. "Reproducible" is claimed exactly as far as it holds: `git archive`
+             fixes every entry's mtime/uid/gid/mode from the commit and `gzip -n` drops the name and
+             timestamp, so runs of the same gzip agree — measured, twice, byte-identical — while
+             other gzip implementations may not, which is why the digest is PUBLISHED rather than the
+             property merely asserted. Owner-confirmed before implementation.
+             **(b) The annotation is authoritative, and `git tag` is fixed so the two subjects are
+             the same string.** `cmd_tag` now passes `--cleanup=verbatim`, because the default
+             SILENTLY DELETES CONTENT: measured on a throwaway repo, an 80-byte message containing
+             one `# A markdown heading line` was stored as 54 bytes with that line gone. Release
+             notes are Markdown, where `#` opens a heading. `publish` then reads the message off the
+             tag object — not `%(contents)`, which appends a newline that is not in the message, and
+             not the file, which is the one of the two that does not survive to a backfill.
+             **(c) A second mode that pins on the PEELED REMOTE TAG and writes nothing back.**
+             `--version vX.Y.Z` skips run state entirely rather than fabricating it, defaults to not
+             Latest, and is validated by a `version-format` predicate split out of `version-ok` —
+             the format rules apply to a backfill, the unused-and-newer rules cannot. Writing
+             `PUBLISHED` from a backfill would tell an unrelated in-flight release that its publish
+             step had already run, so it does not.
+             **(d) Three states, and a mismatch REFUSES rather than repairs.** absent → create;
+             draft → upload only what is missing, verify, publish; published → verify only.
+             `gh release create` with assets internally creates a draft, uploads, then publishes, so
+             a draft IS the interrupted-upload state and converging it is what makes the step
+             resumable. Nothing edits, deletes or `--clobber`s: clobber deletes an asset before
+             replacing it, so a failure between the two leaves neither.
+             **(e) Both, with `v2.1.0` Latest and `v2.0.0` not.** Owner-confirmed. `v1.0.0` is a
+             LIGHTWEIGHT tag — it carries no message, and the message is the notes — so it is
+             refused by the same rule that protects every other caller, not special-cased.
+             **And `roll` now requires the publish receipt.** `cmd_roll` deletes the run state as its
+             last act, so a release rolled before it was published can only ever be published through
+             the backfill path afterwards. `need pub PUBLISHED` is what makes the step order a
+             property rather than a row in a table.
+- placement: `.claude/skills/release/` — the project-scoped skill (`docs/per-project-overrides.md` →
+             *Override 2a*), plus its predicates in the sibling `release-lib.sh`. Deliberately NOT
+             `scripts/lib/`: `adb_agent_manifest` symlinks that directory wholesale into every
+             install, so a publish predicate landing there would ship release machinery to every
+             adopting repo and reverse #3/D7 by accident. That includes the SHA-256 helper — a
+             shared `adb_sha256_file` with exactly one project-scoped caller would ship to everyone
+             to serve nobody; promoting it is the right move when a second consumer appears, not now.
+- reason:    D7 said the baseline ships no generic release machinery because four surveyed projects
+             had four incompatible schemes — and that is untouched here. What #284 reverses is the
+             narrower D14-era claim that THIS repo publishes nothing, which had a measured cost: three
+             tags, zero Releases, so the release-pinned install slice (#285) had no source to install
+             from and every adopter kept cloning the development repo and tracking `main`. A tag
+             carries no notes a human reads, no checksum, and nothing `curl` can fetch.
+- baseline-issue: n/a — this repo IS the baseline; #284 is the tracking issue.
