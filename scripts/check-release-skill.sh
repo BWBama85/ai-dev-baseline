@@ -1026,6 +1026,32 @@ mut_restore
 # THE ACCEPTANCE CRITERION THIS EXISTS FOR: "check-release-skill.sh fails when the publish step is
 # removed or stubbed out." Three mutations at the bottom prove it — a token grep could not.
 # =================================================================================================
+# HERMETIC GIT, FOR EVERYTHING BELOW. The fixture must not read the developer's global or system
+# git config, and until now it did — which is the whole reason the Linux CI failure existed and the
+# whole reason it was invisible here. `check_git` passes `-c user.email` / `-c user.name` to the
+# commands THIS FILE runs, but the DRIVER runs its own `git tag -a`, so the identity came from
+# whatever the host happened to have. A runner has none and cannot auto-detect one (its hostname is
+# unqualified), so the suite was green on every workstation and red only on CI.
+#
+# Pointing both config paths at an EMPTY file is what makes that class impossible rather than
+# merely fixed: the fixture's repo-level identity below is now the ONLY source of one, so deleting
+# it fails HERE, immediately, on any machine — instead of passing locally and failing on a runner.
+# It also neutralizes a maintainer's global `tag.gpgSign`, `commit.gpgsign`, `core.hooksPath` and
+# `init.defaultBranch`, each of which could otherwise steer this fixture somewhere the assertions
+# do not expect.
+#
+# Scoped by POSITION, not by subshell: every fixture above this line has already run, and only
+# `check_summary` follows.
+# `useConfigOnly` IS THE HALF THAT MAKES THIS A PIN RATHER THAN A FIX. An empty config removes the
+# host's SETTINGS, but git still falls back to auto-detecting an identity from username@hostname —
+# which succeeds on any workstation and fails on a runner, so an empty file alone reproduces
+# nothing and the missing identity stays invisible here. `useConfigOnly = true` forbids that
+# fallback, which is precisely the condition a runner is in. With it, deleting the fixture's
+# identity below fails on EVERY machine, immediately, instead of on CI only.
+PUB_GITENV="$work/pub-gitconfig"
+printf '[user]\n\tuseConfigOnly = true\n' > "$PUB_GITENV"
+export GIT_CONFIG_GLOBAL="$PUB_GITENV" GIT_CONFIG_SYSTEM="$PUB_GITENV"
+
 PUB="$work/pubrepo"; PUBO="$work/puborigin.git"; PUBGH="$work/pubgh"
 PUB_RS="$PUB/.claude/state/release-run.env"
 PUB_STATE="$work/pub-state.json"; PUB_STORE="$work/pub-assets"; PUB_TAGS="$work/pub-tags"
@@ -1063,7 +1089,10 @@ pub_write() { printf '%s' "$2" > "$1"; }   # a writer, so redirections can be st
 #
 # Signing is pinned OFF for the same class of reason: a maintainer with a global `tag.gpgSign=true`
 # would otherwise have the FIXTURE build a signed tag and fail here, instead of in the one case
-# that deliberately turns it on.
+# that deliberately turns it on. Say what those two lines are worth, rather than implying more:
+# with the scrub above in place they are REDUNDANT, and a mutation deleting them stays green. They
+# are kept as the second line of defence — so that removing the scrub cannot silently re-enable
+# signing — and are deliberately not claimed as tested.
 pub_built=0
 if pub_step "copy subtrees"    check_copy_subtrees "$ROOT" "$PUB" scripts .claude/skills \
    && pub_step "mkdirs"        mkdir -p "$PUB/.claude/state" "$PUBGH" "$PUB_STORE" \

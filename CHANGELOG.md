@@ -81,6 +81,14 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - the two new preflight checks **covered for each other** — a single shadow `PATH` missing both
     tools stayed green when either check was deleted, because the other one still refused with a
     message the assertion matched. There are now two shadow paths, one per tool;
+  - the fixture read the developer's **global git config**. `check_git` passes an identity to the
+    commands the suite runs, but the *driver* runs its own `git tag -a`, so the identity came from
+    whatever the host had — and a runner has none and cannot auto-detect one (unqualified hostname).
+    Green on every workstation, red only on CI. The fixture now runs with `GIT_CONFIG_GLOBAL` and
+    `GIT_CONFIG_SYSTEM` pointed at a file that sets `user.useConfigOnly = true`, which forbids the
+    auto-detection a workstation silently relies on: deleting the fixture's own identity now fails
+    **locally**, with the runner's exact error. The build also reports *which* of eighteen steps
+    failed — one opaque line had cost a full CI round-trip that bought no information;
   - the shadow-`PATH` fixture `cp`d its `gh` stub over a symlink to the **real** `gh`, and `cp`
     writes *through* a symlink. Homebrew's Cellar binary is `-r-xr-xr-x`, so the write failed with
     EACCES, `2>/dev/null || true` swallowed it, and the shadow `PATH` silently kept the real `gh` —
