@@ -128,7 +128,7 @@ interpreter on line 1.) Its **static** half and #256's **entry-point** half both
 | `base/practices/*.md` | The shared law (edit here) |
 | `base/workflows/*.md` | Single source for each workflow — procedure + metadata (edit here) |
 | `base/roles.md` · `templates/agents.toml` | Role model + per-project manifest |
-| `agents/<agent>/` | Per-agent adapter, generated root doc, (Claude:) generated `skills/` + `scripts/` |
+| `agents/<agent>/` | Per-agent adapter, generated root doc, generated `skills/`; (Claude:) **hand-written** hook `scripts/` (not rendered — edit in place) |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
 | `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill · selfcheck) |

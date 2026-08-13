@@ -67,6 +67,54 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **The shipped global Stop-hook gate exited 1 — a non-blocking notice — instead of its blocking 2,
+  whenever `common.sh` carried a top-level unbound expansion (#317).**
+
+  `agents/claude/scripts/precommit-gate.sh` sets `set -u` and then sources its shared library twice:
+  the conditional bash-floor bootstrap, and `require_lib`. An unbound expansion at a library's **top
+  level** is fatal under `set -u` — it kills the shell outright — so the gate exited **1** and
+  `require_lib`'s `fail_loud` never ran. **Exit 1 from a Stop hook is a non-blocking error notice**,
+  so the turn ended *ungated* while looking like a hook glitch: the "enforcement secretly off"
+  inversion #35 exists to prevent, arriving through the one door `fail_loud` cannot cover, because
+  no `||` catches it — the shell is gone before the next word is read. #299 repaired exactly this in
+  this repo's *own* project gate and put the shipped one out of scope; this is that repair, applied
+  where it reaches every adopting repo.
+
+  Two further defects were **measured on the same two source sites** while fixing it, so they are
+  repaired here rather than filed:
+
+  - **A library truncated *after* the double-source guard made the gate silently PASS.** `common.sh`
+    opens with `_ADB_COMMON_SH_LOADED`, so once the bootstrap has loaded it `require_lib`'s `.`
+    returns 0 **through the guard** without reading the file — and the bootstrap runs on every
+    ordinary invocation, so that is the normal path, not a corner. Both of `require_lib`'s checks
+    then passed on functions the partial load had already defined. Measured at **rc 0 with the
+    configured gates observed executing** on a partially-loaded library. The bootstrap's status is
+    now captured on its own line (before `set -u` restores it, since `set -u` succeeds and would
+    overwrite `$?` with 0) and passed to `require_lib` as an optional third argument that overrides
+    a zero. Same defect an independent review found on #299's PR.
+  - **The bootstrap called `adb_require_bash` as an undefined command** on a truncated library,
+    printing `command not found` — a misleading cause ahead of the real one — with its 127 discarded
+    and the bash floor left unenforced. It now probes for the function first, keeping the top-level
+    call in the command position `check-bash-floor.sh --entrypoints` requires.
+
+  **Seven new cases carrying fifteen assertions in `scripts/check-precommit-gate.sh` (7a-7g), each
+  behavioural one observed failing on the real superseded input** — the suite run against a copy of
+  the tree carrying the pre-fix gate reports `got [1] want [2]` for the unbound expansion, "the gate
+  RAN on a partially-loaded library" for the truncated tail, and the `command not found` for the
+  bootstrap. 7a is a precondition and correctly stays green there; two of the three mutation
+  harnesses *refuse* against that tree, because their anchors do not exist in the pre-fix file —
+  which is `check_mutate_line` doing its job rather than a gap.
+  Cases 5-7 only ever covered an *absent* library; these cover a **present and broken** one.
+  Each case configures a gate that touches a marker and then fails, because the exit code alone
+  cannot carry the claim: 2 is both "the gate ran and blocked" and "the library was refused", and 0
+  is both "everything passed" and "the gate no-opped in an unfamiliar repo". Three in-suite
+  mutations pin them, one per repaired line — and none anchors on `  set +u`, which now appears
+  **twice**, so `check_mutate_line`'s exactly-one precondition would refuse rather than prove
+  anything.
+
+  The relaxation covers a sourced library's top level and stops there: `project-gates.sh` sets
+  `set -u` itself partway down its own file, and nothing here changes that or any other consumer.
+
 - **`publish` decided its exit code from the HOST rather than from the command line.**
 
   `cmd_publish` ran `have_gh || die` and the `jq` check *before* parsing its arguments. `die` exits
