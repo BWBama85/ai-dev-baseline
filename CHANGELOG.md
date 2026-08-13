@@ -7,6 +7,32 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Fixed
+
+- **`publish` decided its exit code from the HOST rather than from the command line.**
+
+  `cmd_publish` ran `have_gh || die` and the `jq` check *before* parsing its arguments. `die` exits
+  1 and a usage error exits 2, so on a box with no `gh` a malformed command line reported
+  "gh not found" and exit 1 — and the caller could not tell a typo from a missing dependency. The
+  two dependency checks now run immediately after the argument loop, matching `cmd_tag`,
+  `cmd_version_guard` and `cmd_record_pr`, which all validated arguments first. `cmd_publish` was
+  the only inverted subcommand and the newest of them (#284).
+
+  **The assertions that catch this already existed, and could not fire where `gh` is installed.**
+  `publish rejects an unknown flag` and `publish --version requires a value` return 2 on any host
+  with `gh` whether the ordering is right or wrong, so they were green on macOS and on both Ubuntu
+  runners. The only job that could see them fail is the WSL smoke, which installs
+  `git jq shellcheck nodejs npm ca-certificates` and no `gh` — and it is not a required context and
+  runs on push, so it reported `got [1] want [2]` twice at `044adc7`, *after* v2.2.0 was tagged.
+
+  So the ordering is now pinned **structurally** in `check-release-skill.sh`: it reads the two line
+  numbers from inside `cmd_publish` and fails on every host regardless of what is installed.
+  Observed failing on the real superseded ordering — `FAIL: publish parses arguments before
+  checking tools (arg loop line 666, have_gh line 635)` — per `self-review.md`'s rule that a new
+  guard is not done until it has been seen going red. Verified on a gh-less host that usage errors
+  now return 2 while valid arguments still return 1 when `gh` is genuinely absent, so the
+  dependency check is reordered rather than weakened.
+
 ## [2.2.0] - 2026-08-13
 
 Twelve issues, composed as one frozen set and delivered in full — nine bugs and three larger riders,
