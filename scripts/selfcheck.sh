@@ -459,6 +459,23 @@ add adopt               bash scripts/check-adopt.sh
 # message's claim that mutations "were observed" with something the repo can re-run.
 add adopt-mutation      bash scripts/check-adopt.sh --mutation
 
+# The ADOPTION COMPLETION CONTRACT and its verifier (scripts/lib/adopt-readiness.sh, #81) — the
+# question /adopt's scan does not answer: is this project now ready to RUN the loop? A verifier's
+# failure mode is silence (it passes green having checked nothing), so the suite drives every one
+# of the twelve rungs to every result class and asserts a NAMED verdict word and exit code for
+# each, plus the fail-closed core: empty stdin, a rung nobody reported, an unknown status, a
+# duplicate and a malformed fact must every one of them be NON-green. Offline — `probe` reads the
+# filesystem and `tracker` reads a JSON object the caller assembled, which is exactly why the gh
+# reads live in the workflow instead.
+add adopt-readiness     bash scripts/check-adopt-readiness.sh
+
+# ...and the same guards-get-mutated rule, for the same reason: thirty-eight defects, each injected
+# into a TREE COPY, each required to make the suite red ON ITS OWN NAMED ASSERTION. Two of them
+# are regressions of real fail-OPEN bugs this suite caught while it was being written (a gate
+# count that grepped a display string, and a jq filter whose failure was swallowed into "every
+# milestone is dispositioned").
+add adopt-readiness-mutation bash scripts/check-adopt-readiness.sh --mutation
+
 # Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
 # targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness
 # (#71), plus a drift guard that the workflow still delegates to them (#45). Offline.

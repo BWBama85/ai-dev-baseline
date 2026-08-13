@@ -50,11 +50,25 @@
 #     reason. (A gate disabled with `= ""` stays silent, as it always has: that is an explicit
 #     "never run this", not a conditional skip whose absence would surprise anyone.)
 #
-# Detection is single-primary-ecosystem: the FIRST ecosystem (Node → Rust → Go → Python)
-# that yields at least one command wins, and the rest are skipped. A polyglot repo layers
-# the second ecosystem's gates via the open-set [gates] override (see
-# docs/per-project-overrides.md). Running every detected ecosystem's gates automatically
-# is tracked as a follow-up (pluggable multi-ecosystem adapters).
+# Detection is single-primary-ecosystem: the FIRST ecosystem (Node → Rust → Go → Python →
+# PHP) that yields at least one command wins, and the rest are skipped. A polyglot repo
+# layers the second ecosystem's gates via the open-set [gates] override (see
+# docs/per-project-overrides.md).
+#
+# Running every detected ecosystem's gates automatically is DELIBERATELY OUT OF SCOPE, and
+# that is a different sentence from the one this comment used to carry. It said the work was
+# "tracked as a follow-up"; no such issue has ever existed, and a reference to tracked work
+# that is not tracked is worse than an admitted gap — it stops anyone from filing it. Measured
+# against base/practices/issues-and-scope.md it does not clear the bar: the open-set [gates]
+# override is a documented escape that WORKS for the polyglot case, so nothing breaks while it
+# stands, and "what breaks if nobody ever does this?" has no answer. If that changes — a repo
+# where the override is genuinely insufficient — file it then, with the evidence.
+#
+# The order lives in ONE place — `_ADB_ECOSYSTEMS`, beside the `_adb_eco_<name>` adapters
+# (#81). That is what "extensible, not a fixed list" bought: the NEXT ecosystem after these five
+# is a function and a token, not another `if` spliced into the middle of a record builder. It did NOT buy
+# simultaneous multi-ecosystem gates; see `_adb_eco_php` for why PHP is last rather than
+# first, which is the polyglot question in its sharpest form.
 #
 # Standalone use:
 #   bash project-gates.sh detect [root]   # prints "<label>\t<command>" for RUN gates only
@@ -180,8 +194,19 @@ _adb_has_tab() { case "$1" in *"$_ADB_TAB"*) return 0 ;; *) return 1 ;; esac; }
 
 # Does package.json declare an npm script named $2? Prefer jq (exact .scripts membership);
 # fall back to a scripts-block-scoped awk heuristic only when jq is unavailable.
-_adb_pkg_has() {
-  local root="$1" name="$2" pkg="$1/package.json"
+#
+# A THIN WRAPPER over _adb_json_script_has since #81, because composer.json declares its
+# scripts in an object of exactly the same shape (`{"scripts": {"test": "phpunit"}}`) and this
+# repo's law is to source the shared primitive, never copy it (docs/design-principles.md §1).
+# The parser below had already been corrected three times — for a brace inside a value, for a
+# dependency named `test`, for a compact one-line object — and a second hand-written copy under
+# the PHP adapter would have started that sequence over from the beginning, in a file whose
+# failure mode is emitting no gates at all.
+_adb_pkg_has() { _adb_json_script_has "$1/package.json" "$2"; }
+
+# Does the JSON manifest at $1 declare a script named $2?
+_adb_json_script_has() {
+  local pkg="$1" name="$2"
   [ -f "$pkg" ] || return 1
   if _adb_have jq; then
     # Authoritative: is <name> a key of the .scripts OBJECT? A missing .scripts, a
@@ -198,8 +223,16 @@ _adb_pkg_has() {
   # "scripts": { opener's own tail is counted too, so a scripts object that opens AND
   # closes on one line (e.g. `"scripts": {"build": "x"},`) correctly ends the scan
   # instead of spilling into the following dependency lines. A FULLY minified whole-file
-  # package.json (scripts and dependencies on one physical line) is still out of reach —
+  # manifest (scripts and dependencies on one physical line) is still out of reach —
   # install jq for exact detection there.
+  #
+  # ONE COMPOSER SHAPE THIS DELIBERATELY UNDER-DETECTS, and it is the fallback's alone: a
+  # composer script whose value is an ARRAY (`"test": ["@lint", "phpunit"]`, which Composer
+  # allows and npm does not) opens a bracket, not a brace, so depth tracking is unaffected and
+  # the KEY still matches — the array only breaks the jq-less path if it spans lines in a way
+  # that hides the key, which it cannot, because the key is on the opening line. The jq path
+  # answers exactly right for both shapes because it asks about key membership and never looks
+  # at the value. Stated rather than left for someone to rediscover.
   awk -v name="$name" '
     BEGIN { depth = 0; inscripts = 0; found = 0 }
     {
@@ -313,54 +346,187 @@ _adb_resolve_record() {
 # spelled literally.
 _adb_emit() { _adb_resolve_record "$1" "$2" "$3"; }
 
+# --- the ecosystem adapter registry ------------------------------------------
+# ONE ADAPTER PER ECOSYSTEM, and the ORDER IS THE POLICY (#81). Detection used to be five
+# inline `if` blocks in _adb_gate_records; the issue asked for the ecosystem set to be
+# "extensible, not a fixed list", and this is what that means here: a new ecosystem is one
+# function plus one token in _ADB_ECOSYSTEMS, in the one place the order is written down.
+#
+# WHAT DID NOT CHANGE, deliberately: the semantics are still SINGLE-PRIMARY FIRST-WINS, and
+# the first four adapters carry the previous blocks' logic and every one of their command
+# strings unchanged — restructured into functions, so "verbatim" would overstate it, but no
+# ecosystem's resolved command moved. Extensible is a statement
+# about how the NEXT ecosystem gets added, not a licence to start running every detected
+# ecosystem's gates — that is a behavioural change for every existing polyglot repo, and this
+# file's header has named it a follow-up since before #81.
+#
+# Each adapter takes <root> and assigns the four `d_*` variables of its CALLER. They are
+# plain `d_typecheck`/`d_lint`/`d_test`/`d_format` locals in _adb_gate_records, visible to
+# these functions through bash's dynamic scope — the same mechanism `_adb_rec_split`'s
+# namerefs avoid, and acceptable here for the opposite reason: there is no caller-supplied
+# name to validate, because the four names are fixed by this contract and written literally
+# in both halves.
+#
+# An adapter returns 0 when it CLAIMED the repo (it found at least one command) and 1 when it
+# did not, so the caller's loop can stop at the first claim without re-testing emptiness.
+_ADB_ECOSYSTEMS="node rust go python php"
+
+_adb_eco_node() {
+  local root="$1" pm=npm
+  [ -f "$root/package.json" ] || return 1
+  [ -f "$root/pnpm-lock.yaml" ] && pm=pnpm
+  [ -f "$root/yarn.lock" ]      && pm=yarn
+  [ -f "$root/bun.lockb" ]      && pm=bun
+  if _adb_have "$pm"; then
+    _adb_pkg_has "$root" typecheck && d_typecheck="$pm run typecheck"
+    _adb_pkg_has "$root" lint      && d_lint="$pm run lint"
+    _adb_pkg_has "$root" test      && d_test="$pm run test"
+    if   _adb_pkg_has "$root" "format:check"; then d_format="$pm run format:check"
+    elif _adb_pkg_has "$root" format;         then d_format="$pm run format"
+    fi
+  fi
+  [ -n "$d_typecheck$d_lint$d_test$d_format" ]
+}
+
+_adb_eco_rust() {
+  local root="$1"
+  { [ -f "$root/Cargo.toml" ] && _adb_have cargo; } || return 1
+  d_typecheck="cargo check --quiet"
+  cargo clippy --version >/dev/null 2>&1 && d_lint="cargo clippy --quiet -- -D warnings"
+  d_test="cargo test --quiet"
+  d_format="cargo fmt --check"
+  [ -n "$d_typecheck$d_lint$d_test$d_format" ]
+}
+
+_adb_eco_go() {
+  local root="$1"
+  { [ -f "$root/go.mod" ] && _adb_have go; } || return 1
+  d_typecheck="go build ./..."
+  d_lint="go vet ./..."
+  d_test="go test ./..."
+  # gofmt -l lists unformatted files; the subshell must expand at run time inside
+  # `sh -c`, not now — single quotes are intentional here.
+  # shellcheck disable=SC2016
+  d_format='test -z "$(gofmt -l .)"'
+  [ -n "$d_typecheck$d_lint$d_test$d_format" ]
+}
+
+_adb_eco_python() {
+  local root="$1"
+  [ -f "$root/pyproject.toml" ] || [ -f "$root/setup.py" ] \
+    || [ -f "$root/setup.cfg" ] || [ -f "$root/requirements.txt" ] || return 1
+  _adb_have mypy && d_typecheck="mypy ."
+  _adb_have ruff && d_lint="ruff check ."
+  _adb_have ruff && d_format="ruff format --check ."
+  if   _adb_have pytest;  then d_test="pytest -q"
+  elif _adb_have python3; then d_test="python3 -m pytest -q"
+  fi
+  [ -n "$d_typecheck$d_lint$d_test$d_format" ]
+}
+
+# Resolve a PHP tool: a project-local `vendor/bin/<tool>` beats anything on PATH, because
+# Composer pins the version the project's own config was written against and a globally
+# installed PHPStan of a different major version fails on rules the project never wrote.
+# Prints the command to run, or nothing.
+_adb_php_tool() {
+  local root="$1" tool="$2"
+  if [ -x "$root/vendor/bin/$tool" ]; then printf 'vendor/bin/%s' "$tool"; return 0; fi
+  _adb_have "$tool" && { printf '%s' "$tool"; return 0; }
+  return 1
+}
+
+# PHP — LAST in the order, and that placement is the whole answer to the polyglot question.
+#
+# A WordPress plugin or theme routinely carries BOTH a `package.json` (its asset build) and a
+# `composer.json`, and `adopt-lib.sh stack` tests WordPress BEFORE node for exactly that
+# reason. This adapter deliberately does NOT copy that ordering, and the difference is not an
+# oversight:
+#
+#   - the two answer different questions. `stack` labels the project for the upstream pin —
+#     one word, and "node" is the wrong word for a WordPress plugin. This file decides WHICH
+#     COMMANDS GATE A COMMIT, and a mixed repo whose package.json declares `test` and `lint`
+#     has those gates because the project itself declared them;
+#   - putting PHP first would silently REPLACE those declared gates with inferred ones for
+#     every existing mixed repo — a behaviour change to already-adopted projects, delivered by
+#     a change whose acceptance criterion is only that a PHP repo gets gates at all;
+#   - `stack`'s WordPress probe is a RECURSIVE grep over the whole tree. This function runs on
+#     every turn-end Stop hook, where that cost is not acceptable.
+#
+# So a mixed repo keeps today's node answer and layers PHP through the open-set `[gates]`
+# override, which is the documented escape for exactly this (docs/per-project-overrides.md).
+# A PURE PHP repo — the 139-issue case #81 surveyed — now gets gates instead of silence.
+_adb_eco_php() {
+  local root="$1" t
+  [ -f "$root/composer.json" ] || return 1
+  # A COMPOSER SCRIPT WINS over an inferred binary, mirroring the node adapter: a declared
+  # script is the project stating its own command, and it may wrap flags, a config path or a
+  # whole pipeline that a bare `phpunit` invocation would skip.
+  _adb_json_script_has "$root/composer.json" test      && d_test="composer run-script test"
+  _adb_json_script_has "$root/composer.json" lint      && d_lint="composer run-script lint"
+  _adb_json_script_has "$root/composer.json" typecheck && d_typecheck="composer run-script typecheck"
+  # ONLY `format:check`, NEVER a bare `format`. The conventional PHP spelling of a bare `format`
+  # script is `php-cs-fixer fix` or `phpcbf` — both of which REWRITE THE PROJECT'S FILES — and
+  # inferring a gate from it would make every turn-end gate run, and every `receipt run`, mutate
+  # the tree. That directly contradicts the read-only formatter handling twenty lines below, which
+  # goes to the trouble of picking `--dry-run` and `phpcs`; honouring a mutating script here would
+  # undo all of it. A project that wants its formatter gated declares a checking script.
+  #
+  # (The node adapter does fall back to a bare `format`. That predates this and is not touched
+  # here — changing it is a behaviour change for every adopted node repo, which is not this
+  # change's to make. The asymmetry is deliberate, and this is where it is recorded.)
+  _adb_json_script_has "$root/composer.json" "format:check" && d_format="composer run-script format:check"
+  # `composer` itself must exist for a declared script to be runnable. Without it the script
+  # names are unusable and the binaries below are the only real answer, so drop them rather
+  # than emitting a gate whose first act is "command not found".
+  _adb_have composer || { d_test=""; d_lint=""; d_typecheck=""; d_format=""; }
+
+  # PHP has no compiler pass to borrow, so `typecheck` is a STATIC ANALYSER — PHPStan, then
+  # Psalm. `--no-progress` because a gate's log is read after the fact, not watched.
+  if [ -z "$d_typecheck" ]; then
+    if   t="$(_adb_php_tool "$root" phpstan)"; then d_typecheck="$t analyse --no-progress"
+    elif t="$(_adb_php_tool "$root" psalm)";   then d_typecheck="$t --no-progress"
+    fi
+  fi
+  if [ -z "$d_lint" ] && t="$(_adb_php_tool "$root" phpcs)"; then d_lint="$t -q"; fi
+  if [ -z "$d_test" ] && t="$(_adb_php_tool "$root" phpunit)"; then d_test="$t"; fi
+
+  # FORMAT MUST NOT REWRITE THE TREE. Both PHP formatters default to fixing in place, and a
+  # gate that edits files turns a verification pass into a mutation — which is precisely what
+  # /adopt's boundary forbids and what makes the readiness verifier's gate-execution rung
+  # unsafe to run unattended. `--dry-run` for php-cs-fixer; `phpcbf` has no check mode at all,
+  # so its READ-ONLY sibling `phpcs` is what stands in.
+  #
+  # `--using-cache=no` IS PART OF "does not rewrite the tree". PHP CS Fixer caches by default and
+  # writes `.php-cs-fixer.cache` progressively — so `--dry-run` alone still leaves a file behind
+  # in the project, which is precisely the mutation this gate is chosen to avoid, and precisely
+  # what makes running it unattended unsafe. `--dry-run` covers the source files; this covers the
+  # cache.
+  if [ -z "$d_format" ]; then
+    if   t="$(_adb_php_tool "$root" php-cs-fixer)"; then d_format="$t fix --dry-run --diff --using-cache=no"
+    elif [ -z "$d_lint" ] && t="$(_adb_php_tool "$root" phpcs)"; then d_format="$t -q"
+    fi
+  fi
+  [ -n "$d_typecheck$d_lint$d_test$d_format" ]
+}
+
 # Print every gate record for a repo (built-in axes first, then open-set custom gates).
 _adb_gate_records() {
   local root="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
   local toml="$root/agents.toml"
-  local d_typecheck="" d_lint="" d_test="" d_format="" found=0 key
+  local d_typecheck="" d_lint="" d_test="" d_format="" key eco
 
   # --- single-primary-ecosystem detection: first ecosystem that yields a command wins.
-  if [ "$found" -eq 0 ] && [ -f "$root/package.json" ]; then
-    local pm=npm
-    [ -f "$root/pnpm-lock.yaml" ] && pm=pnpm
-    [ -f "$root/yarn.lock" ]      && pm=yarn
-    [ -f "$root/bun.lockb" ]      && pm=bun
-    if _adb_have "$pm"; then
-      _adb_pkg_has "$root" typecheck && d_typecheck="$pm run typecheck"
-      _adb_pkg_has "$root" lint      && d_lint="$pm run lint"
-      _adb_pkg_has "$root" test      && d_test="$pm run test"
-      if   _adb_pkg_has "$root" "format:check"; then d_format="$pm run format:check"
-      elif _adb_pkg_has "$root" format;         then d_format="$pm run format"
-      fi
-    fi
-    [ -n "$d_typecheck$d_lint$d_test$d_format" ] && found=1
-  fi
-  if [ "$found" -eq 0 ] && [ -f "$root/Cargo.toml" ] && _adb_have cargo; then
-    d_typecheck="cargo check --quiet"
-    cargo clippy --version >/dev/null 2>&1 && d_lint="cargo clippy --quiet -- -D warnings"
-    d_test="cargo test --quiet"
-    d_format="cargo fmt --check"
-    [ -n "$d_typecheck$d_lint$d_test$d_format" ] && found=1
-  fi
-  if [ "$found" -eq 0 ] && [ -f "$root/go.mod" ] && _adb_have go; then
-    d_typecheck="go build ./..."
-    d_lint="go vet ./..."
-    d_test="go test ./..."
-    # gofmt -l lists unformatted files; the subshell must expand at run time inside
-    # `sh -c`, not now — single quotes are intentional here.
-    # shellcheck disable=SC2016
-    d_format='test -z "$(gofmt -l .)"'
-    [ -n "$d_typecheck$d_lint$d_test$d_format" ] && found=1
-  fi
-  if [ "$found" -eq 0 ] && { [ -f "$root/pyproject.toml" ] || [ -f "$root/setup.py" ] || [ -f "$root/setup.cfg" ] || [ -f "$root/requirements.txt" ]; }; then
-    _adb_have mypy && d_typecheck="mypy ."
-    _adb_have ruff && d_lint="ruff check ."
-    _adb_have ruff && d_format="ruff format --check ."
-    if   _adb_have pytest;  then d_test="pytest -q"
-    elif _adb_have python3; then d_test="python3 -m pytest -q"
-    fi
-    [ -n "$d_typecheck$d_lint$d_test$d_format" ] && found=1
-  fi
+  # The adapters assign the four `d_*` locals above; the FIRST to claim the repo stops the
+  # loop. An adapter that matches its manifest but finds no runnable tool does NOT claim —
+  # it returns 1 with the four still empty — so a repo carrying an empty `go.mod` and a real
+  # `pyproject.toml` still reaches python, exactly as the inline chain did.
+  for eco in $_ADB_ECOSYSTEMS; do
+    if "_adb_eco_$eco" "$root"; then break; fi
+    # An adapter that declined may still have set a variable before failing its final test
+    # (rust assigns before checking clippy). Reset, so a later adapter's record can never
+    # inherit a stray command from an ecosystem that did not claim the repo.
+    d_typecheck=""; d_lint=""; d_test=""; d_format=""
+  done
 
   # Built-in axes — emit once each so an agents.toml override always wins (and can add a
   # built-in that detection missed). KEEP these `_adb_emit <axis>` calls literal.

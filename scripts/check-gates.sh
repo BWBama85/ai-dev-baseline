@@ -512,4 +512,164 @@ d="$work/empty"; mkdir -p "$d"
 out="$(adb_detect_gates "$d")"; eq "$out" "" "empty: detect emits nothing"
 adb_run_gates "$d" >/dev/null 2>&1; yes $? "empty: run is a clean no-op (exit 0)"
 
+# --- PHP (#81) ---------------------------------------------------------------
+# The failure this closes: a PHP repo was a RECOGNISED project root with ZERO gates, which is
+# the silent-no-gate shape #35 exists to prevent — `detect` printed nothing and exited 0, exactly
+# as it does for a directory containing no project at all. `adopt-lib.sh stack` already answered
+# `php` for the same tree, so the two libraries disagreed about whether the repo was even known.
+#
+# EVERY PHP TOOL HERE IS A STUB on PATH or under vendor/bin. The point is which command the
+# detector CHOOSES, not what PHPStan does — and requiring a real PHP toolchain would make this
+# whole section a SKIP on both CI runners, i.e. a test that proves nothing where it matters.
+php_stub() {   # <dir> <name...> — executable no-op stubs
+  local dir="$1"; shift; mkdir -p "$dir"
+  local n; for n in "$@"; do printf '#!/bin/sh\nexit 0\n' > "$dir/$n"; chmod +x "$dir/$n"; done
+}
+
+# vendor/bin beats PATH: a Composer-pinned tool is the version the project's config was
+# written against, so a globally installed PHPStan of another major must NOT win.
+d="$work/php-vendor"; mkdir -p "$d"
+printf '{"name":"a/b"}\n' > "$d/composer.json"
+php_stub "$d/vendor/bin" phpstan phpunit phpcs
+out="$(adb_detect_gates "$d")"
+has "$out" "vendor/bin/phpstan analyse" "php: vendor/bin phpstan is the typecheck gate"
+has "$out" "vendor/bin/phpunit"         "php: vendor/bin phpunit is the test gate"
+
+# EVERY declared composer script is honoured, not just test/lint. The docs claim declared
+# commands beat inferred binaries; honouring only two of the four made that claim false for the
+# other two, and silently preferred an inferred phpstan over a script the project wrote.
+d="$work/php-scripts-all"; mkdir -p "$d"
+printf '{"scripts":{"typecheck":"phpstan analyse -c custom.neon","format:check":"php-cs-fixer check"}}\n' > "$d/composer.json"
+php_stub "$d/vendor/bin" phpstan php-cs-fixer
+( PATH="$work/php-bin-composer2:$PATH"; php_stub "$work/php-bin-composer2" composer
+  out="$(adb_detect_gates "$d")"
+  case "$out" in *"composer run-script typecheck"*) : ;; *) exit 1 ;; esac
+  case "$out" in *"composer run-script format:check"*) : ;; *) exit 1 ;; esac )
+yes $? "php: declared typecheck and format:check scripts beat the inferred binaries"
+
+# A declared composer script beats an inferred binary — the project stating its own command.
+d="$work/php-scripts"; mkdir -p "$d"
+printf '{"scripts":{"test":"phpunit --testdox","lint":"phpcs --standard=PSR12"}}\n' > "$d/composer.json"
+php_stub "$d/vendor/bin" phpunit phpcs
+( PATH="$work/php-bin-composer:$PATH"; php_stub "$work/php-bin-composer" composer
+  out="$(adb_detect_gates "$d")"
+  case "$out" in
+    *"composer run-script test"*) : ;;
+    *) exit 1 ;;
+  esac
+  case "$out" in *"composer run-script lint"*) : ;; *) exit 1 ;; esac )
+yes $? "php: a declared composer script wins over vendor/bin"
+
+# ...but ONLY when composer itself is runnable. Without it the script NAMES are unusable, so
+# the gate must fall back to the binary rather than emitting `composer run-script test` as a
+# gate whose first act is "command not found" — a gate that always fails is not enforcement.
+d="$work/php-noc"; mkdir -p "$d"
+printf '{"scripts":{"test":"phpunit"}}\n' > "$d/composer.json"
+php_stub "$d/vendor/bin" phpunit
+( _adb_have() { case "$1" in composer) return 1 ;; *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+  out="$(adb_detect_gates "$d")"
+  case "$out" in
+    *"composer run-script"*) exit 1 ;;
+    *"vendor/bin/phpunit"*)  exit 0 ;;
+    *) exit 1 ;;
+  esac )
+yes $? "php: no composer on PATH → the declared script is dropped for the binary"
+
+# FORMAT MUST NOT REWRITE THE TREE. php-cs-fixer defaults to fixing in place; a gate that
+# edits files turns verification into mutation, which is what makes unattended gate execution
+# unsafe at all. The chosen command must carry --dry-run.
+d="$work/php-fmt"; mkdir -p "$d"
+printf '{"name":"a/b"}\n' > "$d/composer.json"
+php_stub "$d/vendor/bin" php-cs-fixer
+out="$(adb_detect_gates "$d")"
+has   "$out" "php-cs-fixer fix --dry-run" "php: format is --dry-run, never an in-place fix"
+# --dry-run covers the SOURCE files; PHP CS Fixer caches by default and writes .php-cs-fixer.cache
+# progressively, so without this the "non-mutating" gate still drops a file into the project —
+# which is what makes running it unattended unsafe in the first place.
+has   "$out" "--using-cache=no" "php: format does not write a cache file into the project"
+hasnt "$out" "phpcbf"                     "php: phpcbf (no check mode) is never a gate"
+
+# composer.json present but NOTHING runnable: the adapter must DECLINE rather than claim the
+# repo with an empty record set. Claiming would be worse than not detecting — it looks
+# identical to a clean project while stopping every later adapter from being consulted.
+d="$work/php-bare"; mkdir -p "$d"
+printf '{"name":"a/b"}\n' > "$d/composer.json"
+( _adb_have() { case "$1" in composer|phpunit|phpcs|phpstan|psalm|php-cs-fixer) return 1 ;;
+                            *) command -v "$1" >/dev/null 2>&1 ;; esac; }
+  out="$(adb_detect_gates "$d")"; [ -z "$out" ] )
+yes $? "php: composer.json with no runnable tool detects nothing (declines, not claims)"
+
+# Malformed composer.json must not crash or invent a gate from a key it could not parse.
+d="$work/php-bad"; mkdir -p "$d"
+printf '{ this is not json\n' > "$d/composer.json"
+php_stub "$d/vendor/bin" phpunit
+out="$(adb_detect_gates "$d" 2>/dev/null)"
+hasnt "$out" "composer run-script" "php: malformed composer.json yields no script gate"
+has   "$out" "vendor/bin/phpunit"  "php: malformed composer.json still finds the binary"
+
+# ORDERING (the polyglot decision). A WordPress-shaped repo carrying BOTH manifests keeps its
+# NODE gates: those are commands the project DECLARED, and replacing them with inferred PHP
+# ones would silently change behaviour for every already-adopted mixed repo. This assertion is
+# the one that goes red if someone later moves PHP ahead of node "to match adopt-lib stack".
+d="$work/php-mixed"; mkdir -p "$d"
+printf '{"scripts":{"test":"jest","lint":"eslint ."}}\n' > "$d/package.json"
+printf '{"scripts":{"test":"phpunit"}}\n' > "$d/composer.json"
+php_stub "$d/vendor/bin" phpunit
+out="$(adb_detect_gates "$d")"
+has   "$out" "npm run test" "php: a mixed node+composer repo keeps its node gates"
+hasnt "$out" "phpunit"      "php: a mixed repo does NOT get PHP gates layered in silently"
+
+# An explicit override still wins over PHP detection, and "" still disables — the open set is
+# the documented escape for the mixed case above, so it must actually reach a PHP repo.
+d="$work/php-override"; mkdir -p "$d"
+printf '{"name":"a/b"}\n' > "$d/composer.json"
+php_stub "$d/vendor/bin" phpunit
+printf '[gates]\ntest = "phpunit --group=fast"\nlint = ""\n' > "$d/agents.toml"
+out="$(adb_detect_gates "$d")"
+has   "$out" "phpunit --group=fast" "php: an agents.toml override beats detection"
+hasnt "$out" "lint"                 "php: a \"\" override disables the axis"
+
+# --- the adapter-registry contract itself (#81) -------------------------------
+# AN ADAPTER THAT DECLINES MUST LEAVE NOTHING BEHIND. The five shipped adapters each happen to
+# assign only on a path that also claims, so this invariant is unreachable through any real
+# ecosystem today — which is exactly why it is asserted through a STUB adapter instead of left
+# as a comment. The refactor from five inline `if` blocks to a registry is what makes it a
+# contract at all: the next adapter someone writes will assign before its final test, and a
+# leak would hand a later ecosystem's record a command from one that did not claim the repo.
+#
+# A comment saying "reset, so nothing leaks" is the shape self-review.md calls a guard nobody
+# has seen fail. This is the fixture that makes it fail.
+d="$work/eco-leak"; mkdir -p "$d"
+printf '{"scripts":{"test":"jest"}}\n' > "$d/package.json"
+( _ADB_ECOSYSTEMS="leaky node"
+  # Assigns, then declines. Without the reset its `d_test` survives into node's record.
+  # The four d_* names are the adapter contract, assigned here and read by _adb_gate_records
+  # through bash's dynamic scope — invisible to shellcheck, which is what SC2034 is reporting.
+  # shellcheck disable=SC2034
+  _adb_eco_leaky() { d_test="LEAKED"; d_typecheck="LEAKED"; return 1; }
+  out="$(adb_detect_gates "$d")"
+  case "$out" in *LEAKED*) exit 1 ;; esac
+  case "$out" in *"npm run test"*) exit 0 ;; *) exit 1 ;; esac )
+yes $? "registry: a declining adapter's assignments never reach the next one"
+
+# ...and the loop must STOP at the first claim, not keep walking and let a later adapter
+# overwrite the winner. First-wins is the documented semantic; a loop that ran to completion
+# would silently make it last-wins.
+( _ADB_ECOSYSTEMS="node greedy"
+  # shellcheck disable=SC2034
+  _adb_eco_greedy() { d_test="OVERWROTE"; return 0; }
+  out="$(adb_detect_gates "$d")"
+  case "$out" in *OVERWROTE*) exit 1 ;; *"npm run test"*) exit 0 ;; *) exit 1 ;; esac )
+yes $? "registry: the first claiming adapter wins and stops the walk"
+
+# A detected PHP gate must actually RUN and BLOCK like any other, and a failing one must not
+# stop the rest being attempted.
+d="$work/php-run"; mkdir -p "$d"
+printf '{"name":"a/b"}\n' > "$d/composer.json"
+printf '[gates]\ntest = "exit 3"\nbuild = "exit 0"\n' > "$d/agents.toml"
+php_stub "$d/vendor/bin" phpunit
+err="$(adb_run_gates "$d" 2>&1)"; rc=$?
+no  "$rc" "php: a failing gate makes run non-zero"
+has "$err" 'failing gates: test' "php: the failing gate is named"
+
 check_summary "gates"
