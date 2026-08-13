@@ -7,6 +7,48 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Added
+
+- **`baseline repo reconcile` — the drift detector finally has a repair (#333).**
+
+  `required-drift` has detected a newly added CI job staying non-required since #122, and it works:
+  it fired correctly, twice, and named the job. Nothing consumed the report. `6499dfe` added the
+  `adopt` job and `main` then declared 27 required contexts against 28 discovered jobs for **~21
+  hours**, during which PRs #329 and #330 both merged gated by a check set that did not include
+  `adopt` — the exact hole #122 exists to close, reopened because a signal is not a repair.
+
+  **#333's own preferred fix was refuted rather than built.** Its option 2 assumed the CI step
+  "already holds admin permission in CI". It does not: `ci.yml` grants `contents: read`, no workflow
+  references a secret, and `administration` is not a grantable workflow permission — so
+  `PATCH …/required_status_checks` is impossible from `GITHUB_TOKEN` without an admin PAT or App key
+  stored in CI. That is a security decision, so it went to the owner instead of being taken, and the
+  repair now runs where admin rights already exist: a local workflow run.
+
+  `/implement-issue` preflight calls it right after the post-merge auto-sync — the first moment the
+  repair is both legal and credentialed — and treats every exit code as non-fatal.
+
+  Four properties make an unattended branch-protection write defensible, and each is pinned by a
+  test that was **observed going red** when its rule is deleted:
+
+  - **Opt-in, default off.** `[repo] reconcile-required-checks = true`, read from the repo's own
+    `agents.toml` and never the global one, and checked *before any network call*.
+  - **Default-branch tip only.** `HEAD` must equal the branch's *remote* tip, compared against the
+    API rather than a local `origin/<b>` ref. Anywhere else, discovery and the required set describe
+    two different trees, and writing the difference is D48's phantom-context trap.
+  - **Additions only.** `--prune` is refused by name; a renamed job stays the reviewed
+    `baseline repo apply --prune` case.
+  - **Verified by re-reading.** The PATCH body is a whole `contexts` array, so a concurrent writer
+    can overwrite the addition while the API still answers 2xx. An unconfirmed write is `20`.
+
+  **What this does not do, said plainly:** nothing fires at merge time, so #333's literal criterion
+  ("reconcile with no human command") is not met and was not faked. The drift's lifetime drops from
+  "until a human reads a red check" to "until the next entry into the loop". See D63.
+
+  The mutation suite earned its keep immediately: the mutant copy was first written to a bare temp
+  dir, where `repo-settings.sh` cannot find `common.sh` beside it and exits 1 having run nothing —
+  so all six assertions passed because `1 != 16` and proved nothing. Caught only by neutering the
+  mutator and checking the assertions went red, which they did not.
+
 ### Fixed
 
 - **`publish` decided its exit code from the HOST rather than from the command line.**

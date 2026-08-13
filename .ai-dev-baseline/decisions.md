@@ -5029,3 +5029,91 @@ limit: none of them is sufficient alone.
              place for is **release notes a human reads** and a **checksummed artifact this project
              vouches for**, and those are the two things #284 adds.
 - baseline-issue: n/a — this repo IS the baseline; #284 is the tracking issue.
+
+## D63 — the drift detector gets a repair, and it runs where admin rights EXIST rather than where the detector does
+- date:      2026-08-13
+- category:  project-delta
+- unknown:   #122 shipped `required-drift` and closed. It works — it fired correctly, twice, and
+             named the job. But a red check is a **signal**, and the baseline models no way for a
+             signal to become a repair: nothing in the framework consumed it. `6499dfe` added the
+             `adopt` job, the lint detected it immediately, and `main` then declared 27 required
+             contexts against 28 discovered jobs for ~21 hours while PRs #329 and #330 both merged
+             gated by a check set that did not include `adopt` — the precise hole #122 exists to
+             close, reopened by the framework's inability to act on its own detector. `baseline
+             repo apply`'s own output states the discipline it depends on ("Re-run after ANY change
+             to a CI job name"); nothing enforced it, and a discipline nothing enforces is a defect
+             waiting on a calendar.
+- decision:  Add **`repo-settings.sh reconcile`** — the repair — and call it from
+             `/implement-issue` preflight immediately after the post-merge auto-sync.
+
+             **#333's own preferred remedy was refuted rather than implemented, and that is the
+             load-bearing part of this entry.** Its option 2 ("self-heal at the detector") asserts
+             the CI step "already holds admin permission in CI — the operation is narrow, additive
+             and reversible". It does not hold admin. `ci.yml` grants `contents: read`, no workflow
+             references a secret, and **`administration` is not a grantable workflow permission** —
+             verified against GitHub's own workflow-syntax reference, and already written down in
+             `docs/repo-settings.md`, which is why `required-drift` reads the ordinary branch
+             endpoint at all. A `PATCH …/required_status_checks` from `GITHUB_TOKEN` is therefore
+             impossible, and option 2 is not "ranked second", it is unavailable without putting an
+             admin PAT or App key into CI. That is a security posture change (a credential able to
+             rewrite branch protection, reachable by any workflow edit), so it was surfaced to the
+             owner as a decision rather than taken. The owner chose the local repair.
+
+             **Where the repair is legal is the whole design.** Discovery reads the CHECKED-OUT
+             tree; the required set belongs to the default branch. Those are one tree only at the
+             default branch's tip — anywhere else, writing the difference requires a context before
+             any job reports it, which blocks every merge until an admin clears it. That is D48's
+             trap, and it is why "reconcile at the source" cannot mean "reconcile on the PR that
+             introduces the job", however the issue phrases it. So the gate is `HEAD ==` the
+             branch's **remote** tip (`BR_SHA`, from the API), never a local `origin/<b>` ref, which
+             is only as fresh as the last fetch: a stale one makes a checkout that is BEHIND the
+             real default look synced, and discovering from a tree whose jobs the default has since
+             removed is the trap arriving by a second road.
+
+             **Opt-in, default off, repo manifest only.** This file installs into every adopting
+             project, and an unattended write to somebody's branch protection is not a default
+             anyone consented to — `/adopt` already gates `baseline repo apply` behind explicit
+             operator agreement. `[repo] reconcile-required-checks` is read from the repo's OWN
+             `agents.toml`; a global opt-in would arm it in every repository the operator touches,
+             which is exactly the blast radius default-off exists to prevent. The declaration is
+             checked BEFORE any network call, so a repo that never opted in pays nothing.
+
+             **Bounded to additions.** `--prune` is refused BY NAME rather than falling through to
+             the generic unknown-option arm, because it is a real flag on `apply` and the generic
+             message would misstate why it cannot be used here: pruning DELETES contexts this tool
+             did not discover, an external provider's among them. And the verdict is delegated to
+             `cmd_required_drift` rather than re-derived, so the repair can never be shallower than
+             the lint that gates it — every fail-closed subtlety (opaque protection, ruleset
+             branches, blind discovery, #24's no-CI repo) is inherited rather than re-implemented.
+
+             **The write is verified by re-reading**, because the PATCH body is a whole `contexts`
+             array rather than an add-one operation: a concurrent writer can overwrite the addition
+             while the API still answers 2xx. An unconfirmed write is 20, never success.
+- placement: `scripts/lib/repo-settings.sh` (`cmd_reconcile`) · the call site in
+             `base/workflows/implement-issue.md` (`ADB-SNIPPET: reconcile`) · the declaration in
+             `agents.toml` and `templates/agents.toml` · `docs/repo-settings.md` · tests in
+             `scripts/check-repo-settings.sh`.
+- reason:    A project-delta, not a general gap: the mechanism is general and ships to every
+             adopting repo, but it is off unless declared, so nothing about anyone else's project
+             changes until they choose it.
+
+             **What the acceptance criterion asked for, and what was actually delivered — stated
+             plainly rather than claimed.** #333 asks to "introduce a new CI job on a branch, merge
+             it, and observe the required set reconcile with **no human command**." With no admin
+             credential in CI, nothing fires at merge time, so that is not literally reachable and
+             was not faked: the delivered guarantee is that the drift is repaired at the next entry
+             into the loop, unattended, by a run the operator started for another reason. The
+             lifetime goes from "until a human notices a red check" to "until the next
+             `/implement-issue`". Reaching the literal criterion needs the credential decision above.
+
+             The second half of the criterion — "observe it going red on a job it should have caught
+             and did not" — **is** met, and it earned its keep. Six mutations each delete one rule
+             (the tip gate, the declaration check, the union, the read-back, the named `--prune`
+             refusal, the admin probe) and each is required to make its own assertion fail. Building
+             that found a real defect in the harness itself: the mutant copy was written to a bare
+             temp dir, where `repo-settings.sh` cannot find `common.sh` beside it and `exit 1`s
+             having executed nothing — so all six assertions "passed" because 1 is not 16, and the
+             mutation suite proved exactly nothing. It was caught only by neutering `rc_mutate` into
+             a plain `cp` and checking that the assertions went red, which they did not. A guard
+             that cannot fire is indistinguishable from a guard that found nothing wrong.
+- baseline-issue: n/a — this repo IS the baseline; #333 is the tracking issue.

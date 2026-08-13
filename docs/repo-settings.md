@@ -15,6 +15,7 @@ baseline repo apply         # required checks FIRST, then allow_auto_merge
 baseline repo apply --prune # ...and drop required contexts no discovered job reports
 baseline repo automerge-ok  # the guard /implement-issue asks before arming auto-merge
 baseline repo required-drift # CI lint: has a discovered job silently stayed non-required? (#122)
+baseline repo reconcile     # REPAIR that drift — opt-in, additions-only, default-branch tip only (#333)
 baseline repo merge-flag    # the gh pr merge flag this repo allows (--squash / --merge / --rebase)
 ```
 
@@ -295,6 +296,58 @@ readable is classified `opaque` and fails closed at `20`. Read as "zero contexts
 would report *every* discovered job as drifted — a repo-wide false positive that fails every PR
 and teaches the operator to ignore the lint. A genuinely **unprotected** branch (`protected:
 false`) is different: that is an authoritative "nothing gates this", and it is real drift.
+
+## Repairing the drift, not just reporting it: `reconcile` (#333)
+
+Detection is not repair, and for a while nothing in the framework consumed the detection. `6499dfe`
+added the `adopt` job; the lint fired **immediately and correctly**, named it, and then `main`
+declared 27 required contexts against 28 discovered jobs for **~21 hours** — during which PRs #329
+and #330 both merged, each gated by a check set that did not include `adopt`. `baseline repo apply`
+was the fix the whole time, and the only thing that ever ran it was a human who noticed a red check.
+
+`baseline repo reconcile` is that repair, run by the loop instead of by attention.
+
+### Why it cannot live in CI, where the detector already does
+
+The `required-drift` push arm runs as `GITHUB_TOKEN`, and **`administration` is not a grantable
+workflow permission** — the same fact that made the lint read the ordinary branch endpoint. Writing
+required contexts needs `Administration: write`, so a self-healing CI step is impossible without an
+admin PAT or App key stored as a repository secret. That is a real security decision (a credential
+that can rewrite branch protection, reachable by any workflow change), not a detail, so the repair
+runs where admin rights already exist: a **local workflow run**, on the operator's own `gh`.
+
+**The honest consequence, stated rather than glossed:** nothing fires the instant a job merges. The
+drift's lifetime goes from *"until a human reads a red check"* to *"until the next entry into the
+loop"*, which is bounded and usually minutes — but it is not zero, and a repo that adds a CI job and
+then never runs the loop again stays drifted.
+
+### The two gates that make an unattended write safe
+
+| Gate | Effect |
+|---|---|
+| `[repo] reconcile-required-checks = true` in the repo's **own** `agents.toml` | Off by default. Checked **before any network call**, so a repo that never opted in pays nothing. Never read from the global manifest — a global opt-in would arm this in every repository the operator touches. |
+| `HEAD` must equal the default branch's **remote** tip | Discovery reads the checked-out tree; the required set belongs to the default branch. Anywhere else those are two different trees, and writing the difference is the phantom-context trap of *"Which event asks the question"* below — requiring a context before any job reports it blocks every merge until an admin clears it. Compared against the API's `commit.sha`, never a local `origin/<b>` ref, which is only as fresh as the last fetch. |
+
+It is **additions-only**: `--prune` is refused *by name*, because deleting a context this tool did
+not discover — an external provider's — is not a safe unattended write. A renamed or removed job
+stays the reviewed case, `baseline repo apply --prune`.
+
+And it **verifies by re-reading**. The PATCH body is a whole `contexts` array rather than an
+add-one operation, so a concurrent `reconcile` or `apply` can read the same old set and overwrite
+this addition while the API still answers 2xx. An unconfirmed write reports `20`, never success.
+
+| Code | Meaning |
+|---|---|
+| `0` | in sync — or reconciled **and** confirmed by re-reading |
+| `16` | refused: `HEAD` is not the default branch's tip |
+| `17` | skipped: the repo has not declared `reconcile-required-checks` (the default) |
+| `18` | refused: real drift, but this token is not admin — names the manual command |
+| `20` | unreadable state, failed discovery, or an unconfirmed write — **fail closed** |
+
+`/implement-issue` preflight calls it immediately after its post-merge auto-sync, which is the first
+moment the repair is both legal and credentialed, and treats **every** code as non-fatal: a settings
+read never aborts an implementation run. The disposition is reported in the run's close-out, because
+a settings write nobody reports is a settings write nobody can audit.
 
 ### The same classification, for a second consumer: `branch-required-contexts` (#115)
 
