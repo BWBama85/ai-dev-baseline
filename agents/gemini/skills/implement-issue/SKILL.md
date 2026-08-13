@@ -298,6 +298,63 @@ else
         git branch -d "$b" 2>/dev/null || echo "NOTE: left '$b' (git branch -d refused — squash-merged? use /cleanup)"
       done
 fi
+# ADB-SNIPPET: reconcile
+# REPAIR REQUIRED-CHECK DRIFT, now that this checkout IS the default branch (#333).
+#
+# Everything above just brought the clone level with a merge that already happened. That merge may
+# have added a CI job — and adding one does NOT make it a required status check, so the new job runs
+# on every PR, reports green, and gates nothing. `required-drift` has detected exactly that since
+# #122 and it works; what never existed is anything that ACTS on the detection. Measured in the
+# framework's own repo: the `adopt` job landed, the lint fired immediately and named it, and the
+# default branch stayed red for ~21 hours while two PRs merged past a check set missing it.
+#
+# THIS IS THE FIRST MOMENT THE REPAIR IS BOTH LEGAL AND CREDENTIALED, which is why it sits here and
+# not where the job was introduced:
+#
+#   * LEGAL — the write requires discovery and the required set to describe ONE tree. On a PR branch
+#     they are two, and requiring a context before the job exists on the default branch blocks every
+#     merge until an admin clears it (D48). Right here, HEAD is the default branch's tip, so the
+#     two agree. `reconcile` re-proves that itself against the REMOTE tip and refuses (16) if not —
+#     this placement is the reason it usually passes, never the reason it is safe.
+#   * CREDENTIALED — CI cannot do it. The `required-drift` push arm runs as GITHUB_TOKEN, and
+#     `administration` is not a grantable workflow permission, so branch protection is unwritable
+#     there without an admin PAT stored as a secret. The operator's own `gh` already has the rights.
+#
+# NON-FATAL, ALWAYS. Nothing here can stop the run: a repo that has not opted in, cannot be read, or
+# is not admin still gets its issue implemented. Report the code in step 11 and carry on.
+# `|| RECONCILE=$?`, NEVER `; RECONCILE=$?` — this repo has already shipped that bug once, in the
+# PR advisory arm of ci.yml, and `scripts/check-repo-settings.sh` now executes that block under
+# `bash -e` so it cannot come back. The same hazard is here: under errexit a non-zero exit trips the
+# shell AT THIS LINE, before the assignment or the case runs, and the "non-fatal" promise above
+# becomes a preflight that dies. It would fire on the MOST COMMON path, not an exotic one — 17 is
+# what every repo that has not opted in returns. `||` puts the command in a condition context, where
+# errexit does not apply.
+RECONCILE=0
+bash "$HOME/.gemini/scripts/lib/repo-settings.sh" reconcile || RECONCILE=$?
+case "$RECONCILE" in
+  0)  : ;;   # in sync, or reconciled AND verified by re-reading — its own output says which
+  16) : ;;   # HEAD is not the default tip. Unexpected HERE (the sync block just put us there), so
+             # report it rather than swallow it: it means the branch moved under this run.
+  17) : ;;   # this repo has not declared `[repo] reconcile-required-checks` — the DEFAULT, and not
+             # a problem. Costs no network. Say nothing unless the operator asked for detail.
+  18) : ;;   # real drift, but this token is not admin -> report the named manual command
+  *)  : ;;   # 20/unknown -> live state unreadable, discovery failed, or the write was not
+             # confirmed. Report it; `baseline repo status` shows the detail.
+esac
+```
+
+**Report whichever code came back in step 11**, in one line — this is a repo-settings mutation the
+operator did not watch, so a silent success is as wrong as a silent skip. `17` is the default state
+and needs no ceremony; `0` should say whether it reconciled or found nothing; `18` and `20` name a
+command the operator has to run.
+
+**The fence closes here on purpose.** Both this block and the one below carry an `ADB-SNIPPET`
+marker, and the extractor reads from a marker to the next closing fence — so sharing one fence would
+make this snippet impossible to extract without dragging `admission` in behind it, and the test that
+executes it would take this run's claim as a side effect. Neither block reads a variable the other
+sets, so the split costs nothing.
+
+```bash
 # ADB-SNIPPET: admission
 # ASK WHETHER A RUN MAY START — do not just clear (#202). This used to be an unconditional
 # `rm -f` of the run marker, the blocked marker and the gap lock, and that is the whole bug: a
@@ -1302,6 +1359,13 @@ emit a self-attested completion checklist rendering each required step's real st
 (✅ / ⚠️ / ❌ — never silently drop a skipped item), grouped Setup → Implementation →
 Review → Ship → Close-out, plus a **Needs attention** block for anything not ✅ and a
 **Follow-up issues filed** block (each with its milestone + one-line rationale).
+
+**Name the required-check reconcile disposition** (#333), because preflight performed it without
+the operator watching and a settings write nobody reports is a settings write nobody can audit. One
+line: `0` — in sync, or which contexts it added and that it re-read to confirm them; `17` — not
+declared for this repo, which is the default and needs no follow-up; `16`/`18`/`20` — refused or
+unconfirmed, and then the command that resolves it (`baseline repo apply` for `18`, `baseline repo
+status` for `20`). Say what was **observed**, never that drift "will" stay fixed.
 
 **State the review rung explicitly, in the reviewer's own words, not as a ✅.** The
 close-out is where an operator learns what actually looked at this diff, so name the rung

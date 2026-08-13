@@ -67,7 +67,7 @@ rsx --help;  yes "$RC_" "--help exits 0"
 rsx;         no  "$RC_" "no subcommand exits nonzero"
 rsx bogus;   no  "$RC_" "unknown subcommand exits nonzero"
 has "$OUT" "unknown subcommand 'bogus'" "unknown subcommand names itself"
-has "$OUT" "'checks', 'status', 'apply', 'automerge-ok', 'required-drift', 'merge-flag', or 'branch-required-contexts'" "unknown subcommand lists every subcommand"
+has "$OUT" "'checks', 'status', 'apply', 'reconcile', 'automerge-ok', 'required-drift', 'merge-flag', or 'branch-required-contexts'" "unknown subcommand lists every subcommand"
 
 # ============================ branch-required-contexts (#115) ============================
 # The provider-agnostic CI-existence evidence /roadmap's health gate reads. PURE — jq only, body on
@@ -629,6 +629,11 @@ case "${1:-}" in
   api)  ;;
   *)    exit 0 ;;
 esac
+# `gh api user --jq .login` — the authenticated identity the reconcile audit line records (#333).
+# Answered explicitly and BEFORE the url parser, which only recognizes `repos/*`: without this the
+# call fell through to a silent `exit 0`, the actor resolved to `<unknown>`, and the assertion that
+# an audit line names its actor passed against a line that never could.
+[ "${2:-}" = "user" ] && { printf 'stub-actor\n'; exit 0; }
 url=""; method="GET"; has_input=0; want_headers=0; prev=""
 for a in "$@"; do
   case "$a" in
@@ -669,7 +674,24 @@ if [ "$method" = "GET" ]; then
     */branches/*)
       if [ "${STUB_BRANCH_STATUS:-200}" != "200" ]; then
         emit "HTTP/2.0 ${STUB_BRANCH_STATUS} Error"; [ "$want_headers" = "1" ] || exit 1
-      elif [ -f "$S/branch.json" ]; then emit "HTTP/2.0 200 OK" "$S/branch.json"
+      # A branch that reads back DIFFERENTLY once a write has landed (#333). `reconcile` re-reads to
+      # confirm its own write took effect, and against a wholly static fixture that verification can
+      # only ever fail — so the suite could not tell "the write worked" from "the write was lost".
+      # Opt-in, and keyed on $STUB_CALLS being non-empty, i.e. on a mutation having been RECORDED:
+      # the second read then sees the post-write world, exactly as a real one would.
+      # A branch whose TIP MOVES between two reads, with no write in between (#333). `reconcile`
+      # re-proves the tip immediately before mutating, because discovery, the protection read and the
+      # admin probe all happen after the first check and the default branch can advance in that
+      # window. STUB_BRANCH_AFTER cannot model this — it keys on a recorded mutation, and this race
+      # resolves before any mutation exists — so the sequence gets its own knob: first read serves
+      # `branch.json`, every read after it serves `branch-next.json`.
+      elif [ -n "${STUB_BRANCH_SEQ:-}" ] && [ -f "$S/.brseen" ] && [ -f "$S/branch-next.json" ]; then
+        emit "HTTP/2.0 200 OK" "$S/branch-next.json"
+      elif [ -n "${STUB_BRANCH_AFTER:-}" ] && [ -s "${STUB_CALLS:-/dev/null}" ] && [ -f "$S/branch-after.json" ]; then
+        emit "HTTP/2.0 200 OK" "$S/branch-after.json"
+      elif [ -f "$S/branch.json" ]; then
+        [ -n "${STUB_BRANCH_SEQ:-}" ] && : > "$S/.brseen"
+        emit "HTTP/2.0 200 OK" "$S/branch.json"
       else emit "HTTP/2.0 404 Not Found"; [ "$want_headers" = "1" ] || exit 1; fi ;;
     repos/*)
       if [ -f "$S/repo.json" ]; then emit "HTTP/2.0 200 OK" "$S/repo.json"
@@ -723,6 +745,7 @@ rsx_stub() {   # run against the stub with a fresh call log
   OUT="$(S="$S" STUB_CALLS="$STUB_CALLS" STUB_READS="$STUB_READS" STUB_FAIL_WRITE="${STUB_FAIL_WRITE:-}" \
          STUB_BRANCH_STATUS="${STUB_BRANCH_STATUS:-}" \
          STUB_CHECKRUNS_STATUS="${STUB_CHECKRUNS_STATUS:-}" \
+         STUB_BRANCH_AFTER="${STUB_BRANCH_AFTER:-}" STUB_BRANCH_SEQ="${STUB_BRANCH_SEQ:-}" \
          PATH="$SBIN:$PATH" bash "$RS" "$@" --workflow-dir "$WF" 2>&1)"; RC_=$?
 }
 
@@ -1823,5 +1846,566 @@ hasnt "$OUT" 'gh api -X PATCH repos/acme/widget/branches/rel' \
 hasnt "$OUT" 'gh api -X PUT repos/acme/widget/branches/rel' "...for either endpoint"
 has "$OUT" "no valid request-path encoding" "...and says why the commands are withheld"
 eq "$(cat "$STUB_CALLS")" "" "...while still mutating nothing"
+
+# ============================ reconcile (#333) ============================
+#
+# The REPAIR half of the drift question. `required-drift` only reports, and for ~21 hours nothing
+# consumed the report — so this subcommand writes branch protection, unattended, from a workflow
+# nobody is watching. That is the most dangerous thing in this file, and most of what follows is a
+# rule about NOT writing.
+#
+# HERMETIC BY CONSTRUCTION, AND FROM A REAL TREE. `reconcile` reads four things this suite must
+# control: the repo's own `agents.toml` (the opt-in), `git rev-parse HEAD` (the tip gate), the
+# WORKTREE's cleanliness (an uncommitted workflow would introduce a context that is on no branch),
+# and `.github/workflows` itself. All four resolve through `adb_repo_root`, so every scenario runs
+# inside a THROWAWAY git repo under $work whose workflows are real files, COMMITTED so the tree is
+# clean. Deliberately NOT via `--workflow-dir`: that option is refused for this subcommand now, and
+# passing it on every scenario — as the first version of this suite did — normalized exactly the
+# unsafe shape (discovery from one tree, the gate proving another) that the refusal exists to close.
+RC_REPO="$work/reconcile-repo"
+
+# rc_repo <decl> [--no-ci] — <decl> is `yes`, `no`, `none` (no manifest), or `raw:<value>` to write
+# an arbitrary TOML value, which is how the quoted-string and junk cases are driven.
+rc_repo() {
+  local decl="$1" noci="${2:-}"
+  rm -rf "$RC_REPO"; mkdir -p "$RC_REPO/.github/workflows"
+  check_git "$RC_REPO" init -q
+  case "$decl" in
+    yes)   printf '[repo]\nreconcile-required-checks = true\n'  > "$RC_REPO/agents.toml" ;;
+    no)    printf '[repo]\nreconcile-required-checks = false\n' > "$RC_REPO/agents.toml" ;;
+    none)  : ;;
+    raw:*) printf '[repo]\nreconcile-required-checks = %s\n' "${decl#raw:}" > "$RC_REPO/agents.toml" ;;
+    *)     bad "rc_repo: unknown declaration '$decl'" ;;
+  esac
+  [ "$noci" = "--no-ci" ] || printf 'name: One\non:\n  pull_request:\njobs:\n  one:\n    runs-on: ubuntu-latest\n' \
+      > "$RC_REPO/.github/workflows/one.yml"
+  # COMMITTED, so the worktree is clean. The tip gate now requires that, and a fixture that left
+  # the workflow uncommitted would be refused by the very rule the happy path is trying to exercise.
+  check_git "$RC_REPO" add -A
+  check_git "$RC_REPO" commit -qm seed
+  # AN ORIGIN MATCHING THE STUB'S REPO. `reconcile` refuses when the repository gh resolved is not
+  # this checkout's origin, so without this every scenario below would refuse at that gate and the
+  # rest of the suite would assert nothing. It is fixture setup, not a behaviour under test — the
+  # mismatch and no-origin cases override it explicitly.
+  check_git "$RC_REPO" remote add origin "https://github.com/acme/widget.git"
+}
+rc_head() { check_git "$RC_REPO" rev-parse HEAD; }
+
+# The ordinary branch endpoint carries the tip commit, which is what `reconcile` compares HEAD
+# against. `branch_checks` above omits it, so these scenarios need their own builders.
+_branch_doc() {   # <file> <sha> <contexts…>
+  local f="$1" sha="$2"; shift 2
+  jq -n --arg sha "$sha" --args \
+    '{protected:true, commit:{sha:$sha},
+      protection:{enabled:true, required_status_checks:{enforcement_level:"non_admins",
+                                                        contexts:$ARGS.positional}}}' "$@" > "$f"
+}
+branch_sha()       { _branch_doc "$S/branch.json"       "$@"; }
+branch_sha_after() { _branch_doc "$S/branch-after.json" "$@"; }
+branch_sha_next()  { _branch_doc "$S/branch-next.json"  "$@"; }
+branch_unprot_sha() { jq -n --arg sha "$1" '{protected:false, commit:{sha:$sha}}' > "$S/branch.json"; }
+
+# Runs the helper FROM INSIDE the throwaway repo, with NO scoping flags — `reconcile` refuses both,
+# so this is the only shape it supports. $RSX_BIN lets the mutation half point the same scenarios at
+# a deliberately broken copy.
+RSX_BIN="$RS"
+rsx_reconcile() {
+  STUB_CALLS="$work/calls.txt"; : > "$STUB_CALLS"
+  STUB_READS="$work/reads.txt"; : > "$STUB_READS"
+  rm -f "$S/body.json"
+  OUT="$(cd "$RC_REPO" && S="$S" STUB_CALLS="$STUB_CALLS" STUB_READS="$STUB_READS" \
+         STUB_FAIL_WRITE="${STUB_FAIL_WRITE:-}" STUB_BRANCH_STATUS="${STUB_BRANCH_STATUS:-}" \
+         STUB_BRANCH_AFTER="${STUB_BRANCH_AFTER:-}" STUB_BRANCH_SEQ="${STUB_BRANCH_SEQ:-}" \
+         PATH="$SBIN:$PATH" bash "$RSX_BIN" reconcile "$@" 2>&1)"; RC_=$?
+}
+rc_reset() {
+  STUB_BRANCH_AFTER=""; STUB_BRANCH_STATUS=""; STUB_FAIL_WRITE=""; STUB_BRANCH_SEQ=""
+  rm -f "$S/branch-after.json" "$S/branch-next.json" "$S/.brseen"
+}
+wrote_patch() { case "${ calls_of; }" in *"PATCH repos/acme/widget/branches/main/protection"*) return 0 ;; esac; return 1; }
+
+# --- the opt-in gate: default OFF, exact, and it costs NOTHING ----------------------------------
+# An undeclared repo must not merely decline to write — it must not TALK TO THE API AT ALL. This
+# runs in every /implement-issue preflight in every adopting repo, so a network round-trip to
+# discover "not my job" would tax everyone who never asked for the feature.
+rc_reset; rc_repo no; repo_fx true true; prot_checks "one"; branch_sha "$(rc_head)"
+rsx_reconcile
+eq "$RC_" "17" "an undeclared repo is 17 (skipped), never 0 — it has NOT checked the required set"
+has "$OUT" "reconcile-required-checks" "...and names the declaration that would enable it"
+eq "$(cat "$STUB_READS")" "" "...and issues NO api request at all: the declaration is read first, offline"
+eq "$(cat "$STUB_CALLS")" "" "...and mutates nothing"
+
+rc_repo none; branch_sha "$(rc_head)" "one"; rsx_reconcile
+eq "$RC_" "17" "a repo with NO agents.toml is 17 — absence is never an enablement"
+eq "$(cat "$STUB_READS")" "" "...and still issues no api request"
+
+rc_repo no; printf '[roles]\nprimary = "claude"\n' > "$RC_REPO/agents.toml"; branch_sha "$(rc_head)" "one"
+rsx_reconcile
+eq "$RC_" "17" "an agents.toml with no [repo] table is 17"
+
+# THE KEY MUST BELONG TO [repo]. `adb_toml_get` matches headers literally, and this repo's own
+# manifest carries [gates] AFTER [repo], so a reader that leaked across headers would either miss a
+# real declaration or invent one.
+rc_repo no; printf '[roles]\nreconcile-required-checks = true\n[gates]\ntest = "x"\n' > "$RC_REPO/agents.toml"
+branch_sha "$(rc_head)" "one"; rsx_reconcile
+eq "$RC_" "17" "the key declared under the WRONG table does not enable reconcile"
+
+# ONLY THE BARE BOOLEAN ENABLES IT (independent-review find). This previously ran the value through
+# `adb_toml_unquote`, so the STRING "true" — which is not a boolean — authorized an unattended
+# branch-protection write while the comment beside it claimed it did not.
+for _junk in '"true"' '"false"' '1' 'yes' 'TRUE' 'True' '"1"' 'truthy'; do
+  rc_reset; rc_repo "raw:$_junk"; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+  rsx_reconcile
+  eq "$RC_" "17" "declaration [$_junk] does NOT enable reconcile — only the bare boolean true does"
+  eq "$(cat "$STUB_CALLS")" "" "...and writes nothing for [$_junk]"
+done
+
+# --- THE ANTI-#165 GATE: the tree discovery reads must BE the default branch's tip ---------------
+# The reason this subcommand can exist at all. Discovery reads the checked-out tree; the required
+# set belongs to the default branch. Writing the difference between two different trees requires a
+# context before any job reports it, which blocks every merge until an admin clears it (D48).
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha "0000000000000000000000000000000000000000"
+rsx_reconcile
+eq "$RC_" "16" "a checkout that is NOT the branch tip is refused (16)"
+has "$OUT" "not the tip" "...saying so plainly"
+has "$OUT" "$(rc_head)" "...and printing the HEAD it actually has"
+eq "$(cat "$STUB_CALLS")" "" "...and writes NOTHING — this is the trap the gate exists to prevent"
+
+# THE COMMIT IS NOT THE TREE (independent-review find). HEAD can equal the remote tip while the
+# WORKING FILES differ, and discovery reads the working files — so an uncommitted workflow would be
+# required on a branch where that job does not exist. Same deadlock, reached through the gate.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+printf 'name: Sneaky\non:\n  pull_request:\njobs:\n  sneaky:\n    runs-on: ubuntu-latest\n' \
+  > "$RC_REPO/.github/workflows/sneaky.yml"
+rsx_reconcile
+eq "$RC_" "16" "HEAD matching the tip is NOT enough — an uncommitted workflow is refused"
+has "$OUT" "uncommitted changes" "...naming the working tree as the reason"
+eq "$(cat "$STUB_CALLS")" "" "...and writing nothing"
+# A MODIFIED tracked workflow, not just an untracked one.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+printf 'name: Edited\non:\n  pull_request:\njobs:\n  edited:\n    runs-on: ubuntu-latest\n' \
+  > "$RC_REPO/.github/workflows/one.yml"
+rsx_reconcile
+eq "$RC_" "16" "a MODIFIED tracked workflow is refused too"
+eq "$(cat "$STUB_CALLS")" "" "...writing nothing"
+
+# A SYMLINKED workflow path defeats the cleanliness proof: git reports the committed LINK as clean
+# while discovery follows it and reads whatever it points at, which may be outside the tree.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+mkdir -p "$RC_REPO/elsewhere"
+printf 'name: Outside\non:\n  pull_request:\njobs:\n  outside:\n    runs-on: ubuntu-latest\n' > "$RC_REPO/elsewhere/x.yml"
+ln -s ../elsewhere/x.yml "$RC_REPO/.github/workflows/linked.yml"
+check_git "$RC_REPO" add -A; check_git "$RC_REPO" commit -qm link
+branch_sha "$(rc_head)"          # HEAD is the tip and `git status` is CLEAN — only the link is wrong
+rsx_reconcile
+eq "$RC_" "16" "a COMMITTED symlink in the workflow dir is refused, though the tree is clean"
+has "$OUT" "symlink" "...naming the link as the reason"
+eq "$(cat "$STUB_CALLS")" "" "...and writing nothing"
+
+# THE REPOSITORY gh RESOLVES MUST BE THIS CHECKOUT'S. `gh api repos/{owner}/{repo}` honours $GH_REPO,
+# and a fork commonly shares the upstream's default-branch tip — so the SHA gate cannot catch a write
+# aimed at the wrong repository.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+check_git "$RC_REPO" remote set-url origin "https://github.com/someone-else/other.git"
+rsx_reconcile
+eq "$RC_" "16" "a checkout whose origin is NOT the repository gh resolved is refused"
+has "$OUT" "not this checkout's origin" "...saying the two identities disagree"
+has "$OUT" "acme/widget" "...naming what gh resolved"
+eq "$(cat "$STUB_CALLS")" "" "...and writing nothing"
+# ...and an origin that cannot be resolved at all is the same refusal, not a pass.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+check_git "$RC_REPO" remote remove origin
+rsx_reconcile
+eq "$RC_" "16" "a checkout with NO origin remote is refused too (cannot prove they match)"
+
+# An unresolvable HEAD is the same refusal: 'not proven to be the tip' == 'proven not to be'.
+rc_reset; rc_repo yes; branch_sha "$(rc_head)"; rm -rf "$RC_REPO/.git"
+rsx_reconcile
+eq "$RC_" "16" "a HEAD that cannot be resolved at all is refused too (fail closed, not assumed)"
+eq "$(cat "$STUB_CALLS")" "" "...writing nothing"
+
+# --- the scoping flags are REFUSED, because together they defeat the gate ------------------------
+# `--workflow-dir` moves DISCOVERY off the gated tree; `--branch` moves the TARGET off the default
+# branch. Either one alone turns "these are one tree" into an unchecked claim.
+OUT="$(bash "$RS" reconcile --workflow-dir /tmp 2>&1)"; RC_=$?
+eq "$RC_" "2" "reconcile --workflow-dir exits 2"
+has "$OUT" "not available for 'reconcile'" "...refusing it by name"
+has "$OUT" "baseline repo apply" "...and naming the directed command that does take it"
+OUT="$(bash "$RS" reconcile --branch other 2>&1)"; RC_=$?
+eq "$RC_" "2" "reconcile --branch exits 2"
+has "$OUT" "not available for 'reconcile'" "...refusing it by name too"
+# --prune is refused separately: it is a real flag on `apply`, so the generic unknown-option message
+# would misstate why it cannot be used here.
+OUT="$(bash "$RS" reconcile --prune 2>&1)"; RC_=$?
+eq "$RC_" "2" "reconcile --prune exits 2"
+has "$OUT" "additions-only by design" "...explaining that pruning is not a safe unattended write"
+has "$OUT" "baseline repo apply --prune" "...and naming the reviewed command that does prune"
+
+# --- nothing to do -----------------------------------------------------------------------------
+rc_reset; rc_repo yes; repo_fx true true; prot_checks "one"; branch_sha "$(rc_head)" "one"
+rsx_reconcile
+eq "$RC_" "0" "a repo already in sync is 0"
+has "$OUT" "already in sync" "...and says nothing was needed"
+eq "$(cat "$STUB_CALLS")" "" "...and writes nothing"
+
+# #24: a repo with NO CI is a legitimate 0, not a write of an empty required set.
+rc_reset; rc_repo yes --no-ci; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+rsx_reconcile
+eq "$RC_" "0" "a repo with no discoverable CI is 0 (#24)"
+eq "$(cat "$STUB_CALLS")" "" "...and writes nothing — an empty required set is never written"
+
+# --- the happy path: it repairs, and CONFIRMS the repair ----------------------------------------
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha "$(rc_head)"                 # before: nothing required -> `one` is drifted
+branch_sha_after "$(rc_head)" "one"     # after:  the write landed
+STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$RC_" "0" "real drift + admin + tip == HEAD reconciles and exits 0"
+has "${ calls_of; }" "PATCH repos/acme/widget/branches/main/protection/required_status_checks" \
+  "...through the NARROW sub-resource endpoint, never the destructive protection PUT"
+eq "$(jq -r '.contexts|sort|join(",")' "$S/body.json")" "one" "...writing the discovered context"
+has "$OUT" "AUDIT reconcile" "...and emitting one audit line for a write nobody watched"
+has "$OUT" 'added=["one"]' "...naming what it added, JSON-encoded so a name with a space is unambiguous"
+has "$OUT" "actor=stub-actor" "...and naming the ACTOR, which is what makes it an audit record (logging-and-secrets.md)"
+has "$OUT" "required_now=1" "...counting what the branch NOW requires, read back, not what was intended"
+hasnt "${ calls_of; }" "PATCH repos/acme/widget|" "...and issues no repo-level PATCH: allow_auto_merge is apply's job"
+
+# THE UNION. `write_required_checks` PATCHes a COMPLETE array, so sending only the discovered set
+# would DELETE every context this tool cannot discover — an external provider's most of all.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks "codecov/patch"
+branch_sha "$(rc_head)" "codecov/patch"
+branch_sha_after "$(rc_head)" "codecov/patch" "one"
+STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$RC_" "0" "reconcile succeeds alongside an external provider's context"
+eq "$(jq -r '.contexts|sort|join(",")' "$S/body.json")" "codecov/patch,one" \
+  "...and the body KEEPS the undiscovered external context (additions-only, never a replacement)"
+
+# ...AND THE READ-BACK PROVES IT, not just that the additions arrived (independent-review find).
+# A write that adds `one` and drops `codecov/patch` satisfies "the drifted names are present" while
+# breaking the additions-only promise in the one direction nobody watches.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks "codecov/patch"
+branch_sha "$(rc_head)" "codecov/patch"
+branch_sha_after "$(rc_head)" "one"     # the addition landed; the external context was DROPPED
+STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$RC_" "20" "a read-back that lost the preserved external context is 20, not success"
+has "$OUT" "did not take effect" "...reporting the context that is missing"
+
+# --- refusals that are not failures -------------------------------------------------------------
+rc_reset; rc_repo yes; repo_fx false true; prot_checks; branch_sha "$(rc_head)"
+rsx_reconcile
+eq "$RC_" "18" "real drift with a NON-ADMIN token is 18"
+has "$OUT" "baseline repo apply" "...and names the command an admin must run"
+eq "$(cat "$STUB_CALLS")" "" "...having written nothing"
+
+# AN UNPROTECTED BRANCH IS REFUSED, NOT REPAIRED (independent-review find). There is no
+# required-checks sub-resource to PATCH, so the write would take the full protection PUT — which
+# also establishes PR-review and conversation-resolution policy from PROT_DEFAULTS. That is far
+# wider than an additions-only repair and is not a safe unattended act.
+rc_reset; rc_repo yes; repo_fx true true; prot_none; branch_unprot_sha "$(rc_head)"
+rsx_reconcile
+eq "$RC_" "19" "an UNPROTECTED branch is 19 — standing protection up is not a drift repair"
+has "$OUT" "baseline repo apply" "...and points at the deliberate command"
+eq "$(cat "$STUB_CALLS")" "" "...writing nothing, and in particular issuing no full protection PUT"
+hasnt "${ calls_of; }" "PUT" "...no PUT at all"
+
+# --- fail closed: every unreadable answer refuses the write -------------------------------------
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+STUB_BRANCH_STATUS=500
+rsx_reconcile
+eq "$RC_" "20" "an unreadable branch is 20 (fail closed)"
+eq "$(cat "$STUB_CALLS")" "" "...and writes nothing"
+
+rc_reset; rc_repo yes; branch_opaque
+rsx_reconcile
+eq "$RC_" "20" "a protected branch whose context list is unreadable is 20, never 'requires nothing'"
+eq "$(cat "$STUB_CALLS")" "" "...and writes nothing"
+
+rc_reset; rc_repo yes
+jq -n '{protected:true, protection:{enabled:true, required_status_checks:{contexts:[]}}}' > "$S/branch.json"
+rsx_reconcile
+eq "$RC_" "20" "a branch body carrying no tip commit is 20 — the gate cannot be evaluated"
+has "$OUT" "tip commit" "...saying which fact was missing"
+eq "$(cat "$STUB_CALLS")" "" "...and writes nothing"
+
+# THE TIP MOVING MID-RUN (independent-review find). Discovery, the protection read and the admin
+# probe all happen after the first tip check, so the branch can advance before the write. Writing
+# then puts contexts discovered from the OLD tree onto protection for the NEW one — the same trap,
+# reached through a race. The pre-write re-check must catch it.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha      "$(rc_head)"                                          # first read: we are the tip
+branch_sha_next "1111111111111111111111111111111111111111"            # ...and then it moves
+STUB_BRANCH_SEQ=1
+rsx_reconcile
+eq "$RC_" "20" "a default branch that advances mid-run is 20 — the discovered tree is now stale"
+has "$OUT" "moved while this run" "...saying the branch moved"
+eq "$(cat "$STUB_CALLS")" "" "...and writing NOTHING"
+
+# `strict` IS PRESERVED, NOT RESET. `contexts_json` renders whatever OPT_STRICT holds, and its
+# default is off — so on a branch with "require branches to be up to date" ENABLED, adding one
+# context would also switch that requirement off. An additions-only repair must not carry `apply`'s
+# default into a policy it was not asked to change.
+rc_reset; rc_repo yes; repo_fx true true
+jq -n '{required_status_checks:{strict:true,contexts:[]},
+        required_conversation_resolution:{enabled:true}}' > "$S/protection.json"
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$RC_" "0" "reconcile succeeds on a branch with strict mode on"
+eq "$(jq -r '.strict' "$S/body.json")" "true" \
+  "...and the PATCH body PRESERVES strict:true (resetting it would silently disable up-to-date merges)"
+# ...and a branch with strict OFF stays off — preservation, not a new default.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$(jq -r '.strict' "$S/body.json")" "false" "...and strict:false is preserved as false"
+
+# THE REQUIRED SET CHANGING MID-RUN. The union is built from a snapshot taken before discovery and
+# the admin probe; the PATCH sends a COMPLETE array. A context added concurrently would therefore be
+# DELETED by this write — and the read-back could never notice, because it verifies `ctx` is a subset
+# of the result and that context was never in `ctx`.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha      "$(rc_head)"                       # first read: nothing required
+branch_sha_next "$(rc_head)" "someone-elses-check"  # ...then another admin adds one
+STUB_BRANCH_SEQ=1
+rsx_reconcile
+eq "$RC_" "20" "a required-check set that changed mid-run is 20 — the union is stale"
+has "$OUT" "changed while this run" "...saying the set moved"
+eq "$(cat "$STUB_CALLS")" "" "...and writing NOTHING, so the concurrent context survives"
+
+# THE LOST UPDATE. The PATCH body is a whole array, not an add-one operation, so a concurrent
+# writer can overwrite this addition and the API still answers 2xx.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha "$(rc_head)"          # and NO branch-after fixture: the re-read still shows no `one`
+rsx_reconcile
+eq "$RC_" "20" "a write whose effect the re-read cannot confirm is 20, never 0"
+has "$OUT" "did not take effect" "...saying the write did not land"
+has "$OUT" "raced" "...and naming the concurrent-writer explanation"
+
+# A write that fails outright is also 20, and must not be reported as reconciled.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+STUB_FAIL_WRITE="required_status_checks"
+rsx_reconcile
+eq "$RC_" "20" "a FAILED required-checks write is 20"
+has "$OUT" "unchanged" "...and says the branch was left alone"
+
+# --dry-run proves the whole decision path without issuing the write.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+rsx_reconcile --dry-run
+eq "$RC_" "0" "--dry-run reaches the write decision and exits 0"
+eq "$(cat "$STUB_CALLS")" "" "...having mutated nothing"
+
+# ============================ reconcile: the guard observed FAILING (#333) ======================
+#
+# Every assertion above is a claim that `reconcile` refuses to write in some situation. A guard's
+# failure mode is SILENCE: delete the gate and the suite still passes, because a passing test and an
+# unexecuted one look identical. So each rule is driven to RED against a deliberately broken COPY —
+# never this checkout's file (base/practices/self-review.md's copy rule).
+#
+# THE MUTANT NEEDS ITS LIBRARY BESIDE IT. repo-settings.sh resolves common.sh from its OWN directory
+# and `exit 1`s when it is absent — so a copy dropped in a bare temp dir dies having executed
+# nothing, and every assertion below then "passes" because 1 is not the expected code. That is a
+# mutation suite proving exactly nothing, and it is the first thing this section got wrong.
+#
+# AND THE WITNESS IS THE OBSERVED SIDE EFFECT, NOT MERELY A DIFFERENT CODE (independent-review find).
+# `rc != expected` is satisfied by ANY incidental failure — a syntax error, a missing fixture, a
+# startup abort — which is the same false-green class one level up. Each mutation below therefore
+# asserts what the deleted rule was PREVENTING: a recorded write, an API request, an exact success.
+RSMDIR="$work/mutantlib"; mkdir -p "$RSMDIR"
+cp "$ROOT/scripts/lib/common.sh" "$RSMDIR/common.sh"
+RSM="$RSMDIR/repo-settings-mutant.sh"
+# `@` as the delimiter throughout, never `|`: some patterns contain a shell `||` or a pipe, and with
+# `|` as the delimiter sed reads them as the end of the pattern and dies on the remainder.
+rc_mutate() {   # <sed-expr> <witness> — mutate a COPY and prove the edit actually applied
+  LC_ALL=C sed "$1" "$RS" > "$RSM"
+  # A mutation that silently did not apply would run the REAL code and "prove" the guard fires — the
+  # exact false green this section exists to rule out.
+  if grep -qF "$2" "$RSM"; then ok; else bad "mutation did not apply: $2"; fi
+  RSX_BIN="$RSM"
+}
+rc_unmutate() { RSX_BIN="$RS"; }
+
+# M1 — delete the anti-#165 tip gate. The wrong-tree run must now WRITE.
+rc_mutate 's@  _adb_rs_tree_is_tip "\$branch" || return 16@  :@' '  :'
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha "0000000000000000000000000000000000000000"
+branch_sha_after "0000000000000000000000000000000000000000" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+if wrote_patch; then ok; else bad "M1: with the tip gate deleted, the wrong-tree run must reach the WRITE (guard observed failing)"; fi
+rc_unmutate
+
+# M2 — ignore the opt-in declaration. An undeclared repo must now reach the API.
+rc_mutate 's@if ! _adb_rs_reconcile_declared; then@if false; then@' 'if false; then'
+rc_reset; rc_repo no; repo_fx true true; prot_checks "one"; branch_sha "$(rc_head)" "one"
+rsx_reconcile
+if [ -s "$STUB_READS" ]; then ok; else bad "M2: with the declaration check deleted, an undeclared repo must issue API reads (guard observed failing)"; fi
+rc_unmutate
+
+# M3 — drop the union, so the write becomes a REPLACEMENT. The external context must disappear.
+rc_mutate 's@  if \[ -n "\$kept" \]; then@  if false; then@' 'if false; then'
+rc_reset; rc_repo yes; repo_fx true true; prot_checks "codecov/patch"
+branch_sha "$(rc_head)" "codecov/patch"
+branch_sha_after "$(rc_head)" "codecov/patch" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+hasnt "$(jq -r '.contexts|sort|join(",")' "$S/body.json" 2>/dev/null)" "codecov/patch" \
+  "M3: with the union dropped, the external provider's context IS deleted (guard observed failing)"
+rc_unmutate
+
+# M4 — drop the read-back verification. The lost update must now report SUCCESS, exactly.
+rc_mutate 's@  missing="\$(ungated_contexts "\$ctx" "\$BR_CONTEXTS")"@  missing=""@' '  missing=""'
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+rsx_reconcile
+eq "$RC_" "0" "M4: with the read-back deleted, an unconfirmed write reports success (guard observed failing)"
+rc_unmutate
+
+# M5 — let --prune reach the generic unknown-option arm. The exit code stays 2, so ONLY the
+# explanation changes — which is why that message is asserted rather than just the code.
+rc_mutate 's@      --prune)$@      --pruneX)@' '      --pruneX)'
+OUT="$(bash "$RSM" reconcile --prune 2>&1)"; RC_=$?
+hasnt "$OUT" "additions-only by design" \
+  "M5: with the named --prune arm removed, the refusal stops explaining itself (guard observed failing)"
+rc_unmutate
+
+# M6 — drop the admin probe. A non-admin run must now attempt the write.
+rc_mutate 's@  if \[ "\$(repo_field .permissions.admin)" != "true" \]; then@  if false; then@' 'if false; then'
+rc_reset; rc_repo yes; repo_fx false true; prot_checks
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+if wrote_patch; then ok; else bad "M6: with the admin probe deleted, a non-admin run must reach the WRITE (guard observed failing)"; fi
+rc_unmutate
+
+# M7 — drop the worktree-cleanliness half of the tip gate. The uncommitted workflow must now write.
+rc_mutate 's@  if \[ -n "\$dirty" \]; then@  if false; then@' 'if false; then'
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one" "sneaky"; STUB_BRANCH_AFTER=1
+printf 'name: Sneaky\non:\n  pull_request:\njobs:\n  sneaky:\n    runs-on: ubuntu-latest\n' \
+  > "$RC_REPO/.github/workflows/sneaky.yml"
+rsx_reconcile
+if wrote_patch; then ok; else bad "M7: with the clean-tree check deleted, an UNCOMMITTED workflow reaches the WRITE (guard observed failing)"; fi
+rc_unmutate
+
+# M10 — delete the repo-binding check. A checkout whose origin is a DIFFERENT repository must now
+# reach the API, i.e. start operating on somebody else's settings.
+rc_mutate 's@  if \[ -z "\$checkout_slug" \] || \[ "\$checkout_slug" != "\$REPO_SLUG" \]; then@  if false; then@' 'if false; then'
+# The witness is the WRITE, not "an API read happened": `repo_json` runs BEFORE this check, so reads
+# occur whether or not the guard is intact — that witness passed against both and proved nothing.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+check_git "$RC_REPO" remote set-url origin "https://github.com/someone-else/other.git"
+rsx_reconcile
+if wrote_patch; then ok; else bad "M10: with the repo-binding check deleted, a foreign checkout must reach the WRITE (guard observed failing)"; fi
+rc_unmutate
+
+# M11 — delete the symlink refusal. The linked workflow FILE must now be accepted and written from.
+# Targets the file-level guard, not the directory one: a symlinked DIRECTORY is caught twice over
+# (`find <symlink> -maxdepth 1 -type l` reports the starting point itself), so deleting one of the
+# two proves nothing about either.
+rc_mutate 's@    if \[ -n "\$links" \]; then@    if false; then@' '    if false; then'
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+mkdir -p "$RC_REPO/elsewhere"
+printf 'name: Outside\non:\n  pull_request:\njobs:\n  outside:\n    runs-on: ubuntu-latest\n' > "$RC_REPO/elsewhere/x.yml"
+ln -s ../elsewhere/x.yml "$RC_REPO/.github/workflows/linked.yml"
+check_git "$RC_REPO" add -A; check_git "$RC_REPO" commit -qm link
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one" "outside"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+if wrote_patch; then ok; else bad "M11: with the symlink refusal deleted, a symlinked workflow file reaches the WRITE (guard observed failing)"; fi
+rc_unmutate
+
+# M12 — stop seeding `strict` from the live value. The write must now reset it to false.
+rc_mutate 's@    true) OPT_STRICT=1 ;;@    true) OPT_STRICT=0 ;;@' '    true) OPT_STRICT=0 ;;'
+rc_reset; rc_repo yes; repo_fx true true
+jq -n '{required_status_checks:{strict:true,contexts:[]},
+        required_conversation_resolution:{enabled:true}}' > "$S/protection.json"
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$(jq -r '.strict' "$S/body.json" 2>/dev/null)" "false" \
+  "M12: without seeding from the live value, strict:true is silently reset (guard observed failing)"
+rc_unmutate
+
+# M13 — delete the concurrent-context check. The write must now proceed and drop the added context.
+rc_mutate 's@  if \[ "\$BR_CONTEXTS" != "\$contexts_before" \]; then@  if false; then@' 'if false; then'
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha      "$(rc_head)"
+branch_sha_next "$(rc_head)" "someone-elses-check"
+STUB_BRANCH_SEQ=1
+rsx_reconcile
+if wrote_patch; then
+  ok
+  hasnt "$(jq -r '.contexts|join(",")' "$S/body.json" 2>/dev/null)" "someone-elses-check" \
+    "M13: without the concurrent-set check, the write DELETES the context added mid-run (guard observed failing)"
+else
+  bad "M13: with the concurrent-set check deleted, the write must proceed (guard observed failing)"
+fi
+rc_unmutate
+
+# M8 — accept the scoping flags again. `--workflow-dir` must stop being refused.
+rc_mutate 's@      --branch|--workflow-dir)@      --branchX|--workflow-dirX)@' '      --branchX|--workflow-dirX)'
+OUT="$(bash "$RSM" reconcile --workflow-dir /tmp 2>&1)"; RC_=$?
+hasnt "$OUT" "not available for 'reconcile'" \
+  "M8: with the scoping-flag refusal removed, --workflow-dir is no longer rejected by name (guard observed failing)"
+rc_unmutate
+rc_reset
+
+# ============================ the preflight wiring (#333) ======================================
+#
+# The library can be perfect and still never run — and "nothing consumed the detector" IS #333's
+# original failure, so the wiring gets its own guard. This executes the REAL workflow block,
+# extracted by its ADB-SNIPPET marker exactly as check-roadmap-e2e.sh does, rather than grepping for
+# it: the property that matters is behavioural, because a block that exits on 20 would abort a run
+# over a settings read.
+WFI="base/workflows/implement-issue.md"
+wf_recon="${ check_wf_snippet "$WFI" reconcile; }"
+if [ -n "$wf_recon" ]; then ok; else bad "implement-issue.md lost its '# ADB-SNIPPET: reconcile' marker"; fi
+has "$wf_recon" '{{REPO_SETTINGS_LIB}} reconcile' "preflight calls reconcile through the library placeholder"
+# COMMENTS STRIPPED FIRST. The bare substring test this replaces matched the word "errexit" in the
+# block's own explanation of why it uses `|| VAR=$?`, so documenting the hazard tripped the guard
+# against the hazard. The claim is about the CODE, so ask the code.
+_recon_code="${ printf '%s\n' "$wf_recon" | sed 's/#.*$//'; }"
+hasnt "$_recon_code" 'exit' "the preflight reconcile block contains no exit — it can never abort the run"
+hasnt "$wf_recon" 'ADB-SNIPPET: admission' "the reconcile snippet ends at its own fence"
+
+cat > "$work/rs-recon-stub.sh" <<'EOF'
+#!/usr/bin/env bash
+exit "${STUB_RECONCILE_RC:-0}"
+EOF
+chmod +x "$work/rs-recon-stub.sh"
+_body="${wf_recon//\{\{REPO_SETTINGS_LIB\}\}/bash \"$work/rs-recon-stub.sh\"}"
+printf '%s\n' "$_body" > "$work/recon-block.sh"
+# EVERY code the subcommand can return, INCLUDING 1 — `require_gh` exits 1 on a missing or
+# unauthenticated gh, and an exhaustive-sounding list that omitted it would be a claim the loop did
+# not check (independent-review find).
+for _code in 0 1 16 17 18 19 20 2; do
+  STUB_RECONCILE_RC="$_code" bash "$work/recon-block.sh" >/dev/null 2>&1
+  eq "$?" "0" "preflight survives reconcile exit $_code — the run is never aborted by a settings read"
+  # AND UNDER ERREXIT, which is the shape that actually regressed here. `cmd; VAR=$?` looks correct
+  # under `bash file` and is FATAL under `bash -e file`: errexit fires at the command, so the
+  # assignment and the whole case never run and preflight dies. It would fire on the COMMON path —
+  # 17 is what every repo that has not opted in returns. Same regression, same pin, as the ci.yml
+  # advisory arm above.
+  STUB_RECONCILE_RC="$_code" bash -e "$work/recon-block.sh" >/dev/null 2>&1
+  eq "$?" "0" "...and survives it under 'bash -e', where '; VAR=\$?' would have killed the run"
+done
+
+# M9 — THE ORIGINAL #333 FAILURE, reproduced: the consumer is missing. Every mutation above breaks a
+# rule INSIDE the library; none of them reproduces "the detector fired and nothing acted on it",
+# which is the defect this whole change exists to fix. Deleting the call from a COPY of the workflow
+# must make the wiring assertion above go red.
+_wf_mut="$work/implement-issue-nocall.md"
+LC_ALL=C sed 's@^{{REPO_SETTINGS_LIB}} reconcile || RECONCILE=\$?$@RECONCILE=0@' "$WFI" > "$_wf_mut"
+if grep -qF '{{REPO_SETTINGS_LIB}} reconcile' "$_wf_mut"; then
+  bad "M9: mutation did not apply — the reconcile call is still present in the copy"
+else
+  ok
+  hasnt "${ check_wf_snippet "$_wf_mut" reconcile; }" '{{REPO_SETTINGS_LIB}} reconcile' \
+    "M9: with the preflight CALL deleted, the wiring guard goes red — the #333 failure itself (guard observed failing)"
+fi
+
+# And no unresolved placeholder may survive the render, or the block dies with 'command not found'
+# on the one line whose whole job is to be non-fatal.
+hasnt "${ check_wf_snippet "agents/claude/skills/implement-issue/SKILL.md" reconcile; }" '{{' \
+  "the RENDERED claude snippet carries no unresolved placeholder"
+has "${ check_wf_snippet "agents/codex/skills/implement-issue/SKILL.md" reconcile; }" '.codex/scripts/lib/repo-settings.sh' \
+  "...and codex's render points at its own runtime path"
 
 check_summary "repo-settings"

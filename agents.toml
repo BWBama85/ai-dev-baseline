@@ -45,6 +45,25 @@ release      = "claude"     # Names WHO cuts a release. Declared explicitly (not
 [reviewers]
 bots = ["chatgpt-codex-connector"]
 
+# Repair required-check drift automatically, instead of only detecting it (#333).
+#
+# THIS REPO IS THE ONE THAT PROVED THE GAP. `6499dfe` added the `adopt` job; `required-drift` fired
+# immediately and correctly, named it, and nothing acted — so `main` declared 27 required contexts
+# against 28 discovered jobs, stayed red for ~21 hours, and PRs #329 and #330 both merged gated by a
+# check set that did not include `adopt`. A signal nothing consumes is not a repair.
+#
+# With this declared, `/implement-issue` preflight runs `baseline repo reconcile` after it lands on
+# a clean, synced default branch — the first moment the fix is both legal and credentialed. It is
+# additions-only, it refuses unless HEAD is the default branch's tip, and it verifies the write by
+# re-reading. See scripts/lib/repo-settings.sh's cmd_reconcile and D63.
+#
+# DEFAULT OFF FOR EVERYONE ELSE. This is an unattended write to GitHub branch protection, and
+# `/adopt` already treats `baseline repo apply` as consent-gated — so an adopting repo opts in here
+# deliberately or not at all. Read from the REPO manifest only, never the global one: a global
+# opt-in would arm it in every repository the operator touches.
+[repo]
+reconcile-required-checks = true
+
 # This repo has no standard-ecosystem toolchain, so `project-gates.sh` auto-detects
 # nothing (no pnpm/cargo/go/python). Its real gate is `scripts/selfcheck.sh` — the full
 # local CI mirror — so we wire it in explicitly as the `test` gate. Both the skill's

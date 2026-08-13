@@ -104,6 +104,36 @@ debug        = "claude"     # owns root-cause investigations.
 # [reviewers]
 # bots = ["chatgpt-codex-connector", "gemini-code-assist", "copilot"]
 
+# Optional: let the loop REPAIR required-check drift, not merely detect it (#333).
+#
+# THE PROBLEM IT SOLVES. `baseline repo apply` makes every CI job a required status check. Add a
+# job later and branch protection does not follow: the new job runs on every PR, reports green, and
+# gates NOTHING — so a PR can merge on a red build. `baseline repo required-drift` detects that, but
+# detection is not repair, and until someone reads the red check the hole stays open. Measured in
+# this framework's own repo: a job added on 2026-08-12 left the default branch red for ~21 hours
+# while two PRs merged past a check set that did not include it.
+#
+# WHAT IT DOES WHEN ENABLED. `/implement-issue` preflight runs `baseline repo reconcile` once it has
+# landed on a clean, synced default branch — the first moment the repair is both legal and
+# credentialed — and adds any discovered-but-unrequired job to branch protection.
+#
+# WHY IT IS OFF BY DEFAULT, and why you should think before turning it on: this is an UNATTENDED
+# WRITE to your repository's branch-protection settings, performed by an agent, using whatever
+# admin rights your `gh` login has. It is bounded — additions only, never `--prune`, so an external
+# provider's required context is never deleted; it refuses unless this CLEAN checkout is exactly the
+# default branch's tip, so it can never require a context before the job exists there; it refuses a
+# branch with no protection at all, because standing protection up writes review policy rather than
+# just contexts; and it re-reads to confirm what it wrote. It still changes a repository setting
+# without a human watching, which is a choice to make deliberately rather than inherit.
+#
+# ONLY THE BARE BOOLEAN `true` ENABLES IT. `"true"` (a string), `1` and `yes` all read as OFF: for a
+# switch that authorizes a remote write with nobody watching, anything but an exact match fails safe.
+#
+# It is read from THIS file only, never the global manifest, so enabling it here can never arm it
+# in another repository. Without admin rights it reports the manual command instead of failing.
+# [repo]
+# reconcile-required-checks = true
+
 # Optional: override the auto-detected quality gates for this repo. The gate
 # runner auto-detects pnpm/npm/yarn/bun, cargo, go, and python projects; set
 # these only when detection is wrong or the repo needs specific commands.

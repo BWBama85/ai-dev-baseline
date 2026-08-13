@@ -33,6 +33,13 @@
 #                                        # drifted context names (one per line) and no prose, so a
 #                                        # caller can name them without parsing — or repeating — a
 #                                        # remedy that is wrong for its branch (#165)
+#   repo-settings.sh reconcile [--dry-run]
+#                                        # REPAIR the drift the lint above only reports (#333).
+#                                        # Opt-in per repo, additions-only, and refuses unless this
+#                                        # CLEAN checkout is the default branch's tip. Takes NEITHER
+#                                        # --branch NOR --workflow-dir: choosing the target or the
+#                                        # discovery source separately is what would defeat that
+#                                        # proof. See cmd_reconcile.
 #   repo-settings.sh merge-flag          # the `gh pr merge` flag this repo allows (--squash/…)
 #   repo-settings.sh branch-required-contexts
 #                                        # branch JSON on stdin -> the required contexts as a JSON
@@ -81,6 +88,20 @@
 # detour. Deliberately narrow: it does NOT fail on allow_auto_merge being off, on phantom contexts,
 # or on external-provider contexts — those are different problems with different remedies, and
 # `status` already reports them all.
+#
+# `reconcile` (#333) is the REPAIR the lint never had — a red check is a signal, and nothing in the
+# framework consumed it, so `main` once stayed red for ~21 hours while two PRs merged past a check
+# set that did not include the job the lint had already named. It cannot live in CI (that token
+# cannot hold `administration`), so it runs where admin credentials already exist — a local
+# workflow run — gated on the repo declaring it and on HEAD being the default branch's tip:
+#   0  in sync, or reconciled AND verified by re-reading
+#   16 refused — this tree is not the default branch's tip: HEAD differs, or the workflow directory
+#                has uncommitted changes (writing from another tree is D48's trap)
+#   17 skipped — the repo does not declare `[repo] reconcile-required-checks = true`
+#   18 refused — real drift, but this token is not admin
+#   19 refused — the branch has NO protection; standing it up writes policy, not just contexts
+#   20 unknown — unreadable state, failed discovery, a branch that moved mid-run, or an unconfirmed
+#                write; FAIL CLOSED
 #
 # It reads the live set through the ORDINARY branch endpoint (`repos/{slug}/branches/{branch}`),
 # NOT the admin-only `/protection` one, because its home is a CI job running as GITHUB_TOKEN —
@@ -729,6 +750,14 @@ phantom_contexts() { LC_ALL=C comm -13 <(nz "$1") <(nz "$2"); }
 # ungated_contexts <want> <live> — discovered jobs that are NOT required, i.e. gating nothing.
 ungated_contexts() { LC_ALL=C comm -23 <(nz "$1") <(nz "$2"); }
 
+# union_contexts <discovered> <kept> — the ADDITIONS-ONLY set every non-prune write sends: the
+# discovered jobs plus the required contexts this tool did not discover, deduped and C-sorted to the
+# one collation `comm` needs. ONE home, because `apply` and `reconcile` both need it and a
+# preservation fix landing in only one of them is a silently deleted external provider on the other
+# (independent-review find). The sort is not cosmetic: the result feeds `ungated_contexts` on the
+# verification path, and `comm` yields WRONG SETS rather than an error on differently-collated input.
+union_contexts() { printf '%s\n%s\n' "$1" "$2" | sed '/^$/d' | LC_ALL=C sort -u; }
+
 # shared_contexts <a> <b> — the intersection, the third sibling of the two above. Kept here with
 # them so `nz` and the C collation have one home: both operands must be sorted the same way, and
 # restating that per call site is how one of them eventually gets it wrong.
@@ -755,6 +784,14 @@ shared_contexts() { LC_ALL=C comm -12 <(nz "$1") <(nz "$2"); }
 # cause: from here the two are indistinguishable, and guessing between them is what it refuses.
 BR_STATE=""       # checks | unprotected | opaque | error
 BR_CONTEXTS=""    # the live required contexts, sorted, one per line (empty when none)
+# BR_SHA — the branch's tip commit, straight from the same 200 body. It exists for `reconcile`,
+# whose safety gate is "the tree I am about to discover from IS the default branch's tree", and the
+# only authoritative answer to that is the REMOTE's tip. A local `refs/remotes/origin/<b>` cannot
+# answer it: it is whatever the last fetch left behind, so a stale one makes a checkout that is
+# BEHIND the real default look synced — and discovering from a tree whose jobs the real default has
+# since removed is how a phantom context gets required, which is the #165 trap this gate exists to
+# prevent. Empty whenever the read did not produce one, and `reconcile` treats empty as unreadable.
+BR_SHA=""
 
 # _adb_rs_classify_branch — stdin: a 200 response BODY from `repos/{slug}/branches/{branch}`.
 # Prints the classification on line 1 (`checks` | `unprotected` | `opaque`) and the required
@@ -833,7 +870,7 @@ _adb_rs_classify_branch() {
 # read_branch <branch> — classify the branch's required-check state via the contents-read endpoint.
 read_branch() {
   local branch="$1" out path
-  BR_STATE=""; BR_CONTEXTS=""
+  BR_STATE=""; BR_CONTEXTS=""; BR_SHA=""
   # An unbuildable path joins the `error` arm, which `required-drift` already turns into a
   # fail-closed 20 (#103). Reporting it as any readable state would let the drift lint pass on
   # evidence it never fetched.
@@ -848,6 +885,12 @@ read_branch() {
   # error, if two streams were collated differently). The classifier already `unique`d, so this is
   # a rendering, not a second decision.
   BR_CONTEXTS="$(printf '%s' "$out" | sed -n '2p' | jq -r '.[]' 2>/dev/null | LC_ALL=C sort)"
+  # Taken from the SAME body, so it describes the same instant as BR_CONTEXTS. Read separately
+  # rather than threaded through the classifier: that function's contract is the three-way
+  # protection verdict, and a tip commit is not part of it. A missing or non-hex value stays empty,
+  # which every caller must treat as "unreadable" rather than as "does not match".
+  BR_SHA="$(printf '%s' "$RS_BODY" | jq -r '.commit.sha // empty' 2>/dev/null)"
+  case "$BR_SHA" in ''|*[!0-9a-fA-F]*) BR_SHA="" ;; esac
   return 0
 }
 
@@ -1153,7 +1196,7 @@ cmd_apply() {
     adb_info "  keeping $(nlines "$kept") required context(s) this tool did not discover"
     adb_info "    (an external CI provider? re-run with --prune if a job was renamed or removed)"
     printf '%s\n' "$kept" | sed 's/^/    ~ /'
-    ctx="$(printf '%s\n%s\n' "$ctx" "$kept" | sed '/^$/d' | LC_ALL=C sort -u)"
+    ctx="$(union_contexts "$ctx" "$kept")"
   elif [ -n "$kept" ]; then
     adb_info "  --prune: dropping $(nlines "$kept") required context(s) no discovered job reports"
     printf '%s\n' "$kept" | sed 's/^/    - /'
@@ -1536,6 +1579,340 @@ cmd_required_drift() {
   return 14
 }
 
+# --- reconcile: the repair the detector never had (#333) ---------------------------------------
+#
+# `required-drift` reports; nothing acted on the report. `6499dfe` added the `adopt` job, the lint
+# fired correctly and IMMEDIATELY, and `main` then stayed red for ~21 hours while two PRs merged
+# gated by a check set that did not include it — the exact hole #122 was filed to close, reopened
+# because a signal is not a repair.
+#
+# WHY THIS IS NOT IN CI, WHERE THE DETECTOR ALREADY LIVES. It cannot be. The `required-drift` push
+# arm runs as `GITHUB_TOKEN`, and `administration` is not a grantable workflow permission (see the
+# header, and docs/repo-settings.md) — so the `PATCH …/required_status_checks` a repair needs is
+# impossible there without an admin PAT or App key stored as a secret. #333's option 2 assumed CI
+# "already holds admin permission"; it does not, and the honest consequence is that the repair runs
+# where admin credentials already exist: a local workflow run, on the operator's own `gh`.
+#
+# WHY IT IS SAFE ONLY ON THE DEFAULT BRANCH'S TIP, which is the whole design. Discovery reads the
+# CHECKED-OUT tree; the required set belongs to the DEFAULT BRANCH. Those are one tree only when
+# HEAD is that branch's tip. Anywhere else the two disagree, and writing the difference is D48's
+# phantom-context trap: requiring a context before the job exists on the default branch blocks every
+# merge and needs an admin token to clear. So this refuses (16) rather than reconciling from a tree
+# it cannot prove is the right one — and it proves it against the REMOTE's tip (`BR_SHA`), never a
+# local `origin/<b>` ref, which is only as fresh as the last fetch.
+#
+# WHY IT IS DECLARED, NOT INFERRED. This file installs into every adopting repo, and an unattended
+# write to somebody's branch protection is not a default anyone opted into — `/adopt` already gates
+# `baseline repo apply` behind explicit operator agreement. So it runs only where the repo's OWN
+# `agents.toml` says `[repo] reconcile-required-checks = true`, and the check is FIRST, before any
+# network, so an undeclared repo pays nothing. Read from the repo manifest ONLY, never the global
+# one: a global opt-in would silently arm this in every repository the operator touches, which is
+# precisely the blast radius the default-off choice exists to prevent.
+#
+# WHY IT IS ADDITIONS-ONLY, AND WHY IT IS NOT `apply`. `--prune` deletes required contexts this tool
+# did not discover — including an external provider's — so it is refused outright below rather than
+# merely defaulted off. And `apply` does two things: it also enables `allow_auto_merge`, and on a
+# no-CI repo it skips the checks write while STILL writing that setting. Reconciliation is bounded
+# to required contexts by #333's own scope, so it calls the shared `write_required_checks` directly
+# and never `cmd_apply`.
+#
+# THE VERDICT IS DELEGATED, NOT RE-DERIVED. `cmd_required_drift` already owns every fail-closed
+# subtlety this question has accumulated — opaque protection, ruleset-protected branches, a blind
+# parse that discovered nothing, external-provider contexts, #24's no-CI repo. Re-implementing the
+# comparison here would let the repair be shallower than the lint, so the lint IS the gate: only its
+# 14 opens the write, and its 20 fails closed unchanged.
+#
+# Exit codes (16-18 are free in this module; 10-15 and 20 already mean other things, and the header
+# rule is that a code never means two):
+#   0  in sync — nothing to reconcile, OR the write succeeded AND was verified by re-reading
+#   16 refused — HEAD is not the default branch's tip, so discovery would describe a different tree
+#   17 skipped — the repo does not declare `[repo] reconcile-required-checks = true` (the default)
+#   18 refused — real drift, but this operator is not admin; names the manual remedy
+#   20 unknown — unreadable live state, failed discovery, or a write whose effect could not be
+#                confirmed; FAIL CLOSED
+_adb_rs_reconcile_declared() {
+  local toml raw
+  toml="$(adb_repo_root)/agents.toml"
+  [ -f "$toml" ] || return 1
+  raw="$(adb_toml_get "$toml" repo reconcile-required-checks)" || return 1
+  # THE RAW VALUE, DELIBERATELY NOT UNQUOTED (independent-review find). The bare TOML boolean `true`
+  # is the only enabling value: `false`, `1`, `yes`, a typo — and the STRING `"true"` — are all off.
+  # This line previously ran the value through `adb_toml_unquote`, which turns `"true"` into `true`,
+  # so a quoted string authorized an unattended branch-protection write while the comment beside it
+  # claimed the opposite. A boolean is not a string, and for this switch the difference is the whole
+  # fail-safe: everything that is not exactly `true` must read as off.
+  [ "$raw" = "true" ] || return 1
+  return 0
+}
+
+# _adb_rs_tree_is_tip <branch> — 0 iff the tree discovery will read IS the remote tip of <branch>.
+#
+# TWO facts, because the commit alone is not the tree (independent-review find). `git rev-parse HEAD`
+# proves the checked-out COMMIT matches the remote tip; discovery then reads WORKING FILES. An
+# uncommitted or untracked workflow file therefore introduces a context that exists on nobody's
+# default branch — and requiring it is precisely the phantom-context deadlock this gate exists to
+# prevent, reached through the gate rather than around it. So the worktree must also be clean for
+# the workflow directory.
+#
+# Scoped to that directory rather than the whole repo: an unrelated dirty file cannot change what
+# discovery finds, and refusing on it would make the repair unusable in exactly the situation it is
+# for. `--porcelain` covers modified, staged AND untracked in one read.
+_adb_rs_tree_is_tip() {
+  local root head dirty wf
+  root="$(adb_repo_root)"
+  head="$(git -C "$root" rev-parse HEAD 2>/dev/null)" || head=""
+  if [ -z "$head" ] || [ "$head" != "$BR_SHA" ]; then
+    echo "repo-settings: this checkout is not the tip of '$1' — NOT reconciling." >&2
+    echo "repo-settings:   HEAD:            ${head:-<unresolvable>}" >&2
+    echo "repo-settings:   $1 (remote): $BR_SHA" >&2
+    echo "repo-settings: discovery reads THIS tree while the required set belongs to '$1', so" >&2
+    echo "repo-settings: writing the difference could require a context no job on '$1' reports —" >&2
+    echo "repo-settings: which blocks every merge until an admin clears it. Reconcile from '$1'." >&2
+    return 1
+  fi
+  wf="$(workflow_dir)"
+  dirty="$(git -C "$root" status --porcelain -- "$wf" 2>/dev/null)"
+  if [ -n "$dirty" ]; then
+    echo "repo-settings: '$wf' has uncommitted changes — NOT reconciling." >&2
+    printf '%s\n' "$dirty" | sed 's/^/  /' >&2
+    echo "repo-settings: HEAD matches '$1', but discovery reads the WORKING TREE, so an uncommitted" >&2
+    echo "repo-settings: job would be required on a branch where it does not exist. Commit or stash." >&2
+    return 1
+  fi
+  # A SYMLINK DEFEATS THE CLEANLINESS PROOF (independent-review find). `git status` reports a
+  # committed symlink as clean because the LINK is what is tracked — but discovery follows it and
+  # reads whatever it points at, which may be mutable content outside the committed tree entirely.
+  # So "clean" would be true and "this is the branch's tree" would still be false, which is the one
+  # combination this gate exists to rule out. Refuse rather than resolve: a workflow directory that
+  # is a link, or that holds one, is not a shape this repair needs to support.
+  if [ -L "$wf" ]; then
+    echo "repo-settings: '$wf' is a symlink — NOT reconciling." >&2
+    echo "repo-settings: git reports the LINK as clean while discovery reads whatever it points at," >&2
+    echo "repo-settings: so a clean worktree would not prove the jobs came from '$1'." >&2
+    return 1
+  fi
+  if [ -d "$wf" ]; then
+    local links
+    links="$(find "$wf" -maxdepth 1 -type l 2>/dev/null)"
+    if [ -n "$links" ]; then
+      echo "repo-settings: '$wf' contains symlinked workflow file(s) — NOT reconciling:" >&2
+      printf '%s\n' "$links" | sed 's/^/  /' >&2
+      echo "repo-settings: git reports a committed link as clean while discovery reads its target." >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
+cmd_reconcile() {
+  local branch drifted rc ctx kept missing actor sha_before contexts_before
+  if ! _adb_rs_reconcile_declared; then
+    adb_info "repo-settings: reconcile is not declared for this repo — set '[repo] reconcile-required-checks = true' in agents.toml to enable it"
+    return 17
+  fi
+  require_gh
+  repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — cannot reconcile" >&2; return 20; }
+
+  # THE REPOSITORY `gh` RESOLVES MUST BE THIS CHECKOUT'S (independent-review find). `gh api
+  # repos/{owner}/{repo}` honours $GH_REPO and gh's own directory resolution, so the object read —
+  # and later MUTATED — can be a different repository entirely, while the opt-in declaration and the
+  # discovered jobs still come from the local tree. The SHA gate does not catch it: a fork commonly
+  # shares the upstream's default-branch tip, so `HEAD == BR_SHA` holds across two different repos.
+  # That is the worst version of this command's failure — writing branch protection somewhere nobody
+  # pointed it — so the two identities are compared explicitly before anything is read further.
+  #
+  # An unresolvable origin is a refusal too: this is the write side, and "cannot prove they match"
+  # is not "they match".
+  local checkout_slug
+  checkout_slug="$(adb_git_origin_slug 2>/dev/null)" || checkout_slug=""
+  if [ -z "$checkout_slug" ] || [ "$checkout_slug" != "$REPO_SLUG" ]; then
+    echo "repo-settings: the repository gh resolved is not this checkout's origin — NOT reconciling." >&2
+    echo "repo-settings:   gh resolves:      $REPO_SLUG" >&2
+    echo "repo-settings:   checkout origin:  ${checkout_slug:-<unresolvable>}" >&2
+    echo "repo-settings: the opt-in and the discovered jobs come from THIS tree, so writing branch" >&2
+    echo "repo-settings: protection on another repository would gate it with jobs it does not have." >&2
+    echo "repo-settings: unset GH_REPO, or run from the checkout you mean." >&2
+    return 16
+  fi
+
+  branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — cannot reconcile" >&2; return 20; }
+
+  # THE SAFETY GATE, and it runs before the verdict so an unsafe checkout never even asks. Both
+  # halves fail CLOSED: an unreadable branch is 20, and a HEAD we cannot resolve is 16 — "not proven
+  # to be the tip" is the same refusal as "proven not to be".
+  read_branch "$branch"
+  case "$BR_STATE" in
+    error)
+      echo "repo-settings: cannot read branch '$branch' — refusing to reconcile against unreadable state" >&2
+      return 20 ;;
+    opaque)
+      echo "repo-settings: branch '$branch' is protected but its required-check list is unreadable" >&2
+      echo "repo-settings: refusing to guess — a list we cannot see is NOT an empty one (failing closed)" >&2
+      return 20 ;;
+  esac
+  [ -n "$BR_SHA" ] || { echo "repo-settings: could not read the tip commit of '$branch' — cannot prove this checkout matches it" >&2; return 20; }
+  _adb_rs_tree_is_tip "$branch" || return 16
+  sha_before="$BR_SHA"
+  # The required set as it stands NOW, from this same endpoint, so the pre-write re-check can tell
+  # "nothing moved" from "somebody else edited the required checks while we were preparing".
+  contexts_before="$BR_CONTEXTS"
+
+  # A branch with NO protection is refused, not repaired (independent-review find). There is no
+  # required-check sub-resource to PATCH there, so `write_required_checks` takes the full protection
+  # PUT — which does not merely add contexts, it ESTABLISHES policy from PROT_DEFAULTS: "require a
+  # PR before merging" and conversation resolution. That is a far wider act than the additions-only
+  # repair this command documents, and standing protection up on a repo that has none is a decision
+  # an operator makes once, deliberately, not something an unattended preflight does on their behalf.
+  if [ "$BR_STATE" = "unprotected" ]; then
+    echo "repo-settings: branch '$branch' has NO protection, so there is no required-check drift to repair." >&2
+    echo "repo-settings: standing protection up writes a PR-review and conversation-resolution policy," >&2
+    echo "repo-settings: which is wider than this command's additions-only contract and is not a safe" >&2
+    echo "repo-settings: unattended write. Run it deliberately instead:  baseline repo apply" >&2
+    return 19
+  fi
+
+  # The verdict, from the lint that owns it. Captured in a SUBSHELL so --porcelain's stdout reshape
+  # cannot leak into this command's own output, and so the option stays local to the call.
+  #
+  # STDERR IS DELIBERATELY NOT REDIRECTED. A `2>/dev/null` here reads as tidiness and is a real
+  # loss: on the 20 arm below, the lint's stderr is the ONLY statement of which fact could not be
+  # established (opaque protection, a contradicted discovery, an unreadable branch), and this
+  # command then writes nothing while explaining nothing. The cost is discovery's per-file
+  # "skipping <file> — <reason>" lines on the happy path, which `required-drift` itself refuses to
+  # swallow for exactly this reason (see its own note): a parser that stopped seeing a job looks
+  # identical to a repo that stopped having one.
+  drifted="$( OPT_PORCELAIN=1; cmd_required_drift )"; rc=$?
+  case "$rc" in
+    0)  adb_info "repo-settings: required checks on '$branch' are already in sync — nothing to reconcile"
+        return 0 ;;
+    14) : ;;
+    20) echo "repo-settings: the drift comparison failed closed — refusing to write (re-run 'baseline repo required-drift' for the reason)" >&2
+        return 20 ;;
+    *)  echo "repo-settings: the drift comparison returned an unexpected status ($rc) — refusing to write" >&2
+        return 20 ;;
+  esac
+  [ -n "$drifted" ] || { echo "repo-settings: drift was reported but no context was named — refusing to write on an empty set" >&2; return 20; }
+
+  if [ "$(repo_field .permissions.admin)" != "true" ]; then
+    echo "repo-settings: $(nlines "$drifted") discovered job(s) on '$branch' are not required, but this token is not admin:" >&2
+    printf '%s\n' "$drifted" | sed 's/^/  - /' >&2
+    echo "repo-settings: an admin must run:  baseline repo apply" >&2
+    return 18
+  fi
+
+  # The write path needs the ADMIN protection view (which endpoint is safe to use), on top of the
+  # contents-read view the gate above used. Unreadable here is 20 for the same reason `apply`
+  # refuses: this is the write side, where guessing is not merely an unreadable answer.
+  read_protection "$branch"
+  case "$PROT_STATE" in
+    error|forbidden)
+      echo "repo-settings: cannot read branch protection for '$branch' (state: $PROT_STATE) — refusing to write" >&2
+      return 20 ;;
+  esac
+  # SEED `strict` FROM THE LIVE VALUE (independent-review find). `contexts_json` renders whatever
+  # OPT_STRICT holds, and reconcile neither reads the live setting nor accepts `--strict` — so on a
+  # branch with "require branches to be up to date before merging" ENABLED, adding one missing
+  # context would also PATCH `strict:false` and silently switch that requirement off. An
+  # additions-only repair must not carry `apply`'s default into somebody else's policy: what is not
+  # being repaired is preserved. (D9 keeps the default off for `apply`, which chooses it deliberately;
+  # this command is not choosing anything.)
+  case "$(printf '%s' "$PROT_JSON" | jq -r '.required_status_checks.strict // false' 2>/dev/null)" in
+    true) OPT_STRICT=1 ;;
+    *)    OPT_STRICT=0 ;;
+  esac
+  _adb_rs_discover "$branch" || {
+    echo "repo-settings: check discovery failed — refusing to write required checks from an unreliable scan" >&2
+    return 20
+  }
+  ctx="$RS_WANT"
+  [ -n "$ctx" ] || { echo "repo-settings: discovery produced no contexts — refusing to write an empty required set" >&2; return 20; }
+
+  # UNION, never replacement. `write_required_checks` PATCHes a COMPLETE contexts array, so sending
+  # only the discovered set would silently drop every context this tool does not discover — an
+  # external provider's, most importantly. This is `cmd_apply`'s non-prune arithmetic, reached
+  # through the same two helpers rather than restated.
+  kept="$(phantom_contexts "$ctx" "$(live_contexts)")"
+  if [ -n "$kept" ]; then
+    adb_info "  keeping $(nlines "$kept") required context(s) this tool did not discover"
+    ctx="$(union_contexts "$ctx" "$kept")"
+  fi
+  adb_info "repo-settings: reconciling '$branch' — adding $(nlines "$drifted") discovered job(s) to $(nlines "$(live_contexts)") required context(s):"
+  printf '%s\n' "$drifted" | sed 's/^/    + /'
+
+  # RE-PROVE THE TIP IMMEDIATELY BEFORE THE WRITE (independent-review find). Everything above —
+  # discovery, the protection read, the admin probe — happens between the first tip check and this
+  # moment, and the default branch can advance in that window. Writing then requires contexts
+  # discovered from the OLD tree against protection for the NEW one, which is the very trap the gate
+  # exists to prevent, arriving through a race instead of a wrong checkout. One extra read closes it;
+  # a changed tip is a refusal, not a retry, because the tree this process holds is now stale.
+  read_branch "$branch"
+  if [ "$BR_STATE" != "checks" ] || [ "$BR_SHA" != "$sha_before" ]; then
+    echo "repo-settings: '$branch' moved while this run was preparing its write (was $sha_before, now ${BR_SHA:-<unreadable>})." >&2
+    echo "repo-settings: the discovered contexts describe the OLD tree, so nothing was written. Re-run." >&2
+    return 20
+  fi
+  # AND THE REQUIRED SET ITSELF MUST NOT HAVE MOVED (independent-review find). The union was built
+  # from a protection snapshot taken earlier; the PATCH body is a COMPLETE array. So if another
+  # admin or a concurrent reconcile added a context in between, this write would replace the array
+  # with one that never contained it — deleting it silently. The read-back cannot catch that: it
+  # verifies `ctx` is a subset of what the branch ends up requiring, and a context that was never in
+  # `ctx` is invisible to a subset test. Comparing against the same endpoint's earlier answer is what
+  # makes the difference observable at all; a changed set means the union is stale, so refuse.
+  if [ "$BR_CONTEXTS" != "$contexts_before" ]; then
+    echo "repo-settings: the required-check set on '$branch' changed while this run was preparing its write." >&2
+    echo "repo-settings: this write sends a COMPLETE array, so proceeding would delete whatever was" >&2
+    echo "repo-settings: added concurrently. Nothing was written — re-run to rebuild from the new set." >&2
+    return 20
+  fi
+  write_required_checks "$branch" "$ctx" || {
+    echo "repo-settings: the required-checks write FAILED — '$branch' is unchanged" >&2
+    return 20
+  }
+  if [ "$OPT_DRY_RUN" -eq 1 ]; then
+    adb_info "Dry run — nothing was changed."
+    return 0
+  fi
+
+  # VERIFY BY RE-READING, because a 2xx is not proof the set is what we meant. Two real failure
+  # modes need this and neither shows up in the write's own status: a concurrent reconcile or
+  # `apply` can read the same old set and overwrite this addition (a lost update — the PATCH body
+  # is a whole array, not an add-one operation), and a partial or coerced write can succeed while
+  # storing something else. An unconfirmed write is reported as 20, never as success.
+  read_branch "$branch"
+  if [ "$BR_STATE" != "checks" ]; then
+    echo "repo-settings: wrote the required checks but could not re-read '$branch' to confirm (state: $BR_STATE)" >&2
+    return 20
+  fi
+  # VERIFIED AGAINST THE WHOLE INTENDED SET, not just the additions (independent-review find). The
+  # PATCH body is `ctx` — the discovered jobs UNION the external contexts being preserved — so
+  # checking only `drifted` would report success for a write that added the new jobs and dropped
+  # `codecov/patch`, which is the additions-only promise broken in the one direction nobody watches.
+  missing="$(ungated_contexts "$ctx" "$BR_CONTEXTS")"
+  if [ -n "$missing" ]; then
+    echo "repo-settings: the write did not take effect for $(nlines "$missing") context(s):" >&2
+    printf '%s\n' "$missing" | sed 's/^/  - /' >&2
+    echo "repo-settings: another writer may have raced this one. Re-run, or run 'baseline repo apply'." >&2
+    return 20
+  fi
+  # ONE audit line, per base/practices/logging-and-secrets.md: the ACTOR and the key fields, no
+  # credential material, reconstructable after the fact from the log alone.
+  #
+  # Three things this line got wrong before independent review, each of which made it worse than
+  # useless — an audit record that reads as authoritative and is not:
+  #   * NO ACTOR. The practice's whole requirement is "who changed what", and the comment claimed
+  #     "who/what/where" while naming only the repo. `gh api user` is the authenticated login; it is
+  #     an identity, not a credential, and it fails soft to `<unknown>` rather than losing the line.
+  #   * THE COUNT CAME FROM THE INTENDED SET, not the observed one, so it reported what this process
+  #     meant to write rather than what the branch now requires — the one number an auditor reads.
+  #     It is computed from the re-read `BR_CONTEXTS` above.
+  #   * SPACE-DELIMITED NAMES. A required context legitimately contains a space
+  #     (`ci/circleci: build`), so a space-joined list is ambiguous exactly where it matters. jq
+  #     renders a real JSON array instead.
+  actor="$(gh api user --jq '.login' 2>/dev/null)" || actor=""
+  adb_info "repo-settings: AUDIT reconcile repo=$REPO_SLUG branch=$branch head=$sha_before actor=${actor:-<unknown>} added=$(printf '%s' "$drifted" | jq -R -s -c 'split("\n") | map(select(length > 0))') required_now=$(nlines "$BR_CONTEXTS")"
+  return 0
+}
+
 cmd_checks() {
   local branch
   # `checks` is the one subcommand that must work with NO network: it is pure file discovery, and
@@ -1630,6 +2007,51 @@ parse_read_opts() {   # the read subcommands: --branch / --workflow-dir / --porc
   done
 }
 
+# `reconcile` takes the two scoping options and `--dry-run`, and REFUSES `--prune` by name rather
+# than letting it fall through to the generic unknown-option arm. The generic message would say
+# "unknown option", which is wrong and actively misleading: `--prune` is a real, supported flag on
+# `apply`, and the reason it cannot be combined with an UNATTENDED write is that it DELETES required
+# contexts this tool did not discover — an external provider's among them. Saying so at the point of
+# refusal is what stops the next reader from "fixing" the parser to accept it.
+parse_reconcile_opts() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dry-run)      OPT_DRY_RUN=1 ;;
+      # `--branch` and `--workflow-dir` are REFUSED, and this is a safety property rather than a
+      # scoping preference (independent-review find). Both were accepted here at first, and each
+      # silently defeated the gate the whole command rests on:
+      #
+      #   * `--workflow-dir DIR` moves DISCOVERY to an arbitrary directory while the tip check still
+      #     proves only this repository's HEAD — so contexts read from another checkout, or from any
+      #     directory at all, could be written into this branch's protection. (The first test suite
+      #     passed this flag on every scenario, which normalized exactly that unsafe shape.)
+      #   * `--branch NAME` moves the TARGET off the default branch, so "default-branch tip only" —
+      #     the contract stated in the docs, the changelog, the template and D63 — became "any branch
+      #     whose tip happens to equal HEAD".
+      #
+      # A read-only subcommand can take both safely; a mutating one cannot, because together they let
+      # a caller choose the tree AND the target independently. `apply` remains the deliberate,
+      # operator-driven command where both are available.
+      --branch|--workflow-dir)
+        echo "repo-settings: $1 is not available for 'reconcile'." >&2
+        echo "repo-settings: it discovers from THIS checkout and writes to the DEFAULT branch, and it" >&2
+        echo "repo-settings: proves those are one tree before writing. Choosing the target or the" >&2
+        echo "repo-settings: source separately would defeat that proof, which is the only thing making" >&2
+        echo "repo-settings: an unattended write safe. Use 'baseline repo apply' for a directed run." >&2
+        exit 2 ;;
+      --prune)
+        echo "repo-settings: --prune is not available for 'reconcile' — it is additions-only by design." >&2
+        echo "repo-settings: pruning DELETES required contexts this tool did not discover (an external" >&2
+        echo "repo-settings: provider's included), which is not a safe unattended write. A renamed or" >&2
+        echo "repo-settings: removed job is the reviewed case: run 'baseline repo apply --prune'." >&2
+        exit 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "repo-settings: unknown option '$1'" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+}
+
 # ONE parser, and the scoping is enforced here rather than by a second copy of it (golden rule 4).
 # `--porcelain` reshapes ONE command's stdout, so the four other read subcommands must REFUSE it,
 # not ignore it: an accepted-but-inert flag is a promise the output changed when it did not, and
@@ -1654,7 +2076,8 @@ case "$SUB" in
   # cannot affect a body that is already on stdin.
   branch-required-contexts) cmd_branch_required_contexts "$@" ;;
   apply)          parse_apply_opts "$@"; cmd_apply ;;
+  reconcile)      parse_reconcile_opts "$@"; cmd_reconcile ;;
   -h|--help)      usage; exit 0 ;;
-  *) echo "repo-settings: unknown subcommand '$SUB' (expected 'checks', 'status', 'apply', 'automerge-ok', 'required-drift', 'merge-flag', or 'branch-required-contexts')" >&2
+  *) echo "repo-settings: unknown subcommand '$SUB' (expected 'checks', 'status', 'apply', 'reconcile', 'automerge-ok', 'required-drift', 'merge-flag', or 'branch-required-contexts')" >&2
      usage >&2; exit 2 ;;
 esac
