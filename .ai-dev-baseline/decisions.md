@@ -4907,7 +4907,7 @@ limit: none of them is sufficient alone.
              be a rung: that issue was closed NOT_PLANNED, so requiring it would make the contract
              permanently red for every project. The contract records why, in the file itself.
 - placement: `scripts/lib/adopt-readiness.sh` (the contract + predicates), `scripts/check-adopt-readiness.sh`
-             (the suite + 29-mutation harness), `scripts/lib/project-gates.sh` (the adapter
+             (the suite + 37-mutation harness), `scripts/lib/project-gates.sh` (the adapter
              registry + PHP), `base/workflows/adopt.md` step 12, `bin/baseline adopt`.
 - reason:    Each of the four is a boundary the issue left open in a direction where guessing wrong
              is expensive: (a) would have reversed a recorded decision by accident, (b) would have

@@ -447,11 +447,52 @@ report usable rather than merely correct.
 bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" contract
 ```
 
-**The offline half first** — the rungs decidable from the filesystem alone:
+#### The gate rung asks for consent FIRST, because the verdict has to see the answer
+
+`gates` is the one rung that cannot be settled by looking. **Detection is not working**: a gate
+that is detected but errors is a silent no-op, so the rung is met only against a **receipt** that
+the gates were *executed* at this commit, against this working tree, with this gate configuration,
+and passed.
+
+**So this happens BEFORE the probe, not after it.** Ordering it after meant the verdict was
+computed against a project whose gates had not yet run, printed "never executed", and then nothing
+re-ran it — so a run that dutifully executed the gates still reported the stale red result, and
+step 13 passed that on. Ask now; the probe below then reads the receipt this produced.
+
+Producing that receipt means running the project's own configured commands. The detector picks
+non-mutating invocations on purpose (`--dry-run`, `--using-cache=no`, `phpcs` over `phpcbf`, and it
+refuses to infer a gate from a bare `format` script) — but those commands come from the scanned
+project's `agents.toml`, so **ask before you run it** and skip it without argument if the answer is
+no. A `todo` on this rung is an honest outcome, and it is the one #81 asks for over a silent pass:
+
+```bash
+# ADB-SNIPPET: readiness-gates
+# ONLY WITH EXPLICIT CONSENT. It executes the SCANNED PROJECT's commands, in that project.
+bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" receipt run "$PROJECT"
+```
+
+If no gate is detected at all, the rung is **red and loud**. That is a deliberate inversion of
+`project-gates.sh`'s own contract, which emits nothing for an unrecognized ecosystem and exits 0
+— correct for a gate runner asked about an unknown repo, and wrong for an adoption, where it
+means the project just shipped with enforcement silently off. The remedy is an explicit
+`agents.toml [gates]` decision, and a deliberate `""` disable or a `[gates.state] … = "na"`
+**counts** — but only when it is a real decision: an unsupported value such as
+`[gates.state] test = "todo"` is a typo, not a choice, and stays outstanding.
+
+#### Then the offline half — the rungs decidable from the filesystem alone
 
 ```bash
 # ADB-SNIPPET: readiness-probe
-bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" probe "$PROJECT" --agents "$AGENTS" > ".claude/state/readiness-probe.tsv"
+# `--agents` IS OPTIONAL AND MUST STAY OPTIONAL. `$AGENTS` is empty on the ordinary invocation
+# (`/adopt` with no `--agents`), and forwarding it unconditionally passed `--agents ""`, which the
+# verifier rejects as a usage error — so the DEFAULT adoption path never produced a verdict at
+# all. Pass the flag only when the operator actually narrowed the scan; the library defaults to
+# the same agent the scan does.
+if [ -n "${AGENTS:-}" ]; then
+  bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" probe "$PROJECT" --agents "$AGENTS" > ".claude/state/readiness-probe.tsv"
+else
+  bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" probe "$PROJECT" > ".claude/state/readiness-probe.tsv"
+fi
 ```
 
 **Then the tracker half.** These need live reads, and every one comes from the reader that
@@ -482,7 +523,8 @@ already owns it — `/adopt` gathers, it does not re-derive:
 bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" tracker < ".claude/state/readiness-facts.json" > ".claude/state/readiness-tracker.tsv"
 ```
 
-**Then the verdict**, over both halves at once:
+**Then the verdict**, over both halves at once — and it is the LAST thing computed, so it reflects
+the receipt above rather than predating it:
 
 ```bash
 # ADB-SNIPPET: readiness-verdict
@@ -491,8 +533,11 @@ cat ".claude/state/readiness-probe.tsv" ".claude/state/readiness-tracker.tsv" \
 # 0 green · 10 red (something remains) · 11 indeterminate (a fact could not be established) · 2 usage
 ```
 
+**If anything changed the project after this ran — you executed the gates late, or applied a
+setting — recompute it.** The verdict is an observation with a timestamp, not a standing fact.
+
 Outside an adoption run, the same contract is re-checkable any time in one command — it composes
-exactly the four steps above and returns `verdict`'s exit code unchanged:
+exactly the steps above and returns `verdict`'s exit code unchanged:
 
 ```bash
 # ADB-SNIPPET: readiness-status
@@ -503,30 +548,6 @@ baseline adopt status          # or: bash "$HOME/.claude/scripts/lib/adopt-readi
 `red` means the report's OUTSTANDING list is what remains; `indeterminate` means a fact could not
 be established, which is *not* the same as nothing being wrong. Say which, and pass the report
 through — it already names each rung's owner.
-
-#### The gate rung, and why it needs your consent
-
-`gates` is the one rung that cannot be settled by looking. **Detection is not working**: a gate
-that is detected but errors is a silent no-op, so the rung is met only against a **receipt** that
-the gates were *executed* at this commit, with this gate configuration, and passed.
-
-Producing that receipt means running the project's own configured commands, and in several
-ecosystems a `format` gate rewrites files in place. That is a mutation, so **ask before you run
-it** and skip it without argument if the answer is no — a `todo` on this rung is an honest
-outcome, and it is the one #81 asks for over a silent pass:
-
-```bash
-# ADB-SNIPPET: readiness-gates
-# ONLY WITH EXPLICIT CONSENT. It executes the SCANNED PROJECT's commands, in that project.
-bash "$HOME/.claude/scripts/lib/adopt-readiness.sh" receipt run "$PROJECT"
-```
-
-If no gate is detected at all, the rung is **red and loud**. That is a deliberate inversion of
-`project-gates.sh`'s own contract, which emits nothing for an unrecognized ecosystem and exits 0
-— correct for a gate runner asked about an unknown repo, and wrong for an adoption, where it
-means the project just shipped with enforcement silently off. The remedy is an explicit
-`agents.toml [gates]` decision, and a deliberate `""` disable or a `[gates.state] … = "na"`
-**counts** — a recorded decision is not a gap.
 
 ### 13. Report
 

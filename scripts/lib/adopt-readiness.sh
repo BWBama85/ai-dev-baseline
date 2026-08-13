@@ -57,6 +57,9 @@
 # own. The load is confirmed by PROBING FOR THE FUNCTION rather than by the source's exit
 # status: a sourced file returns its LAST command's status, which says nothing about the load.
 # shellcheck source=/dev/null
+# INLINE `dirname` HERE, deliberately — `_AR_LIB_DIR` is defined further down and cannot be used
+# before this source completes. Safe relatively: nothing has changed directory yet at line 1.
+# shellcheck disable=SC2155
 . "$(dirname "${BASH_SOURCE[0]:-$0}")/common.sh" 2>/dev/null
 command -v adb_require_bash >/dev/null 2>&1 || {
   printf 'adopt-readiness: FATAL — scripts/lib/common.sh is missing or corrupt\n' >&2
@@ -69,6 +72,15 @@ usage() { adb_usage "$0"; }
 die() { printf 'adopt-readiness: %s\n' "$*" >&2; exit 2; }
 
 TAB="$(printf '\t')"
+
+# THE LIBRARY DIRECTORY, RESOLVED ONCE AND ABSOLUTELY. Every sibling invocation below used
+# `$(dirname "${BASH_SOURCE[0]:-$0}")` inline, which is whatever path the CALLER typed — and this
+# file is routinely invoked as `bash scripts/lib/adopt-readiness.sh …`, i.e. relatively. Two
+# functions then run that relative path from INSIDE a `cd "$root"` subshell (`_ar_primary_ok`,
+# and `cmd_status`'s call to `cmd_facts`), where it no longer resolves: the sibling silently
+# fails, and its failure reads as "the fact could not be established" about a project that is
+# perfectly fine. Caught when a valid `primary = "claude"` reported `todo`.
+_AR_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P)" || _AR_LIB_DIR="."
 
 # --- the contract ------------------------------------------------------------------------------
 # ONE HOME for what "ready" means. Every rung below is a line item from #81's own checklist; the
@@ -117,6 +129,38 @@ _ar_is_rung() {
   local r
   while IFS="$TAB" read -r r _ _; do [ "$r" = "$1" ] && return 0; done < <(_ar_contract)
   return 1
+}
+
+# Is `[roles] primary` a token role-dispatch will actually accept? MERE PRESENCE IS NOT ENOUGH:
+# `adb_toml_get` succeeds for `primary = ""`, for an array, and for an unknown agent name, while
+# `role-dispatch.sh` rejects all three — so the rung certified a manifest under which every
+# delegated step fails at dispatch. The known-token set is role-dispatch's, read from its own
+# resolver rather than re-listed here: `resolve primary` prints the token on success and fails on
+# anything it would reject, which is exactly the question being asked.
+#
+# It runs INSIDE the project, because role-dispatch resolves the manifest from the repository it
+# is standing in — asked from anywhere else it would validate THIS repo's manifest and report on
+# somebody else's.
+_ar_primary_ok() {
+  local root="$1" tok
+  # THE REPO'S OWN MANIFEST MUST DECLARE IT. `resolve` deliberately falls back to the global
+  # manifest and then to a built-in default, so on its own it answers "claude" for a project that
+  # declares nothing — and this rung's question is whether THIS project chose. Require the local
+  # key first; `resolve` then validates the value (an invalid repo value makes it fail rather than
+  # fall through, which is the property being borrowed).
+  adb_toml_get "$root/agents.toml" roles primary >/dev/null 2>&1 || return 1
+  tok="$( cd "$root" 2>/dev/null && bash "$_AR_LIB_DIR/role-dispatch.sh" resolve primary 2>/dev/null )" || return 1
+  [ -n "$tok" ] || return 1
+  # Exactly one token. `primary` is single-valued by contract; an array would resolve to several
+  # and is precisely one of the malformed shapes this exists to reject.
+  [ "$(printf '%s\n' "$tok" | grep -c .)" -eq 1 ]
+}
+
+# Does <dir> contain at least one installed skill (a `*/SKILL.md`)? A directory that merely
+# EXISTS proves nothing — an interrupted or partly-removed install leaves it empty.
+_ar_any_skill() {
+  [ -d "$1" ] || return 1
+  [ -n "$(find "$1" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit 2>/dev/null)" ]
 }
 
 # --- emit one rung record ------------------------------------------------------------------------
@@ -175,7 +219,7 @@ _ar_receipt_path() {
 # would still validate. The digest must move whenever the gate configuration moves.
 _ar_gate_digest() {
   local root="$1" recs
-  recs="$(bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" status "$root" 2>/dev/null)" || return 1
+  recs="$(bash "$_AR_LIB_DIR/project-gates.sh" status "$root" 2>/dev/null)" || return 1
   # A missing checksum tool is not "no gates changed" — it is an unanswerable question, and the
   # caller must see it as one.
   if command -v shasum >/dev/null 2>&1; then printf '%s' "$recs" | shasum -a 256 | cut -d' ' -f1
@@ -192,19 +236,43 @@ _ar_head_sha() {
 # receipt for. Edit a tracked source file without committing and the root, the HEAD and the gate
 # configuration are all unchanged — so yesterday's passing run still validated against a tree the
 # gates have never seen. That is the single most valuable thing this receipt asserts, quietly
-# false. `--porcelain` covers tracked modifications, staged changes and untracked files, and its
-# digest joins the key: any uncommitted difference makes the receipt stale, which is exactly
-# right, because the gates would have to run again to say anything about it.
+# false.
+#
+# IT HASHES CONTENT, NOT `--porcelain`. The first fix hashed the status output, and review caught
+# that it only moves the digest when the FILE LIST or a status code changes. Record a receipt
+# while the tree is already dirty, then keep editing those same already-modified paths, and
+# `--porcelain` prints the identical ` M src/foo` lines forever — so the digest matches and the
+# receipt returns `ok` for bytes the gates never saw. That is the exact defect one level in, and
+# it is the likelier one in practice: a dirty tree is the normal state during development.
+#
+# So three things are hashed together, and each covers what the others cannot:
+#   * `git diff HEAD` — the CONTENT of every tracked change, staged and unstaged alike;
+#   * `--porcelain` — the file LIST, which is what notices an untracked file appearing or a
+#     rename, neither of which `diff HEAD` shows;
+#   * every untracked file's CONTENT — because a gate that globs the tree reads those too, and
+#     `diff HEAD` is blind to them by construction.
 #
 # A repo whose status cannot be read yields nothing, and the caller treats that as unanswerable
 # rather than as "clean" — the fail-closed direction, since "clean" is the flattering answer.
 _ar_worktree_digest() {
   local root="$1" st
   st="$(git -C "$root" status --porcelain 2>/dev/null)" || return 1
-  if command -v shasum >/dev/null 2>&1; then printf '%s' "$st" | shasum -a 256 | cut -d' ' -f1
-  elif command -v sha256sum >/dev/null 2>&1; then printf '%s' "$st" | sha256sum | cut -d' ' -f1
-  else return 1
-  fi
+  {
+    printf '%s\n--\n' "$st"
+    git -C "$root" diff HEAD 2>/dev/null || return 1
+    printf -- '--\n'
+    # `-z` + NUL-delimited read, because a filename may contain anything but NUL. `cat` on each
+    # so the CONTENT is in the digest, not merely the name.
+    git -C "$root" ls-files --others --exclude-standard -z 2>/dev/null \
+      | while IFS= read -r -d '' f; do
+          printf '%s\n' "$f"
+          cat -- "$root/$f" 2>/dev/null || printf '<unreadable>'
+          printf '\n'
+        done
+  } | { if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+        elif command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+        else return 1
+        fi; }
 }
 
 # THE RECEIPT IS WRITTEN BY THE RUN, NEVER BY A CALLER'S SAY-SO. The first version of this
@@ -245,8 +313,8 @@ cmd_receipt() {
       # had run. A repo with a `turn-end` gate got a green rung for a gate nothing executed.
       # Running both contexts is the honest reading of the contract; a gate declared `always`
       # runs in both, which costs a second execution and is the price of the claim being true.
-      bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" run "$root" "" full     || { outcome=fail; rc=1; }
-      bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" run "$root" "" turn-end || { outcome=fail; rc=1; }
+      bash "$_AR_LIB_DIR/project-gates.sh" run "$root" "" full     || { outcome=fail; rc=1; }
+      bash "$_AR_LIB_DIR/project-gates.sh" run "$root" "" turn-end || { outcome=fail; rc=1; }
       # Staged then renamed, and the stage has a UNIQUE name. A fixed `$path.tmp` is shared by
       # every concurrent writer — two runs can rename each other's file, so a caller publishes a
       # result it never produced — and the redirect follows a pre-planted `$path.tmp` SYMLINK out
@@ -306,6 +374,15 @@ cmd_probe() {
   [ -n "$root" ] || die "probe: needs <project-root>"
   [ -d "$root" ] || die "probe: not a directory: $root"
 
+  # RESOLVE THE REPOSITORY ROOT FIRST. `status`' documented no-argument form defaults to `$PWD`,
+  # and from a SUBDIRECTORY every filesystem rung below then reads that subdirectory — reporting
+  # `agents.toml`, the gate config and the decision log as missing when they sit perfectly well at
+  # the root. The `shape` rung would have found the real root moments later, which makes the
+  # disagreement worse rather than better: one rung answers about the project and four answer
+  # about wherever the operator happened to be standing.
+  local _rr
+  if _rr="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$_rr" ]; then root="$_rr"; fi
+
   # --- harness ---------------------------------------------------------------------------
   # `adb_install_source` is the ONE home for "where is the baseline installed" (adopt-lib.sh
   # `shipped` uses the same reader). An absent install is not an unknown: it is a definite,
@@ -333,9 +410,15 @@ cmd_probe() {
         # Saying so beats inventing a filename and reporting its absence as the agent's problem.
         *) missing="$missing $a(unknown-agent)"; continue ;;
       esac
-      [ -e "$HOME/.$a/$doc" ]        || missing="$missing $a(root-doc)"
-      [ -d "$HOME/.$a/skills" ] || [ -d "$HOME/.$a/config/skills" ] || missing="$missing $a(skills)"
-      [ -d "$HOME/.$a/scripts/lib" ] || missing="$missing $a(scripts/lib)"
+      # FILES, NOT DIRECTORIES. A partial or half-removed install leaves `skills/` and
+      # `scripts/lib/` present and EMPTY, and a directory test then certifies a harness that
+      # cannot resolve a single skill or source a single library. Probe for an artifact that must
+      # exist inside each: any `*/SKILL.md`, and `common.sh` — the library every workflow's first
+      # fenced block sources.
+      [ -e "$HOME/.$a/$doc" ] || missing="$missing $a(root-doc)"
+      _ar_any_skill "$HOME/.$a/skills" || _ar_any_skill "$HOME/.$a/config/skills" \
+        || missing="$missing $a(skills)"
+      [ -e "$HOME/.$a/scripts/lib/common.sh" ] || missing="$missing $a(scripts/lib/common.sh)"
     done
     if [ -n "$missing" ]; then
       _ar_emit harness todo "installed from $src, but these are absent:${missing} — re-run install.sh"
@@ -352,8 +435,10 @@ cmd_probe() {
   # silent-default shape this contract exists to surface.
   if [ ! -f "$root/agents.toml" ]; then
     _ar_emit manifest todo "no agents.toml — run bin/agent-init, or apply /adopt's proposal"
+  elif _ar_primary_ok "$root"; then
+    _ar_emit manifest ok "agents.toml declares [roles] primary = $(adb_toml_unquote "$(adb_toml_get "$root/agents.toml" roles primary)")"
   elif adb_toml_get "$root/agents.toml" roles primary >/dev/null 2>&1; then
-    _ar_emit manifest ok "agents.toml declares [roles]"
+    _ar_emit manifest todo "agents.toml's [roles] primary is not a usable agent token ($(adb_toml_unquote "$(adb_toml_get "$root/agents.toml" roles primary)")) — role-dispatch rejects it, so every delegated step fails at dispatch rather than falling back"
   else
     _ar_emit manifest todo "agents.toml has no [roles] primary — every delegated step falls back to a default this project never chose"
   fi
@@ -406,9 +491,27 @@ cmd_probe() {
   # gate key, was reported as a deliberate N/A. A broken detector must never resolve to "the
   # owner meant it".
   local gdetect grun gkeys gstat
-  gdetect="$(bash "$(dirname "${BASH_SOURCE[0]:-$0}")/project-gates.sh" detect "$root" 2>/dev/null)"; gstat=$?
+  gdetect="$(bash "$_AR_LIB_DIR/project-gates.sh" detect "$root" 2>/dev/null)"; gstat=$?
   grun="$(printf '%s' "$gdetect" | grep -c . || true)"
-  gkeys="$( { adb_toml_keys "$root/agents.toml" gates; adb_toml_keys "$root/agents.toml" gates.state; } 2>/dev/null | grep -c . || true)"
+  # A KEY IS NOT A DECISION. Counting bare `[gates]`/`[gates.state]` keys treated ANY entry as a
+  # recorded choice — so `[gates.state] test = "todo"`, an unsupported value `project-gates.sh`
+  # ignores, made this rung report the whole gate system as a deliberate N/A while enforcement was
+  # simply off. A typo must never read as intent. Only two spellings are decisions:
+  #   [gates] <label> = ""        -> deliberately disabled
+  #   [gates.state] <label> = na  -> declared not-applicable
+  # Anything else is counted as NOTHING, so the rung falls through to the loud `todo`.
+  gkeys=0
+  local _k _v
+  while IFS= read -r _k; do
+    [ -n "$_k" ] || continue
+    _v="$(adb_toml_unquote "$(adb_toml_get "$root/agents.toml" gates "$_k" 2>/dev/null)" 2>/dev/null)"
+    [ -z "$_v" ] && gkeys=$((gkeys + 1))
+  done < <(adb_toml_keys "$root/agents.toml" gates 2>/dev/null)
+  while IFS= read -r _k; do
+    [ -n "$_k" ] || continue
+    _v="$(adb_toml_unquote "$(adb_toml_get "$root/agents.toml" gates.state "$_k" 2>/dev/null)" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    [ "$_v" = na ] && gkeys=$((gkeys + 1))
+  done < <(adb_toml_keys "$root/agents.toml" gates.state 2>/dev/null)
   if [ "$gstat" -ne 0 ]; then
     _ar_emit gates unknown "the gate detector FAILED (exit $gstat) — this is not 'no gates', and it is not a recorded N/A; fix the detector or the manifest it reads"
   elif [ "$grun" -eq 0 ] && [ "$gkeys" -eq 0 ]; then
@@ -482,6 +585,7 @@ cmd_probe() {
 #   settings            "ok"|"todo"|"unknown"|"na"  + settings_detail
 #   release_command     "…"                 the first declared release-command marker
 #   release_command_count N               how many were declared (>1 is AMBIGUOUS, and refused)
+#   release_command_resolved true|false   does a skill by that name actually exist
 cmd_tracker() {
   local rc _rc
   [ "$#" -eq 0 ] || die "tracker: takes no arguments (facts JSON on stdin)"
@@ -628,9 +732,19 @@ cmd_tracker() {
   # `milestones` must be an ARRAY. `.milestones|length` accepted `null` (length 0) and a string
   # (its character count), so `"milestones":null` produced an empty undecided-set and reported
   # `ok` — a repo whose milestone read failed was told every milestone was dispositioned.
-  _fact milestones array >/dev/null; rc=$?
-  if [ "$rc" -ne 0 ]; then
-    _ar_emit dispositions unknown "$(_why "$rc" milestones "the project's milestones were not read")"
+  # BOTH inputs are type-checked, and `dispositions` is the subtle one: jq's `index()` on a
+  # STRING does SUBSTRING matching, so `"dispositions":"milestone:Audit Results"` — a malformed
+  # scalar where an array belongs — still "finds" the milestone, drops it from `undecided`, and
+  # reports the rung `ok`. A false green produced by a type nobody checked.
+  local rc_ms rc_dp
+  _fact milestones array >/dev/null; rc_ms=$?
+  rc_dp=0
+  if printf '%s' "$json" | jq -e 'has("dispositions")' >/dev/null 2>&1; then
+    _fact dispositions array >/dev/null; rc_dp=$?
+  fi
+  if [ "$rc_ms" -ne 0 ] || [ "$rc_dp" -ne 0 ]; then
+    rc=$(( rc_ms > rc_dp ? rc_ms : rc_dp ))
+    _ar_emit dispositions unknown "$(_why "$rc" "milestones/dispositions" "the project's milestones were not read")"
   else
     # The two convention milestones are dispositioned BY the convention itself; requiring a
     # decision row for `Next release` would demand the owner justify the thing they just
@@ -725,7 +839,18 @@ cmd_tracker() {
   elif [ "$rc" -ne 0 ]; then
     _ar_emit release unknown "$(_why "$rc" release_command "the roadmap artifact's release-command marker was not read")"
   elif [ -n "$relcmd" ]; then
-    _ar_emit release ok "release command resolves to '$relcmd'"
+    # THE CONTRACT SAYS "RESOLVES TO A REAL TARGET", and a non-empty marker is not that. A marker
+    # naming a skill that is missing or disabled leaves `/roadmap` emitting `Next: none` and the
+    # release loop dead — which is precisely the shape of #81's original complaint, one step
+    # further along. `cmd_facts` carries the resolution result across; when it could not be
+    # established the rung says so rather than guessing either way.
+    local resolved
+    resolved="$(_fact release_command_resolved boolean)" || resolved=""
+    case "$resolved" in
+      true)  _ar_emit release ok "release command '$relcmd' resolves to an installed skill" ;;
+      false) _ar_emit release todo "the roadmap declares release-command '$relcmd', but no installed skill by that name was found — /roadmap would emit 'Next: none' and the release loop stays dead" ;;
+      *)     _ar_emit release unknown "release-command '$relcmd' is declared, but whether it RESOLVES could not be established — a declared marker is not a real target (#3)" ;;
+    esac
   else
     _ar_emit release todo "the roadmap declares no <!-- release-command: … --> marker, so a met release has nothing to emit (#3 makes release execution project-owned — every adopting repo owes itself one)"
   fi
@@ -905,16 +1030,23 @@ cmd_facts() {
   # only the roadmap issue is unarmed there and would have been armed here — the two disagreeing
   # about one milestone is worse than either answer alone, and re-deriving the rule is exactly
   # what this repo's design principles forbid.
-  local ms_num
-  ms_num="$(gh api --paginate "repos/$repo/milestones?state=all&per_page=100" 2>/dev/null \
-              | jq -r -s --arg t "$rel" '[ (add // [])[] | select(.title == $t) | .number ] | first // empty' 2>/dev/null || true)"
+  # REUSE THE RESPONSE ALREADY READ. This was a SECOND, identical milestone request whose failure
+  # `|| true` swallowed into an empty `ms_num` — and because `out` already carried `milestones`,
+  # the branch below then asserted `slate_armed:false`, diagnosing an empty release milestone from
+  # a transient network error. `ms_json` is the same list, already fetched and already known to
+  # have parsed; the number is in it.
+  local ms_num=""
+  if [ -n "${ms_json:-}" ]; then
+    ms_num="$(printf '%s' "$ms_json" | jq -r -s --arg t "$rel" \
+                '[ (add // [])[] | select(.title == $t) | .number ] | first // empty' 2>/dev/null || true)"
+  fi
   if [ -n "${ms_num:-}" ]; then
     local mi_json armed_flag
     if mi_json="$(gh api --paginate "repos/$repo/issues?milestone=$ms_num&state=all&per_page=100" 2>/dev/null)"; then
       # Field 1 of line 1 IS the armed verdict. Taking it whole is the point: `release-counts`
       # owns what "armed" means, and the previous version called it only to discard its answer
       # and re-count the list itself — which is the copy this delegation exists to remove.
-      armed_flag="$(printf '%s' "$mi_json" | bash "$(dirname "${BASH_SOURCE[0]:-$0}")/roadmap-lib.sh" \
+      armed_flag="$(printf '%s' "$mi_json" | bash "$_AR_LIB_DIR/roadmap-lib.sh" \
                       release-counts "$blk" "${roadmap_num:-0}" 2>/dev/null | sed -n '1p' | awk '{print $1}')" || armed_flag=""
       case "$armed_flag" in
         0) out="$(printf '%s' "$out" | jq '. + {slate_armed: false}')" ;;
@@ -922,9 +1054,10 @@ cmd_facts() {
         *) : ;;   # unreadable -> omit the fact -> `unknown` downstream, never a pass
       esac
     fi
-  elif printf '%s' "$out" | jq -e 'has("milestones")' >/dev/null 2>&1; then
-    # The milestone does not exist. That is a REAL, observed "not armed" rather than an unread
-    # fact — and the `milestones` rung reports its absence with the more actionable message.
+  elif [ -n "${ms_json:-}" ] && printf '%s' "$out" | jq -e 'has("milestones")' >/dev/null 2>&1; then
+    # The milestone genuinely does not appear in a list we DID read — a real, observed "not armed"
+    # rather than an unread fact. Gated on `ms_json` being non-empty so a FAILED milestone read
+    # can never reach here; that path omits the fact and yields `unknown`, which is the truth.
     out="$(printf '%s' "$out" | jq '. + {slate_armed: false}')"
   fi
 
@@ -940,7 +1073,7 @@ cmd_facts() {
   # stripped there, so a quoted example never retires a real question). A milestone disposition
   # is a row whose Question cell is `milestone:<title>`.
   if [ -n "${roadmap_num:-}" ] && body="$(gh issue view "$roadmap_num" --json body --jq .body 2>/dev/null)"; then
-    if dispo="$(printf '%s' "$body" | bash "$(dirname "${BASH_SOURCE[0]:-$0}")/roadmap-lib.sh" decisions 2>/dev/null \
+    if dispo="$(printf '%s' "$body" | bash "$_AR_LIB_DIR/roadmap-lib.sh" decisions 2>/dev/null \
                   | jq -R -s 'split("\n") | map(select(length > 0))')"; then
       out="$(printf '%s' "$out" | jq --argjson d "$dispo" '. + {dispositions: $d}')"
     fi
@@ -949,11 +1082,29 @@ cmd_facts() {
     # AMBIGUOUS. `head -n1` discarded the ambiguity and picked one arbitrarily, which is the one
     # outcome worse than reporting the problem.
     local rc_all rc_count
-    if rc_all="$(printf '%s' "$body" | bash "$(dirname "${BASH_SOURCE[0]:-$0}")/roadmap-lib.sh" release-command 2>/dev/null)"; then
+    if rc_all="$(printf '%s' "$body" | bash "$_AR_LIB_DIR/roadmap-lib.sh" release-command 2>/dev/null)"; then
       rc_count="$(printf '%s\n' "$rc_all" | sed '/^$/d' | wc -l | tr -d ' ')"
       out="$(printf '%s' "$out" | jq --argjson n "${rc_count:-0}" '. + {release_command_count: $n}')"
       relcmd="$(printf '%s\n' "$rc_all" | sed '/^$/d' | head -n1)"
       out="$(printf '%s' "$out" | jq --arg c "${relcmd:-}" '. + {release_command: $c}')"
+      # DOES IT RESOLVE? The marker is an agent invocation (`/release`, `release`), and a skill
+      # of that name must exist somewhere the agent will look: the project's own scoped skills
+      # first (which is where decision D14 says every adopting repo puts its release skill), then
+      # each installed agent home. Emitted as a FACT rather than decided here — `tracker` owns the
+      # rung — and OMITTED when no agent home is present at all, because then the question is
+      # unanswerable rather than answered "no".
+      local rel_name rel_found=false rel_checked=false ah
+      rel_name="${relcmd#/}"; rel_name="${rel_name%% *}"
+      if [ -n "$rel_name" ]; then
+        for ah in "$PWD/.claude/skills" "$PWD/.codex/skills" "$PWD/.gemini/config/skills" \
+                  "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.gemini/config/skills"; do
+          [ -d "$ah" ] || continue
+          rel_checked=true
+          [ -f "$ah/$rel_name/SKILL.md" ] && { rel_found=true; break; }
+        done
+        [ "$rel_checked" = true ] \
+          && out="$(printf '%s' "$out" | jq --argjson r "$rel_found" '. + {release_command_resolved: $r}')"
+      fi
     fi
   fi
 
@@ -961,7 +1112,7 @@ cmd_facts() {
   # exit code already encodes what a correctly configured repo looks like, including the
   # required-checks-before-auto-merge ordering; restating any of it would be a second model.
   local am
-  bash "$(dirname "${BASH_SOURCE[0]:-$0}")/repo-settings.sh" automerge-ok >/dev/null 2>&1; am=$?
+  bash "$_AR_LIB_DIR/repo-settings.sh" automerge-ok >/dev/null 2>&1; am=$?
   case "$am" in
     0)  out="$(printf '%s' "$out" | jq '. + {settings:"ok",   settings_detail:"auto-merge is enabled and required checks gate it"}')" ;;
     12) out="$(printf '%s' "$out" | jq '. + {settings:"na",   settings_detail:"this repo has no CI, so required checks do not apply (#24)"}')" ;;
@@ -976,8 +1127,16 @@ cmd_facts() {
 # The re-runnable entry point #81 asks for. It composes the three subcommands above and returns
 # `verdict`'s exit code unchanged, so a caller can gate on it.
 cmd_status() {
-  local root="${1:-$PWD}"
-  shift 2>/dev/null || true
+  # THE ROOT IS OPTIONAL AND IT IS POSITIONAL, so it may only be taken from a NON-option argument.
+  # Taking `$1` unconditionally meant the documented `baseline adopt status --agents codex` bound
+  # `--agents` to `root`, shifted it away, and died with "not a directory: --agents" — every
+  # option-only invocation of the advertised command.
+  local root=""
+  case "${1:-}" in
+    -*|'') : ;;
+    *) root="$1"; shift ;;
+  esac
+  [ -n "$root" ] || root="$PWD"
   [ -d "$root" ] || die "status: not a directory: $root"
   # THE OPTIONS ARE SPLIT AND FORWARDED, not all handed to `probe`. A repo initialised with
   # `release-convention.sh --release-name` uses a milestone this command must be TOLD about;

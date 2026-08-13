@@ -233,11 +233,22 @@ printf 'more\n' >> "$d/README.md"; git -C "$d" add README.md; check_git "$d" com
 ar receipt check "$d" >/dev/null 2>&1; eq $? 10 "receipt: a new HEAD makes the receipt stale"
 out="$(ar receipt check "$d")"; has "$out" "HEAD is now" "receipt: the stale reason names the commit"
 
-# The gate CONFIGURATION moves -> stale, even at the same HEAD. The receipt is a receipt for a
-# specific set of commands; changing them leaves the new set unverified.
-ar receipt run "$d" >/dev/null 2>&1
-printf '[gates]\nbuild = "exit 0"\nextra = "exit 0"\n' > "$d/agents.toml"
-ar receipt check "$d" >/dev/null 2>&1; eq $? 10 "receipt: an edited [gates] makes the receipt stale"
+# The gate CONFIGURATION moves -> stale, at the SAME HEAD and with a CLEAN tree. Isolating that is
+# the whole difficulty: editing `agents.toml` cannot do it, because that file is tracked — the edit
+# either dirties the worktree or moves HEAD, and one of the other two key fields fires first. What
+# changes the resolved gate set without touching the repository at all is TOOL AVAILABILITY: the
+# detector asks `command -v`, so a linter appearing on (or vanishing from) PATH changes which gates
+# exist. That is also the realistic case — installing a tool is a normal thing to do between a
+# receipt and a check, and the receipt must not survive it.
+d="$WORK/p-gateconf"; mkrepo "$d"
+printf '{"name":"a/b"}\n' > "$d/composer.json"
+check_git "$d" add composer.json; check_git "$d" commit -qm php
+toolbin="$WORK/gateconf-bin"; mkdir -p "$toolbin"
+printf '#!/bin/sh\nexit 0\n' > "$toolbin/phpunit"; chmod +x "$toolbin/phpunit"
+( PATH="$toolbin:$PATH"; ar receipt run "$d" >/dev/null 2>&1 )
+( PATH="$toolbin:$PATH"; ar receipt check "$d" >/dev/null 2>&1 ); eq $? 0 "receipt: ok while the detected toolchain is unchanged"
+# Same HEAD, same (clean) tree — only the resolvable gate set moved.
+ar receipt check "$d" >/dev/null 2>&1; eq $? 10 "receipt: a changed gate CONFIGURATION makes the receipt stale"
 out="$(ar receipt check "$d")"; has "$out" "configuration changed" "receipt: the stale reason names the config"
 
 # A FAILING gate run still writes a receipt, and `check` reports it as failed (12) — NOT as
@@ -276,7 +287,27 @@ ar receipt check "$d" >/dev/null 2>&1; eq $? 0 "receipt: reverting the edit rest
 # An UNTRACKED file counts too — a gate that globs the tree sees it.
 printf 'x\n' > "$d/stray.txt"
 ar receipt check "$d" >/dev/null 2>&1; eq $? 10 "receipt: an UNTRACKED file makes the receipt stale"
+# ...and so does its CONTENT changing under the same filename. Hashing `--porcelain` alone missed
+# this: the status line stays ` ?? stray.txt` no matter what the file says.
+ar receipt run "$d" >/dev/null 2>&1
+ar receipt check "$d" >/dev/null 2>&1; eq $? 0 "receipt: re-running over the untracked file makes it ok"
+printf 'completely different\n' > "$d/stray.txt"
+ar receipt check "$d" >/dev/null 2>&1; eq $? 10 "receipt: an untracked file whose CONTENT changed makes the receipt stale"
 rm -f "$d/stray.txt"
+ar receipt run "$d" >/dev/null 2>&1
+
+# THE HARDEST CASE, and the one `--porcelain` alone cannot see: record while the tree is ALREADY
+# dirty, then keep editing the SAME modified path. The status output stays byte-identical (` M
+# README.md` either way), so a status-only digest matches forever and certifies bytes the gates
+# never read. A dirty tree is the normal state during development, which makes this the likelier
+# failure, not the exotic one.
+printf 'first-dirty-edit\n' >> "$d/README.md"
+ar receipt run "$d" >/dev/null 2>&1
+ar receipt check "$d" >/dev/null 2>&1; eq $? 0 "receipt: a receipt recorded on a dirty tree is ok for that tree"
+printf 'second-dirty-edit\n' >> "$d/README.md"
+ar receipt check "$d" >/dev/null 2>&1; eq $? 10 "receipt: editing an ALREADY-MODIFIED path makes the receipt stale"
+check_git "$d" checkout -- README.md
+ar receipt run "$d" >/dev/null 2>&1
 
 # EQUIVALENT PATHS SHARE A RECEIPT. The key compares text, so `.` and the absolute path named the
 # same checkout and did not match — a pointless `stale` on every differently-spelled invocation.
@@ -345,8 +376,12 @@ mkdir -p "$fakeinstall/agents/claude" "$fakeinstall/agents/codex"
 : > "$fakeinstall/agents/claude/CLAUDE.md"
 : > "$fakeinstall/agents/codex/AGENTS.md"
 fakehome="$WORK/fakehome"
-mkdir -p "$fakehome/.claude/skills" "$fakehome/.claude/scripts/lib" \
-         "$fakehome/.codex/skills"  "$fakehome/.codex/scripts/lib"
+mkdir -p "$fakehome/.claude/skills/adopt" "$fakehome/.claude/scripts/lib" \
+         "$fakehome/.codex/skills/adopt"  "$fakehome/.codex/scripts/lib"
+# ARTIFACTS, not empty directories — a half-removed install leaves the directories behind, and a
+# directory test would certify a harness that cannot resolve a skill or source a library.
+: > "$fakehome/.claude/skills/adopt/SKILL.md"; : > "$fakehome/.claude/scripts/lib/common.sh"
+: > "$fakehome/.codex/skills/adopt/SKILL.md";  : > "$fakehome/.codex/scripts/lib/common.sh"
 ln -sf "$fakeinstall/agents/claude/CLAUDE.md" "$fakehome/.claude/CLAUDE.md"
 d="$WORK/p-harness"; mkrepo "$d"
 # claude alone is complete -> ok.
@@ -359,6 +394,53 @@ case "$out" in
   *) ok ;;
 esac
 has "$out" "codex(root-doc)" "probe: the harness rung names WHICH artifact is missing"
+# An EMPTY skills tree and an EMPTY scripts/lib are what a partial or half-removed install leaves
+# behind; a directory test certified exactly that as a working harness.
+emptyhome="$WORK/emptyhome"; mkdir -p "$emptyhome/.claude/skills" "$emptyhome/.claude/scripts/lib"
+ln -sf "$fakeinstall/agents/claude/CLAUDE.md" "$emptyhome/.claude/CLAUDE.md"
+# EVERYTHING ELSE PRESENT, so the empty skills tree is the ONLY difference from the good fixture —
+# otherwise the rung fails for a second reason and this assertion cannot observe the first.
+: > "$emptyhome/.claude/scripts/lib/common.sh"
+out="$( HOME="$emptyhome" ar probe "$d" --agents claude 2>/dev/null )"
+case "$out" in
+  *"harness${TAB}ok"*) bad "probe: EMPTY skills/scripts dirs must not satisfy the harness rung" ;;
+  *) ok ;;
+esac
+
+# AN UNSUPPORTED VALUE IS A TYPO, NOT A CHOICE. `[gates.state] test = "todo"` is ignored by the
+# detector, but counting bare KEYS made it read as a deliberate N/A — so a typo disabled
+# enforcement while the fail-closed report called it intent.
+d="$WORK/p-typo-gate"; mkrepo "$d"
+printf '[gates.state]\ntest = "todo"\n' > "$d/agents.toml"
+out="$(ar probe "$d")"
+has "$out" "gates${TAB}todo" "probe: an UNSUPPORTED [gates.state] value is a typo, not a recorded decision"
+# ...while the two real spellings still count.
+printf '[gates.state]\ntest = "na"\n' > "$d/agents.toml"
+out="$(ar probe "$d")"; has "$out" "gates${TAB}na" "probe: [gates.state] = na is a real recorded decision"
+printf '[gates]\ntest = ""\n' > "$d/agents.toml"
+out="$(ar probe "$d")"; has "$out" "gates${TAB}na" "probe: [gates] = \"\" is a real recorded decision"
+
+# THE ROOT IS THE REPOSITORY, NOT WHEREVER THE OPERATOR STANDS. `status`' no-argument form
+# defaults to $PWD, so from a subdirectory the manifest, gate and decision-log rungs all read that
+# subdirectory and reported root-level artifacts missing — while the `shape` rung, moments later,
+# found the real root. One rung answering about the project and four about a subdirectory.
+d="$WORK/p-subdir"; mkrepo "$d"
+printf '[roles]\nprimary = "claude"\n' > "$d/agents.toml"
+mkdir -p "$d/.ai-dev-baseline"; printf '# d\n' > "$d/.ai-dev-baseline/decisions.md"
+mkdir -p "$d/src/deep"
+out="$( cd "$d/src/deep" && ar probe . 2>/dev/null )"
+has "$out" "manifest${TAB}ok"  "probe: running from a SUBDIRECTORY still reads the project root"
+has "$out" "decisions${TAB}ok" "probe: the decision log is found from a subdirectory too"
+
+# AN INVALID `[roles] primary` IS NOT A MANIFEST. `adb_toml_get` succeeds for an empty value, an
+# array and an unknown token, while role-dispatch rejects all three — so the rung certified a
+# manifest under which every delegated step fails at dispatch.
+d="$WORK/p-badrole"; mkrepo "$d"
+printf '[roles]\nprimary = "nosuchagent"\n' > "$d/agents.toml"
+out="$(ar probe "$d")"
+has "$out" "manifest${TAB}todo" "probe: an INVALID [roles] primary is todo, not ok"
+printf '[roles]\nprimary = ""\n' > "$d/agents.toml"
+out="$(ar probe "$d")"; has "$out" "manifest${TAB}todo" "probe: an EMPTY [roles] primary is todo"
 
 # --- probe: argument validation -------------------------------------------------------------------
 ar probe >/dev/null 2>&1;                        eq $? 2 "probe: rejects a missing root"
@@ -454,6 +536,14 @@ has "$out" "dispositions${TAB}todo" "tracker: a row for another milestone does n
 # failing at all.
 out="$(tr_out '{"release_milestone":"Next release","backlog_milestone":"Backlog","milestones":"not-an-array"}' 2>/dev/null)"
 has "$out" "dispositions${TAB}unknown" "tracker: an unreadable milestone list is unknown, NOT all-dispositioned"
+
+# A STRING WHERE AN ARRAY BELONGS IS THE SUBTLE ONE. jq's `index()` on a STRING does SUBSTRING
+# matching, so `"dispositions":"milestone:Audit Results"` still "finds" the milestone, drops it
+# from the undecided set, and reports the rung `ok` — a false green produced by a type nobody
+# checked, on input shaped exactly like the real thing.
+out="$(tr_out '{"release_milestone":"R","backlog_milestone":"B","milestones":[{"title":"Audit Results","open_issues":9}],"dispositions":"milestone:Audit Results"}')"
+has  "$out" "dispositions${TAB}unknown" "tracker: a STRING dispositions is refused, not substring-matched"
+hasnt "$out" "dispositions${TAB}ok" "tracker: a STRING dispositions never reports ok"
 hasnt "$out" "dispositions${TAB}ok" "tracker: an unreadable milestone list never reports ok"
 
 # A MILESTONE TITLE CARRYING A NEWLINE must not forge a record boundary. The detail field
@@ -494,8 +584,16 @@ printf '%s' '{"settings":"probably-fine"}' | ar tracker >/dev/null 2>&1
 eq $? 2 "tracker: an unrecognized settings verdict is rejected, not accepted"
 
 # --- release
+out="$(tr_out '{"release_command":"/release","release_command_resolved":true}')"
+has "$out" "release${TAB}ok" "tracker: a marker whose skill RESOLVES is ok"
+# A NON-EMPTY MARKER IS NOT A REAL TARGET. The contract says the release command "resolves to a
+# real target"; a marker naming a missing or disabled skill leaves /roadmap emitting `Next: none`
+# and the release loop dead, which is #81's own complaint one step further along.
+out="$(tr_out '{"release_command":"/release","release_command_resolved":false}')"
+has "$out" "release${TAB}todo" "tracker: a marker whose skill is MISSING is todo, not ok"
+# ...and when resolution could not be established, say so rather than guessing either way.
 out="$(tr_out '{"release_command":"/release"}')"
-has "$out" "release${TAB}ok" "tracker: a resolved release command is ok"
+has "$out" "release${TAB}unknown" "tracker: an unresolvable-to-check marker is unknown"
 # ABSENT vs EMPTY. A caller that could not reach the roadmap artifact must NOT be reported the
 # same as one that read it and found no marker — the first is `unknown` ("I could not tell"), the
 # second is `todo` ("go add one"). Collapsing them sent the operator to add a marker their
@@ -602,6 +700,11 @@ case "$rc" in 10|11) ok ;; *) bad "status: an unreadable tracker must stay non-g
 ( cd "$d" && PATH="$WORK/gh-partial:$PATH" ar status . --release-milestone 'v2026.08' >/dev/null 2>&1 )
 case "$?" in 10|11) ok ;; *) bad "status: --release-milestone must be accepted and forwarded" ;; esac
 ( cd "$d" && ar status . --bogus >/dev/null 2>&1 ); eq $? 2 "status: an unknown option is rejected"
+# THE ROOT IS OPTIONAL AND POSITIONAL. Taking `$1` unconditionally bound `--agents` to `root` and
+# died with "not a directory: --agents" — every option-only invocation of the advertised command.
+out="$( cd "$d" && PATH="$WORK/gh-partial:$PATH" ar status --agents claude 2>&1 )"; rc=$?
+hasnt "$out" "not a directory" "status: an option-only invocation resolves the root from \$PWD"
+case "$rc" in 10|11) ok ;; *) bad "status: an option-only invocation must still reach a verdict (rc=$rc)" ;; esac
 
 # --- 5. end to end: probe + tracker -> verdict ----------------------------------------------------
 # The composition is the product, so it is asserted as one: a half-adopted project must come out
@@ -615,7 +718,8 @@ facts='{"release_milestone":"Next release","backlog_milestone":"Backlog","blocke
         "slate_armed":true,"unmilestoned":0,"roadmap_count":1,
         "milestones":[{"title":"Next release","open_issues":4},{"title":"Backlog","open_issues":2}],
         "dispositions":[],
-        "settings":"ok","settings_detail":"applied","release_command":"/release","release_command_count":1}'
+        "settings":"ok","settings_detail":"applied","release_command":"/release","release_command_count":1,
+        "release_command_resolved":true}'
 combined="$( { ar probe "$d"; printf '%s' "$facts" | ar tracker; } )"
 out="$(printf '%s' "$combined" | ar verdict)"; rc=$?
 has "$out" "12 of 12 rungs evaluated" "e2e: probe+tracker cover the whole contract"
@@ -627,7 +731,8 @@ facts_bad='{"release_milestone":"Next release","backlog_milestone":"Backlog","bl
         "slate_armed":false,"unmilestoned":0,"roadmap_count":1,
         "milestones":[{"title":"Next release","open_issues":0},{"title":"Backlog","open_issues":2}],
         "dispositions":[],
-        "settings":"ok","settings_detail":"applied","release_command":"/release","release_command_count":1}'
+        "settings":"ok","settings_detail":"applied","release_command":"/release","release_command_count":1,
+        "release_command_resolved":true}'
 combined="$( { ar probe "$d"; printf '%s' "$facts_bad" | ar tracker; } )"
 out="$(printf '%s' "$combined" | ar verdict)"; rc=$?
 has "$out" "VERDICT: red" "e2e: an empty release milestone makes the whole contract red"
@@ -748,7 +853,7 @@ mut no-gate-is-silent \
 mut gate-count-greps-status \
     'grun="$(printf '"'"'%s'"'"' "$gdetect" | grep -c . || true)"' \
     'grun=0' \
-    'probe: a detected gate with no receipt is todo'
+    'probe: a fresh passing receipt makes the gates rung ok'
 mut receipt-ignores-head \
     'if [ "$r_sha" != "$sha" ];' \
     'if false;' \
@@ -756,7 +861,7 @@ mut receipt-ignores-head \
 mut receipt-ignores-gate-config \
     'if [ "$r_digest" != "$digest" ];' \
     'if false;' \
-    'receipt: an edited [gates] makes the receipt stale'
+    'receipt: a changed gate CONFIGURATION makes the receipt stale'
 mut receipt-failure-reads-as-ok \
     'if [ "$r_outcome" = fail ];' \
     'if false;' \
@@ -789,10 +894,6 @@ mut newline-forges-a-record \
     'detail="${detail//$'"'"'\n'"'"'/ }"' \
     'detail="$detail"' \
     'tracker: a newline in a milestone title does not forge an extra record'
-mut gates-decision-read-from-status-text \
-    'gkeys="$( { adb_toml_keys "$root/agents.toml" gates; adb_toml_keys "$root/agents.toml" gates.state; } 2>/dev/null | grep -c . || true)"' \
-    'gkeys=1' \
-    'probe: NO detectable gate is todo (loud), not a silent pass'
 mut release-absent-collapses-to-todo \
     'relcmd="$(_fact release_command string)"; rc=$?' \
     'relcmd=""; rc=0' \
@@ -814,8 +915,8 @@ mut detector-failure-is-na \
     'if false; then' \
     'probe: a FAILED gate detector is unknown, never a recorded N/A'
 mut harness-checks-only-the-directory \
-    '[ -e "$HOME/.$a/$doc" ]        || missing="$missing $a(root-doc)"' \
-    ':' \
+    '      [ -e "$HOME/.$a/$doc" ] || missing="$missing $a(root-doc)"' \
+    '      :' \
     'probe: an agent home with no root doc is todo, not ok'
 mut blocker-label-coerced \
     'printf '"'"'%s'"'"' "$json" | jq -e --arg k "$k" --arg t "$t" '"'"'.[$k]|type == $t'"'"' >/dev/null 2>&1 || return 2' \
@@ -833,6 +934,42 @@ mut roadmap-split-brain-ok \
     'elif [ "$rc_n" -gt 1 ]; then' \
     'elif false; then' \
     'tracker: two roadmap artifacts is todo'
+mut worktree-digest-hashes-only-status \
+    '    git -C "$root" diff HEAD 2>/dev/null || return 1' \
+    '    :' \
+    'receipt: editing an ALREADY-MODIFIED path makes the receipt stale'
+mut untracked-content-not-hashed \
+    '          cat -- "$root/$f" 2>/dev/null || printf '"'"'<unreadable>'"'"'' \
+    '          :' \
+    'receipt: an untracked file whose CONTENT changed makes the receipt stale'
+mut gate-key-is-a-decision \
+    '    [ "$_v" = na ] && gkeys=$((gkeys + 1))' \
+    '    gkeys=$((gkeys + 1))' \
+    'probe: an UNSUPPORTED [gates.state] value is a typo, not a recorded decision'
+mut probe-does-not-resolve-the-root \
+    '  if _rr="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$_rr" ]; then root="$_rr"; fi' \
+    '  :' \
+    'probe: running from a SUBDIRECTORY still reads the project root'
+mut skills-dir-presence-is-enough \
+    '  [ -n "$(find "$1" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit 2>/dev/null)" ]' \
+    '  :' \
+    'probe: EMPTY skills/scripts dirs must not satisfy the harness rung'
+mut primary-presence-is-enough \
+    '  tok="$( cd "$root" 2>/dev/null && bash "$_AR_LIB_DIR/role-dispatch.sh" resolve primary 2>/dev/null )" || return 1' \
+    '  tok=claude' \
+    'probe: an INVALID [roles] primary is todo, not ok'
+mut dispositions-type-unchecked \
+    '    _fact dispositions array >/dev/null; rc_dp=$?' \
+    '    :' \
+    'tracker: a STRING dispositions is refused, not substring-matched'
+mut release-resolution-ignored \
+    '    resolved="$(_fact release_command_resolved boolean)" || resolved=""' \
+    '    resolved=true' \
+    'tracker: a marker whose skill is MISSING is todo, not ok'
+mut status-takes-an-option-as-root \
+    '    -*|'"'"''"'"') : ;;' \
+    '    NEVERMATCHES) : ;;' \
+    'status: an option-only invocation resolves the root from $PWD'
 mut unterminated-final-record-dropped \
     'while IFS= read -r line || [ -n "$line" ]; do' \
     'while IFS= read -r line; do' \

@@ -464,11 +464,17 @@ _adb_eco_php() {
   _adb_json_script_has "$root/composer.json" test      && d_test="composer run-script test"
   _adb_json_script_has "$root/composer.json" lint      && d_lint="composer run-script lint"
   _adb_json_script_has "$root/composer.json" typecheck && d_typecheck="composer run-script typecheck"
-  # `format:check` first, matching the node adapter: a project that declares BOTH means the
-  # checking one here, since a gate must never rewrite the tree.
-  if   _adb_json_script_has "$root/composer.json" "format:check"; then d_format="composer run-script format:check"
-  elif _adb_json_script_has "$root/composer.json" format;         then d_format="composer run-script format"
-  fi
+  # ONLY `format:check`, NEVER a bare `format`. The conventional PHP spelling of a bare `format`
+  # script is `php-cs-fixer fix` or `phpcbf` — both of which REWRITE THE PROJECT'S FILES — and
+  # inferring a gate from it would make every turn-end gate run, and every `receipt run`, mutate
+  # the tree. That directly contradicts the read-only formatter handling twenty lines below, which
+  # goes to the trouble of picking `--dry-run` and `phpcs`; honouring a mutating script here would
+  # undo all of it. A project that wants its formatter gated declares a checking script.
+  #
+  # (The node adapter does fall back to a bare `format`. That predates this and is not touched
+  # here — changing it is a behaviour change for every adopted node repo, which is not this
+  # change's to make. The asymmetry is deliberate, and this is where it is recorded.)
+  _adb_json_script_has "$root/composer.json" "format:check" && d_format="composer run-script format:check"
   # `composer` itself must exist for a declared script to be runnable. Without it the script
   # names are unusable and the binaries below are the only real answer, so drop them rather
   # than emitting a gate whose first act is "command not found".

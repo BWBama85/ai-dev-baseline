@@ -57,7 +57,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     nothing. `status` composes all four and is the re-runnable entry point, reachable as
     `baseline adopt status`.
 
-  **Every guard was observed failing** — 29 mutations against a tree copy, each required to make
+  **Every guard was observed failing** — 37 mutations against a tree copy, each required to make
   the suite red on its *own* named witness. Writing the negative half first caught three defects
   the positive half never would have, and two of them would have reported a broken project as
   fine: a gate count that grepped a human-readable table for `run:` (which it prints *without* a
