@@ -1011,11 +1011,12 @@ jobs:
     name: adopt
     runs-on: ubuntu-26.04
     # TWO mutation harnesses now run here (#81), each re-running its whole suite once per injected
-    # defect: ~156s and ~222s locally on a 10-core machine, so ~6.5 minutes of the job before the
-    # non-mutation steps. A hosted runner is slower and has fewer cores, and a timeout here would
-    # read as a real failure rather than as the capacity problem it is — so the ceiling moves with
-    # the work rather than staying at a number chosen for one harness.
-    timeout-minutes: 35
+    # defect: ~123s and ~441s locally on a 10-core machine, so ~9.5 minutes of the job before the
+    # non-mutation steps — and the second grew with the review round that took it from 21 defects
+    # to 37. A hosted runner is slower and has fewer cores, and a timeout here would read as a real
+    # failure rather than as the capacity problem it is, so the ceiling moves with the work rather
+    # than staying at a number chosen when there was one harness of 21.
+    timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
