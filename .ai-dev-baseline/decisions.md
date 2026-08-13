@@ -4980,8 +4980,13 @@ limit: none of them is sufficient alone.
              the format rules apply to a backfill, the unused-and-newer rules cannot. Writing
              `PUBLISHED` from a backfill would tell an unrelated in-flight release that its publish
              step had already run, so it does not.
-             **(d) Three states, and a mismatch REFUSES rather than repairs.** absent → create;
-             draft → upload only what is missing, verify, publish; published → verify only.
+             **(d) Three states, and a mismatch REFUSES rather than repairs — including BEFORE the
+             upload.** absent → create; draft → check the draft's IDENTITY (its notes must be this
+             tag's message and it must carry no asset this step did not produce), then upload only
+             what is missing, verify, publish; published → verify only. The identity check is there
+             because verification alone runs AFTER the uploads, so without it a draft belonging to
+             something else would have this release's artifacts pushed into it and only then be
+             refused — the upload IS the mutation, and refusing after it is refusing too late.
              `gh release create` with assets internally creates a draft, uploads, then publishes, so
              a draft IS the interrupted-upload state and converging it is what makes the step
              resumable. Nothing edits, deletes or `--clobber`s: clobber deletes an asset before
@@ -4997,13 +5002,30 @@ limit: none of them is sufficient alone.
              *Override 2a*), plus its predicates in the sibling `release-lib.sh`. Deliberately NOT
              `scripts/lib/`: `adb_agent_manifest` symlinks that directory wholesale into every
              install, so a publish predicate landing there would ship release machinery to every
-             adopting repo and reverse #3/D7 by accident. That includes the SHA-256 helper — a
-             shared `adb_sha256_file` with exactly one project-scoped caller would ship to everyone
-             to serve nobody; promoting it is the right move when a second consumer appears, not now.
+             adopting repo and reverse #3/D7 by accident.
+             **The SHA-256 helper is the one placement that is a compromise rather than a
+             consequence, and the first draft of this entry justified it with a false premise.** It
+             claimed a shared `adb_sha256_file` would "ship to everyone to serve nobody"; independent
+             review refuted that by pointing at `scripts/lib/adopt-readiness.sh:225` and `:272`,
+             which already select between `shasum` and `sha256sum` twice, in INSTALLED code. So there
+             are now three sites, and hashing is generic infrastructure rather than release
+             machinery — the reuse argument is real. It stays here anyway, for a reason that is about
+             blast radius rather than principle: those two sites produce the digests that key
+             `adopt-readiness`'s gate RECEIPTS, and changing digest-producing code in an installed
+             module inside a PR about releases risks invalidating receipts for a change unrelated to
+             #284. Consolidating them is a separate change with its own review. Per
+             `issues-and-scope.md` "a helper would live better in another home" is explicitly not
+             filable, so this is recorded here rather than as an issue — and recorded as a debt, not
+             as a justification.
 - reason:    D7 said the baseline ships no generic release machinery because four surveyed projects
              had four incompatible schemes — and that is untouched here. What #284 reverses is the
-             narrower D14-era claim that THIS repo publishes nothing, which had a measured cost: three
-             tags, zero Releases, so the release-pinned install slice (#285) had no source to install
-             from and every adopter kept cloning the development repo and tracking `main`. A tag
-             carries no notes a human reads, no checksum, and nothing `curl` can fetch.
+             narrower D14-era claim that THIS repo publishes nothing, which had a measured cost:
+             FOUR tags, zero Releases, so the release-pinned install slice (#285) had nothing
+             project-owned to install from and the documented install path stayed a live clone of
+             the development repo tracking `main`.
+             Be precise about what a bare tag does not give you, because it does give some of it:
+             GitHub serves a source archive for any tag, and a tag is itself a pin. The first draft
+             of this entry said "nothing `curl` can fetch", which is simply false. What a tag has no
+             place for is **release notes a human reads** and a **checksummed artifact this project
+             vouches for**, and those are the two things #284 adds.
 - baseline-issue: n/a — this repo IS the baseline; #284 is the tracking issue.

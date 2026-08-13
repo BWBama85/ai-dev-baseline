@@ -428,6 +428,25 @@ req_fixed "$DRV" 'mergeCommit'       driver-tags-the-prs-own-merge-commit
 req_fixed "$DRV" 'adb_version_ge'    driver-uses-the-shared-comparator
 req_fixed "$DRV" 'assert_role'       driver-keeps-the-release-role-guard
 req_fixed "$DRV" 'exit-code'         driver-verifies-the-remote-tag-with-exit-code
+# STRUCTURAL, and labelled as such (#284). `git archive` honours `tar.umask`, which is settable
+# per-repo and per-user, so two machines with the same git and gzip emit different mode headers and
+# different digests without it. A RUN cannot distinguish a pinned umask from a host whose config
+# happens to agree, so this asserts how the command is WRITTEN — weaker than driving it, and said
+# rather than implied.
+# AGAINST COMMENT-STRIPPED SOURCE, because both of these strings appear in the prose that explains
+# them. A `req_fixed` over the whole file is satisfied by the comment, so deleting the actual flag
+# left the pin green — measured: removing `-c tar.umask=0022` from the archive command produced
+# 300 passed, 0 failed. That is the same "the check matched its own documentation" defect the
+# `$(slug)` and `need` scanners above already strip comments to avoid.
+DRV_CODE="$(sed 's/#.*//' "$DRV")"
+case "$DRV_CODE" in
+  *'tar.umask=0022'*) ok ;;
+  *) bad "release.sh does not pin tar.umask in live code — git honours per-repo/per-user config, so the archive digest would vary by machine" ;;
+esac
+case "$DRV_CODE" in
+  *'--verify-tag'*) ok ;;
+  *) bad "release.sh does not pass --verify-tag in live code — gh release create would MINT a tag from the default branch head" ;;
+esac
 # THE BAN STAYS, AND ITS OLD RATIONALE DID NOT (#259 asked for this to be settled with evidence).
 #
 # What changed: Golden Rule 4 no longer says "macOS bash 3.2 / BSD userland" — the floor is bash
@@ -513,6 +532,31 @@ eq "${ tagobj 'notes\n-----BEGIN PGP SIGNATURE-----\nabc\n' | rc_of tag-message;
 tagobj 'notes\n-----BEGIN PGP SIGNATURE-----\nabc\n' | bash "$RL" tag-message > "$TM/sig" 2>/dev/null
 eq "$(wc -c < "$TM/sig" | tr -d ' ')" 0 "a refused signed tag produces no output at all"
 eq "${ tagobj 'x\n' | rc_of tag-message extra; }" 2 "tag-message takes no arguments"
+# NO FINAL NEWLINE. `git tag -F --cleanup=verbatim` really does store a message without one, and
+# every line-oriented filter ADDS one — reproduced by independent review as a 19-byte annotation
+# coming back as 20. This is the case that forced the byte-offset + `tail -c` extraction.
+printf 'no trailing newline' > "$TM/nonl-want"
+tagobj 'no trailing newline' | bash "$RL" tag-message > "$TM/nonl-got"
+if cmp -s "$TM/nonl-want" "$TM/nonl-got"; then ok; else
+  bad "tag-message added or lost bytes on a message with no final newline (want $(wc -c < "$TM/nonl-want"), got $(wc -c < "$TM/nonl-got"))"
+fi
+# A CRLF message is preserved verbatim too — which is why `publish_verify` compares raw bytes
+# rather than stripping CR from either side.
+printf 'crlf line\r\n\r\nsecond\r\n' > "$TM/crlf-want"
+tagobj 'crlf line\r\n\r\nsecond\r\n' | bash "$RL" tag-message > "$TM/crlf-got"
+if cmp -s "$TM/crlf-want" "$TM/crlf-got"; then ok; else
+  bad "tag-message did not preserve CRLF bytes"
+fi
+# FOUR SIGNATURE ENVELOPES, not one. Git signs with GPG, with SSH keys, and with X.509 via gpgsm,
+# and the RFC1991 path emits a PGP MESSAGE. A detector that knew only the modern GPG envelope let
+# the other three into the release notes while this file documented a refusal.
+eq "${ tagobj 'n\n-----BEGIN SSH SIGNATURE-----\nx\n'    | rc_of tag-message; }" 12 "tag-message refuses an SSH-signed tag"
+eq "${ tagobj 'n\n-----BEGIN SIGNED MESSAGE-----\nx\n'   | rc_of tag-message; }" 12 "tag-message refuses an X.509-signed tag"
+eq "${ tagobj 'n\n-----BEGIN PGP MESSAGE-----\nx\n'      | rc_of tag-message; }" 12 "tag-message refuses an RFC1991 PGP message"
+# A tag object with no blank line at all is unreadable, not empty: it must not be reported as a
+# verdict about the message.
+eq "$(printf 'object x\ntype commit\n' | bash "$RL" tag-message >/dev/null 2>&1; printf '%s' "$?")" 2 \
+   "tag-message refuses a tag object with no header separator"
 
 # =================================================================================================
 # release-state — absent vs draft vs published, and the two answers that are NOT a verdict (#284)
@@ -567,6 +611,11 @@ eq "${ drv tag; }"                    2 "tag requires --message-file"
 eq "${ drv tag --message-file; }"     2 "tag --message-file requires a path"
 eq "${ drv tag --message-file /nonexistent/nope; }" 1 "tag refuses a missing message file"
 eq "${ drv tag --wrong-flag x; }"     2 "tag rejects an unknown flag"
+eq "${ drv publish --wrong-flag; }"   2 "publish rejects an unknown flag"
+eq "${ drv publish --version; }"      2 "publish --version requires a value"
+# The VALUE-level argument cases are driven in the publish fixture below, not here: with no run
+# state in this checkout every one of them exits 1 whether the guard works or not, so an rc-only
+# assertion cannot tell a refusal from a coincidence.
 # An EMPTY message file must be refused too — an empty annotated tag is the release's only note.
 : > /tmp/adb-empty-msg.$$
 eq "${ drv tag --message-file /tmp/adb-empty-msg.$$; }" 1 "tag refuses an empty message file"
@@ -1030,7 +1079,7 @@ case "${1:-}" in
   *) exit 1 ;;
 esac
 action="$2"; shift 2
-tag=""; notes=""; dir=""; draftflag=""; verify=0; assets=()
+tag=""; notes=""; dir=""; draftflag=""; verify=0; lt=""; assets=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -R)            shift 2 ;;
@@ -1040,7 +1089,10 @@ while [ "$#" -gt 0 ]; do
     --dir)         dir="$2"; shift 2 ;;
     --draft)       draftflag=true; shift ;;
     --draft=false) draftflag=false; shift ;;
-    --latest|--latest=*|--clobber) shift ;;
+    --latest)       lt=true;  shift ;;
+    --latest=true)  lt=true;  shift ;;
+    --latest=false) lt=false; shift ;;
+    --clobber)      shift ;;
     -*)            shift ;;
     *) if [ -z "$tag" ]; then tag="$1"; else assets+=("$1"); fi; shift ;;
   esac
@@ -1056,13 +1108,18 @@ case "$action" in
     for a in "${assets[@]}"; do cp "$a" "$GH_ASSETS/$tag/${a##*/}" || exit 1; names+=("${a##*/}"); done
     [ -n "$notes" ] || { printf 'gh: no notes\n' >&2; exit 1; }
     d=false; [ "$draftflag" = "true" ] && d=true
+    # A test hook, not a GitHub behaviour: it lets one case reach the "created, but still a draft"
+    # state that the driver's final post-condition read exists to catch.
+    [ -n "${GH_FORCE_DRAFT:-}" ] && [ -e "$GH_FORCE_DRAFT" ] && d=true
     # --argjson, NOT `--args`. jq's `--args` consumes every remaining argument as a positional
     # STRING, so `jqw`'s trailing "$GH_STATE" became one of them and jq read from stdin instead of
     # the state file — the create exited 0 having written nothing, which is precisely the silent
     # no-op this suite exists to catch, wearing the test harness as a disguise.
     njson="$(printf '%s\n' "${names[@]}" | jq -R . | jq -s .)" || exit 1
+    ltj='"unset"'; [ -n "$lt" ] && ltj="$lt"
     jqw --arg t "$tag" --rawfile body "$notes" --argjson d "$d" --argjson names "$njson" \
-        '. + [{tag_name:$t, id:(length+1), draft:$d, body:$body,
+        --argjson lt "$ltj" \
+        '. + [{tag_name:$t, id:(length+1), draft:$d, body:$body, latest:$lt,
                assets:($names | map({name:.}))}]' || exit 1
     ;;
   upload)
@@ -1076,7 +1133,9 @@ case "$action" in
     ;;
   edit)
     [ "$draftflag" = "false" ] || { printf 'gh: unsupported edit\n' >&2; exit 1; }
-    jqw --arg t "$tag" 'map(if .tag_name == $t then .draft = false else . end)' || exit 1
+    ltj='"unset"'; [ -n "$lt" ] && ltj="$lt"
+    jqw --arg t "$tag" --argjson lt "$ltj" \
+        'map(if .tag_name == $t then (.draft = false | .latest = $lt) else . end)' || exit 1
     ;;
   download)
     [ -n "$dir" ] || exit 1
@@ -1096,6 +1155,8 @@ pub_run() {
   : > "$work/pub-calls"
   adb_run_bounded 120 5 env "PATH=$PUBGH:$PATH" "GH_CALLS=$work/pub-calls" \
       "GH_STATE=$PUB_STATE" "GH_ASSETS=$PUB_STORE" "GH_TAGS=$PUB_TAGS" "GH_SLUG=acme/widget" \
+      "GH_FORCE_DRAFT=$work/pub-force-draft" \
+      "ADB_RELEASE_READ_TRIES=2" "ADB_RELEASE_READ_SLEEP=0" \
       bash "$PUB_DRV" "$@" > "$work/pub-out" 2> "$work/pub-err"
   PUB_RC=$?
   PUB_OUT="$(cat "$work/pub-out")"; PUB_ERR="$(cat "$work/pub-err")"; PUB_CALLS="$(cat "$work/pub-calls")"
@@ -1131,6 +1192,7 @@ if [ "$pub_built" -eq 1 ] && [ -n "$PUB_SHA" ]; then
   hasnt "$PUB_CALLS" "FORGED-TAG"          "publish/absent: no tag was created by the publish"
   hasnt "$PUB_CALLS" "release upload"      "publish/absent: attaches assets in the create, with no separate upload"
   hasnt "$PUB_CALLS" "--latest=false"      "publish/absent: a current cut is marked Latest"
+  eq "$(jq -r '.[0].latest' "$PUB_STATE")" true "publish/absent: and the platform recorded it as Latest"
   # BYTE-IDENTITY, THE ACCEPTANCE CRITERION. Compared as FILES with cmp: `$(…)` strips trailing
   # newlines, so a substitution comparison passes on an implementation that drops the last byte of
   # every release body. `jq -j` so no newline is invented on the way out either.
@@ -1163,6 +1225,10 @@ if [ "$pub_built" -eq 1 ] && [ -n "$PUB_SHA" ]; then
   if cmp -s "$work/pub-state-before" "$PUB_STATE"; then ok; else
     bad "publish/published: a converging re-run changed the remote state's bytes"
   fi
+  # THE RUN STATE IS STATE TOO. `rset` APPENDS, so an unconditional receipt write made every
+  # converging re-run add another `PUBLISHED=` line — "re-running changes nothing" was true of the
+  # release and false of the file the NEXT step reads.
+  eq "$(grep -c '^PUBLISHED=' "$PUB_RS")" 1 "publish/published: the receipt is written once, not appended per run"
 
   # --- C: an interrupted upload left a DRAFT --------------------------------------------------------
   # Rewound from the real converged state rather than hand-written, so the surviving asset's BYTES
@@ -1181,6 +1247,66 @@ if [ "$pub_built" -eq 1 ] && [ -n "$PUB_SHA" ]; then
   eq "$(jq -r '.[0].draft' "$PUB_STATE")" false "publish/draft: the release is no longer a draft"
   eq "$(jq -r '[.[0].assets[].name] | sort | join(",")' "$PUB_STATE")" \
      "SHA256SUMS,ai-dev-baseline-9.9.9.tar.gz" "publish/draft: both assets present after the resume"
+  # THE LATEST FLAG ON THE RESUME PATH. Computed inside the `absent` arm it never reached the edit,
+  # and GitHub picks Latest automatically when it is not set — so a resumed backfill could take the
+  # badge from the current release.
+  eq "$(jq -r '.[0].latest' "$PUB_STATE")" true "publish/draft: the resumed publish still sets Latest explicitly"
+
+  # --- A2: the argument guards, WHERE RUN STATE EXISTS ----------------------------------------------
+  # These belong here rather than with the other argument cases: the bug they cover is `--version ""`
+  # falling through to NORMAL mode, and normal mode is only distinguishable from a refusal when
+  # there IS a VERSION to fall through to. Each asserts the message, because with the guard removed
+  # the run would SUCCEED — publishing the in-flight release for an empty argument.
+  pub_reset '[]' "$pub_norm_state"
+  pub_run publish --version ""
+  eq "$PUB_RC" 1 "publish/empty --version: refuses instead of falling back to the run state's VERSION"
+  has "$PUB_ERR" "not a version" "publish/empty --version: rejects the value rather than ignoring the flag"
+  hasnt "$PUB_CALLS" "release create" "publish/empty --version: publishes nothing"
+  pub_run publish --version v1.0.0 --version v2.0.0
+  eq "$PUB_RC" 1 "publish/repeated --version: refused"
+  has "$PUB_ERR" "given more than once" "publish/repeated --version: says so rather than taking the last"
+  pub_run publish --latest --no-latest
+  eq "$PUB_RC" 1 "publish/contradictory Latest: refused"
+  has "$PUB_ERR" "contradictory" "publish/contradictory Latest: says so rather than taking the last"
+  pub_run publish --no-latest --latest
+  eq "$PUB_RC" 1 "publish/contradictory Latest: refused in either order"
+  pub_run publish --latest --latest
+  eq "$PUB_RC" 1 "publish/repeated --latest: refused"
+
+  # --- C2: a create that silently leaves a DRAFT is caught -------------------------------------------
+  # `publish_verify` checks the notes and the assets and says nothing about draft status, and the
+  # `absent` arm never runs the `--draft=false` edit — so without the final post-condition read, a
+  # release that came out a draft would be verified, reported as published, and recorded as the
+  # receipt `roll` trusts, while being invisible to every consumer this issue exists to serve.
+  # The simulator is told to create drafts for one run, which is the cheapest way to reach that state.
+  # A MARKER FILE, not `GH_FORCE_DRAFT=1 pub_run …`. An assignment preceding a FUNCTION call persists
+  # in the calling shell in bash — the same trap `rel_case`'s `env` prefix exists to avoid — so that
+  # spelling would leave every later case creating drafts.
+  : > "$work/pub-force-draft"
+  pub_reset '[]' "$pub_norm_state"
+  pub_run publish
+  rm -f "$work/pub-force-draft"
+  eq "$PUB_RC" 1 "publish/silent-draft: refuses when the created release is still a draft"
+  has "$PUB_ERR" "not in a published state" "publish/silent-draft: says so rather than reporting success"
+  hasnt "$(cat "$PUB_RS")" "PUBLISHED" "publish/silent-draft: records no receipt for an invisible release"
+
+  # --- C3: a DRAFT that is not ours is refused BEFORE anything is uploaded into it ------------------
+  # `publish_verify` runs after the uploads, so without an identity check the artifacts would be
+  # pushed into someone else's draft and only then refused. The upload IS the mutation.
+  pub_reset '[{"tag_name":"v9.9.9","id":1,"draft":true,"body":"a different draft","assets":[]}]' "$pub_norm_state"
+  pub_run publish
+  eq "$PUB_RC" 1 "publish/foreign-draft: refuses a draft whose notes are not this tag's message"
+  has "$PUB_ERR" "refusing to upload into a release this step did not create" "publish/foreign-draft: says why"
+  hasnt "$PUB_CALLS" "release upload" "publish/foreign-draft: uploads NOTHING into it"
+  hasnt "$PUB_CALLS" "release edit"   "publish/foreign-draft: does not publish it"
+
+  # A draft with the right notes but an asset this step never produces is the same class of doubt.
+  jq --rawfile body "$work/pub-wantnotes" \
+     '[{tag_name:"v9.9.9", id:1, draft:true, body:$body, assets:[{name:"surprise.bin"}]}]' \
+     <<< 'null' > "$PUB_STATE"
+  pub_run publish
+  eq "$PUB_RC" 1 "publish/foreign-draft-asset: refuses a draft carrying an asset this step did not upload"
+  hasnt "$PUB_CALLS" "release upload" "publish/foreign-draft-asset: uploads nothing into it"
 
   # --- D: a published release whose notes differ is REFUSED, not repaired ---------------------------
   pub_reset '[{"tag_name":"v9.9.9","id":1,"draft":false,"body":"someone else wrote this","assets":[]}]' \
@@ -1243,6 +1369,7 @@ MERGE_SHA=abc123"
   # A backfill must not steal "Latest" from the version that actually is latest — publishing v2.0.0
   # after v2.1.0 would otherwise point every downstream consumer at the older release.
   has "$PUB_CALLS" "--latest=false" "publish/backfill: a historical release does NOT become Latest"
+  eq "$(jq -r '.[0].latest' "$PUB_STATE")" false "publish/backfill: and the platform recorded it as NOT Latest"
 
   # --- L: a tag pointing off the default branch -----------------------------------------------------
   # The one guard a normal cut can never exercise (its commit is on main by construction) and a
@@ -1253,7 +1380,9 @@ MERGE_SHA=abc123"
   has "$PUB_ERR" "not an ancestor of origin/main" "publish/off-branch: says which invariant failed"
   hasnt "$PUB_CALLS" "release create" "publish/off-branch: nothing was published"
 
-  # --- J: --dry-run mutates nothing -----------------------------------------------------------------
+  # --- J: --dry-run makes no GitHub write and no run-state write --------------------------------------
+  # NOT "mutates nothing": like every other subcommand it runs `git fetch --prune --tags` first, so
+  # local remote-tracking refs and tags do change. The claim asserted here is the one that is true.
   pub_reset '[]' "$pub_norm_state"
   pub_run publish --dry-run
   eq "$PUB_RC" 0 "publish/dry-run: exits clean"
@@ -1276,6 +1405,34 @@ PUBLISHED=v1.0.0' roll
   eq "$REL_RC" 1 "roll/stale receipt: refuses a PUBLISHED that names another version"
   has "$REL_ERR" "PUBLISHED records" "roll/stale receipt: says which version it found"
   eq "$REL_BL" '' "roll/stale receipt: never reaches the rollover"
+
+  # --- M: the TAG step's own identity guards, driven ------------------------------------------------
+  # These need no simulator at all — `cmd_tag` touches only git — but they need the real origin, so
+  # they live here rather than with the argument-surface cases above.
+  #
+  # A tag that already exists is the RESUMED-RUN path (a create that succeeded, a push that did
+  # not), and checking only where it POINTS accepts a lightweight tag or a completely different
+  # annotation and pushes it — after which `publish` reads THAT message as the release notes.
+  printf '%s\n' "$pub_norm_state" > "$PUB_RS"
+  pub_run tag --message-file "$work/pub-msg.txt"
+  eq "$PUB_RC" 0 "tag/idempotent: re-running with the SAME message file is a clean no-op"
+
+  printf 'v9.9.9\n\nsomething else entirely\n' > "$work/pub-other-msg.txt"
+  pub_run tag --message-file "$work/pub-other-msg.txt"
+  eq "$PUB_RC" 1 "tag/different message: refuses to push an existing tag whose annotation is not this file"
+  has "$PUB_ERR" "DIFFERENT message" "tag/different message: says so"
+
+  printf '   \n\n\t\n' > "$work/pub-blank-msg.txt"
+  pub_run tag --message-file "$work/pub-blank-msg.txt"
+  eq "$PUB_RC" 1 "tag/blank message: refuses whitespace-only content BEFORE the irreversible push"
+  has "$PUB_ERR" "no non-whitespace content" "tag/blank message: says why"
+
+  # v8.8.8 is lightweight and points at the same commit, so a commit-only check would accept it.
+  pub_reset '[]' "VERSION=v8.8.8
+MERGE_SHA=$PUB_SHA"
+  pub_run tag --message-file "$work/pub-msg.txt"
+  eq "$PUB_RC" 1 "tag/lightweight: refuses an existing lightweight tag even at the right commit"
+  has "$PUB_ERR" "LIGHTWEIGHT" "tag/lightweight: says why rather than pushing a message-less tag"
 
   # --- MUTATION PROOF: "fails when the publish step is removed or stubbed out" -----------------------
   # The acceptance criterion, executed. Each mutation is applied to the COPIED driver and each is
@@ -1309,17 +1466,21 @@ PUBLISHED=v1.0.0' roll
     has "$PUB_ERR" "has no release after the publish step ran" "M5: the verification is what catches it"
   fi
 
-  # M6 — drop `--verify-tag`. The simulator then MINTS the tag, which is the permanent, unmovable
-  # object this whole skill refuses to create by accident.
+  # M6 — drop `--verify-tag`, and say EXACTLY what that proves. It reddens case A's assertion that
+  # the flag is passed, and nothing more: the driver's own `ls-remote` guard stops a nonexistent tag
+  # before `gh` is ever reached, so this mutation cannot reach the simulator's forged-tag path and
+  # does NOT demonstrate a tag being minted. The flag is a BACKSTOP for paths the primary guard does
+  # not cover, and a backstop's test can only assert that it is present. An earlier comment here
+  # claimed the mutation forged a tag; it does not, and overstating a witness is the same defect as
+  # a guard that cannot fire.
   pub_restore
   if check_mutate_line "$PUB_DRV" \
        '      gh release create "$v" -R "$pub_sl" --verify-tag --title "$v" \' \
        's|--verify-tag ||' "M6 --verify-tag dropped"; then
     pub_reset '[]' "VERSION=v6.6.6
 MERGE_SHA=$PUB_SHA"
-    # v6.6.6 has no tag, so the driver's own ls-remote guard stops it first — which is the point:
-    # --verify-tag is the BACKSTOP, and this proves the primary guard is not the only thing standing
-    # between a typo and a forged tag. The flag assertion in case A is what M6 reddens.
+    # v6.6.6 has no tag, so the driver's own ls-remote guard stops it first. That is the PRIMARY
+    # guard doing its job, which is worth pinning on its own — it is not evidence about the flag.
     pub_run publish
     eq "$PUB_RC" 1 "M6: the ls-remote guard still refuses a version with no tag"
     pub_reset '[]' "$pub_norm_state"

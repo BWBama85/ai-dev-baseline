@@ -12,10 +12,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 - **`/release` publishes an actual GitHub Release, reversing the tag-only decision** (#284; D62).
 
   Four tags existed and `gh release list` returned nothing. `SKILL.md` said so on purpose — twice —
-  and called adding a publish step "a decision change". This is that decision change: a tag carries
-  no notes a human reads, no checksum, and nothing `curl` can fetch, so the release-pinned install
-  slice (#285) had no source to install *from* and every adopter kept cloning the development repo
-  and tracking `main`.
+  and called adding a publish step "a decision change". This is that decision change. Be precise
+  about what a tag does *not* give you, because it does give you some of this: GitHub serves a
+  source archive for any tag, and a tag is itself a pin. What it has no place for is **notes a
+  human reads** and a **checksummed artifact this project vouches for** — so the release-pinned
+  install slice (#285) had nothing project-owned to install *from*, and the documented install path
+  stayed what it is today: a live clone of the development repo tracking `main`.
 
   `release.sh publish` is step 11; `roll` renumbers to 12 and now **refuses without the publish
   receipt**, because `roll` deletes the run state as its last act — a release rolled before it was
@@ -28,7 +30,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     cleanup treats a `#`-leading line as commentary and **deletes it** — in Markdown that is a
     heading. Measured on a throwaway repo: an 80-byte message containing one
     `# A markdown heading line` was stored as **54 bytes**, with the line simply gone and nothing
-    said. Every tag this repo has cut went through that.
+    said. Every annotated tag this repo has cut was written under that default. (Whether any of
+    them actually lost a line is unknowable — the message files are gone, which is part of the
+    point: nothing recorded what was dropped.)
   - **Two assets, and "reproducible" is claimed exactly as far as it holds.** A `git archive` of the
     tagged tree plus `SHA256SUMS`. `git archive` fixes every entry's mtime/uid/gid/mode from the
     commit and `gzip -n` drops the name and timestamp, so runs of the same gzip agree — measured,
@@ -50,17 +54,22 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **Backfilling** (`publish --version vX.Y.Z`) pins on the peeled remote tag rather than run state,
     defaults to **not** Latest, and writes nothing back — a backfill run in a checkout with a release
     in flight must not stamp `PUBLISHED` over that release's state. `v2.1.0` and `v2.0.0` are
-    backfilled; `v1.0.0` is a **lightweight** tag, so it carries no message and is refused by the
-    same rule that protects every other caller.
+    backfilled — both are live, verified, and `v2.1.0` holds Latest. `v1.0.0` is a **lightweight**
+    tag, so it carries no message and is refused by the same rule that protects every other caller;
+    `v1.1.0` is annotated but left unpublished, as the issue's own "cosmetic" call.
 
-  `scripts/check-release-skill.sh` grows from 169 assertions to 267, over a fixture that stands up a
-  real repo, a real bare `origin`, a tag created **by the driver**, and a *simulating* `gh` that keeps
-  release state on disk. That last part is what makes "re-running changes nothing" an assertion
-  rather than a hope. Every new guard was **observed failing** on its own witness — the first cut of
-  the fixture created the tag itself, which made the byte-identity assertions a statement about the
-  fixture instead of about `cmd_tag`: deleting `--cleanup=verbatim` and re-running came back
-  **261 passed, 0 failed**. Driving `release.sh tag` put the flag under test, and the same deletion
-  is caught now.
+  `scripts/check-release-skill.sh` grows from **165 assertions to 306**, over a fixture that stands
+  up a real repo, a real bare `origin`, a tag created **by the driver**, and a *simulating* `gh` that
+  keeps release state on disk. That last part is what makes "re-running changes nothing" an assertion
+  rather than a hope. **23 mutations were each observed going red on their own witness**, and two of
+  them were guards that could not fail until the fixture was fixed:
+
+  - the fixture originally created the tag itself, which made every byte-identity assertion a
+    statement about the *fixture* rather than about `cmd_tag` — deleting `--cleanup=verbatim` left
+    the suite fully green. Driving `release.sh tag` put the flag under test;
+  - two structural pins (`tar.umask`, `--verify-tag`) were satisfied by the **comments explaining
+    them**, so deleting the real flag stayed green. They now scan comment-stripped source, the same
+    way the `$(slug)` and `need` scanners already do.
 
 - **The adoption completion contract, and a verifier that fails closed** (#81; D61).
 

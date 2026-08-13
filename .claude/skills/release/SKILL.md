@@ -120,11 +120,19 @@ tag instead of depending on a file that may not exist by then.
 `release.sh publish` creates the GitHub Release for the tag step 10 just pushed. **You run it**, the
 same way you run the tag step — it is the second irreversible, outward-facing act in this procedure,
 and it gets the same confirmation the first one does. `--dry-run` prints exactly what it would do
-(state, commit, notes size, asset digests) and mutates nothing.
+(state, commit, notes size, asset digests) and makes **no GitHub write and no run-state write**. It
+is not inert: like every other subcommand it runs `git fetch --prune --tags origin` first, so local
+remote-tracking refs and tags are updated. Say that rather than "mutates nothing", which is the kind
+of claim that is false in exactly one place nobody checks.
 
 - **The notes are the tag's own message, byte for byte.** Not the changelog, not a regenerated
-  summary: `publish` reads the annotation off the tag object itself. The tag is the one place that
-  prose durably lives, so the two can never drift, and a backfill years later still has it.
+  summary: `publish` reads the annotation off the tag object itself — by byte offset, so a message
+  stored without a final newline does not silently gain one, and a CRLF message is preserved as it
+  is. The tag is the one place that prose durably lives, so a backfill years later still has it.
+  Three things make "byte for byte" hold rather than merely be asserted: `--cleanup=verbatim` when
+  the tag is written, an identity check when a **pre-existing** tag is resumed (its annotation must
+  equal the message file, and a lightweight one is refused), and a raw comparison of the published
+  body — carriage returns are **not** normalized away, they are diagnosed separately.
 - **It publishes the commit the tag points at**, re-verified against the `MERGE_SHA` this run
   pinned in step 9, and re-checked to be an ancestor of the default branch.
 - **Two assets:** `ai-dev-baseline-<X.Y.Z>.tar.gz` — `git archive` of the tagged tree — and
@@ -140,7 +148,15 @@ and it gets the same confirmation the first one does. `--dry-run` prints exactly
   gzip implementations they may not be, which is exactly why the digest is published rather than
   the property merely asserted. What goes *in* the artifact is #285's decision; this step owns only
   that a checksummed, regenerable one is published at all.
-- **It is idempotent and resumable**, in the three states a release can be in. `gh release create`
+
+  **The operational consequence, so it is not a surprise:** verification re-builds the artifact and
+  compares digests, so re-running `publish` against an already-published release **from a machine
+  with a different gzip** can refuse a release that is perfectly fine. That is the fail-closed
+  direction on purpose — the alternative is blessing a digest nobody checked — but if you hit it,
+  re-run from the machine that cut the release rather than clobbering the asset.
+- **It is idempotent and resumable**, in the three states a release can be in — within one
+  toolchain. The one thing it does **not** promise: because verification rebuilds the artifact and
+  compares digests, a re-run from a machine with a different gzip can refuse. See the note above. `gh release create`
   with assets internally creates a draft, uploads, then publishes — so an interrupted upload leaves
   a **draft**, and re-running converges it rather than creating a second release.
 
@@ -173,8 +189,8 @@ is why it has no release.
 - **It never publishes a package or a deploy**, and it publishes a GitHub Release only from a tag
   that is already on origin. This bullet used to say the opposite — that the repo versions by git
   tag only and that adding a publish step would be a decision change. **#284 / D62 is that decision
-  change**: three tags existed with zero Releases, so nothing a downstream project could pull or
-  pin against existed either.
+  change**: four tags existed with zero Releases, so there were no release notes a human could read
+  and no artifact this project vouched for — the two things a bare tag does not carry.
 - **It never consults `pr-review.sh gate`.** That guard reads one surface of three, so the Codex
   connector's clean pass — a `+1` with no review object — wedges it at `16` forever (**#167**,
   reproduced live on PR #187). It uses `pr-watch.sh`, which reads all three.

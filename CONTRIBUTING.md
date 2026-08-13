@@ -196,7 +196,9 @@ just watched go green*, **publishes the GitHub Release from that tag's own messa
 finishes with `baseline release roll` so the release milestone does not stay open and
 re-trigger the next `/roadmap` run.
 
-**Every tag gets a Release** (#284, D62). Versioning is still by git tag — the tag is what the
+**Every tag this procedure cuts gets a Release** (#284, D62) — an *annotated* tag, since the notes
+are its message; the pre-existing lightweight `v1.0.0` has none and is refused rather than
+special-cased, and `v1.1.0` was left unpublished deliberately. Versioning is still by git tag — the tag is what the
 Release is cut from and what its notes come from — but the Release is what carries the notes a
 human reads and a checksummed `git archive` of the tagged tree that a downstream project can
 fetch without cloning. Publishing is idempotent: re-running converges an interrupted upload

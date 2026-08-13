@@ -48,7 +48,10 @@
 #   release-state     0 absent · 10 draft · 11 published · 14 ambiguous (>1 for one tag)
 #   tag-message       0 ok · 12 signed tag (unsupported) · 13 empty message
 #   sha256            0 ok (lowercase hex on stdout)
-#   any               2 usage
+#   any               2 — usage, OR an input this library refuses to interpret (unreadable JSON, a
+#                     malformed tag object, a missing hash tool). Both are "I cannot answer", which
+#                     is the distinction the exit code carries; "the answer is no" always has its
+#                     own code above.
 
 set -u
 
@@ -93,7 +96,9 @@ usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
 # request path and an asset FILENAME, so "unvalidated" is the wrong direction to relax in.
 #
 # Hence one parser with two entry points, rather than a second spelling of the rules living in the
-# driver. `_version_format` prints the bare version and returns 0, or explains and returns 2.
+# driver. `_version_format` SETS `bare` and returns 0, or explains on stderr and returns 2. It
+# prints nothing: its callers print, because a value returned through stdout would have to be
+# captured in a command substitution, and that subshell is what makes a `return 2` unnoticeable.
 _version_format() {
   label="$1"; v="$2"
   case "$v" in
@@ -129,7 +134,8 @@ _version_format() {
 
 cmd_version_format() {
   [ "$#" -eq 1 ] || die "version-format: needs exactly <version>"
-  # NOT `bare="$(_version_format …)"`, and it does not print: a command substitution is a subshell,
+  # NOT `bare="$(_version_format …)"`, and `_version_format` does not print — it sets `bare`: a
+  # command substitution is a subshell,
   # so the function's `return 2` would be the SUBSHELL's status while this function carried on —
   # the same shape `release.sh`'s `need` header documents from #313. Called as a plain command its
   # status is this shell's to branch on, and it leaves `bare` set for the caller to print.
@@ -351,33 +357,51 @@ cmd_checks_settled() {
 # refusing loudly is the honest placeholder for work nobody has done.
 cmd_tag_message() {
   [ "$#" -eq 0 ] || die "tag-message: takes no arguments (raw tag object on stdin)"
-  # THE `X` SENTINEL IS NOT A FLOURISH. A command substitution strips EVERY trailing newline, and a
-  # trailing newline is precisely the byte this predicate exists to preserve — `$(awk …)` would
-  # silently return a message one byte shorter than the tag holds, and the release body would then
-  # differ from the annotation in the one way the acceptance criterion names. Appending a byte
-  # inside the substitution and removing it after is the portable way to keep it.
+  # BYTE OFFSETS AND `tail -c`, NOT A LINE-ORIENTED FILTER. Every line tool terminates the last
+  # line it emits, so `awk`/`sed` silently ADD a final newline to a message stored without one —
+  # reproduced by independent review: a 19-byte annotation came back as 20 bytes, which breaks the
+  # one property this predicate exists to provide. `tail -c` copies the remaining bytes verbatim,
+  # including the absence of that newline.
   #
-  # awk terminates the final line even if the input's did not, so a message stored WITHOUT a
-  # trailing newline gains one. Stated rather than hidden: `git tag -F` on a file written by any
-  # ordinary editor ends in a newline, and `release.sh` refuses an empty message file before this
-  # is ever reached.
-  msg="$(awk 'seen { print; next } /^$/ { seen = 1 }'; printf X)"
-  msg="${msg%X}"
-  # THE SIGNATURE IS CHECKED BEFORE ANYTHING IS EMITTED, so a signed tag produces no output at all.
-  # Emitting first and refusing after would hand the caller a half-written notes file alongside a
-  # non-zero status — and a caller that checked `-s` before the status would publish the signature.
-  case "$msg" in
-    *'-----BEGIN PGP SIGNATURE-----'*) return 12 ;;
-  esac
-  # Whitespace-only is empty for this purpose: it would publish a blank release body, which is the
-  # outcome "the notes are the tag message" exists to prevent.
-  case "$msg" in
-    '' | *[![:space:]]*) : ;;
-    *) return 13 ;;
-  esac
-  [ -n "$msg" ] || return 13
-  printf '%s' "$msg"
-  return 0
+  # An earlier cut used `msg="$(awk …; printf X)"` with a sentinel to protect the trailing newline
+  # from command substitution. It protected the newline and lost something else: the substitution's
+  # status became `printf`'s, so an `awk` that emitted a PARTIAL message and exited non-zero
+  # returned 0 here and the partial output was published. A guard whose failure mode is "succeed"
+  # is the one shape this repo keeps writing down.
+  tm_raw="$(mktemp)" || die "tag-message: cannot create a temporary file"
+  tm_msg="$tm_raw.msg"
+  cat > "$tm_raw" || { rm -f "$tm_raw"; die "tag-message: could not read the tag object"; }
+  # LC_ALL=C so `length()` counts BYTES. In a UTF-8 locale it counts characters, and a header with
+  # a non-ASCII tagger name would then yield an offset shorter than the header actually is,
+  # prefixing the notes with the tail of a header line.
+  tm_off="$(LC_ALL=C awk '{ n += length($0) + 1 } /^$/ { print n; exit }' "$tm_raw")" \
+    || { rm -f "$tm_raw"; die "tag-message: could not scan the tag object"; }
+  [ -n "$tm_off" ] \
+    || { rm -f "$tm_raw"; die "tag-message: no blank line separates the tag headers from the message"; }
+  tail -c "+$((tm_off + 1))" "$tm_raw" > "$tm_msg" \
+    || { rm -f "$tm_raw" "$tm_msg"; die "tag-message: could not extract the message"; }
+
+  # CHECKED BEFORE ANYTHING IS EMITTED, so a refusal produces no output at all. Emitting first and
+  # refusing after would hand the caller a half-written notes file alongside a non-zero status, and
+  # a caller that tested `-s` before the status would publish the signature.
+  #
+  # FOUR ENVELOPES, not one. Git signs tags with GPG, with SSH keys (`gpg.format = ssh`) and with
+  # X.509 via gpgsm, and the older RFC1991 path emits a PGP MESSAGE rather than a PGP SIGNATURE.
+  # A detector that knew only the modern GPG envelope would let the other three straight into the
+  # release notes while this file documented a refusal.
+  tm_rc=0
+  if LC_ALL=C grep -q -e '-----BEGIN PGP SIGNATURE-----' -e '-----BEGIN PGP MESSAGE-----' \
+                     -e '-----BEGIN SSH SIGNATURE-----' -e '-----BEGIN SIGNED MESSAGE-----' "$tm_msg"; then
+    tm_rc=12
+  elif ! LC_ALL=C grep -q '[^[:space:]]' "$tm_msg"; then
+    # Whitespace-only is empty for this purpose: it would publish a blank release body, which is
+    # the outcome "the notes are the tag message" exists to prevent.
+    tm_rc=13
+  else
+    cat "$tm_msg" || tm_rc=2
+  fi
+  rm -f "$tm_raw" "$tm_msg"
+  return "$tm_rc"
 }
 
 # --- release-state -----------------------------------------------------------------------------
@@ -441,6 +465,10 @@ cmd_release_state() {
 cmd_sha256() {
   [ "$#" -eq 1 ] || die "sha256: needs exactly <file>"
   f="$1"
+  # A leading `-` would be read as an option by `openssl dgst`, which takes no `--` terminator.
+  # Refusing is honest; silently hashing the wrong thing, or hashing nothing and parsing whatever
+  # openssl printed, is not. Callers here always pass an absolute path.
+  case "$f" in -*) die "sha256: refusing a path that begins with '-': $f" ;; esac
   [ -f "$f" ] || die "sha256: not a regular file: $f"
   out=""
   if command -v sha256sum >/dev/null 2>&1; then
