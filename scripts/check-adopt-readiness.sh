@@ -26,9 +26,14 @@
 #          issues parked in an undispositioned one.
 #      Neither was visible by reading. Both are pinned below.
 #
-# OFFLINE and HERMETIC. The library never calls gh: `probe` reads the filesystem, `tracker` reads
-# a JSON object the caller assembled. That is the whole reason the split exists, and it is what
-# lets this suite run on both CI runners with no auth. Every fixture is a `mktemp -d` tree.
+# OFFLINE and HERMETIC — and the second word had to be earned. The library never calls gh:
+# `probe` reads the filesystem, `tracker` reads a JSON object the caller assembled. Every fixture
+# is a `mktemp -d` tree. But "hermetic" also means the suite must not read the HOST, and for one
+# round it did: it inherited `$HOME` (so `adb_install_source` found the developer's install and
+# never CI's absence) and `$PATH` (so the PHP adapter resolved whatever toolchain the machine
+# shipped). Six assertions passed locally and failed on both runners. The suite now OWNS both —
+# see "THE SUITE OWNS ITS ENVIRONMENT" below — and a fixture that wants an install or a toolchain
+# builds one.
 # THE TRACKED WORKING TREE IS NEVER MUTATED — not to build a fixture, not to negative-test
 # (self-review.md's copy rule).
 #
@@ -82,6 +87,60 @@ check_exit_guard "check-adopt-readiness" "rm -rf \"$WORK\""
 # depends on a fixture's own .claude/ and the tracked tree is never a candidate.
 export ADB_STATE_DIR="$WORK/state"
 mkdir -p "$ADB_STATE_DIR"
+
+# =============================== THE SUITE OWNS ITS ENVIRONMENT ================================
+#
+# This file's header claims to be hermetic. It was not, and CI is what proved it: six assertions
+# passed on a workstation and failed on both runners, for two reasons that are the same defect
+# wearing different clothes — the suite READ host state instead of CONTROLLING it.
+#
+#   $HOME  — `adb_install_source` finds a baseline install on any developer's machine and on NO
+#            CI runner, so the `harness` rung answered `ok` here and `todo` there. Three
+#            assertions depended on that, including the e2e green path. Worse, one of them was
+#            hiding a real library bug: `--agents` token validation lived inside the
+#            install-succeeded branch, so the traversal-rejection test could not fail locally
+#            because the branch it guarded was always taken.
+#   $PATH  — the PHP adapter resolves tools by `command -v`, and `ubuntu-26.04` ships a PHP
+#            toolchain this laptop does not. A fixture that put a `phpunit` stub on PATH to CHANGE
+#            the detected gate set changed nothing there (a real `phpunit` was already resolving
+#            to the same command string), and a fixture that assumed PHP would NOT claim a repo
+#            had it claimed.
+#
+# So both are pinned here, once, for the whole suite. A test that wants an install or a toolchain
+# now BUILDS one — which is also the only way the assertion means anything, since it then asserts
+# against a known state rather than against whatever the machine happened to have.
+#
+# HOME: a controlled home carrying a COMPLETE, synthetic baseline install. Complete rather than
+# empty, because the default state a fixture inherits should be the one most assertions want — a
+# harness that resolves — and because the alternative hides bugs: with an empty default, every
+# `harness` rung answers `todo` and nothing downstream of it can ever be exercised. The assertions
+# whose subject IS an absent or partial install override HOME explicitly, and say so.
+export HOME="$WORK/home"
+SUITE_INSTALL="$WORK/suite-install"
+mkdir -p "$HOME/.claude/skills/adopt" "$HOME/.claude/scripts/lib" \
+         "$SUITE_INSTALL/agents/claude"
+: > "$SUITE_INSTALL/install.sh"
+: > "$SUITE_INSTALL/agents/claude/CLAUDE.md"
+# `adb_install_source` resolves the source by reading this SYMLINK and walking two levels up, so
+# the link is what makes the install discoverable — not the directory's contents.
+ln -sf "$SUITE_INSTALL/agents/claude/CLAUDE.md" "$HOME/.claude/CLAUDE.md"
+: > "$HOME/.claude/skills/adopt/SKILL.md"
+: > "$HOME/.claude/scripts/lib/common.sh"
+
+# PATH: a directory holding symlinks to exactly the tools this suite and the libraries under test
+# need, and nothing else. Anything absent from this list is absent from every fixture — which is
+# the point: tool availability becomes something the test states rather than something the host
+# decides. Add a tool here when a fixture genuinely needs it; do not widen it to "the host's PATH
+# plus something", which is how the original defect got in.
+PUREBIN="$WORK/purebin"; mkdir -p "$PUREBIN"
+for _t in bash sh env git jq awk sed grep find sort uniq cut tr head tail wc cat cp mv rm mkdir \
+          ln chmod printf date dirname basename mktemp xargs paste comm diff cmp shasum sha256sum \
+          readlink stat touch id uname; do
+  _p="$(command -v "$_t" 2>/dev/null)" || continue
+  ln -sf "$_p" "$PUREBIN/$_t" 2>/dev/null || true
+done
+# A PATH with NO language toolchain on it. Used by the fixtures whose subject IS tool detection.
+PURE_PATH="$PUREBIN"
 
 ar() { bash "$AR" "$@"; }
 
@@ -243,13 +302,18 @@ out="$(ar receipt check "$d")"; has "$out" "HEAD is now" "receipt: the stale rea
 d="$WORK/p-gateconf"; mkrepo "$d"
 printf '{"name":"a/b"}\n' > "$d/composer.json"
 check_git "$d" add composer.json; check_git "$d" commit -qm php
+# ON THE PURE PATH, because the SUBJECT here is tool availability. Against the host's PATH this
+# assertion was vacuous on any machine that already ships PHP: `ubuntu-26.04` does, so a real
+# `phpunit` kept resolving to the same command string after the stub was removed, the digest never
+# moved, and the test reported `ok` where it demanded `stale`. A test about which tools exist must
+# control which tools exist.
 toolbin="$WORK/gateconf-bin"; mkdir -p "$toolbin"
 printf '#!/bin/sh\nexit 0\n' > "$toolbin/phpunit"; chmod +x "$toolbin/phpunit"
-( PATH="$toolbin:$PATH"; ar receipt run "$d" >/dev/null 2>&1 )
-( PATH="$toolbin:$PATH"; ar receipt check "$d" >/dev/null 2>&1 ); eq $? 0 "receipt: ok while the detected toolchain is unchanged"
+( PATH="$toolbin:$PURE_PATH"; ar receipt run "$d" >/dev/null 2>&1 )
+( PATH="$toolbin:$PURE_PATH"; ar receipt check "$d" >/dev/null 2>&1 ); eq $? 0 "receipt: ok while the detected toolchain is unchanged"
 # Same HEAD, same (clean) tree — only the resolvable gate set moved.
-ar receipt check "$d" >/dev/null 2>&1; eq $? 10 "receipt: a changed gate CONFIGURATION makes the receipt stale"
-out="$(ar receipt check "$d")"; has "$out" "configuration changed" "receipt: the stale reason names the config"
+( PATH="$PURE_PATH"; ar receipt check "$d" >/dev/null 2>&1 ); eq $? 10 "receipt: a changed gate CONFIGURATION makes the receipt stale"
+out="$( PATH="$PURE_PATH"; ar receipt check "$d" )"; has "$out" "configuration changed" "receipt: the stale reason names the config"
 
 # A FAILING gate run still writes a receipt, and `check` reports it as failed (12) — NOT as
 # "never run". Those are different facts with different remedies, and collapsing them would make
@@ -339,12 +403,14 @@ yes $? "probe: a FAILED gate detector is unknown, never a recorded N/A"
 
 # THE POLYGLOT NOTE goes to stderr, never into the record stream — a `note` line on stdout would
 # reach `verdict`, fail the rung-name check, and kill the run on a rung nobody wrote.
+# ON THE PURE PATH too: the note fires only when PHP did NOT claim detection, and on a host that
+# ships a PHP toolchain it does claim — so this assertion silently tested nothing there.
 d="$WORK/p-mixed"; mkrepo "$d"
 printf '{"name":"a/b"}\n' > "$d/composer.json"
 printf '[gates]\nbuild = "exit 0"\n' > "$d/agents.toml"
-err="$(ar probe "$d" 2>&1 >/dev/null)"
+err="$( PATH="$PURE_PATH"; ar probe "$d" 2>&1 >/dev/null )"
 has "$err" "composer.json" "probe: a hidden PHP ecosystem is reported to the operator"
-outs="$(ar probe "$d" 2>/dev/null)"
+outs="$( PATH="$PURE_PATH"; ar probe "$d" 2>/dev/null )"
 hasnt "$outs" "composer.json" "probe: that note is NOT a record on stdout"
 printf '%s\n' "$outs" | ar verdict >/dev/null 2>&1; rc=$?
 case "$rc" in 0|10|11) ok ;; *) bad "probe: the note must not make verdict fail (rc=$rc)" ;; esac
@@ -447,6 +513,12 @@ ar probe >/dev/null 2>&1;                        eq $? 2 "probe: rejects a missi
 ar probe "$WORK/nope" >/dev/null 2>&1;           eq $? 2 "probe: rejects a non-directory"
 ar probe "$d" --agents "" >/dev/null 2>&1;       eq $? 2 "probe: rejects an empty --agents"
 ar probe "$d" --agents "../x" >/dev/null 2>&1;   eq $? 2 "probe: rejects a traversal agent token"
+# ...AND WITH NO BASELINE INSTALL PRESENT, which is every CI runner and every fresh workstation.
+# The validation loop originally lived inside the `if adb_install_source` branch, so on exactly
+# the machines where the input is least trusted it never ran — and the local suite could not see
+# it, because a developer's machine always resolves an install.
+( HOME="$WORK/no-install"; mkdir -p "$HOME"
+  ar probe "$d" --agents "../x" >/dev/null 2>&1 ); eq $? 2 "probe: rejects a traversal token even with NO install present"
 ar probe "$d" "$d" >/dev/null 2>&1;              eq $? 2 "probe: rejects two roots"
 
 # --- 4. tracker: every rung, both ways, plus the fail-closed absences ------------------------------
@@ -914,6 +986,10 @@ mut detector-failure-is-na \
     'if [ "$gstat" -ne 0 ]; then' \
     'if false; then' \
     'probe: a FAILED gate detector is unknown, never a recorded N/A'
+mut agent-token-validated-only-when-installed \
+    'die "probe: invalid agent token' \
+    ': "probe: invalid agent token' \
+    'probe: rejects a traversal token even with NO install present'
 mut harness-checks-only-the-directory \
     '      [ -e "$HOME/.$a/$doc" ] || missing="$missing $a(root-doc)"' \
     '      :' \

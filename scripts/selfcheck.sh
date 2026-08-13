@@ -469,7 +469,7 @@ add adopt-mutation      bash scripts/check-adopt.sh --mutation
 # reads live in the workflow instead.
 add adopt-readiness     bash scripts/check-adopt-readiness.sh
 
-# ...and the same guards-get-mutated rule, for the same reason: thirty-seven defects, each injected
+# ...and the same guards-get-mutated rule, for the same reason: thirty-eight defects, each injected
 # into a TREE COPY, each required to make the suite red ON ITS OWN NAMED ASSERTION. Two of them
 # are regressions of real fail-OPEN bugs this suite caught while it was being written (a gate
 # count that grepped a display string, and a jq filter whose failure was swallowed into "every

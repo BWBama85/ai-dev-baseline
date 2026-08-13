@@ -397,13 +397,21 @@ cmd_probe() {
   #   * the SKILLS TREE, which is what a `/adopt` or `/implement-issue` invocation resolves through;
   #   * `scripts/lib`, because every workflow step shells into it and a partial install that
   #     linked the docs but not the libraries fails at the first fenced block rather than at setup.
-  local src a missing=""
+  # ARGUMENT VALIDATION IS UNCONDITIONAL, and it was not. This loop used to live INSIDE the
+  # `if adb_install_source` branch below, so on any machine with no baseline install — which is
+  # every CI runner, and every first run on a new workstation — an invalid or traversal `--agents`
+  # token was never rejected at all. Input validation that only runs when an unrelated lookup
+  # succeeds is validation that is off exactly where the input is least trusted. CI caught it;
+  # the local suite could not, because the developer's machine always has an install.
+  local src a missing="" doc
+  for a in ${agents//,/ }; do
+    case "$a" in
+      ''|*[!a-z0-9-]*|-*) die "probe: invalid agent token '$a'" ;;
+    esac
+  done
+
   if src="$(adb_install_source)"; then
-    local doc
     for a in ${agents//,/ }; do
-      case "$a" in
-        ''|*[!a-z0-9-]*|-*) die "probe: invalid agent token '$a'" ;;
-      esac
       case "$a" in
         claude) doc=CLAUDE.md ;; codex) doc=AGENTS.md ;; gemini) doc=GEMINI.md ;;
         # An agent this library does not model is not a failure — it is a fact it cannot check.
