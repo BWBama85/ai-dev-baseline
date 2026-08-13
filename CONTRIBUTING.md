@@ -5,7 +5,10 @@ agent-facing quick rules live in [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS
 
 ## Prerequisites
 
-- `git`, `gh` (for issues/PRs), `jq` (install hook-wiring + gate state), and **`bash` >= 5.3**
+- `git`, `gh` (for issues/PRs), `jq` (install hook-wiring + gate state), `gzip` and a SHA-256
+  utility (`sha256sum`, `shasum` or `openssl` — the release publish step builds and checksums the
+  artifact; `release.sh preflight` checks for both at step 1 rather than after the tag is pushed),
+  and **`bash` >= 5.3**
   (a hard floor — every entry point re-execs into one or exits; see `docs/installation.md` §7).
 - `shellcheck` recommended (CI runs it; `scripts/selfcheck.sh` skips it if absent).
 - macOS, Linux, or **Windows via WSL2** on a bash-5.3 distro (Ubuntu 26.04). WSL2 *is* Linux, so

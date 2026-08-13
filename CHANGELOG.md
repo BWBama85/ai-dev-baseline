@@ -48,6 +48,14 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **It verifies by reading back**, because a create that exits 0 is not evidence the release says
     the right thing. It re-reads the release, compares the body against the tag message byte for
     byte, requires the asset set to match exactly, and re-downloads both assets to re-hash them.
+  - **A tag git signed on its own is caught before the push.** `git tag -a` signs automatically
+    under `tag.gpgSign = true` — no flag is passed and nothing asked for it — and `publish` refuses
+    a signed tag, so that version would be permanently locked out of the Release path, because a
+    pushed tag never moves. The created tag is now validated with the same predicate `publish` will
+    run, and deleted locally if it fails; nothing is pushed. Not `--no-sign`, which would silently
+    override a maintainer's security policy to get past a limitation of ours.
+  - **`preflight` checks `gzip` and a SHA-256 utility at step 1**, not at step 11 — the first
+    failure used to arrive *after* step 10 had permanently pushed the tag.
   - **It can never create a tag.** `--verify-tag` is the backstop under a `git ls-remote` guard:
     `gh release create <tag>` with no such tag on the remote mints one from the default branch's
     head, which is a permanent object this skill's own rules forbid moving.
@@ -58,18 +66,24 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     tag, so it carries no message and is refused by the same rule that protects every other caller;
     `v1.1.0` is annotated but left unpublished, as the issue's own "cosmetic" call.
 
-  `scripts/check-release-skill.sh` grows from **165 assertions to 306**, over a fixture that stands
+  `scripts/check-release-skill.sh` grows from **165 assertions to 315**, over a fixture that stands
   up a real repo, a real bare `origin`, a tag created **by the driver**, and a *simulating* `gh` that
   keeps release state on disk. That last part is what makes "re-running changes nothing" an assertion
-  rather than a hope. **23 mutations were each observed going red on their own witness**, and two of
-  them were guards that could not fail until the fixture was fixed:
+  rather than a hope. **27 mutations were each observed going red on their own witness**, and several
+  of them were guards that could not fail until the fixture or the assertion was fixed:
 
   - the fixture originally created the tag itself, which made every byte-identity assertion a
     statement about the *fixture* rather than about `cmd_tag` — deleting `--cleanup=verbatim` left
     the suite fully green. Driving `release.sh tag` put the flag under test;
   - two structural pins (`tar.umask`, `--verify-tag`) were satisfied by the **comments explaining
     them**, so deleting the real flag stayed green. They now scan comment-stripped source, the same
-    way the `$(slug)` and `need` scanners already do.
+    way the `$(slug)` and `need` scanners already do;
+  - the two new preflight checks **covered for each other** — a single shadow `PATH` missing both
+    tools stayed green when either check was deleted, because the other one still refused with a
+    message the assertion matched. There are now two shadow paths, one per tool;
+  - the auto-signed-tag case is driven with a **real SSH signature** (`gpg.format=ssh`, so it needs
+    only `ssh-keygen` and no keyring), with the capability probed and a stated SKIP where signing is
+    unavailable — an asserted success path would have proved nothing about the refusal.
 
 - **The adoption completion contract, and a verifier that fails closed** (#81; D61).
 

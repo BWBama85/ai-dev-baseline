@@ -398,6 +398,30 @@ if [ -n "$PLACEHOLDER_HIT" ]; then
   check_note "review round 1 found; the check exists so it cannot come back."
   check_fail
 fi
+# THE DOCUMENTED REGENERATION COMMAND MUST CARRY THE SAME `tar.umask` PIN THE DRIVER DOES (#284).
+#
+# SKILL.md publishes a two-line recipe for rebuilding the release artifact and checking its digest.
+# `git archive` takes mode bits from `tar.umask`, which is settable per-repo and per-user, so a
+# recipe missing the pin produces a DIFFERENT archive for a maintainer whose config differs — and
+# the advertised verification then reports a perfectly good release as corrupt. A verification
+# procedure that can raise a false alarm is worse than none, which is why it is gated rather than
+# left to review.
+#
+# SCANNED INSIDE FENCED BLOCKS ONLY, through the shared fence predicate (#136). Prose is allowed to
+# discuss `git archive`; a runnable block is what a reader copies. The `0` is the container column,
+# as in the placeholder scan above.
+ARCHIVE_UNPINNED="$(LC_ALL=C awk "$_ADB_MD_AWK"'
+  { if (adb_md_fence_delim($0, 0)) next }
+  md_fence_len && /git .*archive/ && !/tar\.umask=/ { print FILENAME ":" FNR ": " $0 }
+' "$SKILL" 2>/dev/null)"
+if [ -n "$ARCHIVE_UNPINNED" ]; then
+  check_note "a documented 'git archive' command omits the tar.umask pin the driver uses:"
+  check_note "$ARCHIVE_UNPINNED"
+  check_note "git honours tar.umask per-repo and per-user, so this recipe would regenerate a"
+  check_note "different archive and report a valid release as mismatched."
+  check_fail
+fi
+
 # The DRIVER is where the shell lives now, so the delegation invariants assert against it.
 req_fixed "$DRV" 'marker-title'      driver-uses-marker-title-predicate
 req_fixed "$DRV" 'release-ready'     driver-uses-readiness-predicate
@@ -1433,6 +1457,95 @@ MERGE_SHA=$PUB_SHA"
   pub_run tag --message-file "$work/pub-msg.txt"
   eq "$PUB_RC" 1 "tag/lightweight: refuses an existing lightweight tag even at the right commit"
   has "$PUB_ERR" "LIGHTWEIGHT" "tag/lightweight: says why rather than pushing a message-less tag"
+
+  # --- N: a tag this step CREATES must be usable as release notes, checked BEFORE the push ----------
+  # THE REAL TRAP, DRIVEN. `git tag -a` signs automatically under `tag.gpgSign = true` — no flag is
+  # passed and nothing asked for it — and `publish` refuses a signed tag, so without this check that
+  # version is permanently locked out of the Release path, because a pushed tag never moves. Found
+  # by independent review on PR #330.
+  #
+  # SIGNED WITH SSH, not GPG: `gpg.format=ssh` needs only `ssh-keygen`, so the case drives a REAL
+  # signature without depending on the developer's keyring. Capability is PROBED rather than
+  # assumed — a host or git too old for ssh signing gets a stated SKIP, because a case that
+  # silently stops exercising its subject is the failure this file exists to catch.
+  ssh-keygen -t ed25519 -N '' -f "$work/pub-sk" -q >/dev/null 2>&1
+  pub_can_sign=0
+  if [ -f "$work/pub-sk" ] \
+     && check_git "$PUB" -c gpg.format=ssh -c user.signingkey="$work/pub-sk" -c tag.gpgSign=true \
+          tag -a v3.3.3 --cleanup=verbatim -F "$work/pub-msg.txt" >/dev/null 2>&1 \
+     && [ "$(check_git "$PUB" cat-file -t v3.3.3 2>/dev/null)" = "tag" ]; then
+    check_git "$PUB" cat-file tag v3.3.3 2>/dev/null | bash "$RL" tag-message >/dev/null 2>&1 \
+      || pub_can_sign=1
+  fi
+  check_git "$PUB" tag -d v3.3.3 >/dev/null 2>&1 || true
+  if [ "$pub_can_sign" -eq 1 ]; then
+    ok
+    check_git "$PUB" config tag.gpgSign true >/dev/null 2>&1
+    check_git "$PUB" config gpg.format ssh >/dev/null 2>&1
+    check_git "$PUB" config user.signingkey "$work/pub-sk" >/dev/null 2>&1
+    pub_reset '[]' "VERSION=v4.4.4
+MERGE_SHA=$PUB_SHA"
+    pub_run tag --message-file "$work/pub-msg.txt"
+    eq "$PUB_RC" 1 "tag/auto-signed: refuses a tag git signed on its own (tag.gpgSign)"
+    has "$PUB_ERR" "cannot be used as release notes" "tag/auto-signed: says why, and names tag.gpgSign"
+    # THE LOCAL TAG IS GONE and NOTHING WAS PUSHED — the two halves that make this a safe refusal
+    # rather than a half-finished release. Deleting it is legitimate precisely because it was never
+    # pushed; leaving it would make the retry fail for a second, more confusing reason.
+    if check_git "$PUB" rev-parse -q --verify refs/tags/v4.4.4 >/dev/null 2>&1; then
+      bad "tag/auto-signed: the unusable local tag was left behind"
+    else ok; fi
+    if check_git "$PUB" ls-remote --exit-code --tags origin refs/tags/v4.4.4 >/dev/null 2>&1; then
+      bad "tag/auto-signed: an unusable tag reached origin — it can never be moved"
+    else ok; fi
+    check_git "$PUB" config --unset tag.gpgSign >/dev/null 2>&1 || true
+    check_git "$PUB" config --unset gpg.format >/dev/null 2>&1 || true
+    check_git "$PUB" config --unset user.signingkey >/dev/null 2>&1 || true
+  else
+    printf 'release-skill: SKIP — ssh tag signing unavailable here, so the auto-signed-tag case did not run\n' >&2
+    ok
+  fi
+
+  # --- O: preflight refuses when the PUBLISH step's tools are absent --------------------------------
+  # The point is WHEN, not whether: without these the first failure is at step 11, after step 10 has
+  # permanently pushed the tag.
+  #
+  # TWO SHADOW PATHS, ONE PER TOOL, because the checks COVER FOR EACH OTHER. The first cut removed
+  # both tools at once, so deleting either check left the other one refusing with a message the
+  # assertion still matched — both mutations came back green against a suite that looked thorough.
+  #
+  # Each mirror is PATH minus exactly one name, not a hand-listed allowlist: an earlier attempt
+  # enumerated the tools preflight "needs", omitted `bash` itself, and died 127 before reaching the
+  # check — a fixture failure wearing the assertion's clothes.
+  pub_shadow() {   # <dir> <name-to-omit>…
+    local dir="$1"; shift
+    mkdir -p "$dir"
+    local d f b skip
+    for d in /bin /usr/bin /usr/sbin /sbin /opt/homebrew/bin /usr/local/bin; do
+      [ -d "$d" ] || continue
+      for f in "$d"/*; do
+        b="${f##*/}"; skip=0
+        for n in "$@"; do [ "$b" = "$n" ] && skip=1; done
+        [ "$skip" -eq 1 ] && continue
+        [ -e "$dir/$b" ] || ln -s "$f" "$dir/$b" 2>/dev/null
+      done
+    done
+    cp "$PUBGH/gh" "$dir/gh" 2>/dev/null || true
+  }
+  pub_preflight_on() {   # <bin-dir> -> PUB_PRE_RC / PUB_PRE_ERR
+    PUB_PRE_RC=0
+    adb_run_bounded 60 5 env "PATH=$1" "GH_CALLS=$work/pub-calls" \
+        "GH_STATE=$PUB_STATE" "GH_ASSETS=$PUB_STORE" "GH_TAGS=$PUB_TAGS" "GH_SLUG=acme/widget" \
+        bash "$PUB_DRV" preflight > "$work/pre-out" 2> "$work/pre-err" || PUB_PRE_RC=$?
+    PUB_PRE_ERR="$(cat "$work/pre-err")"
+  }
+  pub_shadow "$work/nogzip" gzip
+  pub_preflight_on "$work/nogzip"
+  eq "$PUB_PRE_RC" 1 "preflight/no gzip: refuses at step 1 rather than at step 11"
+  has "$PUB_PRE_ERR" "gzip not found" "preflight/no gzip: names the missing tool"
+  pub_shadow "$work/nohash" sha256sum shasum openssl
+  pub_preflight_on "$work/nohash"
+  eq "$PUB_PRE_RC" 1 "preflight/no hash tool: refuses at step 1 rather than at step 11"
+  has "$PUB_PRE_ERR" "no SHA-256 utility" "preflight/no hash tool: names what it looked for"
 
   # --- MUTATION PROOF: "fails when the publish step is removed or stubbed out" -----------------------
   # The acceptance criterion, executed. Each mutation is applied to the COPIED driver and each is

@@ -316,6 +316,14 @@ cmd_preflight() {
   have_gh || die "gh not found"
   gh auth status >/dev/null 2>&1 || die "gh not authenticated"
   command -v jq >/dev/null 2>&1 || die "jq not found"
+  # THE PUBLISH STEP'S TOOLS ARE CHECKED HERE, at step 1, because the alternative is discovering
+  # them at step 11 — AFTER step 10 has permanently pushed a tag (#284, independent review). A
+  # missing `gzip` or a host with no SHA-256 utility is a workstation fact knowable in the first
+  # second of the run, and finding it out after the irreversible act is the whole failure mode this
+  # procedure is arranged to avoid.
+  command -v gzip >/dev/null 2>&1 || die "gzip not found — the publish step builds a .tar.gz release artifact"
+  command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || command -v openssl >/dev/null 2>&1 \
+    || die "no SHA-256 utility found (tried sha256sum, shasum, openssl) — the publish step checksums the release artifact"
   [ -f "$LIB/roadmap-lib.sh" ] || die "$LIB/roadmap-lib.sh missing — wrong repo?"
   assert_role
   # --tags is REQUIRED: a clone with remote.origin.tagOpt=--no-tags fetches none, so the local tag
@@ -548,6 +556,34 @@ cmd_tag() {
     # tag message" and "the notes are what the operator wrote" are the same sentence only under
     # verbatim.
     git -C "$ROOT" tag -a "$v" "$msha" --cleanup=verbatim -F "$msg" || die "could not create tag $v"
+    # THE CREATED TAG IS VALIDATED BEFORE IT IS PUSHED, and this is where `tag.gpgSign` is caught.
+    #
+    # `git tag -a` signs AUTOMATICALLY when the maintainer has `tag.gpgSign = true` — no flag is
+    # passed and nothing here asked for it. `publish` then refuses a signed tag (its signature sits
+    # inside the message region and would land in the release notes), and because a pushed tag never
+    # moves, that version would be permanently locked out of the Release path this whole issue
+    # exists to provide. Found by independent review; reproduced by setting `tag.gpgSign=true` and
+    # watching `-a` reach for a key nobody asked it to use.
+    #
+    # VALIDATED BY RUNNING THE SAME PREDICATE `publish` WILL RUN, not by reading git config. A
+    # config probe answers "is signing configured", which is a proxy; this answers the actual
+    # question — "can this tag's message be used as release notes" — and so it also covers whatever
+    # else could make the answer no.
+    #
+    # NOT `--no-sign`. Forcing signing off would silently override a maintainer's deliberate
+    # security policy to get past a limitation of ours. Refusing says which of the two has to give.
+    #
+    # The local tag is DELETED on failure, which is not a "never move a tag" violation: it was
+    # created seconds ago by this command and has never been pushed. Leaving it would make the next
+    # attempt hit the existing-tag branch above and refuse for a second, more confusing reason.
+    tg_new="$(mktemp -d)" || die "cannot create a working directory"
+    git -C "$ROOT" cat-file tag "$v" > "$tg_new/obj" 2>/dev/null       || { rm -rf "$tg_new"; git -C "$ROOT" tag -d "$v" >/dev/null 2>&1
+           die "$v was created but its tag object cannot be read — the local tag was removed"; }
+    if bash "$RLIB" tag-message < "$tg_new/obj" >/dev/null 2>&1; then rm -rf "$tg_new"; else
+      rm -rf "$tg_new"
+      git -C "$ROOT" tag -d "$v" >/dev/null 2>&1
+      die "$v was created but its annotation cannot be used as release notes — SIGNED (check \`tag.gpgSign\`), empty, or malformed. The local tag was removed; nothing was pushed."
+    fi
   fi
   git -C "$ROOT" push origin "$v" || die "could not push $v — re-run this command to retry"
   # --exit-code is REQUIRED: plain ls-remote exits 0 with EMPTY output on no match, so the

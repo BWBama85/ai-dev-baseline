@@ -139,9 +139,15 @@ of claim that is false in exactly one place nobody checks.
   `SHA256SUMS`. Regenerate and check either of them with:
 
   ```
-  git archive --format=tar --prefix=ai-dev-baseline-X.Y.Z/ vX.Y.Z^{} > a.tar
+  git -c tar.umask=0022 archive --format=tar --prefix=ai-dev-baseline-X.Y.Z/ vX.Y.Z^{} > a.tar
   gzip -n -9 -c a.tar > ai-dev-baseline-X.Y.Z.tar.gz
   ```
+
+  **`-c tar.umask=0022` is part of the command, not an optimisation.** `git archive` takes mode
+  bits from that setting, it is configurable per-repo and per-user, and the driver pins it — so a
+  maintainer whose config differs would regenerate a *different* archive and conclude a perfectly
+  good release was corrupt. A verification procedure that can report a false mismatch is worse than
+  none.
 
   `git archive` fixes every entry's mtime, uid, gid and mode from the commit, and `gzip -n` drops
   the name and timestamp — so the bytes are the same on every run of the same gzip. Across *other*
