@@ -25,13 +25,27 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   `git jq shellcheck nodejs npm ca-certificates` and no `gh` — and it is not a required context and
   runs on push, so it reported `got [1] want [2]` twice at `044adc7`, *after* v2.2.0 was tagged.
 
-  So the ordering is now pinned **structurally** in `check-release-skill.sh`: it reads the two line
+  So the ordering is now pinned **structurally** in `check-release-skill.sh`: it reads the line
   numbers from inside `cmd_publish` and fails on every host regardless of what is installed.
-  Observed failing on the real superseded ordering — `FAIL: publish parses arguments before
-  checking tools (arg loop line 666, have_gh line 635)` — per `self-review.md`'s rule that a new
-  guard is not done until it has been seen going red. Verified on a gh-less host that usage errors
-  now return 2 while valid arguments still return 1 when `gh` is genuinely absent, so the
-  dependency check is reordered rather than weakened.
+
+  **The pin anchors BOTH dependency checks, not just `have_gh`** — review caught that the first
+  version watched one of a pair, which is this same defect one rung up. `cmd_publish` moved two
+  checks; with only the `have_gh` anchor, moving `command -v jq` back above the argument loop would
+  restore exit 1 on a host that has `gh` but not `jq`, while the guard stayed green because the
+  anchor it watched had not moved — and the ordinary rc assertions would stay green too, since
+  every CI host here has `jq`. The comparison is now against the earliest of the two.
+
+  Observed failing on all three superseded orderings, each naming the anchor that moved, per
+  `self-review.md`'s rule that a new guard is not done until it has been seen going red:
+
+  ```
+  have_gh moved back → FAIL: … (arg loop line 665, have_gh line 635)
+  jq moved back      → FAIL: … (arg loop line 665, command -v jq line 635)
+  both moved back    → FAIL: … (arg loop line 666, have_gh line 635)
+  ```
+
+  Verified on a gh-less host that usage errors now return 2 while valid arguments still return 1
+  when `gh` is genuinely absent, so the dependency checks are reordered rather than weakened.
 
 ## [2.2.0] - 2026-08-13
 

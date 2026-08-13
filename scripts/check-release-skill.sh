@@ -651,16 +651,28 @@ eq "${ drv publish --version; }"      2 "publish --version requires a value"
 # a required context, and therefore reported AFTER the release was cut.
 #
 # So the ordering is pinned STRUCTURALLY, where it fails on every host regardless of what is
-# installed. Both line numbers are read from inside `cmd_publish` only, so an earlier `have_gh` in
-# some other subcommand cannot satisfy or break this.
+# installed. Every line number is read from inside `cmd_publish` only, so an earlier dependency
+# check in some other subcommand cannot satisfy or break this.
+#
+# BOTH dependency checks are anchored, not just `have_gh`. `cmd_publish` moved TWO of them, and a
+# guard that pins one of a pair is the same defect this PR is fixing, one rung up: with only the
+# `have_gh` anchor, moving `command -v jq` back above the argument loop would restore exit 1 for
+# `publish --wrong-flag` on a host that has `gh` but not `jq` — while this guard stayed green,
+# because the anchor it watches had not moved. The ordinary rc assertions would stay green there
+# too, since every CI host here has `jq`. So the comparison is against the EARLIEST dependency
+# check of the two, and each anchor is reported by name when it is the one out of order.
 pub_arg_line="$(awk '/^cmd_publish\(\)/{f=1} f && /while \[ "\$#" -gt 0 \]/{print NR; exit}' "$DRV")"
-pub_env_line="$(awk '/^cmd_publish\(\)/{f=1} f && /have_gh \|\| die/{print NR; exit}' "$DRV")"
-if [ -n "$pub_arg_line" ] && [ -n "$pub_env_line" ]; then
+pub_gh_line="$(awk  '/^cmd_publish\(\)/{f=1} f && /have_gh \|\| die/{print NR; exit}' "$DRV")"
+pub_jq_line="$(awk  '/^cmd_publish\(\)/{f=1} f && /command -v jq .* \|\| die/{print NR; exit}' "$DRV")"
+if [ -n "$pub_arg_line" ] && [ -n "$pub_gh_line" ] && [ -n "$pub_jq_line" ]; then
+  # The earliest of the two dependency checks is the one the contract turns on.
+  pub_env_line="$pub_gh_line"; pub_env_name="have_gh"
+  if [ "$pub_jq_line" -lt "$pub_env_line" ]; then pub_env_line="$pub_jq_line"; pub_env_name="command -v jq"; fi
   if [ "$pub_arg_line" -lt "$pub_env_line" ]; then ok; else
-    bad "publish parses arguments before checking tools (arg loop line $pub_arg_line, have_gh line $pub_env_line)"
+    bad "publish checks tools before parsing arguments (arg loop line $pub_arg_line, $pub_env_name line $pub_env_line)"
   fi
 else
-  bad "publish structural pin could not locate its two anchors (arg loop [$pub_arg_line], have_gh [$pub_env_line])"
+  bad "publish structural pin could not locate its anchors (arg loop [$pub_arg_line], have_gh [$pub_gh_line], jq [$pub_jq_line])"
 fi
 # The VALUE-level argument cases are driven in the publish fixture below, not here: with no run
 # state in this checkout every one of them exits 1 whether the guard works or not, so an rc-only
