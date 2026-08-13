@@ -632,9 +632,25 @@ cmd_tag() {
 # would produce, something outside this step wrote it, and that is the operator's to look at.
 cmd_publish() {
   local v msha
-  have_gh || die "gh not found"
-  command -v jq >/dev/null 2>&1 || die "jq not found"
 
+  # ARGUMENTS ARE PARSED BEFORE THE ENVIRONMENT IS CHECKED, and the order is load-bearing.
+  #
+  # It used to be the other way round, and that made the documented exit-code contract a function
+  # of the HOST rather than of the command line. `die` exits 1; a usage error exits 2. So on a box
+  # with no `gh`, `publish --wrong-flag` reported 1 — "gh not found" — for a line that is a usage
+  # error whatever tools are installed, and the caller could not tell a typo from a missing
+  # dependency.
+  #
+  # Measured on the WSL smoke runner at 044adc7, which installs `git jq shellcheck nodejs npm
+  # ca-certificates` and no `gh`: `publish rejects an unknown flag: got [1] want [2]` and
+  # `publish --version requires a value: got [1] want [2]`. Both passed on macOS and on the Ubuntu
+  # CI runners, because `have_gh` falls back to /opt/homebrew/bin and those hosts have `gh` — so
+  # the assertion was environment-dependent and only the gh-less runner could ever see it fail.
+  #
+  # `cmd_tag`, `cmd_version_guard` and `cmd_record_pr` already validated arguments first; this was
+  # the one subcommand that did not, and it is the newest (#284). Nothing below needs a tool to
+  # decide whether the command line is well-formed, so the checks lose nothing by moving.
+  #
   # `pub_have_ver`, NOT `[ -n "$pub_ver" ]`, decides the mode. Testing the VALUE means
   # `publish --version ""` selects NORMAL mode and publishes whatever `VERSION` the run state holds
   # — an empty argument silently becoming "publish the in-flight release" is the worst possible
@@ -661,6 +677,10 @@ cmd_publish() {
       *) usage >&2; exit 2 ;;
     esac
   done
+
+  # The command line is well-formed; NOW the environment has to be able to honour it.
+  have_gh || die "gh not found"
+  command -v jq >/dev/null 2>&1 || die "jq not found"
 
   if [ "$pub_have_ver" -eq 1 ]; then
     # VALIDATED, not merely accepted. This value reaches `git ls-remote`, a `repos/<slug>/...`
