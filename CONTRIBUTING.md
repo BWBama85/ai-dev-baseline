@@ -5,7 +5,10 @@ agent-facing quick rules live in [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS
 
 ## Prerequisites
 
-- `git`, `gh` (for issues/PRs), `jq` (install hook-wiring + gate state), and **`bash` >= 5.3**
+- `git`, `gh` (for issues/PRs), `jq` (install hook-wiring + gate state), `gzip` and a SHA-256
+  utility (`sha256sum`, `shasum` or `openssl` — the release publish step builds and checksums the
+  artifact; `release.sh preflight` checks for both at step 1 rather than after the tag is pushed),
+  and **`bash` >= 5.3**
   (a hard floor — every entry point re-execs into one or exits; see `docs/installation.md` §7).
 - `shellcheck` recommended (CI runs it; `scripts/selfcheck.sh` skips it if absent).
 - macOS, Linux, or **Windows via WSL2** on a bash-5.3 distro (Ubuntu 26.04). WSL2 *is* Linux, so
@@ -192,9 +195,21 @@ it now has a code home at [`.claude/skills/release/SKILL.md`](.claude/skills/rel
 — this project's own release skill, since the baseline ships none by decision #3 (D7/D14).
 It re-verifies release readiness and branch health live, refuses to cut on a red or
 unverifiable `main`, stamps the changelog through an ordinary PR, tags the *merge commit it
-just watched go green*, and finishes with `baseline release roll` so the release milestone
-does not stay open and re-trigger the next `/roadmap` run.
+just watched go green*, **publishes the GitHub Release from that tag's own message**, and
+finishes with `baseline release roll` so the release milestone does not stay open and
+re-trigger the next `/roadmap` run.
+
+**Every tag this procedure cuts gets a Release** (#284, D62) — an *annotated* tag, since the notes
+are its message; the pre-existing lightweight `v1.0.0` has none and is refused rather than
+special-cased, and `v1.1.0` was left unpublished deliberately. Versioning is still by git tag — the tag is what the
+Release is cut from and what its notes come from — but the Release is what carries the notes a
+human reads and a checksummed `git archive` of the tagged tree that a downstream project can
+fetch without cloning. Publishing is idempotent: re-running converges an interrupted upload
+instead of creating a second release. An older tag gets one with
+`.claude/skills/release/release.sh publish --version vX.Y.Z`.
 
 The manual equivalent, if you ever need it: stamp `[Unreleased]` into `## [X.Y.Z] - DATE`
 (leaving `[Unreleased]` in place and empty), repoint the link refs, ship it as a PR, then
-`git tag -a vX.Y.Z` on a green `main` and push the tag.
+`git tag -a vX.Y.Z --cleanup=verbatim -F <message-file>` on a green `main`, push the tag, and
+run the publish step above. **`--cleanup=verbatim` is not optional**: git's default deletes
+`#`-leading lines as commentary, and in a Markdown release note that is a heading.

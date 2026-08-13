@@ -1,6 +1,6 @@
 ---
 name: release
-description: Cut a tagged release of ai-dev-baseline. Verifies release readiness and branch health live, stamps CHANGELOG.md, ships it as a PR, tags the exact merge commit it watched go green, and rolls the release milestone. This is the project-owned release role that decision #3 (D7) says every adopting repo must supply for itself — the baseline ships no /release.
+description: Cut a tagged release of ai-dev-baseline. Verifies release readiness and branch health live, stamps CHANGELOG.md, ships it as a PR, tags the exact merge commit it watched go green, publishes the GitHub Release from that tag's own message, and rolls the release milestone. This is the project-owned release role that decision #3 (D7) says every adopting repo must supply for itself — the baseline ships no /release.
 argument-hint: "[--version vX.Y.Z] [--dry-run]"
 user-invocable: true
 effort: high
@@ -35,9 +35,11 @@ the tag convention.
   that; this skill refuses to proceed when they say no.
 - **It never force-pushes, never `--no-verify`, never pushes to `main` directly.** The CHANGELOG
   stamp ships as an ordinary PR through the same gates as any other change.
-- **It never publishes a GitHub Release object, a package, or a deploy.** This repo versions by
-  git tag only (`CONTRIBUTING.md` → *Releases*); v1.0.0 and v1.1.0 were both tag-only. Adding a
-  publish step is a decision change, not an implementation detail.
+- **It never publishes a package or a deploy.** It *does* publish a GitHub Release — step 11, since
+  **#284 / D62**, which reversed the tag-only decision this bullet used to state. What it still does
+  not do is push an artifact anywhere but that Release: no registry, no image, no deployment.
+- **It never creates or moves a tag while publishing.** `publish` refuses unless the tag is already
+  on origin, and passes `--verify-tag` so that `gh` cannot mint one from the default branch's head.
 - **It never edits the roadmap artifact.** `/roadmap` owns that. This skill's last act is
   `baseline release roll`, which mutates milestones only.
 
@@ -75,7 +77,8 @@ so an interrupted release is **resumable** and a failed tag push can simply be r
 | 8 | `… release.sh await-review` | waits for the declared reviewer, then **settles** the reviewed head's check set and records it |
 | 9 | `… release.sh merge` → `… release.sh verify-merge` | re-verifies readiness against the pin, merges pinned to the reviewed head, then settles + health-checks the **merge commit** |
 | 10 | *(you)* write the tag message to a file, then `… release.sh tag --message-file <path>` | see *The tag message* below |
-| 11 | `… release.sh roll` | revalidates the pinned milestone, rolls it, clears the run state |
+| 11 | *(you)* `… release.sh publish` | publishes the GitHub Release from that tag — see *The release* below |
+| 12 | `… release.sh roll` | revalidates the pinned milestone, rolls it, clears the run state |
 
 ### The version
 
@@ -105,14 +108,95 @@ It is a **file, never an inline `-m`**: the paragraph is Markdown and routinely 
 and inside a double-quoted `-m` the shell would run each backticked fragment as command
 substitution — executing changelog text and corrupting the message.
 
+The tag is created with **`--cleanup=verbatim`**, and that is not cosmetic. Git's default cleanup
+treats a `#`-leading line as commentary and **deletes it** — in Markdown that is a heading, i.e.
+ordinary content. Measured: an 80-byte message containing one `# A markdown heading line` was
+stored as **54 bytes**, with that line simply gone and nothing said. Verbatim also makes the stored
+annotation byte-identical to your file, which is what lets step 11 read the notes back out of the
+tag instead of depending on a file that may not exist by then.
+
+### The release
+
+`release.sh publish` creates the GitHub Release for the tag step 10 just pushed. **You run it**, the
+same way you run the tag step — it is the second irreversible, outward-facing act in this procedure,
+and it gets the same confirmation the first one does. `--dry-run` prints exactly what it would do
+(state, commit, notes size, asset digests) and makes **no GitHub write and no run-state write**. It
+is not inert: like every other subcommand it runs `git fetch --prune --tags origin` first, so local
+remote-tracking refs and tags are updated. Say that rather than "mutates nothing", which is the kind
+of claim that is false in exactly one place nobody checks.
+
+- **The notes are the tag's own message, byte for byte.** Not the changelog, not a regenerated
+  summary: `publish` reads the annotation off the tag object itself — by byte offset, so a message
+  stored without a final newline does not silently gain one, and a CRLF message is preserved as it
+  is. The tag is the one place that prose durably lives, so a backfill years later still has it.
+  Three things make "byte for byte" hold rather than merely be asserted: `--cleanup=verbatim` when
+  the tag is written, an identity check when a **pre-existing** tag is resumed (its annotation must
+  equal the message file, and a lightweight one is refused), and a raw comparison of the published
+  body — carriage returns are **not** normalized away, they are diagnosed separately.
+- **It publishes the commit the tag points at**, re-verified against the `MERGE_SHA` this run
+  pinned in step 9, and re-checked to be an ancestor of the default branch.
+- **Two assets:** `ai-dev-baseline-<X.Y.Z>.tar.gz` — `git archive` of the tagged tree — and
+  `SHA256SUMS`. Regenerate and check either of them with:
+
+  ```
+  git -c tar.umask=0022 archive --format=tar --prefix=ai-dev-baseline-X.Y.Z/ vX.Y.Z^{} > a.tar
+  gzip -n -9 -c a.tar > ai-dev-baseline-X.Y.Z.tar.gz
+  ```
+
+  **`-c tar.umask=0022` is part of the command, not an optimisation.** `git archive` takes mode
+  bits from that setting, it is configurable per-repo and per-user, and the driver pins it — so a
+  maintainer whose config differs would regenerate a *different* archive and conclude a perfectly
+  good release was corrupt. A verification procedure that can report a false mismatch is worse than
+  none.
+
+  `git archive` fixes every entry's mtime, uid, gid and mode from the commit, and `gzip -n` drops
+  the name and timestamp — so the bytes are the same on every run of the same gzip. Across *other*
+  gzip implementations they may not be, which is exactly why the digest is published rather than
+  the property merely asserted. What goes *in* the artifact is #285's decision; this step owns only
+  that a checksummed, regenerable one is published at all.
+
+  **The operational consequence, so it is not a surprise:** verification re-builds the artifact and
+  compares digests, so re-running `publish` against an already-published release **from a machine
+  with a different gzip** can refuse a release that is perfectly fine. That is the fail-closed
+  direction on purpose — the alternative is blessing a digest nobody checked — but if you hit it,
+  re-run from the machine that cut the release rather than clobbering the asset.
+- **It is idempotent and resumable**, in the three states a release can be in — within one
+  toolchain. The one thing it does **not** promise: because verification rebuilds the artifact and
+  compares digests, a re-run from a machine with a different gzip can refuse. See the note above. `gh release create`
+  with assets internally creates a draft, uploads, then publishes — so an interrupted upload leaves
+  a **draft**, and re-running converges it rather than creating a second release.
+
+  | Found | Done |
+  |---|---|
+  | no release | create it, with both assets and the notes, in one call |
+  | a **draft** | upload only the assets that are missing, verify, then publish it |
+  | a **published** release | verify only — notes and both digests. Never edit, delete or `--clobber` |
+
+  A published release that does **not** match is a refusal, not a repair: `--clobber` deletes an
+  asset before replacing it, so "fixing it up" has a window with neither.
+- **It verifies by reading back.** A create that exits 0 is not evidence the release says the right
+  thing, so `publish` re-reads it, compares the stored body against the tag message byte for byte,
+  requires the asset set to match *exactly* (an extra asset is a refusal), and re-downloads both
+  assets to re-hash them. Asking GitHub what it thinks the checksum is would verify nothing.
+
+**Backfilling an older tag** — `… release.sh publish --version vX.Y.Z` — publishes a release for a
+tag pushed long ago. It pins on the **peeled remote tag** rather than run state (a historical tag
+has no `VERSION`/`MERGE_SHA`; `roll` deleted them), defaults to **not** Latest, and writes nothing
+back to the run state, so it is safe to run while another release is in flight. A **lightweight**
+tag is refused: it carries no message, and the message is the notes. `v1.0.0` is lightweight, which
+is why it has no release.
+
 ## What this skill does NOT do
 
 - **It never decides readiness or health itself** — `roadmap-lib.sh` owns both, and the driver
   refuses when they say no.
 - **It never force-pushes, never `--no-verify`, never pushes to the default branch.** The stamp
   ships as an ordinary PR through the same gates as any other change.
-- **It never publishes a GitHub Release, a package, or a deploy.** This repo versions by git tag
-  only; v1.0.0 and v1.1.0 were both tag-only. Adding one is a decision change.
+- **It never publishes a package or a deploy**, and it publishes a GitHub Release only from a tag
+  that is already on origin. This bullet used to say the opposite — that the repo versions by git
+  tag only and that adding a publish step would be a decision change. **#284 / D62 is that decision
+  change**: four tags existed with zero Releases, so there were no release notes a human could read
+  and no artifact this project vouched for — the two things a bare tag does not carry.
 - **It never consults `pr-review.sh gate`.** That guard reads one surface of three, so the Codex
   connector's clean pass — a `+1` with no review object — wedges it at `16` forever (**#167**,
   reproduced live on PR #187). It uses `pr-watch.sh`, which reads all three.
@@ -127,4 +211,7 @@ substitution — executing changelog text and corrupting the message.
 | step 8 | re-run from step 9 |
 | step 9 (merged, untagged) | re-run `verify-merge`, then step 10 |
 | step 10 (tag created, push failed) | re-run `release.sh tag --message-file <path>` — it is idempotent, and `version-guard` exits **3** to route you here |
-| step 10 (tag pushed) | **run step 11** — the easy one to forget; without it `/roadmap` re-emits the cut forever |
+| step 10 (tag pushed, no release) | run `release.sh publish` — the tag is the input, so nothing is lost |
+| step 11 (upload interrupted → a **draft** exists) | re-run `release.sh publish` — it uploads only what is missing, then publishes the draft |
+| step 11 (release published) | **run step 12** — the easy one to forget; without it `/roadmap` re-emits the cut forever |
+| step 11 skipped, step 12 already run | the run state is gone, so use the backfill path: `release.sh publish --version vX.Y.Z` |

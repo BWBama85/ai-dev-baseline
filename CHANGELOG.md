@@ -9,6 +9,96 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **`/release` publishes an actual GitHub Release, reversing the tag-only decision** (#284; D62).
+
+  Four tags existed and `gh release list` returned nothing. `SKILL.md` said so on purpose — twice —
+  and called adding a publish step "a decision change". This is that decision change. Be precise
+  about what a tag does *not* give you, because it does give you some of this: GitHub serves a
+  source archive for any tag, and a tag is itself a pin. What it has no place for is **notes a
+  human reads** and a **checksummed artifact this project vouches for** — so the release-pinned
+  install slice (#285) had nothing project-owned to install *from*, and the documented install path
+  stayed what it is today: a live clone of the development repo tracking `main`.
+
+  `release.sh publish` is step 11; `roll` renumbers to 12 and now **refuses without the publish
+  receipt**, because `roll` deletes the run state as its last act — a release rolled before it was
+  published can only ever be published through the backfill path afterwards.
+
+  - **The notes are the tag's own message, byte for byte.** Not the changelog and not a regenerated
+    summary: `publish` reads the annotation off the tag object, which is the one place that prose
+    durably lives and the only one that still exists for a backfill years later.
+  - **`git tag -a` now passes `--cleanup=verbatim`, and that fixes a live defect.** Git's default
+    cleanup treats a `#`-leading line as commentary and **deletes it** — in Markdown that is a
+    heading. Measured on a throwaway repo: an 80-byte message containing one
+    `# A markdown heading line` was stored as **54 bytes**, with the line simply gone and nothing
+    said. Every annotated tag this repo has cut was written under that default. (Whether any of
+    them actually lost a line is unknowable — the message files are gone, which is part of the
+    point: nothing recorded what was dropped.)
+  - **Two assets, and "reproducible" is claimed exactly as far as it holds.** A `git archive` of the
+    tagged tree plus `SHA256SUMS`. `git archive` fixes every entry's mtime/uid/gid/mode from the
+    commit and `gzip -n` drops the name and timestamp, so runs of the same gzip agree — measured,
+    byte-identical. Across *other* gzip implementations they may not, which is why the digest is
+    published rather than the property merely asserted. What goes *in* the artifact is #285's
+    decision; this owns only that a checksummed, regenerable one is published at all.
+  - **Idempotent in the three states a release can be in.** `gh release create` with assets
+    internally creates a draft, uploads, then publishes — so an interrupted upload leaves a **draft**,
+    and that is the state that must converge rather than produce a second release. absent → create;
+    draft → upload only what is missing, verify, publish; published → verify only. A published
+    release that does not match is a **refusal, not a repair**: `--clobber` deletes an asset before
+    replacing it, so "fixing it up" has a window with neither.
+  - **It verifies by reading back**, because a create that exits 0 is not evidence the release says
+    the right thing. It re-reads the release, compares the body against the tag message byte for
+    byte, requires the asset set to match exactly, and re-downloads both assets to re-hash them.
+  - **A tag git signed on its own is caught before the push.** `git tag -a` signs automatically
+    under `tag.gpgSign = true` — no flag is passed and nothing asked for it — and `publish` refuses
+    a signed tag, so that version would be permanently locked out of the Release path, because a
+    pushed tag never moves. The created tag is now validated with the same predicate `publish` will
+    run, and deleted locally if it fails; nothing is pushed. Not `--no-sign`, which would silently
+    override a maintainer's security policy to get past a limitation of ours.
+  - **`preflight` checks `gzip` and a SHA-256 utility at step 1**, not at step 11 — the first
+    failure used to arrive *after* step 10 had permanently pushed the tag.
+  - **It can never create a tag.** `--verify-tag` is the backstop under a `git ls-remote` guard:
+    `gh release create <tag>` with no such tag on the remote mints one from the default branch's
+    head, which is a permanent object this skill's own rules forbid moving.
+  - **Backfilling** (`publish --version vX.Y.Z`) pins on the peeled remote tag rather than run state,
+    defaults to **not** Latest, and writes nothing back — a backfill run in a checkout with a release
+    in flight must not stamp `PUBLISHED` over that release's state. `v2.1.0` and `v2.0.0` are
+    backfilled — both are live, verified, and `v2.1.0` holds Latest. `v1.0.0` is a **lightweight**
+    tag, so it carries no message and is refused by the same rule that protects every other caller;
+    `v1.1.0` is annotated but left unpublished, as the issue's own "cosmetic" call.
+
+  `scripts/check-release-skill.sh` grows from **165 assertions to 315**, over a fixture that stands
+  up a real repo, a real bare `origin`, a tag created **by the driver**, and a *simulating* `gh` that
+  keeps release state on disk. That last part is what makes "re-running changes nothing" an assertion
+  rather than a hope. **27 mutations were each observed going red on their own witness**, and several
+  of them were guards that could not fail until the fixture or the assertion was fixed:
+
+  - the fixture originally created the tag itself, which made every byte-identity assertion a
+    statement about the *fixture* rather than about `cmd_tag` — deleting `--cleanup=verbatim` left
+    the suite fully green. Driving `release.sh tag` put the flag under test;
+  - two structural pins (`tar.umask`, `--verify-tag`) were satisfied by the **comments explaining
+    them**, so deleting the real flag stayed green. They now scan comment-stripped source, the same
+    way the `$(slug)` and `need` scanners already do;
+  - the two new preflight checks **covered for each other** — a single shadow `PATH` missing both
+    tools stayed green when either check was deleted, because the other one still refused with a
+    message the assertion matched. There are now two shadow paths, one per tool;
+  - the fixture read the developer's **global git config**. `check_git` passes an identity to the
+    commands the suite runs, but the *driver* runs its own `git tag -a`, so the identity came from
+    whatever the host had — and a runner has none and cannot auto-detect one (unqualified hostname).
+    Green on every workstation, red only on CI. The fixture now runs with `GIT_CONFIG_GLOBAL` and
+    `GIT_CONFIG_SYSTEM` pointed at a file that sets `user.useConfigOnly = true`, which forbids the
+    auto-detection a workstation silently relies on: deleting the fixture's own identity now fails
+    **locally**, with the runner's exact error. The build also reports *which* of eighteen steps
+    failed — one opaque line had cost a full CI round-trip that bought no information;
+  - the shadow-`PATH` fixture `cp`d its `gh` stub over a symlink to the **real** `gh`, and `cp`
+    writes *through* a symlink. Homebrew's Cellar binary is `-r-xr-xr-x`, so the write failed with
+    EACCES, `2>/dev/null || true` swallowed it, and the shadow `PATH` silently kept the real `gh` —
+    which is authenticated on a workstation and not on a runner, so the case passed locally for the
+    wrong reason and failed on CI. `gh` is now always omitted from the mirror and the stub's
+    placement is checked;
+  - the auto-signed-tag case is driven with a **real SSH signature** (`gpg.format=ssh`, so it needs
+    only `ssh-keygen` and no keyring), with the capability probed and a stated SKIP where signing is
+    unavailable — an asserted success path would have proved nothing about the refusal.
+
 - **The adoption completion contract, and a verifier that fails closed** (#81; D61).
 
   `/adopt` (#20) answers *"what does this project already have, and what must be reconciled"*. It
