@@ -27,27 +27,35 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   `/implement-issue` preflight calls it right after the post-merge auto-sync — the first moment the
   repair is both legal and credentialed — and treats every exit code as non-fatal.
 
-  Four properties make an unattended branch-protection write defensible, and each is pinned by a
-  test that was **observed going red** when its rule is deleted:
+  These properties make an unattended branch-protection write defensible, and each is pinned by a
+  test **observed going red** when its rule is deleted:
 
-  - **Opt-in, default off.** `[repo] reconcile-required-checks = true`, read from the repo's own
-    `agents.toml` and never the global one, and checked *before any network call*.
-  - **Default-branch tip only.** `HEAD` must equal the branch's *remote* tip, compared against the
-    API rather than a local `origin/<b>` ref. Anywhere else, discovery and the required set describe
-    two different trees, and writing the difference is D48's phantom-context trap.
-  - **Additions only.** `--prune` is refused by name; a renamed job stays the reviewed
-    `baseline repo apply --prune` case.
-  - **Verified by re-reading.** The PATCH body is a whole `contexts` array, so a concurrent writer
-    can overwrite the addition while the API still answers 2xx. An unconfirmed write is `20`.
+  - **Opt-in, default off.** `[repo] reconcile-required-checks`, read from the repo's own
+    `agents.toml` and never the global one, checked *before any network call*. Only the bare TOML
+    boolean `true` enables it — the string `"true"` does not.
+  - **The tree must BE the default-branch tip.** `HEAD` must equal the branch's *remote* tip **and**
+    the workflow directory must be clean, because the commit is not the tree: discovery reads
+    working files, so an uncommitted workflow would require a context that exists on no branch.
+    Re-proved immediately before the write, since the branch can advance while the run prepares.
+  - **Additions only, and not redirectable.** `--prune` is refused by name; so are `--branch` and
+    `--workflow-dir`, which would move the target or the discovery source off the gated tree. An
+    unprotected branch is refused too — standing protection up writes PR-review policy, not just
+    contexts.
+  - **Verified by re-reading**, against the whole intended set rather than only the additions, so a
+    write that adds the new jobs and drops a preserved external context is caught.
 
   **What this does not do, said plainly:** nothing fires at merge time, so #333's literal criterion
   ("reconcile with no human command") is not met and was not faked. The drift's lifetime drops from
-  "until a human reads a red check" to "until the next entry into the loop". See D63.
+  "until a human reads a red check" to "until the next entry into the loop" — an improvement, not a
+  time bound, since nothing schedules that next run. See D63.
 
-  The mutation suite earned its keep immediately: the mutant copy was first written to a bare temp
-  dir, where `repo-settings.sh` cannot find `common.sh` beside it and exits 1 having run nothing —
-  so all six assertions passed because `1 != 16` and proved nothing. Caught only by neutering the
-  mutator and checking the assertions went red, which they did not.
+  Nine mutations pin the rules, including one that deletes the preflight **call** — the only one that
+  reproduces #333's actual failure, a detector nothing consumes. The exercise earned its keep twice
+  over: the mutant copy was first written to a bare temp dir, where `repo-settings.sh` cannot find
+  `common.sh` beside it and exits 1 having run nothing, so every assertion passed because `1 != 16`;
+  and four witnesses were merely "not the expected code", which any incidental failure satisfies.
+  Neither was visible from a green run — both surfaced only by neutering the mutator and checking the
+  assertions went red, which they did not.
 
 ### Fixed
 

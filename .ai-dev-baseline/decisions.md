@@ -5078,10 +5078,17 @@ limit: none of them is sufficient alone.
              which is exactly the blast radius default-off exists to prevent. The declaration is
              checked BEFORE any network call, so a repo that never opted in pays nothing.
 
-             **Bounded to additions.** `--prune` is refused BY NAME rather than falling through to
-             the generic unknown-option arm, because it is a real flag on `apply` and the generic
-             message would misstate why it cannot be used here: pruning DELETES contexts this tool
-             did not discover, an external provider's among them. And the verdict is delegated to
+             **Bounded to additions, and bounded in what it may be pointed at.** `--prune` is refused
+             BY NAME rather than falling through to the generic unknown-option arm, because it is a
+             real flag on `apply` and the generic message would misstate why it cannot be used here:
+             pruning DELETES contexts this tool did not discover, an external provider's among them.
+             `--branch` and `--workflow-dir` are refused for a sharper reason (independent-review
+             find): the first moves the TARGET off the default branch and the second moves DISCOVERY
+             off the gated tree, so either one alone turns "these are one tree" — the proof the whole
+             design rests on — into an unchecked claim. An UNPROTECTED branch is refused for the same
+             family of reason: with no required-checks sub-resource to PATCH, the write becomes the
+             full protection PUT, which establishes PR-review and conversation-resolution policy, and
+             that is not an additions-only repair however it is spelled. And the verdict is delegated to
              `cmd_required_drift` rather than re-derived, so the repair can never be shallower than
              the lint that gates it — every fail-closed subtlety (opaque protection, ruleset
              branches, blind discovery, #24's no-CI repo) is inherited rather than re-implemented.
@@ -5107,13 +5114,31 @@ limit: none of them is sufficient alone.
              `/implement-issue`". Reaching the literal criterion needs the credential decision above.
 
              The second half of the criterion — "observe it going red on a job it should have caught
-             and did not" — **is** met, and it earned its keep. Six mutations each delete one rule
-             (the tip gate, the declaration check, the union, the read-back, the named `--prune`
-             refusal, the admin probe) and each is required to make its own assertion fail. Building
-             that found a real defect in the harness itself: the mutant copy was written to a bare
-             temp dir, where `repo-settings.sh` cannot find `common.sh` beside it and `exit 1`s
-             having executed nothing — so all six assertions "passed" because 1 is not 16, and the
-             mutation suite proved exactly nothing. It was caught only by neutering `rc_mutate` into
-             a plain `cp` and checking that the assertions went red, which they did not. A guard
-             that cannot fire is indistinguishable from a guard that found nothing wrong.
+             and did not" — is met **in the sense the guard rule means**, and the distinction is
+             worth stating because the first draft of this entry overstated it (independent review
+             caught that too). Nine mutations each delete one rule and are each required to make
+             their own assertion fail: the tip gate, the worktree-cleanliness half of it, the
+             declaration check, the union, the read-back, the named `--prune` refusal, the scoping-
+             flag refusal, the admin probe — and **M9, which deletes the preflight CALL itself**.
+             M9 is the one that reproduces #333's actual failure, *"the detector fired and nothing
+             consumed it"*; the other eight test rules inside a library that did not exist when the
+             issue was filed. What is still NOT reproduced by any of them is the end-to-end scenario
+             the issue describes — introduce a job, merge it, watch the required set change — because
+             that needs a live repository and the credential decision above.
+
+             **A witness that is merely "not the expected code" is not a witness**, and the first
+             version of four of these was exactly that. Any incidental failure — a syntax error, a
+             missing fixture, an aborted start — returns 1, satisfies `rc != 16`, and reports the
+             guard as observed. They now assert the SIDE EFFECT the deleted rule was preventing: a
+             recorded `PATCH`, an API request that should not have happened, an exact `0`.
+
+             Building this found two real defects in the harness itself, both of the same shape as
+             the bug the harness exists to catch. The mutant copy was first written to a bare temp
+             dir, where `repo-settings.sh` cannot find `common.sh` beside it and `exit 1`s having
+             executed nothing — so all the assertions "passed" because 1 is not 16, and the mutation
+             suite proved nothing. And the first suite passed `--workflow-dir` on every scenario,
+             which normalized the very shape that option had to be refused for. Neither was caught by
+             running the suite; both were caught by neutering the mutator and checking that the
+             assertions went red, which they did not. A guard that cannot fire is indistinguishable
+             from a guard that found nothing wrong.
 - baseline-issue: n/a — this repo IS the baseline; #333 is the tracking issue.

@@ -318,31 +318,46 @@ runs where admin rights already exist: a **local workflow run**, on the operator
 
 **The honest consequence, stated rather than glossed:** nothing fires the instant a job merges. The
 drift's lifetime goes from *"until a human reads a red check"* to *"until the next entry into the
-loop"*, which is bounded and usually minutes — but it is not zero, and a repo that adds a CI job and
-then never runs the loop again stays drifted.
+loop"*. That is a real improvement and it is **not a time bound**: nothing schedules the next
+`/implement-issue`, so a repo that adds a CI job and then never runs the loop again stays drifted
+indefinitely.
 
-### The two gates that make an unattended write safe
+### The gates that make an unattended write safe
 
 | Gate | Effect |
 |---|---|
-| `[repo] reconcile-required-checks = true` in the repo's **own** `agents.toml` | Off by default. Checked **before any network call**, so a repo that never opted in pays nothing. Never read from the global manifest — a global opt-in would arm this in every repository the operator touches. |
-| `HEAD` must equal the default branch's **remote** tip | Discovery reads the checked-out tree; the required set belongs to the default branch. Anywhere else those are two different trees, and writing the difference is the phantom-context trap of *"Which event asks the question"* below — requiring a context before any job reports it blocks every merge until an admin clears it. Compared against the API's `commit.sha`, never a local `origin/<b>` ref, which is only as fresh as the last fetch. |
+| `[repo] reconcile-required-checks = true` in the repo's **own** `agents.toml` | Off by default, and **only the bare TOML boolean** `true` enables it — `"true"`, `1`, `yes` and a typo all read as off, because for a switch that authorizes an unattended remote write anything not exactly `true` must fail safe. Checked **before any network call**, so a repo that never opted in pays nothing. Never read from the global manifest — a global opt-in would arm this in every repository the operator touches. |
+| The tree must **be** the default branch's remote tip | Two facts, because *the commit is not the tree*: `HEAD` must equal the branch's tip **and** the workflow directory must have no uncommitted changes. Discovery reads working files, so an uncommitted workflow would introduce a context that exists on no branch — the same phantom-context deadlock, reached through the gate instead of around it. Compared against the API's `commit.sha`, never a local `origin/<b>` ref, which is only as fresh as the last fetch. |
+| Re-proved **immediately before the write** | Discovery, the protection read and the admin probe all happen after the first check, so the branch can advance in that window. A tip that moved means the discovered contexts describe a stale tree: the run refuses rather than writing them. |
+| No `--branch`, no `--workflow-dir` | Both are accepted by `apply` and **refused** here. `--workflow-dir` moves discovery off the gated tree; `--branch` moves the target off the default branch. Either one turns *"these are one tree"* into an unchecked claim, which is the only thing making an unattended write safe. |
 
 It is **additions-only**: `--prune` is refused *by name*, because deleting a context this tool did
 not discover — an external provider's — is not a safe unattended write. A renamed or removed job
 stays the reviewed case, `baseline repo apply --prune`.
 
-And it **verifies by re-reading**. The PATCH body is a whole `contexts` array rather than an
-add-one operation, so a concurrent `reconcile` or `apply` can read the same old set and overwrite
-this addition while the API still answers 2xx. An unconfirmed write reports `20`, never success.
+An **unprotected** branch is refused rather than repaired. There is no required-checks sub-resource
+to `PATCH` there, so the write would take the full protection `PUT`, which also establishes a
+PR-review and conversation-resolution policy. That is much wider than an additions-only repair, and
+standing protection up is a decision an operator makes once, deliberately: `baseline repo apply`.
+
+And it **verifies by re-reading** — against the whole set it meant to write, not just the additions.
+The PATCH body is a complete `contexts` array rather than an add-one operation, so a concurrent
+`reconcile` or `apply` can read the same old set and overwrite this addition while the API still
+answers 2xx; checking only the new names would also miss a write that added them and dropped a
+preserved external context. An unconfirmed write reports `20`, never success.
 
 | Code | Meaning |
 |---|---|
 | `0` | in sync — or reconciled **and** confirmed by re-reading |
-| `16` | refused: `HEAD` is not the default branch's tip |
+| `16` | refused: this tree is not the branch tip (`HEAD` differs, or the workflow dir is dirty) |
 | `17` | skipped: the repo has not declared `reconcile-required-checks` (the default) |
 | `18` | refused: real drift, but this token is not admin — names the manual command |
-| `20` | unreadable state, failed discovery, or an unconfirmed write — **fail closed** |
+| `19` | refused: the branch has no protection; standing it up writes policy, not just contexts |
+| `20` | unreadable state, failed discovery, a branch that moved mid-run, or an unconfirmed write — **fail closed** |
+
+Every write emits **one audit line** naming the repo, branch, head, the authenticated actor, the
+contexts added (JSON-encoded, because a context name legitimately contains a space) and the count
+the branch requires afterwards — read back, not intended.
 
 `/implement-issue` preflight calls it immediately after its post-merge auto-sync, which is the first
 moment the repair is both legal and credentialed, and treats **every** code as non-fatal: a settings

@@ -33,10 +33,13 @@
 #                                        # drifted context names (one per line) and no prose, so a
 #                                        # caller can name them without parsing — or repeating — a
 #                                        # remedy that is wrong for its branch (#165)
-#   repo-settings.sh reconcile [--dry-run] [--branch NAME] [--workflow-dir DIR]
+#   repo-settings.sh reconcile [--dry-run]
 #                                        # REPAIR the drift the lint above only reports (#333).
-#                                        # Opt-in per repo, additions-only, and refuses unless HEAD
-#                                        # is the default branch's tip. See cmd_reconcile.
+#                                        # Opt-in per repo, additions-only, and refuses unless this
+#                                        # CLEAN checkout is the default branch's tip. Takes NEITHER
+#                                        # --branch NOR --workflow-dir: choosing the target or the
+#                                        # discovery source separately is what would defeat that
+#                                        # proof. See cmd_reconcile.
 #   repo-settings.sh merge-flag          # the `gh pr merge` flag this repo allows (--squash/…)
 #   repo-settings.sh branch-required-contexts
 #                                        # branch JSON on stdin -> the required contexts as a JSON
@@ -92,10 +95,13 @@
 # cannot hold `administration`), so it runs where admin credentials already exist — a local
 # workflow run — gated on the repo declaring it and on HEAD being the default branch's tip:
 #   0  in sync, or reconciled AND verified by re-reading
-#   16 refused — HEAD is not the default branch's tip (writing from another tree is D48's trap)
+#   16 refused — this tree is not the default branch's tip: HEAD differs, or the workflow directory
+#                has uncommitted changes (writing from another tree is D48's trap)
 #   17 skipped — the repo does not declare `[repo] reconcile-required-checks = true`
 #   18 refused — real drift, but this token is not admin
-#   20 unknown — unreadable state, failed discovery, or an unconfirmed write; FAIL CLOSED
+#   19 refused — the branch has NO protection; standing it up writes policy, not just contexts
+#   20 unknown — unreadable state, failed discovery, a branch that moved mid-run, or an unconfirmed
+#                write; FAIL CLOSED
 #
 # It reads the live set through the ORDINARY branch endpoint (`repos/{slug}/branches/{branch}`),
 # NOT the admin-only `/protection` one, because its home is a CI job running as GITHUB_TOKEN —
@@ -744,6 +750,14 @@ phantom_contexts() { LC_ALL=C comm -13 <(nz "$1") <(nz "$2"); }
 # ungated_contexts <want> <live> — discovered jobs that are NOT required, i.e. gating nothing.
 ungated_contexts() { LC_ALL=C comm -23 <(nz "$1") <(nz "$2"); }
 
+# union_contexts <discovered> <kept> — the ADDITIONS-ONLY set every non-prune write sends: the
+# discovered jobs plus the required contexts this tool did not discover, deduped and C-sorted to the
+# one collation `comm` needs. ONE home, because `apply` and `reconcile` both need it and a
+# preservation fix landing in only one of them is a silently deleted external provider on the other
+# (independent-review find). The sort is not cosmetic: the result feeds `ungated_contexts` on the
+# verification path, and `comm` yields WRONG SETS rather than an error on differently-collated input.
+union_contexts() { printf '%s\n%s\n' "$1" "$2" | sed '/^$/d' | LC_ALL=C sort -u; }
+
 # shared_contexts <a> <b> — the intersection, the third sibling of the two above. Kept here with
 # them so `nz` and the C collation have one home: both operands must be sorted the same way, and
 # restating that per call site is how one of them eventually gets it wrong.
@@ -1182,7 +1196,7 @@ cmd_apply() {
     adb_info "  keeping $(nlines "$kept") required context(s) this tool did not discover"
     adb_info "    (an external CI provider? re-run with --prune if a job was renamed or removed)"
     printf '%s\n' "$kept" | sed 's/^/    ~ /'
-    ctx="$(printf '%s\n%s\n' "$ctx" "$kept" | sed '/^$/d' | LC_ALL=C sort -u)"
+    ctx="$(union_contexts "$ctx" "$kept")"
   elif [ -n "$kept" ]; then
     adb_info "  --prune: dropping $(nlines "$kept") required context(s) no discovered job reports"
     printf '%s\n' "$kept" | sed 's/^/    - /'
@@ -1621,14 +1635,55 @@ _adb_rs_reconcile_declared() {
   toml="$(adb_repo_root)/agents.toml"
   [ -f "$toml" ] || return 1
   raw="$(adb_toml_get "$toml" repo reconcile-required-checks)" || return 1
-  # `true` is the ONLY enabling value. Anything else — `false`, `"true"`, `1`, `yes`, a typo — is
-  # not a declaration, and the fail-safe direction for an unattended remote write is off.
-  [ "$(adb_toml_unquote "$raw")" = "true" ] || return 1
+  # THE RAW VALUE, DELIBERATELY NOT UNQUOTED (independent-review find). The bare TOML boolean `true`
+  # is the only enabling value: `false`, `1`, `yes`, a typo — and the STRING `"true"` — are all off.
+  # This line previously ran the value through `adb_toml_unquote`, which turns `"true"` into `true`,
+  # so a quoted string authorized an unattended branch-protection write while the comment beside it
+  # claimed the opposite. A boolean is not a string, and for this switch the difference is the whole
+  # fail-safe: everything that is not exactly `true` must read as off.
+  [ "$raw" = "true" ] || return 1
+  return 0
+}
+
+# _adb_rs_tree_is_tip <branch> — 0 iff the tree discovery will read IS the remote tip of <branch>.
+#
+# TWO facts, because the commit alone is not the tree (independent-review find). `git rev-parse HEAD`
+# proves the checked-out COMMIT matches the remote tip; discovery then reads WORKING FILES. An
+# uncommitted or untracked workflow file therefore introduces a context that exists on nobody's
+# default branch — and requiring it is precisely the phantom-context deadlock this gate exists to
+# prevent, reached through the gate rather than around it. So the worktree must also be clean for
+# the workflow directory.
+#
+# Scoped to that directory rather than the whole repo: an unrelated dirty file cannot change what
+# discovery finds, and refusing on it would make the repair unusable in exactly the situation it is
+# for. `--porcelain` covers modified, staged AND untracked in one read.
+_adb_rs_tree_is_tip() {
+  local root head dirty wf
+  root="$(adb_repo_root)"
+  head="$(git -C "$root" rev-parse HEAD 2>/dev/null)" || head=""
+  if [ -z "$head" ] || [ "$head" != "$BR_SHA" ]; then
+    echo "repo-settings: this checkout is not the tip of '$1' — NOT reconciling." >&2
+    echo "repo-settings:   HEAD:            ${head:-<unresolvable>}" >&2
+    echo "repo-settings:   $1 (remote): $BR_SHA" >&2
+    echo "repo-settings: discovery reads THIS tree while the required set belongs to '$1', so" >&2
+    echo "repo-settings: writing the difference could require a context no job on '$1' reports —" >&2
+    echo "repo-settings: which blocks every merge until an admin clears it. Reconcile from '$1'." >&2
+    return 1
+  fi
+  wf="$(workflow_dir)"
+  dirty="$(git -C "$root" status --porcelain -- "$wf" 2>/dev/null)"
+  if [ -n "$dirty" ]; then
+    echo "repo-settings: '$wf' has uncommitted changes — NOT reconciling." >&2
+    printf '%s\n' "$dirty" | sed 's/^/  /' >&2
+    echo "repo-settings: HEAD matches '$1', but discovery reads the WORKING TREE, so an uncommitted" >&2
+    echo "repo-settings: job would be required on a branch where it does not exist. Commit or stash." >&2
+    return 1
+  fi
   return 0
 }
 
 cmd_reconcile() {
-  local branch head drifted rc ctx kept n added missing
+  local branch drifted rc ctx kept n missing actor sha_before
   if ! _adb_rs_reconcile_declared; then
     adb_info "repo-settings: reconcile is not declared for this repo — set '[repo] reconcile-required-checks = true' in agents.toml to enable it"
     return 17
@@ -1651,15 +1706,21 @@ cmd_reconcile() {
       return 20 ;;
   esac
   [ -n "$BR_SHA" ] || { echo "repo-settings: could not read the tip commit of '$branch' — cannot prove this checkout matches it" >&2; return 20; }
-  head="$(git -C "$(adb_repo_root)" rev-parse HEAD 2>/dev/null)" || head=""
-  if [ -z "$head" ] || [ "$head" != "$BR_SHA" ]; then
-    echo "repo-settings: this checkout is not the tip of '$branch' — NOT reconciling." >&2
-    echo "repo-settings:   HEAD:            ${head:-<unresolvable>}" >&2
-    echo "repo-settings:   $branch (remote): $BR_SHA" >&2
-    echo "repo-settings: discovery reads THIS tree while the required set belongs to '$branch', so" >&2
-    echo "repo-settings: writing the difference could require a context no job on '$branch' reports —" >&2
-    echo "repo-settings: which blocks every merge until an admin clears it. Reconcile from '$branch'." >&2
-    return 16
+  _adb_rs_tree_is_tip "$branch" || return 16
+  sha_before="$BR_SHA"
+
+  # A branch with NO protection is refused, not repaired (independent-review find). There is no
+  # required-check sub-resource to PATCH there, so `write_required_checks` takes the full protection
+  # PUT — which does not merely add contexts, it ESTABLISHES policy from PROT_DEFAULTS: "require a
+  # PR before merging" and conversation resolution. That is a far wider act than the additions-only
+  # repair this command documents, and standing protection up on a repo that has none is a decision
+  # an operator makes once, deliberately, not something an unattended preflight does on their behalf.
+  if [ "$BR_STATE" = "unprotected" ]; then
+    echo "repo-settings: branch '$branch' has NO protection, so there is no required-check drift to repair." >&2
+    echo "repo-settings: standing protection up writes a PR-review and conversation-resolution policy," >&2
+    echo "repo-settings: which is wider than this command's additions-only contract and is not a safe" >&2
+    echo "repo-settings: unattended write. Run it deliberately instead:  baseline repo apply" >&2
+    return 19
   fi
 
   # The verdict, from the lint that owns it. Captured in a SUBSHELL so --porcelain's stdout reshape
@@ -1714,12 +1775,23 @@ cmd_reconcile() {
   kept="$(phantom_contexts "$ctx" "$(live_contexts)")"
   if [ -n "$kept" ]; then
     adb_info "  keeping $(nlines "$kept") required context(s) this tool did not discover"
-    ctx="$(printf '%s\n%s\n' "$ctx" "$kept" | sed '/^$/d' | LC_ALL=C sort -u)"
+    ctx="$(union_contexts "$ctx" "$kept")"
   fi
-  n="$(nlines "$ctx")"
-  added="$(nlines "$drifted")"
-  adb_info "repo-settings: reconciling '$branch' — adding $added discovered job(s) to $(nlines "$(live_contexts)") required context(s):"
+  adb_info "repo-settings: reconciling '$branch' — adding $(nlines "$drifted") discovered job(s) to $(nlines "$(live_contexts)") required context(s):"
   printf '%s\n' "$drifted" | sed 's/^/    + /'
+
+  # RE-PROVE THE TIP IMMEDIATELY BEFORE THE WRITE (independent-review find). Everything above —
+  # discovery, the protection read, the admin probe — happens between the first tip check and this
+  # moment, and the default branch can advance in that window. Writing then requires contexts
+  # discovered from the OLD tree against protection for the NEW one, which is the very trap the gate
+  # exists to prevent, arriving through a race instead of a wrong checkout. One extra read closes it;
+  # a changed tip is a refusal, not a retry, because the tree this process holds is now stale.
+  read_branch "$branch"
+  if [ "$BR_STATE" != "checks" ] || [ "$BR_SHA" != "$sha_before" ]; then
+    echo "repo-settings: '$branch' moved while this run was preparing its write (was $sha_before, now ${BR_SHA:-<unreadable>})." >&2
+    echo "repo-settings: the discovered contexts describe the OLD tree, so nothing was written. Re-run." >&2
+    return 20
+  fi
   write_required_checks "$branch" "$ctx" || {
     echo "repo-settings: the required-checks write FAILED — '$branch' is unchanged" >&2
     return 20
@@ -1739,16 +1811,33 @@ cmd_reconcile() {
     echo "repo-settings: wrote the required checks but could not re-read '$branch' to confirm (state: $BR_STATE)" >&2
     return 20
   fi
-  missing="$(ungated_contexts "$drifted" "$BR_CONTEXTS")"
+  # VERIFIED AGAINST THE WHOLE INTENDED SET, not just the additions (independent-review find). The
+  # PATCH body is `ctx` — the discovered jobs UNION the external contexts being preserved — so
+  # checking only `drifted` would report success for a write that added the new jobs and dropped
+  # `codecov/patch`, which is the additions-only promise broken in the one direction nobody watches.
+  missing="$(ungated_contexts "$ctx" "$BR_CONTEXTS")"
   if [ -n "$missing" ]; then
     echo "repo-settings: the write did not take effect for $(nlines "$missing") context(s):" >&2
     printf '%s\n' "$missing" | sed 's/^/  - /' >&2
     echo "repo-settings: another writer may have raced this one. Re-run, or run 'baseline repo apply'." >&2
     return 20
   fi
-  # ONE audit line, per base/practices/logging-and-secrets.md: who/what/where, no credential
-  # material, reconstructable after the fact from the log alone.
-  adb_info "repo-settings: AUDIT reconcile repo=$REPO_SLUG branch=$branch head=$head added=[$(printf '%s' "$drifted" | tr '\n' ' ' | sed 's/ $//')] required_now=$n"
+  # ONE audit line, per base/practices/logging-and-secrets.md: the ACTOR and the key fields, no
+  # credential material, reconstructable after the fact from the log alone.
+  #
+  # Three things this line got wrong before independent review, each of which made it worse than
+  # useless — an audit record that reads as authoritative and is not:
+  #   * NO ACTOR. The practice's whole requirement is "who changed what", and the comment claimed
+  #     "who/what/where" while naming only the repo. `gh api user` is the authenticated login; it is
+  #     an identity, not a credential, and it fails soft to `<unknown>` rather than losing the line.
+  #   * THE COUNT CAME FROM THE INTENDED SET, not the observed one, so it reported what this process
+  #     meant to write rather than what the branch now requires — the one number an auditor reads.
+  #     It is computed from the re-read `BR_CONTEXTS` above.
+  #   * SPACE-DELIMITED NAMES. A required context legitimately contains a space
+  #     (`ci/circleci: build`), so a space-joined list is ambiguous exactly where it matters. jq
+  #     renders a real JSON array instead.
+  actor="$(gh api user --jq '.login' 2>/dev/null)" || actor=""
+  adb_info "repo-settings: AUDIT reconcile repo=$REPO_SLUG branch=$branch head=$sha_before actor=${actor:-<unknown>} added=$(printf '%s' "$drifted" | jq -R -s -c 'split("\n") | map(select(length > 0))') required_now=$(nlines "$BR_CONTEXTS")"
   return 0
 }
 
@@ -1856,8 +1945,28 @@ parse_reconcile_opts() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --dry-run)      OPT_DRY_RUN=1 ;;
-      --branch)       OPT_BRANCH="$(_adb_rs_valopt --branch "$#" "${2:-}")" || exit 2; shift ;;
-      --workflow-dir) OPT_WORKFLOW_DIR="$(_adb_rs_valopt --workflow-dir "$#" "${2:-}")" || exit 2; shift ;;
+      # `--branch` and `--workflow-dir` are REFUSED, and this is a safety property rather than a
+      # scoping preference (independent-review find). Both were accepted here at first, and each
+      # silently defeated the gate the whole command rests on:
+      #
+      #   * `--workflow-dir DIR` moves DISCOVERY to an arbitrary directory while the tip check still
+      #     proves only this repository's HEAD — so contexts read from another checkout, or from any
+      #     directory at all, could be written into this branch's protection. (The first test suite
+      #     passed this flag on every scenario, which normalized exactly that unsafe shape.)
+      #   * `--branch NAME` moves the TARGET off the default branch, so "default-branch tip only" —
+      #     the contract stated in the docs, the changelog, the template and D63 — became "any branch
+      #     whose tip happens to equal HEAD".
+      #
+      # A read-only subcommand can take both safely; a mutating one cannot, because together they let
+      # a caller choose the tree AND the target independently. `apply` remains the deliberate,
+      # operator-driven command where both are available.
+      --branch|--workflow-dir)
+        echo "repo-settings: $1 is not available for 'reconcile'." >&2
+        echo "repo-settings: it discovers from THIS checkout and writes to the DEFAULT branch, and it" >&2
+        echo "repo-settings: proves those are one tree before writing. Choosing the target or the" >&2
+        echo "repo-settings: source separately would defeat that proof, which is the only thing making" >&2
+        echo "repo-settings: an unattended write safe. Use 'baseline repo apply' for a directed run." >&2
+        exit 2 ;;
       --prune)
         echo "repo-settings: --prune is not available for 'reconcile' — it is additions-only by design." >&2
         echo "repo-settings: pruning DELETES required contexts this tool did not discover (an external" >&2

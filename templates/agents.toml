@@ -120,10 +120,14 @@ debug        = "claude"     # owns root-cause investigations.
 # WHY IT IS OFF BY DEFAULT, and why you should think before turning it on: this is an UNATTENDED
 # WRITE to your repository's branch-protection settings, performed by an agent, using whatever
 # admin rights your `gh` login has. It is bounded — additions only, never `--prune`, so an external
-# provider's required context is never deleted; it refuses unless HEAD is exactly the default
-# branch's tip, so it can never require a context before the job exists there; and it re-reads to
-# confirm the write. It still changes a repository setting without a human watching, which is a
-# choice to make deliberately rather than inherit.
+# provider's required context is never deleted; it refuses unless this CLEAN checkout is exactly the
+# default branch's tip, so it can never require a context before the job exists there; it refuses a
+# branch with no protection at all, because standing protection up writes review policy rather than
+# just contexts; and it re-reads to confirm what it wrote. It still changes a repository setting
+# without a human watching, which is a choice to make deliberately rather than inherit.
+#
+# ONLY THE BARE BOOLEAN `true` ENABLES IT. `"true"` (a string), `1` and `yes` all read as OFF: for a
+# switch that authorizes a remote write with nobody watching, anything but an exact match fails safe.
 #
 # It is read from THIS file only, never the global manifest, so enabling it here can never arm it
 # in another repository. Without admin rights it reports the manual command instead of failing.
