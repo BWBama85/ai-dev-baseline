@@ -7,6 +7,17 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-13
+
+Twelve issues, composed as one frozen set and delivered in full — nine bugs and three larger riders,
+with no re-composition and no promotions after the freeze. The riders are the headline: `/adopt`
+brings the baseline into a project that already has its own config, an adoption completion contract
+answers whether that project is ready to *run* the loop, and `/release` now publishes an actual
+GitHub Release instead of leaving a bare tag nobody can read notes from. The bug floor is mostly
+guards that could not fail — a sub-floor check that never executed, a Stop-hook gate that was
+fail-open, and a CI-health model that read an unprotected branch with external CI as having no CI
+at all.
+
 ### Added
 
 - **`/release` publishes an actual GitHub Release, reversing the tag-only decision** (#284; D62).
@@ -284,6 +295,40 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   arrives from the filesystem rather than the network — what it reads is other projects' `SKILL.md`
   bodies, which are instructions to an agent by construction.
 
+- **A CI failure has a third class — the job never ran — and it is now a tested command, not a
+  paragraph** (#300, D58).
+
+  `base/practices/ci-discipline.md` modelled every CI failure as exactly one of two things. During
+  the GitHub Actions `major_outage` of 2026-08-06 a run concluded `failure` after 1h46m having
+  executed **zero steps**, annotated *"The job was not acquired by Runner of type hosted even after
+  multiple attempts"*. That protocol's "read the failure log" step was unexecutable, and its
+  "classify" step offered two boxes, neither of which fits. Worse, the closer of the two routes to
+  "file a de-flake issue", which `issues-and-scope.md` forbids on both of its questions: nobody does
+  it, and nothing in the repo breaks if nobody ever does. Two practices, opposite instructions, one
+  event.
+
+  - **`scripts/lib/ci-health.sh classify --run <id>`** answers it: `0` green · `22` a real failure
+    (a non-passing job executed steps, so there is a log) · `23` **never-ran** · `24` queued past a
+    threshold · `25` still pending · `20` unreadable · `2` usage. A pure `classify-doc` arm takes the
+    assembled document on stdin, so the decision is hermetically testable and the live path cannot
+    drift from it.
+  - **It decides on step counts, not on the annotation.** An empty `steps` array is structural; the
+    annotation is vendor wording that costs an API call per job. Annotations are read only for the
+    jobs that executed nothing, and a failure there degrades the reason line, never the verdict.
+  - **It fails closed in the direction that matters.** `never-ran` is the flattering answer — it says
+    the red is not your fault — so it is returned only from positive evidence that *every*
+    non-passing job executed nothing. A truncated job list, a run with no jobs, a failure nothing
+    can be attributed to, and every malformed response resolve to `20`, never to "probably the
+    platform".
+  - **A mixed matrix is a REAL failure.** A shard failing an assertion beside one that never
+    acquired a runner is `22`, with the idle shard still named — reporting it as infrastructure
+    would bury a genuine failure behind "not your fault".
+  - **`startup_failure` is the diff, not the platform** — a workflow that could not start produces
+    no jobs at all, and without its own arm it would have been reported as unreadable.
+  - **The practice now scopes green-by-retry to results that exist.** "Never merge on a flaky re-run
+    alone" is right for a job that ran and flapped; for one that executed zero steps the re-run is
+    the *first* run, and there is no earlier verdict being overridden.
+
 ### Fixed
 
 - **A repo path containing a tab or newline made `agent-init` initialize a different, existing
@@ -345,44 +390,6 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     replaced `adb_tsv_field_display`'s entire body with `:` and watched all 669 assertions **still
     pass** — "one line", "no newline byte" and "passes the predicate" are all satisfied by the empty
     string, so the renderer now has non-empty, escaped-content and driven-fallback assertions too.
-
-### Added
-
-- **A CI failure has a third class — the job never ran — and it is now a tested command, not a
-  paragraph** (#300, D58).
-
-  `base/practices/ci-discipline.md` modelled every CI failure as exactly one of two things. During
-  the GitHub Actions `major_outage` of 2026-08-06 a run concluded `failure` after 1h46m having
-  executed **zero steps**, annotated *"The job was not acquired by Runner of type hosted even after
-  multiple attempts"*. That protocol's "read the failure log" step was unexecutable, and its
-  "classify" step offered two boxes, neither of which fits. Worse, the closer of the two routes to
-  "file a de-flake issue", which `issues-and-scope.md` forbids on both of its questions: nobody does
-  it, and nothing in the repo breaks if nobody ever does. Two practices, opposite instructions, one
-  event.
-
-  - **`scripts/lib/ci-health.sh classify --run <id>`** answers it: `0` green · `22` a real failure
-    (a non-passing job executed steps, so there is a log) · `23` **never-ran** · `24` queued past a
-    threshold · `25` still pending · `20` unreadable · `2` usage. A pure `classify-doc` arm takes the
-    assembled document on stdin, so the decision is hermetically testable and the live path cannot
-    drift from it.
-  - **It decides on step counts, not on the annotation.** An empty `steps` array is structural; the
-    annotation is vendor wording that costs an API call per job. Annotations are read only for the
-    jobs that executed nothing, and a failure there degrades the reason line, never the verdict.
-  - **It fails closed in the direction that matters.** `never-ran` is the flattering answer — it says
-    the red is not your fault — so it is returned only from positive evidence that *every*
-    non-passing job executed nothing. A truncated job list, a run with no jobs, a failure nothing
-    can be attributed to, and every malformed response resolve to `20`, never to "probably the
-    platform".
-  - **A mixed matrix is a REAL failure.** A shard failing an assertion beside one that never
-    acquired a runner is `22`, with the idle shard still named — reporting it as infrastructure
-    would bury a genuine failure behind "not your fault".
-  - **`startup_failure` is the diff, not the platform** — a workflow that could not start produces
-    no jobs at all, and without its own arm it would have been reported as unreadable.
-  - **The practice now scopes green-by-retry to results that exist.** "Never merge on a flaky re-run
-    alone" is right for a job that ran and flapped; for one that executed zero steps the re-run is
-    the *first* run, and there is no earlier verdict being overridden.
-
-### Fixed
 
 - **An outage and a permanent configuration gap no longer get the same words** (#300, D58).
 
@@ -3742,7 +3749,8 @@ Everything below landed before this tag; entries are grouped as they accumulated
   finish on partial or empty output. Clarifies that "advisory" is the standing of a
   **completed** finding, not license to skip the step.
 
-[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/BWBama85/ai-dev-baseline/compare/v1.0.0...v1.1.0
