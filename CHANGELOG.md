@@ -81,6 +81,12 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - the two new preflight checks **covered for each other** — a single shadow `PATH` missing both
     tools stayed green when either check was deleted, because the other one still refused with a
     message the assertion matched. There are now two shadow paths, one per tool;
+  - the shadow-`PATH` fixture `cp`d its `gh` stub over a symlink to the **real** `gh`, and `cp`
+    writes *through* a symlink. Homebrew's Cellar binary is `-r-xr-xr-x`, so the write failed with
+    EACCES, `2>/dev/null || true` swallowed it, and the shadow `PATH` silently kept the real `gh` —
+    which is authenticated on a workstation and not on a runner, so the case passed locally for the
+    wrong reason and failed on CI. `gh` is now always omitted from the mirror and the stub's
+    placement is checked;
   - the auto-signed-tag case is driven with a **real SSH signature** (`gpg.format=ssh`, so it needs
     only `ssh-keygen` and no keyring), with the capability probed and a stated SKIP where signing is
     unavailable — an asserted success path would have proved nothing about the refusal.

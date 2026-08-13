@@ -1038,24 +1038,58 @@ printf 'v9.9.9\n\nRelease with `backticks`, únicode — and a blank line below.
   > "$work/pub-msg.txt"
 
 PUB_DRV="$PUB/.claude/skills/release/release.sh"
+
+# pub_step <label> <cmd…> — run one build step, and REMEMBER WHICH ONE FAILED.
+#
+# The first cut of this build was a single silenced `&&` chain reporting one line: "could not build
+# the publish fixture". It then failed on Linux CI and passed on macOS, and that line said nothing
+# about which of fourteen links broke — a full CI round-trip bought no information. A guard whose
+# diagnostic cannot distinguish its own failure modes is half a guard.
+pub_build_fail=""
+pub_step() {
+  local label="$1"; shift
+  "$@" >/dev/null 2>"$work/pub-build-err" && return 0
+  [ -n "$pub_build_fail" ] || pub_build_fail="$label — $(tr '\n' ' ' < "$work/pub-build-err" | cut -c1-300)"
+  return 1
+}
+pub_write() { printf '%s' "$2" > "$1"; }   # a writer, so redirections can be steps too
+
+# THE FIXTURE OWNS ITS OWN GIT IDENTITY, and this is not tidiness. `check_git` supplies
+# `-c user.email` / `-c user.name` to the commands THIS FILE runs — but the DRIVER runs its own
+# `git tag -a`, with no overrides, so the fixture was silently depending on the developer's global
+# git config. A GitHub runner has none, and git's fallback auto-detection fails there ("unable to
+# auto-detect email address (got 'runner@fv-az….(none)')") because the hostname is unqualified —
+# which is why this passed on every workstation and failed only on Linux CI.
+#
+# Signing is pinned OFF for the same class of reason: a maintainer with a global `tag.gpgSign=true`
+# would otherwise have the FIXTURE build a signed tag and fail here, instead of in the one case
+# that deliberately turns it on.
 pub_built=0
-if check_copy_subtrees "$ROOT" "$PUB" scripts .claude/skills \
-   && mkdir -p "$PUB/.claude/state" "$PUBGH" "$PUB_STORE" \
-   && printf '[roles]\nrelease = "claude"\n' > "$PUB/agents.toml" \
-   && git init -q -b main "$PUB" >/dev/null 2>&1 \
-   && check_git "$PUB" add -A >/dev/null 2>&1 \
-   && check_git "$PUB" commit -qm init >/dev/null 2>&1 \
-   && git init -q --bare "$PUBO" >/dev/null 2>&1 \
-   && check_git "$PUB" remote add origin "$PUBO" >/dev/null 2>&1 \
-   && check_git "$PUB" push -q origin main >/dev/null 2>&1 \
-   && printf 'VERSION=v9.9.9\nMERGE_SHA=%s\n' "$(check_git "$PUB" rev-parse HEAD)" > "$PUB_RS" \
-   && bash "$PUB_DRV" tag --message-file "$work/pub-msg.txt" >/dev/null 2>&1 \
-   && check_git "$PUB" tag v8.8.8 >/dev/null 2>&1 \
-   && check_git "$PUB" push -q origin v8.8.8 >/dev/null 2>&1 \
-   && check_git "$PUB" fetch -q --tags origin >/dev/null 2>&1; then
+if pub_step "copy subtrees"    check_copy_subtrees "$ROOT" "$PUB" scripts .claude/skills \
+   && pub_step "mkdirs"        mkdir -p "$PUB/.claude/state" "$PUBGH" "$PUB_STORE" \
+   && pub_step "agents.toml"   pub_write "$PUB/agents.toml" '[roles]
+release = "claude"
+' \
+   && pub_step "git init"      git init -q -b main "$PUB" \
+   && pub_step "git add"       check_git "$PUB" add -A \
+   && pub_step "git commit"    check_git "$PUB" commit -qm init \
+   && pub_step "git identity"  check_git "$PUB" config user.email release-fixture@example.invalid \
+   && pub_step "git name"      check_git "$PUB" config user.name "release fixture" \
+   && pub_step "no tag sign"   check_git "$PUB" config tag.gpgSign false \
+   && pub_step "no commit sign" check_git "$PUB" config commit.gpgsign false \
+   && pub_step "bare origin"   git init -q --bare "$PUBO" \
+   && pub_step "remote add"    check_git "$PUB" remote add origin "$PUBO" \
+   && pub_step "push main"     check_git "$PUB" push -q origin main \
+   && pub_step "run state"     pub_write "$PUB_RS" "VERSION=v9.9.9
+MERGE_SHA=$(check_git "$PUB" rev-parse HEAD)
+" \
+   && pub_step "driver tag"    bash "$PUB_DRV" tag --message-file "$work/pub-msg.txt" \
+   && pub_step "lightweight"   check_git "$PUB" tag v8.8.8 \
+   && pub_step "push v8.8.8"   check_git "$PUB" push -q origin v8.8.8 \
+   && pub_step "fetch tags"    check_git "$PUB" fetch -q --tags origin; then
   pub_built=1; ok
 else
-  bad "could not build the publish fixture — every publish case below would prove nothing"
+  bad "could not build the publish fixture — every publish case below would prove nothing. Failed at: ${pub_build_fail:-<unknown>}"
 fi
 cp "$PUB_DRV" "$work/pristine-publish.sh" 2>/dev/null || true
 PUB_SHA="$(check_git "$PUB" rev-list -n1 v9.9.9 2>/dev/null)"
@@ -1519,17 +1553,28 @@ MERGE_SHA=$PUB_SHA"
   pub_shadow() {   # <dir> <name-to-omit>…
     local dir="$1"; shift
     mkdir -p "$dir"
-    local d f b skip
+    local d f b n skip
     for d in /bin /usr/bin /usr/sbin /sbin /opt/homebrew/bin /usr/local/bin; do
       [ -d "$d" ] || continue
       for f in "$d"/*; do
         b="${f##*/}"; skip=0
-        for n in "$@"; do [ "$b" = "$n" ] && skip=1; done
+        # `gh` IS ALWAYS OMITTED, and this is a correctness fix with teeth. The stub used to be
+        # `cp`d in AFTER the loop had already symlinked the real one — and `cp` writes THROUGH a
+        # symlink, so that line was one permission bit away from overwriting the developer's actual
+        # gh binary with a 30-line stub. Homebrew's Cellar file is `-r-xr-xr-x`, so the write failed
+        # with EACCES, `2>/dev/null || true` swallowed it, and the shadow PATH silently kept the
+        # REAL gh: locally that gh is authenticated, so preflight sailed past `gh auth status` and
+        # the assertion passed for the wrong reason; on a runner it is not, so preflight died with
+        # "gh not authenticated" before ever reaching the check under test.
+        for n in gh "$@"; do [ "$b" = "$n" ] && skip=1; done
         [ "$skip" -eq 1 ] && continue
         [ -e "$dir/$b" ] || ln -s "$f" "$dir/$b" 2>/dev/null
       done
     done
-    cp "$PUBGH/gh" "$dir/gh" 2>/dev/null || true
+    # CHECKED, not `|| true`. Swallowing this failure is what turned a broken fixture into a green
+    # assertion; a shadow PATH without the stub cannot test anything.
+    cp "$PUBGH/gh" "$dir/gh" || { bad "could not place the gh stub in $dir — the preflight cases below would run against the REAL gh"; return 1; }
+    [ ! -L "$dir/gh" ] || { bad "$dir/gh is a symlink — the stub must be a regular file, never a link to the real binary"; return 1; }
   }
   pub_preflight_on() {   # <bin-dir> -> PUB_PRE_RC / PUB_PRE_ERR
     PUB_PRE_RC=0
