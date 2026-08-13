@@ -49,8 +49,16 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   "until a human reads a red check" to "until the next entry into the loop" — an improvement, not a
   time bound, since nothing schedules that next run. See D63.
 
-  Nine mutations pin the rules, including one that deletes the preflight **call** — the only one that
-  reproduces #333's actual failure, a detector nothing consumes. The exercise earned its keep twice
+  A second independent review pass found four more ways to write unsafely, all fixed: the repository
+  `gh` resolves is now required to be the checkout's own (`$GH_REPO`, or a fork sharing the upstream
+  tip, could otherwise redirect the write); a **symlinked** workflow path is refused (git reports a
+  committed link as clean while discovery reads its target); `strict` is seeded from the live value
+  so adding a context cannot silently switch off "require branches to be up to date"; and a
+  required-set that changes mid-run aborts, because the complete-array PATCH would delete whatever
+  was added concurrently — which the subset read-back could never notice.
+
+  Thirteen mutations pin the rules, including one that deletes the preflight **call** — the only one
+  that reproduces #333's actual failure, a detector nothing consumes. The exercise earned its keep twice
   over: the mutant copy was first written to a bare temp dir, where `repo-settings.sh` cannot find
   `common.sh` beside it and exits 1 having run nothing, so every assertion passed because `1 != 16`;
   and four witnesses were merely "not the expected code", which any incidental failure satisfies.

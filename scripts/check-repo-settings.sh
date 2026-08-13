@@ -1883,6 +1883,11 @@ rc_repo() {
   # the workflow uncommitted would be refused by the very rule the happy path is trying to exercise.
   check_git "$RC_REPO" add -A
   check_git "$RC_REPO" commit -qm seed
+  # AN ORIGIN MATCHING THE STUB'S REPO. `reconcile` refuses when the repository gh resolved is not
+  # this checkout's origin, so without this every scenario below would refuse at that gate and the
+  # rest of the suite would assert nothing. It is fixture setup, not a behaviour under test — the
+  # mismatch and no-origin cases override it explicitly.
+  check_git "$RC_REPO" remote add origin "https://github.com/acme/widget.git"
 }
 rc_head() { check_git "$RC_REPO" rev-parse HEAD; }
 
@@ -1984,6 +1989,35 @@ printf 'name: Edited\non:\n  pull_request:\njobs:\n  edited:\n    runs-on: ubunt
 rsx_reconcile
 eq "$RC_" "16" "a MODIFIED tracked workflow is refused too"
 eq "$(cat "$STUB_CALLS")" "" "...writing nothing"
+
+# A SYMLINKED workflow path defeats the cleanliness proof: git reports the committed LINK as clean
+# while discovery follows it and reads whatever it points at, which may be outside the tree.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+mkdir -p "$RC_REPO/elsewhere"
+printf 'name: Outside\non:\n  pull_request:\njobs:\n  outside:\n    runs-on: ubuntu-latest\n' > "$RC_REPO/elsewhere/x.yml"
+ln -s ../elsewhere/x.yml "$RC_REPO/.github/workflows/linked.yml"
+check_git "$RC_REPO" add -A; check_git "$RC_REPO" commit -qm link
+branch_sha "$(rc_head)"          # HEAD is the tip and `git status` is CLEAN — only the link is wrong
+rsx_reconcile
+eq "$RC_" "16" "a COMMITTED symlink in the workflow dir is refused, though the tree is clean"
+has "$OUT" "symlink" "...naming the link as the reason"
+eq "$(cat "$STUB_CALLS")" "" "...and writing nothing"
+
+# THE REPOSITORY gh RESOLVES MUST BE THIS CHECKOUT'S. `gh api repos/{owner}/{repo}` honours $GH_REPO,
+# and a fork commonly shares the upstream's default-branch tip — so the SHA gate cannot catch a write
+# aimed at the wrong repository.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+check_git "$RC_REPO" remote set-url origin "https://github.com/someone-else/other.git"
+rsx_reconcile
+eq "$RC_" "16" "a checkout whose origin is NOT the repository gh resolved is refused"
+has "$OUT" "not this checkout's origin" "...saying the two identities disagree"
+has "$OUT" "acme/widget" "...naming what gh resolved"
+eq "$(cat "$STUB_CALLS")" "" "...and writing nothing"
+# ...and an origin that cannot be resolved at all is the same refusal, not a pass.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+check_git "$RC_REPO" remote remove origin
+rsx_reconcile
+eq "$RC_" "16" "a checkout with NO origin remote is refused too (cannot prove they match)"
 
 # An unresolvable HEAD is the same refusal: 'not proven to be the tip' == 'proven not to be'.
 rc_reset; rc_repo yes; branch_sha "$(rc_head)"; rm -rf "$RC_REPO/.git"
@@ -2109,6 +2143,37 @@ eq "$RC_" "20" "a default branch that advances mid-run is 20 — the discovered 
 has "$OUT" "moved while this run" "...saying the branch moved"
 eq "$(cat "$STUB_CALLS")" "" "...and writing NOTHING"
 
+# `strict` IS PRESERVED, NOT RESET. `contexts_json` renders whatever OPT_STRICT holds, and its
+# default is off — so on a branch with "require branches to be up to date" ENABLED, adding one
+# context would also switch that requirement off. An additions-only repair must not carry `apply`'s
+# default into a policy it was not asked to change.
+rc_reset; rc_repo yes; repo_fx true true
+jq -n '{required_status_checks:{strict:true,contexts:[]},
+        required_conversation_resolution:{enabled:true}}' > "$S/protection.json"
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$RC_" "0" "reconcile succeeds on a branch with strict mode on"
+eq "$(jq -r '.strict' "$S/body.json")" "true" \
+  "...and the PATCH body PRESERVES strict:true (resetting it would silently disable up-to-date merges)"
+# ...and a branch with strict OFF stays off — preservation, not a new default.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$(jq -r '.strict' "$S/body.json")" "false" "...and strict:false is preserved as false"
+
+# THE REQUIRED SET CHANGING MID-RUN. The union is built from a snapshot taken before discovery and
+# the admin probe; the PATCH sends a COMPLETE array. A context added concurrently would therefore be
+# DELETED by this write — and the read-back could never notice, because it verifies `ctx` is a subset
+# of the result and that context was never in `ctx`.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha      "$(rc_head)"                       # first read: nothing required
+branch_sha_next "$(rc_head)" "someone-elses-check"  # ...then another admin adds one
+STUB_BRANCH_SEQ=1
+rsx_reconcile
+eq "$RC_" "20" "a required-check set that changed mid-run is 20 — the union is stale"
+has "$OUT" "changed while this run" "...saying the set moved"
+eq "$(cat "$STUB_CALLS")" "" "...and writing NOTHING, so the concurrent context survives"
+
 # THE LOST UPDATE. The PATCH body is a whole array, not an add-one operation, so a concurrent
 # writer can overwrite this addition and the API still answers 2xx.
 rc_reset; rc_repo yes; repo_fx true true; prot_checks
@@ -2218,6 +2283,60 @@ printf 'name: Sneaky\non:\n  pull_request:\njobs:\n  sneaky:\n    runs-on: ubunt
   > "$RC_REPO/.github/workflows/sneaky.yml"
 rsx_reconcile
 if wrote_patch; then ok; else bad "M7: with the clean-tree check deleted, an UNCOMMITTED workflow reaches the WRITE (guard observed failing)"; fi
+rc_unmutate
+
+# M10 — delete the repo-binding check. A checkout whose origin is a DIFFERENT repository must now
+# reach the API, i.e. start operating on somebody else's settings.
+rc_mutate 's@  if \[ -z "\$checkout_slug" \] || \[ "\$checkout_slug" != "\$REPO_SLUG" \]; then@  if false; then@' 'if false; then'
+# The witness is the WRITE, not "an API read happened": `repo_json` runs BEFORE this check, so reads
+# occur whether or not the guard is intact — that witness passed against both and proved nothing.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+check_git "$RC_REPO" remote set-url origin "https://github.com/someone-else/other.git"
+rsx_reconcile
+if wrote_patch; then ok; else bad "M10: with the repo-binding check deleted, a foreign checkout must reach the WRITE (guard observed failing)"; fi
+rc_unmutate
+
+# M11 — delete the symlink refusal. The linked workflow FILE must now be accepted and written from.
+# Targets the file-level guard, not the directory one: a symlinked DIRECTORY is caught twice over
+# (`find <symlink> -maxdepth 1 -type l` reports the starting point itself), so deleting one of the
+# two proves nothing about either.
+rc_mutate 's@    if \[ -n "\$links" \]; then@    if false; then@' '    if false; then'
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+mkdir -p "$RC_REPO/elsewhere"
+printf 'name: Outside\non:\n  pull_request:\njobs:\n  outside:\n    runs-on: ubuntu-latest\n' > "$RC_REPO/elsewhere/x.yml"
+ln -s ../elsewhere/x.yml "$RC_REPO/.github/workflows/linked.yml"
+check_git "$RC_REPO" add -A; check_git "$RC_REPO" commit -qm link
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one" "outside"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+if wrote_patch; then ok; else bad "M11: with the symlink refusal deleted, a symlinked workflow file reaches the WRITE (guard observed failing)"; fi
+rc_unmutate
+
+# M12 — stop seeding `strict` from the live value. The write must now reset it to false.
+rc_mutate 's@    true) OPT_STRICT=1 ;;@    true) OPT_STRICT=0 ;;@' '    true) OPT_STRICT=0 ;;'
+rc_reset; rc_repo yes; repo_fx true true
+jq -n '{required_status_checks:{strict:true,contexts:[]},
+        required_conversation_resolution:{enabled:true}}' > "$S/protection.json"
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$(jq -r '.strict' "$S/body.json" 2>/dev/null)" "false" \
+  "M12: without seeding from the live value, strict:true is silently reset (guard observed failing)"
+rc_unmutate
+
+# M13 — delete the concurrent-context check. The write must now proceed and drop the added context.
+rc_mutate 's@  if \[ "\$BR_CONTEXTS" != "\$contexts_before" \]; then@  if false; then@' 'if false; then'
+rc_reset; rc_repo yes; repo_fx true true; prot_checks
+branch_sha      "$(rc_head)"
+branch_sha_next "$(rc_head)" "someone-elses-check"
+STUB_BRANCH_SEQ=1
+rsx_reconcile
+if wrote_patch; then
+  ok
+  hasnt "$(jq -r '.contexts|join(",")' "$S/body.json" 2>/dev/null)" "someone-elses-check" \
+    "M13: without the concurrent-set check, the write DELETES the context added mid-run (guard observed failing)"
+else
+  bad "M13: with the concurrent-set check deleted, the write must proceed (guard observed failing)"
+fi
 rc_unmutate
 
 # M8 — accept the scoping flags again. `--workflow-dir` must stop being refused.

@@ -8,8 +8,9 @@ settings. It never merges, reviews, tags, releases, or deploys — those stay pr
 
 ```bash
 baseline repo checks        # the check contexts it would require, one per line
-                            # (any subcommand takes --workflow-dir DIR to discover from another
-                            #  tree — e.g. the merged default branch rather than a feature branch)
+                            # (every subcommand EXCEPT `reconcile` takes --workflow-dir DIR to
+                            #  discover from another tree — e.g. the merged default branch rather
+                            #  than a feature branch. `reconcile` refuses it: see its section)
 baseline repo status        # desired vs live, with drift named (nonzero = drift)
 baseline repo apply         # required checks FIRST, then allow_auto_merge
 baseline repo apply --prune # ...and drop required contexts no discovered job reports
@@ -327,8 +328,10 @@ indefinitely.
 | Gate | Effect |
 |---|---|
 | `[repo] reconcile-required-checks = true` in the repo's **own** `agents.toml` | Off by default, and **only the bare TOML boolean** `true` enables it — `"true"`, `1`, `yes` and a typo all read as off, because for a switch that authorizes an unattended remote write anything not exactly `true` must fail safe. Checked **before any network call**, so a repo that never opted in pays nothing. Never read from the global manifest — a global opt-in would arm this in every repository the operator touches. |
-| The tree must **be** the default branch's remote tip | Two facts, because *the commit is not the tree*: `HEAD` must equal the branch's tip **and** the workflow directory must have no uncommitted changes. Discovery reads working files, so an uncommitted workflow would introduce a context that exists on no branch — the same phantom-context deadlock, reached through the gate instead of around it. Compared against the API's `commit.sha`, never a local `origin/<b>` ref, which is only as fresh as the last fetch. |
-| Re-proved **immediately before the write** | Discovery, the protection read and the admin probe all happen after the first check, so the branch can advance in that window. A tip that moved means the discovered contexts describe a stale tree: the run refuses rather than writing them. |
+| The repository must be **this checkout's** | `gh api repos/{owner}/{repo}` honours `$GH_REPO` and gh's own directory resolution, so the object read — and mutated — can be a different repository while the opt-in and the discovered jobs still come from the local tree. A fork commonly shares the upstream's default-branch tip, so the SHA gate cannot catch it. `REPO_SLUG` is compared against the checkout's origin; an unresolvable origin refuses too. |
+| The tree must **be** the default branch's remote tip | Three facts, because *the commit is not the tree*: `HEAD` must equal the branch's tip, the workflow directory must have no uncommitted changes, and nothing in it may be a **symlink** — git reports a committed link as clean while discovery follows it and reads content outside the tree. Compared against the API's `commit.sha`, never a local `origin/<b>` ref, which is only as fresh as the last fetch. |
+| Re-proved **immediately before the write** | Discovery, the protection read and the admin probe all happen after the first check, so both the branch tip **and the required-check set** can move in that window. A moved tip means the discovered contexts describe a stale tree; a changed context set means the union is stale and the complete-array PATCH would delete whatever was added concurrently — which the read-back could never notice, since it tests a subset. Either one refuses. |
+| Policy it was not asked to change is **preserved** | `strict` ("require branches to be up to date") is seeded from the live value rather than from `apply`'s default, so adding one context cannot silently switch it off. |
 | No `--branch`, no `--workflow-dir` | Both are accepted by `apply` and **refused** here. `--workflow-dir` moves discovery off the gated tree; `--branch` moves the target off the default branch. Either one turns *"these are one tree"* into an unchecked claim, which is the only thing making an unattended write safe. |
 
 It is **additions-only**: `--prune` is refused *by name*, because deleting a context this tool did
@@ -349,11 +352,11 @@ preserved external context. An unconfirmed write reports `20`, never success.
 | Code | Meaning |
 |---|---|
 | `0` | in sync — or reconciled **and** confirmed by re-reading |
-| `16` | refused: this tree is not the branch tip (`HEAD` differs, or the workflow dir is dirty) |
+| `16` | refused: this checkout is not what would be written to — a foreign repository, a `HEAD` that is not the tip, or a dirty/symlinked workflow directory |
 | `17` | skipped: the repo has not declared `reconcile-required-checks` (the default) |
 | `18` | refused: real drift, but this token is not admin — names the manual command |
 | `19` | refused: the branch has no protection; standing it up writes policy, not just contexts |
-| `20` | unreadable state, failed discovery, a branch that moved mid-run, or an unconfirmed write — **fail closed** |
+| `20` | unreadable state, failed discovery, a branch or required-set that moved mid-run, or an unconfirmed write — **fail closed** |
 
 Every write emits **one audit line** naming the repo, branch, head, the authenticated actor, the
 contexts added (JSON-encoded, because a context name legitimately contains a space) and the count

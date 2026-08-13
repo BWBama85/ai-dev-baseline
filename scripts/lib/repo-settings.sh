@@ -1679,17 +1679,62 @@ _adb_rs_tree_is_tip() {
     echo "repo-settings: job would be required on a branch where it does not exist. Commit or stash." >&2
     return 1
   fi
+  # A SYMLINK DEFEATS THE CLEANLINESS PROOF (independent-review find). `git status` reports a
+  # committed symlink as clean because the LINK is what is tracked — but discovery follows it and
+  # reads whatever it points at, which may be mutable content outside the committed tree entirely.
+  # So "clean" would be true and "this is the branch's tree" would still be false, which is the one
+  # combination this gate exists to rule out. Refuse rather than resolve: a workflow directory that
+  # is a link, or that holds one, is not a shape this repair needs to support.
+  if [ -L "$wf" ]; then
+    echo "repo-settings: '$wf' is a symlink — NOT reconciling." >&2
+    echo "repo-settings: git reports the LINK as clean while discovery reads whatever it points at," >&2
+    echo "repo-settings: so a clean worktree would not prove the jobs came from '$1'." >&2
+    return 1
+  fi
+  if [ -d "$wf" ]; then
+    local links
+    links="$(find "$wf" -maxdepth 1 -type l 2>/dev/null)"
+    if [ -n "$links" ]; then
+      echo "repo-settings: '$wf' contains symlinked workflow file(s) — NOT reconciling:" >&2
+      printf '%s\n' "$links" | sed 's/^/  /' >&2
+      echo "repo-settings: git reports a committed link as clean while discovery reads its target." >&2
+      return 1
+    fi
+  fi
   return 0
 }
 
 cmd_reconcile() {
-  local branch drifted rc ctx kept n missing actor sha_before
+  local branch drifted rc ctx kept missing actor sha_before contexts_before
   if ! _adb_rs_reconcile_declared; then
     adb_info "repo-settings: reconcile is not declared for this repo — set '[repo] reconcile-required-checks = true' in agents.toml to enable it"
     return 17
   fi
   require_gh
   repo_json >/dev/null || { echo "repo-settings: cannot read the repo object — cannot reconcile" >&2; return 20; }
+
+  # THE REPOSITORY `gh` RESOLVES MUST BE THIS CHECKOUT'S (independent-review find). `gh api
+  # repos/{owner}/{repo}` honours $GH_REPO and gh's own directory resolution, so the object read —
+  # and later MUTATED — can be a different repository entirely, while the opt-in declaration and the
+  # discovered jobs still come from the local tree. The SHA gate does not catch it: a fork commonly
+  # shares the upstream's default-branch tip, so `HEAD == BR_SHA` holds across two different repos.
+  # That is the worst version of this command's failure — writing branch protection somewhere nobody
+  # pointed it — so the two identities are compared explicitly before anything is read further.
+  #
+  # An unresolvable origin is a refusal too: this is the write side, and "cannot prove they match"
+  # is not "they match".
+  local checkout_slug
+  checkout_slug="$(adb_git_origin_slug 2>/dev/null)" || checkout_slug=""
+  if [ -z "$checkout_slug" ] || [ "$checkout_slug" != "$REPO_SLUG" ]; then
+    echo "repo-settings: the repository gh resolved is not this checkout's origin — NOT reconciling." >&2
+    echo "repo-settings:   gh resolves:      $REPO_SLUG" >&2
+    echo "repo-settings:   checkout origin:  ${checkout_slug:-<unresolvable>}" >&2
+    echo "repo-settings: the opt-in and the discovered jobs come from THIS tree, so writing branch" >&2
+    echo "repo-settings: protection on another repository would gate it with jobs it does not have." >&2
+    echo "repo-settings: unset GH_REPO, or run from the checkout you mean." >&2
+    return 16
+  fi
+
   branch="$(target_branch)" || { echo "repo-settings: cannot resolve the default branch — cannot reconcile" >&2; return 20; }
 
   # THE SAFETY GATE, and it runs before the verdict so an unsafe checkout never even asks. Both
@@ -1708,6 +1753,9 @@ cmd_reconcile() {
   [ -n "$BR_SHA" ] || { echo "repo-settings: could not read the tip commit of '$branch' — cannot prove this checkout matches it" >&2; return 20; }
   _adb_rs_tree_is_tip "$branch" || return 16
   sha_before="$BR_SHA"
+  # The required set as it stands NOW, from this same endpoint, so the pre-write re-check can tell
+  # "nothing moved" from "somebody else edited the required checks while we were preparing".
+  contexts_before="$BR_CONTEXTS"
 
   # A branch with NO protection is refused, not repaired (independent-review find). There is no
   # required-check sub-resource to PATCH there, so `write_required_checks` takes the full protection
@@ -1761,6 +1809,17 @@ cmd_reconcile() {
       echo "repo-settings: cannot read branch protection for '$branch' (state: $PROT_STATE) — refusing to write" >&2
       return 20 ;;
   esac
+  # SEED `strict` FROM THE LIVE VALUE (independent-review find). `contexts_json` renders whatever
+  # OPT_STRICT holds, and reconcile neither reads the live setting nor accepts `--strict` — so on a
+  # branch with "require branches to be up to date before merging" ENABLED, adding one missing
+  # context would also PATCH `strict:false` and silently switch that requirement off. An
+  # additions-only repair must not carry `apply`'s default into somebody else's policy: what is not
+  # being repaired is preserved. (D9 keeps the default off for `apply`, which chooses it deliberately;
+  # this command is not choosing anything.)
+  case "$(printf '%s' "$PROT_JSON" | jq -r '.required_status_checks.strict // false' 2>/dev/null)" in
+    true) OPT_STRICT=1 ;;
+    *)    OPT_STRICT=0 ;;
+  esac
   _adb_rs_discover "$branch" || {
     echo "repo-settings: check discovery failed — refusing to write required checks from an unreliable scan" >&2
     return 20
@@ -1790,6 +1849,19 @@ cmd_reconcile() {
   if [ "$BR_STATE" != "checks" ] || [ "$BR_SHA" != "$sha_before" ]; then
     echo "repo-settings: '$branch' moved while this run was preparing its write (was $sha_before, now ${BR_SHA:-<unreadable>})." >&2
     echo "repo-settings: the discovered contexts describe the OLD tree, so nothing was written. Re-run." >&2
+    return 20
+  fi
+  # AND THE REQUIRED SET ITSELF MUST NOT HAVE MOVED (independent-review find). The union was built
+  # from a protection snapshot taken earlier; the PATCH body is a COMPLETE array. So if another
+  # admin or a concurrent reconcile added a context in between, this write would replace the array
+  # with one that never contained it — deleting it silently. The read-back cannot catch that: it
+  # verifies `ctx` is a subset of what the branch ends up requiring, and a context that was never in
+  # `ctx` is invisible to a subset test. Comparing against the same endpoint's earlier answer is what
+  # makes the difference observable at all; a changed set means the union is stale, so refuse.
+  if [ "$BR_CONTEXTS" != "$contexts_before" ]; then
+    echo "repo-settings: the required-check set on '$branch' changed while this run was preparing its write." >&2
+    echo "repo-settings: this write sends a COMPLETE array, so proceeding would delete whatever was" >&2
+    echo "repo-settings: added concurrently. Nothing was written — re-run to rebuild from the new set." >&2
     return 20
   fi
   write_required_checks "$branch" "$ctx" || {
