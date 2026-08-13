@@ -637,6 +637,31 @@ eq "${ drv tag --message-file /nonexistent/nope; }" 1 "tag refuses a missing mes
 eq "${ drv tag --wrong-flag x; }"     2 "tag rejects an unknown flag"
 eq "${ drv publish --wrong-flag; }"   2 "publish rejects an unknown flag"
 eq "${ drv publish --version; }"      2 "publish --version requires a value"
+
+# --- structural: `publish` decides USAGE before it decides the ENVIRONMENT -----------------------
+# The two rc assertions directly above are ENVIRONMENT-DEPENDENT, and that is not a nitpick — it is
+# the reason this defect reached a tag. `cmd_publish` used to run `have_gh || die` before parsing
+# its arguments; `die` exits 1 and a usage error exits 2, so on a host with no `gh` both lines
+# above returned 1. On every host that HAS `gh` they return 2 whether the ordering is right or
+# wrong, so they pass and prove nothing.
+#
+# Measured: green on macOS and on both Ubuntu CI runners at 044adc7, red on the WSL smoke runner —
+# which installs `git jq shellcheck nodejs npm ca-certificates` and no `gh` — with exactly
+# `got [1] want [2]` twice. The only job that could see it runs on a schedule and on push, is not
+# a required context, and therefore reported AFTER the release was cut.
+#
+# So the ordering is pinned STRUCTURALLY, where it fails on every host regardless of what is
+# installed. Both line numbers are read from inside `cmd_publish` only, so an earlier `have_gh` in
+# some other subcommand cannot satisfy or break this.
+pub_arg_line="$(awk '/^cmd_publish\(\)/{f=1} f && /while \[ "\$#" -gt 0 \]/{print NR; exit}' "$DRV")"
+pub_env_line="$(awk '/^cmd_publish\(\)/{f=1} f && /have_gh \|\| die/{print NR; exit}' "$DRV")"
+if [ -n "$pub_arg_line" ] && [ -n "$pub_env_line" ]; then
+  if [ "$pub_arg_line" -lt "$pub_env_line" ]; then ok; else
+    bad "publish parses arguments before checking tools (arg loop line $pub_arg_line, have_gh line $pub_env_line)"
+  fi
+else
+  bad "publish structural pin could not locate its two anchors (arg loop [$pub_arg_line], have_gh [$pub_env_line])"
+fi
 # The VALUE-level argument cases are driven in the publish fixture below, not here: with no run
 # state in this checkout every one of them exits 1 whether the guard works or not, so an rc-only
 # assertion cannot tell a refusal from a coincidence.
