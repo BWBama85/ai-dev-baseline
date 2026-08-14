@@ -123,8 +123,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   **twice**, so `check_mutate_line`'s exactly-one precondition would refuse rather than prove
   anything.
 
-  The relaxation covers a sourced library's top level and stops there: `project-gates.sh` sets
-  `set -u` itself partway down its own file, and nothing here changes that or any other consumer.
+  **One door stays open, and it is named rather than glossed: #342.** `project-gates.sh` runs
+  `set -u` at its own line 88, mid-file, so this relaxation is cancelled *from inside the library*
+  partway through the load — an unbound expansion below that line is fatal again and the gate exits 1
+  exactly as before. Found by the reviewer on this PR and reproduced. A caller cannot stop a sourced
+  file from re-enabling the option, so the fix is that library's dual-role `set -u`, not a stronger
+  relaxation here. #317's own scope excluded `project-gates.sh` for want of a reproduction; that
+  reason is now discharged, which is what makes #342 filable rather than a shape.
 
 - **`publish` decided its exit code from the HOST rather than from the command line.**
 

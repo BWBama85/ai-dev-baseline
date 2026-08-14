@@ -246,8 +246,14 @@ fail_loud() {
 # `set +u` HERE TOO (#317), for the reason the floor block above spells out. The relaxation is not
 # decorative at this site: the common.sh call below is short-circuited by the double-source guard
 # (see <prior-rc>), but `project-gates.sh` IS a real load, and its own top level runs under this
-# caller's options until it sets `set -u` itself. It protects that library's PRE-`set -u` top level
-# and nothing after it — do not read it as covering the whole of project-gates.sh.
+# caller's options until it sets `set -u` itself.
+#
+# AND THAT LEAVES ONE DOOR OPEN, WHICH IS #342 AND NOT FIXABLE HERE. `project-gates.sh` runs
+# `set -u` at its own line 88, mid-file, so this relaxation is CANCELLED FROM INSIDE the library
+# partway through the load: an unbound expansion below that line is fatal again, and the gate exits
+# 1 exactly as it did before this change. Reproduced. A caller cannot stop a sourced file from
+# turning the option back on — the fix is that library's dual-role `set -u`, so do not read the
+# relaxation below as covering the whole of project-gates.sh, and do not "strengthen" it here.
 #
 # <prior-rc> (optional) OVERRIDES a zero status, because at the common.sh call site this function's
 # own `.` cannot observe a load at all. `common.sh` opens with a double-source guard
