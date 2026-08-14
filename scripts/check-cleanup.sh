@@ -717,6 +717,24 @@ eq "${ printf 'C\t@a.txt\nC\t@b.txt\n' | rep; }" "C: @a.txt, @b.txt" \
 rep --tail >/dev/null 2>&1; no $? "4 --tail without a value is an error"
 rep --bogus >/dev/null 2>&1; no $? "4 an unknown report option is an error"
 
+# --- 4a2. field integrity: a FOURTH field is refused, never truncated -------------------------
+# The only way to produce one is a tab inside an item or a proof — a value that forged a field
+# boundary. Rendering the head and dropping the tail is the silent direction, and silence is what
+# makes a forged record dangerous. This is the whole of what a CONSUMER can enforce: a newline in a
+# value has already become a record boundary by the time stdin is read, and no reader can tell it
+# from a real one, which is why that half is a producer obligation (`adb_tsv_field_safe`).
+printf 'C\tf.md\tproof\tSURPLUS\n' | rep >/dev/null 2>&1
+eq "$?" "2" "4a2 a record with a fourth field is refused (2), not silently truncated"
+eq "${ printf 'C\tf.md\tproof\tSURPLUS\n' | rep 2>/dev/null; }" "" \
+   "4a2 …and renders nothing at all, rather than a plausible line built from half a record"
+# The tail line must not survive the refusal: a lone state line is exactly what a clean sweep looks
+# like, so printing it under a rejected report would report success for a sweep that was refused.
+eq "${ printf 'C\tf.md\tp\tX\n' | rep --tail 'main: clean, in sync with origin/main' 2>/dev/null; }" "" \
+   "4a2 …and the --tail state line is withheld too, so a refusal cannot read as a clean sweep"
+# Three fields remain the contract, and the refusal must not have swallowed the legal case.
+eq "${ printf 'C\tf.md\tproof\n' | rep --tail 'main: clean'; }" "C: f.md [proof]
+main: clean" "4a2 a three-field record still renders, with its tail"
+
 # --- 4b. the third field: every delete states its proof (#332) ---------------------------------
 # The renderer half. `Deleted (local): fix/371` read identically whether the sweep was correct or
 # catastrophic, so the record grew an optional proof column. Every case here is about the ONE thing
@@ -750,12 +768,13 @@ eq "${ printf 'D\tfix/371\t#379 (merge commit 3f9e9e5abcde)\nD\tfeat/x\tcontaine
    "D: fix/371 [#379 (merge commit 3f9e9e5abcde)], feat/x [contained in origin/main]" \
    "4b ungroupable items each carry their own proof on one category line"
 # THE PER-CATEGORY GROUP-KEY RESET, which is load-bearing in a way its four siblings are not.
-# `gseen` is keyed by CONTENT (prefix, suffix and — since #332 — the proof); the rest are indexed
-# by group number and overwritten at creation, so only this one can carry a stale entry across a
-# category boundary and send an item into a group belonging to the previous one. Measured while
-# writing this: deleting `split("", gseen)` fails exactly this assertion and nothing else in the
-# suite, while deleting the gdet/gnum/gpre resets leaves all 422 green. So this is the assertion
-# that stands there, and the direction is real — `Deleted (local)` always precedes `Cleared state`.
+# `gseen` is keyed by CONTENT (prefix, suffix and — since #332 — the proof); its five siblings
+# (`gpre`, `gsuf`, `gmid`, `gnum`, `gdet`) are indexed by group number and overwritten at creation,
+# so only this one can carry a stale entry across a category boundary and send an item into a group
+# belonging to the previous one. Measured while writing this: deleting `split("", gseen)` fails
+# exactly this assertion and nothing else in the suite, while deleting the gdet/gnum/gpre resets
+# leaves every other case green. So this is the assertion that stands there, and the direction is
+# real — `Deleted (local)` is always emitted before `Cleared state`.
 eq "${ printf 'A\tx.md\tPROOF-A\nA\ty.md\tPROOF-A2\nB\tz.md\n' | rep; }" \
    "A: x.md [PROOF-A], y.md [PROOF-A2]
 B: z.md" \
@@ -1796,20 +1815,35 @@ check_make_repo_pair "$BR" "$work/remote332.git" || bad "9 fixture init failed"
   git checkout -q -b main
   git commit -q --allow-empty -m init
   git push -q -u origin main
-  for b in br/pr br/ff br/open br/unver br/refuse; do
-    git checkout -q -b "$b"
-    git commit -q --allow-empty -m "$b work"
-    git checkout -q main
-  done
-  git push -q origin main
 ) || bad "9 fixture build failed"
 BR_MAIN="${ check_git "$BR" rev-parse refs/heads/main; }"
 
-# The wrapper. `br/pr` is the carry probe: call 1 hands back a SENTINEL, every later call hands back
-# a POISON value. A workflow that re-asks for evidence it already holds reports the poison, and the
-# assertions below can see exactly which one landed. `br/refuse` returns main's OID as the tip, so
-# the real `git update-ref -d refs/heads/br/refuse <main>` fails the compare-and-delete and takes
-# the REFUSED arm without any race to stage.
+# REBUILT BEFORE EVERY RUN. The sweep DELETES br/pr and br/ff, so a second `br_run` over the same
+# fixture would classify branches that no longer exist — the wrapper would hand back an empty tip,
+# which the real library can never return, and the later cases would be asserting against an
+# impossible verdict. Bot review, PR for #332, caught exactly that in 9g/9h.
+br_fixture() {
+  ( cd "$BR" || exit 1
+    git checkout -q main
+    for b in br/pr br/ff br/open br/unver br/refuse; do
+      git rev-parse --verify --quiet "refs/heads/$b" >/dev/null || {
+        git checkout -q -b "$b"
+        git commit -q --allow-empty -m "$b work"
+        git checkout -q main
+      }
+    done ) || bad "9 fixture rebuild failed"
+}
+
+# The wrapper. `br/pr` is the carry probe, and its answer is derived from LIVE STATE rather than a
+# call counter: while the ref exists the verdict is the SENTINEL, and once the sweep has deleted it
+# any later read is a different moment and gets the POISON. That is the issue's acceptance criterion
+# literally — "a fixture whose live state changes after classification" — and it is deterministic,
+# because the state that changes is the delete this very block performs.
+#
+# The counter is kept, but only to assert HOW MANY times the question was asked.
+#
+# `br/refuse` returns main's OID as the tip, so the real `git update-ref -d refs/heads/br/refuse
+# <main>` fails the compare-and-delete and takes the REFUSED arm with no race to stage.
 cat > "$BR/cl" <<BRWRAP
 #!/usr/bin/env bash
 if [ "\$1" = branch-verdict ]; then
@@ -1821,9 +1855,13 @@ if [ "\$1" = branch-verdict ]; then
   tip="\$(git rev-parse --verify --quiet "refs/heads/\$b")"
   case "\$b" in
     br/pr)
-      if [ "\$n" -eq 1 ]; then printf 'merged-pr\n%s\n#7 (merge commit SENTINELCAFE)\n' "\$tip"
-      else                     printf 'merged-pr\n%s\n#999 (merge commit POISONBEEF01)\n' "\$tip"; fi ;;
-    br/ff)     printf 'merged-ff\n%s\n' "\$tip" ;;
+      # The ref is GONE -> this read happens after the delete -> a different answer. A stub that
+      # returned a merged verdict with an empty tip would be describing something the real library
+      # cannot produce, so say so loudly instead.
+      if [ -n "\$tip" ]; then printf 'merged-pr\n%s\n#7 (merge commit SENTINELCAFE)\n' "\$tip"
+      else                    printf 'merged-pr\n%s\n#999 (merge commit POISONBEEF01)\n' "$BR_MAIN"; fi ;;
+    br/ff)     [ -n "\$tip" ] || { printf 'stub: br/ff read after deletion\n' >&2; exit 3; }
+               printf 'merged-ff\n%s\n' "\$tip" ;;
     br/open)   printf 'unmerged\n%s\n' "\$tip" ;;
     br/unver)  printf 'unverified\n%s\nSENTINEL-UNVERIFIED-DETAIL\n' "\$tip" ;;
     br/refuse) printf 'merged-pr\n%s\n#8 (merge commit CAFEBABE1234)\n' "$BR_MAIN" ;;
@@ -1839,8 +1877,10 @@ BRWRAP
 # round trip through `$( )` plus `tr` is exactly where a separator quietly becomes something else.
 # `"$BASH"` and never a bare `bash`, for the reason 8b states — a nested `bash -c` re-resolves from
 # PATH, which on macOS is 3.2.
-br_run() {
+br_run() {   # [snippet-body] — defaults to the real extracted block
   rm -rf "$BRC"
+  br_fixture
+  local body="${1:-$BR_SNIPPET}"
   ( cd "$BR" && env "$BASH" -c '
 BASE=origin/main
 TABC="$(printf "\t")"
@@ -1852,8 +1892,7 @@ br/ff
 br/open
 br/unver
 br/refuse"
-'"${BR_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$BR/cl\"}"'
-'"$1"'
+'"${body//\{\{CLEANUP_LIB\}\}/bash \"$BR/cl\"}"'
 printf "%s" "$DELETED_LOCAL" > '"$BR"'/deleted_local
 printf "%s" "$NOTES"         > '"$BR"'/notes' ) >/dev/null 2>&1
 }
@@ -1917,18 +1956,35 @@ hasnt "$br_report" 'POISONBEEF01'  "9f …and never a value from a later re-quer
 eq "${ cat "$BRC/br_pr" 2>/dev/null; }" "1" \
    "9f …because branch-verdict is asked exactly once per branch"
 
-# --- 9g. THE CONTROL: the assertion above must be able to fail ---------------------------------
-# A guard is not done until it has been observed failing (base/practices/self-review.md). Here the
-# witness is a report-time re-query — the specific implementation the issue rules out — appended to
-# the REAL block. It must produce the poison, or 9f is asserting something nothing could violate.
-br_run '
-V2="$(printf "" | bash '"$BR"'/cl branch-verdict br/pr "$BASE")"
-{ IFS= read -r _; IFS= read -r _; IFS= read -r D2 || D2=""; } <<CTL
-$V2
-CTL
-DELETED_LOCAL="br/pr${TABC}${D2}"'
+# --- 9g. THE CONTROL: 9f must be able to fail, and the witness is the REAL block, MUTATED ------
+# A guard is not done until it has been observed failing (base/practices/self-review.md), and the
+# observation has to be of the IMPLEMENTATION going wrong — not of the harness. An earlier version
+# of this case ran the real block and then overwrote `DELETED_LOCAL` with a separately-queried
+# poison value; that proves a test-authored assignment contains what the test just put in it, and
+# nothing whatever about 9f. Bot review caught it.
+#
+# So the witness is the actual snippet with ONE substitution: the carried `$DETAIL` becomes a
+# re-query, which is precisely the implementation the issue rules out ("never re-derived
+# afterwards"). Everything else — the loop, the guards, the delete, the accumulator — is the
+# shipped text.
+#
+# AND THE RE-QUERY READS GENUINELY DIFFERENT LIVE STATE. The delete happens on the line above, so
+# by the time the mutated arm asks again the ref is gone and the wrapper answers as any real reader
+# would after a deletion. That is the issue's "fixture whose live state changes after
+# classification", with the change being the sweep's own mutation rather than a staged race.
+BR_NEEDLE='merged-pr) PROOF="$DETAIL" ;;'
+BR_REQUERY='          merged-pr) PROOF="$(printf %s "" | {{CLEANUP_LIB}} branch-verdict "$b" "$BASE" | sed -n 3p)" ;;'
+BR_BROKEN="${ printf '%s\n' "$BR_SNIPPET" \
+  | awk -v needle="$BR_NEEDLE" -v repl="$BR_REQUERY" 'index($0, needle) { print repl; next } { print }'; }"
+# The mutation must actually have applied — a needle that silently stopped matching would leave
+# this control running the CORRECT code and passing for the wrong reason, which is the same class
+# of defect it exists to catch.
+if [ "$BR_BROKEN" = "$BR_SNIPPET" ]; then
+  bad "9g the control mutation did not apply — the needle no longer matches the shipped block"
+else ok; fi
+br_run "$BR_BROKEN"
 has "${ br_line; }" 'POISONBEEF01' \
-   "9g the control (a report-time re-query) really does report the poisoned value"
+   "9g the control (the real block, re-querying at record time) reports the post-delete value"
 hasnt "${ br_line; }" 'SENTINELCAFE' \
    "9g …and loses the authorising evidence entirely, which is the defect 9f pins"
 
@@ -2015,11 +2071,15 @@ SCAN="$(bash '"$CL"' state-scan '"$ST"')"
 '"${MK_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"'
 printf "%s" "$CLEARED" > '"$ST"'.cleared' ) >/dev/null 2>&1
 }
+# RENDERED, not substring-matched on the accumulator. `CLEARED="…json branch gone"` — a SPACE where
+# the tab belongs — satisfies any `has … 'branch gone'` check while rendering the proof as part of
+# the FILENAME, with no bracket anywhere. That is a realistic slip (the separator is invisible) and
+# the accumulator cannot see it; only the report can. Bot review caught this gap.
 mk_run none 0
-has "${ cat "$ST.cleared"; }" 'branch gone' \
-   "10d a swept run marker states that both refs were provably gone"
+eq "${ st_line; }" "Cleared state: implement-issue-active.json [branch gone]" \
+   "10d a swept run marker states that both refs were provably gone, through the real report path"
 mk_run merged 1
-has "${ cat "$ST.cleared"; }" 'branch gone, PR merged' \
+eq "${ st_line; }" "Cleared state: implement-issue-active.json [branch gone, PR merged]" \
    "10d …and appends the PR state when one was actually read"
 if [ -e "$ST/implement-issue-active.json" ]; then
   bad "10d the marker arm did not delete — the fixture proves nothing"
@@ -2029,6 +2089,116 @@ else ok; fi
 st_run merged
 if printf '%s\n' "${ st_line; }" | bash "$ROOT/scripts/lib/state-assert.sh" lint >/dev/null 2>&1; then ok; else
   bad "10e the state sweep's report line violates the claim grammar"
+fi
+
+# ============ 11. the REMOTE half states what it actually proved (#332) =======================
+# The remote delete has no expected-OID compare-and-delete: `git push origin --delete` removes the
+# ref BY NAME, whatever it points at now. So its evidence is strictly weaker than the local half's,
+# and the wording has to say WHEN it was established rather than borrow the local half's certainty.
+# Bot review raised this: a bare "contained in origin/main" would be the report asserting something
+# the sweep never proved about the tip it actually removed.
+#
+# A textual pin cannot see any of that, so this drives the real block against a real remote.
+RM="$work/remote-sweep"
+RM_SNIPPET="${ check_wf_snippet "$WF" remote-sweep; }"
+[ -n "$RM_SNIPPET" ] || bad "11 snippet 'remote-sweep' not found in base/workflows/cleanup.md"
+check_make_repo_pair "$RM" "$work/remote-sweep-origin.git" || bad "11 fixture init failed"
+(
+  cd "$RM" || exit 1
+  git checkout -q -b main
+  git commit -q --allow-empty -m init
+  git push -q -u origin main
+  git checkout -q -b rm/merged
+  git commit -q --allow-empty -m work
+  git push -q -u origin rm/merged
+  git checkout -q main
+  git merge -q --no-ff rm/merged -m "merge rm/merged"
+  git push -q origin main
+) || bad "11 fixture build failed"
+
+rm_run() {   # <remote-branch-list>
+  ( cd "$RM" && env "$BASH" -c '
+BASE=origin/main
+TABC="$(printf "\t")"
+NOTES=""; DELETED_REMOTE=""
+REMOTE_MERGED="'"$1"'"
+'"${RM_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"'
+printf "%s" "$DELETED_REMOTE" > '"$RM"'.deleted
+printf "%s" "$NOTES"          > '"$RM"'.notes' ) >/dev/null 2>&1
+}
+rm_line() {
+  printf '%s\n' "$(cat "$RM.deleted")" \
+    | while IFS= read -r x; do [ -n "$x" ] && printf 'Deleted (remote)\t%s\n' "$x"; done \
+    | bash "$CL" report
+}
+
+rm_run "rm/merged"
+eq "${ rm_line; }" "Deleted (remote): rm/merged [contained in origin/main when enumerated]" \
+   "11a a deleted remote branch reports the evidence, scoped to the moment it was established"
+# "when enumerated" is the honest half and it is asserted explicitly: without it this line claims a
+# containment that holds of the enumerated tip, not necessarily of the tip `--delete` removed.
+has "${ rm_line; }" 'when enumerated' \
+   "11a …and does not borrow the local half's expected-OID certainty"
+if [ -n "${ check_git "$RM" ls-remote --heads origin rm/merged; }" ]; then
+  bad "11a the remote branch was not actually deleted — the fixture proves nothing"
+else ok; fi
+
+# A FAILED remote delete is reported loudly and gains NO record — the same asymmetry the local half
+# keeps. A branch that does not exist on the remote makes `git push --delete` fail for real.
+rm_run "rm/never-existed"
+hasnt "${ cat "$RM.deleted"; }" 'rm/never-existed' \
+   "11b a remote delete that FAILED gains no record, so no proof asserts a deletion that did not happen"
+has "${ cat "$RM.notes"; }" 'REFUSED origin/rm/never-existed' \
+   "11b …and is reported in full instead"
+
+# The composed remote line must satisfy the claim grammar too. `contained` is not a status word,
+# but this is the line where a future edit would most naturally reach for `merged`.
+rm_run "rm/merged" 2>/dev/null || true
+if printf '%s\n' "${ rm_line; }" | bash "$ROOT/scripts/lib/state-assert.sh" lint >/dev/null 2>&1; then ok; else
+  bad "11c the remote sweep's report line violates the claim grammar"
+fi
+
+# --- 11d. the new blocks must also run on the interpreter an AGENT will use --------------------
+# Section 8e makes this point for the state block: these fences are executed by the AGENT's shell,
+# and on macOS a shell that has not picked up Homebrew's prefix is /bin/bash 3.2.57. The branch and
+# marker blocks are new surface with the same exposure, and `check-workflow-shell.sh` checks
+# reserved-variable assignment, not general syntax. The sentinel is what makes this able to fail at
+# all — a block that does not run deletes nothing, which satisfies any survival assertion.
+if [ -x /bin/bash ] && [ "${ /bin/bash -c 'printf %s "$BASH_VERSION"'; }" != "${BASH_VERSION}" ]; then
+  br_fixture
+  rm -rf "$BRC"
+  ( cd "$BR" && env /bin/bash -c '
+BASE=origin/main
+TABC="$(printf "\t")"
+WORKTREES=""
+HAVE_GH=0
+NOTES=""; DELETED_LOCAL=""
+CANDIDATES="br/pr
+br/ff
+br/open
+br/unver
+br/refuse"
+'"${BR_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$BR/cl\"}"'
+printf "%s" "$DELETED_LOCAL" > '"$BR"'/deleted_local' ) >/dev/null 2>&1
+  has "${ br_line; }" 'br/pr [#7 (merge commit SENTINELCAFE)]' \
+     "11d the branch-sweep block carries its proof under /bin/bash 3.2 too"
+  if [ -n "${ check_git "$BR" rev-parse --verify --quiet refs/heads/br/pr; }" ]; then
+    bad "11d under /bin/bash the branch block did not run — nothing was deleted (parse or portability failure)"
+  else ok; fi
+
+  mk_run none 0   # rebuilds the marker fixture; re-run it under the old interpreter below
+  rm -rf "${ST:?}"; mkdir -p "$ST"
+  printf '{"branch":"gone/branch"}\n' > "$ST/implement-issue-active.json"
+  ( cd "$BR" && env RUN=none NOTES="" CLEARED="" PRWANT=none /bin/bash -c '
+TABC="$(printf "\t")"
+pr_state() { printf "%s\n" "$PRWANT"; }
+SCAN="$(bash '"$CL"' state-scan '"$ST"')"
+'"${MK_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"'
+printf "%s" "$CLEARED" > '"$ST"'.cleared' ) >/dev/null 2>&1
+  eq "${ st_line; }" "Cleared state: implement-issue-active.json [branch gone]" \
+     "11d …as does the marker-sweep block"
+else
+  check_note "11d SKIPPED the old-interpreter pass: /bin/bash is absent, or is this suite's own interpreter (${BASH_VERSION})"
 fi
 
 check_summary "check-cleanup"

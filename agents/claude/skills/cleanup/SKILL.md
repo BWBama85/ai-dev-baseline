@@ -137,11 +137,17 @@ into their own groups instead of having the first one's proof printed over all o
 written:**
 
 - **Never a `#N` beside a status word.** `bash "$HOME/.claude/scripts/lib/state-assert.sh" lint` rejects that shape unless it is
-  introduced by `was observed`, and one report line legitimately carries both halves at once — a
-  squash-merge proof contributes the `#N`, a thread cache contributes the status. So a
-  fast-forward's proof is *contained in*, never *merged into*, and a cache's is `PR merged`, never
-  `PR #41 merged`. The natural wording for either one turns the whole line into a violation that
-  surfaces only when both verdicts appear in the same sweep.
+  introduced by `was observed`, and **one `Deleted (local)` line legitimately carries both halves at
+  once**: a squash-merged branch contributes the `#N`, and a fast-forward branch sharing that line
+  would contribute the status word. So a fast-forward's proof is *contained in*, never *merged
+  into* — a wording that only violates when both verdicts appear in the same sweep, which is
+  exactly when nobody is looking for it.
+
+  A thread cache's proof avoids the number for the same rule read the other way round: `PR merged`
+  is clean on its own, `PR #41 merged` is a violation by itself. (Report categories are one
+  physical line each, so a `Cleared state` proof and a `Deleted (local)` proof can never collide
+  with each other — an earlier draft of this paragraph claimed they could, and that was wrong. The
+  constraint is real; it just lives *within* a category, not across two.)
 - **The proof is the value the verdict returned or consumed**, carried from that call — never
   re-read when the report is composed. A second read is a different moment, and for the local half
   it is not even answerable: the branch is gone by then. Re-introducing that gap would reinstate
@@ -428,14 +434,26 @@ Fed by a heredoc, not a pipe: a piped `while` runs in a subshell, so every `DELE
 append would be discarded and step 6 would report an empty category for work it really did.
 
 ```bash
+# ADB-SNIPPET: remote-sweep
 while IFS= read -r b; do
   [ -n "$b" ] || continue
   if git push origin --delete "$b"; then
-    # The same proof discipline as the local half (#332), and the same wording constraint. This
-    # half never calls `branch-verdict` — its ONLY evidence is the `--merged` enumeration above,
-    # which is ancestry in $BASE — so that is exactly what it reports, and the uniform string
-    # collapses into one rendering however many branches the sweep removes.
-    DELETED_REMOTE="${DELETED_REMOTE}${b}${TABC}contained in $BASE
+    # The same proof discipline as the local half (#332) — but NOT the same strength of claim, and
+    # the wording says so rather than borrowing the local half's confidence.
+    #
+    # This half never calls `branch-verdict`. Its only evidence is the `--merged` enumeration
+    # above, and unlike the local delete there is no expected-OID compare-and-delete here:
+    # `git push origin --delete` removes the ref BY NAME, whatever it points at now. So if the
+    # remote branch advanced between the enumeration and this line, the tip actually deleted was
+    # never the tip that was proved contained. That gap predates #332 and moving it would change a
+    # deletion decision, which this issue explicitly does not do — but a bare `contained in $BASE`
+    # would be this report asserting something the sweep did not establish, which is worse than the
+    # silence it replaced.
+    #
+    # So the proof is scoped to the moment it was actually observed. Past-tense by construction, as
+    # `verify-before-asserting.md` requires of every observation: it says what was true at
+    # enumeration and claims nothing about the instant of the delete.
+    DELETED_REMOTE="${DELETED_REMOTE}${b}${TABC}contained in $BASE when enumerated
 "
   else
     NOTES="${NOTES}REFUSED origin/$b — the remote delete failed; left in place

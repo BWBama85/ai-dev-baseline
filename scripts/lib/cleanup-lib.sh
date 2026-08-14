@@ -775,9 +775,16 @@ cmd_state_verdict() {
 #
 # Runs of items sharing a prefix, a numeric middle and a suffix collapse to a brace form —
 # `threads-{41,47,51}.json` — which is what keeps twelve swept caches on ONE line instead of
-# twelve. Order is preserved exactly as given (never sorted): the caller's order is the sweep's
-# order, and a reader matching the report against what scrolled past should see the same
-# sequence. Items that do not fit the pattern pass through verbatim, in place.
+# twelve. Items that do not fit the pattern pass through verbatim.
+#
+# ORDER IS NEVER SORTED, and that is the guarantee — but it is weaker than "the input sequence is
+# preserved", which this comment used to imply and the code has never done. GROUPS appear in
+# first-seen order and MEMBERS within a group appear in first-seen order; a group therefore pulls
+# its later members forward past anything that came between them. `z-1, a-2, z-3` has always
+# rendered `z-{1,3}.txt, a-2.txt`, long before there was a third field. #332 makes the same effect
+# reachable inside ONE family (a differing proof splits a run), so the imprecision is worth
+# correcting rather than inheriting: a reader reconciling this against what scrolled past should
+# expect grouped-in-first-seen-order, not a transcript.
 #
 # THE THIRD FIELD IS THE DELETE'S PROOF (#332), rendered as a trailing ` [detail]`. /cleanup
 # computed evidence for every branch and every state file it removed — `#379 (merge commit
@@ -797,6 +804,26 @@ cmd_state_verdict() {
 # A RECORD WITH NO THIRD FIELD RENDERS EXACTLY AS BEFORE. `-F'\t'` gives an absent field as "",
 # the group key then folds identically to the two-field key, and no bracket is emitted — so every
 # pre-#332 caller and every pre-#332 assertion is untouched.
+#
+# FIELD INTEGRITY, and exactly how far this end of it reaches. A FOURTH field is refused rather
+# than discarded: an embedded tab is the only way to produce one, and silently dropping the tail
+# would mean a value that forged a field boundary got rendered as if it had not. That refusal is
+# this subcommand's whole enforceable share.
+#
+# A NEWLINE CANNOT BE CAUGHT HERE AT ALL, and saying so is better than implying a guard that does
+# not exist: by the time stdin is read, a newline in a value has already BECOME a record boundary,
+# and no consumer can tell it from a real one. It is a producer obligation, whose one home is
+# `adb_tsv_field_safe` in common.sh — the predicate `state-scan` already refuses on (#273). The
+# producers that feed this subcommand are safe by construction rather than by check: git rejects
+# control characters in ref names, `state-scan` has already refused any filename carrying either
+# delimiter, and every proof string is machine-shaped (`#<n> (merge commit <oid>)`, `PR <state>`,
+# `contained in <ref>`, and two fixed phrases).
+#
+# THE RENDERED DELIMITERS ARE NOT ESCAPED — items are joined with `, ` and a proof is wrapped in
+# `[…]`. A value containing either is legal input and renders ambiguously to a HUMAN; it cannot
+# forge a record, because the record grammar is the tab. Escaping was rejected for the reason
+# `state-scan` states about its own display path: the values this actually receives are
+# constrained, and an encoder nothing exercises is a sanitizer whose failure mode is silence.
 cmd_report() {
   local tail_line=""
   while [ "$#" -gt 0 ]; do
@@ -828,12 +855,27 @@ cmd_report() {
     {
       # $3 is the OPTIONAL proof. A two-field record leaves it "", which every branch below treats
       # as "no bracket" — the pre-#332 rendering, byte for byte.
+      #
+      # A FOURTH FIELD IS FATAL, never truncated. The only way to produce one is a tab inside an
+      # item or a proof, i.e. a value that forged a field boundary — and rendering the head of it
+      # while dropping the tail is the silent direction. Exit 2, matching `die`, so a caller sees a
+      # refusal rather than a plausible line built from half a record.
+      if (NF > 3) {
+        printf "cleanup-lib: report: record has %d fields (max 3) — a tab inside an item or a proof forged a field boundary\n", NF > "/dev/stderr"
+        bad = 1; exit 2
+      }
       if ($1 == "" || $2 == "") next
       if (!($1 in seen)) { seen[$1] = 1; order[++nc] = $1 }
       items[$1, ++cnt[$1]] = $2
       dets[$1, cnt[$1]] = $3
     }
     END {
+      # `exit` from the main rule still runs END, so the refusal is re-asserted here; otherwise a
+      # partial report would print under the diagnostic and read as the real output of the sweep.
+      # (No apostrophe anywhere in this awk program — see the note further down. One closes the
+      # single-quoted shell string and turns the whole file into a syntax error, which is how this
+      # very comment first arrived.)
+      if (bad) exit 2
       for (i = 1; i <= nc; i++) {
         c = order[i]
         # split("", arr) rather than `delete arr`: the whole-array delete is a later addition and
@@ -880,7 +922,9 @@ cmd_report() {
         printf "%s: %s\n", c, line
       }
     }
-  '
+  ' || die "report: refused a malformed record — nothing was rendered"
+  # The tail line is deliberately BELOW the refusal: a state line printed under a rejected report
+  # would be the one surviving output, and a lone `main: clean, in sync` reads as a clean sweep.
   [ -n "$tail_line" ] && printf '%s\n' "$tail_line"
   return 0
 }
