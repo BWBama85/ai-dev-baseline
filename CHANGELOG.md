@@ -67,6 +67,55 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **A `$HOME` containing a tab or newline made the installer move a real directory into backup and
+  symlink over it — and every consumer discarded the status that said so** (#324, D64).
+
+  `adb_agent_manifest` emitted `<src>TAB<dest>` with both paths unescaped. A newline in `$HOME` does
+  not produce a record a reader rejects; it produces **two** records, and the first one's `<dest>` is
+  a *shorter path that frequently exists*. Reproduced against the real primitives: with
+  `$HOME` = `<dir><NL>shadow`, `adb_link_manifest` moved `<dir>` — a real directory holding real
+  content — into the backup tree, replaced it with a symlink, and *then* returned non-zero. The
+  status was never wrong. It was too late to matter.
+
+  D59 declined to fix this inside #278 and named the obstacle exactly: the consumers parse three
+  different ways and all of them swallow the producer's status inside a heredoc command
+  substitution, so `return 1` alone changes nothing.
+
+  - **The producer refuses atomically.** An unrepresentable `<repo>`, `<home>`, or skill directory
+    name yields **no records at all**, one line on stderr naming the value, and a non-zero status.
+    Deliberately *not* `adb_repo_shape`'s `warning` record: that function's consumer branches on a
+    named field, while this one **links** every record it reads.
+  - **The status is now captured at nine call sites** — `install.sh`, `uninstall.sh`, each adapter's
+    install *and* uninstall arm (four), `bin/baseline` (twice), and `scripts/lib/adopt-lib.sh`.
+    **Two of those the issue's own inventory missed, and they fail worst.** `bin/baseline` swallowed it twice over — a pipeline
+    reporting `cut`'s status, then a heredoc around the function that wrapped it — so a refused
+    enumeration became an empty destination list, a verify loop that ran zero times, and a return of
+    **0**: *healthy*, asserted about an install nothing had looked at. In `adopt-lib.sh` an empty
+    shipped set does not read as an error to `classify`; it reads as "the baseline ships nothing",
+    which makes every artifact in a scanned project look project-specific.
+  - **`adb_link_manifest` validates the whole manifest before the first link**, and
+    `adb_unlink_manifest` gained the mirror pass plus, for the first time, a return value at all.
+    The refusal is **not** in `adb_link`, which #324 proposed: by then the record has already been
+    split, so it receives two safe-looking fragments and cannot see that anything happened. A
+    missing source stays per-record, as it always was.
+  - **An entry-local fault is still entry-local.** A missing source links the good entries and
+    reports the bad one, exactly as before — that contract is pinned, and only *representability*
+    faults refuse the whole map.
+  - **An install made from an unrepresentable pair is unsupported, loudly.** Its links are at
+    truncated paths, so there is no correct removal set: `uninstall.sh` removes nothing, says so,
+    prints the backup directory, and no longer reports "Uninstalled" over a failure.
+  - **Nine mutations were observed red against copies of the tree**, each verifying its own edit
+    applied first — which earned its keep immediately, when the first three-column mutation silently
+    failed to match and 719 green assertions were momentarily indistinguishable from a guard that
+    could not fire. The decisive one leaves the exit status **correct**: neutering only the
+    pre-write pass turns three assertions red and the status assertion is not among them, which is
+    why every fixture checks the filesystem (`cmp`-identical content, no backup, no link).
+  - **What this does not cover, said in the code rather than implied:** a clone directory whose name
+    *ends* in a newline is truncated by each entry point's own `$(cd … && pwd)` bootstrap before the
+    producer is reached. `$HOME` and every *internal* delimiter do reach it and are refused. Filed
+    as #343 rather than folded in — it needs either 20 duplicated lines or a shared bootstrap
+    primitive with a chicken-and-egg, which is a second cross-library decision.
+
 - **The shipped global Stop-hook gate exited 1 — a non-blocking notice — instead of its blocking 2,
   whenever `common.sh` carried a top-level unbound expansion (#317).**
 

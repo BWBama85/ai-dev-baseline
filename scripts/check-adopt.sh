@@ -327,6 +327,20 @@ has "$shipped" "rootdoc${TAB}CLAUDE.md${TAB}claude"        "shipped must report 
 hasnt "$shipped" "gemini" "shipped <agent> must filter to that agent"
 eq "$(bash "$AD" shipped "$WORK" >/dev/null 2>&1; echo $?)" 2 "shipped on a non-baseline dir exits 2"
 
+# A baseline root the install manifest cannot represent DIES; it does not report an empty set
+# (#324, D64). This consumer was missed by #324's own inventory and had the installers' swallow:
+# `adb_agent_manifest` ran inside the `done <<EOF … EOF` substitution, so its refusal arrived as
+# zero records and exit 0. That is the worst possible reading here — an empty shipped set does not
+# look like an error to `classify`, it looks like "the baseline ships nothing", which makes every
+# artifact in the scanned project read as project-specific and recommends keeping a fork of each.
+nl_root="$WORK/nlbase"$'\n'"shadow"
+mkdir -p "$nl_root/agents/claude/skills/demo" "$nl_root/agents/claude/scripts" "$nl_root/scripts/lib"
+nl_out="$(bash "$AD" shipped "$nl_root" claude 2>/dev/null)"; nl_rc=$?
+no "$nl_rc" "shipped refuses a baseline root the manifest cannot represent"
+eq "$nl_out" "" "shipped emits no records when it refuses"
+# Non-emptiness on the good path, so 'refuse everything' cannot satisfy the two above.
+if [ -n "$shipped" ]; then ok; else bad "shipped must still enumerate a representable baseline root"; fi
+
 # --- 4. scan: the surface, the boundary, and the record format ----------------------------------
 # A fixture modelling getrich's documented shape: forked skills (one colliding with a baseline
 # skill, one not), duplicate hook scripts, a project statusLine, a stack root doc, no agents.toml,

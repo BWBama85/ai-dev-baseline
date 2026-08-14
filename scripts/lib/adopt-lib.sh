@@ -265,7 +265,7 @@ cmd_baseline() {
 # reduced to the identity here and the comparison downstream is name-to-name.
 cmd_shipped() {
   [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "shipped: needs <baseline-root> [agent]"
-  local root="$1" want="${2:-}" agent src dest kind name
+  local root="$1" want="${2:-}" agent src dest kind name manifest
   [ -d "$root/agents" ] || die "shipped: not a baseline checkout (no agents/ under $root)"
   while IFS= read -r agent; do
     [ -n "$agent" ] || continue
@@ -273,8 +273,17 @@ cmd_shipped() {
     # A HOME that cannot appear in a real path, so a manifest line is unambiguously splittable
     # back into agent-relative form. `adb_agent_manifest` interpolates it literally.
     #
+    # CAPTURED AND CHECKED (#324, D64). This consumer was missed by #324's own inventory, and it
+    # had the same swallow as the installers: the producer ran inside the heredoc's `$(…)`, so a
+    # refusal for an unrepresentable <baseline-root> became an EMPTY shipped set — and an empty
+    # shipped set does not read as an error to `classify`, it reads as "the baseline ships nothing",
+    # which makes every artifact in the project look project-specific and recommends keeping a fork
+    # of each one. `die`, because that is how every other unanswerable question in this file ends.
+    #
     # BOTH columns are read: the DESTINATION carries the identity the classifier matches on,
     # and the SOURCE is where `delta` reads the baseline's own copy from.
+    manifest="$(adb_agent_manifest "$agent" "$root" "/ADB_SHIPPED")" \
+      || die "shipped: cannot enumerate $agent's install manifest under $root (see above)"
     while IFS="$TAB" read -r src dest; do
       [ -n "$dest" ] || continue
       case "$dest" in
@@ -288,7 +297,7 @@ cmd_shipped() {
       # the manifest is the only place that knows where it lives.
       _ad_emit "$kind" "$name" "$agent" "$src"
     done <<EOF
-$(adb_agent_manifest "$agent" "$root" "/ADB_SHIPPED")
+$manifest
 EOF
   done <<EOF
 $(_ad_agents_from_baseline "$root")

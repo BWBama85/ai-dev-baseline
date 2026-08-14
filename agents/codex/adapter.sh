@@ -27,25 +27,37 @@ _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 adb_require_bash "$@"
 
 cmd_install() {
-  local repo="$1" backup_dir="$2" rc=0
+  local repo="$1" backup_dir="$2" rc=0 manifest
   mkdir -p "$HOME/.codex"
   # Link via the shared manifest (#48) — the same producer install.sh + bin/baseline consume,
   # so this adapter can't drift from them. Capture the status BEFORE the note print (adb_info
   # would otherwise overwrite $?), so a missing source makes the adapter — and the top-level
   # installer — exit non-zero.
+  #
+  # THE PRODUCER IS CAPTURED SEPARATELY (#324, D64): a `$(…)` inside the heredoc discarded its
+  # status, so its refusal for an unrepresentable $repo/$HOME arrived as an empty manifest.
+  manifest="$(adb_agent_manifest codex "$repo" "$HOME")" || {
+    adb_info "  ERROR  cannot enumerate the install surface — nothing was linked (see above)"
+    return 1
+  }
   adb_link_manifest "$backup_dir" <<EOF || rc=1
-$(adb_agent_manifest codex "$repo" "$HOME")
+$manifest
 EOF
   adb_info "  note   ~/.codex/config.toml (model, reasoning effort, sandbox/approval policy) is yours to manage — sample at agents/codex/config.toml.sample"
   return "$rc"
 }
 
 cmd_uninstall() {
-  local repo="$1"
+  local repo="$1" manifest
   # Remove via the same shared manifest install linked from (#48), so this can't drift from
-  # cmd_install even if codex ever grows a second installed path.
+  # cmd_install even if codex ever grows a second installed path. Same capture-then-check as
+  # cmd_install — and a refusal removes NOTHING rather than acting on a map it just rejected.
+  manifest="$(adb_agent_manifest codex "$repo" "$HOME")" || {
+    adb_info "  ERROR  cannot enumerate what to remove — NOTHING was unlinked (see above)"
+    return 1
+  }
   adb_unlink_manifest "$repo" <<EOF
-$(adb_agent_manifest codex "$repo" "$HOME")
+$manifest
 EOF
 }
 

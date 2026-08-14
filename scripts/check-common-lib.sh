@@ -286,6 +286,113 @@ EOF
 if [ ! -e "$umdest" ]; then ok; else bad "adb_unlink_manifest removes an ours-into-repo link"; fi
 if [ -L "$umforeign" ]; then ok; else bad "adb_unlink_manifest must leave a foreign link (not ours)"; fi
 
+# --- a path the manifest cannot represent is REFUSED, not emitted (#324, D64) ------------------
+#
+# The defect: `<src>TAB<home>/.claude/CLAUDE.md` with a NEWLINE inside <home> is not a malformed
+# record, it is TWO records — and the first one's <dest> is a SHORTER path that frequently exists.
+# Driven through the real caller, `adb_link_manifest` moved that real directory into the backup
+# tree and symlinked over it, THEN returned non-zero. Every assertion below therefore checks the
+# FILESYSTEM as well as the status: "returns non-zero" is satisfied by the buggy version too, and
+# a test asserting only that would have passed against the exact code this fixes.
+#
+# BUILD THE DELIMITERS AS $'…' LITERALS. `"$(printf '\n')"` yields the EMPTY STRING (command
+# substitution strips trailing newlines), which would turn every "unsafe" case below into a safe
+# one and quietly test nothing — the same trap the adb_tsv_field_safe block records.
+mf_nl="$mhome"$'\n'"shadow"        # internal newline — the reproduced case
+mf_trail="$mhome"$'\n'             # TRAILING newline — the case $(…) erases
+mf_tab="$mhome"$'\t'"col2"         # a TAB — forges the OTHER column
+mf_repo_nl="$mrepo"$'\n'"shadow"
+
+# (a) Each unsafe root refuses: non-zero AND no records. Both halves matter — a producer that
+#     returned non-zero while still printing would leave every heredoc consumer linking anyway.
+for mf_bad in "$mf_nl" "$mf_trail" "$mf_tab"; do
+  mf_out="$(adb_agent_manifest claude "$mrepo" "$mf_bad" 2>/dev/null)"; mf_rc=$?
+  no "$mf_rc" "manifest: an unrepresentable home is refused"
+  eq "$mf_out" "" "manifest: a refused home emits NO records (atomic, not partial)"
+done
+mf_out="$(adb_agent_manifest claude "$mf_repo_nl" "$mhome" 2>/dev/null)"; mf_rc=$?
+no "$mf_rc" "manifest: an unrepresentable source root is refused"
+eq "$mf_out" "" "manifest: a refused source root emits NO records"
+
+# (b) The diagnostic names the value on ONE physical line — a multi-line diagnostic would re-open
+#     the very hole it is reporting in whatever reads the caller's stderr.
+mf_err="$(adb_agent_manifest claude "$mrepo" "$mf_nl" 2>&1 >/dev/null)"
+eq "$(printf '%s' "$mf_err" | wc -l | tr -d ' ')" "0" "manifest: the refusal diagnostic is one physical line"
+if [ -n "$mf_err" ]; then ok; else bad "manifest: a refusal must SAY something (silence is not a diagnostic)"; fi
+# The two-character `\n` sequence, not a fixed spelling: bash 3.2 renders `a<NL>b` as `a$'\n'b`
+# and 5.3 as `$'a\nb'`, and pinning either fails on the other runner CI uses (D29).
+has "$mf_err" '\n' "manifest: the refusal renders the newline in escaped form"
+# And it must not contain a REAL newline beyond its own terminator — that is what "one line" means.
+if [ "$(printf '%s' "$mf_err" | tr -cd '\n' | wc -c | tr -d ' ')" = "0" ]; then ok
+else bad "manifest: the refusal diagnostic carries a raw newline byte"; fi
+
+# (c) EVERY branch is guarded, not just claude's — the check is per-branch by construction, so a
+#     branch that forgot its call is invisible to a claude-only test.
+for mf_agent in claude codex gemini; do
+  mf_out="$(adb_agent_manifest "$mf_agent" "$mrepo" "$mf_nl" 2>/dev/null)"; mf_rc=$?
+  no "$mf_rc" "manifest: the $mf_agent branch refuses an unrepresentable home"
+  eq "$mf_out" "" "manifest: the $mf_agent branch emits nothing when it refuses"
+done
+
+# (d) A SKILL DIRECTORY NAME is filesystem-controlled and lands in both columns, so it can poison
+#     a record under otherwise safe roots. Its own fixture: mrepo is shared with the tests above.
+skrepo="$work/skrepo"
+mkdir -p "$skrepo/agents/claude/skills/good" "$skrepo/agents/claude/scripts" "$skrepo/scripts/lib"
+mkdir -p "$skrepo/agents/claude/skills/bad"$'\n'"name"
+mf_out="$(adb_agent_manifest claude "$skrepo" "$mhome" 2>/dev/null)"; mf_rc=$?
+no "$mf_rc" "manifest: an unrepresentable SKILL directory name is refused"
+eq "$mf_out" "" "manifest: one bad skill name refuses the WHOLE manifest, not just its record"
+
+# (e) THE GUARD MUST STILL LET GOOD INPUT THROUGH. Without this, deleting the emitting `case`
+#     bodies entirely would satisfy every assertion above — refusing everything is not a fix.
+mf_out="$(adb_agent_manifest claude "$mrepo" "$mhome")"; mf_rc=$?
+yes "$mf_rc" "manifest: a representable pair still succeeds"
+if [ -n "$mf_out" ]; then ok; else bad "manifest: a representable pair still emits records"; fi
+
+# (f) The unknown-agent contract survives. The check is deliberately INSIDE each known branch
+#     rather than hoisted above the `case`, so an unknown token keeps printing nothing and
+#     returning 0 even when paired with roots it would have rejected.
+mf_out="$(adb_agent_manifest bogus "$mrepo" "$mf_nl" 2>/dev/null)"; mf_rc=$?
+yes "$mf_rc" "manifest: an unknown agent still returns 0 even with an unsafe home"
+eq "$mf_out" "" "manifest: an unknown agent still prints nothing"
+
+# (g) NOTHING IS WRITTEN BEFORE THE REFUSAL — the assertion the old code fails.
+#     The fixture is the reproduced split: record 1 well-formed and pointing at the truncated
+#     prefix (a REAL directory holding real content), record 2 the orphan remainder. The prefix
+#     must come through untouched: still a directory, byte-identical, unlinked, and un-backed-up.
+lmpfx="$work/lm-prefix"; mkdir -p "$lmpfx"; printf 'PRECIOUS\n' > "$lmpfx/keep.txt"
+cp "$lmpfx/keep.txt" "$work/lm-pristine.txt"
+lmbk2="$work/lm-backup2"
+adb_link_manifest "$lmbk2" >/dev/null 2>&1 <<EOF
+$good1	$lmpfx
+shadow/.claude/CLAUDE.md
+EOF
+no $? "adb_link_manifest refuses a manifest containing a malformed record"
+if [ -d "$lmpfx" ] && [ ! -L "$lmpfx" ]; then ok; else bad "adb_link_manifest must not replace a real directory before refusing"; fi
+if cmp -s "$lmpfx/keep.txt" "$work/lm-pristine.txt"; then ok; else bad "adb_link_manifest must leave the real directory's content byte-identical"; fi
+if [ ! -e "$lmbk2" ]; then ok; else bad "adb_link_manifest must not create a backup before refusing"; fi
+
+# (h) A THIRD COLUMN is malformed too. `IFS=TAB read -r src dest` folds every extra field into
+#     `dest`, so a TAB inside the SOURCE path arrives as a destination silently carrying a
+#     delimiter; only reading a third name can see it.
+lm3="$work/lm-three"
+adb_link_manifest "$lmbk2" >/dev/null 2>&1 <<EOF
+$good1	$lm3	extra
+EOF
+no $? "adb_link_manifest rejects a three-column record"
+if [ ! -e "$lm3" ]; then ok; else bad "adb_link_manifest must not link a three-column record"; fi
+
+# (i) The remove side mirrors it: refuse, and remove NOTHING. It previously had no shape check at
+#     all and returned whatever its loop last evaluated, so a truncated <dest> that happened to be
+#     a symlink into the repo was deleted — correct ownership scoping, wrong path.
+umkeep="$work/um-keep"; ln -s "$umsrc" "$umkeep"
+adb_unlink_manifest "$umrepo" >/dev/null 2>&1 <<EOF
+$umsrc	$umkeep
+shadow/.claude/CLAUDE.md
+EOF
+no $? "adb_unlink_manifest refuses a manifest containing a malformed record"
+if [ -L "$umkeep" ]; then ok; else bad "adb_unlink_manifest must remove nothing when it refuses"; fi
+
 # --- adb_unlink_if_ours ------------------------------------------------------
 repo="$work/repo"; mkdir -p "$repo"; echo r > "$repo/file"
 ours="$work/ours.link"; ln -s "$repo/file" "$ours"

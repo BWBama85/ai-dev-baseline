@@ -203,14 +203,22 @@ adb_scan_links() {
 # one producer they can't drift: a path added/moved to the manifest is both linked AND verified,
 # and a missing intended link (not just a dangling one) is caught. Usage: adb_manifest_dests <src>
 adb_manifest_dests() {
-  local src="$1" agent
+  local src="$1" agent manifest rc=0
   while IFS= read -r agent; do
     [ -n "$agent" ] || continue
-    # `cut -f2` (TAB default) takes the <dest> column of this agent's manifest lines.
-    adb_agent_manifest "$agent" "$src" "$HOME" | cut -f2
+    # CAPTURED, NOT PIPED (#324, D64). `adb_agent_manifest … | cut -f2` reports CUT's status, so a
+    # producer that refuses an unrepresentable $src/$HOME contributed zero destinations and looked
+    # like an agent that simply installs nothing — and adb_verify_links then had nothing to find
+    # broken. An install whose surface cannot even be enumerated must not verify as healthy.
+    manifest="$(adb_agent_manifest "$agent" "$src" "$HOME")" || { rc=1; continue; }
+    # `cut -f2` (TAB default) takes the <dest> column of this agent's manifest lines. `%s\n` re-adds
+    # the terminator `$(…)` stripped; for an agent with no manifest that is one blank line, which
+    # every reader here already skips.
+    printf '%s\n' "$manifest" | cut -f2
   done <<EOF
 $(adb_installed_agents "$src")
 EOF
+  return "$rc"
 }
 
 # Return 0 iff every intended (manifest) install destination is OUR symlink into <src> AND
@@ -224,7 +232,18 @@ EOF
 # (not a scan of whatever happens to be linked) keeps verify from drifting from install.
 # Usage: adb_verify_links <src>
 adb_verify_links() {
-  local src="$1" p broken=0
+  local src="$1" p broken=0 dests
+  # FAIL CLOSED ON AN UNENUMERABLE SURFACE (#324, D64). This heredoc had the same swallow the
+  # installers did: `$(adb_manifest_dests …)` discards the status, so a refused enumeration became
+  # an empty dest list, the loop below ran zero times, and the function returned 0 — "healthy",
+  # asserted about an install nothing had looked at. That is precisely the stale-state trust
+  # base/practices/verify-before-asserting.md forbids: when the live state cannot be read, hold the
+  # gate and surface it; never fall back to the flattering answer.
+  dests="$(adb_manifest_dests "$src")" || {
+    printf 'baseline: cannot enumerate the intended install destinations for %s — refusing to report this install healthy (see above)\n' \
+      "$src" >&2
+    return 1
+  }
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     # Healthy == our symlink into src (adb_link_into) AND it resolves (-e). Anything else — a
@@ -234,7 +253,7 @@ adb_verify_links() {
       broken=1
     fi
   done <<EOF
-$(adb_manifest_dests "$src")
+$dests
 EOF
   return "$broken"
 }

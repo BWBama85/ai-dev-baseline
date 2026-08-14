@@ -55,6 +55,28 @@ shared copy is the point (design-principle #1; see
 [design-principles.md](design-principles.md)). The `codex` and `gemini`
 adapters are the reference: a source line plus two `adb_*` calls each.
 
+### Consuming the manifest: capture, then check
+
+If your adapter drives `adb_agent_manifest` (the shared enumeration the `codex` and
+`gemini` adapters use, rather than hand-written `adb_link` calls), **capture it into a
+variable and check its status before feeding it**:
+
+```bash
+manifest="$(adb_agent_manifest foo "$repo" "$HOME")" || return 1
+adb_link_manifest "$backup_dir" <<EOF || rc=1
+$manifest
+EOF
+```
+
+Never `adb_link_manifest … <<EOF` / `$(adb_agent_manifest …)` / `EOF`. A command
+substitution inside a heredoc **discards the producer's exit status**, so the refusal
+`adb_agent_manifest` returns for a path this record format cannot represent (a tab or
+newline in `$repo` or `$HOME`) arrives as an empty manifest and a cheerful exit 0. That
+was the shape of #324, at five call sites at once.
+
+Two statements, not one: `local manifest="$(…)" || …` reports `local`'s status, never
+the producer's.
+
 ## 2. Add `foo` to `scripts/build.sh`
 
 Add one `render(...)` call so `foo`'s root doc is generated from

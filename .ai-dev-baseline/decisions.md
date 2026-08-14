@@ -5142,3 +5142,96 @@ limit: none of them is sufficient alone.
              assertions went red, which they did not. A guard that cannot fire is indistinguishable
              from a guard that found nothing wrong.
 - baseline-issue: n/a — this repo IS the baseline; #333 is the tracking issue.
+
+## D64 — a manifest producer refuses ATOMICALLY, the refusal is an exit status every consumer must capture, and `adb_link` is the wrong place for it
+- date:      2026-08-14
+- category:  project-delta
+- unknown:   D59 fixed `adb_repo_shape` and deliberately left `adb_agent_manifest` alone, naming
+             the reason: same unescaped `<src>TAB<dest>` record format, but several consumers
+             parsing three different ways, all of which swallow the producer's status inside a
+             heredoc command substitution. So "make it return 1" changes nothing. #324 asked the
+             implementer to decide what refusal MEANS for such a producer — and the independent
+             gap-analysis pass returned BLOCKED on six unresolved questions, four of which are
+             answered here.
+- decision:  1. **The refusal contract is: non-zero, EMPTY stdout, one line on stderr.**
+                Deliberately NOT `adb_repo_shape`'s shape. That function answers with a record set
+                and refuses by emitting exactly one `warning` record and returning 0 — legitimate
+                there, because its consumer branches on a named field. Here the consumer LINKS
+                every record it reads, so a `warning` record would become a symlink. The exit
+                status is the only channel that cannot be mistaken for content, and empty stdout
+                alone cannot carry it: an unknown agent token also prints nothing.
+
+             2. **Atomic, and the boundary is the fault CLASS rather than the call.** A
+                representability fault poisons the whole manifest — every line is built from the
+                two roots, so a partial manifest describes an install nobody asked for — and
+                nothing is emitted or linked. An ENTRY-LOCAL fault (a missing source) stays
+                per-record exactly as before: `adb_link` already guarantees the destination is
+                untouched, and install has always linked the good entries and reported the bad
+                one. Collapsing the two would have broken that contract, which is pinned in
+                `check-common-lib.sh` and `check-install-guard.sh`. There is a safe subset of a
+                trustworthy map; there is none of an untrustworthy one.
+
+             3. **The pre-write pass lives in `adb_link_manifest`, NOT in `adb_link` as #324
+                proposed.** By the time `adb_link` is called the record has already been split on
+                the delimiter, so it receives two safe-looking fragments and cannot detect that
+                anything happened — the refusal is unimplementable at that boundary. Its arguments
+                are also a documented direct API for new adapters (`docs/adding-an-agent.md`),
+                where a delimiter-bearing path is handled correctly because every use is quoted;
+                rejecting it there would break a working case in order to fail a different one.
+                The whole record set is visible only in `adb_link_manifest`, so the issue's GOAL
+                — no partial write precedes the error — is met there, by validating every record
+                before the first link. `adb_unlink_manifest` gets the mirror pass and, for the
+                first time, a return value at all.
+
+             4. **An install made from an unrepresentable pair is unsupported, loudly.** It linked
+                destinations at TRUNCATED paths, which are not the paths this manifest names, so
+                there is no correct removal set. `uninstall.sh` refuses, removes nothing, and
+                prints the backup directory; `bin/baseline` moves from reporting such an install
+                HEALTHY to failing closed. Emitting records anyway would delete paths derived from
+                a map just declared meaningless.
+
+             5. **Scope is narrowed and the narrowing is stated in the code.** A clone directory
+                whose name ENDS in a newline is truncated by each entry point's own
+                `$(cd … && pwd)` bootstrap, before the producer is reached. Fixing that means
+                either 20 duplicated lines of sentinel capture or a shared bootstrap primitive
+                with a chicken-and-egg (the value being computed is the path used to FIND
+                `common.sh`) — a second cross-library decision, which is precisely what D59
+                declined to take silently when it deferred #324 out of #278. Filed as #343;
+                `adb_agent_manifest`'s header says what it does not cover rather than implying
+                coverage.
+- placement: `scripts/lib/common.sh` (`_adb_manifest_fields_safe`, `_adb_manifest_slurp`,
+             `adb_agent_manifest`, `adb_link_manifest`, `adb_unlink_manifest`); `install.sh`;
+             `uninstall.sh`; `agents/codex/adapter.sh`; `agents/gemini/adapter.sh`; `bin/baseline`
+             (`adb_manifest_dests`, `adb_verify_links`); `scripts/lib/adopt-lib.sh` (`cmd_shipped`);
+             `docs/adding-an-agent.md`; pinned in `scripts/check-common-lib.sh`,
+             `scripts/check-install-guard.sh`, `scripts/check-baseline.sh`, `scripts/check-adopt.sh`.
+- reason:    **The consumer inventory in the issue was incomplete, and the two it missed are the
+             two that fail worst.** `scripts/lib/adopt-lib.sh`'s `cmd_shipped` has the same
+             swallow, and an empty shipped set does not read as an error to `classify` — it reads
+             as "the baseline ships nothing", which makes every artifact in a scanned project look
+             project-specific and recommends keeping a fork of each one. And `bin/baseline`
+             swallows it TWICE: `adb_manifest_dests` reported `cut`'s status through a pipeline,
+             and `adb_verify_links` then expanded that function inside its own heredoc, so a
+             refused enumeration became an empty destination list, a loop that ran zero times, and
+             a return of 0 — "healthy", asserted about an install nothing had looked at.
+
+             **The decisive evidence is a mutation that leaves the exit status correct.** Neutering
+             only the pre-write pass — so `adb_link_manifest` still buffers, still diagnoses, still
+             returns non-zero, but no longer blocks the write — turns exactly three assertions red,
+             and the status assertion is NOT among them. That is the shape the independent pass
+             warned about in advance ("asserting only that `adb_link_manifest` returns non-zero
+             already passes after it has moved the prefix directory"), and it is why every fixture
+             here checks the filesystem: the prefix is still a real directory, its content is
+             byte-identical under `cmp`, no backup was created, no link exists.
+
+             **Nine mutations were observed red against copies of the tree, never the live one**
+             (`self-review.md`), each verifying its own edit applied first. That last part earned
+             its keep immediately: the first attempt at the three-column mutation did not match,
+             the suite came back 719/0, and a green run was momentarily indistinguishable from a
+             guard that could not fire. The end-to-end pair matters for the same reason — every
+             unit assertion in `check-common-lib.sh` passes against a build where the producer
+             refuses correctly and `install.sh` still swallows the status, and reverting exactly
+             that one substitution makes the real `install.sh` exit **0** while linking nothing.
+             The gap between "the primitive refuses" and "the installer refuses" is one command
+             substitution wide, and only a test that runs the real installer spans it.
+- baseline-issue: n/a — this repo IS the baseline; #324 is the tracking issue.
