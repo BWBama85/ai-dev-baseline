@@ -22,13 +22,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
   | construct in a function body | 3.2 `bash -n` | 3.2 at call time |
   |---|---|---|
-  | `mapfile -t a` | accepts | `command not found`, status **0**, array left empty |
-  | `declare -A m; m[x]=1` | accepts | `invalid option`, status **0**, writes index 0 of an *indexed* array — so the value reads back correctly by accident |
-  | `local -n r=$1` | accepts | `invalid option`, status **0**, ref empty |
+  | `mapfile -t a` | accepts | `command not found` (status 127), array left empty |
+  | `declare -A m; m[x]=1` | accepts | `invalid option` (status 2), then writes index 0 of an *indexed* array — so the value reads back correctly by accident |
+  | `local -n r=$1` | accepts | `invalid option` (status 2), ref empty |
   | `readlink -f` | accepts | works on current macOS; D30 carries it as a coreutils rule, not a bash-version one |
 
-  So `adb_require_bash`'s repair path could silently compute the wrong answer on exactly the hosts
-  it exists for, while every CI job stayed green — both runners launch at or above the floor, which
+  The builtins do report a failure — and nothing reads it. These files set no `set -e`, so the
+  function runs on past it with the wrong data and the script still exits 0. `adb_require_bash`'s
+  repair path could therefore silently compute the wrong answer on exactly the hosts it exists for,
+  while every CI job stayed green — both runners launch at or above the floor, which
   is precisely the situation the gate is for.
 
   **Rule C** closes it: a source scan by name over the **whole** of all three files, function bodies
@@ -66,10 +68,19 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   sanctions a construct on the earlier. The splice also makes both patterns stronger — a
   continuation splitting a *word* (`map\` + `file -t`) is rejoined and then caught.
 
-  Eleven mutations of the shipped rules were each applied to a tree copy and each observed making
-  the guard suite go red, plus a twelfth inside the suite that neutralizes rule C's own `check_fail`
-  in a lint copy and requires the identical input to pass while still printing the finding — the
-  silent-guard shape, demonstrated rather than asserted.
+  Twelve mutations of the shipped rules were each applied to a tree copy and each observed making
+  the guard suite go red, plus a thirteenth inside the suite that neutralizes rule C's own
+  `check_fail` in a lint copy and requires the identical input to pass while still printing the
+  finding — the silent-guard shape, demonstrated rather than asserted.
+
+  The independent review found four live bypasses in the first cut and every one is fixed with its
+  own fixture: separated option clusters (`declare -g -A m`) escaped a pattern that only ever read
+  the first option word; a quoted copy of the marker text laundered a real construct, because the
+  exemption was a bare substring test rather than the documented trailing comment; a backslash
+  ending a *trailing* comment spliced the next line onto a statement that had already ended; and
+  the `readlink` rule refused every option — including the portable `-n` — instead of D30's
+  canonicalize family. It also corrected the measured statuses above, which an earlier draft
+  reported as `0` by reading the script's exit status rather than the builtin's.
 
   What is still **not** proved, stated rather than implied: a name scan bans five *named*
   constructs, so an unnamed post-3.2 feature is invisible to it. `CLAUDE.md`, `CONTRIBUTING.md` and

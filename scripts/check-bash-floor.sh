@@ -547,16 +547,22 @@ EOF
 #            the argument for the rule: bash 3.2 `bash -n`-ACCEPTS all four, sourcing a file never
 #            runs a body, and at call time NONE OF THEM STOPS THE SHELL —
 #
-#              `mapfile -t a`           `command not found`, status 0, the array left EMPTY
-#              `declare -A m; m[x]=1`   `invalid option`, status 0, then writes index 0 of an
-#                                       INDEXED array, so `${m[x]}` reads back correctly by accident
-#              `local -n r=$1`          `invalid option`, status 0, the ref left empty
+#              `mapfile -t a`           `command not found` (status 127), the array left EMPTY
+#              `declare -A m; m[x]=1`   `invalid option` (status 2), and `m[x]=1` then writes index
+#                                       0 of an INDEXED array, so `${m[x]}` reads back correctly by
+#                                       accident
+#              `local -n r=$1`          `invalid option` (status 2), the ref left empty
 #              `readlink -f`            works on current macOS; D30 carries it as a COREUTILS
 #                                       portability rule, not a bash-version one
 #
-#            A gate whose repair path silently computes the WRONG answer is worse than one that
-#            dies, because the caller carries on. That is why a name scan earns its place here even
-#            though a name scan is a blunt instrument.
+#            NONE OF THEM STOPS THE SHELL, which is the load-bearing part: these files set no
+#            `set -e`, so the function runs on past the failed builtin with the wrong data and the
+#            script still exits 0. (Review corrected an earlier draft here that reported those
+#            statuses as 0 — that was the SCRIPT's exit status, not the builtin's. The distinction
+#            matters: the builtin does report a failure, and nothing reads it.) A gate whose repair
+#            path silently computes the WRONG answer is worse than one that dies, because the caller
+#            carries on. That is why a name scan earns its place even though it is a blunt
+#            instrument.
 #
 #            WHOLE-FILE, not a declared call-path. #315 names the gate's call graph and asks for
 #            "at least" that; a hand-declared function list is the second copy D54 removed, one
@@ -566,13 +572,23 @@ EOF
 #            `check-lib.sh` says its own `check_enumerated` "must stay evaluable on bash 3.2 (D35),
 #            which has no namerefs" about a helper that is NOT on the observer's path, and D31
 #            exempts this observer from the gate — so it never re-execs and EVERY line of it runs
-#            on whatever PATH resolved. Measured cost of the wider scope: zero. The tracked tree
-#            carries exactly one matching line, and it is a regex STRING (see the marker below).
+#            on whatever PATH resolved. Measured cost of the wider scope: zero findings. The tracked
+#            tree carries TWO matching lines and both are sanctioned: the entry-point lint's
+#            stdin-consumer regex, and this table's own `mapfile` row, which matches its own pattern.
 #
 #            DECLARATIONS AND INVOCATIONS, never "associative-array semantics". There is no lexical
 #            signature for the latter: `${BASH_VERSINFO[0]}` and `${assoc[key]}` are the same three
 #            tokens, and this repo has six of the former in the scanned set. A usage scan would
 #            report all six. So the rule bans the spellings that CREATE the hazard and says so.
+#
+#            WHERE THE MARKER DOES NOT REACH, stated because an escape that is advertised and then
+#            unusable is worse than one that is scoped honestly: a construct NAMED INSIDE A HEREDOC
+#            BODY is scanned like any other line, and a heredoc body is DATA — appending a marker to
+#            it changes the text the script emits. So the escape there is to restructure (name the
+#            construct outside the heredoc, or split the line), not to mark it. Same for a construct
+#            spelled inside a multi-line string. This is the price of the line-oriented, quote-
+#            unaware scan D35 chose for rule A, paid in the same currency: a loud false positive
+#            rather than a silent miss. Neither case occurs in the tracked set today.
 #
 # A SKIP IS LOUD, NEVER SILENT, and it is the honest answer rather than a workaround. Where no
 # interpreter below the floor exists — every Linux runner, and any WSL distro on 26.04 — rule B has
@@ -620,17 +636,27 @@ _ADB_SF_ALLOW="adb-allow: sub-floor-"
 # space, which is what lets `read -r class pattern rest` split a row. `rest` is discarded; it is
 # where a row carries its own marker for the one case where a row's text matches its own pattern.
 #
+# A CLASS NAME MUST BE REGEX-SAFE, because it is interpolated into the marker pattern below
+# (`#[[:space:]]*<marker><class>[[:space:]]*$`). The four here are `[a-z-]` only. A future class
+# carrying `.`, `+`, `*` or a bracket would need escaping at that site rather than a wider match.
+#
 # THE SPELLINGS ARE DELIBERATELY WIDE WITHIN EACH CLASS, since a pattern that catches three of four
-# spellings is green on the fourth (base/practices/self-review.md): the flag cluster is matched, so
-# `-gA`, `-Ag` and `-An` are caught as well as `-A`; `readarray` counts as `mapfile`; `typeset` and
-# `readonly` count alongside `declare` and `local`; and ANY flag on `readlink` is refused, because
-# bare `readlink` is the only portable spelling and enumerating `-f`/`-e`/`-m`/`--canonicalize`
-# would be a longer pattern with more ways to miss one.
+# spellings is green on the fourth (base/practices/self-review.md). `readarray` counts as `mapfile`;
+# `typeset` and `readonly` count alongside `declare` and `local`; and the flag is matched inside a
+# CLUSTER (`-gA`, `-Ag`, `-An`) and across SEPARATED option words (`declare -g -A m`,
+# `local -g -n r`), which review reproduced as a live bypass of the first cut — the earlier pattern
+# only ever examined the option word immediately after the builtin.
+#
+# `readlink` IS NARROWER THAN "any flag", and the first cut had that wrong. D30 bans `readlink -f`,
+# meaning the CANONICALIZE family — `-f`, `-e`, `-m` and `--canonicalize*`, whose letters no other
+# readlink option carries. `readlink -n` is portable (verified on macOS and GNU alike), so refusing
+# every option banned working, portable shell and contradicted this file's own claim that it bans
+# five NAMED constructs.
 SUB_FLOOR_CONSTRUCTS='
 mapfile (^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$) # adb-allow: sub-floor-mapfile
-associative-array (^|[^[:alnum:]_])(declare|local|typeset|readonly)[[:space:]]+-[[:alnum:]]*A
-nameref (^|[^[:alnum:]_])(declare|local|typeset)[[:space:]]+-[[:alnum:]]*n
-readlink-f (^|[^[:alnum:]_])readlink[[:space:]]+-
+associative-array (^|[^[:alnum:]_])(declare|local|typeset|readonly)([[:space:]]+-[[:alnum:]]+)*[[:space:]]+-[[:alnum:]]*A
+nameref (^|[^[:alnum:]_])(declare|local|typeset)([[:space:]]+-[[:alnum:]]+)*[[:space:]]+-[[:alnum:]]*n
+readlink-f (^|[^[:alnum:]_])readlink([[:space:]]+-[[:alnum:]-]+)*[[:space:]]+(-[[:alnum:]]*[fem]|--canonicalize)
 '
 
 # A literal tab, built rather than typed: the two places that need one are a `case` pattern and a
@@ -792,10 +818,23 @@ EOF
 # one logical line: the reported line number is then wrong, and — worse — a marker on the second
 # statement would sanction a construct on the first. Counting the run is what makes the splice agree
 # with the grammar it is modelling.
+#
+# AND A LINE WHOSE LAST TOKEN IS A COMMENT NEVER CONTINUES. That is not a heuristic — you cannot
+# resume a statement after a `#` comment in shell — but it has to be tested for, because only
+# WHOLE-line comments are skipped before the splice. Review reproduced the miss: `code # note \`
+# spliced the following line onto it, which merges two independent statements and lets a marker on
+# the second sanction a construct on the first. The probe strips a trailing comment and the splice
+# runs only when that changed nothing, i.e. when the backslash really is the last thing on the line.
+# The residual is the same quote-unawareness rule A already documents: a `#` inside a quoted string
+# on a genuinely continued line suppresses the splice, which loses a splice rather than forging one.
 _ADB_SF_JOIN='
   {
     logical = $0; logical_at = NR
-    while (match(logical, /\\+$/) && RLENGTH % 2 == 1) {
+    while (1) {
+      probe = logical
+      sub(/[[:space:]]#.*$/, "", probe)
+      if (probe != logical) break
+      if (!(match(logical, /\\+$/) && RLENGTH % 2 == 1)) break
       if ((getline nxt) <= 0) break
       sub(/\\$/, "", logical)
       logical = logical nxt
@@ -837,12 +876,19 @@ sub_floor_construct_hits() {
     BEGIN { pat = ENVIRON["ADB_SF_PAT"]; allow = ENVIRON["ADB_SF_ALLOW"] }
     /^[[:space:]]*#/ { next }'"$_ADB_SF_JOIN"'
     logical ~ pat {
-      # The marker is matched as a LITERAL substring, never as a pattern: it is punctuation-heavy
-      # and a regex read of it would treat `-` and `:` as themselves anyway, so `index` says what
-      # is meant with no escaping to get wrong. Matched against the SPLICED line, so a marker
-      # riding the last physical line of a continued statement still sanctions it — which is the
-      # only place it can legally sit, since a trailing comment on an earlier half is a syntax error.
-      if (index(logical, allow)) { x++; next }
+      # THE MARKER MUST BE IN TRAILING-COMMENT POSITION — a `#`, then only the marker, then the end
+      # of the line. A bare substring test is what the first cut used, and review laundered a real
+      # construct straight through it with `: <single-quoted marker text>`: ordinary string DATA
+      # sanctioning executable code, and silently incrementing the exemption count while doing it.
+      #
+      # Anchoring to end-of-line is what closes it, and it costs nothing: the documented shape is a
+      # trailing comment, which by definition ends the line. A quoted spelling now has to be the
+      # last thing on the line with no closing quote after it, which is no longer shell.
+      #
+      # Matched against the SPLICED line, so a marker riding the LAST physical line of a continued
+      # statement still sanctions it — the only place it can legally sit, since a trailing comment
+      # on an earlier half would end the statement there.
+      if (logical ~ ("#[[:space:]]*" allow "[[:space:]]*$")) { x++; next }
       if (!count_only) printf "    %d: %s\n", logical_at, logical
       n++
     }
@@ -952,7 +998,13 @@ EOF
       sf_chits="$(sub_floor_construct_hits "$f" "$sf_class" "$sf_pat")"; sf_crc=$?
       case "$sf_crc" in
         0)
-          check_note "$rel uses $sf_class, which bash 3.2 accepts at PARSE time and then fails at CALL time WITHOUT stopping the shell — and this file has to be evaluable below the $FLOOR floor, because it is what reports that the interpreter is too old (D30/D35/#315). Sanction a deliberate mention with a trailing '# ${_ADB_SF_ALLOW}$sf_class':"
+          # ONE MESSAGE FOR FOUR CLASSES, so it states what is true of ALL of them and points at
+          # the per-class reasoning rather than asserting a single failure mode. The first cut said
+          # every hit "fails at CALL time", which is false for `readlink -f` — that one works on a
+          # current macOS and is banned as a COREUTILS portability rule, exactly as this file's own
+          # rule C section and D65 say. A diagnostic that contradicts its own decision record is a
+          # claim the reader has to go and disprove.
+          check_note "$rel uses $sf_class, which D30 forbids in the below-floor set — this file has to run below the $FLOOR floor, because it is what reports that the interpreter is too old (D30/D35/#315). See the RULE C section of $0 for what each construct does there. Sanction a deliberate mention with a trailing '# ${_ADB_SF_ALLOW}$sf_class' as the last thing on the line:"
           printf '%s\n' "$sf_chits" >&2
           check_fail ;;
         1) : ;;
@@ -1342,8 +1394,9 @@ $key
     # the narrow `cd` test, found by review. `mapfile`/`readarray` are bash 4+ spellings of the
     # same thing, and `dd`/`</dev/stdin` are the two other ways a prologue eats the payload.
     #
-    # THE PATTERN BELOW CARRIES RULE C's MARKER, and it is the one sanctioned line in the whole
-    # below-floor set (#315). Those two words are DATA here — a regex this lint matches other files
+    # THE PATTERN BELOW CARRIES RULE C's MARKER (#315). It is one of exactly two sanctioned lines
+    # in the below-floor set; the other is the `mapfile` row of `SUB_FLOOR_CONSTRUCTS`, which
+    # matches its own pattern. Those two words are DATA here — a regex this lint matches other files
     # against — not a builtin this file calls. Rule C is line-oriented and quote-unaware by the same
     # deliberate choice D35 made for rule A, and requiring command position would not help: the `|`
     # alternation puts each word in command position as far as any line matcher can tell. So the

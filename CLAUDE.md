@@ -113,10 +113,11 @@ those. The rules below are specific to this repo's code.
    probe it runs on every host and in every job; a deliberate mention carries a per-line
    `# adb-allow: sub-floor-<class>` marker, which exempts that one class on that one line and
    nothing else. It exists because bash 3.2 `bash -n`-*accepts* all four in a function body,
-   loading a file never runs a body, and at call time **none of them stops the shell**:
-   `mapfile` is `command not found` at status 0 with the array empty, and `declare -A m; m[x]=1`
-   is `invalid option` at status 0 that then writes index 0 of an *indexed* array. A gate whose
-   repair path silently computes the wrong answer is worse than one that dies.
+   loading a file never runs a body, and at call time **none of them stops the shell**: `mapfile`
+   is `command not found` (status 127) with the array left empty, and `declare -A m; m[x]=1` is
+   `invalid option` (status 2) that then writes index 0 of an *indexed* array. These files set no
+   `set -e`, so the function runs on with the wrong data and the script still exits 0 — a gate
+   whose repair path silently computes the wrong answer is worse than one that dies.
 
    What is still **not** proved: that every function *behaves* on 3.2. The scan bans five
    *named* constructs, so a post-3.2 feature nobody has named — `${var^^}`, a builtin's newer

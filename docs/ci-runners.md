@@ -25,8 +25,11 @@ the evaluation probe need an old interpreter; the scan for 5.3 command substitut
 for D30's other four named constructs — `mapfile`/`readarray`, associative arrays, namerefs,
 `readlink -f` — need none, so they run on every job on both platforms. That matters because the
 failure they catch is one that passes everywhere and then breaks on a stock macOS: bash 3.2 accepts
-all four inside a function body at parse time and fails them at call time **without stopping the
-shell**. A SKIP here therefore means the probes did not run, never that the file went unchecked.
+the three *bash* constructs inside a function body at parse time and then fails them at call time
+**without stopping the shell**, so the caller runs on with the wrong data. (`readlink -f` is the
+odd one out — it works on a current macOS, and D30 bans it as a *coreutils* portability rule rather
+than a bash-version one.) A SKIP here therefore means the probes did not run, never that the file
+went unchecked.
 
 ## The choice, and the evidence
 

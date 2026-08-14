@@ -5278,12 +5278,17 @@ limit: none of them is sufficient alone.
 
              | construct | 3.2 at call time |
              |---|---|
-             | `mapfile -t a` | `command not found`, status **0**, the array left EMPTY |
-             | `declare -A m; m[x]=1` | `invalid option`, status **0**, then writes index 0 of an INDEXED array — so `${m[x]}` reads back correctly by accident |
-             | `local -n r=$1` | `invalid option`, status **0**, the ref left empty |
+             | `mapfile -t a` | `command not found` (status 127), the array left EMPTY |
+             | `declare -A m; m[x]=1` | `invalid option` (status 2), and `m[x]=1` then writes index 0 of an INDEXED array — so `${m[x]}` reads back correctly by accident |
+             | `local -n r=$1` | `invalid option` (status 2), the ref left empty |
              | `readlink -f` | works on current macOS; D30 carries it as a COREUTILS portability rule, not a bash-version one |
 
-             None of them stops the shell. `adb_require_bash`'s repair path could therefore compute
+             (An earlier draft of this entry reported those statuses as **0**. That was the SCRIPT's
+             exit status, not the builtin's, and the independent review caught it — the builtin does
+             report a failure; what is true is that nothing reads it.)
+
+             None of them stops the shell: these files set no `set -e`, so the function runs on past
+             the failed builtin with the wrong data and the script still exits 0. `adb_require_bash`'s repair path could therefore compute
              the WRONG answer in silence on exactly the hosts the gate exists for, with every CI job
              green — both runners launch at or above the floor, which is the situation the gate is
              for. A gate that dies is recoverable; one that answers wrongly is not.
@@ -5374,19 +5379,40 @@ limit: none of them is sufficient alone.
              the residue review still owns. Adding a sixth construct is one row of the table, which
              is the shape a rule set should have; adding constructs D30 does not name would be a
              compatibility claim #315 explicitly places out of scope.
-- guard-observability: ELEVEN mutations of the shipped rules, each applied to a COPY of the tree and
-             each required to make `check-bash-floor-guard.sh` go red — rule C's per-class loop
-             neutralized (121 failures); the marker reduced to a class-less prefix so it exempts
-             anything (20); the whole-line comment exclusion dropped (19); the empty-table guard's
-             `check_fail` removed (1); the exemption count hardwired to 0 (1); the associative-array
-             pattern broadened to match `declare -a` (1); the marker made unconditional (120); and
-             the four the splice needs — the splice removed entirely (4), the splice inserting a
-             SPACE rather than removing the backslash (3), the comment rule moved AFTER the splice so
-             a `#` line ending in a backslash swallows the next one (22), and the backslash run left
-             uncounted so an EVEN one splices too (2).
-             A TWELFTH runs inside the suite itself: rule C's own `check_fail` is neutralized in a
+- guard-observability: TWELVE mutations of the shipped rules, each applied to a COPY of the tree and
+             each required to make `check-bash-floor-guard.sh` go red:
+
+             - rule C's per-class loop neutralized, so it evaluates nothing;
+             - the marker's class dropped from its prefix, so one marker exempts every construct;
+             - the marker's end-of-line anchoring dropped back to a bare substring test;
+             - the associative-array and nameref patterns narrowed so SEPARATED option clusters
+               (`declare -g -A`) escape again;
+             - `readonly` dropped from the command alternation;
+             - `readlink` narrowed to `-f` alone, and separately re-widened to ANY flag;
+             - the whole-line comment exclusion dropped;
+             - the empty-table guard's `check_fail` removed;
+             - the exemption count hardwired to 0;
+             - and the splice's three: removed entirely, inserting a SPACE rather than removing the
+               backslash, its trailing-comment guard removed, and the backslash run left uncounted.
+
+             A THIRTEENTH runs inside the suite itself: rule C's own `check_fail` is neutralized in a
              lint COPY, which then PASSES the identical input the real lint fails while still
              printing the finding — the silent-guard shape, demonstrated rather than asserted.
+
+             NO PER-MUTATION FAILURE COUNTS ARE RECORDED HERE. The first draft quoted them, and the
+             independent review found them already stale — every fixture added afterwards moved
+             every number. A count that drifts is a claim that goes false on its own, which is the
+             defect `check-claims.sh` exists for, written into the decision log by hand.
+
+             RE-RUNNING THE BATTERY AFTER EVERY CODE CHANGE IS THE POINT, not a formality, and it
+             paid for itself here. Adding the trailing-comment guard to the splice silently took
+             over the even-backslash fixture: that fixture's first line carried its backslashes
+             inside a `# x\\` comment, so the NEW guard rejected the line and the odd/even counting
+             rule stopped being exercised at all — while the fixture went on passing under its own
+             label. Nothing in the suite could see it; the mutation battery could, and did, by
+             reporting ZERO failures for a mutation that had been red an hour earlier. The fixture
+             now ends in a bare escaped backslash with no comment on the line, so the counting rule
+             is the only thing that can decide it.
 
              That last one needed a second runner, `sf_lint_from`, and the reason is worth recording:
              every other fixture here mutates the tree `--sub-floor` SCANS while the TRACKED lint

@@ -20,9 +20,16 @@
 # carve-out list · a candidate that probes but cannot run · the selection itself picking the
 # numerically oldest rather than the first-listed or the lexically smallest · and #315's three:
 # any of D30's OTHER FOUR named constructs anywhere in a carve-out file, function bodies included ·
-# a per-line exemption marker that does not name the class it is claimed for · an EMPTY construct
-# table) — so each gets a fixture that must make the real lint come back red, plus a clean fixture
-# proving the lint is not simply red-always.
+# a per-line exemption marker that does not name the class it is claimed for, or does not sit in
+# trailing-comment position · an EMPTY construct table) — so each gets a fixture that must make the
+# real lint come back red, plus a clean fixture proving the lint is not simply red-always.
+#
+# #315 also changed HOW both source scans read their input rather than adding a rule: they splice
+# backslash-newlines, so a construct split across a line continuation no longer escapes either of
+# them. That is not a fourth category — it is a property of the two scans above — but it carries its
+# own fixtures, because getting it wrong is a fail-open in BOTH directions: too little splicing
+# misses a split construct, too much merges independent statements and lets a marker on one sanction
+# a construct on another.
 #
 # Where a rule can be ISOLATED it is: a fixture that only fails through some OTHER rule proves
 # nothing about the rule it is named for. Review caught two of those here and they are fixed rather
@@ -919,15 +926,30 @@ has "$SFOUT" "5.3 command substitution" "rule A: and the splice rejoins \$ and {
 # floor, so rule B has no subject and cannot supply the redness. That also makes them run
 # identically on both runners — the platform split this file's header warns about.
 for _sf_target in scripts/check-lib.sh scripts/check-bash-floor.sh scripts/lib/common.sh; do
+  # EVERY SPELLING D65 CLAIMS GETS ITS OWN FIXTURE. Review found the first cut pinned only a
+  # representative few, so narrowing the flag match, dropping `readonly` from the command
+  # alternation, or recognizing only `readlink -f` would each have left the suite green while
+  # losing a spelling the decision record advertises. A rule set's claims and its fixtures have to
+  # be the same list.
   for _sf_case in \
       'mapfile|adb_probe_fn() { mapfile -t adb_a < /dev/null; }' \
       'mapfile|adb_probe_fn() { readarray -t adb_a < /dev/null; }' \
       'associative-array|adb_probe_fn() { declare -A adb_m; }' \
+      'associative-array|adb_probe_fn() { declare -Ag adb_m; }' \
+      'associative-array|adb_probe_fn() { declare -gA adb_m; }' \
+      'associative-array|adb_probe_fn() { declare -An adb_m; }' \
       'associative-array|adb_probe_fn() { local -Ag adb_m; }' \
       'associative-array|adb_probe_fn() { typeset -A adb_m; }' \
+      'associative-array|adb_probe_fn() { readonly -A adb_m; }' \
+      'associative-array|adb_probe_fn() { declare -g -A adb_m; }' \
       'nameref|adb_probe_fn() { local -n adb_r=$1; }' \
       'nameref|adb_probe_fn() { declare -gn adb_r=$1; }' \
+      'nameref|adb_probe_fn() { typeset -n adb_r=$1; }' \
+      'nameref|adb_probe_fn() { local -g -n adb_r=$1; }' \
       'readlink-f|adb_probe_fn() { adb_p="$(readlink -f /tmp)"; }' \
+      'readlink-f|adb_probe_fn() { adb_p="$(readlink -ef /tmp)"; }' \
+      'readlink-f|adb_probe_fn() { adb_p="$(readlink -m /tmp)"; }' \
+      'readlink-f|adb_probe_fn() { adb_p="$(readlink -nf /tmp)"; }' \
       'readlink-f|adb_probe_fn() { adb_p="$(readlink --canonicalize /tmp)"; }' ; do
     _sf_class="${_sf_case%%|*}"; _sf_code="${_sf_case#*|}"
     sf_fixture "$SFD"
@@ -943,11 +965,21 @@ done
 
 # THE SPELLINGS THAT MUST NOT FIRE. A rule that reports ordinary code gets deleted within a week,
 # and every one of these is real, present shell in this repo's own libraries.
+#
+# `readlink -n` IS ON THIS LIST DELIBERATELY. The first cut refused every option on `readlink`,
+# claiming bare `readlink` was the only portable spelling; review disproved that (`-n` works on
+# macOS and GNU alike) and the pattern was narrowed to the CANONICALIZE family — `-f`, `-e`, `-m`,
+# `--canonicalize*`, whose letters no other readlink option carries. This fixture is what keeps it
+# narrow, since re-widening it to "any flag" would silently ban working, portable shell.
 for _sf_clean in \
     'adb_probe_fn() { declare -a adb_idx; }' \
     'adb_probe_fn() { local -r adb_ro=1; }' \
     'adb_probe_fn() { local -i adb_n=1; }' \
+    'adb_probe_fn() { local -ir adb_n=1; }' \
+    'adb_probe_fn() { declare -x -i adb_c=1; }' \
+    'adb_probe_fn() { readonly -f adb_fn; }' \
     'adb_probe_fn() { adb_p="$(readlink /tmp)"; }' \
+    'adb_probe_fn() { adb_p="$(readlink -n /tmp)"; }' \
     'adb_probe_fn() { adb_v="${BASH_VERSINFO[0]:-0}"; }' ; do
   sf_fixture "$SFD"
   printf '%s\n' "$_sf_clean" >> "$SFD/scripts/check-lib.sh"
@@ -956,7 +988,9 @@ for _sf_clean in \
 done
 
 # ...nor a whole-line comment naming the construct, which all three files legitimately do (the real
-# tree carries eleven such lines). Without this exclusion the rule is noise on its own documentation.
+# tree carries many, this file included). Without this exclusion the rule is noise on its own
+# documentation. No count is quoted here on purpose: it changes whenever anyone edits a comment or
+# widens a pattern, and review caught the first spelling of this line already stale.
 sf_fixture "$SFD"
 printf '# never write declare -A or mapfile or local -n or readlink -f in this file\n' >> "$SFD/scripts/check-lib.sh"
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
@@ -980,7 +1014,17 @@ eq "$SFRC" "1" "rule C: a construct whose WORD is split by a continuation is cau
 sf_fixture "$SFD"
 printf '# a comment ending in a backslash \\\nadb_probe_fn() { declare -A adb_m; }\n' >> "$SFD/scripts/check-lib.sh"
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
-eq "$SFRC" "1" "rule C: a comment ending in a backslash does not swallow the next line"
+eq "$SFRC" "1" "rule C: a WHOLE-LINE comment ending in a backslash does not swallow the next line"
+
+# ...and neither does a TRAILING one, which is the harder half and the one review reproduced. Only
+# whole-line comments are skipped before the splice, so `code # note \` spliced the following line
+# onto a statement that had already ended — and a marker on that next line then sanctioned the
+# construct on this one. A line whose last token is a comment never continues, in shell or here.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare -A adb_m; } # note \\\n:   # adb-allow: sub-floor-associative-array\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a backslash ending a TRAILING comment does not splice the next line"
+has "$SFOUT" "uses associative-array" "rule C: and the construct above the comment is the one reported"
 
 # ...nor may the splice make ordinary continued shell trip either scan.
 sf_fixture "$SFD"
@@ -992,9 +1036,17 @@ eq "$SFRC" "0" "splice: an ordinary continued command trips neither source scan"
 # backslash and the statement ends there, which a real bash confirms by running the next line as its
 # own command. A naive `~ /\\$/` splices both and merges two INDEPENDENT statements, and the
 # consequence is not cosmetic: a marker on the second then sanctions a construct on the first.
-# Measured on a copy carrying the naive splice, this fixture came back GREEN.
+#
+# NO TRAILING COMMENT ON THE FIRST LINE, and that is what makes this fixture about the RULE IT
+# NAMES. An earlier spelling put the backslashes inside a `# x\\` comment, and once the splice
+# learned that a commented line never continues, THAT guard rejected the fixture and the odd/even
+# rule stopped being exercised at all — the fixture still passed, for a reason unrelated to its own
+# label. Re-running the mutation battery after the change is what surfaced it: neutralizing the
+# backslash COUNT produced zero failures. The line below ends in a bare escaped backslash, so the
+# counting rule is the only thing that can decide it.
 sf_fixture "$SFD"
-printf 'adb_probe_fn() { declare -A adb_m; } # x\\\\\n:   # adb-allow: sub-floor-associative-array\n' >> "$SFD/scripts/check-lib.sh"
+printf "adb_probe_fn() { declare -A adb_m; printf '%%s' x\\\\\\\\\n:   # adb-allow: sub-floor-associative-array\n" >> "$SFD/scripts/check-lib.sh"
+sf_applied "$SFD/scripts/check-lib.sh" "printf '%s' x\\\\" "even-backslash"
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
 eq "$SFRC" "1" "splice: an EVEN backslash run does not join, so a marker cannot reach back a statement"
 has "$SFOUT" "uses associative-array" "splice: and the construct on the first statement is the one reported"
@@ -1050,19 +1102,33 @@ printf '# adb-allow: sub-floor-mapfile\nadb_probe_fn() { mapfile -t adb_a < /dev
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
 eq "$SFRC" "1" "marker: a marker on the PRECEDING line does not exempt the next one"
 
+# 7. STRING DATA CANNOT LAUNDER A CONSTRUCT. The marker must be in TRAILING-COMMENT position — a
+#    `#`, then the marker, then end of line. The first cut tested for the marker as a bare
+#    SUBSTRING, and review walked a real construct straight through it with a single-quoted copy of
+#    the marker text: ordinary data sanctioning executable code, and silently incrementing the
+#    exemption count on the way past.
+sf_fixture "$SFD"
+printf "adb_probe_fn() { mapfile -t adb_a; : 'adb-allow: sub-floor-mapfile'; }\n" >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: a QUOTED copy of the marker text does not sanction anything"
+
+# ...and the same anchoring means a marker followed by more code on the line does not sanction it.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { mapfile -t adb_a; }   # adb-allow: sub-floor-mapfile then more text\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: it must END the line, so trailing text after it does not sanction"
+
 # 6. THE REAL SANCTIONED LINE IS LOAD-BEARING. Removing its marker from a COPY must go red — which
 #    is what proves rule C actually SEES that line, rather than passing because it matches nothing.
 #    A rule silently matching nothing is indistinguishable from a rule finding nothing wrong.
+#    THROUGH check_mutate_line, the shared primitive — not a hand-rolled sed plus a bespoke grep.
+#    It already does both halves this needs (require the target line to be present EXACTLY once, and
+#    prove the substitution took effect), and a byte-copied harness beside it is precisely the drift
+#    `docs/design-principles.md` forbids. Review caught the duplication.
 sf_fixture "$SFD"
-sed 's/   # adb-allow: sub-floor-mapfile$//' "$SFD/scripts/check-bash-floor.sh" > "$SFD/x" && mv "$SFD/x" "$SFD/scripts/check-bash-floor.sh"
-# ASSERTED ON THAT LINE, not on the file. The construct TABLE carries a marker for the same class
-# one space from its pattern, so a file-wide `! grep -q 'adb-allow: sub-floor-mapfile'` reports the
-# mutation as NOT APPLIED while it applied perfectly — and the fixture then proves nothing while
-# looking like it caught a harness bug. (The `sed` matches three spaces before the `#`, which the
-# table row does not have; that is why only the intended line is de-marked.)
-if grep -q 'cd|read|mapfile|readarray|dd' "$SFD/scripts/check-bash-floor.sh" \
-   && [ "$(grep -c 'readarray|dd.*adb-allow' "$SFD/scripts/check-bash-floor.sh")" = "0" ]; then ok; else
-  bad "marker: the de-marking mutation did not apply to the observer copy"; fi
+_sf_marked_line="$(grep -n 'cd|read|mapfile|readarray|dd' "$SFD/scripts/check-bash-floor.sh" | head -n 1 | cut -d: -f2-)"
+check_mutate_line "$SFD/scripts/check-bash-floor.sh" "$_sf_marked_line" \
+  's/   # adb-allow: sub-floor-mapfile$//' "marker de-marking" && ok
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
 eq "$SFRC" "1" "marker: stripping the REAL sanctioned line's marker goes red — rule C does see it"
 has "$SFOUT" "uses mapfile" "marker: and it is rule C's own diagnostic that fires"
