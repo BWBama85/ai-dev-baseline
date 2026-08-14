@@ -327,6 +327,48 @@ has "$shipped" "rootdoc${TAB}CLAUDE.md${TAB}claude"        "shipped must report 
 hasnt "$shipped" "gemini" "shipped <agent> must filter to that agent"
 eq "$(bash "$AD" shipped "$WORK" >/dev/null 2>&1; echo $?)" 2 "shipped on a non-baseline dir exits 2"
 
+# A baseline root the install manifest cannot represent DIES; it does not report an empty set
+# (#324, D64). This consumer was missed by #324's own inventory and had the installers' swallow:
+# `adb_agent_manifest` ran inside the `done <<EOF … EOF` substitution, so its refusal arrived as
+# zero records and exit 0. That is the worst possible reading here — an empty shipped set does not
+# look like an error to `classify`, it looks like "the baseline ships nothing", which makes every
+# artifact in the scanned project read as project-specific and recommends keeping a fork of each.
+nl_root="$WORK/nlbase"$'\n'"shadow"
+mkdir -p "$nl_root/agents/claude/skills/demo" "$nl_root/agents/claude/scripts" "$nl_root/scripts/lib"
+nl_err="$WORK/nl-shipped.err"
+nl_out="$(bash "$AD" shipped "$nl_root" claude 2>"$nl_err")"; nl_rc=$?
+# EXIT 2 AND A DIAGNOSTIC, not merely "non-zero". A witness that accepts any non-zero status is
+# satisfied by an incidental 126/127 — a bad interpreter path, a missing fixture — and would report
+# the guard observed while the rule it covers was never reached (the D63 rule). `die`'s contract in
+# this library is exit 2 plus a message, so both halves are asserted.
+eq "$nl_rc" 2 "shipped refuses an unrepresentable baseline root with die's exit 2"
+eq "$nl_out" "" "shipped emits no records when it refuses"
+if [ -s "$nl_err" ]; then ok; else bad "shipped must say WHY it refused"; fi
+has "$(cat "$nl_err")" "cannot enumerate" "shipped names the enumeration failure"
+
+# ATOMIC ACROSS AGENTS, which is a different claim from the single-agent case above — and the one
+# that was actually broken. With `claude` alone the refusal happens before the first record, so a
+# claude-only fixture cannot distinguish "refuses" from "refuses after writing". Here the FIRST
+# agent is representable and a LATER one is not: an independent review measured 25 records emitted
+# and then exit 2, a partial write whose non-empty output the /adopt workflow's count guard accepts.
+multi_root="$WORK/multibase"
+mkdir -p "$multi_root/agents/claude/skills/fine" "$multi_root/agents/claude/scripts" "$multi_root/scripts/lib"
+mkdir -p "$multi_root/agents/gemini/skills/bad"$'\n'"name"
+printf 'x\n' > "$multi_root/agents/claude/CLAUDE.md"
+printf 'x\n' > "$multi_root/agents/gemini/GEMINI.md"
+multi_out="$(bash "$AD" shipped "$multi_root" 2>/dev/null)"; multi_rc=$?
+eq "$multi_rc" 2 "shipped refuses when a LATER agent's manifest is unrepresentable"
+eq "$multi_out" "" "shipped emits NOTHING for the earlier good agents — the refusal is atomic"
+# And the same fixture minus the poisoned agent still enumerates, so the assertions above are not
+# satisfied by a shipped that has simply stopped working.
+rm -rf "$multi_root/agents/gemini"
+multi_ok="$(bash "$AD" shipped "$multi_root" 2>/dev/null)"; multi_ok_rc=$?
+yes "$multi_ok_rc" "shipped succeeds on the same fixture once the unrepresentable agent is gone"
+has "$multi_ok" "skill${TAB}fine${TAB}claude" "shipped still enumerates the representable agent"
+
+# Non-emptiness on the good path, so 'refuse everything' cannot satisfy the assertions above.
+if [ -n "$shipped" ]; then ok; else bad "shipped must still enumerate a representable baseline root"; fi
+
 # --- 4. scan: the surface, the boundary, and the record format ----------------------------------
 # A fixture modelling getrich's documented shape: forked skills (one colliding with a baseline
 # skill, one not), duplicate hook scripts, a project statusLine, a stack root doc, no agents.toml,
@@ -1002,14 +1044,34 @@ _mut_one() {  # <index>
   fi
   mv "$copy/mutated" "$copy/scripts/lib/adopt-lib.sh"
   out="$( cd "$copy" && bash scripts/check-adopt.sh 2>&1 )"
-  if printf '%s' "$out" | grep -q ' 0 failed'; then
-    printf 'bad|the suite stayed GREEN — nothing here can detect this defect\n' > "$copy/verdict"
-  elif printf '%s' "$out" | grep -Fq -- "${MUT_WIT[$i]}"; then
-    printf 'ok|applied\n' > "$copy/verdict"
-  else
+  # MATCHED WITH `case`, NOT `printf | grep -q`, AND THAT IS A CORRECTNESS FIX (#324).
+  #
+  # This file sets `pipefail`. `grep -q` exits the instant it matches, which closes the pipe while
+  # `printf` still has the rest of a large `$out` queued — `printf` then dies of SIGPIPE, and
+  # pipefail promotes that to the PIPELINE's status. So the witness check returned NON-ZERO for
+  # exactly the outputs where the witness WAS found early, and the harness reported
+  # "went red, but NOT on its witness" about a mutation whose witness was sitting in `$out`.
+  #
+  # A guard that answers wrong under load is worse than no guard, and this one answered wrong in the
+  # flattering-looking direction: it accuses the suite instead of itself. Measured: a 348906-byte
+  # buffer with the witness on line 1 gives `rc=141` under pipefail and `rc=0` without it.
+  # It is latent rather than new — it fires only once `$out` outgrows the pipe buffer (64 KiB) with
+  # an early match, which is why every earlier run was green and why growing the adopt suite's
+  # output surfaced it on CI's Linux runner and not on macOS.
+  #
+  # `case` does the same substring test inside the shell: no second process, no pipe, no signal, and
+  # nothing for pipefail to promote. The witness is a literal, so a glob-special byte in it would be
+  # the one hazard — the strings are prose fragments written in this file, and `-F` was already
+  # asserting they are literals.
+  case "$out" in
+    *' 0 failed'*)
+    printf 'bad|the suite stayed GREEN — nothing here can detect this defect\n' > "$copy/verdict" ;;
+    *"${MUT_WIT[$i]}"*)
+    printf 'ok|applied\n' > "$copy/verdict" ;;
+    *)
     printf 'bad|went red, but NOT on its witness (%s) — caught by accident, not by the assertion that claims to cover it\n' \
-      "${MUT_WIT[$i]}" > "$copy/verdict"
-  fi
+      "${MUT_WIT[$i]}" > "$copy/verdict" ;;
+  esac
 }
 
 mut skill-ignores-symlinks \

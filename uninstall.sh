@@ -26,11 +26,28 @@ done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude codex gemini)
 
 uninstall_claude() {
+  local rc=0 manifest
   adb_info "claude"
   # Remove exactly what install.sh linked, straight from the shared manifest (#48) via the shared
   # remove-side consumer — so uninstall can't drift from install (one producer, one column parse).
-  adb_unlink_manifest "$REPO" <<EOF
-$(adb_agent_manifest claude "$REPO" "$HOME")
+  #
+  # CAPTURED AND CHECKED, exactly as install.sh does it (#324, D64) — the heredoc substitution this
+  # replaces discarded the producer's status.
+  #
+  # A REFUSAL HERE MEANS AN INSTALL THIS TOOL CANNOT CLEAN UP, AND IT SAYS SO. If $REPO or $HOME
+  # carries a delimiter, an install made before that was refused linked destinations at TRUNCATED
+  # paths — not the ones this manifest would name — so there is no correct set to remove and the
+  # honest answer is to remove nothing and hand the operator the two facts they need: the path that
+  # cannot be represented (already on stderr from the producer) and where their originals went.
+  # Emitting the records anyway would delete paths derived from a map just declared meaningless.
+  manifest="$(adb_agent_manifest claude "$REPO" "$HOME")" || {
+    adb_info "  ERROR  cannot enumerate what to remove — NOTHING was unlinked"
+    adb_info "         Remove the ~/.claude symlinks that point into this clone by hand;"
+    adb_info "         originals from the original install are under ~/.claude/backups/ai-dev-baseline-*"
+    return 1
+  }
+  adb_unlink_manifest "$REPO" <<EOF || rc=1
+$manifest
 EOF
 
   # Unwire every event we may have wired, not just Stop — a leftover SessionStart entry pointing
@@ -63,15 +80,26 @@ EOF
   else
     adb_info "  WARN   jq not found — hook entries left in ~/.claude/settings.json; remove them by hand"
   fi
+  return "$rc"
 }
 
+# THE LOOP ACCUMULATES, AND THE SCRIPT EXITS ON IT (#324, D64). It used to call each remover and
+# discard the result, then print "Uninstalled" unconditionally — so a refusal to enumerate, or an
+# adapter that failed outright, ended in a success message and exit 0. An uninstaller that says it
+# removed things it did not is worse than one that fails: the operator stops looking.
+uninstall_rc=0
 for a in "${AGENTS[@]}"; do
   case "$a" in
-    claude) uninstall_claude ;;
+    claude) uninstall_claude || uninstall_rc=1 ;;
     codex|gemini)
       adapter="$REPO/agents/$a/adapter.sh"
-      [ -f "$adapter" ] && { adb_info "$a"; bash "$adapter" uninstall "$REPO"; } ;;
+      [ -f "$adapter" ] && { adb_info "$a"; bash "$adapter" uninstall "$REPO" || uninstall_rc=1; } ;;
   esac
 done
 adb_info ""
-adb_info "Uninstalled. Backups remain in ~/.claude/backups/ai-dev-baseline-*"
+if [ "$uninstall_rc" -ne 0 ]; then
+  adb_info "Uninstall INCOMPLETE — see the errors above. Backups remain in ~/.claude/backups/ai-dev-baseline-*"
+else
+  adb_info "Uninstalled. Backups remain in ~/.claude/backups/ai-dev-baseline-*"
+fi
+exit "$uninstall_rc"

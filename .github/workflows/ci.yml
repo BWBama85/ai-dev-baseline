@@ -346,6 +346,17 @@ jobs:
       - name: Unit-test the shared shell primitives (incl. adb_repo_shape, #23)
         run: bash scripts/check-common-lib.sh
 
+      # ...and the install-manifest guards are guards, so every rule is injected with its own defect
+      # and must make the suite go red ON ITS OWN NAMED WITNESS (#324). Red for the wrong reason is
+      # not evidence — and a mutation whose edit silently fails to apply reports itself observed
+      # while having checked nothing, which is the failure this mode was built after hitting.
+      #
+      # THIS STEP RIDES THE EXISTING JOB rather than adding one, for the reason the `adopt` job
+      # states: a second job is a second required status context for branch protection to grow, and
+      # this split does not earn one.
+      - name: ...and the manifest guards must be able to fail — 8 mutations, each observed RED (#324)
+        run: bash scripts/check-common-lib.sh --mutation
+
   agent-init:
     name: agent-init
     runs-on: ubuntu-26.04

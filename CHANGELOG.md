@@ -67,6 +67,86 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **A `$HOME` containing a tab or newline made the installer move a real directory into backup and
+  symlink over it — and every consumer discarded the status that said so** (#324, D64).
+
+  `adb_agent_manifest` emitted `<src>TAB<dest>` with both paths unescaped. A newline in `$HOME` does
+  not produce a record a reader rejects; it produces **two** records, and the first one's `<dest>` is
+  a *shorter path that frequently exists*. Reproduced against the real primitives: with
+  `$HOME` = `<dir><NL>shadow`, `adb_link_manifest` moved `<dir>` — a real directory holding real
+  content — into the backup tree, replaced it with a symlink, and *then* returned non-zero. The
+  status was never wrong. It was too late to matter.
+
+  D59 declined to fix this inside #278 and named the obstacle exactly: the consumers parse three
+  different ways and all of them swallow the producer's status inside a heredoc command
+  substitution, so `return 1` alone changes nothing.
+
+  - **The producer refuses atomically.** An unrepresentable `<repo>`, `<home>`, or skill directory
+    name yields **no records at all**, one stderr line *per offending value*, and a non-zero status.
+    Deliberately *not* `adb_repo_shape`'s `warning` record: that function's consumer branches on a
+    named field, while this one **links** every record it reads.
+  - **The status is now captured at nine call sites** — `install.sh`, `uninstall.sh`, each adapter's
+    install *and* uninstall arm (four), `bin/baseline` (twice), and `scripts/lib/adopt-lib.sh`.
+    **Two of those the issue's own inventory missed, and they fail worst.** `bin/baseline` swallowed it twice over — a pipeline
+    reporting `cut`'s status, then a heredoc around the function that wrapped it — so a refused
+    enumeration became an empty destination list, a verify loop that ran zero times, and a return of
+    **0**: *healthy*, asserted about an install nothing had looked at. In `adopt-lib.sh` an empty
+    shipped set does not read as an error to `classify`; it reads as "the baseline ships nothing",
+    which makes every artifact in a scanned project look project-specific.
+  - **`adb_link_manifest` validates the whole manifest before the first link**, and
+    `adb_unlink_manifest` gained the mirror pass plus an explicit, defined return contract (it always
+    returned *something* — whatever its loop last evaluated; now it returns non-zero iff the manifest
+    was malformed).
+    The refusal is **not** in `adb_link`, which #324 proposed: by then the record has already been
+    split, so it receives two safe-looking fragments and cannot see that anything happened. A
+    missing source stays per-record, as it always was.
+  - **An entry-local fault is still entry-local.** A missing source links the good entries and
+    reports the bad one, exactly as before — that contract is pinned, and only *representability*
+    faults refuse the whole map.
+  - **An install made from an unrepresentable pair is unsupported, loudly.** Its links are at
+    truncated paths, so there is no correct removal set: `uninstall.sh` removes nothing, says so,
+    prints the backup directory, and no longer reports "Uninstalled" over a failure.
+  - **The guards are observed failing by a STANDING harness, not a one-time claim.**
+    `check-common-lib.sh --mutation` injects each of the **eight** primitive rules with its own
+    defect and requires the suite to go red *on that rule's own named witness* — red for the wrong
+    reason is not evidence. Its applied-check is `cmp` against a pristine copy, because the failure
+    that actually bit during development was a mutation whose pattern silently matched nothing: the
+    suite came back green and reported the guard observed while checking nothing. The three
+    consumer-level mutations (restoring each swallowing heredoc in `install.sh`, `bin/baseline` and
+    `adopt-lib.sh`) were verified once by hand and are **not** in the harness; the end-to-end tests
+    are what stand in for them.
+  - **The decisive mutation leaves the exit status correct.** Neutering only the pre-write pass —
+    so it still buffers, still diagnoses, still returns non-zero — turns three assertions red and
+    the status assertion is **not** among them. That is why every fixture checks the filesystem
+    (`cmp`-identical content, no backup, no link), and the harness pins it: delete those filesystem
+    assertions and that mutation stops going red, which the harness reports.
+  - **What this does not cover, said in the code rather than implied:** a clone directory whose name
+    *ends* in a newline is truncated by the top-level entry points' own `$(cd … && pwd)` bootstrap
+    before the producer is reached (the adapters resolve `agents/<token>`, so the newline is
+    *internal* to them and IS refused — but they are handed an already-truncated root by
+    `install.sh`, so an ordinary install is still affected). `$HOME` and every *internal* delimiter do reach it and are refused. Filed
+    as #343 rather than folded in — it needs either 20 duplicated lines or a shared bootstrap
+    primitive with a chicken-and-egg, which is a second cross-library decision.
+
+- **`/adopt`'s mutation harness reported a false negative once its subject's output outgrew the pipe
+  buffer** (#324).
+
+  `check-adopt.sh --mutation` decided each verdict with `printf '%s' "$out" | grep -Fq -- "$witness"`,
+  in a file that sets `pipefail`. `grep -q` exits the instant it matches, closing the pipe while
+  `printf` still has the rest of a large `$out` queued; `printf` dies of **SIGPIPE**, and `pipefail`
+  promotes that to the pipeline's status. So the check returned non-zero for exactly the outputs where
+  the witness *was* found — and the harness then blamed the suite, reporting "went red, but NOT on its
+  witness" about a mutation whose witness was sitting in `$out`.
+
+  Measured: a 348906-byte buffer with the witness on line 1 gives **rc=141** under `pipefail` and
+  **rc=0** without it. Latent rather than new — it needs `$out` to outgrow the 64 KiB pipe buffer with
+  an early match, which is why it surfaced only when this release grew the adopt suite's output, and
+  only on CI's Linux runner. Both checks now match with `case`: no second process, no pipe, no signal,
+  and nothing for `pipefail` to promote.
+
+  It is worth its own entry because of the *direction* it failed in: a guard that accuses the code it
+  is checking, rather than itself, is the kind of red a reader fixes in the wrong place.
+
 - **The shipped global Stop-hook gate exited 1 — a non-blocking notice — instead of its blocking 2,
   whenever `common.sh` carried a top-level unbound expansion (#317).**
 

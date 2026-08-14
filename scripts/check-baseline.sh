@@ -364,6 +364,22 @@ eq "${ run_update "$src/bin/baseline" "$fh"; }" "1" "verify rejects a manifest d
 rm -f "$fh/.claude/scripts/statusline.sh"
 ln -s "$src/agents/claude/scripts/statusline.sh" "$fh/.claude/scripts/statusline.sh"   # restore canonical link
 
+# A HOME the install manifest cannot represent must FAIL CLOSED, never verify as healthy (#324,
+# D64). Both of this file's manifest readers used to swallow the producer's status — the pipeline
+# in adb_manifest_dests reported `cut`'s, and adb_verify_links expanded that inside its own heredoc
+# — so a refused enumeration produced an EMPTY destination list, the verify loop ran zero times,
+# and the function returned 0. "Healthy", asserted about an install nothing had looked at, which is
+# precisely the stale-state trust base/practices/verify-before-asserting.md forbids.
+#
+# The fake home is built to look installed: the agent is detected from ~/.claude, so a bare
+# newline-bearing directory would exit for the unrelated reason that no agent is installed there.
+reset_src
+nlfh="$work/nlhome"$'\n'"shadow"
+mkdir -p "$nlfh/.claude/skills" "$nlfh/.claude/scripts"
+ln -s "$src/agents/claude/CLAUDE.md" "$nlfh/.claude/CLAUDE.md"
+ln -s "$src/scripts/lib" "$nlfh/.claude/scripts/lib"
+eq "${ run_update "$src/bin/baseline" "$nlfh"; }" "1" "verify fails closed when HOME cannot be represented in the manifest"
+
 # wrong-clone guard must NOT false-trip on a symlinked-path spelling of the SAME clone
 # (physical-path comparison via pwd -P) — regression guard for the bug review's finding.
 reset_src

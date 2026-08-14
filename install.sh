@@ -87,17 +87,28 @@ done
 [ "${#AGENTS[@]}" -eq 0 ] && AGENTS=(claude)
 
 install_claude() {
-  local rc=0
+  local rc=0 manifest
   adb_info "claude → ~/.claude"
   # The install surface (root doc, every skill, the runtime scripts, and the shared
   # scripts/lib) is enumerated ONCE by adb_agent_manifest — install.sh links it, uninstall.sh
   # removes it, and bin/baseline verifies it, so the three can't drift (#48). scripts/lib links
   # at its canonical path; a plain `git pull` keeps pre-#34 installs working via the compat
   # shim, and this re-run self-heals them to the direct link (do NOT delete that shim).
+  #
+  # THE MANIFEST IS CAPTURED FIRST, AND ITS STATUS IS OBSERVED (#324, D64). This used to be
+  # `adb_link_manifest … <<EOF` / `$(adb_agent_manifest …)` / `EOF`, and a command substitution
+  # inside a heredoc DISCARDS the producer's status: the refusal the producer now returns for an
+  # unrepresentable $REPO/$HOME would have arrived as an empty manifest and a cheerful exit 0.
+  # Two statements, never one — `local manifest="$(…)"` would report `local`'s status, not the
+  # producer's, which is the same trap one level down.
+  manifest="$(adb_agent_manifest claude "$REPO" "$HOME")" || {
+    adb_info "  ERROR  cannot enumerate the install surface — nothing was linked (see above)"
+    return 1
+  }
   # Capture the accumulated status so a missing source (adb_link's guard) makes the installer
   # exit non-zero rather than silently leaving a dangling link.
   adb_link_manifest "$BACKUP_DIR" <<EOF || rc=1
-$(adb_agent_manifest claude "$REPO" "$HOME")
+$manifest
 EOF
 
   # Propagate a wiring failure into the install's exit status. Without this the `return 1`s in

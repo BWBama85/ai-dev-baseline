@@ -198,7 +198,28 @@ adb_unlink_if_ours() {
 # Spelling is canonical: absolute <src> with NO trailing slash (so bin/baseline's exact-readlink
 # idempotency check is stable). scripts/lib is linked at its CANONICAL path (not the pre-#34
 # compat shim) — a plain `git pull` keeps old installs working via that shim, and a re-run
-# self-heals them to this direct link. Paths are assumed free of tabs/newlines (unsupported).
+# self-heals them to this direct link.
+#
+# A PATH THIS FORMAT CANNOT REPRESENT IS REFUSED, NOT EMITTED (#324, D64). This comment used to
+# say such paths were "assumed free of tabs/newlines (unsupported)" — a declaration, next to a
+# behaviour that was a confident wrong answer, which is the same pairing #278 removed from
+# `adb_repo_shape`. When `<repo>`, `<home>` or a skill directory name carries a delimiter,
+# `_adb_manifest_fields_safe` refuses: stdout gets NOTHING, stderr gets one line PER OFFENDING VALUE
+# naming it, and the return is 1. Atomic, because the poison is not confined to one record — every
+# line here is built from those roots, so a partial manifest describes an install nobody asked for.
+#
+# THE CONTRACT IS THE EXIT STATUS, AND CALLERS MUST OBSERVE IT. Empty stdout alone cannot carry
+# the refusal, because an unknown token also prints nothing. Do NOT consume this through
+# `cmd <<EOF … $(adb_agent_manifest …) … EOF`: a command substitution inside a heredoc discards
+# the producer's status, which is how the reproduced case reached `adb_link_manifest` at all.
+# Capture it first — `m="$(adb_agent_manifest …)" || return 1` — then feed `$m`.
+#
+# WHAT THIS DOES NOT COVER, stated because a guard that overstates itself is worse than none: a
+# clone directory whose name ENDS in a newline is already truncated before this function is
+# reached, by the `$(cd … && pwd)` capture in the top-level entry points' bootstrap (#343). `$HOME` reaches
+# here intact (it is an environment variable, never a substitution), as does every INTERNAL tab or
+# newline in either root — those are the cases refused below.
+#
 # An unknown token prints nothing (return 0). Usage: adb_agent_manifest <agent> <repo> <home>
 # Emit "<src-skill-dir>\t<dest-parent>/<name>" manifest lines for every rendered skill folder
 # under <src-skills-dir>. The ONE place the skill-folder enumeration convention lives (glob
@@ -213,6 +234,61 @@ _adb_skill_manifest_lines() {
     sdir="${d%/}"
     printf '%s\t%s\n' "$sdir" "$dest_parent/${sdir##*/}"
   done
+}
+
+# Can every value `adb_agent_manifest` is about to interpolate survive this record format?
+# True (0) iff <repo>, <home> and every skill-directory name under <skills-dir> are TSV-safe.
+# False (1), with exactly one physical stderr line PER OFFENDING VALUE. Usage:
+#   _adb_manifest_fields_safe <repo> <home> <skills-dir>
+#
+# PER VALUE, NOT PER REFUSAL, and that is deliberate rather than sloppy: both roots are tested before
+# returning, so an operator whose repo AND home are both unrepresentable is told about both. Failing
+# on the first would hide the second, and they would fix one, re-run, and be told about the other.
+#
+# THE PRECONDITION IS SEPARATE FROM THE EMISSION, and that separation is the whole guard (#324).
+# A check folded into the emitting loop can only fire once records have already been printed —
+# and a caller reading stdin does not un-read them because a later status came back non-zero.
+# Every value below is therefore tested BEFORE `adb_agent_manifest` prints its first byte, which
+# is what makes the refusal atomic rather than merely reported.
+#
+# THE FAILURE IS FORGERY, NOT MALFORMEDNESS (see `adb_tsv_field_safe`). A `$home` carrying a
+# newline does not produce a record a reader rejects; it produces TWO records, the first of which
+# names a SHORTER path that frequently exists. Reproduced: with `$home` = `<dir><NL>shadow`, the
+# root-doc line splits and `adb_link_manifest` is handed `dest=<dir>` — a real directory, which it
+# moves into the backup tree and replaces with a symlink before returning non-zero. The status was
+# always correct; it just arrived after the destruction.
+#
+# WHY THE ARGUMENTS ARE THE THREE THEY ARE. Those are exactly the values `adb_agent_manifest`
+# interpolates that are not literals of this file: the two roots it is handed, and the skill
+# directory names it reads off the filesystem. The hook-script basenames come from
+# `adb_claude_hook_scripts`, whose contents are fixed strings written here — a check on them could
+# not fail, and this repo's law is that a guard which cannot answer wrong is worse than none.
+#
+# ROOTS FIRST, AND THE SKILL LOOP IS SKIPPED WHEN THEY FAIL. An unsafe `$repo` makes EVERY skill
+# path unsafe by construction, so running the loop anyway would bury the one diagnostic that names
+# the cause under one line per skill that merely inherits it.
+_adb_manifest_fields_safe() {
+  local repo="$1" home="$2" skills="$3" d rc=0
+  if ! adb_tsv_field_safe "$repo"; then
+    printf 'adb_agent_manifest: the source root contains a tab or newline, which the install manifest cannot represent: %s\n' \
+      "$(adb_tsv_field_display "$repo")" >&2
+    rc=1
+  fi
+  if ! adb_tsv_field_safe "$home"; then
+    printf 'adb_agent_manifest: the target home contains a tab or newline, which the install manifest cannot represent: %s\n' \
+      "$(adb_tsv_field_display "$home")" >&2
+    rc=1
+  fi
+  [ "$rc" -eq 0 ] || return 1
+  for d in "$skills"/*/; do
+    [ -d "$d" ] || continue
+    if ! adb_tsv_field_safe "${d%/}"; then
+      printf 'adb_agent_manifest: a skill directory name contains a tab or newline, which the install manifest cannot represent: %s\n' \
+        "$(adb_tsv_field_display "${d%/}")" >&2
+      rc=1
+    fi
+  done
+  return "$rc"
 }
 
 # The Claude scripts that install.sh WIRES into ~/.claude/settings.json as lifecycle hooks,
@@ -307,8 +383,15 @@ EOF
 
 adb_agent_manifest() {
   local agent="$1" repo="$2" home="$3" s
+  # The precondition is asked INSIDE each known branch, never once above the `case`. Hoisting it
+  # would refuse an unknown token that happens to be paired with an unsafe root, and "an unknown
+  # token prints nothing and returns 0" is a contract `bin/baseline` and the adapters rely on
+  # (pinned in check-common-lib.sh). Each branch already names its own skills directory, so this
+  # costs one call per branch and re-states no agent list — a fourth agent adds its own line here
+  # and nothing else has to learn about it.
   case "$agent" in
     claude)
+      _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/claude/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/claude/CLAUDE.md" "$home/.claude/CLAUDE.md"
       _adb_skill_manifest_lines "$repo/agents/claude/skills" "$home/.claude/skills"
       # Every wired hook, plus the one installed-but-not-wired script (the statusline). Fed
@@ -323,6 +406,7 @@ EOF
       printf '%s\t%s\n' "$repo/scripts/lib" "$home/.claude/scripts/lib"
       ;;
     codex)
+      _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/codex/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/codex/AGENTS.md" "$home/.codex/AGENTS.md"
       # Rendered workflow skills (agent-skills SKILL.md folders) → Codex's skills dir, which
       # discovers ~/.codex/skills/<name>/SKILL.md.
@@ -334,6 +418,7 @@ EOF
       printf '%s\t%s\n' "$repo/scripts/lib" "$home/.codex/scripts/lib"
       ;;
     gemini)
+      _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/gemini/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/gemini/GEMINI.md" "$home/.gemini/GEMINI.md"
       # Rendered workflow skills → Antigravity's GLOBAL customization root, ~/.gemini/config/
       # (agy discovers skills/<name>/SKILL.md there; confirmed in agy's own bundled
@@ -345,24 +430,102 @@ EOF
   esac
 }
 
+# Read a whole manifest off stdin, check every record's SHAPE, and print the surviving records back
+# on stdout. One diagnostic per bad record on stderr (prefixed <who>); non-zero iff any record is
+# malformed. A wholly empty line is dropped. Usage:  _adb_manifest_slurp <who>
+#
+# IT EXISTS TO MAKE TWO PASSES POSSIBLE. Validation has to precede the first write, and stdin is a
+# stream that cannot be rewound — so the records come through here first and each consumer below
+# iterates the result. A manifest is tens of lines; this is not a memory question.
+#
+# THE DELIMITER COUNT IS CHECKED WITH `case`, BEFORE ANY IFS PARSING, AND THAT IS THE WHOLE POINT.
+# `IFS=TAB read -r src dest` cannot validate this format, because **TAB is IFS whitespace**: bash
+# folds runs of it and strips it at field edges. So `<src>TAB TAB<dest>` (adjacent delimiters) splits
+# into two perfectly-good-looking fields, and so does `<src>TAB<dest>TAB`. Measured on bash 5.3.15
+# against the first version of this function: both returned **0 and created the symlink** — a
+# destination linked from a record that never named it, which is the same class of defect as the
+# split record this whole change exists to refuse. A third `read` variable does not fix it either;
+# the folding happens before the variables are assigned. Only counting delimiters does.
+#
+# Exactly one TAB, and neither side empty. `${line%%"$tab"*}` / `${line#*"$tab"}` split on that one
+# delimiter without consulting IFS at all, and the consumers below use the SAME spelling — so the
+# validator and the code acting on its output cannot disagree about where a record divides.
+#
+# A TAB-ONLY LINE IS MALFORMED, and that is now a decision rather than an inherited artifact. The
+# original implementation skipped it, but only as a side effect of the folding above: `<TAB>` split
+# to two empty fields and its `[ -n "$src$dest" ]` guard read that as "blank". Under exact counting
+# it is one delimiter with two empty fields, which is what malformed means. No producer emits one.
+#
+# `read … || [ -n "$line" ]` because a final line with no trailing newline is still a record: read
+# returns 1 at EOF having populated the variable, and the plain loop would discard it.
+#
+# NO NAMEREF. An earlier draft returned the records through `local -n`, which this file's own header
+# forbids in as many words ("no mapfile, no readlink -f, no associative arrays, no namerefs"). The
+# D30 carve-out is a statement about the interpreter this file is upgrading FROM, and a function
+# that only ever runs after the gate does not get to renegotiate it. Returning the records on stdout
+# needs no out-parameter at all, and drops the nameref's own hazards with it — a caller passing the
+# bound name, or a scalar, breaks a nameref in ways a literal-only call site merely happens to avoid.
+_adb_manifest_slurp() {
+  local who="$1" tab line src dest ok rc=0
+  tab="$(printf '\t')"
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    ok=0
+    case "$line" in
+      *"$tab"*"$tab"*) : ;;                        # two or more delimiters
+      *"$tab"*)
+        src="${line%%"$tab"*}"
+        dest="${line#*"$tab"}"
+        [ -n "$src" ] && [ -n "$dest" ] && ok=1 ;;
+      *) : ;;                                      # no delimiter at all
+    esac
+    if [ "$ok" -eq 1 ]; then
+      printf '%s\n' "$line"
+    else
+      printf '%s: malformed manifest line (want exactly <src>TAB<dest>): [%s]\n' \
+        "$who" "$(adb_tsv_field_display "$line")" >&2
+      rc=1
+    fi
+  done
+  return "$rc"
+}
+
 # Consume a manifest (TAB-separated "<src>\t<dest>" lines on stdin) and adb_link each entry,
 # so column parsing lives in ONE place (install.sh and the adapters both call this rather than
-# re-interpreting the columns). Accumulates failures: returns non-zero iff ANY line failed —
-# a missing source (adb_link's guard) or a malformed line — so a caller propagates a single
-# exit status. A blank line is skipped; a line missing either column is a hard failure (a
-# malformed manifest must never silently link nothing). Usage: adb_link_manifest <backup_dir>
+# re-interpreting the columns). A blank line is skipped.
+#
+# TWO PASSES, AND THE ORDER IS THE GUARANTEE (#324, D64). Every record's SHAPE is checked before
+# the first link is made, so a manifest that is not wholly well-formed links NOTHING. It used to
+# validate inline, which meant a bad record at line N was reported only after lines 1..N-1 had
+# already been backed up and symlinked — and the reproduced case puts the destruction at line 1
+# and the malformed record at line 2. The status was never wrong; it was just too late to matter.
+#
+# WHY HERE AND NOT IN `adb_link`, which #324 proposed: by the time `adb_link` is called the record
+# has already been split on the delimiter, so it receives two safe-looking fragments and cannot see
+# that anything happened. Its arguments are also a documented direct API for new adapters
+# (docs/adding-an-agent.md), where a delimiter-bearing path is handled correctly because every use
+# is quoted — refusing it there would break a working case to fail a different one. The whole
+# record set is visible only here, so this is the only place the check can be made at all.
+#
+# A MISSING SOURCE IS STILL PER-RECORD, deliberately. That is an entry-local fault where adb_link
+# already guarantees the destination is untouched, and install.sh has always linked the good
+# entries and reported the bad one (pinned in check-common-lib.sh / check-install-guard.sh).
+# Shape is different in kind: it means the manifest itself cannot be trusted to say which
+# destinations are real, and there is no safe subset of an untrustworthy map.
+# Returns non-zero iff the manifest was malformed or ANY entry failed to link.
+# Usage: adb_link_manifest <backup_dir>
 adb_link_manifest() {
-  local backup_dir="$1" tab src dest rc=0
+  local backup_dir="$1" tab validated line src dest rc=0
   tab="$(printf '\t')"
-  while IFS="$tab" read -r src dest; do
-    [ -n "$src$dest" ] || continue
-    if [ -z "$src" ] || [ -z "$dest" ]; then
-      printf 'adb_link_manifest: malformed manifest line (want <src>TAB<dest>): [%s|%s]\n' \
-        "$src" "$dest" >&2
-      rc=1; continue
-    fi
+  validated="$(_adb_manifest_slurp adb_link_manifest)" || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    src="${line%%"$tab"*}"
+    dest="${line#*"$tab"}"
     adb_link "$src" "$dest" "$backup_dir" || rc=1
-  done
+  done <<EOF
+$validated
+EOF
   return "$rc"
 }
 
@@ -370,14 +533,32 @@ adb_link_manifest() {
 # <dest> — the remove-side mirror of adb_link_manifest, so uninstall parses the manifest columns
 # in the SAME one place install does (no drift between what is linked and what is removed). Only
 # the <dest> column is used; ownership scoping is adb_unlink_if_ours's job (never removes a real
-# file or a link pointing elsewhere). Usage: adb_unlink_manifest <repo>
+# file or a link pointing elsewhere).
+#
+# IT MIRRORS THE LINK SIDE'S TWO PASSES, AND IT NOW RETURNS A STATUS (#324, D64). It had neither:
+# no shape check at all, and an exit status of whatever the loop last evaluated. A split record
+# hands this a TRUNCATED destination — `<dir><NL>shadow/.claude/CLAUDE.md` arrives as `<dir>` — and
+# `adb_unlink_if_ours` then removes that path whenever it happens to be a symlink into the repo.
+# The ownership scoping is doing its job correctly; it is just answering about the wrong path.
+# Refusing the whole manifest is the only honest response, because a map that cannot say where the
+# links are cannot say which removals are safe either.
+# Returns non-zero iff the manifest was malformed — and then nothing is removed.
+# Usage: adb_unlink_manifest <repo>
 adb_unlink_manifest() {
-  local repo="$1" tab dest
+  local repo="$1" tab validated line dest
   tab="$(printf '\t')"
-  while IFS="$tab" read -r _ dest; do
-    [ -n "$dest" ] || continue
+  validated="$(_adb_manifest_slurp adb_unlink_manifest)" || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    dest="${line#*"$tab"}"
     adb_unlink_if_ours "$dest" "$repo"
-  done
+  done <<EOF
+$validated
+EOF
+  # EXPLICIT, so the documented contract ("non-zero iff the manifest was malformed") is true by
+  # construction. Without it the function returns whatever the last `adb_unlink_if_ours` happened
+  # to evaluate — which is 0 today only because its final statement is an `adb_info`.
+  return 0
 }
 
 # --- gh ----------------------------------------------------------------------

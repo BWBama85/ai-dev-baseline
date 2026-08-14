@@ -75,4 +75,56 @@ if [ -L "$dest" ] && [ ! -e "$dest" ]; then bad "guard created a dangling link a
 # (5) a mid-manifest failure does not abort the rest: the good links still got created.
 [ -L "$fh/.claude/CLAUDE.md" ] && ok || bad "install.sh should still link the good entries after one failure"
 
+# --- a HOME the manifest cannot represent (#324, D64) -------------------------------------------
+#
+# The SAME end-to-end claim, for the other fault class. Above, one entry is bad and install links
+# the rest; here the RECORD FORMAT itself cannot carry the paths, so the correct outcome is the
+# opposite — refuse the whole surface and write nothing at all.
+#
+# THIS RUNS THE REAL install.sh, which is the only way to test what actually broke. Every unit
+# assertion in check-common-lib.sh passes against a build where the producer refuses correctly and
+# install.sh still swallows the status in its heredoc — a manifest nobody can produce becomes an
+# EMPTY manifest, zero links, and exit 0. The gap between "the primitive refuses" and "the
+# installer refuses" is exactly one command substitution, and only this test spans it.
+#
+# `$HOME` is the input to use rather than the clone path: it reaches the producer intact (an
+# environment variable is never passed through a `$(…)`), whereas a clone directory whose name
+# ENDS in a newline is truncated by each entry point's own bootstrap before the producer is
+# reached — a separate defect, tracked in #343 and deliberately not claimed here.
+nl_home="$work/nlhome"$'\n'"shadow"
+mkdir -p "$nl_home/.claude"
+# The truncated sibling is the whole danger: `<work>/nlhome` is a REAL directory with real content,
+# and it is what the split record names as a destination. It must be created on its own — the
+# mkdir above builds `nlhome<NL>shadow`, a single directory whose NAME contains a newline, and it
+# does not bring a `nlhome` sibling into existence.
+prefix="$work/nlhome"
+mkdir -p "$prefix"
+printf 'PRECIOUS\n' > "$prefix/keep.txt"
+cp "$prefix/keep.txt" "$work/nl-pristine.txt"
+# A second clone copy, so the missing statusline.sh above cannot be what fails this run.
+repo2="$work/repo2"
+check_copy_worktree "$ROOT" "$repo2" || { echo "check-install-guard: could not copy the tree (2)" >&2; exit 1; }
+
+nl_log="$work/install-nl.log"
+HOME="$nl_home" bash "$repo2/install.sh" --agent claude --no-hooks >"$nl_log" 2>&1
+nl_rc=$?
+
+if [ "$nl_rc" -ne 0 ]; then ok; else bad "install.sh must exit non-zero when HOME cannot be represented in the manifest (got $nl_rc)"; fi
+grep -q 'cannot represent' "$nl_log" && ok || bad "install.sh must emit the producer's refusal diagnostic"
+grep -q 'nothing was linked' "$nl_log" && ok || bad "install.sh must say that nothing was linked"
+# THE FILESYSTEM ASSERTIONS ARE THE POINT. A non-zero exit is satisfied by the pre-fix code too —
+# it moved the real directory into backup and symlinked over it, THEN returned non-zero.
+if [ -d "$prefix" ] && [ ! -L "$prefix" ]; then ok; else bad "install.sh must not replace the truncated-prefix directory"; fi
+if cmp -s "$prefix/keep.txt" "$work/nl-pristine.txt"; then ok; else bad "install.sh must leave the truncated-prefix content byte-identical"; fi
+# And no link was created anywhere under the real (newline-bearing) home either.
+if [ -e "$nl_home/.claude/CLAUDE.md" ]; then bad "install.sh must link nothing when it refuses"; else ok; fi
+
+# The uninstaller refuses the same pair, and says so instead of printing "Uninstalled".
+nl_ulog="$work/uninstall-nl.log"
+HOME="$nl_home" bash "$repo2/uninstall.sh" --agent claude >"$nl_ulog" 2>&1
+nl_urc=$?
+if [ "$nl_urc" -ne 0 ]; then ok; else bad "uninstall.sh must exit non-zero when HOME cannot be represented (got $nl_urc)"; fi
+grep -q 'NOTHING was unlinked' "$nl_ulog" && ok || bad "uninstall.sh must say that nothing was unlinked"
+grep -q 'Uninstall INCOMPLETE' "$nl_ulog" && ok || bad "uninstall.sh must not report a clean uninstall it did not perform"
+
 check_summary "install-guard"
