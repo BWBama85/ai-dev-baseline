@@ -92,10 +92,15 @@ narrates itself buries the one or two lines that matter.
   `base/practices/verify-before-asserting.md`.
 - **Brevity applies to success only.** A guardrail firing, a refused delete, a branch that could
   not be verified, anything skipped or left behind — all report in full, every run.
+- **Every delete states the evidence it was computed from** (#332). A successful delete is the
+  loudest, least reversible thing this skill does, and it used to be the one outcome with no
+  evidence attached — `Deleted (local): fix/371` read identically whether the sweep was correct or
+  catastrophic. The proof rides *inside* the category line as a trailing `[…]`, so the line budget
+  above is unchanged.
 
 ```
-Deleted (local): issue-3-generic-release-workflow-or-document
-Cleared state: threads-{41,47,51,57,59,65,68,72,76}.json, gaps.md, gaps.err, review.md, review.err
+Deleted (local): fix/371-contact-bundle [#379 (merge commit 3f9e9e5abcde)], feat/x [contained in origin/main]
+Cleared state: threads-{41,47,51,57,59,65,68,72,76}.json [PR merged], gaps.md [no run in flight], gaps.err [no run in flight]
 baseline: updated 3818548 → ebca0f3 (2 commits).
 main: clean, in sync with origin/main
 ```
@@ -103,6 +108,41 @@ main: clean, in sync with origin/main
 The `baseline:` line follows the same rule as every category above it — it appears only when
 something actually happened. An install that was already current, a disabled updater, or a sweep of
 the install-source clone itself all print nothing.
+
+### Where the evidence goes, and why not the other two places
+
+#332 named three candidate channels and deliberately did not choose. The choice is **the default
+per-category line**, and the other two are ruled out by rules already stated above rather than by
+taste:
+
+- **Not `NOTES`.** That is the *exception* channel — `SKIPPED`, `REFUSED`, `UNVERIFIED`, `LARGE` —
+  and it prints in full precisely because everything in it is unusual. Routing a routine success
+  through it costs one line per deleted branch (past the ≤3-line target on any real sweep) and,
+  worse, trains the reader to skim the one channel whose value is that it is rare.
+- **Not `verbose` only.** That leaves the default sweep exactly as unauditable as the run #332
+  reported, which is the thing being fixed. `verbose` keeps its own separate subject — what was
+  *examined and preserved* — and is unchanged by this.
+- **So: a third field on the report record**, `<category>TAB<item>TAB<proof>`, rendered by
+  `{{CLEANUP_LIB}} report`. A record with no third field renders exactly as it did before, so
+  every other caller and every existing assertion is untouched.
+
+**The proof joins the brace-group key**, which is what stops the state line exploding: files swept
+for the same reason still collapse under one bracket, and files swept for *different* reasons split
+into their own groups instead of having the first one's proof printed over all of them.
+
+**Two wording constraints, both load-bearing and both verified against the linter before they were
+written:**
+
+- **Never a `#N` beside a status word.** `{{STATE_ASSERT_LIB}} lint` rejects that shape unless it is
+  introduced by `was observed`, and one report line legitimately carries both halves at once — a
+  squash-merge proof contributes the `#N`, a thread cache contributes the status. So a
+  fast-forward's proof is *contained in*, never *merged into*, and a cache's is `PR merged`, never
+  `PR #41 merged`. The natural wording for either one turns the whole line into a violation that
+  surfaces only when both verdicts appear in the same sweep.
+- **The proof is the value the verdict returned or consumed**, carried from that call — never
+  re-read when the report is composed. A second read is a different moment, and for the local half
+  it is not even answerable: the branch is gone by then. Re-introducing that gap would reinstate
+  exactly the staleness that makes a report untrustworthy.
 
 The decisions behind all of this live in `scripts/lib/cleanup-lib.sh`, so they are executable and
 regression-tested (`scripts/check-cleanup.sh`) rather than re-derived from prose each run.
@@ -146,6 +186,12 @@ CURRENT="$(git rev-parse --abbrev-ref HEAD)"
 # blocks are deliberately self-contained and re-resolve everything they need. Do not carry that
 # habit here, or the reverse habit there.)
 NOTES=""; DELETED_LOCAL=""; DELETED_REMOTE=""; CLEARED=""
+# The report record's field separator, defined ONCE and here — the three delete accumulators above
+# now carry `<item><TAB><proof>` pairs (#332) and step 5 parses `state-scan` records with the same
+# character, so a second spelling later in the file would be one constant with two homes. Never a
+# literal tab in a fenced block: it is invisible in the source, in the render and in review, and an
+# editor that turned it into spaces would silently fold each delete's proof into the item's name.
+TABC="$(printf '\t')"
 git fetch --prune origin --quiet 2>/dev/null \
   || NOTES="${NOTES}NOTE: could not fetch origin — classifying against possibly-stale refs.
 "
@@ -229,6 +275,17 @@ One fresh query per candidate, then the library decides. `--limit` is not decora
 end and read as unmerged.
 
 ```bash
+# ADB-SNIPPET: branch-sweep
+# THE PROOF THIS LOOP COMPUTES IS THE PROOF IT REPORTS (#332). `branch-verdict` returns the
+# evidence that authorised each delete; before this it was read into `$DETAIL` and used in exactly
+# one place — the `unverified` arm — so every successful delete threw it away. `Deleted (local):
+# fix/371` then read identically whether the sweep was correct or catastrophic, and the only
+# defence left was an agent choosing to re-derive by hand what this loop already knew (twice in one
+# session, in two repos, both times confirming the sweep was right).
+#
+# CARRIED, NEVER RE-QUERIED. The value appended below is the string THIS `branch-verdict` call
+# returned. Asking again at report time would read a different moment — and by then the branch is
+# deleted, so the question is no longer answerable at all.
 while IFS= read -r b; do
   [ -n "$b" ] || continue
   # WHOLE-LINE match, via grep. The builtin newline-delimited `case` form looks cheaper and is a
@@ -282,7 +339,32 @@ EOF2
         # upstream and pushes to it. `|| true` because a branch that never had config has no
         # section to remove, which is not an error.
         git config --remove-section "branch.$b" >/dev/null 2>&1 || true
-        DELETED_LOCAL="${DELETED_LOCAL}$b
+        # THE PROOF, recorded ONLY after the delete actually succeeded — the `else` arm below is a
+        # branch that still exists, and attaching evidence to it would assert a deletion that did
+        # not happen.
+        #
+        # THE TWO VERDICTS ARE NOT SYMMETRIC. `merged-pr` carries its evidence in line 3, so that
+        # string is passed through verbatim; `merged-ff` emits NO line 3 at all, because there its
+        # proof IS the verdict word — the tip is contained in $BASE. Rendering it here, rather than
+        # teaching the library to emit a detail line, is what #332 asks for and keeps
+        # `branch-verdict`'s contract untouched.
+        #
+        # "contained in", NEVER "merged into", and that is a HARD constraint rather than a
+        # preference. `state-assert.sh lint` flags a status word (`merged` is one) sharing a
+        # sentence with a `#N` — and this category's line routinely holds both, because a
+        # squash-merged sibling's proof is `#379 (merge commit …)`. The natural wording makes the
+        # whole report line a claim-grammar violation that only fires when BOTH verdicts appear in
+        # one sweep. Verified against the linter, both spellings, before it was written.
+        case "$VERDICT" in
+          merged-pr) PROOF="$DETAIL" ;;
+          *)         PROOF="contained in $BASE" ;;
+        esac
+        # `$TABC`, never a literal tab. The report record's field separator has to survive an
+        # editor, a copy-paste and three skill renders; a raw tab pasted into a fenced block is
+        # load-bearing punctuation that is invisible in every one of them, and a silent conversion
+        # to spaces would fold the proof into the branch NAME with no error anywhere. The currency
+        # step already refuses to depend on one for the same reason.
+        DELETED_LOCAL="${DELETED_LOCAL}${b}${TABC}${PROOF}
 "
       else
         NOTES="${NOTES}REFUSED $b — it moved during the sweep; left in place
@@ -338,7 +420,11 @@ append would be discarded and step 6 would report an empty category for work it 
 while IFS= read -r b; do
   [ -n "$b" ] || continue
   if git push origin --delete "$b"; then
-    DELETED_REMOTE="${DELETED_REMOTE}$b
+    # The same proof discipline as the local half (#332), and the same wording constraint. This
+    # half never calls `branch-verdict` — its ONLY evidence is the `--merged` enumeration above,
+    # which is ancestry in $BASE — so that is exactly what it reports, and the uniform string
+    # collapses into one rendering however many branches the sweep removes.
+    DELETED_REMOTE="${DELETED_REMOTE}${b}${TABC}contained in $BASE
 "
   else
     NOTES="${NOTES}REFUSED origin/$b — the remote delete failed; left in place
@@ -369,7 +455,7 @@ duplicated logic that can drift out of agreement with it.
 # real, common shape). A relative path would miss the repo's actual state dir and, in a monorepo,
 # could inspect a same-named directory under some package instead.
 STATE="$ROOT/{{STATE_DIR}}"
-TABC="$(printf '\t')"
+# `$TABC` comes from step 1, where it is defined once for the whole run — see the note there.
 
 # state-scan exits 2 — with NO stdout — when the state directory's OWN path cannot be serialized.
 # Captured with an `if` rather than left to fall through, because the fallthrough is the silent
@@ -421,6 +507,7 @@ applies to `fpath`, `cdpath`, `manpath`, `module_path`, `argv` and `status`;
 `scripts/check-workflow-shell.sh` fails the build if any fenced block assigns one.
 
 ```bash
+# ADB-SNIPPET: marker-sweep
 RUN=none
 while IFS="$TABC" read -r kind sfile key; do
   [ "$kind" = marker ] || continue
@@ -461,7 +548,22 @@ while IFS="$TABC" read -r kind sfile key; do
     # run's continuation gate. An empty identity (unreadable) never matches, so it also keeps.
     NOW="$({{CLEANUP_LIB}} marker-identity "$sfile")"
     if [ -n "$IDENT" ] && [ "$NOW" = "$IDENT" ] && rm -f "$sfile" 2>/dev/null; then
-      CLEARED="${CLEARED}${sfile##*/}
+      # THE PROOF (#332), built from the FACTS THIS VERDICT CONSUMED — `$LREF`/`$RREF`/`$PRSTATE`,
+      # already in hand — never from a second read. `state-verdict` returns only `keep`/`stale` by
+      # design and must not grow an evidence string, so the rendering belongs here, at the one site
+      # that holds the inputs.
+      #
+      # A marker reaches `stale` only with BOTH refs provably gone, so "branch gone" is true on
+      # every path through here; the PR clause is appended only when a PR was actually read.
+      # `PR merged`/`PR closed` and never `PR #<n> …`: this is a status word, and `state-assert.sh
+      # lint` flags one sharing a sentence with a `#N`. The number is absent from the wording for
+      # that reason, and its absence costs nothing — `.prUrl` is not in the report's vocabulary
+      # anyway, and the marker's own filename is what the line already names.
+      case "$PRSTATE" in
+        none) MPROOF="branch gone" ;;
+        *)    MPROOF="branch gone, PR $PRSTATE" ;;
+      esac
+      CLEARED="${CLEARED}${sfile##*/}${TABC}${MPROOF}
 "
     else
       NOTES="${NOTES}SKIPPED ${sfile##*/} — it changed during the sweep, or could not be removed; kept
@@ -584,8 +686,14 @@ GV="$({{CLEANUP_LIB}} state-verdict gaps "$LOCK" "$RUN")" || GV=keep
 IV="$({{CLEANUP_LIB}} state-verdict issue "$LOCK" "$RUN_NOW")" || IV=keep
 RV="$({{CLEANUP_LIB}} state-verdict review "$RUN_NOW")" || RV=keep
 
-# sweep_file <path> <identity-as-judged> — delete ONE file, but only if it is still the file the
-# verdict was about (#305).
+# sweep_file <path> <identity-as-judged> <proof> — delete ONE file, but only if it is still the
+# file the verdict was about (#305), and record WHY it was removed (#332).
+#
+# THE PROOF IS AN ARGUMENT, NOT A RETURN VALUE, and it is appended inside the successful `rm` arm
+# only. This function returns 0 on a SKIP as well (a file that is no longer the judged one is a
+# normal outcome, not an error), so a caller appending evidence on the strength of the exit status
+# would attribute a deletion to a file that is still sitting there. Passing it in is what binds the
+# proof to the one arm that actually removed something.
 #
 # TWO OUTCOMES THAT ARE NOT THE SAME THING, and collapsing them would hide the one that matters:
 #   SKIPPED … kept              the file changed, vanished, or has no readable identity. Nothing was
@@ -607,7 +715,7 @@ sweep_file() {
     return 0
   fi
   if rm -f "$1" 2>/dev/null && [ ! -e "$1" ]; then
-    CLEARED="${CLEARED}${1##*/}
+    CLEARED="${CLEARED}${1##*/}${TABC}${3}
 "
   else
     NOTES="${NOTES}REFUSED ${1##*/} — could not be removed (state dir not writable?); left in place
@@ -622,20 +730,32 @@ while IFS="$TABC" read -r kind sfile key ident; do
   case "$kind" in
     gaps)
       [ "$GV" = stale ] || continue
-      sweep_file "$sfile" "$ident"
+      sweep_file "$sfile" "$ident" "no run in flight"
       ;;
     issue)
       [ "$IV" = stale ] || continue
-      sweep_file "$sfile" "$ident"
+      sweep_file "$sfile" "$ident" "no run in flight"
       ;;
     review)
       [ "$RV" = stale ] || continue
-      sweep_file "$sfile" "$ident"
+      sweep_file "$sfile" "$ident" "no run in flight"
       ;;
     threads)
-      TV="$({{CLEANUP_LIB}} state-verdict threads "$(pr_state "$key")")" || continue
+      # THE PR STATE IS CAPTURED, THEN USED TWICE (#332) — decided the verdict, then reported as
+      # its proof. `state-verdict threads "$(pr_state "$key")"` spent the value inline and threw it
+      # away, which is the defect this issue is about, in miniature: the sweep knew exactly why the
+      # cache was sweepable and printed a bare filename. Asking `pr_state` a second time for the
+      # report would be a DIFFERENT read of mutable state, i.e. the staleness that makes the output
+      # untrustworthy in the first place, plus a second round trip per cache.
+      PRST="$(pr_state "$key")"
+      TV="$({{CLEANUP_LIB}} state-verdict threads "$PRST")" || continue
       [ "$TV" = stale ] || continue
-      sweep_file "$sfile" "$ident"
+      # `PR $PRST`, deliberately WITHOUT the number. Two reasons, and they point the same way: the
+      # number is already in the filename this line prints, and repeating it would put a `#N` in a
+      # sentence with a status word, which `state-assert.sh lint` rejects. Omitting it also keeps
+      # the proof IDENTICAL across every cache swept for the same reason, so `report`'s brace
+      # collapse survives — `threads-{41,47,51}.json [PR merged]` rather than three separate pieces.
+      sweep_file "$sfile" "$ident" "PR $PRST"
       ;;
   esac
 done <<EOF
@@ -693,6 +813,11 @@ so there is no empty section to suppress.
 whose symlinks are what `{{CLEANUP_LIB}}` resolves through). Composing the report first means the
 whole sweep is reported by the library version that decided it — an old workflow calling a
 freshly-swapped library is a version skew with no upside.
+
+`emit` is unchanged by #332 and deliberately so: each accumulator line is already
+`<item>TAB<proof>`, so prefixing the category yields the three-field record `report` now reads, and
+a line carrying no proof yields the two-field record it has always read. The `\t` below is a
+`printf` escape, not a raw tab — the accumulators use `$TABC` from step 1 for the same reason.
 
 ```bash
 emit() { printf '%s\n' "$2" | while IFS= read -r x; do [ -n "$x" ] && printf '%s\t%s\n' "$1" "$x"; done; }
@@ -779,6 +904,10 @@ above it, in the same slot as the swept categories.
 
 Under `verbose`, additionally state what was examined and preserved: the candidate count, how
 many were classified `unmerged`, and whether the fetch changed any verdict. Never by default.
+
+`verbose` is about what was **preserved**; the evidence for what was **deleted** is not gated on it
+and never was (#332). Those are opposite questions, and putting the second behind a flag is what
+left a default sweep unable to justify its own least-reversible action.
 
 ## Notes
 

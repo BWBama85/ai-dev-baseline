@@ -38,7 +38,7 @@
 #   cleanup-lib.sh marker-branch   <marker-path>
 #   cleanup-lib.sh marker-identity <marker-path>
 #   cleanup-lib.sh file-identity   <path>
-#   cleanup-lib.sh report [--tail <line>]                      # TSV "<category>\t<item>" on stdin
+#   cleanup-lib.sh report [--tail <line>]   # TSV "<category>\t<item>[\t<detail>]" on stdin
 #   cleanup-lib.sh state-line     <root> <default-branch>
 #   cleanup-lib.sh clone-state    <root> <default-branch>
 #   cleanup-lib.sh -h | --help
@@ -763,8 +763,9 @@ cmd_state_verdict() {
 }
 
 # --- report ------------------------------------------------------------------------------------
-# Render the sweep's TERSE OUTPUT CONTRACT (#84). Stdin is TSV "<category>TAB<item>" records;
-# stdout is ONE line per category that has records, in first-seen order, plus the `--tail` line.
+# Render the sweep's TERSE OUTPUT CONTRACT (#84). Stdin is TSV "<category>TAB<item>[TAB<detail>]"
+# records; stdout is ONE line per category that has records, in first-seen order, plus the
+# `--tail` line.
 #
 # EMPTY CATEGORIES CANNOT BE PRINTED — not by convention, by construction. #84's complaint is a
 # run that emitted a `Deleted — remote (0)` heading and a paragraph explaining why nothing needed
@@ -777,6 +778,25 @@ cmd_state_verdict() {
 # twelve. Order is preserved exactly as given (never sorted): the caller's order is the sweep's
 # order, and a reader matching the report against what scrolled past should see the same
 # sequence. Items that do not fit the pattern pass through verbatim, in place.
+#
+# THE THIRD FIELD IS THE DELETE'S PROOF (#332), rendered as a trailing ` [detail]`. /cleanup
+# computed evidence for every branch and every state file it removed — `#379 (merge commit
+# 3f9e9e5abcde)` — and then dropped it, so `Deleted (local): fix/371` read identically whether the
+# sweep was correct or catastrophic. Twice in one session an agent went and re-derived by hand what
+# the sweep already knew. This is the channel that carries it, and the choice of THIS channel over
+# the two alternatives is argued in base/workflows/cleanup.md's output contract.
+#
+# THE DETAIL JOINS THE GROUP KEY, and that is the whole design rather than an implementation
+# detail. Appending a per-item proof to a grouped family would destroy the collapse this function
+# exists for — twelve caches back onto twelve pieces. Keying on it instead means items whose proof
+# is the SAME still collapse (`threads-{41,47}.json [PR merged]`) while items whose proof DIFFERS
+# split into their own groups (`… [PR merged], threads-51.json [PR closed]`), which is both
+# terser and more truthful than either extreme. Ungrouped items are already one group each, so a
+# distinct proof per branch costs nothing there.
+#
+# A RECORD WITH NO THIRD FIELD RENDERS EXACTLY AS BEFORE. `-F'\t'` gives an absent field as "",
+# the group key then folds identically to the two-field key, and no bracket is emitted — so every
+# pre-#332 caller and every pre-#332 assertion is untouched.
 cmd_report() {
   local tail_line=""
   while [ "$#" -gt 0 ]; do
@@ -806,9 +826,12 @@ cmd_report() {
       return 1
     }
     {
+      # $3 is the OPTIONAL proof. A two-field record leaves it "", which every branch below treats
+      # as "no bracket" — the pre-#332 rendering, byte for byte.
       if ($1 == "" || $2 == "") next
       if (!($1 in seen)) { seen[$1] = 1; order[++nc] = $1 }
       items[$1, ++cnt[$1]] = $2
+      dets[$1, cnt[$1]] = $3
     }
     END {
       for (i = 1; i <= nc; i++) {
@@ -816,9 +839,11 @@ cmd_report() {
         # split("", arr) rather than `delete arr`: the whole-array delete is a later addition and
         # this has to run on whatever awk a stock macOS ships.
         split("", gseen); split("", gpre); split("", gsuf); split("", gmid); split("", gnum)
+        split("", gdet)
         ng = 0
         for (j = 1; j <= cnt[c]; j++) {
           it = items[c, j]
+          dt = dets[c, j]
           # A non-matching item gets a key unique to its position, so it can never be appended
           # to and renders verbatim: pre=the item, mid=suf="" makes the 1-member form below the
           # identity. That is why there is no third "verbatim" state to carry.
@@ -829,12 +854,17 @@ cmd_report() {
           # may legitimately begin with `@`, so the discriminator must be the fact, not a glyph.
           # NOTE: no apostrophe anywhere in this awk program — it is a single-quoted shell string,
           # and one stray apostrophe closes it and turns the whole file into a syntax error.
+          # THE PROOF IS PART OF THE KEY (#332). Two caches swept for the same reason still
+          # collapse; two swept for DIFFERENT reasons must not be merged under one of them, which
+          # is what a key that ignored $3 would do — it would print the FIRST members proof over
+          # the whole brace group and silently attribute it to every item in it.
           grouped = split3(it, a)
-          if (grouped) { k = "g" SUBSEP a["pre"] SUBSEP a["suf"] } else { k = "u" SUBSEP j }
+          if (grouped) { k = "g" SUBSEP a["pre"] SUBSEP a["suf"] SUBSEP dt } else { k = "u" SUBSEP j }
           if (!(k in gseen)) {
             gseen[k] = ++ng
             if (grouped) { gpre[ng] = a["pre"]; gsuf[ng] = a["suf"]; gmid[ng] = a["mid"] }
             else         { gpre[ng] = it;       gsuf[ng] = "";       gmid[ng] = "" }
+            gdet[ng] = dt
             gnum[ng] = 1
           } else {
             g = gseen[k]; gmid[g] = gmid[g] "," a["mid"]; gnum[g]++
@@ -844,6 +874,7 @@ cmd_report() {
         for (g = 1; g <= ng; g++) {
           if (gnum[g] == 1) piece = gpre[g] gmid[g] gsuf[g]
           else              piece = gpre[g] "{" gmid[g] "}" gsuf[g]
+          if (gdet[g] != "") piece = piece " [" gdet[g] "]"
           line = line (line == "" ? "" : ", ") piece
         }
         printf "%s: %s\n", c, line
