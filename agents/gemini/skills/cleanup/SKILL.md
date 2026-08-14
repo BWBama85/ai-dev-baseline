@@ -360,9 +360,17 @@ EOF2
         # squash-merged sibling's proof is `#379 (merge commit …)`. The natural wording makes the
         # whole report line a claim-grammar violation that only fires when BOTH verdicts appear in
         # one sweep. Verified against the linter, both spellings, before it was written.
+        # BOTH verdicts named EXPLICITLY, with the catch-all printing the bare verdict word. The
+        # outer `case` admits only these two today, so `*)` is unreachable — but a third word
+        # joining that label later would silently inherit whichever proof the fallback spelled,
+        # and "contained in origin/main" asserted about a verdict that never proved containment is
+        # a false statement about why a branch was deleted. Printing the unrecognised word is the
+        # same move `state-line` makes for a clone state it has not learned: say what you have,
+        # never invent a reassuring sentence for a condition nobody has classified.
         case "$VERDICT" in
           merged-pr) PROOF="$DETAIL" ;;
-          *)         PROOF="contained in $BASE" ;;
+          merged-ff) PROOF="contained in $BASE" ;;
+          *)         PROOF="$VERDICT" ;;
         esac
         # `$TABC`, never a literal tab. The report record's field separator has to survive an
         # editor, a copy-paste and three skill renders; a raw tab pasted into a fenced block is
@@ -720,7 +728,11 @@ sweep_file() {
     return 0
   fi
   if rm -f "$1" 2>/dev/null && [ ! -e "$1" ]; then
-    CLEARED="${CLEARED}${1##*/}${TABC}${3}
+    # `${3:-}`, not `${3}`: these blocks normally run without `set -u`, but a caller that DOES set
+    # it would abort the whole sweep mid-delete on an arm that forgot its proof. An empty proof
+    # renders as the pre-#332 line, which is the right direction — a missing annotation must never
+    # be able to stop a sweep that has already started removing files.
+    CLEARED="${CLEARED}${1##*/}${TABC}${3:-}
 "
   else
     NOTES="${NOTES}REFUSED ${1##*/} — could not be removed (state dir not writable?); left in place

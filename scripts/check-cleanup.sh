@@ -749,6 +749,17 @@ eq "${ printf 'C\tthreads-41.json\tPR merged\nC\tthreads-47.json\n' | rep; }" \
 eq "${ printf 'D\tfix/371\t#379 (merge commit 3f9e9e5abcde)\nD\tfeat/x\tcontained in origin/main\n' | rep; }" \
    "D: fix/371 [#379 (merge commit 3f9e9e5abcde)], feat/x [contained in origin/main]" \
    "4b ungroupable items each carry their own proof on one category line"
+# THE PER-CATEGORY GROUP-KEY RESET, which is load-bearing in a way its four siblings are not.
+# `gseen` is keyed by CONTENT (prefix, suffix and — since #332 — the proof); the rest are indexed
+# by group number and overwritten at creation, so only this one can carry a stale entry across a
+# category boundary and send an item into a group belonging to the previous one. Measured while
+# writing this: deleting `split("", gseen)` fails exactly this assertion and nothing else in the
+# suite, while deleting the gdet/gnum/gpre resets leaves all 422 green. So this is the assertion
+# that stands there, and the direction is real — `Deleted (local)` always precedes `Cleared state`.
+eq "${ printf 'A\tx.md\tPROOF-A\nA\ty.md\tPROOF-A2\nB\tz.md\n' | rep; }" \
+   "A: x.md [PROOF-A], y.md [PROOF-A2]
+B: z.md" \
+   "4b a later category never inherits an earlier one's proofs"
 # #84's acceptance, RE-ASSERTED with proofs present: the line budget is what the bracket form was
 # chosen to protect, so it is checked rather than argued.
 typical332="$(printf 'Deleted (local)\tissue-3-generic-release\tcontained in origin/main\n%s\nCleared state\tgaps.md\tno run in flight\nCleared state\tgaps.err\tno run in flight\n' \
@@ -880,8 +891,12 @@ else
      "6 a local delete records the proof its verdict returned"
   has "$wfcode" 'DELETED_REMOTE="${DELETED_REMOTE}${b}${TABC}contained in $BASE' \
      "6 a remote delete records the ancestry its enumeration proved"
-  has "$wfcode" 'CLEARED="${CLEARED}${1##*/}${TABC}${3}' \
+  has "$wfcode" 'CLEARED="${CLEARED}${1##*/}${TABC}${3:-}' \
      "6 a swept state file records the proof its caller passed in"
+  # Both verdicts named explicitly. A `*)` standing in for merged-ff would hand its proof to any
+  # third word that later joined that label — asserting containment nothing proved.
+  has "$wfexec" 'merged-ff) PROOF="contained in $BASE"' \
+     "6 the fast-forward proof is bound to its own verdict word, not to a catch-all"
   # THE PROOF MUST BE THE VALUE ALREADY IN HAND. `pr_state` inside the sweep_file argument would be
   # a SECOND live read — a different moment, and a second round trip per cache — which is the
   # staleness that makes the report untrustworthy. Nothing else here can see that substitution:
