@@ -717,6 +717,114 @@ eq "${ printf 'C\t@a.txt\nC\t@b.txt\n' | rep; }" "C: @a.txt, @b.txt" \
 rep --tail >/dev/null 2>&1; no $? "4 --tail without a value is an error"
 rep --bogus >/dev/null 2>&1; no $? "4 an unknown report option is an error"
 
+# --- 4a2. field integrity: a FOURTH field is refused, never truncated -------------------------
+# The only way to produce one is a tab inside an item or a proof — a value that forged a field
+# boundary. Rendering the head and dropping the tail is the silent direction, and silence is what
+# makes a forged record dangerous. This is the whole of what a CONSUMER can enforce: a newline in a
+# value has already become a record boundary by the time stdin is read, and no reader can tell it
+# from a real one, which is why that half is a producer obligation (`adb_tsv_field_safe`).
+printf 'C\tf.md\tproof\tSURPLUS\n' | rep >/dev/null 2>&1
+eq "$?" "2" "4a2 a record with a fourth field is refused (2), not silently truncated"
+eq "${ printf 'C\tf.md\tproof\tSURPLUS\n' | rep 2>/dev/null; }" "" \
+   "4a2 …and renders nothing at all, rather than a plausible line built from half a record"
+# The tail line must not survive the refusal: a lone state line is exactly what a clean sweep looks
+# like, so printing it under a rejected report would report success for a sweep that was refused.
+eq "${ printf 'C\tf.md\tp\tX\n' | rep --tail 'main: clean, in sync with origin/main' 2>/dev/null; }" "" \
+   "4a2 …and the --tail state line is withheld too, so a refusal cannot read as a clean sweep"
+# Three fields remain the contract, and the refusal must not have swallowed the legal case.
+eq "${ printf 'C\tf.md\tproof\n' | rep --tail 'main: clean'; }" "C: f.md [proof]
+main: clean" "4a2 a three-field record still renders, with its tail"
+
+# --- 4b. the third field: every delete states its proof (#332) ---------------------------------
+# The renderer half. `Deleted (local): fix/371` read identically whether the sweep was correct or
+# catastrophic, so the record grew an optional proof column. Every case here is about the ONE thing
+# that made this non-trivial: the proof must not destroy the brace collapse the category line
+# depends on.
+eq "${ printf 'C\tgaps.md\tno run in flight\n' | rep; }" "C: gaps.md [no run in flight]" \
+   "4b a third field renders as a trailing bracket"
+# BACKWARD COMPATIBILITY, asserted rather than assumed: every caller that predates #332 emits two
+# fields, and an empty third must produce the pre-#332 string byte for byte — not "almost", since
+# a trailing " []" would appear on every line of every sweep in every adopting repo.
+eq "${ printf 'C\tgaps.md\n' | rep; }" "C: gaps.md" \
+   "4b …and a record with NO third field renders exactly as it did before"
+eq "${ printf 'C\tgaps.md\t\n' | rep; }" "C: gaps.md" \
+   "4b …as does one with an EMPTY third field (no bare brackets)"
+# THE COLLAPSE MUST SURVIVE. A per-item proof appended to the item string would put nine caches
+# back on nine pieces, which is the thing `report` exists to prevent.
+eq "${ printf 'C\tthreads-41.json\tPR merged\nC\tthreads-47.json\tPR merged\nC\tthreads-51.json\tPR merged\n' | rep; }" \
+   "C: threads-{41,47,51}.json [PR merged]" \
+   "4b items sharing a proof still collapse into one brace group"
+# …AND MUST NOT OVER-COLLAPSE. A key that ignored the proof would merge these and print the FIRST
+# member's proof over the whole group — attributing "merged" to a PR that was closed unmerged,
+# which is a false statement about why a file was deleted, not a formatting nit.
+eq "${ printf 'C\tthreads-41.json\tPR merged\nC\tthreads-47.json\tPR closed\nC\tthreads-51.json\tPR merged\n' | rep; }" \
+   "C: threads-{41,51}.json [PR merged], threads-47.json [PR closed]" \
+   "4b items with DIFFERENT proofs split into their own groups, each keeping its own"
+eq "${ printf 'C\tthreads-41.json\tPR merged\nC\tthreads-47.json\n' | rep; }" \
+   "C: threads-41.json [PR merged], threads-47.json" \
+   "4b a proof and a bare item in one family do not merge"
+# FIXTURE DATA, DEFINED ONCE — and the numbers in it are NOT citations.
+#
+# The number below is the illustrative one from #332's own report example, which quotes a
+# transcript from a DIFFERENT repository; it resolves to nothing here, and `check-claims` was right
+# to say so (it went red on this PR for exactly that — twice, the second time on an earlier draft
+# of THIS comment, which explained the problem by spelling the number again). The digits cannot be
+# dropped from the definition itself: the two controls below test
+# `state-assert.sh lint`, whose grammar only fires on `#[0-9]+`, so a placeholder like `#N` would
+# make them pass against a linter that checks nothing. Hence the audited escape rather than a
+# rewrite — and hence one definition, so there is one line to audit instead of four.
+#
+# `#41` gets the same treatment even though it happens to RESOLVE in this repo: it is fixture data
+# either way, and a reference that passes the lint by coincidence is exactly the inapt citation the
+# claim-integrity lens is about.
+CL_PR_PROOF='#379 (merge commit 3f9e9e5abcde)'   # adb-claim-ok: fixture data, not a citation
+CL_BAD_NUMBERED='PR #41 merged'                  # adb-claim-ok: fixture data, the rejected spelling under test
+# Ungrouped items are one group each already, so a distinct proof per branch costs no compaction.
+eq "${ printf 'D\tfix/371\t%s\nD\tfeat/x\tcontained in origin/main\n' "$CL_PR_PROOF" | rep; }" \
+   "D: fix/371 [$CL_PR_PROOF], feat/x [contained in origin/main]" \
+   "4b ungroupable items each carry their own proof on one category line"
+# THE PER-CATEGORY GROUP-KEY RESET, which is load-bearing in a way its four siblings are not.
+# `gseen` is keyed by CONTENT (prefix, suffix and — since #332 — the proof); its five siblings
+# (`gpre`, `gsuf`, `gmid`, `gnum`, `gdet`) are indexed by group number and overwritten at creation,
+# so only this one can carry a stale entry across a category boundary and send an item into a group
+# belonging to the previous one. Measured while writing this: deleting `split("", gseen)` fails
+# exactly this assertion and nothing else in the suite, while deleting the gdet/gnum/gpre resets
+# leaves every other case green. So this is the assertion that stands there, and the direction is
+# real — `Deleted (local)` is always emitted before `Cleared state`.
+eq "${ printf 'A\tx.md\tPROOF-A\nA\ty.md\tPROOF-A2\nB\tz.md\n' | rep; }" \
+   "A: x.md [PROOF-A], y.md [PROOF-A2]
+B: z.md" \
+   "4b a later category never inherits an earlier one's proofs"
+# #84's acceptance, RE-ASSERTED with proofs present: the line budget is what the bracket form was
+# chosen to protect, so it is checked rather than argued.
+typical332="$(printf 'Deleted (local)\tissue-3-generic-release\tcontained in origin/main\n%s\nCleared state\tgaps.md\tno run in flight\nCleared state\tgaps.err\tno run in flight\n' \
+  "$(for n in 41 47 51 57 59 65 68 72 76; do printf 'Cleared state\tthreads-%s.json\tPR merged\n' "$n"; done)" \
+  | rep --tail "main: clean, in sync with origin/main")"
+eq "${ printf '%s\n' "$typical332" | grep -c .; }" "3" \
+   "4b a typical sweep WITH proofs still emits exactly 3 lines (#84 budget preserved)"
+has "$typical332" "threads-{41,47,51,57,59,65,68,72,76}.json [PR merged]" \
+   "4b …with the nine caches still on one brace group, proof and all"
+
+# THE CLAIM GRAMMAR (base/practices/verify-before-asserting.md). A report line routinely carries a
+# `#N` (a squash-merge proof) and a status word (a cache's) AT THE SAME TIME, and `state-assert.sh
+# lint` rejects that pairing unless it is introduced by `was observed`. The wording is therefore
+# not a style choice, and the NEGATIVE control below is what proves this test can fail: the natural
+# spellings — `merged into origin/main`, `PR #41 merged` — are exactly what a future edit would
+# reach for, and they only violate when both verdicts land in one sweep.
+SA="$ROOT/scripts/lib/state-assert.sh"
+lintok() { printf '%s\n' "$1" | bash "$SA" lint >/dev/null 2>&1; }
+if lintok "${ printf 'Deleted (local)\tfix/371\t%s\nDeleted (local)\tfeat/x\tcontained in origin/main\nCleared state\tthreads-41.json\tPR merged\n' "$CL_PR_PROOF" | rep; }"; then ok; else
+  bad "4b the composed report violates the claim grammar — a proof word collides with a numbered reference"
+fi
+# The two rejected spellings, each shown to REALLY be rejected. Without these the assertion above
+# would pass just as well against a linter that accepts everything.
+if lintok "Deleted (local): fix/371 [$CL_PR_PROOF], feat/x [merged into origin/main]"; then
+  bad "4b the claim lint did not reject 'merged into' beside a numbered reference — this guard cannot fire"
+else ok; fi
+if lintok "Cleared state: threads-41.json [$CL_BAD_NUMBERED]"; then
+  bad "4b the claim lint did not reject a numbered PR status — this guard cannot fire"
+else ok; fi
+
 # ============================ 5. state-line: it must never lie ================================
 # The terse contract makes this the ONLY state the operator is shown, so a hardcoded
 # "clean, in sync" would be actively misleading in every non-clean case.
@@ -803,6 +911,42 @@ else
   eq "${ printf '%s\n' "$wfcode" | grep -c 'state-scan --with-identity'; }" "1" \
      "6 …and exactly one of the two asks for identities"
   has "$wfcode" 'sweep_file' "6 state deletions report their failures instead of silently continuing"
+  # --- #332: the proof is CARRIED, and its transport cannot quietly become invisible ----------
+  # `$TABC`, never a literal tab. A raw tab in a fenced block is load-bearing punctuation that is
+  # invisible in the source, in all three renders and in review — and an editor that turned it into
+  # spaces would fold each delete's proof into the item's NAME with no error anywhere. This is the
+  # one assertion that can see that happen, since a spaces version still parses and still runs.
+  # NO CARVE-OUT. `emit`'s `printf '%s\t%s\n'` is a backslash and a `t`, not a tab, so nothing in
+  # these blocks legitimately holds one — and a filter that exempted that line would be exactly
+  # what hides the next real one.
+  hasnt "${ printf '%s\n' "$wfcode" | sed 's/[[:space:]]*#.*$//'; }" "$TAB" \
+     "6 no fenced block carries a literal tab — the record separator is \$TABC"
+  eq "${ printf '%s\n' "$wfcode" | grep -c 'TABC="\$(printf'; }" "1" \
+     "6 …defined exactly once, in step 1, for the whole run"
+  # The three accumulators each pair an item with the proof its own verdict produced. A bare
+  # append is the pre-#332 line and is what this issue exists to remove.
+  has "$wfcode" 'DELETED_LOCAL="${DELETED_LOCAL}${b}${TABC}${PROOF}' \
+     "6 a local delete records the proof its verdict returned"
+  has "$wfcode" 'DELETED_REMOTE="${DELETED_REMOTE}${b}${TABC}contained in $BASE' \
+     "6 a remote delete records the ancestry its enumeration proved"
+  has "$wfcode" 'CLEARED="${CLEARED}${1##*/}${TABC}${3:-}' \
+     "6 a swept state file records the proof its caller passed in"
+  # Both verdicts named explicitly. A `*)` standing in for merged-ff would hand its proof to any
+  # third word that later joined that label — asserting containment nothing proved.
+  has "$wfexec" 'merged-ff) PROOF="contained in $BASE"' \
+     "6 the fast-forward proof is bound to its own verdict word, not to a catch-all"
+  # THE PROOF MUST BE THE VALUE ALREADY IN HAND. `pr_state` inside the sweep_file argument would be
+  # a SECOND live read — a different moment, and a second round trip per cache — which is the
+  # staleness that makes the report untrustworthy. Nothing else here can see that substitution:
+  # both spellings run and both print a plausible proof.
+  has "$wfexec" 'PRST="$(pr_state "$key")"' "6 the thread arm captures the PR state once"
+  hasnt "$wfexec" 'sweep_file "$sfile" "$ident" "PR $(pr_state' \
+     "6 …and the proof reuses it rather than re-reading at report time"
+  # `merged into` is the natural fast-forward wording and it is a claim-grammar violation whenever a
+  # squash-merged sibling puts a #N on the same line — i.e. only in mixed sweeps, which is exactly
+  # when nobody is looking. Pinned as a negative because the correct spelling is not self-evident.
+  has "$wfexec" 'PROOF="contained in $BASE"' "6 the fast-forward proof avoids a status word (claim grammar)"
+  hasnt "$wfexec" 'PROOF="merged into' "6 …and never reaches for the spelling that collides with a #N"
   # --- #264: the review family is swept, and on ITS OWN liveness signal --------------------
   has "$wfcode" '{{CLEANUP_LIB}} state-verdict review' "6 review artifacts are decided through the library, not inline"
   # The label BOUND TO ITS BODY, which needs both halves in one needle. A bare `review)` stays
@@ -1659,5 +1803,418 @@ has   "$sw_gone_notes"   'SKIPPED issue-7.json' "8f …it is reported as skipped
 # file-identity can never print `-`, so this can only ever compare unequal — keep.
 eq "${ bash "$CL" file-identity "$SW/gone/gaps.md"; }" "${ bash "$CL" state-scan --with-identity "$SW/gone" | awk -F'\t' '$1 == "gaps" && $2 ~ /gaps.md$/ { print $4; exit }'; }" \
    "8f a judged identity and a re-captured one agree for an untouched file (the delete path is reachable at all)"
+
+# ============ 9. the branch sweep REPORTS the proof it computed (#332) ========================
+# THE BUG: `branch-verdict` returns three lines — verdict, tip, evidence — and the sweep read all
+# three, deleted using the tip, and appended only the branch NAME. `Deleted (local): fix/371` was
+# therefore identical whether the sweep was correct or catastrophic, and the only remaining defence
+# was an agent choosing, unprompted, to go re-derive by hand what the sweep already knew. That
+# happened twice in one session, in two repos.
+#
+# THIS SECTION RUNS THE REAL WORKFLOW BLOCK, extracted by its ADB-SNIPPET marker, exactly as
+# sections 7 and 8 do. A mirrored copy of the loop would pass forever after the prose it copies had
+# been rewritten, and what this issue is about is what the SWEEP reports.
+#
+# `{{CLEANUP_LIB}}` resolves to a wrapper that returns a SCRIPTED verdict per branch. That is the
+# point, not a shortcut: how a verdict is computed is section 1's subject, and what the workflow
+# DOES with one is this section's. Scripting the verdict is also the only way to ask the question
+# that matters — does the report carry the string this call returned? — because the wrapper can
+# hand back a different string on a second call and the assertion can then tell the two apart.
+BR="$work/branch332"
+BRC="$BR/calls"
+BR_SNIPPET="${ check_wf_snippet "$WF" branch-sweep; }"
+[ -n "$BR_SNIPPET" ] || bad "9 snippet 'branch-sweep' not found in base/workflows/cleanup.md (marker removed or renamed?)"
+
+check_make_repo_pair "$BR" "$work/remote332.git" || bad "9 fixture init failed"
+(
+  cd "$BR" || exit 1
+  git checkout -q -b main
+  git commit -q --allow-empty -m init
+  git push -q -u origin main
+) || bad "9 fixture build failed"
+BR_MAIN="${ check_git "$BR" rev-parse refs/heads/main; }"
+
+# REBUILT BEFORE EVERY RUN. The sweep DELETES br/pr and br/ff, so a second `br_run` over the same
+# fixture would classify branches that no longer exist — the wrapper would hand back an empty tip,
+# which the real library can never return, and the later cases would be asserting against an
+# impossible verdict. Bot review, PR for #332, caught exactly that in 9g/9h.
+br_fixture() {
+  ( cd "$BR" || exit 1
+    git checkout -q main
+    for b in br/pr br/ff br/open br/unver br/refuse; do
+      git rev-parse --verify --quiet "refs/heads/$b" >/dev/null || {
+        git checkout -q -b "$b"
+        git commit -q --allow-empty -m "$b work"
+        git checkout -q main
+      }
+    done ) || bad "9 fixture rebuild failed"
+}
+
+# The wrapper. `br/pr` is the carry probe, and its answer is derived from LIVE STATE rather than a
+# call counter: while the ref exists the verdict is the SENTINEL, and once the sweep has deleted it
+# any later read is a different moment and gets the POISON. That is the issue's acceptance criterion
+# literally — "a fixture whose live state changes after classification" — and it is deterministic,
+# because the state that changes is the delete this very block performs.
+#
+# The counter is kept, but only to assert HOW MANY times the question was asked.
+#
+# `br/refuse` returns main's OID as the tip, so the real `git update-ref -d refs/heads/br/refuse
+# <main>` fails the compare-and-delete and takes the REFUSED arm with no race to stage.
+cat > "$BR/cl" <<BRWRAP
+#!/usr/bin/env bash
+if [ "\$1" = branch-verdict ]; then
+  b="\$2"
+  safe="\$(printf '%s' "\$b" | tr '/' '_')"
+  mkdir -p "$BRC"
+  n=\$(( \$(cat "$BRC/\$safe" 2>/dev/null || echo 0) + 1 ))
+  printf '%s' "\$n" > "$BRC/\$safe"
+  tip="\$(git rev-parse --verify --quiet "refs/heads/\$b")"
+  case "\$b" in
+    br/pr)
+      # The ref is GONE -> this read happens after the delete -> a different answer. A stub that
+      # returned a merged verdict with an empty tip would be describing something the real library
+      # cannot produce, so say so loudly instead.
+      if [ -n "\$tip" ]; then printf 'merged-pr\n%s\n#7 (merge commit SENTINELCAFE)\n' "\$tip"
+      else                    printf 'merged-pr\n%s\n#999 (merge commit POISONBEEF01)\n' "$BR_MAIN"; fi ;;
+    br/ff)     [ -n "\$tip" ] || { printf 'stub: br/ff read after deletion\n' >&2; exit 3; }
+               printf 'merged-ff\n%s\n' "\$tip" ;;
+    br/open)   printf 'unmerged\n%s\n' "\$tip" ;;
+    br/unver)  printf 'unverified\n%s\nSENTINEL-UNVERIFIED-DETAIL\n' "\$tip" ;;
+    br/refuse) printf 'merged-pr\n%s\n#8 (merge commit CAFEBABE1234)\n' "$BR_MAIN" ;;
+    *) exit 2 ;;
+  esac
+  exit 0
+fi
+exec bash "$CL" "\$@"
+BRWRAP
+
+# br_run <extra-shell-code> — execute the extracted block in the fixture and leave DELETED_LOCAL and
+# NOTES in files. FILES, not a captured string: DELETED_LOCAL is TAB-separated by design and a
+# round trip through `$( )` plus `tr` is exactly where a separator quietly becomes something else.
+# `"$BASH"` and never a bare `bash`, for the reason 8b states — a nested `bash -c` re-resolves from
+# PATH, which on macOS is 3.2.
+br_run() {   # [snippet-body] — defaults to the real extracted block
+  rm -rf "$BRC"
+  br_fixture
+  local body="${1:-$BR_SNIPPET}"
+  ( cd "$BR" && env "$BASH" -c '
+BASE=origin/main
+TABC="$(printf "\t")"
+WORKTREES=""
+HAVE_GH=0
+NOTES=""; DELETED_LOCAL=""
+CANDIDATES="br/pr
+br/ff
+br/open
+br/unver
+br/refuse"
+'"${body//\{\{CLEANUP_LIB\}\}/bash \"$BR/cl\"}"'
+printf "%s" "$DELETED_LOCAL" > '"$BR"'/deleted_local
+printf "%s" "$NOTES"         > '"$BR"'/notes' ) >/dev/null 2>&1
+}
+# The category line the operator actually sees, rendered through the real emit + report path rather
+# than eyeballed from the accumulator.
+br_line() {
+  printf '%s\n' "$(cat "$BR/deleted_local")" \
+    | while IFS= read -r x; do [ -n "$x" ] && printf 'Deleted (local)\t%s\n' "$x"; done \
+    | bash "$CL" report
+}
+
+br_run ""
+br_deleted="${ cat "$BR/deleted_local"; }"
+br_notes="${ cat "$BR/notes"; }"
+br_report="${ br_line; }"
+
+# --- 9a. merged-pr: the library's own line 3, verbatim ----------------------------------------
+has "$br_report" 'br/pr [#7 (merge commit SENTINELCAFE)]' \
+   "9a a squash-merged branch reports the PR and merge commit that authorised its delete"
+if [ -n "${ check_git "$BR" rev-parse --verify --quiet refs/heads/br/pr; }" ]; then
+  bad "9a the sweep did not actually delete br/pr — the fixture proves nothing"
+else ok; fi
+
+# --- 9b. merged-ff: proof rendered from the VERDICT WORD, and no empty parenthetical -----------
+# `merged-ff` emits no line 3 at all, so a fix that assumed one would print `br/ff []` on every
+# fast-forward delete — the case the issue explicitly warns about.
+has "$br_report" 'br/ff [contained in origin/main]' \
+   "9b a fast-forward delete states its proof, rendered from the verdict word"
+hasnt "$br_report" 'br/ff []' "9b …and never an empty parenthetical"
+hasnt "$br_report" '[]'       "9b …nor anywhere else on the line"
+
+# --- 9c. unmerged: still silent ---------------------------------------------------------------
+hasnt "$br_deleted" 'br/open' "9c an unmerged branch produces no deleted record"
+hasnt "$br_notes"   'br/open' "9c …and no note either — the terse contract for the common case is unchanged"
+if [ -n "${ check_git "$BR" rev-parse --verify --quiet refs/heads/br/open; }" ]; then ok; else
+  bad "9c the sweep deleted an unmerged branch"
+fi
+
+# --- 9d. unverified: the pre-existing $DETAIL note is UNCHANGED --------------------------------
+# This arm was the ONE place $DETAIL was already used. The regression to guard against is a rewrite
+# that reroutes the detail into the new proof channel and silently empties this note.
+has "$br_notes" 'UNVERIFIED br/unver — SENTINEL-UNVERIFIED-DETAIL; preserved' \
+   "9d an unverified branch keeps its existing loud note, detail intact"
+hasnt "$br_deleted" 'br/unver' "9d …and is never recorded as deleted"
+
+# --- 9e. REFUSED: a branch that moved is reported in full, with no proof attached ---------------
+has "$br_notes" 'REFUSED br/refuse — it moved during the sweep; left in place' \
+   "9e a failed compare-and-delete still reports in full"
+hasnt "$br_deleted" 'br/refuse' \
+   "9e …and a branch that was NOT deleted never gains a deleted record (its proof would assert a delete that did not happen)"
+if [ -n "${ check_git "$BR" rev-parse --verify --quiet refs/heads/br/refuse; }" ]; then ok; else
+  bad "9e the refused branch was deleted anyway"
+fi
+
+# --- 9f. THE CARRY PROPERTY: the reported proof is the one THIS call returned ------------------
+# The issue's sharpest requirement. Re-deriving the evidence at report time would reintroduce the
+# staleness that makes the output untrustworthy — and for the local half it is not even answerable,
+# since the branch is gone by then.
+has   "$br_report" 'SENTINELCAFE'  "9f the report carries the evidence the authorising call returned"
+hasnt "$br_report" 'POISONBEEF01'  "9f …and never a value from a later re-query"
+eq "${ cat "$BRC/br_pr" 2>/dev/null; }" "1" \
+   "9f …because branch-verdict is asked exactly once per branch"
+
+# --- 9g. THE CONTROL: 9f must be able to fail, and the witness is the REAL block, MUTATED ------
+# A guard is not done until it has been observed failing (base/practices/self-review.md), and the
+# observation has to be of the IMPLEMENTATION going wrong — not of the harness. An earlier version
+# of this case ran the real block and then overwrote `DELETED_LOCAL` with a separately-queried
+# poison value; that proves a test-authored assignment contains what the test just put in it, and
+# nothing whatever about 9f. Bot review caught it.
+#
+# So the witness is the actual snippet with ONE substitution: the carried `$DETAIL` becomes a
+# re-query, which is precisely the implementation the issue rules out ("never re-derived
+# afterwards"). Everything else — the loop, the guards, the delete, the accumulator — is the
+# shipped text.
+#
+# AND THE RE-QUERY READS GENUINELY DIFFERENT LIVE STATE. The delete happens on the line above, so
+# by the time the mutated arm asks again the ref is gone and the wrapper answers as any real reader
+# would after a deletion. That is the issue's "fixture whose live state changes after
+# classification", with the change being the sweep's own mutation rather than a staged race.
+BR_NEEDLE='merged-pr) PROOF="$DETAIL" ;;'
+BR_REQUERY='          merged-pr) PROOF="$(printf %s "" | {{CLEANUP_LIB}} branch-verdict "$b" "$BASE" | sed -n 3p)" ;;'
+BR_BROKEN="${ printf '%s\n' "$BR_SNIPPET" \
+  | awk -v needle="$BR_NEEDLE" -v repl="$BR_REQUERY" 'index($0, needle) { print repl; next } { print }'; }"
+# The mutation must actually have applied — a needle that silently stopped matching would leave
+# this control running the CORRECT code and passing for the wrong reason, which is the same class
+# of defect it exists to catch.
+if [ "$BR_BROKEN" = "$BR_SNIPPET" ]; then
+  bad "9g the control mutation did not apply — the needle no longer matches the shipped block"
+else ok; fi
+br_run "$BR_BROKEN"
+has "${ br_line; }" 'POISONBEEF01' \
+   "9g the control (the real block, re-querying at record time) reports the post-delete value"
+hasnt "${ br_line; }" 'SENTINELCAFE' \
+   "9g …and loses the authorising evidence entirely, which is the defect 9f pins"
+
+# --- 9h. the composed line satisfies the claim grammar -----------------------------------------
+# Section 4b proves the wording is lint-clean; this proves the wording the WORKFLOW actually emits
+# is. The two verdicts co-occurring is what makes it non-obvious: br/pr contributes a `#N` and any
+# status word from br/ff's proof would then violate.
+br_run ""
+if printf '%s\n' "${ br_line; }" | bash "$ROOT/scripts/lib/state-assert.sh" lint >/dev/null 2>&1; then ok; else
+  bad "9h the sweep's own report line violates the claim grammar"
+fi
+
+# ============ 10. the state sweep reports its proofs too (#332) ===============================
+# `Cleared state: …, threads-379.json` was equally bare, and the issue asks for one answer across
+# both halves rather than two. Every deleting arm now carries the facts ITS verdict consumed.
+ST="$work/state332"
+st_fixture() {   # a FINISHED run: no lock, no marker, nothing replaced -> every arm deletes
+  rm -rf "${ST:?}"; mkdir -p "$ST"
+  printf '{"n":1}\n'    > "$ST/threads-41.json"
+  printf '{"n":2}\n'    > "$ST/threads-47.json"
+  printf 'prompt\n'     > "$ST/gap-prompt.txt"
+  printf 'findings\n'   > "$ST/gaps.md"
+  printf 'review\n'     > "$ST/review.md"
+  printf '{"i":7}\n'    > "$ST/issue-7.json"
+}
+# st_run <pr-state> — drive the real state-sweep block with pr_state stubbed to one answer, and
+# count how many times it was asked. The count is the point as much as the proof: reporting the PR
+# state must reuse the value the VERDICT consumed, not spend a second round trip per cache.
+st_run() {
+  st_fixture
+  rm -f "$ST.prcalls"
+  ( cd "$BR" && env STATE="$ST" RUN=none NOTES="" CLEARED="" PRWANT="$1" PRLOG="$ST.prcalls" "$BASH" -c '
+TABC="$(printf "\t")"
+pr_state() { printf "x" >> "$PRLOG"; printf "%s\n" "$PRWANT"; }
+'"${SW_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"'
+printf "%s" "$CLEARED" > '"$ST"'.cleared
+printf "%s" "$NOTES"   > '"$ST"'.notes' ) >/dev/null 2>&1
+}
+st_line() {
+  printf '%s\n' "$(cat "$ST.cleared")" \
+    | while IFS= read -r x; do [ -n "$x" ] && printf 'Cleared state\t%s\n' "$x"; done \
+    | bash "$CL" report
+}
+
+st_run merged
+st_report="${ st_line; }"
+has "$st_report" 'threads-{41,47}.json [PR merged]' \
+   "10a a swept thread cache names the PR state that authorised it, and two of them still collapse"
+has "$st_report" 'gaps.md [no run in flight]'       "10a a gap artifact states the liveness fact that authorised it"
+has "$st_report" 'gap-prompt.txt [no run in flight]' "10a …as does the gap prompt"
+has "$st_report" 'review.md [no run in flight]'      "10a …and a review artifact"
+has "$st_report" 'issue-7.json [no run in flight]'   "10a …and the issue snapshot"
+hasnt "$st_report" '[]' "10a no swept file carries an empty parenthetical"
+# ONE read per cache, reused for both the verdict and the report. Two caches -> two calls; a report
+# that re-asked would log four, which is both a second round trip and a DIFFERENT moment.
+eq "${ wc -c < "$ST.prcalls" | tr -d ' '; }" "2" \
+   "10a pr_state is asked once per cache — the report reuses the value the verdict consumed"
+
+# CLOSED is not MERGED, and the report must not flatten them: a cache swept because its PR was
+# abandoned is a different fact from one swept because the work landed.
+st_run closed
+has "${ st_line; }" 'threads-{41,47}.json [PR closed]' "10b a cache swept for a CLOSED PR says closed, not merged"
+
+# The preserved directions, end to end rather than only at the predicate: an open or unreadable PR
+# state keeps the cache, so it can never acquire a proof for a delete that did not happen.
+st_run open
+hasnt "${ cat "$ST.cleared"; }" 'threads-41.json' "10c a cache for an OPEN PR is not swept, and gains no proof"
+if [ -e "$ST/threads-41.json" ]; then ok; else bad "10c an OPEN PR's cache was deleted"; fi
+st_run unknown
+hasnt "${ cat "$ST.cleared"; }" 'threads-41.json' "10c an unreadable PR state keeps the cache too"
+
+# --- 10d. the marker arm, which has its own delete and its own facts ---------------------------
+MK_SNIPPET="${ check_wf_snippet "$WF" marker-sweep; }"
+[ -n "$MK_SNIPPET" ] || bad "10d snippet 'marker-sweep' not found in base/workflows/cleanup.md"
+# <pr-state> <prUrl-present 0|1> — a marker whose branch is provably gone from both refs.
+mk_run() {
+  rm -rf "${ST:?}"; mkdir -p "$ST"
+  if [ "$2" = 1 ]; then printf '{"branch":"gone/branch","prUrl":"https://x/pull/9"}\n' > "$ST/implement-issue-active.json"
+  else                  printf '{"branch":"gone/branch"}\n' > "$ST/implement-issue-active.json"; fi
+  ( cd "$BR" && env RUN=none NOTES="" CLEARED="" PRWANT="$1" "$BASH" -c '
+TABC="$(printf "\t")"
+pr_state() { printf "%s\n" "$PRWANT"; }
+SCAN="$(bash '"$CL"' state-scan '"$ST"')"
+'"${MK_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"'
+printf "%s" "$CLEARED" > '"$ST"'.cleared' ) >/dev/null 2>&1
+}
+# RENDERED, not substring-matched on the accumulator. `CLEARED="…json branch gone"` — a SPACE where
+# the tab belongs — satisfies any `has … 'branch gone'` check while rendering the proof as part of
+# the FILENAME, with no bracket anywhere. That is a realistic slip (the separator is invisible) and
+# the accumulator cannot see it; only the report can. Bot review caught this gap.
+mk_run none 0
+eq "${ st_line; }" "Cleared state: implement-issue-active.json [branch gone]" \
+   "10d a swept run marker states that both refs were provably gone, through the real report path"
+mk_run merged 1
+eq "${ st_line; }" "Cleared state: implement-issue-active.json [branch gone, PR merged]" \
+   "10d …and appends the PR state when one was actually read"
+if [ -e "$ST/implement-issue-active.json" ]; then
+  bad "10d the marker arm did not delete — the fixture proves nothing"
+else ok; fi
+
+# --- 10e. the state line, composed, must also satisfy the claim grammar ------------------------
+st_run merged
+if printf '%s\n' "${ st_line; }" | bash "$ROOT/scripts/lib/state-assert.sh" lint >/dev/null 2>&1; then ok; else
+  bad "10e the state sweep's report line violates the claim grammar"
+fi
+
+# ============ 11. the REMOTE half states what it actually proved (#332) =======================
+# The remote delete has no expected-OID compare-and-delete: `git push origin --delete` removes the
+# ref BY NAME, whatever it points at now. So its evidence is strictly weaker than the local half's,
+# and the wording has to say WHEN it was established rather than borrow the local half's certainty.
+# Bot review raised this: a bare "contained in origin/main" would be the report asserting something
+# the sweep never proved about the tip it actually removed.
+#
+# A textual pin cannot see any of that, so this drives the real block against a real remote.
+RM="$work/remote-sweep"
+RM_SNIPPET="${ check_wf_snippet "$WF" remote-sweep; }"
+[ -n "$RM_SNIPPET" ] || bad "11 snippet 'remote-sweep' not found in base/workflows/cleanup.md"
+check_make_repo_pair "$RM" "$work/remote-sweep-origin.git" || bad "11 fixture init failed"
+(
+  cd "$RM" || exit 1
+  git checkout -q -b main
+  git commit -q --allow-empty -m init
+  git push -q -u origin main
+  git checkout -q -b rm/merged
+  git commit -q --allow-empty -m work
+  git push -q -u origin rm/merged
+  git checkout -q main
+  git merge -q --no-ff rm/merged -m "merge rm/merged"
+  git push -q origin main
+) || bad "11 fixture build failed"
+
+rm_run() {   # <remote-branch-list>
+  ( cd "$RM" && env "$BASH" -c '
+BASE=origin/main
+TABC="$(printf "\t")"
+NOTES=""; DELETED_REMOTE=""
+REMOTE_MERGED="'"$1"'"
+'"${RM_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"'
+printf "%s" "$DELETED_REMOTE" > '"$RM"'.deleted
+printf "%s" "$NOTES"          > '"$RM"'.notes' ) >/dev/null 2>&1
+}
+rm_line() {
+  printf '%s\n' "$(cat "$RM.deleted")" \
+    | while IFS= read -r x; do [ -n "$x" ] && printf 'Deleted (remote)\t%s\n' "$x"; done \
+    | bash "$CL" report
+}
+
+rm_run "rm/merged"
+eq "${ rm_line; }" "Deleted (remote): rm/merged [contained in origin/main when enumerated]" \
+   "11a a deleted remote branch reports the evidence, scoped to the moment it was established"
+# "when enumerated" is the honest half and it is asserted explicitly: without it this line claims a
+# containment that holds of the enumerated tip, not necessarily of the tip `--delete` removed.
+has "${ rm_line; }" 'when enumerated' \
+   "11a …and does not borrow the local half's expected-OID certainty"
+if [ -n "${ check_git "$RM" ls-remote --heads origin rm/merged; }" ]; then
+  bad "11a the remote branch was not actually deleted — the fixture proves nothing"
+else ok; fi
+
+# A FAILED remote delete is reported loudly and gains NO record — the same asymmetry the local half
+# keeps. A branch that does not exist on the remote makes `git push --delete` fail for real.
+rm_run "rm/never-existed"
+hasnt "${ cat "$RM.deleted"; }" 'rm/never-existed' \
+   "11b a remote delete that FAILED gains no record, so no proof asserts a deletion that did not happen"
+has "${ cat "$RM.notes"; }" 'REFUSED origin/rm/never-existed' \
+   "11b …and is reported in full instead"
+
+# The composed remote line must satisfy the claim grammar too. `contained` is not a status word,
+# but this is the line where a future edit would most naturally reach for `merged`.
+rm_run "rm/merged" 2>/dev/null || true
+if printf '%s\n' "${ rm_line; }" | bash "$ROOT/scripts/lib/state-assert.sh" lint >/dev/null 2>&1; then ok; else
+  bad "11c the remote sweep's report line violates the claim grammar"
+fi
+
+# --- 11d. the new blocks must also run on the interpreter an AGENT will use --------------------
+# Section 8e makes this point for the state block: these fences are executed by the AGENT's shell,
+# and on macOS a shell that has not picked up Homebrew's prefix is /bin/bash 3.2.57. The branch and
+# marker blocks are new surface with the same exposure, and `check-workflow-shell.sh` checks
+# reserved-variable assignment, not general syntax. The sentinel is what makes this able to fail at
+# all — a block that does not run deletes nothing, which satisfies any survival assertion.
+if [ -x /bin/bash ] && [ "${ /bin/bash -c 'printf %s "$BASH_VERSION"'; }" != "${BASH_VERSION}" ]; then
+  br_fixture
+  rm -rf "$BRC"
+  ( cd "$BR" && env /bin/bash -c '
+BASE=origin/main
+TABC="$(printf "\t")"
+WORKTREES=""
+HAVE_GH=0
+NOTES=""; DELETED_LOCAL=""
+CANDIDATES="br/pr
+br/ff
+br/open
+br/unver
+br/refuse"
+'"${BR_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$BR/cl\"}"'
+printf "%s" "$DELETED_LOCAL" > '"$BR"'/deleted_local' ) >/dev/null 2>&1
+  has "${ br_line; }" 'br/pr [#7 (merge commit SENTINELCAFE)]' \
+     "11d the branch-sweep block carries its proof under /bin/bash 3.2 too"
+  if [ -n "${ check_git "$BR" rev-parse --verify --quiet refs/heads/br/pr; }" ]; then
+    bad "11d under /bin/bash the branch block did not run — nothing was deleted (parse or portability failure)"
+  else ok; fi
+
+  mk_run none 0   # rebuilds the marker fixture; re-run it under the old interpreter below
+  rm -rf "${ST:?}"; mkdir -p "$ST"
+  printf '{"branch":"gone/branch"}\n' > "$ST/implement-issue-active.json"
+  ( cd "$BR" && env RUN=none NOTES="" CLEARED="" PRWANT=none /bin/bash -c '
+TABC="$(printf "\t")"
+pr_state() { printf "%s\n" "$PRWANT"; }
+SCAN="$(bash '"$CL"' state-scan '"$ST"')"
+'"${MK_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"'
+printf "%s" "$CLEARED" > '"$ST"'.cleared' ) >/dev/null 2>&1
+  eq "${ st_line; }" "Cleared state: implement-issue-active.json [branch gone]" \
+     "11d …as does the marker-sweep block"
+else
+  check_note "11d SKIPPED the old-interpreter pass: /bin/bash is absent, or is this suite's own interpreter (${BASH_VERSION})"
+fi
 
 check_summary "check-cleanup"
