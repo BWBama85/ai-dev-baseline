@@ -73,6 +73,15 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   `check_fail` in a lint copy and requires the identical input to pass while still printing the
   finding — the silent-guard shape, demonstrated rather than asserted.
 
+  The PR review found three more, each reproduced against a real bash before being fixed: a `#` that
+  does not begin a comment (`: x# adb-allow: …` — `x#` is an ordinary word) sanctioned a construct
+  beside it; a comment opened right after a control operator (`};# note \`) was invisible to the
+  splice probe, which then joined the next line on so *its* marker exempted the declaration above;
+  and bash's declaration builtins accept `+` options, so `declare +x -A m` and `local +x -n r=m`
+  passed. Both comment sites now use bash's own word-start rule rather than a whitespace heuristic.
+  The final option stays `-`-only on purpose: `+A` and `+n` *remove* the attribute, so matching them
+  would flag a line that creates no hazard.
+
   The independent review found four live bypasses in the first cut and every one is fixed with its
   own fixture: separated option clusters (`declare -g -A m`) escaped a pattern that only ever read
   the first option word; a quoted copy of the marker text laundered a real construct, because the

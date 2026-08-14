@@ -654,8 +654,8 @@ _ADB_SF_ALLOW="adb-allow: sub-floor-"
 # five NAMED constructs.
 SUB_FLOOR_CONSTRUCTS='
 mapfile (^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$) # adb-allow: sub-floor-mapfile
-associative-array (^|[^[:alnum:]_])(declare|local|typeset|readonly)([[:space:]]+-[[:alnum:]]+)*[[:space:]]+-[[:alnum:]]*A
-nameref (^|[^[:alnum:]_])(declare|local|typeset)([[:space:]]+-[[:alnum:]]+)*[[:space:]]+-[[:alnum:]]*n
+associative-array (^|[^[:alnum:]_])(declare|local|typeset|readonly)([[:space:]]+[-+][[:alnum:]]+)*[[:space:]]+-[[:alnum:]]*A
+nameref (^|[^[:alnum:]_])(declare|local|typeset)([[:space:]]+[-+][[:alnum:]]+)*[[:space:]]+-[[:alnum:]]*n
 readlink-f (^|[^[:alnum:]_])readlink([[:space:]]+-[[:alnum:]-]+)*[[:space:]]+(-[[:alnum:]]*[fem]|--canonicalize)
 '
 
@@ -827,12 +827,19 @@ EOF
 # runs only when that changed nothing, i.e. when the backslash really is the last thing on the line.
 # The residual is the same quote-unawareness rule A already documents: a `#` inside a quoted string
 # on a genuinely continued line suppresses the splice, which loses a splice rather than forging one.
+#
+# A COMMENT ALSO STARTS RIGHT AFTER A CONTROL OPERATOR, not only after whitespace, and missing that
+# left the same hole one character narrower: `probe() { declare -A x; };# note \` is two independent
+# shell lines, and a probe keyed on `[[:space:]]#` did not see the comment, spliced the next line
+# onto it, and let THAT line's marker exempt the declaration above — a green run over a real
+# construct (review reproduced it). The separator set is bash's own word-start rule: start of line,
+# whitespace, or one of `; & | ( )`.
 _ADB_SF_JOIN='
   {
     logical = $0; logical_at = NR
     while (1) {
       probe = logical
-      sub(/[[:space:]]#.*$/, "", probe)
+      sub(/(^|[[:space:]]|[;&|()])#.*$/, "", probe)
       if (probe != logical) break
       if (!(match(logical, /\\+$/) && RLENGTH % 2 == 1)) break
       if ((getline nxt) <= 0) break
@@ -888,7 +895,7 @@ sub_floor_construct_hits() {
       # Matched against the SPLICED line, so a marker riding the LAST physical line of a continued
       # statement still sanctions it — the only place it can legally sit, since a trailing comment
       # on an earlier half would end the statement there.
-      if (logical ~ ("#[[:space:]]*" allow "[[:space:]]*$")) { x++; next }
+      if (logical ~ ("(^|[[:space:]]|[;&|()])#[[:space:]]*" allow "[[:space:]]*$")) { x++; next }
       if (!count_only) printf "    %d: %s\n", logical_at, logical
       n++
     }

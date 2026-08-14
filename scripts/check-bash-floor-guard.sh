@@ -942,6 +942,8 @@ for _sf_target in scripts/check-lib.sh scripts/check-bash-floor.sh scripts/lib/c
       'associative-array|adb_probe_fn() { typeset -A adb_m; }' \
       'associative-array|adb_probe_fn() { readonly -A adb_m; }' \
       'associative-array|adb_probe_fn() { declare -g -A adb_m; }' \
+      'associative-array|adb_probe_fn() { declare +x -A adb_m; }' \
+      'nameref|adb_probe_fn() { local +x -n adb_r=$1; }' \
       'nameref|adb_probe_fn() { local -n adb_r=$1; }' \
       'nameref|adb_probe_fn() { declare -gn adb_r=$1; }' \
       'nameref|adb_probe_fn() { typeset -n adb_r=$1; }' \
@@ -980,6 +982,8 @@ for _sf_clean in \
     'adb_probe_fn() { readonly -f adb_fn; }' \
     'adb_probe_fn() { adb_p="$(readlink /tmp)"; }' \
     'adb_probe_fn() { adb_p="$(readlink -n /tmp)"; }' \
+    'adb_probe_fn() { declare +A adb_m; }' \
+    'adb_probe_fn() { local +n adb_r; }' \
     'adb_probe_fn() { adb_v="${BASH_VERSINFO[0]:-0}"; }' ; do
   sf_fixture "$SFD"
   printf '%s\n' "$_sf_clean" >> "$SFD/scripts/check-lib.sh"
@@ -1025,6 +1029,16 @@ printf 'adb_probe_fn() { declare -A adb_m; } # note \\\n:   # adb-allow: sub-flo
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
 eq "$SFRC" "1" "rule C: a backslash ending a TRAILING comment does not splice the next line"
 has "$SFOUT" "uses associative-array" "rule C: and the construct above the comment is the one reported"
+
+# ...INCLUDING with no whitespace before the `#`, which is the same hole one character narrower.
+# bash starts a comment right after a control operator too, so `};# note \` is two independent
+# lines — and a probe keyed on `[[:space:]]#` spliced them and let the second line's marker exempt
+# the declaration on the first, ending in a green run. Review reproduced it.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare -A adb_m; };# note \\\n:   # adb-allow: sub-floor-associative-array\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a comment opened by ';#' also ends the line for splicing purposes"
+has "$SFOUT" "uses associative-array" "rule C: and the construct before it is still reported"
 
 # ...nor may the splice make ordinary continued shell trip either scan.
 sf_fixture "$SFD"
@@ -1117,6 +1131,21 @@ sf_fixture "$SFD"
 printf 'adb_probe_fn() { mapfile -t adb_a; }   # adb-allow: sub-floor-mapfile then more text\n' >> "$SFD/scripts/check-lib.sh"
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
 eq "$SFRC" "1" "marker: it must END the line, so trailing text after it does not sanction"
+
+# 8. THE `#` MUST ACTUALLY BEGIN A COMMENT. Anchoring to end-of-line was not sufficient on its own:
+#    `#` opens a comment only at the start of a WORD, so `: x# adb-allow: sub-floor-mapfile` contains
+#    no comment at all — `x#` is an ordinary word — yet it sanctioned a real `mapfile` on the same
+#    line. Review reproduced it; this is the fixture that keeps the word-start rule.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { mapfile -t adb_a; : x# adb-allow: sub-floor-mapfile\n}\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: a '#' that does not begin a comment does not sanction"
+
+# ...and the legitimate no-whitespace form still DOES, since `;#` really is a comment start.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { mapfile -t adb_a; };# adb-allow: sub-floor-mapfile\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "marker: a comment opened by ';#' does sanction — the rule is word-start, not whitespace"
 
 # 6. THE REAL SANCTIONED LINE IS LOAD-BEARING. Removing its marker from a COPY must go red — which
 #    is what proves rule C actually SEES that line, rather than passing because it matches nothing.

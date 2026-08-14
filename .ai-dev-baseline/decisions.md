@@ -5332,6 +5332,27 @@ limit: none of them is sufficient alone.
              `mapfile` row matches its own pattern and carries its own marker, which puts the
              mechanism on display in the first place a reader looks.
 
+             **WHERE A COMMENT BEGINS IS BASH'S RULE, NOT A WHITESPACE HEURISTIC**, and getting that
+             wrong cost two separate holes that the PR review reproduced. `#` opens a comment at the
+             start of a WORD — line start, after whitespace, or after a control operator — so:
+
+             - `: x# adb-allow: sub-floor-mapfile` contains NO comment at all (`x#` is an ordinary
+               word), and an end-of-line-anchored marker test sanctioned a real `mapfile` beside it;
+             - `probe() { declare -A x; };# note \` IS a comment, and a splice probe keyed on
+               `[[:space:]]#` could not see it — so it joined the following line on and let THAT
+               line's marker exempt the declaration above, ending in a green run.
+
+             Both sites now use one separator set (start of line, whitespace, or `; & | ( )`), which
+             is what makes the marker's advertised contract — *a trailing comment* — mean the same
+             thing to this scanner as it does to bash.
+
+             **AND THE INTERMEDIATE OPTION WORDS TAKE `+` AS WELL AS `-`.** bash's declaration
+             builtins accept both, so `declare +x -A m` and `local +x -n r=m` create the prohibited
+             construct and were reported clean. The FINAL option stays `-`-only and is deliberately
+             NOT widened: `+A` and `+n` REMOVE the attribute rather than setting it (`declare +A m`
+             leaves `declare -- m`; `local +n r` yields a plain variable), so matching them would
+             flag a line that creates no hazard.
+
              **Spellings are wide WITHIN each class**, because a pattern that catches three of four
              is green on the fourth: the flag CLUSTER is matched (`-gA`, `-Ag`, `-An`), `readarray`
              counts as `mapfile`, `typeset`/`readonly` join `declare`/`local`, and ANY flag on
