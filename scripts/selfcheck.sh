@@ -407,6 +407,11 @@ add gates               bash scripts/check-gates.sh
 # Unit tests for the shared shell primitives (scripts/lib/common.sh), incl. adb_repo_shape (#23).
 add common-lib          bash scripts/check-common-lib.sh
 
+# ...and the install-manifest guards are guards, so each is injected with its own defect and must go
+# red ON ITS OWN NAMED WITNESS (#324). Red for the wrong reason is not evidence, and a mutation whose
+# edit silently fails to apply reports itself observed while checking nothing.
+add common-lib-mutation bash scripts/check-common-lib.sh --mutation
+
 # Integration tests for bin/agent-init's repo-shape tolerance: subdir resolution, bama-style
 # untracked-parent + out-of-repo doc surfacing, nested repos, non-git refusal (#23).
 add agent-init          bash scripts/check-agent-init.sh

@@ -82,7 +82,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   substitution, so `return 1` alone changes nothing.
 
   - **The producer refuses atomically.** An unrepresentable `<repo>`, `<home>`, or skill directory
-    name yields **no records at all**, one line on stderr naming the value, and a non-zero status.
+    name yields **no records at all**, one stderr line *per offending value*, and a non-zero status.
     Deliberately *not* `adb_repo_shape`'s `warning` record: that function's consumer branches on a
     named field, while this one **links** every record it reads.
   - **The status is now captured at nine call sites** — `install.sh`, `uninstall.sh`, each adapter's
@@ -94,7 +94,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     shipped set does not read as an error to `classify`; it reads as "the baseline ships nothing",
     which makes every artifact in a scanned project look project-specific.
   - **`adb_link_manifest` validates the whole manifest before the first link**, and
-    `adb_unlink_manifest` gained the mirror pass plus, for the first time, a return value at all.
+    `adb_unlink_manifest` gained the mirror pass plus an explicit, defined return contract (it always
+    returned *something* — whatever its loop last evaluated; now it returns non-zero iff the manifest
+    was malformed).
     The refusal is **not** in `adb_link`, which #324 proposed: by then the record has already been
     split, so it receives two safe-looking fragments and cannot see that anything happened. A
     missing source stays per-record, as it always was.
@@ -104,15 +106,25 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **An install made from an unrepresentable pair is unsupported, loudly.** Its links are at
     truncated paths, so there is no correct removal set: `uninstall.sh` removes nothing, says so,
     prints the backup directory, and no longer reports "Uninstalled" over a failure.
-  - **Nine mutations were observed red against copies of the tree**, each verifying its own edit
-    applied first — which earned its keep immediately, when the first three-column mutation silently
-    failed to match and 719 green assertions were momentarily indistinguishable from a guard that
-    could not fire. The decisive one leaves the exit status **correct**: neutering only the
-    pre-write pass turns three assertions red and the status assertion is not among them, which is
-    why every fixture checks the filesystem (`cmp`-identical content, no backup, no link).
+  - **The guards are observed failing by a STANDING harness, not a one-time claim.**
+    `check-common-lib.sh --mutation` injects each of the **eight** primitive rules with its own
+    defect and requires the suite to go red *on that rule's own named witness* — red for the wrong
+    reason is not evidence. Its applied-check is `cmp` against a pristine copy, because the failure
+    that actually bit during development was a mutation whose pattern silently matched nothing: the
+    suite came back green and reported the guard observed while checking nothing. The three
+    consumer-level mutations (restoring each swallowing heredoc in `install.sh`, `bin/baseline` and
+    `adopt-lib.sh`) were verified once by hand and are **not** in the harness; the end-to-end tests
+    are what stand in for them.
+  - **The decisive mutation leaves the exit status correct.** Neutering only the pre-write pass —
+    so it still buffers, still diagnoses, still returns non-zero — turns three assertions red and
+    the status assertion is **not** among them. That is why every fixture checks the filesystem
+    (`cmp`-identical content, no backup, no link), and the harness pins it: delete those filesystem
+    assertions and that mutation stops going red, which the harness reports.
   - **What this does not cover, said in the code rather than implied:** a clone directory whose name
-    *ends* in a newline is truncated by each entry point's own `$(cd … && pwd)` bootstrap before the
-    producer is reached. `$HOME` and every *internal* delimiter do reach it and are refused. Filed
+    *ends* in a newline is truncated by the top-level entry points' own `$(cd … && pwd)` bootstrap
+    before the producer is reached (the adapters resolve `agents/<token>`, so the newline is
+    *internal* to them and IS refused — but they are handed an already-truncated root by
+    `install.sh`, so an ordinary install is still affected). `$HOME` and every *internal* delimiter do reach it and are refused. Filed
     as #343 rather than folded in — it needs either 20 duplicated lines or a shared bootstrap
     primitive with a chicken-and-egg, which is a second cross-library decision.
 

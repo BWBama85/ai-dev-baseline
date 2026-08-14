@@ -335,10 +335,38 @@ eq "$(bash "$AD" shipped "$WORK" >/dev/null 2>&1; echo $?)" 2 "shipped on a non-
 # artifact in the scanned project read as project-specific and recommends keeping a fork of each.
 nl_root="$WORK/nlbase"$'\n'"shadow"
 mkdir -p "$nl_root/agents/claude/skills/demo" "$nl_root/agents/claude/scripts" "$nl_root/scripts/lib"
-nl_out="$(bash "$AD" shipped "$nl_root" claude 2>/dev/null)"; nl_rc=$?
-no "$nl_rc" "shipped refuses a baseline root the manifest cannot represent"
+nl_err="$WORK/nl-shipped.err"
+nl_out="$(bash "$AD" shipped "$nl_root" claude 2>"$nl_err")"; nl_rc=$?
+# EXIT 2 AND A DIAGNOSTIC, not merely "non-zero". A witness that accepts any non-zero status is
+# satisfied by an incidental 126/127 — a bad interpreter path, a missing fixture — and would report
+# the guard observed while the rule it covers was never reached (the D63 rule). `die`'s contract in
+# this library is exit 2 plus a message, so both halves are asserted.
+eq "$nl_rc" 2 "shipped refuses an unrepresentable baseline root with die's exit 2"
 eq "$nl_out" "" "shipped emits no records when it refuses"
-# Non-emptiness on the good path, so 'refuse everything' cannot satisfy the two above.
+if [ -s "$nl_err" ]; then ok; else bad "shipped must say WHY it refused"; fi
+has "$(cat "$nl_err")" "cannot enumerate" "shipped names the enumeration failure"
+
+# ATOMIC ACROSS AGENTS, which is a different claim from the single-agent case above — and the one
+# that was actually broken. With `claude` alone the refusal happens before the first record, so a
+# claude-only fixture cannot distinguish "refuses" from "refuses after writing". Here the FIRST
+# agent is representable and a LATER one is not: an independent review measured 25 records emitted
+# and then exit 2, a partial write whose non-empty output the /adopt workflow's count guard accepts.
+multi_root="$WORK/multibase"
+mkdir -p "$multi_root/agents/claude/skills/fine" "$multi_root/agents/claude/scripts" "$multi_root/scripts/lib"
+mkdir -p "$multi_root/agents/gemini/skills/bad"$'\n'"name"
+printf 'x\n' > "$multi_root/agents/claude/CLAUDE.md"
+printf 'x\n' > "$multi_root/agents/gemini/GEMINI.md"
+multi_out="$(bash "$AD" shipped "$multi_root" 2>/dev/null)"; multi_rc=$?
+eq "$multi_rc" 2 "shipped refuses when a LATER agent's manifest is unrepresentable"
+eq "$multi_out" "" "shipped emits NOTHING for the earlier good agents — the refusal is atomic"
+# And the same fixture minus the poisoned agent still enumerates, so the assertions above are not
+# satisfied by a shipped that has simply stopped working.
+rm -rf "$multi_root/agents/gemini"
+multi_ok="$(bash "$AD" shipped "$multi_root" 2>/dev/null)"; multi_ok_rc=$?
+yes "$multi_ok_rc" "shipped succeeds on the same fixture once the unrepresentable agent is gone"
+has "$multi_ok" "skill${TAB}fine${TAB}claude" "shipped still enumerates the representable agent"
+
+# Non-emptiness on the good path, so 'refuse everything' cannot satisfy the assertions above.
 if [ -n "$shipped" ]; then ok; else bad "shipped must still enumerate a representable baseline root"; fi
 
 # --- 4. scan: the surface, the boundary, and the record format ----------------------------------

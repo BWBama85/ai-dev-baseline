@@ -5153,7 +5153,7 @@ limit: none of them is sufficient alone.
              implementer to decide what refusal MEANS for such a producer — and the independent
              gap-analysis pass returned BLOCKED on six unresolved questions, four of which are
              answered here.
-- decision:  1. **The refusal contract is: non-zero, EMPTY stdout, one line on stderr.**
+- decision:  1. **The refusal contract is: non-zero, EMPTY stdout, one stderr line per offending value.**
                 Deliberately NOT `adb_repo_shape`'s shape. That function answers with a record set
                 and refuses by emitting exactly one `warning` record and returning 0 — legitimate
                 there, because its consumer branches on a named field. Here the consumer LINKS
@@ -5180,8 +5180,9 @@ limit: none of them is sufficient alone.
                 rejecting it there would break a working case in order to fail a different one.
                 The whole record set is visible only in `adb_link_manifest`, so the issue's GOAL
                 — no partial write precedes the error — is met there, by validating every record
-                before the first link. `adb_unlink_manifest` gets the mirror pass and, for the
-                first time, a return value at all.
+                before the first link. `adb_unlink_manifest` gets the mirror pass and an explicit,
+                DEFINED return contract — it always returned something (whatever its loop last
+                evaluated); what it never had was a documented meaning for that value.
 
              4. **An install made from an unrepresentable pair is unsupported, loudly.** It linked
                 destinations at TRUNCATED paths, which are not the paths this manifest names, so
@@ -5191,8 +5192,14 @@ limit: none of them is sufficient alone.
                 a map just declared meaningless.
 
              5. **Scope is narrowed and the narrowing is stated in the code.** A clone directory
-                whose name ENDS in a newline is truncated by each entry point's own
-                `$(cd … && pwd)` bootstrap, before the producer is reached. Fixing that means
+                whose name ENDS in a newline is truncated by the TOP-LEVEL entry points' own
+                `$(cd … && pwd)` bootstrap, before the producer is reached — `install.sh`,
+                `uninstall.sh` and `bin/baseline`. The adapters are NOT a fourth instance of it, and
+                saying so was an overstatement the independent review caught: they resolve
+                `agents/<token>`, which puts the newline INSIDE the path rather than at its end, so
+                a standalone adapter handed a correct newline-ending repo reaches the producer and
+                is refused. An ordinary install is still affected, because `install.sh` truncates
+                before it invokes them. Fixing the real sites means
                 either 20 duplicated lines of sentinel capture or a shared bootstrap primitive
                 with a chicken-and-egg (the value being computed is the path used to FIND
                 `common.sh`) — a second cross-library decision, which is precisely what D59
@@ -5224,11 +5231,18 @@ limit: none of them is sufficient alone.
              here checks the filesystem: the prefix is still a real directory, its content is
              byte-identical under `cmp`, no backup was created, no link exists.
 
-             **Nine mutations were observed red against copies of the tree, never the live one**
-             (`self-review.md`), each verifying its own edit applied first. That last part earned
-             its keep immediately: the first attempt at the three-column mutation did not match,
-             the suite came back 719/0, and a green run was momentarily indistinguishable from a
-             guard that could not fire. The end-to-end pair matters for the same reason — every
+             **The observation is a STANDING HARNESS, not a sentence in a PR body.**
+             `check-common-lib.sh --mutation` injects each of the eight primitive rules with its own
+             defect and requires the suite to go red on that rule's OWN NAMED WITNESS — the D63
+             rule, because any incidental failure also returns non-zero and would report a guard as
+             observed. Its applied-check is `cmp` against a pristine copy: the failure that actually
+             bit during development was a mutation whose pattern silently matched nothing, where the
+             suite came back 733/0 and a green run was indistinguishable from a guard that could not
+             fire. `self-review.md` asks for exactly this wherever the rule set is CLOSED, and this
+             one is. It rides the existing `common-lib` CI job rather than a new one, because a new
+             job is a new required status context and this split does not earn one. The three
+             consumer-level mutations were verified once by hand and are NOT in the harness; the
+             end-to-end tests stand in for them, and saying so is better than implying coverage. The end-to-end pair matters for the same reason — every
              unit assertion in `check-common-lib.sh` passes against a build where the producer
              refuses correctly and `install.sh` still swallows the status, and reverting exactly
              that one substitution makes the real `install.sh` exit **0** while linking nothing.

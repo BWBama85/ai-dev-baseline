@@ -90,7 +90,7 @@ if [ -L "$dest" ] && [ ! -e "$dest" ]; then bad "guard created a dangling link a
 # `$HOME` is the input to use rather than the clone path: it reaches the producer intact (an
 # environment variable is never passed through a `$(…)`), whereas a clone directory whose name
 # ENDS in a newline is truncated by each entry point's own bootstrap before the producer is
-# reached — a separate defect, tracked in #340 and deliberately not claimed here.
+# reached — a separate defect, tracked in #343 and deliberately not claimed here.
 nl_home="$work/nlhome"$'\n'"shadow"
 mkdir -p "$nl_home/.claude"
 # The truncated sibling is the whole danger: `<work>/nlhome` is a REAL directory with real content,

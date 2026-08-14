@@ -124,7 +124,14 @@ a second list that would drift the first time a skill was added.
 # compare against, every collision test would answer "no" and the whole inventory would come back
 # `keep`, which is indistinguishable from a genuinely clean project.
 BASELINE="$(bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" baseline)" || exit 1
-bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" shipped "$BASELINE" > ".gemini/state/adopt-shipped.tsv"
+# CHECK THE STATUS, not just the size (#324). `shipped` refuses a baseline root the install manifest
+# cannot represent, and the count guard below cannot stand in for that: a refusal that arrives after
+# some records were already written leaves a NON-EMPTY file, which the count happily accepts. An
+# independent review measured exactly that — 25 records emitted, then exit 2 — so `shipped` is now
+# atomic AND its status is read here. Two guards, because they answer different questions: this one
+# asks "did the producer refuse?", the next asks "did it legitimately find nothing?"
+bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" shipped "$BASELINE" > ".gemini/state/adopt-shipped.tsv" \
+  || { echo "STOP: could not enumerate what the baseline at $BASELINE ships (see above) — every collision test would answer 'no' and the inventory would be a wall of false 'keep'"; exit 1; }
 # COUNT IT, and refuse an empty set. This is the "everything classifies as keep" failure mode named
 # under Failure modes below, caught at its source instead of inferred from a suspicious plan.
 SHIPPED_N="$(grep -c . ".gemini/state/adopt-shipped.tsv" || true)"

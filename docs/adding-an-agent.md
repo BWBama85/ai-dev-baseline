@@ -72,7 +72,8 @@ Never `adb_link_manifest … <<EOF` / `$(adb_agent_manifest …)` / `EOF`. A com
 substitution inside a heredoc **discards the producer's exit status**, so the refusal
 `adb_agent_manifest` returns for a path this record format cannot represent (a tab or
 newline in `$repo` or `$HOME`) arrives as an empty manifest and a cheerful exit 0. That
-was the shape of #324, at five call sites at once.
+was the shape of #324, at nine call sites at once — install, uninstall, each adapter's two arms,
+both of `bin/baseline`'s manifest readers, and `adopt-lib.sh`.
 
 Two statements, not one: `local manifest="$(…)" || …` reports `local`'s status, never
 the producer's.

@@ -204,9 +204,9 @@ adb_unlink_if_ours() {
 # say such paths were "assumed free of tabs/newlines (unsupported)" — a declaration, next to a
 # behaviour that was a confident wrong answer, which is the same pairing #278 removed from
 # `adb_repo_shape`. When `<repo>`, `<home>` or a skill directory name carries a delimiter,
-# `_adb_manifest_fields_safe` refuses: stdout gets NOTHING, stderr gets one line naming the value,
-# and the return is 1. Atomic, because the poison is not confined to one record — every line here
-# is built from those roots, so a partial manifest describes an install nobody asked for.
+# `_adb_manifest_fields_safe` refuses: stdout gets NOTHING, stderr gets one line PER OFFENDING VALUE
+# naming it, and the return is 1. Atomic, because the poison is not confined to one record — every
+# line here is built from those roots, so a partial manifest describes an install nobody asked for.
 #
 # THE CONTRACT IS THE EXIT STATUS, AND CALLERS MUST OBSERVE IT. Empty stdout alone cannot carry
 # the refusal, because an unknown token also prints nothing. Do NOT consume this through
@@ -216,7 +216,7 @@ adb_unlink_if_ours() {
 #
 # WHAT THIS DOES NOT COVER, stated because a guard that overstates itself is worse than none: a
 # clone directory whose name ENDS in a newline is already truncated before this function is
-# reached, by the `$(cd … && pwd)` capture in each entry point's bootstrap (#343). `$HOME` reaches
+# reached, by the `$(cd … && pwd)` capture in the top-level entry points' bootstrap (#343). `$HOME` reaches
 # here intact (it is an environment variable, never a substitution), as does every INTERNAL tab or
 # newline in either root — those are the cases refused below.
 #
@@ -238,8 +238,12 @@ _adb_skill_manifest_lines() {
 
 # Can every value `adb_agent_manifest` is about to interpolate survive this record format?
 # True (0) iff <repo>, <home> and every skill-directory name under <skills-dir> are TSV-safe.
-# False (1), with a one-line diagnostic per offending value on stderr. Usage:
+# False (1), with exactly one physical stderr line PER OFFENDING VALUE. Usage:
 #   _adb_manifest_fields_safe <repo> <home> <skills-dir>
+#
+# PER VALUE, NOT PER REFUSAL, and that is deliberate rather than sloppy: both roots are tested before
+# returning, so an operator whose repo AND home are both unrepresentable is told about both. Failing
+# on the first would hide the second, and they would fix one, re-run, and be told about the other.
 #
 # THE PRECONDITION IS SEPARATE FROM THE EMISSION, and that separation is the whole guard (#324).
 # A check folded into the emitting loop can only fire once records have already been printed —
@@ -426,51 +430,62 @@ EOF
   esac
 }
 
-# Read a whole manifest off stdin into the array named by <array-name>, then check every record's
-# SHAPE. Prints one diagnostic per bad record on stderr (prefixed <who>) and returns non-zero iff
-# any record is malformed. Blank lines are dropped. Usage:
-#   _adb_manifest_slurp <array-name> <who>
+# Read a whole manifest off stdin, check every record's SHAPE, and print the surviving records back
+# on stdout. One diagnostic per bad record on stderr (prefixed <who>); non-zero iff any record is
+# malformed. A wholly empty line is dropped. Usage:  _adb_manifest_slurp <who>
 #
-# THE SLURP IS WHAT MAKES TWO PASSES POSSIBLE. Validation has to precede the first write, and stdin
-# is a stream that cannot be rewound — so the records are buffered here and both consumers below
-# iterate the array instead of the pipe. A manifest is tens of lines; this is not a memory question.
+# IT EXISTS TO MAKE TWO PASSES POSSIBLE. Validation has to precede the first write, and stdin is a
+# stream that cannot be rewound — so the records come through here first and each consumer below
+# iterates the result. A manifest is tens of lines; this is not a memory question.
 #
-# THREE COLUMNS IS MALFORMED, and detecting it needs the third variable. `IFS=TAB read -r src dest`
-# assigns ALL remaining fields to the last name, so `a<TAB>b<TAB>c` yields dest=`b<TAB>c` — a
-# destination silently carrying a delimiter, which is how a tab-bearing SOURCE path smuggles itself
-# into the dest column. Reading into a third name turns that into a detectable extra field.
+# THE DELIMITER COUNT IS CHECKED WITH `case`, BEFORE ANY IFS PARSING, AND THAT IS THE WHOLE POINT.
+# `IFS=TAB read -r src dest` cannot validate this format, because **TAB is IFS whitespace**: bash
+# folds runs of it and strips it at field edges. So `<src>TAB TAB<dest>` (adjacent delimiters) splits
+# into two perfectly-good-looking fields, and so does `<src>TAB<dest>TAB`. Measured on bash 5.3.15
+# against the first version of this function: both returned **0 and created the symlink** — a
+# destination linked from a record that never named it, which is the same class of defect as the
+# split record this whole change exists to refuse. A third `read` variable does not fix it either;
+# the folding happens before the variables are assigned. Only counting delimiters does.
+#
+# Exactly one TAB, and neither side empty. `${line%%"$tab"*}` / `${line#*"$tab"}` split on that one
+# delimiter without consulting IFS at all, and the consumers below use the SAME spelling — so the
+# validator and the code acting on its output cannot disagree about where a record divides.
+#
+# A TAB-ONLY LINE IS MALFORMED, and that is now a decision rather than an inherited artifact. The
+# original implementation skipped it, but only as a side effect of the folding above: `<TAB>` split
+# to two empty fields and its `[ -n "$src$dest" ]` guard read that as "blank". Under exact counting
+# it is one delimiter with two empty fields, which is what malformed means. No producer emits one.
 #
 # `read … || [ -n "$line" ]` because a final line with no trailing newline is still a record: read
 # returns 1 at EOF having populated the variable, and the plain loop would discard it.
-# A NAMEREF, NOT `eval`. The out-parameter has to be an ARRAY (a manifest line may contain spaces,
-# and a string would re-introduce the word-splitting this format exists to avoid), and the two
-# alternatives are worse: `eval "$1+=(…)"` puts a variable name into shell syntax for no gain, and
-# a file-scope global would publish a name into every script in the framework — the same objection
-# `adb_tsv_field_safe` records for its own `tab`/`nl`. `local -n` parses on bash 3.2 (it is an
-# ordinary command word there) and only ever RUNS above the 5.3 floor, so the D30 carve-out that
-# keeps this file loadable below the floor is untouched.
+#
+# NO NAMEREF. An earlier draft returned the records through `local -n`, which this file's own header
+# forbids in as many words ("no mapfile, no readlink -f, no associative arrays, no namerefs"). The
+# D30 carve-out is a statement about the interpreter this file is upgrading FROM, and a function
+# that only ever runs after the gate does not get to renegotiate it. Returning the records on stdout
+# needs no out-parameter at all, and drops the nameref's own hazards with it — a caller passing the
+# bound name, or a scalar, breaks a nameref in ways a literal-only call site merely happens to avoid.
 _adb_manifest_slurp() {
-  local -n _out="$1"
-  local who="$2" tab line src dest extra rc=0
+  local who="$1" tab line src dest ok rc=0
   tab="$(printf '\t')"
-  _out=()
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
-    IFS="$tab" read -r src dest extra <<EOF
-$line
-EOF
-    # A line that yields NOTHING was skipped by the previous implementation's `[ -n "$src$dest" ]`
-    # and is skipped here too. It is not a hypothetical: TAB is IFS *whitespace*, so bash folds
-    # runs of it and strips it at the edges — a tab-only line splits into two empty fields, and
-    # promoting it to a hard failure would be a behaviour change smuggled in by a refactor rather
-    # than a decision anyone took.
-    [ -n "$src$dest$extra" ] || continue
-    if [ -z "$src" ] || [ -z "$dest" ] || [ -n "$extra" ]; then
-      printf '%s: malformed manifest line (want <src>TAB<dest>): [%s]\n' \
+    ok=0
+    case "$line" in
+      *"$tab"*"$tab"*) : ;;                        # two or more delimiters
+      *"$tab"*)
+        src="${line%%"$tab"*}"
+        dest="${line#*"$tab"}"
+        [ -n "$src" ] && [ -n "$dest" ] && ok=1 ;;
+      *) : ;;                                      # no delimiter at all
+    esac
+    if [ "$ok" -eq 1 ]; then
+      printf '%s\n' "$line"
+    else
+      printf '%s: malformed manifest line (want exactly <src>TAB<dest>): [%s]\n' \
         "$who" "$(adb_tsv_field_display "$line")" >&2
       rc=1
     fi
-    _out+=("$line")
   done
   return "$rc"
 }
@@ -500,16 +515,17 @@ EOF
 # Returns non-zero iff the manifest was malformed or ANY entry failed to link.
 # Usage: adb_link_manifest <backup_dir>
 adb_link_manifest() {
-  local backup_dir="$1" tab line src dest rc=0
-  local -a _lines=()
+  local backup_dir="$1" tab validated line src dest rc=0
   tab="$(printf '\t')"
-  _adb_manifest_slurp _lines adb_link_manifest || return 1
-  for line in "${_lines[@]}"; do
-    IFS="$tab" read -r src dest <<EOF
-$line
-EOF
+  validated="$(_adb_manifest_slurp adb_link_manifest)" || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    src="${line%%"$tab"*}"
+    dest="${line#*"$tab"}"
     adb_link "$src" "$dest" "$backup_dir" || rc=1
-  done
+  done <<EOF
+$validated
+EOF
   return "$rc"
 }
 
@@ -529,16 +545,16 @@ EOF
 # Returns non-zero iff the manifest was malformed — and then nothing is removed.
 # Usage: adb_unlink_manifest <repo>
 adb_unlink_manifest() {
-  local repo="$1" tab line dest
-  local -a _lines=()
+  local repo="$1" tab validated line dest
   tab="$(printf '\t')"
-  _adb_manifest_slurp _lines adb_unlink_manifest || return 1
-  for line in "${_lines[@]}"; do
-    IFS="$tab" read -r _ dest <<EOF
-$line
-EOF
+  validated="$(_adb_manifest_slurp adb_unlink_manifest)" || return 1
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    dest="${line#*"$tab"}"
     adb_unlink_if_ours "$dest" "$repo"
-  done
+  done <<EOF
+$validated
+EOF
   # EXPLICIT, so the documented contract ("non-zero iff the manifest was malformed") is true by
   # construction. Without it the function returns whatever the last `adb_unlink_if_ours` happened
   # to evaluate — which is 0 today only because its final statement is an `adb_info`.

@@ -267,6 +267,26 @@ cmd_shipped() {
   [ "$#" -ge 1 ] && [ "$#" -le 2 ] || die "shipped: needs <baseline-root> [agent]"
   local root="$1" want="${2:-}" agent src dest kind name manifest
   [ -d "$root/agents" ] || die "shipped: not a baseline checkout (no agents/ under $root)"
+  # PHASE 1 — PROVE EVERY selected agent's manifest is representable BEFORE emitting one record.
+  #
+  # `die` exits the process, so a refusal discovered mid-loop cannot un-print what earlier agents
+  # already wrote. Without this pass the failure was a PARTIAL WRITE: an independent review dropped
+  # a newline into a gemini skill name and measured `shipped` exiting 2 having already emitted 25
+  # records for claude and codex. That is the same shape as the defect this whole change refuses —
+  # and worse here, because the caller's own belt is a non-empty check, which a partial write passes.
+  #
+  # Two calls per agent rather than a buffer: the producer is pure string building over a glob, and
+  # buffering the emitted records would mean holding and re-splitting the very format whose
+  # splitting is the bug.
+  while IFS= read -r agent; do
+    [ -n "$agent" ] || continue
+    [ -z "$want" ] || [ "$agent" = "$want" ] || continue
+    adb_agent_manifest "$agent" "$root" "/ADB_SHIPPED" >/dev/null \
+      || die "shipped: cannot enumerate $agent's install manifest under $root (see above)"
+  done <<EOF
+$(_ad_agents_from_baseline "$root")
+EOF
+  # PHASE 2 — emit.
   while IFS= read -r agent; do
     [ -n "$agent" ] || continue
     [ -z "$want" ] || [ "$agent" = "$want" ] || continue

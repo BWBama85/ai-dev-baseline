@@ -314,17 +314,32 @@ mf_out="$(adb_agent_manifest claude "$mf_repo_nl" "$mhome" 2>/dev/null)"; mf_rc=
 no "$mf_rc" "manifest: an unrepresentable source root is refused"
 eq "$mf_out" "" "manifest: a refused source root emits NO records"
 
-# (b) The diagnostic names the value on ONE physical line — a multi-line diagnostic would re-open
-#     the very hole it is reporting in whatever reads the caller's stderr.
-mf_err="$(adb_agent_manifest claude "$mrepo" "$mf_nl" 2>&1 >/dev/null)"
-eq "$(printf '%s' "$mf_err" | wc -l | tr -d ' ')" "0" "manifest: the refusal diagnostic is one physical line"
+# (b) The diagnostic names each offending value on ONE physical line — a multi-line diagnostic would
+#     re-open the very hole it is reporting in whatever reads the caller's stderr.
+#
+#     CAPTURED TO A FILE, NOT THROUGH `$(…)`. Command substitution strips EVERY trailing newline, so
+#     a `wc -l` over a captured string cannot tell a properly terminated line from one missing its
+#     terminator — delete the `\n` from the printf format and a substitution-based guard stays green.
+#     The file keeps the bytes, so the terminator can actually be asserted.
+mf_errf="$work/mf-err.txt"
+adb_agent_manifest claude "$mrepo" "$mf_nl" 2>"$mf_errf" >/dev/null
+eq "$(wc -l < "$mf_errf" | tr -d ' ')" "1" "manifest: one unsafe root yields exactly one complete stderr line"
+eq "$(tail -c 1 "$mf_errf" | od -An -c | tr -d ' ')" '\n' "manifest: the diagnostic line is newline-terminated"
+mf_err="$(cat "$mf_errf")"
 if [ -n "$mf_err" ]; then ok; else bad "manifest: a refusal must SAY something (silence is not a diagnostic)"; fi
 # The two-character `\n` sequence, not a fixed spelling: bash 3.2 renders `a<NL>b` as `a$'\n'b`
 # and 5.3 as `$'a\nb'`, and pinning either fails on the other runner CI uses (D29).
 has "$mf_err" '\n' "manifest: the refusal renders the newline in escaped form"
-# And it must not contain a REAL newline beyond its own terminator — that is what "one line" means.
-if [ "$(printf '%s' "$mf_err" | tr -cd '\n' | wc -c | tr -d ' ')" = "0" ]; then ok
-else bad "manifest: the refusal diagnostic carries a raw newline byte"; fi
+
+#     ONE LINE *PER OFFENDING VALUE*, not one line per refusal — the two roots are diagnosed
+#     independently, on purpose. Failing on the first would hide the second, and an operator with
+#     both wrong would fix one, re-run, and be told about the other. The contract is stated that way
+#     in `_adb_manifest_fields_safe`, in the CHANGELOG and in D64; this pins the plural case so the
+#     wording and the behaviour cannot drift apart.
+adb_agent_manifest claude "$mf_repo_nl" "$mf_nl" 2>"$mf_errf" >/dev/null
+eq "$(wc -l < "$mf_errf" | tr -d ' ')" "2" "manifest: TWO unsafe roots yield one line each, not one combined line"
+has "$(cat "$mf_errf")" "source root" "manifest: the plural diagnostic names the source root"
+has "$(cat "$mf_errf")" "target home" "manifest: the plural diagnostic names the target home"
 
 # (c) EVERY branch is guarded, not just claude's — the check is per-branch by construction, so a
 #     branch that forgot its call is invisible to a claude-only test.
@@ -372,15 +387,47 @@ if [ -d "$lmpfx" ] && [ ! -L "$lmpfx" ]; then ok; else bad "adb_link_manifest mu
 if cmp -s "$lmpfx/keep.txt" "$work/lm-pristine.txt"; then ok; else bad "adb_link_manifest must leave the real directory's content byte-identical"; fi
 if [ ! -e "$lmbk2" ]; then ok; else bad "adb_link_manifest must not create a backup before refusing"; fi
 
-# (h) A THIRD COLUMN is malformed too. `IFS=TAB read -r src dest` folds every extra field into
-#     `dest`, so a TAB inside the SOURCE path arrives as a destination silently carrying a
-#     delimiter; only reading a third name can see it.
-lm3="$work/lm-three"
-adb_link_manifest "$lmbk2" >/dev/null 2>&1 <<EOF
-$good1	$lm3	extra
+# (h) THE DELIMITER COUNT MUST BE EXACT, and every one of these cases defeated the first version of
+#     the guard. `IFS=TAB read` cannot validate this format at all, because TAB is IFS *whitespace*:
+#     bash folds runs of it and strips it at field edges, so an ADJACENT pair and a TRAILING one
+#     both split into two innocent-looking fields. Measured on bash 5.3.15 before the fix: the first
+#     two cases below returned **0 and created the symlink**. A third `read` variable does not help
+#     — the folding precedes assignment — which is why the implementation counts with `case`.
+#
+#     Each case asserts the LINK as well as the status: "returns non-zero" is the half that was
+#     already true for the three-column case and was never true for the other two.
+lm_i=0
+for lm_rec in \
+  "$good1	  	DEST" \
+  "$good1	DEST	" \
+  "$good1	DEST	extra" \
+  "	DEST" \
+  "$good1	"
+do
+  lm_i=$((lm_i + 1))
+  # The literal two-space filler above is replaced by a second real TAB, so the fixture carries
+  # actual delimiter bytes rather than a spelling of them.
+  lm_rec="${lm_rec/  /$(printf '\t')}"
+  lm_dest="$work/lm-exact-$lm_i"
+  lm_rec="${lm_rec//DEST/$lm_dest}"
+  adb_link_manifest "$lmbk2" >/dev/null 2>&1 <<EOF
+$lm_rec
 EOF
-no $? "adb_link_manifest rejects a three-column record"
-if [ ! -e "$lm3" ]; then ok; else bad "adb_link_manifest must not link a three-column record"; fi
+  no $? "adb_link_manifest rejects record shape $lm_i (delimiter count/empty field)"
+  if [ ! -e "$lm_dest" ] && [ ! -L "$lm_dest" ]; then ok
+  else bad "adb_link_manifest must not link malformed record shape $lm_i"; fi
+done
+# A TAB-ONLY line is malformed under exact counting (the old folding read it as blank).
+adb_link_manifest "$lmbk2" >/dev/null 2>&1 <<EOF
+$(printf '\t')
+EOF
+no $? "adb_link_manifest rejects a tab-only line"
+# And the ordinary two-column record still links, so 'reject everything' cannot satisfy the above.
+adb_link_manifest "$lmbk2" >/dev/null 2>&1 <<EOF
+$good1	$work/lm-exact-ok
+EOF
+yes $? "adb_link_manifest still accepts an exact two-column record"
+if [ -L "$work/lm-exact-ok" ]; then ok; else bad "adb_link_manifest must still link an exact record"; fi
 
 # (i) The remove side mirrors it: refuse, and remove NOTHING. It previously had no shape check at
 #     all and returned whatever its loop last evaluated, so a truncated <dest> that happened to be
@@ -2436,5 +2483,128 @@ for _wf in .github/workflows/*.yml; do
   eq "${ adb_wf_jobs "$_wf" | grep -c '^JOB	'; }" "${ naive_jobs "$_wf"; }" \
      "real tree: the shared reader and an independent 2-space counter agree on $_wf"
 done
+
+# --- --mutation: the manifest guards must be OBSERVED failing (#324) ----------------------------
+#
+# A guard's failure mode is silence: one that scans nothing, matches nothing, or refuses nothing
+# prints exactly what a clean run prints. `self-review.md` says to automate the observation wherever
+# the rule set is CLOSED — and this one is, because every rule below was added by one change and can
+# be enumerated. Without this the "observed red" claim is a sentence in a PR body that no later
+# reader can re-run, which is the difference between a standing test and "I checked once".
+#
+# EACH MUTATION MUST GO RED ON ITS OWN NAMED WITNESS, not merely make the suite non-zero. D63 records
+# why: any incidental failure — a syntax error, a missing fixture, an aborted start — also returns
+# non-zero, satisfies a bare `rc != 0`, and reports a guard as observed while the rule it covers was
+# never reached. Matching the witness text is what makes red-for-the-right-reason checkable.
+#
+# AND EVERY MUTATION VERIFIES ITS OWN EDIT APPLIED. This is not defensive padding: while building
+# these by hand, one `perl` pattern silently failed to match, the suite came back 733/0, and a green
+# run was momentarily indistinguishable from a guard that could not fire — the exact confusion this
+# whole mode exists to remove.
+#
+# Runs against a COPY of the tree, never the live one (`self-review.md`'s negative-testing rule).
+if [ "${1:-}" = "--mutation" ]; then
+  mut_pass=0; mut_fail=0
+  mut_root="$(mktemp -d)"
+  trap 'rm -rf "$work" "$mut_root"' EXIT
+  check_copy_worktree "$PWD" "$mut_root/t" || { echo "check-common-lib --mutation: could not copy the tree" >&2; exit 1; }
+  mut_lib="$mut_root/t/scripts/lib/common.sh"
+  cp "$mut_lib" "$mut_root/pristine.sh"
+
+  # mutate <name> <witness-substring> <gone-substring> <sed-script>
+  #   Always rendered FROM THE PRISTINE COPY, so no mutation can inherit another's edit and no
+  #   in-place `sed -i` is needed (its spelling differs between GNU and BSD, and this suite runs on
+  #   both runners — D29).
+  #   THE APPLIED-CHECK IS TWO TESTS, and the first is universal. `cmp` against the pristine copy
+  #   catches the failure mode that actually bit: a `sed` script whose pattern silently matches
+  #   nothing produces a byte-identical file, the suite comes back green, and the mutation reports
+  #   itself observed while the rule it covers was never touched. <gone-substring> adds specificity
+  #   where a single line genuinely disappears — checked with `grep -F`, so a pattern character in
+  #   it cannot quietly widen the match — and is passed EMPTY for a mutation that only rewrites a
+  #   line in place, where `cmp` is the honest check and inventing a gone-string would be theatre.
+  mutate() {
+    local name="$1" witness="$2" gone="$3" script="$4" out
+    sed "$script" "$mut_root/pristine.sh" > "$mut_lib"
+    if cmp -s "$mut_root/pristine.sh" "$mut_lib"; then
+      mut_fail=$((mut_fail + 1))
+      printf 'FAIL: mutation %s DID NOT APPLY (file byte-identical to pristine) — its green proves nothing\n' "$name" >&2
+      return
+    fi
+    if [ -n "$gone" ] && grep -qF -- "$gone" "$mut_lib"; then
+      mut_fail=$((mut_fail + 1))
+      printf 'FAIL: mutation %s DID NOT APPLY (still found: %s) — its green proves nothing\n' "$name" "$gone" >&2
+      return
+    fi
+    out="$( (cd "$mut_root/t" && bash scripts/check-common-lib.sh 2>&1) )"
+    case "$out" in
+      *"FAIL: $witness"*) mut_pass=$((mut_pass + 1)) ;;
+      *) mut_fail=$((mut_fail + 1))
+         printf 'FAIL: mutation %s did not turn its witness red: %s\n' "$name" "$witness" >&2 ;;
+    esac
+  }
+
+  # 1. The producer's precondition is deleted from every branch → it stops refusing at all.
+  mutate producer-guard-deleted \
+    "manifest: the claude branch refuses an unrepresentable home" \
+    '_adb_manifest_fields_safe "$repo" "$home"' \
+    '/_adb_manifest_fields_safe "\$repo" "\$home"/d'
+
+  # 2. THE DECISIVE ONE. The pre-write pass still runs, still diagnoses, still returns non-zero — it
+  #    just no longer BLOCKS the write, so the good records ahead of the bad one get linked anyway.
+  #    This is the shape a naive fix has, and the STATUS assertion stays green under it; only the
+  #    filesystem assertions can catch it. If this mutation ever stops going red, the suite has
+  #    quietly reverted to proving nothing more than "returns non-zero".
+  mutate prewrite-pass-does-not-block \
+    "adb_link_manifest must not replace a real directory before refusing" \
+    'adb_link_manifest)" || return 1' \
+    '/_adb_manifest_slurp adb_link_manifest/s/|| return 1/|| rc=1/'
+
+  # 3. Exact delimiter counting is removed, leaving the folded-IFS parse that cannot see an adjacent
+  #    or trailing delimiter.
+  mutate exact-delimiter-count-removed \
+    "adb_link_manifest rejects record shape 1" \
+    '*"$tab"*"$tab"*) : ;;' \
+    '/\*"\$tab"\*"\$tab"\*) : ;;/d'
+
+  # 4. The remove side stops acting on its own validation.
+  mutate unlink-side-status-ignored \
+    "adb_unlink_manifest refuses a manifest containing a malformed record" \
+    'adb_unlink_manifest)" || return 1' \
+    '/_adb_manifest_slurp adb_unlink_manifest/s/ || return 1//'
+
+  # 5. The filesystem-controlled half of the precondition is dropped.
+  mutate skill-name-check-removed \
+    "manifest: an unrepresentable SKILL directory name is refused" \
+    'for d in "$skills"/*/; do' \
+    '/for d in "\$skills"\/\*\/; do/,/^  done$/d'
+
+  # 6. The per-branch boundary is broken: an unknown token now shares the claude branch, so it
+  #    inherits a precondition the documented contract says must not apply to it.
+  mutate precondition-not-per-branch \
+    "manifest: an unknown agent still returns 0 even with an unsafe home" \
+    '    claude)' \
+    's/^    claude)$/    claude|*)/'
+
+  # 7. The per-value contract collapses to first-failure-wins, so an operator with BOTH roots wrong
+  #    is told about only one, fixes it, re-runs, and is told about the other.
+  mutate per-value-diagnostic-collapsed \
+    "manifest: TWO unsafe roots yield one line each, not one combined line" \
+    "" \
+    '/the source root contains/,/^  fi$/s/^    rc=1$/    return 1/'
+
+  # 8. The diagnostic loses its terminator — invisible to any guard that captures stderr through
+  #    `$(…)`, which strips every trailing newline. This is why (b) captures to a FILE.
+  mutate diagnostic-newline-dropped \
+    "manifest: the diagnostic line is newline-terminated" \
+    "the target home contains a tab or newline, which the install manifest cannot represent: %s\\n" \
+    '/the target home contains/s/%s\\n/%s/'
+
+  cp "$mut_root/pristine.sh" "$mut_lib"
+  printf '\ncheck-common-lib --mutation: %d mutation(s) observed RED on their own witness, %d failed\n' \
+    "$mut_pass" "$mut_fail"
+  [ "$mut_fail" -eq 0 ] || exit 1
+  printf 'check-common-lib --mutation: PASS\n'
+  exit 0
+fi
 
 check_summary "common-lib"
