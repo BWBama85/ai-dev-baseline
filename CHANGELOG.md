@@ -9,6 +9,54 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **The below-floor carve-out is enforced by NAME, not just by parse (#315).**
+
+  #310 shipped `--sub-floor` and stated its own gap in its header: D30 forbids **five** constructs
+  in the three files that must run on an old interpreter, and only `${ command; }` was checked. The
+  other four — `mapfile`/`readarray`, associative arrays, namerefs, `readlink -f` — were invisible
+  to both existing rules **inside a function body**, because bash 3.2 parses all four there and
+  loading a file never runs a body.
+
+  Measured against a real `/bin/bash` 3.2.57 rather than assumed, and the measurement is the reason
+  this matters: **none of them stops the shell.**
+
+  | construct in a function body | 3.2 `bash -n` | 3.2 at call time |
+  |---|---|---|
+  | `mapfile -t a` | accepts | `command not found`, status **0**, array left empty |
+  | `declare -A m; m[x]=1` | accepts | `invalid option`, status **0**, writes index 0 of an *indexed* array — so the value reads back correctly by accident |
+  | `local -n r=$1` | accepts | `invalid option`, status **0**, ref empty |
+  | `readlink -f` | accepts | works on current macOS; D30 carries it as a coreutils rule, not a bash-version one |
+
+  So `adb_require_bash`'s repair path could silently compute the wrong answer on exactly the hosts
+  it exists for, while every CI job stayed green — both runners launch at or above the floor, which
+  is precisely the situation the gate is for.
+
+  **Rule C** closes it: a source scan by name over the **whole** of all three files, function bodies
+  included. It needs no interpreter, so unlike the parse and the probe it runs on every host and in
+  every job rather than only where an old bash exists.
+
+  - **Whole-file, not the issue's gate call-path.** A hand-declared function list is the second copy
+    D54 removed, one level down. Whole-file needs no declaration and is already what these files say
+    about themselves — `common.sh`'s header states the ban for the file, and `check-lib.sh` says its
+    own `check_enumerated` "must stay evaluable on bash 3.2 (D35), which has no namerefs" about a
+    helper that is not on the observer's path. Measured cost of the wider scope: **zero**.
+  - **The one false positive is MARKED, never deleted or pattern-loosened.** The entry-point lint's
+    stdin-consumer regex spells `mapfile|readarray` as data; requiring command position does not
+    help, because the `|` alternation puts each word in command position for any line matcher. The
+    escape is the per-line `# adb-allow: sub-floor-<class>` marker `check-fact-drift.sh` already
+    uses for `req_absent`, inheriting its constraint: **per line, never per file.**
+  - **The marker names the class**, so it cannot over-sanction: a line exempt from the `mapfile`
+    rule still goes red the moment a `declare -A` is added to it.
+
+  Seven mutations of the shipped rule were each applied to a tree copy and each observed making the
+  guard suite go red, plus an eighth inside the suite that neutralizes rule C's own `check_fail` in
+  a lint copy and requires the identical input to pass — the silent-guard shape, demonstrated.
+
+  What is still **not** proved, stated rather than implied: a name scan bans five *named*
+  constructs, so an unnamed post-3.2 feature is invisible to it. `CLAUDE.md`, `CONTRIBUTING.md` and
+  the mode's own header now say that narrower thing instead of the wider claim they used to, and
+  D54 is amended rather than rewritten.
+
 - **`baseline repo reconcile` — the drift detector finally has a repair (#333).**
 
   `required-drift` has detected a newly added CI job staying non-required since #122, and it works:

@@ -509,7 +509,7 @@ EOF
 # a stock macOS, every entry point that sources `common.sh` dies with a SYNTAX ERROR instead of the
 # actionable "install bash 5.3" message. The gate does not fail; it never runs.
 #
-# TWO RULES, because neither one alone covers the constructs D30 names. Measured against a real
+# THREE RULES, because no one of them covers the constructs D30 names. Measured against a real
 # /bin/bash 3.2.57 and a real 5.3.15 rather than assumed:
 #
 #   RULE A — THE SOURCE SCAN, interpreter-independent, so it runs on every host including the Linux
@@ -535,6 +535,45 @@ EOF
 #            `read -r -d ''` heredoc loads, a `printf` substitution), so the probe runs in an
 #            isolated subprocess and never in this shell.
 #
+#   RULE C — THE CONSTRUCT SCAN BY NAME (#315), interpreter-independent like rule A, and for the
+#            same reason: rule B needs a sub-floor subject, which only `selfcheck-macos` has, and
+#            the failure this rule catches is precisely one that passes every job on both runners
+#            and then breaks on a stock macOS.
+#
+#            D30 forbids FIVE constructs in these files. Rule A owns `${ command; }`; this one owns
+#            the other four — `mapfile`/`readarray`, associative arrays, namerefs and `readlink -f`
+#            — which sat unenforced because neither existing rule can see them INSIDE A FUNCTION
+#            BODY. Measured against the real /bin/bash 3.2.57, not assumed, and the measurement is
+#            the argument for the rule: bash 3.2 `bash -n`-ACCEPTS all four, sourcing a file never
+#            runs a body, and at call time NONE OF THEM STOPS THE SHELL —
+#
+#              `mapfile -t a`           `command not found`, status 0, the array left EMPTY
+#              `declare -A m; m[x]=1`   `invalid option`, status 0, then writes index 0 of an
+#                                       INDEXED array, so `${m[x]}` reads back correctly by accident
+#              `local -n r=$1`          `invalid option`, status 0, the ref left empty
+#              `readlink -f`            works on current macOS; D30 carries it as a COREUTILS
+#                                       portability rule, not a bash-version one
+#
+#            A gate whose repair path silently computes the WRONG answer is worse than one that
+#            dies, because the caller carries on. That is why a name scan earns its place here even
+#            though a name scan is a blunt instrument.
+#
+#            WHOLE-FILE, not a declared call-path. #315 names the gate's call graph and asks for
+#            "at least" that; a hand-declared function list is the second copy D54 removed, one
+#            level down — add a helper to the repair path, forget the list, and the rule silently
+#            stops covering what it names. Whole-file needs no declaration, and it is already what
+#            these files say about THEMSELVES: `common.sh`'s header states the ban for the file,
+#            `check-lib.sh` says its own `check_enumerated` "must stay evaluable on bash 3.2 (D35),
+#            which has no namerefs" about a helper that is NOT on the observer's path, and D31
+#            exempts this observer from the gate — so it never re-execs and EVERY line of it runs
+#            on whatever PATH resolved. Measured cost of the wider scope: zero. The tracked tree
+#            carries exactly one matching line, and it is a regex STRING (see the marker below).
+#
+#            DECLARATIONS AND INVOCATIONS, never "associative-array semantics". There is no lexical
+#            signature for the latter: `${BASH_VERSINFO[0]}` and `${assoc[key]}` are the same three
+#            tokens, and this repo has six of the former in the scanned set. A usage scan would
+#            report all six. So the rule bans the spellings that CREATE the hazard and says so.
+#
 # A SKIP IS LOUD, NEVER SILENT, and it is the honest answer rather than a workaround. Where no
 # interpreter below the floor exists — every Linux runner, and any WSL distro on 26.04 — rule B has
 # no subject, and running `bash -n` under a 5.3 would prove nothing about D30 while looking exactly
@@ -543,12 +582,12 @@ EOF
 # already supplies a real one, and `selfcheck-macos` runs this whole suite there on every PR.
 #
 # WHAT IS NOT COVERED, stated rather than implied, because a check that overstates itself is worse
-# than none: a 5.3-only construct inside a FUNCTION BODY that is neither new grammar nor a 5.3
-# command substitution — `mapfile`, `declare -A`, `local -n` — is invisible to both rules. bash 3.2
-# parses all three happily and sourcing never runs the body. Rule A exists because the command
-# substitution is the one such construct catchable statically; the rest is review. This half proves
-# PARSEABILITY and BOOTSTRAP REACHABILITY. It does not prove that every function in `common.sh`
-# BEHAVES under 3.2 — three different claims, and only the first two are made here.
+# than none. RULE C below bans the four constructs D30 NAMES, so what remains is the OPEN set: a
+# post-3.2 feature nobody has named — `${var^^}`, a builtin's newer flag, a behavioural difference
+# with no distinctive spelling at all — is invisible to every rule here, and so is an associative
+# array whose DECLARATION lives outside the scanned set. This half proves PARSEABILITY, BOOTSTRAP
+# REACHABILITY, and the ABSENCE OF FIVE NAMED CONSTRUCTS. It does not prove that every function in
+# `common.sh` BEHAVES under 3.2 — four different claims, and only the first three are made here.
 
 # The below-floor set (D30, D35). THE one home: check-bash-floor-guard.sh drives these rules red
 # against fixture copies rather than keeping a second copy of the list, so adding a fourth file here
@@ -558,6 +597,41 @@ scripts/lib/common.sh
 scripts/check-bash-floor.sh
 scripts/check-lib.sh
 "
+
+# THE PER-LINE EXEMPTION MARKER for rule C, in the shape check-fact-drift.sh already uses for its
+# own `req_absent` ban rather than a second idiom invented here.
+#
+# PER LINE, NEVER PER FILE, and that constraint is inherited rather than re-derived: excluding whole
+# files made the `req_absent` invariant FALSE — a real call added to an excluded file passed
+# undetected — and here it would be worse, because the three excludable files are exactly the ones
+# the rule exists to protect. A sanctioned line carries the marker; everything else is a finding.
+#
+# The marker names the CLASS, so it cannot over-sanction: a line exempt from the `mapfile` rule
+# still goes red the moment a `declare -A` is added to it.
+_ADB_SF_ALLOW="adb-allow: sub-floor-"
+
+# The four constructs D30 names besides `${ command; }` (rule A owns that one), as
+# "<class> <ERE> <rest…>". ONE record per class, and the class name is what a sanctioned line
+# spells in its marker — so the ban and its escape hatch are declared in the same place and cannot
+# drift apart. The guard drives each row red against fixture copies rather than keeping a second
+# construct list, which is the same law that put the FILE list here (D54).
+#
+# Fields are SPACE-separated and every pattern is written with `[[:space:]]` rather than a literal
+# space, which is what lets `read -r class pattern rest` split a row. `rest` is discarded; it is
+# where a row carries its own marker for the one case where a row's text matches its own pattern.
+#
+# THE SPELLINGS ARE DELIBERATELY WIDE WITHIN EACH CLASS, since a pattern that catches three of four
+# spellings is green on the fourth (base/practices/self-review.md): the flag cluster is matched, so
+# `-gA`, `-Ag` and `-An` are caught as well as `-A`; `readarray` counts as `mapfile`; `typeset` and
+# `readonly` count alongside `declare` and `local`; and ANY flag on `readlink` is refused, because
+# bare `readlink` is the only portable spelling and enumerating `-f`/`-e`/`-m`/`--canonicalize`
+# would be a longer pattern with more ways to miss one.
+SUB_FLOOR_CONSTRUCTS='
+mapfile (^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$) # adb-allow: sub-floor-mapfile
+associative-array (^|[^[:alnum:]_])(declare|local|typeset|readonly)[[:space:]]+-[[:alnum:]]*A
+nameref (^|[^[:alnum:]_])(declare|local|typeset)[[:space:]]+-[[:alnum:]]*n
+readlink-f (^|[^[:alnum:]_])readlink[[:space:]]+-
+'
 
 # A literal tab, built rather than typed: the two places that need one are a `case` pattern and a
 # parameter-expansion suffix, and a raw tab in either is invisible to a reader and easily eaten by
@@ -699,6 +773,46 @@ sub_floor_funsubs() {
        END { exit (n > 0 ? 0 : 1) }' "$1"
 }
 
+# RULE C's predicate. Print "    <line>: <text>" for every line of $1 carrying construct class $2
+# (ERE $3) in code; exit 0 when any was found, 1 when clean. Same three-outcome contract as rule A,
+# so a scan that FAILS cannot arrive as "clean" — the caller treats any other status as a broken
+# scan, because a scanner that goes blind reports exactly what a clean file reports.
+#
+# THE PATTERN TRAVELS THROUGH THE ENVIRONMENT, not `-v`. awk's `-v` processes escape sequences in
+# the value, so a future row containing a backslash would be silently rewritten before it ever
+# reached the matcher. `first_code_line` in this same file already passes its pattern this way.
+#
+# ONLY WHOLE-LINE COMMENTS ARE DROPPED, exactly as in rule A and for exactly the reason recorded
+# there: a quote-unaware `sed 's/#.*//'` is blinded by ordinary code. The cost is the same too — a
+# construct named in a TRAILING comment or inside a string literal false-positives, loudly — and
+# that cost is what the marker exists to pay. This is the trade D35 weighed and took for rule A;
+# #315 asks for the same instrument, so it inherits the same answer rather than inventing a
+# quote-aware parser the earlier decision declined.
+#
+# TWO QUESTIONS, ONE GRAMMAR. A fourth argument of `1` makes it print the number of lines this
+# class EXEMPTED instead of the hits. That mode exists because the obvious way to count exemptions
+# — `grep -c` for the marker string over the file — counts every MENTION of it: the definition of
+# `_ADB_SF_ALLOW`, the row in `SUB_FLOOR_CONSTRUCTS` that carries its own, and every comment
+# discussing the mechanism. The first spelling of the summary line did exactly that and reported
+# "3 sanctioned marker(s)" for a tree with ONE exempted line — a number that reads like coverage
+# and is not. Both answers now come from the same program, so "what counts as a hit" cannot change
+# one and not the other.
+sub_floor_construct_hits() {
+  ADB_SF_PAT="$3" ADB_SF_ALLOW="$_ADB_SF_ALLOW$2" awk -v count_only="${4:-0}" '
+    BEGIN { pat = ENVIRON["ADB_SF_PAT"]; allow = ENVIRON["ADB_SF_ALLOW"] }
+    /^[[:space:]]*#/ { next }
+    $0 ~ pat {
+      # The marker is matched as a LITERAL substring, never as a pattern: it is punctuation-heavy
+      # and a regex read of it would treat `-` and `:` as themselves anyway, so `index` says what
+      # is meant with no escaping to get wrong.
+      if (index($0, allow)) { x++; next }
+      if (!count_only) printf "    %d: %s\n", NR, $0
+      n++
+    }
+    END { if (count_only) print x + 0; exit (n > 0 ? 0 : 1) }
+  ' "$1"
+}
+
 # Set by sub_floor_lint so the terminal PASS line can state which claim it actually established. A
 # PASS reading "parses below the floor" on a run that skipped the parse would be exactly the
 # overstatement this half exists to remove.
@@ -716,6 +830,25 @@ sub_floor_lint() {
   esac
   [ -n "$root" ] || root="."
   sf_files=0 sf_parsed=0 sf_probed=0 sf_subj="" sf_subjv="" sf_pick="" sf_unparsed="" sf_subj_dead=0 sf_unencodable=0
+  sf_rules=0 sf_exempt=0
+
+  # THE RULE SET IS COUNTED BEFORE IT IS USED, and an empty one is a FAILURE rather than a clean
+  # sweep. Rule C's failure mode is silence in the most literal way available: a table sliced away
+  # by an edit, or a row whose class field went blank, scans nothing and prints exactly what four
+  # clean rows print. The file-set guard below exists for the same reason; a rule set deserves it
+  # as much as a file set does.
+  # `sf_rest` absorbs the remainder so `sf_pat` cannot swallow a row's trailing marker — the same
+  # three-field split the scan loop below uses, deliberately, so one table is never read two ways.
+  # shellcheck disable=SC2034  # deliberate: sf_rest exists to bound sf_pat, not to be read
+  while read -r sf_class sf_pat sf_rest; do
+    [ -n "$sf_class" ] && [ -n "$sf_pat" ] && sf_rules=$((sf_rules + 1))
+  done <<EOF
+$SUB_FLOOR_CONSTRUCTS
+EOF
+  if [ "$sf_rules" -eq 0 ]; then
+    check_note "the below-floor CONSTRUCT set is EMPTY — rule C evaluated nothing, which is not a pass"
+    check_fail
+  fi
 
   # Resolved ONCE, before the loop: probing the candidate list per file would multiply the execs and
   # could, on a host being reconfigured underneath the run, parse two files under two interpreters
@@ -760,6 +893,39 @@ sub_floor_lint() {
         check_note "the source scan over $rel failed outright (status $sf_arc) — refusing to report it clean"
         check_fail ;;
     esac
+
+    # RULE C — the construct scan, one pass per class, interpreter-independent like rule A.
+    #
+    # PER CLASS rather than one fused pattern, and that is what makes the marker safe: the
+    # exemption is keyed to the class that matched, so a line sanctioned for `mapfile` is still
+    # reported when a `declare -A` is added to it. A single alternation would have one name for
+    # four hazards and could only be exempted wholesale.
+    # shellcheck disable=SC2034  # deliberate: sf_rest exists to bound sf_pat, not to be read
+    while read -r sf_class sf_pat sf_rest; do
+      [ -n "$sf_class" ] && [ -n "$sf_pat" ] || continue
+
+      # Sanctioned lines are COUNTED and reported, never merely honoured. An exemption nobody can
+      # see is how a per-line escape becomes a per-file one by accretion: the count is what makes
+      # an unexpectedly broad marker visible in an ordinary CI log. Read BEFORE the hit scan so a
+      # file that fails the scan still contributes its exemptions to the total.
+      sf_ec="$(sub_floor_construct_hits "$f" "$sf_class" "$sf_pat" 1)"
+      case "$sf_ec" in ''|*[!0-9]*) sf_ec=0 ;; esac
+      sf_exempt=$((sf_exempt + sf_ec))
+
+      sf_chits="$(sub_floor_construct_hits "$f" "$sf_class" "$sf_pat")"; sf_crc=$?
+      case "$sf_crc" in
+        0)
+          check_note "$rel uses $sf_class, which bash 3.2 accepts at PARSE time and then fails at CALL time WITHOUT stopping the shell — and this file has to be evaluable below the $FLOOR floor, because it is what reports that the interpreter is too old (D30/D35/#315). Sanction a deliberate mention with a trailing '# ${_ADB_SF_ALLOW}$sf_class':"
+          printf '%s\n' "$sf_chits" >&2
+          check_fail ;;
+        1) : ;;
+        *)
+          check_note "the $sf_class scan over $rel failed outright (status $sf_crc) — refusing to report it clean"
+          check_fail ;;
+      esac
+    done <<EOF
+$SUB_FLOOR_CONSTRUCTS
+EOF
 
     # RULE B, first half — the parse. Skipped file-by-file rather than wholesale so rule A's
     # accounting stays honest either way.
@@ -882,6 +1048,17 @@ EOF
     return
   fi
 
+  # RULE C's OWN LINE, printed on EVERY branch because rule C runs on every branch — it needs no
+  # interpreter, so unlike the parse and the probe it is never skipped. It is a separate line rather
+  # than a clause inside the four below precisely so it cannot become platform-dependent the way a
+  # phrase pinned to one branch already did once.
+  #
+  # THE EXEMPTION COUNT IS PART OF THE VERDICT, not trivia: rules-evaluated shows a table that went
+  # empty, and markers-honoured shows a per-line escape quietly spreading. A zero in either is then
+  # visible in the log instead of indistinguishable from success.
+  printf 'bash-floor: sub-floor  rule C evaluated %d construct rule(s) over %d file(s), honouring %d sanctioned marker(s)\n' \
+    "$sf_rules" "$sf_files" "$sf_exempt"
+
   # SAY WHAT IT CHECKED, not merely whether it passed — and say which of the four situations this
   # run was actually in, since "there was no old bash", "the old bash is broken", "its path cannot
   # be encoded" and "it all ran" send a reader four different places.
@@ -892,29 +1069,29 @@ EOF
   # and took the SKIP branch, and a guard assertion pinned to one of them passed locally and failed
   # in CI on the other. One fact, one spelling.
   if [ "$sf_subj_dead" -eq 1 ]; then
-    printf 'bash-floor: sub-floor  %d file(s) named; rule A ran on all of them; the PARSE and EVALUATION PROBE could NOT be run — %s (%s) is the oldest sub-%s interpreter here and it cannot be executed\n' \
+    printf 'bash-floor: sub-floor  %d file(s) named; the source scans (rules A and C) ran on all of them; the PARSE and EVALUATION PROBE could NOT be run — %s (%s) is the oldest sub-%s interpreter here and it cannot be executed\n' \
       "$sf_files" "$sf_subj" "$sf_subjv" "$FLOOR"
-    SUB_FLOOR_NOTE="the below-floor set carries no 5.3 command substitution, but its sub-$FLOOR interpreter $sf_subj could not be run"
+    SUB_FLOOR_NOTE="the below-floor set carries none of the five banned constructs, but its sub-$FLOOR interpreter $sf_subj could not be run"
   elif [ -n "$sf_subj" ]; then
     # The probe is named as RUN or as NOT RUN, never elided: "3 parsed" beside a silent probe reads
     # as a bootstrap that was proved, on the one run where it was not.
     printf 'bash-floor: sub-floor  %d file(s) named; %d parsed and %d evaluated under %s (%s), the oldest sub-%s interpreter here\n' \
       "$sf_files" "$sf_parsed" "$sf_probed" "$sf_subj" "$sf_subjv" "$FLOOR"
-    SUB_FLOOR_NOTE="the below-floor carve-out parses and bootstraps under $sf_subj ($sf_subjv)"
+    SUB_FLOOR_NOTE="the below-floor carve-out carries none of the five banned constructs and parses and bootstraps under $sf_subj ($sf_subjv)"
   elif [ "$sf_unencodable" -eq 1 ]; then
     # NOT a SKIP, and it must not read like one. A sub-floor interpreter DOES exist here; this
     # check simply cannot name it safely. Printing the ordinary "none exists on this host" line
     # would contradict the candidate list directly below it, which re-probes and shows the very
     # version that was refused.
-    printf 'bash-floor: sub-floor  %d file(s) named; rule A ran on all of them; the PARSE and EVALUATION PROBE could NOT run — every interpreter below the %s floor sits at a path this check cannot encode. Candidates probed:\n' \
+    printf 'bash-floor: sub-floor  %d file(s) named; the source scans (rules A and C) ran on all of them; the PARSE and EVALUATION PROBE could NOT run — every interpreter below the %s floor sits at a path this check cannot encode. Candidates probed:\n' \
       "$sf_files" "$FLOOR"
     sub_floor_candidate_report
-    SUB_FLOOR_NOTE="the below-floor set carries no 5.3 command substitution, but no sub-$FLOOR interpreter could be named safely"
+    SUB_FLOOR_NOTE="the below-floor set carries none of the five banned constructs, but no sub-$FLOOR interpreter could be named safely"
   else
-    printf 'bash-floor: sub-floor  %d file(s) named; rule A ran on all of them; the PARSE and EVALUATION PROBE were **SKIPPED** — no interpreter below the %s floor exists on this host, and running them under a >= %s bash would prove nothing about D30. Candidates probed:\n' \
+    printf 'bash-floor: sub-floor  %d file(s) named; the source scans (rules A and C) ran on all of them; the PARSE and EVALUATION PROBE were **SKIPPED** — no interpreter below the %s floor exists on this host, and running them under a >= %s bash would prove nothing about D30. Candidates probed:\n' \
       "$sf_files" "$FLOOR" "$FLOOR"
     sub_floor_candidate_report
-    SUB_FLOOR_NOTE="no 5.3 command substitution in the below-floor set (parse + evaluation probe SKIPPED — no sub-$FLOOR interpreter on this host)"
+    SUB_FLOOR_NOTE="none of the five banned constructs in the below-floor set (parse + evaluation probe SKIPPED — no sub-$FLOOR interpreter on this host)"
   fi
 }
 
@@ -1127,8 +1304,16 @@ $key
     # the gate drained a hook's payload and passed the first version of this rule — same defect as
     # the narrow `cd` test, found by review. `mapfile`/`readarray` are bash 4+ spellings of the
     # same thing, and `dd`/`</dev/stdin` are the two other ways a prologue eats the payload.
+    #
+    # THE PATTERN BELOW CARRIES RULE C's MARKER, and it is the one sanctioned line in the whole
+    # below-floor set (#315). Those two words are DATA here — a regex this lint matches other files
+    # against — not a builtin this file calls. Rule C is line-oriented and quote-unaware by the same
+    # deliberate choice D35 made for rule A, and requiring command position would not help: the `|`
+    # alternation puts each word in command position as far as any line matcher can tell. So the
+    # answer is the marker, NOT deleting the spellings (which would reopen the exact fail-open
+    # review found here) and NOT loosening rule C until it matches nothing.
     late="$(first_code_line "$f" \
-      '(^|[;&|]|[[:space:]](then|do|else))[[:space:]]*(cd|read|mapfile|readarray|dd)([[:space:]]|$)|\$\(cat\)|<[[:space:]]*/dev/stdin|(^|[[:space:]])(IFS=[^[:space:]]*[[:space:]]+)?read[[:space:]]+-')"
+      '(^|[;&|]|[[:space:]](then|do|else))[[:space:]]*(cd|read|mapfile|readarray|dd)([[:space:]]|$)|\$\(cat\)|<[[:space:]]*/dev/stdin|(^|[[:space:]])(IFS=[^[:space:]]*[[:space:]]+)?read[[:space:]]+-')"   # adb-allow: sub-floor-mapfile
     if [ -n "$late" ] && [ "$late" -lt "$call" ]; then
       check_note "$key calls the floor gate at line $call, AFTER a cd or a stdin read at line $late — move it earlier (\$0 may no longer resolve, and a consumed stdin is not restored by the re-exec)"
       check_fail

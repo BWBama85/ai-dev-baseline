@@ -4147,6 +4147,15 @@ limit: none of them is sufficient alone.
              nothing); and `sf_stub` interpolates its arguments into generated shell (they are
              `mktemp` paths and literals this suite writes itself).
 - baseline-issue: n/a — this repo IS the baseline; #310 is the tracking issue.
+- amended:   2026-08-14 by D65 (#315). This entry's "What is NOT claimed" said a 5.3-only construct
+             inside a FUNCTION BODY — naming `mapfile`, `declare -A` and `local -n` — "is invisible
+             to both rules", and that the residue was review's job. There is now a THIRD rule and
+             those three are caught, along with `readlink -f`. The measured boundary this entry
+             recorded is unchanged and is not erased: `bash -n` really does accept all four, and
+             sourcing really does not run a body — which is exactly why the new rule is a source
+             scan by NAME rather than another execution. What moved is the CLAIM built on that
+             measurement. The residue is now the OPEN set — a post-3.2 feature nobody has named —
+             and D65 states it in those terms.
 
 ## D55 — the sweep deletes by identity, D40's carve-out is reversed, and `marker-identity` does NOT become it
 
@@ -5249,3 +5258,107 @@ limit: none of them is sufficient alone.
              The gap between "the primitive refuses" and "the installer refuses" is one command
              substitution wide, and only a test that runs the real installer spans it.
 - baseline-issue: n/a — this repo IS the baseline; #324 is the tracking issue.
+
+## D65 — the below-floor ban is enforced by NAME, whole-file, with a per-line class-scoped escape
+
+- date:      2026-08-14
+- category:  project-delta
+- unknown:   #315. D30 forbids FIVE constructs in the three below-floor files; #310 enforced one
+             (`${ command; }`) and said so in its own header. Three things the issue could not
+             settle from outside the code: how WIDE the enforced scope is (it names the gate's call
+             graph and asks for "at least" that), what to do about the false positive it identifies,
+             and whether a name scan is even the right instrument given that D35 deliberately
+             declined a quote-aware parser for the same job.
+- decision:  **RULE C** — a source scan by NAME over the **whole** of all three files, with a
+             per-line `# adb-allow: sub-floor-<class>` marker as the only escape.
+
+             **The failure being prevented is SILENT, and that is what earns a blunt instrument its
+             place.** Measured against the real `/bin/bash` 3.2.57, each construct in a function
+             body — where `bash -n` accepts it and sourcing never reaches it:
+
+             | construct | 3.2 at call time |
+             |---|---|
+             | `mapfile -t a` | `command not found`, status **0**, the array left EMPTY |
+             | `declare -A m; m[x]=1` | `invalid option`, status **0**, then writes index 0 of an INDEXED array — so `${m[x]}` reads back correctly by accident |
+             | `local -n r=$1` | `invalid option`, status **0**, the ref left empty |
+             | `readlink -f` | works on current macOS; D30 carries it as a COREUTILS portability rule, not a bash-version one |
+
+             None of them stops the shell. `adb_require_bash`'s repair path could therefore compute
+             the WRONG answer in silence on exactly the hosts the gate exists for, with every CI job
+             green — both runners launch at or above the floor, which is the situation the gate is
+             for. A gate that dies is recoverable; one that answers wrongly is not.
+
+             **Interpreter-independent, like rule A.** Rule B needs a sub-floor subject, which only
+             `selfcheck-macos` has. #315's failure mode is "passes every job and breaks on a stock
+             macOS", so the rule closing it must not itself be macOS-only.
+
+             **WHOLE-FILE, not the issue's call-path.** The call-path scope is correctly derived and
+             is a hand-declared function list — the second copy D54 removed, one level down: add a
+             helper to the repair path, forget the list, and the rule silently stops covering what it
+             names. The gap-analysis pass raised the choice as BLOCKING; it is answered from the repo
+             rather than escalated, because four documents already answer it. `common.sh`'s header
+             states the ban for the FILE. `check-lib.sh` says of its own `check_enumerated` that it
+             "must stay evaluable on bash 3.2 (D35), which has no namerefs" — about a helper that is
+             NOT on the observer's path, so that file has already accepted the file-wide constraint
+             in its own words. D31 exempts the observer from the gate, so it never re-execs and every
+             line of it runs on whatever PATH resolved. And #315's own acceptance says "in the three
+             below-floor files". Measured cost of the wider scope: **zero** — one matching line in
+             the tracked tree, and it is a regex STRING.
+
+             **DECLARATIONS AND INVOCATIONS, never "associative-array semantics."** The gap-analysis
+             pass raised this as the second BLOCKING item, and its own evidence refutes the wider
+             reading: a usage scan for `${x[k]}` false-positives on six real `BASH_VERSINFO[0]`
+             accesses in the scanned set, because an associative subscript and an indexed one are the
+             same three tokens. There is no lexical signature for the semantics. So the rule bans the
+             spellings that CREATE the hazard and states the limit, which is this repo's standing
+             convention for a guard that cannot cover its whole subject.
+
+             **The false positive is MARKED — not deleted, not pattern-loosened.** The one real hit
+             is the entry-point lint's stdin-consumer regex, which spells `mapfile|readarray` as
+             data. Requiring command position does not help: the `|` alternation puts each word in
+             command position as far as any line matcher can tell. Deleting the spellings would
+             reopen the fail-open a reviewer found there. The escape is the marker
+             `check-fact-drift.sh` already uses for `req_absent`, and it inherits that decision's
+             hard-won constraint — **per LINE, never per FILE** — which matters more here, since the
+             three excludable files are the ones the rule protects.
+
+             **The marker names the CLASS**, so it cannot over-sanction: a line exempt from the
+             `mapfile` rule still goes red when a `declare -A` is added to it. The rule table's own
+             `mapfile` row matches its own pattern and carries its own marker, which puts the
+             mechanism on display in the first place a reader looks.
+
+             **Spellings are wide WITHIN each class**, because a pattern that catches three of four
+             is green on the fourth: the flag CLUSTER is matched (`-gA`, `-Ag`, `-An`), `readarray`
+             counts as `mapfile`, `typeset`/`readonly` join `declare`/`local`, and ANY flag on
+             `readlink` is refused — bare `readlink` is the only portable spelling, so enumerating
+             `-f`/`-e`/`-m`/`--canonicalize` would be a longer pattern with more ways to miss one.
+- placement: `scripts/check-bash-floor.sh` — `_ADB_SF_ALLOW`, `SUB_FLOOR_CONSTRUCTS`,
+             `sub_floor_construct_hits` and rule C inside `sub_floor_lint`; every rule driven red in
+             `scripts/check-bash-floor-guard.sh`; the narrowed residue restated in `CLAUDE.md`
+             golden rule 4, `CONTRIBUTING.md` § Style and the mode's own header; D54 amended.
+- reason:    See above. What is NOT claimed is stated rather than implied: a name scan bans five
+             NAMED constructs, so an unnamed post-3.2 feature — `${var^^}`, a builtin's newer flag,
+             a behavioural difference with no distinctive spelling — remains invisible, and THAT is
+             the residue review still owns. Adding a sixth construct is one row of the table, which
+             is the shape a rule set should have; adding constructs D30 does not name would be a
+             compatibility claim #315 explicitly places out of scope.
+- guard-observability: SEVEN mutations of the shipped rule, each applied to a COPY of the tree and
+             each required to make `check-bash-floor-guard.sh` go red — rule C's per-class loop
+             neutralized (121 failures); the marker reduced to a class-less prefix so it exempts
+             anything (20); the whole-line comment exclusion dropped (19); the empty-table guard's
+             `check_fail` removed (1); the exemption count hardwired to 0 (1); the associative-array
+             pattern broadened to match `declare -a` (1); and the marker made unconditional (120).
+             An EIGHTH runs inside the suite itself: rule C's own `check_fail` is neutralized in a
+             lint COPY, which then PASSES the identical input the real lint fails while still
+             printing the finding — the silent-guard shape, demonstrated rather than asserted.
+
+             That last one needed a second runner, `sf_lint_from`, and the reason is worth recording:
+             every other fixture here mutates the tree `--sub-floor` SCANS while the TRACKED lint
+             does the scanning. A mutation of the SCANNER needs the copy to be the thing executed.
+             The first cut of the empty-table fixture missed that, edited the scanned copy, and
+             passed for a reason unrelated to the rule it named.
+
+             Both platform shapes were run before pushing, as this suite's header requires: 479
+             assertions on macOS (which has a real 3.2.57) and 436 on the stubbed Linux shape, zero
+             failures in each. The count differs by the 3.2-gated block, exactly as documented.
+- baseline-issue: n/a — this repo IS the baseline; #315 is the tracking issue.

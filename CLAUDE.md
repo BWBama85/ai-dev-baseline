@@ -105,9 +105,23 @@ those. The rules below are specific to this repo's code.
    with a stated SKIP where none exists. It rides the bare invocation, so `selfcheck-macos`
    — the one per-PR job with a real 3.2.57 — is what actually exercises it. It proves each
    file parses and that its **top level** runs silently there (and, for `common.sh`, that
-   `adb_require_bash` is reachable after). It does **not** prove every function behaves on
-   3.2: a `mapfile` or `declare -A` inside a **function body** is never executed by loading
-   the file, so that stays review's job.
+   `adb_require_bash` is reachable after).
+
+   **A third rule bans D30's other four constructs by NAME** (#315, D65) — `mapfile`/
+   `readarray`, associative arrays, namerefs and `readlink -f` — across the **whole** of all
+   three files, **function bodies included**. It is a source scan, so unlike the parse and the
+   probe it runs on every host and in every job; a deliberate mention carries a per-line
+   `# adb-allow: sub-floor-<class>` marker, which exempts that one class on that one line and
+   nothing else. It exists because bash 3.2 `bash -n`-*accepts* all four in a function body,
+   loading a file never runs a body, and at call time **none of them stops the shell**:
+   `mapfile` is `command not found` at status 0 with the array empty, and `declare -A m; m[x]=1`
+   is `invalid option` at status 0 that then writes index 0 of an *indexed* array. A gate whose
+   repair path silently computes the wrong answer is worse than one that dies.
+
+   What is still **not** proved: that every function *behaves* on 3.2. The scan bans five
+   *named* constructs, so a post-3.2 feature nobody has named — `${var^^}`, a builtin's newer
+   flag, a behavioural difference with no distinctive spelling — is invisible to it. That
+   residue is review's job.
 
    **Every other entry point calls the gate**, and `check-bash-floor.sh --entrypoints`
    fails the build if one does not — a new script cannot join the suite without it. On

@@ -529,6 +529,10 @@ add repo-settings       bash scripts/check-repo-settings.sh
 # of its own precisely so it reaches macOS: this suite is what `selfcheck-macos` runs, and that job
 # is the only per-PR environment with a real 3.2.57 to parse against. On Linux it states a SKIP.
 #
+# The SKIP covers the parse and the evaluation probe ONLY. Since #315 that half carries two source
+# scans — one for 5.3 command substitutions, one for D30's other four named constructs — and neither
+# needs an interpreter, so both run here on every platform.
+#
 # The bare invocation, ENDING the line, is what check-fact-drift.sh's `bash-entrypoint-lint-wired`
 # pin requires — see the registry header above on why these lines are unquoted.
 add bash-floor          bash scripts/check-bash-floor.sh

@@ -174,8 +174,15 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
     under the **oldest sub-floor interpreter** on the host. On a machine that has none — this
     repo's Ubuntu runner, and most Linux boxes, though a host carrying an old bash at a candidate
     path will select and use it — it says **SKIP**, and `selfcheck-macos` is what covers you. It proves the three files *parse* and that `adb_require_bash` stays
-    *reachable*; a `mapfile` or `declare -A` inside a function body still passes, so keep writing
-    those three files as if 3.2 were the target.
+    *reachable*.
+
+    **A third rule bans the other four constructs by name** (#315, D65) — `mapfile`/`readarray`,
+    associative arrays, namerefs, `readlink -f` — across the whole of all three files, **function
+    bodies included**. That one is a source scan with no interpreter to find, so it runs
+    everywhere rather than only where an old bash exists. Write a deliberate mention (a regex
+    that happens to spell one, say) with a trailing `# adb-allow: sub-floor-<class>`; it exempts
+    that class on that line only. A *named* construct is now caught; an unnamed post-3.2 feature
+    still is not, so keep writing those three files as if 3.2 were the target.
 - **Markdown practices/skills:** concise, imperative, agent-neutral where the content
   is shared; include a short "Why" only where it earns its place.
 - **Commits/PRs:** semantic subject, feature branch + PR, green CI. Never push to
