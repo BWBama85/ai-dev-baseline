@@ -988,6 +988,17 @@ printf 'adb_probe_fn() { printf "%%s" \\\n  "hello"; }\n' >> "$SFD/scripts/check
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
 eq "$SFRC" "0" "splice: an ordinary continued command trips neither source scan"
 
+# AN ODD RUN OF TRAILING BACKSLASHES CONTINUES; AN EVEN RUN DOES NOT — the second is an ESCAPED
+# backslash and the statement ends there, which a real bash confirms by running the next line as its
+# own command. A naive `~ /\\$/` splices both and merges two INDEPENDENT statements, and the
+# consequence is not cosmetic: a marker on the second then sanctions a construct on the first.
+# Measured on a copy carrying the naive splice, this fixture came back GREEN.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare -A adb_m; } # x\\\\\n:   # adb-allow: sub-floor-associative-array\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "splice: an EVEN backslash run does not join, so a marker cannot reach back a statement"
+has "$SFOUT" "uses associative-array" "splice: and the construct on the first statement is the one reported"
+
 # --- rule C's exemption marker: it must EXEMPT, and it must not OVER-exempt ------------------------
 # The marker is the mechanism #315 requires to be "itself observed failing". A marker that exempted
 # nothing would make the tracked tree red; one that exempted everything would make the rule inert.

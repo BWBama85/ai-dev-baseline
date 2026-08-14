@@ -786,10 +786,16 @@ EOF
 #
 # The comment rule runs BEFORE the splice, deliberately: a trailing backslash in a `#` comment does
 # NOT continue it in shell, so a joiner that ran first would swallow the following line of real code.
+# AN ODD NUMBER OF TRAILING BACKSLASHES CONTINUES; AN EVEN NUMBER DOES NOT. The second one is an
+# ESCAPED backslash and the line ends there — verified against a real bash, which runs the next line
+# as its own command. A naive `~ /\\$/` splices both, which merges two independent statements into
+# one logical line: the reported line number is then wrong, and — worse — a marker on the second
+# statement would sanction a construct on the first. Counting the run is what makes the splice agree
+# with the grammar it is modelling.
 _ADB_SF_JOIN='
   {
     logical = $0; logical_at = NR
-    while (logical ~ /\\$/) {
+    while (match(logical, /\\+$/) && RLENGTH % 2 == 1) {
       if ((getline nxt) <= 0) break
       sub(/\\$/, "", logical)
       logical = logical nxt

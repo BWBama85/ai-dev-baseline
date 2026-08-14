@@ -60,11 +60,14 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   to `hi`, and rule A reported the file clean. A backslash-newline is a line *splice* in shell, so
   both scans now splice before matching, through one shared fragment. The backslash is **removed,
   not replaced by a space** — a space would silently reintroduce the hole for that exact input
-  (`X=$ {` matches nothing). The splice also makes both patterns stronger: a continuation splitting
-  a *word* (`map\` + `file -t`) is rejoined and then caught.
+  (`X=$ {` matches nothing) — and the run of trailing backslashes is **counted**, because an even
+  run is an escaped backslash that does *not* continue the line. Getting that second one wrong is
+  not cosmetic: it merges two independent statements, so a marker on the later one silently
+  sanctions a construct on the earlier. The splice also makes both patterns stronger — a
+  continuation splitting a *word* (`map\` + `file -t`) is rejoined and then caught.
 
-  Ten mutations of the shipped rules were each applied to a tree copy and each observed making the
-  guard suite go red, plus an eleventh inside the suite that neutralizes rule C's own `check_fail`
+  Eleven mutations of the shipped rules were each applied to a tree copy and each observed making
+  the guard suite go red, plus a twelfth inside the suite that neutralizes rule C's own `check_fail`
   in a lint copy and requires the identical input to pass while still printing the finding — the
   silent-guard shape, demonstrated rather than asserted.
 

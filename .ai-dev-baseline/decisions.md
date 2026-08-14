@@ -5355,7 +5355,15 @@ limit: none of them is sufficient alone.
 
              The comment rule runs BEFORE the splice, because a trailing backslash does not continue
              a `#` comment in shell; a joiner running first would swallow the following line of real
-             code and blind both scans to it. Each of those three choices has its own fixture.
+             code and blind both scans to it.
+
+             **And the run of trailing backslashes is COUNTED: odd continues, even does not.** An
+             even run is an ESCAPED backslash and the statement ends there — confirmed against a real
+             bash, which runs the next line as its own command. A naive `~ /\\$/` splices both and
+             merges two INDEPENDENT statements, and that is not a cosmetic error about line numbers:
+             a marker on the second statement then sanctions a construct on the FIRST. Measured on a
+             copy carrying the naive splice, that fixture came back GREEN. Each of these four choices
+             has its own fixture.
 - placement: `scripts/check-bash-floor.sh` — `_ADB_SF_ALLOW`, `SUB_FLOOR_CONSTRUCTS`,
              `sub_floor_construct_hits` and rule C inside `sub_floor_lint`; every rule driven red in
              `scripts/check-bash-floor-guard.sh`; the narrowed residue restated in `CLAUDE.md`
@@ -5366,16 +5374,17 @@ limit: none of them is sufficient alone.
              the residue review still owns. Adding a sixth construct is one row of the table, which
              is the shape a rule set should have; adding constructs D30 does not name would be a
              compatibility claim #315 explicitly places out of scope.
-- guard-observability: TEN mutations of the shipped rules, each applied to a COPY of the tree and
+- guard-observability: ELEVEN mutations of the shipped rules, each applied to a COPY of the tree and
              each required to make `check-bash-floor-guard.sh` go red — rule C's per-class loop
              neutralized (121 failures); the marker reduced to a class-less prefix so it exempts
              anything (20); the whole-line comment exclusion dropped (19); the empty-table guard's
              `check_fail` removed (1); the exemption count hardwired to 0 (1); the associative-array
              pattern broadened to match `declare -a` (1); the marker made unconditional (120); and
-             the three the splice needs — the splice removed entirely (4), the splice inserting a
-             SPACE rather than removing the backslash (3), and the comment rule moved AFTER the
-             splice so a `#` line ending in a backslash swallows the next one (22).
-             An ELEVENTH runs inside the suite itself: rule C's own `check_fail` is neutralized in a
+             the four the splice needs — the splice removed entirely (4), the splice inserting a
+             SPACE rather than removing the backslash (3), the comment rule moved AFTER the splice so
+             a `#` line ending in a backslash swallows the next one (22), and the backslash run left
+             uncounted so an EVEN one splices too (2).
+             A TWELFTH runs inside the suite itself: rule C's own `check_fail` is neutralized in a
              lint COPY, which then PASSES the identical input the real lint fails while still
              printing the finding — the silent-guard shape, demonstrated rather than asserted.
 
