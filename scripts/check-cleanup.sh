@@ -881,7 +881,10 @@ else
   # invisible in the source, in all three renders and in review — and an editor that turned it into
   # spaces would fold each delete's proof into the item's NAME with no error anywhere. This is the
   # one assertion that can see that happen, since a spaces version still parses and still runs.
-  hasnt "${ printf '%s\n' "$wfcode" | grep -v "printf '%s\\\\t%s" | sed 's/[[:space:]]*#.*$//'; }" "$TAB" \
+  # NO CARVE-OUT. `emit`'s `printf '%s\t%s\n'` is a backslash and a `t`, not a tab, so nothing in
+  # these blocks legitimately holds one — and a filter that exempted that line would be exactly
+  # what hides the next real one.
+  hasnt "${ printf '%s\n' "$wfcode" | sed 's/[[:space:]]*#.*$//'; }" "$TAB" \
      "6 no fenced block carries a literal tab — the record separator is \$TABC"
   eq "${ printf '%s\n' "$wfcode" | grep -c 'TABC="\$(printf'; }" "1" \
      "6 …defined exactly once, in step 1, for the whole run"
