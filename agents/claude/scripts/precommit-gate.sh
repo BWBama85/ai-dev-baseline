@@ -32,10 +32,36 @@ set -u
 # The source is CONDITIONAL on purpose. This file has a deliberate broken-install posture of its
 # own a few lines below, and the floor gate is not entitled to override it — if the shared library
 # is missing, that decision stays with the machinery that already owns it.
+#
+# `set +u` ACROSS THE SOURCE (#317). An unbound expansion at the TOP LEVEL of a library is fatal
+# under `set -u`: it kills the shell OUTRIGHT, so this gate exited **1** and `require_lib`'s
+# `fail_loud` below never ran. Exit 1 from a Stop hook is a NON-BLOCKING error notice, so the turn
+# ended ungated while looking like a hook glitch — the "enforcement secretly off" inversion #35
+# exists to prevent, arriving through the one door `fail_loud` cannot cover, because no `||` can
+# catch it: the shell is gone before the next word is read. Sourcing is not the place to enforce
+# `set -u`; it governs everything this gate actually does. Same repair #299 made to this repo's own
+# project gate, which put this file explicitly out of its scope.
+#
+# AND THE CONDITION IS "DID IT LOAD", NOT "DOES THE FILE EXIST". A file test alone models a MISSING
+# library and misses a CORRUPT one: a truncated common.sh exists, sources, and defines nothing, so
+# `adb_require_bash` ran as an undefined command — `command not found` on stderr, its 127 discarded,
+# and the floor silently unenforced while a misleading cause printed ahead of the real one.
+#
+# `command -v` asks whether the name is CALLABLE, which is a slightly weaker question than "is it a
+# function" — an executable of the same name would satisfy it. That is deliberate rather than
+# overlooked: it is the idiom `require_lib` below, `project-gates.sh` and `roadmap-lib.sh` all use
+# for exactly this probe, and one site answering the question a different way is how two readers of
+# the same condition start disagreeing about what a corrupt library looks like.
 if [ -f "$(dirname "$0")/lib/common.sh" ]; then
+  set +u
   # shellcheck source=/dev/null
   . "$(dirname "$0")/lib/common.sh"
-  adb_require_bash "$@"
+  # CAPTURED ON ITS OWN LINE, BEFORE `set -u` RESTORES IT — `set -u` succeeds, and would otherwise
+  # overwrite `$?` with 0. This is the only status that observes a REAL load of common.sh; the
+  # `require_lib` call below cannot, and is passed this value for exactly that reason.
+  boot_rc=$?
+  set -u
+  command -v adb_require_bash >/dev/null 2>&1 && adb_require_bash "$@"
 fi
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -216,13 +242,47 @@ fail_loud() {
 }
 # Source a REQUIRED sibling library or fail loud: a missing file, an un-sourceable one, or one
 # sourced but missing its expected function (a corrupt/truncated library) each block the turn.
-require_lib() {  # <path> <expected-fn>
+#
+# `set +u` HERE TOO (#317), for the reason the floor block above spells out. The relaxation is not
+# decorative at this site: the common.sh call below is short-circuited by the double-source guard
+# (see <prior-rc>), but `project-gates.sh` IS a real load, and its own top level runs under this
+# caller's options until it sets `set -u` itself.
+#
+# AND THAT LEAVES ONE DOOR OPEN, WHICH IS #342 AND NOT FIXABLE HERE. `project-gates.sh` runs
+# `set -u` at its own line 88, mid-file, so this relaxation is CANCELLED FROM INSIDE the library
+# partway through the load: an unbound expansion below that line is fatal again, and the gate exits
+# 1 exactly as it did before this change. Reproduced. A caller cannot stop a sourced file from
+# turning the option back on — the fix is that library's dual-role `set -u`, so do not read the
+# relaxation below as covering the whole of project-gates.sh, and do not "strengthen" it here.
+#
+# <prior-rc> (optional) OVERRIDES a zero status, because at the common.sh call site this function's
+# own `.` cannot observe a load at all. `common.sh` opens with a double-source guard
+# (`_ADB_COMMON_SH_LOADED`), so once the bootstrap above has loaded it this `.` returns 0 THROUGH
+# the guard without reading the file — and the bootstrap runs on every ordinary invocation, so that
+# is the normal path, not a corner. A common.sh truncated AFTER the guard and after the function
+# probed for therefore failed the bootstrap, short-circuited here, satisfied BOTH checks below, and
+# ran the whole gate on a partially-loaded library reporting a clean pass. Measured at rc 0 with the
+# configured gates observed executing. Same defect an independent review found on #299's PR.
+#
+# <prior-rc> IS A SHELL EXIT STATUS AND NOTHING ELSE — an integer, or absent. Both call sites pass
+# either nothing or a captured `$?`, and the numeric comparison below is what enforces it: a
+# non-numeric value makes `[ … -eq … ]` error rather than compare, which lands on `fail_loud`. That
+# is the safe direction, and it is stated here rather than validated because a check that could only
+# ever fire on a future caller's bug is a worse guard than the contract it would be checking.
+require_lib() {  # <path> <expected-fn> [prior-rc: a shell exit status, or absent]
+  local rc
   [ -f "$1" ] || fail_loud "shared library not found: $1"
+  set +u
   # shellcheck source=/dev/null
-  . "$1" || fail_loud "shared library failed to source: $1"
+  . "$1"
+  # Its OWN line, before `set -u` restores it — see the floor block above.
+  rc=$?
+  set -u
+  [ "${3:-0}" -eq 0 ] || rc="$3"
+  [ "$rc" -eq 0 ] || fail_loud "shared library failed to source: $1"
   command -v "$2" >/dev/null 2>&1 || fail_loud "$1 did not define $2 (corrupt library)"
 }
-require_lib "$lib_dir/common.sh" adb_default_branch
+require_lib "$lib_dir/common.sh" adb_default_branch "${boot_rc:-0}"
 
 # Resolve the default branch (origin/HEAD → main → master → "main").
 default_branch="$(adb_default_branch "$repo_root")"

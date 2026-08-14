@@ -129,6 +129,175 @@ set_libs noproject; on_feature_change; run_gate
 eq "$RC" "2" "project-gates.sh missing + would-gate → exit 2 (fail loud)"
 if is_fatal; then ok; else bad "project-gates.sh missing → message must be FATAL (loud), got: $OUT"; fi
 
+# --- 7a-7g. THE GLOBAL GATE'S OWN LIBRARY LOAD UNDER `set -u` (#317) ---------
+#
+# Cases 5-7 cover a library that is ABSENT. These cover one that is PRESENT and broken, which is
+# the shape `fail_loud` cannot reach on its own: an unbound expansion at a library's top level is
+# fatal under `set -u` and kills the shell OUTRIGHT, so the gate exited 1 — a Stop hook's
+# NON-BLOCKING error notice — with `fail_loud` never reached and no `||` able to catch it.
+#
+# EVERY CASE HERE NEEDS AN OBSERVABLE GATE, and that is the whole design. The exit code alone
+# cannot carry these claims: 2 is both "the gate ran and blocked" and "the library was refused",
+# and 0 is both "everything passed" and "the gate no-opped in an unfamiliar repo". So the fixture
+# configures ONE gate that touches a marker and then fails — the marker separates ran from
+# did-not-run, and the 2 it produces is the same blocking 2 the issue title contrasts with 1.
+set_libs both; on_feature_change
+printf '#!/usr/bin/env bash\ntouch RAN\nexit 1\n' > "$repo/redgate.sh"; chmod +x "$repo/redgate.sh"
+printf '[gates]\nlint = "./redgate.sh"\n' > "$repo/agents.toml"
+gate_ran() { [ -f "$repo/RAN" ]; }
+run_gate_lib() {  # <mutate-common.sh-command>; clears the marker first
+  set_libs both; eval "$1"; rm -f "$repo/RAN"; run_gate
+}
+UNBOUND='printf "\n: \"\${ADB_CHECK_DEFINITELY_UNSET_XYZ}\"\n" >> "$gate/lib/common.sh"'
+TAILCUT='printf "\nadb_truncated_tail() {\n" >> "$gate/lib/common.sh"'
+STUB='printf "# truncated by a partial write\n" > "$gate/lib/common.sh"'
+
+# THE SECOND LIBRARY IS WHERE `require_lib`'s OWN RELAXATION IS OBSERVABLE, and nothing else here
+# reaches it. `common.sh` is loaded by the floor bootstrap on every ordinary invocation, so
+# `require_lib`'s `.` of it returns 0 through the `_ADB_COMMON_SH_LOADED` guard without reading the
+# file — every common.sh fixture above therefore exercises the BOOTSTRAP's relaxation, never this
+# one. `project-gates.sh` carries no such guard and is a real load, so it is the only site at which
+# `require_lib`'s `set +u` and its `rc=$?` can be made to answer wrong. Found in review: without
+# these two cases both lines could be deleted outright and this suite stayed 137/137 green.
+pg_unbound() {   # a top-level unbound expansion BEFORE project-gates.sh sets its own `set -u`
+  { printf ': "${ADB_CHECK_PG_UNSET_XYZ}"\n'; cat "$gate/lib/project-gates.sh"; } > "$gate/lib/pg.tmp" \
+    && mv "$gate/lib/pg.tmp" "$gate/lib/project-gates.sh"
+}
+pg_tailcut() {   # loads far enough to DEFINE adb_run_gates, then fails to parse
+  printf '\nadb_pg_truncated_tail() {\n' >> "$gate/lib/project-gates.sh"
+}
+
+# 7a. The precondition every case below rests on: with a healthy library the configured gate RUNS
+# and its red status is what produces the 2. Asserted rather than assumed — if the fixture's gate
+# were never detected, 7b would "pass" on a no-op that proves nothing.
+run_gate_lib ':'
+eq "$RC" "2" "global gate: healthy library + a red configured gate → exit 2"
+if gate_ran; then ok "global gate: …and the gate was OBSERVED running"; else
+  bad "global gate: the configured gate never ran — every case below would prove nothing"; fi
+
+# 7b. [#317 CORE] An unbound expansion while the library loads must not DECIDE anything. The
+# library still defines everything, so the honest answer is the ordinary verdict — identical to 7a.
+run_gate_lib "$UNBOUND"
+eq "$RC" "2" "global gate: an unbound expansion at load time does not decide the verdict (2, not 1)"
+if gate_ran; then ok "global gate: …and the gate still ran to its own conclusion"; else
+  bad "global gate: an unbound expansion at load time stopped the gate before it ran anything"; fi
+
+# 7c. A library truncated AFTER the double-source guard → FAIL LOUD. `common.sh` opens with
+# `_ADB_COMMON_SH_LOADED`, so once the floor bootstrap has loaded it `require_lib`'s `.` returns 0
+# THROUGH the guard without reading the file — and the bootstrap runs on every ordinary
+# invocation, so that is the normal path. Both of `require_lib`'s checks then passed on functions
+# the partial load had already defined, and the gate ran the whole suite on it reporting success.
+run_gate_lib "$TAILCUT"
+eq "$RC" "2" "global gate: common.sh truncated after the double-source guard → exit 2"
+has "$OUT" "failed to source" "global gate: …reported as a load failure, not incidentally by a red check"
+if gate_ran; then bad "global gate: the gate RAN on a partially-loaded library"; else
+  ok "global gate: …and no check runs on a partially-loaded library"; fi
+
+# 7d. A fully truncated library keeps its existing verdict — and the floor bootstrap stays QUIET.
+# The exit code cannot see that second half: `require_lib` supplies the 2 either way. Before the
+# probe, the bootstrap called `adb_require_bash` as an undefined command, printing a misleading
+# cause ahead of the real one and leaving the floor unenforced.
+run_gate_lib "$STUB"
+eq "$RC" "2" "global gate: truncated common.sh → exit 2 (the source succeeded; the library is gone)"
+hasnt "$OUT" "command not found" "global gate: …without the floor bootstrap calling a missing function"
+
+# 7h. [#317, `require_lib`'s half] An unbound expansion at the top of project-gates.sh — a REAL
+# load, reached under `require_lib`'s own relaxation rather than the bootstrap's. Injected ahead of
+# that library's own `set -u`, which is the only window a caller's option state governs.
+run_gate_lib 'pg_unbound'
+eq "$RC" "2" "global gate: an unbound expansion loading project-gates.sh does not decide the verdict"
+if gate_ran; then ok "global gate: …and the gate still ran to its own conclusion"; else
+  bad "global gate: an unbound expansion in the second library stopped the gate before it ran"; fi
+
+# 7i. project-gates.sh PRESENT but UNSOURCEABLE → FAIL LOUD. The truncation is APPENDED, so the
+# file defines `adb_run_gates` before it fails to parse: the function probe passes, and the
+# source's status is the only thing left that can catch it. That is what makes this the one case
+# able to observe `require_lib`'s `rc=$?` — the `boot_rc` override cannot reach it, because the
+# override is passed only at the common.sh call site.
+run_gate_lib 'pg_tailcut'
+eq "$RC" "2" "global gate: unsourceable project-gates.sh → exit 2"
+has "$OUT" "failed to source" "global gate: …reported as a load failure, not as a missing function"
+if gate_ran; then bad "global gate: the gate RAN on a partially-loaded project-gates.sh"; else
+  ok "global gate: …and no check runs on a partially-loaded project-gates.sh"; fi
+
+# --- 7e-7k. Each assertion above is a guard, so each is OBSERVED FAILING ------
+# One mutation per repaired line, never a blanket edit: the three fixes are independent and a
+# single revert could not show which assertion depends on which. `  set +u` is deliberately NOT
+# the anchor — it now appears TWICE, so `check_mutate_line`'s exactly-one precondition would
+# refuse, and a mutation that refuses proves nothing. Each anchors on a line unique to its site.
+
+# 7e. Nounset re-enabled immediately before the bootstrap source → the shell dies again at rc 1.
+# That source runs FIRST, so it is the one that fires; mutating `require_lib` could not, because
+# the double-source guard means its `.` never reads the file.
+# `.*` STANDS IN FOR `$(dirname "$0")/`, deliberately. A `$` in the MIDDLE of a BRE is literal in
+# both dialects, but "literal in both" is a claim about two implementations this suite cannot run
+# side by side — and the one time this repo trusted a dialect claim (`\+`), the mutation silently
+# stopped mutating on the other runner. The needle is matched exactly by `check_mutate_line`, so
+# looseness here is bounded by that, and the pattern carries no `$` except its own anchor.
+if check_mutate_line "$gate/precommit-gate.sh" '  . "$(dirname "$0")/lib/common.sh"' \
+     's#^  \. ".*lib/common\.sh"$#  set -u; . "$(dirname "$0")/lib/common.sh"#' \
+     "mut-gsetu"; then
+  run_gate_lib "$UNBOUND"
+  eq "$RC" "1" "mut-gsetu: without the relaxation an unbound expansion kills the gate at rc 1 (so 7b can fail)"
+  if gate_ran; then bad "mut-gsetu: the gate somehow still ran"; else
+    ok "mut-gsetu: …having run nothing at all"; fi
+fi
+cp "$ROOT/agents/claude/scripts/precommit-gate.sh" "$gate/precommit-gate.sh"
+
+# 7f. The bootstrap-status override removed → the double-source guard hides the failure, and the
+# gate runs on a partially-loaded library. Pins 7c, which nothing else covers: every other broken
+# library here fails `require_lib`'s own checks too, so all of them stay green with this line gone.
+if check_mutate_line "$gate/precommit-gate.sh" '  [ "${3:-0}" -eq 0 ] || rc="$3"' \
+     's#^  \[ "\${3:-0}" -eq 0 \] || rc="\$3"$#  :#' "mut-gbootrc"; then
+  run_gate_lib "$TAILCUT"
+  hasnt "$OUT" "failed to source" "mut-gbootrc: without the override the guarded re-source hides the failure (so 7c can fail)"
+  if gate_ran; then ok "mut-gbootrc: …and the gate DOES run on a partially-loaded library"; else
+    bad "mut-gbootrc: the gate did not run, so 7c's did-not-run assertion is not what this pins"; fi
+fi
+cp "$ROOT/agents/claude/scripts/precommit-gate.sh" "$gate/precommit-gate.sh"
+
+# 7g. The bootstrap's function probe reverted to the unconditional call → `command not found`
+# returns. This is what makes 7d's quiet-bootstrap assertion mean something: the gate exits 2
+# either way, so nothing else in this suite would notice the regression.
+if check_mutate_line "$gate/precommit-gate.sh" '  command -v adb_require_bash >/dev/null 2>&1 && adb_require_bash "$@"' \
+     's#^  command -v adb_require_bash .*$#  adb_require_bash "$@"#' "mut-gfloorprobe"; then
+  run_gate_lib "$STUB"
+  has "$OUT" "command not found" "mut-gfloorprobe: without the probe the bootstrap DOES call a missing function (so 7d can fail)"
+fi
+cp "$ROOT/agents/claude/scripts/precommit-gate.sh" "$gate/precommit-gate.sh"
+
+# 7j. Nounset re-enabled immediately before `require_lib`'s OWN source → the second library kills
+# the shell at rc 1. Anchored on `  . "$1"`, because `  set +u` now matches BOTH sites and
+# `check_mutate_line` refuses a needle that is not unique — a refusal proves nothing. `".1"` rather
+# than `"$1"` for the same dialect reason mut-gsetu gives: `.` matches the `$` and the pattern
+# carries none of its own.
+if check_mutate_line "$gate/precommit-gate.sh" '  . "$1"' \
+     's#^  \. ".1"$#  set -u; . "$1"#' "mut-greqlib-setu"; then
+  run_gate_lib 'pg_unbound'
+  eq "$RC" "1" "mut-greqlib-setu: without require_lib's relaxation the second library kills the gate at rc 1 (so 7h can fail)"
+  if gate_ran; then bad "mut-greqlib-setu: the gate somehow still ran"; else
+    ok "mut-greqlib-setu: …having run nothing at all"; fi
+fi
+cp "$ROOT/agents/claude/scripts/precommit-gate.sh" "$gate/precommit-gate.sh"
+
+# 7k. `require_lib`'s source status forced to 0 → an unsourceable second library falls through to
+# the function probe, which the appended truncation satisfies, and the gate runs on it. Pins 7i,
+# and NOTHING ELSE here depends on this line: 7c reaches `fail_loud` through the `boot_rc`
+# override instead, so it stays green with this assignment gone.
+if check_mutate_line "$gate/precommit-gate.sh" '  rc=$?' \
+     's#^  rc=..$#  rc=0#' "mut-greqlib-srcstatus"; then
+  run_gate_lib 'pg_tailcut'
+  hasnt "$OUT" "failed to source" "mut-greqlib-srcstatus: without the captured status the load failure is mis-reported (so 7i can fail)"
+  if gate_ran; then ok "mut-greqlib-srcstatus: …and the gate DOES run on a partially-loaded library"; else
+    bad "mut-greqlib-srcstatus: the gate did not run, so 7i's did-not-run assertion is not what this pins"; fi
+fi
+# RESTORED, AND CONFIRMED. Every case from 8 on runs against this copy, so a failed restore would
+# leave them measuring a mutated gate and reporting whatever that produced under their own names.
+cp "$ROOT/agents/claude/scripts/precommit-gate.sh" "$gate/precommit-gate.sh"
+if cmp -s "$ROOT/agents/claude/scripts/precommit-gate.sh" "$gate/precommit-gate.sh"; then ok; else
+  bad "global gate: the mutated gate copy was not restored — every case after this one is unreliable"; fi
+rm -f "$repo/agents.toml" "$repo/redgate.sh" "$repo/RAN"
+
 # 8. project-local gate present → the global gate RUNS it, never touching its own libs.
 #
 # The old version of this case shipped a project gate that just `exit 0`d, so it passed whether the
