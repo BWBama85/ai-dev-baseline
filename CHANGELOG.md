@@ -128,6 +128,25 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     as #343 rather than folded in — it needs either 20 duplicated lines or a shared bootstrap
     primitive with a chicken-and-egg, which is a second cross-library decision.
 
+- **`/adopt`'s mutation harness reported a false negative once its subject's output outgrew the pipe
+  buffer** (#324).
+
+  `check-adopt.sh --mutation` decided each verdict with `printf '%s' "$out" | grep -Fq -- "$witness"`,
+  in a file that sets `pipefail`. `grep -q` exits the instant it matches, closing the pipe while
+  `printf` still has the rest of a large `$out` queued; `printf` dies of **SIGPIPE**, and `pipefail`
+  promotes that to the pipeline's status. So the check returned non-zero for exactly the outputs where
+  the witness *was* found — and the harness then blamed the suite, reporting "went red, but NOT on its
+  witness" about a mutation whose witness was sitting in `$out`.
+
+  Measured: a 348906-byte buffer with the witness on line 1 gives **rc=141** under `pipefail` and
+  **rc=0** without it. Latent rather than new — it needs `$out` to outgrow the 64 KiB pipe buffer with
+  an early match, which is why it surfaced only when this release grew the adopt suite's output, and
+  only on CI's Linux runner. Both checks now match with `case`: no second process, no pipe, no signal,
+  and nothing for `pipefail` to promote.
+
+  It is worth its own entry because of the *direction* it failed in: a guard that accuses the code it
+  is checking, rather than itself, is the kind of red a reader fixes in the wrong place.
+
 - **The shipped global Stop-hook gate exited 1 — a non-blocking notice — instead of its blocking 2,
   whenever `common.sh` carried a top-level unbound expansion (#317).**
 

@@ -1044,14 +1044,34 @@ _mut_one() {  # <index>
   fi
   mv "$copy/mutated" "$copy/scripts/lib/adopt-lib.sh"
   out="$( cd "$copy" && bash scripts/check-adopt.sh 2>&1 )"
-  if printf '%s' "$out" | grep -q ' 0 failed'; then
-    printf 'bad|the suite stayed GREEN — nothing here can detect this defect\n' > "$copy/verdict"
-  elif printf '%s' "$out" | grep -Fq -- "${MUT_WIT[$i]}"; then
-    printf 'ok|applied\n' > "$copy/verdict"
-  else
+  # MATCHED WITH `case`, NOT `printf | grep -q`, AND THAT IS A CORRECTNESS FIX (#324).
+  #
+  # This file sets `pipefail`. `grep -q` exits the instant it matches, which closes the pipe while
+  # `printf` still has the rest of a large `$out` queued — `printf` then dies of SIGPIPE, and
+  # pipefail promotes that to the PIPELINE's status. So the witness check returned NON-ZERO for
+  # exactly the outputs where the witness WAS found early, and the harness reported
+  # "went red, but NOT on its witness" about a mutation whose witness was sitting in `$out`.
+  #
+  # A guard that answers wrong under load is worse than no guard, and this one answered wrong in the
+  # flattering-looking direction: it accuses the suite instead of itself. Measured: a 348906-byte
+  # buffer with the witness on line 1 gives `rc=141` under pipefail and `rc=0` without it.
+  # It is latent rather than new — it fires only once `$out` outgrows the pipe buffer (64 KiB) with
+  # an early match, which is why every earlier run was green and why growing the adopt suite's
+  # output surfaced it on CI's Linux runner and not on macOS.
+  #
+  # `case` does the same substring test inside the shell: no second process, no pipe, no signal, and
+  # nothing for pipefail to promote. The witness is a literal, so a glob-special byte in it would be
+  # the one hazard — the strings are prose fragments written in this file, and `-F` was already
+  # asserting they are literals.
+  case "$out" in
+    *' 0 failed'*)
+    printf 'bad|the suite stayed GREEN — nothing here can detect this defect\n' > "$copy/verdict" ;;
+    *"${MUT_WIT[$i]}"*)
+    printf 'ok|applied\n' > "$copy/verdict" ;;
+    *)
     printf 'bad|went red, but NOT on its witness (%s) — caught by accident, not by the assertion that claims to cover it\n' \
-      "${MUT_WIT[$i]}" > "$copy/verdict"
-  fi
+      "${MUT_WIT[$i]}" > "$copy/verdict" ;;
+  esac
 }
 
 mut skill-ignores-symlinks \
