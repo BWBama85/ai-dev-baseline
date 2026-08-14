@@ -5332,6 +5332,30 @@ limit: none of them is sufficient alone.
              counts as `mapfile`, `typeset`/`readonly` join `declare`/`local`, and ANY flag on
              `readlink` is refused — bare `readlink` is the only portable spelling, so enumerating
              `-f`/`-e`/`-m`/`--canonicalize` would be a longer pattern with more ways to miss one.
+
+             **A LINE IS NOT A STATEMENT, and fixing that for rule C fixed rule A too.** Self-review
+             asked whether a construct could escape across a line continuation, and it could — in
+             BOTH scans. Measured rather than argued: a real bash 5.3 expands
+
+                 X=$\
+                 { printf hi; }
+
+             to `hi`, and rule A reported the file CLEAN. That is a pre-existing fail-open of
+             exactly the class #315 is about, in the sibling predicate, so it is fixed here rather
+             than filed — `base/practices/debugging.md` asks for the CLASS of a bug, not the one
+             instance, and a confirmed sibling in the same function is a fix, not a ticket. Both
+             scans now splice backslash-newlines before matching, through one shared fragment
+             (`_ADB_SF_JOIN`) rather than two copies.
+
+             **The backslash is REMOVED, not replaced by a space**, and that is load-bearing rather
+             than pedantic: a space silently reintroduces the hole for the very input above, since
+             `X=$\` + `{ …` would splice to `X=$ {`, which matches nothing, instead of the `X=${`
+             bash actually sees. The splice also makes both patterns STRONGER — a continuation that
+             splits a WORD (`map\` + `file -t`) is rejoined and then caught.
+
+             The comment rule runs BEFORE the splice, because a trailing backslash does not continue
+             a `#` comment in shell; a joiner running first would swallow the following line of real
+             code and blind both scans to it. Each of those three choices has its own fixture.
 - placement: `scripts/check-bash-floor.sh` — `_ADB_SF_ALLOW`, `SUB_FLOOR_CONSTRUCTS`,
              `sub_floor_construct_hits` and rule C inside `sub_floor_lint`; every rule driven red in
              `scripts/check-bash-floor-guard.sh`; the narrowed residue restated in `CLAUDE.md`
@@ -5342,13 +5366,16 @@ limit: none of them is sufficient alone.
              the residue review still owns. Adding a sixth construct is one row of the table, which
              is the shape a rule set should have; adding constructs D30 does not name would be a
              compatibility claim #315 explicitly places out of scope.
-- guard-observability: SEVEN mutations of the shipped rule, each applied to a COPY of the tree and
+- guard-observability: TEN mutations of the shipped rules, each applied to a COPY of the tree and
              each required to make `check-bash-floor-guard.sh` go red — rule C's per-class loop
              neutralized (121 failures); the marker reduced to a class-less prefix so it exempts
              anything (20); the whole-line comment exclusion dropped (19); the empty-table guard's
              `check_fail` removed (1); the exemption count hardwired to 0 (1); the associative-array
-             pattern broadened to match `declare -a` (1); and the marker made unconditional (120).
-             An EIGHTH runs inside the suite itself: rule C's own `check_fail` is neutralized in a
+             pattern broadened to match `declare -a` (1); the marker made unconditional (120); and
+             the three the splice needs — the splice removed entirely (4), the splice inserting a
+             SPACE rather than removing the backslash (3), and the comment rule moved AFTER the
+             splice so a `#` line ending in a backslash swallows the next one (22).
+             An ELEVENTH runs inside the suite itself: rule C's own `check_fail` is neutralized in a
              lint COPY, which then PASSES the identical input the real lint fails while still
              printing the finding — the silent-guard shape, demonstrated rather than asserted.
 
@@ -5358,7 +5385,7 @@ limit: none of them is sufficient alone.
              The first cut of the empty-table fixture missed that, edited the scanned copy, and
              passed for a reason unrelated to the rule it named.
 
-             Both platform shapes were run before pushing, as this suite's header requires: 479
-             assertions on macOS (which has a real 3.2.57) and 436 on the stubbed Linux shape, zero
-             failures in each. The count differs by the 3.2-gated block, exactly as documented.
+             Both platform shapes were run before pushing, as this suite's header requires. The
+             count differs between them by the 3.2-gated block, exactly as that header documents;
+             the FAIL count is zero in both.
 - baseline-issue: n/a — this repo IS the baseline; #315 is the tracking issue.

@@ -767,9 +767,38 @@ EOF
 #
 # (The awk pattern is written with the brace escaped so this file, which is itself in the scanned
 # set, does not match on its own source.)
+#
+# A LINE IS NOT A STATEMENT, which is why both source scans read LOGICAL lines (#315). A
+# backslash-newline is a line SPLICE in shell — the two characters are removed and what remains is
+# one line — so a construct written across one is invisible to a matcher that reads physical lines.
+# That is a fail-open, and it was measured on both rules rather than reasoned about: a real bash
+# 5.3 expands
+#     X=$\
+#     { printf hi; }
+# to `hi`, and rule A reported the file CLEAN. Rule C had the same hole for `declare \` + `-A m`.
+# Splicing before matching closes both, and it does so in the direction that also STRENGTHENS the
+# patterns: a continuation splitting a word (`map\` + `file -t`) is rejoined and then caught.
+#
+# THE BACKSLASH IS REMOVED, NOT REPLACED BY A SPACE. A space is what a careless join inserts, and
+# it silently reintroduces the very hole: `X=$\` + `{ …` would splice to `X=$ {` — which no longer
+# matches — instead of the `X=${` that bash actually sees. Removal is both correct per the shell
+# grammar and the only spelling that works.
+#
+# The comment rule runs BEFORE the splice, deliberately: a trailing backslash in a `#` comment does
+# NOT continue it in shell, so a joiner that ran first would swallow the following line of real code.
+_ADB_SF_JOIN='
+  {
+    logical = $0; logical_at = NR
+    while (logical ~ /\\$/) {
+      if ((getline nxt) <= 0) break
+      sub(/\\$/, "", logical)
+      logical = logical nxt
+    }
+  }'
+
 sub_floor_funsubs() {
-  awk '/^[[:space:]]*#/ { next }
-       /\$\{([[:space:]|]|$)/ { printf "    %d: %s\n", NR, $0; n++ }
+  awk '/^[[:space:]]*#/ { next }'"$_ADB_SF_JOIN"'
+       logical ~ /\$\{([[:space:]|]|$)/ { printf "    %d: %s\n", logical_at, logical; n++ }
        END { exit (n > 0 ? 0 : 1) }' "$1"
 }
 
@@ -800,13 +829,15 @@ sub_floor_funsubs() {
 sub_floor_construct_hits() {
   ADB_SF_PAT="$3" ADB_SF_ALLOW="$_ADB_SF_ALLOW$2" awk -v count_only="${4:-0}" '
     BEGIN { pat = ENVIRON["ADB_SF_PAT"]; allow = ENVIRON["ADB_SF_ALLOW"] }
-    /^[[:space:]]*#/ { next }
-    $0 ~ pat {
+    /^[[:space:]]*#/ { next }'"$_ADB_SF_JOIN"'
+    logical ~ pat {
       # The marker is matched as a LITERAL substring, never as a pattern: it is punctuation-heavy
       # and a regex read of it would treat `-` and `:` as themselves anyway, so `index` says what
-      # is meant with no escaping to get wrong.
-      if (index($0, allow)) { x++; next }
-      if (!count_only) printf "    %d: %s\n", NR, $0
+      # is meant with no escaping to get wrong. Matched against the SPLICED line, so a marker
+      # riding the last physical line of a continued statement still sanctions it — which is the
+      # only place it can legally sit, since a trailing comment on an earlier half is a syntax error.
+      if (index(logical, allow)) { x++; next }
+      if (!count_only) printf "    %d: %s\n", logical_at, logical
       n++
     }
     END { if (count_only) print x + 0; exit (n > 0 ? 0 : 1) }

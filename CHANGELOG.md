@@ -48,9 +48,25 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   - **The marker names the class**, so it cannot over-sanction: a line exempt from the `mapfile`
     rule still goes red the moment a `declare -A` is added to it.
 
-  Seven mutations of the shipped rule were each applied to a tree copy and each observed making the
-  guard suite go red, plus an eighth inside the suite that neutralizes rule C's own `check_fail` in
-  a lint copy and requires the identical input to pass — the silent-guard shape, demonstrated.
+  **Both source scans now read LOGICAL lines, which fixed a pre-existing fail-open in rule A.**
+  Self-review asked whether a construct could escape across a line continuation, and it could — in
+  *both* scans. Measured rather than argued: a real bash 5.3 expands
+
+  ```sh
+  X=$\
+  { printf hi; }
+  ```
+
+  to `hi`, and rule A reported the file clean. A backslash-newline is a line *splice* in shell, so
+  both scans now splice before matching, through one shared fragment. The backslash is **removed,
+  not replaced by a space** — a space would silently reintroduce the hole for that exact input
+  (`X=$ {` matches nothing). The splice also makes both patterns stronger: a continuation splitting
+  a *word* (`map\` + `file -t`) is rejoined and then caught.
+
+  Ten mutations of the shipped rules were each applied to a tree copy and each observed making the
+  guard suite go red, plus an eleventh inside the suite that neutralizes rule C's own `check_fail`
+  in a lint copy and requires the identical input to pass while still printing the finding — the
+  silent-guard shape, demonstrated rather than asserted.
 
   What is still **not** proved, stated rather than implied: a name scan bans five *named*
   constructs, so an unnamed post-3.2 feature is invisible to it. `CLAUDE.md`, `CONTRIBUTING.md` and

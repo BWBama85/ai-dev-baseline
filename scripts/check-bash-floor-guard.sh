@@ -890,6 +890,20 @@ printf '# never write ADB_X=${ printf hi; } in this file\n' >> "$SFD/scripts/che
 sf_lint "$SFD"
 eq "$SFRC" "0" "rule A: a whole-line comment explaining the rule does not trip it"
 
+# A LINE IS NOT A STATEMENT (#315). A backslash-newline is a line SPLICE, so a construct written
+# across one is invisible to a physical-line matcher — a fail-open that BOTH source scans carried
+# and that was measured, not reasoned about: a real bash 5.3 expands the fixture below to `hi`,
+# and rule A reported the file clean before the splice was added.
+sf_fixture "$SFD"
+printf 'ADB_PROBE=$\\\n{ printf hi; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule A: a funsub split by a LINE CONTINUATION is caught"
+
+# ...and the splice must REMOVE the backslash, never replace it with a space. A space silently
+# reintroduces the hole for this exact input: `X=$\` + `{ …` would become `X=$ {`, which matches
+# nothing, instead of the `X=${` bash actually sees. This fixture is what pins that choice.
+has "$SFOUT" "5.3 command substitution" "rule A: and the splice rejoins \$ and { rather than separating them"
+
 # --- rule C: the construct scan by NAME (#315) ----------------------------------------------------
 # D30 forbids FIVE constructs in these files; rule A owns `${ command; }` and this one owns the
 # other four. The gap #315 closed is specifically the FUNCTION BODY: bash 3.2 `bash -n`-accepts all
@@ -948,6 +962,32 @@ printf '# never write declare -A or mapfile or local -n or readlink -f in this f
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
 eq "$SFRC" "0" "rule C: a whole-line comment explaining the rule does not trip it"
 
+# RULE C READS LOGICAL LINES TOO, and the splice makes it STRICTLY stronger: a continuation that
+# splits the construct — or even splits a WORD — is rejoined and then caught.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare \\\n  -A adb_m; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a construct split by a LINE CONTINUATION is caught"
+
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { map\\\nfile -t adb_x < /dev/null; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a construct whose WORD is split by a continuation is caught"
+
+# ...and neither scan may swallow the line after a COMMENT that happens to end in a backslash. A
+# trailing backslash does NOT continue a comment in shell, so the following line is real code — a
+# joiner running before the comment rule would consume it and blind both scans to whatever it holds.
+sf_fixture "$SFD"
+printf '# a comment ending in a backslash \\\nadb_probe_fn() { declare -A adb_m; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a comment ending in a backslash does not swallow the next line"
+
+# ...nor may the splice make ordinary continued shell trip either scan.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { printf "%%s" \\\n  "hello"; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "splice: an ordinary continued command trips neither source scan"
+
 # --- rule C's exemption marker: it must EXEMPT, and it must not OVER-exempt ------------------------
 # The marker is the mechanism #315 requires to be "itself observed failing". A marker that exempted
 # nothing would make the tracked tree red; one that exempted everything would make the rule inert.
@@ -958,6 +998,14 @@ sf_fixture "$SFD"
 printf 'adb_probe_fn() { mapfile -t adb_a < /dev/null; }   # adb-allow: sub-floor-mapfile\n' >> "$SFD/scripts/check-lib.sh"
 sf_lint "$SFD" ADB_BASH_FLOOR=0.0
 eq "$SFRC" "0" "marker: a sanctioned line for THIS class is exempt"
+
+# ...and on a CONTINUED statement it rides the LAST physical line, which is the only place it can
+# legally sit — a trailing `#` comment on an earlier half is a syntax error. The splice is what
+# makes that work: the marker and the construct end up on one logical line.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare \\\n  -A adb_m; }   # adb-allow: sub-floor-associative-array\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "marker: on a CONTINUED statement it sanctions from the last physical line"
 
 # 2. A marker for a DIFFERENT class does not exempt. This is the whole reason the marker names a
 #    class instead of being a bare `adb-allow: sub-floor` — a per-line escape that covers every
