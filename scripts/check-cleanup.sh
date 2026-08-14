@@ -763,9 +763,25 @@ eq "${ printf 'C\tthreads-41.json\tPR merged\nC\tthreads-47.json\tPR closed\nC\t
 eq "${ printf 'C\tthreads-41.json\tPR merged\nC\tthreads-47.json\n' | rep; }" \
    "C: threads-41.json [PR merged], threads-47.json" \
    "4b a proof and a bare item in one family do not merge"
+# FIXTURE DATA, DEFINED ONCE — and the numbers in it are NOT citations.
+#
+# The number below is the illustrative one from #332's own report example, which quotes a
+# transcript from a DIFFERENT repository; it resolves to nothing here, and `check-claims` was right
+# to say so (it went red on this PR for exactly that — twice, the second time on an earlier draft
+# of THIS comment, which explained the problem by spelling the number again). The digits cannot be
+# dropped from the definition itself: the two controls below test
+# `state-assert.sh lint`, whose grammar only fires on `#[0-9]+`, so a placeholder like `#N` would
+# make them pass against a linter that checks nothing. Hence the audited escape rather than a
+# rewrite — and hence one definition, so there is one line to audit instead of four.
+#
+# `#41` gets the same treatment even though it happens to RESOLVE in this repo: it is fixture data
+# either way, and a reference that passes the lint by coincidence is exactly the inapt citation the
+# claim-integrity lens is about.
+CL_PR_PROOF='#379 (merge commit 3f9e9e5abcde)'   # adb-claim-ok: fixture data, not a citation
+CL_BAD_NUMBERED='PR #41 merged'                  # adb-claim-ok: fixture data, the rejected spelling under test
 # Ungrouped items are one group each already, so a distinct proof per branch costs no compaction.
-eq "${ printf 'D\tfix/371\t#379 (merge commit 3f9e9e5abcde)\nD\tfeat/x\tcontained in origin/main\n' | rep; }" \
-   "D: fix/371 [#379 (merge commit 3f9e9e5abcde)], feat/x [contained in origin/main]" \
+eq "${ printf 'D\tfix/371\t%s\nD\tfeat/x\tcontained in origin/main\n' "$CL_PR_PROOF" | rep; }" \
+   "D: fix/371 [$CL_PR_PROOF], feat/x [contained in origin/main]" \
    "4b ungroupable items each carry their own proof on one category line"
 # THE PER-CATEGORY GROUP-KEY RESET, which is load-bearing in a way its four siblings are not.
 # `gseen` is keyed by CONTENT (prefix, suffix and — since #332 — the proof); its five siblings
@@ -797,15 +813,15 @@ has "$typical332" "threads-{41,47,51,57,59,65,68,72,76}.json [PR merged]" \
 # reach for, and they only violate when both verdicts land in one sweep.
 SA="$ROOT/scripts/lib/state-assert.sh"
 lintok() { printf '%s\n' "$1" | bash "$SA" lint >/dev/null 2>&1; }
-if lintok "${ printf 'Deleted (local)\tfix/371\t#379 (merge commit 3f9e9e5abcde)\nDeleted (local)\tfeat/x\tcontained in origin/main\nCleared state\tthreads-41.json\tPR merged\n' | rep; }"; then ok; else
-  bad "4b the composed report violates the claim grammar — a proof word collides with a #N"
+if lintok "${ printf 'Deleted (local)\tfix/371\t%s\nDeleted (local)\tfeat/x\tcontained in origin/main\nCleared state\tthreads-41.json\tPR merged\n' "$CL_PR_PROOF" | rep; }"; then ok; else
+  bad "4b the composed report violates the claim grammar — a proof word collides with a numbered reference"
 fi
 # The two rejected spellings, each shown to REALLY be rejected. Without these the assertion above
 # would pass just as well against a linter that accepts everything.
-if lintok 'Deleted (local): fix/371 [#379 (merge commit 3f9e9e5abcde)], feat/x [merged into origin/main]'; then
-  bad "4b the claim lint did not reject 'merged into' beside a #N — this guard cannot fire"
+if lintok "Deleted (local): fix/371 [$CL_PR_PROOF], feat/x [merged into origin/main]"; then
+  bad "4b the claim lint did not reject 'merged into' beside a numbered reference — this guard cannot fire"
 else ok; fi
-if lintok 'Cleared state: threads-41.json [PR #41 merged]'; then
+if lintok "Cleared state: threads-41.json [$CL_BAD_NUMBERED]"; then
   bad "4b the claim lint did not reject a numbered PR status — this guard cannot fire"
 else ok; fi
 

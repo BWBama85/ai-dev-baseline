@@ -787,11 +787,15 @@ cmd_state_verdict() {
 # expect grouped-in-first-seen-order, not a transcript.
 #
 # THE THIRD FIELD IS THE DELETE'S PROOF (#332), rendered as a trailing ` [detail]`. /cleanup
-# computed evidence for every branch and every state file it removed — `#379 (merge commit
-# 3f9e9e5abcde)` — and then dropped it, so `Deleted (local): fix/371` read identically whether the
-# sweep was correct or catastrophic. Twice in one session an agent went and re-derived by hand what
-# the sweep already knew. This is the channel that carries it, and the choice of THIS channel over
-# the two alternatives is argued in base/workflows/cleanup.md's output contract.
+# computed evidence for every branch and every state file it removed — `#<n> (merge commit <oid>)`
+# — and then dropped it, so a deleted branch name read identically whether the sweep was correct or
+# catastrophic. Twice in one session an agent went and re-derived by hand what the sweep already
+# knew. This is the channel that carries it, and the choice of THIS channel over the two
+# alternatives is argued in base/workflows/cleanup.md's output contract.
+#
+# The shape, not a sample number. An illustrative issue number here would be a claim that resolves
+# to nothing in this repo, which is precisely what `check-claims` exists to catch — and did, on the
+# PR that added this paragraph.
 #
 # THE DETAIL JOINS THE GROUP KEY, and that is the whole design rather than an implementation
 # detail. Appending a per-item proof to a grouped family would destroy the collapse this function
