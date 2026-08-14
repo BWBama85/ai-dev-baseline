@@ -97,13 +97,24 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     and the bash floor left unenforced. It now probes for the function first, keeping the top-level
     call in the command position `check-bash-floor.sh --entrypoints` requires.
 
-  **Seven new cases carrying fifteen assertions in `scripts/check-precommit-gate.sh` (7a-7g), each
-  behavioural one observed failing on the real superseded input** — the suite run against a copy of
-  the tree carrying the pre-fix gate reports `got [1] want [2]` for the unbound expansion, "the gate
+  **Nine new cases carrying twenty-four assertions in `scripts/check-precommit-gate.sh` (7a-7k,
+  taking the suite from 122 to 146),
+  each behavioural one observed failing on the real superseded input** — the suite run against a
+  tree carrying `origin/main`'s gate reports `got [1] want [2]` for the unbound expansion, "the gate
   RAN on a partially-loaded library" for the truncated tail, and the `command not found` for the
-  bootstrap. 7a is a precondition and correctly stays green there; two of the three mutation
-  harnesses *refuse* against that tree, because their anchors do not exist in the pre-fix file —
-  which is `check_mutate_line` doing its job rather than a gap.
+  bootstrap. 7a is a precondition and correctly stays green there; two of the mutation harnesses
+  *refuse* against that tree, because their anchors do not exist in the pre-fix file — which is
+  `check_mutate_line` doing its job rather than a gap.
+
+  **Two of those nine exist because an independent review found the `require_lib` half of the fix
+  could not fail.** Every broken-`common.sh` fixture reaches the *bootstrap's* relaxation and never
+  `require_lib`'s, because the double-source guard means `require_lib` never reads that file — so
+  both its `set +u` and its `rc=$?` could be deleted outright with the suite staying green.
+  `project-gates.sh` carries no such guard and is a real load, so the new cases break *it*: a
+  top-level unbound expansion ahead of that library's own `set -u`, and an appended truncation that
+  defines `adb_run_gates` before failing to parse (which the function probe cannot catch, leaving
+  the captured status as the only thing that can). Each of the four repaired lines is now pinned by
+  a mutation *and* verified independently by deleting it: 2, 2, 3 and 2 assertions go red.
   Cases 5-7 only ever covered an *absent* library; these cover a **present and broken** one.
   Each case configures a gate that touches a marker and then fails, because the exit code alone
   cannot carry the claim: 2 is both "the gate ran and blocked" and "the library was refused", and 0

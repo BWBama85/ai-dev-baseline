@@ -46,6 +46,12 @@ set -u
 # library and misses a CORRUPT one: a truncated common.sh exists, sources, and defines nothing, so
 # `adb_require_bash` ran as an undefined command — `command not found` on stderr, its 127 discarded,
 # and the floor silently unenforced while a misleading cause printed ahead of the real one.
+#
+# `command -v` asks whether the name is CALLABLE, which is a slightly weaker question than "is it a
+# function" — an executable of the same name would satisfy it. That is deliberate rather than
+# overlooked: it is the idiom `require_lib` below, `project-gates.sh` and `roadmap-lib.sh` all use
+# for exactly this probe, and one site answering the question a different way is how two readers of
+# the same condition start disagreeing about what a corrupt library looks like.
 if [ -f "$(dirname "$0")/lib/common.sh" ]; then
   set +u
   # shellcheck source=/dev/null
@@ -251,7 +257,13 @@ fail_loud() {
 # probed for therefore failed the bootstrap, short-circuited here, satisfied BOTH checks below, and
 # ran the whole gate on a partially-loaded library reporting a clean pass. Measured at rc 0 with the
 # configured gates observed executing. Same defect an independent review found on #299's PR.
-require_lib() {  # <path> <expected-fn> [prior-rc]
+#
+# <prior-rc> IS A SHELL EXIT STATUS AND NOTHING ELSE — an integer, or absent. Both call sites pass
+# either nothing or a captured `$?`, and the numeric comparison below is what enforces it: a
+# non-numeric value makes `[ … -eq … ]` error rather than compare, which lands on `fail_loud`. That
+# is the safe direction, and it is stated here rather than validated because a check that could only
+# ever fire on a future caller's bug is a worse guard than the contract it would be checking.
+require_lib() {  # <path> <expected-fn> [prior-rc: a shell exit status, or absent]
   local rc
   [ -f "$1" ] || fail_loud "shared library not found: $1"
   set +u

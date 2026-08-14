@@ -152,6 +152,21 @@ UNBOUND='printf "\n: \"\${ADB_CHECK_DEFINITELY_UNSET_XYZ}\"\n" >> "$gate/lib/com
 TAILCUT='printf "\nadb_truncated_tail() {\n" >> "$gate/lib/common.sh"'
 STUB='printf "# truncated by a partial write\n" > "$gate/lib/common.sh"'
 
+# THE SECOND LIBRARY IS WHERE `require_lib`'s OWN RELAXATION IS OBSERVABLE, and nothing else here
+# reaches it. `common.sh` is loaded by the floor bootstrap on every ordinary invocation, so
+# `require_lib`'s `.` of it returns 0 through the `_ADB_COMMON_SH_LOADED` guard without reading the
+# file — every common.sh fixture above therefore exercises the BOOTSTRAP's relaxation, never this
+# one. `project-gates.sh` carries no such guard and is a real load, so it is the only site at which
+# `require_lib`'s `set +u` and its `rc=$?` can be made to answer wrong. Found in review: without
+# these two cases both lines could be deleted outright and this suite stayed 137/137 green.
+pg_unbound() {   # a top-level unbound expansion BEFORE project-gates.sh sets its own `set -u`
+  { printf ': "${ADB_CHECK_PG_UNSET_XYZ}"\n'; cat "$gate/lib/project-gates.sh"; } > "$gate/lib/pg.tmp" \
+    && mv "$gate/lib/pg.tmp" "$gate/lib/project-gates.sh"
+}
+pg_tailcut() {   # loads far enough to DEFINE adb_run_gates, then fails to parse
+  printf '\nadb_pg_truncated_tail() {\n' >> "$gate/lib/project-gates.sh"
+}
+
 # 7a. The precondition every case below rests on: with a healthy library the configured gate RUNS
 # and its red status is what produces the 2. Asserted rather than assumed — if the fixture's gate
 # were never detected, 7b would "pass" on a no-op that proves nothing.
@@ -186,7 +201,26 @@ run_gate_lib "$STUB"
 eq "$RC" "2" "global gate: truncated common.sh → exit 2 (the source succeeded; the library is gone)"
 hasnt "$OUT" "command not found" "global gate: …without the floor bootstrap calling a missing function"
 
-# --- 7e-7g. Each assertion above is a guard, so each is OBSERVED FAILING ------
+# 7h. [#317, `require_lib`'s half] An unbound expansion at the top of project-gates.sh — a REAL
+# load, reached under `require_lib`'s own relaxation rather than the bootstrap's. Injected ahead of
+# that library's own `set -u`, which is the only window a caller's option state governs.
+run_gate_lib 'pg_unbound'
+eq "$RC" "2" "global gate: an unbound expansion loading project-gates.sh does not decide the verdict"
+if gate_ran; then ok "global gate: …and the gate still ran to its own conclusion"; else
+  bad "global gate: an unbound expansion in the second library stopped the gate before it ran"; fi
+
+# 7i. project-gates.sh PRESENT but UNSOURCEABLE → FAIL LOUD. The truncation is APPENDED, so the
+# file defines `adb_run_gates` before it fails to parse: the function probe passes, and the
+# source's status is the only thing left that can catch it. That is what makes this the one case
+# able to observe `require_lib`'s `rc=$?` — the `boot_rc` override cannot reach it, because the
+# override is passed only at the common.sh call site.
+run_gate_lib 'pg_tailcut'
+eq "$RC" "2" "global gate: unsourceable project-gates.sh → exit 2"
+has "$OUT" "failed to source" "global gate: …reported as a load failure, not as a missing function"
+if gate_ran; then bad "global gate: the gate RAN on a partially-loaded project-gates.sh"; else
+  ok "global gate: …and no check runs on a partially-loaded project-gates.sh"; fi
+
+# --- 7e-7k. Each assertion above is a guard, so each is OBSERVED FAILING ------
 # One mutation per repaired line, never a blanket edit: the three fixes are independent and a
 # single revert could not show which assertion depends on which. `  set +u` is deliberately NOT
 # the anchor — it now appears TWICE, so `check_mutate_line`'s exactly-one precondition would
@@ -229,6 +263,33 @@ if check_mutate_line "$gate/precommit-gate.sh" '  command -v adb_require_bash >/
      's#^  command -v adb_require_bash .*$#  adb_require_bash "$@"#' "mut-gfloorprobe"; then
   run_gate_lib "$STUB"
   has "$OUT" "command not found" "mut-gfloorprobe: without the probe the bootstrap DOES call a missing function (so 7d can fail)"
+fi
+cp "$ROOT/agents/claude/scripts/precommit-gate.sh" "$gate/precommit-gate.sh"
+
+# 7j. Nounset re-enabled immediately before `require_lib`'s OWN source → the second library kills
+# the shell at rc 1. Anchored on `  . "$1"`, because `  set +u` now matches BOTH sites and
+# `check_mutate_line` refuses a needle that is not unique — a refusal proves nothing. `".1"` rather
+# than `"$1"` for the same dialect reason mut-gsetu gives: `.` matches the `$` and the pattern
+# carries none of its own.
+if check_mutate_line "$gate/precommit-gate.sh" '  . "$1"' \
+     's#^  \. ".1"$#  set -u; . "$1"#' "mut-greqlib-setu"; then
+  run_gate_lib 'pg_unbound'
+  eq "$RC" "1" "mut-greqlib-setu: without require_lib's relaxation the second library kills the gate at rc 1 (so 7h can fail)"
+  if gate_ran; then bad "mut-greqlib-setu: the gate somehow still ran"; else
+    ok "mut-greqlib-setu: …having run nothing at all"; fi
+fi
+cp "$ROOT/agents/claude/scripts/precommit-gate.sh" "$gate/precommit-gate.sh"
+
+# 7k. `require_lib`'s source status forced to 0 → an unsourceable second library falls through to
+# the function probe, which the appended truncation satisfies, and the gate runs on it. Pins 7i,
+# and NOTHING ELSE here depends on this line: 7c reaches `fail_loud` through the `boot_rc`
+# override instead, so it stays green with this assignment gone.
+if check_mutate_line "$gate/precommit-gate.sh" '  rc=$?' \
+     's#^  rc=..$#  rc=0#' "mut-greqlib-srcstatus"; then
+  run_gate_lib 'pg_tailcut'
+  hasnt "$OUT" "failed to source" "mut-greqlib-srcstatus: without the captured status the load failure is mis-reported (so 7i can fail)"
+  if gate_ran; then ok "mut-greqlib-srcstatus: …and the gate DOES run on a partially-loaded library"; else
+    bad "mut-greqlib-srcstatus: the gate did not run, so 7i's did-not-run assertion is not what this pins"; fi
 fi
 # RESTORED, AND CONFIRMED. Every case from 8 on runs against this copy, so a failed restore would
 # leave them measuring a mutated gate and reporting whatever that produced under their own names.
