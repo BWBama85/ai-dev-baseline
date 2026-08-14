@@ -111,8 +111,10 @@ those. The rules below are specific to this repo's code.
    `readarray`, associative arrays, namerefs and `readlink -f` — across the **whole** of all
    three files, **function bodies included**. It is a source scan, so unlike the parse and the
    probe it runs on every host and in every job; a deliberate mention carries a per-line
-   `# adb-allow: sub-floor-<class>` marker, which exempts that one class on that one line and
-   nothing else. It exists because bash 3.2 `bash -n`-*accepts* all four in a function body,
+   `# adb-allow: sub-floor-<class>` marker **as the last thing on the line**, which exempts that
+   one class on that one line and nothing else — so string data cannot launder a construct and a
+   second construct on the same line still fails. It exists because bash 3.2 `bash -n`-*accepts*
+   all four in a function body,
    loading a file never runs a body, and at call time **none of them stops the shell**: `mapfile`
    is `command not found` (status 127) with the array left empty, and `declare -A m; m[x]=1` is
    `invalid option` (status 2) that then writes index 0 of an *indexed* array. These files set no
