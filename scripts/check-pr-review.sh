@@ -86,14 +86,11 @@ trap 'rm -rf "$work"' EXIT
 REPO="$work/repo"; GHOME="$work/home"; SBIN="$work/sbin"; S="$work/stub"
 mkdir -p "$REPO" "$GHOME/.config/ai-dev-baseline" "$SBIN" "$S"
 # A git repo so the helper's repo-root resolution is deterministically $REPO, whatever ambient
-# git repo sits above the temp dir.
-#
-# WITH AN `origin` REMOTE, and it is load-bearing rather than set dressing (#173): the guard anchors
-# every read to the checkout's git origin, because a bare `--pr 7` names no repository and the
-# documented `GH_REPO` variable silently redirects gh's `repos/{owner}/{repo}` expansion. It must
-# agree with the `base.repo.full_name` the PR fixture reports, or every scenario below fails closed.
-git init -q "$REPO"
-git -C "$REPO" remote add origin https://github.com/acme/widget.git
+# git repo sits above the temp dir — with an `origin` remote, which is load-bearing rather than set
+# dressing (#173). `check_make_stub_repo` is the one home for that scaffold (#373); its header
+# carries the reasoning.
+check_make_stub_repo "$REPO" https://github.com/acme/widget.git || {
+  echo "check-pr-review: FATAL — could not build the fixture repo" >&2; exit 1; }
 
 HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -102,7 +99,7 @@ OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 # ORDERING IS LOAD-BEARING, and it is the trap a broad `repos/*` arm sets: the reviews URL is
 # ALSO a `repos/*` URL, so a case arm that matches the general shape first swallows the specific
 # one and every scenario silently reads the wrong fixture. Most specific first, always.
-cat > "$SBIN/gh" <<'STUB'
+check_write_stub "$SBIN/gh" <<'STUB'
 #!/usr/bin/env bash
 # Answers the FIVE reads the guard can make, from $S fixtures. Knobs:
 #   STUB_AUTH_FAIL=1       -> `gh auth status` fails (unauthenticated)
@@ -171,7 +168,6 @@ case "$url" in
 esac
 exit 0
 STUB
-chmod +x "$SBIN/gh"
 
 # ---- fixtures --------------------------------------------------------------------------------
 # WHEN THE HEAD REF BECAME THE HEAD SHA, as the repository activity API recorded it (#175/D19) —
@@ -182,15 +178,21 @@ ARRIVED_AT="2026-07-25T04:42:15Z"
 AFTER_AT="2026-07-25T04:45:23Z"    # 3m08s later — the real gap observed on PR #88
 BEFORE_AT="2026-07-25T04:40:00Z"
 
-# pr_fx [sha] [base-slug] [head-slug] [head-ref]
-# The last two are what the staleness anchor is looked up by. `${3-}` not `${3:-}` on purpose: an
-# EXPLICIT empty string means "this PR has no head repository any more" (a deleted fork), which the
-# anchor must degrade on, while an OMITTED argument takes the default.
+# pr_fx [--sha X] [--base-slug X] [--head-slug X] [--head-ref X] [--state X] [--merged-at X]
+#
+# A ONE-LINE DEFAULTS WRAPPER over `check_pr_json` (check-lib.sh, #373), which is where the fixture
+# SHAPE now lives. NAMED FLAGS, because the two PR suites' positional `pr_fx` signatures differed —
+# pr-watch inserts state/merged_at at positions 2-3 — and a unified positional superset would have
+# shifted every call here one place to the right, onto a valid-but-wrong fixture with no error
+# anywhere. The constants stay here, next to the assertions that read them.
+#
+# `--head-slug ""` is meaningful and distinct from omitting it: an EXPLICIT empty string renders
+# `head.repo` as null — "this PR has no head repository any more" (a deleted fork), which the
+# staleness anchor must degrade on — while omitting the flag takes the default below. Last flag
+# wins, which is what makes that override work.
 pr_fx() {
-  jq -n --arg sha "${1:-$HEAD_SHA}" --arg slug "${2:-acme/widget}" \
-        --arg hslug "${3-acme/widget}" --arg href "${4-$HEAD_REF}" \
-    '{head:{sha:$sha, ref:$href, repo:(if $hslug == "" then null else {full_name:$hslug} end)},
-      base:{repo:{full_name:$slug}}}' > "$S/pr.json"
+  check_pr_json "$S/pr.json" --sha "$HEAD_SHA" --base-slug acme/widget \
+    --head-slug acme/widget --head-ref "$HEAD_REF" "$@"
 }
 pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
 # The four payload builders and the call recorder live in check-lib.sh (#167): both PR-guard suites
@@ -212,8 +214,10 @@ reset_fx() {
   pr_fx
   activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"
 }
-declare_bots() { printf '%s\n' '[reviewers]' "bots = $1" > "$REPO/agents.toml"; }
-undeclare()    { rm -f "$REPO/agents.toml"; rm -f "$GHOME/.config/ai-dev-baseline/agents.toml"; }
+# The reviewer-declaration tri-state lives in check-lib.sh too (#373): `[]`, a populated array and
+# NO FILE are three different answers, and both suites pin the same three.
+declare_bots() { check_declare_bots   "$REPO" "$1"; }
+undeclare()    { check_undeclare_bots "$REPO" "$GHOME"; }
 
 # g <args...> : run the guard as the driving agent would — from $REPO, throwaway HOME, stub gh.
 # ONE home for the environment so a new STUB_* knob is wired in a single place; the two wrappers
@@ -342,7 +346,7 @@ eq "$RC_" "16" "an UNRELATED bot's review does not satisfy the declared reviewer
 has "$OUT" "awaiting review from: chatgpt-codex-connector" "16 names who is still pending"
 
 # ============================ the head SHA ============================
-declare_bots '["chatgpt-codex-connector"]'; pr_fx "$HEAD_SHA"
+declare_bots '["chatgpt-codex-connector"]'; pr_fx --sha "$HEAD_SHA"
 review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$OLD_SHA"
 g gate --pr 7
 eq "$RC_" "16" "a review of an EARLIER commit does not satisfy the current head (live: PR #145)"
@@ -537,7 +541,7 @@ comment_fx "chatgpt-codex-connector[bot]" "$AFTER_AT"
 g gate --pr 7;  eq "$RC_" "16" "#175: the comment path degrades the same way — one rule over both"
 
 # A DELETED HEAD REPOSITORY is a real state, not a broken response.
-reset_fx; pr_fx "$HEAD_SHA" "acme/widget" ""
+reset_fx; pr_fx --head-slug ""
 reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
 g gate --pr 7;  eq "$RC_" "16" "#175: a deleted head repository -> 16"
 has "$OUT" "deleted fork" "#175: names the likely cause"

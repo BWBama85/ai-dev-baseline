@@ -63,11 +63,10 @@ cp "$ROOT/scripts/check-claims.sh" "$REPO/scripts/"
 cp "$ROOT/scripts/check-lib.sh"    "$REPO/scripts/"
 cp "$ROOT/scripts/lib/common.sh"   "$REPO/scripts/lib/"
 
-git init -q "$REPO"
-git -C "$REPO" config user.email t@t
-git -C "$REPO" config user.name  t
-git -C "$REPO" config commit.gpgsign false
-git -C "$REPO" remote add origin https://github.com/acme/widget.git
+# The throwaway repo + its `origin` URL come from check-lib.sh (#373) — the same scaffold the two
+# PR-guard suites build, hand-rolled three times before.
+check_make_stub_repo "$REPO" https://github.com/acme/widget.git || {
+  echo "check-claims-guard: FATAL — could not build the fixture repo" >&2; exit 1; }
 
 # The decision log the D-reference rule resolves against. D1 and D2 exist; nothing else does.
 cat > "$REPO/.ai-dev-baseline/decisions.md" <<'EOF'
@@ -93,7 +92,7 @@ BASE="$(git -C "$REPO" rev-parse HEAD)"
 #   9    -> issue CLOSED/COMPLETED
 # ---------------------------------------------------------------------------------------------
 BIN="$work/bin"; mkdir -p "$BIN"
-cat > "$BIN/gh" <<'STUB'
+check_write_stub "$BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 # `auth status` must succeed or adb_require_gh refuses before any read happens.
 [ "${1:-}" = "auth" ] && exit 0
@@ -116,7 +115,6 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
 fi
 exit 1
 STUB
-chmod +x "$BIN/gh"
 
 GH_CALLS="$work/gh-calls"; export GH_CALLS
 
@@ -132,23 +130,21 @@ reset_branch() {
 # machine the real, authenticated gh would be found and the assertion would silently pass for the
 # wrong reason. An `auth status` that fails is both immune to that and the likelier real condition.
 NOAUTH="$work/noauth"; mkdir -p "$NOAUTH"
-cat > "$NOAUTH/gh" <<'STUB'
+check_write_stub "$NOAUTH/gh" <<'STUB'
 #!/usr/bin/env bash
 [ "${1:-}" = "auth" ] && exit 1     # not logged in
 exit 1
 STUB
-chmod +x "$NOAUTH/gh"
 
 # A gh that authenticates but whose READS all fail — a transport failure mid-run. The distinction
 # matters: collapsing it into "this issue does not exist" would make a network blip accuse a real
 # issue of being fabricated, which is a wrong claim produced by the tool built to stop wrong claims.
 GONE="$work/gone"; mkdir -p "$GONE"
-cat > "$GONE/gh" <<'STUB'
+check_write_stub "$GONE/gh" <<'STUB'
 #!/usr/bin/env bash
 [ "${1:-}" = "auth" ] && exit 0
 exit 1
 STUB
-chmod +x "$GONE/gh"
 cc_gone() { OUT="$(cd "$REPO" && PATH="$GONE:$PATH" bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
 
 # A gh that authenticates, whose REPOSITORY read succeeds, and whose ENTITY read fails for a
@@ -156,14 +152,13 @@ cc_gone() { OUT="$(cd "$REPO" && PATH="$GONE:$PATH" bash scripts/check-claims.sh
 # field). Repository reachability proves connectivity and nothing more, so this must NOT be read as
 # "the number does not exist".
 DENIED="$work/denied"; mkdir -p "$DENIED"
-cat > "$DENIED/gh" <<'STUB'
+check_write_stub "$DENIED/gh" <<'STUB'
 #!/usr/bin/env bash
 [ "${1:-}" = "auth" ] && exit 0
 if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then echo '{"name":"widget"}'; exit 0; fi
 echo 'error: Resource not accessible by integration' >&2
 exit 1
 STUB
-chmod +x "$DENIED/gh"
 cc_denied() { OUT="$(cd "$REPO" && PATH="$DENIED:$PATH" bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
 
 # cc <args…> — run the lint inside the fixture repo, capturing stdout+stderr and the real status.

@@ -65,7 +65,7 @@ mkdir -p "$FIX" "$SBIN"
 # Answers reads from $ADB_FIX fixtures and records every mutation to $ADB_FIX/calls. It applies
 # `--jq` with REAL jq rather than pre-baking filtered output: the filters are part of what the
 # workflow documents, so a snippet whose jq program is wrong must fail here.
-cat > "$SBIN/gh" <<'STUB'
+check_write_stub "$SBIN/gh" <<'STUB'
 #!/usr/bin/env bash
 set -u
 F="$ADB_FIX"
@@ -191,7 +191,6 @@ case "$sub" in
   *) echo "gh stub: unhandled command: $sub" >&2; exit 90 ;;
 esac
 STUB
-chmod +x "$SBIN/gh"
 
 # ============================================================================================
 # Snippet extraction — the point of the harness
