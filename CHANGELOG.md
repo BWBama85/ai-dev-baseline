@@ -318,6 +318,27 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   The code-16 narration in `implement-issue`'s preflight is corrected in the same pass. It said only
   "the branch moved under this run", which is a benign story for what may be an identity refusal.
 
+- **`project-gates.sh` re-enabled `set -u` mid-file while being sourced, so an unbound expansion
+  below that line still exited the Stop hook 1** (#342, D70).
+
+  #317 made the gate relax nounset across the library load, precisely so that a broken library
+  degrades to the blocking exit 2 instead of killing the shell outright at exit 1 — a Stop hook's
+  NON-blocking error notice, i.e. the turn ending ungated. `project-gates.sh` then turned the option
+  back on from inside the load, so the relaxation covered only the lines above its own `set -u`.
+
+  The file is dual-role — a sourced library *and* a directly-executed `detect|status|run` entry
+  point — so the fix is not a delete: `set -u` is now conditional on direct execution, spelled with
+  the predicate the file already used twice. Its own top level was audited; every expansion there is
+  a literal assignment or carries a `:-` default.
+
+  Three assertions in `scripts/check-precommit-gate.sh` pin it, each observed failing first: the
+  sourced path keeps its blocking 2 (rc 1 before the fix, with the gate never run), the executed
+  path is still fatal on the same expansion (which is what a delete-the-option "fix" would break),
+  and a mutation restoring the unconditional `set -u` turns the first red. The sweep of the other
+  `scripts/lib` libraries found no second site: they all set `set -u` at top level, but every one is
+  an executed entry point — `common.sh` and `project-gates.sh` are the only two with a sourced role,
+  and `common.sh` sets no options at all.
+
 - **A `$HOME` containing a tab or newline made the installer move a real directory into backup and
   symlink over it — and every consumer discarded the status that said so** (#324, D64).
 

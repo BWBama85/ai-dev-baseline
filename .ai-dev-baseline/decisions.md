@@ -5807,3 +5807,23 @@ limit: none of them is sufficient alone.
              two sides came to disagree in the first place.
 - baseline-issue: n/a — this repo IS the baseline; #340 is the tracking issue.
 
+## D70 — a dual-role file sets shell options only on the path that owns them
+- date:      2026-08-15
+- category:  project-delta
+- unknown:   `project-gates.sh` is BOTH a sourced library and an executed entry point. The baseline
+             has a rule for each role — a library must not impose shell options on its caller, an
+             entry point wants `set -u` — and nothing for a file that is both, so the option was set
+             unconditionally and the library rule silently lost.
+- decision:  Gate the option on the role: `if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then set -u; fi`,
+             the predicate this file already uses for its floor gate and its dispatch — no third
+             spelling. Executed, nothing changes. Sourced, the caller's options govern the whole
+             load, which is what lets the Stop hook's deliberate nounset relaxation reach the end of
+             the file instead of the line above this one.
+- placement: `scripts/lib/project-gates.sh`; pinned by `scripts/check-precommit-gate.sh` (the
+             sourced path, the executed path, and a mutation restoring the unconditional option).
+- reason:    A caller cannot stop a sourced file from turning an option back on, so the rule has to
+             live in the file that has both roles — #317 named this and could not fix it from the
+             caller. The sweep found no sibling: every other `scripts/lib` library that sets `set -u`
+             at top level is an executed entry point, and `common.sh` — the only other file with a
+             sourced role — sets no options at all.
+- baseline-issue: n/a — this repo IS the baseline; #342 is the tracking issue.
