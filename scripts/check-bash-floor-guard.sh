@@ -14,12 +14,22 @@
 # `bash --version` · and the three WSL-class rules #2 added: the guard reached through
 # `wsl -d <distro>` · a WSL bash version logged at all · that log preceding the guard), THREE
 # runtime ones ($BASH below floor · PATH bash below floor or absent · a malformed floor override),
-# and — since #310 — SEVEN sub-floor ones (a 5.3 command substitution in any of the three carve-out
-# files · a file that will not parse under a sub-floor interpreter · a common.sh that sources
-# noisily · one that leaves adb_require_bash unreachable · a stale entry in the carve-out list · a
-# candidate that probes but cannot run · and the selection itself picking the numerically oldest
-# rather than the first-listed or the lexically smallest) — so each gets a fixture that must make
-# the real lint come back red, plus a clean fixture proving the lint is not simply red-always.
+# and — since #310, extended by #315 — TEN sub-floor ones (a 5.3 command substitution in any of the
+# three carve-out files · a file that will not parse under a sub-floor interpreter · a common.sh
+# that sources noisily · one that leaves adb_require_bash unreachable · a stale entry in the
+# carve-out list · a candidate that probes but cannot run · the selection itself picking the
+# numerically oldest rather than the first-listed or the lexically smallest · and #315's three:
+# any of D30's OTHER FOUR named constructs anywhere in a carve-out file, function bodies included ·
+# a per-line exemption marker that does not name the class it is claimed for, or does not sit in
+# trailing-comment position · an EMPTY construct table) — so each gets a fixture that must make the
+# real lint come back red, plus a clean fixture proving the lint is not simply red-always.
+#
+# #315 also changed HOW both source scans read their input rather than adding a rule: they splice
+# backslash-newlines, so a construct split across a line continuation no longer escapes either of
+# them. That is not a fourth category — it is a property of the two scans above — but it carries its
+# own fixtures, because getting it wrong is a fail-open in BOTH directions: too little splicing
+# misses a split construct, too much merges independent statements and lets a marker on one sanction
+# a construct on another.
 #
 # Where a rule can be ISOLATED it is: a fixture that only fails through some OTHER rule proves
 # nothing about the rule it is named for. Review caught two of those here and they are fixed rather
@@ -887,6 +897,343 @@ printf '# never write ADB_X=${ printf hi; } in this file\n' >> "$SFD/scripts/che
 sf_lint "$SFD"
 eq "$SFRC" "0" "rule A: a whole-line comment explaining the rule does not trip it"
 
+# A LINE IS NOT A STATEMENT (#315). A backslash-newline is a line SPLICE, so a construct written
+# across one is invisible to a physical-line matcher — a fail-open that BOTH source scans carried
+# and that was measured, not reasoned about: a real bash 5.3 expands the fixture below to `hi`,
+# and rule A reported the file clean before the splice was added.
+sf_fixture "$SFD"
+printf 'ADB_PROBE=$\\\n{ printf hi; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule A: a funsub split by a LINE CONTINUATION is caught"
+
+# ...and the splice must REMOVE the backslash, never replace it with a space. A space silently
+# reintroduces the hole for this exact input: `X=$\` + `{ …` would become `X=$ {`, which matches
+# nothing, instead of the `X=${` bash actually sees. This fixture is what pins that choice.
+has "$SFOUT" "5.3 command substitution" "rule A: and the splice rejoins \$ and { rather than separating them"
+
+# --- rule C: the construct scan by NAME (#315) ----------------------------------------------------
+# D30 forbids FIVE constructs in these files; rule A owns `${ command; }` and this one owns the
+# other four. The gap #315 closed is specifically the FUNCTION BODY: bash 3.2 `bash -n`-accepts all
+# four there, and sourcing a file never runs a body, so rules A and B are both blind to them.
+#
+# EVERY FIXTURE PUTS THE CONSTRUCT IN A FUNCTION BODY, deliberately. A top-level injection is a
+# WEAKER test that can pass for the wrong reason: the evaluation probe catches a top-level
+# `declare -A` through its stderr half (there is a fixture for exactly that further down), so a
+# top-level fixture stays red with rule C deleted entirely.
+#
+# ADB_BASH_FLOOR=0.0 ON EVERY ONE, which is what makes these assertions about rule C rather than
+# about whichever rule happened to fire first: it puts every interpreter on the host at or above the
+# floor, so rule B has no subject and cannot supply the redness. That also makes them run
+# identically on both runners — the platform split this file's header warns about.
+for _sf_target in scripts/check-lib.sh scripts/check-bash-floor.sh scripts/lib/common.sh; do
+  # EVERY SPELLING D65 CLAIMS GETS ITS OWN FIXTURE. Review found the first cut pinned only a
+  # representative few, so narrowing the flag match, dropping `readonly` from the command
+  # alternation, or recognizing only `readlink -f` would each have left the suite green while
+  # losing a spelling the decision record advertises. A rule set's claims and its fixtures have to
+  # be the same list.
+  for _sf_case in \
+      'mapfile|adb_probe_fn() { mapfile -t adb_a < /dev/null; }' \
+      'mapfile|adb_probe_fn() { readarray -t adb_a < /dev/null; }' \
+      'associative-array|adb_probe_fn() { declare -A adb_m; }' \
+      'associative-array|adb_probe_fn() { declare -Ag adb_m; }' \
+      'associative-array|adb_probe_fn() { declare -gA adb_m; }' \
+      'associative-array|adb_probe_fn() { declare -An adb_m; }' \
+      'associative-array|adb_probe_fn() { local -Ag adb_m; }' \
+      'associative-array|adb_probe_fn() { typeset -A adb_m; }' \
+      'associative-array|adb_probe_fn() { readonly -A adb_m; }' \
+      'associative-array|adb_probe_fn() { declare -g -A adb_m; }' \
+      'associative-array|adb_probe_fn() { declare +x -A adb_m; }' \
+      'nameref|adb_probe_fn() { local +x -n adb_r=$1; }' \
+      'nameref|adb_probe_fn() { local -n adb_r=$1; }' \
+      'nameref|adb_probe_fn() { declare -gn adb_r=$1; }' \
+      'nameref|adb_probe_fn() { typeset -n adb_r=$1; }' \
+      'nameref|adb_probe_fn() { local -g -n adb_r=$1; }' \
+      'readlink-f|adb_probe_fn() { adb_p="$(readlink -f /tmp)"; }' \
+      'readlink-f|adb_probe_fn() { adb_p="$(readlink -ef /tmp)"; }' \
+      'readlink-f|adb_probe_fn() { adb_p="$(readlink -m /tmp)"; }' \
+      'readlink-f|adb_probe_fn() { adb_p="$(readlink -nf /tmp)"; }' \
+      'readlink-f|adb_probe_fn() { adb_p="$(readlink --canonicalize /tmp)"; }' ; do
+    _sf_class="${_sf_case%%|*}"; _sf_code="${_sf_case#*|}"
+    sf_fixture "$SFD"
+    printf '%s\n' "$_sf_code" >> "$SFD/$_sf_target"
+    sf_applied "$SFD/$_sf_target" "$_sf_code" "injected $_sf_class"
+    sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+    eq "$SFRC" "1" "rule C: [$_sf_class] in a FUNCTION BODY of $_sf_target is caught"
+    has "$SFOUT" "uses $_sf_class" "rule C: and the diagnostic names the construct class"
+    has "$SFOUT" "$_sf_target" "rule C: and names the file it found it in"
+    has "$SFOUT" "$_sf_code" "rule C: and quotes the offending line back"
+  done
+done
+
+# THE SPELLINGS THAT MUST NOT FIRE. A rule that reports ordinary code gets deleted within a week,
+# and every one of these is real, present shell in this repo's own libraries.
+#
+# `readlink -n` IS ON THIS LIST DELIBERATELY. The first cut refused every option on `readlink`,
+# claiming bare `readlink` was the only portable spelling; review disproved that (`-n` works on
+# macOS and GNU alike) and the pattern was narrowed to the CANONICALIZE family — `-f`, `-e`, `-m`,
+# `--canonicalize*`, whose letters no other readlink option carries. This fixture is what keeps it
+# narrow, since re-widening it to "any flag" would silently ban working, portable shell.
+for _sf_clean in \
+    'adb_probe_fn() { declare -a adb_idx; }' \
+    'adb_probe_fn() { local -r adb_ro=1; }' \
+    'adb_probe_fn() { local -i adb_n=1; }' \
+    'adb_probe_fn() { local -ir adb_n=1; }' \
+    'adb_probe_fn() { declare -x -i adb_c=1; }' \
+    'adb_probe_fn() { readonly -f adb_fn; }' \
+    'adb_probe_fn() { adb_p="$(readlink /tmp)"; }' \
+    'adb_probe_fn() { adb_p="$(readlink -n /tmp)"; }' \
+    'adb_probe_fn() { declare +A adb_m; }' \
+    'adb_probe_fn() { local +n adb_r; }' \
+    'adb_probe_fn() { adb_v="${BASH_VERSINFO[0]:-0}"; }' ; do
+  sf_fixture "$SFD"
+  printf '%s\n' "$_sf_clean" >> "$SFD/scripts/check-lib.sh"
+  sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+  eq "$SFRC" "0" "rule C: ordinary shell does not trip it — $_sf_clean"
+done
+
+# ...nor a whole-line comment naming the construct, which all three files legitimately do (the real
+# tree carries many, this file included). Without this exclusion the rule is noise on its own
+# documentation. No count is quoted here on purpose: it changes whenever anyone edits a comment or
+# widens a pattern, and review caught the first spelling of this line already stale.
+sf_fixture "$SFD"
+printf '# never write declare -A or mapfile or local -n or readlink -f in this file\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "rule C: a whole-line comment explaining the rule does not trip it"
+
+# RULE C READS LOGICAL LINES TOO, and the splice makes it STRICTLY stronger: a continuation that
+# splits the construct — or even splits a WORD — is rejoined and then caught.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare \\\n  -A adb_m; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a construct split by a LINE CONTINUATION is caught"
+
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { map\\\nfile -t adb_x < /dev/null; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a construct whose WORD is split by a continuation is caught"
+
+# ...and neither scan may swallow the line after a COMMENT that happens to end in a backslash. A
+# trailing backslash does NOT continue a comment in shell, so the following line is real code — a
+# joiner running before the comment rule would consume it and blind both scans to whatever it holds.
+sf_fixture "$SFD"
+printf '# a comment ending in a backslash \\\nadb_probe_fn() { declare -A adb_m; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a WHOLE-LINE comment ending in a backslash does not swallow the next line"
+
+# ...and neither does a TRAILING one, which is the harder half and the one review reproduced. Only
+# whole-line comments are skipped before the splice, so `code # note \` spliced the following line
+# onto a statement that had already ended — and a marker on that next line then sanctioned the
+# construct on this one. A line whose last token is a comment never continues, in shell or here.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare -A adb_m; } # note \\\n:   # adb-allow: sub-floor-associative-array\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a backslash ending a TRAILING comment does not splice the next line"
+has "$SFOUT" "uses associative-array" "rule C: and the construct above the comment is the one reported"
+
+# ...INCLUDING with no whitespace before the `#`, which is the same hole one character narrower.
+# bash starts a comment right after a control operator too, so `};# note \` is two independent
+# lines — and a probe keyed on `[[:space:]]#` spliced them and let the second line's marker exempt
+# the declaration on the first, ending in a green run. Review reproduced it.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare -A adb_m; };# note \\\n:   # adb-allow: sub-floor-associative-array\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: a comment opened by ';#' also ends the line for splicing purposes"
+has "$SFOUT" "uses associative-array" "rule C: and the construct before it is still reported"
+
+# ...nor may the splice make ordinary continued shell trip either scan.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { printf "%%s" \\\n  "hello"; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "splice: an ordinary continued command trips neither source scan"
+
+# AN ODD RUN OF TRAILING BACKSLASHES CONTINUES; AN EVEN RUN DOES NOT — the second is an ESCAPED
+# backslash and the statement ends there, which a real bash confirms by running the next line as its
+# own command. A naive `~ /\\$/` splices both and merges two INDEPENDENT statements, and the
+# consequence is not cosmetic: a marker on the second then sanctions a construct on the first.
+#
+# NO TRAILING COMMENT ON THE FIRST LINE, and that is what makes this fixture about the RULE IT
+# NAMES. An earlier spelling put the backslashes inside a `# x\\` comment, and once the splice
+# learned that a commented line never continues, THAT guard rejected the fixture and the odd/even
+# rule stopped being exercised at all — the fixture still passed, for a reason unrelated to its own
+# label. Re-running the mutation battery after the change is what surfaced it: neutralizing the
+# backslash COUNT produced zero failures. The line below ends in a bare escaped backslash, so the
+# counting rule is the only thing that can decide it.
+sf_fixture "$SFD"
+printf "adb_probe_fn() { declare -A adb_m; printf '%%s' x\\\\\\\\\n:   # adb-allow: sub-floor-associative-array\n" >> "$SFD/scripts/check-lib.sh"
+sf_applied "$SFD/scripts/check-lib.sh" "printf '%s' x\\\\" "even-backslash"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "splice: an EVEN backslash run does not join, so a marker cannot reach back a statement"
+has "$SFOUT" "uses associative-array" "splice: and the construct on the first statement is the one reported"
+
+# --- rule C's exemption marker: it must EXEMPT, and it must not OVER-exempt ------------------------
+# The marker is the mechanism #315 requires to be "itself observed failing". A marker that exempted
+# nothing would make the tracked tree red; one that exempted everything would make the rule inert.
+# Both directions are driven here.
+
+# 1. It exempts its own class.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { mapfile -t adb_a < /dev/null; }   # adb-allow: sub-floor-mapfile\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "marker: a sanctioned line for THIS class is exempt"
+
+# ...and on a CONTINUED statement it rides the LAST physical line, which is the only place it can
+# legally sit — a trailing `#` comment on an earlier half is a syntax error. The splice is what
+# makes that work: the marker and the construct end up on one logical line.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare \\\n  -A adb_m; }   # adb-allow: sub-floor-associative-array\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "marker: on a CONTINUED statement it sanctions from the last physical line"
+
+# 2. A marker for a DIFFERENT class does not exempt. This is the whole reason the marker names a
+#    class instead of being a bare `adb-allow: sub-floor` — a per-line escape that covers every
+#    construct on the line is a per-line escape that stops being reviewable.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { mapfile -t adb_a < /dev/null; }   # adb-allow: sub-floor-nameref\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: a marker naming a DIFFERENT class does not exempt"
+
+# 3. A sanctioned line does not launder a SECOND construct added to it later — the accretion failure
+#    a per-line escape is most likely to suffer.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { mapfile -t adb_a; declare -A adb_m; }   # adb-allow: sub-floor-mapfile\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: it exempts ONE class, not the whole line"
+has "$SFOUT" "uses associative-array" "marker: and the unsanctioned class is the one reported"
+
+# 4. A MALFORMED or STALE marker does not exempt. `adb-allow:` with no class, a typo'd class, and
+#    the bare rule name are each one keystroke from the real thing and must all stay red.
+for _sf_bad in 'adb-allow: sub-floor' 'adb-allow: sub-floor-mapfil' 'adb-allow: mapfile' 'adballow: sub-floor-mapfile'; do
+  sf_fixture "$SFD"
+  printf 'adb_probe_fn() { mapfile -t adb_a < /dev/null; }   # %s\n' "$_sf_bad" >> "$SFD/scripts/check-lib.sh"
+  sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+  eq "$SFRC" "1" "marker: a malformed marker [$_sf_bad] does not exempt"
+done
+
+# 5. AN ADJACENT MARKER DOES NOT REACH. Per LINE, never per region — the constraint inherited from
+#    check-fact-drift.sh's `req_absent` ban, where per-FILE exclusion made the invariant false.
+sf_fixture "$SFD"
+printf '# adb-allow: sub-floor-mapfile\nadb_probe_fn() { mapfile -t adb_a < /dev/null; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: a marker on the PRECEDING line does not exempt the next one"
+
+# 7. STRING DATA CANNOT LAUNDER A CONSTRUCT. The marker must be in TRAILING-COMMENT position — a
+#    `#`, then the marker, then end of line. The first cut tested for the marker as a bare
+#    SUBSTRING, and review walked a real construct straight through it with a single-quoted copy of
+#    the marker text: ordinary data sanctioning executable code, and silently incrementing the
+#    exemption count on the way past.
+sf_fixture "$SFD"
+printf "adb_probe_fn() { mapfile -t adb_a; : 'adb-allow: sub-floor-mapfile'; }\n" >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: a QUOTED copy of the marker text does not sanction anything"
+
+# ...and the same anchoring means a marker followed by more code on the line does not sanction it.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { mapfile -t adb_a; }   # adb-allow: sub-floor-mapfile then more text\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: it must END the line, so trailing text after it does not sanction"
+
+# 8. THE `#` MUST ACTUALLY BEGIN A COMMENT. Anchoring to end-of-line was not sufficient on its own:
+#    `#` opens a comment only at the start of a WORD, so `: x# adb-allow: sub-floor-mapfile` contains
+#    no comment at all — `x#` is an ordinary word — yet it sanctioned a real `mapfile` on the same
+#    line. Review reproduced it; this is the fixture that keeps the word-start rule.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { mapfile -t adb_a; : x# adb-allow: sub-floor-mapfile\n}\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: a '#' that does not begin a comment does not sanction"
+
+# ...and the legitimate no-whitespace form still DOES, since `;#` really is a comment start.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { mapfile -t adb_a; };# adb-allow: sub-floor-mapfile\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "marker: a comment opened by ';#' does sanction — the rule is word-start, not whitespace"
+
+# 6. THE REAL SANCTIONED LINE IS LOAD-BEARING. Removing its marker from a COPY must go red — which
+#    is what proves rule C actually SEES that line, rather than passing because it matches nothing.
+#    A rule silently matching nothing is indistinguishable from a rule finding nothing wrong.
+#    THROUGH check_mutate_line, the shared primitive — not a hand-rolled sed plus a bespoke grep.
+#    It already does both halves this needs (require the target line to be present EXACTLY once, and
+#    prove the substitution took effect), and a byte-copied harness beside it is precisely the drift
+#    `docs/design-principles.md` forbids. Review caught the duplication.
+sf_fixture "$SFD"
+_sf_marked_line="$(grep -n 'cd|read|mapfile|readarray|dd' "$SFD/scripts/check-bash-floor.sh" | head -n 1 | cut -d: -f2-)"
+check_mutate_line "$SFD/scripts/check-bash-floor.sh" "$_sf_marked_line" \
+  's/   # adb-allow: sub-floor-mapfile$//' "marker de-marking" && ok
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "marker: stripping the REAL sanctioned line's marker goes red — rule C does see it"
+has "$SFOUT" "uses mapfile" "marker: and it is rule C's own diagnostic that fires"
+
+# --- rule C cannot go silently inert --------------------------------------------------------------
+# Its failure mode is silence in the most literal way available: an emptied table scans nothing and
+# prints exactly what four clean rows print.
+#
+# THIS ONE MUTATES THE LINT, NOT THE SUBJECT, and that distinction is the whole reason it needs its
+# own runner. Every fixture above edits the tree that `--sub-floor` SCANS while the TRACKED lint
+# does the scanning; here the defect being injected is in the scanner itself. Editing
+# `$SFD/scripts/check-bash-floor.sh` and calling `sf_lint` would change the file under test and
+# leave the real rule table untouched — the assertion would then be about a scanned copy that lost
+# a line, which is a different (and already covered) fact. The first cut of this fixture did
+# exactly that and passed for the wrong reason.
+#
+# The mutated lint has to run from a tree that carries its siblings, because it `cd`s to
+# `$(dirname "$0")/..` and sources `scripts/check-lib.sh` — which is precisely what sf_fixture
+# builds, so the mutated copy runs out of a second fixture and scans the first.
+sf_lint_from() {   # sf_lint_from <lint-path> <dir> [env…] — run a MUTATED lint copy over a fixture
+  _sfl="$1"; _sfd="$2"; shift 2
+  SFOUT="$(env "$@" bash "$_sfl" --sub-floor "$_sfd" 2>&1)"
+  SFRC=$?
+}
+SFMUT="$work/subfloor-mut"
+
+# First prove the runner itself is not simply red-always: an UNMUTATED copy must still pass.
+sf_fixture "$SFD"
+sf_fixture "$SFMUT"
+sf_lint_from "$SFMUT/scripts/check-bash-floor.sh" "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "rule C: an unmutated lint COPY passes, so the runner is not red-always"
+
+sf_fixture "$SFMUT"
+sed '/^mapfile (/d; /^associative-array (/d; /^nameref (/d; /^readlink-f (/d' \
+  "$SFMUT/scripts/check-bash-floor.sh" > "$SFMUT/x" && mv "$SFMUT/x" "$SFMUT/scripts/check-bash-floor.sh"
+if grep -q '^mapfile (' "$SFMUT/scripts/check-bash-floor.sh"; then
+  bad "rule C: the table-emptying mutation did not apply to the lint copy"; else ok; fi
+sf_lint_from "$SFMUT/scripts/check-bash-floor.sh" "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: an EMPTY construct table is a failure, not a clean sweep"
+has "$SFOUT" "CONSTRUCT set is EMPTY" "rule C: and it says outright that it evaluated nothing"
+
+# ...and the same runner proves rule C's `check_fail` is LOAD-BEARING. A scan that finds a construct,
+# prints the diagnostic, and forgets to record the failure exits 0 — diagnostics on stderr and a
+# green status, which is the silent-guard shape this whole file exists to refuse. The proof is that
+# the identical input the real lint FAILS is PASSED once that one call is removed.
+sf_fixture "$SFD"
+printf 'adb_probe_fn() { declare -A adb_m; }\n' >> "$SFD/scripts/check-lib.sh"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "1" "rule C: (control) the real lint fails this input"
+
+sf_fixture "$SFMUT"
+# Targeted at rule C's arm alone: `$sf_chits` is unique to it, so the `check_fail` neutralized is
+# the one on the following line and no other rule's is touched.
+awk '{
+  if (seen && $0 ~ /check_fail/) { sub(/check_fail/, ":"); seen = 0 }
+  if ($0 ~ /sf_chits.*>&2/) seen = 1
+  print
+}' "$SFMUT/scripts/check-bash-floor.sh" > "$SFMUT/x" && mv "$SFMUT/x" "$SFMUT/scripts/check-bash-floor.sh"
+if [ "$(grep -c 'sf_chits' "$SFMUT/scripts/check-bash-floor.sh")" -ge 1 ]; then ok; else
+  bad "rule C: the check_fail mutation lost the arm it was aimed at"; fi
+sf_lint_from "$SFMUT/scripts/check-bash-floor.sh" "$SFD" ADB_BASH_FLOOR=0.0
+eq "$SFRC" "0" "rule C: dropping its check_fail passes that same input — the call is load-bearing"
+has "$SFOUT" "uses associative-array" "rule C: and it still PRINTED the finding while exiting 0"
+
+# ...and the count it reports is the count it USED, on every branch, so a shrunken table is visible
+# in an ordinary log rather than only when it hits zero.
+sf_fixture "$SFD"
+sf_lint "$SFD" ADB_BASH_FLOOR=0.0
+has "$SFOUT" "rule C evaluated 4 construct rule(s) over 3 file(s)" "rule C: it says how many rules over how many files"
+
+# THE EXEMPTION COUNT MEANS EXEMPTIONS SPENT, not mentions of the marker string. Counting mentions
+# is the obvious `grep -c` spelling and it is wrong: the tracked observer mentions the marker in its
+# own definition and in several comments. The first cut reported THREE for a tree with two exempted
+# lines, which reads like coverage and is not.
+has "$SFOUT" "honouring 2 sanctioned marker(s)" "rule C: the exemption count is lines EXEMPTED, not mentions"
+
 # --- the fake-candidate seam ----------------------------------------------------------------------
 # Rule B needs a subject BELOW the floor, and a Linux runner has none — so most of what follows
 # would be macOS-only without a seam. `ADB_SUB_FLOOR_CANDIDATES` supplies the enumeration and
@@ -1115,7 +1462,8 @@ has "$SFOUT" "SKIPPED" "skip: and it says SKIPPED out loud"
 # ...and the SKIP branch opens with the SAME file-count phrasing as the ran branch. One fact, one
 # spelling — the alternative made a guard assertion silently platform-dependent.
 has "$SFOUT" "3 file(s) named" "skip: the skip branch names the file count identically"
-has "$SFOUT" "rule A ran on all of them" "skip: and says outright that rule A still ran"
+has "$SFOUT" "the source scans (rules A and C) ran on all of them" "skip: and says outright which rules still ran"
+has "$SFOUT" "rule C evaluated 4 construct rule(s)" "skip: rule C is named with its own count on the SKIP branch too"
 has "$SFOUT" "Candidates probed" "skip: naming every candidate it looked at, so a skip is auditable"
 hasnt "$SFOUT" "parses and bootstraps under" "skip: and it never claims a parse it did not do"
 

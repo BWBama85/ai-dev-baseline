@@ -174,8 +174,21 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
     under the **oldest sub-floor interpreter** on the host. On a machine that has none — this
     repo's Ubuntu runner, and most Linux boxes, though a host carrying an old bash at a candidate
     path will select and use it — it says **SKIP**, and `selfcheck-macos` is what covers you. It proves the three files *parse* and that `adb_require_bash` stays
-    *reachable*; a `mapfile` or `declare -A` inside a function body still passes, so keep writing
-    those three files as if 3.2 were the target.
+    *reachable*.
+
+    **A third rule bans the other four constructs by name** (#315, D65) — `mapfile`/`readarray`,
+    associative arrays (`declare`/`local`/`typeset`/`readonly` with an `A` in the flags, separated
+    option words included), namerefs (the same with an `n`), and `readlink`'s canonicalize family
+    (`-f`/`-e`/`-m`/`--canonicalize`; the portable `readlink -n` is fine) — across the whole of all
+    three files, **function bodies included**. That one is a source scan with no interpreter to
+    find, so it runs everywhere rather than only where an old bash exists.
+
+    A deliberate mention (a regex that happens to spell one, say) is sanctioned with
+    `# adb-allow: sub-floor-<class>` **as the last thing on the line** — a trailing comment,
+    nothing after it. It exempts that class on that line only, so a second construct added to the
+    same line still fails. Inside a heredoc body it does not apply, because a marker there would
+    change the emitted data; restructure instead. A *named* construct is now caught; an unnamed
+    post-3.2 feature still is not, so keep writing those three files as if 3.2 were the target.
 - **Markdown practices/skills:** concise, imperative, agent-neutral where the content
   is shared; include a short "Why" only where it earns its place.
 - **Commits/PRs:** semantic subject, feature branch + PR, green CI. Never push to

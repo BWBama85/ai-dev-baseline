@@ -9,6 +9,93 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **The below-floor carve-out is enforced by NAME, not just by parse (#315).**
+
+  #310 shipped `--sub-floor` and stated its own gap in its header: D30 forbids **five** constructs
+  in the three files that must run on an old interpreter, and only `${ command; }` was checked. The
+  other four — `mapfile`/`readarray`, associative arrays, namerefs, `readlink -f` — were invisible
+  to both existing rules **inside a function body**, because bash 3.2 parses all four there and
+  loading a file never runs a body.
+
+  Measured against a real `/bin/bash` 3.2.57 rather than assumed, and the measurement is the reason
+  this matters: **none of them stops the shell.**
+
+  | construct in a function body | 3.2 `bash -n` | 3.2 at call time |
+  |---|---|---|
+  | `mapfile -t a` | accepts | `command not found` (status 127), array left empty |
+  | `declare -A m; m[x]=1` | accepts | `invalid option` (status 2), then writes index 0 of an *indexed* array — so the value reads back correctly by accident |
+  | `local -n r=$1` | accepts | `invalid option` (status 2), ref empty |
+  | `readlink -f` | accepts | works on current macOS; D30 carries it as a coreutils rule, not a bash-version one |
+
+  The builtins do report a failure — and nothing reads it. These files set no `set -e`, so the
+  function runs on past it with the wrong data and the script still exits 0. `adb_require_bash`'s
+  repair path could therefore silently compute the wrong answer on exactly the hosts it exists for,
+  while every CI job stayed green — both runners launch at or above the floor, which
+  is precisely the situation the gate is for.
+
+  **Rule C** closes it: a source scan by name over the **whole** of all three files, function bodies
+  included. It needs no interpreter, so unlike the parse and the probe it runs on every host and in
+  every job rather than only where an old bash exists.
+
+  - **Whole-file, not the issue's gate call-path.** A hand-declared function list is the second copy
+    D54 removed, one level down. Whole-file needs no declaration and is already what these files say
+    about themselves — `common.sh`'s header states the ban for the file, and `check-lib.sh` says its
+    own `check_enumerated` "must stay evaluable on bash 3.2 (D35), which has no namerefs" about a
+    helper that is not on the observer's path. Measured cost of the wider scope: **zero**.
+  - **The one false positive is MARKED, never deleted or pattern-loosened.** The entry-point lint's
+    stdin-consumer regex spells `mapfile|readarray` as data; requiring command position does not
+    help, because the `|` alternation puts each word in command position for any line matcher. The
+    escape is the per-line `# adb-allow: sub-floor-<class>` marker `check-fact-drift.sh` already
+    uses for `req_absent`, inheriting its constraint: **per line, never per file.**
+  - **The marker names the class**, so it cannot over-sanction: a line exempt from the `mapfile`
+    rule still goes red the moment a `declare -A` is added to it.
+
+  **Both source scans now read LOGICAL lines, which fixed a pre-existing fail-open in rule A.**
+  Self-review asked whether a construct could escape across a line continuation, and it could — in
+  *both* scans. Measured rather than argued: a real bash 5.3 expands
+
+  ```sh
+  X=$\
+  { printf hi; }
+  ```
+
+  to `hi`, and rule A reported the file clean. A backslash-newline is a line *splice* in shell, so
+  both scans now splice before matching, through one shared fragment. The backslash is **removed,
+  not replaced by a space** — a space would silently reintroduce the hole for that exact input
+  (`X=$ {` matches nothing) — and the run of trailing backslashes is **counted**, because an even
+  run is an escaped backslash that does *not* continue the line. Getting that second one wrong is
+  not cosmetic: it merges two independent statements, so a marker on the later one silently
+  sanctions a construct on the earlier. The splice also makes both patterns stronger — a
+  continuation splitting a *word* (`map\` + `file -t`) is rejoined and then caught.
+
+  Twelve mutations of the shipped rules were each applied to a tree copy and each observed making
+  the guard suite go red, plus a thirteenth inside the suite that neutralizes rule C's own
+  `check_fail` in a lint copy and requires the identical input to pass while still printing the
+  finding — the silent-guard shape, demonstrated rather than asserted.
+
+  The PR review found three more, each reproduced against a real bash before being fixed: a `#` that
+  does not begin a comment (`: x# adb-allow: …` — `x#` is an ordinary word) sanctioned a construct
+  beside it; a comment opened right after a control operator (`};# note \`) was invisible to the
+  splice probe, which then joined the next line on so *its* marker exempted the declaration above;
+  and bash's declaration builtins accept `+` options, so `declare +x -A m` and `local +x -n r=m`
+  passed. Both comment sites now use bash's own word-start rule rather than a whitespace heuristic.
+  The final option stays `-`-only on purpose: `+A` and `+n` *remove* the attribute, so matching them
+  would flag a line that creates no hazard.
+
+  The independent review found four live bypasses in the first cut and every one is fixed with its
+  own fixture: separated option clusters (`declare -g -A m`) escaped a pattern that only ever read
+  the first option word; a quoted copy of the marker text laundered a real construct, because the
+  exemption was a bare substring test rather than the documented trailing comment; a backslash
+  ending a *trailing* comment spliced the next line onto a statement that had already ended; and
+  the `readlink` rule refused every option — including the portable `-n` — instead of D30's
+  canonicalize family. It also corrected the measured statuses above, which an earlier draft
+  reported as `0` by reading the script's exit status rather than the builtin's.
+
+  What is still **not** proved, stated rather than implied: a name scan bans five *named*
+  constructs, so an unnamed post-3.2 feature is invisible to it. `CLAUDE.md`, `CONTRIBUTING.md` and
+  the mode's own header now say that narrower thing instead of the wider claim they used to, and
+  D54 is amended rather than rewritten.
+
 - **`baseline repo reconcile` — the drift detector finally has a repair (#333).**
 
   `required-drift` has detected a newly added CI job staying non-required since #122, and it works:
