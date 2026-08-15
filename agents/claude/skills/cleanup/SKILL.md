@@ -421,6 +421,7 @@ fi
 ```
 
 ```bash
+# ADB-SNIPPET: remote-enum
 # `grep '^origin/'` drops the bare `origin` short form of the origin/HEAD symref (which --format
 # renders as plain `origin`, not a real branch, so `sed 's@^origin/@@'` — no trailing slash to
 # strip — would otherwise leak it into the list and offer a bogus `git push origin --delete

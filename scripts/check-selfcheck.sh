@@ -64,7 +64,7 @@ cp "$ROOT/scripts/lib/common.sh" "$FX/scripts/lib/common.sh"
 # The stub steps, chosen from names the real registry already carries as plain
 # `bash scripts/check-<x>.sh` commands — so the fixture exercises the registry as shipped rather
 # than a registry this suite rewrote.
-STUBS=(practice-index cleanup-enum gates claims fact-guard release-role workflow-shell injection)
+STUBS=(practice-index bash-floor-guard gates claims fact-guard release-role workflow-shell injection)
 
 # One generic stub, parameterised at run time by a control file per step, so a case can change a
 # step's behaviour without rewriting the fixture. Control keys: RC (exit status), LINES (how many
@@ -215,7 +215,8 @@ serial_order="$(printf '%s\n' "$OUT" | sed -n 's/^=== \(.*\) ===$/\1/p' | grep -
 # inverted. (Demonstrated by review, not hypothesised.) The order the `add` lines appear in the
 # SOURCE is the independent fact, so read that instead.
 #
-# WHOLE-NAME membership, not a substring test: `cleanup` is a substring of `cleanup-enum`, so an
+# WHOLE-NAME membership, not a substring test: `bash-floor` is a substring of `bash-floor-guard`
+# (in the registry, NOT selected here — that is why the pair is in the stub set), so an
 # unanchored match silently adds a step the run never selected and the expectation is wrong rather
 # than the runner.
 declared="$(sed -n 's/^add[[:space:]]\{1,\}\([A-Za-z0-9_-]\{1,\}\)[[:space:]].*$/\1/p' \

@@ -90,7 +90,7 @@ temporary directory. Under `--serial` it simply takes its declared place, and `-
 out altogether.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
-where this walkthrough covers 23 of 50 and was silently claiming to be the whole set until #335
+where this walkthrough covers 22 of 49 and was silently claiming to be the whole set until #335
 counted it. Read it for what these checks are *for*; ask `--list` for what runs.
 
 **shellcheck** (tracked `*.sh` + `bin/agent-init`),
@@ -101,9 +101,9 @@ proving the assertion can go red), **workflow-map** (each `base/workflows/<name>
 to a rendered skill, no orphans), **skill-frontmatter** (each `SKILL.md` has
 `name`/`description`/`user-invocable`), **gate-detector** + **gates** (`detect` no-ops
 cleanly, `badcmd` errors, full gate-model behavior), **common-lib** (unit-test the shared
-`scripts/lib/common.sh` primitives), **cleanup-enum**, **cleanup** and **baseline** (the
-`/cleanup` symref fix, the `/cleanup` decision predicates — squash-merge detection, the
-destructive refusals, the terse output contract — and `bin/baseline` currency
+`scripts/lib/common.sh` primitives), **cleanup** and **baseline** (the
+`/cleanup` decision predicates — squash-merge detection, the destructive refusals, the
+remote-enumeration symref filter, the terse output contract — and `bin/baseline` currency
 classification), **precommit-gate** (the Stop-hook
 gate fails loud, never silently no-ops, when its library is missing), **implement-gate**
 (the implement-issue Stop hook re-verifies PR state live and fails closed),
@@ -144,10 +144,10 @@ interpreter on line 1.) Its **static** half and #256's **entry-point** half both
 | `agents/<agent>/` | Per-agent adapter, generated root doc, generated `skills/`; (Claude:) **hand-written** hook `scripts/` (not rendered — edit in place) |
 | `scripts/lib/common.sh` · `project-gates.sh` | Shared shell primitives + gate detector (the ONE home; installs to `~/.<agent>/scripts/lib`) |
 | `scripts/build.sh` · `scripts/selfcheck.sh` | Render root docs + skills · local CI |
-| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill · selfcheck) |
+| `scripts/check-*.sh` | Standalone checks CI + selfcheck both call (common-lib · gates · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill · selfcheck) |
 | `install.sh` · `uninstall.sh` · `bin/agent-init` | Global install + per-project init |
 | `docs/` | design-principles · philosophy · installation · roles-and-agents · per-project-overrides · adding-an-agent · ci-runners |
-| `.github/workflows/ci.yml` | 26 Linux jobs on `ubuntu-26.04` + one aggregate `selfcheck-macos` job (shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup-enum · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · claims-live (CI-only) · practice-index · release-role · release-skill · install dry-run). Every job proves its own bash ≥ 5.3 — [`docs/ci-runners.md`](docs/ci-runners.md) |
+| `.github/workflows/ci.yml` | 26 Linux jobs on `ubuntu-26.04` + one aggregate `selfcheck-macos` job (shellcheck · build-drift · frontmatter · gate-detector · common-lib · cleanup · baseline · precommit-gate · implement-gate · install-migration · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · claims-live (CI-only) · practice-index · release-role · release-skill · install dry-run). Every job proves its own bash ≥ 5.3 — [`docs/ci-runners.md`](docs/ci-runners.md) |
 | `.github/workflows/wsl-smoke.yml` | The Windows leg (#2): **one** `windows-latest` job, on a weekly `schedule` + `workflow_dispatch` + `push: tags`, **never per-PR**. Installs `Ubuntu-26.04` into WSL2, then creates an ordinary user and — **as that user**, because root's `CAP_DAC_OVERRIDE` inverts a permission fixture in the suite (#271) — clones onto the Linux filesystem and runs the installer + `selfcheck.sh` there. Its own file so `repo-settings.sh` can never discover or add it as a required context — discovery skips a workflow with no `pull_request` trigger (an admin can still require any context by hand) |
 
 ## Adding a new agent
