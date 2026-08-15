@@ -40,13 +40,16 @@
 # AND IT IS OBSERVED FAILING. Five mutations, each applied to a COPY of `build.sh` in a fixture and
 # each required to make the assertion above it go red:
 #
-#   1. inclusion forced ON  (`emit = 1`)      -> claude receives the block on BOTH paths;
-#   2. inclusion forced OFF (`emit = 0`)      -> codex/gemini LOSE it on BOTH paths;
-#   3. the root-doc surviving-marker scan deleted -> a misspelled marker ships into a root doc;
-#   4. `pipefail` dropped                     -> a malformed marker in a WORKFLOW publishes a
-#                                                truncated skill at rc 0, because the skill path
-#                                                reaches the filter through a pipe;
-#   5. the skill surviving-marker scan deleted    -> a misspelled marker ships into a skill.
+#   1. inclusion forced ON  (`emit = 1`)   -> claude receives the block on BOTH paths;
+#   2. inclusion forced OFF (`emit = 0`)   -> codex/gemini LOSE it on BOTH paths;
+#   3. `pipefail` dropped                  -> a malformed marker in a WORKFLOW publishes a
+#                                             truncated skill at rc 0, because the skill path
+#                                             reaches the filter through a pipe;
+#   4. `block_marker_residue` neutered     -> a misspelled keyword ships literally into a root doc
+#                                             AND into a skill (one guard, so one mutation, two
+#                                             witnesses);
+#   5. an agent token typo'd in a `render` call -> the build must fail rather than render every
+#                                             block to an agent nobody defined.
 #
 # 1 and 2 are the pair that matters: either one alone is satisfiable by a filter that is wrong in
 # the other direction. Each mutation VERIFIES ITS OWN EDIT APPLIED (exactly one matching line
@@ -55,6 +58,16 @@
 #
 # Never mutates the tracked tree — every fixture lives under one `mktemp -d`. The tracked-tree
 # section at the end only READS.
+#
+# THE FIXTURE SCAFFOLD IS THIS SUITE'S OWN, and that is a deliberate disposition rather than an
+# oversight (independent review flagged it). `check-workflow-render.sh` and `check-build-atomic.sh`
+# each carry a similar `mkfixture`, so there are now three — but each is shaped to what its own
+# proofs need (this one renders one practice and one workflow it fully controls; build-atomic needs
+# a middle to fail part-way through; workflow-render needs a placeholder-bearing body). Promoting
+# them to `check-lib.sh` would touch two suites whose proofs are unrelated to this issue, and a
+# shared scaffold that has to satisfy three sets of needs is the kind of generality that makes each
+# proof harder to read. That is a SHAPE, not a defect — `base/practices/issues-and-scope.md` says
+# so explicitly — so it is recorded here and not filed.
 #
 # Usage: bash scripts/check-agent-blocks.sh   (exit 0 = pass, 1 = fail)
 
@@ -267,6 +280,50 @@ has "$(cat "$dd/build.log" 2>/dev/null)" "unknown agent token" "skill path: the 
 [ ! -e "$(skill "$dd" claude)" ] && ok \
   || bad "skill path: a SKILL was published despite the malformed marker — the filter's status was lost crossing the pipe"
 
+# A SOURCE WITHOUT A FINAL NEWLINE IS REFUSED, because the filter cannot preserve its absence:
+# `cat` reproduced it exactly, awk's `print` always appends ORS. Silently adding a byte is the
+# wrong way to differ from the code this replaced, so the documented "newline-terminated" rule is
+# enforced instead (independent-review find — the no-marker control cannot see this, since both
+# sides of that comparison pass through the same filter).
+dd="$work/bad-nonewline"
+mkfixture "$dd" || bad "bad-nonewline: fixture"
+printf 'SHARED-NO-TRAILING-NEWLINE' > "$dd/base/practices/10-fixture.md"   # deliberately unterminated
+cp "$W_B" "$dd/base/workflows/fixture.md"
+run_build "$dd"; rc=$?
+no "$rc" "a source with no final newline fails the build instead of being silently rewritten"
+has "$(cat "$dd/build.log" 2>/dev/null)" "does not end with a newline" "no-final-newline: the diagnostic names the real problem"
+[ ! -e "$dd/agents/claude/$CDOC" ] && ok || bad "no-final-newline: a root doc was published anyway"
+
+# A MARKER IN FRONTMATTER IS REFUSED, which is what makes the source contract's "body-only" a fact
+# rather than a wish. block_filter has no notion of frontmatter — it also serves the practices,
+# which have none — so a well-formed marker there would be processed like any other and could drop
+# a frontmatter key, or the closing `---`, for one agent and not another.
+dd="$work/bad-fm-marker"
+mkfixture "$dd" || bad "bad-fm-marker: fixture"
+cp "$P_B" "$dd/base/practices/10-fixture.md"
+printf -- '---\nname: fixture\n<!-- adb:except claude -->\ndescription: a fixture workflow\n<!-- adb:end -->\nuser-invocable: true\n---\n\n# /fixture\n\nbody\n' \
+  > "$dd/base/workflows/fixture.md"
+run_build "$dd"; rc=$?
+eq "$rc" "3" "a marker inside frontmatter fails the build loud (rc 3)"
+has "$(cat "$dd/build.log" 2>/dev/null)" "markers are body-only" "frontmatter marker: the diagnostic names the real problem"
+[ ! -e "$(skill "$dd" claude)" ] && ok || bad "frontmatter marker: a skill was published anyway"
+
+# BLOCKS RESOLVE BEFORE THE PLACEHOLDER MAP, and this is the witness for that claim. A `{{TOKEN}}`
+# inside an EXCLUDED block must never be substituted and emitted for the agent the author excluded;
+# the same token outside the block must still map normally. Without a placeholder in the fixture,
+# reordering the two stages would be invisible here and the comment asserting the order would be
+# unbacked (independent-review find).
+dd="$work/order"
+mkfixture "$dd" || bad "order: fixture"
+cp "$P_B" "$dd/base/practices/10-fixture.md"
+{ cat "$W_B"; printf '\nOUTSIDE {{STATE_DIR}}\n<!-- adb:except claude -->\n\nINSIDE {{STATE_DIR}}\n<!-- adb:end -->\n'; } \
+  > "$dd/base/workflows/fixture.md"
+run_build "$dd"; rc=$?
+yes "$rc" "order: a block containing a placeholder builds"
+has   "$(cat "$(skill "$dd" claude)")" "OUTSIDE .claude/state" "order/claude: a placeholder OUTSIDE the block still maps"
+hasnt "$(cat "$(skill "$dd" claude)")" "INSIDE"                "order/claude: the excluded block is gone, placeholder and all"
+has   "$(cat "$(skill "$dd" codex)")"  "INSIDE .codex/state"   "order/codex: a placeholder INSIDE an included block maps for the agent that gets it"
+
 # AN UNREADABLE SOURCE IS A REFUSAL, NOT AN OMISSION. The root-doc renderer used to `cat "$f"`,
 # and `cat` on a directory exits 1; `awk` on a directory reads zero records and exits 0. So routing
 # the render through this filter silently dropped a whole practice from the root doc while the
@@ -360,20 +417,7 @@ fi
 # Delete each scan's `grep -Fq` test and feed the misspelled marker again: the build must now
 # SUCCEED and publish a literal `<!-- adb:` into the artifact. That is what makes section 4 a
 # proof rather than an observation that some builds fail.
-dd="$work/mut-noscan-root"
-mkfixture "$dd" || bad "mut-noscan-root: fixture"
-if mutate_line "$dd/scripts/build.sh" '  if LC_ALL=C grep -Fq '"'"'<!-- adb:'"'"' "$build_tmp"; then' \
-     's|^  if LC_ALL=C grep -Fq .<!-- adb:. "\$build_tmp"; then$|  if false; then|' \
-     "mut-noscan-root"; then
-  printf 'SHARED\n<!-- adb:only claude -->\nBLOCK\n' > "$dd/base/practices/10-fixture.md"
-  cp "$W_B" "$dd/base/workflows/fixture.md"
-  run_build "$dd"
-  if grep -Fq -- '<!-- adb:only claude -->' "$(doc "$dd" claude "$CDOC")" 2>/dev/null; then ok; else
-    bad "MUTATION 3 DID NOT FIRE: with the root-doc marker scan removed, a literal marker still did not reach the root doc — section 4's root assertion proves nothing"
-  fi
-fi
-
-# --- 5c-bis. `pipefail` is what carries the filter's rc across the skill pipe -------------------
+# --- 5c. `pipefail` is what carries the filter's rc across the skill pipe -----------------------
 # The skill renderer reaches block_filter through a PIPE, and a pipeline reports its LAST
 # command's status — awk's, which is 0. Drop `pipefail` and the filter's rc 3 is discarded: awk
 # renders whatever partial stream it received and the build publishes a TRUNCATED skill at rc 0.
@@ -386,21 +430,47 @@ if mutate_line "$dd/scripts/build.sh" 'set -euo pipefail' 's|^set -euo pipefail$
   { cat "$W_B"; printf '\n<!-- adb:except cladue -->\nBLOCK\n<!-- adb:end -->\n'; } > "$dd/base/workflows/fixture.md"
   run_build "$dd"
   if [ -e "$(skill "$dd" claude)" ]; then ok; else
-    bad "MUTATION 5 DID NOT FIRE: with pipefail removed, a workflow carrying a malformed marker STILL published no skill — the skill-path rejection assertion proves nothing about pipefail"
+    bad "MUTATION 3 DID NOT FIRE: with pipefail removed, a workflow carrying a malformed marker STILL published no skill — the skill-path rejection assertion proves nothing about pipefail"
   fi
 fi
 
-dd="$work/mut-noscan-skill"
-mkfixture "$dd" || bad "mut-noscan-skill: fixture"
-if mutate_line "$dd/scripts/build.sh" '  if LC_ALL=C grep -Fq '"'"'<!-- adb:'"'"' "$tmp"; then' \
-     's|^  if LC_ALL=C grep -Fq .<!-- adb:. "\$tmp"; then$|  if false; then|' \
-     "mut-noscan-skill"; then
-  cp "$P_B" "$dd/base/practices/10-fixture.md"
+# --- 5d. the surviving-marker guard is load-bearing, on BOTH paths at once ----------------------
+# ONE mutation, TWO witnesses, because the guard is one function both renderers call
+# (independent-review find: it used to be two copies, and two copies of a refusal policy can
+# drift). Neutering it must let the misspelled keyword through into a root doc AND into a skill;
+# if either still refuses, section 4's corresponding assertion was proving something else.
+dd="$work/mut-noscan"
+mkfixture "$dd" || bad "mut-noscan: fixture"
+# `#` as the sed delimiter, never `|`: the replaced line contains `||`, which would close a
+# `|`-delimited expression mid-pattern. check-build-atomic.sh carries the same note for the same
+# reason — and here the harness's own "did the edit apply?" check is what caught it.
+if mutate_line "$dd/scripts/build.sh" "  LC_ALL=C grep -Fq '<!-- adb:' \"\$f\" || return 0" \
+     's#^  LC_ALL=C grep -Fq .<!-- adb:. "\$f" || return 0$#  return 0#' \
+     "mut-noscan"; then
+  printf 'SHARED\n<!-- adb:only claude -->\nBLOCK\n' > "$dd/base/practices/10-fixture.md"
   { cat "$W_B"; printf '\n<!-- adb:only claude -->\nBLOCK\n'; } > "$dd/base/workflows/fixture.md"
   run_build "$dd"
-  if grep -Fq -- '<!-- adb:only claude -->' "$(skill "$dd" claude)" 2>/dev/null; then ok; else
-    bad "MUTATION 4 DID NOT FIRE: with the skill marker scan removed, a literal marker still did not reach the skill — section 4's skill assertion proves nothing"
+  if grep -Fq -- '<!-- adb:only claude -->' "$(doc "$dd" claude "$CDOC")" 2>/dev/null; then ok; else
+    bad "MUTATION 4 DID NOT FIRE (root): with block_marker_residue neutered, a literal marker still did not reach the root doc — section 4's root assertion proves nothing"
   fi
+  if grep -Fq -- '<!-- adb:only claude -->' "$(skill "$dd" claude)" 2>/dev/null; then ok; else
+    bad "MUTATION 4 DID NOT FIRE (skill): with block_marker_residue neutered, a literal marker still did not reach the skill — section 4's skill assertion proves nothing"
+  fi
+fi
+
+# --- 5e. a TYPO'D TARGET AGENT fails the build ------------------------------------------------
+# The scenario is a new `render` call spelled wrong. An unknown target is otherwise
+# indistinguishable from a known agent that no marker excludes — it renders every block and looks
+# entirely correct — so without the BEGIN validation this ships the wrong density silently. The
+# mutation IS the scenario, which is why it lives here rather than in section 3.
+dd="$work/mut-typo-agent"
+mkfixture "$dd" || bad "mut-typo-agent: fixture"
+if mutate_line "$dd/scripts/build.sh" 'render gemini "$root/agents/gemini/GEMINI.md" "Global engineering practices"' \
+     's|^render gemini |render gemni  |' "mut-typo-agent"; then
+  cp "$P_A" "$dd/base/practices/10-fixture.md"; cp "$W_A" "$dd/base/workflows/fixture.md"
+  run_build "$dd"; rc=$?
+  no "$rc" "a typo'd agent token in a render call fails the build"
+  has "$(cat "$dd/build.log" 2>/dev/null)" "unknown agent" "typo'd target: the diagnostic names the real problem"
 fi
 
 # ============================ 6. the TRACKED tree, read-only ===================================
@@ -419,11 +489,35 @@ fi
 # `<file>:0` for EVERY file scanned, so the count was the file count — 21 — whether or not
 # anything matched, and this assertion could not fail. Caught only by negative-testing it against
 # a stripped copy, which is the whole argument of base/practices/self-review.md's guard section.
-n="$(grep -rl -- '<!-- adb:except ' base/practices base/workflows 2>/dev/null \
-      | grep -Fxv -e base/practices/00-index.md -e base/workflows/README.md | grep -c .)"
-if [ "$n" -gt 0 ]; then ok; else
+sites="$(grep -rl -- '<!-- adb:except ' base/practices base/workflows 2>/dev/null \
+      | grep -Fxv -e base/practices/00-index.md -e base/workflows/README.md | LC_ALL=C sort | tr '\n' ' ')"
+if [ -n "$sites" ]; then ok; else
   bad "no source declares a per-agent block — the facility has no consumer, so every render is identical and this suite's tracked-tree assertions are vacuous"
 fi
+
+# ...AND ONLY WHERE IT IS SUPPOSED TO BE. This is the assertion that keeps "instruction density
+# only" from being an honour-system rule (independent-review find): without it, wrapping an
+# arbitrary PROCEDURE in `except claude` somewhere else passes every other check here, because the
+# rest of section 6 pins only the two intended strings. A whitelist cannot judge whether a block's
+# CONTENT is density rather than procedure — no check can — but it forces a human decision at the
+# only moment one can be made, by failing until someone deliberately widens this line and says why
+# in review.
+eq "$sites" "base/practices/self-review.md base/workflows/implement-issue.md " \
+  "the per-agent blocks live in exactly the two files #304 sanctioned — a new site must be argued for here, not just added"
+
+# THE RETIRED SAME-MODEL FALLBACK STAYS RETIRED, in every restatement. This exists because the
+# claim "removed everywhere" was made and was FALSE: step 11's close-out still offered
+# "a same-model fallback" as a way to reach the same-model rung, and nothing failed. A prose rule
+# with four restatements needs a guard, or the next edit reintroduces one of them.
+for f in base/workflows/implement-issue.md base/roles.md; do
+  hasnt "$(cat "$f")" 'a same-model fallback' "$f: the retired same-model fallback is not offered as a live option"
+done
+for a in claude codex gemini; do
+  hasnt "$(cat "agents/$a/skills/implement-issue/SKILL.md")" 'a same-model fallback' \
+    "$a's rendered skill carries no retired same-model fallback"
+  has "$(cat "agents/$a/skills/implement-issue/SKILL.md")" 'cross-model' \
+    "$a's rendered skill states the fallback set is cross-model"
+done
 
 # Nothing leaked into what ships.
 leaked="$(grep -rl -- '<!-- adb:' agents 2>/dev/null | LC_ALL=C sort | tr '\n' ' ')"

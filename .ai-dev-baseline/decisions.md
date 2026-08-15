@@ -5654,10 +5654,18 @@ limit: none of them is sufficient alone.
 
              (5) FAIL LOUD, TWICE. `block_filter` rejects every malformed spelling it can recognise
              (unknown token · empty list · a list naming every known agent · a duplicate · a nested
-             opener · a stray close · EOF inside a block). It cannot recognise a MISSPELLED KEYWORD —
-             `adb:excpt` matches no rule and falls through as prose — so each renderer also scans its
-             finished output for a surviving `<!-- adb:` and refuses to publish one, the same shape as
-             the existing `{{` guard.
+             opener · a stray close · EOF inside a block), plus three conditions independent review
+             showed were being tolerated: an unknown TARGET agent (otherwise a typo in a `render`
+             call renders every block and looks correct), a source with no final newline (`cat`
+             reproduced its absence and awk cannot, so the documented rule is enforced rather than
+             silently repaired), and a marker inside a skill's frontmatter (which is what makes the
+             contract's "body-only" a fact rather than a wish). It cannot recognise a MISSPELLED
+             KEYWORD — `adb:excpt` matches no rule and falls through as prose — so `block_marker_residue`,
+             ONE function both renderers call, scans the finished output for a surviving `<!-- adb:`
+             and refuses to publish it, the same shape as the existing `{{` guard. That reservation is
+             deliberately broader than the recognizer: the substring cannot be quoted anywhere in a
+             file that renders, which is why the two files documenting the syntax are both files
+             their renderer skips.
 - placement: `scripts/build.sh` (`build_known_agents`, `block_filter`, both renderers' marker scans);
              `base/practices/self-review.md` and `base/workflows/implement-issue.md` (the blocks);
              `base/roles.md` + `base/workflows/implement-issue.md` (the fallback);

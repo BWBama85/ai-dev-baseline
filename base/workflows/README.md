@@ -167,14 +167,25 @@ the block's own blank line *inside* the block, and the closing marker immediatel
 block's last content line. Marker lines are removed, so this is what makes both the included and
 the excluded render come out with correct markdown spacing.
 
-**Rules, all fail-loud (rc 3) at build time.** An unknown agent token · an empty list · a list
-naming every known agent (the block would render nowhere) · the same agent twice · a nested
-opener · a close with nothing open · EOF inside a block. Markers must match their spelling
-**exactly, as a whole line**, so a marker quoted inside running prose is text rather than a
-directive — and because a *misspelled keyword* (`adb:excpt`) therefore matches no rule at all,
-each renderer additionally scans its finished output for any surviving `<!-- adb:` and refuses to
-publish one. Markers are **body-only**, the same rule `{{TOKEN}}` lives by: this filter has no
-notion of frontmatter, so a marker placed there is neither rejected nor meaningful.
+**Rules, all fail-loud at build time.** An unknown agent token · an empty list · a list naming
+every known agent (the block would render nowhere) · the same agent twice · a nested opener · a
+close with nothing open · EOF inside a block · a marker inside a skill's **frontmatter** (markers
+are body-only, the same rule `{{TOKEN}}` lives by, and it is rejected rather than merely asked
+for) · a **target agent** the renderer does not know, which is what turns a typo in a `render`
+call into a failure instead of a silent full-density render.
+
+Two further rules are the filter's, and they are here because they differ from the `cat` it
+replaced:
+
+- **A source must end with a newline.** `cat` reproduced a missing final newline exactly; awk's
+  `print` always appends one. Rather than silently add a byte, the build refuses.
+- **The substring `<!-- adb:` is reserved *everywhere* in a file that renders** — inside a fence,
+  inside a code span, inside running prose. The *recognizer* matches only whole lines, so a quoted
+  marker is not treated as a directive; but each renderer then scans its finished output and
+  refuses to publish anything still carrying the substring, which is the only net that catches a
+  *misspelled keyword* (`adb:excpt` matches no rule at all). The consequence is that you cannot
+  quote the syntax in a file that renders — which is why the two files documenting it, this one
+  and `base/practices/00-index.md`, are both files their renderer skips.
 
 ### Step headings are project-override anchors
 

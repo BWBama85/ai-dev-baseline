@@ -276,11 +276,15 @@ jobs:
       - name: Run data lands on a per-checkout path, never a fixed shared-temp one (#250)
         run: bash scripts/check-tmp-paths.sh
 
-      # Fifth species, riding this job for the SAME branch-protection reason the three above give,
-      # and it is the reason this one is a step rather than the job its runtime might argue for
-      # (~3.5s locally — it runs the real build.sh over a dozen throwaway fixtures, where the four
-      # above are sub-second lints). It also belongs here on subject: it is the second thing
-      # `build.sh` now does per agent, beside the placeholder MAP the first step covers.
+      # Fifth species, riding this job for the SAME branch-protection reason the three above give.
+      # It also belongs here on subject: it is the second thing `build.sh` now does per agent,
+      # beside the placeholder MAP the first step covers.
+      #
+      # It is the slowest step in this job — it runs the real `build.sh` over a couple of dozen
+      # throwaway fixtures, where the others are single-pass lints. No figure is quoted, and that
+      # is the rule rather than laziness: #335 was filed because a runtime copied into prose was
+      # wrong by an order of magnitude by the time anyone read it, and D66 gives the live number
+      # one dated home. The job's own timing output is the current answer.
       - name: Per-agent blocks vary instruction DENSITY and nothing else, on both render paths (#304)
         run: bash scripts/check-agent-blocks.sh
 

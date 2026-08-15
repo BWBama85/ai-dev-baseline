@@ -1380,7 +1380,8 @@ status` for `20`). Say what was **observed**, never that drift "will" stay fixed
 **State the review rung explicitly, in the reviewer's own words, not as a ✅.** The
 close-out is where an operator learns what actually looked at this diff, so name the rung
 step 8 reached: *independent* (which agent), *same-model (not independent)* (a slot whose
-token is the driving agent, or a same-model fallback), *deferred to the PR layer* (naming
+token is the driving agent — the only way to reach this rung since #304 retired the
+same-model fallback), *deferred to the PR layer* (naming
 the async reviewer, and that it gates only the auto-arm), or *none — no independent review
 exists*. A rung-2 or rung-3 run is **not** a failure and must not be reported as one; it is
 also **not** a ✅ review, and rendering it as one is the single most misleading thing this

@@ -26,8 +26,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   already named, and the skill `render_agent_skill()`. Exclusion-only, deliberately: a fourth
   agent *inherits* every block (today's density, unchanged) rather than silently receiving the
   most stripped-down render, and `docs/adding-an-agent.md` asks that adder to choose and say so.
-  Every malformed spelling fails the build; a misspelled *keyword* matches no rule at all, so each
-  renderer also refuses to publish output carrying a surviving `<!-- adb:`.
+
+  Every malformed spelling fails the build, and three conditions that used to be tolerated now do
+  too: an unknown **target** agent (so a typo in a `render` call fails instead of quietly rendering
+  full density), a source with **no final newline** (`cat` reproduced its absence and awk cannot,
+  so the documented rule is enforced rather than silently repaired), and a marker inside a skill's
+  **frontmatter**. A misspelled *keyword* matches no rule at all, so both renderers additionally
+  refuse — through one shared guard — to publish output carrying a surviving `<!-- adb:`.
 
   **What actually changed for readers.** Claude's root doc and `implement-issue` skill drop the
   "mandatory gate, not a victory lap" exhortation and the enumerated `What to look for` checklist.
