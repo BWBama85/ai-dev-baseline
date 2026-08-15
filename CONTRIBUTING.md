@@ -90,7 +90,7 @@ temporary directory. Under `--serial` it simply takes its declared place, and `-
 out altogether.
 
 **Some** of the steps, in declaration order — `--list` is the registry and is always current,
-where this walkthrough covers 23 of 49 and was silently claiming to be the whole set until #335
+where this walkthrough covers 23 of 50 and was silently claiming to be the whole set until #335
 counted it. Read it for what these checks are *for*; ask `--list` for what runs.
 
 **shellcheck** (tracked `*.sh` + `bin/agent-init`),

@@ -51,9 +51,11 @@ bounded by each CLI).
   agent supplies its own map for the same placeholders. `{{…}}` is **reserved** for this
   vocabulary — any `{{…}}` that survives rendering (a typo, or a token with no map entry)
   is a fail-loud build error, never emitted into a skill.
-- **Encoding.** UTF-8, LF line endings, a single trailing newline. The renderer
-  normalizes the trailing newline (so the generated skill always ends with exactly one);
-  keep sources newline-terminated so the render stays a clean marker + placeholder diff.
+- **Encoding.** UTF-8, LF line endings, a single trailing newline. A source that is **not**
+  newline-terminated is **rejected** — the build fails rather than repairing it, because the
+  per-agent block filter reads sources through `awk`, whose `print` always appends a newline, and
+  silently adding a byte is the wrong way to differ from the `cat` it replaced (#304). The
+  rendered *output* still ends with exactly one trailing newline.
 - **`README.md` is not a workflow** — the renderer skips it.
 
 ### Neutral placeholder vocabulary
