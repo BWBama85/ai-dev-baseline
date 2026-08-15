@@ -30,8 +30,14 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   renderer also refuses to publish output carrying a surviving `<!-- adb:`.
 
   **What actually changed for readers.** Claude's root doc and `implement-issue` skill drop the
-  "mandatory gate, not a victory lap" exhortation and the enumerated `What to look for` checklist;
-  Codex's and Gemini's are **byte-identical to before**. The *step* is untouched for everyone —
+  "mandatory gate, not a victory lap" exhortation and the enumerated `What to look for` checklist.
+  The Codex and Gemini **root docs are byte-identical to before** — the block wraps the existing
+  paragraphs rather than rewording them, so the density change is visible in exactly one of the
+  three. All three `implement-issue` skills do change: Claude's for the block, and all three for
+  the two edits that are shared by design — a reflowed self-review sentence, and the fallback
+  removal below.
+
+  **The *step* is untouched for everyone.**
   #304 asks both that Claude "drop the standing instruction to verify" and that renders "never
   differ in what they do", which read literally contradict, and the invariant wins: step 9 triages
   self-review findings and the PR body reports them, so removing the step would be a different
@@ -42,7 +48,7 @@ installs are symlinks, changes on `main` reach a user's clone on their next
   **`scripts/check-agent-blocks.sh`** pins it, because `build-drift` structurally cannot: it
   agrees with whatever was committed, so a facility that varies nothing and a shared paragraph
   reworded in one render only both look like a clean build. Three hand-written oracle sources make
-  "differs there, byte-identical everywhere else" a `cmp` on both paths, and four mutations of a
+  "differs there, byte-identical everywhere else" a `cmp` on both paths, and five mutations of a
   copied `build.sh` are each required to make a named assertion go red. It found two bugs in this
   change's own guards during that exercise.
 

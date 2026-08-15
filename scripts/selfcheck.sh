@@ -379,7 +379,7 @@ add workflow-render     bash scripts/check-workflow-render.sh
 # because build-drift structurally cannot see this class — it agrees with whatever was committed,
 # so a facility that silently varies nothing, and a shared paragraph reworded in one render only,
 # both look exactly like a clean build. Three hand-written oracle sources make "differs there,
-# byte-identical everywhere else" a `cmp`, on BOTH render paths, and four mutations of a copied
+# byte-identical everywhere else" a `cmp`, on BOTH render paths, and five mutations of a copied
 # build.sh are each required to make a named assertion go red.
 add agent-blocks        bash scripts/check-agent-blocks.sh
 

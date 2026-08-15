@@ -5673,7 +5673,7 @@ limit: none of them is sufficient alone.
              asserts byte equality against THREE hand-written oracle sources (shared-only,
              shared+block, and the marked source), on both paths, which carries "identical everywhere
              else" — blank lines and separators included — without a second assertion. Two of the
-             four mutations are a PAIR for the same reason: forcing inclusion on and forcing it off
+             five mutations are a PAIR for the same reason: forcing inclusion on and forcing it off
              are each satisfiable by a filter that is wrong in the other direction, so neither alone
              proves anything.
 
@@ -5691,5 +5691,7 @@ limit: none of them is sufficient alone.
              branch-protection context that `required-drift` reports as gating nothing until someone
              edits protection by hand. That mattered more than usual here — `baseline repo reconcile`,
              the repair that is supposed to close exactly that gap, currently refuses on this repo
-             (filed separately), so nothing would have healed it automatically.
+             (#340, observed at this run's preflight: rc 16, comparing a case-folded
+             `bwbama85/ai-dev-baseline` against gh's `BWBama85/ai-dev-baseline`), so nothing would
+             have healed a new required context automatically.
 - baseline-issue: n/a — this repo IS the baseline; #304 is the tracking issue.

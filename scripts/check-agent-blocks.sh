@@ -37,13 +37,16 @@
 # the blank lines and separators around the block, which is exactly where a line-reconstructing
 # implementation goes wrong.
 #
-# AND IT IS OBSERVED FAILING. Four mutations, each applied to a COPY of `build.sh` in a fixture and
+# AND IT IS OBSERVED FAILING. Five mutations, each applied to a COPY of `build.sh` in a fixture and
 # each required to make the assertion above it go red:
 #
 #   1. inclusion forced ON  (`emit = 1`)      -> claude receives the block on BOTH paths;
 #   2. inclusion forced OFF (`emit = 0`)      -> codex/gemini LOSE it on BOTH paths;
 #   3. the root-doc surviving-marker scan deleted -> a misspelled marker ships into a root doc;
-#   4. the skill surviving-marker scan deleted    -> …and into a skill.
+#   4. `pipefail` dropped                     -> a malformed marker in a WORKFLOW publishes a
+#                                                truncated skill at rc 0, because the skill path
+#                                                reaches the filter through a pipe;
+#   5. the skill surviving-marker scan deleted    -> a misspelled marker ships into a skill.
 #
 # 1 and 2 are the pair that matters: either one alone is satisfiable by a filter that is wrong in
 # the other direction. Each mutation VERIFIES ITS OWN EDIT APPLIED (exactly one matching line
@@ -195,7 +198,7 @@ cmp -s "$(doc "$d" claude "$CDOC")" "$(doc "$db" claude "$CDOC")" && ok \
 cmp -s "$(doc "$d" codex "$XDOC")" "$(doc "$dc" codex "$XDOC")" && ok \
   || bad "ROOT/codex: the render is not byte-identical to the markers-stripped oracle — codex did not get exactly shared+block"
 cmp -s "$(doc "$d" gemini "$GDOC")" "$(doc "$dc" gemini "$GDOC")" && ok \
-  || bad "ROOT/gemini: an unlisted agent did not inherit the block — `adb:except` must exclude only what it names"
+  || bad "ROOT/gemini: an unlisted agent did not inherit the block — \`adb:except\` must exclude only what it names"
 
 # The equalities above already imply these, but a failing `cmp` says only "differ"; these name
 # WHICH way it went, which is the difference between a two-minute fix and a bisect.
@@ -247,6 +250,39 @@ bad_marker no-space       '<!-- adb:except claude-->'                'malformed 
 bad_marker unterminated   '<!-- adb:except claude -->'               'unterminated'                0
 bad_marker nested         '<!-- adb:except claude -->
 <!-- adb:except codex -->'                                           'nested `adb:except`'
+
+# THE SAME REJECTION, REACHED THROUGH THE SKILL RENDERER. Every case above puts its malformed
+# marker in a PRACTICE, so all of them exercise the root-doc path; the skill path reaches
+# block_filter through a PIPE, and a pipeline reports its LAST command's status. Without
+# `set -o pipefail` the filter's rc 3 would be discarded, awk would happily render the partial
+# stream it received, and a malformed marker in a workflow would publish a TRUNCATED skill at
+# rc 0 — the quietest possible version of this failure, and invisible to every case above.
+dd="$work/bad-skill"
+mkfixture "$dd" || bad "bad-skill: fixture"
+cp "$P_B" "$dd/base/practices/10-fixture.md"
+{ cat "$W_B"; printf '\n<!-- adb:except cladue -->\nBLOCK\n<!-- adb:end -->\n'; } > "$dd/base/workflows/fixture.md"
+run_build "$dd"; rc=$?
+eq "$rc" "3" "skill path: a malformed marker in a WORKFLOW fails the build loud (rc 3)"
+has "$(cat "$dd/build.log" 2>/dev/null)" "unknown agent token" "skill path: the diagnostic names the real problem"
+[ ! -e "$(skill "$dd" claude)" ] && ok \
+  || bad "skill path: a SKILL was published despite the malformed marker — the filter's status was lost crossing the pipe"
+
+# AN UNREADABLE SOURCE IS A REFUSAL, NOT AN OMISSION. The root-doc renderer used to `cat "$f"`,
+# and `cat` on a directory exits 1; `awk` on a directory reads zero records and exits 0. So routing
+# the render through this filter silently dropped a whole practice from the root doc while the
+# build reported success — caught by `scripts/check-build-atomic.sh`, whose fault injection is a
+# directory named like a practice. Pinned here too, at the site that introduced the hazard, so a
+# future refactor of `block_filter` cannot reintroduce it and blame a suite about atomic publishing.
+dd="$work/bad-unreadable"
+mkfixture "$dd" || bad "bad-unreadable: fixture"
+cp "$P_B" "$dd/base/practices/10-fixture.md"
+cp "$W_B" "$dd/base/workflows/fixture.md"
+mkdir -p "$dd/base/practices/90-boom.md"     # a DIRECTORY the *.md glob matches
+run_build "$dd"; rc=$?
+no "$rc" "an unreadable practice path fails the build instead of being silently omitted"
+has "$(cat "$dd/build.log" 2>/dev/null)" "not a readable regular file" "unreadable: the diagnostic names the real problem"
+[ ! -e "$dd/agents/claude/$CDOC" ] && ok \
+  || bad "unreadable: a root doc was published with a practice silently missing from it"
 
 # A stray close needs no opener at all.
 dd="$work/bad-stray"
@@ -337,6 +373,23 @@ if mutate_line "$dd/scripts/build.sh" '  if LC_ALL=C grep -Fq '"'"'<!-- adb:'"'"
   fi
 fi
 
+# --- 5c-bis. `pipefail` is what carries the filter's rc across the skill pipe -------------------
+# The skill renderer reaches block_filter through a PIPE, and a pipeline reports its LAST
+# command's status — awk's, which is 0. Drop `pipefail` and the filter's rc 3 is discarded: awk
+# renders whatever partial stream it received and the build publishes a TRUNCATED skill at rc 0.
+# This is what makes the "a malformed marker in a WORKFLOW fails the build" assertion above a
+# proof rather than a coincidence of the root path failing first.
+dd="$work/mut-nopipefail"
+mkfixture "$dd" || bad "mut-nopipefail: fixture"
+if mutate_line "$dd/scripts/build.sh" 'set -euo pipefail' 's|^set -euo pipefail$|set -eu|' "mut-nopipefail"; then
+  cp "$P_B" "$dd/base/practices/10-fixture.md"
+  { cat "$W_B"; printf '\n<!-- adb:except cladue -->\nBLOCK\n<!-- adb:end -->\n'; } > "$dd/base/workflows/fixture.md"
+  run_build "$dd"
+  if [ -e "$(skill "$dd" claude)" ]; then ok; else
+    bad "MUTATION 5 DID NOT FIRE: with pipefail removed, a workflow carrying a malformed marker STILL published no skill — the skill-path rejection assertion proves nothing about pipefail"
+  fi
+fi
+
 dd="$work/mut-noscan-skill"
 mkfixture "$dd" || bad "mut-noscan-skill: fixture"
 if mutate_line "$dd/scripts/build.sh" '  if LC_ALL=C grep -Fq '"'"'<!-- adb:'"'"' "$tmp"; then' \
@@ -356,12 +409,18 @@ fi
 
 # It is applied at all.
 #
+# ONLY FILES THE RENDERERS ACTUALLY READ COUNT. `base/practices/00-index.md` and
+# `base/workflows/README.md` both DOCUMENT the marker syntax and both are skipped by their
+# renderer, so counting them would make this assertion permanently true — satisfied by its own
+# documentation while no source used the facility at all. That is the same shape as the bug below.
+#
 # `-rl` PIPED INTO `grep -c .`, never `grep -rlc`. Combining `-l` and `-c` is not portable and
 # resolves the wrong way here: under bash on this machine `-c` wins and the command prints
 # `<file>:0` for EVERY file scanned, so the count was the file count — 21 — whether or not
 # anything matched, and this assertion could not fail. Caught only by negative-testing it against
 # a stripped copy, which is the whole argument of base/practices/self-review.md's guard section.
-n="$(grep -rl -- '<!-- adb:except ' base/practices base/workflows 2>/dev/null | grep -c .)"
+n="$(grep -rl -- '<!-- adb:except ' base/practices base/workflows 2>/dev/null \
+      | grep -Fxv -e base/practices/00-index.md -e base/workflows/README.md | grep -c .)"
 if [ "$n" -gt 0 ]; then ok; else
   bad "no source declares a per-agent block — the facility has no consumer, so every render is identical and this suite's tracked-tree assertions are vacuous"
 fi

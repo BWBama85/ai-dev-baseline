@@ -137,6 +137,21 @@ build_known_agents='claude codex gemini'
 # is neither rejected nor meaningful — see base/workflows/README.md's source contract.
 block_filter() {
   local agent="$1" src="$2"
+  # REFUSE ANYTHING THAT IS NOT A READABLE REGULAR FILE, before awk sees it — and this test is
+  # load-bearing, not defensive garnish. In the root-doc renderer this call replaced `cat "$f"`,
+  # and the two disagree in exactly the direction that matters: `cat` on a DIRECTORY exits 1 with
+  # "Is a directory", while `awk` on a directory reads zero records and exits **0**. Without this,
+  # a practice path the `*.md` glob matched but the renderer cannot read is silently OMITTED from
+  # the root doc and the build still reports success — a whole practice missing, with no
+  # diagnostic. That is the same silent-omission failure this facility exists to make impossible,
+  # reintroduced one layer down. `scripts/check-build-atomic.sh` injects precisely that fault (a
+  # directory named `90-boom.md`, chosen because `cat` refuses it as any uid) and is what caught
+  # the regression; an unreadable regular file awk does reject on its own (rc 2), but naming both
+  # here keeps one message for one condition.
+  if [ ! -f "$src" ] || [ ! -r "$src" ]; then
+    printf 'build.sh: cannot read %s — not a readable regular file\n' "$src" >&2
+    return 1
+  fi
   awk -v agent="$agent" -v known="$build_known_agents" -v src="$src" '
     function die(ln, msg) {
       dying = 1
@@ -160,13 +175,18 @@ block_filter() {
       if ($0 !~ /^<!-- adb:except( [a-z0-9-]+)+ -->$/)
         die(FNR, "malformed `adb:except` marker (want `<!-- adb:except <agent>… -->`): " $0)
       if (open) die(FNR, "nested `adb:except` — close the block opened at line " open_line " first")
-      delete listed
+      # The already-listed set is a DELIMITED STRING, not an array, so resetting it per marker is
+      # an assignment. `delete listed` would read better and is supported by gawk, mawk and
+      # onetrue-awk alike — but whole-array `delete` is unspecified in POSIX awk, and this runs in
+      # the build path of every CI job on three platforms. A token cannot contain a space (the
+      # validating regex above is `[a-z0-9-]+`), so space-delimited membership is exact.
+      listed = " "
       nlisted = 0; excluded = 0
       # Fields 3..NF-1 are the agent tokens: $1 `<!--`, $2 `adb:except`, $NF `-->`.
       for (i = 3; i <= NF - 1; i++) {
         if (!($i in valid)) die(FNR, "unknown agent token `" $i "` in an `adb:except` marker")
-        if ($i in listed)   die(FNR, "agent `" $i "` listed twice in one `adb:except` marker")
-        listed[$i] = 1; nlisted++
+        if (index(listed, " " $i " ")) die(FNR, "agent `" $i "` listed twice in one `adb:except` marker")
+        listed = listed $i " "; nlisted++
         if ($i == agent) excluded = 1
       }
       # A block excluded from every known agent renders nowhere — dead content that reads, in the
