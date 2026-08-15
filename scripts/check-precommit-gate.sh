@@ -166,6 +166,20 @@ pg_unbound() {   # a top-level unbound expansion BEFORE project-gates.sh sets it
 pg_tailcut() {   # loads far enough to DEFINE adb_run_gates, then fails to parse
   printf '\nadb_pg_truncated_tail() {\n' >> "$gate/lib/project-gates.sh"
 }
+# An unbound expansion immediately BELOW this library's own `set -u` line — the half of the load
+# `require_lib`'s relaxation could not reach while that `set -u` was unconditional (#342).
+#
+# The anchor matches BOTH spellings (the conditional one and the superseded bare `set -u`), because
+# the mutation below restores the bare one and this same injector has to land in the same place for
+# the pair to be comparable. A missed anchor is loud rather than a silently empty injection: that
+# would leave a fixture asserting the healthy path under another case's name.
+pg_unbound_below() {
+  awk 'BEGIN{n=0} {print}
+       n==0 && /^(set -u|if .*then set -u; fi)$/ {print ": \"${ADB_CHECK_PG_BELOW_XYZ}\""; n=1}
+       END{if (n==0) exit 3}' "$gate/lib/project-gates.sh" > "$gate/lib/pg.tmp" \
+    && mv "$gate/lib/pg.tmp" "$gate/lib/project-gates.sh" \
+    || bad "pg_unbound_below: no top-level 'set -u' line to inject below — the fixture would test nothing"
+}
 
 # 7a. The precondition every case below rests on: with a healthy library the configured gate RUNS
 # and its red status is what produces the 2. Asserted rather than assumed — if the fixture's gate
@@ -219,6 +233,41 @@ eq "$RC" "2" "global gate: unsourceable project-gates.sh → exit 2"
 has "$OUT" "failed to source" "global gate: …reported as a load failure, not as a missing function"
 if gate_ran; then bad "global gate: the gate RAN on a partially-loaded project-gates.sh"; else
   ok "global gate: …and no check runs on a partially-loaded project-gates.sh"; fi
+
+# 7l. [#342] The SAME expansion, one line LOWER — below the library's own `set -u`. 7h injects above
+# it, which is the only window a caller's options used to govern: the library turned nounset back on
+# mid-source, so everything after that line was fatal again and the gate exited 1 having run nothing.
+# The library's `set -u` is now conditional on direct execution, so the relaxation covers the load.
+run_gate_lib 'pg_unbound_below'
+eq "$RC" "2" "global gate: an unbound expansion BELOW project-gates.sh's own set -u does not decide the verdict"
+if gate_ran; then ok "global gate: …and the gate still ran to its own conclusion"; else
+  bad "global gate: an unbound expansion below the library's set -u stopped the gate before it ran"; fi
+
+# 7l-exec. The OTHER half of the dual role, and what stops 7l being satisfied by deleting the option
+# outright: EXECUTED directly, the library still runs under `set -u`, so the same injected expansion
+# is fatal there.
+set_libs both; pg_unbound_below
+PG_OUT="$(cd "$repo" && bash "$gate/lib/project-gates.sh" detect "$repo" 2>&1)"; PG_RC=$?
+no "$PG_RC" "project-gates.sh executed directly still runs under set -u — the expansion is fatal there"
+has "$PG_OUT" "unbound variable" "...and names the variable"
+set_libs both
+PG_OUT="$(cd "$repo" && bash "$gate/lib/project-gates.sh" detect "$repo" 2>&1)"; PG_RC=$?
+eq "$PG_RC" "0" "...while a healthy direct execution is unaffected"
+
+# 7l-mut. The library's `set -u` made unconditional again — the superseded shape. Nounset is back on
+# partway through the load, and the expansion below it kills the gate at rc 1. Pins 7l, which
+# nothing else covers: 7h injects ABOVE that line, so it stays green with the condition gone. The
+# mutated file is the LIBRARY copy, so `set_libs both` is what restores it.
+set_libs both
+if check_mutate_line "$gate/lib/project-gates.sh" 'if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then set -u; fi' \
+     's#^if .*then set -u; fi$#set -u#' "mut-pgsetu"; then
+  pg_unbound_below
+  rm -f "$repo/RAN"; run_gate
+  eq "$RC" "1" "mut-pgsetu: with the library's set -u unconditional again, the expansion below it kills the gate at rc 1 (so 7l can fail)"
+  if gate_ran; then bad "mut-pgsetu: the gate somehow still ran"; else
+    ok "mut-pgsetu: …having run nothing at all"; fi
+fi
+set_libs both
 
 # --- 7e-7k. Each assertion above is a guard, so each is OBSERVED FAILING ------
 # One mutation per repaired line, never a blanket edit: the three fixes are independent and a

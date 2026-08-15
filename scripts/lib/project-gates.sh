@@ -85,7 +85,16 @@
 # the richer per-gate state (N/A / disabled / scope) is surfaced by `status`, and consumed
 # internally by adb_run_gates.
 
-set -u
+# `set -u` ONLY WHEN EXECUTED (#342). Sourced, this file must not impose a shell option on its
+# caller: the Stop hook relaxes nounset across the load precisely so that a broken library degrades
+# to its blocking exit 2, and turning the option back on mid-source made an unbound expansion
+# anywhere below this line kill the hook at exit 1 — a NON-blocking notice, i.e. the turn ending
+# ungated. Same predicate as the two below, and it must stay ahead of the load: a caller's options
+# govern common.sh's top level too.
+#
+# Nothing at this file's own top level relies on nounset to surface a bug: audited, every top-level
+# expansion is a literal assignment or carries a `:-` default.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then set -u; fi
 
 # Shared primitives (adb_toml_get / adb_toml_unquote / adb_toml_keys) live next to this
 # file. At runtime this is ~/.<agent>/scripts/lib/common.sh (install.sh symlinks the whole

@@ -1679,6 +1679,28 @@ out="$(cd "$oslug" && adb_git_origin_slug 2>/dev/null)"; rc=$?
 no "$rc" "adb_git_origin_slug refuses to pick among several remotes with no origin"
 eq "$out" "" "adb_git_origin_slug prints nothing when the single answer is ambiguous"
 
+# --- adb_slug_eq: the ONE comparison of two `owner/repo` values (#340) --------------------------
+# GitHub slugs are case-insensitive, and the two anchors are not case-consistent by construction:
+# the git side is folded here, `.full_name` is whatever GitHub stores. A case-sensitive comparison
+# therefore refused EVERY run in any repo with uppercase in its slug.
+for _p in "acme/widget|Acme/Widget" "ACME/WIDGET|acme/widget" "AcMe/WiDgEt|aCmE/wIdGeT" \
+          "acme/widget|acme/widget"; do
+  adb_slug_eq "${_p%%|*}" "${_p##*|}"
+  yes "$?" "adb_slug_eq: '${_p%%|*}' and '${_p##*|}' name one repository"
+done
+# A DIFFERENT repository, and every unusable value, must refuse — folding must not make two repos
+# equal, and "cannot prove they match" is not "they match".
+for _p in "acme/widget|acme/widgets" "acme/widget|other/widget" "Acme/Widget|acme-co/widget" \
+          "acme/widget|" "|acme/widget" "|" "acme|acme" "a/b/c|a/b/c" "acme/widget|acme/widget/x"; do
+  adb_slug_eq "${_p%%|*}" "${_p##*|}"
+  no "$?" "adb_slug_eq: refuses '${_p%%|*}' vs '${_p##*|}'"
+done
+# The defect in its real shape: a folded git anchor against the API's canonical case.
+gslug="$work/gitcase"; mkdir -p "$gslug"; git init -q "$gslug"
+git -C "$gslug" remote add origin "https://github.com/BWBama85/ai-dev-baseline.git"
+adb_slug_eq "$(cd "$gslug" && adb_git_origin_slug)" "BWBama85/ai-dev-baseline"
+yes "$?" "adb_slug_eq: the folded git anchor agrees with the API's canonical case (#340)"
+
 # --- adb_git_repo_slugs: the anchor SET, which is what a cross-check needs ----------------------
 # Reading only `origin` was a real regression, verified against both ordinary layouts below: in a FORK
 # clone the pull request being gated lives on `upstream`, so an origin-only anchor returns a

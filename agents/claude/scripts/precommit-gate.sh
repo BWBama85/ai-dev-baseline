@@ -248,12 +248,12 @@ fail_loud() {
 # (see <prior-rc>), but `project-gates.sh` IS a real load, and its own top level runs under this
 # caller's options until it sets `set -u` itself.
 #
-# AND THAT LEAVES ONE DOOR OPEN, WHICH IS #342 AND NOT FIXABLE HERE. `project-gates.sh` runs
-# `set -u` at its own line 88, mid-file, so this relaxation is CANCELLED FROM INSIDE the library
-# partway through the load: an unbound expansion below that line is fatal again, and the gate exits
-# 1 exactly as it did before this change. Reproduced. A caller cannot stop a sourced file from
-# turning the option back on — the fix is that library's dual-role `set -u`, so do not read the
-# relaxation below as covering the whole of project-gates.sh, and do not "strengthen" it here.
+# THAT DOOR IS CLOSED SINCE #342, AND NOT FROM HERE. `project-gates.sh` used to run `set -u` at its
+# own top level while being sourced, cancelling this relaxation partway through the load, so an
+# unbound expansion below that line was fatal again and the gate exited 1. Its `set -u` is now
+# conditional on direct execution, so the relaxation governs the whole of that load. Do not
+# "strengthen" this side: no caller can stop a sourced file from turning an option back on, which is
+# why the repair had to be the library's.
 #
 # <prior-rc> (optional) OVERRIDES a zero status, because at the common.sh call site this function's
 # own `.` cannot observe a load at all. `common.sh` opens with a double-source guard

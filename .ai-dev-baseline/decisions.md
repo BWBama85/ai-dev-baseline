@@ -5789,3 +5789,41 @@ limit: none of them is sufficient alone.
              pool width is NOT re-litigated here: `adb_pool_size` and the per-caller cap are D66's,
              and the cap stays a parameter because the two adopt suites deliberately differ.
 - baseline-issue: n/a — this repo IS the baseline; #373 is the tracking issue.
+
+## D69 — slug identity is ONE named predicate, and it folds both sides
+- date:      2026-08-15
+- category:  project-delta
+- unknown:   #340 could have been repaired with a second inline `tr` at the comparison site. The
+             baseline says where a VALUE belongs (one home per primitive); it says nothing about
+             where a COMPARISON of two values belongs when each operand already has its own home.
+- decision:  `adb_slug_eq <a> <b>` in `common.sh`, built on `_adb_slug_fold` — which is now the one
+             home for the fold that `adb_pr_slug`, `_adb_remote_url_slug` and `adb_pr_slug_check`
+             each spelled inline. Inequality and unusability share exit 1: every caller is a refusal
+             gate, and there "cannot prove they match" is the same answer as "proven not to".
+- placement: `scripts/lib/common.sh`; the caller is `repo-settings.sh` `cmd_reconcile`.
+- reason:    The defect was one identity predicate normalizing its two sides differently — the exact
+             shape `base/practices/self-review.md` names in its "Why". Folding at the call site
+             would have left the next consumer free to re-derive it a third way, which is how the
+             two sides came to disagree in the first place.
+- baseline-issue: n/a — this repo IS the baseline; #340 is the tracking issue.
+
+## D70 — a dual-role file sets shell options only on the path that owns them
+- date:      2026-08-15
+- category:  project-delta
+- unknown:   `project-gates.sh` is BOTH a sourced library and an executed entry point. The baseline
+             has a rule for each role — a library must not impose shell options on its caller, an
+             entry point wants `set -u` — and nothing for a file that is both, so the option was set
+             unconditionally and the library rule silently lost.
+- decision:  Gate the option on the role: `if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then set -u; fi`,
+             the predicate this file already uses for its floor gate and its dispatch — no third
+             spelling. Executed, nothing changes. Sourced, the caller's options govern the whole
+             load, which is what lets the Stop hook's deliberate nounset relaxation reach the end of
+             the file instead of the line above this one.
+- placement: `scripts/lib/project-gates.sh`; pinned by `scripts/check-precommit-gate.sh` (the
+             sourced path, the executed path, and a mutation restoring the unconditional option).
+- reason:    A caller cannot stop a sourced file from turning an option back on, so the rule has to
+             live in the file that has both roles — #317 named this and could not fix it from the
+             caller. The sweep found no sibling: every other `scripts/lib` library that sets `set -u`
+             at top level is an executed entry point, and `common.sh` — the only other file with a
+             sourced role — sets no options at all.
+- baseline-issue: n/a — this repo IS the baseline; #342 is the tracking issue.

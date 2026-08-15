@@ -1722,10 +1722,13 @@ cmd_reconcile() {
   # pointed it — so the two identities are compared explicitly before anything is read further.
   #
   # An unresolvable origin is a refusal too: this is the write side, and "cannot prove they match"
-  # is not "they match".
+  # is not "they match". `adb_slug_eq` answers both — the identity and the unresolvable side — and
+  # it is the one home for the comparison because the two anchors disagree on CASE by construction:
+  # the git side is folded, `.full_name` is not, so a case-sensitive test refused every run in any
+  # repo with uppercase in its slug (#340).
   local checkout_slug
   checkout_slug="$(adb_git_origin_slug 2>/dev/null)" || checkout_slug=""
-  if [ -z "$checkout_slug" ] || [ "$checkout_slug" != "$REPO_SLUG" ]; then
+  if ! adb_slug_eq "$checkout_slug" "$REPO_SLUG"; then
     echo "repo-settings: the repository gh resolved is not this checkout's origin — NOT reconciling." >&2
     echo "repo-settings:   gh resolves:      $REPO_SLUG" >&2
     echo "repo-settings:   checkout origin:  ${checkout_slug:-<unresolvable>}" >&2
