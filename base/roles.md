@@ -101,11 +101,18 @@ cross-agent dispatch:
 - **On timeout / error / hang:** abandon the call — a Bash timeout kills a
   `codex exec` / `agy -p` / `claude -p` process; an Agent-tool subagent has no PID to
   kill, so its error or timeout return *is* the terminal signal — then **retry once**
-  and, *except for `gap_analysis`* (below), **fall back**: to another agent the role
-  lists, or to a `general-purpose` Claude subagent running the same prompt
-  (model-invokable whenever Claude drives; but it too can error, so it is a fallback,
-  not a guarantee). **Report every fallback prominently** — a step running on its
-  backup is a fact the operator must not have to dig for.
+  and, *except for `gap_analysis`* (below), **fall back** to another agent the role
+  lists (it too can error, so it is a fallback, not a guarantee). **Report every
+  fallback prominently** — a step running on its backup is a fact the operator must
+  not have to dig for.
+- **The fallback set is CROSS-MODEL only (#304).** A `general-purpose` subagent of the
+  driving agent used to close that list; it is gone. The fallback is reachable only while
+  that agent drives, so such a stand-in is the model that wrote the diff reviewing its own
+  work — the arrangement `review`'s own row exists to avoid, arriving through the back
+  door. It is also the same reasoning that already refuses to fabricate a reviewer for an
+  **empty** slot, and a slot that *broke* is not a weaker case for it. When no cross-model
+  stand-in is usable the step has **failed**; block or surface, and never fill it with a
+  pass that reads as coverage in the close-out while supplying none.
 - **`gap_analysis` never falls back to another agent.** Retry the assigned agent
   **exactly once**; if the second attempt also fails, **report the classified
   incompleteness and stop** (pre-branch, so no blocked marker — see the workflow's
