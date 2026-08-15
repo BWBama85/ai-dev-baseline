@@ -1107,11 +1107,11 @@ run_mutations() {
   # reach. The work is embarrassingly parallel and each mutation owns its own tree copy, so nothing
   # is shared but the CPU.
   #
-  # Same bound as selfcheck's: min(cpu, 8). `wait -n` needs bash 4.3+; the floor here is 5.3.
-  jobs="$( { getconf _NPROCESSORS_ONLN || sysctl -n hw.ncpu || echo 4; } 2>/dev/null | head -n1 )"
-  case "$jobs" in ''|*[!0-9]*) jobs=4 ;; esac
-  [ "$jobs" -gt 8 ] && jobs=8
-  [ "$jobs" -lt 1 ] && jobs=1
+  # ASKED FOR rather than restated: `adb_pool_size` is the one home for
+  # min(cpu, 8) (scripts/lib/common.sh, #335). This copy of the probe chain was the second of three
+  # spellings, and the third — `check-adopt-readiness.sh` — got the number wrong.
+  # `wait -n` needs bash 4.3+; the floor here is 5.3.
+  jobs="$(adb_pool_size 8)"
 
   for ((i = 0; i < n; i++)); do
     mkdir -p "$WORK/mut-$i"

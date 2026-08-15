@@ -657,24 +657,11 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--list]
 USAGE
 }
 
-# min(cpu, 8), portably. `nproc` is GNU coreutils and is absent from a stock macOS, where CI and
-# the maintainer both run; `getconf _NPROCESSORS_ONLN` is the one spelling both platforms carry,
-# with the other two as fallbacks. Deliberately NOT promoted to scripts/lib/common.sh: it has one
-# consumer, and that library is installed into every agent home and must stay parseable below the
-# 5.3 floor (D30). If a second consumer appears, promote it then — the `adb_run_bounded` path.
-cpu_count() {
-  local n=""
-  n="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || n=""
-  [ -n "$n" ] || n="$(sysctl -n hw.ncpu 2>/dev/null)" || n=""
-  [ -n "$n" ] || n="$(nproc 2>/dev/null)" || n=""
-  # Trim surrounding whitespace before the digit test. A probe that answered " 10" would otherwise
-  # fail it and fall back to 1 — a pool of one, which is this whole change silently not happening.
-  # (The run header prints the job count, so it would be visible; it should also not occur.)
-  n="${n#"${n%%[![:space:]]*}"}"; n="${n%"${n##*[![:space:]]}"}"
-  case "$n" in ''|*[!0-9]*) n=1 ;; esac
-  [ "$n" -ge 1 ] 2>/dev/null || n=1
-  printf '%s' "$n"
-}
+# min(cpu, 8) is `adb_pool_size` in scripts/lib/common.sh now (#335). The note that used to sit here
+# is why: it said this probe was deliberately NOT promoted "because it has one consumer — if a
+# second appears, promote it then". Two more appeared — `check-adopt.sh` wrote its own copy of the
+# chain, and `check-adopt-readiness.sh` skipped the probe and hardcoded 4 — so the third spelling
+# was the one that got the number wrong. Sourced, never copied (docs/design-principles.md).
 
 LIST=0
 while [ "$#" -gt 0 ]; do
@@ -721,7 +708,7 @@ if [ "$LIST" -eq 1 ]; then
   exit 0
 fi
 
-[ "$JOBS" -gt 0 ] || { JOBS="$(cpu_count)"; [ "$JOBS" -le 8 ] || JOBS=8; }
+[ "$JOBS" -gt 0 ] || JOBS="$(adb_pool_size)"
 
 # --only, applied to the declared order so the selection keeps it. An unknown name EXITS rather
 # than being skipped: a filter that quietly matches nothing runs zero checks and reports the same

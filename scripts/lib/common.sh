@@ -2423,6 +2423,80 @@ adb_run_bounded() {
   rm -f "$flag"; return "$rc"
 }
 
+# --- how wide a bounded pool may run -----------------------------------------
+#
+# ONE HOME, and it was three (#335). `scripts/selfcheck.sh` carried this probe chain with a note
+# saying it was deliberately NOT promoted here "because it has one consumer — if a second appears,
+# promote it then". A second appeared, then a third: `scripts/check-adopt.sh` wrote its own copy
+# inline, and `scripts/check-adopt-readiness.sh` skipped the probe entirely and hardcoded 4. Three
+# spellings of one question is how the third ends up wrong, and it did — 4 is half the usable width
+# of a 10-core workstation and a third more than the 3-core macOS runner has.
+#
+# BELOW-FLOOR SAFE (D30/D65): plain command substitution, no `${ command; }`, and none of the five
+# constructs the sub-floor scan bans. This file must keep parsing AND running under bash 3.2, which
+# is the interpreter `adb_require_bash` exists to reject — verified on /bin/bash 3.2.57.
+
+# _adb_pos_int <value> — <value> as a plain decimal positive integer, or nothing (status 1).
+#
+# LEADING ZEROS ARE STRIPPED RATHER THAN ACCEPTED, and that is not tidiness: `[ 007 -le 8 ]` is
+# TRUE (test parses base 10) while `$(( 007 ))` is 7 and `$(( 010 ))` is 8 (arithmetic parses
+# OCTAL). A value that survives validation and is then used in either context would mean two
+# different numbers depending on which one a caller reached for. `selfcheck.sh --jobs` already
+# carries a note about `000` for the same reason; this normalizes once instead.
+_adb_pos_int() {
+  local v="${1:-}"
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in ''|*[!0-9]*) return 1 ;; esac
+  while [ "${v#0}" != "$v" ] && [ -n "${v#0}" ]; do v="${v#0}"; done
+  [ "$v" != 0 ] || return 1
+  # AND IT MUST FIT IN THE SHELL'S ARITHMETIC. A value past intmax makes `[ "$v" -le … ]` fail with
+  # `integer expected` ON STDERR rather than return false — the caller's `||` then picks the right
+  # answer, so the number is correct and the run is littered with a diagnostic that reads like a
+  # broken check. `selfcheck.sh --jobs` already carries a note about this class; nine digits is far
+  # past any core count and far inside the range where the comparison simply works.
+  [ "${#v}" -le 9 ] || return 1
+  printf '%s' "$v"
+}
+
+# adb_cpu_count — the number of online CPUs, or 1 when nothing here can say.
+#
+# `nproc` is GNU coreutils and is absent from a stock macOS, where CI and the maintainer both run;
+# `getconf _NPROCESSORS_ONLN` is the one spelling both platforms carry, with the other two as
+# fallbacks. A probe that cannot answer falls back to 1 — a pool of one is slow, never wrong.
+adb_cpu_count() {
+  local n=""
+  n="$(getconf _NPROCESSORS_ONLN 2>/dev/null)" || n=""
+  [ -n "$n" ] || n="$(sysctl -n hw.ncpu 2>/dev/null)" || n=""
+  [ -n "$n" ] || n="$(nproc 2>/dev/null)" || n=""
+  n="$(_adb_pos_int "$n")" || n=1
+  printf '%s' "$n"
+}
+
+# adb_pool_size [cap] — how many workers a bounded pool should run: min(cpu, cap), cap default 8.
+#
+# ADB_POOL_JOBS REPLACES THE CPU PROBE when it is a positive integer; the cap still applies. That
+# ordering is deliberate — it makes the variable a BUDGET a caller can be handed rather than a way
+# to exceed one — and it is also the seam that lets the sizing be OBSERVED going wrong: without it,
+# "the bound was honoured" is only testable on whichever machine the test happens to run on
+# (base/practices/self-review.md).
+#
+# NOTHING IN THIS REPO EXPORTS IT TODAY, and that is worth stating rather than leaving a reader to
+# infer a mechanism that is not there. `selfcheck.sh` handing each pooled step a slice of one
+# machine-wide budget was built against #335 and measured slower in every configuration tried, so
+# it is not shipped (D66). The seam stays because the alternative is a bound nothing can test, and
+# because an operator on a shared box has no other way to ask for a smaller pool.
+#
+# A MALFORMED value falls back to the probe rather than to 1, and is not fatal. Silently becoming
+# 1 is the failure this whole primitive exists to prevent, and a caller's parallelism is not the
+# place to die; a caller that must REJECT a bad value says so itself (`selfcheck.sh --jobs`).
+adb_pool_size() {
+  local cap n
+  cap="$(_adb_pos_int "${1:-8}")" || cap=8
+  n="$(_adb_pos_int "${ADB_POOL_JOBS:-}")" || n="$(adb_cpu_count)"
+  [ "$n" -le "$cap" ] || n="$cap"
+  printf '%s' "$n"
+}
+
 # --- installed-baseline discovery --------------------------------------------
 
 # True iff <path> is a symlink whose target is inside <src>. The ownership test every

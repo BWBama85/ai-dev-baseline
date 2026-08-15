@@ -1054,7 +1054,7 @@ mut unterminated-final-record-dropped \
 # One mutation, start to verdict. The verdict travels through a FILE because this runs in a
 # background subshell and a counter incremented there dies with it.
 _mut_one() {  # <index>
-  local i="$1" copy out
+  local i="$1" copy out src
   copy="$WORK/mut-$i"
   mkdir -p "$copy"
   if ! check_copy_subtrees "$ROOT" "$copy" scripts base >/dev/null 2>&1; then
@@ -1070,24 +1070,60 @@ _mut_one() {  # <index>
     printf 'bad|the mutation matched nothing (literal is stale)\n' > "$copy/verdict"; return
   fi
   mv "$copy/mutated" "$copy/scripts/lib/adopt-readiness.sh"
-  out="$( cd "$copy" && ADB_STATE_DIR="$copy/state" bash scripts/check-adopt-readiness.sh 2>&1 )"
-  case "$out" in
-    *"FAIL: ${MUT_WIT[$i]}"*) printf 'ok|\n' > "$copy/verdict" ;;
-    *)
+  # THE STATUS AND THE WITNESS, both. This used to match the witness STRING and throw the recursive
+  # suite's exit code away — so "38 observed RED" was a claim about what the child PRINTED, never
+  # about whether it failed. The two agree today only because `check_summary` couples them; a
+  # refactor that lost a status while still printing the line would leave this harness reporting
+  # thirty-eight proofs it no longer had. Require exactly 1: it is what a failed ASSERTION exits,
+  # while a crash, a `set -u` abort or a usage error exit something else, and those are the suite
+  # dying rather than the guard firing (base/practices/self-review.md).
+  out="$( cd "$copy" && ADB_STATE_DIR="$copy/state" bash scripts/check-adopt-readiness.sh 2>&1 )"; src=$?
+  case "$src" in
+    1)
       case "$out" in
+        *"FAIL: ${MUT_WIT[$i]}"*) printf 'ok|\n' > "$copy/verdict" ;;
         *FAIL:*) printf 'bad|went red, but NOT on its witness [%s]\n' "${MUT_WIT[$i]}" > "$copy/verdict" ;;
-        *)       printf 'bad|stayed GREEN — the guard cannot fail\n' > "$copy/verdict" ;;
+        *)       printf 'bad|exited 1 with no FAIL: line at all — it aborted, it did not fail an assertion\n' > "$copy/verdict" ;;
       esac ;;
+    0) printf 'bad|stayed GREEN (exit 0) — the guard cannot fail\n' > "$copy/verdict" ;;
+    *) printf 'bad|exited %s, not 1 — the suite ABORTED rather than failing its assertion\n' "$src" > "$copy/verdict" ;;
   esac
+  # A worker's own status must stay 0 whatever it decided: the pool below reaps exactly one job per
+  # `wait -n`, and a non-zero worker is what used to send it down a fallback that drained every
+  # child at once. The verdict travels in the file; the exit code carries nothing.
+  return 0
 }
 
 if [ "$MUTATE" -eq 1 ]; then
   # The mutated copies run the suite recursively, so the child must NOT recurse again.
-  pool=4; i=0; running=0
+  #
+  # THE WIDTH IS ASKED FOR, NOT HARDCODED (#335). It was `pool=4` — half the usable width of a
+  # 10-core workstation, and a third MORE than the 3-core `macos-latest` runner has, on a step that
+  # costs 1115 CPU-seconds and is 94% of `selfcheck`'s critical path. `adb_pool_size` is the one
+  # home for the answer (scripts/lib/common.sh): min(cpu, 8), so the number right-sizes itself per
+  # machine instead of being a constant chosen on one.
+  #
+  # THE CAP IS 4 BECAUSE THAT IS WHAT IT ALREADY WAS, and `min` is the only part that changes
+  # anything. This deliberately does NOT try to tune the number: it takes no more workers than the
+  # constant it replaces on any machine, and fewer on a machine with fewer cores — the 3-core
+  # `macos-latest` runner has been forking 4 and now forks 3. That claim needs no benchmark.
+  #
+  # WHAT A BENCHMARK WOULD HAVE TO SURVIVE, stated because it was attempted and did not: on the
+  # maintainer's box the whole suite measured 526s, 583s and 775s across trees whose differences
+  # were far smaller than that spread, and two runs with DIFFERENT pool widths reported CPU totals
+  # within 0.1% of each other. Standalone, pool 8 looked 9% faster for 46% more CPU; in-suite that
+  # did not reproduce. So no width here is claimed to be optimal — only that this one is never
+  # worse than what shipped before. D66 records the numbers and their unreliability together.
+  pool="$(adb_pool_size 4)"; i=0; running=0
   while [ "$i" -lt "${#MUT_NAMES[@]}" ]; do
     _mut_one "$i" &
     running=$((running + 1)); i=$((i + 1))
-    if [ "$running" -ge "$pool" ]; then wait -n 2>/dev/null || wait; running=$((running - 1)); fi
+    # `wait -n` ALONE, with no `|| wait` behind it. That fallback fired on any worker that exited
+    # non-zero and then waited for EVERY child while decrementing the counter once — so `running`
+    # stayed pinned at the bound and the pool degraded toward serial, silently. Measured on an
+    # 8-worker fixture at pool 4: 5s against the correct 2s. `_mut_one` returns 0 unconditionally
+    # (see its tail), so the fallback protected nothing that the contract does not already give.
+    if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
   done
   wait
   applied=0; red=0
@@ -1099,8 +1135,11 @@ if [ "$MUTATE" -eq 1 ]; then
       *) bad "mutation '${MUT_NAMES[$i]}': ${v#*|}" ;;
     esac
   done
-  printf '\ncheck-adopt-readiness --mutation: %d mutation(s) applied, %d observed RED on their own witness\n' \
-    "$applied" "$red" >&2
+  # SAY THE WIDTH IT ACTUALLY USED, as check-adopt.sh already does. A pool that degrades to one
+  # finishes with the same counts and the same verdict as a healthy one — the only difference is
+  # how long it took, which nothing reads. Printing it is what makes that difference visible.
+  printf '\ncheck-adopt-readiness --mutation: %d mutation(s) applied, %d observed RED on their own witness (pool=%s)\n' \
+    "$applied" "$red" "$pool" >&2
 fi
 
 check_summary "check-adopt-readiness"

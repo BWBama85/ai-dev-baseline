@@ -68,8 +68,17 @@ bash scripts/selfcheck.sh
 `scripts/selfcheck.sh` runs its steps **concurrently** (#260): a registry dispatched through a
 `wait -n` job pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
 eight steps at once never interleave. Results therefore arrive in *completion* order, and the final
-`result` block names every failing step. On a 10-core machine the suite went from 273–279s to
-66–72s.
+`result` block names every failing step. That bound counts **steps, not processes** (#335): three
+of them run bounded pools of their own, so the real number of workers is higher than `--jobs`
+suggests. Turning it into a bound on processes was tried and measured and made the suite slower —
+see D66 for the table.
+
+**Expect minutes, not seconds, and read the run's own output rather than this sentence.** Eight
+full runs on the maintainer's 10-core macOS machine (2026-08-14) spanned **8m46s to 12m55s** — the range
+is the honest figure, and it is wider than most changes you will make to the suite. One step,
+`adopt-readiness-mutation`, is consistently most of it. The `result` block prints the elapsed time
+and the three slowest steps every run, which is why the number lives there and only a dated
+snapshot lives here.
 
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs everything
 sequentially, in the order listed below, with output streaming live — that is the mode for
@@ -80,7 +89,11 @@ rewrites files in the working tree; everything else either reads the tree or wor
 temporary directory. Under `--serial` it simply takes its declared place, and `--only` can leave it
 out altogether.
 
-The steps, in declaration order: **shellcheck** (tracked `*.sh` + `bin/agent-init`),
+**Some** of the steps, in declaration order — `--list` is the registry and is always current,
+where this walkthrough covers 23 of 49 and was silently claiming to be the whole set until #335
+counted it. Read it for what these checks are *for*; ask `--list` for what runs.
+
+**shellcheck** (tracked `*.sh` + `bin/agent-init`),
 **build-drift** (rebuild + assert generated root docs **and** skills are current — not
 stale, untracked, or missing), **build-atomic** (a render that fails part-way must leave the
 tracked file it was writing byte-exact — faulted in a throwaway fixture, with three mutations

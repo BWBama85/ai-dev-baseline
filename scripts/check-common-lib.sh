@@ -1334,6 +1334,76 @@ if [ -n "$(adb_actions_app_slug)" ]; then ok; else bad "adb_actions_app_slug is 
 # NOT here: `scripts/check-fact-drift.sh` is the declared home for a fact restated across files,
 # and it already pins branch-health and required-drift. See the `actions-slug-*` facts there.
 
+# ============ the pool-sizing primitive (#335: promoted from selfcheck.sh) ============
+#
+# THIS PRIMITIVE'S FAILURE MODE IS A SMALLER NUMBER, which is the quietest one available: a pool of
+# one is not wrong, it is slow, and nothing in a green run distinguishes it from a pool of eight.
+# The three callers each fork whole check suites, so an unnoticed 1 costs minutes per run and
+# reports exactly what a healthy run reports. Every case below is a way that could happen.
+#
+# The probe chain is driven through a STUBBED PATH rather than read off this machine: an assertion
+# that compares `adb_cpu_count` against the host's core count asserts nothing (both sides come from
+# the same call), and would answer differently on the two runners this repo builds on.
+_cpu_stub() {   # _cpu_stub <getconf-output> -> a PATH dir whose cpu probes answer exactly that
+  local sb="$work/cpuprobe"; rm -rf "$sb"; mkdir -p "$sb"
+  printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$1" > "$sb/getconf"
+  # sysctl and nproc stubbed to FAIL, so the fallback chain cannot rescue a bad first answer and
+  # make a case pass for a reason it was not written to test.
+  printf '#!/bin/sh\nexit 1\n' > "$sb/sysctl"; printf '#!/bin/sh\nexit 1\n' > "$sb/nproc"
+  chmod +x "$sb/getconf" "$sb/sysctl" "$sb/nproc"
+  printf '%s' "$sb"
+}
+cpu_probe()  { local sb; sb="$(_cpu_stub "$1")"; PATH="$sb:$PATH" adb_cpu_count; }
+# pool_probe <getconf-output> [cap] — adb_pool_size against a KNOWN cpu count, so the fallback
+# cases below can assert a literal. Comparing them against `adb_cpu_count` instead would be
+# tautological (both sides would be the same call) and would answer differently on the two runners
+# this repo builds on.
+pool_probe() {
+  local sb; sb="$(_cpu_stub "$1")"
+  if [ "$#" -ge 2 ]; then PATH="$sb:$PATH" adb_pool_size "$2"; else PATH="$sb:$PATH" adb_pool_size; fi
+}
+eq "$(cpu_probe 4)"       "4"  "adb_cpu_count: a plain count is used as-is"
+eq "$(cpu_probe '  6  ')" "6"  "adb_cpu_count: surrounding whitespace is trimmed, not read as garbage"
+eq "$(cpu_probe banana)"  "1"  "adb_cpu_count: unusable output falls back to 1, never to empty"
+eq "$(cpu_probe '')"      "1"  "adb_cpu_count: an empty answer falls back to 1"
+eq "$(cpu_probe 0)"       "1"  "adb_cpu_count: a zero is not a usable width"
+# ZERO-PADDED, and this is the case that motivated `_adb_pos_int` rather than a bare digit test.
+# `[ 010 -le 8 ]` is FALSE (test reads base 10: 10 > 8) while `$(( 010 ))` is 8 (arithmetic reads
+# OCTAL) — so an un-normalized value means two different numbers depending on which one a caller
+# reaches for, and a `pool=010` printed into a log is a third answer again.
+eq "$(cpu_probe 012)"     "12" "adb_cpu_count: a zero-padded count is decimal 12, not octal 10"
+
+eq "$(ADB_POOL_JOBS='' pool_probe 6)"    "6"  "adb_pool_size with no budget follows the cpu probe"
+eq "$(ADB_POOL_JOBS='' pool_probe 32)"   "8"  "adb_pool_size: the default cap is 8"
+eq "$(ADB_POOL_JOBS='' pool_probe 6 2)"  "2"  "adb_pool_size: an explicit cap is honoured"
+eq "$(ADB_POOL_JOBS=3 pool_probe 6)"     "3"  "adb_pool_size: a budget REPLACES the probe"
+eq "$(ADB_POOL_JOBS=3 pool_probe 6 2)"   "2"  "adb_pool_size: the cap still applies over a budget"
+eq "$(ADB_POOL_JOBS=32 pool_probe 6)"    "8"  "adb_pool_size: a budget cannot exceed the cap"
+eq "$(ADB_POOL_JOBS=007 pool_probe 6)"   "7"  "adb_pool_size: a zero-padded budget is decimal, not octal"
+# A MALFORMED budget falls back to the PROBE, not to 1. Falling back to 1 would turn a typo in an
+# environment variable into the silent serialization this whole primitive exists to prevent, and it
+# would do it on the machine where the typo is hardest to see. `6`, not the host's core count, is
+# what makes this discriminate: a fallback to 1 and a fallback to the probe are different numbers.
+eq "$(ADB_POOL_JOBS=banana pool_probe 6)" "6" \
+  "adb_pool_size: a malformed budget falls back to the probe, NOT to 1"
+eq "$(ADB_POOL_JOBS=0 pool_probe 6)"      "6" \
+  "adb_pool_size: a zero budget is malformed (a pool of zero never dispatches)"
+eq "$(ADB_POOL_JOBS=-2 pool_probe 6)"     "6" \
+  "adb_pool_size: a negative budget is malformed"
+eq "$(ADB_POOL_JOBS=3 pool_probe 6 banana)" "3" \
+  "adb_pool_size: a malformed cap falls back to 8 rather than refusing"
+# PAST INTMAX, and the assertion is about STDERR, not the answer. `[ 99999999999999999999 -le 8 ]`
+# does not return false — it fails with `integer expected` on stderr, so the caller's `||` picks
+# the right number and the run is littered with a diagnostic that reads like a broken check. The
+# value is captured to a FILE because `$(…)` cannot see whether stderr was written.
+_pool_err="$work/pool.err"
+eq "$(ADB_POOL_JOBS=99999999999999999999 pool_probe 6 2>"$_pool_err")" "6" \
+  "adb_pool_size: a value past the shell's arithmetic range is malformed, not a comparison error"
+if [ -s "$_pool_err" ]; then bad "adb_pool_size stays SILENT on an over-large budget: $(cat "$_pool_err")"; else ok; fi
+# The floor: whatever happens, the answer is usable as a loop bound.
+if [ "$(ADB_POOL_JOBS=banana pool_probe banana)" -ge 1 ] 2>/dev/null; then ok
+else bad "adb_pool_size never returns a value below 1"; fi
+
 # ============ the PR-argument and repository-identity primitives (#173) ============
 # Promoted out of pr-review.sh and pr-watch.sh, which each carried private copies that had already
 # DIVERGED into a live fail-open. They are covered here, at their one home, rather than only through
@@ -2522,25 +2592,44 @@ if [ "${1:-}" = "--mutation" ]; then
   #   where a single line genuinely disappears — checked with `grep -F`, so a pattern character in
   #   it cannot quietly widen the match — and is passed EMPTY for a mutation that only rewrites a
   #   line in place, where `cmp` is the honest check and inventing a gone-string would be theatre.
-  mutate() {
-    local name="$1" witness="$2" gone="$3" script="$4" out
-    sed "$script" "$mut_root/pristine.sh" > "$mut_lib"
-    if cmp -s "$mut_root/pristine.sh" "$mut_lib"; then
-      mut_fail=$((mut_fail + 1))
-      printf 'FAIL: mutation %s DID NOT APPLY (file byte-identical to pristine) — its green proves nothing\n' "$name" >&2
-      return
+  #
+  # `mutate` RECORDS; `_cl_mut_one` executes, one mutation per BOUNDED-POOL worker (#335). It ran
+  # them one at a time against a SHARED tree copy, rewriting one `common.sh` in place — which is
+  # exactly why it had to be serial, and why adding six rows to it took the step from 323s to 596s
+  # and made it `selfcheck`'s critical path. Each mutation now owns its own copy, which is what its
+  # two sibling harnesses (`check-adopt.sh`, `check-adopt-readiness.sh`) already do and the only
+  # thing that made them poolable. Every `mutate` call below is unchanged.
+  MUT_NAME=(); MUT_WIT=(); MUT_GONE=(); MUT_SED=()
+  mutate() { MUT_NAME+=("$1"); MUT_WIT+=("$2"); MUT_GONE+=("$3"); MUT_SED+=("$4"); }
+
+  # One mutation, start to verdict. The verdict travels through a FILE because this runs in a
+  # background subshell and a counter incremented there dies with it.
+  _cl_mut_one() {   # <index>
+    local i="$1" copy lib out
+    copy="$mut_root/t$i"
+    # Copied from the already-`.git`-free pristine tree rather than re-copying the working tree, so
+    # each worker pays for 7 MB and not for the repository's history.
+    if ! { mkdir -p "$copy" && ( cd "$mut_root/t" && cp -R . "$copy" ); } >/dev/null 2>&1; then
+      printf 'bad|could not copy the tree\n' > "$mut_root/v$i" 2>/dev/null; return 0
     fi
-    if [ -n "$gone" ] && grep -qF -- "$gone" "$mut_lib"; then
-      mut_fail=$((mut_fail + 1))
-      printf 'FAIL: mutation %s DID NOT APPLY (still found: %s) — its green proves nothing\n' "$name" "$gone" >&2
-      return
+    lib="$copy/scripts/lib/common.sh"
+    sed "${MUT_SED[$i]}" "$mut_root/pristine.sh" > "$lib"
+    if cmp -s "$mut_root/pristine.sh" "$lib"; then
+      printf 'bad|DID NOT APPLY (file byte-identical to pristine) — its green proves nothing\n' > "$mut_root/v$i"
+      return 0
     fi
-    out="$( (cd "$mut_root/t" && bash scripts/check-common-lib.sh 2>&1) )"
+    if [ -n "${MUT_GONE[$i]}" ] && grep -qF -- "${MUT_GONE[$i]}" "$lib"; then
+      printf 'bad|DID NOT APPLY (still found: %s) — its green proves nothing\n' "${MUT_GONE[$i]}" > "$mut_root/v$i"
+      return 0
+    fi
+    out="$( (cd "$copy" && bash scripts/check-common-lib.sh 2>&1) )"
     case "$out" in
-      *"FAIL: $witness"*) mut_pass=$((mut_pass + 1)) ;;
-      *) mut_fail=$((mut_fail + 1))
-         printf 'FAIL: mutation %s did not turn its witness red: %s\n' "$name" "$witness" >&2 ;;
+      *"FAIL: ${MUT_WIT[$i]}"*) printf 'ok|\n' > "$mut_root/v$i" ;;
+      *) printf 'bad|did not turn its witness red: %s\n' "${MUT_WIT[$i]}" > "$mut_root/v$i" ;;
     esac
+    # A worker's own status stays 0 whatever it decided: the pool reaps exactly one job per
+    # `wait -n`, and the verdict travels in the file.
+    return 0
   }
 
   # 1. The producer's precondition is deleted from every branch → it stops refusing at all.
@@ -2599,9 +2688,85 @@ if [ "${1:-}" = "--mutation" ]; then
     "the target home contains a tab or newline, which the install manifest cannot represent: %s\\n" \
     '/the target home contains/s/%s\\n/%s/'
 
-  cp "$mut_root/pristine.sh" "$mut_lib"
-  printf '\ncheck-common-lib --mutation: %d mutation(s) observed RED on their own witness, %d failed\n' \
-    "$mut_pass" "$mut_fail"
+  # --- the pool-sizing primitive (#335) --------------------------------------------------------
+  # Its failure mode is a SMALLER NUMBER, which passes every functional test its callers have: a
+  # pool of one produces byte-identical output to a pool of eight and merely takes minutes longer.
+  # So the cases worth injecting are the ones where the answer silently shrinks, silently stops
+  # being honoured, or stops being a usable integer at all.
+
+  # 9. THE DECISIVE ONE. The budget is ignored, so `adb_pool_size` always answers from the cpu
+  #    probe — every nested pool sizes itself off the whole machine again and `selfcheck`'s bound
+  #    goes back to being a bound on steps rather than on processes. Nothing in a green run shows
+  #    it; the suite simply costs more and the operator is told a number that is not true.
+  mutate budget-not-honoured \
+    "adb_pool_size: a budget REPLACES the probe" \
+    'n="$(_adb_pos_int "${ADB_POOL_JOBS:-}")" || n="$(adb_cpu_count)"' \
+    '/_adb_pos_int "\${ADB_POOL_JOBS:-}"/s/.*/  n="$(adb_cpu_count)"/'
+
+  # 10. The cap stops applying — the direction that oversubscribes rather than serializes, and the
+  #     one a caller passing an explicit cap is relying on.
+  mutate cap-not-applied \
+    "adb_pool_size: the default cap is 8" \
+    '[ "$n" -le "$cap" ] || n="$cap"' \
+    '/\[ "\$n" -le "\$cap" \] || n="\$cap"/d'
+
+  # 11. A malformed budget collapses to 1 instead of falling back to the probe: one typo in an
+  #     environment variable serializes every pool on the machine, quietly.
+  mutate malformed-budget-becomes-one \
+    "adb_pool_size: a malformed budget falls back to the probe, NOT to 1" \
+    "" \
+    '/_adb_pos_int "\${ADB_POOL_JOBS:-}"/s/|| n="\$(adb_cpu_count)"/|| n=1/'
+
+  # 12. Leading zeros stop being stripped, so `012` is returned verbatim — decimal 12 to `[`,
+  #     octal 10 to `$(( ))`, and a nonsense `pool=012` in the log.
+  mutate zero-padding-not-normalized \
+    "adb_cpu_count: a zero-padded count is decimal 12, not octal 10" \
+    'while [ "${v#0}" != "$v" ] && [ -n "${v#0}" ]; do v="${v#0}"; done' \
+    '/while \[ "\${v#0}" != "\$v" \]/d'
+
+  # 13. The probe stops falling back to 1 on unusable output, so a caller receives the EMPTY string
+  #     as a loop bound — not slow, but a syntax error at the call site.
+  mutate probe-failure-returns-empty \
+    "adb_cpu_count: unusable output falls back to 1, never to empty" \
+    'n="$(_adb_pos_int "$n")" || n=1' \
+    '/n="\$(_adb_pos_int "\$n")" || n=1/s/ || n=1//'
+
+  # 14. The arithmetic-range check is dropped, so an over-large value reaches `[ … -le … ]` and
+  #     that comparison ERRORS instead of returning false. The number a caller gets is still
+  #     right — the damage is a diagnostic on stderr that reads like a broken check, which is
+  #     exactly the shape no assertion about the return value can see.
+  mutate arithmetic-range-unchecked \
+    "adb_pool_size stays SILENT on an over-large budget" \
+    '[ "${#v}" -le 9 ] || return 1' \
+    '/\[ "\${#v}" -le 9 \] || return 1/d'
+
+  # --- run them, bounded ------------------------------------------------------------------------
+  # `adb_pool_size` is the one home for the width (scripts/lib/common.sh): min(cpu, 8), so it
+  # right-sizes per machine rather than being a constant chosen on one. `wait -n` alone, with no
+  # `|| wait` behind it — that fallback drains every child while decrementing once, which is a
+  # silent degrade to serial.
+  mut_pool="$(adb_pool_size 8)"; mut_i=0; mut_running=0; mut_n="${#MUT_NAME[@]}"
+  [ "$mut_n" -gt 0 ] || { echo "check-common-lib --mutation: the mutation table is EMPTY — this harness proves nothing" >&2; exit 1; }
+  while [ "$mut_i" -lt "$mut_n" ]; do
+    _cl_mut_one "$mut_i" &
+    mut_running=$((mut_running + 1)); mut_i=$((mut_i + 1))
+    if [ "$mut_running" -ge "$mut_pool" ]; then wait -n; mut_running=$((mut_running - 1)); fi
+  done
+  wait
+
+  # THE PARENT SCORES, over every index — so a worker that died without writing a verdict is a
+  # FAILURE rather than a silently missing row.
+  for mut_i in $(seq 0 $((mut_n - 1))); do
+    mut_v="$(cat "$mut_root/v$mut_i" 2>/dev/null || echo 'bad|produced NO verdict — its worker died without reporting')"
+    case "$mut_v" in
+      ok\|*) mut_pass=$((mut_pass + 1)) ;;
+      *) mut_fail=$((mut_fail + 1))
+         printf 'FAIL: mutation %s %s\n' "${MUT_NAME[$mut_i]}" "${mut_v#*|}" >&2 ;;
+    esac
+  done
+
+  printf '\ncheck-common-lib --mutation: %d mutation(s) observed RED on their own witness, %d failed (pool=%s)\n' \
+    "$mut_pass" "$mut_fail" "$mut_pool"
   [ "$mut_fail" -eq 0 ] || exit 1
   printf 'check-common-lib --mutation: PASS\n'
   exit 0

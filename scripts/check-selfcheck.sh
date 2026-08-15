@@ -353,7 +353,11 @@ probe() {  # probe <getconf-output> -> the job count the runner chose
   # make this test pass for the wrong reason.
   printf '#!/bin/sh\nexit 1\n' > "$sb/sysctl"; printf '#!/bin/sh\nexit 1\n' > "$sb/nproc"
   chmod +x "$sb/getconf" "$sb/sysctl" "$sb/nproc"
-  PATH="$sb:$PATH" ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/selfcheck.sh" --only practice-index 2>&1 \
+  # ADB_POOL_JOBS CLEARED: since #335 the runner sizes its pool through `adb_pool_size`, which reads
+  # that variable INSTEAD of the probe chain. Left set, every case below would read whatever an
+  # operator happened to export and test nothing — while staying green on it.
+  PATH="$sb:$PATH" ADB_POOL_JOBS='' ADB_STUB_CTL="$FX/ctl" \
+    bash "$FX/scripts/selfcheck.sh" --only practice-index 2>&1 \
     | sed -n 's/^selfcheck: .* \([0-9][0-9]*\) parallel job(s).*/\1/p'
 }
 eq "$(probe 4)"      "4" "cpu probe: a plain count is used as-is"

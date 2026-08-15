@@ -9,6 +9,101 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **Neither reading of "parallelise it" makes `selfcheck` faster — and its documented cost gets
+  one dated home (#335).**
+
+  `CLAUDE.md` golden rule 3 told every contributor and every agent that the mandatory pre-push gate
+  cost **66-72s**. Eight full runs on the maintainer's 10-core macOS machine spanned
+  **8m46s to 12m55s** — an order of magnitude out, and the spread itself is part of the answer.
+  The old figure was not careless: D37 measured it correctly on 2026-08-03, against a **39-step**
+  registry. The registry is **49** steps now, and the one that dominates it did not exist then.
+
+  **Measured first, and the measurement refused the obvious fix.** `adopt-readiness-mutation` is
+  **493s of the 526s wall — 94% of the critical path** — and 1115 of the suite's 2546 CPU-seconds.
+  It runs `check-adopt-readiness.sh` in full once per injected defect, 38 times, through a pool
+  that was hardcoded at 4. Widening that pool is what the issue proposed, so it was tried:
+
+  | inner pool | wall | CPU (user + sys) |
+  |---|---|---|
+  | 4 | 328s | 1115s |
+  | 8 | 299s | 1627s |
+
+  **Nine percent of wall clock for 46% more CPU.** The step is syscall-bound — `sys` exceeds `user`
+  throughout — so more workers mostly buy contention. The width stays 4.
+
+  What was actually costing 165s: the box ran **48% utilised** while that step got 2.26 cores out
+  of the 4 it nominally held, because `selfcheck` dispatched 8 step slots *and* two of those steps
+  forked pools of their own on top. `--jobs N` bounded a number nobody cared about.
+
+  - **A machine-wide process budget was built, measured, and is NOT shipped.** `selfcheck`'s
+    `min(cpu, 8)` bounds STEPS, and three of them run pools of their own — so `--jobs N` bounds a
+    number nobody cares about. The obvious fix is to bound processes instead: each pooled step
+    declares a width, the pool admits by summed width, each worker is handed its slice. That was
+    built in full, guarded by five negative cases against a copied runner, and then measured:
+
+    | configuration | wall | CPU | critical step |
+    |---|---|---|---|
+    | **shipped** (no leaf bound) | **526s** | 2546s | 493s |
+    | leaf budget 8 | 705s | 2904s | 587s |
+    | leaf budget 16, width 4 | 603s | 2787s | 552s |
+    | leaf budget 16, width 8 | 591s | 3090s | 521s |
+    | leaf budget 16 + breadth cap 8 | 692s | 3172s | 628s |
+    | leaf budget 20 | 724s, **`selfcheck-guard` went red** | 3214s | 695s |
+
+    **Not one configuration beat leaving it alone** — and the stronger finding is that this
+    machine could not measure the difference. Trees with small functional differences produced
+    **526s, 583s and 775s**, and two runs with *different* inner pool widths reported CPU totals
+    within 0.1% of each other when the standalone numbers predicted a ~500s gap. The table is a
+    record of what was observed, **not a ranking**; treating it as one is the mistake this entry
+    exists to prevent.
+
+    What did survive the noise is qualitative: collapsing "steps in flight" into "leaf workers"
+    doubles the breadth, and that took `shellcheck` from **57s to 270s** and timed the cancellation
+    assertions out — a step change rather than a few percent. So the budget is reverted, the
+    reasons it looked right are in D66, and `--jobs N` still bounds steps rather than processes.
+
+    `ADB_POOL_JOBS` flows one way: the runner hands out slices and is never handed one, or a stray
+    value in an operator's environment would silently shrink the whole suite.
+  - **A third harness is pooled, because this change broke it.** `check-common-lib.sh
+    --mutation` ran its mutations one at a time against a *shared* tree copy, rewriting one
+    `common.sh` in place — which is exactly why it could not be parallel. Adding the six rows the
+    new primitive needs took it from **323s to 596s** and made it the critical path: a fix that
+    traded one long pole for another, caught by measuring the result rather than assuming it. Each mutation now owns its copy, as the two siblings already
+    did — and the step is **128s standalone** for 14 mutations, against 596s for the serial
+    version's 14 and 323s for its original 8.
+  - **The harness's width is `min(cpu, 4)`, which takes no more workers than the `4` it replaces
+    and fewer where the machine is smaller.** On a 10-core workstation both spell `4`; on the
+    3-core `macos-latest` runner the constant forked *more* workers than the machine has cores,
+    and `min` gives it **3**. No claim is made that 4 is optimal — see the noise caveat above;
+    the claim is only that this is never worse than what shipped before, which needs no benchmark.
+  - **`min(cpu, 8)` moves to `scripts/lib/common.sh`, on the instruction that was already there.**
+    `selfcheck.sh`'s comment read *"deliberately NOT promoted: it has one consumer — if a second
+    appears, promote it then."* Two appeared, and the third spelling — `check-adopt-readiness.sh`'s
+    — got the number wrong: 4 is half a workstation's usable width and a third more than the 3-core
+    `macos-latest` runner has. `adb_cpu_count` / `adb_pool_size` are the one home, below the 5.3
+    floor and verified under a real `/bin/bash` 3.2.57.
+  - **Two defects in the harness itself**, both surfaced by the gap-analysis pass. Its
+    `wait -n 2>/dev/null || wait` fallback waited for **every** child while decrementing the
+    counter once — 5s against the correct 2s on an 8-worker fixture at pool 4, a silent degrade
+    toward serial. And its verdict matched the recursive suite's `FAIL:` **string** while throwing
+    the exit status away, so *"38 observed RED"* was a claim about what a child printed. It now
+    requires exactly exit 1 **and** that mutation's own witness, and reports the pool it used.
+  - **`--list` gains a fourth field** (the declared width). The third stays `pool|serial`, so the
+    guards that already read it are untouched.
+
+  **What is enforceable about the number, stated narrowly.** Nothing offline can re-measure a wall
+  clock, so no lint can tell you the figure has aged. What went wrong was cheaper than that: it was
+  restated in **seven** files and went stale in all of them together. Five of those restatements
+  are deleted in favour of "minutes, not seconds" and a pointer; `check-fact-drift.sh` pins the
+  live value across the two that remain and refuses the retired one in all seven — in **three**
+  spellings, because the real ones differed (ASCII hyphen, en-dash, and a bare `66s`), and the
+  en-dash is why the first grep for this figure found five of seven sites. Golden rule 3's
+  hand-copied step list is gone for the same reason: it named 29 of 49, and `--list` cannot go
+  stale.
+
+  Deliberately **not** here: #339 (the same step running on both CI legs) and #297 (a hanging gate
+  is unattributable). Both are tracked, neither blocks this.
+
 - **The below-floor carve-out is enforced by NAME, not just by parse (#315).**
 
   #310 shipped `--sub-floor` and stated its own gap in its header: D30 forbids **five** constructs
