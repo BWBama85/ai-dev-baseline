@@ -81,8 +81,9 @@ test = "bash scripts/selfcheck.sh"
 #
 # `selfcheck.sh` is the whole offline CI mirror. Golden rule 3 puts it before every push, and
 # that is right; as the `test` axis of a per-turn Stop hook it meant re-running CI after every
-# message — measured at 66-72s parallel (#260) and once observed far worse. This declaration is
-# what the general fix for that looks like, and this repo dogfoods it.
+# message — minutes, not seconds, and growing as the registry does (see CLAUDE.md golden rule 3
+# for the current measured figure). This declaration is what the general fix for that looks like,
+# and this repo dogfoods it.
 #
 # WHAT IT DOES NOT DO, so nobody reads more into it: it does not change this repo's turn-end
 # behaviour today. The global gate delegates to `.claude/scripts/precommit-gate.sh` (D25) before

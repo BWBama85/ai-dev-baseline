@@ -29,7 +29,10 @@ product thesis turned inward.
   runtime gates all **source** it. `adb_run_bounded` (a portable TERM → grace → KILL wall-clock
   backstop) lives there for the same reason: `role-dispatch.sh` bounds an agent CLI and
   `currency-lib.sh` bounds `baseline update`, and a second hand-rolled watchdog would have been
-  drift the moment it was written. The install manifest is single-sourced too: `install.sh`
+  drift the moment it was written. `adb_cpu_count` / `adb_pool_size` (how wide a bounded pool may
+  run) are the worked example of this rule being learned the hard way: `selfcheck.sh` carried the
+  probe with a note saying it was deliberately *not* shared because it had one consumer, two more
+  consumers appeared anyway, and the third spelling shipped the wrong number (#335). The install manifest is single-sourced too: `install.sh`
   links it, `uninstall.sh` removes it, and `bin/baseline` verifies it — one producer, so the
   create/remove/verify sets can't drift. `scripts/check-common-lib.sh` unit-tests the
   primitives; a regression breaks one job, not eight silently-diverging copies.

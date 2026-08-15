@@ -243,8 +243,8 @@ unconditionally (fail-safe).
 **Don't point a per-turn gate at a full CI suite.** The Stop hook fires at the
 end of *every* turn, including turns that edit nothing. A `test` gate wired to a
 repo-wide CI mirror therefore re-runs CI after every message — this framework's
-own `test` gate is `scripts/selfcheck.sh`, and doing that at turn-end was
-measured at 66–72s a turn (and once observed far worse). `[gates.scope]` cannot
+own `test` gate is `scripts/selfcheck.sh`, which costs **minutes** a run and
+grows as its registry does. `[gates.scope]` cannot
 express the difference, because a repo-wide suite legitimately matches almost any
 changed path. Cadence can:
 

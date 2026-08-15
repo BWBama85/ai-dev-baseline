@@ -857,6 +857,43 @@ fact fact-guard-wired 'regex:^[^#]*check-fact-guard\.sh' -- \
 fact build-atomic-wired 'regex:^[^#]*check-build-atomic\.sh' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
 
+# --- what selfcheck COSTS, and the figure that replaced (#335) ----------------
+#
+# A WALL CLOCK CANNOT BE PINNED, and this lint does not pretend to. What it pins is the thing that
+# actually failed: the figure was restated in SIX files (eight occurrences), went stale in all of
+# them at once, and `CLAUDE.md` golden rule 3 — the contributor contract — told every reader and
+# every agent that a mandatory pre-push gate cost about a minute when it cost minutes. Nothing
+# offline can re-measure a runtime, so nothing can tell you the number has aged; what a lint CAN do
+# is keep the surviving copies identical and refuse the retired value's return.
+#
+# TWO FILES CARRY A FIGURE, not six. That is the other half of the fix. `agents.toml`,
+# `.claude/scripts/precommit-gate.sh`, `docs/per-project-overrides.md`, `.github/workflows/ci.yml`
+# and `CLAUDE.md`'s own precommit-gate row now describe the cost QUALITATIVELY ("minutes, not
+# seconds") and point at golden rule 3; only golden rule 3 and `CONTRIBUTING.md` state a
+# measurement, and both state it as a dated RANGE.
+_sc_cost_docs="CLAUDE.md CONTRIBUTING.md"
+# shellcheck disable=SC2086  # deliberate word-splitting of the file list, as elsewhere in this file
+fact selfcheck-cost 'fixed:8m46s to 12m55s' -- $_sc_cost_docs
+#
+# THE NEGATIVE HALF, and it is exactly what this file's header sanctions `absent:` for — "a value a
+# fact has retired", never a general prose blocklist. Presence-checking cannot catch a file that
+# carries the new figure AND keeps the old one beside it, which is how the 2026-08-03 measurement
+# survived into a registry a quarter larger than the one it was taken on.
+#
+# THREE SPELLINGS, because the real ones differed and a pattern that catches two of three is green
+# on the third: `CLAUDE.md` and four others wrote an ASCII hyphen, `CONTRIBUTING.md` and
+# `docs/per-project-overrides.md` wrote an EN-DASH — which is why the first grep for this figure
+# found five of seven sites — and two files carried a bare "66s" with no range at all.
+#
+# SCOPED TO THE CURRENT-CLAIM FILES. `.ai-dev-baseline/decisions.md` and `CHANGELOG.md` keep the
+# figure deliberately: they are dated records of what was measured when, and rewriting them would
+# be falsifying history rather than correcting a claim. They are not in this list and must not be
+# added to it.
+fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
+  'fires:66-72s after' 'fires:measured at 66–72s a turn' 'fires:even 66s per turn is the wrong trade' \
+  -- $_sc_cost_docs agents.toml .claude/scripts/precommit-gate.sh \
+     docs/per-project-overrides.md .github/workflows/ci.yml
+
 # --- the bash floor: 5.3, and the 3.2 declaration it retired (#256/#261) ------
 #
 # The floor number itself, pinned across the constant and the docs that restate it. The constant in

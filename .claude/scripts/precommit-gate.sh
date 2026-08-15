@@ -2,22 +2,26 @@
 # ai-dev-baseline — THIS REPO'S OWN Stop-hook gate (#240, D25).
 #
 # The global gate runs whatever `agents.toml [gates]` declares. This repo declares
-# `test = "bash scripts/selfcheck.sh"` — its entire 40-step offline CI mirror. That is the right
-# command for the job CLAUDE.md golden rule 3 gives it (before every PUSH) and the wrong one for a
-# Stop hook, which fires at the end of EVERY turn: a run that observed 18m55s during a session that
+# `test = "bash scripts/selfcheck.sh"` — its entire offline CI mirror. That is the right command
+# for the job CLAUDE.md golden rule 3 gives it (before every PUSH) and the wrong one for a Stop
+# hook, which fires at the end of EVERY turn: a run that observed 18m55s during a session that
 # edited nothing left the operator no escape but deleting the hook machine-wide.
 #
-# THAT 18m55s FIGURE IS NOT THE SUITE'S COST, and #260 measured it rather than repeating it. On the
-# maintainer's 10-core machine the pre-#260 sequential suite is 273s and 279s, and the post-#260
-# parallel suite is 66-72s; a deliberately timed run never came close to nineteen minutes. The
-# 18m55s was real, but what has been demonstrated is that it DOES NOT REPRODUCE — not a cause for
-# it. That run was not instrumented, so "the machine was busy" is a guess and is not asserted here;
-# it is restated as an observation rather than as the suite's runtime.
+# THAT 18m55s FIGURE IS NOT THE SUITE'S COST. #260 measured the suite rather than repeating the
+# number, and a deliberately timed run never came close to nineteen minutes; the 18m55s was real
+# but DOES NOT REPRODUCE, and that run was not instrumented, so no cause for it is asserted here.
 #
-# The decision it justified is unchanged, and does not need the bigger number. One command, two
-# cadences, wildly different budgets: even 66s at the end of every turn is the wrong trade, so this
-# gate runs the FAST subset that catches what a turn actually breaks (~3s measured), and the full
-# mirror stays where it belongs.
+# THE SUITE'S COST IS NOT QUOTED HERE EITHER, and that is the correction #335 forced. This comment
+# used to carry a figure D37 measured on 2026-08-03 against a 39-step registry — accurate then,
+# wrong within a release, and restated in six files that all went stale together. It has ONE home
+# now: CLAUDE.md golden rule 3, dated, beside the reminder that the run prints its own elapsed
+# time. (The step COUNT is gone from the first paragraph above for the same reason: it said
+# "40-step" against a registry of 49.)
+#
+# The decision that number justified is unchanged and never depended on its size. One command, two
+# cadences, wildly different budgets: the mirror costs minutes per run and a turn-end gate must
+# cost seconds, so this gate runs the FAST subset that catches what a turn actually breaks
+# (~3s measured), and the full mirror stays where it belongs.
 #
 # WHAT THIS DOES NOT COVER, stated rather than implied: everything else `selfcheck.sh` runs — every
 # check-*.sh suite, install dry-run, the migration and guard checks. This is a turn-end smoke test,

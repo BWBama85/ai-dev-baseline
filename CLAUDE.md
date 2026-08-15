@@ -25,16 +25,40 @@ those. The rules below are specific to this repo's code.
    concern per file. `base/workflows/` is the single source for each workflow's
    procedure + metadata (rendered into the Claude skills). `base/roles.md` is the
    multi-agent role model.
-3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs
-   (shellcheck · build-drift · build-atomic · skill-frontmatter · workflow-render · gate-detector · gates · common-lib ·
-   pr-review · cleanup-enum · cleanup · adopt-readiness · baseline · precommit-gate · implement-gate · implement-lib · install-migration ·
-   install-guard · bash-floor · bash-floor-guard · fact-drift · fact-mutation · fact-guard · claims · claims-guard · practice-index · release-role · release-skill · selfcheck-guard · install-dry-run). Fix red at the root — never push and
-   hope (the CI-discipline practice applies to this repo too).
+3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs —
+   shellcheck, the generated-file drift check, every `check-*.sh` suite, and an install→uninstall
+   dry-run. **`bash scripts/selfcheck.sh --list` prints the registry**, and that is the
+   authoritative set: the hand-copied list that used to sit here named 29 of what are now 49 steps,
+   because a list in prose goes stale the first time a step is added and nothing says so. Fix red
+   at the root — never push and hope (the CI-discipline practice applies to this repo too).
 
    **It runs those steps in PARALLEL** (#260, D37) — a registry of steps dispatched through a
    `wait -n` pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
-   concurrent steps never interleave. Measured on a 10-core machine: **273s/279s before, 66-72s
-   after** (~4x). The flags worth knowing:
+   concurrent steps never interleave.
+
+   **That bound counts STEPS, not processes** (#335, D66) — three registered steps run bounded
+   pools of their own, so the real leaf count is higher than `--jobs` implies. Making it a bound on
+   processes was built and measured and is *not* shipped: every configuration tried came out slower
+   than leaving it alone, and D66 carries the table. What did ship is the sizing primitive
+   (`adb_pool_size`), which is what stops a harness inventing its own number.
+
+   **What it costs — a RANGE, measured, not a number.** On the maintainer's 10-core macOS machine
+   on 2026-08-14, eight full runs of near-identical trees spanned **8m46s to 12m55s**. That spread is
+   the honest answer: it is what the machine actually did, and it is wider than most changes
+   anyone will make to the suite. One step, `adopt-readiness-mutation`, is consistently 85-95% of
+   it — it runs the whole `check-adopt-readiness.sh` suite once per injected defect, 38 times.
+
+   **Read the run, not this line.** The `result` block prints its own elapsed time and three
+   slowest steps every time, and that output is always current where this sentence is only as
+   current as its last edit. Two lessons are baked into the wording: quoting a single number
+   invites the precision it does not have (#335 was filed because one such number was off by an
+   order of magnitude), and the previous figure was *correct* when D37 took it on 2026-08-03 —
+   against a **39-step** registry, before the dominant step existed. It stays in D37 where it is
+   dated, and is deliberately not repeated here: it had been restated in six files, and all six
+   went stale together. `scripts/check-fact-drift.sh` now pins the live figure across the
+   files that carry it, and refuses the retired one.
+
+   The flags worth knowing:
 
    - **`--serial`** runs the registry in declaration order with output streaming live. Reach for it
      when a parallel failure is hard to attribute — it is the debugging mode, and it is what the
@@ -132,8 +156,8 @@ those. The rules below are specific to this repo's code.
    lack, so the gate **re-execs** into a known-good interpreter before failing.
 
    **Source the shared primitives, never copy them** — link/unlink/backup,
-   default-branch, TOML-read, version-compare and the bash floor itself live once in
-   `scripts/lib/common.sh` (see `docs/design-principles.md`).
+   default-branch, TOML-read, version-compare, pool sizing (`adb_pool_size`) and the bash floor
+   itself live once in `scripts/lib/common.sh` (see `docs/design-principles.md`).
 5. **Skills are self-contained.** A Claude `SKILL.md` loads whole — keep it complete.
    Keep shared content agent-neutral so adapters can render it.
 6. **Feature branch + PR + green CI.** No direct pushes to `main`. Deferred work earns a
@@ -151,8 +175,8 @@ those. The rules below are specific to this repo's code.
 | `base/roles.md`, `templates/agents.toml` | Role model + per-project manifest |
 | `agents/<agent>/` | Per-agent: generated root doc, `adapter.sh`, generated `skills/` (all agents); Claude also has **hand-written** hook `scripts/` — `build.sh` does not render them, so edit those in place |
 | `.claude/skills/release/SKILL.md` | **This project's own `/release`** — hand-written, **not** generated, and deliberately outside `base/`+`agents/` so decision #3/D7's "no baseline `/release`" lint stays green. Cuts the tag: re-verifies readiness + branch health live, stamps `CHANGELOG.md` through a normal PR, tags the verified-green merge commit, then `baseline release roll`. Every adopting repo owes itself one of these (D14) |
-| `.claude/scripts/precommit-gate.sh` | **This project's own Stop-hook gate** (D25, #240). `[gates] test` here is `selfcheck.sh` — the whole CI mirror — which is right before a *push* and wrong per *turn*. (The 18m55s once observed did not reproduce: #260 measured 273s serial and 66-72s parallel. That run was not instrumented, so no cause for the outlier is claimed — and the decision does not need the bigger number, since even 66s per turn is the wrong trade.) This runs the fast subset instead (changed-file shellcheck · build-drift · workflow-render · practice-index · fact-drift, ~3s) and says so: it is a turn-end smoke test, **not** a CI predictor. The global gate detects it and `exec`s it |
-| `scripts/lib/common.sh` | Shared shell primitives — the **ONE home** for link/unlink/backup, default-branch, TOML-read, version-compare; **source it, never copy** |
+| `.claude/scripts/precommit-gate.sh` | **This project's own Stop-hook gate** (D25, #240). `[gates] test` here is `selfcheck.sh` — the whole CI mirror — which is right before a *push* and wrong per *turn*. (The 18m55s once observed did not reproduce, and that run was not instrumented, so no cause for the outlier is claimed. The decision never needed the bigger number: the mirror costs minutes per run and a turn-end gate must cost seconds — see golden rule 3 for the current figure, which has only grown.) This runs the fast subset instead (changed-file shellcheck · build-drift · workflow-render · practice-index · fact-drift, ~3s) and says so: it is a turn-end smoke test, **not** a CI predictor. The global gate detects it and `exec`s it |
+| `scripts/lib/common.sh` | Shared shell primitives — the **ONE home** for link/unlink/backup, default-branch, TOML-read, version-compare, and how wide a bounded pool may run (`adb_cpu_count`/`adb_pool_size`, #335); **source it, never copy** |
 | `scripts/lib/project-gates.sh` | Gate auto-detector (installs beside `common.sh` into `~/.<agent>/scripts/lib`) |
 | `scripts/lib/skill-compose.sh` | Partial skill-override composer — merges a project's `overrides.md` onto the installed base skill so a project carries deltas without forking the whole skill (#22); installs beside `common.sh` |
 | `scripts/lib/cleanup-lib.sh` | `/cleanup`'s decision predicates — squash/rebase-merge detection (#106), run-state liveness + the terse output contract (#84) — factored out of the workflow prose so they are regression-testable offline (`scripts/check-cleanup.sh`); installs beside `common.sh` |

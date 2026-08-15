@@ -5445,3 +5445,153 @@ limit: none of them is sufficient alone.
              count differs between them by the 3.2-gated block, exactly as that header documents;
              the FAIL count is zero in both.
 - baseline-issue: n/a — this repo IS the baseline; #315 is the tracking issue.
+
+## D66 — #335 lands as OPTION 3: no scheduling change made selfcheck faster, and the runtime figure gets one dated home
+- date:          2026-08-14
+- category:      project-delta
+- unknown:       Two things the baseline does not model. (1) A `min(cpu, 8)` job pool whose
+                 workers are themselves job pools — `selfcheck.sh` dispatches 8 steps of which
+                 `adopt-mutation` forks `min(cpu,8)` more and `adopt-readiness-mutation` forked a
+                 hardcoded 4, so `--jobs N` bounds a number nobody cared about. (2) A performance
+                 figure in the contributor contract that no offline lint can re-measure, restated
+                 in six files (eight occurrences), wrong in all of them at once (#335).
+- decision:      **Option 3** of the three #335 offers — accept the cost, correct the
+                 documentation — reached by attempting option 1 first and being refuted by
+                 measurement, plus the infrastructure repair that attempt turned up.
+
+                 THE UNCOMFORTABLE HEADLINE FIRST, because it is the finding: **no scheduling
+                 change tried here made this suite reliably faster, and the machine could not
+                 measure the small ones at all.** A machine-wide process budget — built in full and
+                 guarded by five negative cases — was never observed beating the code it replaced,
+                 so it is not shipped. What ships is the sizing primitive that removes a wrong
+                 hardcoded number, two real defects in a guard that could not fail, a third harness
+                 that is now pooled (596s -> 128s), and a contributor contract that no longer
+                 states a false figure.
+
+                 1. **The measurements, taken before anything was written.** 10-core macOS,
+                    `525dc49`, idle machine, whole suite: **526s (8m46s)** over 49 steps, of which
+                    `adopt-readiness-mutation` is **493s — 94% of the critical path**. `/usr/bin/
+                    time` puts the suite's total cost at **2546 CPU-seconds** (user 1079, sys
+                    1467) against 5260 core-seconds available, so the box ran **48% utilised**:
+                    the headroom was real, and it was not where the issue assumed.
+                 2. **WIDENING THE INNER POOL IS NOT THE WIN, and the measurement says so.** The
+                    same harness standalone: **pool 4 → 328s wall / 1115 CPU-s**; **pool 8 → 299s
+                    wall / 1627 CPU-s**. Nine percent of wall clock for **46% more CPU** — it is
+                    syscall-bound (`sys` exceeds `user` throughout), so extra workers mostly buy
+                    contention. The width therefore stays **4** — but as `adb_pool_size 4`, i.e.
+                    `min(cpu, 4)`, which is NOT the same statement as the constant it replaces.
+
+                    THAT DISTINCTION IS THE WHOLE FIX AND IS EASY TO MISREAD, because on the
+                    maintainer's machine both spellings print `4`. The constant was wrong in BOTH
+                    directions: it over-forked the 3-core `macos-latest` runner (which now gets
+                    **3**), and it was a number nobody could justify. The cap now encodes a
+                    measurement — "no benefit past four" — and `min` adds "and less on a machine
+                    that has less". Running this harness at `min(cpu, 8)` instead was measured too,
+                    and it is worse in the way that matters least visibly: the suite stayed green
+                    at **583s but burned 3175 CPU-seconds against 2546**, because the extra workers
+                    take their CPU from the other 48 steps.
+                 3. **A MACHINE-WIDE BUDGET WAS BUILT, MEASURED, AND IS NOT SHIPPED.** The obvious
+                    fix for a bound that counts steps is to make it count PROCESSES: each pooled
+                    step declares a width, `run_pool` admits by summed width, and each worker is
+                    handed its slice in `ADB_POOL_JOBS`. That was built in full, guarded by five
+                    negative cases against a copied runner, and then measured end to end — five
+                    times, because the answer kept disagreeing with the intuition:
+
+                    | configuration | wall | CPU | critical step |
+                    |---|---|---|---|
+                    | **shipped** (no leaf bound) | **526s** | 2546s | 493s |
+                    | leaf budget = 8 | 705s | 2904s | 587s |
+                    | leaf budget 16, width 4 | 603s | 2787s | 552s |
+                    | leaf budget 16, width 8 | 591s | 3090s | 521s |
+                    | leaf budget 16 + breadth cap 8 | 692s | 3172s | 628s |
+                    | leaf budget 20 | 724s, **`selfcheck-guard` went RED** | 3214s | 695s |
+
+                    NOT ONE CONFIGURATION BEAT LEAVING IT ALONE — but the stronger and more
+                    uncomfortable finding is that THIS MACHINE COULD NOT MEASURE THE DIFFERENCE.
+                    Trees whose functional differences were small produced 526s, 583s and 775s,
+                    and two runs with DIFFERENT inner pool widths reported CPU totals within 0.1%
+                    of each other (3175s and 3173s) when the standalone numbers predicted a ~500s
+                    gap. The spread is larger than every effect being chased, so the table above
+                    is a record of what was observed, NOT a ranking. Reading it as a ranking is
+                    the mistake this entry exists to stop the next reader making — it is the one
+                    the author made twice before noticing.
+
+                    What survives that caveat is qualitative and was reproducible: collapsing
+                    "steps in flight" into "leaf workers" doubles the breadth and made `shellcheck`
+                    go from 57s to 270s and the cancellation assertions time out — a step change,
+                    not a few percent. The rest is inside the noise.
+
+                    So it is reverted, and the reasons it was attractive are recorded rather than
+                    re-derived next time: `--jobs N` still bounds STEPS, not processes, and the
+                    3-core `macos-latest` runner still carries more concurrent suite runs than it
+                    has cores. Both are real; neither is fixed by a change that cannot be shown to
+                    help. What DID ship from this line of work is the sizing primitive, which is
+                    where the actual defect was.
+
+                 4b. **The THIRD harness is pooled too, and it is pooled because this change broke
+                    it.** `check-common-lib.sh --mutation` ran its mutations one at a time against
+                    a SHARED tree copy, rewriting one `common.sh` in place — which is precisely why
+                    it could not be parallel. Adding the six rows point 5 requires took that step
+                    from **323s to 596s** and made it the suite's critical path: a fix that traded
+                    one long pole for another. Each mutation now owns its copy, exactly as the two
+                    sibling harnesses already did, and the step is **128s standalone** for 14 mutations
+                    (against 596s serial for the same 14, and 323s for its original 8). The
+                    regression was caught by measuring the result rather than by assuming it, which
+                    is the only reason it is not in this PR.
+                 5. **Two defects in the harness this touched, both found by the gap-analysis
+                    pass.** Its `wait -n 2>/dev/null || wait` fallback waited for EVERY child while
+                    decrementing the counter once — measured on an 8-worker fixture at pool 4 as
+                    5s against the correct 2s, a silent degrade toward serial. And the verdict
+                    matched the recursive suite's `FAIL:` STRING while discarding its exit status,
+                    so "38 observed RED" was a claim about what a child printed. It now requires
+                    exactly exit 1 AND that mutation's own witness.
+                 6. **The figure gets one dated home and a lint, because nothing can re-measure
+                    it.** `CLAUDE.md` golden rule 3 carries the measurement, dated, beside the
+                    reminder that the run prints its own elapsed time; `CONTRIBUTING.md` carries
+                    it for contributors. The other five restatements were DELETED in favour of
+                    "minutes, not seconds" and a pointer. `check-fact-drift.sh` pins the live
+                    value across the two and refuses the retired one in all seven — in three
+                    spellings, because the real ones differed (ASCII hyphen, EN-DASH, and a bare
+                    `66s`), and the en-dash is why the first grep for this figure found five of
+                    seven sites.
+                 7. **The registry list in golden rule 3 is gone too.** It named 29 of 49 steps.
+                    `--list` is the authoritative set and cannot go stale; a list in prose can and
+                    did. Same for `precommit-gate.sh`'s "40-step".
+- placement:     `scripts/lib/common.sh` (`adb_cpu_count`/`adb_pool_size`); `scripts/selfcheck.sh`
+                 (its private `cpu_count` deleted in favour of the shared reader — the ONLY change
+                 that survived there); `scripts/check-adopt-readiness.sh`, `scripts/check-adopt.sh`
+                 and `scripts/check-common-lib.sh` (the shared bound, the two harness defects, and
+                 the third harness's pooling); `scripts/check-common-lib.sh` +
+                 `scripts/check-selfcheck.sh` (the guards); `scripts/check-fact-drift.sh` (the
+                 figure's pins); `CLAUDE.md`, `CONTRIBUTING.md`, `agents.toml`,
+                 `.claude/scripts/precommit-gate.sh`, `docs/per-project-overrides.md`,
+                 `.github/workflows/ci.yml`; this entry.
+                 NOT placed anywhere, because they were reverted: `STEP_WIDTH`, `step_width`,
+                 `run_pool`'s width accounting, the `ADB_POOL_JOBS` hand-down and `--list`'s fourth
+                 field. They exist only in this entry's description of what was tried.
+- reason:        The issue framed three options and asked for a deliberate choice. Option 2
+                 (tier the step) was refused: D13/D24's exceptions are about network, auth and
+                 mutable external state, and this suite is hermetic, so tiering would break the
+                 "every offline check CI runs" contract to buy speed — and no subset of 38
+                 mutations preserves the claim that all 38 guards were exercised.
+
+                 SO THE SHIPPED CHOICE IS OPTION 3 — accept the cost, correct the documentation —
+                 and calling it option 1 would be flattering the result. Option 1 was ATTEMPTED, in
+                 both of its readings, and both were refuted by measurement: the harness is still
+                 four-wide on the machine the issue was filed from, and the process budget that
+                 would have made the bound real is reverted. What accompanies option 3 is
+                 infrastructure repair the investigation turned up — one home for the pool bound,
+                 two defects in a guard that could not fail, and a third harness pooled — none of
+                 which makes the suite meaningfully faster and none of which the issue asked for.
+                 Option 3's own cost is real and is not waved away: a 9-13 minute mandatory gate is
+                 the gate people stop running, and nothing here changes that.
+
+                 The documentation half is not garnish. A figure that is wrong by an order of
+                 magnitude in the file that tells every contributor and every agent what a
+                 mandatory gate costs is a defect in the contract, and it went wrong precisely
+                 because it was true when written: D37 measured it correctly on 2026-08-03,
+                 against a 39-step registry, before the step that now dominates existed. Nothing
+                 offline can notice a runtime aging, so what is enforceable is that the copies
+                 stay identical and the retired value cannot return — and that the count and the
+                 list, which CAN be asked of the runner, are no longer hand-copied at all.
+- baseline-issue: n/a — this repo IS the baseline; #335 is the tracking issue.
