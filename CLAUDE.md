@@ -28,7 +28,7 @@ those. The rules below are specific to this repo's code.
 3. **Run `scripts/selfcheck.sh` before every push.** It mirrors every *offline* check CI runs —
    shellcheck, the generated-file drift check, every `check-*.sh` suite, and an install→uninstall
    dry-run. **`bash scripts/selfcheck.sh --list` prints the registry**, and that is the
-   authoritative set: the hand-copied list that used to sit here named 29 of what are now 49 steps,
+   authoritative set: the hand-copied list that used to sit here named 29 of what are now 50 steps,
    because a list in prose goes stale the first time a step is added and nothing says so. Fix red
    at the root — never push and hope (the CI-discipline practice applies to this repo too).
 

@@ -2,6 +2,7 @@
 
 Before opening a PR, run a **dedicated self-review pass focused on real bugs** —
 separate from writing the code, and separate from any independent reviewer.
+<!-- adb:except claude -->
 
 This is a **mandatory gate**, not a victory lap. It repeatedly catches genuine
 landmines in freshly generated code before they reach a reviewer or production.
@@ -19,6 +20,7 @@ landmines in freshly generated code before they reach a reviewer or production.
 - **Idempotency:** can this run twice without corrupting state? (Queue consumers,
   migrations, cron, scripts especially.)
 - **Resource leaks:** unclosed handles, unbounded growth, missing timeouts.
+<!-- adb:end -->
 
 ## How
 

@@ -81,11 +81,16 @@ the producer's.
 ## 2. Add `foo` to `scripts/build.sh`
 
 Add one `render(...)` call so `foo`'s root doc is generated from
-`base/practices/*.md` like the other three:
+`base/practices/*.md` like the other three. The first argument is the **agent token** — the
+renderer needs it to resolve per-agent blocks (below), and it is the same token everything else
+in this guide uses:
 
 ```bash
-render "$root/agents/foo/FOO.md" "Global engineering practices"
+render foo "$root/agents/foo/FOO.md" "Global engineering practices"
 ```
+
+Add `foo` to `build_known_agents` in the same file, or every `<!-- adb:except foo -->` a source
+might carry is rejected as an unknown token.
 
 Run `bash scripts/build.sh` and commit the generated file — CI re-runs this
 script and fails the build if the checked-in output has drifted from what
@@ -107,6 +112,20 @@ different surface, its renderer plugs in the same way and reads the same
 re-authored per agent. A `render()` for `foo`'s root doc is all that's required
 for `foo` to be installable and role-assignable; native skills are the optional
 deeper parity described below.
+
+### Choose `foo`'s instruction density — do not let it default silently
+
+Some blocks in `base/` render for some agents and not others: verification/scope **instruction
+density** varies where the agents' vendors ask for different amounts of it, while the procedure,
+the gates and the state protocol stay identical for everyone (#304, decision **D67**; the marker
+contract is in `base/workflows/README.md`).
+
+The grammar is exclusion-only, so **a new agent inherits every existing block by default** — the
+fullest, most explicitly-scaffolded render. That default is deliberate and safe (it changes no
+other agent's instructions, and it is what every agent got before the facility existed), but it is
+a default, not an answer. Read what `foo`'s vendor publishes about verification prompting, and
+either confirm the inherited density or add `foo` to the relevant markers. Say which you did in
+the PR; an unstated inheritance is the one outcome this section exists to prevent.
 
 ## 3. Register `foo` in `base/roles.md`
 

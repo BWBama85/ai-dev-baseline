@@ -51,9 +51,11 @@ bounded by each CLI).
   agent supplies its own map for the same placeholders. `{{…}}` is **reserved** for this
   vocabulary — any `{{…}}` that survives rendering (a typo, or a token with no map entry)
   is a fail-loud build error, never emitted into a skill.
-- **Encoding.** UTF-8, LF line endings, a single trailing newline. The renderer
-  normalizes the trailing newline (so the generated skill always ends with exactly one);
-  keep sources newline-terminated so the render stays a clean marker + placeholder diff.
+- **Encoding.** UTF-8, LF line endings, a single trailing newline. A source that is **not**
+  newline-terminated is **rejected** — the build fails rather than repairing it, because the
+  per-agent block filter reads sources through `awk`, whose `print` always appends a newline, and
+  silently adding a byte is the wrong way to differ from the `cat` it replaced (#304). The
+  rendered *output* still ends with exactly one trailing newline.
 - **`README.md` is not a workflow** — the renderer skips it.
 
 ### Neutral placeholder vocabulary
@@ -126,6 +128,66 @@ renderer/enforcement follow-ups, not this pass:
   Claude until #14/#25 gives the other agents a hook. **`scripts/check-fact-drift.sh` pins the
   literal name in all three rendered skills**, so neutralizing this is expected to change that
   rule — the lint failing at that point is the tripwire working, not a regression.
+
+### Per-agent blocks (`<!-- adb:except … -->`) — instruction density only
+
+**One source, one procedure, different amounts of scaffolding.** A block wrapped in these
+markers renders for every known agent **except** the ones it names:
+
+```markdown
+Do your own self-review pass first and list each finding.
+<!-- adb:except claude -->
+
+**Always** run it — self-review is the mandatory floor: edge cases, escaping/encoding,
+off-by-one, idempotency.
+<!-- adb:end -->
+```
+
+The mechanism is `block_filter` in `scripts/build.sh`, and **both** renderers call it — the
+root-doc `render()` and the skill `render_agent_skill()` — so the same markers work in
+`base/practices/*.md` and `base/workflows/*.md` alike. It runs **before** the `{{TOKEN}}` MAP,
+so a placeholder inside an excluded block is never substituted for an agent the author excluded.
+
+**What may go in one, and this is the whole constraint:** verification and scope **instruction
+density**. The procedure, the gates and the state protocol are shared content and must render
+identically to every agent. A rendered doc may differ in *how much it is told to double-check*;
+it must never differ in *what it does*. Nothing in `build.sh` can enforce that — it is a rule for
+the author and the reviewer, and `scripts/check-agent-blocks.sh` pins the concrete consequences
+rather than the principle. Why it exists: the two vendors' published guidance asks for opposite
+densities (Anthropic's Opus 5 guidance asks that explicit verification scaffolding be *removed*;
+OpenAI's asks Codex for exactly the named-checklist pass), and one instruction set cannot be right
+for both. See decision **D67**.
+
+**There is deliberately no `only` form.** `except` is what every shipped source needs, and a
+second spelling with no consumer is a silently dead knob. It also picks the safe default for an
+agent nobody has considered yet: a fourth agent **inherits** every block — today's density,
+unchanged — instead of silently receiving the most stripped-down render.
+`docs/adding-an-agent.md` asks that adder to choose deliberately.
+
+**Authoring idiom.** Put the opening marker on the line immediately after the preceding content,
+the block's own blank line *inside* the block, and the closing marker immediately after the
+block's last content line. Marker lines are removed, so this is what makes both the included and
+the excluded render come out with correct markdown spacing.
+
+**Rules, all fail-loud at build time.** An unknown agent token · an empty list · a list naming
+every known agent (the block would render nowhere) · the same agent twice · a nested opener · a
+close with nothing open · EOF inside a block · a marker inside a skill's **frontmatter** (markers
+are body-only, the same rule `{{TOKEN}}` lives by, and it is rejected rather than merely asked
+for) · a **target agent** the renderer does not know, which is what turns a typo in a `render`
+call into a failure instead of a silent full-density render.
+
+Two further rules are the filter's, and they are here because they differ from the `cat` it
+replaced:
+
+- **A source must end with a newline.** `cat` reproduced a missing final newline exactly; awk's
+  `print` always appends one. Rather than silently add a byte, the build refuses.
+- **The substring `<!-- adb:` is reserved *everywhere* in a file that renders** — inside a fence,
+  inside a code span, inside running prose. The *recognizer* matches only whole lines, so a quoted
+  marker is not treated as a directive; but each renderer then scans its finished output and
+  refuses to publish anything still carrying the substring, which is the only net that catches a
+  *misspelled keyword* (`adb:excpt` matches no rule at all). The consequence is that you cannot
+  quote the syntax in a file that renders — which is why the two files documenting it, this one
+  and `base/practices/00-index.md`, are both files their renderer skips.
 
 ### Step headings are project-override anchors
 
