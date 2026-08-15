@@ -3,7 +3,7 @@
 #
 # Runs the checks CI runs, with the two documented exceptions below: shellcheck, build-drift,
 # skill-frontmatter, workflow-render,
-# gate-detector/gates, common-lib, agent-init, cleanup-enum, repo-settings, bash-floor,
+# gate-detector/gates, common-lib, agent-init, cleanup, repo-settings, bash-floor,
 # bash-floor-guard, baseline, session-currency, precommit-gate, implement-gate, install-migration,
 # install-guard, fact-drift, fact-mutation, fact-guard, practice-index, release-role,
 # release-skill, selfcheck-guard, and an install→uninstall dry-run into a throwaway HOME.
@@ -93,8 +93,8 @@ fail=0
 #     and `scripts/check-tmp-paths.sh` accepts `$$` for exactly this reason.
 #   * `check-role-dispatch.sh`'s system-wide `pgrep -f 'sleep 31337'`. Only that one step ever
 #     stages such a process, and only one copy of it runs.
-#   * the destructive-git fixtures (`check-cleanup.sh`, `check-cleanup-enum.sh`): every one of
-#     them operates inside its own `mktemp -d` repo, never this one.
+#   * the destructive-git fixtures (`check-cleanup.sh`): every one of them operates inside its
+#     own `mktemp -d` repo, never this one.
 #
 # TWO CONCURRENT SELFCHECK RUNS in one checkout are still not supported, and neither #260 nor #250
 # made them so: they would both drive `build.sh` over the same TRACKED tree, which no temp-path
@@ -439,13 +439,11 @@ add state-assert        bash scripts/check-state-assert.sh
 # ops, anchor slugging, inherit-on-recompose, byte-exact currency check, and the safety guards.
 add skill-compose       bash scripts/check-skill-compose.sh
 
-# Regression test for /cleanup's remote enumeration excluding the origin/HEAD symref (#38).
-add cleanup-enum        bash scripts/check-cleanup-enum.sh
-
 # Behavioral tests for the /cleanup decision predicates (scripts/lib/cleanup-lib.sh): squash-merge
 # detection against a real fixture (#106 — `--merged` alone is blind to it, so the sweep was a
 # permanent no-op), the destructive refusals (a branch that gained commits after its merge; state
-# for an open PR or an in-flight run), and the terse output contract (#84). Offline.
+# for an open PR or an in-flight run), and the terse output contract (#84). Also home of the #38
+# remote-enumeration regression since #372 retired check-cleanup-enum.sh. Offline.
 add cleanup             bash scripts/check-cleanup.sh
 
 # Behavioral tests for the /adopt decision predicates (scripts/lib/adopt-lib.sh, #20): the

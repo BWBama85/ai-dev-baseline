@@ -485,8 +485,8 @@ jobs:
       - name: Partial skill override composer — ops, inherit-on-recompose, currency, guards (#22)
         run: bash scripts/check-skill-compose.sh
 
-  cleanup-enum:
-    name: cleanup-enum
+  cleanup:
+    name: cleanup
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
@@ -502,15 +502,15 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      - name: /cleanup remote enumeration must exclude the origin/HEAD symref (#38)
-        run: bash scripts/check-cleanup-enum.sh
-
       - name: Install jq
         # cleanup-lib.sh reads merged-PR evidence and run markers with jq; install it explicitly
         # rather than lean on runner-image contents, like the other jq-dependent jobs.
         run: sudo apt-get install -y jq
 
-      - name: /cleanup predicates — squash-merge detection, destructive refusals, terse output (#106, #84)
+      # Also home of the #38 remote-enumeration regression: since #372 the suite extracts and
+      # executes the workflow's own `remote-enum` block (the standalone check-cleanup-enum.sh it
+      # replaced tested a hardcoded copy, so this job's old `cleanup-enum` name retired with it).
+      - name: /cleanup predicates — squash-merge detection, destructive refusals, remote enumeration, terse output (#106, #84, #38)
         run: bash scripts/check-cleanup.sh
 
   roadmap:

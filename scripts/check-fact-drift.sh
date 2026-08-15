@@ -416,13 +416,12 @@ fact gap-analysis-no-fallback fixed:'never substitut' -- \
 fact resolution-order fixed:'global default' -- base/roles.md docs/roles-and-agents.md scripts/lib/role-dispatch.sh
 fact resolution-order fixed:'built-in'       -- base/roles.md docs/roles-and-agents.md scripts/lib/role-dispatch.sh
 
-# --- FACT: cleanup origin/HEAD symref filter (#38) ---------------------------
-# The remote-enumeration pipeline that drops the bare `origin` symref lives in the workflow
-# doc AND is re-asserted by its regression test — which can only re-implement, not source, a
-# pipeline that lives inside a markdown fence. Pin the critical fragment so editing the doc's
-# pipeline without updating the test (or vice-versa) fails CI instead of silently drifting.
-fact cleanup-origin-symref "fixed:grep '^origin/'" -- \
-  base/workflows/cleanup.md scripts/check-cleanup-enum.sh
+# --- FACT: cleanup origin/HEAD symref filter (#38) — RETIRED by #372 ---------
+# The pin existed because check-cleanup-enum.sh could only re-implement, never source, the
+# enumeration pipeline inside cleanup.md's fence — two spellings of one pipeline, held together
+# by a string. #372 deleted the copy: check-cleanup.sh section 11 now extracts the workflow's
+# `remote-enum` block by marker and executes it against a real remote, so there is no second
+# spelling left to drift, and a doc whose filter is deleted fails the executed regression.
 
 # --- FACT: the gap-analysis in-flight lock filename (#84) --------------------
 # A cross-skill contract: /implement-issue TAKES and RELEASES the lock around its gap dispatch,

@@ -20,8 +20,10 @@
 # squash-merge fixture is a real local repo pair — the merge topology has to be real, since the
 # whole bug is about what git's ancestry queries can and cannot see.
 #
-# scripts/check-cleanup-enum.sh stays the home of the #38 remote-enumeration regression and its
-# fact-drift token; this file owns the library and the destructive-path behavior.
+# This file also owns the #38 remote-enumeration regression (#372): section 11 extracts the
+# workflow's `remote-enum` block by marker and executes it against a real remote carrying an
+# origin/HEAD symref. The standalone check-cleanup-enum.sh it retired pipelined a hardcoded COPY
+# of that enumeration — green whatever the workflow actually said.
 #
 # Usage: bash scripts/check-cleanup.sh   (exit 0 = all pass, 1 = a failure)
 
@@ -644,9 +646,9 @@ eq "$bad_out" "" "3b …and it emits no partial records to act on"
 
 # --- END TO END: the forged record must not survive the sweep's own parse loop -----------------
 # Section 3b above proves the producer is safe; this proves the thing the issue is actually about,
-# through the loop shape base/workflows/cleanup.md step 5 runs (mirrored here, as
-# check-cleanup-enum.sh mirrors the enumeration pipeline — a fenced block full of `{{…}}`
-# placeholders cannot be sourced, and section 6 pins that the real one still has these parts).
+# through the loop shape base/workflows/cleanup.md step 5 runs (mirrored here — a fenced block
+# full of `{{…}}` placeholders cannot be sourced — and section 6 pins that the real one still has
+# these parts).
 #
 # THE FIXTURE IS ITS OWN ROOT. `check-cleanup.sh` runs anchored at the REAL repo root, so a victim
 # named `CHANGELOG.md` parsed from here would resolve to this repo's own changelog: the test would
@@ -2130,7 +2132,42 @@ check_make_repo_pair "$RM" "$work/remote-sweep-origin.git" || bad "11 fixture in
   git checkout -q main
   git merge -q --no-ff rm/merged -m "merge rm/merged"
   git push -q origin main
+  # The origin/HEAD symref, which `git branch -r --format='%(refname:short)'` renders as a BARE
+  # `origin` — the #38 shape the enumeration below must filter out.
+  git remote set-head origin main >/dev/null 2>&1
 ) || bad "11 fixture build failed"
+
+# --- the ENUMERATION is the documented block too (#372/#38) ------------------------------------
+# The retired check-cleanup-enum.sh guarded this pipeline by testing a hardcoded copy of it, so
+# deleting the symref filters from the workflow left both suites green. This extracts the
+# `remote-enum` block from the workflow itself and runs it against the fixture's real remote:
+# unfiltered, the bare `origin` symref reaches the merged list and step 4 offers
+# `git push origin --delete origin`.
+RE_SNIPPET="${ check_wf_snippet "$WF" remote-enum; }"
+[ -n "$RE_SNIPPET" ] || bad "11 snippet 'remote-enum' not found in base/workflows/cleanup.md"
+# Repro guard first: the RAW enumeration must surface the symref (bare `origin` on current git;
+# a few builds render it `origin/HEAD`), or the fixture stopped exercising #38 and a green
+# filter assertion below would mean nothing.
+raw_enum="${ check_git "$RM" branch -r --merged origin/main --format='%(refname:short)'; }"
+if printf '%s\n' "$raw_enum" | grep -Eqx 'origin|origin/HEAD'; then ok; else
+  bad "11 enum: fixture did not surface the origin/HEAD symref (raw: ${ printf '%s' "$raw_enum" | tr '\n' ' '; })"
+fi
+# The variables the workflow sets in its own earlier steps, mirrored for a fixture whose default
+# branch is `main` and whose sweep runs from that branch — nothing else is pre-set, exactly as
+# the snippet expects.
+re_enum() {   # execute the DOCUMENTED enumeration in $RM; the produced list lands in $RM.enum
+  ( cd "$RM" && env "$BASH" -c '
+BASE=origin/main
+CURRENT=main
+PROTECTED="^(HEAD|main|master|develop|release/.*|hotfix/.*)$"
+'"$RE_SNIPPET"'
+printf "%s" "$REMOTE_MERGED" > '"$RM"'.enum' ) >/dev/null 2>&1
+}
+re_enum
+hasnt "${ cat "$RM.enum"; }" 'origin' \
+   "11 enum: the origin/HEAD symref is filtered out of the documented enumeration"
+eq "${ cat "$RM.enum"; }" "rm/merged" \
+   "11 enum: the genuinely-merged branch survives every filter — and is the list's only entry"
 
 rm_run() {   # <remote-branch-list>
   ( cd "$RM" && env "$BASH" -c '
@@ -2148,16 +2185,25 @@ rm_line() {
     | bash "$CL" report
 }
 
-rm_run "rm/merged"
-eq "${ rm_line; }" "Deleted (remote): rm/merged [contained in origin/main when enumerated]" \
+# The sweep consumes the list the DOCUMENTED enumeration just produced against the real remote —
+# not a supplied one, so the two blocks are exercised end-to-end in the order the workflow runs them.
+rm_run "${ cat "$RM.enum"; }"
+rm_line_11a="${ rm_line; }"
+eq "$rm_line_11a" "Deleted (remote): rm/merged [contained in origin/main when enumerated]" \
    "11a a deleted remote branch reports the evidence, scoped to the moment it was established"
 # "when enumerated" is the honest half and it is asserted explicitly: without it this line claims a
 # containment that holds of the enumerated tip, not necessarily of the tip `--delete` removed.
-has "${ rm_line; }" 'when enumerated' \
+has "$rm_line_11a" 'when enumerated' \
    "11a …and does not borrow the local half's expected-OID certainty"
 if [ -n "${ check_git "$RM" ls-remote --heads origin rm/merged; }" ]; then
   bad "11a the remote branch was not actually deleted — the fixture proves nothing"
 else ok; fi
+# With the merged branch swept, the remote is symref-and-default only — the enumeration must come
+# back EMPTY. A list that resurrects the bare `origin` here is the #38 shape with nothing left to
+# hide it behind, and an empty remote list is the everyday no-op /cleanup must survive.
+re_enum
+eq "${ cat "$RM.enum"; }" "" \
+   "11a a symref-only remote enumerates to an empty list, never to the bare origin"
 
 # A FAILED remote delete is reported loudly and gains NO record — the same asymmetry the local half
 # keeps. A branch that does not exist on the remote makes `git push --delete` fail for real.
@@ -2168,10 +2214,13 @@ has "${ cat "$RM.notes"; }" 'REFUSED origin/rm/never-existed' \
    "11b …and is reported in full instead"
 
 # The composed remote line must satisfy the claim grammar too. `contained` is not a status word,
-# but this is the line where a future edit would most naturally reach for `merged`.
-rm_run "rm/merged" 2>/dev/null || true
-if printf '%s\n' "${ rm_line; }" | bash "$ROOT/scripts/lib/state-assert.sh" lint >/dev/null 2>&1; then ok; else
-  bad "11c the remote sweep's report line violates the claim grammar"
+# but this is the line where a future edit would most naturally reach for `merged`. The line is
+# the one CAPTURED at 11a — re-running the sweep here (the previous shape) deleted nothing, since
+# 11a already removed the branch, so an EMPTY line was what reached the lint and the case could
+# never fail. The non-empty guard is what keeps this from regressing into that vacuity.
+if [ -n "$rm_line_11a" ] \
+   && printf '%s\n' "$rm_line_11a" | bash "$ROOT/scripts/lib/state-assert.sh" lint >/dev/null 2>&1; then ok; else
+  bad "11c the remote sweep's report line violates the claim grammar (or was empty)"
 fi
 
 # --- 11d. the new blocks must also run on the interpreter an AGENT will use --------------------

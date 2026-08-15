@@ -18,9 +18,8 @@
 # runtime.
 #
 # Families 1 and 2 keep SEPARATE state (CHECK_FAIL/CHECK_LABEL vs pass/fail) and never collide;
-# a single check may use one, or both (e.g. check-cleanup-enum.sh uses grep-assert accounting
-# AND the git fixture). Callers touch state only through these functions, never the vars — so
-# ShellCheck sees no SC2154 / "unused" false positives across the source boundary.
+# a single check may use one, or both. Callers touch state only through these functions, never
+# the vars — so ShellCheck sees no SC2154 / "unused" false positives across the source boundary.
 #
 # --- grep-assert family: check_init "<name>" sets the message prefix, req_fixed / req_regex
 # (or check_fail directly) accumulate into CHECK_FAIL, and check_result emits the PASS line and
