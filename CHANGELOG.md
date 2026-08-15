@@ -9,8 +9,8 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
-- **Neither reading of "parallelise it" makes `selfcheck` faster — and its documented cost gets
-  one dated home (#335).**
+- **#335 lands as option 3 (accept the cost, fix the docs): neither reading of "parallelise it"
+  made `selfcheck` faster (#335).**
 
   `CLAUDE.md` golden rule 3 told every contributor and every agent that the mandatory pre-push gate
   cost **66-72s**. Eight full runs on the maintainer's 10-core macOS machine spanned
@@ -62,8 +62,9 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     assertions out — a step change rather than a few percent. So the budget is reverted, the
     reasons it looked right are in D66, and `--jobs N` still bounds steps rather than processes.
 
-    `ADB_POOL_JOBS` flows one way: the runner hands out slices and is never handed one, or a stray
-    value in an operator's environment would silently shrink the whole suite.
+    `ADB_POOL_JOBS` survives as an override on `adb_pool_size` — the seam that lets the sizing be
+    tested, and the only way an operator on a shared machine can ask these harnesses for a smaller
+    pool. **Nothing exports it**; the hand-down went with the revert.
   - **A third harness is pooled, because this change broke it.** `check-common-lib.sh
     --mutation` ran its mutations one at a time against a *shared* tree copy, rewriting one
     `common.sh` in place — which is exactly why it could not be parallel. Adding the six rows the
@@ -71,11 +72,13 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     traded one long pole for another, caught by measuring the result rather than assuming it. Each mutation now owns its copy, as the two siblings already
     did — and the step is **128s standalone** for 14 mutations, against 596s for the serial
     version's 14 and 323s for its original 8.
-  - **The harness's width is `min(cpu, 4)`, which takes no more workers than the `4` it replaces
-    and fewer where the machine is smaller.** On a 10-core workstation both spell `4`; on the
-    3-core `macos-latest` runner the constant forked *more* workers than the machine has cores,
-    and `min` gives it **3**. No claim is made that 4 is optimal — see the noise caveat above;
-    the claim is only that this is never worse than what shipped before, which needs no benchmark.
+  - **The harness's width is `min(cpu, 4)`.** On a 10-core workstation it spells the same `4` the
+    constant did; on the 3-core `macos-latest` runner, where the constant forked *more* workers
+    than the machine has cores, it gives **3**. Two honest caveats: fewer workers there **may cost
+    wall clock** — a real trade against over-forking a 3-core box, not a free win, and not
+    benchmarked here because CI timing is #339's subject; and `ADB_POOL_JOBS` can now shrink this
+    pool on any machine, which is a second behavioural change and a deliberate seam. No claim is
+    made that 4 is optimal.
   - **`min(cpu, 8)` moves to `scripts/lib/common.sh`, on the instruction that was already there.**
     `selfcheck.sh`'s comment read *"deliberately NOT promoted: it has one consumer — if a second
     appears, promote it then."* Two appeared, and the third spelling — `check-adopt-readiness.sh`'s
@@ -88,8 +91,6 @@ installs are symlinks, changes on `main` reach a user's clone on their next
     toward serial. And its verdict matched the recursive suite's `FAIL:` **string** while throwing
     the exit status away, so *"38 observed RED"* was a claim about what a child printed. It now
     requires exactly exit 1 **and** that mutation's own witness, and reports the pool it used.
-  - **`--list` gains a fourth field** (the declared width). The third stays `pool|serial`, so the
-    guards that already read it are untouched.
 
   **What is enforceable about the number, stated narrowly.** Nothing offline can re-measure a wall
   clock, so no lint can tell you the figure has aged. What went wrong was cheaper than that: it was

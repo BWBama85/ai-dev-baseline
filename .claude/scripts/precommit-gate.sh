@@ -13,7 +13,7 @@
 #
 # THE SUITE'S COST IS NOT QUOTED HERE EITHER, and that is the correction #335 forced. This comment
 # used to carry a figure D37 measured on 2026-08-03 against a 39-step registry — accurate then,
-# wrong within a release, and restated in seven files that all went stale together. It has ONE home
+# wrong within a release, and restated in six files that all went stale together. It has ONE home
 # now: CLAUDE.md golden rule 3, dated, beside the reminder that the run prints its own elapsed
 # time. (The step COUNT is gone from the first paragraph above for the same reason: it said
 # "40-step" against a registry of 49.)

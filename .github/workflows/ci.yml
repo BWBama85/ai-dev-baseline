@@ -1209,10 +1209,11 @@ jobs:
     runs-on: macos-latest
     # Generous next to the Linux jobs' 10: this one runs the WHOLE offline suite plus a Homebrew
     # install first. Since #260 the suite dispatches its steps through a bounded `wait -n` pool
-    # rather than sequentially, and since #335 that bound counts LEAF workers, so a step running a
-    # pool of its own gets a slice of it rather than forking on top of it — which matters most
-    # here, because this runner has 3 cores against a workstation's ten. The headroom stays as it
-    # was rather than being trimmed to a number this runner will not reproduce.
+    # rather than sequentially, but that bound counts STEPS and three of them run pools of their
+    # own — so the real worker count here is higher than `--jobs` suggests, on a runner with 3
+    # cores against a workstation's ten. Bounding processes instead was tried and measured under
+    # #335 and did not help (D66). The headroom therefore stays as it was rather than being
+    # trimmed to a number this runner will not reproduce.
     timeout-minutes: 45
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives

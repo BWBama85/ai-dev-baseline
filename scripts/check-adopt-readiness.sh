@@ -1104,16 +1104,25 @@ if [ "$MUTATE" -eq 1 ]; then
   # machine instead of being a constant chosen on one.
   #
   # THE CAP IS 4 BECAUSE THAT IS WHAT IT ALREADY WAS, and `min` is the only part that changes
-  # anything. This deliberately does NOT try to tune the number: it takes no more workers than the
-  # constant it replaces on any machine, and fewer on a machine with fewer cores — the 3-core
-  # `macos-latest` runner has been forking 4 and now forks 3. That claim needs no benchmark.
+  # anything. This deliberately does NOT try to tune the number.
+  #
+  # TWO BEHAVIOURAL CHANGES, BOTH STATED RATHER THAN GLOSSED. (1) On a machine with fewer than four
+  # cores this forks fewer workers — the 3-core `macos-latest` runner has been forking 4 and now
+  # forks 3. That is the point, but it is a TRADE, not a free win: fewer workers can cost wall
+  # clock, and no benchmark here says otherwise (CI timing is #339's subject, not this change's).
+  # (2) `adb_pool_size` honours `ADB_POOL_JOBS`, so an operator can now shrink this pool on ANY
+  # machine. That seam is deliberate — it is how the sizing is tested, and the only lever someone
+  # on a shared box has — but it means "same as before" is true of the DEFAULT, not of every
+  # environment.
   #
   # WHAT A BENCHMARK WOULD HAVE TO SURVIVE, stated because it was attempted and did not: on the
   # maintainer's box the whole suite measured 526s, 583s and 775s across trees whose differences
   # were far smaller than that spread, and two runs with DIFFERENT pool widths reported CPU totals
-  # within 0.1% of each other. Standalone, pool 8 looked 9% faster for 46% more CPU; in-suite that
-  # did not reproduce. So no width here is claimed to be optimal — only that this one is never
-  # worse than what shipped before. D66 records the numbers and their unreliability together.
+  # within 0.1% of each other. Standalone, pool 8 was 29s FASTER (299s against 328s) for 46% more
+  # CPU — so "no benefit past four" would be false, and is not claimed. What can be said is that
+  # the extra width buys little wall clock at a large CPU cost, and inside a suite that CPU is
+  # taken from 48 other steps. The cap stays where it was because nothing measured here justifies
+  # moving it. D66 records the numbers and their unreliability together.
   pool="$(adb_pool_size 4)"; i=0; running=0
   while [ "$i" -lt "${#MUT_NAMES[@]}" ]; do
     _mut_one "$i" &

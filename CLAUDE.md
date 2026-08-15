@@ -54,8 +54,8 @@ those. The rules below are specific to this repo's code.
    invites the precision it does not have (#335 was filed because one such number was off by an
    order of magnitude), and the previous figure was *correct* when D37 took it on 2026-08-03 —
    against a **39-step** registry, before the dominant step existed. It stays in D37 where it is
-   dated, and is deliberately not repeated here: it had been restated in seven files, and all
-   seven went stale together. `scripts/check-fact-drift.sh` now pins the live figure across the
+   dated, and is deliberately not repeated here: it had been restated in six files, and all six
+   went stale together. `scripts/check-fact-drift.sh` now pins the live figure across the
    files that carry it, and refuses the retired one.
 
    The flags worth knowing:

@@ -860,17 +860,17 @@ fact build-atomic-wired 'regex:^[^#]*check-build-atomic\.sh' -- \
 # --- what selfcheck COSTS, and the figure that replaced (#335) ----------------
 #
 # A WALL CLOCK CANNOT BE PINNED, and this lint does not pretend to. What it pins is the thing that
-# actually failed: the figure was restated in SEVEN files, went stale in all of them at once, and
-# `CLAUDE.md` golden rule 3 — the contributor contract — told every reader and every agent that a
-# mandatory pre-push gate cost about a minute when it cost minutes. Nothing offline can re-measure
-# a runtime, so nothing can tell you the number has aged; what a lint CAN do is keep the copies
-# identical and refuse the retired value's return.
+# actually failed: the figure was restated in SIX files (eight occurrences), went stale in all of
+# them at once, and `CLAUDE.md` golden rule 3 — the contributor contract — told every reader and
+# every agent that a mandatory pre-push gate cost about a minute when it cost minutes. Nothing
+# offline can re-measure a runtime, so nothing can tell you the number has aged; what a lint CAN do
+# is keep the surviving copies identical and refuse the retired value's return.
 #
-# TWO FILES, not seven. That is the other half of the fix: five of the seven restatements were
-# deleted rather than corrected, because a figure worth stating twice is not worth stating seven
-# times. `agents.toml`, `.claude/scripts/precommit-gate.sh`, `docs/per-project-overrides.md` and
-# `.github/workflows/ci.yml` now describe the COST QUALITATIVELY ("minutes, not seconds") and point
-# at golden rule 3; only the two contributor-facing docs carry the measurement.
+# TWO FILES CARRY A FIGURE, not six. That is the other half of the fix. `agents.toml`,
+# `.claude/scripts/precommit-gate.sh`, `docs/per-project-overrides.md`, `.github/workflows/ci.yml`
+# and `CLAUDE.md`'s own precommit-gate row now describe the cost QUALITATIVELY ("minutes, not
+# seconds") and point at golden rule 3; only golden rule 3 and `CONTRIBUTING.md` state a
+# measurement, and both state it as a dated RANGE.
 _sc_cost_docs="CLAUDE.md CONTRIBUTING.md"
 # shellcheck disable=SC2086  # deliberate word-splitting of the file list, as elsewhere in this file
 fact selfcheck-cost 'fixed:8m46s to 12m55s' -- $_sc_cost_docs

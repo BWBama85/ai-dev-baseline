@@ -5446,7 +5446,7 @@ limit: none of them is sufficient alone.
              the FAIL count is zero in both.
 - baseline-issue: n/a — this repo IS the baseline; #315 is the tracking issue.
 
-## D66 — neither reading of "parallelise it" makes selfcheck faster, and the runtime figure gets one dated home
+## D66 — #335 lands as OPTION 3: no scheduling change made selfcheck faster, and the runtime figure gets one dated home
 - date:          2026-08-14
 - category:      project-delta
 - unknown:       Two things the baseline does not model. (1) A `min(cpu, 8)` job pool whose
@@ -5454,10 +5454,10 @@ limit: none of them is sufficient alone.
                  `adopt-mutation` forks `min(cpu,8)` more and `adopt-readiness-mutation` forked a
                  hardcoded 4, so `--jobs N` bounds a number nobody cared about. (2) A performance
                  figure in the contributor contract that no offline lint can re-measure, restated
-                 in seven files, wrong in all of them at once (#335).
-- decision:      Option 1 of the three #335 offers — "parallelise inside the mutation harness" —
-                 taken in the form the measurements support rather than the form the words
-                 suggest, plus the mandatory documentation correction.
+                 in six files (eight occurrences), wrong in all of them at once (#335).
+- decision:      **Option 3** of the three #335 offers — accept the cost, correct the
+                 documentation — reached by attempting option 1 first and being refuted by
+                 measurement, plus the infrastructure repair that attempt turned up.
 
                  THE UNCOMFORTABLE HEADLINE FIRST, because it is the finding: **no scheduling
                  change tried here made this suite reliably faster, and the machine could not
@@ -5558,20 +5558,33 @@ limit: none of them is sufficient alone.
                     `--list` is the authoritative set and cannot go stale; a list in prose can and
                     did. Same for `precommit-gate.sh`'s "40-step".
 - placement:     `scripts/lib/common.sh` (`adb_cpu_count`/`adb_pool_size`); `scripts/selfcheck.sh`
-                 (`STEP_WIDTH`, `step_width`, `run_pool`'s width accounting, `--list`'s fourth
-                 field); `scripts/check-adopt-readiness.sh` and `scripts/check-adopt.sh` (the
-                 shared bound); `scripts/check-selfcheck.sh` and `scripts/check-common-lib.sh`
-                 (the guards); `scripts/check-fact-drift.sh` (the figure's pins); `CLAUDE.md`,
-                 `CONTRIBUTING.md`, `agents.toml`, `.claude/scripts/precommit-gate.sh`,
-                 `docs/per-project-overrides.md`, `.github/workflows/ci.yml`; this entry.
+                 (its private `cpu_count` deleted in favour of the shared reader — the ONLY change
+                 that survived there); `scripts/check-adopt-readiness.sh`, `scripts/check-adopt.sh`
+                 and `scripts/check-common-lib.sh` (the shared bound, the two harness defects, and
+                 the third harness's pooling); `scripts/check-common-lib.sh` +
+                 `scripts/check-selfcheck.sh` (the guards); `scripts/check-fact-drift.sh` (the
+                 figure's pins); `CLAUDE.md`, `CONTRIBUTING.md`, `agents.toml`,
+                 `.claude/scripts/precommit-gate.sh`, `docs/per-project-overrides.md`,
+                 `.github/workflows/ci.yml`; this entry.
+                 NOT placed anywhere, because they were reverted: `STEP_WIDTH`, `step_width`,
+                 `run_pool`'s width accounting, the `ADB_POOL_JOBS` hand-down and `--list`'s fourth
+                 field. They exist only in this entry's description of what was tried.
 - reason:        The issue framed three options and asked for a deliberate choice. Option 2
                  (tier the step) was refused: D13/D24's exceptions are about network, auth and
                  mutable external state, and this suite is hermetic, so tiering would break the
                  "every offline check CI runs" contract to buy speed — and no subset of 38
-                 mutations preserves the claim that all 38 guards were exercised. Option 3 (accept
-                 the cost) leaves a mandatory gate that people stop running. Option 1 is right,
-                 but the naive reading of it — raise the inner pool — is refuted by measurement
-                 above, which is why the decision is the budget rather than the number.
+                 mutations preserves the claim that all 38 guards were exercised.
+
+                 SO THE SHIPPED CHOICE IS OPTION 3 — accept the cost, correct the documentation —
+                 and calling it option 1 would be flattering the result. Option 1 was ATTEMPTED, in
+                 both of its readings, and both were refuted by measurement: the harness is still
+                 four-wide on the machine the issue was filed from, and the process budget that
+                 would have made the bound real is reverted. What accompanies option 3 is
+                 infrastructure repair the investigation turned up — one home for the pool bound,
+                 two defects in a guard that could not fail, and a third harness pooled — none of
+                 which makes the suite meaningfully faster and none of which the issue asked for.
+                 Option 3's own cost is real and is not waved away: a 9-13 minute mandatory gate is
+                 the gate people stop running, and nothing here changes that.
 
                  The documentation half is not garnish. A figure that is wrong by an order of
                  magnitude in the file that tells every contributor and every agent what a

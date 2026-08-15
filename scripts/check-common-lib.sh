@@ -2605,7 +2605,7 @@ if [ "${1:-}" = "--mutation" ]; then
   # One mutation, start to verdict. The verdict travels through a FILE because this runs in a
   # background subshell and a counter incremented there dies with it.
   _cl_mut_one() {   # <index>
-    local i="$1" copy lib out
+    local i="$1" copy lib out src
     copy="$mut_root/t$i"
     # Copied from the already-`.git`-free pristine tree rather than re-copying the working tree, so
     # each worker pays for 7 MB and not for the repository's history.
@@ -2622,10 +2622,22 @@ if [ "${1:-}" = "--mutation" ]; then
       printf 'bad|DID NOT APPLY (still found: %s) — its green proves nothing\n' "${MUT_GONE[$i]}" > "$mut_root/v$i"
       return 0
     fi
-    out="$( (cd "$copy" && bash scripts/check-common-lib.sh 2>&1) )"
-    case "$out" in
-      *"FAIL: ${MUT_WIT[$i]}"*) printf 'ok|\n' > "$mut_root/v$i" ;;
-      *) printf 'bad|did not turn its witness red: %s\n' "${MUT_WIT[$i]}" > "$mut_root/v$i" ;;
+    # THE STATUS AND THE WITNESS, both — the same rule `check-adopt-readiness.sh` carries, and it is
+    # here because this harness had the identical hole: matching the child's `FAIL:` STRING while
+    # discarding its exit code accepts a child that prints the expected line and then ABORTS (a
+    # `set -u` error, a missing fixture, exit 2), recording `ok` for a rule that was never reached.
+    # Require exactly 1: that is what a failed ASSERTION exits, while a crash or a usage error
+    # exits something else, and those are the suite dying rather than the guard firing.
+    out="$( (cd "$copy" && bash scripts/check-common-lib.sh 2>&1) )"; src=$?
+    case "$src" in
+      1)
+        case "$out" in
+          *"FAIL: ${MUT_WIT[$i]}"*) printf 'ok|\n' > "$mut_root/v$i" ;;
+          *FAIL:*) printf 'bad|went red, but NOT on its witness: %s\n' "${MUT_WIT[$i]}" > "$mut_root/v$i" ;;
+          *) printf 'bad|exited 1 with no FAIL: line at all — it aborted, it did not fail an assertion\n' > "$mut_root/v$i" ;;
+        esac ;;
+      0) printf 'bad|stayed GREEN (exit 0) — the guard cannot fail\n' > "$mut_root/v$i" ;;
+      *) printf 'bad|exited %s, not 1 — the suite ABORTED rather than failing its assertion\n' "$src" > "$mut_root/v$i" ;;
     esac
     # A worker's own status stays 0 whatever it decided: the pool reaps exactly one job per
     # `wait -n`, and the verdict travels in the file.
@@ -2694,10 +2706,11 @@ if [ "${1:-}" = "--mutation" ]; then
   # So the cases worth injecting are the ones where the answer silently shrinks, silently stops
   # being honoured, or stops being a usable integer at all.
 
-  # 9. THE DECISIVE ONE. The budget is ignored, so `adb_pool_size` always answers from the cpu
-  #    probe — every nested pool sizes itself off the whole machine again and `selfcheck`'s bound
-  #    goes back to being a bound on steps rather than on processes. Nothing in a green run shows
-  #    it; the suite simply costs more and the operator is told a number that is not true.
+  # 9. THE DECISIVE ONE. `ADB_POOL_JOBS` is ignored, so `adb_pool_size` always answers from the cpu
+  #    probe and the documented override silently does nothing. That override is the only way an
+  #    operator on a shared or throttled machine can ask these harnesses for a smaller pool, and a
+  #    green run looks identical whether it is honoured or not. (It is NOT about `selfcheck`
+  #    handing down slices — that design was reverted and nothing exports the variable today.)
   mutate budget-not-honoured \
     "adb_pool_size: a budget REPLACES the probe" \
     'n="$(_adb_pos_int "${ADB_POOL_JOBS:-}")" || n="$(adb_cpu_count)"' \
