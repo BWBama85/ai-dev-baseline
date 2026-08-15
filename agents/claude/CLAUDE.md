@@ -761,6 +761,37 @@ you are running a script with an explicit `#!/usr/bin/env bash` shebang.
   nullglob` in bash, or iterate `find … -print0 | while IFS= read -r -d ''`).
   Don't let an unmatched glob leak through as a literal argument.
 
+## Background processes
+
+A wait is a guard, and a guard whose predicate cannot match is indistinguishable
+from one that is still waiting.
+
+- **Never poll what already notifies.** A harness-tracked background task signals
+  its own completion, and that signal *is* the wait. Hand-rolled polling is for
+  external state the harness cannot see, and for nothing else.
+- **Prove the predicate before a loop depends on it.** Match it against one real
+  instance of the completed output first — `self-review.md`'s rule that a check is
+  not done until it has been observed answering. A pattern written against a
+  remembered log format is a guess.
+- **Every poll loop carries a hard deadline** — a timeout, or a maximum iteration
+  count. A wrong predicate must expire loudly; it must never spin silently.
+- **One waiter per event.** A second, belt-and-braces waiter on the same event is
+  how orphans are made: it outlives the answer, and nothing reports it.
+- **Inventory before ending the turn.** List the running shells and tasks, stop
+  every one you own that is no longer needed, and state what remains and why.
+
+`scripts/lib/pr-watch.sh`'s `wait` is the worked example: bounded, in-shell, one
+waiter for one event, so a long wait costs no model tokens.
+
+Measured on 2026-08-15 in this repo: two orphaned loops — one whose completion
+pattern matched no line the log could produce, the second chained to the first —
+spun unbounded and redundant to a task notification the session already had, until
+a human asked why the shells were open.
+
+No hook enforces this. Background tasks are harness-managed and not enumerable
+from a Stop hook, so the practice and the turn's own report are the whole
+mechanism.
+
 ## Why
 
 Shell-environment friction — bash array expansions and globs failing under zsh,
