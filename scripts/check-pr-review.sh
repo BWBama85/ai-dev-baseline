@@ -85,10 +85,8 @@ trap 'rm -rf "$work"' EXIT
 
 REPO="$work/repo"; GHOME="$work/home"; SBIN="$work/sbin"; S="$work/stub"
 mkdir -p "$REPO" "$GHOME/.config/ai-dev-baseline" "$SBIN" "$S"
-# A git repo so the helper's repo-root resolution is deterministically $REPO, whatever ambient
-# git repo sits above the temp dir — with an `origin` remote, which is load-bearing rather than set
-# dressing (#173). `check_make_stub_repo` is the one home for that scaffold (#373); its header
-# carries the reasoning.
+# A git repo so the helper's repo-root resolution is deterministically $REPO, whatever ambient git
+# repo sits above the temp dir. `check_make_stub_repo` carries the `origin`-remote contract (#173).
 check_make_stub_repo "$REPO" https://github.com/acme/widget.git || {
   echo "check-pr-review: FATAL — could not build the fixture repo" >&2; exit 1; }
 
@@ -179,17 +177,8 @@ AFTER_AT="2026-07-25T04:45:23Z"    # 3m08s later — the real gap observed on PR
 BEFORE_AT="2026-07-25T04:40:00Z"
 
 # pr_fx [--sha X] [--base-slug X] [--head-slug X] [--head-ref X] [--state X] [--merged-at X]
-#
-# A ONE-LINE DEFAULTS WRAPPER over `check_pr_json` (check-lib.sh, #373), which is where the fixture
-# SHAPE now lives. NAMED FLAGS, because the two PR suites' positional `pr_fx` signatures differed —
-# pr-watch inserts state/merged_at at positions 2-3 — and a unified positional superset would have
-# shifted every call here one place to the right, onto a valid-but-wrong fixture with no error
-# anywhere. The constants stay here, next to the assertions that read them.
-#
-# `--head-slug ""` is meaningful and distinct from omitting it: an EXPLICIT empty string renders
-# `head.repo` as null — "this PR has no head repository any more" (a deleted fork), which the
-# staleness anchor must degrade on — while omitting the flag takes the default below. Last flag
-# wins, which is what makes that override work.
+# A defaults wrapper over `check_pr_json`, which holds the fixture shape (D68). Last flag wins, so
+# `pr_fx --head-slug ""` renders `head.repo` null — a deleted fork, which the anchor must degrade on.
 pr_fx() {
   check_pr_json "$S/pr.json" --sha "$HEAD_SHA" --base-slug acme/widget \
     --head-slug acme/widget --head-ref "$HEAD_REF" "$@"
@@ -214,8 +203,7 @@ reset_fx() {
   pr_fx
   activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"
 }
-# The reviewer-declaration tri-state lives in check-lib.sh too (#373): `[]`, a populated array and
-# NO FILE are three different answers, and both suites pin the same three.
+# The reviewer-declaration tri-state lives in check-lib.sh too; both suites pin the same three.
 declare_bots() { check_declare_bots   "$REPO" "$1"; }
 undeclare()    { check_undeclare_bots "$REPO" "$GHOME"; }
 

@@ -870,20 +870,12 @@ else bad "bin/baseline: the 'adopt' dispatch must precede the wrong-clone guard"
 # injected with its own defect, and the suite above must come back RED on that defect's OWN named
 # witness. Red for the wrong reason is not evidence.
 #
-# Every mutation is applied to a COPY (self-review.md's copy rule). The working tree is never
-# touched, so this cannot be the thing that eats an uncommitted edit.
-#
-# THE TABLE, THE LITERAL REWRITE, THE POOL AND THE SCORING ALL LIVE IN check-lib.sh (#373). They
-# were byte-identical here and in check-adopt.sh apart from one function — and that one had
-# DIVERGED, in the direction that matters: the copy there discarded the child's exit status. Two
-# copies of a harness is how the next divergence stays invisible, which is the failure this harness
-# exists to detect, one level up.
-#
-# What stays here is what is genuinely local: the tree copy, the file to mutate, how the child is
-# invoked, and the table itself.
+# Every mutation is applied to a COPY (self-review.md's copy rule); the working tree is untouched.
+# The table, the rewrite, the pool and the scoring live in check-lib.sh (D68). What stays here is
+# local: the tree copy, the file to mutate, how the child is invoked, and the table itself.
 
-# <copy> — build the tree copy and print the file to mutate. `base` is copied as well as `scripts`
-# because the suite reads base/workflows/adopt.md.
+# <copy> — build the tree copy and print the file to mutate. `base` too: the suite reads
+# base/workflows/adopt.md.
 _ar_mut_prepare() {
   check_copy_subtrees "$ROOT" "$1" scripts base >/dev/null 2>&1 || return 1
   printf '%s\n' "$1/scripts/lib/adopt-readiness.sh"
@@ -894,16 +886,8 @@ _ar_mut_run() { ( cd "$1" && ADB_STATE_DIR="$1/state" bash scripts/check-adopt-r
 
 # THE FAIL-CLOSED MUTATIONS. Each turns one guard toward the flattering answer.
 #
-# THE WITNESS IS THE ASSERTION'S FULL LABEL, prefix included. The first version of this table
-# wrote the witness as the bare sentence ("a new HEAD makes the receipt stale") while the suite
-# prints "FAIL: receipt: a new HEAD makes the receipt stale" — so every one of the sixteen rows
-# reported "went red, but NOT on its witness" while the guards were in fact working perfectly.
-# A harness that cannot recognize its own success is the same silence it exists to detect.
-#
-# AND EVERY LITERAL IS ONE LINE. `check_mutate_literal` matches with awk's `index()`, which sees a
-# single record at a time, so a literal spanning two source lines can never match — and a mutation
-# that matches nothing is a test that proves nothing. Two rows started that way; the did-it-apply
-# check inside that helper is what caught them.
+# The witness is the assertion's FULL label, prefix included, and every literal is ONE line —
+# `check_mutate_literal` matches per record, so a two-line literal can never match (D68).
 check_mut missing-rung-is-skipped \
     'unknowns+=("$rung${TAB}$owner${TAB}$title${TAB}not reported' \
     'continue; unknowns+=("$rung${TAB}$owner${TAB}$title${TAB}not reported' \
@@ -1057,32 +1041,8 @@ check_mut unterminated-final-record-dropped \
     'while IFS= read -r line; do' \
     'e2e: probe+tracker cover the whole contract'
 
-# THE POOL WIDTH IS ASKED FOR, NOT HARDCODED (#335). It was `pool=4` — half the usable width of a
-# 10-core workstation, and a third MORE than the 3-core `macos-latest` runner has, on a step that
-# costs 1115 CPU-seconds and is 94% of `selfcheck`'s critical path. `adb_pool_size` is the one home
-# for the answer (scripts/lib/common.sh): min(cpu, cap), so the number right-sizes itself per
-# machine instead of being a constant chosen on one.
-#
-# THE CAP IS 4 BECAUSE THAT IS WHAT IT ALREADY WAS, and `min` is the only part that changes
-# anything. This deliberately does NOT try to tune the number.
-#
-# TWO BEHAVIOURAL CHANGES, BOTH STATED RATHER THAN GLOSSED. (1) On a machine with fewer than four
-# cores this forks fewer workers — the 3-core `macos-latest` runner has been forking 4 and now
-# forks 3. That is the point, but it is a TRADE, not a free win: fewer workers can cost wall
-# clock, and no benchmark here says otherwise (CI timing is #339's subject, not this change's).
-# (2) `adb_pool_size` honours `ADB_POOL_JOBS`, so an operator can now shrink this pool on ANY
-# machine. That seam is deliberate — it is how the sizing is tested, and the only lever someone
-# on a shared box has — but it means "same as before" is true of the DEFAULT, not of every
-# environment.
-#
-# WHAT A BENCHMARK WOULD HAVE TO SURVIVE, stated because it was attempted and did not: on the
-# maintainer's box the whole suite measured 526s, 583s and 775s across trees whose differences
-# were far smaller than that spread, and two runs with DIFFERENT pool widths reported CPU totals
-# within 0.1% of each other. Standalone, pool 8 was 29s FASTER (299s against 328s) for 46% more
-# CPU — so "no benefit past four" would be false, and is not claimed. What can be said is that
-# the extra width buys little wall clock at a large CPU cost, and inside a suite that CPU is
-# taken from 48 other steps. The cap stays where it was because nothing measured here justifies
-# moving it. D66 records the numbers and their unreliability together.
+# Width from `adb_pool_size` (min(cpu, 4)); `ADB_POOL_JOBS` is the operator/test seam. The cap is
+# 4 because that is what it already was — nothing measured justifies moving it (D66).
 [ "$MUTATE" -eq 1 ] && \
   check_mutation_pool "check-adopt-readiness" "$WORK" _ar_mut_prepare _ar_mut_run 4
 

@@ -63,8 +63,7 @@ cp "$ROOT/scripts/check-claims.sh" "$REPO/scripts/"
 cp "$ROOT/scripts/check-lib.sh"    "$REPO/scripts/"
 cp "$ROOT/scripts/lib/common.sh"   "$REPO/scripts/lib/"
 
-# The throwaway repo + its `origin` URL come from check-lib.sh (#373) — the same scaffold the two
-# PR-guard suites build, hand-rolled three times before.
+# The throwaway repo + its `origin` URL come from check-lib.sh — the same scaffold the PR suites build.
 check_make_stub_repo "$REPO" https://github.com/acme/widget.git || {
   echo "check-claims-guard: FATAL — could not build the fixture repo" >&2; exit 1; }
 

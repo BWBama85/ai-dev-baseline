@@ -5703,3 +5703,89 @@ limit: none of them is sufficient alone.
              `bwbama85/ai-dev-baseline` against gh's `BWBama85/ai-dev-baseline`), so nothing would
              have healed a new required context automatically.
 - baseline-issue: n/a — this repo IS the baseline; #304 is the tracking issue.
+
+## D68 — the mutation harness converges on the STATUS-AND-WITNESS verdict, and the shared PR fixture takes named flags
+- date:      2026-08-15
+- category:  project-delta
+- unknown:   Four fixture families were hand-rolled per check suite, and one divergence between two
+             copies was a live correctness bug. `check-adopt.sh` and `check-adopt-readiness.sh`
+             carried byte-identical mutation harnesses except for the verdict function:
+             readiness required the recursive child's exit status to be 1 **and** the mutation's own
+             witness; adopt captured no status at all and matched printed text only. So
+             `check-adopt --mutation`'s "26 mutations proven RED" was a claim about what the child
+             PRINTED, never about whether it FAILED. Nothing in the baseline said where a shared
+             test-fixture primitive belongs, or how two harnesses that had already diverged should
+             be reconciled — the shape `handling-the-unknown.md` calls a project-delta with no
+             prescribed home.
+- decision:  Five things.
+
+             (1) ONE HOME, AND IT IS `scripts/check-lib.sh`. The table (`check_mut`), the literal
+             rewrite (`check_mutate_literal`), the worker (`_check_mut_one`), the witness test
+             (`_check_mut_witness`) and the bounded pool + scoring (`check_mutation_pool`) live
+             there once. Both adopt suites keep only what is genuinely local: the tree copy, the
+             file to mutate, how the child is invoked, and the table rows themselves.
+
+             (2) THE VERDICT IS READINESS'S, WHICH BACK-PORTS THE REPAIR TO ADOPT. Exit status
+             EXACTLY 1 — what a failed assertion exits — AND the witness. A crash, a `set -u` abort
+             or a usage error exits something else, and those are the suite dying rather than the
+             guard firing. Observed failing rather than argued: with the recursive child forced to
+             `exit 0` while still failing its assertions, run against copies in a `mktemp -d`,
+             `origin/main`'s verdict reported `26/26 mutation(s) applied, 26 observed RED on their
+             own witness` and the suite PASSED; the converged verdict reported `0 observed RED` and
+             exited 1 on all 26 rows.
+
+             (3) THE WITNESS TEST IS PER LINE, not over the whole output blob — a hair stricter than
+             readiness's anchored `*"FAIL: $witness"*`, because adopt's witnesses are mid-label
+             fragments that could otherwise match a passing assertion's own echo. Two properties of
+             it are easy to get wrong and were verified rather than assumed. It matches with `case`
+             over a here-string and never `printf | grep -q`: these suites set `pipefail`, `grep -q`
+             exits on first match and closes the pipe, `printf` dies of SIGPIPE, and pipefail
+             promotes that to the pipeline's status — so the check answered NON-ZERO for exactly the
+             outputs where the witness was found EARLY (measured: a 348906-byte buffer with the
+             witness on line 1 gives rc=141 under pipefail). And the witness is interpolated QUOTED
+             (`*"$2"*`), which makes it literal: quoting removes the glob meaning of `*`, `?` and
+             `[…]` inside a `case` pattern. Three live witnesses carry such bytes — `a blanket
+             *.json IS reported`, and two naming `[gates.state]` and `[roles]` — and unquoted, the
+             first would widen to a wildcard and the bracket pair would stop matching their own
+             `FAIL:` lines entirely.
+
+             (4) THE REWRITE TAKES A LITERAL, NOT A REGEX, AND IT IS A SIBLING OF
+             `check_mutate_line` RATHER THAN A REPLACEMENT. Both contracts belong: a `sed` script
+             needs whole-line uniqueness, and a literal substring edit cannot demand it because the
+             needles are routinely fragments of a longer line. The history is why the literal form
+             exists at all. The adopt table's first version was written in `sed` and EIGHT OF TWENTY
+             rows silently matched nothing — every one of them carried a character special to sed,
+             to the shell, or to the heredoc it was written in. Ten of those first twenty rows
+             failed the did-it-apply check across three separate causes, the last of which was
+             `awk -v`: it processes backslash escape sequences in the assignment, so a literal
+             containing `\$` reached the program as `$` and one containing `\n` arrived as a REAL
+             NEWLINE that can never match inside a single line. The strings therefore arrive through
+             `ENVIRON`, which performs no such processing. A mutation that matches nothing is a test
+             that proves nothing, so the "matched NOTHING" case is a distinct return code (2) rather
+             than a silent no-op. `check-common-lib.sh` keeps its own harness deliberately: its rows
+             are `sed` scripts, so it is a `check_mutate_line` caller and not one of these.
+
+             (5) THE SHARED PR FIXTURE TAKES NAMED FLAGS, and the obvious alternative is the
+             dangerous one. The two suites' `pr_fx` had DIFFERENT positional signatures for the same
+             fixture — pr-watch inserts `state` and `merged_at` at positions 2 and 3 — so
+             pr-review's `pr_fx "$sha" "acme/widget" ""` and pr-watch's `pr_fx "$sha" "open" ""`
+             mean different things in the same three words. A unified positional SUPERSET would have
+             shifted every existing call one or two places to the right and landed it on a
+             VALID-but-wrong fixture (a base slug read as a state, an empty head-slug read as an
+             empty merged_at), producing no error anywhere — just scenarios quietly testing
+             something else. Flags cannot mis-shift. Last flag wins, so each suite keeps a one-line
+             wrapper carrying its own constants and a scenario still overrides one field;
+             `check-lib.sh` carries no fixture constants, because those belong next to the
+             assertions that read them. An unknown flag or a flag with no value records a FAILURE
+             rather than being skipped.
+
+             The two `gh` stubs stay separate, deliberately: pr-watch's per-poll fixture rotation
+             and pr-review's flat emit are different contracts, and merging them would trade a real
+             behavioural difference for a smaller line count.
+- placement: `scripts/check-lib.sh`; the two adopt suites, the two PR suites,
+             `scripts/check-claims-guard.sh` and `scripts/check-roadmap-e2e.sh` are the callers.
+- reason:    A shared home is what stops the next divergence being invisible — two copies of a
+             harness is exactly the failure the harness itself exists to detect, one level up. The
+             pool width is NOT re-litigated here: `adb_pool_size` and the per-caller cap are D66's,
+             and the cap stays a parameter because the two adopt suites deliberately differ.
+- baseline-issue: n/a — this repo IS the baseline; #373 is the tracking issue.

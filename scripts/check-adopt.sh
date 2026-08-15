@@ -901,22 +901,10 @@ fi
 #
 # Every mutation is applied to a COPY of the tree (self-review.md's copy rule). The working tree is
 # never touched, so this cannot be the thing that eats an uncommitted edit.
-# THE TABLE, THE LITERAL REWRITE, THE POOL AND THE SCORING ALL LIVE IN check-lib.sh (#373). This
-# harness and check-adopt-readiness.sh carried byte-identical copies of them apart from one
-# function — and that one had DIVERGED, here, in the direction that matters: this copy captured no
-# exit status and matched printed text only, so "N mutations proven RED" was a claim about what the
-# child PRINTED and never about whether it FAILED. A stray `exit 0` in the child left this reporting
-# `ok|applied` on a green run. The readiness header documented that exact repair; it was never
-# back-ported until now.
-#
-# `check_mut <name> <old-literal> <new-literal> <witness>` — FIXED STRINGS, not regexes. The first
-# version of this table used `sed` expressions, and EIGHT OF TWENTY silently matched nothing: every
-# one contained a character special to sed, to the shell, or to the heredoc it was written in, and a
-# pattern that matches nothing is a mutation that tests nothing. Literal strings and an index/substr
-# replacement remove the entire class: there is no escaping to get wrong.
-#
-# What stays here is what is genuinely local: the tree copy, the file to mutate, how the child is
-# invoked, and the table itself.
+# The table, the rewrite, the pool and the scoring live in check-lib.sh. This copy of the verdict
+# had DIVERGED: it captured no exit status, so "N mutations proven RED" was a claim about what the
+# child PRINTED, never about whether it FAILED. Back-ported here (D68). What stays local: the tree
+# copy, the file to mutate, how the child is invoked, and the table itself.
 
 # <copy> — build the tree copy and print the file to mutate. `install.sh`/`uninstall.sh` come along
 # because the suite reads them; a copy failure for those is not fatal to the row.
@@ -1034,14 +1022,9 @@ check_mut ignore-axis-needs-agent-dir \
     '    [ -d "$root/.$a" ] && _ad_ignore_axis "$root" "$a"' \
     'runs even when .<agent>/ does not exist yet'
 
-# The pool WIDTH IS ASKED FOR rather than restated: `adb_pool_size` is the one home for
-# min(cpu, cap) (scripts/lib/common.sh, #335). Each mutation costs a FULL suite run (~23s,
-# dominated by ~200 subprocess invocations that each load common.sh), so twenty of them serially
-# was measured at 658s — on its own more than double what the entire rest of the mirror costs.
-#
-# `--mutation`, matching `check-fact-drift.sh --mutation` — the established idiom here, and the
-# form `scripts/selfcheck.sh` can register as a step (its `add` takes a command's words, so an
-# env-var prefix would be executed as a command name).
+# Width from `adb_pool_size` (min(cpu, 8)); each row costs a full suite run (D66, D68).
+# `--mutation` as a flag, not an env var: `selfcheck.sh`'s `add` takes a command's words, so an
+# env-var prefix would be executed as a command name.
 [ "$MUTATE" = "1" ] && check_mutation_pool "check-adopt" "$WORK" _ad_mut_prepare _ad_mut_run 8
 
 check_summary "check-adopt"

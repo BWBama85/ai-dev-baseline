@@ -91,10 +91,8 @@ trap 'rm -rf "$work"' EXIT
 REPO="$work/repo"; GHOME="$work/home"; SBIN="$work/sbin"; S="$work/stub"
 mkdir -p "$REPO" "$GHOME/.config/ai-dev-baseline" "$SBIN" "$S"
 # A git repo so the helper's repo-root resolution is deterministically $REPO, whatever ambient git
-# repo sits above the temp dir — with an `origin` remote, which is load-bearing rather than set
-# dressing (#173); `/resolve-pr-threads --watch` passes the bare `--pr 7` form that names no
-# repository at all. `check_make_stub_repo` is the one home for that scaffold (#373); its header
-# carries the reasoning.
+# repo sits above the temp dir. `check_make_stub_repo` carries the `origin`-remote contract (#173),
+# which `/resolve-pr-threads --watch` needs: it passes the bare `--pr 7` form, naming no repository.
 check_make_stub_repo "$REPO" https://github.com/acme/widget.git || {
   echo "check-pr-watch: FATAL — could not build the fixture repo" >&2; exit 1; }
 
@@ -242,27 +240,15 @@ reset_fx() {
   activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"
 }
 # pr_fx [--sha X] [--state X] [--merged-at X] [--base-slug X] [--head-slug X] [--head-ref X]
-#
-# A ONE-LINE DEFAULTS WRAPPER over `check_pr_json` (check-lib.sh, #373), which is where the fixture
-# SHAPE now lives. NAMED FLAGS, because this suite's positional signature inserted state/merged_at
-# at positions 2-3 while check-pr-review.sh's did not — so a unified positional SUPERSET would have
-# shifted one suite's every call onto a valid-but-wrong fixture with no error anywhere. The
-# constants stay here, next to the assertions that read them.
-#
-# `--head-slug ""` is meaningful and distinct from omitting it: an EXPLICIT empty string renders
-# `head.repo` as null — "this PR has no head repository any more" (a deleted fork), a state the
-# anchor must degrade on — while omitting the flag takes the default below. Last flag wins, which is
-# what makes that override work.
+# A defaults wrapper over `check_pr_json`, which holds the fixture shape (D68). Last flag wins, so
+# `pr_fx --head-slug ""` renders `head.repo` null — a deleted fork, which the anchor must degrade on.
 pr_fx() {
   check_pr_json "$S/pr.json" --sha "$HEAD_SHA" --state open --merged-at "" \
     --base-slug acme/widget --head-slug acme/widget --head-ref "$HEAD_REF" "$@"
 }
 pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
-# pr_poll_fx <n> [flags…] — the same builder writing the PER-POLL fixture the gh stub prefers on
-# poll <n>. The only thing that differs from `pr_fx` is the destination, which is why it is a second
-# wrapper rather than a second construction site: three of these were open-coded `jq -n` objects
-# that had drifted into a SHORTER shape than `pr_fx`'s (no `head.ref`, no `head.repo`), so a change
-# to the PR shape had to be found in four places with nothing checking they agreed.
+# pr_poll_fx <n> [flags…] — `pr_fx` writing the per-poll fixture the gh stub prefers on poll <n>.
+# A second wrapper rather than a second construction site: the destination is the only difference.
 pr_poll_fx() {
   local n="$1"; shift
   check_pr_json "$S/pr.$n.json" --sha "$HEAD_SHA" --state open --merged-at "" \
@@ -283,8 +269,7 @@ reaction_fx()     { check_pr_reactions_json "$S/reactions.json" "$@"; }
 _reactions_into() { check_pr_reactions_json "$@"; }
 activity_fx()     { check_pr_activity_json  "$S/activity.json"  "$@"; }
 activity_fx_raw() { printf '%s\n' "$1" > "$S/activity.json"; }
-# The reviewer-declaration tri-state lives in check-lib.sh too (#373): `[]`, a populated array and
-# NO FILE are three different answers, and both suites pin the same three.
+# The reviewer-declaration tri-state lives in check-lib.sh too; both suites pin the same three.
 declare_bots() { check_declare_bots   "$REPO" "$1"; }
 undeclare()    { check_undeclare_bots "$REPO" "$GHOME"; }
 
