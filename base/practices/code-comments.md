@@ -21,7 +21,10 @@ these. Classify it, then dispose of it:
 | **4 — Restated policy**: text duplicating a `base/practices/` rule, a root doc, or a workflow step | **Delete.** The law has one home. A copy in code is a second home that drifts, and the drifted copy is the one being read at the moment it matters. |
 
 When a comment mixes classes — most long ones do — split it. The class-1 sentence
-stays; the rest goes to its home or goes away.
+stays; the rest goes to its home or goes away. When one sentence is genuinely
+both — a call-site constraint that also restates law, like a credential warning
+beside the key it protects — **the keep-class wins**: precedence is 1 > 2 > 3 > 4,
+and the survivor is written as the local constraint, never as the policy quote.
 
 ## The form: Google Shell Style Guide
 

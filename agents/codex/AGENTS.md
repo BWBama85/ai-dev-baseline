@@ -189,7 +189,10 @@ these. Classify it, then dispose of it:
 | **4 — Restated policy**: text duplicating a `base/practices/` rule, a root doc, or a workflow step | **Delete.** The law has one home. A copy in code is a second home that drifts, and the drifted copy is the one being read at the moment it matters. |
 
 When a comment mixes classes — most long ones do — split it. The class-1 sentence
-stays; the rest goes to its home or goes away.
+stays; the rest goes to its home or goes away. When one sentence is genuinely
+both — a call-site constraint that also restates law, like a credential warning
+beside the key it protects — **the keep-class wins**: precedence is 1 > 2 > 3 > 4,
+and the survivor is written as the local constraint, never as the policy quote.
 
 ## The form: Google Shell Style Guide
 
@@ -915,9 +918,11 @@ shapes, pagination and rate limits, a library's capability, a CLI flag, a config
 a platform default, a pricing tier — recall closes none of them. Training data is a
 snapshot, and the vendor shipped after it.
 
-`verify-before-asserting.md` governs mutable state inside *this* repo — PR, branch,
-issue, CI. This file governs everything outside it. Neither covers the other's
-ground; cite whichever one applies.
+The boundary is provenance, not location. `verify-before-asserting.md` governs this
+project's own mutable state — PR, branch, issue, CI. This file governs behavior you
+do not control, wherever it sits: a vendored or generated dependency inside the
+checkout is still third-party; your own code in a sibling repository is not.
+Neither file covers the other's ground; cite whichever one applies.
 
 ## Resolution order
 
@@ -925,18 +930,27 @@ Descend until a rung answers, then **name the rung that answered** when you stat
 the claim.
 
 1. **An executed probe — where it is cheap and safe.** `--help`, `--version`, one
-   request against a sandbox or throwaway resource, a two-line script that prints
-   the real response. It outranks every document because it observes the version
-   actually running rather than a description of some version. Do not probe where
-   the call mutates production state, spends money, sends anything outward, or
-   needs a credential the task does not already hold — there, drop to rung 2.
+   read-only request against a sandbox or throwaway resource, a two-line script
+   that prints the real response. It outranks every document because it observes
+   the running system rather than a description of one — so probe the version the
+   project actually uses (its pin, its lockfile, its configured binary): a probe
+   of whatever `PATH` happens to expose is evidence about the wrong system, and
+   loses to documentation matched to the right one. Do not probe where the call
+   mutates state anyone else can observe, spends money, emits a message or
+   webhook, or needs a credential the task does not already hold — there, drop
+   to rung 2.
 2. **context7** — `resolve-library-id` (official name → `/org/project`), then
    `query-docs` (that id plus the single concept you need). **Required as the first
    documentation source** for any language, package, library, service or CLI in
    use, *including* ones you know well: confidence is what stale recall feels like
    from the inside. One concept per `query-docs` call — a query spanning three
    topics returns shallow results for all three. Pass a version-pinned id
-   (`/org/project/version`) when the project pins that dependency.
+   (`/org/project/version`) when the project pins that dependency. **Public
+   surfaces only**: for an internal package, a private service, or an embargoed
+   integration, the authoritative source is the project's own docs and source —
+   never send its name or concepts to an external documentation service without
+   explicit operator approval; resolve at rung 1 or from the internal source
+   instead.
 3. **Current authoritative documentation via web search** — when context7 has no
    entry, or its entry does not reach the concept. The vendor's own docs, the
    project's repository, its changelog: dated, and matched to the version you run.
@@ -945,9 +959,11 @@ the claim.
    the hypothesis and for choosing what to search. It never closes a claim, and it
    never reaches an assertion unlabelled.
 
-"Probed: the call returned 300 items" and "per the vendor docs fetched this run"
-are claims a reader can audit. "I believe the cap is 30 days" is the defect — and
-once written, the three sentences are indistinguishable.
+In a durable artifact — an issue, a PR body, a ranking — the rung label alone is
+not auditable: record what answered. "Probed: `gh api /users/x/events` page 1
+returned 300 items" or "per <vendor doc URL>, fetched this run, for v4" can be
+re-run or re-read later; "I believe the cap is 30 days" is the defect — and a
+bare "probed" becomes indistinguishable from it one reader downstream.
 
 ## Where this binds
 
