@@ -2769,7 +2769,13 @@ if [ "${1:-}" = "--mutation" ]; then
 
   # THE PARENT SCORES, over every index — so a worker that died without writing a verdict is a
   # FAILURE rather than a silently missing row.
-  for mut_i in $(seq 0 $((mut_n - 1))); do
+  #
+  # `for ((…))`, NOT `$(seq …)`, and that is a correctness fix rather than a style preference. A
+  # missing `seq` makes the substitution empty, the loop body runs ZERO times, `mut_fail` stays 0,
+  # and the harness prints PASS having examined no verdict at all — a false green in the one place
+  # whose entire job is to make false greens impossible. Bash arithmetic has no such dependency,
+  # and it is what `check-adopt.sh`'s sibling loop already uses.
+  for (( mut_i = 0; mut_i < mut_n; mut_i++ )); do
     mut_v="$(cat "$mut_root/v$mut_i" 2>/dev/null || echo 'bad|produced NO verdict — its worker died without reporting')"
     case "$mut_v" in
       ok\|*) mut_pass=$((mut_pass + 1)) ;;
@@ -2778,6 +2784,15 @@ if [ "${1:-}" = "--mutation" ]; then
     esac
   done
 
+  # AND THE SCOREBOARD MUST COVER THE TABLE. Every path above that can skip rows — a loop that
+  # iterated zero times, an early `continue`, a future refactor — is invisible in `mut_fail`, which
+  # counts only rows it actually looked at. Asserting the total is what makes "scored nothing"
+  # loud instead of indistinguishable from "scored everything and all passed".
+  if [ "$(( mut_pass + mut_fail ))" -ne "$mut_n" ]; then
+    printf 'FAIL: scored %d of %d mutation(s) — the harness skipped rows and would have reported on none of them\n' \
+      "$(( mut_pass + mut_fail ))" "$mut_n" >&2
+    mut_fail=$(( mut_fail + 1 ))
+  fi
   printf '\ncheck-common-lib --mutation: %d mutation(s) observed RED on their own witness, %d failed (pool=%s)\n' \
     "$mut_pass" "$mut_fail" "$mut_pool"
   [ "$mut_fail" -eq 0 ] || exit 1
