@@ -91,15 +91,10 @@ trap 'rm -rf "$work"' EXIT
 REPO="$work/repo"; GHOME="$work/home"; SBIN="$work/sbin"; S="$work/stub"
 mkdir -p "$REPO" "$GHOME/.config/ai-dev-baseline" "$SBIN" "$S"
 # A git repo so the helper's repo-root resolution is deterministically $REPO, whatever ambient git
-# repo sits above the temp dir.
-#
-# WITH AN `origin` REMOTE, and it is load-bearing rather than set dressing (#173): the detector
-# anchors every read to the checkout's git origin, because a bare `--pr 7` names no repository and
-# the documented `GH_REPO` variable silently redirects gh's `repos/{owner}/{repo}` expansion —
-# `/resolve-pr-threads --watch` passes exactly that bare form. It must agree with the
-# `base.repo.full_name` the PR fixture reports, or every scenario below fails closed.
-git init -q "$REPO"
-git -C "$REPO" remote add origin https://github.com/acme/widget.git
+# repo sits above the temp dir. `check_make_stub_repo` carries the `origin`-remote contract (#173),
+# which `/resolve-pr-threads --watch` needs: it passes the bare `--pr 7` form, naming no repository.
+check_make_stub_repo "$REPO" https://github.com/acme/widget.git || {
+  echo "check-pr-watch: FATAL — could not build the fixture repo" >&2; exit 1; }
 
 HEAD_SHA="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -125,7 +120,7 @@ FORGED_COMMIT_AT="2026-07-25T00:00:00Z"
 # It also COUNTS polls (one `pulls/N` read per classification) and prefers a per-poll fixture
 # `<name>.<n>.json` when one exists, which is how the `wait` scenarios below make the answer change
 # between polls without any network.
-cat > "$SBIN/gh" <<'STUB'
+check_write_stub "$SBIN/gh" <<'STUB'
 #!/usr/bin/env bash
 # Knobs:
 #   STUB_AUTH_FAIL=1       -> `gh auth status` fails (unauthenticated)
@@ -215,7 +210,6 @@ case "$url" in
 esac
 exit 0
 STUB
-chmod +x "$SBIN/gh"
 
 # A `sleep` shim that RECORDS the requested nap and then sleeps a flat 1s.
 #
@@ -227,12 +221,11 @@ chmod +x "$SBIN/gh"
 # a small `--max-secs` to expire in a few iterations, while RECORDING the requested value is what
 # lets the overshoot assertion below read the clamp the code actually computed rather than the
 # shortened one it slept.
-cat > "$SBIN/sleep" <<'SLEEPSTUB'
+check_write_stub "$SBIN/sleep" <<'SLEEPSTUB'
 #!/usr/bin/env bash
 printf '%s\n' "${1:-}" >> "$S/slept"
 exec /bin/sleep 1
 SLEEPSTUB
-chmod +x "$SBIN/sleep"
 
 # ---- fixtures --------------------------------------------------------------------------------
 reset_fx() {
@@ -246,38 +239,24 @@ reset_fx() {
   commit_fx
   activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"
 }
-# pr_fx [sha] [state] [merged_at] [base-slug] [head-slug] [head-ref]
-# The last two are what the staleness anchor is looked up by. `${5-}` not `${5:-}` on purpose: an
-# EXPLICIT empty string means "this PR has no head repository any more" (a deleted fork), which is a
-# state the anchor must degrade on, while an OMITTED argument takes the default.
+# pr_fx [--sha X] [--state X] [--merged-at X] [--base-slug X] [--head-slug X] [--head-ref X]
+# A defaults wrapper over `check_pr_json`, which holds the fixture shape (D68). Last flag wins, so
+# `pr_fx --head-slug ""` renders `head.repo` null — a deleted fork, which the anchor must degrade on.
 pr_fx() {
-  jq -n --arg sha "${1:-$HEAD_SHA}" --arg st "${2:-open}" --arg m "${3:-}" --arg slug "${4:-acme/widget}" \
-        --arg hslug "${5-acme/widget}" --arg href "${6-$HEAD_REF}" \
-    '{head:{sha:$sha, ref:$href, repo:(if $hslug == "" then null else {full_name:$hslug} end)},
-      state:$st, merged_at:(if $m == "" then null else $m end), base:{repo:{full_name:$slug}}}' \
-    > "$S/pr.json"
+  check_pr_json "$S/pr.json" --sha "$HEAD_SHA" --state open --merged-at "" \
+    --base-slug acme/widget --head-slug acme/widget --head-ref "$HEAD_REF" "$@"
 }
 pr_fx_raw()  { printf '%s\n' "$1" > "$S/pr.json"; }
+# pr_poll_fx <n> [flags…] — `pr_fx` writing the per-poll fixture the gh stub prefers on poll <n>.
+# A second wrapper rather than a second construction site: the destination is the only difference.
+pr_poll_fx() {
+  local n="$1"; shift
+  check_pr_json "$S/pr.$n.json" --sha "$HEAD_SHA" --state open --merged-at "" \
+    --base-slug acme/widget --head-slug acme/widget --head-ref "$HEAD_REF" "$@"
+}
 # The committer date the module MUST NOT consult. Defaulted to a value old enough that reading it
 # would flip every staleness assertion below from `pending` to `clean`.
 commit_fx()  { jq -n --arg d "${1:-$FORGED_COMMIT_AT}" '{commit:{committer:{date:$d}, author:{date:$d}}}' > "$S/commit.json"; }
-# activity_fx <after-sha> <ref> <timestamp> [...] — one repository-activity record per triple, in the
-# newest-first order the API returns them.
-#
-# Written flat, unlike the `_*_into` siblings above: those take an `out` parameter because each has
-# 2-3 callers writing page-two and per-poll fixtures, and this one has exactly one destination. The
-# indirection is theirs to earn, not a house style to copy.
-activity_fx() {
-  local acc="[]"
-  while [ "$#" -ge 3 ]; do
-    acc="$(printf '%s' "$acc" | jq -c --arg sha "$1" --arg ref "$2" --arg at "$3" \
-            '. + [{activity_type:"push", ref:$ref, before:"0000000000000000000000000000000000000000",
-                   after:$sha, timestamp:$at}]')"
-    shift 3
-  done
-  printf '%s\n' "$acc" > "$S/activity.json"
-}
-activity_fx_raw() { printf '%s\n' "$1" > "$S/activity.json"; }
 # The four payload builders and the call recorder live in check-lib.sh (#167): both PR-guard suites
 # now exercise ONE shared classifier, so the response SHAPES must have one home. The `_*_into` seam
 # stays because this suite writes page-two and per-poll fixtures as well as the default one.
@@ -290,8 +269,9 @@ reaction_fx()     { check_pr_reactions_json "$S/reactions.json" "$@"; }
 _reactions_into() { check_pr_reactions_json "$@"; }
 activity_fx()     { check_pr_activity_json  "$S/activity.json"  "$@"; }
 activity_fx_raw() { printf '%s\n' "$1" > "$S/activity.json"; }
-declare_bots() { printf '%s\n' '[reviewers]' "bots = $1" > "$REPO/agents.toml"; }
-undeclare()    { rm -f "$REPO/agents.toml" "$GHOME/.config/ai-dev-baseline/agents.toml"; }
+# The reviewer-declaration tri-state lives in check-lib.sh too; both suites pin the same three.
+declare_bots() { check_declare_bots   "$REPO" "$1"; }
+undeclare()    { check_undeclare_bots "$REPO" "$GHOME"; }
 
 # _w <args...> : run the detector as the driving agent would — from $REPO, throwaway HOME, stubs.
 # ONE home for the environment so a new STUB_* knob is wired in a single place; the two wrappers
@@ -470,7 +450,7 @@ w observe --pr 1;  rc 11 "#175: the comment path degrades the same way — one r
 # A DELETED HEAD REPOSITORY is a real state, not a broken response: the PR reads fine, there is
 # simply nowhere left to ask. That is an unestablished anchor (11), not an unreadable one (20).
 reset_fx; declare_bots "[\"$CODEX\"]"
-pr_fx "$HEAD_SHA" "open" "" "acme/widget" ""
+pr_fx --head-slug ""
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 w observe --pr 1;  rc 11 "#175: a deleted head repository -> pending"
 has "$OUT" "deleted fork" "#175: names the likely cause"
@@ -478,17 +458,17 @@ has "$OUT" "deleted fork" "#175: names the likely cause"
 # interpolated into a URL PATH — a position no other slug in this family occupies (the base slug is
 # only ever COMPARED). Being a well-formed `owner/repo` pair is necessary and NOT sufficient:
 # `a/..` is a valid pair and a path traversal, so the charset is pinned too.
-pr_fx "$HEAD_SHA" "open" "" "acme/widget" "acme/widget/extra"
+pr_fx --head-slug "acme/widget/extra"
 w observe --pr 1;  rc 20 "#175: a malformed head repository slug -> 20, never a path-injected read"
 for bad_slug in 'acme/..' '../widget' 'acme/.' 'acme/wid get' 'acme/wid?et'; do
-  pr_fx "$HEAD_SHA" "open" "" "acme/widget" "$bad_slug"
+  pr_fx --head-slug "$bad_slug"
   w observe --pr 1;  rc 20 "#175: head repository '$bad_slug' is refused before it reaches a URL"
 done
 # ...but a repository whose NAME merely contains dots is a name, not a traversal, and must still be
 # queryable. Over-rejecting it would make every date-scoped signal on that PR permanently 20 —
 # failure by availability rather than by safety, which is the kind that ships unnoticed.
 reset_fx; declare_bots "[\"$CODEX\"]"
-pr_fx "$HEAD_SHA" "open" "" "acme/widget" "acme/api..client"
+pr_fx --head-slug "acme/api..client"
 activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 wout observe --pr 1;  rc 0 "#175: a head repository named 'api..client' is queryable, not a traversal"
@@ -734,10 +714,10 @@ w observe --pr 1;  rc 10 "pagination: a review on page 2 is still found"
 
 # ============================ 6. the PR is no longer live ============================
 reset_fx; declare_bots "[\"$CODEX\"]"
-pr_fx "$HEAD_SHA" "closed" "2026-07-25T05:00:00Z"
+pr_fx --state closed --merged-at "2026-07-25T05:00:00Z"
 w observe --pr 1;  rc 12 "gone: a MERGED PR is terminal"
 has "$OUT" "MERGED" "gone: names the merge"
-pr_fx "$HEAD_SHA" "closed" ""
+pr_fx --state closed
 w observe --pr 1;  rc 12 "gone: a CLOSED PR is terminal"
 # Terminal-ness is checked BEFORE the signal reads, so a merged PR stops promptly rather than
 # being classified off whatever the reviewer happened to leave behind.
@@ -861,7 +841,7 @@ w observe --pr "https://github.com/pull/7";  rc 2 "slug: a URL with no owner/rep
 # repository at all). The anchor is therefore the CHECKOUT's git origin, which no gh variable can
 # move. Simulated the only way a stub can: the reads answer for a repository that is not this one.
 reset_fx; declare_bots "[\"$CODEX\"]"
-pr_fx "$HEAD_SHA" "open" "" "other/project"
+pr_fx --base-slug "other/project"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 w observe --pr 1;  rc 2 "slug: a bare number whose reads answered for ANOTHER repo is refused (GH_REPO class)"
 has "$OUT" "GH_REPO" "slug: the refusal names the likely cause"
@@ -945,16 +925,16 @@ STUB_FAIL_PR=0
 
 # A PR that merges mid-watch stops the loop rather than running to the deadline.
 reset_fx; declare_bots "[\"$CODEX\"]"
-pr_fx "$HEAD_SHA" "open" ""
-jq -n --arg sha "$HEAD_SHA" '{head:{sha:$sha}, state:"closed", merged_at:"2026-07-25T05:00:00Z", base:{repo:{full_name:"acme/widget"}}}' > "$S/pr.2.json"
+pr_fx
+pr_poll_fx 2 --state closed --merged-at "2026-07-25T05:00:00Z"
 w wait --pr 1 --interval 1 --max-secs 300;  rc 12 "wait: stops as soon as the PR stops being open"
 
 # A head that moves mid-watch is reported, and the earlier signal must not carry over: the `+1` on
 # poll 1 is fresh for head A, but poll 2's head B was committed after it.
 reset_fx; declare_bots "[\"$CODEX\"]"
-jq -n --arg sha "$OLD_SHA"  '{head:{sha:$sha}, state:"open", merged_at:null, base:{repo:{full_name:"acme/widget"}}}' > "$S/pr.1.json"
-jq -n --arg sha "$HEAD_SHA" '{head:{sha:$sha}, state:"open", merged_at:null, base:{repo:{full_name:"acme/widget"}}}' > "$S/pr.2.json"
-jq -n --arg sha "$HEAD_SHA" '{head:{sha:$sha}, state:"open", merged_at:null, base:{repo:{full_name:"acme/widget"}}}' > "$S/pr.3.json"
+pr_poll_fx 1 --sha "$OLD_SHA"
+pr_poll_fx 2
+pr_poll_fx 3
 # The activity fixture dates the NEW head's arrival after the reaction — so the reaction that was
 # valid for the old head is stale for this one.
 activity_fx "$HEAD_SHA" "refs/heads/$HEAD_REF" "$AFTER_AT"

@@ -870,285 +870,180 @@ else bad "bin/baseline: the 'adopt' dispatch must precede the wrong-clone guard"
 # injected with its own defect, and the suite above must come back RED on that defect's OWN named
 # witness. Red for the wrong reason is not evidence.
 #
-# Every mutation is applied to a COPY (self-review.md's copy rule). The working tree is never
-# touched, so this cannot be the thing that eats an uncommitted edit.
-MUT_NAMES=(); MUT_OLD=(); MUT_NEW=(); MUT_WIT=()
-mut() { MUT_NAMES+=("$1"); MUT_OLD+=("$2"); MUT_NEW+=("$3"); MUT_WIT+=("$4"); }
+# Every mutation is applied to a COPY (self-review.md's copy rule); the working tree is untouched.
+# The table, the rewrite, the pool and the scoring live in check-lib.sh (D68). What stays here is
+# local: the tree copy, the file to mutate, how the child is invoked, and the table itself.
 
-# Literal strings and an index/substr replacement, never a regex — check-adopt.sh records how
-# eight of twenty sed-based rows silently matched nothing, and a mutation that matches nothing is
-# a test that proves nothing. `ENVIRON`, not `awk -v`, because -v processes escape sequences.
-_mut_apply() {  # <file> <old> <new>
-  MUT_OLD_S="$2" MUT_NEW_S="$3" awk '
-    BEGIN { old = ENVIRON["MUT_OLD_S"]; new = ENVIRON["MUT_NEW_S"] }
-    !hit { i = index($0, old); if (i) { $0 = substr($0, 1, i - 1) new substr($0, i + length(old)); hit = 1 } }
-    { print }
-  ' "$1"
+# <copy> — build the tree copy and print the file to mutate. `base` too: the suite reads
+# base/workflows/adopt.md.
+_ar_mut_prepare() {
+  check_copy_subtrees "$ROOT" "$1" scripts base >/dev/null 2>&1 || return 1
+  printf '%s\n' "$1/scripts/lib/adopt-readiness.sh"
 }
+# <copy> — run the suite recursively. ADB_STATE_DIR keeps the child's receipt inside its own copy.
+# NOT `--mutation`, or the child would recurse.
+_ar_mut_run() { ( cd "$1" && ADB_STATE_DIR="$1/state" bash scripts/check-adopt-readiness.sh ); }
 
 # THE FAIL-CLOSED MUTATIONS. Each turns one guard toward the flattering answer.
 #
-# THE WITNESS IS THE ASSERTION'S FULL LABEL, prefix included. The first version of this table
-# wrote the witness as the bare sentence ("a new HEAD makes the receipt stale") while the suite
-# prints "FAIL: receipt: a new HEAD makes the receipt stale" — so every one of the sixteen rows
-# reported "went red, but NOT on its witness" while the guards were in fact working perfectly.
-# A harness that cannot recognize its own success is the same silence it exists to detect.
-#
-# AND EVERY LITERAL IS ONE LINE. `_mut_apply` matches with awk's `index()`, which sees a single
-# record at a time, so a literal spanning two source lines can never match — and a mutation that
-# matches nothing is a test that proves nothing. Two rows started that way; the did-it-apply
-# check below is what caught them.
-mut missing-rung-is-skipped \
+# The witness is the assertion's FULL label, prefix included, and every literal is ONE line —
+# `check_mutate_literal` matches per record, so a two-line literal can never match (D68).
+check_mut missing-rung-is-skipped \
     'unknowns+=("$rung${TAB}$owner${TAB}$title${TAB}not reported' \
     'continue; unknowns+=("$rung${TAB}$owner${TAB}$title${TAB}not reported' \
     'verdict: a rung nobody reported is unknown, not absent'
-mut unknown-status-accepted \
+check_mut unknown-status-accepted \
     '*) die "verdict: rung '"'"'$rung'"'"' has status' \
     '*) st=ok ;; esac; case x in y) die "verdict: rung '"'"'$rung'"'"' has status' \
     'verdict: an unknown STATUS is rejected (never a pass)'
-mut duplicate-rung-last-wins \
+check_mut duplicate-rung-last-wins \
     '[ -n "${seen[$rung]:-}" ] && die "verdict: rung' \
     '[ -n "${seen[$rung]:-}" ] && : "verdict: rung' \
     'verdict: a duplicated rung is rejected (no silent last-wins)'
-mut indeterminate-becomes-green \
+check_mut indeterminate-becomes-green \
     "printf 'VERDICT: indeterminate" \
     "return 0; printf 'VERDICT: indeterminate" \
     'verdict: unknown-only is indeterminate'
-mut red-becomes-green \
+check_mut red-becomes-green \
     "printf 'VERDICT: red" \
     "return 0; printf 'VERDICT: red" \
     'verdict: any todo is red'
-mut no-gate-is-silent \
+check_mut no-gate-is-silent \
     '_ar_emit gates todo "NO GATE was detected' \
     '_ar_emit gates na "NO GATE was detected' \
     'probe: NO detectable gate is todo (loud), not a silent pass'
-mut gate-count-greps-status \
+check_mut gate-count-greps-status \
     'grun="$(printf '"'"'%s'"'"' "$gdetect" | grep -c . || true)"' \
     'grun=0' \
     'probe: a fresh passing receipt makes the gates rung ok'
-mut receipt-ignores-head \
+check_mut receipt-ignores-head \
     'if [ "$r_sha" != "$sha" ];' \
     'if false;' \
     'receipt: a new HEAD makes the receipt stale'
-mut receipt-ignores-gate-config \
+check_mut receipt-ignores-gate-config \
     'if [ "$r_digest" != "$digest" ];' \
     'if false;' \
     'receipt: a changed gate CONFIGURATION makes the receipt stale'
-mut receipt-failure-reads-as-ok \
+check_mut receipt-failure-reads-as-ok \
     'if [ "$r_outcome" = fail ];' \
     'if false;' \
     'receipt: a recorded failure is 12, not 11'
-mut receipt-truncated-reads-as-ok \
+check_mut receipt-truncated-reads-as-ok \
     'case "$r_outcome" in pass|fail) ;; *) printf' \
     'case "$r_outcome" in pass|fail|"") ;; *) printf' \
     'receipt: a receipt with no outcome column is none, not ok'
-mut disposition-jq-rebinding-returns \
+check_mut disposition-jq-rebinding-returns \
     'select( ($d | index("milestone:" + $m.title)) == null )' \
     'select( ($d | index("milestone:" + .title)) == null )' \
     'tracker: an undispositioned thematic milestone is todo'
-mut disposition-jq-failure-unchecked \
+check_mut disposition-jq-failure-unchecked \
     'if ! undecided="$(printf' \
     'if undecided="$(printf' \
     'tracker: an undispositioned thematic milestone is todo'
-mut disposition-convention-filter-drops-all \
+check_mut disposition-convention-filter-drops-all \
     'select($m.title != $rel and $m.title != $bak)' \
     'select(false)' \
     'tracker: an undispositioned thematic milestone is todo'
-mut armed-not-checked \
+check_mut armed-not-checked \
     'elif [ "$armed" != true ]; then' \
     'elif false; then' \
     'tracker: an unarmed release milestone is todo'
-mut settings-typo-accepted \
+check_mut settings-typo-accepted \
     '*)  die "tracker: .settings must be' \
     '*)  _ar_emit settings ok "x" ;; esac; case x in y) die "tracker: .settings must be' \
     'tracker: an unrecognized settings verdict is rejected, not accepted'
-mut newline-forges-a-record \
+check_mut newline-forges-a-record \
     'detail="${detail//$'"'"'\n'"'"'/ }"' \
     'detail="$detail"' \
     'tracker: a newline in a milestone title does not forge an extra record'
-mut release-absent-collapses-to-todo \
+check_mut release-absent-collapses-to-todo \
     'relcmd="$(_fact release_command string)"; rc=$?' \
     'relcmd=""; rc=0' \
     'tracker: an UNREAD release-command marker is unknown'
-mut receipt-ignores-the-worktree \
+check_mut receipt-ignores-the-worktree \
     'if [ "$r_tree" != "$tree" ];' \
     'if false;' \
     'receipt: an UNCOMMITTED edit makes the receipt stale'
-mut receipt-skips-turn-end-gates \
+check_mut receipt-skips-turn-end-gates \
     'run "$root" "" turn-end || { outcome=fail; rc=1; }' \
     'true' \
     'receipt: a failing turn-end gate is EXECUTED, not skipped'
-mut receipt-shared-temp-name \
+check_mut receipt-shared-temp-name \
     'tmp="$(mktemp "$(dirname "$path")/.adopt-receipt.XXXXXX")"' \
     'tmp="$(dirname "$path")/.adopt-receipt.tmp"; :' \
     'receipt: a pre-planted temp symlink is not written through'
-mut detector-failure-is-na \
+check_mut detector-failure-is-na \
     'if [ "$gstat" -ne 0 ]; then' \
     'if false; then' \
     'probe: a FAILED gate detector is unknown, never a recorded N/A'
-mut agent-token-validated-only-when-installed \
+check_mut agent-token-validated-only-when-installed \
     'die "probe: invalid agent token' \
     ': "probe: invalid agent token' \
     'probe: rejects a traversal token even with NO install present'
-mut harness-checks-only-the-directory \
+check_mut harness-checks-only-the-directory \
     '      [ -e "$HOME/.$a/$doc" ] || missing="$missing $a(root-doc)"' \
     '      :' \
     'probe: an agent home with no root doc is todo, not ok'
-mut blocker-label-coerced \
+check_mut blocker-label-coerced \
     'printf '"'"'%s'"'"' "$json" | jq -e --arg k "$k" --arg t "$t" '"'"'.[$k]|type == $t'"'"' >/dev/null 2>&1 || return 2' \
     ':' \
     'tracker: a STRING blocker_label is malformed, not true'
-mut milestones-not-observed \
+check_mut milestones-not-observed \
     'elif [ -n "$missing" ]; then' \
     'elif false; then' \
     'tracker: the label without the milestones is todo, NOT ok'
-mut release-ambiguity-ignored \
+check_mut release-ambiguity-ignored \
     'if [ -n "$rc_count" ] && [ "$rc_count" -gt 1 ]; then' \
     'if false; then' \
     'tracker: two declared release-command markers are refused'
-mut roadmap-split-brain-ok \
+check_mut roadmap-split-brain-ok \
     'elif [ "$rc_n" -gt 1 ]; then' \
     'elif false; then' \
     'tracker: two roadmap artifacts is todo'
-mut worktree-digest-hashes-only-status \
+check_mut worktree-digest-hashes-only-status \
     '    git -C "$root" diff HEAD 2>/dev/null || return 1' \
     '    :' \
     'receipt: editing an ALREADY-MODIFIED path makes the receipt stale'
-mut untracked-content-not-hashed \
+check_mut untracked-content-not-hashed \
     '          cat -- "$root/$f" 2>/dev/null || printf '"'"'<unreadable>'"'"'' \
     '          :' \
     'receipt: an untracked file whose CONTENT changed makes the receipt stale'
-mut gate-key-is-a-decision \
+check_mut gate-key-is-a-decision \
     '    [ "$_v" = na ] && gkeys=$((gkeys + 1))' \
     '    gkeys=$((gkeys + 1))' \
     'probe: an UNSUPPORTED [gates.state] value is a typo, not a recorded decision'
-mut probe-does-not-resolve-the-root \
+check_mut probe-does-not-resolve-the-root \
     '  if _rr="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$_rr" ]; then root="$_rr"; fi' \
     '  :' \
     'probe: running from a SUBDIRECTORY still reads the project root'
-mut skills-dir-presence-is-enough \
+check_mut skills-dir-presence-is-enough \
     '  [ -n "$(find "$1" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit 2>/dev/null)" ]' \
     '  :' \
     'probe: EMPTY skills/scripts dirs must not satisfy the harness rung'
-mut primary-presence-is-enough \
+check_mut primary-presence-is-enough \
     '  tok="$( cd "$root" 2>/dev/null && bash "$_AR_LIB_DIR/role-dispatch.sh" resolve primary 2>/dev/null )" || return 1' \
     '  tok=claude' \
     'probe: an INVALID [roles] primary is todo, not ok'
-mut dispositions-type-unchecked \
+check_mut dispositions-type-unchecked \
     '    _fact dispositions array >/dev/null; rc_dp=$?' \
     '    :' \
     'tracker: a STRING dispositions is refused, not substring-matched'
-mut release-resolution-ignored \
+check_mut release-resolution-ignored \
     '    resolved="$(_fact release_command_resolved boolean)" || resolved=""' \
     '    resolved=true' \
     'tracker: a marker whose skill is MISSING is todo, not ok'
-mut status-takes-an-option-as-root \
+check_mut status-takes-an-option-as-root \
     '    -*|'"'"''"'"') : ;;' \
     '    NEVERMATCHES) : ;;' \
     'status: an option-only invocation resolves the root from $PWD'
-mut unterminated-final-record-dropped \
+check_mut unterminated-final-record-dropped \
     'while IFS= read -r line || [ -n "$line" ]; do' \
     'while IFS= read -r line; do' \
     'e2e: probe+tracker cover the whole contract'
 
-# One mutation, start to verdict. The verdict travels through a FILE because this runs in a
-# background subshell and a counter incremented there dies with it.
-_mut_one() {  # <index>
-  local i="$1" copy out src
-  copy="$WORK/mut-$i"
-  mkdir -p "$copy"
-  if ! check_copy_subtrees "$ROOT" "$copy" scripts base >/dev/null 2>&1; then
-    printf 'bad|could not copy the tree\n' > "$copy/verdict" 2>/dev/null; return
-  fi
-  if ! _mut_apply "$copy/scripts/lib/adopt-readiness.sh" "${MUT_OLD[$i]}" "${MUT_NEW[$i]}" > "$copy/mutated"; then
-    printf 'bad|the rewrite failed\n' > "$copy/verdict"; return
-  fi
-  # VERIFY THE EDIT APPLIED. A literal that matches nothing produces an unchanged copy, the suite
-  # passes, and the harness would blame the guard for a mutation that never happened — the same
-  # silence it exists to detect, one level up.
-  if cmp -s "$copy/mutated" "$copy/scripts/lib/adopt-readiness.sh"; then
-    printf 'bad|the mutation matched nothing (literal is stale)\n' > "$copy/verdict"; return
-  fi
-  mv "$copy/mutated" "$copy/scripts/lib/adopt-readiness.sh"
-  # THE STATUS AND THE WITNESS, both. This used to match the witness STRING and throw the recursive
-  # suite's exit code away — so "38 observed RED" was a claim about what the child PRINTED, never
-  # about whether it failed. The two agree today only because `check_summary` couples them; a
-  # refactor that lost a status while still printing the line would leave this harness reporting
-  # thirty-eight proofs it no longer had. Require exactly 1: it is what a failed ASSERTION exits,
-  # while a crash, a `set -u` abort or a usage error exit something else, and those are the suite
-  # dying rather than the guard firing (base/practices/self-review.md).
-  out="$( cd "$copy" && ADB_STATE_DIR="$copy/state" bash scripts/check-adopt-readiness.sh 2>&1 )"; src=$?
-  case "$src" in
-    1)
-      case "$out" in
-        *"FAIL: ${MUT_WIT[$i]}"*) printf 'ok|\n' > "$copy/verdict" ;;
-        *FAIL:*) printf 'bad|went red, but NOT on its witness [%s]\n' "${MUT_WIT[$i]}" > "$copy/verdict" ;;
-        *)       printf 'bad|exited 1 with no FAIL: line at all — it aborted, it did not fail an assertion\n' > "$copy/verdict" ;;
-      esac ;;
-    0) printf 'bad|stayed GREEN (exit 0) — the guard cannot fail\n' > "$copy/verdict" ;;
-    *) printf 'bad|exited %s, not 1 — the suite ABORTED rather than failing its assertion\n' "$src" > "$copy/verdict" ;;
-  esac
-  # A worker's own status must stay 0 whatever it decided: the pool below reaps exactly one job per
-  # `wait -n`, and a non-zero worker is what used to send it down a fallback that drained every
-  # child at once. The verdict travels in the file; the exit code carries nothing.
-  return 0
-}
-
-if [ "$MUTATE" -eq 1 ]; then
-  # The mutated copies run the suite recursively, so the child must NOT recurse again.
-  #
-  # THE WIDTH IS ASKED FOR, NOT HARDCODED (#335). It was `pool=4` — half the usable width of a
-  # 10-core workstation, and a third MORE than the 3-core `macos-latest` runner has, on a step that
-  # costs 1115 CPU-seconds and is 94% of `selfcheck`'s critical path. `adb_pool_size` is the one
-  # home for the answer (scripts/lib/common.sh): min(cpu, 8), so the number right-sizes itself per
-  # machine instead of being a constant chosen on one.
-  #
-  # THE CAP IS 4 BECAUSE THAT IS WHAT IT ALREADY WAS, and `min` is the only part that changes
-  # anything. This deliberately does NOT try to tune the number.
-  #
-  # TWO BEHAVIOURAL CHANGES, BOTH STATED RATHER THAN GLOSSED. (1) On a machine with fewer than four
-  # cores this forks fewer workers — the 3-core `macos-latest` runner has been forking 4 and now
-  # forks 3. That is the point, but it is a TRADE, not a free win: fewer workers can cost wall
-  # clock, and no benchmark here says otherwise (CI timing is #339's subject, not this change's).
-  # (2) `adb_pool_size` honours `ADB_POOL_JOBS`, so an operator can now shrink this pool on ANY
-  # machine. That seam is deliberate — it is how the sizing is tested, and the only lever someone
-  # on a shared box has — but it means "same as before" is true of the DEFAULT, not of every
-  # environment.
-  #
-  # WHAT A BENCHMARK WOULD HAVE TO SURVIVE, stated because it was attempted and did not: on the
-  # maintainer's box the whole suite measured 526s, 583s and 775s across trees whose differences
-  # were far smaller than that spread, and two runs with DIFFERENT pool widths reported CPU totals
-  # within 0.1% of each other. Standalone, pool 8 was 29s FASTER (299s against 328s) for 46% more
-  # CPU — so "no benefit past four" would be false, and is not claimed. What can be said is that
-  # the extra width buys little wall clock at a large CPU cost, and inside a suite that CPU is
-  # taken from 48 other steps. The cap stays where it was because nothing measured here justifies
-  # moving it. D66 records the numbers and their unreliability together.
-  pool="$(adb_pool_size 4)"; i=0; running=0
-  while [ "$i" -lt "${#MUT_NAMES[@]}" ]; do
-    _mut_one "$i" &
-    running=$((running + 1)); i=$((i + 1))
-    # `wait -n` ALONE, with no `|| wait` behind it. That fallback fired on any worker that exited
-    # non-zero and then waited for EVERY child while decrementing the counter once — so `running`
-    # stayed pinned at the bound and the pool degraded toward serial, silently. Measured on an
-    # 8-worker fixture at pool 4: 5s against the correct 2s. `_mut_one` returns 0 unconditionally
-    # (see its tail), so the fallback protected nothing that the contract does not already give.
-    if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
-  done
-  wait
-  applied=0; red=0
-  for i in "${!MUT_NAMES[@]}"; do
-    v="$(cat "$WORK/mut-$i/verdict" 2>/dev/null || echo 'bad|no verdict file')"
-    applied=$((applied + 1))
-    case "$v" in
-      ok\|*) red=$((red + 1)); ok ;;
-      *) bad "mutation '${MUT_NAMES[$i]}': ${v#*|}" ;;
-    esac
-  done
-  # SAY THE WIDTH IT ACTUALLY USED, as check-adopt.sh already does. A pool that degrades to one
-  # finishes with the same counts and the same verdict as a healthy one — the only difference is
-  # how long it took, which nothing reads. Printing it is what makes that difference visible.
-  printf '\ncheck-adopt-readiness --mutation: %d mutation(s) applied, %d observed RED on their own witness (pool=%s)\n' \
-    "$applied" "$red" "$pool" >&2
-fi
+# Width from `adb_pool_size` (min(cpu, 4)); `ADB_POOL_JOBS` is the operator/test seam. The cap is
+# 4 because that is what it already was — nothing measured justifies moving it (D66).
+[ "$MUTATE" -eq 1 ] && \
+  check_mutation_pool "check-adopt-readiness" "$WORK" _ar_mut_prepare _ar_mut_run 4
 
 check_summary "check-adopt-readiness"

@@ -7,11 +7,11 @@
 #      check_result: many assertions collapse to ONE boolean verdict (the anti-drift lints).
 #   2. unit-test assertion family (§ further down) — ok / bad / bad_quiet / eq / yes / no /
 #      has / hasnt + a pass/fail COUNTER + check_summary: the *.sh unit tests.
-#   3. git fixture helpers (§ further down) — check_git + check_make_repo_pair: the throwaway
-#      identity wrapper and the local+bare-origin scaffold, accounting-neutral so either family
-#      can guard them.
-#   4. PR reviewer-signal payload builders (§ further down) — check_pr_reviews_json and friends:
-#      the four GitHub response SHAPES both PR-guard suites stub.
+#   3. git fixture helpers (§ further down) — check_git, check_make_repo_pair,
+#      check_make_stub_repo, check_write_stub: throwaway repos and executable stubs.
+#   4. PR payload builders (§ further down) — check_pr_*_json, check_pr_json, check_declare_bots.
+#   5. mutation harness (§ with check_mutate_line) — check_mutate_literal, check_mut,
+#      check_mutation_pool: a defect per row into a tree COPY, require RED (family 2's counters).
 #
 # Sourced, never executed. Lives OUTSIDE scripts/lib/ on purpose: install.sh symlinks the whole
 # scripts/lib dir into ~/.<agent>/scripts/lib, and check/test code must not ship into a user's
@@ -170,6 +170,149 @@ check_mutate_line() {
     return 1
   fi
   return 0
+}
+
+# --- mutation-harness family (#373) ------------------------------------------------------------
+# Inject one defect per row into a COPY of the tree and require the suite under test to come back
+# RED. A SIBLING of `check_mutate_line` above, not a replacement: that one applies a `sed` script
+# and needs whole-line uniqueness, this one takes an arbitrary literal substring. (D68)
+
+# check_mutate_literal <file> <old> <new> — replace the FIRST occurrence of literal <old> with
+# <new>, in place. Returns:
+#   0  applied
+#   1  the rewrite failed (unreadable file, unwritable dir)
+#   2  the literal matched NOTHING — the file is unchanged, so this row tests nothing
+#
+# `ENVIRON`, not `awk -v`: -v processes backslash escapes, so `\$` and `\n` arrive altered. (D68)
+# `index()` sees one record, so a literal spanning two source lines always returns 2.
+# Sibling-then-rename, not `sed -i` (BSD/GNU differ), so a failed rewrite cannot half-write <file>.
+check_mutate_literal() {
+  local f="$1" tmp="$1.adb-mut"
+  ADB_MUT_OLD="$2" ADB_MUT_NEW="$3" awk '
+    BEGIN { old = ENVIRON["ADB_MUT_OLD"]; new = ENVIRON["ADB_MUT_NEW"] }
+    !hit { i = index($0, old); if (i) { $0 = substr($0, 1, i - 1) new substr($0, i + length(old)); hit = 1 } }
+    { print }
+  ' "$f" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  if cmp -s "$tmp" "$f"; then rm -f "$tmp"; return 2; fi
+  mv "$tmp" "$f" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# check_mut <name> <old-literal> <new-literal> <witness> — append one table row. Fixed strings,
+# never regexes. The witness is the assertion label (or a distinctive fragment) the child must fail
+# on, since red for the wrong reason is not evidence (#213's `fires:<witness>` contract).
+CHECK_MUT_NAMES=(); CHECK_MUT_OLD=(); CHECK_MUT_NEW=(); CHECK_MUT_WIT=()
+check_mut() {
+  CHECK_MUT_NAMES+=("$1"); CHECK_MUT_OLD+=("$2"); CHECK_MUT_NEW+=("$3"); CHECK_MUT_WIT+=("$4")
+}
+
+# _check_mut_witness <output> <witness> — true when some line of <output> begins with `FAIL: ` and
+# carries <witness>. Per LINE, so a mid-label witness cannot match a passing assertion's echo.
+# `case` over a here-string, never `printf | grep -q`: pipefail promotes grep's early-exit SIGPIPE.
+# `*"$2"*` is quoted, so the witness matches literally — three live witnesses carry glob bytes. (D68)
+_check_mut_witness() {
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      "FAIL: "*) case "$line" in *"$2"*) return 0 ;; esac ;;
+    esac
+  done <<< "$1"
+  return 1
+}
+
+# _check_mut_one <index> <workdir> <prepare-fn> <run-fn> — one row, start to verdict. Writes
+# `<verdict>|<why>` to `<workdir>/mut-<i>/verdict`: it runs in a background subshell, where an
+# incremented counter would die with it (#259). Its own status is always 0 — the pool reaps exactly
+# one job per `wait -n`, so a non-zero worker would miscount the pool. (D68)
+_check_mut_one() {   # <index> <workdir> <prepare-fn> <run-fn>
+  local i="$1" copy="$2/mut-$1" prep="$3" run="$4" tgt out src rc
+  if ! tgt="$("$prep" "$copy")" || [ -z "$tgt" ]; then
+    printf 'bad|could not build the tree copy\n' > "$copy/verdict" 2>/dev/null; return 0
+  fi
+  check_mutate_literal "$tgt" "${CHECK_MUT_OLD[$i]}" "${CHECK_MUT_NEW[$i]}"; rc=$?
+  case "$rc" in
+    0) ;;
+    2) printf 'bad|the injection did not apply — this row tests NOTHING\n' > "$copy/verdict"; return 0 ;;
+    *) printf 'bad|the rewrite failed\n' > "$copy/verdict"; return 0 ;;
+  esac
+  # The status AND the witness: matching printed text alone accepts a child that prints the expected
+  # line and then exits 0. Exactly 1 is a failed assertion; anything else is the suite dying. (D68)
+  out="$("$run" "$copy" 2>&1)"; src=$?
+  case "$src" in
+    1)
+      if _check_mut_witness "$out" "${CHECK_MUT_WIT[$i]}"; then
+        printf 'ok|applied\n' > "$copy/verdict"
+      else
+        case "$out" in
+          *"FAIL:"*) printf 'bad|went red, but NOT on its witness [%s] — caught by accident, not by the assertion that claims to cover it\n' \
+                       "${CHECK_MUT_WIT[$i]}" > "$copy/verdict" ;;
+          *)         printf 'bad|exited 1 with no FAIL: line at all — it aborted, it did not fail an assertion\n' > "$copy/verdict" ;;
+        esac
+      fi ;;
+    0) printf 'bad|stayed GREEN (exit 0) — nothing here can detect this defect\n' > "$copy/verdict" ;;
+    *) printf 'bad|exited %s, not 1 — the suite ABORTED rather than failing its assertion\n' "$src" > "$copy/verdict" ;;
+  esac
+  return 0
+}
+
+# check_mutation_pool <label> <workdir> <prepare-fn> <run-fn> <pool-cap> — run every table row
+# through a bounded pool, scoring into family 2's counters. Width from `adb_pool_size`
+# (min(cpu, cap)); the cap is a parameter because the two adopt suites differ deliberately (D66).
+# The parent scores every index and asserts rows-scored == table size (D68). Callbacks:
+#   <prepare-fn> <copy-dir>  build the tree copy; PRINT the path to mutate, nothing else. Non-zero
+#                            or empty stdout fails that row.
+#   <run-fn>     <copy-dir>  run the suite in <copy-dir>. Its output AND exit status are the verdict.
+check_mutation_pool() {
+  local label="$1" wd="$2" prep="$3" run="$4" cap="$5"
+  local n i pool running=0 applied=0 red=0 scored=0 verdict why
+  n="${#CHECK_MUT_NAMES[@]}"
+  if [ "$n" -eq 0 ]; then
+    bad "$label --mutation: the mutation table is EMPTY — this harness proves nothing"
+    return 1
+  fi
+  if ! command -v adb_pool_size >/dev/null 2>&1; then
+    bad "$label --mutation: adb_pool_size is unavailable — source scripts/lib/common.sh before check-lib.sh"
+    return 1
+  fi
+  pool="$(adb_pool_size "$cap")"
+
+  for (( i = 0; i < n; i++ )); do
+    mkdir -p "$wd/mut-$i"
+    _check_mut_one "$i" "$wd" "$prep" "$run" &
+    running=$((running + 1))
+    # `wait -n` alone: a `|| wait` fallback drains every child while decrementing once, degrading
+    # the pool to serial silently. `_check_mut_one` always returns 0, so nothing needs it. (D68)
+    if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
+  done
+  wait
+
+  for (( i = 0; i < n; i++ )); do
+    scored=$((scored + 1))
+    if [ ! -f "$wd/mut-$i/verdict" ]; then
+      bad "mutation '${CHECK_MUT_NAMES[$i]}': produced NO verdict — its worker died without reporting"
+      continue
+    fi
+    IFS='|' read -r verdict why < "$wd/mut-$i/verdict"
+    if [ "$verdict" = ok ]; then
+      ok; red=$((red + 1)); applied=$((applied + 1))
+    else
+      bad "mutation '${CHECK_MUT_NAMES[$i]}': $why"
+      # `applied` counts rows whose defect reached the code; a row that never got that far tested
+      # nothing at all, which is worse than a guard that missed one.
+      case "$why" in
+        *"did not apply"*|*"could not build"*|*"rewrite failed"*) : ;;
+        *) applied=$((applied + 1)) ;;
+      esac
+    fi
+  done
+  if [ "$scored" -ne "$n" ]; then
+    bad "$label --mutation: scored $scored of $n row(s) — the harness skipped rows and would have reported on none of them"
+  fi
+  # SAY THE WIDTH IT ACTUALLY USED. A pool that degrades to one finishes with the same counts and
+  # the same verdict as a healthy one — the only difference is how long it took, which nothing reads.
+  printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s)\n' \
+    "$label" "$applied" "$n" "$red" "$pool"
+  [ "$applied" -eq "$n" ] || bad "$label --mutation: only $applied of $n mutations actually applied — the rest tested nothing"
 }
 
 # check_summary <name> — emit the terminal "<name>: N passed, M failed" line, then exit 1 if any
@@ -332,6 +475,34 @@ check_make_repo_pair() {
   git -C "$1" remote add origin "$2" || return 1
 }
 
+# check_make_stub_repo <dir> <origin-url> — create <dir>, init it, stamp the throwaway identity +
+# signing-off config, and point `origin` at <origin-url>. Returns non-zero WITHOUT exiting.
+# The sibling of check_make_repo_pair: no bare repo to push to, only an origin URL.
+# The remote is load-bearing (#173) — the code under test anchors every `gh` read to the checkout's
+# git origin, so the slug must agree with the PR fixture's `base.repo.full_name`.
+check_make_stub_repo() {
+  mkdir -p "$1" || return 1
+  git init -q "$1" || return 1
+  git -C "$1" config user.email t@t || return 1
+  git -C "$1" config user.name  t   || return 1
+  git -C "$1" config commit.gpgsign false || return 1
+  git -C "$1" remote add origin "$2" || return 1
+}
+
+# check_write_stub <path> — read a stub program from STDIN, write it to <path> (creating its
+# parent) and make it executable. Returns non-zero WITHOUT exiting. A stub left non-executable is
+# never used, and the suite then silently exercises the real command. Usage:
+#         check_write_stub "$SBIN/gh" <<'STUB'
+#         #!/usr/bin/env bash
+#         …
+#         STUB
+check_write_stub() {
+  # `${1%/*}` is the whole path when it carries no slash, so a bare name would `mkdir` the file.
+  case "$1" in */*) mkdir -p "${1%/*}" || return 1 ;; esac
+  cat > "$1" || return 1
+  chmod +x "$1" || return 1
+}
+
 # --- PR reviewer-signal payload builders (#167) ------------------------------------------------
 # The four GitHub response shapes the two PR-guard suites stub. They live here rather than in each
 # suite because BOTH now exercise ONE shared classifier (`adb_reviewer_evidence` /
@@ -399,6 +570,44 @@ check_pr_activity_json() {
   done
   printf '%s\n' "$acc" > "$out"
 }
+
+# check_pr_json <out> [--sha X] [--state X] [--merged-at X] [--base-slug X] [--head-slug X]
+#               [--head-ref X] — the PULL-REQUEST OBJECT, the fifth shape both suites stub.
+#
+# Named flags, never positional — a positional superset mis-shifts calls silently (D68). Last wins.
+# Empty is meaningful: `--head-slug ""` renders `head.repo` null, `--merged-at ""` likewise.
+# Every field defaults to empty (the fixture constants live in the suites); a bad flag fails loudly.
+check_pr_json() {
+  local out="$1"; shift
+  local sha="" state="open" merged="" bslug="" hslug="" href=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$#" -lt 2 ]; then bad "check_pr_json: flag '$1' has no value"; return 1; fi
+    case "$1" in
+      --sha)       sha="$2" ;;
+      --state)     state="$2" ;;
+      --merged-at) merged="$2" ;;
+      --base-slug) bslug="$2" ;;
+      --head-slug) hslug="$2" ;;
+      --head-ref)  href="$2" ;;
+      *) bad "check_pr_json: unknown flag '$1'"; return 1 ;;
+    esac
+    shift 2
+  done
+  jq -n --arg sha "$sha" --arg st "$state" --arg m "$merged" --arg slug "$bslug" \
+        --arg hslug "$hslug" --arg href "$href" \
+    '{head:{sha:$sha, ref:$href, repo:(if $hslug == "" then null else {full_name:$hslug} end)},
+      state:$st, merged_at:(if $m == "" then null else $m end),
+      base:{repo:{full_name:$slug}}}' > "$out"
+}
+
+# check_declare_bots <repo-dir> <toml-array> — declare the reviewer set the guards read, e.g.
+#   check_declare_bots "$REPO" '["chatgpt-codex-connector"]'
+# `[]` (arm) and NO FILE (fail closed) are different answers; their collapse IS #134.
+check_declare_bots() { printf '%s\n' '[reviewers]' "bots = $2" > "$1/agents.toml"; }
+
+# check_undeclare_bots <repo-dir> <fake-home> — the UNDECLARED arm of that tri-state. Both homes,
+# because the manifest resolves project-first then user-level.
+check_undeclare_bots() { rm -f "$1/agents.toml" "$2/.config/ai-dev-baseline/agents.toml"; }
 
 # check_pr_called <calls-file> <substring> — did any recorded `gh api` call address <substring>?
 # Both suites record every call so they can prove NEGATIVES: that the head-commit endpoint is never
