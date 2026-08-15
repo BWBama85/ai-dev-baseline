@@ -167,8 +167,9 @@ and any cross-agent / subagent dispatch MUST reach a terminal, *completed* state
 exit for `codex exec`/`agy -p`/`claude -p`; the tool result for an Agent subagent).
 **Never poll a background agent's output to infer whether it is "hung"** — the
 outcome is the call returning, not the byte count growing. On timeout / error /
-hang: kill it, **retry once**, then **fall back** to another agent the role lists or
-a `general-purpose` Claude subagent running the same prompt — **except for
+hang: kill it, **retry once**, then **fall back** to another agent the role lists —
+a **cross-model** stand-in only, never a subagent of the model that wrote the diff, which
+would report as coverage while supplying none (#304) — and **except for
 `gap_analysis`, which never substitutes another agent** (retry once, then report the
 classified incompleteness and stop; see step 3). If nothing completes, the step
 **failed** → block or surface (step 4 / step 8), never proceed on partial or empty
@@ -824,10 +825,14 @@ not `-A`. Update `phase=committed`.
 
 ### 8. Review (role: `review`) + your own self-review
 
-**Always** do your own self-review pass first (`base/practices/self-review.md`):
-edge cases, escaping/encoding, binary/NUL corruption, cascade/cancel effects,
-off-by-one, idempotency. List each finding. Self-review is the mandatory floor; the
-`review` role adds *independent* perspective on top of it.
+Do your own self-review pass first (`base/practices/self-review.md`) and list each
+finding; the `review` role adds *independent* perspective on top of it.
+<!-- adb:except claude -->
+
+**Always** run it — self-review is the mandatory floor: edge cases,
+escaping/encoding, binary/NUL corruption, cascade/cancel effects, off-by-one,
+idempotency.
+<!-- adb:end -->
 
 Then run each configured `review` agent. Resolve the slots with
 `{{ROLE_DISPATCH}} resolve review` — it prints one token per slot. **Do not**
@@ -1071,12 +1076,19 @@ advisory: step 9 triages it, and no finding may widen the run's scope on its own
 (`codex` / `gemini`) and the subagent bug review as a single bounded call and **wait
 for it to return** — never poll output to guess liveness. On timeout / error, abandon
 the call (a Bash timeout kills a `codex exec` / `agy -p` process; an Agent subagent
-just returns its error), **retry once**, then **fall back** — preferring another agent
-the role lists **whose CLI `available` reports usable**, and only then a
-`general-purpose` Claude subagent bug review (model-invokable whenever Claude drives)
-standing in for that slot; document the substitution, and when the stand-in is the same
-model that wrote the diff, label it *same-model (not independent)* exactly as a
-same-agent slot is labelled. A slot is **terminal** the moment its reviewer (or its
+just returns its error), **retry once**, then **fall back** to another agent the role
+lists **whose CLI `available` reports usable**, and document the substitution.
+
+**The fallback set is cross-model only (#304).** A `general-purpose` subagent of the
+driving agent used to close this list, and it is gone: when the driving agent is also the
+model that wrote the diff — which is every run where the fallback was reachable — such a
+stand-in is that model checking its own work. Rung 3 above already refuses to manufacture
+one for an *empty* slot, on exactly that reasoning; a slot that *broke* is not a weaker
+case for the same rule. So when no cross-model stand-in is usable, the slot has **failed**
+and the run blocks (below) rather than filling it with a review that reads as coverage in
+the close-out while supplying none.
+
+A slot is **terminal** the moment its reviewer (or its
 fallback) **returns a result** — a completed review that finds *nothing* is a clean
 pass, not a failure; only a hung / errored / crashed-empty call is incomplete.
 If **any** required slot still cannot reach a terminal state after retry + fallback,
@@ -1449,10 +1461,10 @@ parent (a comment that survives the parent closing) and the PR.
 - **Delegated step (gap-analysis / review) hangs, times out, or errors** → it is
   **incomplete**, not skippable. Run it as one bounded call and wait for it to
   return; never poll its output to guess "hung." Then kill → **retry once** →
-  **fall back** (another listed agent, or a `general-purpose` Claude subagent running
-  the same prompt) → if still nothing completes, block/surface. Never mark the step
-  done on partial or empty output. **`gap_analysis` is the exception: retry once, then
-  surface — never substitute another agent** (see step 3).
+  **fall back** (another listed agent, **cross-model only** — never a subagent of the
+  model that wrote the diff, #304) → if still nothing completes, block/surface. Never mark
+  the step done on partial or empty output. **`gap_analysis` is the exception: retry once,
+  then surface — never substitute another agent** (see step 3).
 - **Gap-analysis returns rc 143 (SIGTERM)** → an **outer** bound killed the call before
   the helper's own 45-min backstop could. The fix is *where* it runs, not a bigger
   number: dispatch it through the harness's background facility. Re-deriving a

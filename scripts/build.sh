@@ -87,8 +87,105 @@ build_stage() {
 # later failure in the same run cannot delete a file that is already published.
 build_publish() { mv "$build_tmp" "$1" && build_tmp=''; }
 
+# The agent tokens THIS renderer knows. Its one consumer is block_filter's validator below: a
+# marker naming an unknown token is a typo, and a typo that silently resolved to "everyone" is
+# precisely the quiet failure this facility must not have.
+#
+# NOT a single-sourcing of the agent set, deliberately. The three `render` calls, the three
+# `render_agent_skill` calls and that function's own per-agent `case` arms each still name their
+# agents; consolidating them is #61's job and touching it here would restructure the agent model
+# twice. This constant is a CONSUMER of the set, not its new owner.
+build_known_agents='claude codex gemini'
+
+# block_filter <agent> <file> — emit <file> with its per-agent blocks resolved for <agent>.
+#
+# THE ONE HOME for per-agent instruction density (#304), and both renderers call it: the root-doc
+# `render()` immediately below, and `render_agent_skill()` further down. Both, because the density
+# to be varied lives on both paths — `base/practices/self-review.md` renders through the first and
+# `base/workflows/implement-issue.md` through the second — and two copies of an inclusion rule that
+# had drifted apart would be exactly what this repo exists to prevent.
+#
+# THE GRAMMAR IS ONE FORM:
+#
+#     <!-- adb:except claude -->
+#     …block…
+#     <!-- adb:end -->
+#
+# The block renders for every known agent EXCEPT those listed. There is deliberately no `only`
+# form: `except` is what every shipped source needs, and a second spelling with no consumer is a
+# silently dead knob. It also picks the safe default for an agent nobody has considered yet — a
+# fourth agent added tomorrow INHERITS every block, i.e. today's density unchanged, rather than
+# silently receiving whatever the most stripped-down render happens to be.
+# `docs/adding-an-agent.md` asks that adder to choose deliberately; this is what it defaults to.
+#
+# WHAT MAY GO IN A BLOCK — stated here because nothing in this file can enforce it: verification
+# and scope INSTRUCTION DENSITY only. The procedure, the gates and the state protocol are shared
+# content and must render identically to every agent. A rendered doc may differ in how much it is
+# told to double-check; it must never differ in what it does. That is a constraint on the author,
+# not a mechanism, and saying so plainly is better than implying a check that does not exist.
+#
+# EVERY MALFORMED SPELLING FAILS THE BUILD (rc 3), because a marker parser's failure mode is
+# silence — a block that matches nothing renders exactly like a block that was correctly included.
+# Rejected: an unknown agent token · an empty list · a list naming every known agent (the block
+# would then render nowhere at all) · a second opener before a close · a close with nothing open ·
+# EOF inside a block. What this rule set cannot see is a MISSPELLED KEYWORD — `adb:excpt` matches
+# nothing here and would ship literally — so each caller additionally scans its rendered output for
+# any surviving `<!-- adb:` and refuses to publish one.
+#
+# Markers are BODY-ONLY, the same rule `{{TOKEN}}` already lives by. This filter has no notion of
+# frontmatter (the practices it also serves have none), so a marker placed in a skill's frontmatter
+# is neither rejected nor meaningful — see base/workflows/README.md's source contract.
+block_filter() {
+  local agent="$1" src="$2"
+  awk -v agent="$agent" -v known="$build_known_agents" -v src="$src" '
+    function die(ln, msg) {
+      dying = 1
+      printf("build.sh: %s:%d: %s\n", src, ln, msg) > "/dev/stderr"
+      exit 3
+    }
+    BEGIN {
+      nknown = split(known, ka, " ")
+      for (i = 1; i <= nknown; i++) valid[ka[i]] = 1
+      open = 0; emit = 1
+    }
+    # Matched as a WHOLE LINE, so a marker quoted inside running prose is text, not a directive.
+    /^<!-- adb:end -->$/ {
+      if (!open) die(FNR, "`adb:end` with no open block")
+      open = 0; emit = 1
+      next
+    }
+    # The loose pattern selects, the strict one validates. Selecting loosely is what lets a
+    # mangled opener be REPORTED rather than silently falling through to be emitted as prose.
+    /^<!-- adb:except[ \t]/ {
+      if ($0 !~ /^<!-- adb:except( [a-z0-9-]+)+ -->$/)
+        die(FNR, "malformed `adb:except` marker (want `<!-- adb:except <agent>… -->`): " $0)
+      if (open) die(FNR, "nested `adb:except` — close the block opened at line " open_line " first")
+      delete listed
+      nlisted = 0; excluded = 0
+      # Fields 3..NF-1 are the agent tokens: $1 `<!--`, $2 `adb:except`, $NF `-->`.
+      for (i = 3; i <= NF - 1; i++) {
+        if (!($i in valid)) die(FNR, "unknown agent token `" $i "` in an `adb:except` marker")
+        if ($i in listed)   die(FNR, "agent `" $i "` listed twice in one `adb:except` marker")
+        listed[$i] = 1; nlisted++
+        if ($i == agent) excluded = 1
+      }
+      # A block excluded from every known agent renders nowhere — dead content that reads, in the
+      # source, exactly like content that ships. It is always a mistake, so it is always loud.
+      if (nlisted == nknown)
+        die(FNR, "`adb:except` naming every known agent — this block would render for no agent")
+      open = 1; open_line = FNR; emit = !excluded
+      next
+    }
+    { if (emit) print }
+    END {
+      if (dying) exit 3
+      if (open) die(open_line, "unterminated `adb:except` block — no `adb:end` before EOF")
+    }
+  ' "$src"
+}
+
 render() {
-  local outfile="$1" title="$2"
+  local agent="$1" outfile="$2" title="$3"
   mkdir -p "$(dirname "$outfile")"
   # Stage, render, publish — the same pair render_agent_skill() below uses (#268). A plain
   # `> "$outfile"` truncates the TRACKED root doc before the first byte is written, so any abort
@@ -113,18 +210,28 @@ render() {
     local f
     for f in "$practices"/*.md; do
       case "$(basename "$f")" in 00-index.md) continue ;; esac
-      cat "$f"
+      block_filter "$agent" "$f"
       printf '\n\n---\n\n'
     done
     printf '_Generated from base/practices. The multi-agent role model lives in base/roles.md._\n'
   } > "$build_tmp"
+  # A SURVIVING MARKER IS A REFUSAL, the same shape as the skill renderer's `{{` guard and for the
+  # same reason. block_filter rejects every malformed spelling it can RECOGNISE, but a misspelled
+  # keyword (`adb:excpt`, `adb:unless`) matches none of its rules and would sail through as prose
+  # into a tracked root doc that install.sh symlinks into a live agent session. Scanned before the
+  # publish, so the tracked file is left intact; the EXIT trap removes the staged temp.
+  if LC_ALL=C grep -Fq '<!-- adb:' "$build_tmp"; then
+    echo "build.sh: unresolved per-agent block marker(s) in the rendered '$agent' root doc — every marker must be \`<!-- adb:except <agent>… -->\` … \`<!-- adb:end -->\` (see base/workflows/README.md):" >&2
+    LC_ALL=C grep -Fn '<!-- adb:' "$build_tmp" | sed 's/^/  /' >&2
+    exit 3
+  fi
   build_publish "$outfile"
   echo "wrote ${outfile#"$root"/}"
 }
 
-render "$root/agents/claude/CLAUDE.md" "Global engineering practices"
-render "$root/agents/codex/AGENTS.md"  "Global engineering practices"
-render "$root/agents/gemini/GEMINI.md" "Global engineering practices"
+render claude "$root/agents/claude/CLAUDE.md" "Global engineering practices"
+render codex  "$root/agents/codex/AGENTS.md"  "Global engineering practices"
+render gemini "$root/agents/gemini/GEMINI.md" "Global engineering practices"
 
 # base/workflows/<name>.md is the single source for each workflow (procedure +
 # metadata). Render each into EVERY agent's native skill form. All three agents
@@ -324,11 +431,17 @@ render_agent_skill() {
   # hazard they both face, which is the asymmetry #268 exists to end.
   build_stage "$out"
   tmp="$build_tmp"
-  # The MAP is the four lreplace() calls below, fed the per-agent tokens via -v. Kept
+  # PER-AGENT BLOCKS RESOLVE FIRST, then the MAP substitutes tokens (#304). The order is
+  # load-bearing in one direction only — a `{{TOKEN}}` inside an excluded block must never reach
+  # the map, or a token that only makes sense for the agent the block was written for would be
+  # substituted and emitted for an agent the author excluded. The reverse order buys nothing.
+  # Piped rather than passed as a filename, so `set -o pipefail` carries the filter's rc 3 out.
+  #
+  # The MAP is the lreplace() calls below, fed the per-agent tokens via -v. Kept
   # literal (index/substr in awk, no regex) so tokens with $, ", and / substitute
   # cleanly. -v does no escape processing on these values (none contain backslashes),
   # so e.g. Claude's gate command emits its real quotes byte-for-byte.
-  awk -v name="$name" -v fmmode="$fmmode" \
+  block_filter "$agent" "$src" | awk -v name="$name" -v fmmode="$fmmode" \
       -v args_to="$args_to" -v state_dir="$state_dir" \
       -v gate_run="$gate_run" -v role_dispatch="$role_dispatch" \
       -v roadmap_lib="$roadmap_lib" -v repo_settings="$repo_settings" \
@@ -412,7 +525,7 @@ render_agent_skill() {
       line = lreplace(line, "{{SUBTASK_PRIMITIVE}}", subtask)
       print line
     }
-  ' "$src" > "$tmp"
+  ' > "$tmp"
 
   # Fail loud on any unresolved placeholder: {{…}} is reserved for the neutral vocabulary,
   # so a survivor means a body used a token the MAP does not define (a typo, or a new
@@ -423,6 +536,17 @@ render_agent_skill() {
   if LC_ALL=C grep -Fq '{{' "$tmp"; then
     echo "build.sh: unresolved placeholder(s) in the rendered '$agent' '$name' skill — every {{TOKEN}} used in a workflow body must have a mapping in build.sh's render_agent_skill:" >&2
     LC_ALL=C grep -Fn '{{' "$tmp" | sed 's/^/  /' >&2
+    rm -f "$tmp"
+    build_tmp=''
+    exit 3
+  fi
+
+  # The same refusal the root-doc renderer makes, for the same reason: block_filter rejects every
+  # malformed marker it can RECOGNISE, and a misspelled keyword is by definition one it cannot.
+  # Publishing it would ship a literal `<!-- adb:… -->` into an installed skill.
+  if LC_ALL=C grep -Fq '<!-- adb:' "$tmp"; then
+    echo "build.sh: unresolved per-agent block marker(s) in the rendered '$agent' '$name' skill — every marker must be \`<!-- adb:except <agent>… -->\` … \`<!-- adb:end -->\` (see base/workflows/README.md):" >&2
+    LC_ALL=C grep -Fn '<!-- adb:' "$tmp" | sed 's/^/  /' >&2
     rm -f "$tmp"
     build_tmp=''
     exit 3

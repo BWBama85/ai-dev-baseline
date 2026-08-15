@@ -127,6 +127,55 @@ renderer/enforcement follow-ups, not this pass:
   literal name in all three rendered skills**, so neutralizing this is expected to change that
   rule — the lint failing at that point is the tripwire working, not a regression.
 
+### Per-agent blocks (`<!-- adb:except … -->`) — instruction density only
+
+**One source, one procedure, different amounts of scaffolding.** A block wrapped in these
+markers renders for every known agent **except** the ones it names:
+
+```markdown
+Do your own self-review pass first and list each finding.
+<!-- adb:except claude -->
+
+**Always** run it — self-review is the mandatory floor: edge cases, escaping/encoding,
+off-by-one, idempotency.
+<!-- adb:end -->
+```
+
+The mechanism is `block_filter` in `scripts/build.sh`, and **both** renderers call it — the
+root-doc `render()` and the skill `render_agent_skill()` — so the same markers work in
+`base/practices/*.md` and `base/workflows/*.md` alike. It runs **before** the `{{TOKEN}}` MAP,
+so a placeholder inside an excluded block is never substituted for an agent the author excluded.
+
+**What may go in one, and this is the whole constraint:** verification and scope **instruction
+density**. The procedure, the gates and the state protocol are shared content and must render
+identically to every agent. A rendered doc may differ in *how much it is told to double-check*;
+it must never differ in *what it does*. Nothing in `build.sh` can enforce that — it is a rule for
+the author and the reviewer, and `scripts/check-agent-blocks.sh` pins the concrete consequences
+rather than the principle. Why it exists: the two vendors' published guidance asks for opposite
+densities (Anthropic's Opus 5 guidance asks that explicit verification scaffolding be *removed*;
+OpenAI's asks Codex for exactly the named-checklist pass), and one instruction set cannot be right
+for both. See decision **D67**.
+
+**There is deliberately no `only` form.** `except` is what every shipped source needs, and a
+second spelling with no consumer is a silently dead knob. It also picks the safe default for an
+agent nobody has considered yet: a fourth agent **inherits** every block — today's density,
+unchanged — instead of silently receiving the most stripped-down render.
+`docs/adding-an-agent.md` asks that adder to choose deliberately.
+
+**Authoring idiom.** Put the opening marker on the line immediately after the preceding content,
+the block's own blank line *inside* the block, and the closing marker immediately after the
+block's last content line. Marker lines are removed, so this is what makes both the included and
+the excluded render come out with correct markdown spacing.
+
+**Rules, all fail-loud (rc 3) at build time.** An unknown agent token · an empty list · a list
+naming every known agent (the block would render nowhere) · the same agent twice · a nested
+opener · a close with nothing open · EOF inside a block. Markers must match their spelling
+**exactly, as a whole line**, so a marker quoted inside running prose is text rather than a
+directive — and because a *misspelled keyword* (`adb:excpt`) therefore matches no rule at all,
+each renderer additionally scans its finished output for any surviving `<!-- adb:` and refuses to
+publish one. Markers are **body-only**, the same rule `{{TOKEN}}` lives by: this filter has no
+notion of frontmatter, so a marker placed there is neither rejected nor meaningful.
+
 ### Step headings are project-override anchors
 
 A skill's `### ` step headings are a stable contract: a project can carry a small

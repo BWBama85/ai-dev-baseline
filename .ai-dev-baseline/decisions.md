@@ -5595,3 +5595,101 @@ limit: none of them is sufficient alone.
                  stay identical and the retired value cannot return — and that the count and the
                  list, which CAN be asked of the runner, are no longer hand-copied at all.
 - baseline-issue: n/a — this repo IS the baseline; #335 is the tracking issue.
+
+## D67 — per-agent density is an EXCLUSION block in one shared filter, and the STEP is what stays shared
+- date:      2026-08-15
+- category:  project-delta
+- unknown:   The framework dispatches roles to two models whose vendors publish **opposite** guidance
+             on verification prompting — Anthropic's Opus 5 guidance asks that explicit verification
+             scaffolding be REMOVED from Claude's instructions (it self-corrects natively and
+             over-verifies when told to), OpenAI's asks Codex for exactly the named-checklist,
+             required-vs-optional pass — and `scripts/build.sh` had no way to express that. `render()`
+             took `(outfile, title)` and `cat`-ed every practice unconditionally; `render_agent_skill()`
+             had a per-agent map, but `{{TOKEN}}` → string substitution cannot omit a paragraph. So one
+             instruction set went to both models and was, by construction, wrong for at least one of
+             them in every project that installs the baseline. D21 deferred this as #211 §2+§3 and
+             recorded that the two are inseparable; #304 is where they land.
+- decision:  Five things. The third is the one the issue could not answer for itself.
+
+             (1) ONE FILTER, BOTH RENDER PATHS. `block_filter <agent> <file>` in `scripts/build.sh`
+             resolves `<!-- adb:except <agent>… -->` … `<!-- adb:end -->`, and BOTH renderers call it:
+             `render()` (which now takes the agent token its call sites already name) and
+             `render_agent_skill()`. The issue's §3 describes the gap in the root-doc path, but its §2
+             asks for a block in `base/workflows/implement-issue.md`, which only the SKILL renderer
+             touches — so a root-only facility could not complete §2 at all. Two copies of an inclusion
+             rule that had drifted apart is the failure this repo exists to prevent, so there is one.
+             It runs BEFORE the placeholder MAP, so a `{{TOKEN}}` inside an excluded block is never
+             substituted for an agent the author excluded.
+
+             (2) EXCLUSION ONLY — there is no `only` form. `except` is what every shipped source
+             needs, and a second spelling with no consumer is a silently dead knob. It also picks the
+             safe default for an agent nobody has considered yet: a fourth agent INHERITS every block
+             — today's density, unchanged — rather than silently receiving the most stripped-down
+             render. `docs/adding-an-agent.md` now asks that adder to choose deliberately and say so,
+             which is what makes the default an inheritance rather than an accident. Gemini's policy
+             is that inheritance, recorded here explicitly: no vendor guidance was read for it, so it
+             keeps what it has today.
+
+             (3) THE STEP IS SHARED; ONLY THE SCAFFOLDING VARIES. #304 asks in one bullet that the
+             Claude render "drop the standing instruction to verify", and in another that a render
+             "never differ in WHAT it does, only in how much it is told to double-check". Read
+             literally the two contradict — D21 flagged exactly this and called it owner-facing —
+             because `/implement-issue` step 9 triages self-review findings and step 10's PR body
+             reports them, so an agent told not to produce them would be running a DIFFERENT
+             procedure, not a lighter one. The invariant wins. Claude keeps the step, the pointer to
+             the practice, and the requirement to name findings; what it loses is the exhortation
+             ("a **mandatory gate**, not a victory lap") and the enumerated `## What to look for`
+             checklist — the density, which is what the vendor guidance is actually about.
+             `scripts/check-agent-blocks.sh` pins the shared half by asserting all three renders still
+             carry the step, so a future block cannot quietly widen this into a procedure fork.
+
+             (4) THE SAME-MODEL FALLBACK IS GONE from the review completion contract, in every
+             restatement — the workflow's Roles section, its step 8, its failure modes, and
+             `base/roles.md`. The fallback list used to end in "a `general-purpose` Claude subagent
+             running the same prompt", which is only reachable while Claude drives and is therefore
+             the model that wrote the diff reviewing its own work. Rung 3 already refuses to
+             manufacture one for an EMPTY slot on exactly that reasoning; a slot that BROKE is not a
+             weaker case for it. Cross-model fallbacks stay, and so does the configured `claude`
+             review arm — D21's "a same-agent slot is labelled, not deleted" is untouched.
+
+             (5) FAIL LOUD, TWICE. `block_filter` rejects every malformed spelling it can recognise
+             (unknown token · empty list · a list naming every known agent · a duplicate · a nested
+             opener · a stray close · EOF inside a block). It cannot recognise a MISSPELLED KEYWORD —
+             `adb:excpt` matches no rule and falls through as prose — so each renderer also scans its
+             finished output for a surviving `<!-- adb:` and refuses to publish one, the same shape as
+             the existing `{{` guard.
+- placement: `scripts/build.sh` (`build_known_agents`, `block_filter`, both renderers' marker scans);
+             `base/practices/self-review.md` and `base/workflows/implement-issue.md` (the blocks);
+             `base/roles.md` + `base/workflows/implement-issue.md` (the fallback);
+             `scripts/check-agent-blocks.sh` + the `agent-blocks` selfcheck step + a step in ci.yml's
+             `workflow-render` job; `base/workflows/README.md` (the source contract),
+             `base/practices/00-index.md` (the pointer), `docs/adding-an-agent.md` (the density
+             choice); this entry.
+- reason:    The mechanism is the cheap half. What made this hard is that a per-agent renderer's
+             failure mode is SILENCE in both directions: a facility that renders the same bytes to
+             every agent looks exactly like one that worked, and a shared paragraph reworded in one
+             render only looks exactly like a clean build. `build-drift` cannot see either — it
+             agrees with whatever was committed. So the guard does not assert "they differ"; it
+             asserts byte equality against THREE hand-written oracle sources (shared-only,
+             shared+block, and the marked source), on both paths, which carries "identical everywhere
+             else" — blank lines and separators included — without a second assertion. Two of the
+             four mutations are a PAIR for the same reason: forcing inclusion on and forcing it off
+             are each satisfiable by a filter that is wrong in the other direction, so neither alone
+             proves anything.
+
+             That discipline paid for itself twice inside this change, which is the argument for it.
+             The root-doc marker scan's diagnostic used raw backticks inside a double-quoted string,
+             so the guard's own error path was a syntax error that could only ever fire when the
+             guard fired. And the suite's vacuity assertion used `grep -rlc`: under bash, `-c` wins,
+             the command prints `<file>:0` for EVERY file scanned, and the count was the file count
+             whether or not anything matched — a check that could not fail, in the file whose subject
+             is checks that cannot fail. Neither is visible in a passing run; both surfaced only from
+             running the suite against a deliberately stripped COPY of the tree.
+
+             Adding the check to CI as a STEP on the existing `workflow-render` job rather than as a
+             new job is the same reasoning three steps there already carry: a new job is a new
+             branch-protection context that `required-drift` reports as gating nothing until someone
+             edits protection by hand. That mattered more than usual here — `baseline repo reconcile`,
+             the repair that is supposed to close exactly that gap, currently refuses on this repo
+             (filed separately), so nothing would have healed it automatically.
+- baseline-issue: n/a — this repo IS the baseline; #304 is the tracking issue.

@@ -9,6 +9,43 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Added
 
+- **One source can now render a different instruction DENSITY to each agent — and nothing else
+  differently (#304).**
+
+  The framework dispatches roles to two models whose vendors publish opposite guidance on
+  verification prompting: Anthropic's Opus 5 guidance asks that explicit verification scaffolding
+  be *removed* from Claude's instructions (it self-corrects natively and over-verifies when told
+  to); OpenAI's asks Codex for exactly the named-checklist, required-vs-optional pass. `build.sh`
+  had nowhere to put that. `render()` took `(outfile, title)` and concatenated every practice
+  unconditionally, and the skill renderer's per-agent map is `{{TOKEN}}` → string substitution,
+  which cannot omit a paragraph. So one instruction set went to both models, wrong for at least
+  one of them, in every project that installs the baseline.
+
+  **The mechanism.** `block_filter` resolves `<!-- adb:except claude -->` … `<!-- adb:end -->` on
+  **both** render paths — the root-doc `render()`, which now takes the agent token its call sites
+  already named, and the skill `render_agent_skill()`. Exclusion-only, deliberately: a fourth
+  agent *inherits* every block (today's density, unchanged) rather than silently receiving the
+  most stripped-down render, and `docs/adding-an-agent.md` asks that adder to choose and say so.
+  Every malformed spelling fails the build; a misspelled *keyword* matches no rule at all, so each
+  renderer also refuses to publish output carrying a surviving `<!-- adb:`.
+
+  **What actually changed for readers.** Claude's root doc and `implement-issue` skill drop the
+  "mandatory gate, not a victory lap" exhortation and the enumerated `What to look for` checklist;
+  Codex's and Gemini's are **byte-identical to before**. The *step* is untouched for everyone —
+  #304 asks both that Claude "drop the standing instruction to verify" and that renders "never
+  differ in what they do", which read literally contradict, and the invariant wins: step 9 triages
+  self-review findings and the PR body reports them, so removing the step would be a different
+  procedure rather than a lighter one. Also removed, in every restatement: the review completion
+  contract's fallback to a subagent of the driving agent — reachable only when that agent wrote
+  the diff, i.e. the model grading its own work. Cross-model fallbacks stay. Decision **D67**.
+
+  **`scripts/check-agent-blocks.sh`** pins it, because `build-drift` structurally cannot: it
+  agrees with whatever was committed, so a facility that varies nothing and a shared paragraph
+  reworded in one render only both look like a clean build. Three hand-written oracle sources make
+  "differs there, byte-identical everywhere else" a `cmp` on both paths, and four mutations of a
+  copied `build.sh` are each required to make a named assertion go red. It found two bugs in this
+  change's own guards during that exercise.
+
 - **#335 lands as option 3 (accept the cost, fix the docs): neither reading of "parallelise it"
   made `selfcheck` faster (#335).**
 

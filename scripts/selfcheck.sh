@@ -374,6 +374,15 @@ add skill-frontmatter   step_skill_frontmatter
 # fails loud, and no committed skill ships an unresolved placeholder.
 add workflow-render     bash scripts/check-workflow-render.sh
 
+# The OTHER thing the renderers now do per agent (#304): resolve `<!-- adb:except … -->` blocks, so
+# one source can carry a different verification-instruction DENSITY for each agent. Its own suite
+# because build-drift structurally cannot see this class — it agrees with whatever was committed,
+# so a facility that silently varies nothing, and a shared paragraph reworded in one render only,
+# both look exactly like a clean build. Three hand-written oracle sources make "differs there,
+# byte-identical everywhere else" a `cmp`, on BOTH render paths, and four mutations of a copied
+# build.sh are each required to make a named assertion go red.
+add agent-blocks        bash scripts/check-agent-blocks.sh
+
 # A fenced ```bash block in base/workflows/*.md is executed for real, but the linter above only
 # sees tracked *.sh files — never a workflow body. This catches the one class that is both
 # invisible there and destructive: assigning a zsh-special name. `path` IS $PATH, so
