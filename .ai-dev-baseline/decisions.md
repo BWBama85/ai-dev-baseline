@@ -5789,3 +5789,21 @@ limit: none of them is sufficient alone.
              pool width is NOT re-litigated here: `adb_pool_size` and the per-caller cap are D66's,
              and the cap stays a parameter because the two adopt suites deliberately differ.
 - baseline-issue: n/a — this repo IS the baseline; #373 is the tracking issue.
+
+## D69 — slug identity is ONE named predicate, and it folds both sides
+- date:      2026-08-15
+- category:  project-delta
+- unknown:   #340 could have been repaired with a second inline `tr` at the comparison site. The
+             baseline says where a VALUE belongs (one home per primitive); it says nothing about
+             where a COMPARISON of two values belongs when each operand already has its own home.
+- decision:  `adb_slug_eq <a> <b>` in `common.sh`, built on `_adb_slug_fold` — which is now the one
+             home for the fold that `adb_pr_slug`, `_adb_remote_url_slug` and `adb_pr_slug_check`
+             each spelled inline. Inequality and unusability share exit 1: every caller is a refusal
+             gate, and there "cannot prove they match" is the same answer as "proven not to".
+- placement: `scripts/lib/common.sh`; the caller is `repo-settings.sh` `cmd_reconcile`.
+- reason:    The defect was one identity predicate normalizing its two sides differently — the exact
+             shape `base/practices/self-review.md` names in its "Why". Folding at the call site
+             would have left the next consumer free to re-derive it a third way, which is how the
+             two sides came to disagree in the first place.
+- baseline-issue: n/a — this repo IS the baseline; #340 is the tracking issue.
+

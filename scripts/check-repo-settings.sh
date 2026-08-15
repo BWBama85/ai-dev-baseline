@@ -2019,6 +2019,25 @@ check_git "$RC_REPO" remote remove origin
 rsx_reconcile
 eq "$RC_" "16" "a checkout with NO origin remote is refused too (cannot prove they match)"
 
+# ...BUT CASE IS NOT A DIFFERENCE (#340). GitHub slugs are case-insensitive and the two anchors are
+# not case-consistent by construction — the git side is folded, `.full_name` is not — so a
+# case-sensitive comparison refused every run in any repo whose slug carries uppercase.
+rc_reset; rc_repo yes; prot_checks
+printf '{"full_name":"Acme/Widget","default_branch":"main","allow_auto_merge":true,"permissions":{"admin":true}}\n' \
+  > "$S/repo.json"
+check_git "$RC_REPO" remote set-url origin "https://github.com/Acme/Widget.git"
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$RC_" "0" "a slug carrying uppercase passes the identity check and reconciles (#340)"
+has "${ calls_of; }" "PATCH repos/Acme/Widget/branches/main/protection/required_status_checks" \
+  "...building the request path from what gh resolved, never from the folded anchor"
+# ...and folding does not make two DIFFERENT repositories equal.
+rc_reset; rc_repo yes; repo_fx true true; prot_checks; branch_sha "$(rc_head)"
+check_git "$RC_REPO" remote set-url origin "https://github.com/Acme-Co/Widget.git"
+rsx_reconcile
+eq "$RC_" "16" "an origin differing BEYOND case is still refused"
+eq "$(cat "$STUB_CALLS")" "" "...and writes nothing"
+
 # An unresolvable HEAD is the same refusal: 'not proven to be the tip' == 'proven not to be'.
 rc_reset; rc_repo yes; branch_sha "$(rc_head)"; rm -rf "$RC_REPO/.git"
 rsx_reconcile
@@ -2287,7 +2306,7 @@ rc_unmutate
 
 # M10 — delete the repo-binding check. A checkout whose origin is a DIFFERENT repository must now
 # reach the API, i.e. start operating on somebody else's settings.
-rc_mutate 's@  if \[ -z "\$checkout_slug" \] || \[ "\$checkout_slug" != "\$REPO_SLUG" \]; then@  if false; then@' 'if false; then'
+rc_mutate 's@  if ! adb_slug_eq "\$checkout_slug" "\$REPO_SLUG"; then@  if false; then@' 'if false; then'
 # The witness is the WRITE, not "an API read happened": `repo_json` runs BEFORE this check, so reads
 # occur whether or not the guard is intact — that witness passed against both and proved nothing.
 rc_reset; rc_repo yes; repo_fx true true; prot_checks
@@ -2295,6 +2314,21 @@ branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=
 check_git "$RC_REPO" remote set-url origin "https://github.com/someone-else/other.git"
 rsx_reconcile
 if wrote_patch; then ok; else bad "M10: with the repo-binding check deleted, a foreign checkout must reach the WRITE (guard observed failing)"; fi
+rc_unmutate
+
+# M14 — restore the case-SENSITIVE comparison (#340). The two anchors can then never agree in a repo
+# whose slug carries uppercase, so the identity check refuses a checkout that IS the right one — the
+# shipped defect, which made the whole repair path unreachable here.
+rc_mutate 's@  if ! adb_slug_eq "\$checkout_slug" "\$REPO_SLUG"; then@  if [ "$checkout_slug" != "$REPO_SLUG" ]; then@' \
+  '  if [ "$checkout_slug" != "$REPO_SLUG" ]; then'
+rc_reset; rc_repo yes; prot_checks
+printf '{"full_name":"Acme/Widget","default_branch":"main","allow_auto_merge":true,"permissions":{"admin":true}}\n' \
+  > "$S/repo.json"
+check_git "$RC_REPO" remote set-url origin "https://github.com/Acme/Widget.git"
+branch_sha "$(rc_head)"; branch_sha_after "$(rc_head)" "one"; STUB_BRANCH_AFTER=1
+rsx_reconcile
+eq "$RC_" "16" "M14: with the case-sensitive comparison restored, an uppercase slug refuses its OWN checkout (guard observed failing)"
+eq "$(cat "$STUB_CALLS")" "" "...and the repair never happens"
 rc_unmutate
 
 # M11 — delete the symlink refusal. The linked workflow FILE must now be accepted and written from.

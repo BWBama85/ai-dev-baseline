@@ -298,6 +298,26 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ### Fixed
 
+- **`repo reconcile` compared a case-folded git slug against gh's unfolded one, so it refused on
+  every run in any repo whose slug carries uppercase** (#340, D69).
+
+  The write guard requires that the repository `gh` resolved is this checkout's origin. The git side
+  comes from `adb_git_origin_slug`, which case-folds by design; the gh side is `.full_name`
+  verbatim. `BWBama85/ai-dev-baseline` — this repo — therefore compared unequal to itself, so
+  `reconcile` returned 16 on every invocation and #333's required-check repair path was unreachable.
+  Any adopting repo with uppercase in its slug hit the same silently, because `/implement-issue`'s
+  preflight treats every reconcile code as non-fatal.
+
+  The comparison now goes through **one named predicate**, `adb_slug_eq`, which folds both sides
+  through the single home for that fold (`_adb_slug_fold`, now also used by `adb_pr_slug`,
+  `_adb_remote_url_slug` and `adb_pr_slug_check`) and refuses an empty or malformed side — "cannot
+  prove they match" stays the same answer as "proven not to". The sibling sweep found no second
+  site: `adb_pr_slug_check` is the only other git-anchor-against-gh-value comparison, and it already
+  folded both sides.
+
+  The code-16 narration in `implement-issue`'s preflight is corrected in the same pass. It said only
+  "the branch moved under this run", which is a benign story for what may be an identity refusal.
+
 - **A `$HOME` containing a tab or newline made the installer move a real directory into backup and
   symlink over it — and every consumer discarded the status that said so** (#324, D64).
 

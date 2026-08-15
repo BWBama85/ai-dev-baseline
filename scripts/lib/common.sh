@@ -796,6 +796,29 @@ adb_url_path_segment() {
   printf '%s' "$enc"
 }
 
+# _adb_slug_fold <value> — the case-fold every `owner/repo` in this file is compared through.
+# GitHub slugs are case-insensitive, and this repo's two anchors are not case-consistent by
+# construction: the git side folds (a remote carries whatever was cloned), the API side answers
+# canonical case. One home, so a third consumer cannot re-derive it differently (#340).
+_adb_slug_fold() { printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'; }
+
+# adb_slug_eq <a> <b> — do two `owner/repo` values name the same repository?
+#
+#   0  same repository, comparing case-insensitively
+#   1  different repositories, OR either side is empty or not a well-formed pair
+#
+# Both failures share an exit code deliberately: every caller is a refusal gate, and there
+# "cannot prove they match" is the same answer as "proven not to".
+adb_slug_eq() {
+  # Declared with values, per this file's contract of being safe under a caller's `set -u`.
+  local a="" b=""
+  a="$(_adb_slug_fold "${1:-}")"
+  b="$(_adb_slug_fold "${2:-}")"
+  adb_is_repo_slug "$a" || return 1
+  adb_is_repo_slug "$b" || return 1
+  [ "$a" = "$b" ]
+}
+
 # adb_pr_slug <value> — the `owner/repo` a PR argument names, case-folded; nothing for a bare
 # number, and nothing for an argument whose slug does not parse to a well-formed pair. Used only to
 # CROSS-CHECK the argument against the repository a caller's reads actually addressed; a bare number
@@ -816,7 +839,7 @@ adb_pr_slug() {
     */*/pull/*)       rest="$v" ;;                             # owner/repo/pull/N
     *) return 0 ;;
   esac
-  slug="$(printf '%s' "${rest%%/pull/*}" | tr '[:upper:]' '[:lower:]')"
+  slug="$(_adb_slug_fold "${rest%%/pull/*}")"
   adb_is_repo_slug "$slug" || return 0
   printf '%s' "$slug"
 }
@@ -880,7 +903,7 @@ _adb_remote_url_slug() {
     *:*)   url="${url#*:}" ;;
   esac
   adb_is_repo_slug "$url" || return 1
-  printf '%s' "$url" | tr '[:upper:]' '[:lower:]'
+  _adb_slug_fold "$url"
 }
 
 # adb_git_repo_slugs — EVERY `owner/repo` this checkout's git remotes name, case-folded, one per
@@ -1034,7 +1057,7 @@ EOF
 # by both harnesses.
 adb_pr_slug_check() {
   local label="$1" n="$2" arg="$3" got="$4" want local_slug
-  got="$(printf '%s' "$got" | tr '[:upper:]' '[:lower:]')"
+  got="$(_adb_slug_fold "$got")"
   # The observed slug is the ONLY evidence of which repository answered, so a response without a
   # well-formed one is unreadable. Validated in shape, not just non-emptiness: `acme` or
   # `acme/widget/extra` would otherwise compare unequal to every real slug and read as a refusal,

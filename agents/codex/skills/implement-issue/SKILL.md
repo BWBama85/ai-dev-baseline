@@ -334,8 +334,10 @@ RECONCILE=0
 bash "$HOME/.codex/scripts/lib/repo-settings.sh" reconcile || RECONCILE=$?
 case "$RECONCILE" in
   0)  : ;;   # in sync, or reconciled AND verified by re-reading — its own output says which
-  16) : ;;   # HEAD is not the default tip. Unexpected HERE (the sync block just put us there), so
-             # report it rather than swallow it: it means the branch moved under this run.
+  16) : ;;   # a refusal, and NOT only the tip one: either this checkout is not provably the default
+             # branch's tip (the branch moved under this run, the worktree is dirty, a workflow file
+             # is a symlink), or the repository gh resolved is not this checkout's origin. Report it
+             # rather than swallow it — reconcile's own stderr names which.
   17) : ;;   # this repo has not declared `[repo] reconcile-required-checks` — the DEFAULT, and not
              # a problem. Costs no network. Say nothing unless the operator asked for detail.
   18) : ;;   # real drift, but this token is not admin -> report the named manual command
