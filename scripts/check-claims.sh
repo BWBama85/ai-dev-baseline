@@ -534,6 +534,20 @@ STUB
   eq "$RC_" 0 "rename: a pure rename adds no lines, so old references are not re-litigated"
   reset_branch
 
+  # A rename INTO scope is different: its citations just became shipped prose, and rename
+  # detection alone would carry them past --live with zero hunks.
+  reset_branch
+  mkdir -p "$REPO/docs"
+  printf 'Tracked in %s and has always been.\n' "$REF_GONE" > "$REPO/docs/old-name.md"
+  commit "bad ref outside scope"
+  XRENBASE="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" mv docs/old-name.md base/workflows/renamed-in.md
+  commit "rename into scope"
+  cc --range "$XRENBASE..probe" --live
+  eq "$RC_" 1 "rename: a move INTO shipped prose re-validates the whole file"
+  has "$OUT" "4242" "rename: ...and the violation names the unresolvable reference it carried"
+  reset_branch
+
   # --------------------------- markdown stripping edges ------------------------
   # A greedy HTML-comment strip deleted the prose BETWEEN two comments — hiding a real citation, the
   # dangerous direction. And a 4-space-indented fence is an indented code block, not a fence:
@@ -959,6 +973,28 @@ git -c core.quotePath=false diff --unified=0 "$RANGE" 2>/dev/null | awk '
     start = P[1] + 0; cnt = (n > 1 ? P[2] + 0 : 1)
     for (i = 0; i < cnt; i++) printf "%s\t%d\n", p, start + i
   }' > "$ADDEDMAP"
+
+# A rename that CROSSES INTO scope is a whole-file addition to shipped prose: rename detection
+# gives it no hunks, so without this pass its citations reach adopters unvalidated. Same-scope
+# renames keep the no-relitigation behavior above. (Copies need --find-copies to be detected;
+# undetected, a copy already arrives as a full-hunk new file and needs nothing here.)
+while IFS= read -r -d '' rn_status; do
+  case "$rn_status" in
+    R*) IFS= read -r -d '' rn_old || break
+        IFS= read -r -d '' rn_new || break ;;
+    *)  IFS= read -r -d '' rn_old || break; continue ;;
+  esac
+  case "$rn_new" in *"$_CC_NL"*) continue ;; esac   # counted in N_SKIP_PATH by the walk above
+  cc_in_scope "$rn_old" && continue
+  cc_in_scope "$rn_new" || continue
+  rn_cnt="$(git show "$HEADREV:$rn_new" 2>/dev/null | awk 'END { print NR }')"
+  case "$rn_cnt" in ''|*[!0-9]*) rn_cnt=0 ;; esac
+  rn_i=1
+  while [ "$rn_i" -le "$rn_cnt" ]; do
+    printf '%s\t%d\n' "$rn_new" "$rn_i" >> "$ADDEDMAP"
+    rn_i=$((rn_i + 1))
+  done
+done < <(git -c core.quotePath=false diff --name-status -z "$RANGE" 2>/dev/null)
 
 # --- gh entity resolution (LIVE half) -----------------------------------------------------------
 # One lookup per DISTINCT number per run, cached in a `declare -A` map. It was a directory of
