@@ -1095,88 +1095,27 @@ has "$wf" 'could not list open PRs' \
 has "$wf" 'could not list open issues' \
   "workflow hard-stops when the open-issue read fails"
 
-# `continue` outside a loop: bash only warns and FALLS THROUGH (so a member closed since step 4
-# would still be emitted), while zsh aborts the block outright.
-#
-# Scoped to the `fresh-read` SNIPPET, not the whole workflow. The rule is about that block, whose
-# per-member check is a bare `if` with no enclosing loop — asserted file-wide it also fires on a
-# `continue` that IS inside a real `for`, which is ordinary shell (the release-command resolver
-# iterates skill roots). A guard that flags correct code trains readers to route around it.
-freshread_block="${ check_wf_snippet "$WF" fresh-read; }"
-hasnt "$freshread_block" '|| continue' \
-  "the fresh-read snippet's per-member check uses no loop-only 'continue' (bash falls through; zsh aborts)"
-
-# Each fenced snippet must resolve "$REPO" itself: these steps can be run as separate shell
-# invocations that share no variables, so a slug hoisted into an earlier step arrives EMPTY and
-# every in-flight check dies on a bad slug. (Adversarial-review find on the first fix attempt.)
-inflight_block="$(awk '/^# Self-contained: each fenced block/,/^```$/' "$WF")"
-has "$inflight_block" 'REPO=' \
-  "the in-flight snippet resolves \$REPO itself (no cross-snippet variable dependency)"
-has "$inflight_block" 'OPEN_PRS=' \
-  "...and fetches the open-PR set in that same snippet"
 # Extract each executable snippet by its `# ADB-SNIPPET:` marker — the same anchors
 # scripts/check-roadmap-e2e.sh runs them from. Anchoring on a marker rather than on a prose line
 # (or on "the line immediately above the comment") is what keeps this guard from breaking when
 # a legitimate statement is added to the block, which a positional check did.
 # Delegates to check_wf_snippet (check-lib.sh), the ONE home for the marker/closing-fence
 # contract — three suites execute documented snippets and three copies of this awk could drift.
-wf_snippet() { check_wf_snippet "$WF" "$1"; }
-gauge_block="${ wf_snippet gauge; }"
-has "$gauge_block" 'labels/$LABEL' \
-  "the destination-report snippet probes the label"
-has "$gauge_block" 'REPO=' \
-  "the destination-report snippet resolves \$REPO itself"
-# The gauge is OPTIONAL, so an unset LABEL is the normal "not configured" case: it must
-# short-circuit, never probe `repos/OWNER/REPO/labels/` with an empty name and never die under
-# `set -u`. (Found by the e2e harness executing this snippet.)
-has "$gauge_block" 'LABEL="${LABEL:-}"' \
-  "the gauge tolerates an unconfigured destination-label instead of exploding on it"
-has "$gauge_block" '[ -n "$LABEL" ]' \
-  "...and skips the probe entirely when none is configured"
-# ...AND THE REPO RESOLUTION SITS INSIDE THAT CONDITIONAL (#218 review). The slug guard was first
-# added ABOVE it, which converted an optional feature into a hard stop for the entire roadmap run:
-# with no `destination-label` configured, a `gh repo view` that merely failed — or returned
-# something malformed — exited the run over a request that would never have been made. Pinned by
-# ORDER, because both lines are present either way and only their relative position differs.
-g_label_at="$(printf '%s\n' "$gauge_block" | grep -nF 'LABEL="${LABEL:-}"' | head -1 | cut -d: -f1)"
-g_repo_at="$(printf '%s\n' "$gauge_block" | grep -nE '^[[:space:]]*REPO="' | head -1 | cut -d: -f1)"
-g_guard_at="$(printf '%s\n' "$gauge_block" | grep -nE '^[[:space:]]*\{\{ROADMAP_LIB\}\} slug-ok' | head -1 | cut -d: -f1)"
-if [ -n "$g_label_at" ] && [ -n "$g_repo_at" ] && [ -n "$g_guard_at" ] \
-   && [ "$g_label_at" -lt "$g_repo_at" ] && [ "$g_label_at" -lt "$g_guard_at" ]; then ok
-else
-  bad "the gauge must decide on LABEL BEFORE resolving/validating \$REPO, or an optional feature can fail the whole run (LABEL@${g_label_at:-none} REPO@${g_repo_at:-none} guard@${g_guard_at:-none})"
-fi
-readiness_block="${ wf_snippet readiness; }"
-has "$readiness_block" 'gh repo view' \
-  "the readiness snippet resolves \$REPO itself (it may run as its own shell invocation)"
-has "$readiness_block" 'M_NUM:?' \
-  "...and fails loud on an unresolved milestone number rather than addressing milestone=''"
-# A pipeline reports only its LAST command's status, so `gh api … | release-counts` returns 0 on a
-# failed read — the tabulator sees empty stdin, which is a legitimately empty milestone, and the
-# verdict becomes `unarmed`. Read and tabulate must be separate, separately-checked steps.
-has "$readiness_block" 'M_ISSUES=' \
-  "the milestone READ is captured and checked on its own status, not through a pipeline"
-has "$readiness_block" 'could not read milestone' \
-  "...and a failed read reports as a failed read, never as an empty release set"
-
-# --- #78: the health reads, asserted against the EXECUTABLE block ---------------------------
-# Scoped to the snippet, not the whole document: the prose deliberately QUOTES `gh run list
-# --branch … --limit 1` to explain why it is unsound, so a document-wide `hasnt` would fail on
-# the explanation itself. What must never regress is the executable code.
-hasnt "$readiness_block" 'gh run list' \
-  "the readiness snippet does NOT use the run-list green test (it can answer with an unrelated workflow or an older commit)"
-has "$readiness_block" 'commits/$HEAD_SHA/check-runs' \
-  "health is read from the Checks API for the resolved HEAD commit"
-has "$readiness_block" 'commits/$DEFAULT_BRANCH/status' \
-  "...AND from the legacy status API, so non-Actions CI providers are not silently ignored"
-has "$readiness_block" 'actions/workflows' \
-  "...AND from the active-workflow inventory, the only no-ci/indeterminate discriminator"
-has "$readiness_block" '{{ROADMAP_LIB}} branch-health' \
-  "the snippet delegates the verdict to the shared predicate rather than re-deriving it"
-# The inventory read is gated on ACTIONS having reported, not on "any result exists": both a legacy
-# status and a check run from another Checks app can be present while Actions is silent, and
-# suppressing the read on either lets the predicate return `green` on an unreported build.
 #
+# WHAT IS PINNED HERE, AND WHAT IS NOT (#376). A token pin fails only when the token is DELETED;
+# an execution case fails when the BEHAVIOR is wrong, so it also catches reorderings,
+# fall-throughs and `set -u` aborts a `has` can never see. Every pin with an executable equivalent
+# is gone — scripts/check-roadmap-e2e.sh executes these snippets against a stub `gh`. What
+# survives is the residue no execution can reach:
+#   * a BUILD TOKEN — the harness substitutes `{{ACTIONS_APP_SLUG}}` before running, so a source
+#     that hard-coded the value behaves identically; only the text distinguishes them;
+#   * PAGE SIZE — the stub answers from one fixture, so a dropped `per_page=100` changes nothing
+#     it can observe, while against a real tracker it truncates a health read;
+#   * the 2-line check's ORDER (bottom of this file) — both orders exit 1, so there is nothing to
+#     execute. The gauge's order was NOT in this class and was retired: an optional feature that
+#     fails the whole run is very much observable.
+wf_snippet() { check_wf_snippet "$WF" "$1"; }
+readiness_block="${ wf_snippet readiness; }"
 # THIS PINS THE TOKEN, NOT THE JQ TEXT (#183). It used to assert the rendered filter character for
 # character — `.app.slug // "") == "<slug>"` — which pinned FORMATTING, not the value: dropping a
 # space around `==`, writing `// ""` differently, wrapping the line or renaming a jq variable
@@ -1207,69 +1146,17 @@ for a in claude codex gemini; do
     bad "$a roadmap SKILL.md is missing"
   fi
 done
-# The provider-agnostic existence probe is a SECOND read, and it must be delegated, not re-derived:
-# the ruleset shape (`enabled:false` with a real empty `contexts` array) is exactly the trap a
-# hand-rolled copy in this snippet would fall into.
-has "$readiness_block" 'branches/$DEFAULT_BRANCH' \
-  "the snippet reads the branch endpoint for the provider-agnostic existence probe (#115)"
-has "$readiness_block" 'branch-required-contexts' \
-  "...and delegates the classification rather than restating the ruleset rule"
-has "$readiness_block" 'required_contexts' \
-  "...and feeds it to branch-health as part of the health document"
-has "$readiness_block" 'BRANCH_JSON=' \
-  "the branch read is captured on its own status, never piped straight into the classifier"
-# The declarations are resolved from the artifact by TESTED predicates, and their authority is
-# re-validated at the point of use — these markers bypass a release-safety refusal.
-# PIN THE INVOCATIONS, NOT THE TOKENS. A bare `health-decl` matches the four comment lines that
-# EXPLAIN it, so deleting the call and keeping the prose left this green — the same defect this
-# block already corrected for `author_association` one assertion down, reintroduced by the change
-# that corrected it. (Independent-review find.) What must be true is that the snippet CALLS each
-# predicate, so match the call: the subcommand preceded by the library token the render substitutes.
-has "$readiness_block" '| {{ROADMAP_LIB}} health-optout' \
-  "the marker is read by the shared predicate, never by eye (#115)"
-has "$readiness_block" '{{ROADMAP_LIB}} health-decl "$OPTOUT_RAW" "$ART_PERM"' \
-  "...and the AUTHORITY rule is the shared predicate's too, not a second copy in this snippet (#293)"
-# The PERMISSION endpoint, not `author_association`. Pinning the association token matched only the
-# comment that explains why it is the wrong field — a pin that cannot fail. What must be true is
-# that the snippet asks the endpoint whose answer actually gates the declaration.
-has "$readiness_block" 'collaborators/$ART_AUTHOR/permission' \
-  "...and the artifact author's PERMISSION is re-read before a declaration is honoured"
-has "$readiness_block" 'branch-health "$HEAD_SHA" "$WF_COUNT" "$HEALTH_DECL"' \
-  "...and the resolved declaration reaches the predicate (not dropped on the floor)"
-# A refused declaration must SAY SO. Both refusals — an unusable value, and an author who cannot
-# push — leave the repo at a permanent `indeterminate`, and an owner with no explanation for it is
-# how a deliberate declaration becomes a mystery deadlock.
-# ...and the PRINT, not merely the variable: `DECL_WHY` alone stayed green with the `echo` deleted,
-# which is the whole failure this pins against — the reason exists and nobody sees it.
-has "$readiness_block" 'if [ -n "$DECL_WHY" ]; then echo' \
-  "...and a declaration that was NOT honoured is PRINTED, not merely read into a variable"
-has "$readiness_block" 'HEALTH=skipped' \
-  "health starts at the honest 'skipped', never a fabricated green"
-has "$readiness_block" 'defaultBranchRef' \
-  "the default branch is resolved live from the REMOTE, not assumed to be main"
-has "$readiness_block" 'REPO_VIEW=' \
-  "...captured on its own status first, since an exit inside a heredoc substitution only leaves the subshell"
-# Each health read is captured and checked on its OWN status, for the same reason the milestone
-# read is: a pipeline reports only its last command, so a failed read would arrive as empty JSON.
-for v in CHECKS_JSON STATUS_JSON WF_JSON WF_COUNT HEAD_SHA; do
-  has "$readiness_block" "$v=" "the $v read is captured on its own status"
-done
-# WF_JSON/WF_COUNT are deliberately two statements, and this asserts the property rather than the
-# formatting: the COUNT must be parsed out of the CAPTURED read. Piping the inventory read
-# straight into its parser would report only the parser's status, so a failed read would count 0
-# active workflows and silently downgrade a fail-closed `indeterminate` into a "no CI here" pass.
-# (Found by the e2e fail-injection case, which the first implementation did not survive.)
-has "$readiness_block" '"$WF_JSON" | jq' \
-  "the active-workflow count is parsed from the captured read, not piped from gh"
 # Every LIST read here must paginate, for the reason #79 established. It matters most on the
 # status endpoint, which pages at 30 by default: a truncated health read that loses the one red
 # status is a FALSE GREEN — the most dangerous direction this predicate can be wrong in.
+#
+# STAYS A PIN (#376). The e2e stub answers each read from one fixture and ignores page size, so a
+# dropped `per_page=100` is invisible to execution — the truncation only happens against a real
+# tracker with more than 30 contexts, which is exactly the repo nobody tests on.
 has "$readiness_block" 'commits/$DEFAULT_BRANCH/status?per_page=100' \
   "the commit-status read is paginated (a dropped failing status would be a false green)"
 has "$readiness_block" 'check-runs?per_page=100' \
   "the check-runs read is paginated too"
-has "$readiness_block" '"$HEALTH"' \
-  "the resolved health is passed to release-ready (not dropped on the floor)"
 
 
 # Every rendered agent skill must carry the RESOLVED helper path. check-workflow-render.sh
@@ -2596,36 +2483,10 @@ hasnt "$wf" 'git commit' "the skill never commits"
 hasnt "$wf" 'git push'   "the skill never pushes"
 hasnt "$wf" 'gh pr create' "the skill never opens a PR"
 # The autofix must be a runnable step, not a description of one — otherwise "fix what you find"
-# is re-invented by every agent that reads it. scripts/check-roadmap-e2e.sh executes this snippet.
-autofix_block="${ wf_snippet autofix-unmilestoned; }"
-has "$autofix_block" 'select(.milestone == null)' \
-  "the limbo set is DERIVED from milestone == null (which is what makes autofix idempotent)"
-# #78's carve-out lives here too — one home for every assertion about this snippet.
-has "$autofix_block" 'index("release-blocker") | not' \
-  "step 4b excludes an unmilestoned release-blocker from the Backlog sweep (#78)"
-# ...but ONLY in release-readiness mode. Step 4b is convention-agnostic hygiene that runs on every
-# repo, and the overlay promises classic mode stays byte-identical — a repo that merely has the
-# label (e.g. ran `release init`, no marker yet) must keep the plain sweep. (Bot-review find.)
-has "$autofix_block" 'RELEASE_MODE' \
-  "...and the carve-out is gated on release-readiness mode being ACTIVE"
-has "$autofix_block" '$carve == 0 or' \
-  "...so in classic mode the sweep filter reduces to its pre-overlay form"
-has "$autofix_block" 'WARN:' \
-  "...and surfaces it instead of silently burying a declared must-have"
-# It WARNS, it does not gate — nothing feeds it to the predicate, so the wording must not promise
-# a hold the code does not implement. (Altitude-review find.)
-hasnt "$autofix_block" 'HOLD:' \
-  "...and does NOT call it a HOLD, which would claim a gate that is not wired"
-hasnt "$autofix_block" '? unmilestoned:#$n — open release-blocker' \
-  "...and does NOT file it as a retirable question (a Decisions row must not hide a release risk)"
-has "$autofix_block" 'first // empty' \
-  "the backlog milestone is resolved by title, and an unresolved one stays empty"
-has "$autofix_block" 'NO_AUTOFIX:-0' \
-  "the snippet honors --no-autofix rather than only the prose promising it"
-has "$autofix_block" 'gh issue edit' \
-  "the repair is a real tracker write"
-hasnt "$autofix_block" 'gh api --method POST' \
-  "autofix never CREATES a milestone (that would invent a convention the repo never opted into)"
+# is re-invented by every agent that reads it. Its assertions are EXECUTED, in
+# scripts/check-roadmap-e2e.sh section 7: the limbo selection and its idempotency, #78's carve-out
+# in both modes, the WARN that is not a HOLD and not a retirable question, the missing-backlog
+# escalation, the unset-flag defaults, and the fact that no milestone is ever created (#376).
 
 # ============ slug-ok: the path-safe slug predicate, exposed to the prose (#218) ============
 # The workflow resolves `nameWithOwner` at SIX places and interpolates it into `repos/$REPO/...`
@@ -2679,9 +2540,14 @@ eq "$n_reads" "6" "...and there are still exactly 6 such reads (a new one needs 
 # validation and a DEFAULT_BRANCH of `main`, with the real default branch discarded — every later
 # read then addresses a DIFFERENT REPOSITORY. `slug-ok` cannot see it, because the value it is
 # handed is clean by then. The line count is the only place the substitution is still visible.
+#
+# THE REFUSAL ITSELF IS EXECUTED (#376) — scripts/check-roadmap-e2e.sh feeds the snippet a repo
+# view carrying an embedded newline and requires the hard stop. What stays here is the ORDER, and
+# only the order: both orders exit 1 on that fixture, so no execution case can tell them apart,
+# and a check that ran after the split would be validating values already re-partitioned. The
+# `has` below is gone with the pins it belonged to — `fr_check_at` is empty if the message is
+# deleted, which this fails on.
 readiness_block="${ wf_snippet readiness; }"
-has "$readiness_block" 'expected exactly 2 lines' \
-  "the combined repo view is line-count checked before it is split"
 fr_check_at="$(printf '%s\n' "$readiness_block" | grep -nF 'expected exactly 2 lines' | head -1 | cut -d: -f1)"
 fr_split_at="$(printf '%s\n' "$readiness_block" | grep -nF 'IFS= read -r REPO' | head -1 | cut -d: -f1)"
 if [ -n "$fr_check_at" ] && [ -n "$fr_split_at" ] && [ "$fr_check_at" -lt "$fr_split_at" ]; then ok
