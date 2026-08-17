@@ -477,6 +477,29 @@ jobs:
       - name: Unit-test the observe-and-render state helper (#138)
         run: bash scripts/check-state-assert.sh
 
+  render-size:
+    name: render-size
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
+      # us, in the log. A later step is what proves it clears the floor; this is what
+      # makes an image that silently changed its bash readable rather than mysterious.
+      - name: Log this runner's bash
+        run: bash --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
+
+      - name: Rendered-size report (#359)
+        run: bash scripts/render-size.sh
+
+      - name: Guard the report fails closed (#359)
+        run: bash scripts/check-render-size.sh
+
   skill-compose:
     name: skill-compose
     runs-on: ubuntu-26.04
