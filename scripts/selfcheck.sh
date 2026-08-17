@@ -5,8 +5,8 @@
 # skill-frontmatter, workflow-render,
 # gate-detector/gates, common-lib, agent-init, cleanup, repo-settings, bash-floor,
 # bash-floor-guard, baseline, session-currency, precommit-gate, implement-gate, install-migration,
-# install-guard, fact-drift, fact-mutation, fact-guard, practice-index, release-role,
-# release-skill, selfcheck-guard, and an install→uninstall dry-run into a throwaway HOME.
+# install-guard, fact-drift, fact-mutation, fact-self-test, practice-index, release-skill,
+# selfcheck-guard, and an install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 #
@@ -80,7 +80,7 @@ fail=0
 #
 # So while it runs, `agents/claude/CLAUDE.md` and its two siblings can be observed out of step with
 # each other and with the skills trees — by `workflow-map` and `skill-frontmatter` here, and by
-# `fact-drift`, `injection`, `bash-floor`, `roadmap`, `release-role`, `install-guard` and
+# `fact-drift`, `injection`, `bash-floor`, `roadmap`, `release-skill`, `install-guard` and
 # `install-dry-run`, all of which read that tree. Running it alone, first, removes the whole class
 # rather than one instance of it.
 #
@@ -606,34 +606,39 @@ add fact-mutation       bash scripts/check-fact-drift.sh --mutation
 # ...and the guard rails above are themselves guards, so they get the same treatment (#213): the
 # witness contract and the mutation harness are each driven against deliberately broken rules in a
 # tree copy and must be seen going red. Carries the direct regression test for #173's defect — the
-# exact `absent:\[bot\]\$` pattern that could not match either real idiom.
-add fact-guard          bash scripts/check-fact-guard.sh
+# exact `absent:\[bot\]\$` pattern that could not match either real idiom. A MODE of the lint since
+# #377, not a separate file: it used the same copy-and-mutate scaffold `--mutation` already carries.
+add fact-self-test      bash scripts/check-fact-drift.sh --self-test
 
-# The OFFLINE half of the claim lint (#212): every D<N> an added line cites resolves to a heading in
-# the decision log, and every added decision date is within a day of the commit that introduced it.
+# The OFFLINE half of the claim lint (#212, narrowed by #374). Since the `D<N>` and decision-date
+# rules were dropped (D72), every VIOLATION the lint can report needs the network — so what this
+# step contributes is the other two answers, and both are the ones that would otherwise turn the
+# CI-only half into a silent no-op: it FAILS CLOSED on an unresolvable range (2) or a broken
+# markdown filter / added-line scanner (3), and it REPORTS how many references it collected and
+# left unverified, plus how many changed files fell outside the shipped-prose scope.
 #
 # The issue/PR-reference half is NOT run here, and that is deliberate rather than an omission. It
 # needs the network, and D13 keeps selfcheck hermetic precisely so a local green is a DETERMINISTIC
 # predictor of CI — a step whose verdict depends on network, auth and externally-mutable issue state
 # would break that promise for every other step too. It rides CI instead, exactly as the one other
-# live assertion (`repo-settings.sh required-drift`) does. The check SAYS which half it skipped and
-# how many references went unverified, so the gap is visible rather than silent.
+# live assertion (`repo-settings.sh required-drift`) does.
 add claims              bash scripts/check-claims.sh
 
 # ...and the lint above is a guard, so it gets the treatment guards get here (D22): every rule is
 # driven to RED against fixtures in a throwaway repo with a stubbed gh, asserting the DESIGNATED
-# exit code and diagnostic rather than "some non-zero". This suite has already earned its place
-# twice — it caught a markdown stripper that made one rule structurally unable to fire, and an
-# unresolvable --range that silently turned the whole check into a no-op reporting PASS.
-add claims-guard        bash scripts/check-claims-guard.sh
+# exit code and diagnostic rather than "some non-zero". This has already earned its place twice —
+# it caught a markdown stripper that made one rule structurally unable to fire, and an unresolvable
+# --range that silently turned the whole check into a no-op reporting PASS. A MODE of the lint since
+# #374, following the fact-drift fold (#377) rather than inventing a second shape.
+add claims-self-test    bash scripts/check-claims.sh --self-test
 
 # Every base/practices/*.md is listed in 00-index.md exactly once (no missing/stale rows).
 add practice-index      bash scripts/check-practice-index.sh
 
-# #3's decision: release execution stays project-owned and no /release skill ships. A NEGATIVE
-# invariant no other check can express — build-drift/workflow-map would happily green-light a
-# newly added base/workflows/release.md.
-add release-role        bash scripts/check-release-role.sh
+# #3's decision — release execution stays project-owned and no /release skill ships — is no longer
+# a step of its own. Since #375 it is a section of `check-fact-drift.sh`: three of its five groups
+# were already that file's `fact` grammar, and the `roll` boundary needed the `fires:` witnesses and
+# the `--mutation` proof only that file can give it. `fact-drift` and `fact-mutation` above run it.
 
 # The other half of #3: the project supplies its OWN release skill, so this repo's copy needs a
 # gate. Offline unit tests for .claude/skills/release/release-lib.sh (version-ok, changelog-verify,
@@ -804,7 +809,7 @@ banner() { printf '\n=== %s ===\n' "$1"; }
 # Run one step and return its status. Stdin is /dev/null in BOTH modes, deliberately: no check
 # reads it, and inheriting selfcheck's own open stdin is what once turned an accidental command
 # substitution inside a test label into a ten-minute hang instead of an instant failure
-# (scripts/check-claims-guard.sh, the note above its digit-boundary case).
+# (scripts/check-claims.sh --self-test, the note above its digit-boundary case).
 run_step() {
   local name="$1" rc=0
   # shellcheck disable=SC2086  # deliberate word-split of a value `add` validated at registration

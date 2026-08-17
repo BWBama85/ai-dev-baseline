@@ -24,7 +24,7 @@ debug        = "claude"     # owns root-cause investigations.
 release      = "claude"     # Names WHO cuts a release. Declared explicitly (not left to default)
                             # because this repo now HAS a release executor and the skill resolves
                             # this key before it mutates anything. The BASELINE still installs no
-                            # `/release` — decision #3/D7, pinned by check-release-role.sh. What
+                            # `/release` — decision #3/D7, pinned by check-fact-drift.sh. What
                             # this repo supplies is its OWN project-scoped copy at
                             # `.claude/skills/release/SKILL.md` (D14), which is exactly what D7
                             # says every adopting project must do for itself. Setting this to a

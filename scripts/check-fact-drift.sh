@@ -14,6 +14,12 @@
 # It never forbids incidental wording, so rewording a doc never trips it; only dropping
 # or changing a canonical value does.
 #
+# It also carries ONE invariant that is not a fact at all: the release-role policy (#3/D7), whose
+# absence half asserts that certain PATHS do not exist. It moved here from `check-release-role.sh`
+# with #375 because three of that file's five groups were already this grammar and the fourth — the
+# `roll` boundary — needed the `fires:`/`--mutation` proof only this file can give it. Its own
+# banner is at the bottom, deliberately not scattered through the rules.
+#
 # `stale` is the narrow negative counterpart, used ONLY for a value a fact has retired:
 # presence-checking cannot catch a file that carries the new value AND keeps the old one
 # beside it, which is how a superseded figure survives a repoint (#93). Reach for it when
@@ -44,9 +50,20 @@
 # to test a check that reads tracked files is what destroyed 40 minutes of uncommitted work in the
 # #173 run; `base/practices/self-review.md` states the method and this mode is the demonstration.
 #
+# And the two guard rails above are THEMSELVES guards, so `--self-test` drives each of them against a
+# deliberately broken rule and requires it to go red (#377). It was a standalone `check-fact-guard.sh`
+# until then; the technique it used — splice ONE synthetic rule between this file's own `# --- FACT:`
+# markers, into a COPY of the tree, and run the real lint there — is the same copy-and-mutate scaffold
+# `--mutation` already implements a few lines below, so the two now share one home and one preamble.
+# What must NOT be inferred from that fold is that every guard suite should follow it:
+# `check-bash-floor-guard.sh` drags 5.3-only fixture code and its subject must stay parseable under
+# bash 3.2 (D30/D35), and `check-selfcheck.sh` folded into `selfcheck.sh` would recurse. #377 is
+# deliberately the one clean fold, not a precedent for the rest.
+#
 # Usage:
 #   bash scripts/check-fact-drift.sh              # exit 0 = no drift, 1 = drift found
 #   bash scripts/check-fact-drift.sh --mutation   # exit 0 = every absent: pin was seen going RED
+#   bash scripts/check-fact-drift.sh --self-test  # exit 0 = every guard rail was seen going RED
 
 # bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
 #
@@ -71,18 +88,30 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 }
 adb_require_bash "$@"
 set -u
+# The release-role section at the bottom detects a rendered release skill with a GLOB, so pathname
+# expansion must be ON (#375). A caller with `set -f` (noglob) would leave the pattern literal,
+# matching nothing, and the absence check would pass while a real skill sat in the tree — a false
+# GREEN, the one failure mode a policy lint must never have. Force it on rather than trusting the
+# invoking shell.
+set +f
 cd "$(dirname "$0")/.." || exit 1
+ROOT="$(pwd)"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 
 MODE=normal
 case "${1:-}" in
-  "")         ;;
-  --mutation) MODE=mutation ;;
-  *) echo "usage: check-fact-drift.sh [--mutation]" >&2; exit 2 ;;
+  "")          ;;
+  --mutation)  MODE=mutation ;;
+  --self-test) MODE=selftest ;;
+  *) echo "usage: check-fact-drift.sh [--mutation | --self-test]" >&2; exit 2 ;;
 esac
-if [ "$#" -gt 1 ]; then echo "usage: check-fact-drift.sh [--mutation]" >&2; exit 2; fi
-if [ "$MODE" = mutation ]; then check_init "fact-mutation"; else check_init "fact-drift"; fi
+if [ "$#" -gt 1 ]; then echo "usage: check-fact-drift.sh [--mutation | --self-test]" >&2; exit 2; fi
+case "$MODE" in
+  mutation) check_init "fact-mutation" ;;
+  selftest) check_init "fact-self-test" ;;
+  *)        check_init "fact-drift" ;;
+esac
 
 # What the run actually evaluated, reported rather than inferred (#213). "Checked and clean" and
 # "matched nothing" were indistinguishable in the log, which is why the unfirable pin survived
@@ -300,6 +329,530 @@ _fact_mutate() {
     done
   done
 }
+
+# =============================== the self-test (--self-test only) ==============================
+#
+# WHY THIS IS HERE AT ALL. The `fires:` witness contract inside `fact()` and the `--mutation` harness
+# above both exist to stop a check passing while checking nothing. Both are guards, and a guard's
+# failure mode is SILENCE — it reports exactly what a clean run reports — so shipping them without
+# watching them fail would reproduce, one level up, the defect they were written to remove.
+# `base/practices/self-review.md` states the rule: a new guard is not done until it has been observed
+# failing.
+#
+# HOW IT TESTS. Every case runs against a THROWAWAY COPY of the working tree; the live tree is never
+# touched. That is the other half of #213 — negative-testing the last pin by editing
+# `scripts/lib/pr-review.sh` in place and "restoring" it with `git checkout` destroyed ~40 minutes of
+# uncommitted work, which no reflog could recover. The method is in the same practice file.
+#
+# Most cases replace the real rule set with ONE synthetic rule, spliced between this file's own
+# `# --- FACT:` and `# --- what was actually evaluated` markers. That keeps each case readable — the
+# rule under test is right there in the case — and keeps `--mutation` cases to a single sub-lint
+# instead of the whole set. The real rules are exercised for real by the two other modes in
+# selfcheck; this mode is about the machinery around them.
+#
+# THIS SECTION MUST STAY ABOVE THE FIRST `# --- FACT:` MARKER. `_st_minimal` slices everything
+# between the markers out of the copy, so a case that lived below the first one would delete itself
+# from the fixture it is running. Nothing here may open a line with that marker either, for the same
+# reason: the slicer takes the FIRST match.
+#
+# The headline case is `historic-bot-pin`: the EXACT pattern that shipped unable to fire
+# (`absent:\[bot\]\$`) against the EXACT idiom it was meant to catch. It must be reported UNFIRABLE,
+# and its corrected form must be accepted — the regression test for #213 itself.
+if [ "$MODE" = selftest ]; then
+  ST_WORK="$(mktemp -d)" || { echo "fact-self-test: cannot create a temp dir" >&2; exit 1; }
+  # ONE exit trap, doing both jobs: fail closed if this suite ends without running its summary, then
+  # clean up. Without the first half the suite fails OPEN — its exit status is its last command's,
+  # and only check_summary ever consults the `fail` counter, so a truncating edit or a stray early
+  # `exit` prints FAIL lines and still exits 0, and selfcheck and CI report the step as passing.
+  # A suite whose entire job is proving guards can fail must not be able to skip its own verdict.
+  check_exit_guard "fact-self-test" "rm -rf \"$ST_WORK\""
+
+  # ONE copy of the working tree, cloned per case, through check-lib.sh's shared copier. It copies
+  # UNCOMMITTED sources — so this mode tests the lint you just edited, not the one at HEAD.
+  ST_PRISTINE="$ST_WORK/pristine"
+  check_copy_worktree "$ROOT" "$ST_PRISTINE" \
+    || { echo "fact-self-test: could not copy the tree" >&2; exit 1; }
+
+  # _st_fresh — print the path of a brand-new copy of the pristine tree.
+  #
+  # The unique name comes from `mktemp -d`, NOT from a counter, and it STAYS that way even though the
+  # containment argument has expired (#259). Call sites are `d="${ _st_fresh; }"` now, which runs in
+  # the CURRENT shell, so a counter WOULD survive — but it would also be one more piece of state to
+  # reset between cases, and `mktemp -d` needs none. What has changed is the hazard: an assignment in
+  # here no longer dies with a subshell, so anything added below must be `local` on purpose rather
+  # than by accident.
+  _st_fresh() {
+    local d
+    # Drop earlier case dirs first. Each case is self-contained and never revisits a previous one,
+    # and the tree is ~4 MB — without this, ~24 cases peak at ~100 MB of temp. Statelessly, by glob,
+    # which is simplest and needs no per-case bookkeeping.
+    rm -rf "$ST_WORK"/case.*
+    d="$(mktemp -d "$ST_WORK/case.XXXXXX")" || return 1
+    check_copy_worktree "$ST_PRISTINE" "$d" || return 1
+    printf '%s' "$d"
+  }
+
+  # _st_minimal <dir>  (synthetic rule text on stdin) — swap the copy's whole rule set for the text
+  # given. Sliced by this file's own section markers with head/tail rather than sed or `awk -v`:
+  # every rule under test is dense with backslashes and single quotes, and both of those tools would
+  # eat them on the way in.
+  _st_minimal() {
+    local d="$1" f synth start end
+    if [ -z "$d" ]; then
+      bad "_st_minimal(): empty fixture dir — '_st_fresh' failed; refusing to slice a path outside the fixture"
+      return 1
+    fi
+    f="$d/scripts/check-fact-drift.sh"
+    synth="$(cat)"
+    start="$(grep -n '^# --- FACT: ' "$f" | head -n1 | cut -d: -f1)"
+    end="$(grep -n '^# --- what was actually evaluated' "$f" | head -n1 | cut -d: -f1)"
+    if [ -z "$start" ] || [ -z "$end" ]; then
+      bad "_st_minimal(): section markers not found in check-fact-drift.sh — this mode's slicing is stale"
+      return 1
+    fi
+    { head -n "$((start - 1))" "$f"; printf '%s\n' "$synth"; tail -n "+$end" "$f"; } > "$f.tmp" \
+      && mv "$f.tmp" "$f"
+  }
+
+  # _st_run <dir> [args…] — run the copy's lint, capturing merged output in ST_OUT and status in
+  # ST_RC. Set ST_PATH to override PATH for one case (used to stub out `find`).
+  #
+  # An EMPTY <dir> is fatal rather than ignored: `_st_fresh` can fail, its callers assign in a
+  # command substitution that cannot propagate a status, and `cd "" && …` succeeds — which would
+  # silently aim the whole case at the REAL repo root instead of the fixture.
+  ST_OUT=""; ST_RC=0; ST_PATH=""
+  _st_run() {
+    local d="$1"; shift
+    if [ -z "$d" ]; then
+      bad "_st_run(): empty fixture dir — '_st_fresh' failed and the case would have run against the real repo"
+      ST_OUT=""; ST_RC=-1; return
+    fi
+    ST_OUT="$( cd "$d" && PATH="${ST_PATH:-$PATH}" bash scripts/check-fact-drift.sh "$@" 2>&1 )"; ST_RC=$?
+  }
+
+  # ------------------------------- the control ---------------------------------
+  # An untouched copy must pass NORMAL mode. Without this, every "it failed" below could be the copy
+  # being broken rather than the case under test. (`--mutation` gets its own control further down, on
+  # a one-rule fixture; running it here would re-do every sub-lint selfcheck already runs.)
+  d="${ _st_fresh; }"
+  _st_run "$d"
+  eq "$ST_RC" 0 "control: a pristine copy passes the lint"
+  has "$ST_OUT" "absent rules" "control: the run reports what it evaluated"
+
+  # -------------------- #213's actual defect, both directions ------------------
+  # The pattern as originally shipped, against the real shell idiom. `\[bot\]\$` asks for a
+  # contiguous `[bot]$`; the idiom always backslash-escapes the bracket, so it matched nothing at all
+  # and the check was green forever.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact historic-bot-pin 'absent:\[bot\]\$' 'fires:s/\[bot\]$//' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "historic-bot-pin: the pattern that shipped unfirable is rejected"
+  has "$ST_OUT" "UNFIRABLE PIN" "historic-bot-pin: named as unfirable, not as generic drift"
+
+  # ...and its correction accepted, against BOTH real spellings — the shell form (one backslash) and
+  # the jq form (two). A pin witnessed by only one of them would have re-created the defect one
+  # spelling narrower.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact fixed-bot-pin 'absent:bot\\*\]\$' 'fires:s/\[bot\]$//' 'fires:sub("\\[bot\\]$"; "")' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 0 "fixed-bot-pin: the corrected pattern matches both real idioms"
+
+  # ---------------------------- the witness contract ---------------------------
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact no-witness 'absent:ZZQQ-superseded' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "an absent: rule with no fires: witness is refused"
+  has "$ST_OUT" "declares no fires: witness" "no-witness: says which contract was broken"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact witness-on-positive 'fixed:ai-dev-baseline' 'fires:ai-dev-baseline' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "fires: on a positive rule is a usage error, not silently ignored"
+  has "$ST_OUT" "only meaningful on an absent: rule" "witness-on-positive: names the misuse"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact empty-witness 'absent:ZZQQ' 'fires:' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "an empty fires: value is refused (it would witness nothing)"
+  has "$ST_OUT" "empty fires: witness" "empty-witness: names the shape"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact multiline-witness 'absent:ZZQQ' 'fires:one
+two' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "a witness spanning lines is refused (grep is line-oriented)"
+  has "$ST_OUT" "witness spans lines" "multiline-witness: names the reason"
+
+  # ------------------------- the degenerate-rule shapes ------------------------
+  # Each of these is a way a rule asserts NOTHING while looking like a rule.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact empty-needle 'absent:' 'fires:anything' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "an empty pattern is refused (it matches every line of every file)"
+  has "$ST_OUT" "empty absent pattern" "empty-needle: names the shape"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact empty-fixed-needle 'fixed:' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "an empty fixed: token is refused too"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact no-separator 'fixed:ai-dev-baseline'
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "a rule with no '--' is refused"
+  has "$ST_OUT" "missing '--'" "no-separator: names the missing separator"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact no-files 'fixed:ai-dev-baseline' --
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "a rule with no files is refused (it can never fail)"
+  has "$ST_OUT" "no files" "no-files: names the shape"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact bad-kind 'bogus:ai-dev-baseline' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "an unknown spec kind is refused"
+  has "$ST_OUT" "unknown spec kind" "bad-kind: names the kind"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact no-colon 'ai-dev-baseline' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "a spec with no kind prefix is refused"
+  has "$ST_OUT" "malformed spec" "no-colon: names the shape"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact stray-arg 'fixed:ai-dev-baseline' README.md -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "an argument that is neither fires: nor '--' is refused"
+
+  # A file listed twice asserts nothing new — and under --mutation the second injection would
+  # overwrite the first's backup, so the restore would put back an already-mutated file and one
+  # witness would leak into the next.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact duplicate-file 'absent:ZZQQ' 'fires:ZZQQ' -- README.md README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "a file listed twice in one rule is refused"
+  has "$ST_OUT" "listed more than once" "duplicate-file: names the shape"
+
+  # ------------------------------ the empty rule set ---------------------------
+  # The quietest possible green: a truncated file, a sourcing accident, an early exit. Every
+  # individual assertion still passes, because there are none.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" </dev/null
+  _st_run "$d"
+  eq "$ST_RC" 1 "a lint that evaluated no rules at all fails instead of passing"
+  has "$ST_OUT" "no rules were evaluated" "empty rule set: says so in as many words"
+
+  # Positive rules only — the negative half of the lint silently deleted.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact positives-only 'fixed:ai-dev-baseline' -- README.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "a lint with no absent: rules left fails"
+  has "$ST_OUT" "superseded-value half of this lint is gone" "positives-only: names what vanished"
+
+  # ------------------------------- the mutation mode ---------------------------
+  # Its control: one synthetic rule, injected and observed going red end to end.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact mutation-control 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  _st_run "$d" --mutation
+  eq "$ST_RC" 0 "mutation control: a firable pin is observed going red"
+  has "$ST_OUT" "witnesses injected" "mutation control: reports what it injected"
+  # The live tree is never the thing mutated. If it were, README.md would now carry the witness.
+  hasnt "$(cat "$ROOT/README.md")" "ZZQQ-superseded token" "mutation ran against a COPY, not the working tree"
+
+  # A rule whose predicate cannot fire: `req_absent` neutered in the copy. Normal mode still passes
+  # (nothing asserts), which is precisely the silence this mode exists to break.
+  #
+  # THE SANCTIONED MARKER GOES INTO THE FIXTURE LINE, not just onto this one, and that is what makes
+  # the case isolated. Without it the injected stub is itself an unmarked call site, so the
+  # call-site scan reports a bypass and the `--mutation` run comes back 1 whether or not
+  # `_fact_mutate`'s stayed-GREEN verdict still fails the run — the case would pass while proving
+  # nothing about the branch it names. Verified by neutering that branch: with the marker the case
+  # goes red, without it, green.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact mutation-dead-predicate 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  printf '\nreq_absent() { :; }   # adb-allow: req_absent\n' >> "$d/scripts/check-lib.sh"
+  _st_run "$d"
+  eq "$ST_RC" 0 "dead predicate: normal mode cannot see it (this is the silence)"
+  _st_run "$d" --mutation
+  eq "$ST_RC" 1 "dead predicate: --mutation catches a pin that cannot fire"
+  has "$ST_OUT" "cannot fire" "dead predicate: names it as an unfirable pin, not as a crash"
+  hasnt "$ST_OUT" "a crash or broken copy" "dead predicate: a green lint is NOT reported as a crash"
+
+  # A lint that goes non-zero for a reason that is NOT a drift verdict (a crash, a missing
+  # dependency, a corrupt copy). "Any non-zero" would accept it and prove nothing.
+  # The sabotage edits the copy's lint, so the OUTER --mutation run inherits the same `exit 3`; what
+  # is under test is the message, and that the run does not come back green.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact mutation-wrong-rc 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  printf '\n_guard_rc=$?\n[ "$_guard_rc" -eq 0 ] || exit 3\nexit 0\n' >> "$d/scripts/check-fact-drift.sh"
+  _st_run "$d" --mutation
+  no "$ST_RC" "--mutation requires exactly rc 1, not merely non-zero"
+  has "$ST_OUT" "not a drift verdict" "wrong rc: distinguishes a crash from a verdict"
+
+  # A file pinned ONLY by an absent: rule and missing from the tree. `req_absent` is vacuously true
+  # on a missing path, so this used to be a SILENT pass that the totals then reported as "scanned".
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact mutation-missing-file 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- docs/does-not-exist.md
+RULE
+  _st_run "$d"
+  eq "$ST_RC" 1 "a pinned file that does not exist fails — the rule asserts nothing about it"
+  has "$ST_OUT" "pinned file does not exist" "missing file: names the path"
+  has "$ST_OUT" "0 files scanned" "missing file: is NOT counted as scanned"
+  _st_run "$d" --mutation
+  eq "$ST_RC" 1 "missing pinned file: --mutation stops at the pristine baseline"
+  has "$ST_OUT" "PRISTINE tree copy does not pass" "missing file under mutation: names why it stopped"
+
+  # The per-file diagnostic match. An UNRELATED failure returns rc 1 too, and accepting that would
+  # let a neighbouring rule's red satisfy this rule's proof while the pin stayed unfirable. Here
+  # `req_absent` fires — so the lint goes red — but reports someone else's label.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact mutation-wrong-diagnostic 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  cat >> "$d/scripts/check-lib.sh" <<'STUB'
+req_absent() {   # adb-allow: req_absent
+  if grep -Eq -- "$2" "$1"; then
+    check_note "[some-other-rule] superseded pattern /decoy/ still present in nowhere.md:"
+    check_fail
+  fi
+}
+STUB
+  _st_run "$d"
+  eq "$ST_RC" 0 "wrong diagnostic: the pristine baseline is still clean"
+  _st_run "$d" --mutation
+  eq "$ST_RC" 1 "an unrelated rule going red does NOT satisfy this rule's proof"
+  has "$ST_OUT" "did NOT trip the rule" "wrong diagnostic: names the per-file miss"
+
+  # A tree that is ALREADY red must not be mutated: every injection would "fail the lint" for a
+  # reason having nothing to do with the witness, and the mode would report success.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact mutation-dirty-baseline 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  printf '\nZZQQ-superseded token\n' >> "$d/README.md"
+  _st_run "$d" --mutation
+  eq "$ST_RC" 1 "--mutation refuses to run against a tree that is already drifting"
+  has "$ST_OUT" "PRISTINE tree copy does not pass" "dirty baseline: names why it stopped"
+
+  # --------------------- the req_absent call-site invariant --------------------
+  # The witness contract lives in fact(); a direct caller bypasses it entirely.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact callsite-invariant 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  printf '\nreq_absent scripts/check-lib.sh "ZZQQ" stray-caller\n' >> "$d/scripts/check-cleanup.sh"   # adb-allow: req_absent
+  _st_run "$d" --mutation
+  eq "$ST_RC" 1 "an unmarked caller outside fact() is refused"
+  has "$ST_OUT" "called outside fact()" "call-site invariant: names the bypass"
+
+  # A MENTION in a comment is not a call — suites legitimately discuss the helper in prose.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact callsite-comment 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  printf '\n# req_absent is deliberately not used here\n' >> "$d/scripts/check-cleanup.sh"   # adb-allow: req_absent
+  _st_run "$d" --mutation
+  eq "$ST_RC" 0 "a commented mention of the helper is not a call site"
+
+  # THE EXEMPTION IS PER LINE, NOT PER FILE. A whole-file exclusion made this invariant false: a real
+  # direct call added to one of the files that legitimately name the helper would pass undetected. A
+  # sanctioned line carries a marker; an unmarked one is caught wherever it lives.
+  #
+  # The target is `scripts/check-lib.sh` — which DEFINES the helper and therefore names it on a
+  # sanctioned line — and the injected call names a path that does not exist, so `req_absent` returns
+  # immediately: this file is SOURCED by the lint, and a call that actually asserted something would
+  # be testing the injection rather than the scan. (Before #377 the target was the standalone guard
+  # suite, which the lint never sourced.)
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact callsite-in-exempt-file 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  printf '\nreq_absent scripts/no-such-file "ZZQQ" sneaky\n' >> "$d/scripts/check-lib.sh"   # adb-allow: req_absent
+  _st_run "$d" --mutation
+  eq "$ST_RC" 1 "an unmarked call inside a file that legitimately names the helper is still caught"
+  has "$ST_OUT" "called outside fact()" "exempt-file call: reported as the bypass"
+  has "$ST_OUT" "scripts/check-lib.sh:" "exempt-file call: names the file it found it in"
+
+  # ...and the marker is what makes a line sanctioned, so a marked line is accepted anywhere.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact callsite-marked 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  printf '\nreq_absent a b c   # adb-allow: req_absent\n' >> "$d/scripts/check-cleanup.sh"
+  _st_run "$d" --mutation
+  eq "$ST_RC" 0 "a line carrying the sanctioned marker is accepted"
+
+  # EXTENSIONLESS shell programs are scanned too. `bin/agent-init` and `bin/baseline` have no `.sh`,
+  # and a `*.sh`-only enumeration left them — and any future extensionless script — invisible.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact callsite-extensionless 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  printf '\nreq_absent scripts/check-lib.sh "ZZQQ" from-bin\n' >> "$d/bin/agent-init"   # adb-allow: req_absent
+  _st_run "$d" --mutation
+  eq "$ST_RC" 1 "a call in an extensionless shell program (bin/agent-init) is caught"
+  has "$ST_OUT" "bin/agent-init" "extensionless: names the file"
+
+  # The enumeration's own zero-file branch. A scan that returns nothing is a BROKEN scan, not a clean
+  # tree — the silent-inert shape this whole family is about. Driven with a `find` that finds nothing.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact callsite-zero-files 'absent:ZZQQ-superseded' 'fires:ZZQQ-superseded token' -- README.md
+RULE
+  mkdir -p "$d/stubbin"
+  printf '#!/bin/sh\nexit 0\n' > "$d/stubbin/find"
+  chmod +x "$d/stubbin/find"
+  ST_PATH="$d/stubbin:$PATH"
+  _st_run "$d" --mutation
+  ST_PATH=""
+  eq "$ST_RC" 1 "an enumeration that finds no shell files fails instead of passing"
+  has "$ST_OUT" "enumeration is broken" "zero files: names the broken scan"
+
+  # ------------------- an ACTIVE invocation, not the raw token -----------------
+  # A `fixed:` pin on a command is satisfied by a COMMENTED-OUT command, so commenting out the
+  # selfcheck line and the workflow step would leave both tokens present and both guards un-run. The
+  # wiring rules therefore anchor on `^[^#]*`; prove it both ways on a fixture file.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact active-invocation 'regex:^[^#]*check-fact-drift\.sh --mutation' -- README.md
+fact keeps-a-negative 'absent:ZZQQ-never-present' 'fires:ZZQQ-never-present' -- README.md
+RULE
+  printf '\n# bash scripts/check-fact-drift.sh --mutation\n' >> "$d/README.md"
+  _st_run "$d"
+  eq "$ST_RC" 1 "a COMMENTED-OUT invocation does not satisfy the wiring pin"
+  has "$ST_OUT" "canonical pattern" "commented invocation: reported as a missing pattern"
+
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact active-invocation 'regex:^[^#]*check-fact-drift\.sh --mutation' -- README.md
+fact keeps-a-negative 'absent:ZZQQ-never-present' 'fires:ZZQQ-never-present' -- README.md
+RULE
+  printf '\nif bash scripts/check-fact-drift.sh --mutation; then :; fi\n' >> "$d/README.md"
+  _st_run "$d"
+  eq "$ST_RC" 0 "an ACTIVE invocation satisfies it"
+
+  # ...and it must not depend on something preceding the token, which is the trap the earlier
+  # `[^#[:space:]]`-consuming anchor fell into twice.
+  d="${ _st_fresh; }"
+  _st_minimal "$d" <<'RULE'
+fact active-invocation 'regex:^[^#]*check-fact-drift\.sh --mutation' -- README.md
+fact keeps-a-negative 'absent:ZZQQ-never-present' 'fires:ZZQQ-never-present' -- README.md
+RULE
+  printf '\nbash scripts/check-fact-drift.sh --mutation\n' >> "$d/README.md"
+  _st_run "$d"
+  eq "$ST_RC" 0 "an invocation at the START of a line satisfies it too"
+
+  # -------------- the suite's own verdict cannot be skipped --------------------
+  # A suite's exit status is its LAST COMMAND's, and only check_summary consults the `fail` counter.
+  # Lose that final line and the suite prints FAIL diagnostics, exits 0, and is reported as passing.
+  ST_SELF="$ST_WORK/selftest"
+  mkdir -p "$ST_SELF/scripts"
+  cp scripts/check-lib.sh "$ST_SELF/scripts/"
+  # A tiny suite that records a FAILING assertion and then ends without its summary.
+  cat > "$ST_SELF/scripts/truncated.sh" <<'SUITE'
+set -u
+cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_exit_guard "truncated-suite"
+bad "a deliberate failure that nothing will ever count"
+SUITE
+  ( cd "$ST_SELF" && bash scripts/truncated.sh ) >/dev/null 2>&1
+  eq "$?" 1 "a suite that ends without check_summary fails closed"
+
+  # ...and the guard does not fire when the summary DID run.
+  cat > "$ST_SELF/scripts/complete.sh" <<'SUITE'
+set -u
+cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_exit_guard "complete-suite"
+ok
+check_summary "complete-suite"
+SUITE
+  ( cd "$ST_SELF" && bash scripts/complete.sh ) >/dev/null 2>&1
+  eq "$?" 0 "a suite that runs its summary is unaffected by the guard"
+
+  # ...and a real failure still exits 1 through the guard rather than being masked by it.
+  cat > "$ST_SELF/scripts/failing.sh" <<'SUITE'
+set -u
+cd "$(dirname "$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_exit_guard "failing-suite"
+bad "a real, counted failure"
+check_summary "failing-suite"
+SUITE
+  ( cd "$ST_SELF" && bash scripts/failing.sh ) >/dev/null 2>&1
+  eq "$?" 1 "a counted failure still exits 1"
+
+  # ...and the cleanup argument still runs.
+  ST_PROBE="$ST_WORK/cleanup-probe"
+  : > "$ST_PROBE"
+  cat > "$ST_SELF/scripts/cleanup.sh" <<SUITE
+set -u
+cd "\$(dirname "\$0")/.." || exit 1
+# shellcheck source=/dev/null
+. scripts/check-lib.sh
+check_exit_guard "cleanup-suite" "rm -f '$ST_PROBE'"
+ok
+check_summary "cleanup-suite"
+SUITE
+  ( cd "$ST_SELF" && bash scripts/cleanup.sh ) >/dev/null 2>&1
+  if [ -e "$ST_PROBE" ]; then bad "check_exit_guard did not run its cleanup command"; else ok; fi
+
+  # ------------------------------ argument handling ----------------------------
+  d="${ _st_fresh; }"
+  _st_run "$d" --bogus
+  eq "$ST_RC" 2 "an unknown mode argument exits 2 rather than silently running normally"
+  d="${ _st_fresh; }"
+  _st_run "$d" --mutation extra
+  eq "$ST_RC" 2 "a surplus argument exits 2"
+  d="${ _st_fresh; }"
+  _st_run "$d" --self-test extra
+  eq "$ST_RC" 2 "a surplus argument after --self-test exits 2 too"
+
+  check_summary "fact-self-test"
+  exit 0
+fi
 
 # --- the throwaway tree copy (--mutation only) -------------------------------
 # Through check-lib.sh's shared copier, which copies UNCOMMITTED sources — so adding a pin and
@@ -847,7 +1400,10 @@ fact pr-primitives-no-copies 'absent:^_sa_local_slug\(\)' \
 # other.
 fact fact-mutation-wired 'regex:^[^#]*check-fact-drift\.sh --mutation' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
-fact fact-guard-wired 'regex:^[^#]*check-fact-guard\.sh' -- \
+# The self-test mode, pinned the same way and for the same reason (#377). It was
+# `check-fact-guard.sh` until the fold, and the rule moved with it rather than being retired:
+# a mode is exactly as easy to un-wire as a file was.
+fact fact-selftest-wired 'regex:^[^#]*check-fact-drift\.sh --self-test' -- \
   scripts/selfcheck.sh .github/workflows/ci.yml
 # Same shape, same reason (#268). This one guards a hazard that only appears when a build ABORTS,
 # so nothing about a normal green run would notice it had stopped being checked — the exact
@@ -1221,6 +1777,149 @@ fact ci-failure-model-binary 'absent:flaky (or|vs\.?) real' \
   'fires:  classify flaky vs. real with evidence, fix real failures at the root, and' -- \
   base/practices/ci-discipline.md base/workflows/debug.md docs/philosophy.md
 
+# --- the release-role policy: release stays PROJECT-OWNED (#3/D7, migrated by #375) -------------
+#
+# #3 resolved a DECISION, not a feature: cutting a release stays project-owned, and the baseline
+# ships no `/release` workflow. A decision is only as durable as the thing that re-checks it — and
+# this one is a NEGATIVE invariant ("no such skill exists"), which `build-drift` and `workflow-map`
+# cannot express, because a new workflow rendering correctly is exactly what they are built to allow.
+#
+# It was `scripts/check-release-role.sh` until #375. Three of its five groups were already this
+# file's grammar (`fact <label> <token> -- <files>`, riding this same CI job), and the fourth — the
+# `roll` boundary — was six negative greps that had NEVER been observed firing, on the highest
+# consequence surface in the set: `scripts/lib/` ships to every adopter, so a release call grown
+# inside `cmd_roll` would start publishing on THEIR repos. Moving it here is what gives that group
+# `fires:` witnesses and a standing `--mutation` proof, which is protection it could not have where
+# it was.
+#
+# The retired file's own header argued the other way — "a guard you have to reassemble from two
+# files is harder to find and harder to reverse deliberately". That argument is preserved and
+# answered rather than ignored: the whole policy now lives in ONE section of ONE file, which is
+# strictly fewer places to look than the two it had. What it must not become is a rule scattered
+# through the list above, so it keeps its own banner and its own paragraph here.
+
+# THE ABSENCE HALF is not a `fact` — a `fact` asserts about a file's CONTENT, and there is no
+# content to assert about a file that must not exist. Assert the path itself.
+# `-e` alone is FALSE for a dangling symlink, so a `release` skill symlinked at a broken target
+# would slip through — test for the link too.
+forbid_path() {   # <path> <why>
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    check_note "[no-release-skill] $1 exists — $2"
+    check_note "[no-release-skill] #3 decided release execution stays project-owned. If that is"
+    check_note "[no-release-skill] being reversed, update base/roles.md + docs/roles-and-agents.md"
+    check_note "[no-release-skill] and this lint together — deliberately, not as a side effect."
+    check_fail
+  fi
+}
+forbid_path base/workflows/release.md "the baseline must not ship a generic release workflow"
+# Glob, not a hardcoded `claude codex gemini` — this way a newly added agent tree is covered the day
+# it lands. An unmatched glob stays literal, and neither -e nor -L is true of the literal, so "no
+# agent trees" passes. (`set +f` at the top of this file is what keeps that true for a caller who
+# invoked us with noglob: a literal pattern matching nothing would be a false GREEN, the one failure
+# mode a policy lint must never have.)
+for _rp in agents/*/skills/release; do
+  forbid_path "$_rp" "no agent tree may carry a rendered release skill"
+done
+
+# THE PRESENCE HALF: every surface that carries the decision still carries it. `project-owned` is
+# the decision itself; "no `/release`" is its concrete consequence. A doc that lost either one is a
+# doc that would let a reader assume a release skill exists.
+fact release-is-project-owned 'fixed:project-owned' -- \
+  base/roles.md docs/roles-and-agents.md README.md
+fact ships-no-release-skill 'fixed:no `/release`' -- \
+  base/roles.md docs/roles-and-agents.md README.md
+# The trap the role model must spell out: `[roles].release` is inert until a project skill RESOLVES
+# it. Without this sentence a user sets `release = "codex"` and it is silently ignored.
+fact release-role-must-be-resolved 'fixed:resolve release' -- \
+  base/roles.md docs/roles-and-agents.md
+# The manifest template is where most users meet the role — it must say the token picks an executor
+# and installs nothing.
+fact template-release-note 'fixed:installs no release skill' -- templates/agents.toml
+
+# DISAMBIGUATION: `/new-release` is not `/release`. The name collision is the reported UX bug (#3).
+# Asserted on the SOURCE only — build.sh substitutes only {{TOKEN}} placeholders (none of these
+# tokens contain `{{`) and build-drift rebuilds + diffs every agent tree, so source-token +
+# build-drift already implies rendered-token.
+# NOTE the backticks in the token. A bare `/release` would also match `/releases/latest` in the
+# `gh release view` prose further down that same workflow — so the note could be deleted entirely
+# and the assertion would still pass. The backtick-delimited code span is what the disambiguation
+# actually writes, and it appears nowhere else in the file.
+fact new-release-names-the-other-command 'fixed:`/release`' -- base/workflows/new-release.md
+fact new-release-points-at-the-owned-role 'fixed:project-owned' -- base/workflows/new-release.md
+
+# THE EMIT CONTRACT: "the baseline ships no /release" is only safe because /roadmap lets a repo NAME
+# its own release command and emits that. Losing that half turns the decision into a dead end — and
+# since #188 the emission must also RESOLVE, because an unresolvable slash command does not fail
+# loudly: Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo without one
+# silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
+fact roadmap-release-command-override 'fixed:release-command' -- base/workflows/roadmap.md
+fact roadmap-verifies-the-command-resolves 'fixed:RESOLVES' -- base/workflows/roadmap.md
+fact convention-documents-override 'fixed:release-command' -- docs/release-goal-convention.md
+
+# THE ROLLOVER BOUNDARY: `roll` is bookkeeping, never a cutter (#74/D8).
+#
+# #74 moved milestone rollover the OTHER way across the #3 line — out of the project-owned
+# `/release` and into `baseline release roll` — because cutting has four incompatible shapes while
+# rolling has exactly one. That makes `release-convention.sh` the single file in the repo with both
+# a plausible reason and a plausible path to grow into the generic cutter #3 rejected: it already
+# talks to the release milestones, so "while we're here, also tag it" reads like a feature rather
+# than a reversal. The absence half above cannot catch that — a cutter grown INSIDE this helper
+# ships no `release.md` and no skill directory, so every path check stays green.
+#
+# `absent:` OVER CODE, which is the narrow superseded-value use this file's header sanctions rather
+# than a prose blocklist: the boundary is about what the code DOES, and a token grep over prose is
+# the wrong instrument for it. Adding `git tag "$V"` to cmd_roll leaves every doc token intact and
+# every positive rule green — verified, it did.
+#
+# `^[^#]*` IS THE COMMENT GUARD, and it replaces the `sed 's/#.*//'` pre-pass the retired file used.
+# It is the same anchor the wiring rules above use and it means the same thing: the match must be
+# reachable without passing a `#`, so this very file — and release-convention.sh's own header, which
+# says in prose that roll never tags or publishes — cannot trip its own lint. The `(^|[^…])`
+# alternation is what lets a match sit at column 0, where a bare `[^[:alnum:]_-]` prefix would
+# consume the first character and match nothing (the anchor mistake this file has now made twice).
+#
+# SCOPE: this catches accidental GROWTH ("while we're already in the release milestone, also tag
+# it"), which is the realistic failure. It is not an adversarial sandbox — indirection such as
+# `"$GIT" tag` defeats it, and is meant to: someone hiding a cutter behind a variable has already
+# decided to reverse #3, and the decision record governs that, not a grep.
+#
+# THE WITNESSES ARE HYPOTHETICAL, AND SAYING SO IS THE POINT. Everywhere else in this file a
+# `fires:` witness is a verbatim superseded line, because there was one. Here there is not: the
+# boundary has never been crossed, which is exactly why these six patterns went four releases
+# without ever being observed firing. Each witness is therefore the realistic growth line for its
+# own pattern, written in this file's own idiom — enough to prove the pattern can match and that
+# `--mutation` drives it red, and no more. Same honesty as the `-u root` / `--user 0` branches of
+# `wsl-smoke-nonroot-framework` above.
+_roll_lib="scripts/lib/release-convention.sh"
+fact roll-boundary-no-git \
+  'absent:(^|^[^#]*[^[:alnum:]_-])git[[:space:]]+(tag|push)([^[:alnum:]_-]|$)' \
+  'fires:  git tag -a "v$ROLL_VERSION" -m "release $ROLL_VERSION"' \
+  'fires:  git push origin "v$ROLL_VERSION"' -- "$_roll_lib"
+fact roll-boundary-no-gh-release \
+  'absent:(^|^[^#]*[^[:alnum:]_-])gh[[:space:]]+release([^[:alnum:]_-]|$)' \
+  'fires:  gh release create "v$ROLL_VERSION" --notes-file "$notes"' -- "$_roll_lib"
+fact roll-boundary-no-package-publish \
+  'absent:(^|^[^#]*[^[:alnum:]_-])(npm|pnpm|yarn|cargo|poetry)[[:space:]]+(version|publish)([^[:alnum:]_-]|$)' \
+  'fires:  npm version "$ROLL_VERSION" --no-git-tag-version' \
+  'fires:  cargo publish --allow-dirty' -- "$_roll_lib"
+# The REALISTIC growth path is not the `gh release` porcelain — this file already does everything
+# through `gh api`, so a cutter grown here would too. Forbid the REST endpoints that publish a
+# release or create a tag ref, and the changelog surface, independent of which verb reaches them.
+fact roll-boundary-no-releases-endpoint \
+  'absent:^[^#]*/releases([^[:alnum:]_-]|$)' \
+  'fires:  gh api --method POST "repos/$slug/releases" -f tag_name="v$ROLL_VERSION"' -- "$_roll_lib"
+fact roll-boundary-no-tag-ref \
+  'absent:^[^#]*refs/tags' \
+  'fires:  gh api --method POST "repos/$slug/git/refs" -f ref="refs/tags/v$ROLL_VERSION"' -- "$_roll_lib"
+fact roll-boundary-no-changelog \
+  'absent:^[^#]*[Cc][Hh][Aa][Nn][Gg][Ee][Ll][Oo][Gg]' \
+  'fires:  printf %s "$notes" >> CHANGELOG.md' \
+  'fires:  changelog_stamp "$ROLL_VERSION"' -- "$_roll_lib"
+# POSITIVE half: the boundary is still STATED where a reader and an editor will meet it. One token,
+# used verbatim in both files, so the claim cannot drift into two different wordings.
+fact roll-declares-its-boundary 'fixed:milestone bookkeeping only' -- \
+  scripts/lib/release-convention.sh docs/release-goal-convention.md
+
 # --- what was actually evaluated ---------------------------------------------
 # A rule that scans nothing is already a hard failure inside fact(); these totals are the other
 # half of the same idea, and the half that survives a future edit fact() does not model. Zero rules
@@ -1244,8 +1943,8 @@ if [ "$MODE" = mutation ]; then
   # stray caller, and pass: a check that goes inert exactly where nobody would notice.
   #
   # PER-LINE exemption, never per-file. Excluding whole files (check-lib.sh defines the helper,
-  # this file dispatches to it, check-fact-guard.sh writes stray callers into fixtures) made the
-  # invariant FALSE: a real direct call added to any of those three would pass undetected, which
+  # this file both dispatches to it and writes stray callers into --self-test fixtures) made the
+  # invariant FALSE: a real direct call added to any of them would pass undetected, which
   # a reviewer reproduced. A sanctioned line instead carries the marker below, so every occurrence
   # is deliberate and reviewable, and a NEW call anywhere — including in these three files — has
   # to be marked before it is accepted.
@@ -1281,8 +1980,8 @@ if [ "$MODE" = mutation ]; then
     #   1. find the token — `^[[:space:]]*[^#[:space:]].*req_absent` LOOKS like it also excludes
     #      comments, but `[^#[:space:]]` CONSUMES the line's first non-blank character, so a line
     #      that BEGINS with the call (the ordinary way a stray caller is written) matches nothing
-    #      at all. That match-nothing defect shipped here first and was caught by
-    #      check-fact-guard.sh's stray-caller case.
+    #      at all. That match-nothing defect shipped here first and was caught by the
+    #      `callsite-invariant` stray-caller case in --self-test.
     #   2. drop comment lines — suites legitimately discuss the helper in prose.
     #   3. drop lines carrying the sanctioned marker.
     _hit="$(grep -n "$_ra" "$_sf" | grep -Ev '^[0-9]+:[[:space:]]*#' | grep -Fv "$_allow")" || continue

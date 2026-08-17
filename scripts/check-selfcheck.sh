@@ -64,7 +64,7 @@ cp "$ROOT/scripts/lib/common.sh" "$FX/scripts/lib/common.sh"
 # The stub steps, chosen from names the real registry already carries as plain
 # `bash scripts/check-<x>.sh` commands — so the fixture exercises the registry as shipped rather
 # than a registry this suite rewrote.
-STUBS=(practice-index bash-floor-guard gates claims fact-guard release-role workflow-shell injection)
+STUBS=(practice-index bash-floor-guard gates claims state-assert release-skill workflow-shell injection)
 
 # One generic stub, parameterised at run time by a control file per step, so a case can change a
 # step's behaviour without rewriting the fixture. Control keys: RC (exit status), LINES (how many
