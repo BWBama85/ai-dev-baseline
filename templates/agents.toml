@@ -134,6 +134,24 @@ debug        = "claude"     # owns root-cause investigations.
 # [repo]
 # reconcile-required-checks = true
 
+# Optional: MCP servers this project's agents should expect (#356).
+#
+# DECLARATION ONLY. Nothing here installs, starts, or health-checks a server — wiring is per-agent.
+# It states what a run should have, so an absent server is a stated gap rather than a silent
+# fall-back to training-data recall (base/practices/third-party-claims.md).
+#   required — a run that cannot reach one is DEGRADED; say so instead of proceeding quietly.
+#              `context7` belongs here wherever agents write code against third-party APIs.
+#   optional — absence is not worth reporting.
+#
+# CONNECTED IS NOT USABLE. A server with a bad credential still reports Connected, still answers
+# `tools/list`, and returns the auth failure INSIDE a 200 tool result. Judge the tool RESULT.
+#
+# NEVER TRACK THE CREDENTIAL. A keyed server declared in a committed `.mcp.json` ships that key to
+# every clone and fork. Declare the NAME here; keep keys in the agent's own user-level config.
+# [mcp]
+# required = ["context7"]
+# optional = []
+
 # Optional: override the auto-detected quality gates for this repo. The gate
 # runner auto-detects pnpm/npm/yarn/bun, cargo, go, and python projects; set
 # these only when detection is wrong or the repo needs specific commands.
