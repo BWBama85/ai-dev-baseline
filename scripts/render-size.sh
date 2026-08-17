@@ -32,13 +32,16 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 }
 adb_require_bash "$@"
 set -u
-cd "$(dirname "$0")/.." || exit 1
 
+# Argument handling BEFORE the cd: `adb_usage "$0"` re-reads this file, and a
+# relative $0 stops resolving once the working directory changes.
 case "${1:-}" in
   '') : ;;
   -h|--help) adb_usage "$0"; exit 0 ;;
   *) printf 'render-size: unknown argument %s (usage: bash scripts/render-size.sh)\n' "$1" >&2; exit 2 ;;
 esac
+
+cd "$(dirname "$0")/.." || exit 1
 
 # <agent>:<root-doc-basename>. Restated rather than sourced: scripts/build.sh owns the same triple
 # and says why it is not single-sourced yet.
@@ -93,7 +96,7 @@ for wf in base/workflows/*.md; do
   # A TAB or newline in a workflow name would forge a field boundary in the TSV this command
   # promises is machine-readable.
   case "$name" in *[!A-Za-z0-9._-]*)
-    printf 'render-size: UNNAMEABLE base/workflows/%s.md — a workflow name outside [A-Za-z0-9._-] cannot be reported in this TSV\n' "$name" >&2
+    printf 'render-size: UNNAMEABLE base/workflows/%s.md — a workflow name outside [A-Za-z0-9._-] cannot be reported in this TSV\n' "$(adb_display_value "$name")" >&2
     rc=1; continue ;;
   esac
   sources=$(( sources + 1 ))
