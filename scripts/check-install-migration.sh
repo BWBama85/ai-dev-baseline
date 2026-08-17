@@ -12,6 +12,23 @@
 # (the base installer links the canonical target, not the shim), so the historical shims are
 # additionally asserted explicitly — append-only as future moves add shims.
 #
+# THE ONE EXEMPTION, AND IT COSTS MORE THAN IT SAVES (#378). A payload that is RETIRED — deleted
+# outright, not moved — cannot be compat-shimmed, because there is nothing left to point a shim
+# at. Demanding one is incoherent, so step 4 accepts a dangling link whose destination HEAD
+# DECLARES retired in `adb_agent_manifest_retired`. That declaration is not a free pass; it buys
+# two obligations this file then enforces, and both are strictly additional to the rule above:
+#
+#   5. HEAD's installer must actually PRUNE every declared-retired link it finds. The exemption is
+#      "nothing depends on this and it gets cleaned up", and an undischarged prune makes the
+#      second half false — so HEAD's install.sh is run in the same fake HOME and the tree must
+#      come back with no dangling link at all.
+#   6. every row of the register must be TRUE at HEAD: its former source must be gone, and its
+#      destination must be absent from the live manifest. A retirement whose payload is still
+#      shipped is a declaration that would let a real move through under the exemption.
+#
+# Steps 5-6 read only what HEAD declares, so an undeclared dangle — which is what a MOVE produces
+# — still fails exactly as it did before, with the same compat-shim prescription.
+#
 # Needs full history + origin/<default> (CI: actions/checkout with fetch-depth: 0).
 # Usage: bash scripts/check-install-migration.sh   (exit 0 = all pass, 1 = a failure)
 
@@ -60,6 +77,48 @@ else
   bad "compat shim missing or broken: $compat_shim (removing it dangles pre-move installs — see #35)"
 fi
 
+# --- the retirement register must be TRUE at HEAD (#378) ---------------------
+# Obligation 6. Independent of git history, like the shim check above, because it is a statement
+# about THIS tree: a row whose payload is still shipped, or whose destination is still in the live
+# manifest, is a declaration that would wave a genuine MOVE past the exemption below.
+#
+# A SYNTHETIC HOME, never $HOME. Only the record's SHAPE is under test here, nothing is read from
+# or written to a real install, and interpolating the runner's actual home would make the result
+# depend on whose machine it ran on.
+RETIRED_HOME="/ADB_MIGRATION_PROBE_HOME"
+# Built with printf rather than typed as a literal: an invisible character no reviewer can see is
+# one editor away from becoming a space, and the split would then silently take the whole record.
+RM_TAB="$(printf '\t')"
+retired_rows=0
+for _rm_agent in claude codex gemini; do
+  if ! _rm_reg="$(adb_agent_manifest_retired "$_rm_agent" "$ROOT" "$RETIRED_HOME")"; then
+    bad "cannot enumerate $_rm_agent's retirement register (see above)"
+    continue
+  fi
+  [ -n "$_rm_reg" ] || continue
+  if ! _rm_live="$(adb_agent_manifest "$_rm_agent" "$ROOT" "$RETIRED_HOME")"; then
+    bad "cannot enumerate $_rm_agent's live manifest to check its retirement register against"
+    continue
+  fi
+  while IFS= read -r _rm_line; do
+    [ -n "$_rm_line" ] || continue
+    _rm_src="${_rm_line%%"$RM_TAB"*}"
+    _rm_dest="${_rm_line#*"$RM_TAB"}"
+    retired_rows=$(( retired_rows + 1 ))
+    if [ -e "$_rm_src" ]; then
+      bad "retired source still exists at HEAD: $_rm_src (a retirement whose payload is still shipped would exempt a real move)"
+    else ok; fi
+    if printf '%s\n' "$_rm_live" | cut -f2 | grep -Fqx -- "$_rm_dest"; then
+      bad "retired destination is still in $_rm_agent's LIVE manifest: $_rm_dest (retired and shipped cannot both be true)"
+    else ok; fi
+  done <<REGISTER_EOF
+$_rm_reg
+REGISTER_EOF
+done
+# SAY WHAT WAS CHECKED, not merely that it passed: an empty register and a register nobody looked
+# at print the same two green lines otherwise (self-review.md).
+printf 'install-migration: retirement register — %d row(s) checked\n' "$retired_rows" >&2
+
 # --- history-aware pull simulation -------------------------------------------
 default="$(adb_default_branch .)"
 base=""
@@ -89,18 +148,65 @@ else
     # Simulate a plain `git pull`: same clone, now at HEAD, with NO re-install.
     bad "could not checkout HEAD $head in the migration clone"
   else
-    broken=0
+    # HEAD's register, resolved for THIS clone and THIS fake home, so the comparison below is
+    # against the exact destination strings the base installer wrote. Enumerated per agent with
+    # its status observed: a refusal must not arrive as an empty exemption list, which would read
+    # as "nothing is retired" and turn a green run into a claim nobody checked (#324, D64).
+    retired_dests=""
+    for _rm_agent in claude codex gemini; do
+      if ! _rm_reg="$(adb_agent_manifest_retired "$_rm_agent" "$clone" "$fh")"; then
+        bad "cannot enumerate $_rm_agent's retirement register for the simulated install"
+        continue
+      fi
+      [ -n "$_rm_reg" ] || continue
+      retired_dests="$retired_dests$(printf '%s\n' "$_rm_reg" | cut -f2)
+"
+    done
+
+    broken=0 exempt=0
     while IFS= read -r link; do
       [ -n "$link" ] || continue
-      if [ ! -e "$link" ]; then
-        [ "$broken" -eq 0 ] && printf 'FAIL: a plain "git pull" (base->HEAD) dangled installed symlink(s) — add a compat shim (#35):\n' >&2
-        printf '  %s\n' "$link" >&2
-        broken=1
+      [ -e "$link" ] && continue
+      # A DECLARED RETIREMENT is exempt from the shim rule and from nothing else — the prune
+      # obligation below is what it is exempt INTO.
+      if printf '%s\n' "$retired_dests" | grep -Fqx -- "$link"; then
+        exempt=$(( exempt + 1 ))
+        continue
       fi
-    done <<EOF
+      [ "$broken" -eq 0 ] && printf 'FAIL: a plain "git pull" (base->HEAD) dangled installed symlink(s) — add a compat shim (#35), or declare the path retired in adb_agent_manifest_retired if its payload is gone for good (#378):\n' >&2
+      printf '  %s\n' "$link" >&2
+      broken=1
+    done <<PULLSIM_EOF
 $(find "$fh" -type l)
-EOF
-    if [ "$broken" -eq 0 ]; then ok; else bad_quiet; fi   # diagnostic already printed above
+PULLSIM_EOF
+
+    if [ "$broken" -ne 0 ]; then
+      bad_quiet                       # diagnostic already printed above
+    elif [ "$exempt" -eq 0 ]; then
+      ok
+    else
+      # Obligation 5. The exemption's second half — "and it gets cleaned up" — is the half a
+      # declaration cannot assert on its own, so it is executed: run HEAD's installer over the
+      # same already-installed home and require the tree to come back with NO dangling link.
+      printf 'install-migration: %d declared-retired link(s) dangled after the pull; requiring HEAD'"'"'s installer to prune them\n' \
+        "$exempt" >&2
+      if ! HOME="$fh" bash "$clone/install.sh" --agent claude --agent codex --agent gemini --no-hooks \
+             >"$work/install-head.log" 2>&1; then
+        bad "install.sh at HEAD failed over the base install (see below)"; sed 's/^/  /' "$work/install-head.log" >&2
+      else
+        left=0
+        while IFS= read -r link; do
+          [ -n "$link" ] || continue
+          [ -e "$link" ] && continue
+          [ "$left" -eq 0 ] && printf 'FAIL: HEAD'"'"'s installer left a dangling link — a retirement must be PRUNED, not merely declared (#378):\n' >&2
+          printf '  %s\n' "$link" >&2
+          left=1
+        done <<PRUNED_EOF
+$(find "$fh" -type l)
+PRUNED_EOF
+        if [ "$left" -eq 0 ]; then ok; else bad_quiet; fi
+      fi
+    fi
   fi
 fi
 

@@ -1791,25 +1791,30 @@ out="${out% }"
 eq "$out" "0 0 1 1 0" "floor compare: 5.3/5.3.15/6.0 clear it; 5.2.21 and 3.2.57 do not"
 
 # --- the ADVISORY files keep their contracts even when the library is broken -------------------------
-# statusline.sh runs under `set -euo pipefail`, so a source that returns non-zero — an unreadable or
-# corrupt common.sh — aborted it before the documented `claude-code` fallback could print, handing
-# the harness a failed statusLine command instead of a harmless cosmetic line. Review found it.
+# An advisory classification IS the claim "this file may never exit non-zero", and the library it
+# sources is the thing most able to break that: an unreadable or corrupt common.sh must not turn a
+# lifecycle hook into a failing one. The original witness was retired out of the tree (#378), so
+# the claim is asserted here on the advisory hook that remains and can still be driven end to end.
 # Fixtures are copies; the live tree is never touched.
-sl_src="agents/claude/scripts/statusline.sh"
-if [ -f "$sl_src" ]; then
-  sl="$work/sl"; mkdir -p "$sl/scripts/lib"
-  cp "$sl_src" "$sl/scripts/statusline.sh"
-  printf 'this is not valid shell ((((\n' > "$sl/scripts/lib/common.sh"
-  out="${ printf '{"model":{"display_name":"x"}}' | "$BASH" "$sl/scripts/statusline.sh" 2>/dev/null; }"; rc=$?
-  eq "$rc" "0" "statusline: a CORRUPT common.sh still exits 0 (errexit must not beat the fallback)"
-  eq "$out" "claude-code" "statusline: and prints the documented fallback line"
+sc_src="agents/claude/scripts/session-currency.sh"
+if [ -f "$sc_src" ]; then
+  sc="$work/sc"; mkdir -p "$sc/scripts/lib"
+  cp "$sc_src" "$sc/scripts/session-currency.sh"
+  printf 'this is not valid shell ((((\n' > "$sc/scripts/lib/common.sh"
+  # A `startup` payload, so the source gate does not return before the broken library has been
+  # reached — without it this would assert nothing about the library at all.
+  sc_ev='{"source":"startup","cwd":"/nonexistent-adb-probe"}'
+  out="${ printf '%s' "$sc_ev" | "$BASH" "$sc/scripts/session-currency.sh" 2>/dev/null; }"; rc=$?
+  eq "$rc" "0" "session-currency: a CORRUPT common.sh still exits 0 (a SessionStart hook may never fail)"
+  # stdout on exit 0 is injected into Claude's CONTEXT, so leaked shell noise is not cosmetic.
+  eq "$out" "" "session-currency: and emits nothing rather than leaking the library's own errors"
 
   # ...and the ordinary path is unaffected, or the assertion above is satisfied by a broken script.
-  rm -rf "$sl/scripts/lib"; mkdir -p "$sl/scripts/lib"
-  cp scripts/lib/common.sh "$sl/scripts/lib/common.sh"
-  out="${ printf '{"model":{"display_name":"opus"}}' | "$BASH" "$sl/scripts/statusline.sh" 2>/dev/null; }"; rc=$?
-  eq "$rc" "0" "statusline: a healthy library still renders"
-  has "$out" "opus" "statusline: and renders the real field, not the fallback"
+  rm -rf "$sc/scripts/lib"; mkdir -p "$sc/scripts/lib"
+  cp scripts/lib/common.sh "$sc/scripts/lib/common.sh"
+  out="${ printf '%s' "$sc_ev" | "$BASH" "$sc/scripts/session-currency.sh" 2>/dev/null; }"; rc=$?
+  eq "$rc" "0" "session-currency: a healthy library still exits 0"
+  eq "$out" "" "session-currency: and stays silent when there is nothing to report"
 fi
 
 # --- the ENTRY-POINT LINT, rule by rule -------------------------------------------------------------
@@ -1870,13 +1875,13 @@ has "$EPOUT" "is not a gate" "entrypoints: the message says why the soft form is
 
 # The classification is bidirectional, which is the half that keeps `advisory` from becoming a dial.
 d="$work/ep-adv-hard"; ep_tree "$d"; mkdir -p "$d/agents/claude/scripts"
-printf '#!/usr/bin/env bash\nset -u\nadb_require_bash "$@"\n' > "$d/agents/claude/scripts/statusline.sh"
+printf '#!/usr/bin/env bash\nset -u\nadb_require_bash "$@"\n' > "$d/agents/claude/scripts/session-currency.sh"
 ep_lint "$d"
 eq "$EPRC" "1" "entrypoints: a declared-ADVISORY file using the hard-failing form is rejected too"
 has "$EPOUT" "classified ADVISORY" "entrypoints: the message names the classification it violated"
 
 d="$work/ep-adv-ok"; ep_tree "$d"; mkdir -p "$d/agents/claude/scripts"
-printf '#!/usr/bin/env bash\nset -u\nadb_require_bash_advisory "$@"\n' > "$d/agents/claude/scripts/statusline.sh"
+printf '#!/usr/bin/env bash\nset -u\nadb_require_bash_advisory "$@"\n' > "$d/agents/claude/scripts/session-currency.sh"
 ep_lint "$d"
 eq "$EPRC" "0" "entrypoints: a declared-ADVISORY file using the advisory form passes"
 has "$EPOUT" "1 advisory" "entrypoints: and is counted as advisory, not as a gate"
@@ -1916,13 +1921,13 @@ eq "$EPRC" "0" "entrypoints: the gate BEFORE the definitions is the compliant sh
 
 # SCANNING A SUBDIRECTORY must classify on the repository-relative path. The classification lists
 # are repo-relative while the scanner yields paths relative to the scanned dir, so `--entrypoints
-# agents/claude` saw `scripts/statusline.sh` and called all three advisory hooks hard gates — a
+# agents/claude` saw `scripts/session-currency.sh` and called every advisory hook a hard gate — a
 # valid tree exiting 1. Asserted against the REAL repo, read-only, because the bug is precisely
 # about this repo's own layout.
 if git rev-parse --show-toplevel >/dev/null 2>&1; then
   EPOUT="$(bash "$LINT" --entrypoints agents/claude 2>&1)"; EPRC=$?
   eq "$EPRC" "0" "entrypoints: scanning a SUBDIRECTORY does not misclassify the advisory hooks"
-  has "$EPOUT" "3 advisory" "entrypoints: and it still sees them as advisory, not as gates"
+  has "$EPOUT" "2 advisory" "entrypoints: and it still sees them as advisory, not as gates"
   EPOUT="$(bash "$LINT" --entrypoints scripts 2>&1)"; EPRC=$?
   eq "$EPRC" "0" "entrypoints: scanning scripts/ keeps the observer exemption"
   has "$EPOUT" "1 exempt" "entrypoints: and still counts it as exempt"

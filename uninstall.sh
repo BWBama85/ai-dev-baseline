@@ -95,6 +95,10 @@ for a in "${AGENTS[@]}"; do
       adapter="$REPO/agents/$a/adapter.sh"
       [ -f "$adapter" ] && { adb_info "$a"; bash "$adapter" uninstall "$REPO" || uninstall_rc=1; } ;;
   esac
+  # A RETIRED destination is no longer in the manifest, so adb_unlink_manifest above cannot see
+  # it — and an uninstall that leaves one of our own dangling symlinks behind has not uninstalled
+  # (#378). Same register and same ownership scoping as install.sh's pass.
+  adb_prune_retired "$a" "$REPO" "$HOME" || uninstall_rc=1
 done
 adb_info ""
 if [ "$uninstall_rc" -ne 0 ]; then

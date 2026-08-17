@@ -5883,3 +5883,44 @@ limit: none of them is sufficient alone.
              at all, so it is a reporter plus a fail-closed scan (2 on a bad range, 3 on a broken
              filter or scanner), and it counts what it declined to judge as `out-of-scope=N`.
 - baseline-issue: n/a — this repo IS the baseline; #374 is the tracking issue.
+
+## D73 — statusline.sh is REMOVED, and a retirement gets a declared, pruned disposal path
+- date:      2026-08-17
+- category:  project-delta
+- unknown:   #378 left acceptance box 1 as an explicit owner decision — WIRE the shipped-but-unwired
+             Claude statusLine (write the `statusLine` key from `install.sh`) or REMOVE it — and,
+             once REMOVE was chosen, the baseline had no model at all for retiring an installed
+             path. `check-install-migration.sh` knows exactly one discharge for a dangling install
+             link, "add a compat shim (#35)", and a deleted payload has nothing to point one at.
+             Two rules, opposite instructions, for one event.
+- decision:  REMOVE, per the owner's comment of 2026-08-15 on #378. The script, its manifest row,
+             its `docs/installation.md` row, its `ADVISORY_ENTRYPOINTS` entry and the guard rule
+             driving it are gone, and the two `check-adopt.sh` fixtures are repointed at a synthetic
+             file. The retirement itself is DECLARED in a register
+             (`adb_agent_manifest_retired`) and disposed of by an ownership-scoped pruner
+             (`adb_prune_retired_manifest`) that `install.sh` and `uninstall.sh` both run.
+             `check-install-migration.sh` reads that register: an UNDECLARED dangle fails exactly as
+             before, with the same compat-shim prescription, and a DECLARED one is accepted only
+             after HEAD's installer is observed removing it and every row of the register is proven
+             true at HEAD.
+- placement: `scripts/lib/common.sh` (the register, the pruner, the wrapper) ·
+             `install.sh` / `uninstall.sh` (the two call sites) ·
+             `scripts/check-install-migration.sh` (the two new obligations) ·
+             `scripts/check-common-lib.sh` (the register and pruner cases) ·
+             `docs/installation.md` ("When a path is retired").
+- reason:    A generic pruner — delete any dangling link into the clone — would have needed no
+             declaration and left zero references, and it is the wrong answer: it discharges a MOVE
+             identically to a RETIREMENT, and the difference is the whole content of #35. A move
+             keeps a payload that something still depends on, so its old path owes a shim; a
+             retirement deletes the payload, so nothing depends on the link and removing it is
+             correct. Only a declaration separates those two, which is why the register is an input
+             `check-install-migration.sh` reads rather than a convenience list — and why #378's
+             "zero references to `statusline.sh` remain anywhere" is met everywhere except the one
+             row that names the retirement, plus its tests and this entry.
+             The pruner is exact-target and refuses to touch a link that still resolves: `adb_link`
+             wrote that exact string, so equality is the tightest ownership proof available, and a
+             link that resolves is still doing something whatever a register says.
+             Uninstall was the second defect the same change fixes: a destination dropped from the
+             manifest is invisible to `adb_unlink_manifest`, so before this an uninstall left one of
+             our own dangling symlinks in the operator's home and still printed "Uninstalled".
+- baseline-issue: n/a — this repo IS the baseline; #378 is the tracking issue.

@@ -7,6 +7,41 @@ installs are symlinks, changes on `main` reach a user's clone on their next
 
 ## [Unreleased]
 
+### Removed
+
+- **`agents/claude/scripts/statusline.sh` is gone, and retiring an installed path now has a
+  disposal path (#378).**
+
+  The script shipped symlinked into every install while nothing ever wrote the `statusLine` key
+  that runs it — it rendered only for operators who reverse-engineered the missing step — and it
+  carried a six-touchpoint maintenance tail for that. The owner's decision (2026-08-15) was to
+  remove it rather than wire it; D73 records why.
+
+  **What existing installs see.** Removing a manifest row does not remove anything from an
+  install that already exists, so a plain `git pull` leaves `~/.claude/scripts/statusline.sh`
+  pointing at a file that is gone. That link is now *declared* retired
+  (`adb_agent_manifest_retired` in `scripts/lib/common.sh`) and swept by `install.sh`,
+  `uninstall.sh`, and therefore by `baseline update`'s self-heal — ownership-scoped, so a real
+  file you put at that path, a link pointing elsewhere, and a link that still resolves are all
+  left alone. Nothing referenced the link, so the gap until the next install is harmless.
+
+  **If you wired it yourself**, your `~/.claude/settings.json` still holds a `statusLine` entry
+  pointing at that path and it will stop rendering — deleting the script is what breaks it, not
+  the prune. Your settings file is yours and nothing here edits it; copy the script out of this
+  repo's history (`git show <pre-removal-sha>:agents/claude/scripts/statusline.sh`) and point the
+  entry at your own copy, or drop the entry.
+
+  **Why declared and not swept generically.** A pruner that deleted any dangling link would
+  discharge a *move* the same way it discharges a *retirement*, and #35 exists precisely to keep
+  those apart: a move's payload still exists somewhere and owes a compat symlink.
+  `check-install-migration.sh` reads the register — an undeclared dangling link fails exactly as
+  before and still asks for a shim, while a declared one is accepted only once HEAD's installer
+  is observed actually removing it.
+
+  Uninstall was quietly broken by the same gap and is fixed here too: a destination dropped from
+  the manifest is invisible to the remove-side consumer, so an uninstall would have left one of
+  its own dangling symlinks behind and still reported success.
+
 ### Added
 
 - **One source can now render a different instruction DENSITY to each agent — and nothing else
