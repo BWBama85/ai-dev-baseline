@@ -5,8 +5,8 @@
 # skill-frontmatter, workflow-render,
 # gate-detector/gates, common-lib, agent-init, cleanup, repo-settings, bash-floor,
 # bash-floor-guard, baseline, session-currency, precommit-gate, implement-gate, install-migration,
-# install-guard, fact-drift, fact-mutation, fact-self-test, practice-index, release-role,
-# release-skill, selfcheck-guard, and an install→uninstall dry-run into a throwaway HOME.
+# install-guard, fact-drift, fact-mutation, fact-self-test, practice-index, release-skill,
+# selfcheck-guard, and an install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 #
@@ -80,7 +80,7 @@ fail=0
 #
 # So while it runs, `agents/claude/CLAUDE.md` and its two siblings can be observed out of step with
 # each other and with the skills trees — by `workflow-map` and `skill-frontmatter` here, and by
-# `fact-drift`, `injection`, `bash-floor`, `roadmap`, `release-role`, `install-guard` and
+# `fact-drift`, `injection`, `bash-floor`, `roadmap`, `release-skill`, `install-guard` and
 # `install-dry-run`, all of which read that tree. Running it alone, first, removes the whole class
 # rather than one instance of it.
 #
@@ -631,10 +631,10 @@ add claims-guard        bash scripts/check-claims-guard.sh
 # Every base/practices/*.md is listed in 00-index.md exactly once (no missing/stale rows).
 add practice-index      bash scripts/check-practice-index.sh
 
-# #3's decision: release execution stays project-owned and no /release skill ships. A NEGATIVE
-# invariant no other check can express — build-drift/workflow-map would happily green-light a
-# newly added base/workflows/release.md.
-add release-role        bash scripts/check-release-role.sh
+# #3's decision — release execution stays project-owned and no /release skill ships — is no longer
+# a step of its own. Since #375 it is a section of `check-fact-drift.sh`: three of its five groups
+# were already that file's `fact` grammar, and the `roll` boundary needed the `fires:` witnesses and
+# the `--mutation` proof only that file can give it. `fact-drift` and `fact-mutation` above run it.
 
 # The other half of #3: the project supplies its OWN release skill, so this repo's copy needs a
 # gate. Offline unit tests for .claude/skills/release/release-lib.sh (version-ok, changelog-verify,

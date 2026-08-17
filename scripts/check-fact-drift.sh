@@ -14,6 +14,12 @@
 # It never forbids incidental wording, so rewording a doc never trips it; only dropping
 # or changing a canonical value does.
 #
+# It also carries ONE invariant that is not a fact at all: the release-role policy (#3/D7), whose
+# absence half asserts that certain PATHS do not exist. It moved here from `check-release-role.sh`
+# with #375 because three of that file's five groups were already this grammar and the fourth — the
+# `roll` boundary — needed the `fires:`/`--mutation` proof only this file can give it. Its own
+# banner is at the bottom, deliberately not scattered through the rules.
+#
 # `stale` is the narrow negative counterpart, used ONLY for a value a fact has retired:
 # presence-checking cannot catch a file that carries the new value AND keeps the old one
 # beside it, which is how a superseded figure survives a repoint (#93). Reach for it when
@@ -82,6 +88,12 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 }
 adb_require_bash "$@"
 set -u
+# The release-role section at the bottom detects a rendered release skill with a GLOB, so pathname
+# expansion must be ON (#375). A caller with `set -f` (noglob) would leave the pattern literal,
+# matching nothing, and the absence check would pass while a real skill sat in the tree — a false
+# GREEN, the one failure mode a policy lint must never have. Force it on rather than trusting the
+# invoking shell.
+set +f
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 # shellcheck source=/dev/null
@@ -1764,6 +1776,149 @@ fact ci-failure-model-binary 'absent:flaky (or|vs\.?) real' \
   'fires:  (`base/practices/ci-discipline.md`). Classify flaky vs real with evidence first.' \
   'fires:  classify flaky vs. real with evidence, fix real failures at the root, and' -- \
   base/practices/ci-discipline.md base/workflows/debug.md docs/philosophy.md
+
+# --- the release-role policy: release stays PROJECT-OWNED (#3/D7, migrated by #375) -------------
+#
+# #3 resolved a DECISION, not a feature: cutting a release stays project-owned, and the baseline
+# ships no `/release` workflow. A decision is only as durable as the thing that re-checks it — and
+# this one is a NEGATIVE invariant ("no such skill exists"), which `build-drift` and `workflow-map`
+# cannot express, because a new workflow rendering correctly is exactly what they are built to allow.
+#
+# It was `scripts/check-release-role.sh` until #375. Three of its five groups were already this
+# file's grammar (`fact <label> <token> -- <files>`, riding this same CI job), and the fourth — the
+# `roll` boundary — was six negative greps that had NEVER been observed firing, on the highest
+# consequence surface in the set: `scripts/lib/` ships to every adopter, so a release call grown
+# inside `cmd_roll` would start publishing on THEIR repos. Moving it here is what gives that group
+# `fires:` witnesses and a standing `--mutation` proof, which is protection it could not have where
+# it was.
+#
+# The retired file's own header argued the other way — "a guard you have to reassemble from two
+# files is harder to find and harder to reverse deliberately". That argument is preserved and
+# answered rather than ignored: the whole policy now lives in ONE section of ONE file, which is
+# strictly fewer places to look than the two it had. What it must not become is a rule scattered
+# through the list above, so it keeps its own banner and its own paragraph here.
+
+# THE ABSENCE HALF is not a `fact` — a `fact` asserts about a file's CONTENT, and there is no
+# content to assert about a file that must not exist. Assert the path itself.
+# `-e` alone is FALSE for a dangling symlink, so a `release` skill symlinked at a broken target
+# would slip through — test for the link too.
+forbid_path() {   # <path> <why>
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    check_note "[no-release-skill] $1 exists — $2"
+    check_note "[no-release-skill] #3 decided release execution stays project-owned. If that is"
+    check_note "[no-release-skill] being reversed, update base/roles.md + docs/roles-and-agents.md"
+    check_note "[no-release-skill] and this lint together — deliberately, not as a side effect."
+    check_fail
+  fi
+}
+forbid_path base/workflows/release.md "the baseline must not ship a generic release workflow"
+# Glob, not a hardcoded `claude codex gemini` — this way a newly added agent tree is covered the day
+# it lands. An unmatched glob stays literal, and neither -e nor -L is true of the literal, so "no
+# agent trees" passes. (`set +f` at the top of this file is what keeps that true for a caller who
+# invoked us with noglob: a literal pattern matching nothing would be a false GREEN, the one failure
+# mode a policy lint must never have.)
+for _rp in agents/*/skills/release; do
+  forbid_path "$_rp" "no agent tree may carry a rendered release skill"
+done
+
+# THE PRESENCE HALF: every surface that carries the decision still carries it. `project-owned` is
+# the decision itself; "no `/release`" is its concrete consequence. A doc that lost either one is a
+# doc that would let a reader assume a release skill exists.
+fact release-is-project-owned 'fixed:project-owned' -- \
+  base/roles.md docs/roles-and-agents.md README.md
+fact ships-no-release-skill 'fixed:no `/release`' -- \
+  base/roles.md docs/roles-and-agents.md README.md
+# The trap the role model must spell out: `[roles].release` is inert until a project skill RESOLVES
+# it. Without this sentence a user sets `release = "codex"` and it is silently ignored.
+fact release-role-must-be-resolved 'fixed:resolve release' -- \
+  base/roles.md docs/roles-and-agents.md
+# The manifest template is where most users meet the role — it must say the token picks an executor
+# and installs nothing.
+fact template-release-note 'fixed:installs no release skill' -- templates/agents.toml
+
+# DISAMBIGUATION: `/new-release` is not `/release`. The name collision is the reported UX bug (#3).
+# Asserted on the SOURCE only — build.sh substitutes only {{TOKEN}} placeholders (none of these
+# tokens contain `{{`) and build-drift rebuilds + diffs every agent tree, so source-token +
+# build-drift already implies rendered-token.
+# NOTE the backticks in the token. A bare `/release` would also match `/releases/latest` in the
+# `gh release view` prose further down that same workflow — so the note could be deleted entirely
+# and the assertion would still pass. The backtick-delimited code span is what the disambiguation
+# actually writes, and it appears nowhere else in the file.
+fact new-release-names-the-other-command 'fixed:`/release`' -- base/workflows/new-release.md
+fact new-release-points-at-the-owned-role 'fixed:project-owned' -- base/workflows/new-release.md
+
+# THE EMIT CONTRACT: "the baseline ships no /release" is only safe because /roadmap lets a repo NAME
+# its own release command and emits that. Losing that half turns the decision into a dead end — and
+# since #188 the emission must also RESOLVE, because an unresolvable slash command does not fail
+# loudly: Claude Code fuzzy-matches the nearest built-in, so a bare `/release` on a repo without one
+# silently opens the CLI's release-notes viewer at the moment the roadmap says "cutting".
+fact roadmap-release-command-override 'fixed:release-command' -- base/workflows/roadmap.md
+fact roadmap-verifies-the-command-resolves 'fixed:RESOLVES' -- base/workflows/roadmap.md
+fact convention-documents-override 'fixed:release-command' -- docs/release-goal-convention.md
+
+# THE ROLLOVER BOUNDARY: `roll` is bookkeeping, never a cutter (#74/D8).
+#
+# #74 moved milestone rollover the OTHER way across the #3 line — out of the project-owned
+# `/release` and into `baseline release roll` — because cutting has four incompatible shapes while
+# rolling has exactly one. That makes `release-convention.sh` the single file in the repo with both
+# a plausible reason and a plausible path to grow into the generic cutter #3 rejected: it already
+# talks to the release milestones, so "while we're here, also tag it" reads like a feature rather
+# than a reversal. The absence half above cannot catch that — a cutter grown INSIDE this helper
+# ships no `release.md` and no skill directory, so every path check stays green.
+#
+# `absent:` OVER CODE, which is the narrow superseded-value use this file's header sanctions rather
+# than a prose blocklist: the boundary is about what the code DOES, and a token grep over prose is
+# the wrong instrument for it. Adding `git tag "$V"` to cmd_roll leaves every doc token intact and
+# every positive rule green — verified, it did.
+#
+# `^[^#]*` IS THE COMMENT GUARD, and it replaces the `sed 's/#.*//'` pre-pass the retired file used.
+# It is the same anchor the wiring rules above use and it means the same thing: the match must be
+# reachable without passing a `#`, so this very file — and release-convention.sh's own header, which
+# says in prose that roll never tags or publishes — cannot trip its own lint. The `(^|[^…])`
+# alternation is what lets a match sit at column 0, where a bare `[^[:alnum:]_-]` prefix would
+# consume the first character and match nothing (the anchor mistake this file has now made twice).
+#
+# SCOPE: this catches accidental GROWTH ("while we're already in the release milestone, also tag
+# it"), which is the realistic failure. It is not an adversarial sandbox — indirection such as
+# `"$GIT" tag` defeats it, and is meant to: someone hiding a cutter behind a variable has already
+# decided to reverse #3, and the decision record governs that, not a grep.
+#
+# THE WITNESSES ARE HYPOTHETICAL, AND SAYING SO IS THE POINT. Everywhere else in this file a
+# `fires:` witness is a verbatim superseded line, because there was one. Here there is not: the
+# boundary has never been crossed, which is exactly why these six patterns went four releases
+# without ever being observed firing. Each witness is therefore the realistic growth line for its
+# own pattern, written in this file's own idiom — enough to prove the pattern can match and that
+# `--mutation` drives it red, and no more. Same honesty as the `-u root` / `--user 0` branches of
+# `wsl-smoke-nonroot-framework` above.
+_roll_lib="scripts/lib/release-convention.sh"
+fact roll-boundary-no-git \
+  'absent:(^|^[^#]*[^[:alnum:]_-])git[[:space:]]+(tag|push)([^[:alnum:]_-]|$)' \
+  'fires:  git tag -a "v$ROLL_VERSION" -m "release $ROLL_VERSION"' \
+  'fires:  git push origin "v$ROLL_VERSION"' -- "$_roll_lib"
+fact roll-boundary-no-gh-release \
+  'absent:(^|^[^#]*[^[:alnum:]_-])gh[[:space:]]+release([^[:alnum:]_-]|$)' \
+  'fires:  gh release create "v$ROLL_VERSION" --notes-file "$notes"' -- "$_roll_lib"
+fact roll-boundary-no-package-publish \
+  'absent:(^|^[^#]*[^[:alnum:]_-])(npm|pnpm|yarn|cargo|poetry)[[:space:]]+(version|publish)([^[:alnum:]_-]|$)' \
+  'fires:  npm version "$ROLL_VERSION" --no-git-tag-version' \
+  'fires:  cargo publish --allow-dirty' -- "$_roll_lib"
+# The REALISTIC growth path is not the `gh release` porcelain — this file already does everything
+# through `gh api`, so a cutter grown here would too. Forbid the REST endpoints that publish a
+# release or create a tag ref, and the changelog surface, independent of which verb reaches them.
+fact roll-boundary-no-releases-endpoint \
+  'absent:^[^#]*/releases([^[:alnum:]_-]|$)' \
+  'fires:  gh api --method POST "repos/$slug/releases" -f tag_name="v$ROLL_VERSION"' -- "$_roll_lib"
+fact roll-boundary-no-tag-ref \
+  'absent:^[^#]*refs/tags' \
+  'fires:  gh api --method POST "repos/$slug/git/refs" -f ref="refs/tags/v$ROLL_VERSION"' -- "$_roll_lib"
+fact roll-boundary-no-changelog \
+  'absent:^[^#]*[Cc][Hh][Aa][Nn][Gg][Ee][Ll][Oo][Gg]' \
+  'fires:  printf %s "$notes" >> CHANGELOG.md' \
+  'fires:  changelog_stamp "$ROLL_VERSION"' -- "$_roll_lib"
+# POSITIVE half: the boundary is still STATED where a reader and an editor will meet it. One token,
+# used verbatim in both files, so the claim cannot drift into two different wordings.
+fact roll-declares-its-boundary 'fixed:milestone bookkeeping only' -- \
+  scripts/lib/release-convention.sh docs/release-goal-convention.md
 
 # --- what was actually evaluated ---------------------------------------------
 # A rule that scans nothing is already a hard failure inside fact(); these totals are the other

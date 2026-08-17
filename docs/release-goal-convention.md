@@ -400,8 +400,8 @@ to learn which milestone to roll (`--release-name` overrides it) and never write
 artifact — `/roadmap` remains its sole writer.
 
 **Boundary.** `roll` is milestone bookkeeping only: no version bump, no changelog, no tag, no
-package, no publish, no deploy. Those are the project-owned half (#3) and
-`scripts/check-release-role.sh` pins the line. Your `/release` should call `roll` as its last
+package, no publish, no deploy. Those are the project-owned half (#3) and the release-role
+section of `scripts/check-fact-drift.sh` pins the line. Your `/release` should call `roll` as its last
 step; running it by hand afterwards is equally valid.
 
 ### Issue filing — new work defaults to `Backlog`

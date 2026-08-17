@@ -1038,11 +1038,11 @@ jobs:
       - name: "...and the witness/mutation guard rails must themselves be observed failing (#213)"
         run: bash scripts/check-fact-drift.sh --self-test
 
-      # Same species as the step above (an allowlisted positive-presence lint over the same doc
-      # set, ~50ms), so it rides this job rather than spending a whole runner + checkout on a
-      # 21st parallel job.
-      - name: Release stays project-owned — no /release skill may ship (#3)
-        run: bash scripts/check-release-role.sh
+      # #3's "release stays project-owned" lint used to be a step of its own here. Since #375 it is
+      # a section of check-fact-drift.sh — three of its five groups were already that file's `fact`
+      # grammar, and its `roll` boundary needed the `fires:` witnesses and the `--mutation` proof
+      # that only that file can give it — so the two steps above now run it. NOT a new job, then or
+      # now: a new job is a new check context branch protection would not require.
 
       # The other half of the same decision: #3 says the PROJECT supplies its own release skill,
       # so this repo's copy (.claude/skills/release/) needs a gate too. Rides this job for the

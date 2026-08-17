@@ -286,7 +286,8 @@ cmd_status() {
 # bookkeeping on primitives THIS FILE ALREADY CREATES in `init`. Leaving it to each project meant
 # every project re-derived it, and getting it wrong strands the loop (see the `met` trap below).
 # The boundary this file must never cross: no version bump, no changelog, no tag, no package, no
-# publish, no deploy. `scripts/check-release-role.sh` pins that.
+# publish, no deploy. The release-role section of `scripts/check-fact-drift.sh` pins that,
+# with `fires:` witnesses and a standing `--mutation` proof since #375.
 
 ROLL_VERSION=""
 ROLL_DRY_RUN=0
