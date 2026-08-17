@@ -1111,11 +1111,26 @@ has "$wf" 'could not list open issues' \
 #     that hard-coded the value behaves identically; only the text distinguishes them;
 #   * PAGE SIZE — the stub answers from one fixture, so a dropped `per_page=100` changes nothing
 #     it can observe, while against a real tracker it truncates a health read;
+#   * DELEGATION — an inlined copy of a shared predicate answers every fixture the stub serves
+#     exactly as the delegated call does, and diverges only on the edges its one home was
+#     hardened for (the ruleset shape, only-prose-declares masking, the authority table), which
+#     no fixture suite carries by construction; only the call text distinguishes them;
 #   * the 2-line check's ORDER (bottom of this file) — both orders exit 1, so there is nothing to
 #     execute. The gauge's order was NOT in this class and was retired: an optional feature that
 #     fails the whole run is very much observable.
 wf_snippet() { check_wf_snippet "$WF" "$1"; }
 readiness_block="${ wf_snippet readiness; }"
+# THE DELEGATION PINS (#115, #293 — the surviving class above). PIN THE INVOCATIONS, NOT THE
+# TOKENS: a bare `health-decl` also matches the comment lines that EXPLAIN it, so deleting the
+# call and keeping the prose stays green. What must be true is that the snippet CALLS each shared
+# predicate — an inline copy passes both suites on every fixture and diverges exactly where the
+# shared home was hardened (a fenced marker arming the opt-out is the #294 shape).
+has "$readiness_block" '| {{REPO_SETTINGS_LIB}} branch-required-contexts' \
+  "the branch classification is DELEGATED — a hand-rolled copy is what falls into the ruleset trap (#115)"
+has "$readiness_block" '| {{ROADMAP_LIB}} health-optout' \
+  "the opt-out marker is read by the shared predicate, never by eye (#115)"
+has "$readiness_block" '{{ROADMAP_LIB}} health-decl "$OPTOUT_RAW" "$ART_PERM"' \
+  "...and the AUTHORITY rule is the shared predicate's too, not a second copy in this snippet (#293)"
 # THIS PINS THE TOKEN, NOT THE JQ TEXT (#183). It used to assert the rendered filter character for
 # character — `.app.slug // "") == "<slug>"` — which pinned FORMATTING, not the value: dropping a
 # space around `==`, writing `// ""` differently, wrapping the line or renaming a jq variable
@@ -2484,8 +2499,9 @@ hasnt "$wf" 'git push'   "the skill never pushes"
 hasnt "$wf" 'gh pr create' "the skill never opens a PR"
 # The autofix must be a runnable step, not a description of one — otherwise "fix what you find"
 # is re-invented by every agent that reads it. Its assertions are EXECUTED, in
-# scripts/check-roadmap-e2e.sh section 7: the limbo selection and its idempotency, #78's carve-out
-# in both modes, the WARN that is not a HOLD and not a retirable question, the missing-backlog
+# scripts/check-roadmap-e2e.sh section 7: the limbo selection (including the `pull_request`
+# exclusion — the issues endpoint returns PRs too) and its idempotency, #78's carve-out in both
+# modes, the WARN that is not a HOLD and not a retirable question, the missing-backlog
 # escalation, the unset-flag defaults, and the fact that no milestone is ever created (#376).
 
 # ============ slug-ok: the path-safe slug predicate, exposed to the prose (#218) ============
