@@ -5827,3 +5827,29 @@ limit: none of them is sufficient alone.
              at top level is an executed entry point, and `common.sh` — the only other file with a
              sourced role — sets no options at all.
 - baseline-issue: n/a — this repo IS the baseline; #342 is the tracking issue.
+
+## D71 — rendered instruction size is a `scripts/` REPORT, and its expected set is derived, not globbed
+- date:      2026-08-16
+- category:  project-delta
+- unknown:   #359 left the home open by name — a `scripts/` helper or a `bin/baseline` subcommand —
+             and asked the implementer to pick and record it. `handling-the-unknown.md` prescribes a
+             home per category; it does not say which of those two a measurement command is.
+- decision:  `scripts/render-size.sh`, registered as a selfcheck step, with
+             `scripts/check-render-size.sh` as its guard. `bin/baseline` is the INSTALLED command —
+             it is symlinked into a user's agent home and its charter is keeping that install
+             current. This measures THIS repo's generated artifacts, which only a developer or CI
+             ever has; shipping it into every adopting project's runtime would be a surface nobody
+             there can use. Two properties are load-bearing beyond placement: the expected artifact
+             set is DERIVED from `base/workflows/` plus the agent table rather than globbed from
+             `agents/`, and the command fails ONLY on mechanics — missing, unreadable or zero-byte.
+- placement: `scripts/render-size.sh` · `scripts/check-render-size.sh` · two `add` lines in
+             `scripts/selfcheck.sh` · the row in this repo's `CLAUDE.md`.
+- reason:    A glob reports what exists, so a skill that failed to render is not a red row, it is no
+             row at all — the silent-guard shape `self-review.md` names, and the reason the
+             derivation is the fail-closed half rather than the file reads. The no-size-failure half
+             is the owner's 2026-08-15 rejection of caps, and it is asserted rather than merely
+             documented: the guard makes an artifact arbitrarily large and requires exit 0, so a
+             ceiling reintroduced later cannot pass as the mechanical arm. `approx_tokens` is
+             `ceil(bytes/4)` and says so in its own output — a stated heuristic beats an unstated
+             one, and #358 needs a same-method before/after delta, not a vendor token count.
+- baseline-issue: n/a — this repo IS the baseline; #359 is the tracking issue.
