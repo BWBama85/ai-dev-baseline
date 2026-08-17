@@ -248,6 +248,7 @@ run_snippet() {
     bad "snippet '$name' not found in base/workflows/roadmap.md (marker removed or renamed?)"
     RC_=90; OUT=""; return 1
   fi
+  printf '%s\n' "$name" >> "$work/ran"   # the executed-name ledger the section-8 set guard audits
   code="${code//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
   code="${code//\{\{REPO_SETTINGS_LIB\}\}/bash \"$ROOT/scripts/lib/repo-settings.sh\"}"
   # {{ACTIONS_APP_SLUG}} is resolved THE WAY build.sh RESOLVES IT — from `adb_actions_app_slug`,
@@ -401,12 +402,17 @@ limbo_issues() {
       n="${spec%%:*}"; ms="${spec#*:}"
       # A `!` suffix on the number labels the issue `release-blocker` — the #78 carve-out is
       # keyed on labels, so a fixture that never emits a `labels` array cannot exercise it.
-      local labels='[]'
+      # A trailing `^` (outermost, so `N!^` combines) makes the entry a PULL REQUEST: the
+      # `issues?state=open` endpoint returns PRs too, and both jq filters in the snippet must
+      # drop them — a fixture without one left `select(has("pull_request") | not)` deletable
+      # with every suite green (#376 review).
+      local labels='[]' prfrag=''
+      case "$n" in *'^') n="${n%^}"; prfrag='"pull_request":{"url":"x"},' ;; esac
       case "$n" in *'!') n="${n%!}"; labels='[{"name":"release-blocker"}]' ;; esac
       if [ "$ms" = "$spec" ]; then
-        printf '{"number":%s,"state":"open","title":"i%s","body":"","labels":%s,"milestone":null}' "$n" "$n" "$labels"
+        printf '{"number":%s,"state":"open","title":"i%s","body":"",%s"labels":%s,"milestone":null}' "$n" "$n" "$prfrag" "$labels"
       else
-        printf '{"number":%s,"state":"open","title":"i%s","body":"","labels":%s,"milestone":{"title":"%s"}}' "$n" "$n" "$labels" "$ms"
+        printf '{"number":%s,"state":"open","title":"i%s","body":"",%s"labels":%s,"milestone":{"title":"%s"}}' "$n" "$n" "$prfrag" "$labels" "$ms"
       fi
     done
     printf ']\n'
@@ -482,7 +488,7 @@ has "$OUT" "NCAND=1 CANDS=9" "a title-matched roadmap is the only candidate — 
 # anyway adopts silently: the gate adds nothing for them, so it must cost nothing either.
 for assoc in OWNER MEMBER COLLABORATOR; do
   fix_default; cand_fx 7 "$assoc"
-  ADB_CAND=7 run_snippet adopt-ownership 'printf "ADOPTED\n"' >/dev/null
+  run_snippet adopt-ownership 'printf "ADOPTED\n"' >/dev/null
   eq "$RC_" 0 "a $assoc-authored candidate passes the ownership gate"
   has "$OUT" "ADOPTED" "...and the run continues into the adopt branch"
   hasnt "$OUT" "adopt-untrusted-author" "...with no escalation raised"
@@ -492,7 +498,7 @@ done
 # being asked a question, and a run that died here would take the rest of the roadmap with it.
 for assoc in NONE CONTRIBUTOR FIRST_TIME_CONTRIBUTOR; do
   fix_default; cand_fx 7 "$assoc"
-  ADB_CAND=7 run_snippet adopt-ownership 'printf "ADOPTED\n"' >/dev/null
+  run_snippet adopt-ownership 'printf "ADOPTED\n"' >/dev/null
   eq "$RC_" 0 "a $assoc-authored candidate does not crash the run"
   has "$OUT" "? adopt-untrusted-author:#7" "...it escalates with the stable id"
   has "$OUT" "$assoc account" "...naming the standing it actually read"
@@ -500,11 +506,22 @@ for assoc in NONE CONTRIBUTOR FIRST_TIME_CONTRIBUTOR; do
   hasnt "$OUT" "ADOPTED" "...and the adopt branch is NOT entered"
 done
 
+# THE CANDIDATE NUMBER IS AN INPUT, NOT A CONSTANT (#376 review). Every case above rides the
+# preamble default (7), so a snippet that hard-coded the number behaved identically — the same
+# fixture-agrees-with-default class the trunk-branch case closes for `main`. 13 is served only by
+# its own fixture: a literal-7 snippet reads the stub's per-number FALLBACK, which carries no
+# author_association, and the gate cannot pass it.
+fix_default; cand_fx 13 OWNER
+ADB_CAND=13 run_snippet adopt-ownership 'printf "ADOPTED\n"' >/dev/null
+eq "$RC_" 0 "a candidate that is NOT the preamble default runs clean"
+has "$OUT" "ADOPTED" "...and passes the gate on its own fixture — the snippet addresses \$CAND, not a literal"
+hasnt "$OUT" "adopt-untrusted-author" "...with no escalation raised"
+
 # A failed read is a hard stop, like every other read in this workflow: `--jq` on an errored
 # response yields an empty association, which would fall through the `case` to the escalation arm
 # and report a candidate as untrusted on the strength of an API failure.
 fix_default; cand_fx 7 OWNER; : > "$FIX/fail-artifact"
-ADB_CAND=7 run_snippet adopt-ownership 'printf "ADOPTED\n"' >/dev/null
+run_snippet adopt-ownership 'printf "ADOPTED\n"' >/dev/null
 no "$RC_" "a failing author-association read hard-stops"
 has "$OUT" "could not read #7's author association" "...failing for THAT read, not for an unrelated error"
 hasnt "$OUT" "ADOPTED" "...and adopts nothing"
@@ -593,8 +610,13 @@ has "$OUT" "TARGETS=0" "a PR that actually closes #5 DOES freeze it"
 # The tail also proves SELF-CONTAINMENT: `$REPO` and `$NPR` exist only because the snippet resolved
 # them from its own reads. The preamble supplies neither, and the run is under `set -u`, so a slug
 # hoisted from an earlier step would abort here rather than silently addressing `repos//…`.
+#
+# LC_ALL=C, because the `hasnt` witness below is bash's OWN warning text and bash localizes it
+# (de_DE prints "nur in einer for-, while- oder until-Schleife sinnvoll") — unpinned, the check
+# passes vacuously on any non-English workstation (#376 review). A temp assignment on a function
+# call does not outlive it, so nothing later inherits the pin.
 fix_default
-ADB_N=44 run_snippet fresh-read 'printf "DROPPED REPO=%s NPR=%s\n" "$REPO" "$NPR"' >/dev/null
+ADB_N=44 LC_ALL=C run_snippet fresh-read 'printf "DROPPED REPO=%s NPR=%s\n" "$REPO" "$NPR"' >/dev/null
 eq "$RC_" 0 "a member that closed since step 4 is dropped without stopping the run"
 has "$OUT" "DROPPED REPO=acme/widget NPR=0" "...and the snippet resolved the slug and the open-PR set itself"
 hasnt "$OUT" "only meaningful in" \
@@ -667,6 +689,11 @@ has "$OUT" "VERDICT=unarmed" "a milestone holding only the artifact is unarmed (
 # the tabulator's status, so the read's failure would arrive as an empty milestone and the run
 # would exit 0 reporting `unarmed`. Naming the diagnostic is what separates that from a hard stop
 # that happened for some unrelated reason (the discipline §4c states for its own injections).
+#
+# The `hasnt … "VERDICT="` lines here and below CO-FIRE with their adjacent `no "$RC_"`: the tail
+# that prints VERDICT= runs only when the snippet failed to stop, which is the same event the
+# exit-status assertion watches. They attribute WHICH promise broke — they are not independent
+# coverage. (#376 review)
 fix_default; : > "$FIX/fail-milestone"
 readiness
 no "$RC_" "a failing milestone read hard-stops instead of reporting an empty release set"
@@ -1038,7 +1065,7 @@ hasnt "$OUT" "cannot resolve repo" "...so an optional feature cannot hard-stop t
 # difference visible.
 fix_default
 printf '{"nameWithOwner":"acme/..","defaultBranchRef":{"name":"main"}}\n' > "$FIX/repo"
-ADB_UNSET=LABEL run_snippet gauge 'printf "SKIPPED\n"' >/dev/null
+ADB_UNSET="LABEL N" run_snippet gauge 'printf "SKIPPED\n"' >/dev/null
 eq "$RC_" 0 "an unconfigured gauge survives a MALFORMED slug too"
 has "$OUT" "SKIPPED" "...and the run continues"
 hasnt "$OUT" "malformed repository slug" "...because the guard sits inside the conditional, not above it"
@@ -1046,14 +1073,14 @@ hasnt "$OUT" "malformed repository slug" "...because the guard sits inside the c
 # THE OTHER DIRECTION, or the two cases above pass for a gauge that resolves nothing at all: with
 # the marker configured, each of those reads IS made and each failure IS a hard stop.
 fix_default; : > "$FIX/fail-repo"
-run_snippet gauge 'printf "REACHED\n"' >/dev/null
+ADB_UNSET=N run_snippet gauge 'printf "REACHED\n"' >/dev/null
 no "$RC_" "a CONFIGURED gauge hard-stops on a failing repo read"
 has "$OUT" "cannot resolve repo" "...naming that read"
 hasnt "$OUT" "REACHED" "...and does not fall through"
 
 fix_default
 printf '{"nameWithOwner":"acme/..","defaultBranchRef":{"name":"main"}}\n' > "$FIX/repo"
-run_snippet gauge 'printf "REACHED\n"' >/dev/null
+ADB_UNSET=N run_snippet gauge 'printf "REACHED\n"' >/dev/null
 no "$RC_" "a CONFIGURED gauge refuses a malformed slug (it interpolates into a path AND a query)"
 has "$OUT" "malformed repository slug" "...naming the guard that refused"
 hasnt "$OUT" "REACHED" "...and does not fall through"
@@ -1096,12 +1123,13 @@ eq "${ printf 'Depends on #78 only.' | bash "$RL" deps-from-body | tr '\n' ' ' |
 
 # --- 7a. every unmilestoned open issue is repaired, one line each ---------------------------
 fix_default
-limbo_issues 5 12:Backlog 44 31
+limbo_issues 5 12:Backlog 44 31 61^
 ADB_ROADMAP_NUM=31 run_snippet autofix-unmilestoned >/dev/null
 eq "$RC_" 0 "the autofix snippet runs clean"
 has "$OUT" "fixed: #5 → milestone Backlog (was unmilestoned)"  "an unmilestoned issue is repaired, not reported"
 has "$OUT" "fixed: #44 → milestone Backlog (was unmilestoned)" "...every one of them"
 hasnt "$OUT" "#12" "an issue already in a milestone is untouched"
+hasnt "$OUT" "#61" "an open PR is untouched too — the issues endpoint returns PRs, and the sweep must never milestone one"
 hasnt "$OUT" "fixed: #31" "the roadmap artifact is never moved into the backlog"
 eq "$(grep -c 'issue edit' "$FIX/calls" 2>/dev/null || echo 0)" 2 "exactly two tracker writes, one per repaired issue"
 
@@ -1111,12 +1139,14 @@ eq "$(grep -c 'issue edit' "$FIX/calls" 2>/dev/null || echo 0)" 2 "exactly two t
 # have passed every executed test. This drives it end to end: the labeled issue must produce NO
 # tracker write, while an unlabeled sibling in the same run is still repaired.
 fix_default
-limbo_issues 5 '44!' 31
+limbo_issues 5 '44!' 31 '61!^'
 ADB_ROADMAP_NUM=31 ADB_RELEASE_MODE=1 run_snippet autofix-unmilestoned >/dev/null
 eq "$RC_" 0 "the autofix snippet runs clean with a stray blocker present"
 has "$OUT" "WARN: #44 is an open release-blocker in NO milestone" \
   "an unmilestoned release-blocker is surfaced, not buried in Backlog"
 hasnt "$OUT" "fixed: #44" "...and is NOT swept"
+hasnt "$OUT" "#61" \
+  "a release-blocker-labelled open PR is neither swept nor warned about (the STRAY filter drops PRs too)"
 # It WARNS, it does not gate — nothing feeds this line to the readiness predicate, so wording it as
 # a HOLD would claim a gate that is not wired.
 hasnt "$OUT" "HOLD:" "...and does not call it a HOLD, which would promise a gate nothing implements"
@@ -1233,6 +1263,7 @@ rc_snip() {   # <CMD> <user-root> [subdirs] [prefix] [extra-key] [probe] [cwd] -
   # variable in the caller it never knew about. `${ command; }` runs in the CURRENT shell.
   local body
   body="${ snippet release-command; }"
+  printf 'release-command\n' >> "$work/ran"   # rc_snip is this snippet's only executor
   body="${body//\{\{SKILLS_SUBDIRS\}\}/${3-no-project-skills}}"
   body="${body//\{\{SKILL_REGISTRY_PROBE\}\}/${6-}}"
   body="${body//\{\{ROADMAP_LIB\}\}/bash \"$RL\"}"
@@ -1662,13 +1693,24 @@ eq "$FIRST" "20 102 112" "...and closes the chain it selected"
 # by nothing and executed by nothing, for as long as it took someone to count the markers by hand.
 # Both sides pass through the SAME sort, so this compares sets rather than orderings — a name
 # added to the list in the wrong position must not fail for a reason that is not the point. A new
-# marker fails this line until a case exercises it; a renamed one fails it from the other side.
+# marker fails these guards until a case EXECUTES it: the declared list must match the documented
+# markers, and the names run_snippet/rc_snip actually ran must match the declared list, so a name
+# parked in EXECUTED with zero cases is caught too (#376 review). A renamed marker fails from the
+# other side.
 EXECUTED=(locate-artifact adopt-scan adopt-ownership fresh-read readiness gauge
           autofix-unmilestoned release-command compose-candidates)
-mapfile -t DOCUMENTED < <(grep -oE '# ADB-SNIPPET: [a-z-]+' "$WF" | sed 's/.*: //' | LC_ALL=C sort -u)
+# The listing anchor is BYTE-IDENTICAL to check_wf_snippet's (check-lib.sh, the one home for the
+# marker contract): the extractor accepts ANY name running to end of line, so a narrower listing
+# grammar — the `[a-z-]+` this replaced — is how a documented `2fa-gate` stayed invisible and a
+# `gauge2` truncated into `gauge` and deduped away (#376 review; #390 lifts the listing itself
+# into that home).
+mapfile -t DOCUMENTED < <(sed -n 's/^[[:space:]]*# ADB-SNIPPET: //p' "$WF" | LC_ALL=C sort -u)
 mapfile -t EXEC_SORTED < <(printf '%s\n' "${EXECUTED[@]}" | LC_ALL=C sort -u)
 eq "${DOCUMENTED[*]}" "${EXEC_SORTED[*]}" \
   "every '# ADB-SNIPPET' marker in roadmap.md is executed by this harness, and no more"
+mapfile -t RAN < <(LC_ALL=C sort -u "$work/ran" 2>/dev/null)
+eq "${EXEC_SORTED[*]}" "${RAN[*]}" \
+  "every name EXECUTED declares was actually RUN by a case above (a declaration with zero cases cannot pass)"
 
 # Every snippet this file claims to execute must still exist. Without this, renaming a marker
 # would make run_snippet quietly find nothing and the suite would go green on zero coverage.
