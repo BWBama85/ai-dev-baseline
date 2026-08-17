@@ -80,7 +80,10 @@ while [ "$i" -lt "${#args[@]}" ]; do
   a="${args[$i]}"
   case "$a" in
     --jq)        i=$((i+1)); jqexpr="${args[$i]:-}" ;;
-    -f)          i=$((i+1)); v="${args[$i]:-}"; case "$v" in q=*) qval="${v#q=}" ;; esac ;;
+    # Every spelling gh accepts for a raw string field, not just the one the snippets use today
+    # (#376 review): a `-f q=` rewritten to `--raw-field q=` must not silently route the search
+    # arm to the wrong fixture. The arm itself refuses a query this parse did not capture.
+    -f|-F|--raw-field) i=$((i+1)); v="${args[$i]:-}"; case "$v" in q=*) qval="${v#q=}" ;; esac ;;
     --body-file) i=$((i+1)); bodyfile="${args[$i]:-}" ;;
     repos/*|search/*) [ -z "$url" ] && url="$a" ;;
   esac
@@ -90,6 +93,18 @@ done
 emit() {  # emit <file> — print the fixture, applying --jq when one was given
   [ -f "$1" ] || { printf '[]\n'; return 0; }
   if [ -n "$jqexpr" ]; then jq -r "$jqexpr" < "$1"; else cat "$1"; fi
+}
+
+# default_branch — the branch this repo declares, from $F/repo's defaultBranchRef: the ONE source
+# (#376 review — a second `default-branch` fixture duplicated it, already disagreeing in the
+# newline case, and its `|| echo main` fell OPEN into the very assumption the branch-addressed
+# arms exist to police). A missing/unreadable repo fixture is a harness defect, not a scenario:
+# fail CLOSED, distinct from both the 90 "unhandled" and a simulated gh failure. Callers must
+# `db="$(default_branch)" || exit` — the exit here only leaves the substitution's subshell.
+default_branch() {
+  jq -re '.defaultBranchRef.name // empty' "$F/repo" 2>/dev/null && return 0
+  echo "gh stub: cannot derive the default branch from \$ADB_FIX/repo" >&2
+  exit 91
 }
 
 case "$sub" in
@@ -105,11 +120,15 @@ case "$sub" in
     case "$url" in
       search/issues)
         fail_if search
-        # The gauge scopes by milestone; the completeness cross-check does not. Answer each from
-        # its own fixture so a snippet that drops the milestone qualifier is visible as a wrong count.
+        # Two search reads are documented (#376 review): fresh-read's completeness cross-check
+        # (unscoped) and the label gauge (label:-qualified). Answer each from its own fixture, so
+        # a gauge that lost its label scoping reads the unscoped count and fails as a wrong
+        # number. A query the parse did not capture is refused loudly rather than routed to a
+        # default — that is how a rewritten flag spelling would silently pick a fixture.
+        [ -n "$qval" ] || { echo "gh stub: search/issues read with no captured q= — teach the argv parse its spelling" >&2; exit 90; }
         case "$qval" in
-          *milestone:*) emit "$F/search-milestone.json" ;;
-          *)            emit "$F/search-total.json" ;;
+          *label:*) emit "$F/search-label.json" ;;
+          *)        emit "$F/search-total.json" ;;
         esac ;;
       */labels/*)
         lbl="${url##*/labels/}"
@@ -117,17 +136,26 @@ case "$sub" in
         printf '{"name":"%s"}\n' "$lbl" ;;
       # --- #78 branch health: three distinct reads, each independently failable ---------------
       # Ordered before the bare `repos/OWNER/REPO` arm below, which would otherwise swallow them.
+      # SHA-ANCHORED, like the snippet that calls it (#376 review): health is only meaningful
+      # about the commit the status read resolved, so this arm answers for THAT sha and no other
+      # ref. Real GitHub also accepts a BRANCH name here, so before this guard a snippet
+      # rewritten to branch-addressed `commits/$DEFAULT_BRANCH/check-runs` — reopening the
+      # stale-evidence race the anchoring prevents — passed every case.
       */check-runs*)
         fail_if checkruns
+        ref="${url#*/commits/}"; ref="${ref%%/check-runs*}"
+        sha="$(jq -r '.sha // empty' "$F/commit-status.json" 2>/dev/null)" || sha=""
+        { [ -n "$sha" ] && [ "$ref" = "$sha" ]; } || { echo "gh: Not Found (no commit '$ref')" >&2; exit 1; }
         emit "$F/check-runs.json" ;;
       # The BRANCH-ADDRESSED reads answer only for the branch this repo actually declares as its
       # default (#376). Without that, a snippet that hard-coded `main` behaved identically to one
       # that resolved `defaultBranchRef` live, because the fixture's default IS `main` — so the
       # rule "never assume main" was unexecutable and only a token pin could watch it.
+      # The ref is stripped of any query string the same way in both arms.
       */commits/*/status*)
         fail_if commitstatus
-        ref="${url#*/commits/}"; ref="${ref%%/status*}"
-        db="$(cat "$F/default-branch" 2>/dev/null || echo main)"
+        ref="${url#*/commits/}"; ref="${ref%%/status*}"; ref="${ref%%\?*}"
+        db="$(default_branch)" || exit
         [ "$ref" = "$db" ] || { echo "gh: Not Found (no branch '$ref')" >&2; exit 1; }
         emit "$F/commit-status.json" ;;
       */actions/workflows*)
@@ -137,8 +165,8 @@ case "$sub" in
       # the bare `repos/OWNER/REPO` arms below, which would otherwise swallow it.
       */branches/*)
         fail_if branch
-        b="${url##*/branches/}"
-        db="$(cat "$F/default-branch" 2>/dev/null || echo main)"
+        b="${url##*/branches/}"; b="${b%%\?*}"
+        db="$(default_branch)" || exit
         [ "$b" = "$db" ] || { echo "gh: Not Found (no branch '$b')" >&2; exit 1; }
         emit "$F/branch.json" ;;
       # #115: the artifact author's REPOSITORY PERMISSION, which authorizes the health opt-out. An
@@ -264,15 +292,17 @@ run_snippet() {
 # --- fixture writers -------------------------------------------------------------------------
 # Every scenario starts from fix_default, so no case inherits another's edits.
 fix_default() {
-  rm -f "$FIX"/fail-* "$FIX/calls"
+  # Per-number issue fixtures are reset too (#376 review): a leaked issue-7.json outlives its
+  # case, permanently shadows the stub's documented per-number fallback, and falsifies the
+  # sentence above. artifact_fx rewrites #31 below.
+  rm -f "$FIX"/fail-* "$FIX/calls" "$FIX"/issue-*.json
   printf '{"nameWithOwner":"acme/widget","defaultBranchRef":{"name":"main"}}\n' > "$FIX/repo"
-  printf 'main\n'                        > "$FIX/default-branch"
   printf '31\n'                          > "$FIX/roadmap-nums"
   printf 'release-blocker\nroadmap\n'    > "$FIX/labels.txt"
   printf '[]\n'                          > "$FIX/open-prs.json"
   open_issues 5 12 31
   printf '{"total_count":3}\n'           > "$FIX/search-total.json"
-  printf '{"total_count":1}\n'           > "$FIX/search-milestone.json"
+  printf '{"total_count":1}\n'           > "$FIX/search-label.json"
   printf '[]\n'                          > "$FIX/milestone-issues.json"
   printf '[{"number":8,"title":"Backlog"},{"number":9,"title":"Next release"}]\n' > "$FIX/milestones.json"
   # The roadmap ARTIFACT as the readiness snippet reads it (#115): a body with NO `release-health`
@@ -690,7 +720,6 @@ hasnt "$OUT" "VERDICT=" "...so no verdict is derived from a re-partitioned read"
 # all rather than a token pin on `defaultBranchRef`.
 fix_default; ms_drained; health_green
 printf '{"nameWithOwner":"acme/widget","defaultBranchRef":{"name":"trunk"}}\n' > "$FIX/repo"
-printf 'trunk\n' > "$FIX/default-branch"
 readiness
 eq "$RC_" 0 "a repo whose default branch is not 'main' reads clean"
 has "$OUT" "HEALTH=green" "...because health is read on the branch the REMOTE declares"
@@ -964,15 +993,17 @@ has "$OUT" "could not read roadmap artifact" "...failing for THAT read, not for 
 # ============================================================================================
 # 5. DESTINATION GAUGE (acceptance §8)
 # ============================================================================================
-# The gauge is repo-wide outside release-readiness mode, so its `q` carries no `milestone:`
-# qualifier and the stub answers it from the unscoped fixture. Asserting the COUNT, not merely a
-# clean exit, is what makes the label probe below a gate rather than decoration.
+# The gauge's `q` is label:-qualified, so the stub answers it from its own fixture
+# (search-label.json) while the unscoped completeness cross-check reads search-total.json (#376
+# review). Asserting the COUNT, not merely a clean exit, is what makes the label probe below a
+# gate rather than decoration — and the two fixtures carry different counts, so a gauge that lost
+# its label scoping entirely reads the unscoped number and fails as a wrong count.
 #
 # `N` is UNSET for every case here, and that is load-bearing: the preamble's `N` is step 5's
 # selected bundle member, the gauge's `N` is its own count, and they collide by name. Left set, a
 # gauge that counted nothing still prints the member number and reads as a count.
 fix_default
-printf '{"total_count":2}\n' > "$FIX/search-total.json"
+printf '{"total_count":2}\n' > "$FIX/search-label.json"
 ADB_UNSET=N run_snippet gauge 'printf "N=%s\n" "${N:-unset}"' >/dev/null
 eq "$RC_" 0 "the gauge snippet runs clean"
 has "$OUT" "N=2" "...and counts the open issues carrying the label"
@@ -1678,5 +1709,27 @@ allsnips="${allsnips//\{\{REPO_SETTINGS_LIB\}\}/}"
 allsnips="${allsnips//\{\{ACTIONS_APP_SLUG\}\}/}"
 hasnt "$allsnips" '{{' \
   "no executed snippet carries a placeholder outside the mapped vocabulary"
+
+# THE STUB'S REF GUARDS, observed failing (#376 review). No documented snippet addresses a branch
+# or commit the fixtures do not declare, so only a direct probe can watch these arms refuse — and
+# an unobserved refusal is a guard whose failure mode is silence. Each probe drives the real stub
+# through PATH exactly as a snippet reaches it.
+fix_default
+OUT="$(PATH="$SBIN:$PATH" ADB_FIX="$FIX" gh api repos/acme/widget/commits/nonexistent/status 2>&1)"; RC_=$?
+no "$RC_" "the stub refuses a status read for a branch the repo fixture does not declare"
+has "$OUT" "no branch 'nonexistent'" "...and the refusal names the branch"
+OUT="$(PATH="$SBIN:$PATH" ADB_FIX="$FIX" gh api repos/acme/widget/branches/nonexistent 2>&1)"; RC_=$?
+no "$RC_" "the stub refuses a branch-protection read for an undeclared branch too"
+has "$OUT" "no branch 'nonexistent'" "...with the same refusal"
+OUT="$(PATH="$SBIN:$PATH" ADB_FIX="$FIX" gh api repos/acme/widget/commits/deadbeef/check-runs 2>&1)"; RC_=$?
+no "$RC_" "the stub refuses a check-runs read for a sha the status fixture did not resolve"
+has "$OUT" "no commit 'deadbeef'" "...naming the sha"
+# ...and the shared branch deriver fails CLOSED: a missing repo fixture is a harness defect and
+# must never quietly become `main` — that fail-open is the assumption the arms exist to police.
+rm -f "$FIX/repo"
+OUT="$(PATH="$SBIN:$PATH" ADB_FIX="$FIX" gh api repos/acme/widget/branches/main 2>&1)"; RC_=$?
+eq "$RC_" 91 "asked to derive the default branch with no repo fixture, the stub refuses distinctly (91)"
+has "$OUT" "cannot derive the default branch" "...and says which fixture is broken"
+fix_default
 
 check_summary "roadmap-e2e"
