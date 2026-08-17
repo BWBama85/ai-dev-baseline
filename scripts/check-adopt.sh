@@ -892,8 +892,8 @@ fi
 # unverifiable afterwards: the mutations were ad-hoc shell run once by hand, so nothing in the
 # repository could reproduce them and no later edit could be caught weakening a guard back into
 # silence. Review flagged it, correctly, as a claim the diff does not support. This is the same
-# move `check-fact-drift.sh --mutation` and `check-fact-guard.sh` already make: turn "I checked
-# once" into a standing test.
+# move `check-fact-drift.sh --mutation` and `check-fact-drift.sh --self-test` already make: turn
+# "I checked once" into a standing test.
 #
 # Each row names the defect and the ASSERTION that must catch it. A mutation that goes red for the
 # WRONG reason is not evidence, so the witness is matched against the failure text — that is the

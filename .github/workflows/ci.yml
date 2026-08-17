@@ -1036,7 +1036,7 @@ jobs:
         run: bash scripts/check-fact-drift.sh --mutation
 
       - name: "...and the witness/mutation guard rails must themselves be observed failing (#213)"
-        run: bash scripts/check-fact-guard.sh
+        run: bash scripts/check-fact-drift.sh --self-test
 
       # Same species as the step above (an allowlisted positive-presence lint over the same doc
       # set, ~50ms), so it rides this job rather than spending a whole runner + checkout on a

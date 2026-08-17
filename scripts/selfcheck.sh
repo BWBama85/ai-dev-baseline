@@ -5,7 +5,7 @@
 # skill-frontmatter, workflow-render,
 # gate-detector/gates, common-lib, agent-init, cleanup, repo-settings, bash-floor,
 # bash-floor-guard, baseline, session-currency, precommit-gate, implement-gate, install-migration,
-# install-guard, fact-drift, fact-mutation, fact-guard, practice-index, release-role,
+# install-guard, fact-drift, fact-mutation, fact-self-test, practice-index, release-role,
 # release-skill, selfcheck-guard, and an install→uninstall dry-run into a throwaway HOME.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
@@ -606,8 +606,9 @@ add fact-mutation       bash scripts/check-fact-drift.sh --mutation
 # ...and the guard rails above are themselves guards, so they get the same treatment (#213): the
 # witness contract and the mutation harness are each driven against deliberately broken rules in a
 # tree copy and must be seen going red. Carries the direct regression test for #173's defect — the
-# exact `absent:\[bot\]\$` pattern that could not match either real idiom.
-add fact-guard          bash scripts/check-fact-guard.sh
+# exact `absent:\[bot\]\$` pattern that could not match either real idiom. A MODE of the lint since
+# #377, not a separate file: it used the same copy-and-mutate scaffold `--mutation` already carries.
+add fact-self-test      bash scripts/check-fact-drift.sh --self-test
 
 # The OFFLINE half of the claim lint (#212): every D<N> an added line cites resolves to a heading in
 # the decision log, and every added decision date is within a day of the commit that introduced it.
