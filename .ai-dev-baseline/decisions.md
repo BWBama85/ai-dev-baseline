@@ -5853,3 +5853,33 @@ limit: none of them is sufficient alone.
              `ceil(bytes/4)` and says so in its own output — a stated heuristic beats an unstated
              one, and #358 needs a same-method before/after delta, not a vendor token count.
 - baseline-issue: n/a — this repo IS the baseline; #359 is the tracking issue.
+
+## D72 — the claim lint keeps the `#N` rule on shipped prose; the D-number and date rules are DROPPED
+- date:      2026-08-17
+- category:  project-delta
+- unknown:   #374 left acceptance box 1 as an explicit owner decision: DROP the `D<N>`-resolution and
+             decision-date rules, or MIGRATE them into `check-fact-drift.sh`'s grammar. Nothing in
+             the baseline decides between retiring a rule and re-homing it, and the two answers cost
+             ~600 and ~150 lines respectively — a difference too large to settle by an implementer's
+             taste.
+- decision:  DROP, per the owner's comment of 2026-08-15 on #374. The `#N` rule stays and is scoped
+             to the shipped-prose roots — `base/workflows/`, `base/practices/`, `templates/` — with
+             its guard cases and its CI-only `--live` half intact. The guard suite narrows to the
+             surviving rules and folds into `check-claims.sh --self-test`, following #377.
+- placement: `scripts/check-claims.sh` (the rule, the scope, the `--self-test` mode) ·
+             `scripts/selfcheck.sh`'s `claims` and `claims-self-test` steps · the `fact-drift` job's
+             three claim steps in `.github/workflows/ci.yml` · the row in this repo's `CLAUDE.md`.
+- reason:    The two dropped rules read `.ai-dev-baseline/decisions.md` and `CHANGELOG.md`.
+             `install.sh` ships neither and no `base/workflows/*.md` reads either, so they protected
+             one maintainer from a D-number mix-up — documentation hygiene, not a loop invariant, and
+             `issues-and-scope.md` returns *nothing breaks* on the second question. The `#N` rule is
+             the opposite and that asymmetry IS the split: workflow and practice prose renders into
+             all three agents' root docs and skills and symlinks into every adopter's tree, and
+             `templates/agents.toml` is copied into an adopting project — PR #210 shipped a citation
+             to an issue that did not exist and it rendered into all three. The path scope follows
+             from the same argument rather than being a separate trim: a citation in a script comment
+             or a decision record misinforms one reader of one repo. What the narrowing costs is
+             stated in the code rather than hidden: an offline run can no longer report a violation
+             at all, so it is a reporter plus a fail-closed scan (2 on a bad range, 3 on a broken
+             filter or scanner), and it counts what it declined to judge as `out-of-scope=N`.
+- baseline-issue: n/a — this repo IS the baseline; #374 is the tracking issue.

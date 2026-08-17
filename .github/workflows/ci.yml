@@ -1001,7 +1001,7 @@ jobs:
       # steps: a new job is a new check context that branch protection would not require, which is
       # exactly the drift `repo-settings.sh required-drift` exists to flag.
       - name: The claim lint must be observed going RED on every rule it owns (#212)
-        run: bash scripts/check-claims-guard.sh
+        run: bash scripts/check-claims.sh --self-test
 
       # Both range-taking steps are PULL-REQUEST ONLY, and that is a correctness bound rather than
       # thrift. The obvious push-event fallback, `github.event.before`, is forty zeros on the first
@@ -1010,7 +1010,12 @@ jobs:
       # clean PASS. Every change here reaches the default branch through a pull request anyway, so
       # the gate loses no coverage; `base.sha...head.sha` is three-dot, i.e. the merge base, so it
       # sees exactly the lines this PR adds.
-      - name: A claim added to a tracked file must resolve — decisions and dates (#212)
+      # NOT a duplicate of the live step below: this arm is what fails closed on an unresolvable
+      # range or a broken filter/scanner (2 and 3), which the live step would otherwise inherit
+      # without ever naming. Since #374 it can no longer report a violation of its own — every one
+      # of those needs the network — so it is a reporter and a fail-closed scan, and the live step
+      # is the verdict.
+      - name: The claim scan must resolve its range and its filter — fail closed (#212)
         if: github.event_name == 'pull_request'
         run: bash scripts/check-claims.sh --range "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}"
 

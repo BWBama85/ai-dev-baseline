@@ -610,23 +610,27 @@ add fact-mutation       bash scripts/check-fact-drift.sh --mutation
 # #377, not a separate file: it used the same copy-and-mutate scaffold `--mutation` already carries.
 add fact-self-test      bash scripts/check-fact-drift.sh --self-test
 
-# The OFFLINE half of the claim lint (#212): every D<N> an added line cites resolves to a heading in
-# the decision log, and every added decision date is within a day of the commit that introduced it.
+# The OFFLINE half of the claim lint (#212, narrowed by #374). Since the `D<N>` and decision-date
+# rules were dropped (D72), every VIOLATION the lint can report needs the network — so what this
+# step contributes is the other two answers, and both are the ones that would otherwise turn the
+# CI-only half into a silent no-op: it FAILS CLOSED on an unresolvable range (2) or a broken
+# markdown filter / added-line scanner (3), and it REPORTS how many references it collected and
+# left unverified, plus how many changed files fell outside the shipped-prose scope.
 #
 # The issue/PR-reference half is NOT run here, and that is deliberate rather than an omission. It
 # needs the network, and D13 keeps selfcheck hermetic precisely so a local green is a DETERMINISTIC
 # predictor of CI — a step whose verdict depends on network, auth and externally-mutable issue state
 # would break that promise for every other step too. It rides CI instead, exactly as the one other
-# live assertion (`repo-settings.sh required-drift`) does. The check SAYS which half it skipped and
-# how many references went unverified, so the gap is visible rather than silent.
+# live assertion (`repo-settings.sh required-drift`) does.
 add claims              bash scripts/check-claims.sh
 
 # ...and the lint above is a guard, so it gets the treatment guards get here (D22): every rule is
 # driven to RED against fixtures in a throwaway repo with a stubbed gh, asserting the DESIGNATED
-# exit code and diagnostic rather than "some non-zero". This suite has already earned its place
-# twice — it caught a markdown stripper that made one rule structurally unable to fire, and an
-# unresolvable --range that silently turned the whole check into a no-op reporting PASS.
-add claims-guard        bash scripts/check-claims-guard.sh
+# exit code and diagnostic rather than "some non-zero". This has already earned its place twice —
+# it caught a markdown stripper that made one rule structurally unable to fire, and an unresolvable
+# --range that silently turned the whole check into a no-op reporting PASS. A MODE of the lint since
+# #374, following the fact-drift fold (#377) rather than inventing a second shape.
+add claims-self-test    bash scripts/check-claims.sh --self-test
 
 # Every base/practices/*.md is listed in 00-index.md exactly once (no missing/stale rows).
 add practice-index      bash scripts/check-practice-index.sh
@@ -805,7 +809,7 @@ banner() { printf '\n=== %s ===\n' "$1"; }
 # Run one step and return its status. Stdin is /dev/null in BOTH modes, deliberately: no check
 # reads it, and inheriting selfcheck's own open stdin is what once turned an accidental command
 # substitution inside a test label into a ten-minute hang instead of an instant failure
-# (scripts/check-claims-guard.sh, the note above its digit-boundary case).
+# (scripts/check-claims.sh --self-test, the note above its digit-boundary case).
 run_step() {
   local name="$1" rc=0
   # shellcheck disable=SC2086  # deliberate word-split of a value `add` validated at registration

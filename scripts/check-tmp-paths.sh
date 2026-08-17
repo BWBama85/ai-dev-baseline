@@ -107,7 +107,7 @@ trap 'rm -rf "$work"' EXIT
 # the only ways out are both worse than this one: exempting the whole file (an exemption that then
 # hides a real regression introduced here later) or marking each fixture line (which cannot be done
 # at all inside a `for … in 'a' \` continuation, and which would make the marker fixture
-# self-exempting besides — the same trap `check-claims-guard.sh` records for `adb-claim-ok`).
+# self-exempting besides — the same trap `check-claims.sh --self-test` records for `adb-claim-ok`).
 # Composing them at runtime keeps the source clean, keeps the scanner honest about its own file,
 # and still hands the fixtures the real bytes.
 TMP_LIT='/tmp'

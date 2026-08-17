@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# ai-dev-baseline — claim lint (issue #212).
+# ai-dev-baseline — claim lint (issue #212, narrowed by #374).
 #
-# A VERIFIABLE ASSERTION written into a tracked file, with no gate between writing it and
-# committing it. That is one class, and the #173 run (PR #210) shipped four of them, three wrong:
-# a `#206` citation that tracked something else, a `#207` citation for an issue that DID NOT EXIST
-# (rendered into all three agents' skills), "(recorded as D17)" for a decision that is D18, and a
-# CHANGELOG sentence describing an edit that had not been made. Two pre-existing citations pointed
-# at issue #150, closed NOT_PLANNED — abandoned work reading as delivered.  adb-claim-ok: that
-# citation is deliberately historical, and the marker must sit on the SAME line as the reference
-# because the exemption is per-line. This is the escape's first real use, on the very example the
-# lint exists for.
+# ONE RULE: an issue/PR number cited by an added line of SHIPPED PROSE must resolve, and must be
+# the kind of entity it is cited as. The #173 run (PR #210) shipped a `#207` citation for an issue
+# that DID NOT EXIST, and it rendered into all three agents' skills; two pre-existing citations
+# pointed at issue #150, closed NOT_PLANNED — abandoned work reading as delivered.  adb-claim-ok:
+# that citation is deliberately historical, and the marker must sit on the SAME line as the
+# reference because the exemption is per-line. This is the escape's first real use, on the very
+# example the lint exists for.
 #
 # base/practices/verify-before-asserting.md already forbids exactly this for PR/issue STATUS, and
 # D16 is the precedent for why it is a gate rather than another paragraph: the prose version failed
@@ -17,21 +15,37 @@
 # call plus a `grep` is all "find a supporting quote" means for an identifier — so it can be a lint
 # instead of an instruction.
 #
-# SCOPED TO THE ADDED LINES OF A RANGE, never the whole tree. That is not an optimization, it is
-# what makes the check adoptable. Measured on `origin/main` at the time this landed, the tree
-# carried 2450 numeric references over 157 distinct numbers, of which 11 cite issues legitimately
-# closed NOT_PLANNED and 39 are not issues at all (pull-request numbers, plus deliberate fixtures
-# for 0 and 999999999). The figures are a dated baseline, not a live property of the checkout —
-# they drift the moment anyone writes a reference, and quoting them as current would be the same
-# stale-claim defect this file exists to catch. A whole-tree run would be red forever on history
-# nobody is asserting anything about today.
+# WHAT #374 REMOVED, and why it is a removal rather than a move. This file also carried a
+# `D<N>`-resolution rule and a decision-date rule. Both read `.ai-dev-baseline/decisions.md` and
+# `CHANGELOG.md`; `install.sh` ships neither, and no `base/workflows/*.md` reads either — they
+# protected one maintainer from a D-number mix-up, which is documentation hygiene rather than a loop
+# invariant. The owner decided on 2026-08-15 to DROP them rather than migrate them into
+# `check-fact-drift.sh`'s grammar (D72). The `#N` rule stays because it has a shipped artifact
+# behind it: workflow and practice prose renders into all three agents' root docs and skills and
+# symlinks into every adopter's tree, and `templates/agents.toml` is copied into an adopting repo.
+#
+# SCOPED TO THE ADDED LINES OF A RANGE, and within that to the SHIPPED-PROSE roots — never the
+# whole tree. The range scoping is what makes the check adoptable: measured on `origin/main` at the
+# time this landed, the tree carried 2450 numeric references over 157 distinct numbers, of which 11
+# cite issues legitimately closed NOT_PLANNED and 39 are not issues at all. (Those figures are a
+# dated baseline, not a live property of the checkout — they drift the moment anyone writes a
+# reference, and quoting them as current would be the same stale-claim defect this file exists to
+# catch.) The PATH scoping is what keeps the rule pointed at the artifact that justifies it; a
+# citation in a script comment or a decision record misinforms one reader of one repo, while a
+# citation in shipped prose is rendered, installed and read by every adopter. The run REPORTS how
+# many changed files it skipped for being out of scope, so the narrowing is visible in the log
+# rather than looking like a range with nothing in it.
 #
 # Usage:
 #   bash scripts/check-claims.sh [--range <base>..<head>] [--live]
+#   bash scripts/check-claims.sh --self-test
 #
-#   --range   what to scan. Default: origin/<default>...HEAD (three-dot: from the merge base, i.e.
-#             this branch's own added lines). Two-dot is accepted and passed through unchanged.
-#   --live    ALSO run the issue/PR-reference check, which needs gh and the network.
+#   --range      what to scan. Default: origin/<default>...HEAD (three-dot: from the merge base,
+#                i.e. this branch's own added lines). Two-dot is accepted and passed through.
+#   --live       ALSO run the issue/PR-reference check, which needs gh and the network.
+#   --self-test  drive every rule this file owns to RED against fixtures in a throwaway git repo
+#                with a stubbed gh. Takes no other argument. It was `check-claims-guard.sh` until
+#                #374, folded here the way #377 folded the fact-drift guard.
 #
 # Exit codes:
 #   0  no claim violations
@@ -41,6 +55,13 @@
 #      requested and gh/jq is unavailable, or the shared markdown filter failed on a .md file.
 #      Both are "I could not tell", which is never the same answer as "nothing is wrong" — a
 #      filter that returns nothing looks exactly like a file with no claims in it.
+#
+# WHAT AN OFFLINE RUN CAN AND CANNOT RETURN, stated plainly because the answer changed with #374.
+# Every VIOLATION this file can report now needs the network, so without `--live` it exits 1 for
+# nothing — it is a reporter (how many references it collected and left unverified) plus a
+# fail-closed scan (2 on a bad range, 3 on a broken filter or scanner). That is exactly why
+# `selfcheck` still runs it: those two are the shapes that would otherwise turn the CI-only half
+# into a silent no-op. `--self-test` is what proves both can still go red.
 #
 # KNOWN LIMIT OF THE REFERENCE GRAMMAR: a six-digit CSS colour is shaped exactly like an issue
 # number, so a value such as #123456 in a stylesheet would be looked up.  adb-claim-ok: that is a
@@ -75,8 +96,8 @@
 # prompt of base/workflows/implement-issue.md, which is where #212's own follow-up comment puts
 # judgement-heavy claim validation. A controlled opt-in syntax is tracked separately.
 #
-# Regression-tested by scripts/check-claims-guard.sh, which drives every rule to RED against
-# fixtures in a throwaway git repo with a stubbed gh. The working tree is never mutated.
+# Regression-tested by `--self-test` below, which drives every rule to RED against fixtures in a
+# throwaway git repo with a stubbed gh. The working tree is never mutated.
 
 # bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
 #
@@ -102,6 +123,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
+ROOT="$(pwd)"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 check_init "check-claims"
@@ -121,6 +143,7 @@ command -v adb_md_prose >/dev/null 2>&1 \
 
 RANGE=""
 LIVE=0
+SELFTEST=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --range)
@@ -128,10 +151,674 @@ while [ "$#" -gt 0 ]; do
       RANGE="$2"; shift 2 ;;
     --range=*) RANGE="${1#--range=}"; shift ;;
     --live)    LIVE=1; shift ;;
+    # EXCLUSIVE, and rejected here rather than quietly ignored. `--self-test --live` reads like a
+    # request for a live self-test; there is no such thing (every case drives a stub), and silently
+    # dropping the flag would be a mode doing something other than what it was asked for.
+    --self-test)
+      [ "$#" -eq 1 ] || { echo "check-claims: --self-test takes no other argument" >&2; exit 2; }
+      SELFTEST=1; shift ;;
     -h|--help) adb_usage "$0"; exit 0 ;;
     *) echo "check-claims: unknown option '$1'" >&2; exit 2 ;;
   esac
 done
+if [ "$SELFTEST" -eq 1 ] && { [ -n "$RANGE" ] || [ "$LIVE" -eq 1 ]; }; then
+  echo "check-claims: --self-test takes no other argument" >&2; exit 2
+fi
+
+# ================================ --self-test ===================================================
+#
+# A GUARD'S FAILURE MODE IS SILENCE. Ordinary code that breaks throws; a guard that breaks PASSES —
+# it scans zero files, matches zero lines, and prints exactly what a clean run prints. So every rule
+# below is driven to RED here against an input it is supposed to reject, and the assertion is on the
+# DESIGNATED exit code and diagnostic, never on "some non-zero" (a crash also exits non-zero, and
+# would otherwise be indistinguishable from a working rule).
+#
+# That is not hypothetical for this file's own subject. While it was being written, its markdown
+# stripper removed inline code spans before the path-claim rule looked for backticked paths, so that
+# rule was structurally incapable of firing. It reported `path-claims=0` on a commit carrying nine of
+# them and no assertion anywhere went red.
+#
+# It was `scripts/check-claims-guard.sh` (950 lines) until #374, and folding it here follows #377's
+# fact-drift fold rather than inventing a second shape: one preamble, one bash-floor gate, one
+# `cd`, and a mode word. The cases that tested the `D<N>` and decision-date rules are GONE with
+# those rules; what remains is the `#N` rule, the shared scan machinery it rests on, and the new
+# path scope.
+#
+# Fixtures live in a throwaway git repo under mktemp, never in the working tree. Editing a tracked
+# file to test a check that reads tracked files is how ~40 minutes of uncommitted work was destroyed
+# once already (base/practices/self-review.md).
+if [ "$SELFTEST" -eq 1 ]; then
+  check_init "check-claims --self-test"
+  st_work="$(mktemp -d)" || { echo "check-claims --self-test: cannot create a temp dir" >&2; exit 1; }
+  ST_JOB="$st_work/ci-job"
+  check_exit_guard "check-claims --self-test" "rm -rf \"$st_work\""
+
+  # A throwaway repo that LOOKS like a baseline checkout: this script resolves its own root with
+  # `cd "$(dirname "$0")/.."` and sources scripts/check-lib.sh + scripts/lib/common.sh from there,
+  # so the fixture needs that shape rather than a bare directory. And the SHIPPED-PROSE roots have
+  # to exist in it, because since #374 a fixture written anywhere else is out of scope by design.
+  REPO="$st_work/repo"
+  mkdir -p "$REPO/scripts/lib" "$REPO/base/workflows" "$REPO/base/practices" "$REPO/templates"
+  cp "$ROOT/scripts/check-claims.sh" "$REPO/scripts/"
+  cp "$ROOT/scripts/check-lib.sh"    "$REPO/scripts/"
+  cp "$ROOT/scripts/lib/common.sh"   "$REPO/scripts/lib/"
+
+  # The throwaway repo + its `origin` URL come from check-lib.sh — the same scaffold the PR suites
+  # build. The remote is load-bearing: every read is anchored to the checkout's git origin, so the
+  # slug must agree with what the gh stub answers for.
+  check_make_stub_repo "$REPO" https://github.com/acme/widget.git || {
+    echo "check-claims --self-test: FATAL — could not build the fixture repo" >&2; exit 1; }
+
+  # A TRACKED seed in EVERY in-scope root, committed at BASE. Git prunes a directory that becomes
+  # empty when it removes the last tracked file in it, so `reset_branch` between cases would
+  # otherwise delete `base/practices/` and `templates/` the first time a case wrote and dropped a
+  # fixture there — and the NEXT case's `printf > …` would fail with "No such file or directory",
+  # leaving that case asserting against an empty range instead of the input it names. Observed
+  # exactly that before this line existed.
+  printf 'seed\n'   > "$REPO/README.md"
+  printf 'seed\n'   > "$REPO/base/workflows/seed.md"
+  printf 'seed\n'   > "$REPO/base/practices/seed.md"
+  printf '# seed\n' > "$REPO/templates/seed.toml"
+  git -C "$REPO" add -A
+  git -C "$REPO" commit -qm base
+  BASE="$(git -C "$REPO" rev-parse HEAD)"
+
+  # A recording gh stub. It answers `gh issue view <n> --repo <slug> --json …` from a table, so every
+  # entity SHAPE the live rule must distinguish is reproducible offline:
+  #   4242 -> unresolvable        150 -> issue CLOSED/NOT_PLANNED
+  #   7,21 -> issue OPEN          210 -> PULL REQUEST (the shared number space; 21 is a
+  #                                     deliberate PREFIX of 210, for the hint-boundary test)
+  #   9    -> issue CLOSED/COMPLETED
+  BIN="$st_work/bin"; mkdir -p "$BIN"
+  check_write_stub "$BIN/gh" <<'STUB'
+#!/usr/bin/env bash
+# `auth status` must succeed or adb_require_gh refuses before any read happens.
+[ "${1:-}" = "auth" ] && exit 0
+# The repository IS reachable. adb_gh_entity asks this to tell "no such issue" apart from "the
+# network is gone", so a stub that failed here would make every absent number look unreadable.
+if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then echo '{"name":"widget"}'; exit 0; fi
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+  n="$3"
+  printf '%s\n' "$*" >> "$GH_CALLS"
+  case "$n" in
+    7)    echo '{"state":"OPEN","stateReason":"","url":"https://github.com/acme/widget/issues/7"}' ;;
+    21)   echo '{"state":"OPEN","stateReason":"","url":"https://github.com/acme/widget/issues/21"}' ;;
+    9)    echo '{"state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/acme/widget/issues/9"}' ;;
+    150)  echo '{"state":"CLOSED","stateReason":"NOT_PLANNED","url":"https://github.com/acme/widget/issues/150"}' ;;
+    210)  echo '{"state":"MERGED","stateReason":"","url":"https://github.com/acme/widget/pull/210"}' ;;
+    *)    echo 'GraphQL: Could not resolve to an issue or pull request with the number of '"$n"'. (repository.issue)' >&2
+          exit 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+STUB
+
+  GH_CALLS="$st_work/gh-calls"; export GH_CALLS
+
+  reset_branch() { git -C "$REPO" checkout -q -B probe "$BASE"; }
+
+  # An UNAUTHENTICATED gh, for the fail-closed path. Emptying PATH would not test what it looks like
+  # it tests: adb_require_gh reacts to a missing gh by prepending /opt/homebrew/bin, so on a
+  # developer machine the real, authenticated gh would be found and the assertion would silently
+  # pass for the wrong reason. An `auth status` that fails is both immune to that and the likelier
+  # real condition.
+  NOAUTH="$st_work/noauth"; mkdir -p "$NOAUTH"
+  check_write_stub "$NOAUTH/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "auth" ] && exit 1     # not logged in
+exit 1
+STUB
+
+  # A gh that authenticates but whose READS all fail — a transport failure mid-run. The distinction
+  # matters: collapsing it into "this issue does not exist" would make a network blip accuse a real
+  # issue of being fabricated, which is a wrong claim produced by the tool built to stop wrong claims.
+  GONE="$st_work/gone"; mkdir -p "$GONE"
+  check_write_stub "$GONE/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "auth" ] && exit 0
+exit 1
+STUB
+
+  # A gh that authenticates, whose REPOSITORY read succeeds, and whose ENTITY read fails for a
+  # query-specific reason (insufficient issue permissions, a transient GraphQL error, an unsupported
+  # field). Repository reachability proves connectivity and nothing more, so this must NOT be read as
+  # "the number does not exist".
+  DENIED="$st_work/denied"; mkdir -p "$DENIED"
+  check_write_stub "$DENIED/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "auth" ] && exit 0
+if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then echo '{"name":"widget"}'; exit 0; fi
+echo 'error: Resource not accessible by integration' >&2
+exit 1
+STUB
+
+  # cc <args…> — run the lint inside the fixture repo, capturing stdout+stderr and the real status.
+  cc()        { OUT="$(cd "$REPO" && PATH="$BIN:$PATH"    bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
+  cc_noauth() { OUT="$(cd "$REPO" && PATH="$NOAUTH:$PATH" bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
+  cc_gone()   { OUT="$(cd "$REPO" && PATH="$GONE:$PATH"   bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
+  cc_denied() { OUT="$(cd "$REPO" && PATH="$DENIED:$PATH" bash scripts/check-claims.sh "$@" 2>&1)"; RC_=$?; }
+
+  commit() { git -C "$REPO" add -A; git -C "$REPO" commit -qm "$1"; }
+
+  # ------------------------------ usage / dispatch -----------------------------
+  cc --help;          yes "$RC_" "--help exits 0";      has "$OUT" "claim lint" "--help prints the header"
+  cc --bogus;         eq  "$RC_" 2 "unknown option exits 2"
+  cc --range;         eq  "$RC_" 2 "--range without a value exits 2"
+  cc --range HEAD;    eq  "$RC_" 2 "a range with no .. exits 2"
+  cc --range "deadbeefdeadbeef..HEAD"; eq "$RC_" 2 "an unresolvable BASE revision exits 2"
+  cc --self-test --live;              eq "$RC_" 2 "--self-test with another flag exits 2"
+  cc --live --self-test;              eq "$RC_" 2 "...in either order"
+
+  # THE REFERENCE TOKENS ARE BUILT, NEVER WRITTEN LITERALLY. These numbers are meaningful in THIS
+  # repository too (150 really is closed NOT_PLANNED here, 210 really is a pull request), so a
+  # literal fixture would be a claim about them. #374's path scope now also puts this file out of
+  # the rule's reach — but the split stays, because a scope is a decision that can be widened and
+  # this hazard would come back silently if it were. Split so no digit follows the `#`.
+  REF_GONE="#""4242"
+  REF_NP="#""150"
+  REF_PR="#""210"
+  REF_OPEN="#""7"
+  REF_DONE="#""9"
+  REF_ZERO="#""0"
+  REF_PREFIX="#""21"      # a genuine prefix of REF_PR (210)
+  D_MISSING="D""99"       # for the DROPPED decision rule, below
+
+  # ------------------- the path scope, which is what #374 added ----------------
+  # A citation in a file OUTSIDE the shipped-prose roots is not scanned, and the run SAYS how many
+  # changed files it dropped for that reason — the narrowing must be visible in the log, or it is
+  # indistinguishable from a range that had nothing in it.
+  : > "$GH_CALLS"
+  reset_branch
+  printf 'Tracked in %s, which does not exist.\n' "$REF_GONE" > "$REPO/notes.md"
+  printf '# Tracked in %s, which does not exist.\n' "$REF_GONE" > "$REPO/scripts/thing.sh"
+  commit "a dangling citation OUTSIDE the shipped-prose roots"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 0 "scope: a citation outside base/workflows, base/practices and templates is not scanned"
+  has "$OUT" "out-of-scope=2" "scope: ...and the skipped files are COUNTED, so the narrowing is visible"
+  eq "$(grep -c 'issue view' "$GH_CALLS" | tr -d ' ')" 0 "scope: ...so nothing out of scope reaches the network"
+
+  # ...and the SAME citation inside each shipped root IS caught. Three roots, three cases: a scope
+  # is a list, and a list is where an entry goes missing without anything noticing.
+  for root in base/workflows base/practices templates; do
+    : > "$GH_CALLS"
+    reset_branch
+    printf 'Tracked in %s, which does not exist.\n' "$REF_GONE" > "$REPO/$root/notes.md"
+    commit "a dangling citation in $root"
+    cc --range "$BASE..probe" --live
+    eq "$RC_" 1 "scope: the same citation in $root/ IS scanned"
+    has "$OUT" "$root/notes.md:1" "scope: ...and blamed at file:line"
+    rm -f "$REPO/$root/notes.md"
+  done
+  reset_branch
+
+  # ------------------- the rules #374 DELIBERATELY REMOVED ---------------------
+  # The owner decided on 2026-08-15 to DROP the `D<N>`-resolution and decision-date rules rather
+  # than migrate them (D72). Asserted rather than merely deleted: a dangling D-reference in shipped
+  # prose is now a PASS, so re-adding either rule is a deliberate act with a test to change, not a
+  # silent restoration. The token is assembled from halves for the same reason as the ones above.
+  reset_branch
+  printf 'This paragraph cites %s, which has no heading anywhere.\n' "$D_MISSING" \
+    > "$REPO/base/practices/notes.md"
+  commit "a dangling decision reference"
+  cc --range "$BASE..probe"
+  eq "$RC_" 0 "dropped: a dangling D-reference is no longer a violation (owner decision, D72)"
+  hasnt "$OUT" "d-refs=" "dropped: ...and the decision counter is gone from the report"
+  hasnt "$OUT" "dates=" "dropped: ...as is the decision-date counter"
+  rm -f "$REPO/base/practices/notes.md"
+
+  # ------------------------ C1 — live issue/PR references ----------------------
+  : > "$GH_CALLS"
+  reset_branch
+  printf 'Tracked in %s, which does not exist.\n' "$REF_GONE" > "$REPO/base/workflows/notes.md"
+  commit "nonexistent reference"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "C1: a reference that does not resolve exits 1"
+  has "$OUT" "$REF_GONE does not resolve" "C1: the diagnostic names the dangling number"
+  has "$OUT" "acme/widget" "C1: the diagnostic names the repo the read was pinned to"
+
+  : > "$GH_CALLS"
+  reset_branch
+  printf 'Superseded by %s, which tracks this work.\n' "$REF_NP" > "$REPO/base/workflows/notes.md"
+  commit "not-planned reference"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "C1: a NOT_PLANNED reference exits 1"
+  has "$OUT" "closed NOT_PLANNED" "C1: the diagnostic says the issue tracks nothing"
+  has "$OUT" "adb-claim-ok" "C1: the diagnostic names the escape, so the remedy is discoverable"
+
+  : > "$GH_CALLS"
+  reset_branch
+  printf 'See issue %s for the rationale.\n' "$REF_PR" > "$REPO/base/workflows/notes.md"
+  commit "kind mismatch"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "C1: an issue-cited number resolving to a PULL REQUEST exits 1"
+  has "$OUT" "resolves to a pull request" "C1: the kind mismatch is named"
+  has "$OUT" "base/workflows/notes.md:1" "C1: the kind mismatch names the offending SITE"
+
+  # BLAME IS PER SITE. A number cited correctly on one line and incorrectly on another must flag only
+  # the incorrect line. The first draft aggregated every site of a mismatched number, so a correctly
+  # written `PR #<n>` was accused of a neighbour's error — observed on this file's own header.
+  : > "$GH_CALLS"
+  reset_branch
+  {
+    printf 'Landed in PR %s, which is correct.\n' "$REF_PR"
+    printf 'But see issue %s, which is not.\n'    "$REF_PR"
+  } > "$REPO/base/workflows/notes.md"
+  commit "one number, one good site and one bad"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "C1: a per-site mismatch still exits 1"
+  has  "$OUT" "base/workflows/notes.md:2" "C1: blame lands on the INCORRECT line"
+  hasnt "$OUT" "base/workflows/notes.md:1" "C1: the correctly-written line is NOT accused"
+
+  # A bare number that resolves to a PR is fine — PRs are legitimate references.
+  : > "$GH_CALLS"
+  reset_branch
+  printf 'Landed in %s and tracked by %s, and %s is done.\n' "$REF_PR" "$REF_OPEN" "$REF_DONE" \
+    > "$REPO/base/workflows/notes.md"
+  commit "legitimate references"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 0 "C1: bare PR, open issue and COMPLETED issue references all pass"
+  has "$OUT" "live-lookups=3" "C1: three distinct numbers cost exactly three lookups"
+
+  # Deduplication: the same number many times is ONE network call.
+  : > "$GH_CALLS"
+  reset_branch
+  printf '%s and %s and %s again, plus %s once more.\n' "$REF_OPEN" "$REF_OPEN" "$REF_OPEN" "$REF_OPEN" \
+    > "$REPO/base/workflows/notes.md"
+  commit "repeated reference"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 0 "C1: repeated references pass"
+  has "$OUT" "live-lookups=1" "C1: four occurrences of one number cost ONE lookup (dedup)"
+  eq "$(grep -c 'issue view' "$GH_CALLS" | tr -d ' ')" 1 "C1: the stub recorded exactly one read"
+
+  # ------------------------------- C1 precision --------------------------------
+  : > "$GH_CALLS"
+  reset_branch
+  {
+    printf 'A fenced block declares nothing:\n\n'
+    printf '```\n'
+    printf 'Tracked in %s.\n' "$REF_GONE"
+    printf '```\n\n'
+    printf 'Nor does `%s` in a code span.\n' "$REF_GONE"
+    printf 'A cross-repo reference acme/other%s belongs to a different number space.\n' "$REF_GONE"
+    printf 'Neither %s nor SC1091 is an entity reference.\n' "$REF_ZERO"
+  } > "$REPO/base/workflows/notes.md"
+  commit "precision corpus"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 0 "C1: fences, code spans, cross-repo forms and #0 are all excluded"
+  eq "$(grep -c 'issue view' "$GH_CALLS" | tr -d ' ')" 0 "C1: nothing in the precision corpus reached the network"
+
+  # A TRANSPORT FAILURE IS NOT A MISSING ISSUE. Same fixture, same number, different gh: the entity
+  # read fails AND the repository read fails, so the honest answer is "unreadable" (3), never a
+  # violation claiming the reference is fabricated.
+  : > "$GH_CALLS"
+  reset_branch
+  printf 'Tracked in %s.\n' "$REF_OPEN" > "$REPO/base/workflows/notes.md"
+  commit "transport failure"
+  cc_gone --range "$BASE..probe" --live
+  eq "$RC_" 3 "C1: a transport failure exits 3 (unreadable), NOT 1 (does not resolve)"
+  hasnt "$OUT" "does not resolve" "C1: a transport failure is never reported as a fabricated number"
+
+  # ------------------------------- fail closed ---------------------------------
+  reset_branch
+  printf 'Tracked in %s.\n' "$REF_OPEN" > "$REPO/base/workflows/notes.md"
+  commit "live without gh"
+  cc_noauth --range "$BASE..probe" --live
+  eq "$RC_" 3 "--live with an unauthenticated gh exits 3 (fail closed), NOT 0"
+  has "$OUT" "This is NOT a pass" "the fail-closed message refuses to be read as a pass"
+
+  # ...while the OFFLINE run over the same tree is a legitimate pass that SAYS what it skipped.
+  cc_noauth --range "$BASE..probe"
+  eq "$RC_" 0 "the offline run passes"
+  has "$OUT" "did NOT run" "offline: the unrun half is stated, never silently skipped"
+  has "$OUT" "refs=1/1" "offline: the count of unverified references is reported"
+
+  # --------------------------- the scan is non-empty ---------------------------
+  # A correctly written checker wired to an EMPTY range scans nothing and prints a clean PASS. That
+  # is the silent-guard shape, so a normal invocation must be shown to have looked at real lines.
+  reset_branch
+  printf 'Plain prose with no citations.\n' > "$REPO/base/workflows/notes.md"
+  commit "non-empty scan"
+  cc --range "$BASE..probe"
+  eq "$RC_" 0 "a clean range passes"
+  hasnt "$OUT" "added-lines=0" "a normal run scans a NON-ZERO number of added lines"
+  has "$OUT" "files=1" "the file count is reported"
+
+  # An empty range is reported as empty rather than looking like a clean scan.
+  cc --range "$BASE..$BASE"
+  eq "$RC_" 0 "an empty range exits 0"
+  has "$OUT" "added-lines=0" "an empty range REPORTS zero rather than hiding it"
+
+  # ----------------------- the audited escape ----------------------------------
+  reset_branch
+  printf 'Tracked in %s deliberately. adb-claim-ok: a number that does not resolve.\n' "$REF_GONE" \
+    > "$REPO/base/workflows/notes.md"
+  commit "exempt line"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 0 "escape: a line carrying the marker is exempt"
+  has "$OUT" "exempt=1" "escape: the exemption is COUNTED, so a waiver is visible in the log"
+
+  # A bare mention of the token waived every rule on the line, so a typo — or prose ABOUT the escape
+  # — silently disabled checks it was never meant to touch. D24 states the contract; this enforces it.
+  reset_branch
+  printf 'Tracked in %s. adb-claim-ok\n' "$REF_GONE" > "$REPO/base/workflows/notes.md"
+  commit "escape without a reason"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "escape: a bare marker with no reason does NOT waive the rule"
+
+  # ------------------------ a non-ASCII filename must be SCANNED ---------------
+  # git quotes a non-ASCII path by default while the diff yields raw bytes, so the membership test
+  # failed and the file was skipped WITHOUT a word — a file the lint never looked at, reported clean.
+  reset_branch
+  rm -f "$REPO/base/workflows/notes.md"
+  # A REAL non-ASCII name. An earlier version wrote "na\xc3\xafve.md" inside double quotes, which
+  # bash does not interpret — the file was named with literal backslashes and the test exercised
+  # nothing.
+  printf 'Tracked in %s from a non-ASCII filename.\n' "$REF_GONE" > "$REPO/base/workflows/naïve.md"
+  commit "non-ascii filename"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "path: a non-ASCII filename is SCANNED, not silently skipped"
+  hasnt "$OUT" "files=0" "path: the non-ASCII file is counted as scanned"
+  rm -f "$REPO/base/workflows/naïve.md"
+
+  # ---------------------- a pure rename re-litigates nothing -------------------
+  # --no-renames turned a move into a whole-file addition, so every historical line in the moved file
+  # was re-checked as new — contradicting the promise never to re-litigate history.
+  reset_branch
+  printf 'Tracked in %s and has always been.\n' "$REF_GONE" > "$REPO/base/workflows/old-name.md"
+  commit "pre-existing bad ref"
+  RENBASE="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" mv base/workflows/old-name.md base/workflows/new-name.md
+  commit "pure rename"
+  cc --range "$RENBASE..probe" --live
+  eq "$RC_" 0 "rename: a pure rename adds no lines, so old references are not re-litigated"
+  reset_branch
+
+  # --------------------------- markdown stripping edges ------------------------
+  # A greedy HTML-comment strip deleted the prose BETWEEN two comments — hiding a real citation, the
+  # dangerous direction. And a 4-space-indented fence is an indented code block, not a fence:
+  # toggling on it hid every following line of the file.
+  reset_branch
+  {
+    printf 'Intro.\n\n'
+    printf '<!-- a --> this cites %s <!-- b -->\n' "$REF_GONE"
+  } > "$REPO/base/workflows/notes.md"
+  commit "two comments on one line"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "md: prose BETWEEN two HTML comments is still scanned (non-greedy strip)"
+
+  reset_branch
+  {
+    printf 'Intro.\n\n'
+    printf '    ```\n'
+    printf '\n'
+    printf 'This cites %s in ordinary prose after an INDENTED code block.\n' "$REF_GONE"
+  } > "$REPO/base/workflows/notes.md"
+  commit "indented fence"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "md: a 4-space-indented fence does not toggle fence state and hide the rest"
+
+  # --------------------- the MULTI-LINE HTML comment (#251) --------------------
+  # THE DEFECT #251 FILED. `cc_prose` was `sed`, and `sed` is line-based, so it could strip a comment
+  # that opened and closed on ONE line and nothing else. A `#N` quoted inside a MULTI-LINE comment
+  # was therefore scanned as a live citation, and `--live` would resolve it and fail CI on text that
+  # is not a claim at all.
+  #
+  # NOT THEORETICAL: this repo writes exactly that shape. base/workflows/roadmap.md carries a
+  # multi-line schema comment quoting the dependency vocabulary by example, and it was latent only
+  # because the numbers it happens to quote all resolve.
+  #
+  # The OPENER AND CLOSER ARE IN THE BASE COMMIT and only the middle line is ADDED, which is the
+  # fixture that actually pins the fix: the scan sees an added line whose containing block was opened
+  # by a line it never looks at, so it can only be right if the WHOLE file is fed to the
+  # paragraph-aware filter and the added-line set applied afterwards. A fixture that added the whole
+  # comment at once would pass under a naive per-added-line filter too, and prove nothing.
+  reset_branch
+  {
+    printf 'Intro.\n\n'
+    printf '<!-- schema notes\n'
+    printf '     PLACEHOLDER\n'
+    printf '     -->\n\n'
+    printf 'Ordinary prose.\n'
+  } > "$REPO/base/workflows/notes.md"
+  commit "a multi-line comment whose body is not yet a citation"
+  MLBASE="$(git -C "$REPO" rev-parse HEAD)"
+  sed "s/PLACEHOLDER/it may cite $REF_GONE as example vocabulary/" "$REPO/base/workflows/notes.md" \
+    > "$REPO/base/workflows/notes.md.new"
+  mv "$REPO/base/workflows/notes.md.new" "$REPO/base/workflows/notes.md"
+  commit "quote a dangling number INSIDE the multi-line comment"
+  : > "$GH_CALLS"
+  cc --range "$MLBASE..probe" --live
+  eq "$RC_" 0 "md: a #N inside a MULTI-LINE HTML comment is NOT a citation"
+  has "$OUT" "refs=0/0" "md: ...it is not even collected as a reference"
+  eq "$(grep -c 'issue view' "$GH_CALLS" | tr -d ' ')" 0 "md: ...so --live makes no entity read at all"
+
+  # ...and the inverse, so the fix is a STRIP and not a blanket "stop scanning after a `<!--`":
+  # a real dangling reference AFTER the closer is still caught, at the right file:line.
+  reset_branch
+  {
+    printf 'Intro.\n\n'
+    printf '<!-- schema notes\n'
+    printf '     spanning two lines\n'
+    printf '     -->\n\n'
+    printf 'This cites %s in ordinary prose after the comment.\n' "$REF_GONE"
+  } > "$REPO/base/workflows/notes.md"
+  commit "a dangling reference AFTER a multi-line comment"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "md: a real citation AFTER the closer is still caught"
+  has "$OUT" "base/workflows/notes.md:7" "md: ...at the correct line, so the filter did not renumber the file"
+
+  # ---------------------- RAW vs PROSE stay two views (#251) -------------------
+  # check-claims deliberately keeps TWO views of every added line: the RULES read prose (a number
+  # quoted in a code span is not a citation), while the EXEMPTION reads the RAW line (the marker is
+  # normally a trailing comment, which in markdown may well sit inside a span). A single shared
+  # stripper is how a rule was once silently disabled here — it deleted exactly the tokens that rule
+  # searched for, reported zero on a commit carrying nine, and no assertion went red.
+  #
+  # ONE LINE carries both halves — a dangling citation OUTSIDE any span, and a valid `adb-claim-ok:`
+  # marker INSIDE one. Only the two-view reading is green: collapse them and the marker vanishes with
+  # the span, the exemption never fires, and the dangling number is a violation.
+  reset_branch
+  printf 'Tracked in %s and shows the escape as `adb-claim-ok: a quoted example`.\n' \
+    "$REF_GONE" > "$REPO/base/workflows/notes.md"
+  commit "the escape marker inside a code span, beside a real dangling reference"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 0 "views: the exemption is read from the RAW line, so a marker inside a span still waives"
+  has "$OUT" "exempt=1" "views: ...and the line is reported as exempt, not merely unscanned"
+
+  # The mirror image: with no marker anywhere, the SAME line is a violation — so the case above is
+  # passing because of the exemption, not because the prose view happened to drop the reference.
+  reset_branch
+  printf 'Tracked in %s and shows the escape as `a quoted example`.\n' \
+    "$REF_GONE" > "$REPO/base/workflows/notes.md"
+  commit "the same line WITHOUT the marker"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "views: ...while the same line with no marker IS a violation"
+
+  # --------------------- the filter is NOT optional (#251) ---------------------
+  # Since the conversion the `.md` rules have no structure model of their own. A common.sh that
+  # PREDATES the filter loads perfectly well and simply has no `adb_md_prose` in it.
+  #
+  # WHAT THE PROBE IS AND IS NOT WORTH, measured rather than asserted: removing it does NOT open a
+  # raw-markdown scan — the missing function makes the filter pipeline exit 127, so the run still
+  # fails closed, at 3. What the probe buys is WHERE and WHEN: exit 2 before a single file is read,
+  # naming a stale library, instead of exit 3 partway through blaming "the filter failed on
+  # notes.md". This fixture therefore pins the CODE, and it was witnessed going red (2 -> 3) against
+  # a copy with the probe deleted. Stated exactly, because a guard whose value is a better
+  # diagnostic is worth having and is not worth overclaiming.
+  #
+  # 2 (a broken invocation) rather than 1 (a claim is wrong), because nothing has been judged.
+  reset_branch
+  printf 'Plain prose with no claims.\n' > "$REPO/base/workflows/notes.md"
+  commit "a benign range, to isolate the library probe"
+  cp "$REPO/scripts/lib/common.sh" "$st_work/common.sh.bak"
+  printf '\nunset -f adb_md_prose\n' >> "$REPO/scripts/lib/common.sh"
+  cc --range "$BASE..probe"
+  eq "$RC_" 2 "filter: a common.sh with no adb_md_prose is a hard failure, not a silent raw scan"
+  has "$OUT" "adb_md_prose" "filter: ...and the diagnostic names the missing primitive"
+  cp "$st_work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+  cc --range "$BASE..probe"
+  eq "$RC_" 0 "filter: ...and the same range is clean once the library is whole again"
+
+  # THE 1:1 LINE INVARIANT, which every `CC_MASK[lno - 1]` lookup rests on. Its failure mode is
+  # silence: a prose view one line short reads the WRONG line for everything after it, and an empty
+  # one reads "" for every line — zero references and a confident PASS.
+  #
+  # It cannot be driven red from an input, because the invariant holds (check-common-lib.sh pins it).
+  # So it is witnessed the way this repo witnesses a forward guard: a deliberately broken filter that
+  # drops a line, in the throwaway copy. Without the check, the run below PASSES while scanning the
+  # wrong lines; with it, it is a named failure.
+  reset_branch
+  {
+    printf 'Intro.\n\n'
+    printf 'This cites %s in ordinary prose.\n' "$REF_GONE"
+  } > "$REPO/base/workflows/notes.md"
+  commit "a real violation, to prove the broken filter would HIDE it"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "1:1: the range is genuinely a violation with the filter intact"
+  cp "$REPO/scripts/lib/common.sh" "$st_work/common.sh.bak"
+  # Drop the LAST line of the filter's output — a renumbering no input can produce.
+  printf '\nadb_md_prose() { LC_ALL=C awk "{ print \\"\\" }" | sed \x27$d\x27; }\n' \
+    >> "$REPO/scripts/lib/common.sh"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 3 "1:1: a filter whose output is SHORT is caught, not silently scanned as empty"
+  has "$OUT" "line count" "1:1: ...and the diagnostic says what is wrong"
+  cp "$st_work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+
+  # A FILTER THAT FAILS OUTRIGHT is the third arm, and it is the one `adb_md_prose`'s nonce trailer
+  # exists for: a killed or truncated run returns non-zero rather than a short clean result. The two
+  # fixtures above cover a MISSING function and a SHORT one; this covers a present one that FAILS,
+  # which is a different branch of the same `case`.
+  cp "$REPO/scripts/lib/common.sh" "$st_work/common.sh.bak"
+  printf '\nadb_md_prose() { return 1; }\n' >> "$REPO/scripts/lib/common.sh"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 3 "filter: a filter that FAILS is exit 3, not an empty prose view scanned as clean"
+  has "$OUT" "markdown filter failed" "filter: ...and the diagnostic names the filter and the file"
+  cp "$st_work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+
+  # AND THE ADDED-LINE SCANNER ITSELF. Its status used to be discarded by a process substitution, so
+  # an awk that died mid-file arrived as zero added lines — a file never read, reported in the words
+  # of a clean one. Driven here with a shim that fails ONLY `cc_scan_file`'s second awk (the one
+  # invoked with a leading `-v want=`), over a NON-markdown file so the prose filter — whose own awk
+  # also leads with `-v` — is never reached and cannot be what fails. `templates/` is in scope and
+  # carries a non-markdown file in the real tree too, which is why the fixture lives there.
+  reset_branch
+  rm -f "$REPO/base/workflows/notes.md"
+  printf 'Tracked in %s from a non-markdown file.\n' "$REF_GONE" > "$REPO/templates/notes.txt"
+  commit "a real violation in a non-markdown file"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 1 "scanner: the range is genuinely a violation with the scanner intact"
+  cp "$REPO/scripts/lib/common.sh" "$st_work/common.sh.bak"
+  printf '\nawk() { case "$1" in -v) return 3 ;; esac; command awk "$@"; }\n' \
+    >> "$REPO/scripts/lib/common.sh"
+  cc --range "$BASE..probe" --live
+  eq "$RC_" 3 "scanner: an added-line reader that DIES is exit 3, not zero added lines reported clean"
+  has "$OUT" "could not scan" "scanner: ...and the diagnostic names the file it failed on"
+  cp "$st_work/common.sh.bak" "$REPO/scripts/lib/common.sh"
+  rm -f "$REPO/templates/notes.txt"
+
+  # --------------------- a kind hint needs a digit boundary --------------------
+  # A short number must not be found INSIDE a longer one: with a pull-request citation for 210 on
+  # the line, a bare 21 was handed 210's hint and a correct citation was reported as a kind
+  # mismatch.
+  : > "$GH_CALLS"
+  reset_branch
+  printf 'Landed in PR %s, and also see %s.\n' "$REF_PR" "$REF_PREFIX" > "$REPO/base/workflows/notes.md"
+  commit "prefix hint"
+  cc --range "$BASE..probe" --live
+  # NOTE the quoting: this label must not contain backticks. An earlier version read a label naming
+  # both numbers with backticks around one of them, inside a double-quoted string, which bash expands
+  # as COMMAND SUBSTITUTION — it ran a command named PR and then blocked reading stdin. Standalone
+  # the suite still passed (stdin was /dev/null); under selfcheck, whose stdin is an open pipe, it
+  # hung for ten minutes. A test label is a value crossing a syntax boundary like any other.
+  eq "$RC_" 0 "hint: a bare 21 beside a PR 210 citation is not given the PR hint (digit boundary)"
+
+  # ------ review #239: a query-specific failure is UNREADABLE, not "does not exist" ------
+  # An earlier version asked whether the REPOSITORY was reachable and treated success as proof the
+  # number was absent. Every query-specific failure with a readable repo then became a confident
+  # "does not resolve" — a tool built to stop fabricated references, fabricating them.
+  : > "$GH_CALLS"
+  reset_branch
+  printf 'Tracked in %s.\n' "$REF_OPEN" > "$REPO/base/workflows/notes.md"
+  commit "entity denied, repo readable"
+  cc_denied --range "$BASE..probe" --live
+  eq "$RC_" 3 "C1: a query-specific read failure with a READABLE repo exits 3, not 1"
+  hasnt "$OUT" "does not resolve" "C1: a permissions/transient failure is never called a missing issue"
+
+  # ------------- review #239: the pull hint is CASE-INSENSITIVE ----------------
+  # The issue hint used -i and the pull hint did not, so `Pull request #N` and `pr #N` were recorded
+  # as `bare` — and a bare reference is only existence-checked, so a sentence naming the wrong entity
+  # kind passed the live check outright.
+  for spelling in "Pull request" "pull request" "pr" "PR"; do
+    : > "$GH_CALLS"
+    reset_branch
+    printf 'See %s %s for context.\n' "$spelling" "$REF_OPEN" > "$REPO/base/workflows/notes.md"
+    commit "hint spelling $spelling"
+    cc --range "$BASE..probe" --live
+    eq "$RC_" 1 "C1: '$spelling' is recognized as a pull-request hint (and 7 is an issue)"
+  done
+
+  # ------------------------------ the wiring is pinned -------------------------
+  # A perfectly correct lint that nothing invokes is a lint that checks nothing, and it fails exactly
+  # the way this whole mode exists to prevent: silently. So the ACTIVE invocation sites are asserted,
+  # not merely the presence of the filename somewhere in the tree.
+  SELFCHECK="$ROOT/scripts/selfcheck.sh"
+  CI="$ROOT/.github/workflows/ci.yml"
+
+  # ASK THE RUNNER, do not grep it (#260). selfcheck.sh no longer carries `if bash …; then` lines:
+  # its steps are a REGISTRY dispatched through a `wait -n` job pool. A grep for the old shape would
+  # now report "not wired" for a perfectly wired suite, and a grep for the new shape would prove only
+  # that a string exists somewhere in a file — a weaker claim than the one this section is making.
+  registry="$(bash "$SELFCHECK" --list 2>/dev/null)" || registry=""
+  if [ -n "$registry" ]; then ok; else bad "selfcheck.sh --list produced no registry to check"; fi
+  eq "$(printf '%s\n' "$registry" | awk -F'\t' '$1 == "claims" {print $2}')" \
+     "bash scripts/check-claims.sh" "selfcheck.sh's registry ACTIVELY invokes check-claims.sh"
+  eq "$(printf '%s\n' "$registry" | awk -F'\t' '$1 == "claims-self-test" {print $2}')" \
+     "bash scripts/check-claims.sh --self-test" "selfcheck.sh's registry ACTIVELY invokes the self-test"
+
+  # The local mirror must NOT run the live half: D13 keeps selfcheck hermetic, and a
+  # network-dependent step there would make a local green stop predicting CI for every other step
+  # too. Asserted on the registry AND on the file: the registry is what runs, and the file grep still
+  # catches a `--live` reintroduced somewhere the registry does not reach.
+  if printf '%s\n' "$registry" | grep -q -- '--live'; then
+    bad "selfcheck.sh's registry runs the LIVE claim half — that breaks the hermetic-mirror promise (D13)"
+  else ok; fi
+  if grep -qE '^[^#]*check-claims\.sh[^#]*--live' "$SELFCHECK"; then
+    bad "selfcheck.sh runs the LIVE claim half — that breaks the hermetic-mirror promise (D13)"
+  else ok; fi
+
+  # THE CI ASSERTIONS ARE SCOPED TO ONE JOB, not to the file. A whole-file `grep` for
+  # `fetch-depth: 0` was VACUOUS: another job (install-migration) already carries one, so deleting it
+  # from the job that actually runs the claim lint would have left this guard green while the lint
+  # failed on every shallow clone. The same argument applies to the permissions and the token — they
+  # only mean anything if they belong to the SAME job as the run steps.
+  awk '/^  [a-z][a-z0-9_-]*:/ { injob = ($0 ~ /^  fact-drift:/) } injob { print }' "$CI" > "$ST_JOB"
+
+  if [ -s "$ST_JOB" ]; then ok; else bad "ci.yml has no fact-drift job — the claim wiring has no home"; fi
+  if grep -qE '^ *run: bash scripts/check-claims\.sh --range ' "$ST_JOB"; then ok; else
+    bad "the claim-lint job does not run the offline claim lint over a range"; fi
+  if grep -qE '^ *run: bash scripts/check-claims\.sh --live --range ' "$ST_JOB"; then ok; else
+    bad "the claim-lint job does not run the LIVE half — the network half would run NOWHERE"; fi
+  if grep -qE '^ *run: bash scripts/check-claims\.sh --self-test' "$ST_JOB"; then ok; else
+    bad "the claim-lint job does not run the self-test"; fi
+
+  # The live step needs a token and issue/PR read scope; without either it exits 3 on every run,
+  # which is a red build rather than a silent pass — but a red build nobody can fix from the diff.
+  # Anchored to the real YAML key. A bare substring grep also matched the COMMENT that mentions the
+  # setting, so deleting the setting itself left the guard green — a pin made vacuous by the very
+  # prose written to explain it.
+  if grep -qE '^ +issues: read$' "$ST_JOB"; then ok; else
+    bad "the claim-lint job grants no 'issues: read' — the live half cannot resolve anything"; fi
+  if grep -qE '^ +pull-requests: read$' "$ST_JOB"; then ok; else
+    bad "the claim-lint job grants no 'pull-requests: read' — a PR number cannot resolve"; fi
+  if grep -qE '^ +GH_TOKEN:' "$ST_JOB"; then ok; else
+    bad "the claim-lint job passes no GH_TOKEN — the live half would exit 3 on every run"; fi
+  if grep -qE '^ +fetch-depth: 0$' "$ST_JOB"; then ok; else
+    bad "the claim-lint job has no full-history checkout — base..head cannot resolve when shallow"; fi
+
+  check_summary "check-claims --self-test"
+  exit 0
+fi
 
 # --- resolve the range --------------------------------------------------------------------------
 if [ -z "$RANGE" ]; then
@@ -165,37 +852,43 @@ done
 git diff --name-only "$RANGE" >/dev/null 2>&1 \
   || { echo "check-claims: git cannot diff range '$RANGE'" >&2; exit 2; }
 
-# THE COMMIT WALK NEEDS ITS OWN RANGE, because `A...B` means two different things to the two
-# commands this script uses. To `git diff` it is "from the merge base to B" — the branch's own
-# added lines, which is what every line-scanning rule wants. To `git rev-list` it is the SYMMETRIC
-# DIFFERENCE: commits reachable from A or B but not both, i.e. the BASE branch's commits as well.
-# Verified on a diverged fixture — `rev-list main...feature` returns both "on feature" and "on main
-# only", while `main..feature` returns just the one.
-#
-# Left as-is, the date rule walked commits on the base branch and reported on history this branch
-# is not asserting anything about, which is precisely the whole-tree behaviour the added-lines
-# scoping exists to avoid.
-case "$RANGE" in
-  *...*)
-    CC_MB="$(git merge-base "$BASEREV" "$HEADREV" 2>/dev/null)" \
-      || { echo "check-claims: no merge base for '$RANGE'" >&2; exit 2; }
-    [ -n "$CC_MB" ] || { echo "check-claims: no merge base for '$RANGE'" >&2; exit 2; }
-    REVRANGE="$CC_MB..$HEADREV" ;;
-  *) REVRANGE="$BASEREV..$HEADREV" ;;
-esac
+# THE COMMIT WALK IS GONE with the decision-date rule (#374). It needed its own range, because
+# `A...B` means two different things to the two commands this script used: to `git diff` it is "from
+# the merge base to B" — the branch's own added lines, which is what every line-scanning rule wants
+# — while to `git rev-list` it is the SYMMETRIC DIFFERENCE, i.e. the BASE branch's commits as well.
+# Nothing walks commits any more, so the distinction has no consumer left; recorded here rather than
+# deleted silently, because a future rule that walks commits has to re-learn it.
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-DECISIONS=".ai-dev-baseline/decisions.md"
 _CC_NL=$'\n'
+
+# THE SHIPPED-PROSE SCOPE (#374). Prefixes, matched against the repo-relative path, and a trailing
+# slash on each so `templates/` cannot also select a top-level `templates-old.md`. These are exactly
+# the roots whose content leaves this repository: `base/practices/` renders into all three agents'
+# root docs, `base/workflows/` into all three agents' skills (and symlinks into every adopter's skill
+# dir), and `templates/agents.toml` is COPIED into an adopting project by `install.sh`. A citation
+# anywhere else misinforms one reader of one repo; a citation here is installed everywhere.
+#
+# A LIST IS WHERE AN ENTRY GOES MISSING without anything noticing, so `--self-test` asserts each root
+# separately rather than asserting "some in-scope file is scanned".
+CC_SCOPE_ROOTS="base/workflows/ base/practices/ templates/"
+cc_in_scope() {   # <path>
+  local pre
+  for pre in $CC_SCOPE_ROOTS; do
+    case "$1" in "$pre"*) return 0 ;; esac
+  done
+  return 1
+}
 
 # What the run actually evaluated, REPORTED rather than inferred. A guard's failure mode is
 # silence: a checker wired to an empty range scans nothing and prints exactly what a clean run
 # prints. D22 is this repo paying for that once already, so every axis carries a count and a zero
-# is visible in the log.
-N_FILES=0; N_ADDED=0; N_SKIP_BIN=0; N_SKIP_PATH=0
+# is visible in the log. `out-of-scope` is here for the same reason and is new with #374: a narrowed
+# rule that never says what it narrowed away is indistinguishable from a rule that found nothing.
+N_FILES=0; N_ADDED=0; N_SKIP_BIN=0; N_SKIP_PATH=0; N_SKIP_SCOPE=0
 N_REF_OCC=0; N_REF_DISTINCT=0; N_REF_LOOKUPS=0
-N_DREF=0; N_DATE=0; N_EXEMPT=0; N_MD_STRUCT=0
+N_EXEMPT=0; N_MD_STRUCT=0
 
 cc_violation() { check_note "$1"; check_fail; }
 
@@ -214,7 +907,7 @@ while IFS= read -r -d '' p; do
   printf '%s\n' "$p" >> "$CHANGED"
 done < <(git diff --name-only -z --diff-filter=ACMRD "$RANGE" 2>/dev/null)
 
-# The candidate tree's file list and decision log, read once rather than per-reference.
+# The candidate tree's file list, read once rather than per-reference.
 #
 # `core.quotePath=false` is load-bearing, not cosmetic. git QUOTES a non-ASCII path by default
 # (`"na\303\257ve.md"`), while the diff above yields the raw bytes — so the membership test below
@@ -223,13 +916,15 @@ done < <(git diff --name-only -z --diff-filter=ACMRD "$RANGE" 2>/dev/null)
 TREEFILES="$WORK/treefiles"
 git -c core.quotePath=false ls-tree -r --name-only "$HEADREV" > "$TREEFILES" 2>/dev/null \
   || : > "$TREEFILES"
-DECFILE="$WORK/decisions"
-git show "$HEADREV:$DECISIONS" > "$DECFILE" 2>/dev/null || : > "$DECFILE"
 
 # --- files to scan (text only, git's own binary verdict is unavailable per-blob, so test it) ----
 SCANLIST="$WORK/scan"; : > "$SCANLIST"
 while IFS= read -r p; do
   [ -n "$p" ] || continue
+  # OUT OF SCOPE is counted BEFORE the tree-membership test, deliberately: a deleted path is not a
+  # skip anybody needs told about, but a file this rule declines to judge is, and counting it here
+  # means the figure covers every changed path the range carried rather than only the surviving ones.
+  if ! cc_in_scope "$p"; then N_SKIP_SCOPE=$((N_SKIP_SCOPE + 1)); continue; fi
   # Present in the candidate tree? A deleted path has no content to scan.
   grep -qxF "$p" "$TREEFILES" || continue
   # Binary test: a NUL byte in the first 8 KiB. Portable, and it needs no awk RS="\0" support
@@ -264,21 +959,6 @@ git -c core.quotePath=false diff --unified=0 "$RANGE" 2>/dev/null | awk '
     start = P[1] + 0; cnt = (n > 1 ? P[2] + 0 : 1)
     for (i = 0; i < cnt; i++) printf "%s\t%d\n", p, start + i
   }' > "$ADDEDMAP"
-
-# --- day arithmetic, without depending on GNU vs BSD `date` flags -------------------------------
-# days_from_civil (Hinnant): a calendar date to a day number, so two dates can be compared by
-# subtraction. `date -d` is GNU-only and `date -v` is BSD-only, so neither is portable here.
-cc_daynum() {   # <YYYY-MM-DD> -> integer day number
-  printf '%s\n' "$1" | awk -F- '{
-    y = $1 + 0; m = $2 + 0; d = $3 + 0
-    if (m <= 2) { y -= 1; m += 9 } else { m -= 3 }
-    era = int((y >= 0 ? y : y - 399) / 400)
-    yoe = y - era * 400
-    doy = int((153 * m + 2) / 5) + d - 1
-    doe = yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy
-    print era * 146097 + doe - 719468
-  }'
-}
 
 # --- gh entity resolution (LIVE half) -----------------------------------------------------------
 # One lookup per DISTINCT number per run, cached in a `declare -A` map. It was a directory of
@@ -342,14 +1022,14 @@ cc_entity() {
 #   * .md — markdown fences and inline code spans are stripped. Quoting a number while documenting
 #     a grammar is not a citation, and a lint that could not tell them apart would fire on this
 #     repo's own docs about this repo's own checks.
-#   * everything else — EVERY added line is scanned, shell comments INCLUDED. That is deliberate:
-#     the "(recorded as D17)" defect was itself in a shell comment in scripts/lib/common.sh, so a
-#     rule that discarded comments would have been green on one of the four claims it exists for.
+#   * everything else — EVERY added line is scanned, comments INCLUDED. That is deliberate: a
+#     citation written in a comment is as installed as one written in a paragraph, and `templates/`
+#     is in scope precisely because a shipped config file is mostly comments.
 #
-# This emits the RAW line and lets each rule strip what IT should not see. The reference and
-# decision rules must not see inside a code span (quoting a number while documenting a grammar is
-# not a citation), while the exemption marker must be read from the raw line because it is
-# normally written as a trailing comment.
+# This emits the RAW line and lets each rule strip what IT should not see. The reference rule must
+# not see inside a code span (quoting a number while documenting a grammar is not a citation),
+# while the exemption marker must be read from the raw line because it is normally written as a
+# trailing comment.
 #
 # The separation is kept even though the rule that most needed it — the path check, which looked
 # for BACKTICKED paths — no longer ships. A single shared stripper is how that rule was silently
@@ -387,14 +1067,14 @@ cc_scan_file() {   # <file> -> "<lineno>\t<raw text>" per scannable added line
 # out, which is the same line-at-a-time mistake in a new costume. So the file is filtered whole and
 # the added-line set is applied afterwards — the ordering `cc_scan_file` already used.
 #
-# MASK, NOT TEXT. `MD_TEXT` leaves inline spans INTACT by design; the reference and decision rules
-# must not see inside one, so they get the view where a resolved span is \x01. Masking rather than
+# MASK, NOT TEXT. `MD_TEXT` leaves inline spans INTACT by design; the reference rule must not see
+# inside one, so it gets the view where a resolved span is \x01. Masking rather than
 # deleting is also what stops `clo`x`ses #42` collapsing into a keyword nobody wrote.
 #
 # FAIL LOUD, because the failure mode here is a clean-looking pass. `adb_md_prose` is fail-closed —
 # its awk prints a per-invocation nonce trailer and the wrapper returns non-zero without it — so a
 # killed or truncated run is a status, not a short result. Swallowing that would give every line of
-# the file an empty prose view: zero references, zero decision refs, and a confident PASS. That is
+# the file an empty prose view: zero references and a confident PASS. That is
 # precisely the silently-disabled rule this file`s own header is about.
 CC_MASK=()
 cc_prose_view() {   # <file>
@@ -406,8 +1086,8 @@ cc_prose_view() {   # <file>
   # ONE OUTPUT LINE PER INPUT LINE, ASSERTED RATHER THAN TRUSTED. Every lookup below is
   # `CC_MASK[lno - 1]`, so the whole conversion rests on that alignment — and its failure mode is
   # SILENCE, not a crash: a prose view one line short makes every subsequent lookup read the wrong
-  # line, and a view that is EMPTY makes every line read "", which is zero references, zero
-  # decision refs and a confident PASS. That is indistinguishable in the log from a range with no
+  # line, and a view that is EMPTY makes every line read "", which is zero references and a
+  # confident PASS. That is indistinguishable in the log from a range with no
   # claims in it, which is the exact shape this file`s header was written about.
   #
   # The filter documents the 1:1 invariant and check-common-lib.sh pins it, so this is a FORWARD
@@ -518,113 +1198,13 @@ while IFS= read -r f; do
       [ "$got" -eq 1 ] || printf '%s\t%s:%s\tbare\n' "$n" "$f" "$lno" >> "$REFS"
     done
 
-    # --- C2: a decision reference must resolve to a heading in the decision log -----------------
-    # Resolved against the CANDIDATE tree, not the base: a PR that adds D24 and cites it in the
-    # same commit is correct, and a rule that only knew the old file would reject it.
-    for d in $(printf '%s\n' "$text" | grep -oE '(^|[^A-Za-z0-9_])D[1-9][0-9]*([^A-Za-z0-9_]|$)' | grep -oE 'D[0-9]+'); do
-      N_DREF=$((N_DREF + 1))
-      grep -qE "^## $d — " "$DECFILE" \
-        || cc_violation "$f:$lno: cites $d, which has no '## $d — ' heading in $DECISIONS"
-    done
-
-    # --- (the path-claim check deliberately does NOT live here — see the header) ----------------
+    # --- (the D<N> rule was DROPPED by #374, and the path-claim check never lived here) ---------
+    # The decision-reference rule read `.ai-dev-baseline/decisions.md`, which `install.sh` does not
+    # ship and no workflow reads: it protected one maintainer from a D-number mix-up. The owner
+    # decided on 2026-08-15 to drop rather than migrate it (D72). `--self-test` asserts the absence,
+    # so restoring it is a deliberate act with a test to change.
   done < "$WORK/scanned"
 done < "$SCANLIST"
-
-# --- C4: a decision's date must be near the commit that INTRODUCED it ---------------------------
-# Attributed per COMMIT rather than per line, so there is no pickaxe ambiguity about which commit a
-# repeated `- date:` string belongs to. The branch tip is the wrong anchor on a multi-commit branch
-# — and the #173 entry was stamped a day in the FUTURE relative to its own commit, which is exactly
-# the defect and is invisible against a later tip.
-#
-# MERGE COMMITS ARE WALKED TOO. `--no-merges` looks obviously right (a merge introduces nothing of
-# its own) and is wrong here: this project merges the default branch INTO a feature branch to
-# refresh it, and a conflict resolution inside that merge really can introduce a `date:` line that
-# exists in no parent. Skipping merges left that line checked by nothing. `git show -m` diffs a
-# merge against each parent, and `--first-parent`-style double counting is harmless because the
-# same line simply gets the same verdict twice.
-#
-# The date field is VALIDATED, not merely pattern-matched. `- date: TBD` used to be skipped by the
-# `[ -n "$d" ] || continue` below, so a decision with no date at all sailed through with `dates=0`
-# — a rule reporting that it checked nothing, in the same words a clean run uses. And a date that
-# matches the pattern can still be impossible: the civil-day conversion happily normalizes
-# `2026-02-30` into March 2, so it would pass against a March commit.
-cc_valid_day() {   # <YYYY-MM-DD> -> 0 if it is a real Gregorian date
-  printf '%s\n' "$1" | awk -F- '
-    { y = $1 + 0; m = $2 + 0; d = $3 + 0
-      if (m < 1 || m > 12 || d < 1) { exit 1 }
-      split("31 28 31 30 31 30 31 31 30 31 30 31", L, " ")
-      max = L[m] + 0
-      if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) { max = 29 }
-      if (d > max) { exit 1 }
-      exit 0 }'
-}
-
-# cc_added_dates <commit> — the `- date:` lines THIS commit introduced, with the diff marker
-# stripped. For a merge that means lines added relative to EVERY parent, which is a distinction
-# `git show -m` cannot make: -m diffs the merge against each parent in turn, so a line that came
-# from ONE parent appears as an addition relative to the other. On a feature branch that merges the
-# default branch and resolves a conflict in the decision log, every decision the default branch had
-# accumulated was therefore re-attributed to the merge commit and compared against the merge's own
-# date — a guaranteed red build on an entry that was dated correctly when it was written, and that
-# does not even appear in the branch's own `main...feature` diff.
-#
-# `--cc` is exactly the right tool: it shows only hunks that differ from ALL parents, which is the
-# definition of "introduced by the merge itself" (a conflict resolution). Its output carries one
-# +/- column PER PARENT, so a line the merge introduced has a `+` in every column — hence the
-# parent count rather than a hardcoded `++`.
-cc_added_dates() {
-  local c="$1" np
-  np="$(git rev-list --parents -n1 "$c" 2>/dev/null | wc -w | tr -d ' ')"
-  np=$((np - 1))
-  if [ "$np" -gt 1 ]; then
-    git show --cc --format='' --unified=0 "$c" -- "$DECISIONS" 2>/dev/null \
-      | grep -E "^\+{$np}[[:space:]]*-[[:space:]]*date:" \
-      | sed -E "s/^\+{$np}//"
-  else
-    git show --format='' --unified=0 "$c" -- "$DECISIONS" 2>/dev/null \
-      | grep -E '^\+[[:space:]]*-[[:space:]]*date:' \
-      | sed 's/^+//'
-  fi
-}
-
-for c in $(git rev-list "$REVRANGE" -- "$DECISIONS" 2>/dev/null); do
-  cday="$(git log -1 --format='%cI' "$c" 2>/dev/null)"; cday="${cday%%T*}"
-  [ -n "$cday" ] || continue
-  cnum="${ cc_daynum "$cday"; }"
-  while IFS= read -r dl; do
-    if printf '%s' "$dl" | grep -qE "$CC_EXEMPT_RE"; then
-      N_EXEMPT=$((N_EXEMPT + 1)); continue
-    fi
-    N_DATE=$((N_DATE + 1))
-    # THE FIELD'S VALUE, not the first date-shaped substring anywhere on the line. Scanning the
-    # whole line let trailing prose satisfy the rule: `- date: TBD # expected around 2026-07-31`
-    # passed on 2026-07-31 while the field itself carried no date at all — the rule reporting a
-    # pass on an input it exists to reject. Take what follows `date:` up to the first whitespace,
-    # and require THAT to be the date.
-    d="$(printf '%s\n' "$dl" \
-          | sed -nE 's/^.*[[:space:]]*-[[:space:]]*date:[[:space:]]*([^[:space:]]*).*$/\1/p' \
-          | head -n1)"
-    case "$d" in
-      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
-      *) d="" ;;
-    esac
-    if [ -z "$d" ]; then
-      cc_violation "$DECISIONS ($c): a 'date:' field carries no YYYY-MM-DD value: $dl"
-      continue
-    fi
-    if ! cc_valid_day "$d"; then
-      cc_violation "$DECISIONS ($c): 'date: $d' is not a real calendar date"
-      continue
-    fi
-    dnum="${ cc_daynum "$d"; }"
-    diff=$((dnum - cnum)); [ "$diff" -lt 0 ] && diff=$((-diff))
-    # Absolute one-day tolerance, BOTH directions. A future stamp is a violation exactly as a
-    # stale one is; the #173 entry was a day ahead, not behind.
-    [ "$diff" -le 1 ] \
-      || cc_violation "$DECISIONS ($c): 'date: $d' is $diff days from its commit date ($cday)"
-  done < <(cc_added_dates "$c")
-done
 
 # --- C1, resolved in one deduplicated pass ------------------------------------------------------
 N_REF_DISTINCT="$(awk -F'\t' '{print $1}' "$REFS" 2>/dev/null | sort -u | grep -c . || true)"
@@ -706,8 +1286,12 @@ fi
 # `added-lines` read like "added lines" while meaning "added lines a private parser let through".
 # Reporting both keeps D22's rule honest: a run that suddenly strips far more than it used to is
 # now visible in the log rather than indistinguishable from a range with fewer claims in it.
-printf 'check-claims: range=%s files=%d added-lines=%d md-structural=%d refs=%s/%d live-lookups=%d d-refs=%d dates=%d exempt=%d binary-skipped=%d path-skipped=%d\n' \
+#
+# `out-of-scope` is #374's addition and carries that duty one level up: this rule now declines to
+# judge most of the tree, and a narrowed rule that never says what it narrowed away reads exactly
+# like a rule that found nothing. `d-refs` and `dates` are gone with the rules that produced them.
+printf 'check-claims: range=%s files=%d added-lines=%d md-structural=%d refs=%s/%d live-lookups=%d exempt=%d binary-skipped=%d path-skipped=%d out-of-scope=%d\n' \
   "$RANGE" "$N_FILES" "$N_ADDED" "$N_MD_STRUCT" "$N_REF_DISTINCT" "$N_REF_OCC" "$N_REF_LOOKUPS" \
-  "$N_DREF" "$N_DATE" "$N_EXEMPT" "$N_SKIP_BIN" "$N_SKIP_PATH"
+  "$N_EXEMPT" "$N_SKIP_BIN" "$N_SKIP_PATH" "$N_SKIP_SCOPE"
 
 check_result "no unverified claims in the range"
