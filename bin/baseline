@@ -484,10 +484,15 @@ fi
 # this command's subject is the install-source clone, and a project vendoring its own payload
 # neither blocks nor is served by keeping that clone current — so the notice is purely additive.
 #
-# AFTER `--check` returns, so that predicate stays exactly what it documents: one status word on
-# stdout and nothing else. And it reads only the pin and the receipt — no network — so the
-# SessionStart hook and /cleanup pay nothing for it (both discard this output anyway).
-bash "$REPO/scripts/lib/pinned-install.sh" notice || true
+# `--check-latest`, because #285 asks `baseline update` to REPORT a newer release for a pinned
+# project. This is the mutating path, which has already fetched, so the extra read costs a pinned
+# project one call and a global one nothing (the notice exits immediately when no pin says
+# `mode = "pinned"`). It never upgrades: naming the version is the approval, and the two automatic
+# callers of this command must never be able to express one.
+#
+# AFTER `--check` returns, so that predicate stays exactly what it documents — one status word on
+# stdout, no changes, and no network it did not already need.
+bash "$REPO/scripts/lib/pinned-install.sh" notice --check-latest || true
 
 # --- serialize the mutating path ---------------------------------------------
 #

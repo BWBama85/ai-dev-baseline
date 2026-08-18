@@ -6145,16 +6145,41 @@ limit: none of them is sufficient alone.
              **`mode = "pinned"` is the discriminator, NOT the pin's existence.** `/adopt` already
              writes `.ai-dev-baseline/upstream.toml` for projects running the global symlink model
              (D60), so file-presence would classify every adopted project as pinned. The schema is
-             EXTENDED, not replaced: `version`, `adopted`, `stack` and `agents` keep their D60
-             meanings, `mode` and `source` are added, and `commit` is omitted because a pinned
-             project has no clone in which one could be resolved. A pin with no `mode` is a
-             global-mode pin by construction and nothing here touches it.
+             EXTENDED, not replaced: `version`, `adopted` and `agents` keep their D60 meanings;
+             `stack` is PRESERVED across upgrades but never invented, because this installer has no
+             classifier and writing a guess would be worse than writing nothing; `mode`, `source`
+             and `artifact` are added. `commit` is omitted because a pinned project has no clone in
+             which one could be resolved — and `artifact`, the SHA-256 of the release archive, is
+             the identity that IS resolvable here. It is not decoration: without it "the same
+             version" is a filename rather than a content identity, and a second archive carrying
+             the same name silently replaced the whole payload while the docs still claimed
+             re-running changed nothing.
+
+             **A global-mode pin is REFUSED, not converted.** The first draft of this entry said
+             "nothing here touches it" while the code overwrote it — losing /adopt's `commit` and
+             `stack`, which this installer cannot reconstruct. The claim is now true because the
+             install stops and asks the operator to retire that pin deliberately.
 
              **A RECEIPT, not a path rule, is what ownership means.** `pinned-files.sha256` records
              every file the install wrote and its digest. `status` re-checks the tree against it,
-             `uninstall` removes only files that still match, and `/adopt` reads it to tell an
-             install-owned artifact from a project's own fork. A path rule cannot do this:
-             `.claude/skills/foo` is a legitimate fork in one repo and install-owned in another.
+             `uninstall` removes only files that still match, `_pi_retire` removes what a previous
+             payload owned and the new one does not, and `/adopt` reads it to tell an install-owned
+             artifact from a project's own fork. A path rule cannot do this: `.claude/skills/foo`
+             is a legitimate fork in one repo and install-owned in another.
+
+             **And MEMBERSHIP is not ownership — the digest is.** A vendored file the operator has
+             edited is deliberately absent from the owned set, so `/adopt` reports it rather than
+             suppressing a real delta, and a hand-written receipt naming a project's own skill
+             proves nothing. The predicate is `adb_pinned_owned` in `common.sh` rather than a copy
+             in each caller, because `pinned-install.sh` and `adopt-lib.sh` ask the same question
+             of the same file.
+
+             **What the receipt does NOT cover, stated because the first draft claimed otherwise:**
+             the two MERGED surfaces. The project's `AGENTS.md` and `.claude/settings.json` are
+             regions inside files the project owns, so they cannot carry a whole-file digest and a
+             remover that treated them as owned would delete a project's own configuration.
+             `_pi_check_surfaces` verifies them separately, and `status` is NOT INTACT when either
+             is missing — which is the only way that gap becomes visible rather than silent.
 
              **`--to` IS the approval; there is no prompt.** Two things already invoke
              `baseline update` unattended — the `SessionStart` hook and the last step of `/cleanup`
@@ -6185,10 +6210,22 @@ limit: none of them is sufficient alone.
              repository.** A checksum proves the bytes arrived; it says nothing about the archive
              being usable, so the tree is probed structurally, its internal `ai-dev-baseline-<v>/`
              prefix is required to match the filename the digest was keyed on, absolute and `../`
-             members are refused before extraction, the unpacked tree is CRLF-scanned (an artifact
-             is not governed by this repo's `.gitattributes`), and a release below 2.0.0 is refused
-             rather than half-installed. The whole payload is STAGED and validated before the first
-             write into the project, so a failure halfway through leaves the project untouched.
+             members are refused before extraction, every symlink in the unpacked tree must RESOLVE
+             inside it (this framework ships a legitimate one, so "refuse all links" was wrong and
+             the rule is about where a link points), the tree is CRLF-scanned because an artifact is
+             not governed by this repo's `.gitattributes`, and a release carrying no
+             `scripts/lib/pinned-install.sh` is refused — that structural test is the REAL floor,
+             because such a release could never supply the status/upgrade/uninstall path the docs
+             promise, whereas a version constant is something somebody has to remember to bump.
+
+             **Staging bounds the failure; it does not make publishing atomic, and the difference
+             is stated rather than blurred.** Nothing is written into the project until the whole
+             payload has been produced and re-anchored, so every refusal above leaves the tree
+             untouched. Once publishing starts it is many renames, and an interruption leaves a
+             partly-populated project — what makes that recoverable is that the RECEIPT is written
+             incrementally and kept on failure, so it always describes exactly what was written and
+             `uninstall` can always take it back out. A failed run that left no receipt would be
+             the unrecoverable shape, and that is the one this ordering removes.
 
              **The re-anchor's failure mode is silence**, which is why it has its own assertion:
              a substitution that matched nothing produces a file that looks correct and quietly runs
@@ -6204,9 +6241,37 @@ limit: none of them is sufficient alone.
              membership; a project's own fork and any `overrides.md` are still reported, because
              a blanket path exclusion would hide real project content living in the same tree.
 
-             **Two limitations are documented rather than papered over.** `skill-compose` overrides
-             do not work in pinned mode — the composer's output path IS the vendored base skill —
-             and that is filed rather than hidden. And two GitHub Release assets prove corruption,
-             not authenticity; the docs say so instead of letting "verify the checksum" imply a
-             trust root it does not have.
+             **Three limitations are documented rather than papered over.** `skill-compose`
+             overrides do not work in pinned mode — the composer's output path IS the vendored base
+             skill — and that is filed rather than hidden. Two GitHub Release assets prove
+             corruption, not authenticity; the docs say so instead of letting "verify the checksum"
+             imply a trust root it does not have. And **Codex truncates a project doc at
+             `project_doc_max_bytes`, 32 KiB by default** — its own config module says "Larger files
+             are *silently truncated*" — while the rendered practices are ~71 KB, so more than half
+             the law would never reach it with no symptom at all. The install cannot fix an operator
+             setting, so it measures the result and prints the one line that does, loudly. That was
+             the independent review's first finding, and it is the sharpest illustration of why the
+             review step is not optional: the payload was correct and the outcome was still wrong.
+
+             **What the independent review changed, recorded because the count is the point.** The
+             `codex` pass returned 60 findings against the first three commits. The ones that were
+             defects rather than documentation: `install --upgrade` bypassed the approval gate
+             entirely; a global-mode pin was overwritten; `--project` accepted a SUBDIRECTORY, whose
+             re-anchored skills could never find the payload; every `shift 2` could spin forever on
+             a truncated command line; a receipt path of `../victim` made `uninstall` delete a file
+             OUTSIDE the project; `rm` failures were discarded and the receipt — the only ownership
+             evidence — was deleted anyway; the directory prune removed empty directories the
+             install never created and swallowed its own enumeration status; an unbalanced managed
+             region deleted a project's prose to EOF; the region moved to EOF on every re-install;
+             a hook-wiring failure was swallowed by `|| true`; uninstall without `jq` deleted the
+             gate scripts while `settings.json` still named them; a pre-existing empty
+             `settings.json` was deleted; an ALTERED payload returned 0 while printing that it was
+             altered; a comment-only receipt reported "intact"; the recorded `source` was
+             display-only so `status` consulted the ambient default; `_pi_tar_is_safe` read only
+             `head`'s status and ignored member types; hidden files in a skill bypassed the
+             bundling refusal; and exit code 12 was collapsed into 11. Several assertions in the
+             new suite were named as rubber stamps and were rewritten to test what they claimed.
+             Each is fixed and pinned. Two more findings were caught by the fixes themselves: the
+             `-tv` field-offset parse is not portable between BSD and GNU tar, and `_pi_retire`
+             deleted the pin on every re-install — which the byte-idempotence assertion caught.
 - baseline-issue: n/a — this repo IS the baseline; #285 is the tracking issue.

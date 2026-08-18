@@ -239,14 +239,19 @@ for _ev in relative absolute; do
   ( cd "$work/ev-$_ev" && { command -v sha256sum >/dev/null 2>&1 && sha256sum "$PREFIX.tar.gz" || shasum -a 256 "$PREFIX.tar.gz"; } > SHA256SUMS )
   # THE FIXTURE IS PROVED TO CARRY THE DEFECT before it is used as evidence. A tar that quietly
   # normalised the member would otherwise turn this row into an assertion about a clean archive.
-  if ! tar -tzf "$work/ev-$_ev/$PREFIX.tar.gz" 2>/dev/null | grep -Eq '^/|(^|/)\.\.(/|$)'; then
+  # CAPTURED, then matched. `tar … | grep -q` reports GREP's status, so a listing that emitted a
+  # matching line and then FAILED would be declared a proven fixture.
+  _evlist="$(tar -tzf "$work/ev-$_ev/$PREFIX.tar.gz" 2>/dev/null)" || _evlist=""
+  if ! printf '%s\n' "$_evlist" | grep -Eq '^/|(^|/)\.\.(/|$)'; then
     bad "escape fixture ($_ev): this tar normalised the member away — the guard was NOT exercised"
     continue
   fi
   out="$(bash "$PI" install --project "$P" --artifact "$work/ev-$_ev/$PREFIX.tar.gz" --sums "$work/ev-$_ev/SHA256SUMS" 2>&1)"; rc=$?
   eq "$rc" 11 "install: an archive with a $_ev escaping member refuses"
   has "$out" "absolute or parent-relative members" "install: … and says which rule fired ($_ev)"
-  file_isnt "$work/evilsrc/escape.extracted" "install: … and nothing was extracted ($_ev)"
+  # THE PATH THE ARCHIVE ACTUALLY TARGETS. Asserting an invented name passes whether or not the
+  # archive was unpacked, which is the definition of a rubber stamp.
+  file_isnt "$P/escape" "install: … and the member did not land in the project ($_ev)"
 done
 
 # ================================ install: the happy path =======================================
@@ -259,19 +264,22 @@ yes "$rc" "install: a verified artifact installs"
 file_is "$P/.claude/rules/ai-dev-baseline.md" "install: Claude's practices land in .claude/rules"
 file_is "$P/.claude/skills/implement-issue/SKILL.md" "install: the skills are vendored"
 file_is "$P/.claude/adb/lib/common.sh" "install: the shared library is vendored"
-file_is "$P/.claude/adb/precommit-gate.sh" "install: the vendored gate is executable"
+if [ -x "$P/.claude/adb/precommit-gate.sh" ]; then ok; else bad "install: the vendored gate is EXECUTABLE (-x, not merely present)"; fi
 file_is "$P/.ai-dev-baseline/upstream.toml" "install: the pin is written"
 file_is "$P/.ai-dev-baseline/pinned-files.sha256" "install: the receipt is written"
 
 # THE GATE MUST FIND ITS LIBRARY. Every hook resolves `$(dirname "$0")/lib/common.sh`, which is the
 # whole reason hooks and lib/ are siblings — if that ever stops being true the gates degrade
 # silently to their broken-install posture.
-file_is "$P/.claude/adb/lib/common.sh" "install: the vendored gate's sibling lib/ resolves"
+# NOT a second existence check. The gate resolves `$(dirname "$0")/lib/common.sh`, so what matters
+# is that the path THE GATE COMPUTES exists — which is what this spells out.
+gate_lib="$(dirname "$P/.claude/adb/precommit-gate.sh")/lib/common.sh"
+file_is "$gate_lib" "install: the path the vendored gate computes for its library exists"
 
 out="$(cat "$P/.ai-dev-baseline/upstream.toml")"
-has "$out" 'mode    = "pinned"' "install: the pin records the MODE, which is the discriminator"
-has "$out" "version = \"$VER\"" "install: the pin records the version"
-has "$out" 'agents  = ["claude", "codex"]' "install: the pin records the agent set"
+has "$out" 'mode     = "pinned"' "install: the pin records the MODE, which is the discriminator"
+has "$out" "version  = \"$VER\"" "install: the pin records the version"
+has "$out" 'agents   = ["claude", "codex"]' "install: the pin records the agent set"
 
 # NO MACHINE-LOCAL PATH may reach a file that is about to be committed to somebody else's repo.
 leak="$(grep -rl -- "$work" "$P/.claude" "$P/.codex" "$P/.ai-dev-baseline" "$P/AGENTS.md" 2>/dev/null || true)"
@@ -309,9 +317,9 @@ eq "$after" "$before" "install: re-running the same version changes NOTHING, byt
 # mean "last install" while its name says otherwise. Edited by hand here, so the re-run is what
 # carries it forward; the receipt's own digest for the pin necessarily catches up on that first
 # re-run, which is why idempotence is measured from the run AFTER it.
-sed 's/^adopted = .*/adopted = "2020-01-02"/' "$P/.ai-dev-baseline/upstream.toml" > "$P/.pin.t" && mv "$P/.pin.t" "$P/.ai-dev-baseline/upstream.toml"
+sed 's/^adopted .*=.*/adopted  = "2020-01-02"/' "$P/.ai-dev-baseline/upstream.toml" > "$P/.pin.t" && mv "$P/.pin.t" "$P/.ai-dev-baseline/upstream.toml"
 bash "$PI" install --project "$P" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
-has "$(cat "$P/.ai-dev-baseline/upstream.toml")" 'adopted = "2020-01-02"' "install: the adoption date is carried forward, not restamped"
+has "$(cat "$P/.ai-dev-baseline/upstream.toml")" 'adopted  = "2020-01-02"' "install: the adoption date is carried forward, not restamped"
 before="$(tree_digest "$P")"
 bash "$PI" install --project "$P" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
 eq "$(tree_digest "$P")" "$before" "install: and the tree is a fixed point once the receipt agrees with it"
@@ -377,8 +385,12 @@ has "$out" "mode:    pinned" "status: reports the mode"
 has "$out" "payload: intact" "status: reports an untouched payload as intact"
 
 printf '\n# local edit\n' >> "$P/.claude/skills/cleanup/SKILL.md"
-out="$(bash "$PI" status --project "$P" 2>&1)"
+out="$(bash "$PI" status --project "$P" --offline 2>&1)"; rc=$?
 has "$out" "altered  .claude/skills/cleanup/SKILL.md" "status: names a locally modified file"
+# THE DOCUMENTED CODE, not just the text. An altered payload is an unverifiable one, and reporting
+# that in prose while returning 0 makes the machine answer disagree with the human one.
+eq "$rc" 20 "status: an altered payload exits 20, as the contract says"
+bash "$PI" install --project "$P" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
 
 mv "$P/.claude/adb/lib/ci-health.sh" "$work/parked.sh"
 bash "$PI" status --project "$P" >/dev/null 2>&1; rc=$?
@@ -417,8 +429,8 @@ has "$out" "does not match the archive" "upgrade: … and says so"
 
 out="$(bash "$PI" upgrade --project "$P" --to 9.9.10 --artifact "$work/ai-dev-baseline-9.9.10.tar.gz" --sums "$work/SUMS.next" 2>&1)"; rc=$?
 yes "$rc" "upgrade: a named version installs"
-has "$(cat "$P/.ai-dev-baseline/upstream.toml")" 'version = "9.9.10"' "upgrade: the pin moves"
-has "$(cat "$P/.ai-dev-baseline/upstream.toml")" 'agents  = ["claude", "codex"]' "upgrade: the agent set is read back from the pin, not re-defaulted"
+has "$(cat "$P/.ai-dev-baseline/upstream.toml")" 'version  = "9.9.10"' "upgrade: the pin moves"
+has "$(cat "$P/.ai-dev-baseline/upstream.toml")" 'agents   = ["claude", "codex"]' "upgrade: the agent set is read back from the pin, not re-defaulted"
 file_is "$P/.codex/adb/lib/common.sh" "upgrade: … so codex's payload is refreshed too, not orphaned"
 
 out="$(bash "$PI" upgrade --project "$Q" --to 9.9.10 2>&1)"; rc=$?
@@ -451,7 +463,10 @@ mkdir -p "$P4/.claude"
 printf '{"permissions":{"allow":["Bash(ls:*)"]}}\n' > "$P4/.claude/settings.json"
 bash "$PI" install --project "$P4" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
 bash "$PI" uninstall --project "$P4" >/dev/null 2>&1
-eq "$(cat "$P4/AGENTS.md")" "$(printf '# Mine\n\nProject prose.')" "uninstall: the project's AGENTS.md is restored exactly"
+# `cmp`, NOT `$(cat …)`. Command substitution strips trailing newlines from BOTH sides, so a
+# change in newline termination compares equal and "restored exactly" becomes unfalsifiable.
+printf '# Mine\n\nProject prose.\n' > "$work/agents-expected"
+if cmp -s "$work/agents-expected" "$P4/AGENTS.md"; then ok; else bad "uninstall: the project's AGENTS.md is restored BYTE-for-byte"; fi
 if command -v jq >/dev/null 2>&1; then
   out="$(jq -r '.permissions.allow[0]' "$P4/.claude/settings.json" 2>/dev/null)"
   eq "$out" "Bash(ls:*)" "uninstall: the project's own settings.json keys survive"
@@ -471,6 +486,16 @@ hasnt "$scan" "other	.claude/adb/lib/common.sh" "adopt: owned library members ar
 out="$(bash "$ROOT/scripts/lib/adopt-lib.sh" classify pinned yes differs no)"
 has "$out" "keep" "adopt: a pinned payload classifies as keep"
 
+# A VENDORED FILE THE OPERATOR HAS EDITED IS NO LONGER "OWNED", and must be reported rather than
+# suppressed: membership in the receipt is not ownership, the DIGEST is. Otherwise a real delta —
+# or a hand-written receipt naming a project's own skill — disappears from the plan entirely.
+printf '\n# my edit\n' >> "$P5/.claude/skills/cleanup/SKILL.md"
+scan="$(bash "$ROOT/scripts/lib/adopt-lib.sh" scan --agents claude "$P5")"
+has "$scan" "skill	.claude/skills/cleanup" "adopt: an EDITED vendored skill is reported, not suppressed"
+bash "$PI" install --project "$P5" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+scan="$(bash "$ROOT/scripts/lib/adopt-lib.sh" scan --agents claude "$P5")"
+hasnt "$scan" "skill	.claude/skills/cleanup" "adopt: … and is owned again once the install restores it"
+
 # THE PROJECT'S OWN FORK IS STILL REPORTED. Ownership must come from the receipt, not from the
 # path — otherwise a blanket exclusion would hide real project content living in the same tree.
 mkdir -p "$P5/.claude/skills/my-own"; printf 'x\n' > "$P5/.claude/skills/my-own/SKILL.md"
@@ -478,6 +503,195 @@ printf 'y\n' > "$P5/.claude/skills/cleanup/overrides.md"
 scan="$(bash "$ROOT/scripts/lib/adopt-lib.sh" scan --agents claude "$P5")"
 has "$scan" "skill	.claude/skills/my-own" "adopt: a project's own skill is still reported"
 has "$scan" "override	.claude/skills/cleanup/overrides.md" "adopt: an overrides.md inside the payload is still reported"
+
+# ================================ the review's refusals =========================================
+# Each of these was a REQUIRED finding in the independent review. They are pinned here so the fix
+# is a rule rather than a patch.
+
+# 1. A TRUNCATED COMMAND LINE MUST NOT SPIN. `shift 2` with one argument left fails and shifts
+#    NOTHING, so an unguarded parse loop runs forever — a hang, not an error.
+for _sub in "install --project" "status --project" "upgrade --to" "uninstall --project" "notice --project"; do
+  # shellcheck disable=SC2086
+  out="$( { bash "$PI" $_sub; } 2>&1 )"; rc=$?
+  eq "$rc" 2 "args: '$_sub' with no value is a usage error, not an infinite loop"
+done
+
+# 2. `install --upgrade` IS NOT A PUBLIC BYPASS of the approval gate.
+out="$(bash "$PI" install --project "$P" --upgrade --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+eq "$rc" 2 "approval: install --upgrade without a named version is refused"
+has "$out" "requires the version to be named" "approval: … and points at 'upgrade --to'"
+
+# 3. A GLOBAL-MODE /adopt PIN IS NOT CONVERTED SILENTLY.
+PG="$(new_project globalpin)"
+mkdir -p "$PG/.ai-dev-baseline"
+printf '[upstream]\nversion = "2.2.0"\ncommit  = "%s"\nstack   = "node"\n' "$(printf '0%.0s' $(seq 40))" > "$PG/.ai-dev-baseline/upstream.toml"
+cp "$PG/.ai-dev-baseline/upstream.toml" "$work/globalpin.before"
+out="$(bash "$PI" install --project "$PG" --agent claude --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+eq "$rc" 10 "pin: a global-mode /adopt pin refuses conversion"
+has "$out" "GLOBAL-mode pin" "pin: … and names what it found"
+if cmp -s "$work/globalpin.before" "$PG/.ai-dev-baseline/upstream.toml"; then ok; else bad "pin: the global-mode pin was modified despite the refusal"; fi
+
+# 4. THE SAME VERSION MUST MEAN THE SAME BYTES. A pin records a version; a version is not a
+#    content identity, so a second archive with the same name must not silently replace the tree.
+PD="$(new_project samename)"
+bash "$PI" install --project "$PD" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+mkdir -p "$work/impostor/$PREFIX"
+( cd "$work/src/$PREFIX" && tar -cf - . ) | ( cd "$work/impostor/$PREFIX" && tar -xf - )
+printf '\n# different bytes, same name\n' >> "$work/impostor/$PREFIX/agents/claude/CLAUDE.md"
+( cd "$work/impostor" && tar -czf "$work/impostor/$PREFIX.tar.gz" "$PREFIX" )
+( cd "$work/impostor" && { command -v sha256sum >/dev/null 2>&1 && sha256sum "$PREFIX.tar.gz" || shasum -a 256 "$PREFIX.tar.gz"; } > SHA256SUMS )
+out="$(bash "$PI" install --project "$PD" --agent claude --artifact "$work/impostor/$PREFIX.tar.gz" --sums "$work/impostor/SHA256SUMS" 2>&1)"; rc=$?
+eq "$rc" 10 "artifact: the same version from DIFFERENT bytes is refused"
+has "$out" "DIFFERENT archive" "artifact: … naming the two digests"
+has "$(cat "$PD/.ai-dev-baseline/upstream.toml")" "artifact = " "artifact: the pin records the archive digest"
+
+# 5. A RECEIPT PATH THAT ESCAPES THE PROJECT MUST NEVER BE ACTED ON. The receipt is committed, so
+#    on any repo that takes pull requests it is attacker-influenced text.
+PE="$(new_project escape-receipt)"
+bash "$PI" install --project "$PE" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+printf 'sibling\n' > "$work/victim.txt"
+victim_sha="$( { command -v sha256sum >/dev/null 2>&1 && sha256sum "$work/victim.txt" || shasum -a 256 "$work/victim.txt"; } | awk '{print $1}')"
+printf '%s  ../victim.txt\n' "$victim_sha" >> "$PE/.ai-dev-baseline/pinned-files.sha256"
+out="$(bash "$PI" uninstall --project "$PE" 2>&1)"
+file_is "$work/victim.txt" "receipt: a '..' record cannot make uninstall delete a file outside the project"
+has "$out" "ignoring an unsafe path" "receipt: … and the record is reported, not silently skipped"
+
+# 6. A TRUNCATED RECEIPT IS NOT AN INTACT PAYLOAD.
+PT="$(new_project truncreceipt)"
+bash "$PI" install --project "$PT" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+head -1 "$PT/.ai-dev-baseline/pinned-files.sha256" > "$PT/.t" && mv "$PT/.t" "$PT/.ai-dev-baseline/pinned-files.sha256"
+out="$(bash "$PI" status --project "$PT" --offline 2>&1)"; rc=$?
+eq "$rc" 20 "receipt: a comment-only receipt exits 20, not 'intact'"
+has "$out" "EMPTY RECEIPT" "receipt: … and says so"
+
+# 7. THE MERGED SURFACES ARE CHECKED, because the receipt structurally cannot cover them.
+PM="$(new_project surfaces)"
+bash "$PI" install --project "$PM" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+out="$(bash "$PI" status --project "$PM" --offline 2>&1)"; rc=$?
+eq "$rc" 0 "surfaces: a complete install is intact"
+grep -v 'ai-dev-baseline:' "$PM/AGENTS.md" > "$PM/.t" && mv "$PM/.t" "$PM/AGENTS.md"
+out="$(bash "$PI" status --project "$PM" --offline 2>&1)"; rc=$?
+eq "$rc" 20 "surfaces: a deleted AGENTS.md region makes the payload NOT intact"
+has "$out" "AGENTS.md managed region" "surfaces: … and names it"
+
+# 8. AN UNBALANCED MANAGED REGION IS REFUSED, NOT 'REPAIRED' BY DELETING TO EOF.
+PU="$(new_project unbalanced)"
+printf '# Mine\n<!-- ai-dev-baseline:begin (managed by pinned-install.sh — do not edit inside) -->\nirreplaceable prose\n' > "$PU/AGENTS.md"
+cp "$PU/AGENTS.md" "$work/unbalanced.before"
+out="$(bash "$PI" install --project "$PU" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+no "$rc" "unbalanced: an install over an unbalanced region refuses"
+has "$out" "unbalanced ai-dev-baseline managed region" "unbalanced: … and says why"
+if cmp -s "$work/unbalanced.before" "$PU/AGENTS.md"; then ok; else bad "unbalanced: the project's prose was altered despite the refusal"; fi
+
+# 9. THE MANAGED REGION IS REPLACED IN PLACE, not moved to EOF.
+PP="$(new_project inplace)"
+printf '# Mine\n' > "$PP/AGENTS.md"
+bash "$PI" install --project "$PP" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+printf 'TAIL PROSE AFTER THE BLOCK\n' >> "$PP/AGENTS.md"
+cp "$PP/AGENTS.md" "$work/inplace.before"
+bash "$PI" install --project "$PP" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+if cmp -s "$work/inplace.before" "$PP/AGENTS.md"; then ok; else bad "inplace: re-installing moved or rewrote the managed region"; fi
+eq "$(tail -1 "$PP/AGENTS.md")" "TAIL PROSE AFTER THE BLOCK" "inplace: the project's trailing prose stays last"
+
+# 10. UNINSTALL MUST NOT DELETE THE GATE SCRIPTS WHILE settings.json STILL POINTS AT THEM.
+PJ="$(new_project nojq)"
+bash "$PI" install --project "$PJ" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+# A PATH THAT REALLY HAS NO jq. Prepending an empty directory does nothing — jq is on the system
+# PATH this suite inherits — so the fixture links in exactly the tools the uninstaller needs and
+# nothing else. If any of them is missing on this host the row is SKIPPED and says so, rather than
+# passing for the wrong reason.
+mkdir -p "$work/nojq-bin"
+_nojq_ok=1
+for _t in bash sh git awk sed grep find rm rmdir mv cp cat dirname basename wc tr sort cut head tail printf uniq cmp date mktemp readlink ln chmod tar gzip mkdir sha256sum shasum; do
+  _src="$(command -v "$_t" 2>/dev/null)" || continue
+  ln -sf "$_src" "$work/nojq-bin/$_t" 2>/dev/null
+done
+for _t in bash git awk sed grep find rm rmdir mv cp dirname sort cut mkdir; do
+  [ -e "$work/nojq-bin/$_t" ] || _nojq_ok=0
+done
+if [ -z "$(PATH="$work/nojq-bin" command -v jq 2>/dev/null)" ] && [ "$_nojq_ok" -eq 1 ]; then
+  out="$(PATH="$work/nojq-bin" bash "$PI" uninstall --project "$PJ" 2>&1)"; rc=$?
+  eq "$rc" 12 "uninstall: refuses to strand hook entries when jq is unavailable"
+  file_is "$PJ/.claude/adb/precommit-gate.sh" "uninstall: … and the gate script it points at survives"
+else
+  printf 'check-pinned-install: NOTE — could not build a jq-free PATH on this host; the strand guard was not exercised\n' >&2
+fi
+
+# 11. A settings.json THIS INSTALL DID NOT CREATE IS NEVER DELETED.
+PS="$(new_project ownsettings)"
+mkdir -p "$PS/.claude"; printf '{}\n' > "$PS/.claude/settings.json"
+bash "$PI" install --project "$PS" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+bash "$PI" uninstall --project "$PS" >/dev/null 2>&1
+file_is "$PS/.claude/settings.json" "uninstall: a pre-existing empty settings.json is NOT deleted"
+
+# 12. A RETIRED FILE IS REMOVED ON UPGRADE, not orphaned. Built by giving the "next version" one
+#     fewer skill than the current one.
+PR="$(new_project retire)"
+bash "$PI" install --project "$PR" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+file_is "$PR/.claude/skills/debug/SKILL.md" "retire: the file exists before the upgrade"
+rm -rf "$work/src2/ai-dev-baseline-9.9.10/agents/claude/skills/debug"
+( cd "$work/src2" && tar -czf "$work/ai-dev-baseline-9.9.10.tar.gz" ai-dev-baseline-9.9.10 )
+( cd "$work" && { command -v sha256sum >/dev/null 2>&1 && sha256sum ai-dev-baseline-9.9.10.tar.gz || shasum -a 256 ai-dev-baseline-9.9.10.tar.gz; } > SUMS.next )
+bash "$PI" upgrade --project "$PR" --to 9.9.10 --artifact "$work/ai-dev-baseline-9.9.10.tar.gz" --sums "$work/SUMS.next" >/dev/null 2>&1
+file_isnt "$PR/.claude/skills/debug/SKILL.md" "retire: a file the new version no longer ships is removed"
+out="$(bash "$PI" status --project "$PR" --offline 2>&1)"; rc=$?
+eq "$rc" 0 "retire: … and the payload verifies intact afterwards"
+
+# 13. AN AGENT DROPPED FROM THE SET IS NOT ORPHANED EITHER.
+PA="$(new_project dropagent)"
+bash "$PI" install --project "$PA" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+file_is "$PA/.codex/adb/lib/common.sh" "agents: codex is installed first"
+bash "$PI" install --project "$PA" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+file_isnt "$PA/.codex/adb/lib/common.sh" "agents: dropping codex removes its payload rather than orphaning it"
+
+# 14. THE PIN'S RECORDED SOURCE WINS OVER THE ENVIRONMENT.
+PF="$(new_project pinsource)"
+ADB_PINNED_REPO="someone/private-fork" bash "$PI" install --project "$PF" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+has "$(cat "$PF/.ai-dev-baseline/upstream.toml")" 'source   = "someone/private-fork"' "source: the pin records where it came from"
+out="$(bash "$PI" status --project "$PF" 2>&1)"
+has "$out" "source:  someone/private-fork" "source: status reads the PIN, not the ambient default"
+
+# 15. A RELEASE PREDATING THIS FEATURE IS REFUSED, because it cannot supply the commands the docs
+#     promise. This is the real floor; the version number is only a coarse one.
+mkdir -p "$work/nopi/$PREFIX"
+( cd "$work/src/$PREFIX" && tar -cf - . ) | ( cd "$work/nopi/$PREFIX" && tar -xf - )
+rm -f "$work/nopi/$PREFIX/scripts/lib/pinned-install.sh"
+( cd "$work/nopi" && tar -czf "$work/nopi/$PREFIX.tar.gz" "$PREFIX" )
+( cd "$work/nopi" && { command -v sha256sum >/dev/null 2>&1 && sha256sum "$PREFIX.tar.gz" || shasum -a 256 "$PREFIX.tar.gz"; } > SHA256SUMS )
+PN="$(new_project nopinned)"
+out="$(bash "$PI" install --project "$PN" --agent claude --artifact "$work/nopi/$PREFIX.tar.gz" --sums "$work/nopi/SHA256SUMS" 2>&1)"; rc=$?
+eq "$rc" 11 "floor: an artifact carrying no pinned-install.sh is refused"
+has "$out" "predates the pinned" "floor: … and says why that matters"
+
+# 16. --project MUST BE THE REPOSITORY ROOT, or the re-anchored skills can never find the payload.
+PZ="$(new_project subdir)"
+mkdir -p "$PZ/packages/web"
+out="$(bash "$PI" install --project "$PZ/packages/web" --agent claude --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+eq "$rc" 2 "root: installing into a subdirectory is refused"
+has "$out" "must be the repository ROOT" "root: … and names the real root"
+eq "$(find "$PZ/packages/web" -type f | wc -l | tr -d ' ')" 0 "root: … and nothing was written there"
+
+# 17. A LEGITIMATE SYMLINK IN THE ARTIFACT IS FINE; ONE THAT ESCAPES IS NOT. This framework really
+#     ships one (the agents/claude/scripts/lib compat shim), so "refuse all links" was wrong.
+mkdir -p "$work/evil-link/$PREFIX"
+( cd "$work/src/$PREFIX" && tar -cf - . ) | ( cd "$work/evil-link/$PREFIX" && tar -xf - )
+ln -sf /etc/hosts "$work/evil-link/$PREFIX/scripts/lib/escaped.sh"
+( cd "$work/evil-link" && tar -czf "$work/evil-link/$PREFIX.tar.gz" "$PREFIX" )
+( cd "$work/evil-link" && { command -v sha256sum >/dev/null 2>&1 && sha256sum "$PREFIX.tar.gz" || shasum -a 256 "$PREFIX.tar.gz"; } > SHA256SUMS )
+PL="$(new_project escapelink)"
+out="$(bash "$PI" install --project "$PL" --agent claude --artifact "$work/evil-link/$PREFIX.tar.gz" --sums "$work/evil-link/SHA256SUMS" 2>&1)"; rc=$?
+eq "$rc" 11 "links: a symlink resolving outside the unpacked tree is refused"
+has "$out" "resolving OUTSIDE it" "links: … and names the offender"
+eq "$(find "$PL" -path "$PL/.git" -prune -o -type f -print | wc -l | tr -d ' ')" 0 "links: … and nothing was written"
+
+# 18. THE HOOK WIRING IS DERIVED FROM settings.hooks.json, not from a hardcoded list — so a hook
+#     added upstream is wired here too instead of being silently omitted.
+if command -v jq >/dev/null 2>&1; then
+  wired="$(jq -r '[.hooks[]?[]?.hooks[]?.command] | map(split("/") | last) | sort | join(",")' "$PM/.claude/settings.json")"
+  shipped="$(jq -r '[.[][].hooks[].command] | map(split("/") | last) | map(select(. != "session-currency.sh")) | sort | join(",")' "$ROOT/agents/claude/settings.hooks.json")"
+  eq "$wired" "$shipped" "hooks: every shipped Stop hook except the excluded one is wired"
+  hasnt "$wired" "session-currency.sh" "hooks: the clone-currency hook is excluded"
+fi
 
 # ================================ the payload actually RUNS =====================================
 # "The files are present" is not the acceptance criterion; "a pinned project can run the loop" is.
@@ -522,6 +736,10 @@ done
 out="$( cd "$P7" && bash "$P7/.claude/adb/precommit-gate.sh" </dev/null 2>&1 )"; rc=$?
 hasnt "$out" "required library not found" "runnable: the vendored Stop gate resolves its sibling lib/"
 hasnt "$out" "No such file or directory" "runnable: … with no missing-file error"
+# THE EXIT STATUS IS PART OF THE VERDICT. Searching only for two strings passes a gate that died
+# for a third reason entirely. A Stop hook's contract is 0 (allow) or 2 (block); anything else is
+# the script failing to run.
+case "$rc" in 0|2) ok ;; *) bad "runnable: the vendored Stop gate exited $rc, which is neither allow (0) nor block (2)" ;; esac
 
 # ================================ entry points ==================================================
 

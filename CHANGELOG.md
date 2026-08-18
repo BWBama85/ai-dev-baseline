@@ -37,9 +37,14 @@ only by a published release, which is what these entries are the notes for.
 
   **Installing always goes through a published release artifact**, checksummed against that
   release's own `SHA256SUMS` record before anything is unpacked — even when the installer is driven
-  from a clone. Archives with absolute or `../` members, a name disagreeing with the internal
-  prefix, CRLF line endings, or a version below 2.0.0 are refused, and the whole payload is staged
-  and validated before the first write into the project.
+  from a clone. Refused: an archive with absolute or `../` members, one whose name disagrees with
+  its internal prefix, one containing a symlink that resolves outside the unpacked tree, one with
+  CRLF line endings, and one carrying no `scripts/lib/pinned-install.sh` — a release predating this
+  feature, which could never supply the commands the docs promise. The pin also records the
+  archive's SHA-256, so re-installing "the same version" from *different bytes* is refused rather
+  than silently replacing the tree. The whole payload is staged and validated before the first
+  write into the project; once publishing begins the receipt is written incrementally, so an
+  interrupted install is always uninstallable.
 
   **Nothing upgrades on its own.** `baseline pinned status` reports the pinned version and whether
   a newer release exists; `baseline pinned upgrade --to X.Y.Z` is the only thing that moves it, and
@@ -50,13 +55,20 @@ only by a published release, which is what these entries are the notes for.
   out.
 
   **Uninstall removes by digest** (`./uninstall.sh --pinned --project DIR`): a vendored file that
-  still matches the receipt goes, one you edited is kept and named, and your own `AGENTS.md` prose
-  and `settings.json` keys survive.
+  still matches the receipt goes, one you edited is kept and named. Your own `AGENTS.md` prose and
+  your own `settings.json` keys are preserved — a `settings.json` is only removed when this install
+  created it *and* it now holds nothing but this install's wiring, and an `AGENTS.md` whose managed
+  region has unbalanced markers is refused rather than repaired, because "repairing" it means
+  deleting to end of file.
 
-  **Two limitations, stated rather than discovered.** Gemini is refused — it has no project-local
+  **Three limitations, stated rather than discovered.** Gemini is refused — it has no project-local
   skill discovery, so a vendored payload could not be loaded, and installing one would be a mode
-  that reports success and does nothing. And `skill-compose` overrides do not work in pinned mode,
-  because the composer's output path *is* the vendored base skill.
+  that reports success and does nothing. `skill-compose` overrides do not work in pinned mode,
+  because the composer's output path *is* the vendored base skill. And **Codex reads at most
+  `project_doc_max_bytes` — 32 KiB by default — and truncates silently**, while the rendered
+  practices are far larger; the install measures the result and prints the config line that fixes
+  it, because an installer cannot change your Codex settings but must not let half the practices
+  vanish without a word.
 
 ### Changed
 

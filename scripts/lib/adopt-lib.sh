@@ -460,23 +460,11 @@ cmd_prescribed() {
 # collision arm below would fire on them and the plan would tell the operator to dismantle their
 # own runtime.
 #
-# OWNERSHIP IS PROVED FROM THE RECEIPT, NEVER FROM THE PATH. `.claude/skills/foo` is a legitimate
-# project fork in one repo and install-owned in another, and only the receipt written at install
-# time tells them apart. No receipt, or a pin that does not say `mode = "pinned"`, means nothing
-# here is owned and the scan behaves exactly as it always has.
-# Usage: _ad_pinned_owned <project-root>      (prints one repo-relative path per line)
-_ad_pinned_owned() {
-  local root="$1" pin="$1/.ai-dev-baseline/upstream.toml" receipt="$1/.ai-dev-baseline/pinned-files.sha256"
-  [ -f "$pin" ] && [ -f "$receipt" ] || return 0
-  [ "$(adb_toml_unquote "$(adb_toml_get "$pin" upstream mode 2>/dev/null)" 2>/dev/null)" = pinned ] || return 0
-  local _ hash rel
-  while read -r hash rel; do
-    case "$hash" in ''|'#'*) continue ;; esac
-    [ -n "$rel" ] || continue
-    printf '%s\n' "$rel"
-  done < "$receipt"
-  return 0
-}
+# OWNERSHIP IS PROVED BY DIGEST, NOT BY PATH OR BY MEMBERSHIP, and the predicate lives in
+# `common.sh` because `pinned-install.sh` decides the same question and two readers of one receipt
+# is the drift this library exists to prevent. Membership alone would let a hand-written receipt
+# suppress a project's own skill, and would hide a vendored file the operator has since EDITED —
+# which is a real delta somebody needs to see.
 
 # _ad_owns <owned-list> <repo-relative-path> — true when the path is in the pinned receipt.
 #
@@ -653,7 +641,7 @@ cmd_scan() {
   # is emitted rather than suppressing the payload silently: an omitted artifact never reaches
   # `classify`, which is the exact hole the `other` kind was added to close.
   local _ad_owned=""
-  _ad_owned="$(_ad_pinned_owned "$root")"
+  _ad_owned="$(adb_pinned_owned "$root")"
   if [ -n "$_ad_owned" ]; then
     _ad_emit pinned .ai-dev-baseline/pinned-files.sha256 pinned-payload -
   fi

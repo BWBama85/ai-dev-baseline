@@ -562,11 +562,15 @@ bash install.sh --pinned --project . --artifact ../ai-dev-baseline-2.2.0.tar.gz 
 ```
 
 Either way the archive's SHA-256 is checked **against the `SHA256SUMS` record naming that exact
-filename** before anything is unpacked, and the unpacked tree is rejected if it carries an absolute
-or `../` member, if its internal `ai-dev-baseline-<version>/` prefix disagrees with the filename, if
-it predates the payload floor (2.0.0), or if it arrived with CRLF line endings. Note what two assets
-from one Release do and do not prove: they detect **corruption and truncation**, not authenticity —
-an attacker who can replace one can replace both.
+filename** before anything is unpacked. The tree is then rejected if it carries an absolute or
+`../` member, if a symlink in it resolves outside the tree, if its internal
+`ai-dev-baseline-<version>/` prefix disagrees with the filename, if it arrived with CRLF line
+endings, or if it carries no `scripts/lib/pinned-install.sh` — a release published before this
+feature existed, which could never give the project the `status` / `upgrade` / `uninstall` commands
+below. That last test is the real floor; the version comparison is only a coarse one.
+
+Note what two assets from one Release do and do not prove: they detect **corruption and
+truncation**, not authenticity — an attacker who can replace one can replace both.
 
 ### What gets vendored, and where
 
@@ -625,7 +629,10 @@ install-source clone; it reads only the local pin and receipt, so it costs no ex
 **Re-running the install changes nothing.** The same version republishes identical bytes — the
 adoption date is carried forward rather than restamped — and a *different* version is refused with
 the `upgrade --to` command spelled out, because changing the pinned version is a decision, not a
-side effect.
+side effect. The pin also records the **archive's SHA-256**, so "the same version" means the same
+bytes: a second archive with the same filename and different contents is refused too, rather than
+quietly replacing the payload. An upgrade removes what the previous version shipped and the new one
+does not, so nothing is left behind unowned.
 
 **Uninstall removes by digest.** A vendored file whose contents still match the receipt is removed;
 one you edited is **kept and named**, because an uninstaller that deletes work it did not write is
@@ -649,6 +656,13 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   and no `bin/` — a pinned project consumes the baseline, it does not develop it.
 - **The pin is not a lock file.** It records what was installed; the receipt is what proves the
   tree still matches it.
+- **Codex truncates long project instructions, and this install cannot stop it.** Its
+  `project_doc_max_bytes` defaults to 32 KiB and larger files are truncated *silently*, while the
+  rendered practices are far bigger. The install measures the resulting `AGENTS.md` and prints the
+  one line that fixes it — put `project_doc_max_bytes = 262144` in `~/.codex/config.toml` — but the
+  setting is yours, not the payload's.
+- **A project already carrying an `/adopt` pin is refused, not converted.** That file records a
+  commit this installer cannot reconstruct; retire it deliberately first.
 
 ## Uninstalling
 
