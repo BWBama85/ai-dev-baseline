@@ -5924,3 +5924,75 @@ limit: none of them is sufficient alone.
              manifest is invisible to `adb_unlink_manifest`, so before this an uninstall left one of
              our own dangling symlinks in the operator's home and still printed "Uninstalled".
 - baseline-issue: n/a — this repo IS the baseline; #378 is the tracking issue.
+
+## D74 — instruction prose is written to the vendors' current prompting guidance, and narrative is not a form of instruction
+- date:      2026-08-18
+- category:  project-delta
+- unknown:   `handling-the-unknown.md` prescribes a home for project-specific CONTENT; it says nothing
+             about the REGISTER instruction prose is written in. The baseline's own workflows and
+             practices had accumulated incident history, product pitch, field reports and
+             design-alternative argumentation inline, and every such line renders ×3 (Claude, Codex,
+             Gemini) and is paid as context on every invocation. #358 states an owner standard for
+             that register and requires the first child PR to land to record it here; #359 landed
+             (D71) without doing so, so this entry discharges the obligation.
+- decision:  Instruction prose in `base/workflows/` and `base/practices/` is written to the target
+             vendors' CURRENT documented prompting guidance, fetched at implementation time —
+             never from training-data recall (`third-party-claims.md`). Fetched for this change on
+             2026-08-18: Anthropic's *Prompting best practices* and *Prompting Claude Opus 5* (be
+             clear and direct; sequential steps as ordered lists; motivation only where it changes
+             behavior; tell the model what to do rather than what not to do; dial back
+             CRITICAL/MUST emphasis, which now over-triggers; remove verification scaffolding the
+             model already performs; constrain scope explicitly), Google's *Prompt design
+             strategies* and the Gemini 3.x note (precise, concise instructions — over-elaborate
+             prompt engineering causes over-analysis), and OpenAI's Codex prompting guide (specific
+             actionable constraints over vague guidance; do not repeat core behaviors; batch
+             related constraints rather than scattering them).
+             There is NO length cap in either direction: operative completeness decides length.
+             Cutting a RULE is a defect; cutting the story around it is the job. Incident history,
+             pitch, field reports and design-alternative argumentation either relocate to this log
+             as one dated entry and are cited from the surviving rule as `(D<n>)`, or are cut
+             outright when an entry here already carries them.
+- placement: `base/workflows/*.md` and `base/practices/*.md` (the prose itself) · this log (the
+             relocated history) · `scripts/render-size.sh` reports the cost (D71), and deliberately
+             does not gate it — the owner rejected caps on 2026-08-15.
+- reason:    A register is not content, so no prescribed home in `handling-the-unknown.md` covers it,
+             and an unrecorded standard is one every future rewrite re-derives differently. Writing
+             it down once is what makes "narrative does not survive" reviewable rather than a matter
+             of taste. The vendors converge on the same instruction: be specific and operative, do
+             not repeat, do not pad — which is why one standard can serve three render targets and
+             #304's per-agent block mechanism stays unused for density.
+- baseline-issue: n/a — this repo IS the baseline; #358 is the tracking epic.
+
+## D75 — a density rewrite treats the guarded regions as BYTE-PRESERVED and the in-fence comments as prose
+- date:      2026-08-18
+- category:  project-delta
+- unknown:   #360 rewrites `base/workflows/roadmap.md` for density while `scripts/check-roadmap.sh`
+             pins exact sentences, `scripts/check-roadmap-e2e.sh` EXECUTES ten `# ADB-SNIPPET`
+             blocks, and `scripts/check-injection.sh` counts labelled read sites. Nothing said which
+             of those regions a behavior-preserving rewrite may touch, and the two obvious readings
+             are both wrong: byte-preserving every fence leaves the 376 in-fence comment lines the
+             issue's own defect inventory names, while treating a fence as prose risks editing shell
+             that a suite runs.
+- decision:  Split the fence. Every NON-COMMENT line inside an `# ADB-SNIPPET` block is behavior and
+             is byte-preserved; the `#` comment lines inside it are prose and are rewritten to the
+             D74 register. Proven mechanically rather than by eye: the ten snippets' comment-stripped
+             bodies were captured before the rewrite and diffed against the rewritten file, and all
+             ten came back identical. The four regions the issue names as behavior — the four-state
+             classification, the bundle-status ladder, the terminal-string set, and the output
+             contract — are byte-preserved whole, including their prose, and the gauge-before-
+             owner-action document order is unchanged.
+             Two contracts that had been restated in five snippets (self-containment, and
+             read-then-parse-then-hard-stop) are stated ONCE in a new `## Fenced blocks — two
+             standing contracts` section and deleted from the blocks, which is the Codex guidance's
+             "do not repeat core behaviors" applied to a file that repeated them per call site.
+             No pin moved: every sentence `check-roadmap.sh` pins survives verbatim, so no guarded
+             test needed updating and none was re-observed failing.
+- placement: `base/workflows/roadmap.md` · the three regenerated `agents/*/skills/roadmap/SKILL.md`.
+- reason:    A comment inside a fenced block is not executed, so it cannot be behavior; the shell
+             beside it is, and the e2e suite proves that by running it. Making the split mechanical —
+             capture the code-only lines, rewrite, diff — turns "I was careful" into an observation,
+             which is what `self-review.md` asks of any change whose failure mode is silence. Stating
+             it here rather than in the workflow keeps the next density child (#361, #362, #363) from
+             re-deciding it: `implement-issue.md` and `cleanup.md` carry the same fenced-block shape
+             and the same suites.
+- baseline-issue: n/a — this repo IS the baseline; #360 is the tracking issue.
