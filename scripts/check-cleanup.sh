@@ -965,13 +965,27 @@ else
   # so a widened field list is the regression to catch.
   has "$wfexec" '--json number,headRefOid --jq' \
      "6 the open-PR read takes only GitHub-assigned fields — never the untrusted PR body"
-  # BOTH gh CALLS TAKE </dev/null. This arm runs inside the candidate loop, whose stdin is the
-  # `$CANDIDATES` heredoc; a child that read stdin would swallow the rest of the list and the sweep
-  # would process ONE branch and stop, reporting success. Nothing else here can see that — every
-  # fixture that happens to feed one candidate passes either way, and section 12's does not exercise
-  # it because the stub reads no stdin. Counted, so removing one of the two fails.
-  eq "${ printf '%s\n' "$wfexec" | grep -c '</dev/null'; }" "2" \
-     "6 both gh calls in the PR-close arm are stdin-protected against swallowing the candidate list"
+  # ALL FOUR gh CALLS TAKE </dev/null (list, close, view, reopen). This arm runs inside the
+  # candidate loop, whose stdin is the `$CANDIDATES` heredoc; a child that read stdin would swallow
+  # the rest of the list and the sweep would process ONE branch and stop, reporting success. Nothing
+  # else here can see that — every fixture that happens to feed one candidate passes either way, and
+  # section 12's does not exercise it because the stub reads no stdin. Counted, so losing one fails.
+  eq "${ printf '%s\n' "$wfexec" | grep -c '</dev/null'; }" "4" \
+     "6 all four gh calls in the PR-close arm are stdin-protected against swallowing the candidate list"
+  # --- PR #393 review: the four close-arm hardenings, pinned as text. The executed cases live in
+  # section 12 (12k-12n); these pin the spellings a quiet revert would remove.
+  has "$wfexec" 'unset GH_REPO' \
+     "6 the sweep neutralizes GH_REPO before its first gh call, so every read and mutation is anchored to the checkout the proof used"
+  has "$wfexec" '--base "$DEFAULT" --state open' \
+     "6 the open-PR query is scoped to the base the containment proof speaks for"
+  has "$wfcode" 'if [ "$OPENPR_N" -ge "$OPENPR_LIMIT" ]; then' \
+     "6 a list at the hard cap is treated as a possible subset — refused, never closed from"
+  has "$wfexec" 'POSTHEAD="$(gh pr view "$PRNUM" --json headRefOid' \
+     "6 the head is re-read AFTER the close, because gh pr close cannot be leased"
+  has "$wfexec" 'gh pr reopen "$PRNUM"' \
+     "6 …and a post-close head that is not the proved tip is compensated by a reopen"
+  has "$wfcode" 'present; liveness could not be verified — kept fail-closed' \
+     "6 an unverifiable marker is reported without claiming a live run"
   # THE CLOSE FOLLOWS A DELETE THAT SUCCEEDED. cleanup.md`s guardrail has no PR-shaped exception:
   # an unmerged branch`s PR is live work. Structurally: the close must sit between the successful
   # `update-ref` and the `else` arm that reports a refusal, so a close hoisted out of that arm —
@@ -2489,22 +2503,30 @@ PCR="$PC/repo"
 ) || bad "12 fixture build failed"
 PC_MAIN="${ check_git "$PCR" rev-parse refs/heads/main; }"
 
-# The `gh` the workflow will actually invoke. It answers the TWO reads the block makes and logs
+# The `gh` the workflow will actually invoke. It answers every read the block makes and logs
 # every call, so "was a close even attempted?" is answerable rather than inferred from an absence.
+# Each log line is prefixed with `GH_REPO=<slug> ` when that variable reached the process, so
+# "did the documented redirect reach gh?" (PR #393's P1) is answerable the same way.
 #
 # ROUTED BY `--state`, because the block makes two DIFFERENT `pr list` calls: the merged-PR
 # evidence query (whose output feeds branch-verdict, stubbed here, so `[]` is right) and the
 # open-PR query this section is about. A stub that answered both the same way would feed open-PR
 # records into the verdict path and prove nothing about either.
+#
+# `--base` ROUTES TOO, the way gh behaves: with no `--base`, same-head PRs targeting OTHER bases
+# (the `open-<head>+other` fixture) are served as well; with one, only the base's own fixture is.
+# `--limit` is honored as the HARD CAP the real flag documents — rows beyond it are dropped.
 check_write_stub "$PCB/gh" <<'GHSTUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$PC_LOG"
+printf '%s\n' "${GH_REPO:+GH_REPO=$GH_REPO }$*" >> "$PC_LOG"
 sub="$1 $2"
-head=""; state=""; prev=""
+head=""; state=""; base=""; limit=""; prev=""
 for a in "$@"; do
   case "$prev" in
     --head|-H)  head="$a" ;;
     --state|-s) state="$a" ;;
+    --base|-B)  base="$a" ;;
+    --limit|-L) limit="$a" ;;
   esac
   prev="$a"
 done
@@ -2513,20 +2535,32 @@ case "$sub" in
     if [ "$state" = open ]; then
       [ "${PC_LIST_RC:-0}" -eq 0 ] || exit "$PC_LIST_RC"
       f="$PC_FIX/open-$(printf '%s' "$head" | tr '/' '_')"
-      [ -f "$f" ] && cat "$f"
+      { [ -f "$f" ] && cat "$f"
+        [ -z "$base" ] && [ -f "$f+other" ] && cat "$f+other"
+        :
+      } | head -n "${limit:-30}"
       exit 0
     fi
     printf '[]\n'
     exit 0
     ;;
-  "pr close") exit "${PC_CLOSE_RC:-0}" ;;
+  "pr close")  exit "${PC_CLOSE_RC:-0}" ;;
+  "pr view")
+    # The post-close head read: a `post-<number>` fixture overrides; the default answer is the
+    # head the open-PR fixture advertised, i.e. "nothing moved after the close".
+    if [ -f "$PC_FIX/post-$3" ]; then cat "$PC_FIX/post-$3"
+    else grep -h "^$3 " "$PC_FIX"/open-* 2>/dev/null | head -n1 | cut -d' ' -f2; fi
+    exit 0
+    ;;
+  "pr reopen") exit "${PC_REOPEN_RC:-0}" ;;
 esac
 exit 0
 GHSTUB
 [ -x "$PCB/gh" ] || bad "12 the gh stub was not written executable — the real gh would be used"
 
-# Six branches, one per direction the issue names. Every one of them is a REAL ancestor of main
-# (so `branch-verdict` is asked about a genuinely merged branch) except `pc/open`.
+# Eight branches, one per direction the issue (and the PR #393 review findings) names. Every one
+# of them is a REAL ancestor of main (so `branch-verdict` is asked about a genuinely merged
+# branch) except `pc/open`.
 #
 # BUILT ONCE, THEN RESTORED BY OID — never re-created with a fresh commit. The sweep DELETES these
 # branches and this section runs it five times, so a rebuild that made a new empty commit would
@@ -2537,7 +2571,7 @@ GHSTUB
 pc_build() {
   ( cd "$PCR" || exit 1
     git checkout -q main
-    for b in pc/match pc/moved pc/gone pc/two pc/carry; do
+    for b in pc/match pc/moved pc/gone pc/two pc/carry pc/full pc/swap; do
       git checkout -q -b "$b"
       git commit -q --allow-empty -m "$b work"
       git checkout -q main
@@ -2549,7 +2583,7 @@ pc_build() {
 }
 pc_build
 PC_REFS=""
-for b in pc/match pc/moved pc/gone pc/two pc/carry pc/open; do
+for b in pc/match pc/moved pc/gone pc/two pc/carry pc/full pc/swap pc/open; do
   PC_REFS="${PC_REFS}${b} ${ check_git "$PCR" rev-parse "refs/heads/$b"; }
 "
 done
@@ -2596,13 +2630,20 @@ pc_openprs() {
 
 # pc_run [snippet-body] — execute the extracted block with gh AVAILABLE. Files, not captured
 # strings, for the reason br_run states: these accumulators are TAB-separated by design.
+#
+# GH_REPO IS FOISTED ON EVERY RUN, deliberately. The P1 in the PR #393 review is that a live
+# GH_REPO redirects every gh call to a repository the $TIP proof knows nothing about; exporting a
+# foreign slug here makes each standard run double as that hostile environment, and 12k asserts
+# no gh call ever saw it.
 pc_run() {
   local body="${1:-$BR_SNIPPET}"
   rm -f "$PC/gh.log"
   pc_fixture
   ( cd "$PCR" && env PATH="$PCB:$PATH" PC_LOG="$PC/gh.log" PC_FIX="$PC/fix" \
-        PC_LIST_RC="${PC_LIST_RC:-0}" PC_CLOSE_RC="${PC_CLOSE_RC:-0}" "$BASH" -c '
+        PC_LIST_RC="${PC_LIST_RC:-0}" PC_CLOSE_RC="${PC_CLOSE_RC:-0}" \
+        PC_REOPEN_RC="${PC_REOPEN_RC:-0}" GH_REPO=evil/elsewhere "$BASH" -c '
 BASE=origin/main
+DEFAULT=main
 TABC="$(printf "\t")"
 WORKTREES=""
 HAVE_GH=1
@@ -2612,6 +2653,8 @@ pc/moved
 pc/gone
 pc/two
 pc/carry
+pc/full
+pc/swap
 pc/open"
 '"${body//\{\{CLEANUP_LIB\}\}/bash \"$PC/cl\"}"'
 printf "%s" "$DELETED_LOCAL" > '"$PC"'/deleted_local
@@ -2633,12 +2676,36 @@ pc_line() {
 PC_TIP_MATCH="${ check_git "$PCR" rev-parse refs/heads/pc/match; }"
 PC_TIP_TWO="${   check_git "$PCR" rev-parse refs/heads/pc/two; }"
 PC_TIP_CARRY="${ check_git "$PCR" rev-parse refs/heads/pc/carry; }"
+PC_TIP_FULL="${  check_git "$PCR" rev-parse refs/heads/pc/full; }"
+PC_TIP_SWAP="${  check_git "$PCR" rev-parse refs/heads/pc/swap; }"
 pc_openprs pc/match "101 $PC_TIP_MATCH"
 pc_openprs pc/moved "102 $PC_MAIN"
 pc_openprs pc/gone  ""
 pc_openprs pc/two   "103 $PC_TIP_TWO" "104 $PC_MAIN"
 pc_openprs pc/carry "105 $PC_TIP_CARRY"
 pc_openprs pc/open  "106 $PC_MAIN"
+# A same-head PR targeting ANOTHER base, at the proved tip — the one PR #393's base-filter
+# finding is about. The stub serves it only to an UNFILTERED query, the way gh would.
+printf '107 %s\n' "$PC_TIP_MATCH" > "$PC/fix/open-pc_match+other"
+# A SATURATED head: exactly the shipped cap's worth of open PRs, every one at the proved tip, so
+# an implementation that trusts the truncated list would close all of them. The cap is extracted
+# from the shipped block, so the fixture tracks it instead of silently falling below it.
+pc_limit="${ printf '%s\n' "$BR_SNIPPET" | sed -n 's/^ *OPENPR_LIMIT=\([0-9][0-9]*\)$/\1/p' | head -n1; }"
+if [ -n "$pc_limit" ]; then ok; else
+  bad "12 could not extract OPENPR_LIMIT from the shipped block — the saturation fixture cannot track the cap"
+  pc_limit=100
+fi
+: > "$PC/fix/open-pc_full"
+pc_i=0
+while [ "$pc_i" -lt "$pc_limit" ]; do
+  printf '%s %s\n' "$((200 + pc_i))" "$PC_TIP_FULL" >> "$PC/fix/open-pc_full"
+  pc_i=$((pc_i + 1))
+done
+# A head whose PR moves BETWEEN the close and the post-close read: the open fixture advertises
+# the proved tip (so the close is attempted), and the `post-` fixture answers the re-read with a
+# different head — the race `gh pr close` cannot lease against.
+pc_openprs pc/swap "110 $PC_TIP_SWAP"
+printf '%s\n' "$PC_MAIN" > "$PC/fix/post-110"
 
 pc_run
 pc_notes="${ cat "$PC/notes"; }"
@@ -2677,10 +2744,12 @@ if [ -z "${ check_git "$PCR" rev-parse --verify --quiet refs/heads/pc/gone; }" ]
   bad "12c pc/gone was not deleted — the fixture proves nothing"
 fi
 # SCOPED BY ENUMERATING THE CLOSES, not by `hasnt … 'pr close'`: this one run legitimately closes
-# three other PRs, so a bare absence test could only ever pass by accident of ordering. The set is
-# the assertion — 101 (pc/match), 103 (pc/two) and 105 (pc/carry), and nothing for pc/gone.
+# four other PRs, so a bare absence test could only ever pass by accident of ordering. The set is
+# the assertion — 101 (pc/match), 103 (pc/two), 105 (pc/carry) and 110 (pc/swap, reopened later by
+# 12n's compensation), and nothing for pc/gone, nothing from pc/full's saturated list, and never
+# the other-base 107.
 eq "${ printf '%s\n' "$pc_log" | awk '$1 == "pr" && $2 == "close" { print $3 }' | sort | tr '\n' ' '; }" \
-   "101 103 105 " \
+   "101 103 105 110 " \
    "12c the closes attempted are exactly the PRs at a proved tip — none for a head with no open PR"
 hasnt "$pc_notes" 'pc/gone'  "12c …and nothing is reported about it"
 
@@ -2760,6 +2829,116 @@ has "${ cat "$PC/gh.log"; }" 'pr close 102' \
    "12j the control (the same block with the OID gate removed) closes the PR whose head had moved"
 has "${ cat "$PC/gh.log"; }" 'pr close 104' \
    "12j …and the second PR on the two-PR head as well, which is the defect 12b and 12d pin"
+
+# --- 12k. GH_REPO cannot redirect the arm: the proof's repository is the gh calls' repository ---
+# The P1 in the PR #393 review. $TIP containment was proved against THIS checkout's origin, and a
+# live GH_REPO redirects every gh call to whatever repository it names (`gh help environment`) —
+# a fork sharing the commit and branch name would have ITS PR closed on this checkout's proof.
+# The hazard record lives on `adb_git_repo_slugs` in common.sh. Every pc_run exports
+# GH_REPO=evil/elsewhere, and the stub prefixes any call that saw it, so the log answers directly.
+pc_run
+has   "${ cat "$PC/gh.log"; }" 'pr close 101' \
+   "12k the run made real gh calls, so the absence asserted next cannot pass vacuously"
+hasnt "${ cat "$PC/gh.log"; }" 'GH_REPO=' \
+   "12k no gh call in the sweep ever saw the foisted GH_REPO — the redirect dies before the first read"
+# THE CONTROL: the shipped block with the one `unset GH_REPO` line removed, in the same hostile
+# environment. Every call then reaches gh with the foreign slug in force — the pre-fix defect.
+PCK_BROKEN="${ printf '%s\n' "$BR_SNIPPET" \
+  | N='unset GH_REPO' awk 'index($0, ENVIRON["N"]) == 1 { print ":"; next } { print }'; }"
+if [ "$PCK_BROKEN" = "$BR_SNIPPET" ]; then
+  bad "12k the control mutation did not apply — the needle no longer matches the shipped block"
+else ok; fi
+pc_run "$PCK_BROKEN"
+has "${ cat "$PC/gh.log"; }" 'GH_REPO=evil/elsewhere pr list' \
+   "12k the control (the unset removed) hands every gh call to the foreign repository — the P1 defect"
+
+# --- 12l. the base filter: containment in origin/main says NOTHING about another base -----------
+# A same-head PR targeting a release or maintenance branch is live backport work: $TIP's proof
+# speaks only for origin/$DEFAULT. The stub serves the other-base PR (107, head AT the proved
+# tip) only to an unfiltered query, the way gh would, so the shipped `--base` keeps it out of
+# reach entirely. The other direction rides 12a: 101 — same head, base main — IS still closed.
+pc_run
+has   "${ cat "$PC/gh.log"; }" 'pr list --head pc/match --base main --state open' \
+   "12l the open-PR query is scoped to the base the proof speaks for"
+hasnt "${ cat "$PC/gh.log"; }" 'pr close 107' \
+   "12l a same-head PR targeting another base is never closed, even at the proved tip"
+hasnt "${ cat "$PC/pr_closed"; }" "107$TAB" "12l …and never reported as closed"
+# THE CONTROL: the shipped query with only `--base "$DEFAULT"` dropped. The stub then serves the
+# other-base PR, its head matches the proved tip, and the OID gate happily closes it.
+PCL_NEEDLE='gh pr list --head "$b" --base "$DEFAULT" --state open'
+PCL_UNFILTERED='          if OPENPRS="$(gh pr list --head "$b" --state open \'
+PCL_BROKEN="${ printf '%s\n' "$BR_SNIPPET" \
+  | N="$PCL_NEEDLE" R="$PCL_UNFILTERED" awk 'index($0, ENVIRON["N"]) { print ENVIRON["R"]; next } { print }'; }"
+if [ "$PCL_BROKEN" = "$BR_SNIPPET" ]; then
+  bad "12l the control mutation did not apply — the needle no longer matches the shipped block"
+else ok; fi
+pc_run "$PCL_BROKEN"
+has "${ cat "$PC/gh.log"; }" 'pr close 107' \
+   "12l the control (the filter dropped) closes the other-base PR on a proof about origin/main — the defect"
+
+# --- 12m. the hard cap: a list AT the cap is a possible subset, and a subset is never closed ----
+# `gh pr list --limit` is a hard truncation, not a page size. When the stub returns exactly the
+# cap's worth of rows the shipped block refuses the whole head — naming the count and the cap —
+# and closes NOTHING: closing the visible subset would leave every invisible PR dangling in
+# silence, which is the #106 failure class on PRs.
+pc_run
+has "${ cat "$PC/notes"; }" \
+   "REFUSED closing any PR for pc/full — the open-PR list returned $pc_limit results at its cap of $pc_limit" \
+   "12m a saturated open-PR list is refused loudly, naming the head, the count and the cap"
+hasnt "${ cat "$PC/gh.log"; }" 'pr close 200' \
+   "12m …and no PR from the saturated list is closed (12c's exact close set is the full assertion)"
+# THE CONTROL: the saturation check blinded — the pre-fix shape, which trusted the cap as the
+# whole answer and closed the subset it could see, with no refusal anywhere.
+PCM_NEEDLE='if [ "$OPENPR_N" -ge "$OPENPR_LIMIT" ]; then'
+PCM_BLIND='            if false; then'
+PCM_BROKEN="${ printf '%s\n' "$BR_SNIPPET" \
+  | N="$PCM_NEEDLE" R="$PCM_BLIND" awk 'index($0, ENVIRON["N"]) { print ENVIRON["R"]; next } { print }'; }"
+if [ "$PCM_BROKEN" = "$BR_SNIPPET" ]; then
+  bad "12m the control mutation did not apply — the needle no longer matches the shipped block"
+else ok; fi
+pc_run "$PCM_BROKEN"
+has "${ cat "$PC/gh.log"; }" 'pr close 200' \
+   "12m the control (the saturation check blinded) closes the visible subset — the silent-truncation defect"
+hasnt "${ cat "$PC/notes"; }" 'REFUSED closing any PR for pc/full' \
+   "12m …with no refusal anywhere, which is what made it silent"
+
+# --- 12n. the compensated close: the post-close head is re-read, and a mismatch is undone -------
+# `gh pr close` takes no expected-head option, so unlike the delete it cannot be leased on $TIP.
+# The compensation is the guarantee instead: re-read the head AFTER the close; a head that is no
+# longer the proved tip means the close judged content the sweep never proved, so it is REOPENED
+# and reported with both OIDs. A verified close is reported under PR closed; a reopened one never.
+pc_run
+has "${ cat "$PC/gh.log"; }" 'pr view 110' "12n the post-close head is re-read after the close"
+has "${ cat "$PC/gh.log"; }" 'pr reopen 110' \
+   "12n a post-close head that moved is compensated by an actual reopen call"
+has "${ cat "$PC/notes"; }" \
+   "REOPENED PR 110 for pc/swap — after the close its head read back as $PC_MAIN, not the proved tip $PC_TIP_SWAP" \
+   "12n …reported loudly, naming the PR and BOTH OIDs"
+hasnt "${ cat "$PC/pr_closed"; }" "110$TAB" \
+   "12n …and a reopened close is never reported under PR closed"
+has   "${ cat "$PC/gh.log"; }" 'pr view 101' "12n a clean close is verified the same way"
+hasnt "${ cat "$PC/gh.log"; }" 'pr reopen 101' "12n …and never reopened"
+has "${ cat "$PC/pr_closed"; }" "101$TAB" "12n …and is the one that IS reported closed"
+# The reopen itself failing must escalate, never pass silently: the PR is closed on unproved
+# content and nothing compensated it.
+PC_REOPEN_RC=1 pc_run
+has "${ cat "$PC/notes"; }" 'ATTENTION PR 110 for pc/swap' \
+   "12n a failed reopen escalates to the operator by name — a mismatched close never stands silently"
+PC_REOPEN_RC=0
+# THE CONTROL: the post-close verification blinded — the pre-fix shape, where no read followed the
+# close, so a mismatched close stood, silently, reported as a clean close.
+PCN_NEEDLE='if [ "$POSTHEAD" = "$TIP" ]; then'
+PCN_BLIND='                if true; then'
+PCN_BROKEN="${ printf '%s\n' "$BR_SNIPPET" \
+  | N="$PCN_NEEDLE" R="$PCN_BLIND" awk 'index($0, ENVIRON["N"]) { print ENVIRON["R"]; next } { print }'; }"
+if [ "$PCN_BROKEN" = "$BR_SNIPPET" ]; then
+  bad "12n the control mutation did not apply — the needle no longer matches the shipped block"
+else ok; fi
+pc_run "$PCN_BROKEN"
+hasnt "${ cat "$PC/gh.log"; }" 'pr reopen 110' \
+   "12n the control (the verification blinded) leaves the mismatched close standing"
+has "${ cat "$PC/pr_closed"; }" "110$TAB" \
+   "12n …and reports it as a clean close — the silent wrong mutation the compensation exists to prevent"
 
 # ============ 13. the run marker is never silently invisible (#350) ============================
 # THE BUG: three distinct states of one record rendered byte-identically as SILENCE — the gate
@@ -2990,5 +3169,33 @@ printf "%s" "$REMOTE_MERGED" > '"$RM"'.enum' ) >/dev/null 2>&1
 else
   check_note "13i SKIPPED the old-interpreter pass: /bin/bash is absent, or is this suite's own interpreter (${BASH_VERSION})"
 fi
+
+# --- 13j. UNKNOWN liveness is never reported as a LIVE RUN (PR #393 review on #350) ------------
+# A malformed or unreadable canonical marker scans as `marker` with key `-`; `state-verdict
+# marker` keeps it, fail closed — but that establishes only UNKNOWN liveness. The report must not
+# convert the conservative refusal into a confirmed "run in flight" claim, or corrupt stale state
+# gets trusted indefinitely on the report's word.
+rm -rf "${MR:?}"; mkdir -p "$MR"
+printf 'not json at all' > "$MR/implement-issue-active.json"
+eq "${ bash "$CL" state-scan "$MR" | cut -f3; }" "-" \
+   "13j the fixture's marker really scans with key '-' — otherwise this case tests nothing"
+mr_run "$MR"
+eq "${ mr_line; }" \
+   "Run marker: implement-issue-active.json [present; liveness could not be verified — kept fail-closed]" \
+   "13j an unverifiable marker is reported as exactly that — never as a run in flight"
+
+# --- 13k. THE CONTROL: 13j must be able to fail, and the witness is the REAL block, MUTATED ----
+# The shipped snippet with the key test blinded — the pre-fix shape, where every kept marker got
+# the confirmed-liveness wording regardless of whether liveness was ever established.
+MRJ_NEEDLE='if [ "$key" = "-" ]; then'
+MRJ_BLIND='      if false; then'
+MRJ_BROKEN="${ printf '%s\n' "$MR_SNIPPET" \
+  | N="$MRJ_NEEDLE" R="$MRJ_BLIND" awk 'index($0, ENVIRON["N"]) { print ENVIRON["R"]; next } { print }'; }"
+if [ "$MRJ_BROKEN" = "$MR_SNIPPET" ]; then
+  bad "13k the control mutation did not apply — the needle no longer matches the shipped block"
+else ok; fi
+mr_run "$MR" "$CL" "$MRJ_BROKEN"
+has "${ mr_line; }" 'artifacts kept for a run in flight' \
+   "13k the control (the key test blinded) reports unknown liveness as a run in flight — the overclaim the review names"
 
 check_summary "check-cleanup"

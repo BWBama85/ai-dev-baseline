@@ -336,6 +336,16 @@ end and read as unmerged.
 # CARRIED, NEVER RE-QUERIED. The value appended below is the string THIS `branch-verdict` call
 # returned. Asking again at report time would read a different moment — and by then the branch is
 # deleted, so the question is no longer answerable at all.
+#
+# GH_REPO IS NEUTRALIZED UP FRONT, because every proof this loop computes — ancestry, $TIP
+# containment in origin/$DEFAULT — is anchored to THIS checkout, so every gh read and mutation
+# below must be anchored to the same repository. A live GH_REPO redirects them all to whatever
+# repository it names (`gh help environment`): a fork sharing this commit and branch name could
+# have ITS open PR closed on this checkout's proof. The hazard and its git-anchored resolution
+# are recorded on `adb_git_repo_slugs` in scripts/lib/common.sh; here the redirect is simply
+# removed — unset, gh resolves the repository from this checkout's own git remotes, the same
+# anchor the proofs already stand on.
+unset GH_REPO
 while IFS= read -r b; do
   [ -n "$b" ] || continue
   # WHOLE-LINE match, via grep. The builtin newline-delimited `case` form looks cheaper and is a
@@ -448,17 +458,37 @@ EOF2
           # A FRESH read at the moment of the mutation (`base/practices/verify-before-asserting.md`).
           # Nothing earlier in this sweep looked at open PRs, and a status captured at the top of a
           # long run is not the status that gates a close.
-          # `</dev/null` ON BOTH gh CALLS, and it is load-bearing rather than tidy. This arm runs
-          # INSIDE the candidate loop, whose stdin is the `$CANDIDATES` heredoc at the bottom of
-          # this block. A child that read stdin would swallow the rest of that list and the sweep
-          # would quietly process one branch and stop — a silent partial sweep, which is the #106
-          # failure class this whole library exists to remove. `gh pr close` takes its text through
-          # `--comment` and neither call reads stdin today; the redirect is what keeps that from
-          # being a fact this loop depends on without saying so. It also stops any auth prompt from
-          # hanging the sweep.
-          if OPENPRS="$(gh pr list --head "$b" --state open --limit 20 \
+          # `</dev/null` ON EVERY gh CALL IN THIS ARM, and it is load-bearing rather than tidy.
+          # This arm runs INSIDE the candidate loop, whose stdin is the `$CANDIDATES` heredoc at
+          # the bottom of this block. A child that read stdin would swallow the rest of that list
+          # and the sweep would quietly process one branch and stop — a silent partial sweep,
+          # which is the #106 failure class this whole library exists to remove. None of these
+          # calls reads stdin today; the redirect is what keeps that from being a fact this loop
+          # depends on without saying so. It also stops any auth prompt from hanging the sweep.
+          #
+          # `--base "$DEFAULT"`, because the proof is SCOPED TO THE BASE. $TIP's containment was
+          # proved against origin/$DEFAULT and says nothing about any other base — a same-head PR
+          # targeting a release or maintenance branch is live backport work this sweep never
+          # judged, so the filter keeps it out of reach entirely.
+          #
+          # THE LIMIT IS A HARD CAP, not a page size: `gh pr list` silently drops whatever lies
+          # beyond it. Checked for saturation below — a list AT the cap may be a subset, and
+          # closing from a subset leaves the invisible remainder dangling in silence, which is
+          # the defect this arm exists to remove.
+          OPENPR_LIMIT=100
+          if OPENPRS="$(gh pr list --head "$b" --base "$DEFAULT" --state open \
+                          --limit "$OPENPR_LIMIT" \
                           --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"' \
                           2>/dev/null </dev/null)"; then
+            OPENPR_N="$(printf '%s' "$OPENPRS" | grep -c .)"
+            if [ "$OPENPR_N" -ge "$OPENPR_LIMIT" ]; then
+              # Loud, and it stands the whole head down: blanking the list is what makes the loop
+              # below close NOTHING for this head. Naming the count and the cap is what lets the
+              # operator see the saturation instead of a confident subset.
+              NOTES="${NOTES}REFUSED closing any PR for $b — the open-PR list returned $OPENPR_N results at its cap of $OPENPR_LIMIT and may be truncated; every PR left for the operator
+"
+              OPENPRS=""
+            fi
             # Fed by a heredoc for the reason the remote loop states: a piped `while` runs in a
             # subshell and every PR_CLOSED append would be discarded.
             while IFS=' ' read -r PRNUM PRHEAD; do
@@ -491,8 +521,33 @@ EOF2
                 # above, and the full proof (`$PROOF`, `#<n>` and all) is on the PR comment, which
                 # is durable and is not a report line. What belongs HERE is why THIS PR was closed,
                 # which is the OID test. Carried, never re-read: `$TIP` is line 2 of the verdict.
-                PR_CLOSED="${PR_CLOSED}${PRNUM}${TABC}head matched the proved tip ${TIP}
+                #
+                # THE CLOSE IS COMPENSATED, BECAUSE IT CANNOT BE LEASED. `gh pr close` takes no
+                # expected-head option (unlike the delete above, which leases on $TIP), so a push
+                # landing between the fresh read and the close wins that race undetected. The
+                # window cannot be removed, so it is made explicit and compensated: re-read the
+                # head AFTER the close, and if it is no longer the proved $TIP, reopen and say so
+                # loudly. An unreadable post-close head takes the same arm — fail closed, never
+                # "probably fine". A mismatched close is NEVER left standing silently, and never
+                # recorded under PR closed.
+                POSTHEAD="$(gh pr view "$PRNUM" --json headRefOid --jq .headRefOid \
+                              2>/dev/null </dev/null)"
+                if [ "$POSTHEAD" = "$TIP" ]; then
+                  PR_CLOSED="${PR_CLOSED}${PRNUM}${TABC}head matched the proved tip ${TIP}
 "
+                else
+                  # No backtick and no # before a number, for the same two fences the close
+                  # comment states.
+                  if gh pr reopen "$PRNUM" \
+                       --comment "Reopened by /cleanup: after the close, this PR's head read back as ${POSTHEAD:-unreadable}, not the proved tip $TIP. The close judged content the sweep never proved." \
+                       >/dev/null 2>&1 </dev/null; then
+                    NOTES="${NOTES}REOPENED PR $PRNUM for $b — after the close its head read back as ${POSTHEAD:-unreadable}, not the proved tip $TIP
+"
+                  else
+                    NOTES="${NOTES}ATTENTION PR $PRNUM for $b — closed with head ${POSTHEAD:-unreadable} instead of the proved tip $TIP, and the reopen FAILED; reopen it by hand
+"
+                  fi
+                fi
               else
                 NOTES="${NOTES}REFUSED closing PR $PRNUM for $b — gh pr close failed; left alone
 "
@@ -1000,8 +1055,18 @@ while IFS="$TABC" read -r kind sfile key ident; do
       # Present at the scan that governed the deletes, i.e. exactly the fact that set `RUN_NOW=keep`
       # and preserved every gap, issue and review artifact above. Stated as the observation, not as
       # "a run is running" — this sweep saw a file, not a process.
-      RUNMARK="${RUNMARK}${sfile##*/}${TABC}present at the delete scan — artifacts kept for a run in flight
+      #
+      # KEY `-` IS UNKNOWN LIVENESS, NOT A LIVE RUN. `state-scan` emits `-` when the marker is
+      # malformed or unreadable, and `state-verdict marker` KEEPS it — a conservative refusal.
+      # Reporting that as "a run in flight" would convert the refusal into a confirmed claim and
+      # teach the operator to trust corrupt state indefinitely. Say only what was verified.
+      if [ "$key" = "-" ]; then
+        RUNMARK="${RUNMARK}${sfile##*/}${TABC}present; liveness could not be verified — kept fail-closed
 "
+      else
+        RUNMARK="${RUNMARK}${sfile##*/}${TABC}present at the delete scan — artifacts kept for a run in flight
+"
+      fi
       ;;
     other)
       # THE DEFECT CASE. `marker-shape` asks the FAMILY question the delete allowlist deliberately
