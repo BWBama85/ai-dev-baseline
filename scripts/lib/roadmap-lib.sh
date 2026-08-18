@@ -40,6 +40,7 @@
 #   roadmap-lib.sh decisions                                      # roadmap artifact body on stdin
 #   roadmap-lib.sh open-issues                                    # paginated issues JSON on stdin
 #   roadmap-lib.sh read-complete <read-count> <expected-total>
+#   roadmap-lib.sh emit-verdict                                   # one classification word per line
 #   roadmap-lib.sh compose-candidates <roadmap-issue-number> [bug-label]
 #                                     # {issues,edges,exclude,canceled} on stdin
 #   roadmap-lib.sh compose-select     # compose-candidates TSV on stdin
@@ -1614,6 +1615,58 @@ cmd_read_complete() {
   fi
 }
 
+# --- emit-verdict ----------------------------------------------------------------------------
+# WHAT MAY THIS BUNDLE EMIT? (#352) Step 4 classifies every still-open issue as one of four
+# states; this reduces the SELECTED bundle's member classifications to the one thing step 6 has
+# to decide — whether the bundle is `/implement-issue` input, an owner-action report, or nothing
+# at all. Stdin is one classification word per line, in any order; blank lines are ignored.
+#
+#   ready         >=1 member is `implementable`  -> emit `Next: /implement-issue <ids>`
+#   owner-action  no member is, but >=1 is `owner-action` -> the work is real, unblocked, and its
+#                 FIRST action is the owner's; emit it as owner-action lines, never as a batch
+#   tracker-only  every member is `tracker-only`/`owner-review` -> nothing is left to build
+#
+# The three outputs are the three BUNDLE-STATUS rungs decided by classification alone. `done` and
+# `in-flight` turn on facts this predicate is deliberately not given (closed members,
+# `pr-targets-issue`) and are settled before it is asked; `blocked` sits BETWEEN the rungs here, so
+# the caller reads this in the ladder's own order — `tracker-only` settles the bundle ahead of the
+# dependency test, and `owner-action`/`ready` stand only once the deps are satisfied. Internally
+# `ready` wins first, so one implementable member still emits a batch and the owner-action member
+# beside it is reported rather than holding the batch hostage.
+#
+# WHY IT IS A PREDICATE. The withholding judgment ("this is ready, but you have to set the secret
+# first") was correct and had nowhere to live, so it was re-improvised in prose every run and no
+# two runs could be compared. The judgment that an issue's first action is the OWNER'S stays with
+# the agent — it is not derivable from tracker metadata — but what that judgment then MEANS for
+# the emission is mechanical, and mechanical belongs here.
+#
+# FAIL-CLOSED ON AN UNKNOWN WORD. A classification this vocabulary does not carry is an ERROR (2),
+# never silently skipped: skipping it would let a typo demote a `ready` bundle to `tracker-only`
+# and delete real work from the plan, reported as nothing. Empty stdin is an error for the same
+# reason — a bundle with no still-open members is `done`, decided before this is called, so an
+# empty read means the caller failed to derive the set rather than found it empty.
+cmd_emit_verdict() {
+  [ "$#" -eq 0 ] || die "emit-verdict: takes no arguments (one classification word per line on stdin)"
+  local line seen=0 impl=0 owner=0
+  # No `IFS=`: the default split trims surrounding whitespace, so an indented word still reads.
+  # `|| [ -n "$line" ]` so a final line with no trailing newline is not silently dropped.
+  while read -r line || [ -n "$line" ]; do
+    [ -n "$line" ] || continue
+    seen=$((seen + 1))
+    case "$line" in
+      implementable) impl=$((impl + 1)) ;;
+      owner-action)  owner=$((owner + 1)) ;;
+      tracker-only|owner-review) : ;;
+      *) die "emit-verdict: unknown classification ($(adb_display_value "$line")) — step 4's vocabulary is implementable|owner-action|tracker-only|owner-review" ;;
+    esac
+  done
+  [ "$seen" -gt 0 ] || die "emit-verdict: no member classifications on stdin — a bundle with no still-open member is 'done', so an empty read is a failed derivation, not an answer"
+  if   [ "$impl"  -gt 0 ]; then printf 'ready\n'
+  elif [ "$owner" -gt 0 ]; then printf 'owner-action\n'
+  else                          printf 'tracker-only\n'
+  fi
+}
+
 # --- compose-candidates ----------------------------------------------------------------------
 # The MECHANICAL half of release composition (D15 / #80). Rank the open backlog into the slate an
 # agent then judges, so the parts that must not vary — tiering, dependency closure and the tie-break
@@ -1818,6 +1871,7 @@ main() {
     decisions)        cmd_decisions "$@" ;;
     open-issues)      cmd_open_issues "$@" ;;
     read-complete)    cmd_read_complete "$@" ;;
+    emit-verdict)     cmd_emit_verdict "$@" ;;
     compose-candidates) cmd_compose_candidates "$@" ;;
     compose-select)   cmd_compose_select "$@" ;;
     *) printf 'roadmap-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;

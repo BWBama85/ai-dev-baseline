@@ -259,9 +259,10 @@ run_snippet() {
   code="${code//\{\{ACTIONS_APP_SLUG\}\}/$ACTIONS_SLUG}"
   # The preamble supplies exactly what an EARLIER step would have produced — the selected member,
   # the resolved milestone number, the artifact number, the adopt candidate, the configured gauge
-  # label. Nothing else: anything a snippet needs beyond these it must resolve itself, which is the
-  # property the workflow states and the reason two snippets were found relying on a caller's
-  # variables.
+  # label, and the SELECTED BUNDLE'S member classifications (#352: step 4's four-state judgment,
+  # which no `gh` read can produce because it is the agent's). Nothing else: anything a snippet
+  # needs beyond these it must resolve itself, which is the property the workflow states and the
+  # reason two snippets were found relying on a caller's variables.
   #
   # ADB_UNSET names preamble variables to leave UNSET, which is how a snippet's own defaulting is
   # exercised (#376). A snippet that writes `${LABEL:-}` or `${NO_AUTOFIX:-0}` is claiming to
@@ -281,6 +282,7 @@ run_snippet() {
       NO_AUTOFIX=\${ADB_NO_AUTOFIX:-0}
       RELEASE_MODE=\${ADB_RELEASE_MODE:-0}
       COMPOSE_EXCLUDE=\${ADB_EXCLUDE-}
+      MEMBERS=\${ADB_MEMBERS-}
       [ -z \"\${ADB_UNSET:-}\" ] || unset -v \$ADB_UNSET
       $code
       $tail_code
@@ -628,6 +630,81 @@ ADB_N=5 run_snippet fresh-read 'printf "%s|%s|%s\n" "$GOT" "$EXPECTED" "$(printf
 first="$OUT"
 ADB_N=5 run_snippet fresh-read 'printf "%s|%s|%s\n" "$GOT" "$EXPECTED" "$(printf "%s" "$OPEN_NUMS" | tr "\n" ",")"' >/dev/null
 eq "$OUT" "$first" "two runs over an unchanged tracker produce identical reads"
+
+# ============================================================================================
+# 3h. OWNER-ACTION — a ready bundle whose FIRST action is the owner's (#352, acceptance §4b)
+# ============================================================================================
+# The defect this executes: a bundle rendered `ready`, prose twenty lines later declared "no
+# agent-implementable bundle", and the owner's step arrived as trailing prose on the terminal line
+# — where nothing parses it and an operator reading only the last line sees `Next: none`. The
+# state now has a name, a predicate and a terminal string, and this is the run that proves the
+# three agree. TAB-separated records, exactly as the snippet's contract states: a space-separated
+# copy would put the whole record in field 1 and hard-stop, which is the fail-closed direction.
+OA_ONE=$'#12\towner-action\tset the DEPLOY_TOKEN repo secret; #12 is otherwise ready.'
+OA_TWO=$'#12\towner-action\tset the DEPLOY_TOKEN repo secret; #12 is otherwise ready.\n#13\towner-action\tgrant the deploy app write access to this repo.'
+OA_MIX=$'#12\towner-action\tset the DEPLOY_TOKEN repo secret; #12 is otherwise ready.\n#5\timplementable\t'
+OA_DEAD=$'#35\ttracker-only\t\n#36\towner-review\t'
+
+last_line() { printf '%s\n' "$1" | sed -e '/^$/d' | tail -1; }
+
+fix_default
+ADB_MEMBERS="$OA_ONE" run_snippet owner-action >/dev/null
+eq "$RC_" 0 "a bundle whose every buildable member is owner-action emits a terminal report, not an error"
+has "$OUT" '! owner-action:#12 — set the DEPLOY_TOKEN repo secret; #12 is otherwise ready.' \
+  "the owner's step renders as an owner-action VERDICT line ('!', the slot the output contract defines)"
+eq "${ last_line "$OUT"; }" 'Next: none — owner-action: do the 1 action(s) above, then re-run.' \
+  "the LAST line is the state's terminal string, with no trailing prose on it"
+hasnt "$OUT" '/implement-issue' \
+  "owner-executed work is never emitted as /implement-issue input"
+hasnt "$OUT" 'Next: none — owner-action: do the 1 action(s) above, then re-run. set the' \
+  "the action is not appended to the Next: line (the shape observed in #352)"
+
+# TWO actions: the count is the number of lines printed, not a hardcoded 1.
+ADB_MEMBERS="$OA_TWO" run_snippet owner-action >/dev/null
+eq "$RC_" 0 "two owner-action members still emit a terminal report"
+has "$OUT" '! owner-action:#13 — grant the deploy app write access to this repo.' \
+  "...one owner-action line per member"
+eq "${ last_line "$OUT"; }" 'Next: none — owner-action: do the 2 action(s) above, then re-run.' \
+  "...and the terminal count is derived from the members, never hardcoded"
+
+# ONE implementable member beside it is still a `ready` bundle: the batch wins, the owner-action
+# member is reported above it. An owner step must never hold agent-implementable work hostage.
+ADB_MEMBERS="$OA_MIX" run_snippet owner-action 'printf "VERDICT=%s\n" "$VERDICT"' >/dev/null
+eq "$RC_" 0 "a mixed bundle does not stop the run"
+has "$OUT" "VERDICT=ready" "...it stays 'ready' and falls through to the ordinary advance"
+hasnt "$OUT" "Next: none" "...so no terminal line is emitted for it"
+
+# Nothing left to build routes to step 7's existing report, NOT to the new one.
+ADB_MEMBERS="$OA_DEAD" run_snippet owner-action 'printf "VERDICT=%s\n" "$VERDICT"' >/dev/null
+eq "$RC_" 0 "an all-flagged bundle does not stop the run"
+has "$OUT" "VERDICT=tracker-only" "...it reports tracker-only, which is step 7's existing path"
+hasnt "$OUT" "owner-action:" "...and never borrows the owner-action terminal string"
+
+# FAIL-CLOSED, both ways. A word outside the four-state vocabulary and an empty member set are
+# each a hard stop: a skipped member silently demotes a ready bundle and deletes work from the plan.
+ADB_MEMBERS=$'#12\tmaybe-later\t' run_snippet owner-action >/dev/null
+no "$RC_" "a classification outside step 4's vocabulary hard-stops the run"
+has "$OUT" "emit-verdict could not classify the selected bundle" \
+  "...and the snippet reports the hard stop rather than falling through to an emission"
+ADB_MEMBERS="" run_snippet owner-action >/dev/null
+no "$RC_" "an EMPTY member set hard-stops too (a bundle with no open member is 'done', decided earlier)"
+# The snippet writes `${MEMBERS:-}`, which CLAIMS to tolerate an absent input; with the preamble
+# always assigning one that claim is untestable, so unset it and watch the claim hold under `set -u`.
+ADB_UNSET="MEMBERS" run_snippet owner-action >/dev/null
+no "$RC_" "an UNSET member set hard-stops on the predicate, not on a set -u abort"
+has "$OUT" "emit-verdict could not classify the selected bundle" \
+  "...so the snippet's own defaulting is what carries it there"
+# The TAB is the contract, so prove the other spelling refuses rather than guessing: `cut -f2` on a
+# space-separated record returns the WHOLE record, which is not a classification word.
+ADB_MEMBERS='#12 owner-action set the DEPLOY_TOKEN repo secret.' run_snippet owner-action >/dev/null
+no "$RC_" "a SPACE-separated record hard-stops instead of being re-interpreted"
+has "$OUT" "emit-verdict could not classify the selected bundle" \
+  "...naming the classification step, so the record can be fixed rather than guessed at"
+
+# Determinism (acceptance §6): the same members render the same bytes.
+ADB_MEMBERS="$OA_TWO" run_snippet owner-action >/dev/null; oa_first="$OUT"
+ADB_MEMBERS="$OA_TWO" run_snippet owner-action >/dev/null
+eq "$OUT" "$oa_first" "two runs over an unchanged bundle emit byte-identical owner-action output"
 
 # ============================================================================================
 # 4. RELEASE READINESS — the documented pipeline, end to end (acceptance §9b)
@@ -1698,7 +1775,7 @@ eq "$FIRST" "20 102 112" "...and closes the chain it selected"
 # parked in EXECUTED with zero cases is caught too (#376 review). A renamed marker fails from the
 # other side.
 EXECUTED=(locate-artifact adopt-scan adopt-ownership fresh-read readiness gauge
-          autofix-unmilestoned release-command compose-candidates)
+          autofix-unmilestoned release-command compose-candidates owner-action)
 # The listing anchor is BYTE-IDENTICAL to check_wf_snippet's (check-lib.sh, the one home for the
 # marker contract): the extractor accepts ANY name running to end of line, so a narrower listing
 # grammar — the `[a-z-]+` this replaced — is how a documented `2fa-gate` stayed invisible and a

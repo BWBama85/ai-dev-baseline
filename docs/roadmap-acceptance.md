@@ -117,6 +117,37 @@ gh issue comment 5 --body "Superseded — this shipped in PR #999."
       acceptance is prose — ordinary unfinished work is never quarantined.
 - [ ] A `tracker-only`/`owner-review` member does **not** block other ready bundles behind it.
 
+## 4b. Owner-action — implementable work whose first action is the owner's (#352) **[auto]**
+
+The fourth classification state. `#12` is unshipped, unblocked and perfectly well specified, but
+its **first** step is one `/implement-issue` cannot perform — a secret, a repo setting, an account:
+
+```bash
+gh issue create --title "Deploy pipeline" --body "Acceptance: pushes deploy. Requires the DEPLOY_TOKEN repo secret to exist first."
+```
+
+- [ ] `#12` classifies **`owner-action`**, not `implementable` — a batch emitted now stalls on step
+      one — and not `tracker-only`/`owner-review` either: nothing claims it shipped.
+- [ ] It **stays in its bundle** and is **not** written to `Reconcile flags`. The classification is
+      re-derived from ground truth every run, so the bundle is `ready` again the moment the owner
+      acts — with no tracker edit and no recorded row.
+- [ ] A bundle whose every buildable member is `owner-action` takes bundle status **`owner-action`**
+      (the ladder rung between `blocked` and `ready`), and `roadmap-lib.sh emit-verdict` — fed the
+      members' classification words — returns `owner-action`.
+- [ ] A bundle with **one** `implementable` member beside the `owner-action` one is still `ready`:
+      the batch is emitted, and the owner-action line prints **above** it. One owner step never
+      holds an agent-implementable member hostage.
+- [ ] The run prints the action as an owner-action **verdict** line — `!`, not `?` —
+      `! owner-action:#12 — set the DEPLOY_TOKEN repo secret; #12 is otherwise ready.`
+- [ ] The last line is `Next: none — owner-action: do the 1 action(s) above, then re-run.` with
+      **no trailing prose**: the action lives in the line above, never appended to `Next:`.
+- [ ] The line is a **verdict, not a question**. Record `owner-action:#12` in the artifact's
+      `## Decisions` table → it still prints, exactly as `held` does. Only ground truth clears it.
+- [ ] An `owner-action` prerequisite still **blocks** its dependent (its work has not shipped), the
+      way an `owner-review` one does and a `tracker-only` one does not.
+- [ ] A classification word outside the four-state vocabulary is a **hard stop**, never a skipped
+      member — a silently dropped member demotes a `ready` bundle and deletes work from the plan.
+
 ## 5. Advance — in-flight skipping (the #69 regression) **[auto]**
 
 This is the case `scripts/check-roadmap.sh` pins at the predicate level; verify it end-to-end.
@@ -171,6 +202,10 @@ exit "$rc"
       batch; names the blocking dependency or the in-flight PR and points at what unblocks next.
 - [ ] **Open issues remain but none is implementable** (all `tracker-only`/`owner-review`) →
       reports the flags and stops; does **not** report "roadmap complete".
+- [ ] **Open issues remain and a bundle is ready, but its first action is the owner's** (all
+      `owner-action`) → reports the owner-action lines and ends
+      `Next: none — owner-action: do the N action(s) above, then re-run.` — distinct from every
+      string above it, because the work *is* implementable and the operator is the blocker (§4b).
 
 ## 8. Destination report (finish-line gauge) **[auto-partial]**
 
@@ -448,8 +483,8 @@ ends with its `Next:` line. What is verified here is that a **run** obeys it.)*
       `Then: baseline release roll …` reminder **above** it. A cut-ready run whose command is
       missing or undeclared ends with `Next: none — …` and prints **neither** the reminder nor the
       `— cutting.` banner.
-- [ ] An all-blocked run, a "roadmap complete" run, an unarmed-milestone run, and a STOP condition
-      each end with `Next: none — <state>` and no trailing prose.
+- [ ] An all-blocked run, a "roadmap complete" run, an unarmed-milestone run, an `owner-action`
+      run and a STOP condition each end with `Next: none — <state>` and no trailing prose.
 - [ ] **No** bundle table, "what changed since last run", per-issue reconcile narration, or
       look-ahead appears in the default output.
 - [ ] **Zero-count sections are omitted entirely** — no "Reconcile flags: none".
@@ -558,6 +593,7 @@ gh issue create --title "In limbo" --body "no milestone"        # #9, deliberate
 - `base/workflows/roadmap.md` — the workflow this script accepts.
 - `scripts/check-roadmap-e2e.sh` — the mocked-`gh` harness that automates the cases marked
   **[auto]** above by executing the workflow's own `# ADB-SNIPPET:` blocks.
-- `scripts/lib/roadmap-lib.sh` — the two extracted predicates (in-flight targeting, readiness).
+- `scripts/lib/roadmap-lib.sh` — the extracted predicates (in-flight targeting, readiness, and
+  `emit-verdict`, the bundle's emit decision — #352).
 - `scripts/check-roadmap.sh` — their offline regression tests (run by `selfcheck` + CI).
 - `docs/release-goal-convention.md` — the opt-in module §9 exercises.
