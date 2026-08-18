@@ -6024,6 +6024,18 @@ limit: none of them is sufficient alone.
              is separately pinned verbatim by `scripts/check-implement-lib.sh` section 13, which
              matches it against the RAW workflow for exactly that reason.
 
+             **Amended 2026-08-18 (#396 review).** The recipe above is unsound as a standing
+             method: `[[:space:]]*` matches zero characters, so the strip truncates at EVERY
+             `#` — `${#ARR[@]}`, `$#`, and a quoted `"issue #$n"` all lose their tails — and
+             only the one known case was hand-pinned. The corrected proof, re-run over this
+             PR's full raw fence diff: a whole-line comment (`^[[:space:]]*#`) has no
+             executable part; otherwise split at the first `#` PRECEDED BY WHITESPACE (which
+             excludes `${#` and `$#` by construction); flag any cut point with odd quote
+             parity for manual reading; an unpaired added/deleted line must have an empty
+             executable part. Result: 214 changed fence lines, 0 executable divergences,
+             0 quote-parity flags — the original 220-line claim stands, now on a method a
+             future rewrite can follow without the blind spot.
+
              **History that already has an entry is CUT and cited, never re-told and never
              re-relocated.** The preflight reconcile comment loses the outage timeline and the
              LEGAL/CREDENTIALED argument and cites **(D63)**; the admission comment loses the
