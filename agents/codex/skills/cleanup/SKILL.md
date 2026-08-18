@@ -42,10 +42,16 @@ process detail the default output deliberately omits.
   - **rewritten merge (squash or rebase)** — a **freshly-queried** merged PR whose
     `mergeCommit.oid` is contained in `origin/<default>` **and** whose `headRefOid` equals the
     local tip.
-- **Every local delete is the same atomic compare-and-delete:**
-  `git update-ref -d refs/heads/<b> <the tip the verdict was computed from>`. It removes the ref
-  only if the branch still points exactly there, so a commit landing mid-sweep makes the delete
-  fail loudly instead of destroying it.
+- **Every delete is a compare-and-delete against the tip its own proof was computed from.**
+  Locally that is `git update-ref -d refs/heads/<b> <the tip the verdict was computed from>`; on
+  the remote it is `git push origin --force-with-lease=refs/heads/<b>:<the tip the enumeration
+  proved> --delete refs/heads/<b>` (#346). Both remove the ref only if it still points exactly
+  there, so a commit landing mid-sweep makes the delete fail loudly instead of destroying it.
+  **`--force-with-lease` here is the lease, not a force-push**: it rewrites no history and moves
+  no ref forward — it is the only way `git push` will refuse a delete whose target has moved, and
+  it makes this half strictly safer than the by-name delete it replaces. The confirmation
+  `base/practices/git-and-prs.md` requires before a remote delete is unchanged and still comes
+  first.
 - **Never `git branch -d` either — not even for the fast-forward case.** Its refusal tests
   whether the branch is merged into its **upstream** (or HEAD), *not* into `origin/<default>`.
   A branch that gained a pushed commit after being classified still satisfies that test, so `-d`
@@ -72,6 +78,18 @@ process detail the default output deliberately omits.
   remote *without* merging looks identical to one deleted after merging.
 - **Never delete run-state for an OPEN PR or an in-flight run.** Those markers arm
   `/implement-issue`'s continuation gate; removing one mid-run disables it silently.
+- **An OPEN PR is closed only for a branch this sweep DELETED, and only at the proved tip** (#346).
+  Local ancestry can prove a branch merged while its own PR stays open — folded into another PR,
+  rebased on, or pushed straight to the default branch — and deleting the branch removes the
+  dangling ref that would have prompted a human. So the delete carries the close. It is gated on
+  the PR's `headRefOid` still equalling the tip the verdict was computed from: anything else is a
+  refusal reported in full, never a close. An unmerged branch's PR is live work and is never
+  touched. Only GitHub-assigned fields are read — the PR body is third-party text
+  (`base/practices/untrusted-content.md`) and never reaches a decision. **Autonomous, with no
+  confirmation**, and the asymmetry with the remote-delete rule above is deliberate: what earns a
+  confirmation there is that a by-name delete could destroy something nobody proved. The OID gate
+  removes exactly that possibility here, so this sits in the same safety class as the local delete —
+  which is also autonomous — and it is reversible besides, where a delete is not.
 - **Liveness is never file age.** Every keep/delete decision reads a freshly-fetched ref or a
   live PR state, never an mtime — a slow run's state is not stale and a fast one's is not fresh.
 - **The currency check never gates the sweep, and never updates the clone you are standing in.**
@@ -102,13 +120,17 @@ narrates itself buries the one or two lines that matter.
   evidence attached — `Deleted (local): fix/371` read identically whether the sweep was correct or
   catastrophic. The proof rides *inside* the category line as a trailing `[…]`, so the line budget
   above is unchanged.
-
+- **Every outward mutation the sweep causes is a category of its own** (#346). Closing a PR is not
+  a delete, and burying it inside `Deleted (local)` would hide the one action here that touches
+  something other people can see. It carries the same proof the delete did.
 ```
 Deleted (local): fix/371-contact-bundle [#379 (merge commit 3f9e9e5abcde)], feat/x [contained in origin/main]
+PR closed: 380 [head matched the proved tip 3f9e9e5abcde]
 Cleared state: threads-{41,47,51,57,59,65,68,72,76}.json [PR merged], gaps.md [no run in flight], gaps.err [no run in flight]
 baseline: updated 3818548 → ebca0f3 (2 commits).
 main: clean, in sync with origin/main
 ```
+
 
 The `baseline:` line follows the same rule as every category above it — it appears only when
 something actually happened. An install that was already current, a disabled updater, or a sweep of
@@ -196,12 +218,16 @@ CURRENT="$(git rev-parse --abbrev-ref HEAD)"
 # report silently degrades to blank lines rather than failing. (`/roadmap` is the opposite: its
 # blocks are deliberately self-contained and re-resolve everything they need. Do not carry that
 # habit here, or the reverse habit there.)
-NOTES=""; DELETED_LOCAL=""; DELETED_REMOTE=""; CLEARED=""
-# The report record's field separator, defined ONCE and here — the three delete accumulators above
+NOTES=""; DELETED_LOCAL=""; DELETED_REMOTE=""; CLEARED=""; PR_CLOSED=""
+# The report record's field separator, defined ONCE and here — the delete accumulators above
 # now carry `<item><TAB><proof>` pairs (#332) and step 5 parses `state-scan` records with the same
 # character, so a second spelling later in the file would be one constant with two homes. Never a
 # literal tab in a fenced block: it is invisible in the source, in the render and in review, and an
 # editor that turned it into spaces would silently fold each delete's proof into the item's name.
+#
+# `$TABC` reaches one more place since #346: the remote enumeration now carries `<name><TAB><oid>`
+# per line, because the tip that authorises a remote delete has to be captured BY the enumeration
+# that proves it. Same constant, same reason — a second spelling would be a second home.
 TABC="$(printf '\t')"
 git fetch --prune origin --quiet 2>/dev/null \
   || NOTES="${NOTES}NOTE: could not fetch origin — classifying against possibly-stale refs.
@@ -385,6 +411,89 @@ EOF2
         # step already refuses to depend on one for the same reason.
         DELETED_LOCAL="${DELETED_LOCAL}${b}${TABC}${PROOF}
 "
+        # --- #346(b): the branch is gone; its OPEN PR must not outlive it ---------------------
+        # `branch-verdict` proves containment from LOCAL ANCESTRY and never reads PR state, so a
+        # branch can be provably merged with its own PR still open: folded into another PR that
+        # merged, rebased or fast-forwarded onto the default branch, or pushed there directly. The
+        # PR then never closes on its own, and the dangling branch that would have prompted a human
+        # is exactly what the line above just removed.
+        #
+        # GATED ON THE PROVED TIP, which is what puts this in the same safety class as the delete
+        # and is why it needs no confirmation. `$TIP` is the commit `branch-verdict` computed its
+        # verdict from; a PR whose head is anything else describes work this sweep did not prove,
+        # so it is a REFUSAL reported in full, never a close. Multiple open PRs on one head (a
+        # reopen, a duplicate) are each judged independently under the same test.
+        #
+        # ONLY `number` AND `headRefOid` ARE READ — both GitHub-assigned. The PR body, title and
+        # comments are third-party text (`base/practices/untrusted-content.md`): they are never
+        # read here, so nothing a stranger can write reaches a decision or the report.
+        #
+        # THE COMMENT CARRIES THE PROOF ALREADY IN HAND — `$PROOF` and `$TIP`, from the verdict
+        # above — never a second query. That is #332's discipline applied to an outward mutation:
+        # the durable record on the PR must be the evidence that actually authorised the delete.
+        if [ "$HAVE_GH" -eq 1 ]; then
+          # A FRESH read at the moment of the mutation (`base/practices/verify-before-asserting.md`).
+          # Nothing earlier in this sweep looked at open PRs, and a status captured at the top of a
+          # long run is not the status that gates a close.
+          # `</dev/null` ON BOTH gh CALLS, and it is load-bearing rather than tidy. This arm runs
+          # INSIDE the candidate loop, whose stdin is the `$CANDIDATES` heredoc at the bottom of
+          # this block. A child that read stdin would swallow the rest of that list and the sweep
+          # would quietly process one branch and stop — a silent partial sweep, which is the #106
+          # failure class this whole library exists to remove. `gh pr close` takes its text through
+          # `--comment` and neither call reads stdin today; the redirect is what keeps that from
+          # being a fact this loop depends on without saying so. It also stops any auth prompt from
+          # hanging the sweep.
+          if OPENPRS="$(gh pr list --head "$b" --state open --limit 20 \
+                          --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"' \
+                          2>/dev/null </dev/null)"; then
+            # Fed by a heredoc for the reason the remote loop states: a piped `while` runs in a
+            # subshell and every PR_CLOSED append would be discarded.
+            while IFS=' ' read -r PRNUM PRHEAD; do
+              [ -n "$PRNUM" ] || continue
+              if [ "$PRHEAD" != "$TIP" ]; then
+                # Loud, and it names the PR. Its head moved after the verdict, so the content this
+                # sweep proved is not the content the PR now carries.
+                NOTES="${NOTES}REFUSED closing PR $PRNUM for $b — its head is not the tip this sweep proved; left alone
+"
+                continue
+              fi
+              # `--comment`, so the proof is durable on the PR itself rather than only in a report
+              # that scrolls away. Written WITHOUT a `#<n>` and with NO BACKTICK: the first is the
+              # claim grammar (`state-assert.sh lint` rejects a status word sharing a sentence with
+              # an entity reference, and this sentence is about a PR being closed); the second is
+              # this fence — a backtick inside a double-quoted string is command substitution, and
+              # an escape that survives three skill renders intact is not a thing worth betting a
+              # remote mutation on.
+              if gh pr close "$PRNUM" \
+                   --comment "Closed by /cleanup: branch $b was deleted after its content was proved $PROOF (tip $TIP)." \
+                   >/dev/null 2>&1 </dev/null; then
+                # THE PROOF IS THE GATE THIS CLOSE PASSED, not the delete's evidence — and that
+                # is a claim-grammar constraint, discovered by the executed case rather than
+                # reasoned about. `PR closed` is a category name containing a STATUS WORD, and a
+                # `merged-pr` verdict's evidence is `#<n> (merge commit <oid>)`: rendering it here
+                # puts a status word and an entity reference in one sentence, which
+                # `state-assert.sh lint` rejects — and only on sweeps where a squash-merged branch
+                # also had an open PR, i.e. exactly when nobody is looking. It costs the report
+                # nothing: the delete's own evidence is on the `Deleted (local)` line directly
+                # above, and the full proof (`$PROOF`, `#<n>` and all) is on the PR comment, which
+                # is durable and is not a report line. What belongs HERE is why THIS PR was closed,
+                # which is the OID test. Carried, never re-read: `$TIP` is line 2 of the verdict.
+                PR_CLOSED="${PR_CLOSED}${PRNUM}${TABC}head matched the proved tip ${TIP}
+"
+              else
+                NOTES="${NOTES}REFUSED closing PR $PRNUM for $b — gh pr close failed; left alone
+"
+              fi
+            done <<EOF3
+$OPENPRS
+EOF3
+          else
+            # The query failed — say so. Silently skipping is what leaves a PR dangling with no
+            # trace, which is the defect this arm exists to remove.
+            NOTES="${NOTES}UNVERIFIED $b — the open-PR query failed, so no PR was closed for it
+"
+          fi
+        fi
       else
         NOTES="${NOTES}REFUSED $b — it moved during the sweep; left in place
 "
@@ -411,7 +520,10 @@ The remote half still enumerates with `--merged` alone. That rests on an **assum
 fact**: GitHub's `delete_branch_on_merge` removes squash-merged remote branches server-side, so
 what survives on the remote really is ancestor-merged. On a repo with that setting **off**, this
 half stays as blind to a squash merge as the local half was before #106 — so say so rather than
-report a clean sweep. Enumerate, **show the list and get one confirmation**, then delete by name.
+report a clean sweep. Enumerate, **show the list and get one confirmation**, then delete each
+branch by name **under a lease on the tip that enumeration proved** (#346): the enumeration is this
+half's only evidence, and an unleased `git push origin --delete` removes the ref whatever it points
+at now, so a push landing mid-sweep would destroy a tip nothing ever proved contained.
 
 ```bash
 if [ "$HAVE_GH" -eq 1 ] \
@@ -424,13 +536,36 @@ fi
 
 ```bash
 # ADB-SNIPPET: remote-enum
-# `grep '^origin/'` drops the bare `origin` short form of the origin/HEAD symref (which --format
-# renders as plain `origin`, not a real branch, so `sed 's@^origin/@@'` — no trailing slash to
-# strip — would otherwise leak it into the list and offer a bogus `git push origin --delete
-# origin`); `grep -v '^origin/HEAD$'` is belt-and-suspenders for a fully-qualified form.
-REMOTE_MERGED="$(git branch -r --merged "$BASE" --format='%(refname:short)' \
-  | grep '^origin/' | grep -v '^origin/HEAD$' | sed 's@^origin/@@' \
-  | grep -Ev "$PROTECTED" | grep -Fxv "$CURRENT" | sort -u || true)"
+# THE TIP IS CAPTURED HERE, WITH THE PROOF (#346). `--merged` is this half's ONLY evidence, and the
+# delete below leases against exactly the OID this line read. Re-reading the tip at delete time
+# would look equivalent and is the bug wearing the fix's clothes (#305's discipline): a second read
+# is a second moment, so it would happily "confirm" a tip that arrived after the containment was
+# established and lease the delete to the very commit nobody proved.
+#
+# `%(objectname)` is the REMOTE-TRACKING tip as of this run's `git fetch --prune`, not a live read
+# of the remote — and that is the point rather than a limitation. The lease compares it against
+# what the remote holds at push time, so a branch that moved in between (by anyone, in any clone)
+# refuses instead of deleting by name.
+#
+# ONE awk, not the four-process grep/sed pipeline this replaces, because every filter that used to
+# be whole-line is now field-aware: `$PROTECTED` and `$CURRENT` are anchored patterns and a
+# `<name><TAB><oid>` line would match neither, so a protected or current branch would sail straight
+# through a pipeline that still looked correct. Same three exclusions, applied to the NAME field:
+#   - the bare `origin` short form of the origin/HEAD symref, which `%(refname:short)` renders with
+#     no trailing slash — unfiltered it leaks into the list and offers `git push origin --delete
+#     origin`. `$1 ~ /^origin\//` drops it; `origin/HEAD` is excluded by name as
+#     belt-and-suspenders for a build that renders the fully-qualified form.
+#   - the protected set, matched as the ERE it already is.
+#   - the branch this sweep is standing on.
+REMOTE_MERGED="$(git branch -r --merged "$BASE" --format="%(refname:short)${TABC}%(objectname)" \
+  | awk -F"$TABC" -v OFS="$TABC" -v prot="$PROTECTED" -v cur="$CURRENT" '
+      $1 !~ /^origin\// { next }
+      $1 == "origin/HEAD" { next }
+      { n = substr($1, 8) }
+      n ~ prot { next }
+      n == cur { next }
+      { print n, $2 }' \
+  | sort -u || true)"
 ```
 
 Fed by a heredoc, not a pipe: a piped `while` runs in a subshell, so every `DELETED_REMOTE`
@@ -438,28 +573,48 @@ append would be discarded and step 6 would report an empty category for work it 
 
 ```bash
 # ADB-SNIPPET: remote-sweep
-while IFS= read -r b; do
+# TWO FIELDS: the branch name and the tip the enumeration proved contained. Reading one variable
+# here would fold the OID into `$b` and hand `git push` a branch name that does not exist — loudly,
+# which is the only reason a single-variable slip is not the dangerous direction. The dangerous one
+# is the opposite and it is what this loop now closes.
+while IFS="$TABC" read -r b oid; do
   [ -n "$b" ] || continue
-  if git push origin --delete "$b"; then
-    # The same proof discipline as the local half (#332) — but NOT the same strength of claim, and
-    # the wording says so rather than borrowing the local half's confidence.
-    #
-    # This half never calls `branch-verdict`. Its only evidence is the `--merged` enumeration
-    # above, and unlike the local delete there is no expected-OID compare-and-delete here:
-    # `git push origin --delete` removes the ref BY NAME, whatever it points at now. So if the
-    # remote branch advanced between the enumeration and this line, the tip actually deleted was
-    # never the tip that was proved contained. That gap predates #332 and moving it would change a
-    # deletion decision, which this issue explicitly does not do — but a bare `contained in $BASE`
-    # would be this report asserting something the sweep did not establish, which is worse than the
-    # silence it replaced.
-    #
-    # So the proof is scoped to the moment it was actually observed. Past-tense by construction, as
-    # `verify-before-asserting.md` requires of every observation: it says what was true at
-    # enumeration and claims nothing about the instant of the delete.
-    DELETED_REMOTE="${DELETED_REMOTE}${b}${TABC}contained in $BASE when enumerated
+  # NO OID, NO DELETE. An enumeration that produced a name without a tip cannot be leased, and an
+  # unleased `git push origin --delete` is exactly the by-name delete #346 exists to remove — so
+  # the branch is kept and the gap is reported, never quietly deleted on weaker evidence.
+  if [ -z "$oid" ]; then
+    NOTES="${NOTES}SKIPPED origin/$b — the enumeration carried no tip, so the delete could not be leased; left in place
+"
+    continue
+  fi
+  # THE LEASE (#346). `git push origin --delete` removes the ref BY NAME, whatever it points at
+  # now: a push landing between this run's `git fetch --prune` and this line deleted a tip that was
+  # never proved contained — the one outcome this skill promises never to produce. The explicit
+  # `--force-with-lease=<ref>:<oid>` form makes the delete a compare-and-delete against the tip the
+  # enumeration above actually proved, so that race REFUSES instead of destroying work.
+  #
+  # The EXPLICIT expected value, never the bare `--force-with-lease`. The bare form leases against
+  # the local remote-tracking ref, which this very sweep is reasoning about and which a concurrent
+  # `git fetch` in another process can advance — it would lease against whatever arrived, i.e.
+  # against nothing. The `<ref>:<oid>` form pins the one commit the proof is about.
+  #
+  # Fully-qualified `refs/heads/$b` on BOTH halves, so a branch whose name collides with a tag
+  # cannot make git resolve one thing for the lease and another for the delete.
+  if git push origin --force-with-lease="refs/heads/$b:$oid" --delete "refs/heads/$b"; then
+    # The same proof discipline as the local half (#332), and now the SAME STRENGTH of claim. This
+    # line used to read `contained in $BASE when enumerated`, and the qualifier was load-bearing:
+    # without a lease the tip actually removed was not necessarily the tip that was proved. With
+    # the lease it is — the push refuses unless the remote still holds exactly `$oid` — so the
+    # containment may be stated plainly of the ref that was really deleted.
+    DELETED_REMOTE="${DELETED_REMOTE}${b}${TABC}contained in $BASE
 "
   else
-    NOTES="${NOTES}REFUSED origin/$b — the remote delete failed; left in place
+    # ONE arm for two causes, and the wording names both rather than picking the flattering one.
+    # A rejected lease and a failed push are indistinguishable from an exit status, and asserting
+    # "it moved" for what may have been a network error would be this report claiming something it
+    # did not observe (`base/practices/verify-before-asserting.md`). What IS observed is that the
+    # branch was not deleted, and that is what the line says.
+    NOTES="${NOTES}REFUSED origin/$b — it moved during the sweep, or the push failed; left in place
 "
   fi
 done <<EOF
@@ -850,10 +1005,25 @@ whose symlinks are what `bash "$HOME/.codex/scripts/lib/cleanup-lib.sh"` resolve
 whole sweep is reported by the library version that decided it — an old workflow calling a
 freshly-swapped library is a version skew with no upside.
 
-`emit` is unchanged by #332 and deliberately so: each accumulator line is already
+`emit` is unchanged by #332 and #346, and deliberately so: each accumulator line is already
 `<item>TAB<proof>`, so prefixing the category yields the three-field record `report` now reads, and
 a line carrying no proof yields the two-field record it has always read. The `\t` below is a
 `printf` escape, not a raw tab — the accumulators use `$TABC` from step 1 for the same reason.
+**A category joins the list rather than a renderer**, which is why this issue needed no change here
+beyond one line: a category exists only because a record created it, so it stays absent on a sweep
+that has nothing to say about it. `PR closed` sits directly under the deletes because a close is a
+*consequence* of the local delete above it and is meaningless without it.
+
+**`PR closed` carries a bare number, never `#<n>` — and that rule reaches its PROOF too.**
+`bash "$HOME/.codex/scripts/lib/state-assert.sh" lint` rejects a status word sharing a sentence with an entity reference,
+`closed` is a status word, and the category name is the sentence. This is the same rule the
+`Cleared state` proofs already live by (`PR merged`, not `PR #41 merged`) — read from the other
+end, and the number is not lost: it is the item. The sharper half is the proof: a `merged-pr`
+delete's evidence *is* `#<n> (merge commit <oid>)`, so rendering the delete's proof on this line
+would violate the grammar on any sweep where a squash-merged branch also had an open PR. The proof
+here is the **OID gate this close passed** instead, which is both grammar-safe and the more precise
+answer to why *this* PR was closed; the delete's own evidence is one line above, and the full
+string reaches the PR itself as the closing comment.
 
 ```bash
 emit() { printf '%s\n' "$2" | while IFS= read -r x; do [ -n "$x" ] && printf '%s\t%s\n' "$1" "$x"; done; }
@@ -861,6 +1031,7 @@ emit() { printf '%s\n' "$2" | while IFS= read -r x; do [ -n "$x" ] && printf '%s
 REPORT_OUT="$({
   emit 'Deleted (local)'  "$DELETED_LOCAL"
   emit 'Deleted (remote)' "$DELETED_REMOTE"
+  emit 'PR closed'        "$PR_CLOSED"
   emit 'Cleared state'    "$CLEARED"
 } | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" report --tail "$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-line "$ROOT" "$DEFAULT")")"
 ```
@@ -948,7 +1119,10 @@ left a default sweep unable to justify its own least-reversible action.
 ## Notes
 
 - This never runs `git branch -D`, `push --force`, or `clean -fd`. Unmerged branches are always
-  preserved; unclassifiable run-state is always kept.
+  preserved; unclassifiable run-state is always kept. The remote delete does pass
+  `--force-with-lease`, and that is the opposite of a force-push: it adds a compare-and-delete
+  where there was none, so the only outcome it can produce that the old command could not is a
+  **refusal** (#346).
 - Run it after a merge, or periodically. It is idempotent — a second run finds nothing new and
   prints only the state line. The currency check is idempotent in the same sense: once the install
   is current it reports nothing, though a second sweep *does* re-check (an explicitly requested
