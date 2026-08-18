@@ -6082,3 +6082,131 @@ limit: none of them is sufficient alone.
              needed updating** — which is the evidence that the cut fell on prose, since every one
              of them would have gone red on a rule.
 - baseline-issue: n/a — this repo IS the baseline; #361 is the tracking issue.
+
+## D77 — the pinned payload MIRRORS the agent home into the project under a namespace, the skills are re-anchored, and `mode` (not the pin's existence) is the discriminator
+- date:      2026-08-18
+- category:  project-delta
+- unknown:   #285 asked for a release-pinned per-project install "alongside the global symlink
+             model" and left eight things open, of which the gap-analysis pass returned all eight
+             as BLOCKING. Three were genuinely undecidable from the repo:
+             **(a)** where a vendored payload can live such that an agent actually LOADS it —
+             `scripts/build.sh` renders every skill's library calls as
+             `$HOME/.<agent>/scripts/lib/`, which is one directory shared by the global install and
+             by every project on the machine, so "vendor it into the project" has no working
+             destination until that is answered;
+             **(b)** which agents the model can support at all — `scripts/build.sh:405` records
+             `skills_subdirs=""` for gemini, i.e. no established project-local skill discovery;
+             **(c)** the no-clone bootstrap, since `install.sh` runs FROM a tree and `bin/baseline`
+             refuses when no root-doc symlink identifies an install source.
+             The remaining five (artifact/payload boundary, mode discriminator, `stack` variant,
+             approval protocol, uninstall ownership) were resolvable from the repo and are recorded
+             below as consequences rather than as open questions.
+- decision:  **The payload mirrors the agent home into the project, under a namespace.** Skills go
+             to `.<agent>/skills/<name>/` because the harness fixes that path; everything else this
+             install owns goes to `.<agent>/adb/` — the gate scripts and, as their sibling, `lib/`.
+             The namespace is load-bearing rather than tidy: `.claude/scripts/` is
+             `handling-the-unknown.md`'s ONE prescribed home for a project's own gate policy, and an
+             install that wrote its gates there would occupy the path the practice reserves for the
+             project. Hooks and `lib/` are siblings because every gate resolves its library as
+             `$(dirname "$0")/lib/common.sh`, which is exactly what lets them be vendored
+             byte-unchanged — the payload contains no modified script, only re-anchored skills.
+
+             **The skills are RE-ANCHORED at install time**, `$HOME/.<agent>/scripts/lib/` →
+             `$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.<agent>/adb/lib/`. That single
+             substitution is what makes coexistence real: without it two pinned projects and the
+             global install all reach into one directory and the last writer wins. The prefix
+             carries `scripts/lib/` deliberately, so the sibling `$HOME/.<agent>/skills` — which
+             genuinely means the user-global skills root — is left alone. `git rev-parse` rather
+             than an absolute path because the result is committed into somebody else's repository.
+
+             **Practices reach each agent by that agent's own documented mechanism**, and the two
+             differ because the agents do. Claude gets `.claude/rules/ai-dev-baseline.md` — a rule
+             with no `paths:` frontmatter loads at session start, per the vendor's `.claude`
+             directory reference. Codex gets a delimited managed region in the project's root
+             `AGENTS.md`, because its discovery concatenates `AGENTS.md` from the project root down
+             to the cwd and supports **no include directive** (read this run from
+             `codex-rs/core/src/agents_md.rs` via context7). Nothing else can reach it, so the
+             managed region is the mechanism, not a shortcut: it is idempotent by delimiter, and
+             uninstall strips it and removes the file only when the block was all it ever held.
+
+             **Gemini is REFUSED, with the reason stated.** `--agent gemini` exits 2 naming the
+             missing project-local discovery. Installing a payload the agent cannot load would be a
+             mode that reports success and does nothing, which is the silent-guard shape this repo
+             keeps paying for. Global mode still covers all three.
+
+             **The bootstrap is a verified download, and the installer always re-fetches.** Even
+             when driven from an unpacked artifact or a full clone, `install --version` fetches and
+             checksums the published release; `--artifact FILE --sums FILE` is the offline pair for
+             air-gapped installs and for the check. So what lands in a project is always a *named
+             published version* rather than whatever tree the driver sat in — which is what #285's
+             "install from a published release artifact, never from a clone" actually requires, and
+             it removes the driver's own provenance from the trust argument entirely.
+
+             **`mode = "pinned"` is the discriminator, NOT the pin's existence.** `/adopt` already
+             writes `.ai-dev-baseline/upstream.toml` for projects running the global symlink model
+             (D60), so file-presence would classify every adopted project as pinned. The schema is
+             EXTENDED, not replaced: `version`, `adopted`, `stack` and `agents` keep their D60
+             meanings, `mode` and `source` are added, and `commit` is omitted because a pinned
+             project has no clone in which one could be resolved. A pin with no `mode` is a
+             global-mode pin by construction and nothing here touches it.
+
+             **A RECEIPT, not a path rule, is what ownership means.** `pinned-files.sha256` records
+             every file the install wrote and its digest. `status` re-checks the tree against it,
+             `uninstall` removes only files that still match, and `/adopt` reads it to tell an
+             install-owned artifact from a project's own fork. A path rule cannot do this:
+             `.claude/skills/foo` is a legitimate fork in one repo and install-owned in another.
+
+             **`--to` IS the approval; there is no prompt.** Two things already invoke
+             `baseline update` unattended — the `SessionStart` hook and the last step of `/cleanup`
+             — so a command that could upgrade without a named version would upgrade in both. In a
+             pinned project `baseline update` prints a local-only notice (pin + receipt, no network)
+             and otherwise does its ordinary job on the install-source clone; `--check` is untouched,
+             which keeps the exit-code contract the currency hook consumes exactly as it was.
+
+             **`stack` stays descriptive.** #285's "stack variant" wording invites real per-stack
+             payloads; D60 already recorded that the baseline ships exactly one flavor, so this
+             change preserves the field and builds no variant machinery.
+- placement: `scripts/lib/pinned-install.sh` (the model and its contracts), `scripts/lib/adopt-lib.sh`
+             (the `pinned` kind + receipt-based ownership), `install.sh` / `uninstall.sh` /
+             `bin/baseline` (the three entry points), `scripts/check-pinned-install.sh` (the
+             regression suite), `scripts/selfcheck.sh` (the `pinned-install` step),
+             `.github/workflows/ci.yml` (the job), `docs/installation.md` (both models),
+             `CLAUDE.md` (the "Where things live" row).
+- reason:    **The topology decided itself once the 132 library references were counted.** Every
+             alternative was worse in a way that could be named: installing the libraries to
+             `$HOME/.<agent>/scripts/lib` keeps the render untouched and fails #285's own
+             "coexist without fighting" outright; changing `build.sh` to emit a
+             both-modes resolver grows every shipped skill for every user to serve one mode, and
+             #285's "Out" list says the global model is unchanged by construction. Re-anchoring at
+             install time confines the whole cost to the pinned installer, and the generated
+             artifact is the right thing to transform because it is generated.
+
+             **The refusals are the load-bearing part, because this writes into somebody else's
+             repository.** A checksum proves the bytes arrived; it says nothing about the archive
+             being usable, so the tree is probed structurally, its internal `ai-dev-baseline-<v>/`
+             prefix is required to match the filename the digest was keyed on, absolute and `../`
+             members are refused before extraction, the unpacked tree is CRLF-scanned (an artifact
+             is not governed by this repo's `.gitattributes`), and a release below 2.0.0 is refused
+             rather than half-installed. The whole payload is STAGED and validated before the first
+             write into the project, so a failure halfway through leaves the project untouched.
+
+             **The re-anchor's failure mode is silence**, which is why it has its own assertion:
+             a substitution that matched nothing produces a file that looks correct and quietly runs
+             the other install's libraries. `_pi_assert_reanchored` refuses to publish a staged tree
+             that still reaches `$HOME/.<agent>/scripts/lib/`, and the suite drives that red.
+
+             **`/adopt` had to be taught about this, in the same change, because this change is what
+             breaks it.** A pinned payload collides with the baseline by construction and its skills
+             differ (they are re-anchored), so the existing table returned `remove` for the untouched
+             members and `move` for the skills — a migration plan instructing the operator to
+             dismantle the runtime they deliberately vendored. The fix is one aggregate `pinned`
+             record and a `keep` arm tested first, with the per-file records suppressed by RECEIPT
+             membership; a project's own fork and any `overrides.md` are still reported, because
+             a blanket path exclusion would hide real project content living in the same tree.
+
+             **Two limitations are documented rather than papered over.** `skill-compose` overrides
+             do not work in pinned mode — the composer's output path IS the vendored base skill —
+             and that is filed rather than hidden. And two GitHub Release assets prove corruption,
+             not authenticity; the docs say so instead of letting "verify the checksum" imply a
+             trust root it does not have.
+- baseline-issue: n/a — this repo IS the baseline; #285 is the tracking issue.

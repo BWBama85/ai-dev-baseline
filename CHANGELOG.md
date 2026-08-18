@@ -1,11 +1,72 @@
 # Changelog
 
 All notable changes to this project are documented here. Format follows
-[Keep a Changelog](https://keepachangelog.com/); versioning is by git tag. Because
-installs are symlinks, changes on `main` reach a user's clone on their next
-`git pull` — keep `main` releasable.
+[Keep a Changelog](https://keepachangelog.com/); versioning is by git tag. A **global**
+install is symlinks, so changes on `main` reach that user's clone on their next
+`git pull` — keep `main` releasable. A **release-pinned** project (#285) is reached
+only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
+
+### Added
+
+- **A second install model: release-pinned, per project (#285).** The global symlink install is
+  unchanged and stays the default; beside it, `install.sh --pinned --project DIR --version X.Y.Z`
+  vendors **one released version into one project tree**. No clone is required, the project records
+  which baseline it runs, and a breaking change upstream reaches it only when someone names a new
+  version. D77 records the decisions.
+
+  **What lands in the project.** The practices at `.claude/rules/ai-dev-baseline.md` (a rule with
+  no `paths:` frontmatter loads at session start) and, for Codex, in a delimited managed region of
+  the root `AGENTS.md` — Codex concatenates `AGENTS.md` from the project root down and supports no
+  include directive, so that is the only place it can be reached from. The skills at
+  `.<agent>/skills/`, the shared libraries and Stop gates under `.<agent>/adb/`, the pin at
+  `.ai-dev-baseline/upstream.toml`, and a receipt of per-file digests beside it.
+
+  **`.claude/scripts/` is deliberately left free.** It is `handling-the-unknown.md`'s one
+  prescribed home for a project's *own* gate policy, so the vendored gates go to `.claude/adb/`
+  instead — a pinned project can still ship its own `precommit-gate.sh` and the vendored gate steps
+  aside for it exactly as the global one does.
+
+  **The vendored skills are re-anchored.** A rendered skill reaches its libraries through
+  `$HOME/.<agent>/scripts/lib/`, one directory shared by the global install and by every project on
+  the machine. The pinned copy is repointed at the project's own, so two projects pinned to
+  different versions cannot reach into each other and no absolute path is committed. Both models
+  can be active on one machine: inside a pinned project the vendored skills win by the harness's
+  own precedence, and everywhere else the global install does.
+
+  **Installing always goes through a published release artifact**, checksummed against that
+  release's own `SHA256SUMS` record before anything is unpacked — even when the installer is driven
+  from a clone. Archives with absolute or `../` members, a name disagreeing with the internal
+  prefix, CRLF line endings, or a version below 2.0.0 are refused, and the whole payload is staged
+  and validated before the first write into the project.
+
+  **Nothing upgrades on its own.** `baseline pinned status` reports the pinned version and whether
+  a newer release exists; `baseline pinned upgrade --to X.Y.Z` is the only thing that moves it, and
+  the named version *is* the approval — there is no prompt, because `baseline update` is already
+  invoked unattended by the `SessionStart` hook and by `/cleanup`. In a pinned project
+  `baseline update` adds a local-only notice and its `--check` contract is untouched. Re-running
+  the install changes nothing; a different version is refused with the `upgrade` command spelled
+  out.
+
+  **Uninstall removes by digest** (`./uninstall.sh --pinned --project DIR`): a vendored file that
+  still matches the receipt goes, one you edited is kept and named, and your own `AGENTS.md` prose
+  and `settings.json` keys survive.
+
+  **Two limitations, stated rather than discovered.** Gemini is refused — it has no project-local
+  skill discovery, so a vendored payload could not be loaded, and installing one would be a mode
+  that reports success and does nothing. And `skill-compose` overrides do not work in pinned mode,
+  because the composer's output path *is* the vendored base skill.
+
+### Changed
+
+- **`/adopt` recognises a release-pinned payload instead of recommending its deletion (#285).** A
+  vendored payload collides with the baseline by construction and its skills differ (they are
+  re-anchored), so the classifier previously returned `remove` for the untouched members and `move`
+  for the skills — a migration plan telling the operator to dismantle the runtime they deliberately
+  installed. The scan now emits one `pinned` artifact, which classifies as `keep`. Ownership is
+  read from the install's receipt rather than from a path rule, so a project's own skill fork and
+  any `overrides.md` living in the same tree are still reported.
 
 ### Removed
 

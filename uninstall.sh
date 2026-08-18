@@ -6,7 +6,13 @@
 # ~/.claude/backups/ai-dev-baseline-* are left untouched — restore from there if
 # you want your pre-install files back.
 #
-# Usage: ./uninstall.sh [--agent claude|codex|gemini]...   (default: all present)
+# The MIRROR of install.sh's second model lives here too: `--pinned` removes a project's
+# vendored payload instead of this clone's symlinks (#285). It removes only files whose contents
+# still match the receipt that install wrote, so a vendored file you edited is kept and named.
+#
+# Usage:
+#   ./uninstall.sh [--agent claude|codex|gemini]...   (default: all present)
+#   ./uninstall.sh --pinned [--project DIR]
 
 set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +21,19 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$REPO/scripts/lib/common.sh"
 # bash 5.3 runtime floor (#256) — re-exec into a >= 5.3 interpreter, or exit with instructions.
 adb_require_bash "$@"
+# Same dispatch shape as install.sh, and for the same reason: the two models share no
+# destination, so a run is one or the other.
+for _adb_arg in "$@"; do
+  if [ "$_adb_arg" = "--pinned" ]; then
+    _adb_pinned_args=()
+    for _adb_a in "$@"; do
+      [ "$_adb_a" = "--pinned" ] && continue
+      _adb_pinned_args+=("$_adb_a")
+    done
+    exec bash "$REPO/scripts/lib/pinned-install.sh" uninstall "${_adb_pinned_args[@]}"
+  fi
+done
+
 AGENTS=()
 while [ $# -gt 0 ]; do
   case "$1" in
