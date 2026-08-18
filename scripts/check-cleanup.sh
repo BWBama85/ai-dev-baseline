@@ -987,15 +987,35 @@ else
   # comment would be a second read — and for a deleted branch it is not even answerable.
   hasnt "$wfexec" '--comment "Closed by /cleanup: the branch $b was deleted after its content was proved $({{CLEANUP_LIB}}' \
      "6 the closing comment carries the carried proof, never a re-query"
-  # --- #346: the composer is wired. Nothing else executes this line ----------------------------
+  # --- #350: the marker report reads the DELETE scan, and decides nothing ------------------------
+  # It must render `state-verdict`s answers, not grow a verdict of its own — `other` is still never
+  # touched. The one thing it may not do is call `rm`.
+  has "$wfcode" '{{CLEANUP_LIB}} marker-shape' \
+     "6 the marker report asks the library the family question, not a second copy of the allowlist"
+  mrblock="${ printf '%s\n' "$wfcode" | awk '/# ADB-SNIPPET: marker-report/ { inb = 1 } inb { print } inb && /^EOF$/ { exit }'; }"
+  # COMMENT-STRIPPED for the negatives, exactly as `wfexec` is built above and for the same reason:
+  # this block explains at length what it does NOT do, and `arm that stopped matching` contains the
+  # substring `rm ` — observed failing on its own prose before the strip was added.
+  mrexec="${ printf '%s\n' "$mrblock" | sed 's/[[:space:]]*#.*$//'; }"
+  if [ -n "$mrblock" ]; then
+    hasnt "$mrexec" 'rm -f'          "6 …and the marker report never deletes anything"
+    hasnt "$mrexec" 'state-verdict'  "6 …nor re-decides what state-verdict already decided"
+    has   "$mrblock" 'read -r kind sfile key ident' \
+       "6 …and reads FOUR fields, so the --with-identity scan cannot fold an identity into \$key"
+  else
+    bad "6 could not read the marker-report block from the workflow — its pins asserted NOTHING"
+  fi
+  # --- both issues: the composer is wired. Nothing else executes this line ----------------------
   # Every harness in this suite renders its own category label, so an accumulator that never reached
   # `emit` would leave all of them green while the operator saw nothing at all.
   has "$wfcode" "emit 'PR closed'        \"\$PR_CLOSED\"" \
      "6 the PR-closed accumulator reaches the report composer"
-  # …and it is INITIALIZED in step 1, with every other accumulator. A scope that skips the step that
-  # fills one must still leave the report a defined, empty variable to work from.
-  has "$wfcode" 'PR_CLOSED=""' \
-     "6 the new accumulator is initialized in step 1, beside the ones it joins"
+  has "$wfcode" "emit 'Run marker'       \"\$RUNMARK\"" \
+     "6 …as does the run-marker accumulator"
+  # …and both are INITIALIZED in step 1, with every other accumulator. A scope that skips the step
+  # that fills one must still leave the report a defined, empty variable to work from.
+  has "$wfcode" 'PR_CLOSED=""; RUNMARK=""' \
+     "6 both new accumulators are initialized in step 1, beside the ones they join"
   has "$wfcode" 'CLEARED="${CLEARED}${1##*/}${TABC}${3:-}' \
      "6 a swept state file records the proof its caller passed in"
   # Both verdicts named explicitly. A `*)` standing in for merged-ff would hand its proof to any
@@ -2740,5 +2760,235 @@ has "${ cat "$PC/gh.log"; }" 'pr close 102' \
    "12j the control (the same block with the OID gate removed) closes the PR whose head had moved"
 has "${ cat "$PC/gh.log"; }" 'pr close 104' \
    "12j …and the second PR on the two-PR head as well, which is the defect 12b and 12d pin"
+
+# ============ 13. the run marker is never silently invisible (#350) ============================
+# THE BUG: three distinct states of one record rendered byte-identically as SILENCE — the gate
+# cleared the marker at end of run (normal); no run ever existed here; or a marker is sitting in
+# the state directory under a filename the classifier no longer matches. The third is classified
+# `other`, correctly never swept, and never reported — and `RUN_NOW` then reads `none`, which is
+# precisely the verdict that lets a LIVE run's gap and review artifacts be swept out from under it.
+# `base/practices/self-review.md`: a guard must say what it CHECKED, not only whether it passed.
+MR_SNIPPET="${ check_wf_snippet "$WF" marker-report; }"
+[ -n "$MR_SNIPPET" ] || bad "13 snippet 'marker-report' not found in base/workflows/cleanup.md"
+MR="$work/marker350"
+
+# --- 13pre. the library predicate, on its own -------------------------------------------------
+# `marker-shape` answers the REPORTING question the delete allowlist deliberately cannot. It must
+# be WIDER than that allowlist and must never restate it: a second copy of the exact names would
+# have drifted along with the arm that stopped matching, which is the very case this exists for.
+eq "${ bash "$CL" marker-shape implement-issue-active.json; }"  "marker-shaped" "13pre the canonical marker name is in the family"
+eq "${ bash "$CL" marker-shape implement-issue-blocked.json; }" "marker-shaped" "13pre …as is the blocked marker"
+eq "${ bash "$CL" marker-shape implement-issue-paused.json; }"  "marker-shaped" "13pre …and a marker name the allowlist does NOT know, which is the whole point"
+eq "${ bash "$CL" marker-shape /a/b/implement-issue-active.json; }" "marker-shaped" "13pre a full path is judged by its basename"
+eq "${ bash "$CL" marker-shape .marker.tmp; }" "marker-shaped" "13pre a staged marker whose rename never happened is in the family too"
+eq "${ bash "$CL" marker-shape threads-41.json; }" "-" "13pre a thread cache is not a marker"
+eq "${ bash "$CL" marker-shape gaps.md; }"        "-" "13pre nor a gap artifact"
+eq "${ bash "$CL" marker-shape review.md; }"      "-" "13pre nor a review artifact"
+bash "$CL" marker-shape >/dev/null 2>&1; eq "$?" "2" "13pre a missing argument is a hard error, never a quiet '-'"
+
+# mr_run <state-dir> [lib] [snippet-body] — execute the DOCUMENTED marker-report block against a
+# real state dir. `--with-identity`, because that is the scan the workflow reads it from: the
+# pre-delete re-scan, the one pass that binds a file's classification and its identity to a single
+# observation. A three-variable read here would fold the identity into `$key` (see the workflow).
+mr_run() {
+  local dir="$1" lib="${2:-$CL}" body="${3:-$MR_SNIPPET}"
+  rm -f "$dir.runmark"
+  ( cd "$BR" && env "$BASH" -c '
+TABC="$(printf "\t")"
+RUNMARK=""
+SCAN="$(bash '"$lib"' state-scan --with-identity '"$dir"')"
+'"${body//\{\{CLEANUP_LIB\}\}/bash \"$lib\"}"'
+printf "%s" "$RUNMARK" > '"$dir"'.runmark' ) >/dev/null 2>&1
+}
+# RENDERED through the real report path, never substring-matched on the accumulator — 10d's lesson:
+# a SPACE where the tab belongs satisfies any `has` on the raw string while rendering the proof as
+# part of the filename, with no bracket anywhere, and only the report can see that.
+mr_line() {   # <state-dir> — render THAT dir's accumulator, never a fixed one
+  printf '%s\n' "$(cat "${1:-$MR}.runmark")" \
+    | while IFS= read -r x; do [ -n "$x" ] && printf 'Run marker\t%s\n' "$x"; done \
+    | bash "$CL" report
+}
+
+# --- 13a. ABSENT: the common path stays silent -------------------------------------------------
+# The terse contract (#84) forbids a `Run marker: none` on every sweep, and in the documented
+# `merge → /cleanup → /clear` loop the marker is ALWAYS already gone by sweep time — so this is the
+# state that must not grow a line. It is also the state a careless fix breaks first.
+rm -rf "${MR:?}"; mkdir -p "$MR"
+printf '{"n":1}\n' > "$MR/threads-41.json"
+printf 'findings\n' > "$MR/gaps.md"
+mr_run "$MR"
+eq "${ cat "$MR.runmark"; }" "" "13a a state dir with no marker produces no record"
+eq "${ mr_line; }" ""           "13a …so the category does not appear at all — absence is silent"
+
+# --- 13b. KEPT-LIVE: a marker in the delete scan is reported ------------------------------------
+# This is the record that set `RUN_NOW=keep` and preserved every gap, issue and review artifact.
+# It used to be invisible: the sweep knew a run was in flight and said nothing.
+rm -rf "${MR:?}"; mkdir -p "$MR"
+printf '{"branch":"live/branch"}\n' > "$MR/implement-issue-active.json"
+mr_run "$MR"
+eq "${ mr_line; }" \
+   "Run marker: implement-issue-active.json [present at the delete scan — artifacts kept for a run in flight]" \
+   "13b a marker present at the delete scan is reported, through the real report path"
+
+# --- 13c. KEPT-OTHER: the defect — a marker nothing recognised ----------------------------------
+# A filename the classifier's arm does not match. `state-scan` calls it `other`, the sweep never
+# touches it (correct, and unchanged by this issue), and before #350 nothing said so.
+rm -rf "${MR:?}"; mkdir -p "$MR"
+printf '{"branch":"live/branch"}\n' > "$MR/implement-issue-paused.json"
+eq "${ bash "$CL" state-scan "$MR" | cut -f1; }" "other" \
+   "13c the fixture really is classified 'other' — otherwise this case tests nothing"
+mr_run "$MR"
+eq "${ mr_line; }" \
+   "Run marker: implement-issue-paused.json [UNRECOGNISED — scanned as 'other', so this sweep detected no run in flight]" \
+   "13c a marker-shaped file nothing recognised is surfaced, and named"
+if [ -e "$MR/implement-issue-paused.json" ]; then ok; else
+  bad "13c the file was DELETED — 'other' is never touched, and reporting must not have changed that"
+fi
+
+# --- 13d. the same defect arrived at the OTHER way: the classifier's arm drifted ----------------
+# 13c is producer drift (/implement-issue writes a name the arm never learned). This is consumer
+# drift — the arm itself stops matching the canonical name — and it is the shape #350 describes.
+# Reproduced against a COPY of the library in a temp dir (base/practices/self-review.md: never
+# mutate the live tree to watch a check fire), with ONLY `state-scan`'s allowlist edited. A second
+# copy of that allowlist inside `marker-shape` would have been edited by the same sed and detected
+# nothing, which is exactly why the predicate is a family instead.
+# The copy needs its NEIGHBOUR: cleanup-lib.sh sources common.sh from its own directory and dies
+# without it, so a lone copy in $work would produce no output at all and 13d would "pass" by
+# emptiness on the wrong side. Copy both into one throwaway dir.
+MRLIBD="$work/drifted-lib"; mkdir -p "$MRLIBD"
+cp "$ROOT/scripts/lib/common.sh" "$MRLIBD/common.sh" || bad "13d could not stage common.sh"
+MRLIB="$MRLIBD/cleanup-lib.sh"
+sed 's/implement-issue-active\.json|implement-issue-blocked\.json)/implement-issue-run.json)/' "$CL" > "$MRLIB"
+if cmp -s "$MRLIB" "$CL"; then
+  bad "13d the library mutation did not apply — the marker allowlist no longer matches the needle"
+else ok; fi
+rm -rf "${MR:?}"; mkdir -p "$MR"
+printf '{"branch":"live/branch"}\n' > "$MR/implement-issue-active.json"
+eq "${ bash "$MRLIB" state-scan "$MR" | cut -f1; }" "other" \
+   "13d with the arm drifted, the CANONICAL marker name falls to 'other' — the regression, reproduced"
+mr_run "$MR" "$MRLIB"
+has "${ mr_line "$MR"; }" "implement-issue-active.json [UNRECOGNISED" \
+   "13d …and the report says so, which is the whole of this issue"
+
+# --- 13e. THE CONTROL: 13c/13d must be able to fail, and the witness is the REAL block, MUTATED --
+# A guard is not done until it has been observed failing. The witness is the shipped snippet with
+# its `other` arm's predicate inverted — i.e. the pre-#350 behaviour, where a marker-shaped `other`
+# record produced nothing at all. Everything else (the loop, the marker arm, the accumulator) is
+# the shipped text.
+MR_NEEDLE='[ "$({{CLEANUP_LIB}} marker-shape "$sfile")" = marker-shaped ] || continue'
+MR_BLIND='      continue'
+MR_BROKEN="${ printf '%s\n' "$MR_SNIPPET" \
+  | awk -v needle="$MR_NEEDLE" -v repl="$MR_BLIND" 'index($0, needle) { print repl; next } { print }'; }"
+if [ "$MR_BROKEN" = "$MR_SNIPPET" ]; then
+  bad "13e the control mutation did not apply — the needle no longer matches the shipped block"
+else ok; fi
+mr_run "$MR" "$MRLIB" "$MR_BROKEN"
+eq "${ cat "$MR.runmark"; }" "" \
+   "13e the control (the block blind to a marker-shaped 'other') reports NOTHING — the silence #350 removes"
+# …and the marker arm must still work in the control, or 13e would be passing because the whole
+# block stopped running rather than because the one arm was removed.
+rm -rf "${MR:?}"; mkdir -p "$MR"
+printf '{"branch":"live/branch"}\n' > "$MR/implement-issue-active.json"
+mr_run "$MR" "$CL" "$MR_BROKEN"
+has "${ cat "$MR.runmark"; }" 'implement-issue-active.json' \
+   "13e …while its marker arm still fires, so 13e failed for the reason it claims"
+
+# --- 13f. CLEARED: swept by the marker pass, so it is reported by THAT category and not this one -
+# The third state, end to end. `Cleared state` already carries it (#332); the point here is that
+# the new category does not DOUBLE-report a record the sweep removed — the delete scan no longer
+# holds it. Every observed marker therefore produces exactly one line-item, in exactly one category.
+mk_run none 0
+eq "${ st_line; }" "Cleared state: implement-issue-active.json [branch gone]" \
+   "13f a swept marker is reported by the category that swept it"
+mr_run "$ST"
+eq "${ cat "$ST.runmark"; }" "" \
+   "13f …and NOT a second time under Run marker — the delete scan no longer holds the record"
+
+# --- 13g. an unreadable state dir is never conflated with 'no marker' ---------------------------
+# `state-scan` exits 2 with NO stdout when the state directory's own path cannot be serialized, and
+# the workflow turns that into a REFUSED note. The marker report must produce nothing there rather
+# than a reassuring silence that reads like case (a).
+MRBAD="$work/marker350-$(printf 'bad\tdir')"
+mkdir -p "$MRBAD" 2>/dev/null || true
+if [ -d "$MRBAD" ]; then
+  bash "$CL" state-scan "$MRBAD" >/dev/null 2>&1; eq "$?" "2" \
+     "13g a state dir whose own path cannot be serialized is REFUSED by the scan, not enumerated"
+  mr_run "$MRBAD"
+  eq "${ cat "$MRBAD.runmark" 2>/dev/null; }" "" \
+     "13g …and the marker report adds nothing to it, so the REFUSED note stands alone"
+else
+  check_note "13g SKIPPED: this filesystem would not create a directory with a tab in its name"
+fi
+
+# --- 13h. REPORTING ONLY: what the sweep DOES is unchanged, including the dangerous part --------
+# #350's "Out" scope is explicit — `other` is still never swept, and the `RUN_NOW=none` a
+# misclassified marker produces is still what it was. That is exactly why the report matters, so
+# pin it rather than leaving a reader to assume the fix also repaired the liveness signal. It did
+# not, and claiming otherwise would be worse than the silence.
+rm -rf "${ST:?}"; mkdir -p "$ST"
+printf '{"branch":"live/branch"}\n' > "$ST/implement-issue-paused.json"
+printf 'findings\n' > "$ST/gaps.md"
+( cd "$BR" && env STATE="$ST" RUN=none NOTES="" CLEARED="" PRWANT=merged PRLOG="$ST.prcalls" "$BASH" -c '
+TABC="$(printf "\t")"
+pr_state() { printf "%s\n" "$PRWANT"; }
+'"${SW_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"'
+printf "%s" "$RUN_NOW" > '"$ST"'.runnow' ) >/dev/null 2>&1
+eq "${ cat "$ST.runnow"; }" "none" \
+   "13h a misclassified marker still yields RUN_NOW=none — the danger this issue reports, not repairs"
+if [ -e "$ST/gaps.md" ]; then
+  bad "13h …and the fixture must show why that matters: the gap artifact was NOT swept"
+else ok; fi
+if [ -e "$ST/implement-issue-paused.json" ]; then ok; else
+  bad "13h the 'other' record was deleted — the never-touch rule must be unchanged"
+fi
+mr_run "$ST"
+has "${ mr_line "$ST"; }" 'UNRECOGNISED' \
+   "13h …so the ONE thing that changed is that the operator is now told"
+
+# --- 13i. the new blocks must run on the interpreter an AGENT will use too ---------------------
+# 11d makes this point for the branch and marker sweeps: these fences are executed by the AGENT's
+# shell, and on macOS a shell that has not picked up Homebrew's prefix is /bin/bash 3.2.57.
+# `marker-report` (#350) and `remote-enum` (#346) are new surface with the same exposure, and
+# `check-workflow-shell.sh` checks reserved-variable assignment, not general syntax. The sentinel
+# in each case is what makes this able to fail at all — a block that does not run produces an empty
+# accumulator, which satisfies any absence assertion.
+if [ -x /bin/bash ] && [ "${ /bin/bash -c 'printf %s "$BASH_VERSION"'; }" != "${BASH_VERSION}" ]; then
+  rm -rf "${MR:?}"; mkdir -p "$MR"
+  printf '{"branch":"live/branch"}\n' > "$MR/implement-issue-paused.json"
+  rm -f "$MR.runmark"
+  ( cd "$BR" && env /bin/bash -c '
+TABC="$(printf "\t")"
+RUNMARK=""
+SCAN="$(bash '"$CL"' state-scan --with-identity '"$MR"')"
+'"${MR_SNIPPET//\{\{CLEANUP_LIB\}\}/bash \"$CL\"}"'
+printf "%s" "$RUNMARK" > '"$MR"'.runmark' ) >/dev/null 2>&1
+  has "${ mr_line "$MR"; }" 'implement-issue-paused.json [UNRECOGNISED' \
+     "13i the marker-report block reports a misclassified marker under /bin/bash 3.2 too"
+  # The ENUMERATION, whose awk is the piece most likely to differ across shells and awks. Run in
+  # the section-11 fixture, whose remote still holds only main after 11a swept rm/merged — so a
+  # branch is staged for it here rather than relying on one an earlier case left behind.
+  ( cd "$RM" || exit 1
+    git rev-parse --verify --quiet refs/heads/rm/oldsh >/dev/null || {
+      git checkout -q -b rm/oldsh
+      git commit -q --allow-empty -m "rm/oldsh work"
+      git checkout -q main
+      git merge -q --no-ff rm/oldsh -m "merge rm/oldsh"
+      git push -q origin main
+      git push -q -u origin rm/oldsh
+    } ) >/dev/null 2>&1
+  ( cd "$RM" && env /bin/bash -c '
+BASE=origin/main
+CURRENT=main
+TABC="$(printf "\t")"
+PROTECTED="^(HEAD|main|master|develop|release/.*|hotfix/.*)$"
+'"$RE_SNIPPET"'
+printf "%s" "$REMOTE_MERGED" > '"$RM"'.enum' ) >/dev/null 2>&1
+  eq "${ cut -f1 < "$RM.enum"; }" "rm/oldsh" \
+     "13i the remote enumeration filters correctly under /bin/bash 3.2 too"
+  eq "${ cut -f2 < "$RM.enum"; }" "${ check_git "$RM" rev-parse refs/remotes/origin/rm/oldsh; }" \
+     "13i …and still carries the tip the delete will be leased to"
+else
+  check_note "13i SKIPPED the old-interpreter pass: /bin/bash is absent, or is this suite's own interpreter (${BASH_VERSION})"
+fi
 
 check_summary "check-cleanup"

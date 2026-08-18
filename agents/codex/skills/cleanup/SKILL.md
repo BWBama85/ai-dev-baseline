@@ -123,6 +123,14 @@ narrates itself buries the one or two lines that matter.
 - **Every outward mutation the sweep causes is a category of its own** (#346). Closing a PR is not
   a delete, and burying it inside `Deleted (local)` would hide the one action here that touches
   something other people can see. It carries the same proof the delete did.
+- **A run marker the sweep OBSERVED is never silent** (#350). It appears under `Cleared state` if
+  this sweep removed it, and under `Run marker` if it is still there — kept because a run is in
+  flight, or kept because nothing recognised it as a marker at all. The third state is the one that
+  used to render identically to "no marker exists", and it is the dangerous one: `RUN_NOW` reads
+  `none`, so a **live** run's artifacts become sweepable. **Absence is still silent** — the terse
+  contract forbids a `Run marker: none` on every sweep, and absence is the common case in the
+  documented loop, where the Stop-hook gate has already cleared the marker before `/cleanup` runs.
+
 ```
 Deleted (local): fix/371-contact-bundle [#379 (merge commit 3f9e9e5abcde)], feat/x [contained in origin/main]
 PR closed: 380 [head matched the proved tip 3f9e9e5abcde]
@@ -131,6 +139,11 @@ baseline: updated 3818548 → ebca0f3 (2 commits).
 main: clean, in sync with origin/main
 ```
 
+A sweep that found a marker nothing recognised adds the one line that used to be missing:
+
+```
+Run marker: implement-issue-active.json [UNRECOGNISED — scanned as 'other', so this sweep detected no run in flight]
+```
 
 The `baseline:` line follows the same rule as every category above it — it appears only when
 something actually happened. An install that was already current, a disabled updater, or a sweep of
@@ -218,7 +231,7 @@ CURRENT="$(git rev-parse --abbrev-ref HEAD)"
 # report silently degrades to blank lines rather than failing. (`/roadmap` is the opposite: its
 # blocks are deliberately self-contained and re-resolve everything they need. Do not carry that
 # habit here, or the reverse habit there.)
-NOTES=""; DELETED_LOCAL=""; DELETED_REMOTE=""; CLEARED=""; PR_CLOSED=""
+NOTES=""; DELETED_LOCAL=""; DELETED_REMOTE=""; CLEARED=""; PR_CLOSED=""; RUNMARK=""
 # The report record's field separator, defined ONCE and here — the delete accumulators above
 # now carry `<item><TAB><proof>` pairs (#332) and step 5 parses `state-scan` records with the same
 # character, so a second spelling later in the file would be one constant with two homes. Never a
@@ -954,6 +967,57 @@ $SCAN
 EOF
 ```
 
+**Then say what the scan saw about the run marker (#350).** Three states of one record used to
+render byte-identically as silence: the Stop-hook gate cleared it at end of run (the normal case,
+and in the documented `merge → /cleanup → /clear` loop the marker is *always already gone* by
+sweep time); no run ever existed here; or **a marker is sitting in the state directory under a
+filename the classifier no longer matches** — classified `other`, correctly never swept, and
+*never reported*. That third one is the failure the library names in its own words: `RUN_NOW` reads
+`none`, so a **live** run's gap and review artifacts become sweepable. A guard must say what it
+checked, not only whether it passed (`base/practices/self-review.md`).
+
+**It reports an observation, never an inferred cause.** `/cleanup` never watched the gate clear
+anything, so it must not say so (`base/practices/verify-before-asserting.md`). What it did observe
+is which records the delete scan held, and that is exactly what the line states. **Nothing here
+decides anything**: `state-verdict marker` remains the only thing that decides a marker's fate, in
+the marker pass above, and `other` is still never touched (the rule at the top of this step stands).
+This renders what those decisions produced.
+
+**Absence stays silent**, because the terse contract forbids a `Run marker: none` on every sweep
+(#84) — and absence is the overwhelmingly common case. A marker record that *was* observed is never
+silent: it appears under `Cleared state` if this sweep removed it, and under `Run marker` if it is
+still there.
+
+```bash
+# ADB-SNIPPET: marker-report
+# THE SAME SNAPSHOT the deletes ran from — the pre-delete re-scan, which binds a file's
+# classification and its identity to one observation. Reporting from the FIRST scan instead would
+# describe a state the sweep no longer acted on, which is the staleness this whole step is built to
+# avoid; and re-scanning a third time here would be a different moment again.
+while IFS="$TABC" read -r kind sfile key ident; do
+  case "$kind" in
+    marker)
+      # Present at the scan that governed the deletes, i.e. exactly the fact that set `RUN_NOW=keep`
+      # and preserved every gap, issue and review artifact above. Stated as the observation, not as
+      # "a run is running" — this sweep saw a file, not a process.
+      RUNMARK="${RUNMARK}${sfile##*/}${TABC}present at the delete scan — artifacts kept for a run in flight
+"
+      ;;
+    other)
+      # THE DEFECT CASE. `marker-shape` asks the FAMILY question the delete allowlist deliberately
+      # cannot: does this look like a run marker? A second copy of the allowlist here would have
+      # drifted along with the arm that stopped matching and detected nothing, which is why the
+      # library answers it with a wider predicate instead (see its header).
+      [ "$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" marker-shape "$sfile")" = marker-shaped ] || continue
+      RUNMARK="${RUNMARK}${sfile##*/}${TABC}UNRECOGNISED — scanned as 'other', so this sweep detected no run in flight
+"
+      ;;
+  esac
+done <<EOF
+$SCAN
+EOF
+```
+
 A kept captured stream that has grown large is **reported, not truncated** — truncating a live
 run's stream destroys the evidence its operator is about to read. This covers the **review**
 stream too (#264): `review.err` captures a reviewer's whole exploration, and the run #264 recorded
@@ -1005,14 +1069,20 @@ whose symlinks are what `bash "$HOME/.codex/scripts/lib/cleanup-lib.sh"` resolve
 whole sweep is reported by the library version that decided it — an old workflow calling a
 freshly-swapped library is a version skew with no upside.
 
-`emit` is unchanged by #332 and #346, and deliberately so: each accumulator line is already
+`emit` is unchanged by #332, #346 and #350, and deliberately so: each accumulator line is already
 `<item>TAB<proof>`, so prefixing the category yields the three-field record `report` now reads, and
 a line carrying no proof yields the two-field record it has always read. The `\t` below is a
 `printf` escape, not a raw tab — the accumulators use `$TABC` from step 1 for the same reason.
-**A category joins the list rather than a renderer**, which is why this issue needed no change here
-beyond one line: a category exists only because a record created it, so it stays absent on a sweep
-that has nothing to say about it. `PR closed` sits directly under the deletes because a close is a
-*consequence* of the local delete above it and is meaningless without it.
+**Two categories join the list rather than two renderers**, which is why neither issue needed a
+change here beyond a line each: a category exists only because a record created it, so both stay
+absent on a sweep that has nothing to say about them.
+
+**The order is the causal order**, and it is the one thing about this block that is a decision.
+`PR closed` sits directly under the deletes because a close is a *consequence* of the local delete
+above it and is meaningless without it; `Run marker` sits last, under `Cleared state`, because it
+is the only category that reports something the sweep did **not** change — what it saw and left
+alone. A reader scanning top-to-bottom then gets destructive actions, their follow-on mutations,
+and finally the observation, before the repository-state tail.
 
 **`PR closed` carries a bare number, never `#<n>` — and that rule reaches its PROOF too.**
 `bash "$HOME/.codex/scripts/lib/state-assert.sh" lint` rejects a status word sharing a sentence with an entity reference,
@@ -1033,6 +1103,7 @@ REPORT_OUT="$({
   emit 'Deleted (remote)' "$DELETED_REMOTE"
   emit 'PR closed'        "$PR_CLOSED"
   emit 'Cleared state'    "$CLEARED"
+  emit 'Run marker'       "$RUNMARK"
 } | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" report --tail "$(bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" state-line "$ROOT" "$DEFAULT")")"
 ```
 

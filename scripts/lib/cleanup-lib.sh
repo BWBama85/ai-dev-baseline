@@ -37,6 +37,7 @@
 #   cleanup-lib.sh state-verdict  review  <run keep|stale|none>
 #   cleanup-lib.sh marker-branch   <marker-path>
 #   cleanup-lib.sh marker-identity <marker-path>
+#   cleanup-lib.sh marker-shape    <path-or-name>
 #   cleanup-lib.sh file-identity   <path>
 #   cleanup-lib.sh report [--tail <line>]   # TSV "<category>\t<item>[\t<detail>]" on stdin
 #   cleanup-lib.sh state-line     <root> <default-branch>
@@ -506,6 +507,39 @@ cmd_marker_branch() {
   [ "$#" -eq 1 ] || die "marker-branch: needs exactly 1 arg: <marker-path>"
   _adb_cl_marker_branch "$1"
   printf '\n'
+}
+
+# --- marker-shape -------------------------------------------------------------------------------
+# Is this filename SHAPED like an /implement-issue run marker? Prints `marker-shaped` or `-`;
+# exit 0 always (a description is never an error), 2 on bad arguments.
+#
+# IT DECIDES NOTHING ABOUT DELETION, and that separation is the whole point (#350). `state-scan`'s
+# marker arm is a DELETE allowlist and must stay exact — a name it cannot account for is not ours
+# to remove, so anything unmatched falls to `other` and is never touched. That is correct, and it
+# is also silent: a marker written under a name that arm stops matching is classified `other`,
+# never swept (right), never reported (the defect) — and `RUN_NOW` then reads `none`, which is the
+# verdict that lets a LIVE run's gap and review artifacts be swept out from under it. This answers
+# the REPORTING question the allowlist cannot: does this look like a run marker that nothing
+# recognised?
+#
+# SO IT IS A FAMILY, NOT A SECOND COPY OF THE ALLOWLIST. Restating `implement-issue-active.json`
+# and `implement-issue-blocked.json` here would be two spellings of one list, and the case this
+# exists for is precisely the one where the first spelling stopped matching — a duplicate would
+# have drifted with it and detected nothing. The predicate is deliberately WIDER than the
+# allowlist and never overlaps a positive: a name the allowlist accepts is classified `marker` by
+# `state-scan` and never reaches the `other` arm the workflow asks this about.
+#
+# `.marker.tmp` is in the family for the same reason /implement-issue writes it: step 5 stages the
+# marker there and publishes it by rename. One left behind at sweep time means the rename never
+# happened, so a run's marker exists on disk and no reader will ever see it — the same invisible
+# state this subcommand exists to surface, arrived at by a different route.
+cmd_marker_shape() {
+  [ "$#" -eq 1 ] || die "marker-shape: needs exactly 1 arg: <path-or-name>"
+  local base="${1##*/}"
+  case "$base" in
+    implement-issue-*.json|.marker.tmp) printf 'marker-shaped\n' ;;
+    *)                                  printf -- '-\n' ;;
+  esac
 }
 
 # --- marker-identity ----------------------------------------------------------------------------
@@ -1007,6 +1041,7 @@ main() {
     state-verdict)  cmd_state_verdict "$@" ;;
     marker-branch)   cmd_marker_branch "$@" ;;
     marker-identity) cmd_marker_identity "$@" ;;
+    marker-shape)    cmd_marker_shape "$@" ;;
     file-identity)   cmd_file_identity "$@" ;;
     report)         cmd_report "$@" ;;
     state-line)     cmd_state_line "$@" ;;
