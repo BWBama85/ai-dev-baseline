@@ -1054,6 +1054,22 @@ has "$wf" '{{ROADMAP_LIB}} pr-targets-issue' \
   "workflow delegates in-flight targeting to the shared predicate"
 has "$wf" '{{ROADMAP_LIB}} release-ready' \
   "workflow delegates release readiness to the shared predicate"
+# #352 — the emit decision must stay delegated too. The withholding judgment ("ready, but the first
+# action is yours") was correct and homeless, so it was re-improvised in prose every run; a skill
+# that quietly reverts to deciding it inline puts it straight back where it was.
+#
+# SCOPED TO THE SNIPPET, not to the file. The ladder prose names the predicate too, so a whole-file
+# `has` stays green against a snippet that inlined a `grep -qx` copy of the rule and left the
+# sentence describing it — which is the drift this section exists to catch, wearing documentation
+# as cover. (Observed: that exact edit kept a file-scoped pin green.) `check_wf_snippet` is used
+# directly because `wf_snippet` is not defined until further down this section.
+oa_block="${ check_wf_snippet "$WF" owner-action; }"
+has "$oa_block" '{{ROADMAP_LIB}} emit-verdict' \
+  "the executed snippet delegates the bundle's emit decision to the shared predicate (#352)"
+has "$oa_block" 'emit-verdict could not classify the selected bundle' \
+  "...and hard-stops when it cannot answer, rather than falling through to a batch"
+hasnt "$oa_block" 'grep -qx implementable' \
+  "...instead of re-deciding the four-state ladder inline"
 # #132 — the ambiguity report is worth nothing if the workflow never asks for it, and "the library
 # can be perfect while the skill quietly reverts" is exactly what this section exists to catch.
 has "$wf" '{{ROADMAP_LIB}} deps-ambiguous' \
@@ -2390,6 +2406,48 @@ has "$wf" 'never** retirable' \
 has "$wf" 'empty `## Decisions` section' \
   "bootstrap seeds the Decisions section so the first question has a recording home"
 
+# --- 8e. #352: the owner-action state is ONE NAME across every home it has ------------------
+# The defect was not a missing feature, it was a homeless judgment: the run classified the issue
+# `implementable`, rendered the bundle `ready`, then declined to emit it — correctly — with nothing
+# in the workflow to say so, so the override was re-improvised in prose every run. These pin the
+# name in each place it now lives; the PREDICATE half is section 9b and the EXECUTED half is
+# scripts/check-roadmap-e2e.sh section 3h.
+has "$wf" '`Status` ∈ ready | owner-action | blocked' \
+  "the bundle-status ladder carries the owner-action rung (#352)"
+has "$wf" '- **owner-action** — the acceptance is **not** satisfied' \
+  "step 4's classification carries the fourth state, under the same name"
+has "$wf" 'Next: none — owner-action: do the' \
+  "the state has its own terminal string, distinct from 'nothing implementable'"
+has "$wf" '! owner-action:#12 —' \
+  "the owner's step renders as an owner-action line — the slot the output contract already defines"
+# It is a VERDICT, not a question: a `## Decisions` row that retired it would blank the only
+# explanation above `Next: none`, which is the failure the state exists to end. Pinning the END of
+# the retirable vocabulary is what catches an append; the prose pin catches a rewrite of the rule.
+has "$wf" '`owner-review:#N` · `cycle:#N` (the lowest-numbered issue in the cycle).' \
+  "the retirable question-id vocabulary still ends at cycle:#N"
+has "$wf" 'deliberately absent from that list' \
+  "...and says why owner-action is not in it"
+has "$wf" 'the **`owner-action:#N`** verdict' \
+  "the never-retirable list carries it beside held and the STOP conditions"
+# The fifth home. `docs/roadmap-acceptance.md` is the specification a run is accepted against, so a
+# terminal string that drifts from it is a spec and a workflow disagreeing in silence.
+racc="$(cat "$ROOT/docs/roadmap-acceptance.md" 2>/dev/null)"
+has "$racc" 'Next: none — owner-action: do the 1 action(s) above, then re-run.' \
+  "the acceptance script pins the SAME terminal string the workflow emits (#352)"
+has "$racc" '## 4b. Owner-action' \
+  "...and carries the state's own acceptance case"
+# DOC ORDER is execution order for an agent reading the workflow, and per-snippet execution can
+# never see it: the gauge block must precede the owner-action terminal, or a configured gauge
+# never prints on that path — the run would open with a `!` line instead of the contractual
+# every-run prefix (#392 review).
+g_at="$(printf '%s\n' "$wf" | grep -n '^# ADB-SNIPPET: gauge$' | cut -d: -f1)"
+oa_at="$(printf '%s\n' "$wf" | grep -n '^# ADB-SNIPPET: owner-action$' | cut -d: -f1)"
+if [ -n "$g_at" ] && [ -n "$oa_at" ] && [ "$g_at" -lt "$oa_at" ]; then
+  ok
+else
+  bad "the gauge block precedes the owner-action terminal (doc order is execution order)"
+fi
+
 # ============================================================================================
 # 9. OPEN-ISSUES + READ-COMPLETE — completeness of the backlog read (#79)
 # ============================================================================================
@@ -2467,6 +2525,103 @@ hasnt "$wf" 'gh issue list --state open --limit 200' \
 # The gauge/readiness path was ALREADY exact (search/issues total_count) and must stay untouched.
 has "$wf" "--jq '.total_count'" \
   "the Search-API gauge/readiness path is unchanged (already exact at any size)"
+
+# ============================================================================================
+# 9b. EMIT-VERDICT — what may this bundle emit? (#352)
+# ============================================================================================
+# The fourth classification state and the two bundle-status rungs decided by classification alone.
+# `ready` first, so one implementable member still emits a batch; `owner-action` next, so real
+# unblocked work whose FIRST step is the owner's is reported instead of vanishing behind
+# `Next: none`; `tracker-only` last, when nothing is left to build.
+ev() { printf '%s\n' "$1" | bash "$RL" emit-verdict 2>/dev/null; }
+ev_rc() { printf '%s\n' "$1" | bash "$RL" emit-verdict >/dev/null 2>&1; printf '%s' "$?"; }
+
+# --- 9b-a. the three verdicts, and the ORDER between them ------------------------------------
+eq "${ ev 'implementable'; }" ready "a lone implementable member is a ready bundle"
+eq "${ ev 'owner-action'; }" owner-action "a lone owner-action member is an owner-action bundle"
+eq "${ ev 'tracker-only'; }" tracker-only "a lone tracker-only member leaves nothing to build"
+eq "${ ev 'owner-review'; }" tracker-only "...and so does a lone owner-review member"
+eq "${ ev $'implementable\nowner-action'; }" ready \
+  "READY WINS: one implementable member still emits a batch, with the owner-action line above it"
+eq "${ ev $'owner-action\nimplementable'; }" ready \
+  "...regardless of the order the members arrive in"
+eq "${ ev $'owner-action\ntracker-only\nowner-review'; }" owner-action \
+  "OWNER-ACTION beats tracker-only: unshipped work waiting on the owner is not 'nothing to build'"
+eq "${ ev $'tracker-only\nowner-review\ntracker-only'; }" tracker-only \
+  "only an all-flagged bundle reports tracker-only"
+
+# --- 9b-b. blank lines are ignorable; whitespace is not a new vocabulary ---------------------
+eq "${ ev $'\nowner-action\n\n'; }" owner-action "blank lines between records are ignored"
+eq "${ ev $'  implementable  '; }" ready "surrounding whitespace does not hide a classification"
+
+# --- 9b-c. FAIL-CLOSED: an unknown word and an empty set are ERRORS, never a quiet verdict ---
+# A skipped member is the dangerous direction: it demotes a `ready` bundle to `tracker-only` and
+# deletes real work from the plan, reported as nothing.
+eq "${ ev_rc 'maybe-later'; }" 2 "a classification outside the four-state vocabulary is an ERROR (2)"
+eq "${ ev_rc $'implementable\nmaybe-later'; }" 2 "...even when a valid member would have answered first"
+eq "${ ev_rc ''; }" 2 "an empty member set is an ERROR — a bundle with no open member is 'done'"
+eq "${ ev_rc '#12'; }" 2 "an untrimmed RECORD (the whole tab-separated line) is an error, not field 1"
+oa_err="$(printf 'maybe-later\n' | bash "$RL" emit-verdict 2>&1 >/dev/null)"
+has "$oa_err" "maybe-later" "the refusal names the word it refused"
+has "$oa_err" "implementable|owner-action|tracker-only|owner-review" \
+  "...and states the vocabulary, so the caller can fix the record rather than guess"
+eq "$(printf 'implementable\n' | bash "$RL" emit-verdict extra 2>/dev/null; printf '%s' "$?")" 2 \
+  "emit-verdict takes no arguments (arity is enforced like every other subcommand)"
+
+# --- 9b-d. determinism ------------------------------------------------------------------------
+eq "${ ev $'owner-action\ntracker-only'; }" "${ ev $'owner-action\ntracker-only'; }" \
+  "two runs over the same member set return the same verdict"
+
+# --- 9b-e. OBSERVED FAILING (self-review.md): each rule driven RED on its own witness ---------
+# A guard's failure mode is silence, so the cases above are only evidence once a defect makes them
+# go red. Each row injects one plausible superseded shape into a COPY of the library — never the
+# tracked tree (self-review.md's copy rule) — and requires the assertion that claims to cover it to
+# fail on its own label. A row that stays green means nothing here can detect that defect.
+ev_prepare() {   # <copy-dir> — build the library copy; print the file to mutate
+  local copy="$1"
+  mkdir -p "$copy/lib" || return 1
+  cp "$ROOT/scripts/lib/roadmap-lib.sh" "$ROOT/scripts/lib/common.sh" "$copy/lib/" || return 1
+  printf '%s\n' "$copy/lib/roadmap-lib.sh"
+}
+ev_run() {       # <copy-dir> — re-run 9b-a..c against the mutated copy; FAIL: lines + exit 1
+  local lib="$1/lib/roadmap-lib.sh" f=0
+  _ev_eq() {     # <label> <stdin> <want>
+    local got; got="$(printf '%s\n' "$2" | bash "$lib" emit-verdict 2>/dev/null)"
+    [ "$got" = "$3" ] || { printf 'FAIL: %s: got [%s] want [%s]\n' "$1" "$got" "$3"; f=1; }
+  }
+  _ev_rc() {     # <label> <stdin> <want-rc>
+    local rc; printf '%s\n' "$2" | bash "$lib" emit-verdict >/dev/null 2>&1; rc=$?
+    [ "$rc" = "$3" ] || { printf 'FAIL: %s: rc [%s] want [%s]\n' "$1" "$rc" "$3"; f=1; }
+  }
+  _ev_eq "READY WINS" $'implementable\nowner-action' ready
+  _ev_eq "OWNER-ACTION beats tracker-only" $'owner-action\ntracker-only\nowner-review' owner-action
+  _ev_eq "all-flagged reports tracker-only" $'tracker-only\nowner-review' tracker-only
+  _ev_rc "unknown word is an ERROR" 'maybe-later' 2
+  _ev_rc "empty member set is an ERROR" '' 2
+  return "$f"
+}
+# The plausible wrong reading of the rule, not a scramble of it: "a bundle containing ANY
+# owner-action member is withheld". It withholds a batch that is genuinely emittable, which is the
+# direction that costs work rather than merely mislabelling it.
+check_mut 'ready-yields-to-any-owner-action' \
+  'if   [ "$impl"  -gt 0 ]; then printf' \
+  'if   [ "$impl"  -gt 0 ] && [ "$owner" -eq 0 ]; then printf' \
+  'READY WINS'
+check_mut 'owner-action-folded-into-tracker-only' \
+  '      owner-action)  owner=$((owner + 1)) ;;' \
+  '      owner-action)  : ;;' \
+  'OWNER-ACTION beats tracker-only'
+check_mut 'unknown-word-skipped-instead-of-refused' \
+  '      *) die "emit-verdict: unknown classification' \
+  '      *) continue ;; *) die "emit-verdict: unknown classification' \
+  'unknown word is an ERROR'
+check_mut 'empty-set-answers-instead-of-refusing' \
+  '  [ "$seen" -gt 0 ] || die "emit-verdict: no member classifications' \
+  '  [ "$seen" -ge 0 ] || die "emit-verdict: no member classifications' \
+  'empty member set is an ERROR'
+ev_work="$(mktemp -d "${TMPDIR:-/tmp}/adb-emit-verdict-mut.XXXXXX")" || exit 1
+check_mutation_pool "emit-verdict" "$ev_work" ev_prepare ev_run 4
+rm -rf "$ev_work"
 
 # ============================================================================================
 # 10. AUTOFIX TIER — fix the unambiguous, escalate the rest (#109)
