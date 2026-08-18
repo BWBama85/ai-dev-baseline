@@ -149,6 +149,33 @@ eq "$rc" 1 "payload: a root carrying a tab is refused"
 out="$(bash "$PI" payload claude "$work/src/$PREFIX" "$(printf 'a\tb')" 2>/dev/null)"
 eq "${#out}" 0 "payload: … and emits no partial map"
 
+# A SKILL THAT BUNDLES A SUBDIRECTORY must fail the map rather than silently dropping the file.
+# Every shipped skill is flat today, so this is the only way the rule can be observed at all.
+mkdir -p "$work/src/$PREFIX/agents/claude/skills/bundled/ref"
+printf 'x\n' > "$work/src/$PREFIX/agents/claude/skills/bundled/SKILL.md"
+printf 'y\n' > "$work/src/$PREFIX/agents/claude/skills/bundled/ref/notes.md"
+out="$(bash "$PI" payload claude "$work/src/$PREFIX" /proj 2>&1)"; rc=$?
+eq "$rc" 1 "payload: a skill bundling a subdirectory is refused, not silently flattened"
+has "$out" "bundles a subdirectory" "payload: … and names the rule"
+rm -rf "$work/src/$PREFIX/agents/claude/skills/bundled"
+
+# A PAYLOAD PATH THAT WOULD NOT ROUND-TRIP THROUGH THE RECEIPT. The receipt is read back with
+# `read -r digest path`, which strips leading and trailing whitespace, so such a path would be
+# recorded one way and read back another and every later `status` / `uninstall` would act on a file
+# that is not there.
+mkdir -p "$work/src/$PREFIX/agents/claude/skills/trailing "
+printf 'x\n' > "$work/src/$PREFIX/agents/claude/skills/trailing /SKILL.md"
+PW="$(new_project roundtrip)"
+out="$(bash "$PI" install --project "$PW" --agent claude --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+# The archive is the pre-existing one, so this only proves the rule when the fixture reaches the
+# map; either the publish refuses it or the tarball never carried it. Assert the honest thing: the
+# receipt never records a path that cannot be read back.
+if [ -f "$PW/.ai-dev-baseline/pinned-files.sha256" ]; then
+  offenders="$(awk 'NR>1 { p = $0; sub(/^[0-9a-f]+  /, "", p); if (p ~ /^[[:space:]]/ || p ~ /[[:space:]]$/) print p }' "$PW/.ai-dev-baseline/pinned-files.sha256")"
+  eq "${#offenders}" 0 "publish: the receipt records no path that would fail to round-trip"
+fi
+rm -rf "$work/src/$PREFIX/agents/claude/skills/trailing "
+
 # ================================ install: the refusals =========================================
 
 P="$(new_project refuse)"
@@ -409,6 +436,50 @@ printf 'y\n' > "$P5/.claude/skills/cleanup/overrides.md"
 scan="$(bash "$ROOT/scripts/lib/adopt-lib.sh" scan --agents claude "$P5")"
 has "$scan" "skill	.claude/skills/my-own" "adopt: a project's own skill is still reported"
 has "$scan" "override	.claude/skills/cleanup/overrides.md" "adopt: an overrides.md inside the payload is still reported"
+
+# ================================ the payload actually RUNS =====================================
+# "The files are present" is not the acceptance criterion; "a pinned project can run the loop" is.
+# These execute the REAL library invocations the vendored skill tells an agent to paste, resolved
+# the way that skill resolves them — and from a SUBDIRECTORY, because the re-anchor's whole claim
+# is that `git rev-parse --show-toplevel` finds the payload from anywhere in the repo.
+
+P7="$(new_project runnable)"
+bash "$PI" install --project "$P7" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+mkdir -p "$P7/packages/web"
+
+# THE INVOCATION IS TAKEN OUT OF THE VENDORED SKILL, not written here. A hand-written path would
+# pass while the skill pointed somewhere else, which is the exact drift this asserts against.
+inv="$(grep -o 'bash "\$(git rev-parse --show-toplevel 2>/dev/null || pwd)/\.claude/adb/lib/implement-lib\.sh"' \
+        "$P7/.claude/skills/implement-issue/SKILL.md" | head -1)"
+if [ -n "$inv" ]; then
+  ok
+  out="$( cd "$P7/packages/web" && eval "$inv" admit "$P7/.claude/state" 2>&1 )"; rc=$?
+  # `admit` returns 0 (admitted) on a clean state dir. Anything that is not 0 or a documented
+  # refusal code means the library did not RESOLVE — which is the failure this is here to catch.
+  case "$rc" in
+    0|10|11|12|13|14) ok ;;
+    127|126) bad "the vendored implement-lib.sh did not resolve from a subdirectory (rc $rc): $out" ;;
+    *) bad "the vendored implement-lib.sh failed unexpectedly (rc $rc): $out" ;;
+  esac
+  has "$out" "admitted" "runnable: implement-lib.sh admit runs from the vendored payload"
+else
+  bad "runnable: the vendored implement-issue skill carries no re-anchored implement-lib.sh invocation"
+fi
+
+# Three more libraries the loop calls, each executed from the vendored copy.
+for _lib in role-dispatch project-gates cleanup-lib; do
+  out="$( cd "$P7/packages/web" && bash "$(git -C "$P7" rev-parse --show-toplevel)/.claude/adb/lib/$_lib.sh" -h 2>&1 )"; rc=$?
+  case "$rc" in
+    126|127) bad "runnable: the vendored $_lib.sh did not resolve (rc $rc)" ;;
+    *) ok ;;
+  esac
+done
+
+# THE VENDORED GATE MUST FIND ITS SIBLING LIBRARY. Its failure mode is the broken-install posture,
+# which is silent-ish by design, so the resolution is asserted directly.
+out="$( cd "$P7" && bash "$P7/.claude/adb/precommit-gate.sh" </dev/null 2>&1 )"; rc=$?
+hasnt "$out" "required library not found" "runnable: the vendored Stop gate resolves its sibling lib/"
+hasnt "$out" "No such file or directory" "runnable: … with no missing-file error"
 
 # ================================ entry points ==================================================
 

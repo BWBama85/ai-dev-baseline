@@ -153,6 +153,16 @@ cmd_payload() {
       _pi_err "payload: skill directory name contains a tab or newline: $(adb_tsv_field_display "$name")"
       return 1
     }
+    # A SUBDIRECTORY IS REFUSED, NOT SKIPPED. Every shipped skill is flat today, and the flat loop
+    # below would drop a nested file without a word — a payload silently missing a file a skill
+    # reads at runtime, which is indistinguishable from a correct install until the skill runs.
+    # Refusing costs nothing while the set is flat, and turns a future bundled skill into a build
+    # failure rather than a broken install.
+    for f in "$d"*/; do
+      [ -d "$f" ] || continue
+      _pi_err "payload: skill '$name' bundles a subdirectory (${f#"$skills"/}), which this payload map does not model"
+      return 1
+    done
     for f in "$d"*; do
       [ -f "$f" ] || continue
       printf '%s\t%s\n' "$f" "$p/$dot/skills/$name/${f##*/}"
@@ -579,19 +589,39 @@ _pi_assert_reanchored() {
 # receipt (`<sha256>  <repo-relative path>`) on stdout. Publishing is per-file and by RENAME, so
 # no destination is ever observable half-written (D52).
 _pi_publish() {
-  local stage="$1" p="$2" f rel digest
+  local stage="$1" p="$2" f rel digest listing n=0
+  # CAPTURED AND CHECKED, never interpolated straight into the heredoc (#324, D64). A command
+  # substitution inside a heredoc DISCARDS its status, so a failed enumeration would arrive as an
+  # empty list: the loop below runs zero times, the receipt comes out empty, and the install
+  # reports success having written nothing at all.
+  listing="$(cd "$stage" && find . -type f | LC_ALL=C sort)" || {
+    _pi_err "publish: could not enumerate the staged payload"
+    return 1
+  }
+  [ -n "$listing" ] || { _pi_err "publish: the staged payload is empty — refusing to publish nothing"; return 1; }
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    rel="${f#"$stage"/}"
+    rel="${f#./}"
+    # THE RECEIPT MUST ROUND-TRIP. It is read back by `read -r digest path`, which strips leading
+    # and trailing IFS whitespace — so a path carrying either would be recorded one way and read
+    # back another, and `status` and `uninstall` would then silently act on a path that is not the
+    # file. `cmd_payload` already refuses a tab or a newline; this is the same rule for the two
+    # remaining bytes that make a record lie.
+    case "$rel" in
+      ' '*|*' ') _pi_err "publish: refusing a payload path with leading or trailing whitespace: $(adb_tsv_field_display "$rel")"; return 1 ;;
+    esac
     mkdir -p "$p/$(dirname "$rel")" || return 1
-    cp "$f" "$p/$rel.adb.$$.tmp" || return 1
-    if [ -x "$f" ]; then chmod +x "$p/$rel.adb.$$.tmp" || return 1; fi
+    cp "$stage/$rel" "$p/$rel.adb.$$.tmp" || return 1
+    if [ -x "$stage/$rel" ]; then chmod +x "$p/$rel.adb.$$.tmp" || return 1; fi
     mv "$p/$rel.adb.$$.tmp" "$p/$rel" || { rm -f "$p/$rel.adb.$$.tmp"; return 1; }
     digest="$(_pi_sha256 "$p/$rel")" || return 1
     printf '%s  %s\n' "$digest" "$rel"
+    n=$((n + 1))
   done <<EOF
-$(cd "$stage" && find . -type f | sed "s|^\./|$stage/|" | LC_ALL=C sort)
+$listing
 EOF
+  [ "$n" -gt 0 ] || { _pi_err "publish: published no files"; return 1; }
+  return 0
 }
 
 cmd_install() {
@@ -630,8 +660,10 @@ cmd_install() {
   fi
 
   local work; work="$(mktemp -d "${TMPDIR:-/tmp}/adb-pinned.XXXXXX")" || { _pi_err "install: cannot create a working directory"; return 12; }
-  # shellcheck disable=SC2064
-  trap "rm -rf '$work'" EXIT
+  # SINGLE-QUOTED, so `$work` is expanded when the trap FIRES rather than baked in now. The other
+  # spelling embeds the path inside a quoted string, and a TMPDIR carrying a single quote then
+  # produces a trap body that is either a syntax error or a different command.
+  trap 'rm -rf "$work"' EXIT
 
   if [ -z "$artifact" ]; then
     _pi_say "fetching ai-dev-baseline ${version#v} from $PI_REPO …"
