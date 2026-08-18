@@ -1893,9 +1893,6 @@ of the same `search/issues` query (e.g. `q="repo:$REPO is:issue is:open label:\"
 milestone:\"NAME\" -label:roadmap"`). Outside release-readiness mode the count stays repo-wide as
 above.
 
-**With the artifact persisted**, ask the tested predicate what the bundle may emit, rather than
-re-deciding it in prose — the `owner-action` arm below is a terminal emission, so anything that
-must be recorded has to be recorded before it. This is the whole of the #352 fix: the judgment
 **With the artifact persisted**, ask the tested predicate what the bundle may emit rather than
 re-deciding it in prose — the `owner-action` arm below is a terminal emission, so anything that
 must be recorded has to be recorded before it. The judgment *"ready, but the first action is
