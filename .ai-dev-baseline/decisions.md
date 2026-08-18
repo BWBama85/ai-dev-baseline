@@ -5996,3 +5996,77 @@ limit: none of them is sufficient alone.
              re-deciding it: `implement-issue.md` and `cleanup.md` carry the same fenced-block shape
              and the same suites.
 - baseline-issue: n/a — this repo IS the baseline; #360 is the tracking issue.
+
+## D76 — the density proof moves to the COMMENT-STRIPPED fence line, and history with an existing entry is CUT rather than re-relocated
+- date:      2026-08-18
+- category:  project-delta
+- unknown:   #361 rewrites `base/workflows/implement-issue.md` for density under D74's register.
+             D75 settled the fenced-block rule for `roadmap.md` — non-comment lines are behavior
+             and byte-preserved, `#` comment lines are prose — and it was proven by capturing the
+             blocks' bodies with whole-line comments removed. That rule does not transfer here
+             unchanged. This file's exit-code contracts are TRAILING comments on code lines
+             (`  17) : ;;   # not declared — the DEFAULT`, `  13) : ;;  # a required context
+             nothing reports`), so a whole-line-only strip leaves the prose half of ~30 lines
+             frozen as "behavior" while the rule D75 states says it is prose. Second unknown: the
+             two longest passages the issue inventories — the ~21-hour required-check drift and
+             the `rm -f`-deleted-a-live-marker history — already have full decision entries (D63,
+             D46). D74 says relocate *or* cut when an entry already carries it, and does not say
+             which applies when the entry exists but the workflow retells the story anyway.
+- decision:  **Take the byte-preservation proof over the comment-STRIPPED fence line.** Every
+             top-level ```` ```bash ```` block is captured with `sed 's/[[:space:]]*#.*$//'`,
+             blank results dropped, before and after the rewrite; the two captures must be
+             identical. All **220** executable lines came back identical on the first assembly.
+             This is stricter than D75's rule in the direction that matters — it pins the
+             executable text of a line whose trailing comment is being rewritten, which a
+             whole-line strip cannot do — and looser in the one that does not: a trailing comment
+             is prose and may be compressed. Where the expansion truncates a line that carries a
+             non-comment `#` (`RUN_CLAIM_TOKEN="${ADMIT_OUT##* }"` becomes its prefix), the line
+             is separately pinned verbatim by `scripts/check-implement-lib.sh` section 13, which
+             matches it against the RAW workflow for exactly that reason.
+
+             **History that already has an entry is CUT and cited, never re-told and never
+             re-relocated.** The preflight reconcile comment loses the outage timeline and the
+             LEGAL/CREDENTIALED argument and cites **(D63)**; the admission comment loses the
+             second-session narrative and the ownership-versus-staleness derivation and cites
+             **(D46)**. What survives at each site is the operative residue: *this is the first
+             point where the repair is legal and credentialed*, and *ask whether a run may start —
+             do not just clear*.
+
+             **Two incidents had no entry, and are recorded here rather than left in the file:**
+
+             (a) `|| RECONCILE=$?`, never `; RECONCILE=$?`. This repo shipped the bare form once,
+             in the PR advisory arm of `ci.yml`: under errexit a non-zero exit trips the shell AT
+             THAT LINE, before the assignment or the `case` runs, so the block's "non-fatal"
+             promise becomes a preflight that dies — and it fires on the MOST COMMON path, since
+             17 (the repo has not opted in) is what every un-opted-in repo returns.
+             `scripts/check-repo-settings.sh` now executes the real snippet under `bash -e` for
+             all eight codes so it cannot come back. The workflow keeps the rule and the
+             mechanism; the history is here.
+
+             (b) A run once cited `#207` in a workflow source and a changelog, the render carried
+             it into all three agents' skills, and the issue did not exist — because filing
+             happened in step 12, after step 10 had written a PR body citing the number. Step 9
+             now files at the moment of deferral. The workflow keeps the rule — *a number you have
+             not filed is a number you must not write*, and *a `#N` that resolves to nothing looks
+             exactly like tracked work, so nobody files it* — and the incident is here.
+
+             **The `## Roles` section states the rule and stops.** It spent roughly half its lines
+             arguing why a reviewer should not be `primary`; the rule ("prefer a token that is not
+             `primary`; step 8 labels a same-model slot *not independent*") and the one fact a
+             reader cannot derive (the manifest template ships `["codex"]` while the resolver's
+             built-in fallback for an unset `review` is still the primary's own pass) survive.
+- placement: `base/workflows/implement-issue.md` · the three regenerated
+             `agents/*/skills/implement-issue/SKILL.md`.
+- reason:    A trailing comment is not executed, so by D75's own argument it cannot be behavior —
+             but D75's *proof* could not express that, and a proof that over-freezes is how a
+             density rewrite quietly stops being one. Making the strip match the rule is what let
+             the exit-code tables be compressed without touching a single `case` arm.
+             Re-relocating a story into a second entry would give one incident two homes and make
+             the log the thing it exists to prevent, so the test applied was: does an entry
+             already carry this? If yes, cut and cite; if no, record it here. Nine suites pin this
+             file's content (`check-injection.sh`, `check-fact-drift.sh`, `check-workflow-shell.sh`,
+             `check-implement-lib.sh`, `check-cleanup.sh`, `check-pr-review.sh`,
+             `check-repo-settings.sh`, `check-tmp-paths.sh`, `check-agent-blocks.sh`) and **none
+             needed updating** — which is the evidence that the cut fell on prose, since every one
+             of them would have gone red on a rule.
+- baseline-issue: n/a — this repo IS the baseline; #361 is the tracking issue.
