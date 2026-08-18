@@ -673,6 +673,8 @@ ADB_MEMBERS="$OA_MIX" run_snippet owner-action 'printf "VERDICT=%s\n" "$VERDICT"
 eq "$RC_" 0 "a mixed bundle does not stop the run"
 has "$OUT" "VERDICT=ready" "...it stays 'ready' and falls through to the ordinary advance"
 hasnt "$OUT" "Next: none" "...so no terminal line is emitted for it"
+has "$OUT" '! owner-action:#12 — set the DEPLOY_TOKEN repo secret; #12 is otherwise ready.' \
+  "...but the owner-action member still prints ABOVE the batch: advancing without saying the owner step is how it goes unasked forever (#392 review)"
 
 # Nothing left to build routes to step 7's existing report, NOT to the new one.
 ADB_MEMBERS="$OA_DEAD" run_snippet owner-action 'printf "VERDICT=%s\n" "$VERDICT"' >/dev/null

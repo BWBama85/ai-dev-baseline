@@ -2436,6 +2436,17 @@ has "$racc" 'Next: none — owner-action: do the 1 action(s) above, then re-run.
   "the acceptance script pins the SAME terminal string the workflow emits (#352)"
 has "$racc" '## 4b. Owner-action' \
   "...and carries the state's own acceptance case"
+# DOC ORDER is execution order for an agent reading the workflow, and per-snippet execution can
+# never see it: the gauge block must precede the owner-action terminal, or a configured gauge
+# never prints on that path — the run would open with a `!` line instead of the contractual
+# every-run prefix (#392 review).
+g_at="$(printf '%s\n' "$wf" | grep -n '^# ADB-SNIPPET: gauge$' | cut -d: -f1)"
+oa_at="$(printf '%s\n' "$wf" | grep -n '^# ADB-SNIPPET: owner-action$' | cut -d: -f1)"
+if [ -n "$g_at" ] && [ -n "$oa_at" ] && [ "$g_at" -lt "$oa_at" ]; then
+  ok
+else
+  bad "the gauge block precedes the owner-action terminal (doc order is execution order)"
+fi
 
 # ============================================================================================
 # 9. OPEN-ISSUES + READ-COMPLETE — completeness of the backlog read (#79)

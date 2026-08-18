@@ -2059,59 +2059,9 @@ otherwise the next run re-processes the same stale ready member. This applies in
 mode too: the **met → release-command** early exit must still persist any emit-time reconcile change
 (e.g. a `NOT_PLANNED`-canceled blocker moved to the Reconcile flags) before emitting.
 
-**With the artifact persisted**, ask the tested predicate what the bundle may emit, rather than
-re-deciding it in prose — the `owner-action` arm below is a terminal emission, so anything that
-must be recorded has to be recorded before it. This is the whole of the #352 fix: the judgment
-*"ready, but the first action is yours"* has one name, one predicate, and one terminal string, so
-two runs over the same tracker say the same thing.
-
-```bash
-# ADB-SNIPPET: owner-action
-# Self-contained: MEMBERS is what step 4 produced for the SELECTED bundle — one record per
-# still-open member, TAB-separated:
-#
-#   #<N><TAB><classification><TAB><the owner's first action, one line>
-#
-# The third field is used only by an `owner-action` record. A record whose second field is not one
-# of step 4's four words is a HARD STOP inside the predicate, never a skipped line: a silently
-# dropped member is how a `ready` bundle demotes itself and deletes real work from the plan.
-MEMBERS="${MEMBERS:-}"
-VERDICT="$(printf '%s\n' "$MEMBERS" | cut -f2 | {{ROADMAP_LIB}} emit-verdict)" \
-  || { echo "ERROR: emit-verdict could not classify the selected bundle — hard stop"; exit 1; }
-case "$VERDICT" in
-  ready) : ;;          # >=1 implementable member -> the ordinary advance below
-  owner-action)
-    # Real, unblocked work whose FIRST action is the owner's. It emits as owner-action lines and
-    # a terminal action line — never as /implement-issue input, and never as prose appended to
-    # `Next:`, which is what the run being fixed here did.
-    printf '%s\n' "$MEMBERS" | awk -F'\t' '$2 == "owner-action" { printf "! owner-action:%s — %s\n", $1, $3 }'
-    NACT="$(printf '%s\n' "$MEMBERS" | awk -F'\t' '$2 == "owner-action" { n++ } END { print n + 0 }')"
-    printf 'Next: none — owner-action: do the %s action(s) above, then re-run.\n' "$NACT"
-    exit 0 ;;
-  tracker-only) : ;;   # nothing left to build -> step 7's "nothing implementable" report
-  *) echo "ERROR: emit-verdict returned an unrecognized verdict ($VERDICT) — hard stop"; exit 1 ;;
-esac
-```
-
-**A failed verdict is a hard stop, never a fallthrough to `ready`.** Exit `>=2` means the
-predicate could not answer, and the flattering reading of that — "emit the batch anyway" — is the
-one that hands an operator a command whose first step they have not taken.
-
-Then emit, **exactly as the output contract prescribes** — gauge, then any owner-action line,
-then `Why:`, then `Next:` **last, with nothing after it**:
-
-```text
-release-blocker: 1 blocker open
-Why:  B1 (gates) — unblocked, no in-flight PR, foundational for M2.
-Next: /implement-issue 5 19
-```
-
-That is the whole default output. No bundle table, no reconcile narration, no look-ahead — the
-artifact rewritten above already holds all of it.
-
 **Destination report (finish line) — configured, never hardcoded.** If the artifact carries a
 `<!-- destination-label: LABEL -->` marker, prefix **every** run's output — the `Next:` batch
-above and the completion / all-blocked reports of step 7 alike — with the finish line:
+below and the completion / all-blocked reports of step 7 alike — with the finish line:
 
 ```
 LABEL: N blocker(s) open      # N = open issues carrying LABEL, excluding the roadmap issue itself
@@ -2162,6 +2112,62 @@ would otherwise inflate a repo-wide count). Add the `milestone:"NAME"` qualifier
 of the same `search/issues` query (e.g. `q="repo:$REPO is:issue is:open label:\"release-blocker\"
 milestone:\"NAME\" -label:roadmap"`). Outside release-readiness mode the count stays repo-wide as
 above.
+
+**With the artifact persisted**, ask the tested predicate what the bundle may emit, rather than
+re-deciding it in prose — the `owner-action` arm below is a terminal emission, so anything that
+must be recorded has to be recorded before it. This is the whole of the #352 fix: the judgment
+*"ready, but the first action is yours"* has one name, one predicate, and one terminal string, so
+two runs over the same tracker say the same thing.
+
+```bash
+# ADB-SNIPPET: owner-action
+# Self-contained: MEMBERS is what step 4 produced for the SELECTED bundle — one record per
+# still-open member, TAB-separated:
+#
+#   #<N><TAB><classification><TAB><the owner's first action, one line>
+#
+# The third field is used only by an `owner-action` record. A record whose second field is not one
+# of step 4's four words is a HARD STOP inside the predicate, never a skipped line: a silently
+# dropped member is how a `ready` bundle demotes itself and deletes real work from the plan.
+MEMBERS="${MEMBERS:-}"
+VERDICT="$(printf '%s\n' "$MEMBERS" | cut -f2 | {{ROADMAP_LIB}} emit-verdict)" \
+  || { echo "ERROR: emit-verdict could not classify the selected bundle — hard stop"; exit 1; }
+case "$VERDICT" in
+  ready)
+    # >=1 implementable member -> the ordinary advance below. Any owner-action member still
+    # prints ABOVE the batch (the mixed-bundle rule, docs/roadmap-acceptance.md): one owner
+    # step never holds the batch hostage, and never goes unsaid either.
+    printf '%s\n' "$MEMBERS" | awk -F'\t' '$2 == "owner-action" { printf "! owner-action:%s — %s\n", $1, $3 }' ;;
+  owner-action)
+    # Real, unblocked work whose FIRST action is the owner's. It emits as owner-action lines and
+    # a terminal action line — never as /implement-issue input, and never as prose appended to
+    # `Next:`, which is what the run being fixed here did. The gauge, when configured,
+    # printed above (Destination report) — this terminal inherits the every-run prefix by
+    # document order, and check-roadmap.sh pins that order.
+    printf '%s\n' "$MEMBERS" | awk -F'\t' '$2 == "owner-action" { printf "! owner-action:%s — %s\n", $1, $3 }'
+    NACT="$(printf '%s\n' "$MEMBERS" | awk -F'\t' '$2 == "owner-action" { n++ } END { print n + 0 }')"
+    printf 'Next: none — owner-action: do the %s action(s) above, then re-run.\n' "$NACT"
+    exit 0 ;;
+  tracker-only) : ;;   # nothing left to build -> step 7's "nothing implementable" report
+  *) echo "ERROR: emit-verdict returned an unrecognized verdict ($VERDICT) — hard stop"; exit 1 ;;
+esac
+```
+
+**A failed verdict is a hard stop, never a fallthrough to `ready`.** Exit `>=2` means the
+predicate could not answer, and the flattering reading of that — "emit the batch anyway" — is the
+one that hands an operator a command whose first step they have not taken.
+
+Then emit, **exactly as the output contract prescribes** — gauge, then any owner-action line,
+then `Why:`, then `Next:` **last, with nothing after it**:
+
+```text
+release-blocker: 1 blocker open
+Why:  B1 (gates) — unblocked, no in-flight PR, foundational for M2.
+Next: /implement-issue 5 19
+```
+
+That is the whole default output. No bundle table, no reconcile narration, no look-ahead — the
+artifact rewritten above already holds all of it.
 
 ### 7. Completion & edge cases
 
