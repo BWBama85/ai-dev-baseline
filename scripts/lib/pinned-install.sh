@@ -943,7 +943,9 @@ _pi_publish() {
       if [ -z "$prior_digest" ] || [ "$have" != "$prior_digest" ]; then
         bdest="$backup/$rel"
         mkdir -p "$(dirname "$bdest")" || return 1
-        cp -R "$p/$rel" "$bdest" 2>/dev/null || cp -RP "$p/$rel" "$bdest" 2>/dev/null \
+        # `-P`, so a SYMLINK is copied as a symlink rather than dereferenced — a dangling one
+        # cannot be dereferenced at all, and that is exactly the destination `-e` used to miss.
+        cp -RP "$p/$rel" "$bdest" \
           || { _pi_err "publish: could not back up the existing $rel — refusing to replace it"; return 1; }
         printf '  backup %s → %s/%s\n' "$rel" "${backup/#$HOME/~}" "$rel" >&2
       fi
@@ -951,7 +953,10 @@ _pi_publish() {
     printf '%s  %s\n' "$digest" "$rel" >> "$out" || return 1
     cp "$stage/$rel" "$p/$rel.adb.$$.tmp" || return 1
     if [ -x "$stage/$rel" ]; then chmod +x "$p/$rel.adb.$$.tmp" || return 1; fi
-    rm -f "$p/$rel" 2>/dev/null
+    # NO `rm` FIRST. `rename(2)` replaces the destination atomically whatever it is — a regular
+    # file, or a symlink, dangling or not — so unlinking beforehand buys nothing and opens a window
+    # in which the destination does not exist, which is precisely the observability this publish
+    # mechanism exists to avoid (D52).
     mv "$p/$rel.adb.$$.tmp" "$p/$rel" || { rm -f "$p/$rel.adb.$$.tmp"; return 1; }
     n=$((n + 1))
   done <<EOF

@@ -815,6 +815,18 @@ out="$(bash "$PI" install --project "$PV" --agent claude --artifact "$work/ai-de
 eq "$rc" 11 "version: a single-component version is refused"
 has "$out" "single-component version" "version: … and says so"
 
+# 27. A DANGLING SYMLINK AT A DESTINATION is invisible to `-e`, so it was replaced with neither a
+#     backup nor a mention. `-L` catches it, and `cp -P` is what can copy it at all.
+PDL="$(new_project danglingdest)"
+mkdir -p "$PDL/.claude/rules"
+ln -s /nonexistent/target "$PDL/.claude/rules/ai-dev-baseline.md"
+dlhome="$work/dlhome"; mkdir -p "$dlhome"
+out="$(HOME="$dlhome" bash "$PI" install --project "$PDL" --agent claude --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "dangling: an install over a dangling symlink succeeds"
+has "$out" "backup .claude/rules/ai-dev-baseline.md" "dangling: … and the link is backed up, not silently replaced"
+if [ -f "$PDL/.claude/rules/ai-dev-baseline.md" ] && [ ! -L "$PDL/.claude/rules/ai-dev-baseline.md" ]; then ok; else bad "dangling: the destination is now the real practices file"; fi
+if [ -n "$(find "$dlhome" -name ai-dev-baseline.md -type l 2>/dev/null)" ]; then ok; else bad "dangling: the backup preserved the link itself"; fi
+
 # ================================ the payload actually RUNS =====================================
 # "The files are present" is not the acceptance criterion; "a pinned project can run the loop" is.
 # These execute the REAL library invocations the vendored skill tells an agent to paste, resolved
