@@ -328,6 +328,48 @@ eq "$rc" 10 "install: a DIFFERENT version refuses and points at upgrade"
 has "$out" "upgrade --to 9.9.10" "install: … naming the exact command"
 eq "$(tree_digest "$P")" "$before" "install: the refusal changed nothing"
 
+# ================================ a project's own files are backed up ============================
+# `.claude/skills/<name>/SKILL.md` is where a project may legitimately keep a hand-authored fork or
+# a `skill-compose` output (docs/per-project-overrides.md, Override 2). A FIRST install into such a
+# project must not replace it silently.
+
+PB="$(new_project preexisting)"
+mkdir -p "$PB/.claude/skills/cleanup" "$PB/.claude/rules"
+printf 'MY OWN FORK\n' > "$PB/.claude/skills/cleanup/SKILL.md"
+printf 'MY OWN RULE\n' > "$PB/.claude/rules/ai-dev-baseline.md"
+fakehome="$work/fakehome-$$"; mkdir -p "$fakehome"
+out="$(HOME="$fakehome" bash "$PI" install --project "$PB" --agent claude --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+yes "$rc" "backup: an install over a project's own files succeeds"
+has "$out" "backup .claude/skills/cleanup/SKILL.md" "backup: names the file it preserved"
+saved="$(find "$fakehome/.claude/backups" -name SKILL.md -path '*cleanup*' 2>/dev/null | head -1)"
+if [ -n "$saved" ]; then
+  eq "$(cat "$saved")" "MY OWN FORK" "backup: the project's fork is preserved byte-for-byte"
+else
+  bad "backup: no backup of the project's own SKILL.md was written"
+fi
+saved="$(find "$fakehome/.claude/backups" -name ai-dev-baseline.md 2>/dev/null | head -1)"
+if [ -n "$saved" ]; then eq "$(cat "$saved")" "MY OWN RULE" "backup: a pre-existing rules file is preserved too"; else bad "backup: no backup of the pre-existing rules file"; fi
+# THE BACKUP LIVES OUTSIDE THE PROJECT. A copy dropped inside it is one `git add -A` from being
+# committed into somebody else's repository.
+stray="$(find "$PB" -path "$PB/.git" -prune -o -name '*.adb*' -print -o -type d -name 'backups' -print 2>/dev/null)"
+eq "${#stray}" 0 "backup: nothing is left inside the project tree"
+
+# THE RECEIPT IS THE OTHER HALF OF THAT RULE. `_pi_publish`'s stdout IS the receipt, so any
+# narration it prints there becomes a record the reader parses as `<digest> <path>` — and every
+# later `status` then reports a file that does not exist. Every line must be a comment or a
+# digest-and-path pair, and the whole tree must still verify as intact.
+bogus="$(awk '!/^#/ && NF > 0 && $1 !~ /^[0-9a-f]{64}$/ { print }' "$PB/.ai-dev-baseline/pinned-files.sha256")"
+eq "${#bogus}" 0 "backup: the receipt carries no line that is not a digest record"
+out="$(bash "$PI" status --project "$PB" 2>&1)"
+has "$out" "payload: intact" "backup: … so the freshly installed payload verifies as intact"
+
+# A RE-INSTALL MUST NOT LITTER. The second run owns those paths through its own receipt, so it
+# overwrites them without backing anything up.
+before_n="$(find "$fakehome/.claude/backups" -type f 2>/dev/null | wc -l | tr -d ' ')"
+HOME="$fakehome" bash "$PI" install --project "$PB" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+after_n="$(find "$fakehome/.claude/backups" -type f 2>/dev/null | wc -l | tr -d ' ')"
+eq "$after_n" "$before_n" "backup: a re-install of files it already owns backs up nothing"
+
 # ================================ status ========================================================
 
 out="$(bash "$PI" status --project "$P" 2>&1)"; rc=$?

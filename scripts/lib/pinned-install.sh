@@ -585,11 +585,34 @@ _pi_assert_reanchored() {
   return "$rc"
 }
 
-# _pi_publish <staging-root> <project-root> — copy the staged tree into the project and print the
-# receipt (`<sha256>  <repo-relative path>`) on stdout. Publishing is per-file and by RENAME, so
-# no destination is ever observable half-written (D52).
+# _pi_owns <newline-list> <path> — true when the path appears in a receipt's path column.
+_pi_owns() {
+  local nl
+  nl="$(printf '\nx')"; nl="${nl%x}"
+  [ -n "$1" ] || return 1
+  case "$nl$1$nl" in
+    *"$nl$2$nl"*) return 0 ;;
+  esac
+  return 1
+}
+
+# _pi_publish <staging-root> <project-root> <prior-receipt> <backup-dir> — copy the staged tree
+# into the project and print the receipt (`<sha256>  <repo-relative path>`) on stdout. Publishing
+# is per-file and by RENAME, so no destination is ever observable half-written (D52).
+#
+# A PRE-EXISTING DESTINATION THIS INSTALL DOES NOT ALREADY OWN IS BACKED UP FIRST, and that is not
+# defensive tidiness — `.claude/skills/<name>/SKILL.md` is where a project may legitimately keep a
+# hand-authored fork or a `skill-compose` output (docs/per-project-overrides.md, Override 2), and a
+# first install into such a project would otherwise replace it with no warning at all. `adb_link`
+# has exactly this contract for the global model; the backup goes OUTSIDE the project, because a
+# copy dropped inside it is one `git add -A` from being committed.
+#
+# "Already own" is decided from the PRIOR receipt, so a re-install overwrites its own previous
+# output silently (as it must, or every run would litter backups) while never touching a file it
+# did not write.
 _pi_publish() {
-  local stage="$1" p="$2" f rel digest listing n=0
+  local stage="$1" p="$2" prior="$3" backup="$4"
+  local f rel digest listing n=0 owned="" bdest
   # CAPTURED AND CHECKED, never interpolated straight into the heredoc (#324, D64). A command
   # substitution inside a heredoc DISCARDS its status, so a failed enumeration would arrive as an
   # empty list: the loop below runs zero times, the receipt comes out empty, and the install
@@ -599,6 +622,9 @@ _pi_publish() {
     return 1
   }
   [ -n "$listing" ] || { _pi_err "publish: the staged payload is empty — refusing to publish nothing"; return 1; }
+  if [ -n "$prior" ] && [ -f "$prior" ]; then
+    owned="$(awk 'NR >= 1 { p = $0; sub(/^[#].*$/, "", p); if (p != "") { sub(/^[0-9a-f]+  /, "", p); print p } }' "$prior")" || owned=""
+  fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     rel="${f#./}"
@@ -611,6 +637,15 @@ _pi_publish() {
       ' '*|*' ') _pi_err "publish: refusing a payload path with leading or trailing whitespace: $(adb_tsv_field_display "$rel")"; return 1 ;;
     esac
     mkdir -p "$p/$(dirname "$rel")" || return 1
+    if [ -e "$p/$rel" ] && ! _pi_owns "$owned" "$rel"; then
+      bdest="$backup/$rel"
+      mkdir -p "$(dirname "$bdest")" || return 1
+      cp -R "$p/$rel" "$bdest" || { _pi_err "publish: could not back up the existing $rel — refusing to replace it"; return 1; }
+      # STDERR, NOT STDOUT. This function's stdout IS the receipt, so a `_pi_say` here would both
+      # hide the message and write a line the receipt reader parses as `<digest> <path>` — turning
+      # every later `status` into a report about a file that does not exist.
+      printf '  backup %s → %s/%s\n' "$rel" "${backup/#$HOME/~}" "$rel" >&2
+    fi
     cp "$stage/$rel" "$p/$rel.adb.$$.tmp" || return 1
     if [ -x "$stage/$rel" ]; then chmod +x "$p/$rel.adb.$$.tmp" || return 1; fi
     mv "$p/$rel.adb.$$.tmp" "$p/$rel" || { rm -f "$p/$rel.adb.$$.tmp"; return 1; }
@@ -740,8 +775,9 @@ cmd_install() {
   fi
 
   _pi_say "installing ai-dev-baseline $ver into ${p##*/} (agents: ${agents[*]})"
-  local receipt="$work/receipt"
-  _pi_publish "$stage" "$p" > "$receipt" || { _pi_err "install: publishing failed — the project tree may be partially written"; rm -rf "$work"; trap - EXIT; return 14; }
+  local receipt="$work/receipt" backup
+  backup="$HOME/.claude/backups/ai-dev-baseline-pinned-$(date -u +%Y%m%d-%H%M%S)"
+  _pi_publish "$stage" "$p" "$(_pi_receipt_path "$p")" "$backup" > "$receipt" || { _pi_err "install: publishing failed — the project tree may be partially written"; rm -rf "$work"; trap - EXIT; return 14; }
 
   # Codex reads only the root AGENTS.md, so its practices are spliced there as a delimited region
   # rather than copied to a path it would never load.
