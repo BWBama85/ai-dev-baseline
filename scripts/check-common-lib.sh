@@ -348,6 +348,23 @@ EOF
 no $? "prune-retired: a malformed register is a hard failure"
 if [ -L "$rp/home/victim" ]; then ok; else bad "prune-retired: a malformed register must remove NOTHING"; fi
 
+# A removal that FAILS is a named non-zero, never a silent success (#378 review): a read-only
+# destination directory leaves the link in place, and a zero would let both installers report a
+# clean prune over a dangle that survived.
+mkdir -p "$rp/home/ro"
+ln -s "$rp_gone" "$rp/home/ro/stuck"
+chmod 555 "$rp/home/ro"
+rerr2="$(adb_prune_retired_manifest 2>&1 >/dev/null <<EOF
+$rp_gone	$rp/home/ro/stuck
+EOF
+)"
+rrc2=$?
+chmod 755 "$rp/home/ro"
+no "$rrc2" "prune-retired: a failed removal returns non-zero"
+if [ -L "$rp/home/ro/stuck" ]; then ok; else bad "prune-retired: the unremovable link is still present"; fi
+case "$rerr2" in *"could not remove retired link"*) ok ;;
+  *) bad "prune-retired: the failure names the link on stderr" ;; esac
+
 # The wrapper both installers call: register -> pruner, in one place. Its fixture is READ FROM the
 # register rather than spelled out, so this case cannot be orphaned by the next retirement the way
 # a hardcoded destination would be.

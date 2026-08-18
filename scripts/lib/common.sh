@@ -633,25 +633,31 @@ EOF
 # NO <repo> ARGUMENT, unlike adb_unlink_manifest: that function scopes ownership to "inside the
 # repo" and needs the root to do it, while this one gets a stricter answer from the record itself.
 #
-# Returns non-zero iff the register was MALFORMED — and then nothing is removed, mirroring the
+# Returns non-zero when the register was MALFORMED — and then nothing is removed, mirroring the
 # two-pass rule (#324, D64): a map that cannot say where the links are cannot say which removals
-# are safe. Usage: adb_prune_retired_manifest      (register on stdin)
+# are safe — or when a removal FAILED (the link remains; stderr names it), so a read-only
+# destination cannot read as a successful prune. Usage: adb_prune_retired_manifest  (stdin)
 adb_prune_retired_manifest() {
-  local tab validated line src dest
+  local tab validated line src dest rc
   tab="$(printf '\t')"
   validated="$(_adb_manifest_slurp adb_prune_retired_manifest)" || return 1
+  rc=0
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     src="${line%%"$tab"*}"
     dest="${line#*"$tab"}"
     if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ] && [ ! -e "$dest" ]; then
-      rm -f "$dest"
-      adb_info "  prune  ${dest/#$HOME/~} (retired — source removed upstream)"
+      if rm -f "$dest" 2>/dev/null && [ ! -L "$dest" ]; then
+        adb_info "  prune  ${dest/#$HOME/~} (retired — source removed upstream)"
+      else
+        printf 'ERROR: could not remove retired link %s — it remains dangling\n' "${dest/#$HOME/~}" >&2
+        rc=1
+      fi
     fi
   done <<EOF
 $validated
 EOF
-  return 0
+  return "$rc"
 }
 
 # The whole retirement disposal for one agent token: enumerate the register, hand it to the
