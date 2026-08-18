@@ -214,6 +214,19 @@ for a in "${AGENTS[@]}"; do
     codex|gemini) run_adapter "$a" || install_rc=1 ;;
     *) adb_info "unknown agent '$a' — skipping" ;;
   esac
+  # Dispose of the destinations this framework has RETIRED (#378) — paths it once linked and no
+  # longer does. install.sh otherwise only ever adds or relinks, so a removed manifest row leaves
+  # a dangling symlink in an existing install that nothing here would ever clean up; `git pull`
+  # certainly does not. Ownership is scoped in common.sh (exact former target, and only when the
+  # link no longer resolves), so a real file or a link pointing elsewhere is never touched. An
+  # unknown agent token has an empty register and is a silent no-op.
+  #
+  # AFTER the agent's own install, not before, and for a reason rather than by taste: both
+  # producers share one precondition, so an unrepresentable $REPO/$HOME refuses BOTH — running
+  # this first would put its refusal where the operator expects install_claude's "nothing was
+  # linked". Pruning is independent of linking (a retired destination is by definition absent
+  # from the live manifest), so the order costs nothing.
+  adb_prune_retired "$a" "$REPO" "$HOME" || install_rc=1
   adb_info ""
 done
 write_global_manifest

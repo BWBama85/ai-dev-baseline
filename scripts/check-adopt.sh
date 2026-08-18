@@ -157,7 +157,7 @@ yes "$(bash "$AD" prescribed script  precommit-gate.sh; echo $?)" "precommit-gat
 yes "$(bash "$AD" prescribed rootdoc CLAUDE.md;         echo $?)" "the repo root doc IS a prescribed home"
 yes "$(bash "$AD" prescribed manifest agents.toml;      echo $?)" "agents.toml IS a prescribed home"
 yes "$(bash "$AD" prescribed override overrides.md;     echo $?)" "a compose-override IS a prescribed home"
-no  "$(bash "$AD" prescribed script  statusline.sh;     echo $?)" "statusline.sh is NOT a prescribed home"
+no  "$(bash "$AD" prescribed script  notify-hook.sh;    echo $?)" "an ordinary hook script is NOT a prescribed home"
 no  "$(bash "$AD" prescribed skill   implement-issue;   echo $?)" "a whole forked skill is NOT a prescribed home"
 eq  "$(bash "$AD" prescribed nonsense x >/dev/null 2>&1; echo $?)" 2 "an unknown kind exits 2"
 
@@ -371,16 +371,22 @@ if [ -n "$shipped" ]; then ok; else bad "shipped must still enumerate a represen
 
 # --- 4. scan: the surface, the boundary, and the record format ----------------------------------
 # A fixture modelling getrich's documented shape: forked skills (one colliding with a baseline
-# skill, one not), duplicate hook scripts, a project statusLine, a stack root doc, no agents.toml,
+# skill, one not), duplicate hook scripts, a settings.json, a stack root doc, no agents.toml,
 # and a prior framework's pin. Plus a `src/` tree that references an agent CLI — which the scan
 # must NOT descend into (#29 axis 1).  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
+#
+# THE SECOND SCRIPT IS SYNTHETIC, and deliberately so (#378). It used to be a copy of a real
+# shipped artifact, which coupled a fixture about ADOPTION to whatever the baseline happened to
+# install that week — and when that artifact was retired the case had to be repointed anyway. Its
+# job is to be "a project script that is not a prescribed home", which is a property of the NAME,
+# so a name the baseline will never ship is the stabler input.
 FX="$WORK/getrich-shape"
 mkdir -p "$FX"/.claude/{skills/{implement-issue,release},scripts,state} "$FX/src/lib/cli"
 printf 'gap analysis is run by codex exec\n' > "$FX/.claude/skills/implement-issue/SKILL.md"
 printf 'project release skill\n'             > "$FX/.claude/skills/release/SKILL.md"
 printf '#!/bin/sh\n# apps/ packages/ scope\n' > "$FX/.claude/scripts/precommit-gate.sh"
-printf '#!/bin/sh\n'                          > "$FX/.claude/scripts/statusline.sh"
-printf '{"statusLine":{"type":"command","command":".claude/scripts/statusline.sh"}}\n' > "$FX/.claude/settings.json"
+printf '#!/bin/sh\n'                          > "$FX/.claude/scripts/notify-hook.sh"
+printf '{"permissions":{"allow":["Bash(git status:*)"]}}\n' > "$FX/.claude/settings.json"
 printf '# Cloudflare + stack conventions\n'   > "$FX/CLAUDE.md"
 printf 'v1.2.3\n'                             > "$FX/.claude/UPSTREAM_VERSION"
 printf 'const x = "codex exec"\n'             > "$FX/src/lib/cli/run.ts"
@@ -482,21 +488,24 @@ yes "$(bash "$AD" scan "$FX" --agents claude >/dev/null 2>&1; echo $?)" "a valid
 
 # --- 5. the getrich inventory, end to end --------------------------------------------------------
 # #20's acceptance criterion, discharged against the SHAPE rather than the live repo (see the
-# header): remove the duplicate statusline/gate hook, keep the stack CLAUDE.md, keep the
+# header): remove the duplicated non-prescribed hook, keep the stack CLAUDE.md, keep the
 # path-scoped precommit-gate, and propose gap_analysis = codex.
 #
-# The `same`/`differs` inputs are computed by comparing against the real shipped artifact, so this
-# exercises the pipeline the workflow actually runs rather than a hand-written verdict.
-cp "$ROOT/agents/claude/scripts/statusline.sh" "$FX/.claude/scripts/statusline.sh"   # a true duplicate
+# The `same`/`differs` inputs are computed by the real `delta` against a SYNTHETIC "shipped" copy
+# (see the fixture note above), so this exercises the pipeline the workflow actually runs rather
+# than a hand-written verdict — without pinning the case to an artifact the baseline may retire.
+SHIPPED_FX="$WORK/shipped-shape/scripts"; mkdir -p "$SHIPPED_FX"
+printf '#!/bin/sh\n' > "$SHIPPED_FX/notify-hook.sh"                                  # the "shipped" side
+cp "$SHIPPED_FX/notify-hook.sh" "$FX/.claude/scripts/notify-hook.sh"                 # a true duplicate
 # THE REAL `delta`, not a second implementation. A local `delta_of` here would be testing a copy
 # of the decision rather than the decision — and the two could disagree without any assertion
 # noticing, which is the whole failure this library/prose split exists to prevent. Review caught it.
 delta_of() { bash "$AD" delta "$1" "$2" "$3"; }
-eq "$(delta_of script "$FX/.claude/scripts/statusline.sh" "$ROOT/agents/claude/scripts/statusline.sh")" same \
-   "the copied statusline is byte-identical (via the real delta)"
-eq "$(verdict script yes "$(delta_of script "$FX/.claude/scripts/statusline.sh" "$ROOT/agents/claude/scripts/statusline.sh")" \
-        "$(bash "$AD" prescribed script statusline.sh >/dev/null 2>&1 && echo yes || echo no)")" remove \
-   "getrich: the duplicated statusline script is REMOVE"
+eq "$(delta_of script "$FX/.claude/scripts/notify-hook.sh" "$SHIPPED_FX/notify-hook.sh")" same \
+   "the copied hook script is byte-identical (via the real delta)"
+eq "$(verdict script yes "$(delta_of script "$FX/.claude/scripts/notify-hook.sh" "$SHIPPED_FX/notify-hook.sh")" \
+        "$(bash "$AD" prescribed script notify-hook.sh >/dev/null 2>&1 && echo yes || echo no)")" remove \
+   "getrich: the duplicated non-prescribed hook script is REMOVE"
 eq "$(verdict script yes "$(delta_of script "$FX/.claude/scripts/precommit-gate.sh" "$ROOT/agents/claude/scripts/precommit-gate.sh")" \
         "$(bash "$AD" prescribed script precommit-gate.sh >/dev/null 2>&1 && echo yes || echo no)")" keep \
    "getrich: the path-scoped precommit-gate is KEEP (removing it would lose apps/packages scoping)"

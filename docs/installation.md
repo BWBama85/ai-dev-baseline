@@ -48,7 +48,6 @@ tracked as follow-up issues. See each agent's README under `agents/<token>/`.
 | `agents/claude/scripts/implement-issue-gate.sh` | `~/.claude/scripts/implement-issue-gate.sh` |
 | `agents/claude/scripts/state-claim-gate.sh` | `~/.claude/scripts/state-claim-gate.sh` |
 | `agents/claude/scripts/session-currency.sh` | `~/.claude/scripts/session-currency.sh` |
-| `agents/claude/scripts/statusline.sh` | `~/.claude/scripts/statusline.sh` |
 | `scripts/lib/` (the shared shell library) | `~/.claude/scripts/lib` |
 
 The shared shell library (`scripts/lib/common.sh` + `project-gates.sh`) installs as
@@ -57,6 +56,24 @@ made before the library moved to `scripts/lib` still points `~/.claude/scripts/l
 `agents/claude/scripts/lib`; that path is now a **compatibility symlink** back to
 `scripts/lib`, so a plain `git pull` keeps such installs' gates working without a
 re-install (re-running `install.sh` self-heals them to the direct link).
+
+### When a path is retired
+
+A **move** keeps its old path alive as a compat symlink, as above. A **retirement** —
+a payload deleted outright — has nothing to point one at, so the old link is *removed*
+instead: `install.sh` and `uninstall.sh` both sweep a small register of retired
+destinations (`adb_agent_manifest_retired` in `scripts/lib/common.sh`) and unlink each
+one that is still this install's own symlink to the now-absent source. A real file you
+put there, a link pointing somewhere else, and a link that still resolves are never
+touched.
+
+The sweep needs *something* to run, so a plain `git pull` alone leaves the dead link in
+place until the next `install.sh`, `baseline update`, or session-start currency check —
+harmless, since nothing referenced it, and `baseline update`'s orphan prune catches it
+even if the register has since been trimmed. `scripts/check-install-migration.sh`
+enforces the distinction in CI: an undeclared dangling link still fails and still asks
+for a compat shim, and a declared one is only accepted once the installer is observed
+actually removing it.
 
 Every link is created by the shared `adb_link()` helper (from `scripts/lib/common.sh`,
 sourced by `install.sh`) that is **idempotent**:
@@ -294,7 +311,7 @@ Two things to get right:
 |---|---|
 | `git` | Cloning this repo; every skill's branch/PR flow. |
 | `gh` | The issue/PR-touching skills (`implement-issue`, `create-issue`, `new-release`, `resolve-pr-threads`) and `implement-issue-gate.sh`'s live PR check. |
-| `jq` | Wiring/unwiring the lifecycle hooks in `install.sh`/`uninstall.sh`; parsing state JSON in both gate scripts; the SessionStart hook's structured output; `agents.toml`-aware statusline fields. |
+| `jq` | Wiring/unwiring the lifecycle hooks in `install.sh`/`uninstall.sh`; parsing state JSON in both gate scripts; the SessionStart hook's structured output. |
 
 Without `jq`, hook wiring is skipped (with a warning) but the rest of the
 install still completes. Without `gh`, the install itself still works — only

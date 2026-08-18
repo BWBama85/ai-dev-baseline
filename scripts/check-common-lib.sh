@@ -227,8 +227,16 @@ echo "$man" | grep -Fq -- "$mrepo/agents/claude/CLAUDE.md${tab_}$mhome/.claude/C
 # skill dir: absolute source, NO trailing slash, dest under ~/.claude/skills/<name>
 echo "$man" | grep -Fq -- "$mrepo/agents/claude/skills/demo${tab_}$mhome/.claude/skills/demo" && ok || bad "manifest emits skill dir with no trailing slash"
 echo "$man" | grep -q '/skills/demo/	' && bad "manifest skill source must not carry a trailing slash" || ok
-# the three runtime scripts + scripts/lib
-echo "$man" | grep -Fq -- "$mrepo/agents/claude/scripts/statusline.sh${tab_}$mhome/.claude/scripts/statusline.sh" && ok || bad "manifest emits statusline.sh"
+# every wired hook script + scripts/lib. DERIVED from the hook enumeration rather than named, so
+# a hook added there is asserted here for free — and a hardcoded name cannot be orphaned by a
+# retirement the way one already was (#378, D73).
+while IFS= read -r hookname; do
+  [ -n "$hookname" ] || continue
+  echo "$man" | grep -Fq -- "$mrepo/agents/claude/scripts/$hookname${tab_}$mhome/.claude/scripts/$hookname" \
+    && ok || bad "manifest emits $hookname"
+done <<EOF
+$(adb_claude_hook_scripts)
+EOF
 echo "$man" | grep -Fq -- "$mrepo/scripts/lib${tab_}$mhome/.claude/scripts/lib" && ok || bad "manifest emits canonical scripts/lib"
 # codex manifest: root doc + rendered skills (no trailing slash) + shared gate runner (#12)
 cman="$(adb_agent_manifest codex "$mrepo" "$mhome")"
@@ -285,6 +293,90 @@ $umsrc	$umforeign
 EOF
 if [ ! -e "$umdest" ]; then ok; else bad "adb_unlink_manifest removes an ours-into-repo link"; fi
 if [ -L "$umforeign" ]; then ok; else bad "adb_unlink_manifest must leave a foreign link (not ours)"; fi
+
+# --- the retirement register + its pruner (#378) -------------------------------------------------
+# The register says which destinations the install USED TO create. Its consumer deletes exactly
+# those links and nothing else — so every assertion below is about what SURVIVES as much as about
+# what goes: a pruner that over-reaches is a global uninstaller nobody asked for.
+#
+# COUNT FIRST, so an empty register is visible. Every case after this one loops over the register,
+# and a register that had silently emptied would pass all of them by running none of them.
+rreg="$(adb_agent_manifest_retired claude "$mrepo" "$mhome")"; rrc=$?
+yes "$rrc" "retired register: claude enumerates without refusing"
+if [ "$(printf '%s\n' "$rreg" | grep -c .)" -ge 1 ]; then ok
+else bad "retired register: claude names at least one row (an empty register makes the cases below vacuous)"; fi
+eq "$(adb_agent_manifest_retired bogus "$mrepo" "$mhome")" "" "retired register: an unknown agent prints nothing"
+yes "$(adb_agent_manifest_retired bogus "$mrepo" "$mhome" >/dev/null 2>&1; echo $?)" \
+   "retired register: ...and returns 0, exactly as adb_agent_manifest does"
+# Same refusal contract as the live producer: an unrepresentable root emits NOTHING and returns 1,
+# or a caller reading stdout alone would prune from a partial map. A `$'…'` literal, never
+# `"$(printf '\n')"` — command substitution strips the trailing newline and the case tests nothing.
+rbadhome="$mhome"$'\n'"shadow"
+rout="$(adb_agent_manifest_retired claude "$mrepo" "$rbadhome" 2>/dev/null)"; rrc=$?
+no "$rrc" "retired register: an unrepresentable home is refused"
+eq "$rout" "" "retired register: a refused home emits NO rows"
+
+# The pruner, driven over a fixture that stages every outcome at once.
+rp="$work/retire"; mkdir -p "$rp/repo" "$rp/home"
+rp_gone="$rp/repo/gone.sh"                                   # deliberately never created
+rp_live="$rp/repo/live.sh"; printf 'live\n' > "$rp_live"
+ln -s "$rp_gone" "$rp/home/dangling"                         # ours, retired, dead   -> pruned
+ln -s "$rp_live" "$rp/home/resolving"                        # retired but RESOLVES  -> kept
+ln -s "$rp/repo/other.sh" "$rp/home/other-target"            # dangles, wrong target -> kept
+printf 'real\n' > "$rp/home/realfile"                        # a real file           -> kept
+adb_prune_retired_manifest >/dev/null <<EOF
+$rp_gone	$rp/home/dangling
+$rp_live	$rp/home/resolving
+$rp_gone	$rp/home/other-target
+$rp_gone	$rp/home/realfile
+EOF
+yes $? "prune-retired: a well-formed register returns zero"
+if [ ! -L "$rp/home/dangling" ]; then ok; else bad "prune-retired: removes the retired, dangling, exact-target link"; fi
+if [ -L "$rp/home/resolving" ]; then ok; else bad "prune-retired: must KEEP a retired link that still resolves"; fi
+if [ -L "$rp/home/other-target" ]; then ok; else bad "prune-retired: must KEEP a dangling link to a DIFFERENT target"; fi
+if [ -f "$rp/home/realfile" ] && [ ! -L "$rp/home/realfile" ]; then ok
+else bad "prune-retired: must never delete a real file at a retired destination"; fi
+
+# A malformed register removes NOTHING — the two-pass rule (#324, D64). Staged with a live victim
+# so the assertion is about the filesystem, not only the status: the pre-two-pass shape returned
+# non-zero having already deleted the records before the bad one.
+ln -s "$rp_gone" "$rp/home/victim"
+adb_prune_retired_manifest >/dev/null 2>&1 <<EOF
+$rp_gone	$rp/home/victim
+$rp_gone
+EOF
+no $? "prune-retired: a malformed register is a hard failure"
+if [ -L "$rp/home/victim" ]; then ok; else bad "prune-retired: a malformed register must remove NOTHING"; fi
+
+# A removal that FAILS is a named non-zero, never a silent success (#378 review): a read-only
+# destination directory leaves the link in place, and a zero would let both installers report a
+# clean prune over a dangle that survived.
+mkdir -p "$rp/home/ro"
+ln -s "$rp_gone" "$rp/home/ro/stuck"
+chmod 555 "$rp/home/ro"
+rerr2="$(adb_prune_retired_manifest 2>&1 >/dev/null <<EOF
+$rp_gone	$rp/home/ro/stuck
+EOF
+)"
+rrc2=$?
+chmod 755 "$rp/home/ro"
+no "$rrc2" "prune-retired: a failed removal returns non-zero"
+if [ -L "$rp/home/ro/stuck" ]; then ok; else bad "prune-retired: the unremovable link is still present"; fi
+case "$rerr2" in *"could not remove retired link"*) ok ;;
+  *) bad "prune-retired: the failure names the link on stderr" ;; esac
+
+# The wrapper both installers call: register -> pruner, in one place. Its fixture is READ FROM the
+# register rather than spelled out, so this case cannot be orphaned by the next retirement the way
+# a hardcoded destination would be.
+rwrow="$(printf '%s\n' "$rreg" | head -n 1)"
+rwsrc="${rwrow%%"$tab_"*}"; rwdest="${rwrow#*"$tab_"}"
+mkdir -p "$(dirname "$rwdest")"; ln -s "$rwsrc" "$rwdest"
+adb_prune_retired claude "$mrepo" "$mhome" >/dev/null
+yes $? "prune-retired: the wrapper returns zero on a clean register"
+if [ ! -L "$rwdest" ]; then ok
+else bad "prune-retired: the wrapper actually removes the register's dangling destination"; fi
+adb_prune_retired bogus "$mrepo" "$mhome" >/dev/null
+yes $? "prune-retired: the wrapper is a silent no-op for an agent with no register"
 
 # --- a path the manifest cannot represent is REFUSED, not emitted (#324, D64) ------------------
 #
@@ -914,7 +1006,15 @@ adb_link_into "$ihome/.claude/realfile" "$isrc"; no "$?" "link_into: a real file
 eq "$(adb_claude_hook_scripts | wc -l | tr -d ' ')" "4" "hook scripts: four wired hooks"
 has "$(adb_claude_hook_scripts)" "session-currency.sh" "hook scripts: includes the currency hook"
 has "$(adb_claude_hook_scripts)" "state-claim-gate.sh" "hook scripts: includes the state-claim gate"
-hasnt "$(adb_claude_hook_scripts)" "statusline.sh" "hook scripts: excludes the non-hook statusline"
+# A RETIRED script must not still be named here: the manifest would demand a source that no longer
+# exists, and the settings filters would go on matching a command nothing installs. Derived from
+# the register (#378) rather than naming one, so it holds for the next retirement too.
+while IFS= read -r rdest; do
+  [ -n "$rdest" ] || continue
+  hasnt "$(adb_claude_hook_scripts)" "${rdest##*/}" "hook scripts: excludes the retired ${rdest##*/}"
+done <<EOF
+$(adb_agent_manifest_retired claude /r /h | cut -f2)
+EOF
 eq "$(adb_claude_hook_regex /home/u)" \
   '^/home/u/\.claude/scripts/(precommit-gate|implement-issue-gate|session-currency|state-claim-gate)\.sh$' \
   "hook regex: anchored to the EXACT installed paths, not a basename"

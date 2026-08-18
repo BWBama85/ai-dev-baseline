@@ -1202,14 +1202,13 @@ EOF
 #   gate      — calls adb_require_bash: re-exec, else exit non-zero. The default, and the
 #               overwhelming majority.
 #   advisory  — calls adb_require_bash_advisory: same re-exec, but RETURNS instead of exiting,
-#               for the three files whose own contract forbids a non-zero exit. Naming them here
+#               for the two files whose own contract forbids a non-zero exit. Naming them here
 #               is what stops "advisory" becoming a dial a future script can quietly pick.
 #   exempt    — must NOT call it at all, and there is exactly one.
 #
 # Matched on the path RELATIVE to the scanned root, so the guard can build a fixture tree at the
 # same paths and drive each rule red.
 ADVISORY_ENTRYPOINTS="
-agents/claude/scripts/statusline.sh
 agents/claude/scripts/session-currency.sh
 agents/claude/scripts/state-claim-gate.sh
 "
@@ -1252,8 +1251,8 @@ scan_entrypoints() {
 #
 # The classification lists below are repository-relative, but scan_entrypoints yields paths relative
 # to whatever directory was scanned. Scanning a SUBDIRECTORY therefore matched nothing:
-# `--entrypoints agents/claude` sees `scripts/statusline.sh`, not
-# `agents/claude/scripts/statusline.sh`, so all three advisory hooks were classified as hard gates
+# `--entrypoints agents/claude` sees `scripts/session-currency.sh`, not
+# `agents/claude/scripts/session-currency.sh`, so every advisory hook was classified as a hard gate
 # and a perfectly valid tree exited 1 — and `--entrypoints scripts` lost the observer exemption the
 # same way. Review found it in the advertised `[DIR]` form.
 #

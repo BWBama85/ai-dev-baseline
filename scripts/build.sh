@@ -14,7 +14,8 @@
 # exit status — the same idiom as the check-*.sh family, for the same two reasons. A sourced file
 # returns its LAST command's status, so `. lib || exit 1` reports whatever that happened to be and
 # says nothing about whether the file loaded; and under errexit a non-zero source aborts the script
-# outright, which is the defect review found in statusline.sh.
+# outright — the defect review found in a since-retired hook, where the abort jumped clean over the
+# fallback the file's own header promised.
 # shellcheck source=/dev/null
 . "$(dirname "$0")/lib/common.sh" 2>/dev/null
 command -v adb_require_bash >/dev/null 2>&1 || {

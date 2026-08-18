@@ -46,16 +46,18 @@ trap 'rm -rf "$work"' EXIT
 repo="$work/repo"
 check_copy_worktree "$ROOT" "$repo" || { echo "check-install-guard: could not copy the tree" >&2; exit 1; }
 
-# Delete ONE manifest source to simulate a bad/renamed entry: the runtime script statusline.sh.
-# install.sh's manifest still emits it (a fixed entry), so adb_link's guard must fire.
-missing_src="$repo/agents/claude/scripts/statusline.sh"
+# Delete ONE manifest source to simulate a bad/renamed entry: a runtime hook script.
+# install.sh's manifest still emits it (a fixed entry), so adb_link's guard must fire. The run
+# passes `--no-hooks`, so removing a WIRED script's file changes nothing about settings.json and
+# the case stays about adb_link alone. (The previous subject was retired out of the manifest, #378.)
+missing_src="$repo/agents/claude/scripts/state-claim-gate.sh"
 rm -f "$missing_src"
 [ -e "$missing_src" ] && bad "precondition: could not remove the manifest source"
 
 fh="$work/home"; mkdir -p "$fh/.claude/scripts"
 # Pre-place a REAL file at the destination the missing source would link to, to prove the guard
 # leaves an existing destination untouched (no backup, no clobber, no dangling replacement).
-dest="$fh/.claude/scripts/statusline.sh"
+dest="$fh/.claude/scripts/state-claim-gate.sh"
 printf 'preexisting\n' > "$dest"
 
 log="$work/install.log"
@@ -101,7 +103,7 @@ prefix="$work/nlhome"
 mkdir -p "$prefix"
 printf 'PRECIOUS\n' > "$prefix/keep.txt"
 cp "$prefix/keep.txt" "$work/nl-pristine.txt"
-# A second clone copy, so the missing statusline.sh above cannot be what fails this run.
+# A second clone copy, so the manifest source deleted above cannot be what fails this run.
 repo2="$work/repo2"
 check_copy_worktree "$ROOT" "$repo2" || { echo "check-install-guard: could not copy the tree (2)" >&2; exit 1; }
 

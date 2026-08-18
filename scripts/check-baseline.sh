@@ -70,6 +70,10 @@ ADB_SCRIPTS="$(for f in "$ROOT"/agents/claude/scripts/*.sh; do b="${f##*/}"; pri
 for s in $ADB_SCRIPTS; do
   printf '#stub\n' > "$seed/agents/claude/scripts/$s.sh"
 done
+# ONE manifest destination, derived rather than named, for the "a dest that is not our symlink"
+# case far below. A hardcoded basename here was orphaned by a retirement once (#378, D73); taking
+# the first of the real set means the next one does not repeat it.
+PROBE_SCRIPT="${ADB_SCRIPTS%% *}.sh"
 
 origin="$work/origin.git"
 check_make_repo_pair "$seed" "$origin" || { echo "baseline fixture: repo pair init failed" >&2; exit 1; }
@@ -358,11 +362,11 @@ rm -f "$fh/.claude/skills/foreign" "$fh/.claude/scripts/keepme"
 # The stub install.sh can't repair it, so the run must be LOUD (exit 1), never a false "nothing to
 # do" that skips re-linking (#48, PR #51 review).
 reset_src
-rm -f "$fh/.claude/scripts/statusline.sh"
-printf 'not a link\n' > "$fh/.claude/scripts/statusline.sh"   # a real file shadowing a manifest dest
+rm -f "$fh/.claude/scripts/$PROBE_SCRIPT"
+printf 'not a link\n' > "$fh/.claude/scripts/$PROBE_SCRIPT"   # a real file shadowing a manifest dest
 eq "${ run_update "$src/bin/baseline" "$fh"; }" "1" "verify rejects a manifest dest that is not our symlink into src"
-rm -f "$fh/.claude/scripts/statusline.sh"
-ln -s "$src/agents/claude/scripts/statusline.sh" "$fh/.claude/scripts/statusline.sh"   # restore canonical link
+rm -f "$fh/.claude/scripts/$PROBE_SCRIPT"
+ln -s "$src/agents/claude/scripts/$PROBE_SCRIPT" "$fh/.claude/scripts/$PROBE_SCRIPT"   # restore canonical link
 
 # A HOME the install manifest cannot represent must FAIL CLOSED, never verify as healthy (#324,
 # D64). Both of this file's manifest readers used to swallow the producer's status — the pipeline

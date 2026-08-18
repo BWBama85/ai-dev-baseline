@@ -294,9 +294,12 @@ _adb_manifest_fields_safe() {
 # The Claude scripts that install.sh WIRES into ~/.claude/settings.json as lifecycle hooks,
 # one per line. The ONE enumeration of the baseline-owned hook set: adb_agent_manifest links
 # them, install.sh's wire filter and uninstall.sh's unwire filter both match on exactly these
-# basenames, and a new hook is added here alone. Deliberately NOT the same list as the manifest's
-# script set — statusline.sh is installed but is not a hook, and matching it in the hook filters
-# would strip an unrelated settings key.
+# basenames, and a new hook is added here alone.
+#
+# LINKED IS NOT THE SAME QUESTION AS WIRED, even though the two sets happen to coincide today
+# (#378). A script that is installed but not a lifecycle hook belongs in adb_agent_manifest's
+# claude branch ALONE: adding it here would make the settings filters match it, and those filters
+# delete the whole hook group they match, so a non-hook basename here strips an unrelated key.
 adb_claude_hook_scripts() {
   printf 'precommit-gate.sh\nimplement-issue-gate.sh\nsession-currency.sh\nstate-claim-gate.sh\n'
 }
@@ -394,14 +397,14 @@ adb_agent_manifest() {
       _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/claude/skills" || return 1
       printf '%s\t%s\n' "$repo/agents/claude/CLAUDE.md" "$home/.claude/CLAUDE.md"
       _adb_skill_manifest_lines "$repo/agents/claude/skills" "$home/.claude/skills"
-      # Every wired hook, plus the one installed-but-not-wired script (the statusline). Fed
-      # through a heredoc rather than an unquoted `$(…)` so no word-splitting is relied on.
+      # Every wired hook. Fed through a heredoc rather than an unquoted `$(…)` so no
+      # word-splitting is relied on. An installed-but-not-wired script would be appended to this
+      # heredoc and NOT to adb_claude_hook_scripts — see that function's header for why.
       while IFS= read -r s; do
         [ -n "$s" ] || continue
         printf '%s\t%s\n' "$repo/agents/claude/scripts/$s" "$home/.claude/scripts/$s"
       done <<EOF
 $(adb_claude_hook_scripts)
-statusline.sh
 EOF
       printf '%s\t%s\n' "$repo/scripts/lib" "$home/.claude/scripts/lib"
       ;;
@@ -427,6 +430,56 @@ EOF
       _adb_skill_manifest_lines "$repo/agents/gemini/skills" "$home/.gemini/config/skills"
       printf '%s\t%s\n' "$repo/scripts/lib" "$home/.gemini/scripts/lib"
       ;;
+  esac
+}
+
+# --- the retirement register (the ONE enumeration of what the install USED to create) ---------
+
+# Print, for ONE agent token, the install destinations this framework once created and no longer
+# does — in adb_agent_manifest's own `<former-src>TAB<dest>` shape.
+#
+# WHY A REGISTER EXISTS AT ALL. An install is a set of symlinks into a clone, so deleting a row
+# from adb_agent_manifest removes nothing from an install that already exists: after a plain
+# `git pull` the operator is left holding a symlink whose target is gone. #35's guarantee — a pull
+# must never dangle an installed link — has exactly two discharges, and they are not
+# interchangeable:
+#
+#   - a MOVE keeps the payload and changes its path. Something still depends on the link
+#     resolving, so the old path owes a compat SHIM, and pruning the link would break that
+#     dependant. (scripts/check-install-migration.sh asserts the one shim this repo has.)
+#   - a RETIREMENT deletes the payload outright. There is nothing for a shim to point at, and
+#     nothing depends on the link, so the correct disposal is to REMOVE it —
+#     adb_prune_retired does that on the next install, uninstall, or `baseline update` self-heal.
+#
+# DECLARING THE RETIREMENT IS WHAT KEEPS THOSE TWO APART, and that is the whole reason this is a
+# register rather than a generic sweep. A pruner that deleted any dangling link it found would
+# silently discharge a MOVE as well, and check-install-migration.sh — which reads this — would
+# lose the only evidence that distinguishes "nothing depends on this" from "a shim is owed".
+#
+# A ROW IS INERT once no supported install predates it, and may then be dropped; `bin/baseline`'s
+# generic adb_prune_orphans still sweeps whatever survives. Nothing here expires a row
+# automatically, because "how old is the oldest install still out there" is not a fact this repo
+# holds.
+#
+# SAME REFUSAL CONTRACT AS adb_agent_manifest (#324, D64): an unrepresentable root prints NOTHING
+# and returns 1, so a caller reading stdout alone can never act on a partial register. It borrows
+# that producer's precondition rather than re-deriving it — the interpolated values are the same
+# two roots — which also means an unrepresentable skill name refuses the prune. That is the
+# fail-closed direction: a tree whose install surface cannot be enumerated is not one to start
+# deleting paths in.
+#
+# An unknown token prints nothing and returns 0, exactly as adb_agent_manifest does.
+# Usage: adb_agent_manifest_retired <agent> <repo> <home>
+adb_agent_manifest_retired() {
+  local agent="$1" repo="$2" home="$3"
+  case "$agent" in
+    claude)
+      _adb_manifest_fields_safe "$repo" "$home" "$repo/agents/claude/skills" || return 1
+      # #378 / D73 (2026-08-17): the Claude statusLine script shipped symlinked to every adopter
+      # while nothing ever wrote the `statusLine` key that runs it. Removed rather than wired.
+      printf '%s\t%s\n' "$repo/agents/claude/scripts/statusline.sh" "$home/.claude/scripts/statusline.sh"
+      ;;
+    codex|gemini) : ;;   # nothing retired for these agents yet
   esac
 }
 
@@ -559,6 +612,70 @@ EOF
   # construction. Without it the function returns whatever the last `adb_unlink_if_ours` happened
   # to evaluate — which is 0 today only because its final statement is an `adb_info`.
   return 0
+}
+
+# Consume a RETIREMENT register (adb_agent_manifest_retired's `<former-src>TAB<dest>` lines, on
+# stdin) and remove each <dest> that is still the link this framework created for it.
+#
+# THE OWNERSHIP TEST IS EXACT-TARGET, not adb_unlink_if_ours's "points anywhere inside the repo".
+# A retired row names ONE former source and `adb_link` wrote exactly that string into the link, so
+# string equality against it is the tightest available proof that this link is the one being
+# retired. A link at the same destination pointing at some other path inside the clone is a
+# different link, and is left alone.
+#
+# AND IT MUST NOT RESOLVE — which is not implied by the target test, so it is not redundant. An
+# operator can leave a file at the retired source path inside their own clone (a local edit, a
+# stray build artifact), and a link that still resolves is still doing something. Deleting it there
+# would mean removing a working path on the strength of a register rather than of the filesystem.
+#
+# A real file, a directory, a link pointing elsewhere, and a link that resolves are all untouched.
+#
+# NO <repo> ARGUMENT, unlike adb_unlink_manifest: that function scopes ownership to "inside the
+# repo" and needs the root to do it, while this one gets a stricter answer from the record itself.
+#
+# Returns non-zero when the register was MALFORMED — and then nothing is removed, mirroring the
+# two-pass rule (#324, D64): a map that cannot say where the links are cannot say which removals
+# are safe — or when a removal FAILED (the link remains; stderr names it), so a read-only
+# destination cannot read as a successful prune. Usage: adb_prune_retired_manifest  (stdin)
+adb_prune_retired_manifest() {
+  local tab validated line src dest rc
+  tab="$(printf '\t')"
+  validated="$(_adb_manifest_slurp adb_prune_retired_manifest)" || return 1
+  rc=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    src="${line%%"$tab"*}"
+    dest="${line#*"$tab"}"
+    if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ] && [ ! -e "$dest" ]; then
+      if rm -f "$dest" 2>/dev/null && [ ! -L "$dest" ]; then
+        adb_info "  prune  ${dest/#$HOME/~} (retired — source removed upstream)"
+      else
+        printf 'ERROR: could not remove retired link %s — it remains dangling\n' "${dest/#$HOME/~}" >&2
+        rc=1
+      fi
+    fi
+  done <<EOF
+$validated
+EOF
+  return "$rc"
+}
+
+# The whole retirement disposal for one agent token: enumerate the register, hand it to the
+# pruner. The ONE call-site shape, so install.sh and uninstall.sh cannot drift about what "prune
+# the retired links" means — the same reason adb_link_manifest exists rather than a loop in each
+# installer. An agent with an empty register is a silent no-op.
+# Returns non-zero iff the register could not be enumerated. Usage:
+#   adb_prune_retired <agent> <repo> <home>
+adb_prune_retired() {
+  local agent="$1" repo="$2" home="$3" retired
+  retired="$(adb_agent_manifest_retired "$agent" "$repo" "$home")" || {
+    adb_info "  ERROR  cannot enumerate the retired install surface for $agent — nothing was pruned (see above)"
+    return 1
+  }
+  [ -n "$retired" ] || return 0
+  adb_prune_retired_manifest <<EOF
+$retired
+EOF
 }
 
 # --- gh ----------------------------------------------------------------------
@@ -2956,11 +3073,11 @@ adb_require_bash() {
 # The advisory form: identical re-exec, but it RETURNS non-zero instead of exiting.
 #
 # For the handful of entry points whose own contract forbids a non-zero exit — a SessionStart hook
-# renders an error notice on every session start, the statusline is a cosmetic string, and
-# state-claim-gate.sh deliberately refuses to wedge a session on infrastructure failure. Hard-
-# failing those would make a sub-floor host look BROKEN rather than out of date, which is a worse
-# outcome than a stale statusline and is precisely what those files' headers already promise not
-# to do. They still take the re-exec, which is silent and strictly better; they just do not die.
+# renders an error notice on every session start, and state-claim-gate.sh deliberately refuses to
+# wedge a session on infrastructure failure. Hard-failing those would make a sub-floor host look
+# BROKEN rather than out of date, which is a worse outcome than a skipped convenience and is
+# precisely what those files' headers already promise not to do. They still take the re-exec,
+# which is silent and strictly better; they just do not die.
 #
 # This is an exception list, not a dial: `check-bash-floor.sh --entrypoints` enforces that every
 # entry point is classified one way or the other, so a new script cannot quietly pick the softer
