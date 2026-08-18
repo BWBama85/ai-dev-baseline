@@ -2732,7 +2732,12 @@ fi
 # --- 12b. the OID GATE: a PR whose head moved is refused, loudly, and never closed --------------
 # The safety property of the whole arm. Without it this closes a PR describing content the sweep
 # never proved, which is a wrong outward mutation on somebody else's work.
-hasnt "${ cat "$PC/pr_closed"; }" '102' "12b a PR whose head is not the proved tip is NOT closed"
+# ANCHORED TO THE RECORD'S ID FIELD, not a substring of the whole file. `pr_closed` holds
+# `<id>TAB<reason>` records whose reasons carry commit SHAs, and a bare `102` matches inside one:
+# observed red on a correct tree when PR 105's fixture head hashed to
+# …d075**102**1ebfdbf. The later cases in this section (12l/12m/12n) already
+# anchor this way; these three did not.
+hasnt "${ cat "$PC/pr_closed"; }" "102$TAB" "12b a PR whose head is not the proved tip is NOT closed"
 hasnt "$pc_log" 'pr close 102'          "12b …and no close is even attempted"
 has "$pc_notes" 'REFUSED closing PR 102 for pc/moved' \
    "12b …the refusal names the PR and the branch, in full, through NOTES"
@@ -2765,7 +2770,7 @@ if [ -n "${ check_git "$PCR" rev-parse --verify --quiet refs/heads/pc/open; }" ]
 fi
 hasnt "$pc_log" '--head pc/open --state open' "12e an unmerged branch's open PRs are never queried"
 hasnt "$pc_log" 'pr close 106'                "12e …and its PR is never closed"
-hasnt "${ cat "$PC/pr_closed"; }" '106'       "12e …nor reported as closed"
+hasnt "${ cat "$PC/pr_closed"; }" "106$TAB"   "12e …nor reported as closed"
 
 # --- 12f. THE CARRY PROPERTY: the comment holds the evidence THIS verdict returned --------------
 # #332's discipline applied to an outward mutation. Re-deriving the proof when the comment is
@@ -2780,7 +2785,7 @@ hasnt "$pc_log" 'POISONBEEF01' "12f …and never a value from a re-query after t
 PC_CLOSE_RC=1 pc_run
 has "${ cat "$PC/notes"; }" 'REFUSED closing PR 101 for pc/match — gh pr close failed' \
    "12g a failed close is reported in full through NOTES"
-hasnt "${ cat "$PC/pr_closed"; }" '101' \
+hasnt "${ cat "$PC/pr_closed"; }" "101$TAB" \
    "12g …and gains no record, so nothing claims a close that did not happen"
 has "${ cat "$PC/deleted_local"; }" 'pc/match' \
    "12g …while the delete it followed still stands and is still reported"
