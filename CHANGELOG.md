@@ -43,8 +43,9 @@ only by a published release, which is what these entries are the notes for.
   feature, which could never supply the commands the docs promise. The pin also records the
   archive's SHA-256, so re-installing "the same version" from *different bytes* is refused rather
   than silently replacing the tree. The whole payload is staged and validated before the first
-  write into the project; once publishing begins the receipt is written incrementally, so an
-  interrupted install is always uninstallable.
+  write into the project; once publishing begins the receipt is written incrementally and the pin is
+  written before the merged surfaces, so a run that fails after it started writing can still be
+  taken back out with `uninstall`.
 
   **Nothing upgrades on its own.** `baseline pinned status` reports the pinned version and whether
   a newer release exists; `baseline pinned upgrade --to X.Y.Z` is the only thing that moves it, and
@@ -59,7 +60,9 @@ only by a published release, which is what these entries are the notes for.
   your own `settings.json` keys are preserved — a `settings.json` is only removed when this install
   created it *and* it now holds nothing but this install's wiring, and an `AGENTS.md` whose managed
   region has unbalanced markers is refused rather than repaired, because "repairing" it means
-  deleting to end of file.
+  deleting to end of file — uninstall then leaves that file alone and says so, rather than
+  abandoning the payload. A `settings.json` that existed before the install is never deleted, even
+  once its only remaining content is this install's wiring.
 
   **Three limitations, stated rather than discovered.** Gemini is refused — it has no project-local
   skill discovery, so a vendored payload could not be loaded, and installing one would be a mode

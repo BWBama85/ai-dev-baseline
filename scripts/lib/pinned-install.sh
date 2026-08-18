@@ -125,6 +125,16 @@ _pi_project_root() {
 _pi_sha256() { adb_sha256 "$@" || { _pi_err "could not digest: ${1:-<none>}"; return 1; }; }
 _pi_relpath_safe() { adb_pinned_relpath_safe "$@"; }
 
+# _pi_record_ok <project-root> <rel> — the FULL test every receipt reader applies: representable,
+# a path the payload map could have produced, and resolving inside the project once symlinks are
+# followed. Lexical safety alone let `link/victim` through, where `link` points out of the repo.
+_pi_record_ok() {
+  adb_pinned_relpath_safe "$2" || return 1
+  adb_pinned_payload_shaped "$2" || return 1
+  adb_pinned_contained "$1" "$2" || return 1
+  return 0
+}
+
 # _pi_owns <newline-list> <path> — membership, not a prefix test. `.claude/adb/` looks like a safe
 # prefix until a project puts its own file there.
 _pi_owns() {
@@ -338,8 +348,16 @@ _pi_tar_is_safe() {
 # docs/installation.md describes), so the rule has to be about where a link RESOLVES, not that it
 # exists. Checked after extraction because that is the only portable way to read a target.
 _pi_links_are_safe() {
-  local root="$1" real l target rc=0
+  local root="$1" real l target rc=0 links
   real="$(cd "$root" && pwd -P)" || return 1
+  # CAPTURED AND CHECKED (#324, D64 — the same swallow this file already fixed once). A `find` that
+  # fails inside a command substitution yields an EMPTY list, the loop runs zero times, and the
+  # guard returns 0: "no unsafe links" asserted about a tree nothing looked at. Reproduced in
+  # review with find exiting 7.
+  links="$(find "$root" -type l 2>/dev/null | LC_ALL=C sort)" || {
+    _pi_err "could not scan the unpacked tree for symlinks — refusing to vendor an unexamined payload"
+    return 1
+  }
   while IFS= read -r l; do
     [ -n "$l" ] || continue
     target="$(cd "$(dirname "$l")" 2>/dev/null && cd -P "$(readlink "$l")" 2>/dev/null && pwd -P)" || target=""
@@ -357,7 +375,7 @@ _pi_links_are_safe() {
       *) _pi_err "the unpacked tree has a symlink resolving OUTSIDE it: ${l#"$root"/} -> $(readlink "$l")"; rc=1 ;;
     esac
   done <<EOF
-$(find "$root" -type l 2>/dev/null | LC_ALL=C sort)
+$links
 EOF
   return "$rc"
 }
@@ -375,6 +393,8 @@ _pi_artifact_version() {
   case "$v" in
     ''|.*|*.|*..*) _pi_err "the archive name does not carry a dotted numeric version: $base"; return 1 ;;
     *[!0-9.]*)     _pi_err "the archive name does not carry a dotted numeric version: $base"; return 1 ;;
+    *.*) ;;
+    *) _pi_err "the archive name carries a single-component version, not X.Y[.Z]: $base"; return 1 ;;
   esac
   printf '%s' "$v"
 }
@@ -510,13 +530,22 @@ TOML
 # own prose, destroyed by an installer, with no way back. A stray end with no begin is the same
 # class.
 _pi_block_state() {
-  local f="$1" b e
+  local f="$1" verdict
   [ -f "$f" ] || { printf 'absent'; return 0; }
-  b="$(ADB_PI_B="$PI_BEGIN" awk 'BEGIN{m=ENVIRON["ADB_PI_B"]} $0==m{c++} END{print c+0}' "$f")"
-  e="$(ADB_PI_E="$PI_END" awk 'BEGIN{m=ENVIRON["ADB_PI_E"]} $0==m{c++} END{print c+0}' "$f")"
-  if [ "$b" -eq 0 ] && [ "$e" -eq 0 ]; then printf 'absent'; return 0; fi
-  if [ "$b" -eq 1 ] && [ "$e" -eq 1 ]; then printf 'balanced'; return 0; fi
-  printf 'unbalanced'
+  # COUNTS ARE NOT ENOUGH: one end marker followed by one begin marker counts as 1 and 1, and a
+  # count-only rule calls that `balanced` — after which the splice happily deletes every line from
+  # the begin marker to end of file. Reproduced in review. The order is what makes a region a
+  # region, so this walks the file rather than tallying it.
+  verdict="$(ADB_PI_B="$PI_BEGIN" ADB_PI_E="$PI_END" awk '
+      BEGIN { b = ENVIRON["ADB_PI_B"]; e = ENVIRON["ADB_PI_E"]; seen = 0; open = 0; bad = 0 }
+      $0 == b { if (open || seen) { bad = 1 } else { open = 1 }; next }
+      $0 == e { if (!open) { bad = 1 } else { open = 0; seen = 1 }; next }
+      END {
+        if (bad || open) { print "unbalanced" }
+        else if (seen)   { print "balanced" }
+        else             { print "absent" }
+      }' "$f")"
+  printf '%s' "$verdict"
 }
 
 # _pi_splice_block <file> <content-file> — put the managed region into <file>, creating it if
@@ -543,7 +572,14 @@ _pi_splice_block() {
     ' "$f" > "$tmp" || { rm -f "$tmp"; return 1; }
   else
     {
-      [ -f "$f" ] && cat "$f"
+      # A FINAL NEWLINE IS ENSURED BEFORE THE MARKER. A project AGENTS.md that ends without one
+      # concatenated the begin marker onto its last line, so the marker no longer matched, the
+      # install reported success over an unbalanced surface, and every later run refused.
+      # Reproduced in review.
+      if [ -f "$f" ]; then
+        cat "$f"
+        [ -s "$f" ] && [ -n "$(tail -c 1 "$f")" ] && printf '\n'
+      fi
       printf '%s\n' "$PI_BEGIN"
       cat "$body"
       printf '%s\n' "$PI_END"
@@ -590,8 +626,16 @@ _pi_hook_groups() {
       ( $excl | split(" ") ) as $drop
       | with_entries(
           .value |= ( map(
-              .hooks |= map(select(((.command // "") | split("/") | last) as $b | ($drop | index($b)) | not))
-              | .hooks |= map(.command |= sub("^__ADB_HOME__/\\.claude/scripts/"; "${CLAUDE_PROJECT_DIR}/.claude/" + $ns + "/"))
+              # `.command` IS NOT GUARANTEED TO BE A STRING. The hook schema also allows handlers
+              # with no `command` at all, and `split`/`sub` on null aborts the whole transform — so
+              # a future non-command handler in the shipped file would make every pinned install
+              # fail. Such a handler is passed through untouched. (No apostrophes in here: this
+              # comment lives inside a single-quoted jq program.)
+              .hooks |= map(select((.command | type) != "string"
+                                   or (((.command) | split("/") | last) as $b | ($drop | index($b)) | not)))
+              | .hooks |= map(if (.command | type) == "string"
+                              then .command |= sub("^__ADB_HOME__/\\.claude/scripts/"; "${CLAUDE_PROJECT_DIR}/.claude/" + $ns + "/")
+                              else . end)
             ) | map(select((.hooks | length) > 0)) )
         )
       | with_entries(select((.value | length) > 0))
@@ -710,13 +754,14 @@ _pi_latest_version() {
 # is unsafe is DROPPED and reported: the receipt is committed, so on any repository a stranger can
 # send a pull request to it is attacker-influenced text.
 _pi_receipt_paths() {
-  local f="$1" hash rel
+  local f="$1" root="${2:-}" hash rel
   [ -f "$f" ] || return 0
+  [ -n "$root" ] || root="$(dirname "$(dirname "$f")")"
   while read -r hash rel; do
     case "$hash" in ''|'#'*) continue ;; esac
     [ -n "$rel" ] || continue
-    if ! _pi_relpath_safe "$rel"; then
-      _pi_err "receipt: ignoring an unsafe path: $(adb_tsv_field_display "$rel")"
+    if ! _pi_record_ok "$root" "$rel"; then
+      _pi_err "receipt: ignoring an unsafe or out-of-payload path: $(adb_tsv_field_display "$rel")"
       continue
     fi
     printf '%s\n' "$rel"
@@ -741,7 +786,7 @@ _pi_verify_tree() {
     case "$hash" in ''|'#'*) continue ;; esac
     [ -n "$rel" ] || continue
     n=$((n + 1))
-    if ! _pi_relpath_safe "$rel"; then altered=$((altered + 1)); continue; fi
+    if ! _pi_record_ok "$p" "$rel"; then altered=$((altered + 1)); continue; fi
     if [ ! -f "$p/$rel" ]; then missing=$((missing + 1)); continue; fi
     have="$(_pi_sha256 "$p/$rel" 2>/dev/null)" || have=""
     [ "$have" = "$hash" ] || altered=$((altered + 1))
@@ -753,11 +798,25 @@ _pi_verify_tree() {
 # receipt cannot cover because they are regions inside files the project owns. Prints one line per
 # problem; silent when both are intact. Non-zero iff something is wrong.
 _pi_check_surfaces() {
-  local p="$1" agents="$2" rp="$3" rc=0
+  local p="$1" agents="$2" rp="$3" rc=0 body want cmd
   case ",$agents," in
     *,codex,*)
       case "$(_pi_block_state "$p/AGENTS.md")" in
-        balanced) ;;
+        balanced)
+          # THE MARKERS BEING BALANCED SAYS NOTHING ABOUT WHAT IS BETWEEN THEM. Emptying the region
+          # leaves it perfectly balanced and Codex loading nothing, so the body is compared against
+          # the vendored practices — a file the receipt DOES cover, which is what makes this exact.
+          body="$(ADB_PI_B="$PI_BEGIN" ADB_PI_E="$PI_END" awk '
+              BEGIN { b = ENVIRON["ADB_PI_B"]; e = ENVIRON["ADB_PI_E"] }
+              $0 == b { inb = 1; next }
+              $0 == e { inb = 0; next }
+              inb { print }' "$p/AGENTS.md")"
+          want="$p/.codex/$PI_NS/AGENTS.practices.md"
+          if [ ! -f "$want" ]; then
+            _pi_say "  missing  .codex/$PI_NS/AGENTS.practices.md (nothing to compare the region against)"; rc=1
+          elif [ "$body" != "$(cat "$want")" ]; then
+            _pi_say "  altered  AGENTS.md managed region (its body is not the vendored practices)"; rc=1
+          fi ;;
         absent)     _pi_say "  missing  AGENTS.md managed region (Codex would load none of the practices)"; rc=1 ;;
         unbalanced) _pi_say "  broken   AGENTS.md managed region (unbalanced markers)"; rc=1 ;;
       esac ;;
@@ -766,8 +825,16 @@ _pi_check_surfaces() {
     *,claude,*)
       if _pi_receipt_flag "$rp" "# unwired: .claude/settings.json"; then
         _pi_say "  missing  Stop-gate wiring (this install ran without jq)"; rc=1
-      elif ! grep -Fq "/.claude/$PI_NS/" "$p/.claude/settings.json" 2>/dev/null; then
-        _pi_say "  missing  Stop-gate entries in .claude/settings.json"; rc=1
+      else
+        # EACH GATE, NOT "the namespace appears somewhere". One surviving entry made a settings.json
+        # missing two of the three gates report as complete.
+        while IFS= read -r cmd; do
+          [ -n "$cmd" ] || continue
+          grep -Fq "\${CLAUDE_PROJECT_DIR}/.claude/$PI_NS/$cmd" "$p/.claude/settings.json" 2>/dev/null && continue
+          _pi_say "  missing  Stop-gate entry for $cmd in .claude/settings.json"; rc=1
+        done <<EOF
+$(_pi_hook_scripts)
+EOF
       fi ;;
   esac
   return "$rc"
@@ -846,31 +913,46 @@ _pi_assert_reanchored() {
 # previous output silently while never touching a file it did not write.
 _pi_publish() {
   local stage="$1" p="$2" prior="$3" backup="$4" out="$5"
-  local f rel digest listing n=0 owned="" bdest
+  local f rel digest listing n=0 bdest prior_digest have
   listing="$(cd "$stage" && find . -type f | LC_ALL=C sort)" || {
     _pi_err "publish: could not enumerate the staged payload"
     return 1
   }
   [ -n "$listing" ] || { _pi_err "publish: the staged payload is empty — refusing to publish nothing"; return 1; }
-  owned="$(_pi_receipt_paths "$prior" 2>/dev/null)" || owned=""
   mkdir -p "$(dirname "$out")" || return 1
   printf '# ai-dev-baseline — files written by pinned-install.sh. Do not edit.\n' > "$out" || return 1
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     rel="${f#./}"
-    _pi_relpath_safe "$rel" || { _pi_err "publish: refusing an unrepresentable payload path: $(adb_tsv_field_display "$rel")"; return 1; }
+    _pi_record_ok "$p" "$rel" || { _pi_err "publish: refusing an unrepresentable or out-of-payload path: $(adb_tsv_field_display "$rel")"; return 1; }
     mkdir -p "$p/$(dirname "$rel")" || return 1
-    if [ -e "$p/$rel" ] && ! _pi_owns "$owned" "$rel"; then
-      bdest="$backup/$rel"
-      mkdir -p "$(dirname "$bdest")" || return 1
-      cp -R "$p/$rel" "$bdest" || { _pi_err "publish: could not back up the existing $rel — refusing to replace it"; return 1; }
-      printf '  backup %s → %s/%s\n' "$rel" "${backup/#$HOME/~}" "$rel" >&2
+    # THE DIGEST COMES FROM THE STAGED FILE, and the record is appended BEFORE the rename. Digesting
+    # after the rename put a window between "the file is in the project" and "the receipt knows
+    # about it": a failure there left a file nothing could ever identify as ours. Reversed, the
+    # worst case is a receipt naming a file that was not written — which `uninstall` skips and
+    # `status` reports as missing, both of which are recoverable.
+    digest="$(_pi_sha256 "$stage/$rel")" || return 1
+    # OWNED MEANS THE PRIOR RECEIPT NAMED IT *AND* THE FILE STILL MATCHES THAT DIGEST. Membership
+    # alone let a stale or forged receipt suppress the backup for a file this install never wrote.
+    if [ -e "$p/$rel" ] || [ -L "$p/$rel" ]; then
+      prior_digest="$(_pi_receipt_digest "$prior" "$rel")"
+      have=""
+      [ -f "$p/$rel" ] && have="$(_pi_sha256 "$p/$rel" 2>/dev/null)"
+      # `-L` as well as `-e`: a DANGLING symlink at a destination is invisible to `-e`, so it was
+      # replaced with no backup and no mention.
+      if [ -z "$prior_digest" ] || [ "$have" != "$prior_digest" ]; then
+        bdest="$backup/$rel"
+        mkdir -p "$(dirname "$bdest")" || return 1
+        cp -R "$p/$rel" "$bdest" 2>/dev/null || cp -RP "$p/$rel" "$bdest" 2>/dev/null \
+          || { _pi_err "publish: could not back up the existing $rel — refusing to replace it"; return 1; }
+        printf '  backup %s → %s/%s\n' "$rel" "${backup/#$HOME/~}" "$rel" >&2
+      fi
     fi
+    printf '%s  %s\n' "$digest" "$rel" >> "$out" || return 1
     cp "$stage/$rel" "$p/$rel.adb.$$.tmp" || return 1
     if [ -x "$stage/$rel" ]; then chmod +x "$p/$rel.adb.$$.tmp" || return 1; fi
+    rm -f "$p/$rel" 2>/dev/null
     mv "$p/$rel.adb.$$.tmp" "$p/$rel" || { rm -f "$p/$rel.adb.$$.tmp"; return 1; }
-    digest="$(_pi_sha256 "$p/$rel")" || return 1
-    printf '%s  %s\n' "$digest" "$rel" >> "$out" || return 1
     n=$((n + 1))
   done <<EOF
 $listing
@@ -888,7 +970,7 @@ EOF
 # file the operator edited is kept and named rather than deleted.
 _pi_retire() {
   local p="$1" prior_paths="$2" new="$3" old="$4"
-  local rel have want kept=0 gone=0 keepset
+  local rel have want kept=0 gone=0 failed=0 keepset
   [ -n "$prior_paths" ] || return 0
   keepset="$(_pi_receipt_paths "$new" 2>/dev/null)" || keepset=""
   while IFS= read -r rel; do
@@ -902,7 +984,9 @@ _pi_retire() {
     want="$(_pi_receipt_digest "$old" "$rel")"
     have="$(_pi_sha256 "$p/$rel" 2>/dev/null)" || have=""
     if [ -n "$want" ] && [ "$have" = "$want" ]; then
-      rm -f "$p/$rel" && gone=$((gone + 1))
+      # THE STATUS IS NOT DISCARDED. `rm -f … && gone=…` silently dropped a failed removal, and the
+      # new receipt does not list the file — so it became an orphan nothing could ever identify.
+      if rm -f "$p/$rel"; then gone=$((gone + 1)); else failed=$((failed + 1)); _pi_err "retire: could not remove $rel"; fi
     else
       kept=$((kept + 1)); _pi_say "  kept   $rel (retired by this version, but locally modified)"
     fi
@@ -910,6 +994,7 @@ _pi_retire() {
 $prior_paths
 EOF
   [ "$gone" -eq 0 ] || _pi_say "  retire $gone file(s) this version no longer ships"
+  [ "$failed" -eq 0 ] || return 1
   return 0
 }
 
@@ -1087,8 +1172,10 @@ cmd_install() {
     *) adopted="$(date -u +%Y-%m-%d)" ;;
   esac
 
+  local prior_agents; prior_agents="$(_pi_pin_agents "$p" 2>/dev/null)" || prior_agents=""
+
   local rp; rp="$(_pi_receipt_path "$p")"
-  local prior_paths; prior_paths="$(_pi_receipt_paths "$rp" 2>/dev/null)" || prior_paths=""
+  local prior_paths; prior_paths="$(_pi_receipt_paths "$rp" "$p" 2>/dev/null)" || prior_paths=""
   local prior_copy="$work/prior-receipt"
   if [ -f "$rp" ]; then cp "$rp" "$prior_copy" || { rm -rf "$work"; trap - EXIT; return 14; }; else : > "$prior_copy"; fi
 
@@ -1105,12 +1192,55 @@ EOF
   _pi_say "installing ai-dev-baseline $ver into ${p##*/} (agents: ${agents[*]})"
   local backup; backup="$HOME/.claude/backups/ai-dev-baseline-pinned-$(date -u +%Y%m%d-%H%M%S)"
   if ! _pi_publish "$stage" "$p" "$prior_copy" "$backup" "$rp"; then
-    _pi_err "install: publishing failed. The receipt at ${rp#"$p"/} lists exactly what WAS written —"
-    _pi_err "         run 'pinned-install.sh uninstall' to take it back out."
+    # THE PRIOR RECORDS ARE MERGED BACK IN. Publishing writes the new receipt over the live one, so
+    # a run that failed part-way had already discarded the previous install's ownership evidence for
+    # every file it never reached — leaving those files unowned forever. The union covers both.
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      _pi_receipt_digest "$rp" "$rel" >/dev/null 2>&1 && [ -n "$(_pi_receipt_digest "$rp" "$rel")" ] && continue
+      want="$(_pi_receipt_digest "$prior_copy" "$rel")"
+      [ -n "$want" ] && printf '%s  %s\n' "$want" "$rel" >> "$rp"
+    done <<EOF
+$prior_paths
+EOF
+    _pi_err "install: publishing failed. The receipt at ${rp#"$p"/} lists what WAS written, plus what"
+    _pi_err "         the previous install still owns — run 'pinned-install.sh uninstall' to take it out."
     rm -rf "$work"; trap - EXIT; return 14
   fi
 
-  _pi_retire "$p" "$prior_paths" "$rp" "$prior_copy"
+  _pi_retire "$p" "$prior_paths" "$rp" "$prior_copy" || {
+    _pi_err "install: a file retired by this version could not be removed — it would be left unowned."
+    _pi_err "         Fix the permission and re-run; the receipt at ${rp#"$p"/} is current."
+    rm -rf "$work"; trap - EXIT; return 14
+  }
+
+  # THE PIN IS WRITTEN HERE, BEFORE THE MERGED SURFACES, and that ordering is the recovery
+  # guarantee rather than tidiness. `uninstall` requires `mode = "pinned"`, so a run that published
+  # the payload and then failed on the AGENTS splice used to leave a receipt, a payload, and NO pin
+  # — and the recovery command this file tells the operator to run refused. Reproduced in review.
+  local csv adopted_out
+  csv="$(IFS=,; printf '%s' "${agents[*]}")"
+  adopted_out="$adopted"
+  _pi_write_pin "$p" "$ver" "$source_repo" "$csv" "$adopted_out" "$artifact_sha" "$prior_stack" \
+    || { _pi_err "install: could not write the pin"; rm -rf "$work"; trap - EXIT; return 14; }
+  printf '%s  %s\n' "$(_pi_sha256 "$(_pi_pin_path "$p")")" ".ai-dev-baseline/upstream.toml" >> "$rp" \
+    || { _pi_err "install: could not finish the receipt"; rm -rf "$work"; trap - EXIT; return 14; }
+
+  # A DROPPED AGENT'S MERGED SURFACE GOES WITH ITS FILES. `_pi_retire` removes what the receipt
+  # covers, and a merged region is by definition not in the receipt — so re-installing without
+  # `codex` left its block in AGENTS.md, and without `claude` left hook entries pointing at gate
+  # scripts that had just been retired.
+  local prev_agent
+  while IFS= read -r prev_agent; do
+    [ -n "$prev_agent" ] || continue
+    case " ${agents[*]} " in *" $prev_agent "*) continue ;; esac
+    case "$prev_agent" in
+      codex)  _pi_strip_block "$p/AGENTS.md" && _pi_say "  retire codex's managed region in AGENTS.md" ;;
+      claude) _pi_unwire_hooks "$p" >/dev/null 2>&1 && _pi_say "  retire claude's Stop-gate entries in .claude/settings.json" ;;
+    esac
+  done <<EOF
+$prior_agents
+EOF
 
   # Codex reads only the root AGENTS.md, so its practices are spliced there as a delimited region.
   local created bytes
@@ -1154,16 +1284,6 @@ EOF
       fi
     fi
   done
-
-  # `adopted` RECORDS THE FIRST ADOPTION and is carried forward, never restamped: rewriting it
-  # would make "re-running changes nothing" false on any day but the first, and would make the
-  # field mean "last install" while its name says otherwise. Resolved above, before any write.
-  local csv
-  csv="$(IFS=,; printf '%s' "${agents[*]}")"
-  _pi_write_pin "$p" "$ver" "$source_repo" "$csv" "$adopted" "$artifact_sha" "$prior_stack" \
-    || { _pi_err "install: could not write the pin"; rm -rf "$work"; trap - EXIT; return 14; }
-  printf '%s  %s\n' "$(_pi_sha256 "$(_pi_pin_path "$p")")" ".ai-dev-baseline/upstream.toml" >> "$rp" \
-    || { _pi_err "install: could not finish the receipt"; rm -rf "$work"; trap - EXIT; return 14; }
 
   _pi_say "pinned to $ver — commit .ai-dev-baseline/ and the vendored .<agent>/ payload"
   rm -rf "$work"; trap - EXIT
@@ -1375,7 +1495,17 @@ cmd_uninstall() {
     _pi_err "           Install jq (or remove those entries by hand), then re-run."
     return 12
   fi
-  _pi_strip_block "$p/AGENTS.md" || { _pi_err "uninstall: refusing to continue with an unrepairable AGENTS.md"; return 10; }
+  # A REFUSAL TO EDIT AGENTS.md IS NOT A REASON TO ABANDON THE PAYLOAD. `_pi_strip_block` refuses an
+  # unbalanced region so it can never delete a project's own prose — but that region may be the
+  # OPERATOR's, predating this install (an install over one already refuses, and can only have got
+  # this far by failing after publishing). Treating the refusal as fatal deadlocked the recovery:
+  # the payload was written, the pin existed, and the command this file tells the operator to run
+  # would not remove it. Warn, leave the file alone, and carry on.
+  local agents_kept=0
+  if ! _pi_strip_block "$p/AGENTS.md"; then
+    agents_kept=1
+    _pi_say "  kept   AGENTS.md (its managed region is unbalanced — repair the markers by hand)"
+  fi
 
   # REMOVE BY DIGEST. A file whose contents no longer match the receipt was changed after the
   # install, so it is the operator's now and is kept and named — an uninstaller that deletes work
@@ -1401,7 +1531,11 @@ EOF
   # is an orphan; one it did not create is the project's file and stays, whatever it now contains.
   if _pi_receipt_flag "$rp" "# created: .claude/settings.json" && command -v jq >/dev/null 2>&1; then
     if jq -e '(. | del(.hooks)) == {} and ((.hooks // {}) == {})' "$p/.claude/settings.json" >/dev/null 2>&1; then
-      rm -f "$p/.claude/settings.json" && _pi_say "  hooks  removed .claude/settings.json (this install created it)"
+      if rm -f "$p/.claude/settings.json"; then
+        _pi_say "  hooks  removed .claude/settings.json (this install created it)"
+      else
+        failed=$((failed + 1)); _pi_say "  FAILED .claude/settings.json (could not remove)"
+      fi
     fi
   fi
 
@@ -1412,7 +1546,12 @@ EOF
     _pi_say "uninstalled partially: $gone removed, $kept kept, $failed failed"
     return 14
   fi
-  rm -f "$rp"
+  # THE RECEIPT'S OWN REMOVAL IS CHECKED TOO. Left behind, it names a payload that is gone, so the
+  # next `status` reports every file missing and the next install treats them as already owned.
+  if ! rm -f "$rp"; then
+    _pi_err "uninstall: the payload is gone but the receipt at ${rp#"$p"/} could not be removed — delete it by hand."
+    return 14
+  fi
 
   # PRUNE ONLY THE DIRECTORIES THE RECEIPT NAMES, deepest first, and only when empty. A blanket
   # `find .claude .codex .ai-dev-baseline -type d` also removed directories this install never
@@ -1425,6 +1564,7 @@ EOF
 $(printf '%s\n' "${dirs[@]}" | awk '{ n = split($0, a, "/"); acc = ""; for (i = 1; i <= n; i++) { acc = (i == 1 ? a[i] : acc "/" a[i]); print length(acc) "\t" acc } }' | LC_ALL=C sort -rn -k1,1 | cut -f2 | awk '!seen[$0]++')
 EOF
 
+  [ "$agents_kept" -eq 0 ] || _pi_say "  NOTE   AGENTS.md was left untouched; nothing else remains of this install"
   _pi_say "uninstalled the pinned payload: $gone file(s) removed, $kept kept"
   return 0
 }

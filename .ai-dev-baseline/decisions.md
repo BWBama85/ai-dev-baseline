@@ -6170,9 +6170,16 @@ limit: none of them is sufficient alone.
              **And MEMBERSHIP is not ownership — the digest is.** A vendored file the operator has
              edited is deliberately absent from the owned set, so `/adopt` reports it rather than
              suppressing a real delta, and a hand-written receipt naming a project's own skill
-             proves nothing. The predicate is `adb_pinned_owned` in `common.sh` rather than a copy
-             in each caller, because `pinned-install.sh` and `adopt-lib.sh` ask the same question
-             of the same file.
+             proves nothing **about a path the payload map could never have produced** —
+             `adb_pinned_payload_shaped` bounds every record to this install's own namespaces, so a
+             forged record can never reach `src/` or a project's config. Within those namespaces a
+             correct digest IS accepted, and that residue is stated rather than hidden: a receipt is
+             a committed file, so it is exactly as trustworthy as the repository's review of the
+             commit that changed it. A digest establishes integrity, not provenance, and nothing
+             short of a signature would. The predicate is `adb_pinned_owned` in `common.sh` rather
+             than a copy in each caller, because `pinned-install.sh` and `adopt-lib.sh` ask the same
+             question of the same file — and lexical safety is not enough on its own:
+             `link/victim` carries no `..`, so containment is checked by RESOLVING the path.
 
              **What the receipt does NOT cover, stated because the first draft claimed otherwise:**
              the two MERGED surfaces. The project's `AGENTS.md` and `.claude/settings.json` are
@@ -6274,4 +6281,24 @@ limit: none of them is sufficient alone.
              Each is fixed and pinned. Two more findings were caught by the fixes themselves: the
              `-tv` field-offset parse is not portable between BSD and GNU tar, and `_pi_retire`
              deleted the pin on every re-install — which the byte-idempotence assertion caught.
+
+             **A SECOND review pass over the fixes returned 37 more, and that is the entry's most
+             useful sentence.** A rewrite made under review pressure is where the next defect hides,
+             and this one held several the first pass could not have seen because the code did not
+             yet exist: `link/victim` escaping the project through a project SYMLINK, which carries
+             no `..` and defeats the purely lexical rule the first pass had asked for; `_pi_publish`
+             treating prior-receipt MEMBERSHIP as ownership, so a stale receipt suppressed the
+             backup the first pass had just required; `_pi_block_state` counting markers without
+             checking their ORDER, so end-then-begin read as balanced and the splice deleted to EOF;
+             an `AGENTS.md` with no final newline having the marker concatenated onto its last line;
+             `_pi_links_are_safe` losing `find`'s status — the same swallow, reintroduced in the
+             function written to fix a different one; a rename preceding its receipt record; the
+             live prior receipt truncated before the new publish completed; `_pi_retire` and two
+             uninstall removals discarding failures; a dropped agent's merged surface left behind;
+             the surface check verifying that markers were balanced rather than that the body was
+             the practices; and the recovery deadlock above. Nine of the thirty-seven were
+             reproduced by the reviewer against the working tree.
+
+             The lesson recorded rather than the list: **the second pass was worth as much as the
+             first.** One review of a change this size is a sample, not a verdict.
 - baseline-issue: n/a — this repo IS the baseline; #285 is the tracking issue.

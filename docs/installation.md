@@ -583,7 +583,7 @@ truncation**, not authenticity — an attacker who can replace one can replace b
 | `.claude/settings.json` | the gates wired through `${CLAUDE_PROJECT_DIR}` (merged, never replaced) |
 | `.codex/skills/<name>/SKILL.md`, `.codex/adb/…` | the same, for Codex |
 | `AGENTS.md` | Codex's practices, inside a delimited managed region |
-| `.ai-dev-baseline/upstream.toml` | the pin — `mode`, `version`, `source`, `adopted`, `agents` |
+| `.ai-dev-baseline/upstream.toml` | the pin — `mode`, `version`, `source`, `artifact` (the release archive's SHA-256), `adopted`, `agents`, and `stack` when a previous pin recorded one |
 | `.ai-dev-baseline/pinned-files.sha256` | the receipt: every file this install wrote, and its digest |
 
 Four of those choices are decisions rather than layout, and each is load-bearing:
@@ -622,9 +622,11 @@ is missing or unverifiable · `30` the release list could not be read.
 **Nothing upgrades on its own, and `--to` *is* the approval.** There is no prompt, because two
 things already invoke `baseline update` unattended (the `SessionStart` hook and the last step of
 `/cleanup`) and a command that could upgrade without a named version would upgrade in both. In a
-pinned project `baseline update` prints a one-line notice and keeps doing its ordinary job on the
-install-source clone; it reads only the local pin and receipt, so it costs no extra network call and
-`baseline update --check` is untouched.
+pinned project `baseline update` prints a notice — the pinned version, whether the payload still matches its
+receipt, and whether a newer release exists — and then keeps doing its ordinary job on the
+install-source clone. Reporting the newer release costs one read of the release list, on the
+*mutating* path only; `baseline update --check` is untouched and still makes no changes and no call
+it did not already need.
 
 **Re-running the install changes nothing.** The same version republishes identical bytes — the
 adoption date is carried forward rather than restamped — and a *different* version is refused with
@@ -637,7 +639,8 @@ does not, so nothing is left behind unowned.
 **Uninstall removes by digest.** A vendored file whose contents still match the receipt is removed;
 one you edited is **kept and named**, because an uninstaller that deletes work it did not write is
 worse than one that leaves a file behind. Your own `AGENTS.md` prose and your own `settings.json`
-keys survive; a `settings.json` that held nothing but this install's wiring is removed with it.
+keys survive — a `settings.json` is removed only when this install **created** it and nothing but
+this install's wiring is left in it, so one that existed beforehand always stays.
 
 ### What it does not do
 

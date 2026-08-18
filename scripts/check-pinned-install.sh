@@ -250,8 +250,11 @@ for _ev in relative absolute; do
   eq "$rc" 11 "install: an archive with a $_ev escaping member refuses"
   has "$out" "absolute or parent-relative members" "install: … and says which rule fired ($_ev)"
   # THE PATH THE ARCHIVE ACTUALLY TARGETS. Asserting an invented name passes whether or not the
-  # archive was unpacked, which is the definition of a rubber stamp.
-  file_isnt "$P/escape" "install: … and the member did not land in the project ($_ev)"
+  # archive was unpacked, which is the definition of a rubber stamp. The relative fixture's member
+  # resolves to `$work/evilsrc/escape` from an extraction root, so THAT is what must be unchanged,
+  # and the project must have gained nothing at all.
+  eq "$(cat "$work/evilsrc/escape")" "pwned" "install: … and the escaping member did not overwrite its target ($_ev)"
+  eq "$(find "$P" -path "$P/.git" -prune -o -type f -print | wc -l | tr -d ' ')" 0 "install: … and nothing landed in the project ($_ev)"
 done
 
 # ================================ install: the happy path =======================================
@@ -366,8 +369,10 @@ eq "${#stray}" 0 "backup: nothing is left inside the project tree"
 # narration it prints there becomes a record the reader parses as `<digest> <path>` — and every
 # later `status` then reports a file that does not exist. Every line must be a comment or a
 # digest-and-path pair, and the whole tree must still verify as intact.
-bogus="$(awk '!/^#/ && NF > 0 && $1 !~ /^[0-9a-f]{64}$/ { print }' "$PB/.ai-dev-baseline/pinned-files.sha256")"
-eq "${#bogus}" 0 "backup: the receipt carries no line that is not a digest record"
+# BOTH FIELDS. A rule checking only the digest column stays green on a line that carries a digest
+# and no path at all — which is exactly the shape a stray narration line would take.
+bogus="$(awk '!/^#/ && NF > 0 && ($1 !~ /^[0-9a-f]{64}$/ || NF != 2) { print }' "$PB/.ai-dev-baseline/pinned-files.sha256")"
+eq "${#bogus}" 0 "backup: every receipt line is a comment or a digest-AND-path pair"
 out="$(bash "$PI" status --project "$PB" 2>&1)"
 has "$out" "payload: intact" "backup: … so the freshly installed payload verifies as intact"
 
@@ -554,7 +559,29 @@ victim_sha="$( { command -v sha256sum >/dev/null 2>&1 && sha256sum "$work/victim
 printf '%s  ../victim.txt\n' "$victim_sha" >> "$PE/.ai-dev-baseline/pinned-files.sha256"
 out="$(bash "$PI" uninstall --project "$PE" 2>&1)"
 file_is "$work/victim.txt" "receipt: a '..' record cannot make uninstall delete a file outside the project"
-has "$out" "ignoring an unsafe path" "receipt: … and the record is reported, not silently skipped"
+has "$out" "ignoring an unsafe or out-of-payload path" "receipt: … and the record is reported, not silently skipped"
+
+# 5b. THE SAME ESCAPE THROUGH A SYMLINK, which carries no `..` at all and defeats a purely lexical
+#     rule. Reproduced in review against the first fix.
+PE2="$(new_project escape-symlink)"
+bash "$PI" install --project "$PE2" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+mkdir -p "$work/outside"; printf 'sibling\n' > "$work/outside/victim.txt"
+ln -sfn "$work/outside" "$PE2/.claude/adb/link"
+victim_sha="$( { command -v sha256sum >/dev/null 2>&1 && sha256sum "$work/outside/victim.txt" || shasum -a 256 "$work/outside/victim.txt"; } | awk '{print $1}')"
+printf '%s  .claude/adb/link/victim.txt\n' "$victim_sha" >> "$PE2/.ai-dev-baseline/pinned-files.sha256"
+bash "$PI" uninstall --project "$PE2" >/dev/null 2>&1
+file_is "$work/outside/victim.txt" "receipt: a record traversing a project SYMLINK cannot delete outside the project"
+
+# 5c. A RECORD NAMING A PATH THE PAYLOAD MAP COULD NEVER PRODUCE is rejected whatever its digest.
+#     A digest proves integrity, not provenance, and the receipt is a committed file.
+PE3="$(new_project forged-receipt)"
+bash "$PI" install --project "$PE3" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+mkdir -p "$PE3/src"; printf 'my code\n' > "$PE3/src/main.txt"
+src_sha="$( { command -v sha256sum >/dev/null 2>&1 && sha256sum "$PE3/src/main.txt" || shasum -a 256 "$PE3/src/main.txt"; } | awk '{print $1}')"
+printf '%s  src/main.txt\n' "$src_sha" >> "$PE3/.ai-dev-baseline/pinned-files.sha256"
+scan="$(bash "$ROOT/scripts/lib/adopt-lib.sh" scan --agents claude "$PE3")"
+bash "$PI" uninstall --project "$PE3" >/dev/null 2>&1
+file_is "$PE3/src/main.txt" "receipt: a forged record for a project file outside the payload shapes is not acted on"
 
 # 6. A TRUNCATED RECEIPT IS NOT AN INTACT PAYLOAD.
 PT="$(new_project truncreceipt)"
@@ -691,7 +718,102 @@ if command -v jq >/dev/null 2>&1; then
   shipped="$(jq -r '[.[][].hooks[].command] | map(split("/") | last) | map(select(. != "session-currency.sh")) | sort | join(",")' "$ROOT/agents/claude/settings.hooks.json")"
   eq "$wired" "$shipped" "hooks: every shipped Stop hook except the excluded one is wired"
   hasnt "$wired" "session-currency.sh" "hooks: the clone-currency hook is excluded"
+  # THE WHOLE COMMAND, not its basename. Dropping the ${CLAUDE_PROJECT_DIR} substitution leaves
+  # every basename identical while the installed hooks still point at __ADB_HOME__ — a machine-local
+  # path committed into somebody's repository, and a guard that could not see it.
+  full="$(jq -r '[.hooks[]?[]?.hooks[]?.command] | sort | join(" ")' "$PM/.claude/settings.json")"
+  hasnt "$full" "__ADB_HOME__" "hooks: no wired command still carries the home placeholder"
+  hasnt "$full" "$HOME" "hooks: no wired command carries a machine-local absolute path"
+  has "$full" '${CLAUDE_PROJECT_DIR}/.claude/adb/' "hooks: every wired command is project-relative"
 fi
+
+# ================================ the second review's refusals ==================================
+
+# 19. AN OUT-OF-ORDER MARKER PAIR IS NOT "BALANCED". End-then-begin counts 1 and 1, and a
+#     count-only rule then let the splice delete every line after the begin marker.
+PO="$(new_project blockorder)"
+printf '<!-- ai-dev-baseline:end -->\n# Mine\n<!-- ai-dev-baseline:begin (managed by pinned-install.sh — do not edit inside) -->\nirreplaceable\n' > "$PO/AGENTS.md"
+cp "$PO/AGENTS.md" "$work/blockorder.before"
+out="$(bash "$PI" install --project "$PO" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+no "$rc" "blockorder: end-before-begin is refused, not treated as balanced"
+if cmp -s "$work/blockorder.before" "$PO/AGENTS.md"; then ok; else bad "blockorder: the project's prose was altered despite the refusal"; fi
+
+# 20. AN AGENTS.md WITH NO FINAL NEWLINE must not have the marker concatenated onto its last line.
+PNL="$(new_project nonewline)"
+printf '# Mine no trailing newline' > "$PNL/AGENTS.md"
+bash "$PI" install --project "$PNL" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+yes "$rc" "newline: an AGENTS.md with no final newline installs"
+out="$(bash "$PI" status --project "$PNL" --offline 2>&1)"; rc=$?
+eq "$rc" 0 "newline: … and the managed region is well-formed afterwards"
+bash "$PI" install --project "$PNL" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+yes "$?" "newline: … and re-installing still works"
+
+# 21. AN EMPTIED MANAGED REGION IS NOT AN INTACT SURFACE. Balanced markers say nothing about the
+#     body between them.
+PB2="$(new_project emptyblock)"
+bash "$PI" install --project "$PB2" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+awk 'BEGIN{inb=0} /ai-dev-baseline:begin/{print; inb=1; next} /ai-dev-baseline:end/{inb=0} !inb{print}' "$PB2/AGENTS.md" > "$PB2/.t" && mv "$PB2/.t" "$PB2/AGENTS.md"
+out="$(bash "$PI" status --project "$PB2" --offline 2>&1)"; rc=$?
+eq "$rc" 20 "surfaces: an emptied managed region is NOT intact"
+has "$out" "not the vendored practices" "surfaces: … and says what is wrong with it"
+
+# 22. ONE SURVIVING HOOK ENTRY IS NOT COMPLETE WIRING.
+PH="$(new_project partialhooks)"
+bash "$PI" install --project "$PH" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+if command -v jq >/dev/null 2>&1; then
+  jq '.hooks.Stop[0].hooks |= [.[0]]' "$PH/.claude/settings.json" > "$PH/.t" && mv "$PH/.t" "$PH/.claude/settings.json"
+  out="$(bash "$PI" status --project "$PH" --offline 2>&1)"; rc=$?
+  eq "$rc" 20 "surfaces: a settings.json missing two of three gates is NOT intact"
+  has "$out" "Stop-gate entry for" "surfaces: … and names the missing gate"
+fi
+
+# 23. A FAILURE AFTER PUBLISHING MUST STILL BE UNINSTALLABLE. `uninstall` requires the pin, so the
+#     pin is written before the merged surfaces rather than after them.
+PX="$(new_project postpublish)"
+printf '# Mine\n<!-- ai-dev-baseline:begin (managed by pinned-install.sh — do not edit inside) -->\nstranded\n' > "$PX/AGENTS.md"
+bash "$PI" install --project "$PX" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+no "$rc" "recovery: the unbalanced-AGENTS install fails"
+if [ -f "$PX/.ai-dev-baseline/pinned-files.sha256" ]; then
+  # It got as far as publishing, so the recovery command this file prints must actually work.
+  file_is "$PX/.ai-dev-baseline/upstream.toml" "recovery: … and a pin exists, so uninstall is usable"
+  bash "$PI" uninstall --project "$PX" >/dev/null 2>&1; rc=$?
+  yes "$rc" "recovery: uninstall takes the partial payload back out"
+  file_isnt "$PX/.codex/adb/lib/common.sh" "recovery: … leaving no payload behind"
+else
+  ok; ok; ok
+fi
+
+# 24. A DROPPED AGENT'S MERGED SURFACE GOES WITH ITS FILES.
+PDA="$(new_project dropsurface)"
+bash "$PI" install --project "$PDA" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+has "$(cat "$PDA/AGENTS.md")" "ai-dev-baseline:begin" "dropsurface: codex's region is present first"
+bash "$PI" install --project "$PDA" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+hasnt "$(cat "$PDA/AGENTS.md" 2>/dev/null || printf '')" "ai-dev-baseline:begin" "dropsurface: dropping codex removes its AGENTS.md region"
+out="$(bash "$PI" status --project "$PDA" --offline 2>&1)"; rc=$?
+eq "$rc" 0 "dropsurface: … and the remaining install still verifies intact"
+
+# 25. A RETIRED FILE THAT CANNOT BE REMOVED IS A FAILURE, not a silent orphan.
+PRF="$(new_project retirefail)"
+bash "$PI" install --project "$PRF" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+chmod a-w "$PRF/.codex/adb/lib" 2>/dev/null
+out="$(bash "$PI" install --project "$PRF" --agent claude --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+chmod u+w "$PRF/.codex/adb/lib" 2>/dev/null
+if [ "$rc" -eq 0 ]; then
+  # Running as a user who can write regardless (root, or a permissive filesystem) — say so rather
+  # than recording a pass this host did not earn.
+  printf 'check-pinned-install: NOTE — this host ignored the read-only directory; the retire-failure guard was not exercised\n' >&2
+else
+  eq "$rc" 14 "retire: a file that cannot be removed fails the install rather than orphaning it"
+  has "$out" "could not be removed" "retire: … and says which"
+fi
+
+# 26. THE SINGLE-COMPONENT VERSION.
+cp "$ART" "$work/ai-dev-baseline-2.tar.gz"
+( cd "$work" && { command -v sha256sum >/dev/null 2>&1 && sha256sum ai-dev-baseline-2.tar.gz || shasum -a 256 ai-dev-baseline-2.tar.gz; } > SUMS.single )
+PV="$(new_project singleversion)"
+out="$(bash "$PI" install --project "$PV" --agent claude --artifact "$work/ai-dev-baseline-2.tar.gz" --sums "$work/SUMS.single" 2>&1)"; rc=$?
+eq "$rc" 11 "version: a single-component version is refused"
+has "$out" "single-component version" "version: … and says so"
 
 # ================================ the payload actually RUNS =====================================
 # "The files are present" is not the acceptance criterion; "a pinned project can run the loop" is.
@@ -751,10 +873,24 @@ bash "$ROOT/uninstall.sh" --pinned --project "$P6" >/dev/null 2>&1; rc=$?
 yes "$rc" "uninstall.sh --pinned dispatches to the pinned uninstaller"
 file_isnt "$P6/.ai-dev-baseline/upstream.toml" "uninstall.sh --pinned really removed it"
 
-# THE GLOBAL MODEL IS UNCHANGED BY CONSTRUCTION, and that is asserted rather than assumed: a
-# no-argument install.sh must still take the global path.
+# THE GLOBAL MODEL IS UNCHANGED, and that is EXERCISED rather than read off the help text. A
+# `--pinned` dispatch added to the top of install.sh is exactly the kind of change that can break
+# an ordinary invocation while every help string stays correct.
 out="$(bash "$ROOT/install.sh" --help 2>&1)"
 has "$out" "--pinned" "install.sh --help documents the second model"
 has "$out" "installs the 'claude' agent" "install.sh --help still documents the global model first"
+
+globalhome="$work/globalhome"; mkdir -p "$globalhome"
+out="$(HOME="$globalhome" bash "$ROOT/install.sh" --agent claude --agent codex 2>&1)"; rc=$?
+yes "$rc" "global: an ordinary install.sh run still succeeds"
+[ -L "$globalhome/.claude/CLAUDE.md" ] && ok || bad "global: the root doc is still symlinked"
+[ -L "$globalhome/.claude/skills/implement-issue" ] && ok || bad "global: skills are still symlinked"
+file_is "$globalhome/.claude/scripts/lib/common.sh" "global: the shared library still resolves"
+[ -L "$globalhome/.codex/AGENTS.md" ] && ok || bad "global: the codex adapter still runs"
+# AND IT MUST NOT HAVE ACQUIRED THE PINNED MODEL'S ARTIFACTS.
+file_isnt "$globalhome/.claude/adb" "global: an ordinary install writes nothing into the pinned namespace"
+out="$(HOME="$globalhome" bash "$ROOT/uninstall.sh" --agent claude --agent codex 2>&1)"; rc=$?
+yes "$rc" "global: an ordinary uninstall.sh run still succeeds"
+[ -L "$globalhome/.claude/CLAUDE.md" ] && bad "global: uninstall left the root doc linked" || ok
 
 check_summary check-pinned-install
