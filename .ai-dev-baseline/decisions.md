@@ -6299,6 +6299,29 @@ limit: none of them is sufficient alone.
              the practices; and the recovery deadlock above. Nine of the thirty-seven were
              reproduced by the reviewer against the working tree.
 
-             The lesson recorded rather than the list: **the second pass was worth as much as the
-             first.** One review of a change this size is a sample, not a verdict.
+             **A THIRD pass — the reviewer on the PR itself — returned 13 more, and the pattern
+             held.** Two were P1: an archive whose top-level entry is ITSELF a symlink defined its
+             own containment root, so every link inside it "resolved inside" an external directory
+             and the whole archive-safety contract collapsed; and a stale or committed receipt with
+             no pin vouching for it was read as prior ownership, so a record carrying the current
+             digest of a project's OWN skill suppressed the backup and overwrote it. The rest were
+             the same shapes one level further out: the PRACTICE DOCUMENTS were copied verbatim
+             while only the skills were re-anchored, so a pinned project's own rules pointed the
+             agent at the user-global library (both rendered root docs really do carry
+             `bash "$HOME/.claude/scripts/lib/ci-health.sh"`); a partial FIRST install still had no
+             pin, so the recovery command it printed refused — fixed by writing the pin *before*
+             publishing and seeding the receipt with it; dropped-Claude hooks were unwired AFTER the
+             scripts they name were deleted, with the failure discarded; the hook surface was
+             checked by grepping text, so invalid JSON containing the command strings passed; a
+             directory at a file destination made `mv` move the file inside it and report success;
+             a symlinked `AGENTS.md` was replaced by a regular file; a failed retirement was dropped
+             from the receipt, so the retry never retried it; the pin was removed mid-uninstall, so
+             a later failure left a receipt no re-run could use; `--limit 1` fetched a draft and the
+             filter then emptied it; a Codex-only pin was told to run a `.claude/` command that does
+             not exist; and `/adopt` stopped reporting a project's own file added inside a pinned
+             skill directory.
+
+             The lesson recorded rather than the list: **each pass was worth as much as the last,
+             and the later ones mostly found defects the earlier fixes introduced.** One review of a
+             change this size is a sample, not a verdict.
 - baseline-issue: n/a — this repo IS the baseline; #285 is the tracking issue.

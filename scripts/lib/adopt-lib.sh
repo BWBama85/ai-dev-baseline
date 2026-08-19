@@ -715,9 +715,18 @@ cmd_scan() {
         # comes back. Observed on a real scan, which reported `.DS_Store` as an artifact to keep.
         */.DS_Store|*/Thumbs.db) continue ;;
       esac
-      # A skill directory's OTHER members are already covered by the whole-directory `delta`
-      # comparison of the skill itself, so re-emitting each of them would double-report.
-      case "$rel" in ".$a/skills/"*) continue ;; esac
+      # A skill directory's OTHER members are covered by the whole-directory `delta` comparison of
+      # the skill itself — EXCEPT when that skill record was suppressed as a pinned payload. There is
+      # then no record covering them at all, so a project-added `.claude/skills/cleanup/notes.md`
+      # vanished from the inventory entirely: not owned, not compared, not reported. An owned member
+      # is still skipped; an unowned one under a suppressed skill is emitted as `other`, which is
+      # what the escalate path exists for.
+      case "$rel" in
+        ".$a/skills/"*)
+          _ad_owns "$_ad_owned" "$rel" && continue
+          [ -n "$_ad_owned" ] || continue
+          ;;
+      esac
       _ad_owns "$_ad_owned" "$rel" && continue
       _ad_emit other "$rel" "${rel##*/}" "$a"
     done

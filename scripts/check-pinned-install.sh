@@ -827,6 +827,117 @@ has "$out" "backup .claude/rules/ai-dev-baseline.md" "dangling: … and the link
 if [ -f "$PDL/.claude/rules/ai-dev-baseline.md" ] && [ ! -L "$PDL/.claude/rules/ai-dev-baseline.md" ]; then ok; else bad "dangling: the destination is now the real practices file"; fi
 if [ -n "$(find "$dlhome" -name ai-dev-baseline.md -type l 2>/dev/null)" ]; then ok; else bad "dangling: the backup preserved the link itself"; fi
 
+# ================================ the PR review's refusals ======================================
+# Thirteen findings from the independent review on PR #398. Each is pinned here so the fix is a rule.
+
+# T2. THE PRACTICE DOCUMENTS carry library invocations too — both rendered root docs run
+#     `bash "$HOME/.claude/scripts/lib/ci-health.sh" classify …` — and were copied verbatim, so a
+#     pinned project's own rules told the agent to run the OTHER install's library.
+PPD="$(new_project practicedocs)"
+bash "$PI" install --project "$PPD" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+hasnt "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '$HOME/.claude/scripts/lib/' "practices: the Claude rule is re-anchored"
+has   "$(cat "$PPD/.claude/rules/ai-dev-baseline.md")" '/.claude/adb/lib/' "practices: … to the project's own library"
+hasnt "$(cat "$PPD/.codex/adb/AGENTS.practices.md")" '$HOME/.codex/scripts/lib/' "practices: the Codex region is re-anchored"
+hasnt "$(cat "$PPD/AGENTS.md")" '$HOME/.codex/scripts/lib/' "practices: … including the copy spliced into AGENTS.md"
+
+# T5. A CODEX-ONLY PIN must be told a command that exists.
+PCO="$(new_project codexonly)"
+bash "$PI" install --project "$PCO" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+file_isnt "$PCO/.claude/adb/lib/pinned-install.sh" "codexonly: no .claude payload is installed"
+# The command is only PRINTED when there is something to act on, so the payload is broken first —
+# a healthy, current project correctly says nothing beyond the mode line.
+rm -f "$PCO/.codex/adb/lib/ci-health.sh"
+out="$(bash "$PI" notice --project "$PCO" 2>&1)"
+hasnt "$out" ".claude/adb/lib/pinned-install.sh" "codexonly: notice does not name a command that does not exist"
+has   "$out" ".codex/adb/lib/pinned-install.sh" "codexonly: … it names the one that does"
+
+# T6. A DIRECTORY AT A FILE DESTINATION. `mv tmp somedir` moves the file INSIDE it and succeeds, so
+#     publish counted a success for a path that is still a directory.
+PDIR="$(new_project dircollide)"
+mkdir -p "$PDIR/.claude/skills/cleanup/SKILL.md"
+out="$(bash "$PI" install --project "$PDIR" --agent claude --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+no "$rc" "dircollide: a directory at a file destination is refused"
+has "$out" "DIRECTORY occupies a file destination" "dircollide: … and says which"
+
+# T7. A SYMLINKED merged surface must not be silently turned into a regular file.
+PSY="$(new_project symlinkedsurface)"
+printf '# shared\n' > "$work/shared-agents.md"
+ln -s "$work/shared-agents.md" "$PSY/AGENTS.md"
+out="$(bash "$PI" install --project "$PSY" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+no "$rc" "symlinked: a symlinked AGENTS.md is refused"
+if [ -L "$PSY/AGENTS.md" ]; then ok; else bad "symlinked: the link survived the refusal"; fi
+eq "$(cat "$work/shared-agents.md")" "# shared" "symlinked: … and the shared file it points at is untouched"
+
+# T1/T3. A PARTIAL FIRST INSTALL IS UNINSTALLABLE, because the pin is written before publishing.
+PPF="$(new_project partialfirst)"
+mkdir -p "$PPF/.claude/skills/cleanup/SKILL.md"   # forces publish to fail part-way
+bash "$PI" install --project "$PPF" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+file_is "$PPF/.ai-dev-baseline/upstream.toml" "partialfirst: a pin exists even though publishing failed"
+file_is "$PPF/.ai-dev-baseline/pinned-files.sha256" "partialfirst: … and so does the receipt"
+rm -rf "$PPF/.claude/skills/cleanup/SKILL.md"
+bash "$PI" uninstall --project "$PPF" >/dev/null 2>&1; rc=$?
+yes "$rc" "partialfirst: uninstall — the command the failure recommends — actually works"
+file_isnt "$PPF/.ai-dev-baseline/upstream.toml" "partialfirst: … and takes the pin with it"
+
+# T12. A RECEIPT WITH NO PINNED-MODE OWNER IS NOT OWNERSHIP EVIDENCE. A stale or committed receipt
+#      carrying the current digest of a project's OWN skill made publish skip the backup.
+PSR="$(new_project stalereceipt)"
+mkdir -p "$PSR/.claude/skills/cleanup" "$PSR/.ai-dev-baseline"
+printf 'MY OWN FORK\n' > "$PSR/.claude/skills/cleanup/SKILL.md"
+fork_sha="$( { command -v sha256sum >/dev/null 2>&1 && sha256sum "$PSR/.claude/skills/cleanup/SKILL.md" || shasum -a 256 "$PSR/.claude/skills/cleanup/SKILL.md"; } | awk '{print $1}')"
+printf '# ai-dev-baseline — files written by pinned-install.sh. Do not edit.\n%s  .claude/skills/cleanup/SKILL.md\n' "$fork_sha" > "$PSR/.ai-dev-baseline/pinned-files.sha256"
+srhome="$work/srhome"; mkdir -p "$srhome"
+out="$(HOME="$srhome" bash "$PI" install --project "$PSR" --agent claude --artifact "$ART" --sums "$SUMS" 2>&1)"
+has "$out" "backup .claude/skills/cleanup/SKILL.md" "stalereceipt: an unvouched receipt does not suppress the backup"
+saved="$(find "$srhome/.claude/backups" -name SKILL.md -path '*cleanup*' 2>/dev/null | head -1)"
+if [ -n "$saved" ] && [ "$(cat "$saved")" = "MY OWN FORK" ]; then ok; else bad "stalereceipt: the project's fork was preserved"; fi
+
+# T11. AN ARCHIVE WHOSE TOP-LEVEL ENTRY IS ITSELF A SYMLINK would otherwise define its own
+#      containment root, and every link inside it would then "resolve inside" that external target.
+mkdir -p "$work/rootlink/outside"
+printf 'host\n' > "$work/rootlink/outside/loot.txt"
+( cd "$work/rootlink" && ln -s outside "$PREFIX" && tar -czhf /dev/null "$PREFIX" >/dev/null 2>&1 || true )
+( cd "$work/rootlink" && tar -czf "$work/rootlink/$PREFIX.tar.gz" "$PREFIX" outside 2>/dev/null )
+( cd "$work/rootlink" && { command -v sha256sum >/dev/null 2>&1 && sha256sum "$PREFIX.tar.gz" || shasum -a 256 "$PREFIX.tar.gz"; } > SHA256SUMS )
+PRL="$(new_project rootlink)"
+out="$(bash "$PI" install --project "$PRL" --agent claude --artifact "$work/rootlink/$PREFIX.tar.gz" --sums "$work/rootlink/SHA256SUMS" 2>&1)"; rc=$?
+no "$rc" "rootlink: an archive whose top-level entry is a symlink is refused"
+eq "$(find "$PRL" -path "$PRL/.git" -prune -o -type f -print | wc -l | tr -d ' ')" 0 "rootlink: … and nothing was written"
+
+# T4. THE HOOK SURFACE IS PARSED, NOT GREPPED. Invalid JSON that still contains the command strings
+#     satisfied every text search while Claude loaded none of it.
+PIJ="$(new_project invalidjson)"
+bash "$PI" install --project "$PIJ" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+printf '{ this is not json but mentions ${CLAUDE_PROJECT_DIR}/.claude/adb/precommit-gate.sh\n' > "$PIJ/.claude/settings.json"
+out="$(bash "$PI" status --project "$PIJ" --offline 2>&1)"; rc=$?
+eq "$rc" 20 "invalidjson: a settings.json that is not valid JSON is NOT intact"
+has "$out" "not valid JSON" "invalidjson: … and says so"
+
+# T13. THE PIN COMES OUT LAST. A failure during removal must leave a receipt the retry can use —
+#      which means the pin must still say `pinned`.
+PUF="$(new_project uninstallfail)"
+bash "$PI" install --project "$PUF" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+chmod a-w "$PUF/.claude/adb/lib" 2>/dev/null
+out="$(bash "$PI" uninstall --project "$PUF" 2>&1)"; rc=$?
+chmod u+w "$PUF/.claude/adb/lib" 2>/dev/null
+if [ "$rc" -eq 0 ]; then
+  printf 'check-pinned-install: NOTE — this host ignored the read-only directory; the uninstall-retry guard was not exercised\n' >&2
+else
+  eq "$rc" 14 "uninstallfail: a failed removal reports failure"
+  file_is "$PUF/.ai-dev-baseline/upstream.toml" "uninstallfail: … the pin survives, so the retry is authorised"
+  file_is "$PUF/.ai-dev-baseline/pinned-files.sha256" "uninstallfail: … and so does the receipt"
+  bash "$PI" uninstall --project "$PUF" >/dev/null 2>&1; rc=$?
+  yes "$rc" "uninstallfail: … and the retry finishes the job"
+fi
+
+# T10. A PROJECT-ADDED FILE INSIDE A PINNED SKILL DIRECTORY must still reach /adopt's inventory.
+PAM="$(new_project adoptmember)"
+bash "$PI" install --project "$PAM" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+printf 'my notes\n' > "$PAM/.claude/skills/cleanup/notes.md"
+scan="$(bash "$ROOT/scripts/lib/adopt-lib.sh" scan --agents claude "$PAM")"
+has  "$scan" "other	.claude/skills/cleanup/notes.md" "adoptmember: an unowned file under a pinned skill is reported"
+hasnt "$scan" "other	.claude/skills/cleanup/SKILL.md" "adoptmember: … while the owned SKILL.md is still suppressed"
+
 # ================================ the payload actually RUNS =====================================
 # "The files are present" is not the acceptance criterion; "a pinned project can run the loop" is.
 # These execute the REAL library invocations the vendored skill tells an agent to paste, resolved

@@ -28,12 +28,17 @@ only by a published release, which is what these entries are the notes for.
   instead — a pinned project can still ship its own `precommit-gate.sh` and the vendored gate steps
   aside for it exactly as the global one does.
 
-  **The vendored skills are re-anchored.** A rendered skill reaches its libraries through
+  **The vendored skills and practices are re-anchored.** A rendered skill reaches its libraries through
   `$HOME/.<agent>/scripts/lib/`, one directory shared by the global install and by every project on
   the machine. The pinned copy is repointed at the project's own, so two projects pinned to
-  different versions cannot reach into each other and no absolute path is committed. Both models
+  different versions cannot reach into each other and no absolute path is committed — and the same
+  rewrite covers the practice documents, which spell out library commands of their own. Both models
   can be active on one machine: inside a pinned project the vendored skills win by the harness's
   own precedence, and everywhere else the global install does.
+
+  **Refused rather than silently restructured:** a symlinked `AGENTS.md` or `.claude/settings.json`
+  (publishing by rename would replace the link and uninstall could not put it back), and a directory
+  sitting where a payload file goes (`mv` would move the file inside it and report success).
 
   **Installing always goes through a published release artifact**, checksummed against that
   release's own `SHA256SUMS` record before anything is unpacked — even when the installer is driven

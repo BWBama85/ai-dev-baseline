@@ -595,11 +595,13 @@ Four of those choices are decisions rather than layout, and each is load-bearing
   the vendored gate steps aside for it exactly as the global one does.
 - **The gates and `lib/` are siblings.** Every gate resolves its library as
   `$(dirname "$0")/lib/common.sh`, which is what lets them be vendored byte-unchanged.
-- **The skills are re-anchored at install time.** A rendered skill reaches its libraries through
-  `$HOME/.<agent>/scripts/lib/` — one directory shared by the global install and by every project
-  on the machine. The pinned copy is rewritten to
-  `$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.<agent>/adb/lib/` instead, so two projects
-  pinned to different versions cannot reach into each other, and no absolute path is committed.
+- **The payload is re-anchored at install time** — the skills *and* the practices. A rendered skill
+  reaches its libraries through `$HOME/.<agent>/scripts/lib/`, one directory shared by the global
+  install and by every project on the machine; so do the practice documents, which spell out
+  `bash "$HOME/.claude/scripts/lib/ci-health.sh" classify …`. Every such reference in the vendored
+  copies is rewritten to `$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.<agent>/adb/lib/`
+  instead, so two projects pinned to different versions cannot reach into each other, and no
+  absolute path is committed.
 - **`session-currency.sh` is not vendored.** It fast-forwards the install-source clone, and a
   pinned project has none.
 
@@ -666,6 +668,12 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   setting is yours, not the payload's.
 - **A project already carrying an `/adopt` pin is refused, not converted.** That file records a
   commit this installer cannot reconstruct; retire it deliberately first.
+- **A symlinked `AGENTS.md` or `.claude/settings.json` is refused.** Publishing by rename would
+  replace the link with a regular file, and uninstall could never put it back — so a repository that
+  deliberately shares one instruction file across checkouts is told, rather than silently
+  restructured.
+- **A directory sitting where a payload file goes is refused.** `mv` would move the file *inside*
+  it and report success.
 
 ## Uninstalling
 
