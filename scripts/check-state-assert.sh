@@ -471,6 +471,22 @@ eq "${ lint_rc 'CI for PR #383 is in; passing all checks.'; }" 1 "...nor a semic
 eq "${ lint_rc 'The run for #383 went in — passing at last.'; }" 1 "...nor a dash"
 eq "${ lint_rc 'Noted **in passing** while reading #383.'; }" 0 "...while markdown around the idiom is still the idiom"
 
+# EMPHASIS IS NOT A SEPARATOR (review round 2). The raw-separator reads made `*` and `_` look like
+# the neighbour, so bolding a single word inside otherwise-ordinary prose fired the gate. The
+# earlier fixtures emphasised the WHOLE phrase, which is why they missed this.
+eq "${ lint_rc 'They make a green **suite** mean something for #383'; }" 0 "bold around the attributive NOUN alone"
+eq "${ lint_rc 'So merged **files** are not swept twice for #383'; }" 0 "...for the other witnessed noun"
+eq "${ lint_rc 'Mentioned in *passing* for #383'; }" 0 "...and italics around the idiom's status word"
+# ...and skipping emphasis must not relax the separator itself: clause punctuation still fires.
+eq "${ lint_rc 'PR #383 is merged; **files** are swept once.'; }" 1 "a semicolon still breaks adjacency, bold or not"
+
+# AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM (review round 2). "resulted in
+# passing" predicates the run it follows; "discovered in passing" modifies the verb. The lexical
+# difference is the verb two words back.
+eq "${ lint_rc 'The CI run for PR #383 resulted in passing'; }" 1 "\"resulted in passing\" is a status claim"
+eq "${ lint_rc 'The test for #383 ended in passing'; }" 1 "...as is \"ended in passing\""
+eq "${ lint_rc 'Mentioned only in passing for #383.'; }" 0 "...while an adverbial \"in passing\" is still the idiom"
+
 # THE RESIDUE, stated rather than implied. The predication list is closed, so a verb outside it
 # still admits a real claim. That is the direction this grammar chooses everywhere — a gate that
 # fires on ordinary prose gets worked around — and it is pinned so the next reader knows the shape

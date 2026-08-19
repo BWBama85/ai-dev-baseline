@@ -1282,8 +1282,11 @@ stripping them would let a real claim through.
 **Each carve-out is a narrow pattern, never a classifier, and each is paid for in misses.** The
 attributive rule needs a curated noun, a single space, and no copula or possession verb in front —
 so `PR #1 is merged; files are swept once` and `PR #1 has a green suite` both still fire, while
-`PR #1 shows a green suite` does not. That residue is the design rather than an oversight: a gate
-that fires on ordinary prose gets worked around, and then it protects nothing.
+`PR #1 shows a green suite` does not. The idiom needs its preposition to be adverbial, so
+`resulted in passing` fires and `mentioned in passing` does not. Emphasis is not a separator:
+`a green **suite**` is still adjacent, while `,` `;` and `—` still break adjacency. That residue is
+the design rather than an oversight: a gate that fires on ordinary prose gets worked around, and
+then it protects nothing.
 
 **What is still NOT enforced, stated plainly:**
 

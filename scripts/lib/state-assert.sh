@@ -301,6 +301,12 @@ cmd_lint() {
       # This is why `suite` can be exempted at all without swallowing the claim it names.
       split("is are was were has have had", PRED, " ")
       split("a an the its their our my this that", DET, " ")
+      # ...AND AN IDIOM IS DEFEATED WHEN ITS PREPOSITION IS A COMPLEMENT. "resulted in passing"
+      # and "ended in passing" predicate the run they follow; "discovered in passing" and
+      # "mentioned in passing" modify the verb. The lexical difference is the verb two words back,
+      # so these are the verbs that take `in` as their complement. Witness-grown, like every other
+      # list here — the two families below are the ones that fired.
+      split("result results resulted resulting end ends ended ending", INBLOCK, " ")
       # IDIOMS: an exact previous-word + status-word bigram in which the status word is not a
       # status at all. "in passing" is the whole list.
       # THE SEPARATOR IS A COMMA because an entry contains a space and a comma means nothing as an
@@ -368,10 +374,22 @@ cmd_lint() {
             # "PR #1 is merged; files are swept once" presents `files` as the next word and
             # "CI for #1 is in, passing all checks" presents `in` as the previous one — both real
             # claims, both exempted. A single space cannot cross a clause boundary.
+            #
+            # EMPHASIS IS NOT A SEPARATOR. `*` and `_` carry no clause structure, so a neighbour
+            # that is merely bolded — "a green **suite**", "in *passing*" — is still adjacent, and
+            # reading the delimiter as the neighbour fired on ordinary prose. They are skipped
+            # HERE, by name, rather than by relaxing the separator: `,` `;` `—` still break both
+            # reads, which is the whole point of taking them raw.
             attrw = ""
-            if (rest ~ /^ [a-z]/) { attrw = substr(rest, 2); sub(/[^a-z0-9].*$/, "", attrw) }
+            if (rest ~ /^ [*_]*[a-z]/) {
+              attrw = substr(rest, 2); sub(/^[*_]+/, "", attrw); sub(/[^a-z0-9].*$/, "", attrw)
+            }
             idiomw = ""
-            if (pre ~ /[^ ] $/) { idiomw = pre; sub(/ $/, "", idiomw); sub(/^.*[^a-z0-9]/, "", idiomw) }
+            if (pre ~ /[^ ][ ][*_]*$/) {
+              idiomw = pre
+              sub(/[*_]*$/, "", idiomw); sub(/ $/, "", idiomw); sub(/[*_]*$/, "", idiomw)
+              sub(/^.*[^a-z0-9]/, "", idiomw)
+            }
             sub(/^[^a-z0-9]+/, "", rest)
             nextw = rest; sub(/[^a-z0-9].*$/, "", nextw)
             skip = 0
@@ -389,7 +407,9 @@ cmd_lint() {
             for (d in DET) if (prevw == DET[d]) isdet = 1
             if (isdet) for (v in PRED) if (prev2w == PRED[v]) pred = 1
             if (attrw != "" && !pred) for (k in ATTR) if (attrw == ATTR[k]) skip = 1
-            for (q in IDIOM) if (idiomw != "" && idiomw " " w == IDIOM[q]) skip = 1
+            inblock = 0
+            for (b in INBLOCK) if (prev2w == INBLOCK[b]) inblock = 1
+            for (q in IDIOM) if (idiomw != "" && !inblock && idiomw " " w == IDIOM[q]) skip = 1
             if (skip) continue
             # THE MASK BYTE NEVER LEAVES THIS PROGRAM. `s` comes from MD_MASK, so a quoted span is
             # \x01 here — and the Stop hook prints this excerpt verbatim to the operator

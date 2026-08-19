@@ -171,8 +171,10 @@ the claim is re-read or removed.
 It is deliberately **precision-first**: quoting a status inside a fence, a code span, a blockquote
 or an HTML comment declares nothing, `open a PR` / `closed #195` are treated as verbs, a status
 word directly before one of a few curated nouns is attributive rather than predicative (`merged
-files`, `green suite`) unless a copula or possession verb precedes it, `in passing` is an idiom,
-and words that collide too often with ordinary prose are kept out of the token set entirely. It
+files`, `green suite`) unless a copula or possession verb precedes it, `in passing` is an idiom
+unless its preposition is a verb's complement (`resulted in passing` still fires), and words that
+collide too often with ordinary prose are kept out of the token set entirely. Emphasis around a
+neighbouring word does not break adjacency; clause punctuation does. It
 also never wedges a session — a missing `jq`, a text-free turn or a broken linter install are all
 reported on stderr and then allowed through.
 

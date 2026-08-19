@@ -87,8 +87,11 @@ only by a published release, which is what these entries are the notes for.
   The attributive reading is **defeated by predication**, which is what lets `suite` be exempted at
   all: `they make a green suite mean something` and `CI for #1 has a green suite` differ only in the
   verb in front, so a copula or possession verb before the token — or before its determiner — turns
-  the carve-out off. The residue is stated rather than implied: that list is closed, so `PR #1 shows
-  a green suite` is still a miss. The third candidate the issue floated, "a token not predicated of
+  the carve-out off. The idiom is defeated the same way when its preposition is a verb's complement,
+  so `resulted in passing` fires while `mentioned in passing` does not. Emphasis is skipped by name
+  rather than by relaxing the separator, so `a green **suite**` is adjacent while `;` still is not.
+  The residue is stated rather than implied: those lists are closed, so `PR #1 shows a green suite`
+  is still a miss. The third candidate the issue floated, "a token not predicated of
   the co-sentential entity reference", was **withdrawn**: it is coreference analysis, and the
   practice already rules a classifier over arbitrary English out of scope.
 

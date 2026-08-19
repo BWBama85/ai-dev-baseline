@@ -6640,6 +6640,18 @@ limit: none of them is sufficient alone.
                  resolving as "the turn's final message" lints text the operator never wrote.
                  Excluded from BOTH sides of the comparison, or a subagent's own prompt would count
                  as the last user record.
+             (5) TWO MORE NARROW RULES, from the PR's own bot review (round 2), both reproduced
+                 before they were fixed.
+                 EMPHASIS IS NOT A SEPARATOR. The raw-separator reads treated `*` and `_` as the
+                 neighbour, so "a green **suite**" and "in *passing*" — a single bolded word inside
+                 ordinary prose — fired. They are skipped BY NAME rather than by relaxing the
+                 separator to punctuation generally, because `,` `;` `—` must keep breaking
+                 adjacency; that is the whole reason the reads are raw. The round-1 fixtures
+                 emphasised the WHOLE phrase, which is why they missed this.
+                 AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM. "resulted in passing"
+                 and "ended in passing" predicate the run they follow and were exempted; the
+                 lexical difference from "discovered in passing" is the verb two words back, so
+                 that verb is checked against a witness-grown list.
 - placement: `scripts/lib/state-assert.sh` (ATTR + IDIOM in `cmd_lint`) +
              `agents/claude/scripts/state-claim-gate.sh` (payload-first resolution) +
              `scripts/check-state-assert.sh` (3b-l and 3c-2) +
