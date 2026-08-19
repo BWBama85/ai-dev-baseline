@@ -23,10 +23,11 @@
 # (see `state-assert.sh lint`), so unusual phrasings pass. This narrows the failure; it does not
 # close it.
 #
-# No-op (exit 0) when: the repo ships its own copy of this gate; jq is missing; the transcript is
-# absent or unparseable; the turn's final message carries no text. Infrastructure absence is
-# REPORTED once on stderr rather than swallowed (#35) — but it never blocks, because wedging a
-# session over a missing dependency is worse than the claim it was trying to catch.
+# No-op (exit 0) when: the repo ships its own copy of this gate; jq is missing; the turn's final
+# message carries no text; or — on the transcript fallback path only — the transcript is absent or
+# unparseable. Infrastructure absence is REPORTED once on stderr rather than swallowed (#35) — but
+# it never blocks, because wedging a session over a missing dependency is worse than the claim it
+# was trying to catch.
 
 set -u
 
@@ -76,27 +77,51 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
-# Claude Code passes the hook payload as JSON on stdin; `transcript_path` names the JSONL session
-# log. Read stdin ONCE into a variable: it is a pipe, so a second read would get nothing.
+# Claude Code passes the hook payload as JSON on stdin. Read stdin ONCE into a variable: it is a
+# pipe, so a second read would get nothing.
 payload="$(cat 2>/dev/null || true)"
-transcript="$(printf '%s' "$payload" | jq -r '.transcript_path // ""' 2>/dev/null || true)"
-[ -n "$transcript" ] || exit 0
-[ -f "$transcript" ] || exit 0
 
-# The FINAL assistant message's text blocks — the user-visible summary, which is where narration
-# lives. Deliberately not every assistant block since the last user turn: intermediate blocks are
-# mostly tool orchestration, and linting them would trade precision for noise in a gate whose
-# whole value depends on being believed when it fires.
-#
-# `-s` slurps the JSONL; a malformed trailing line (a session still being written) makes jq fail,
-# which is an unparseable transcript and therefore a no-op, not a block.
-text="$(jq -s -r '
-  [ .[] | select(type == "object") | select(.type == "assistant") ] as $a
-  | if ($a | length) == 0 then ""
-    else ($a | last | .message.content // [])
-         | map(select(type == "object") | select(.type == "text") | .text // "")
-         | join("\n")
-    end' "$transcript" 2>/dev/null || true)"
+# PREFER THE STOP PAYLOAD: transcript persistence LAGS the turn (#383, D83).
+# `last_assistant_message` is built from the live message list, so it is this turn's own text; the
+# transcript is a file the turn's records may not have reached yet, and a read that loses that race
+# resolves the PREVIOUS message. The transcript stays as the fallback because a CLI that predates
+# the field leaves no other source — so no minimum version is declared here.
+text="$(printf '%s' "$payload" | jq -r '.last_assistant_message // ""' 2>/dev/null || true)"
+
+if [ -z "$text" ]; then
+  # `transcript_path` names the JSONL session log. Its FINAL assistant message's text blocks are
+  # the user-visible summary, which is where narration lives. Deliberately not every assistant
+  # block since the last user turn: intermediate blocks are mostly tool orchestration, and linting
+  # them would trade precision for noise in a gate whose whole value depends on being believed
+  # when it fires.
+  #
+  # `-s` slurps the JSONL; a malformed trailing line (a session still being written) makes jq fail,
+  # which is an unparseable transcript and therefore a no-op, not a block.
+  #
+  # TWO GUARDS MAKE THIS PATH SAFE, and both are reachable on a CURRENT CLI — an empty field is not
+  # proof of an old one, because the field is omitted when the final message carries no text:
+  #
+  #   STALENESS. If the last assistant record does not come AFTER the last user record, this turn's
+  #   final message has not been written yet and the newest text belongs to a SUPERSEDED one. Say
+  #   nothing rather than lint it. That comparison is what the lagging-write race looks like from
+  #   inside the file, and it needs no version probe to detect.
+  #
+  #   SIDECHAIN. A Task subagent's messages land in this same log; one of them resolving as "the
+  #   turn's final message" lints text the operator never wrote. Excluded from BOTH sides of the
+  #   comparison, or a subagent's own prompt would count as the last user record.
+  transcript="$(printf '%s' "$payload" | jq -r '.transcript_path // ""' 2>/dev/null || true)"
+  [ -n "$transcript" ] || exit 0
+  [ -f "$transcript" ] || exit 0
+  text="$(jq -s -r '
+    [ .[] | select(type == "object") | select(.isSidechain != true) ] as $r
+    | ([ $r | to_entries[] | select(.value.type == "assistant") ] | last) as $a
+    | ([ $r | to_entries[] | select(.value.type == "user")      ] | last) as $u
+    | if $a == null or ($u != null and $u.key > $a.key) then ""
+      else ($a.value.message.content // [])
+           | map(select(type == "object") | select(.type == "text") | .text // "")
+           | join("\n")
+      end' "$transcript" 2>/dev/null || true)"
+fi
 [ -n "$text" ] || exit 0
 
 # Capture stderr separately: the linter's exit-1 is AMBIGUOUS, and discarding the diagnostic is

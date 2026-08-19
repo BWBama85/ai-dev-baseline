@@ -6580,3 +6580,118 @@ limit: none of them is sufficient alone.
              loudly, which is #324's guard finally becoming reachable. Verified: rc 1, one stderr
              line naming `$'/w/clone\n'`.
 - baseline-issue: n/a
+
+## D83 — the claim gate reads the payload's final message, and ordinary English earns two narrow carve-outs
+- date:      2026-08-19
+- category:  project-delta
+- unknown:   #383 reported three shapes of ordinary prose that the state-claim lint flagged as
+             status claims, plus a fourth observation with no mechanism: after a Stop rejection, a
+             later firing quoted sentence text that was no longer in the retried final message.
+             The baseline had a home for the grammar (`state-assert.sh lint`) and for the gate
+             (`state-claim-gate.sh`), but no answer for either question — and the two candidate
+             fixes the issue floated ("a token not predicated of the co-sentential entity") were
+             semantic analysis the line-oriented matcher cannot do.
+- decision:  (1) TWO NARROW CARVE-OUTS, not a classifier, and the third candidate WITHDRAWN.
+                 `ATTR` — a status word separated by EXACTLY ONE SPACE from a curated non-entity
+                 head noun (`file files suite suites`) is attributive: "merged files", "green
+                 suite". `IDIOM` — a previous word and a status word separated by exactly one
+                 space; "in passing" is the list.
+                 BOTH SEPARATORS ARE READ RAW, and that is the load-bearing half of each rather
+                 than a detail. Read AFTER punctuation stripping, "PR #1 is merged; files are
+                 swept once" presents `files` as the next word and "CI for #1 is in, passing all
+                 checks" presents `in` as the previous one — two real claims, both exempted.
+                 Review round 1 found the second of those live. A single space cannot cross a
+                 clause boundary. The noun list grows BY WITNESS ONLY, the mirror of the token
+                 set's rule — every entry there is a new false-positive surface, every entry here
+                 a new false-negative one.
+                 "Not predicated of the co-sentential entity reference" is coreference analysis
+                 and was withdrawn rather than attempted: the practice already rules that a
+                 classifier over arbitrary English "would be theatre beyond a small documented
+                 grammar".
+                 (2) PREDICATION BEATS ATTRIBUTION, which is what lets `suite` be exempted at
+                 all. "they make a green suite mean something" and "CI for #1 has a green suite"
+                 differ only in the verb in front, and the second is a real CI claim — so a copula
+                 or possession verb immediately before the token, or before its determiner, turns
+                 the carve-out off. Review round 1 found the naive rule admitting both "has a
+                 green suite" and "has a failing suite", which the issue's In-scope line forbids.
+                 THE RESIDUE IS STATED, NOT HIDDEN: the predication list is closed, so "PR #1
+                 shows a green suite" is still a miss. That is the direction the practice already
+                 chose — misses are the accepted cost of not crying wolf — and it is pinned AS
+                 residue, the way `draft`'s cost already is.
+             (3) THE FOURTH OBSERVATION IS A REAL RACE, AND THE SOURCE WAS WRONG. The hook read the
+                 last assistant record of the transcript FILE. A rejected draft is an ordinary
+                 assistant record, so between the retry completing and its records landing, that
+                 read resolves the SUPERSEDED message. The payload already carries the answer:
+                 `last_assistant_message` is built from the live message list
+                 (`findLast(type=="assistant")`, text blocks joined with newlines — probed in the
+                 installed 2.1.235 binary, not recalled), so it is always THIS turn's text. The
+                 hook now prefers it and falls back to the transcript whenever it yields nothing,
+                 which keeps every older CLI working with no declared version floor.
+             (4) THE FALLBACK PATH NEEDS ITS OWN TWO GUARDS, because an empty field is NOT proof of
+                 an old CLI: the binary omits it whenever the final message carries no text, so a
+                 text-free turn on a current CLI reaches the fallback and would re-lint the
+                 previous message. Review round 1 found that reachable.
+                 STALENESS — if the last assistant record does not come after the last user record,
+                 this turn's final message has not been written yet and the newest text belongs to
+                 a superseded one; say nothing. This is what the lagging write looks like from
+                 inside the file, and it needs no version probe, which is why it was preferred over
+                 keying on a neighbouring payload field's presence.
+                 SIDECHAIN — a Task subagent's messages land in the same log, and one of them
+                 resolving as "the turn's final message" lints text the operator never wrote.
+                 Excluded from BOTH sides of the comparison, or a subagent's own prompt would count
+                 as the last user record.
+             (5) TWO MORE NARROW RULES, from the PR's own bot review (round 2), both reproduced
+                 before they were fixed.
+                 EMPHASIS IS NOT A SEPARATOR. The raw-separator reads treated `*` and `_` as the
+                 neighbour, so "a green **suite**" and "in *passing*" — a single bolded word inside
+                 ordinary prose — fired. They are skipped BY NAME rather than by relaxing the
+                 separator to punctuation generally, because `,` `;` `—` must keep breaking
+                 adjacency; that is the whole reason the reads are raw. The round-1 fixtures
+                 emphasised the WHOLE phrase, which is why they missed this — and the first cut of
+                 this very rule skipped delimiters only AFTER the space, which the reviewer caught
+                 on its second pass: with the STATUS word emphasised ("a **green** suite") the
+                 closing delimiter lands BEFORE it. Both sides are skipped.
+                 Round 3 added the same treatment for MARKDOWN LINKS — `[suite](url)` opens with
+                 `[` before the neighbour and leaves `](url)` before the space when the status word
+                 is the linked one — and closed a hole in the predication lookback: it steps over a
+                 DETERMINER to reach the verb, so a quantifier it did not recognise stepped over the
+                 VERB instead and exempted "has two failing suites". Quantifiers are determiners,
+                 and a bare numeral is matched by pattern rather than by listing digits.
+                 THE SHAPE OF THE RESIDUE IS NOW CLEAR AND WORTH STATING: every one of these is the
+                 same defect — inline markup or a function word sitting where the raw read expects a
+                 neighbour. They are fixed one construct at a time BY NAME because the alternative,
+                 skipping punctuation generally, re-admits the clause boundaries the whole design
+                 rests on; three separate mutations pin that.
+                 Round 4 closed the last two of the same shape — a link around the idiom's FIRST
+                 word, and a determiner that STACKS ("has a dozen failing suites") — and the second
+                 forced the lookback from a single step to a walk. The walk is CAPPED AT THREE
+                 WORDS and stops at the first non-determiner, deliberately: run to a clause
+                 boundary it reaches the copula in "this PR is about the merged files", whose verb
+                 governs something else entirely. Both the cap and the depth-0 case are pinned; the
+                 depth-0 pin exists because the first cut of the walk dropped it and the suite is
+                 what caught that.
+                 AND THE COMMENT WAS CORRECTED, not just the list. It had claimed the quantifier
+                 CLASS was handled when what exists is a closed list at a fixed depth — the same
+                 overclaim round 1 corrected for `suite`. An unlisted quantifier still exempts a
+                 claim, and that residue is now pinned by name rather than described away.
+                 AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM. "resulted in passing"
+                 and "ended in passing" predicate the run they follow and were exempted; the
+                 lexical difference from "discovered in passing" is the verb two words back, so
+                 that verb is checked against a witness-grown list.
+- placement: `scripts/lib/state-assert.sh` (ATTR + IDIOM in `cmd_lint`) +
+             `agents/claude/scripts/state-claim-gate.sh` (payload-first resolution) +
+             `scripts/check-state-assert.sh` (3b-l and 3c-2) +
+             `base/practices/verify-before-asserting.md` and `docs/installation.md` (the
+             operator-facing description of when the gate fires).
+- reason:    project-delta rather than general: both halves are edits inside homes the baseline
+             already prescribes for exactly this content, so nothing was improvised and no new home
+             was invented. The evidence is recorded here rather than in the code because it is
+             incident history (comment class 2): measured across this workstation's own session
+             logs, 29 of 301 gate firings quoted the previous message rather than the current one —
+             the mechanism is intermittent, not deterministic, which is why it survived review as
+             an unexplained anecdote. The worked case is session
+             `febc77dc-237c-401d-92b4-b73f805d8112`: assistant text records 435, 442, 451 and 456
+             are four successive drafts, and the hook-feedback records at 447, 452 and 457 are
+             three consecutive firings, each quoting the draft BEFORE the one then on screen — 447
+             quotes 435, 452 quotes 442, 457 quotes 451.
+- baseline-issue: n/a

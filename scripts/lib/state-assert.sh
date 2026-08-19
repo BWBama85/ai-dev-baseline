@@ -286,6 +286,44 @@ cmd_lint() {
       split("a an the this that it them pr prs pull issue issues branch branches", OBJ, " ")
       # An intent marker before the word is likewise a verb ("going to open", "let me close").
       split("to will can could should would must may let lets", MOD, " ")
+      # ATTRIBUTIVE HEAD NOUNS (#383). A status word in ATTRIBUTIVE POSITION — directly before one
+      # of these nouns — is an adjective inside a noun phrase ("merged files", "green suite")
+      # rather than a predication about the `#N` sharing its sentence.
+      # GROWN BY WITNESS ONLY, exactly like the token set above and for the mirror-image reason:
+      # every entry here is a new FALSE-NEGATIVE surface. `files` and `suite` are the two nouns
+      # that actually fired; their number-partners are included because a rule that fires on the
+      # plural of a word it exempts is a false positive waiting for the next sentence.
+      split("file files suite suites", ATTR, " ")
+      # ...AND THE ATTRIBUTIVE READING IS DEFEATED WHEN THE PHRASE IS PREDICATED. "CI for #1 has a
+      # green suite" asserts that suite`s state; "they make a green suite mean something" does not,
+      # and the only lexical difference is the verb in front. So a copula or possession verb
+      # immediately before the token — or before its determiner — turns the carve-out off.
+      # This is why `suite` can be exempted at all without swallowing the claim it names.
+      split("is are was were has have had", PRED, " ")
+      # DETERMINERS INCLUDE QUANTIFIERS, or the lookback steps over the verb it exists to find:
+      # "has two failing suites" and "has no failing suites" are the same predication as "has a
+      # failing suite". A bare numeral is handled by pattern rather than by listing digits.
+      #
+      # SAY WHAT THIS IS: a CLOSED LIST, walked to a BOUNDED depth — not the quantifier class.
+      # A quantifier nobody has listed ("umpteen") still steps over the verb and still exempts a
+      # real claim. The bound is deliberate and is the reason the list stays closed: an unbounded
+      # walk back to any copula fires on ordinary prose such as "this PR is about the merged
+      # files", where the verb governs something else entirely. Both halves are pinned.
+      split("a an the its their our my this that no some any few many several both all each every other another one two three four five six seven eight nine ten more most fewer less zero dozen couple lots plenty enough", DET, " ")
+      # ...AND AN IDIOM IS DEFEATED WHEN ITS PREPOSITION IS A COMPLEMENT. "resulted in passing"
+      # and "ended in passing" predicate the run they follow; "discovered in passing" and
+      # "mentioned in passing" modify the verb. The lexical difference is the verb two words back,
+      # so these are the verbs that take `in` as their complement. Witness-grown, like every other
+      # list here — the two families below are the ones that fired.
+      split("result results resulted resulting end ends ended ending", INBLOCK, " ")
+      # IDIOMS: an exact previous-word + status-word bigram in which the status word is not a
+      # status at all. "in passing" is the whole list.
+      # THE SEPARATOR IS A COMMA because an entry contains a space and a comma means nothing as an
+      # ERE — and POSIX specifies `split`s third argument AS an ERE (the single-character-is-literal
+      # rule belongs to FS, not to this argument). The one awk probed here treats a lone `|`
+      # literally, but an ERE `|` is an empty alternation, and leaning on that leniency buys
+      # nothing when a comma is unambiguous everywhere.
+      split("in passing", IDIOM, ",")
     }
     # --- structure stripping: only prose declares -----------------------------------------
     # BUFFER, then resolve once. The filter is paragraph-aware because a CommonMark code span may
@@ -339,12 +377,79 @@ cmd_lint() {
             # Checked BEFORE punctuation is stripped, because stripping `#` is exactly what left
             # `nextw` empty and misread the object as absent.
             if (rest ~ /^[[:space:]]*#[0-9]+/) continue
+            # THE RAW-SEPARATOR READS, taken BEFORE punctuation is stripped. Both carve-outs
+            # below demand exactly ONE SPACE between the status word and its neighbour, and that
+            # is the load-bearing half of each rather than a detail: read after stripping,
+            # "PR #1 is merged; files are swept once" presents `files` as the next word and
+            # "CI for #1 is in, passing all checks" presents `in` as the previous one — both real
+            # claims, both exempted. A single space cannot cross a clause boundary.
+            #
+            # EMPHASIS IS NOT A SEPARATOR. `*` and `_` carry no clause structure, so a neighbour
+            # that is merely bolded — "a green **suite**", "in *passing*" — is still adjacent, and
+            # reading the delimiter as the neighbour fired on ordinary prose. They are skipped
+            # HERE, by name, rather than by relaxing the separator: `,` `;` `—` still break both
+            # reads, which is the whole point of taking them raw.
+            #
+            # ON BOTH SIDES OF THE SPACE, because either word may be the wrapped one. With the
+            # STATUS word emphasised ("a **green** suite") the closing delimiter lands BEFORE the
+            # space, so skipping only after it leaves the neighbour unread and the sentence firing.
+            # A markdown LINK is the same shape with a tail: "[suite](url)" opens with `[` before
+            # the neighbour, and a linked status word leaves "](url)" before the space.
+            attrw = ""
+            if (rest ~ /^(\]\([^ )]*\))?[*_]* [*_[]*[a-z]/) {
+              attrw = rest
+              sub(/^\]\([^ )]*\)/, "", attrw)   # the link TAIL of a linked status word
+              sub(/^[*_]*/, "", attrw)          # the CLOSING delimiter of an emphasised one
+              sub(/^ /, "", attrw)
+              sub(/^[*_[]+/, "", attrw)         # ...and the OPENING wrapper of the neighbour
+              sub(/[^a-z0-9].*$/, "", attrw)
+            }
+            idiomw = ""
+            if (pre ~ /[^ ][ ][*_[]*$/) {
+              idiomw = pre
+              sub(/[*_[]*$/, "", idiomw); sub(/ $/, "", idiomw); sub(/[*_]*$/, "", idiomw)
+              # THE PREVIOUS WORD MAY ITSELF BE LINKED — "[in](url) passing" — in which case what
+              # trails is the URL, and the word extraction below would return a fragment of it.
+              sub(/\]\([^ )]*\)$/, "", idiomw); sub(/^.*\[/, "", idiomw)
+              sub(/^.*[^a-z0-9]/, "", idiomw)
+            }
             sub(/^[^a-z0-9]+/, "", rest)
             nextw = rest; sub(/[^a-z0-9].*$/, "", nextw)
             skip = 0
             for (o in OBJ) if (nextw == OBJ[o]) skip = 1
             prevw = pre; sub(/[^a-z0-9]+$/, "", prevw); sub(/^.*[^a-z0-9]/, "", prevw)
             for (m in MOD) if (prevw == MOD[m]) skip = 1
+            # PREDICATION BEATS ATTRIBUTION. `prevw` is the word before the token; `prev2w` the one
+            # before that, needed because a determiner usually sits between the verb and the
+            # adjective ("has a green suite").
+            # WALK BACK OVER DETERMINERS, AT MOST THREE WORDS. "has a dozen failing suites" stacks
+            # two of them, so a single lookback stops on `dozen` and never reaches the verb. The
+            # depth is CAPPED rather than run to a clause boundary: an unbounded walk reaches the
+            # copula in "this PR is about the merged files", which asserts nothing about the entity.
+            # `prev2w` is the word two back, which the idiom rule below reads on its own account
+            # ("resulted in passing"). It is computed here rather than inside the walk because the
+            # walk stops early on a non-determiner and would leave it unset.
+            prev2w = pre; sub(/[^a-z0-9]+$/, "", prev2w); sub(/[a-z0-9]+$/, "", prev2w)
+            sub(/[^a-z0-9]+$/, "", prev2w); sub(/^.*[^a-z0-9]/, "", prev2w)
+            pred = 0
+            back = pre
+            for (step = 0; step < 3; step++) {
+              sub(/[^a-z0-9]+$/, "", back)
+              bw = back; sub(/^.*[^a-z0-9]/, "", bw)
+              if (bw == "") break
+              hit = 0
+              for (v in PRED) if (bw == PRED[v]) hit = 1
+              if (hit) { pred = 1; break }        # at ANY depth, adjacent included
+              isdet = 0
+              if (bw ~ /^[0-9]+$/) isdet = 1
+              for (d in DET) if (bw == DET[d]) isdet = 1
+              if (!isdet) break                   # a non-determiner ends the walk
+              sub(/[a-z0-9]+$/, "", back)
+            }
+            if (attrw != "" && !pred) for (k in ATTR) if (attrw == ATTR[k]) skip = 1
+            inblock = 0
+            for (b in INBLOCK) if (prev2w == INBLOCK[b]) inblock = 1
+            for (q in IDIOM) if (idiomw != "" && !inblock && idiomw " " w == IDIOM[q]) skip = 1
             if (skip) continue
             # THE MASK BYTE NEVER LEAVES THIS PROGRAM. `s` comes from MD_MASK, so a quoted span is
             # \x01 here — and the Stop hook prints this excerpt verbatim to the operator

@@ -412,6 +412,127 @@ eq "${ lint_rc 'CI is green on PR #194.'; }" 1 "...including CI"
 eq "${ lint_rc 'It fired on "CI on #196 is green".'; }" 1 "a double-quoted status is still a claim"
 eq "${ lint_rc 'It fired on `CI on #196 is green`.'; }" 0 "...while a backticked one is not"
 
+# --- 3b-l. ORDINARY ENGLISH IN ADJECTIVE AND IDIOM POSITION (#383) ---------------------------
+# Three shapes fired on live prose that asserts nothing, across multiple sessions and multiple
+# agents. All three are pinned VERBATIM as they were written, because a tidied paraphrase is a
+# fixture for a sentence nobody wrote — and each was observed RED against the pre-#383 library,
+# naming exactly the token the report named.
+#
+# The carve-outs are two narrow patterns, NOT a classifier:
+#   ATTR   a status word separated by EXACTLY ONE SPACE from a curated non-entity head noun.
+#   IDIOM  an exact previous-word + status-word bigram ("in passing").
+eq "${ lint_rc 'One stale reference discovered in passing (rendered skills still cite dead #25 in one place).'; }" 0 \
+   "\"in passing\" is an idiom, not a CI status"
+eq "${ lint_rc '- **#367** — the comment-reduction epic, with children **#370** (checks — sequenced after the consolidations so merged files aren'"'"'t swept twice), **#371** (ci.yml).'; }" 0 \
+   "\"merged files\" modifies a non-entity noun, so it predicates nothing about #370"
+eq "${ lint_rc '- First **#372** and **#373** — small, mechanical, and they make a green suite mean something everywhere.'; }" 0 \
+   "\"green suite\" likewise"
+
+# THE NEGATIVE PINS. Each carve-out is proven UNABLE to swallow its nearest-neighbour real claim;
+# without these the section above is indistinguishable from deleting the tokens outright.
+#
+# THE SEPARATOR IS WHAT CARRIES THIS. `merged; files` and `open, not` present the same next word as
+# `merged files` once punctuation is stripped, so the attributive test reads the RAW rest and
+# demands a single space — a separator that cannot cross a clause boundary.
+eq "${ lint_rc 'PR #383 is merged; files are swept once.'; }" 1 \
+   "a clause boundary is not attributive position — the real claim still fires"
+# ...and these isolate the SEPARATOR, because the sentence above is now defended twice: `is` also
+# trips the predication rule below, so relaxing the separator alone would not show up there.
+eq "${ lint_rc '#383: merged; files swept.'; }" 1 "a semicolon clause boundary, with no verb to fall back on"
+eq "${ lint_rc 'For #383 the check went green, suite and all.'; }" 1 "...and a comma, for a different token"
+eq "${ lint_rc 'The branch for PR #383 is merged.'; }" 1 "...and a predicative merged-claim is untouched"
+eq "${ lint_rc 'The suite for PR #383 is green.'; }" 1 "...as is a predicative green-claim about a suite"
+eq "${ lint_rc 'The last check on PR #383 was passing.'; }" 1 "...and \"was passing\" is not the idiom"
+
+# THE TWO SHAPES THE ISSUE NAMES BY NAME, asserted PER OCCURRENCE rather than by exit code alone:
+# a carve-out that wrongly exempted one token would leave the other holding the return code red,
+# and the suite would never notice.
+eq "${ lint_rc "$SHIPPED"; }" 1 "the 2026-07-29 sentence is STILL a violation after the carve-outs"
+has "${ lint_out "$SHIPPED"; }" "open" "...and the stale parenthetical is still named"
+STILL_OPEN='PR #137 is still open, not merged.'
+eq "${ lint_rc "$STILL_OPEN"; }" 1 "\"still open, not merged\" is STILL a violation"
+has "${ lint_out "$STILL_OPEN" | cut -f2; }" "open" "...and \"open\" is one of the occurrences"
+has "${ lint_out "$STILL_OPEN" | cut -f2; }" "merged" "...and \"merged\" is the other"
+eq "${ lint_out "$STILL_OPEN" | wc -l | tr -d ' '; }" 2 "...both, not one standing in for the pair"
+
+# PREDICATION BEATS ATTRIBUTION, which is what lets `suite` be exempted at all. "make a green
+# suite mean something" and "has a green suite" differ only in the verb in front, and the second is
+# a real CI claim — so a copula or possession verb before the token, or before its determiner,
+# turns the carve-out off. Review round 1 found both of these passing.
+eq "${ lint_rc 'CI for PR #383 has a green suite.'; }" 1 "a POSSESSED noun phrase is a claim, not an adjective"
+eq "${ lint_rc 'CI for PR #383 has a failing suite.'; }" 1 "...for every token, not just green"
+eq "${ lint_rc 'PR #383 has merged files.'; }" 1 "...with no determiner in between"
+eq "${ lint_rc 'PR #383 had merged files.'; }" 1 "...in any tense the list carries"
+eq "${ lint_rc 'PR #383 is a green suite.'; }" 1 "...and a copula reads the same way"
+
+# THE SEPARATOR PINS. Both carve-outs read the RAW text, so anything but a single space fires.
+eq "${ lint_rc 'CI for PR #383 is in, passing all checks.'; }" 1 "a comma between \"in\" and \"passing\" is not the idiom"
+eq "${ lint_rc 'CI for PR #383 is in; passing all checks.'; }" 1 "...nor a semicolon"
+eq "${ lint_rc 'The run for #383 went in — passing at last.'; }" 1 "...nor a dash"
+eq "${ lint_rc 'Noted **in passing** while reading #383.'; }" 0 "...while markdown around the idiom is still the idiom"
+
+# EMPHASIS IS NOT A SEPARATOR (review round 2). The raw-separator reads made `*` and `_` look like
+# the neighbour, so bolding a single word inside otherwise-ordinary prose fired the gate. The
+# earlier fixtures emphasised the WHOLE phrase, which is why they missed this.
+eq "${ lint_rc 'They make a green **suite** mean something for #383'; }" 0 "bold around the attributive NOUN alone"
+eq "${ lint_rc 'So merged **files** are not swept twice for #383'; }" 0 "...for the other witnessed noun"
+eq "${ lint_rc 'Mentioned in *passing* for #383'; }" 0 "...and italics around the idiom's status word"
+# ...ON BOTH SIDES OF THE SPACE (review round 2, second pass): when the STATUS word is the
+# emphasised one the closing delimiter lands BEFORE the space, so a skip that only looked after it
+# left the neighbour unread and the sentence firing.
+eq "${ lint_rc 'They make a **green** suite mean something for #383'; }" 0 "bold around the STATUS word alone"
+eq "${ lint_rc 'So *merged* files are not swept twice for #383'; }" 0 "...in italics, for the other witnessed noun"
+eq "${ lint_rc 'Mentioned **in** passing for #383'; }" 0 "...and around the idiom's previous word"
+# ...and skipping emphasis must not relax the separator itself: clause punctuation still fires.
+eq "${ lint_rc 'PR #383 is merged; **files** are swept once.'; }" 1 "a semicolon still breaks adjacency, bold or not"
+eq "${ lint_rc 'CI for PR #383 has a **green** suite.'; }" 1 "...nor does emphasis defeat the predication rule"
+
+# A MARKDOWN LINK IS A WRAPPER, NOT A SEPARATOR (review round 3) — the same class as emphasis, and
+# it needs both sides too: a linked neighbour opens with `[`, a linked status word leaves `](url)`
+# sitting before the space.
+eq "${ lint_rc 'They make a green [suite](https://example.test) mean something for #383'; }" 0 "a linked attributive noun"
+eq "${ lint_rc 'The merged [files](https://example.test) are listed in #383'; }" 0 "...for the other witnessed noun"
+eq "${ lint_rc 'They make a [green](https://example.test) suite mean something for #383'; }" 0 "...and a linked STATUS word"
+eq "${ lint_rc 'Mentioned in [passing](https://example.test) for #383'; }" 0 "...on the idiom side too"
+
+# A QUANTIFIER IS A DETERMINER (review round 3). The predication lookback steps over the determiner
+# to find the verb, so a quantifier it does not recognise steps over the verb instead and exempts a
+# real claim.
+eq "${ lint_rc 'CI for #383 has two failing suites'; }" 1 "a number word between the verb and the adjective"
+eq "${ lint_rc 'CI for #383 has no failing suites'; }" 1 "...a negative quantifier"
+eq "${ lint_rc 'CI for #383 has 3 failing suites'; }" 1 "...and a bare numeral, matched by pattern not by list"
+
+# THE WALK IS BOUNDED, AND BOUNDED IN BOTH DIRECTIONS (review round 4). A determiner may stack
+# ("has a dozen failing suites"), so the lookback steps over determiners — but at most three words,
+# because an unbounded walk to any copula fires on prose whose verb governs something else.
+eq "${ lint_rc 'CI for #383 has more failing suites'; }" 1 "an unlisted-shape quantifier, now listed"
+eq "${ lint_rc 'CI for #383 has zero failing suites'; }" 1 "...another"
+eq "${ lint_rc 'CI for #383 has a dozen failing suites'; }" 1 "...and a STACKED determiner, which one lookback cannot reach"
+eq "${ lint_rc 'PR #383 has merged files.'; }" 1 "the ADJACENT verb still predicates — depth 0 counts"
+eq "${ lint_rc 'This PR is about the merged files for #383.'; }" 0 \
+   "...while the walk stops at a non-determiner, so a copula governing something else does not fire"
+eq "${ lint_rc 'Mentioned [in](https://example.test) passing for #383'; }" 0 \
+   "a link around the idiom's FIRST word is unwrapped too, not just around its status word"
+
+# THE RESIDUE OF THIS ONE, stated because the comment used to overclaim it: DET is a CLOSED list
+# walked to a FIXED depth, not the quantifier class. An unlisted quantifier still exempts a claim.
+eq "${ lint_rc 'CI for #383 has umpteen failing suites'; }" 0 \
+   "the residue: an unlisted quantifier still steps over the verb"
+
+# AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM (review round 2). "resulted in
+# passing" predicates the run it follows; "discovered in passing" modifies the verb. The lexical
+# difference is the verb two words back.
+eq "${ lint_rc 'The CI run for PR #383 resulted in passing'; }" 1 "\"resulted in passing\" is a status claim"
+eq "${ lint_rc 'The test for #383 ended in passing'; }" 1 "...as is \"ended in passing\""
+eq "${ lint_rc 'Mentioned only in passing for #383.'; }" 0 "...while an adverbial \"in passing\" is still the idiom"
+
+# THE RESIDUE, stated rather than implied. The predication list is closed, so a verb outside it
+# still admits a real claim. That is the direction this grammar chooses everywhere — a gate that
+# fires on ordinary prose gets worked around — and it is pinned so the next reader knows the shape
+# of what is missed rather than inferring that nothing is.
+eq "${ lint_rc 'PR #383 shows a green suite.'; }" 0 \
+   "the residue: a verb outside the predication list still admits an attributive claim"
+
 # --- 3b-f. determinism + hygiene ---------------------------------------------------------------
 eq "${ lint_out "$SHIPPED"; }" "${ lint_out "$SHIPPED"; }" "lint is deterministic"
 eq "${ printf '' | bash "$LIB" lint >/dev/null 2>&1; printf '%s' "$?"; }" 0 "empty input is clean"
@@ -428,13 +549,27 @@ mkdir -p "$tdir/lib" && cp "$GATE" "$tdir/" && cp "$LIB" "$tdir/lib/" \
   && cp "$ROOT/scripts/lib/common.sh" "$tdir/lib/"
 HOOK="$tdir/state-claim-gate.sh"
 
-# transcript <text> — a one-message JSONL session log, then the hook payload naming it.
-transcript() {
-  printf '{"type":"assistant","message":{"content":[{"type":"text","text":%s}]}}\n' \
-    "${ printf '%s' "$1" | jq -Rs .; }" > "$tdir/t.jsonl"
-  printf '{"transcript_path":"%s"}' "$tdir/t.jsonl"
+# THE FIXTURE PRIMITIVES. One record builder and one payload runner, so the single-message cases
+# below and the multi-record payload cases in 3c-2 cannot drift apart in what they construct.
+#
+# sa_msg <text> [true] — one assistant text record; the second argument marks it a subagent's.
+sa_msg() {
+  printf '{"type":"assistant","isSidechain":%s,"message":{"content":[{"type":"text","text":%s}]}}\n' \
+    "${2:-false}" "${ printf '%s' "$1" | jq -Rs .; }"
 }
-run_hook() { HOOK_OUT="${ printf '%s' "${ transcript "$1"; }" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?; }
+sa_user() { printf '{"type":"user","message":{"content":[{"type":"text","text":"go on"}]}}\n'; }
+sa_tool() { printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Bash"}]}}\n'; }
+# sa_jsonl <text>... — a transcript whose assistant text records appear in argument order.
+sa_jsonl() { : > "$tdir/t.jsonl"; for _m in "$@"; do sa_msg "$_m" >> "$tdir/t.jsonl"; done; }
+# sa_run <payload> — drive the hook with a payload built by the caller.
+sa_run() { HOOK_OUT="${ printf '%s' "$1" | bash "$HOOK" 2>&1; }"; HOOK_RC=$?; }
+# sa_tpath — the payload naming the current transcript and NOTHING else, so these exercise the
+# FALLBACK path (no `last_assistant_message`).
+sa_tpath() { printf '{"transcript_path":"%s"}' "$tdir/t.jsonl"; }
+
+# transcript <text> — a one-message JSONL session log, then the hook payload naming it.
+transcript() { sa_jsonl "$1"; sa_tpath; }
+run_hook() { sa_run "${ transcript "$1"; }"; }
 
 run_hook "$SHIPPED"
 eq "$HOOK_RC" 2 "the hook BLOCKS the turn on the 2026-07-29 sentence"
@@ -520,8 +655,78 @@ run_hook 'The branch for #195 is unmerged.'
 eq "$HOOK_RC" 2 "an unsourced branch claim blocks"
 has "$HOOK_OUT" "branch-verdict" "...and is routed to the branch predicate"
 run_hook 'PR #137 is still open.'
+eq "$HOOK_RC" 2 "an unsourced PR-state claim blocks"
 has "$HOOK_OUT" "state-assert.sh" "a PR-state claim is still routed to observe"
 has "$HOOK_OUT" "ambiguous" "...and the merged-PR vs merged-branch ambiguity is called out"
+
+# --- 3c-2. THE FINAL MESSAGE IS THE PAYLOAD'S, NOT THE TRANSCRIPT'S LAST RECORD (#383) -------
+# A rejected draft is an ordinary assistant record, so the transcript ends with it until the retry
+# lands — and a hook that reads the file can lose that race and lint a sentence the operator has
+# already deleted. `last_assistant_message` is computed from the live message list and cannot.
+#
+# THE FIXTURES ARE THE REAL PAIR, from the session that produced the report: the superseded draft
+# is what the hook quoted, and the retry is what was actually on screen. The retry deliberately
+# carries NO status token at all, so this section proves the SOURCE question and never borrows a
+# pass from 3b-l's carve-outs.
+SA_SUPERSEDED='- First **#372** and **#373** — small, mechanical, and they make "green" mean something everywhere.'
+SA_RETRY='Restated without the status wording: #372 and #373 are the two verifier repairs, sequenced first.'
+
+# THE REGRESSION FIXTURE. Observed RED against the pre-#383 hook, which blocks here — quoting the
+# superseded draft's wording at an operator who can no longer find it in the turn.
+sa_jsonl "$SA_RETRY" "$SA_SUPERSEDED"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" --arg m "$SA_RETRY" '{transcript_path:$t,last_assistant_message:$m}'; }"
+eq "$HOOK_RC" 0 "a clean retry passes even while the transcript still ends in the rejected draft"
+eq "$HOOK_OUT" "" "...silently"
+
+# ...and the payload cannot be used to LOSE a claim either: it is the source of truth in both
+# directions, so a dirty final message blocks over a clean transcript.
+sa_jsonl "$SA_RETRY"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" --arg m "$SA_SUPERSEDED" '{transcript_path:$t,last_assistant_message:$m}'; }"
+eq "$HOOK_RC" 2 "a dirty final message blocks even when the transcript's last record is clean"
+has "$HOOK_OUT" "mean something everywhere" "...and the excerpt is the PAYLOAD's sentence"
+
+# THE FALLBACK IS LOAD-BEARING, NOT DECORATION: a CLI that predates the field omits it, and there
+# the transcript is the only source there is. Absent and explicit-null behave alike.
+sa_jsonl "$SA_RETRY" "$SA_SUPERSEDED"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" '{transcript_path:$t}'; }"
+eq "$HOOK_RC" 2 "with no last_assistant_message the hook still reads the transcript"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" '{transcript_path:$t,last_assistant_message:null}'; }"
+eq "$HOOK_RC" 2 "...and an explicit null is the same as absent"
+
+# A SUBAGENT'S MESSAGE IS NOT THE TURN'S FINAL MESSAGE. Task sidechain records land in this same
+# log, so on the fallback path the last record can belong to an agent the operator never read.
+sa_jsonl "$SA_RETRY"
+sa_msg "$SA_SUPERSEDED" true >> "$tdir/t.jsonl"
+sa_run "${ jq -n --arg t "$tdir/t.jsonl" '{transcript_path:$t}'; }"
+eq "$HOOK_RC" 0 "a trailing SIDECHAIN record is skipped — the main thread's message is the final one"
+
+# AN EMPTY FIELD IS NOT PROOF OF AN OLD CLI. The field is omitted when the final message carries
+# no text, so both cases below reach the FALLBACK on a current CLI — and without the staleness and
+# text-free guards each one re-lints the previous message, which is the very defect this section
+# exists to close. Review round 1 found both reachable.
+{ sa_msg "$SA_SUPERSEDED"; sa_user; } > "$tdir/t.jsonl"
+sa_run "${ sa_tpath; }"
+eq "$HOOK_RC" 0 "a transcript whose newest text predates the last user record is STALE — no-op"
+{ sa_msg "$SA_SUPERSEDED"; sa_user; sa_tool; } > "$tdir/t.jsonl"
+sa_run "${ sa_tpath; }"
+eq "$HOOK_RC" 0 "a text-free final message is a no-op, NOT a re-lint of the previous message"
+# ...and the guard must not swallow a live turn: the same shape with real text still blocks.
+{ sa_msg "$SA_RETRY"; sa_user; sa_msg "$SA_SUPERSEDED"; } > "$tdir/t.jsonl"
+sa_run "${ sa_tpath; }"
+eq "$HOOK_RC" 2 "...while a final message that IS newer than the last user record is still linted"
+
+# THE SECOND REQUIRED TRUE-POSITIVE SHAPE, asserted where it actually gates something. 3b-l proves
+# the LINT still reports it; only an exit code proves the TURN still stops. Without this, changing
+# the gate's `exit 2` to `exit 0` leaves every remaining assertion about this shape green.
+run_hook "$STILL_OPEN"
+eq "$HOOK_RC" 2 "the hook BLOCKS the turn on \"still open, not merged\""
+has "$HOOK_OUT" "volatile external status" "...and says why"
+
+# THE TRANSCRIPT IS NOT REQUIRED when the payload answers. Pinned because the reverse — reading
+# the file first and treating the field as a corroborator — passes every case above while leaving
+# the race exactly where it was.
+sa_run "${ jq -n --arg m "$SA_SUPERSEDED" '{last_assistant_message:$m}'; }"
+eq "$HOOK_RC" 2 "a payload carrying only last_assistant_message needs no transcript at all"
 
 # The hook must be in the ONE hook enumeration, or install wires it and uninstall never removes it.
 has "$(bash -c '. scripts/lib/common.sh; adb_claude_hook_scripts')" "state-claim-gate.sh" \
