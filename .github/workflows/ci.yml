@@ -960,6 +960,26 @@ jobs:
       - name: A missing manifest source must make install.sh fail loud (#48)
         run: bash scripts/check-install-guard.sh
 
+  pinned-install:
+    name: pinned-install
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
+      # us, in the log. A later step is what proves it clears the floor; this is what
+      # makes an image that silently changed its bash readable rather than mysterious.
+      - name: Log this runner's bash
+        run: bash --version
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: bash floor — prove this job's interpreter clears 5.3 (#257)
+        run: bash scripts/check-bash-floor.sh --runtime
+
+      - name: The release-pinned per-project install must refuse every bad artifact (#285)
+        run: bash scripts/check-pinned-install.sh
+
   fact-drift:
     name: fact-drift
     runs-on: ubuntu-26.04

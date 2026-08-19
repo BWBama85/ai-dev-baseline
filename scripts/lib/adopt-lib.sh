@@ -435,7 +435,7 @@ cmd_prescribed() {
   [ "$#" -eq 2 ] || die "prescribed: needs <kind> <name>"
   local kind="$1" name="$2"
   case "$kind" in
-    skill|script|rootdoc|manifest|settings|override|decisions|pin|foreign-pin|lib|other) ;;
+    skill|script|rootdoc|manifest|settings|override|decisions|pin|foreign-pin|lib|pinned|other) ;;
     *) die "prescribed: unknown kind: $kind" ;;
   esac
   case "$kind$TAB$name" in
@@ -452,6 +452,33 @@ cmd_prescribed() {
     "decisions${TAB}decisions.md") return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# --- release-pinned ownership (#285) -------------------------------------------------------------
+# A project can carry a VENDORED baseline payload instead of inheriting a machine's global symlink
+# install. Those files are the baseline, byte for byte plus an install-time re-anchor, so every
+# collision arm below would fire on them and the plan would tell the operator to dismantle their
+# own runtime.
+#
+# OWNERSHIP IS PROVED BY DIGEST, NOT BY PATH OR BY MEMBERSHIP, and the predicate lives in
+# `common.sh` because `pinned-install.sh` decides the same question and two readers of one receipt
+# is the drift this library exists to prevent. Membership alone would let a hand-written receipt
+# suppress a project's own skill, and would hide a vendored file the operator has since EDITED —
+# which is a real delta somebody needs to see.
+
+# _ad_owns <owned-list> <repo-relative-path> — true when the path is in the pinned receipt.
+#
+# A LIST, not a prefix test. `.claude/adb/` looks like a safe prefix until a project puts its own
+# file there, and a prefix rule would then hide it; the receipt names files, so membership is what
+# ownership actually means here.
+_ad_owns() {
+  local nl
+  nl="$(printf '\nx')"; nl="${nl%x}"
+  [ -n "$1" ] || return 1
+  case "$nl$1$nl" in
+    *"$nl$2$nl"*) return 0 ;;
+  esac
+  return 1
 }
 
 # --- classify ------------------------------------------------------------------------------------
@@ -490,7 +517,7 @@ cmd_classify() {
   case "$delta"      in same|differs|unknown) ;; *) die "classify: <delta> must be same|differs|unknown: $delta" ;; esac
   case "$prescribed" in yes|no) ;;              *) die "classify: <prescribed> must be yes|no: $prescribed" ;; esac
   case "$kind" in
-    skill|script|rootdoc|manifest|settings|override|decisions|pin|foreign-pin|lib|other) ;;
+    skill|script|rootdoc|manifest|settings|override|decisions|pin|foreign-pin|lib|pinned|other) ;;
     *) printf 'escalate%sunmodelled artifact kind "%s" — classify it by hand (handling-the-unknown.md bucket 4)\n' "$TAB" "$kind"; return 0 ;;
   esac
 
@@ -511,6 +538,16 @@ cmd_classify() {
   #
   # Caught by re-running the live acceptance scan after the classifier changed; the unit test that
   # was supposed to cover it asserted `collision=yes`, an input this kind cannot have.
+  # A RELEASE-PINNED PAYLOAD IS `keep`, AND IT IS TESTED FIRST (#285). Its files collide with the
+  # baseline by construction — they ARE the baseline — and their SKILL.md copies are re-anchored at
+  # install time, so they differ too. Left to the table below, a pinned project's own runtime came
+  # out as `move` ("re-home the delta") and its unmodified members as `remove`, i.e. a plan telling
+  # the operator to dismantle the install they deliberately vendored. Ownership is proved from the
+  # receipt, not guessed from the path: see the scan.
+  if [ "$kind" = pinned ]; then
+    printf 'keep%sa release-pinned baseline payload, owned by .ai-dev-baseline/upstream.toml (mode = "pinned") and listed in its receipt — it is this project'"'"'s runtime, not a fork to re-home. Change it with: baseline pinned upgrade --to <version>\n' "$TAB"
+    return 0
+  fi
   if [ "$kind" = other ]; then
     printf 'escalate%sthe baseline does not model this artifact — classify it per handling-the-unknown.md (general / project-delta / deviation), place it in that bucket'"'"'s prescribed home, and record the decision; do not improvise\n' "$TAB"
     return 0
@@ -600,6 +637,15 @@ cmd_scan() {
   [ -f "$root/.claude/UPSTREAM_VERSION" ] && _ad_emit foreign-pin .claude/UPSTREAM_VERSION UPSTREAM_VERSION -
   [ -f "$root/CLAUDE.md.upstream" ]       && _ad_emit foreign-pin CLAUDE.md.upstream CLAUDE.md.upstream -
 
+  # RELEASE-PINNED OWNERSHIP, resolved once and consulted by every arm below. One aggregate record
+  # is emitted rather than suppressing the payload silently: an omitted artifact never reaches
+  # `classify`, which is the exact hole the `other` kind was added to close.
+  local _ad_owned=""
+  _ad_owned="$(adb_pinned_owned "$root")"
+  if [ -n "$_ad_owned" ]; then
+    _ad_emit pinned .ai-dev-baseline/pinned-files.sha256 pinned-payload -
+  fi
+
   # Per-agent config trees.
   while IFS= read -r a; do
     [ -n "$a" ] || continue
@@ -609,6 +655,10 @@ cmd_scan() {
       [ -d "$d" ] || continue
       n="${d%/}"; n="${n##*/}"
       [ -f "$d/overrides.md" ] && _ad_emit override ".$a/skills/$n/overrides.md" overrides.md "$a"
+      # An overrides.md is ALWAYS reported, even inside a pinned payload: the install never writes
+      # one, so its presence is the project's own — and in pinned mode it is a delta with no
+      # working home, which is precisely what the operator needs told.
+      _ad_owns "$_ad_owned" ".$a/skills/$n/SKILL.md" && continue
       [ -f "$d/SKILL.md" ]     && _ad_emit skill    ".$a/skills/$n" "$n" "$a"
     done
     # THE VENDORED SHARED LIBRARY IS ONE ARTIFACT, emitted before the flat file loop. `shipped`
@@ -625,6 +675,7 @@ cmd_scan() {
     for f in "$root/.$a"/scripts/*; do
       [ -f "$f" ] || continue
       n="${f##*/}"
+      _ad_owns "$_ad_owned" ".$a/scripts/$n" && continue
       _ad_emit script ".$a/scripts/$n" "$n" "$a"
     done
 
@@ -664,9 +715,19 @@ cmd_scan() {
         # comes back. Observed on a real scan, which reported `.DS_Store` as an artifact to keep.
         */.DS_Store|*/Thumbs.db) continue ;;
       esac
-      # A skill directory's OTHER members are already covered by the whole-directory `delta`
-      # comparison of the skill itself, so re-emitting each of them would double-report.
-      case "$rel" in ".$a/skills/"*) continue ;; esac
+      # A skill directory's OTHER members are covered by the whole-directory `delta` comparison of
+      # the skill itself — EXCEPT when that skill record was suppressed as a pinned payload. There is
+      # then no record covering them at all, so a project-added `.claude/skills/cleanup/notes.md`
+      # vanished from the inventory entirely: not owned, not compared, not reported. An owned member
+      # is still skipped; an unowned one under a suppressed skill is emitted as `other`, which is
+      # what the escalate path exists for.
+      case "$rel" in
+        ".$a/skills/"*)
+          _ad_owns "$_ad_owned" "$rel" && continue
+          [ -n "$_ad_owned" ] || continue
+          ;;
+      esac
+      _ad_owns "$_ad_owned" "$rel" && continue
       _ad_emit other "$rel" "${rel##*/}" "$a"
     done
   done <<EOF

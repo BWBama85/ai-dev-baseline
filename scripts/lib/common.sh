@@ -2793,6 +2793,145 @@ adb_toml_array() {
     }'
 }
 
+# --- release-pinned payload ownership (#285) ---------------------------------
+#
+# THE ONE HOME for "is this file part of a release-pinned baseline payload, and is it still the one
+# the install wrote". `pinned-install.sh` decides what to publish and remove; `adopt-lib.sh` needs
+# the same verdict to avoid recommending that a project delete its own runtime. Two readers of one
+# receipt is exactly the drift this library exists to prevent.
+#
+# Deliberately parseable under the sub-floor with the rest of this file (D30/D35): plain `case`,
+# `while read`, and no construct from D65's banned list.
+
+# adb_sha256 <file> — the file's lowercase hex SHA-256 on stdout, or non-zero.
+#
+# THE SHARED DIGEST. The release skill carries its own `release-lib.sh sha256`, which is NOT this
+# one and is deliberately not folded in: that skill is project-scoped and never installed into an
+# agent home, so the two live in trees that never meet.
+adb_sha256() {
+  local f="$1" out hex
+  case "$f" in -*) return 1 ;; esac
+  [ -f "$f" ] || return 1
+  if command -v sha256sum >/dev/null 2>&1; then
+    out="$(sha256sum -- "$f")" || return 1
+  elif command -v shasum >/dev/null 2>&1; then
+    out="$(shasum -a 256 -- "$f")" || return 1
+  elif command -v openssl >/dev/null 2>&1; then
+    out="$(openssl dgst -sha256 -r "$f")" || return 1
+  else
+    return 1
+  fi
+  hex="${out%% *}"
+  case "$hex" in
+    ''|*[!0-9a-f]*) return 1 ;;
+  esac
+  [ "${#hex}" -eq 64 ] || return 1
+  printf '%s' "$hex"
+}
+
+# adb_pinned_relpath_safe <repo-relative path> — refuse a path that could leave the project.
+#
+# A SECURITY BOUNDARY, not tidiness. The receipt is COMMITTED, so on any repository that accepts
+# pull requests it is attacker-influenced text; a record naming `../sibling/known-file` would have
+# a consumer hash and act on a path outside the project entirely. Leading/trailing whitespace is
+# refused for a different reason landing in the same place: the receipt is read back with
+# `read -r digest path`, which strips it, so such a path is recorded one way and acted on another.
+adb_pinned_relpath_safe() {
+  case "${1:-}" in
+    ''|/*) return 1 ;;
+    ..|../*|*/../*|*/..) return 1 ;;
+    # ANY space, not just a leading or trailing one. The receipt is read back with
+    # `read -r digest path`, and its per-path lookups are `awk '$2 == r'` — those two disagree the
+    # moment a path contains a space, so one reader sees `dir/a b` and the other sees `dir/a`.
+    # Refusing outright is what keeps every consumer looking at the same record; nothing the
+    # payload map produces has a space in it.
+    *' '*) return 1 ;;
+  esac
+  adb_tsv_field_safe "$1" || return 1
+  return 0
+}
+
+# adb_pinned_payload_shaped <repo-relative path> — true only for a path the pinned payload map can
+# actually produce.
+#
+# A DIGEST PROVES INTEGRITY, NOT PROVENANCE. The receipt is committed, so a pull request can add a
+# project file together with its (trivially computed) digest and have every consumer treat it as
+# install-owned. This shape test is what bounds that: a forged record can still name a file inside
+# the install's own namespaces, but it can never reach `src/`, a config file, or anything else the
+# installer would never have written. Narrow by construction — a new payload destination must be
+# added here as well as to the map, and that coupling is deliberate.
+adb_pinned_payload_shaped() {
+  case "${1:-}" in
+    .ai-dev-baseline/upstream.toml|.ai-dev-baseline/pinned-files.sha256) return 0 ;;
+    .claude/rules/ai-dev-baseline.md) return 0 ;;
+    .claude/adb/*|.codex/adb/*) return 0 ;;
+    .claude/skills/*|.codex/skills/*) return 0 ;;
+  esac
+  return 1
+}
+
+# adb_pinned_contained <project-root> <repo-relative path> — true when the path resolves INSIDE the
+# project once symlinks are followed.
+#
+# LEXICAL SAFETY IS NOT ENOUGH. `link/victim` contains no `..` and is not absolute, so a purely
+# textual rule accepts it — and if `link` is a symlink pointing out of the repository, a consumer
+# then hashes and DELETES a file somewhere else entirely. Reproduced in review. The parent is what
+# is resolved, because that is the directory the operation actually acts in.
+adb_pinned_contained() {
+  local root="$1" rel="$2" real d resolved
+  real="$(cd "$root" 2>/dev/null && pwd -P)" || return 1
+  # WALK UP TO THE DEEPEST EXISTING ANCESTOR. A destination directory legitimately does not exist
+  # yet on a first install, so resolving `dirname` directly refuses every real payload path. What
+  # decides containment is the deepest component that DOES exist: if that is inside the project,
+  # no not-yet-created component below it can be a symlink pointing anywhere, because nothing has
+  # created one. A pre-existing `link` in the middle of the path still resolves and still fails.
+  d="$(dirname "$rel")"
+  while [ "$d" != "." ] && [ "$d" != "/" ] && [ ! -d "$root/$d" ]; do
+    d="$(dirname "$d")"
+  done
+  if [ "$d" = "." ]; then resolved="$real"; else
+    resolved="$(cd "$root/$d" 2>/dev/null && pwd -P)" || return 1
+  fi
+  [ -n "$resolved" ] || return 1
+  case "$resolved" in
+    "$real") return 0 ;;
+    "$real"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# adb_pinned_owned <project-root> — one repo-relative path per line for every file a release-pinned
+# install wrote AND that still matches the digest it recorded. Prints nothing (exit 0) when the
+# project is not pinned.
+#
+# MEMBERSHIP IS NOT OWNERSHIP, and that distinction is the whole point. A vendored file the operator
+# has since edited is a real delta somebody needs to see, so it is deliberately absent from this
+# list — `/adopt` then reports it instead of suppressing it, and `pinned-install.sh status` names it
+# precisely. A hand-written receipt listing a project's own skill likewise proves nothing: the
+# digest has to agree.
+adb_pinned_owned() {
+  local root="$1"
+  local pin="$1/.ai-dev-baseline/upstream.toml"
+  local receipt="$1/.ai-dev-baseline/pinned-files.sha256"
+  local mode hash rel have
+  [ -f "$pin" ] || return 0
+  [ -f "$receipt" ] || return 0
+  mode="$(adb_toml_unquote "$(adb_toml_get "$pin" upstream mode 2>/dev/null)" 2>/dev/null)"
+  [ "$mode" = pinned ] || return 0
+  while read -r hash rel; do
+    case "$hash" in ''|'#'*) continue ;; esac
+    [ -n "$rel" ] || continue
+    adb_pinned_relpath_safe "$rel" || continue
+    adb_pinned_payload_shaped "$rel" || continue
+    adb_pinned_contained "$root" "$rel" || continue
+    [ -f "$root/$rel" ] || continue
+    have="$(adb_sha256 "$root/$rel" 2>/dev/null)" || continue
+    [ "$have" = "$hash" ] || continue
+    printf '%s\n' "$rel"
+  done < "$receipt"
+  return 0
+}
+
 # --- versions ----------------------------------------------------------------
 
 # Compare dot-separated numeric versions. Returns 0 iff have >= want. Missing trailing

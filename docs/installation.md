@@ -1,5 +1,34 @@
 # Installation
 
+## Two install models
+
+There are two, and they answer different questions. Everything from *"1. Clone the repo"* to
+*"Keeping the install current"* describes the **global symlink install**; the second model has its
+own section, [Release-pinned, per project](#release-pinned-per-project).
+
+| | **Global symlink** | **Release-pinned, per project** |
+|---|---|---|
+| What it is | a permanent clone symlinked into `~/.<agent>` | one released version vendored into one project tree |
+| Scope | every project on the machine | exactly the project it is installed in |
+| Version | whatever the clone's `main` says right now | the release named in `.ai-dev-baseline/upstream.toml` |
+| Updating | `git pull` reaches every project at once | `baseline pinned upgrade --to X.Y.Z`, never on its own |
+| Needs a clone | yes, forever | no |
+| Committed to the project | no | yes — the payload ships with the repo |
+| Agents | claude · codex · gemini | claude · codex |
+
+**They coexist, and neither one degrades the other.** A machine can run the global install and
+still open a project that carries a pinned payload: the agent harness resolves a project's own
+skills ahead of the user-global ones ("most specific wins" —
+[per-project-overrides.md](per-project-overrides.md), Override 2), so inside such a project the
+pinned version governs, and everywhere else the global install does. Nothing arbitrates that at
+install time; it is the harness's own precedence, and `baseline pinned status` reports the overlap
+rather than pretending to resolve it.
+
+**Pick the global model** when the machine is yours and you want one `git pull` to update
+everything. **Pick the pinned model** when a project must state which baseline it runs — a repo
+other people clone, a build that has to be reproducible, or any machine where keeping a permanent
+clone is not an option.
+
 ## 1. Clone the repo
 
 Clone it somewhere stable — you're going to symlink into it, so don't clone
@@ -500,7 +529,158 @@ install-source (resolving it the same way `baseline` does, never via `PATH`), an
 entirely when the session you just started is *inside* that clone. So a session in the dev
 clone updates the install-source; a session in the install-source updates nothing.
 
+## Release-pinned, per project
+
+The second model. It vendors **one released version** into **one project tree** — no clone, no
+symlinks, and no dependency on what any machine's `main` happens to say. The project records which
+version it is on, and nothing moves it until someone names a new one.
+
+### Getting it in the first place
+
+The payload comes from a published GitHub Release, never from a checkout — so the bootstrap is a
+download you verify yourself, and every command after it runs from the vendored copy:
+
+```bash
+V=2.2.0
+curl -fsSLO "https://github.com/BWBama85/ai-dev-baseline/releases/download/v$V/ai-dev-baseline-$V.tar.gz"
+curl -fsSLO "https://github.com/BWBama85/ai-dev-baseline/releases/download/v$V/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS          # or: sha256sum -c SHA256SUMS
+tar xzf "ai-dev-baseline-$V.tar.gz"
+
+cd /path/to/your/project
+bash "/path/to/ai-dev-baseline-$V/install.sh" --pinned --project . --version "$V" --agent claude
+```
+
+The installer **re-fetches and re-checksums the release artifact** even when you run it out of an
+unpacked one. That is deliberate: what lands in your project is then a *named published version*
+rather than whatever tree the driver happened to be sitting in, and it is the same code path
+whether you started from a download or from a full clone. To install from the copy you already
+have — an air-gapped machine, or media — hand it the pair directly and skip the second fetch:
+
+```bash
+bash install.sh --pinned --project . --artifact ../ai-dev-baseline-2.2.0.tar.gz --sums ../SHA256SUMS
+```
+
+Either way the archive's SHA-256 is checked **against the `SHA256SUMS` record naming that exact
+filename** before anything is unpacked. The tree is then rejected if it carries an absolute or
+`../` member, if a symlink in it resolves outside the tree, if its internal
+`ai-dev-baseline-<version>/` prefix disagrees with the filename, if it arrived with CRLF line
+endings, or if it carries no `scripts/lib/pinned-install.sh` — a release published before this
+feature existed, which could never give the project the `status` / `upgrade` / `uninstall` commands
+below. That last test is the real floor; the version comparison is only a coarse one.
+
+Note what two assets from one Release do and do not prove: they detect **corruption and
+truncation**, not authenticity — an attacker who can replace one can replace both.
+
+### What gets vendored, and where
+
+| Path in your project | What |
+|---|---|
+| `.claude/rules/ai-dev-baseline.md` | the practices — a rule with no `paths:` frontmatter loads at session start |
+| `.claude/skills/<name>/SKILL.md` | the workflows, shadowing any same-named global skill |
+| `.claude/adb/lib/*.sh` | the shared shell libraries the skills and gates call |
+| `.claude/adb/{precommit,implement-issue,state-claim}-gate.sh` | the Stop gates |
+| `.claude/settings.json` | the gates wired through `${CLAUDE_PROJECT_DIR}` (merged, never replaced) |
+| `.codex/skills/<name>/SKILL.md`, `.codex/adb/…` | the same, for Codex |
+| `AGENTS.md` | Codex's practices, inside a delimited managed region |
+| `.ai-dev-baseline/upstream.toml` | the pin — `mode`, `version`, `source`, `artifact` (the release archive's SHA-256), `adopted`, `agents`, and `stack` when a previous pin recorded one |
+| `.ai-dev-baseline/pinned-files.sha256` | the receipt: every file this install wrote, and its digest |
+
+Four of those choices are decisions rather than layout, and each is load-bearing:
+
+- **`.claude/adb/`, not `.claude/scripts/`.** The latter is
+  [`handling-the-unknown.md`](../base/practices/handling-the-unknown.md)'s one prescribed home for
+  a project's *own* gate policy. An install that wrote there would occupy the path the practice
+  reserves for you — so a pinned project can still ship `.claude/scripts/precommit-gate.sh`, and
+  the vendored gate steps aside for it exactly as the global one does.
+- **The gates and `lib/` are siblings.** Every gate resolves its library as
+  `$(dirname "$0")/lib/common.sh`, which is what lets them be vendored byte-unchanged.
+- **The payload is re-anchored at install time** — the skills *and* the practices. A rendered skill
+  reaches its libraries through `$HOME/.<agent>/scripts/lib/`, one directory shared by the global
+  install and by every project on the machine; so do the practice documents, which spell out
+  `bash "$HOME/.claude/scripts/lib/ci-health.sh" classify …`. Every such reference in the vendored
+  copies is rewritten to `$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.<agent>/adb/lib/`
+  instead, so two projects pinned to different versions cannot reach into each other, and no
+  absolute path is committed.
+- **`session-currency.sh` is not vendored.** It fast-forwards the install-source clone, and a
+  pinned project has none.
+
+Everything else the repository ships — `base/`, `bin/`, `docs/`, `templates/`, the `scripts/check-*`
+suites, the build — stays out. It is the framework's own development surface, not a runtime.
+
+### Living with it
+
+```bash
+baseline pinned status                     # or: bash .claude/adb/lib/pinned-install.sh status
+baseline pinned upgrade --to 2.3.0
+baseline pinned uninstall                  # or: ./uninstall.sh --pinned --project .
+```
+
+`status` reports the mode, the pinned version, whether the payload still matches its receipt, and —
+this one call reaches the network — whether a newer release exists. Its exit code is the machine
+contract: `0` pinned and current · `10` a newer release exists · `11` not pinned · `20` the payload
+is missing or unverifiable · `30` the release list could not be read.
+
+**Nothing upgrades on its own, and `--to` *is* the approval.** There is no prompt, because two
+things already invoke `baseline update` unattended (the `SessionStart` hook and the last step of
+`/cleanup`) and a command that could upgrade without a named version would upgrade in both. In a
+pinned project `baseline update` prints a notice — the pinned version, whether the payload still matches its
+receipt, and whether a newer release exists — and then keeps doing its ordinary job on the
+install-source clone. Reporting the newer release costs one read of the release list, on the
+*mutating* path only; `baseline update --check` is untouched and still makes no changes and no call
+it did not already need.
+
+**Re-running the install changes nothing.** The same version republishes identical bytes — the
+adoption date is carried forward rather than restamped — and a *different* version is refused with
+the `upgrade --to` command spelled out, because changing the pinned version is a decision, not a
+side effect. The pin also records the **archive's SHA-256**, so "the same version" means the same
+bytes: a second archive with the same filename and different contents is refused too, rather than
+quietly replacing the payload. An upgrade removes what the previous version shipped and the new one
+does not, so nothing is left behind unowned.
+
+**Uninstall removes by digest.** A vendored file whose contents still match the receipt is removed;
+one you edited is **kept and named**, because an uninstaller that deletes work it did not write is
+worse than one that leaves a file behind. Your own `AGENTS.md` prose and your own `settings.json`
+keys survive — a `settings.json` is removed only when this install **created** it and nothing but
+this install's wiring is left in it, so one that existed beforehand always stays.
+
+### What it does not do
+
+Said plainly, because a model that overstates itself is worse than a narrow one:
+
+- **Gemini is not supported.** It has no established project-local skill discovery
+  (`scripts/build.sh`), so a vendored payload could not be loaded — the installer refuses
+  `--agent gemini` and says so rather than installing something inert. Global mode still covers all
+  three agents.
+- **`skill-compose` overrides do not work in pinned mode.** The composer writes
+  `.claude/skills/<name>/SKILL.md` by merging your `overrides.md` onto the *installed base* skill —
+  and in this model that output path *is* the base. Carrying a delta on top of a pinned skill needs
+  a separate home; `/adopt` still reports an `overrides.md` it finds, so the situation is visible
+  rather than silent.
+- **It vendors a runtime, not a development environment.** There is no `build.sh`, no `selfcheck`,
+  and no `bin/` — a pinned project consumes the baseline, it does not develop it.
+- **The pin is not a lock file.** It records what was installed; the receipt is what proves the
+  tree still matches it.
+- **Codex truncates long project instructions, and this install cannot stop it.** Its
+  `project_doc_max_bytes` defaults to 32 KiB and larger files are truncated *silently*, while the
+  rendered practices are far bigger. The install measures the resulting `AGENTS.md` and prints the
+  one line that fixes it — put `project_doc_max_bytes = 262144` in `~/.codex/config.toml` — but the
+  setting is yours, not the payload's.
+- **A project already carrying an `/adopt` pin is refused, not converted.** That file records a
+  commit this installer cannot reconstruct; retire it deliberately first.
+- **A symlinked `AGENTS.md` or `.claude/settings.json` is refused.** Publishing by rename would
+  replace the link with a regular file, and uninstall could never put it back — so a repository that
+  deliberately shares one instruction file across checkouts is told, rather than silently
+  restructured.
+- **A directory sitting where a payload file goes is refused.** `mv` would move the file *inside*
+  it and report success.
+
 ## Uninstalling
+
+This section is the **global symlink** install's mirror. The pinned model has its own remover —
+`./uninstall.sh --pinned --project DIR`, or `baseline pinned uninstall` — described under
+[Release-pinned, per project](#release-pinned-per-project); the two share no destination, so a run
+is one or the other.
 
 ```bash
 cd ~/Code/ai-dev-baseline
@@ -524,7 +704,9 @@ restore from them by hand if you want the pre-install files back.
 ## See also
 
 - [philosophy.md](philosophy.md) — why the baseline is installed globally
-  rather than per-project.
+  rather than per-project. That reasoning still holds for the global model; the
+  release-pinned model above answers the different question of how a *project*
+  states which baseline it runs.
 - [roles-and-agents.md](roles-and-agents.md) — the manifest written to
   `~/.config/ai-dev-baseline/agents.toml` and how it's consumed.
 - [per-project-overrides.md](per-project-overrides.md) — layering

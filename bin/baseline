@@ -21,6 +21,10 @@
 #   baseline release …         # the optional release-goal convention in this repo: 'init' /
 #                              #   'status' to stand it up, 'roll' to roll the milestone after a
 #                              #   release is cut (issues #27/#74; 'baseline release -h' for more)
+#   baseline pinned …          # the RELEASE-PINNED per-project install (#285): 'install' /
+#                              #   'status' / 'upgrade --to X.Y.Z' / 'uninstall'. It operates on
+#                              #   the PROJECT you are standing in, never on the install-source
+#                              #   clone ('baseline pinned -h' for more)
 #   baseline adopt status      # the ADOPTION COMPLETION CONTRACT (#81): is this project actually
 #                              #   ready to run the loop? Twelve rungs, fail-closed — a fact that
 #                              #   could not be established is never a pass. Re-runnable any time;
@@ -110,6 +114,16 @@ fi
 if [ "${1:-}" = "repo" ]; then
   shift
   exec bash "$REPO/scripts/lib/repo-settings.sh" "$@"
+fi
+
+# Delegate the release-pinned per-project install to its library (#285) — same reasoning as the
+# three above: every subcommand operates on the PROJECT the operator is standing in, so it must
+# dispatch BEFORE the install-source resolution and the wrong-clone guard below, which would
+# otherwise refuse a machine that has no global install at all — exactly the machine this model
+# exists for.
+if [ "${1:-}" = "pinned" ]; then
+  shift
+  exec bash "$REPO/scripts/lib/pinned-install.sh" "$@"
 fi
 
 # Delegate the adoption completion contract to its library (#81) — same reasoning as the three
@@ -406,7 +420,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ "$ACTION" != "update" ]; then
-  echo "baseline: expected a subcommand ('update', 'skill-compose', 'release', 'repo', or 'adopt')" >&2; echo >&2; usage >&2; exit 2
+  echo "baseline: expected a subcommand ('update', 'skill-compose', 'release', 'repo', 'adopt', or 'pinned')" >&2; echo >&2; usage >&2; exit 2
 fi
 
 # --- resolve the install-source clone ----------------------------------------
@@ -465,6 +479,20 @@ if [ "$CHECK" -eq 1 ]; then
     *)                                      exit 30 ;;   # no-remote | not-a-repo
   esac
 fi
+
+# A PINNED PROJECT IS TOLD, and the global update still runs. The two models are independent:
+# this command's subject is the install-source clone, and a project vendoring its own payload
+# neither blocks nor is served by keeping that clone current — so the notice is purely additive.
+#
+# `--check-latest`, because #285 asks `baseline update` to REPORT a newer release for a pinned
+# project. This is the mutating path, which has already fetched, so the extra read costs a pinned
+# project one call and a global one nothing (the notice exits immediately when no pin says
+# `mode = "pinned"`). It never upgrades: naming the version is the approval, and the two automatic
+# callers of this command must never be able to express one.
+#
+# AFTER `--check` returns, so that predicate stays exactly what it documents — one status word on
+# stdout, no changes, and no network it did not already need.
+bash "$REPO/scripts/lib/pinned-install.sh" notice --check-latest || true
 
 # --- serialize the mutating path ---------------------------------------------
 #

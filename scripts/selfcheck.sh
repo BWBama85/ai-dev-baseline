@@ -592,6 +592,12 @@ add install-migration   bash scripts/check-install-migration.sh
 # makes the real installer exit non-zero, never dangling a link or disturbing a real dest (#48).
 add install-guard       bash scripts/check-install-guard.sh
 
+# The SECOND install model writes into somebody else's repository (#285), so its refusals are the
+# load-bearing part: an unverified or escaping archive, a re-anchor that silently did nothing, an
+# uninstall that deletes an operator's edits or leaves orphans. Every one is driven red against
+# fixtures under `mktemp -d`; the tracked tree is never mutated.
+add pinned-install      bash scripts/check-pinned-install.sh
+
 # Canonical facts (gate axes, cross-agent invocations, codex timeout, resolution order)
 # must stay consistent across their consumer docs.
 add fact-drift          bash scripts/check-fact-drift.sh

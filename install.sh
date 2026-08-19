@@ -6,14 +6,23 @@
 # mean `git pull` in this repo updates every project at once. Existing files are
 # backed up first; re-running is idempotent; `uninstall.sh` reverses it.
 #
+# There is a SECOND install model, and this script is the entry point for both. `--pinned`
+# vendors ONE released version into ONE project tree instead of symlinking this clone into
+# ~/.<agent>; see docs/installation.md and scripts/lib/pinned-install.sh (#285). Everything
+# below the `--pinned` dispatch is the global model, unchanged.
+#
 # Usage:
 #   ./install.sh                       # installs the 'claude' agent + wires gates
 #   ./install.sh --agent claude --agent codex
 #   ./install.sh --agent claude --no-hooks
+#   ./install.sh --pinned --project DIR --version X.Y.Z [--agent claude|codex]...
+#   ./install.sh --pinned --project DIR --artifact FILE --sums FILE
 #
 # Options:
 #   --agent <claude|codex|gemini>   repeatable; default: claude
 #   --no-hooks                      don't wire the global Stop-hook gates
+#   --pinned                        release-pinned per-project install; every remaining argument
+#                                   is passed to scripts/lib/pinned-install.sh install
 #   -h, --help
 
 set -uo pipefail
@@ -71,6 +80,23 @@ if ! _crlf="$(adb_crlf_scan "$REPO")"; then
   exit 1
 fi
 adb_drvfs_warn "$REPO"
+
+# THE PINNED MODEL DISPATCHES HERE, before the global argument loop, and `exec`s rather than
+# returning: the two models share no state and no destination, so a run is one or the other. It
+# sits after the CRLF bootstrap, the library source and the bash-floor gate above because it
+# needs all three — and the pinned installer NEVER vendors this clone. It fetches and checksums a
+# published release artifact even when invoked from a checkout, so what lands in a project is a
+# named version rather than whatever this tree happens to say.
+for _adb_arg in "$@"; do
+  if [ "$_adb_arg" = "--pinned" ]; then
+    _adb_pinned_args=()
+    for _adb_a in "$@"; do
+      [ "$_adb_a" = "--pinned" ] && continue
+      _adb_pinned_args+=("$_adb_a")
+    done
+    exec bash "$REPO/scripts/lib/pinned-install.sh" install "${_adb_pinned_args[@]}"
+  fi
+done
 
 BACKUP_DIR="$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)"
 WIRE_HOOKS=1
