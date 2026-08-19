@@ -66,7 +66,18 @@ set -u
 #
 # Resolved relative to this file first (the layout is fixed: .claude/skills/release/ -> repo root),
 # with a git-root fallback so it still resolves through a symlink or from an unusual cwd.
-_ADB_SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+_adb_boot_src="$0"; _adb_boot_rel="."
+# ADB-BOOTSTRAP-BEGIN (#343) — BYTE-IDENTICAL IN EVERY ENTRY POINT; pinned by scripts/check-bootstrap.sh,
+# which carries why each line is shaped this way. Lossless because `$(…)` strips every trailing newline:
+# `${src%/*}` cannot strip, and the `X` sentinel bounds what the `pwd` capture can. Logical `pwd` (not
+# `-P`) preserves how install.sh records its symlink targets. bash 3.2-safe: this runs before the gate.
+_adb_boot_dir="${_adb_boot_src%/*}"
+if [ "$_adb_boot_dir" = "$_adb_boot_src" ]; then _adb_boot_dir="."; elif [ -z "$_adb_boot_dir" ]; then _adb_boot_dir="/"; fi
+_adb_boot_abs="$(cd -- "$_adb_boot_dir/$_adb_boot_rel" && pwd && printf 'X')"
+_adb_boot_abs="${_adb_boot_abs%X}"; _adb_boot_abs="${_adb_boot_abs%$'\n'}"
+[ -n "$_adb_boot_abs" ] || { printf '%s: FATAL - cannot resolve this clone location.\n' "${0##*/}" >&2; exit 1; }
+# ADB-BOOTSTRAP-END
+_ADB_SELF_DIR="$_adb_boot_abs"
 _ADB_COMMON="$_ADB_SELF_DIR/../../../scripts/lib/common.sh"
 if [ ! -f "$_ADB_COMMON" ]; then
   _ADB_ROOT="$(git -C "$_ADB_SELF_DIR" rev-parse --show-toplevel 2>/dev/null || true)"

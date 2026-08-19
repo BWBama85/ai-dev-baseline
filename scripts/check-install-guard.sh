@@ -90,9 +90,9 @@ if [ -L "$dest" ] && [ ! -e "$dest" ]; then bad "guard created a dangling link a
 # installer refuses" is exactly one command substitution, and only this test spans it.
 #
 # `$HOME` is the input to use rather than the clone path: it reaches the producer intact (an
-# environment variable is never passed through a `$(…)`), whereas a clone directory whose name
-# ENDS in a newline is truncated by each entry point's own bootstrap before the producer is
-# reached — a separate defect, tracked in #343 and deliberately not claimed here.
+# environment variable is never passed through a `$(…)`). The clone-path case is a separate defect
+# — each entry point's own bootstrap used to truncate a trailing newline before the producer was
+# reached — and it is fixed and pinned in scripts/check-bootstrap.sh (#343), not claimed here.
 nl_home="$work/nlhome"$'\n'"shadow"
 mkdir -p "$nl_home/.claude"
 # The truncated sibling is the whole danger: `<work>/nlhome` is a REAL directory with real content,

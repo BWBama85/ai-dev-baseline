@@ -214,11 +214,11 @@ adb_unlink_if_ours() {
 # the producer's status, which is how the reproduced case reached `adb_link_manifest` at all.
 # Capture it first — `m="$(adb_agent_manifest …)" || return 1` — then feed `$m`.
 #
-# WHAT THIS DOES NOT COVER, stated because a guard that overstates itself is worse than none: a
-# clone directory whose name ENDS in a newline is already truncated before this function is
-# reached, by the `$(cd … && pwd)` capture in the top-level entry points' bootstrap (#343). `$HOME` reaches
-# here intact (it is an environment variable, never a substitution), as does every INTERNAL tab or
-# newline in either root — those are the cases refused below.
+# THIS FUNCTION'S REACH DEPENDS ON ITS CALLERS RESOLVING LOSSLESSLY (#343, D82). A `<repo>` whose
+# name ends in a newline only arrives here intact because the entry-point bootstraps preserve it;
+# an unsentinelled `$(cd … && pwd)` upstream shortens it onto a sibling first, and what reaches this
+# check is then perfectly representable. `$HOME` needs no such help — an environment variable is
+# never passed through a substitution — nor does any INTERNAL tab or newline in either root.
 #
 # An unknown token prints nothing (return 0). Usage: adb_agent_manifest <agent> <repo> <home>
 # Emit "<src-skill-dir>\t<dest-parent>/<name>" manifest lines for every rendered skill folder
@@ -3580,12 +3580,26 @@ adb_require_bash_advisory() {
 # ending in CR. A `\r` ESCAPE in source (`printf '\r'`) is two characters, not a CR byte, so it
 # does not false-positive — verified against this repo's own `printf '\r'` sites.
 adb_crlf_scan() {
-  local dir="${1:-.}" cr found=0 listing=""
+  local dir="${1:-.}" cr found=0 listfile=""
   [ -d "$dir" ] || { printf 'adb_crlf_scan: not a directory: %s\n' "$dir" >&2; return 2; }
   cr="$(printf '\r')"
   # FAIL CLOSED ON A FAILED WALK. A preflight whose `find` errored and whose output was discarded
   # reports a clean tree — the silence-as-success failure mode this repo writes guards against.
-  listing="$(find "$dir" -name .git -prune -o -type f -print 2>/dev/null)" || {
+  #
+  # NUL-DELIMITED (the reason #259 established elsewhere in this repo; D82 for why it became
+  # reachable here). A newline-delimited listing splits every path under a directory whose NAME
+  # contains a newline into fragments, each of which is unreadable — so the unreadable arm below
+  # fires and a clean tree is reported CRLF-corrupt.
+  # THE LISTING GOES TO A FILE, NOT A VARIABLE, and that is forced rather than stylistic: a shell
+  # variable cannot hold a NUL byte, so `$(find … -print0)` drops every delimiter it just asked for
+  # and yields one run-together string. The redirect keeps the loop in THIS shell, so `found` still
+  # survives it — which a pipe would not.
+  listfile="$(mktemp "${TMPDIR:-/tmp}/adb-crlf.XXXXXX" 2>/dev/null)" || {
+    printf 'adb_crlf_scan: could not create a work file — refusing to report %s clean\n' "$dir" >&2
+    return 2
+  }
+  find "$dir" -name .git -prune -o -type f -print0 > "$listfile" 2>/dev/null || {
+    rm -f "$listfile"
     printf 'adb_crlf_scan: could not walk %s — refusing to report it clean\n' "$dir" >&2
     return 2
   }
@@ -3596,7 +3610,7 @@ adb_crlf_scan() {
   #     was not cosmetic: `scripts/lib/common.sh` is a sourced library, so a shebang-only scan
   #     declared a tree clean while the one file every entry point loads was CRLF-corrupt.
   #     Independent review reproduced it.
-  while IFS= read -r f; do
+  while IFS= read -r -d '' f; do
     case "$f" in
       *.sh) ;;
       *) head -n 1 "$f" 2>/dev/null | grep -q '^#!.*\(bash\|sh\)' || continue ;;
@@ -3609,9 +3623,8 @@ adb_crlf_scan() {
       1) ;;
       *) printf '%s (unreadable — not verified)\n' "$f"; found=1 ;;
     esac
-  done <<EOF
-$listing
-EOF
+  done < "$listfile"
+  rm -f "$listfile"
   [ "$found" -eq 0 ]
 }
 
