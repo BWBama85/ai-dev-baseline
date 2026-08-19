@@ -502,6 +502,23 @@ eq "${ lint_rc 'CI for #383 has two failing suites'; }" 1 "a number word between
 eq "${ lint_rc 'CI for #383 has no failing suites'; }" 1 "...a negative quantifier"
 eq "${ lint_rc 'CI for #383 has 3 failing suites'; }" 1 "...and a bare numeral, matched by pattern not by list"
 
+# THE WALK IS BOUNDED, AND BOUNDED IN BOTH DIRECTIONS (review round 4). A determiner may stack
+# ("has a dozen failing suites"), so the lookback steps over determiners — but at most three words,
+# because an unbounded walk to any copula fires on prose whose verb governs something else.
+eq "${ lint_rc 'CI for #383 has more failing suites'; }" 1 "an unlisted-shape quantifier, now listed"
+eq "${ lint_rc 'CI for #383 has zero failing suites'; }" 1 "...another"
+eq "${ lint_rc 'CI for #383 has a dozen failing suites'; }" 1 "...and a STACKED determiner, which one lookback cannot reach"
+eq "${ lint_rc 'PR #383 has merged files.'; }" 1 "the ADJACENT verb still predicates — depth 0 counts"
+eq "${ lint_rc 'This PR is about the merged files for #383.'; }" 0 \
+   "...while the walk stops at a non-determiner, so a copula governing something else does not fire"
+eq "${ lint_rc 'Mentioned [in](https://example.test) passing for #383'; }" 0 \
+   "a link around the idiom's FIRST word is unwrapped too, not just around its status word"
+
+# THE RESIDUE OF THIS ONE, stated because the comment used to overclaim it: DET is a CLOSED list
+# walked to a FIXED depth, not the quantifier class. An unlisted quantifier still exempts a claim.
+eq "${ lint_rc 'CI for #383 has umpteen failing suites'; }" 0 \
+   "the residue: an unlisted quantifier still steps over the verb"
+
 # AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM (review round 2). "resulted in
 # passing" predicates the run it follows; "discovered in passing" modifies the verb. The lexical
 # difference is the verb two words back.

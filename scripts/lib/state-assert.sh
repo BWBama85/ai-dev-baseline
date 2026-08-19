@@ -303,7 +303,13 @@ cmd_lint() {
       # DETERMINERS INCLUDE QUANTIFIERS, or the lookback steps over the verb it exists to find:
       # "has two failing suites" and "has no failing suites" are the same predication as "has a
       # failing suite". A bare numeral is handled by pattern rather than by listing digits.
-      split("a an the its their our my this that no some any few many several both all each every other another one two three four five six seven eight nine ten", DET, " ")
+      #
+      # SAY WHAT THIS IS: a CLOSED LIST, walked to a BOUNDED depth — not the quantifier class.
+      # A quantifier nobody has listed ("umpteen") still steps over the verb and still exempts a
+      # real claim. The bound is deliberate and is the reason the list stays closed: an unbounded
+      # walk back to any copula fires on ordinary prose such as "this PR is about the merged
+      # files", where the verb governs something else entirely. Both halves are pinned.
+      split("a an the its their our my this that no some any few many several both all each every other another one two three four five six seven eight nine ten more most fewer less zero dozen couple lots plenty enough", DET, " ")
       # ...AND AN IDIOM IS DEFEATED WHEN ITS PREPOSITION IS A COMPLEMENT. "resulted in passing"
       # and "ended in passing" predicate the run they follow; "discovered in passing" and
       # "mentioned in passing" modify the verb. The lexical difference is the verb two words back,
@@ -402,6 +408,9 @@ cmd_lint() {
             if (pre ~ /[^ ][ ][*_[]*$/) {
               idiomw = pre
               sub(/[*_[]*$/, "", idiomw); sub(/ $/, "", idiomw); sub(/[*_]*$/, "", idiomw)
+              # THE PREVIOUS WORD MAY ITSELF BE LINKED — "[in](url) passing" — in which case what
+              # trails is the URL, and the word extraction below would return a fragment of it.
+              sub(/\]\([^ )]*\)$/, "", idiomw); sub(/^.*\[/, "", idiomw)
               sub(/^.*[^a-z0-9]/, "", idiomw)
             }
             sub(/^[^a-z0-9]+/, "", rest)
@@ -413,14 +422,30 @@ cmd_lint() {
             # PREDICATION BEATS ATTRIBUTION. `prevw` is the word before the token; `prev2w` the one
             # before that, needed because a determiner usually sits between the verb and the
             # adjective ("has a green suite").
+            # WALK BACK OVER DETERMINERS, AT MOST THREE WORDS. "has a dozen failing suites" stacks
+            # two of them, so a single lookback stops on `dozen` and never reaches the verb. The
+            # depth is CAPPED rather than run to a clause boundary: an unbounded walk reaches the
+            # copula in "this PR is about the merged files", which asserts nothing about the entity.
+            # `prev2w` is the word two back, which the idiom rule below reads on its own account
+            # ("resulted in passing"). It is computed here rather than inside the walk because the
+            # walk stops early on a non-determiner and would leave it unset.
             prev2w = pre; sub(/[^a-z0-9]+$/, "", prev2w); sub(/[a-z0-9]+$/, "", prev2w)
             sub(/[^a-z0-9]+$/, "", prev2w); sub(/^.*[^a-z0-9]/, "", prev2w)
             pred = 0
-            for (v in PRED) if (prevw == PRED[v]) pred = 1
-            isdet = 0
-            if (prevw ~ /^[0-9]+$/) isdet = 1
-            for (d in DET) if (prevw == DET[d]) isdet = 1
-            if (isdet) for (v in PRED) if (prev2w == PRED[v]) pred = 1
+            back = pre
+            for (step = 0; step < 3; step++) {
+              sub(/[^a-z0-9]+$/, "", back)
+              bw = back; sub(/^.*[^a-z0-9]/, "", bw)
+              if (bw == "") break
+              hit = 0
+              for (v in PRED) if (bw == PRED[v]) hit = 1
+              if (hit) { pred = 1; break }        # at ANY depth, adjacent included
+              isdet = 0
+              if (bw ~ /^[0-9]+$/) isdet = 1
+              for (d in DET) if (bw == DET[d]) isdet = 1
+              if (!isdet) break                   # a non-determiner ends the walk
+              sub(/[a-z0-9]+$/, "", back)
+            }
             if (attrw != "" && !pred) for (k in ATTR) if (attrw == ATTR[k]) skip = 1
             inblock = 0
             for (b in INBLOCK) if (prev2w == INBLOCK[b]) inblock = 1

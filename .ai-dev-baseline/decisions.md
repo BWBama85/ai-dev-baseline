@@ -6662,6 +6662,18 @@ limit: none of them is sufficient alone.
                  neighbour. They are fixed one construct at a time BY NAME because the alternative,
                  skipping punctuation generally, re-admits the clause boundaries the whole design
                  rests on; three separate mutations pin that.
+                 Round 4 closed the last two of the same shape — a link around the idiom's FIRST
+                 word, and a determiner that STACKS ("has a dozen failing suites") — and the second
+                 forced the lookback from a single step to a walk. The walk is CAPPED AT THREE
+                 WORDS and stops at the first non-determiner, deliberately: run to a clause
+                 boundary it reaches the copula in "this PR is about the merged files", whose verb
+                 governs something else entirely. Both the cap and the depth-0 case are pinned; the
+                 depth-0 pin exists because the first cut of the walk dropped it and the suite is
+                 what caught that.
+                 AND THE COMMENT WAS CORRECTED, not just the list. It had claimed the quantifier
+                 CLASS was handled when what exists is a closed list at a fixed depth — the same
+                 overclaim round 1 corrected for `suite`. An unlisted quantifier still exempts a
+                 claim, and that residue is now pinned by name rather than described away.
                  AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM. "resulted in passing"
                  and "ended in passing" predicate the run they follow and were exempted; the
                  lexical difference from "discovered in passing" is the verb two words back, so
