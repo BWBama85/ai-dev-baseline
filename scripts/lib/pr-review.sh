@@ -86,7 +86,9 @@
 # failed read degrades into "no reviewers pending".
 #
 # REVIEWER IDENTITY IS NOT SPELLED HERE. The same GitHub App is reported as `foo` by GraphQL and
-# `foo[bot]` by REST, and this module reads REST. The matching rule — asymmetric, so a declared
+# `foo[bot]` by REST. This module now reads GRAPHQL (#174), so the adapter in `adb_pr_snapshot`
+# gives a `__typename: "Bot"` login its REST suffix back before the matcher ever sees it — which is
+# what keeps the collapse a transport change (D79). The matching rule — asymmetric, so a declared
 # `foo[bot]` is never satisfied by a human account named `foo` — lives once in common.sh as
 # `adb_reviewer_match_jq`, and the declaration is normalized once by `role-dispatch.sh bots
 # --comparable` (#173, superseding #176). Both were duplicated here and in pr-watch.sh, and the
@@ -135,7 +137,7 @@ OPT_PR=""
 # --- the guard -------------------------------------------------------------------------------
 
 cmd_gate() {
-  local n drc want head pjson pfields gotslug src headslug headref
+  local n drc want head qslug pjson pfields gotslug src headslug headref
   local classes verdict
 
   [ -n "$OPT_PR" ] || { echo "pr-review: gate requires --pr <number|url>" >&2; return 2; }
@@ -170,30 +172,33 @@ cmd_gate() {
 
   adb_require_gh jq || return 20
 
-  # Read, then parse — two steps, deliberately. Folding the extraction into `gh --jq` would make
+  # ONE READ FOR THE WHOLE CLASSIFICATION (#174). This used to be `gh api repos/{owner}/{repo}/pulls/N`
+  # followed by three more paginated reads inside the shared pipeline; it is now a single GraphQL
+  # document carrying the PR metadata AND all three signal surfaces. The guard's own logic below is
+  # unchanged — the snapshot is normalized to the REST shapes the shared classifier already consumed.
+  qslug="$(adb_pr_query_slug pr-review "$OPT_PR")" \
+    || { echo "pr-review: could not resolve which repository to read — refusing to arm" >&2; return 20; }
+  pjson="$(adb_pr_snapshot pr-review "$n" "$qslug")" \
+    || { echo "pr-review: could not read PR #$n — refusing to arm" >&2; return 20; }
+  # Read, then parse — two steps, deliberately. Folding the extraction into the read would make
   # one status cover both the network read and the shape of what came back, so a PR object that
   # arrived fine but carries no head SHA would be indistinguishable from a failed call. Both are
   # fatal here, but only separate steps can SAY which, and the same discipline is what stops a
   # `gh … | jq` pipeline from reporting the parser's success for the reader's failure.
-  pjson="$(gh api "repos/{owner}/{repo}/pulls/$n" 2>/dev/null)" \
-    || { echo "pr-review: could not read PR #$n — refusing to arm" >&2; return 20; }
-  # One jq pass for both fields this object is read for. The slug is case-folded inside it; the
-  # shared cross-check folds it again rather than trusting that, because a primitive with two callers
-  # must not carry a precondition one of them could quietly stop meeting.
   #
-  # CAPTURE FIRST, then split, and CHECK THE STATUS. jq emits `.head.sha` before it evaluates the
-  # second expression, so a jq that errors partway still writes a usable-looking first line: `head`
-  # ends up set and `gotslug` empty, which would skip the different-repository refusal below
+  # CAPTURE FIRST, then split, and CHECK THE STATUS. jq emits the first expression before it
+  # evaluates the second, so a jq that errors partway still writes a usable-looking first line:
+  # `head` ends up set and `gotslug` empty, which would skip the different-repository refusal below
   # entirely. Putting the substitution straight into the heredoc would discard the very status that
   # distinguishes that from a clean read.
   #
-  # `.head.repo.full_name` and `.head.ref` are read HERE rather than in a second call, because they
-  # are the coordinates the staleness anchor is looked up by and they belong to the same snapshot as
-  # the head SHA they describe. NOT case-folded, unlike the base slug: that one exists to be
-  # COMPARED against the local remote (where case must not decide the answer), while these two are
-  # interpolated into a URL and a ref name, both of which GitHub treats as case-sensitive.
+  # `head_slug` and `head_ref` are read from the SAME snapshot as the head SHA, because they are the
+  # coordinates the staleness anchor is looked up by and they must describe the same observation.
+  # NOT case-folded, unlike the base slug: that one exists to be COMPARED against the local remote
+  # (where case must not decide the answer), while these two are interpolated into a URL and a ref
+  # name, both of which GitHub treats as case-sensitive.
   pfields="$(printf '%s' "$pjson" \
-             | jq -r '(.head.sha // ""), (.base.repo.full_name // "" | ascii_downcase), (.head.repo.full_name // ""), (.head.ref // "")' 2>/dev/null)" \
+             | jq -r '(.head_sha // ""), (.base_slug // "" | ascii_downcase), (.head_slug // ""), (.head_ref // "")' 2>/dev/null)" \
     || { echo "pr-review: could not parse PR #$n — refusing to arm" >&2; return 20; }
   { IFS= read -r head; IFS= read -r gotslug; IFS= read -r headslug; IFS= read -r headref; } <<EOF
 $pfields
@@ -230,7 +235,7 @@ EOF
   # selection, the conditional head-arrival anchor, and the per-reviewer classification. What stays
   # here is the mapping below — this guard's own exit codes, which are the thing that must NOT be
   # shared with the watcher.
-  classes="$(adb_reviewer_classes_for_pr pr-review "$n" "$want" "$head" "$headslug" "$headref")" \
+  classes="$(adb_reviewer_classes_for_pr pr-review "$n" "$want" "$head" "$headslug" "$headref" "$pjson" "$qslug")" \
     || { echo "pr-review: PR #$n — refusing to arm on review state it could not read" >&2; return 20; }
   verdict="$(adb_fold_reviewer_classes "$classes")"
 
@@ -243,12 +248,18 @@ EOF
     # Nothing else catches it — this repo's branch protection carries
     # `required_approving_review_count: 0` (verified live), so GitHub will happily merge a PR whose
     # only review says "do not merge this", and `required_conversation_resolution` gates on threads
-    # rather than on the verdict. It is not a deadlock either: addressing the feedback pushes a
-    # commit, which moves the head SHA, and the next review is evaluated against that.
+    # rather than on the verdict. Addressing the feedback pushes a commit, which moves the head SHA,
+    # and any LATER review is evaluated against that one.
+    #
+    # A PUSH IS NOT A TRIGGER, and this comment used to imply it was (#169). The Codex connector
+    # lists its own triggers — open a PR, mark a draft ready, comment `@codex review` — and a push is
+    # not among them, so a moved head is re-reviewed only when something ASKS. That request now
+    # exists (`pr-watch.sh request-review`), but it is invoked by `/resolve-pr-threads`, not by a
+    # bare push, so the honest instruction below names it rather than promising an automatic pass.
     rejected)
       echo "pr-review: PR #$n at $head — changes requested by: $(adb_reviewers_in_class "$classes" rejected)" >&2
       echo "pr-review: not arming auto-merge; a submitted review is not a satisfied one, and branch protection does not block on the verdict." >&2
-      echo "pr-review: address the feedback and push (which moves the head, and is re-reviewed), or merge by hand if you disagree." >&2
+      echo "pr-review: address the feedback and push, then REQUEST a re-review (/resolve-pr-threads does this) — a push alone does not trigger one — or merge by hand if you disagree." >&2
       return 19 ;;
     # REVIEW COMPLETE, ATTENTION REQUIRED. The reviewer spoke and is not satisfied. This used to be
     # a silent 0: `COMMENTED` was treated as "satisfied" on the argument that a comment-only bot

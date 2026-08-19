@@ -1293,6 +1293,33 @@ done
 for _fn in adb_reviewer_classes_for_pr adb_fold_reviewer_classes; do
   fact pr-classifier-shared "fixed:$_fn" -- $_prguards
 done
+# ...and ONE READ, in one place (#174). Both guards route their whole classification through
+# `adb_pr_snapshot`; neither may grow a `gh api graphql` of its own. The positive rule is what
+# proves each still calls it, and the `absent:` rule is what catches a guard that calls the shared
+# reader AND re-open-codes a query beside it — the shape #173 showed survives review, because the
+# copy looks correct in isolation and only diverges later.
+# shellcheck disable=SC2086
+fact pr-onread-shared "fixed:adb_pr_snapshot" -- $_prguards
+fact pr-onread-shared "fixed:adb_pr_snapshot" -- scripts/lib/common.sh
+# shellcheck disable=SC2086
+fact pr-onread-shared "absent:gh api graphql" "fires:gh api graphql -f owner=" -- scripts/lib/pr-review.sh
+# NOTE pr-watch.sh is deliberately NOT under that `absent:` rule: `request-review` legitimately
+# makes its OWN GraphQL read (#169), because the receipt query selects comment BODIES that the
+# classification snapshot must not pay for. The positive rule above still proves its CLASSIFY path
+# routes through the shared reader.
+
+# --- FACT: the one-read COST figure, measured once and restated in two operative headers (#174) ---
+# `adb_pr_snapshot` and `pr-watch.sh`'s poll budget both quote the same measurement, and a budget
+# nobody recomputes is how the poll-cost comment in that very file went stale TWICE — it said
+# "three" for as long as a fourth read had existed, and "240 requests" after the count changed. Two
+# copies is where that starts, so they are pinned together: re-measure and both must move.
+#
+# SCOPED TO THE CURRENT-CLAIM FILES, following the selfcheck-cost rule above. `CHANGELOG.md` and
+# `.ai-dev-baseline/decisions.md` carry the same figure DELIBERATELY, as dated records of what was
+# measured when; rewriting those would be falsifying history rather than correcting a claim. They
+# are not in this list and must not be added to it.
+fact pr-onread-cost 'fixed:39,833 bytes over 4 round trips' --   scripts/lib/common.sh scripts/lib/pr-watch.sh
+fact pr-onread-cost 'fixed:97.0%' --   scripts/lib/common.sh scripts/lib/pr-watch.sh
 # ...and the pipeline's own steps are pinned at the ONE place that now performs them. Pinning these
 # at the guards is what would push a future edit back toward open-coding the pipeline in each of
 # them, which is the duplication #167 removed at review time.

@@ -117,6 +117,8 @@
 #   pr-watch.sh observe --pr <number|url>            # classify once, print "<verdict> <head-sha>"
 #   pr-watch.sh wait    --pr <number|url> \          # poll until terminal, bounded; 0 model tokens
 #                       [--interval <secs>] [--max-secs <secs>]
+#   pr-watch.sh request-review --pr <number|url> \   # ask for a re-review of the CURRENT head (#169)
+#                       [--max-rounds <n>]
 #   pr-watch.sh -h | --help
 #
 # PLUGGABILITY, STATED PLAINLY: the `+1`-means-clean convention above is the CODEX CONNECTOR's,
@@ -142,6 +144,16 @@
 #                   signal will never be provable — so the stderr line says which. From `wait`, the
 #                   bound expired while still pending: hand off to a human. STDOUT: "pending <sha>".
 #   12 gone       — the PR is no longer OPEN (merged or closed). Stop watching.
+#
+#   `request-review` adds three of its own, disjoint from every code above and from pr-review.sh's
+#   16-21. None of the three is a failure: each names a different reason nothing was posted.
+#   13 already    — a re-review was already requested for THIS head. Idempotent no-op.
+#   14 no-trigger — no declared reviewer has a trigger phrase this module knows (or `bots = []`).
+#                   The caller carries on; the watch simply has nothing to wake it early.
+#   15 capped     — the round cap is reached. Stop looping and hand off to a human. NOTE it OUTRANKS
+#                   13: at the cap, a repeat observation of an already-asked head reports `capped`
+#                   rather than `already`. Deliberate — the cap is the stronger instruction, and
+#                   checking `already` first would buy an anchor read on every capped call.
 #   17 undeclared — the repo declares no `[reviewers] bots`, so it cannot be known whether a
 #                   reviewer is coming. FAIL CLOSED. Declare them, or `bots = []` if there are none.
 #   18 config     — `[reviewers] bots` is present but malformed. Fix agents.toml.
@@ -182,9 +194,14 @@
 # connector while the reviews endpoint reports `type: "Bot"` for the same App, so it would reject the
 # real signal.
 #
-# What this file must never grow: it does not resolve threads, edit code, push, or merge. It
-# observes and it waits. Acting on a `findings` verdict is the resolver's job; arming a merge is
-# the arming guard's.
+# What this file must never grow: it does not resolve threads, edit code, push, or merge. Acting on
+# a `findings` verdict is the resolver's job; arming a merge is the arming guard's.
+#
+# IT IS NO LONGER READ-ONLY, AND THAT WAS A DELIBERATE WIDENING (#169). `request-review` posts ONE
+# comment — a reviewer's own documented trigger phrase — because #49's multi-round loop cannot reach
+# round 2 without it: a push is not one of the connector's triggers, so a resolved-and-pushed PR sits
+# at `pending` until the bound expires. The list above is unchanged; what was added is narrow, and
+# the argument for putting it HERE rather than in the resolver's prose is beside the subcommand.
 #
 # Requires: gh (authenticated), jq.
 
@@ -229,26 +246,31 @@ OPT_PR=""
 # on this repo's recent PRs, so a 30s poll converges promptly, and 30 minutes is long enough to
 # cover a slow or queued review without waiting on one that is never coming.
 #
-# COST OF A POLL: FOUR reads — the PR, its reviews, its issue comments, its reactions — plus a
-# FIFTH, the head ref's activity, only on the branch where a date-scoped signal was actually found.
-# (This comment said "three" for as long as the comments read has existed; a budget nobody
-# recomputes is how a poll loop quietly doubles.)
+# COST OF A POLL, AFTER #174: ONE read — a single GraphQL document carrying the PR metadata and all
+# three signal surfaces — plus a SECOND, the head ref's activity, only on the branch where a
+# date-scoped signal was actually found. It was FOUR plus that fifth until the collapse; this
+# comment has now been recomputed twice (it said "three" for as long as the comments read existed),
+# which is the standing argument for recomputing it rather than trusting it.
 #
-# A full 30-minute watch at 30s is ~240 requests with no signal present — but price the OTHER regime
+# A full 30-minute watch at 30s is ~60 requests with no signal present — but price the OTHER regime
 # too, because it is the common one and pricing the exception as the rule is how this comment went
 # stale the first time. A `+1` or task-mode comment from a PREVIOUS head PERSISTS on the PR, so it
 # satisfies the anchor's guard on EVERY poll until it is proved fresh or the watch expires. That is
 # the ordinary state of a PR that got a clean pass and was then pushed to — exactly what `--watch`
-# is for — and it costs the fifth read every poll: ~300 requests, +25%. Against an authenticated
-# limit of 5000/hour both are comfortable but neither is free, which is why the interval is tunable
-# and why the clean/findings checks short-circuit the moment either lands.
+# is for — and it costs the anchor read every poll: ~120 requests, double. Both were ~240 and ~300
+# before the collapse. BYTES fell further than requests did: measured on this repo's PR #393 on
+# 2026-08-18, one classification went from 39,833 bytes over 4 round trips to 1,202 over 1 (97.0%).
+#
+# A PR whose reviews, issue comments or `+1` reactions exceed 100 costs MORE than one read, because
+# that surface is then re-read through the paginated REST endpoint rather than classified from a
+# truncated page (`adb_reviewer_classes_for_pr`). That is the honest bound: one round trip is the
+# common case, not a guarantee, and the alternative — trusting the newest 100 — is a fail-open.
 #
 # The anchor read is ONE request and is deliberately NOT `--paginate`d: activity comes back newest-
 # first, filtered server-side to the head ref, so the answer is on page one or the head is old
 # enough that no anchor is established — which is `pending`, the safe side. An unbounded paginated
-# scan for a bound that is only ever used to REFUSE would be paying by PR age for nothing.
-# Collapsing the reads into one GraphQL query is #174 (the sibling of #147, which makes the same
-# argument about the arming guard but is scoped to that file only).
+# scan for a bound that is only ever used to REFUSE would be paying by PR age for nothing. It stays
+# REST because GraphQL has no ref-scoped update time at all (see `adb_pr_snapshot`).
 OPT_INTERVAL=30
 OPT_MAX_SECS=1800
 # Consecutive unreadable polls tolerated before `wait` gives up. A single 502/rate-limit must not
@@ -320,7 +342,7 @@ read_declared_bots() {
 # Every read is fresh: this is called once per poll, so a head that moves mid-watch is picked up on
 # the next pass without any stored state to reset (base/practices/verify-before-asserting.md).
 classify() {
-  local n="$1" want="$2" pjson pfields head state merged gotslug src headslug headref
+  local n="$1" want="$2" qslug pjson pfields head state merged gotslug src headslug headref
   local classes verdict
 
   # THE IDENTITY PREDICATE IS NO LONGER APPLIED HERE. `adb_reviewer_match_jq` used to be hoisted into
@@ -329,22 +351,28 @@ classify() {
   # re-create the per-surface copies #173 removed — and, worse, would mean this file was selecting
   # evidence on its own terms rather than the shared ones (#167).
 
-  # Read, then parse — two steps, deliberately. Folding the extraction into `gh --jq` makes one
+  # ONE READ FOR THE WHOLE CLASSIFICATION (#174). This was `gh api repos/{owner}/{repo}/pulls/N`
+  # plus three paginated surface reads inside the shared pipeline; it is now a single GraphQL
+  # document carrying the PR metadata AND all three surfaces, normalized to the REST shapes the
+  # shared classifier already consumed. The poll budget below is written against that.
+  qslug="$(adb_pr_query_slug pr-watch "$OPT_PR")" \
+    || { echo "pr-watch: could not resolve which repository to read for PR #$n" >&2; return 20; }
+  # Read, then parse — two steps, deliberately. Folding the extraction into the read makes one
   # status cover both the network read and the shape of what came back, so a PR object that
   # arrived fine but carries no head SHA is indistinguishable from a failed call.
-  pjson="$(gh api "repos/{owner}/{repo}/pulls/$n" 2>/dev/null)" \
+  pjson="$(adb_pr_snapshot pr-watch "$n" "$qslug")" \
     || { echo "pr-watch: could not read PR #$n" >&2; return 20; }
   # CAPTURE FIRST, then split, and CHECK THE STATUS. jq emits earlier expressions before it
   # evaluates later ones, so a jq that errors partway still writes usable-looking leading lines;
   # putting the substitution straight into the heredoc would discard the status that tells a
   # partial parse from a clean one.
-  # `.head.repo.full_name` and `.head.ref` are read HERE rather than in a second call, because they
-  # are the coordinates the staleness anchor is looked up by and they belong to the same snapshot as
-  # the head SHA they describe. NOT case-folded, unlike the base slug: that one exists to be
-  # COMPARED against the local remote (where case must not decide the answer), while these two are
-  # interpolated into a URL and a ref name, both of which GitHub treats as case-sensitive.
+  # `head_slug` and `head_ref` come from the SAME snapshot as the head SHA, because they are the
+  # coordinates the staleness anchor is looked up by and must describe one observation. NOT
+  # case-folded, unlike the base slug: that one exists to be COMPARED against the local remote
+  # (where case must not decide the answer), while these two are interpolated into a URL and a ref
+  # name, both of which GitHub treats as case-sensitive.
   pfields="$(printf '%s' "$pjson" \
-             | jq -r '(.head.sha // ""), (.state // "" | ascii_downcase), (.merged_at // ""), (.base.repo.full_name // "" | ascii_downcase), (.head.repo.full_name // ""), (.head.ref // "")' 2>/dev/null)" \
+             | jq -r '(.head_sha // ""), (.state // "" | ascii_downcase), (.merged_at // ""), (.base_slug // "" | ascii_downcase), (.head_slug // ""), (.head_ref // "")' 2>/dev/null)" \
     || { echo "pr-watch: could not parse PR #$n" >&2; return 20; }
   { IFS= read -r head; IFS= read -r state; IFS= read -r merged; IFS= read -r gotslug
     IFS= read -r headslug; IFS= read -r headref; } <<EOF
@@ -393,7 +421,7 @@ EOF
   # module and the arming guard used to open-code those six steps identically, differing only in a
   # label — including the decision about when to fetch the anchor, which was a pattern match against
   # a record format common.sh owns. What stays here is the mapping below: this module's own verdicts.
-  classes="$(adb_reviewer_classes_for_pr pr-watch "$n" "$want" "$head" "$headslug" "$headref")" \
+  classes="$(adb_reviewer_classes_for_pr pr-watch "$n" "$want" "$head" "$headslug" "$headref" "$pjson" "$qslug")" \
     || { echo "pr-watch: PR #$n — could not read the review state" >&2; return 20; }
   verdict="$(adb_fold_reviewer_classes "$classes")"
 
@@ -425,6 +453,347 @@ EOF
   esac
 }
 
+
+# ================================================================================================
+# REQUESTING A RE-REVIEW (#169) — THE ONE MUTATION THIS MODULE MAKES
+#
+# #49's design is a bounded multi-round loop: watch -> findings -> resolve -> push -> re-review ->
+# watch again. ROUND 2 COULD NOT HAPPEN. The connector's own triggers, quoted from every lightweight
+# review body it posts on this repo, are: open a pull request for review, mark a draft as ready, or
+# comment "@codex review". A PUSH IS NOT AMONG THEM. The staleness rule above is correct and stays —
+# a review is SHA-scoped, a date-scoped signal must postdate the head's arrival — so after a resolve
+# round pushes a fix, classification honestly reads `pending` until the deadline. Every multi-round
+# resolve therefore ended in a structural timeout unless something ASKED.
+#
+# THIS DELIBERATELY WIDENS THIS FILE'S CONTRACT, and says so rather than doing it quietly. The
+# "observes and waits" boundary above still holds for everything it named — this module does not
+# resolve threads, edit code, push, or merge. What it now also does is post ONE comment whose entire
+# content is a reviewer's own documented trigger phrase. That belongs here rather than in the
+# resolver prose (the issue's own scope) because the per-reviewer signal conventions are already
+# this module's knowledge, and rather than in common.sh because that file must stay parseable below
+# the bash floor (D30) and should not carry a one-consumer mutation table.
+#
+# WHAT IS NOT PROVEN, STATED PLAINLY (base/practices/third-party-claims.md). That `@codex review`
+# RE-TRIGGERS a review is the vendor's own claim, read this run off the connector's review bodies on
+# PRs #127/#145/#166/#393/#398 — not something this repo has observed working. The repo has also
+# been seen in TASK mode (PR #178: one issue comment, no review object), where the quoted list may
+# not apply at all: the comment may start a lightweight review, start a second task, or do nothing.
+# Nothing here depends on the answer. An unknown reviewer is skipped, the request is idempotent, the
+# rounds are capped, and a trigger that turns out to be a no-op costs one comment and then times out
+# exactly as today. Determining which happens needs a live probe, which is an outward mutation and
+# is the operator's to run.
+#
+# IDEMPOTENCY IS DERIVED FROM THE PULL REQUEST, NOT FROM LOCAL STATE, for the same reason this
+# module refuses to model the transient 👀 reaction: a watcher must survive a restart, a resumed
+# session and a late start. A marker file would make "have I already asked?" unanswerable to the
+# second process and wrong after a crash. So the receipt IS the comment: a trigger comment that
+# postdates this head's arrival — the SAME anchor every date-scoped signal is judged by — means the
+# request has already been made for this head.
+#
+# THE GUARANTEE IS SEQUENTIAL, NOT GLOBAL, and overclaiming it would be worse than not having it.
+# Read-then-post is not atomic, so two watchers polling the same PR concurrently can both observe no
+# receipt and both post. This family already carries that class knowingly (#215's head-moved window,
+# the run claim's lease), and closing it needs server-side coordination GitHub does not offer on
+# comments. What is guaranteed: one request per (reviewer, head) for a single watcher, however many
+# polls observe that head.
+#
+# THE ROUND CAP IS COUNTED THE SAME WAY, and the same argument applies. #49 asked for "N rounds
+# (~3)" without saying what a round is; this module answers: a round is a re-review THIS mechanism
+# requested, so the cap counts trigger comments on the PR regardless of head. The reviewer's FIRST,
+# unrequested review is not a round — nobody asked for it — so a cap of 3 permits an initial review
+# plus three requested re-reviews.
+
+# adb_pw_trigger <login> — the phrase that asks <login> for a re-review, or non-zero when this
+# module knows of none. THE ONE HOME for per-reviewer trigger knowledge.
+#
+# A `case`, not an associative array: D30 keeps common.sh below the bash floor and this file is
+# routinely read beside it, and a five-line case is not worth the divergence. Unknown is the DEFAULT
+# and it is not an error — #169 requires a declared reviewer with no known trigger to be skipped
+# silently, because a wrong phrase posted at a bot is spam that no one asked for.
+#
+# Matched against the login AS DECLARED, case-folded, with any `[bot]` suffix tolerated: the same
+# App is spelled `foo` by GraphQL and `foo[bot]` by REST (see common.sh's adb_reviewer_match_jq),
+# and a trigger table that recognized only one spelling would silently stop firing when a reader
+# switched surfaces — which is exactly what #174 just did to this file.
+adb_pw_trigger() {
+  local who
+  who="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$who" in *'[bot]') who="${who%\[bot\]}" ;; esac
+  case "$who" in
+    chatgpt-codex-connector) printf '@codex review' ;;
+    *) return 1 ;;
+  esac
+}
+
+# The default round cap. Overridable with --max-rounds so a repo that wants exactly one retry can
+# say so; three is #49's own "~3".
+_ADB_PW_MAX_ROUNDS=3
+
+# cmd_request_review — ask every declared reviewer that has a known trigger to look at this head.
+#
+#   0  requested   — a trigger comment was posted. STDOUT: "requested <sha>".
+#   13 already     — a trigger for THIS head already exists; nothing was posted (idempotent no-op).
+#                    STDOUT: "already <sha>".
+#   14 no-trigger  — reviewers are declared, but none has a trigger this module knows. Not an error:
+#                    the caller carries on and lets the watch time out. STDOUT: "no-trigger <sha>".
+#   15 capped      — the round cap is reached; refusing to ask again. STDOUT: "capped <sha>".
+#   12 gone        — the PR is no longer OPEN. STDOUT: "gone <sha>".
+#   17/18          — the declaration is absent or malformed (same meanings as everywhere here).
+#   20 unknown     — live state unreadable, or the head's arrival could not be established. FAIL
+#                    CLOSED: an unprovable receipt must never be read as "not yet asked", because
+#                    that direction SPAMS the reviewer on every poll.
+#   2  usage       — bad or missing arguments.
+cmd_request_review() {
+  local n want wrc qslug snap pfields head state gotslug headslug headref qerr
+  local phrases="" who trig posted=0 anchor arc rounds fresh recheck rfields nowhead nowstate
+
+  [ -n "$OPT_PR" ] || { echo "pr-watch: request-review requires --pr <number|url>" >&2; return 2; }
+  n="$(adb_pr_number "$OPT_PR")" \
+    || { echo "pr-watch: '--pr $OPT_PR' is not a PR number or a GitHub PR URL naming a repository" >&2; return 2; }
+  require_uint "$_ADB_PW_MAX_ROUNDS" --max-rounds || return 2
+  want="$(read_declared_bots)"; wrc=$?
+  [ "$wrc" -eq 0 ] || return "$wrc"
+  adb_require_gh jq || return 20
+
+  # `bots = []` is an explicit "no async reviewer". Nobody to ask; not an error.
+  #
+  # NO VERDICT LINE HERE, deliberately. The head SHA is not known yet — reading it would spend a
+  # network call on a repo that just said nobody is coming — and stdout is contracted to be
+  # "<verdict> <sha>" or NOTHING AT ALL. Printing a bare `no-trigger ` would hand a caller doing
+  # `read -r verdict sha` an empty second field that looks like a SHA it failed to parse. The exit
+  # code carries the whole answer, which is what every caller branches on anyway.
+  if [ -z "$want" ]; then
+    echo "pr-watch: PR #$n — no async reviewers declared ([reviewers] bots = []); nothing to ask" >&2
+    return 14
+  fi
+
+  qslug="$(adb_pr_query_slug pr-watch "$OPT_PR")" \
+    || { echo "pr-watch: could not resolve which repository to read for PR #$n" >&2; return 20; }
+
+  # THE RECEIPT READ IS ITS OWN QUERY, not the classification snapshot, because it needs comment
+  # BODIES and the snapshot deliberately does not select them: a task-mode review comment runs to
+  # kilobytes, and pulling every body on every poll would give back most of what #174 just saved.
+  # This runs once per resolve round, so its cost is irrelevant.
+  snap="$(adb_pw_receipts pr-watch "$n" "$qslug")" \
+    || { echo "pr-watch: could not read PR #$n — refusing to guess whether a re-review was already asked for" >&2
+         return 20; }
+  # ONE extraction pass for every field this function reads, captured and status-checked before any
+  # of them is used. Reading them as `$(…)` in an ARGUMENT position instead would discard the
+  # substitution status, so an unparseable snapshot would arrive as empty strings — which happens to
+  # fail closed here, but only by luck of what each consumer does with "", and this function POSTS.
+  pfields="$(printf '%s' "$snap" \
+             | jq -r '(.head_sha // ""), (.state // ""), (.base_slug // ""), (.head_slug // ""), (.head_ref // "")' 2>/dev/null)" \
+    || { echo "pr-watch: could not parse PR #$n" >&2; return 20; }
+  { IFS= read -r head; IFS= read -r state; IFS= read -r gotslug
+    IFS= read -r headslug; IFS= read -r headref; } <<EOF
+$pfields
+EOF
+  [ -n "$head" ] \
+    || { echo "pr-watch: could not resolve the head SHA of PR #$n" >&2; return 20; }
+
+  # A slug cross-check, exactly as `classify` does: a request is a MUTATION, so answering about the
+  # wrong repository here is worse than answering about it in a read.
+  adb_pr_slug_check pr-watch "$n" "$OPT_PR" "$gotslug"; qerr=$?
+  case "$qerr" in
+    0) ;;
+    2) return 2 ;;
+    *) return 20 ;;
+  esac
+
+  if [ "$state" != "open" ]; then
+    printf 'gone %s\n' "$head"
+    echo "pr-watch: PR #$n is $state — not asking for a review of a closed pull request" >&2
+    return 12
+  fi
+
+  # Which declared reviewers can even be asked? Unknown ones are skipped silently, per #169.
+  while IFS= read -r who; do
+    [ -n "$who" ] || continue
+    trig="$(adb_pw_trigger "$who")" || continue
+    phrases="$phrases$trig
+"
+  done <<EOF
+$want
+EOF
+  if [ -z "$phrases" ]; then
+    printf 'no-trigger %s\n' "$head"
+    echo "pr-watch: PR #$n — no declared reviewer has a re-review trigger this module knows; skipping" >&2
+    return 14
+  fi
+  # Two reviewers can share one phrase (nothing stops a repo declaring both spellings of one App),
+  # and posting it twice would be the spam this whole path exists to avoid.
+  phrases="$(printf '%s' "$phrases" | LC_ALL=C sort -u)"
+
+  # THE ROUND CAP, counted from the PR itself. Every trigger comment ever posted by this mechanism
+  # is a round, whatever head it was for — so a loop that keeps pushing and re-asking cannot run
+  # forever. Deliberately NOT anchored to the head: anchoring it there would reset the cap on every
+  # push, which is precisely the runaway it exists to bound.
+  rounds="$(adb_pw_count_receipts "$snap" "$phrases" "")" \
+    || { echo "pr-watch: PR #$n — could not count previous re-review requests; refusing to ask again" >&2
+         return 20; }
+  if [ "$rounds" -ge "$_ADB_PW_MAX_ROUNDS" ]; then
+    printf 'capped %s\n' "$head"
+    echo "pr-watch: PR #$n — $rounds re-review request(s) already made (cap $_ADB_PW_MAX_ROUNDS); handing off to a human" >&2
+    return 15
+  fi
+
+  # IDEMPOTENCY. A trigger comment that POSTDATES this head's arrival is the receipt. The anchor is
+  # the same server-assigned instant every date-scoped signal is judged against, for the same reason
+  # (#175): the head commit's own date is client-supplied. An anchor that cannot be established is
+  # 20, NOT "no receipt" — the permissive reading would re-post on every poll.
+  anchor="$(adb_head_anchor pr-watch "$n" "$headslug" "$headref" "$head")"; arc=$?
+  case "$arc" in
+    0) ;;
+    *) echo "pr-watch: PR #$n — cannot date this head's arrival, so cannot tell whether a re-review was already requested; refusing to ask" >&2
+       return 20 ;;
+  esac
+  fresh="$(adb_pw_count_receipts "$snap" "$phrases" "$anchor")" \
+    || { echo "pr-watch: PR #$n — could not read previous re-review requests; refusing to ask again" >&2
+         return 20; }
+  if [ "$fresh" -gt 0 ]; then
+    printf 'already %s\n' "$head"
+    echo "pr-watch: PR #$n at $head — a re-review was already requested for this head; not asking again" >&2
+    return 13
+  fi
+
+  # RE-VERIFY THE STATE THAT GATES THE MUTATION, IMMEDIATELY BEFORE MAKING IT. Everything above was
+  # read across two or three round trips, and `base/practices/verify-before-asserting.md` is
+  # explicit that an outward-facing mutation re-checks its gating state at the moment it acts rather
+  # than trusting a value captured earlier in the task. A pull request can close, or its head can
+  # move, inside that window — and a comment asking for a review of a head that no longer exists is
+  # noise nobody can act on. Reported by the independent reviewer.
+  #
+  # THIS NARROWS THE WINDOW; IT CANNOT CLOSE IT. Read-then-post is not atomic and GitHub offers no
+  # conditional-comment primitive (there is no `--match-head-commit` for a comment), so a push
+  # landing between this check and the POST is still possible. Narrowing a race is worth doing and
+  # worth describing honestly — the same standing this module already gives #215.
+  recheck="$(adb_pw_receipts pr-watch "$n" "$qslug")" \
+    || { echo "pr-watch: PR #$n — could not re-verify the PR immediately before asking; not asking" >&2
+         return 20; }
+  rfields="$(printf '%s' "$recheck" | jq -r '(.head_sha // ""), (.state // "")' 2>/dev/null)" \
+    || { echo "pr-watch: PR #$n — could not re-verify the PR immediately before asking; not asking" >&2
+         return 20; }
+  { IFS= read -r nowhead; IFS= read -r nowstate; } <<EOF
+$rfields
+EOF
+  if [ "$nowstate" != "open" ]; then
+    printf 'gone %s\n' "$head"
+    echo "pr-watch: PR #$n became $nowstate while this request was being prepared — not asking" >&2
+    return 12
+  fi
+  if [ "$nowhead" != "$head" ]; then
+    echo "pr-watch: PR #$n head moved $head -> $nowhead while this request was being prepared; not asking about a head that is already superseded" >&2
+    return 20
+  fi
+
+  # POST. One comment per distinct phrase. A failure here is 20 — the caller must not treat a failed
+  # request as a made one.
+  #
+  # A PARTIAL POST IS NOT RECOVERABLE TODAY, and the limit is stated rather than left to be found:
+  # if a later phrase failed after an earlier one succeeded, the next invocation would see the
+  # earlier receipt, classify the head as already asked, and never ask the remaining reviewer. It is
+  # unreachable while exactly one trigger phrase is defined — the loop runs once — and closing it
+  # needs a per-reviewer receipt rather than a per-head one. Reported by the independent reviewer.
+  while IFS= read -r trig; do
+    [ -n "$trig" ] || continue
+    gh api "repos/$qslug/issues/$n/comments" -f body="$trig" >/dev/null 2>&1 \
+      || { echo "pr-watch: PR #$n — could not post the re-review request '$trig'" >&2; return 20; }
+    echo "pr-watch: PR #$n at $head — requested a re-review with '$trig' (round $(( rounds + 1 )) of $_ADB_PW_MAX_ROUNDS)" >&2
+    posted=1
+  done <<EOF
+$phrases
+EOF
+  [ "$posted" -eq 1 ] || { echo "pr-watch: PR #$n — nothing was posted" >&2; return 20; }
+  printf 'requested %s\n' "$head"
+  return 0
+}
+
+# adb_pw_receipts <label> <pr-number> <slug> — the PR fields plus its issue comments WITH BODIES, in
+# one GraphQL read. Separate from `adb_pr_snapshot` on purpose: bodies are the one field the
+# classification path must not pay for (see cmd_request_review), and a receipt read happens once per
+# round rather than once per poll.
+#
+# TRUNCATION IS FATAL HERE, and in the opposite direction from the classifier's. There the risk is
+# missing a rejection; here it is missing a RECEIPT, which makes the module post again — so a PR with
+# more than 100 comments refuses rather than re-asking. Refusing is the safe side of THIS decision.
+adb_pw_receipts() {
+  local label="$1" n="$2" slug="$3" owner name raw out
+  case "$slug" in
+    */*) owner="${slug%%/*}"; name="${slug#*/}" ;;
+    *) echo "$label: cannot address PR #$n — '$slug' is not an owner/repo pair" >&2; return 2 ;;
+  esac
+  raw="$(gh api graphql -f owner="$owner" -f name="$name" -F number="$n" -f query='
+      query($owner:String!,$name:String!,$number:Int!){
+        repository(owner:$owner,name:$name){
+          pullRequest(number:$number){
+            state headRefOid headRefName
+            baseRepository{nameWithOwner} headRepository{nameWithOwner}
+            comments(last:100){totalCount nodes{createdAt body}}
+          }}}' 2>/dev/null)" \
+    || { echo "$label: could not read the comments of PR #$n" >&2; return 2; }
+  [ -n "$raw" ] || { echo "$label: could not read the comments of PR #$n (empty response body)" >&2; return 2; }
+  out="$(printf '%s' "$raw" | jq -c '
+      if (.errors | length) > 0 then error("graphql errors") else . end
+      | (.data.repository.pullRequest // null) as $p
+      | if $p == null then error("no pullRequest") else . end
+      | ($p.comments // null) as $cm
+      | if $cm == null then error("no comments connection") else . end
+      # THE SAME TYPE DISCIPLINE AS THE CLASSIFICATION SNAPSHOT, and here the direction it protects
+      # is POSTING. `// 0` and `// []` would read a malformed or absent connection as "no comments",
+      # which reads as "nobody has asked yet" and posts again — on every poll. Reported by the
+      # independent reviewer with the witness `{comments:{totalCount:0}}`.
+      | if ($cm.nodes | type) != "array" then error("the comments connection carries no nodes array") else . end
+      | if ($cm.totalCount | type) != "number" then error("the comments connection carries no totalCount") else . end
+      | if (($cm.totalCount | floor) != $cm.totalCount) or ($cm.totalCount < ($cm.nodes | length))
+        then error("the comments connection carries an impossible totalCount") else . end
+      | if $cm.totalCount > ($cm.nodes | length)
+        then error("more than 100 comments; cannot prove whether a request was already made")
+        else . end
+      # A comment with no usable createdAt cannot be dated against the anchor, so it can be neither
+      # honoured as a receipt nor dismissed as absent — refuse, rather than let it read as absence.
+      | if any($cm.nodes[]; ((.createdAt | type) != "string") or ((.createdAt // "") | length) == 0)
+        then error("a comment carries no usable createdAt") else . end
+      | { head_sha:  ($p.headRefOid // ""),
+          head_ref:  ($p.headRefName // ""),
+          head_slug: ($p.headRepository.nameWithOwner // ""),
+          base_slug: ($p.baseRepository.nameWithOwner // ""),
+          state:     (if ($p.state // "") == "MERGED" then "closed"
+                      else ($p.state // "" | ascii_downcase) end),
+          comments:  [ $cm.nodes[] | {created_at:.createdAt, body:(.body // "")} ] }' \
+      2>/dev/null)" \
+    || { echo "$label: could not parse the comments of PR #$n (errors, an unexpected shape, or more than 100 comments)" >&2
+         return 2; }
+  [ -n "$out" ] || { echo "$label: could not parse the comments of PR #$n" >&2; return 2; }
+  printf '%s' "$out"
+}
+
+# adb_pw_count_receipts <receipts-json> <phrases> <anchor> — how many comments are a trigger request.
+# With a non-empty <anchor>, only those strictly newer than it are counted; with an empty one, all of
+# them (the round cap). Prints the count.
+#
+# THE BOUNDARY IS INCLUSIVE (`>=`) WHERE EVERY SIGNAL RULE USES `>`, AND THE ASYMMETRY IS THE POINT.
+# GitHub timestamps carry second precision, so a request posted moments after the push it responds
+# to can share a second with the ref-arrival anchor. For a reviewer SIGNAL the safe reading of that
+# tie is "not provably after the head, so not fresh" — it withholds. For a RECEIPT the safe reading
+# is exactly inverted: treating the tie as "no receipt" posts a SECOND comment at the reviewer, and
+# does so on every subsequent poll. So each side rounds toward the answer that cannot do harm, and
+# they round opposite ways. Reported by the independent reviewer.
+#
+# The match is on the TRIMMED WHOLE BODY, not a substring, and that is the load-bearing part: a
+# reviewer's own review body QUOTES its trigger list verbatim ("Comment \"@codex review\""), and this
+# module reads it on PRs #127/#145/#166/#393/#398. A substring match would count the reviewer's own
+# boilerplate as this module's receipt — reading the cap as already spent, and never asking at all.
+adb_pw_count_receipts() {
+  local snap="$1" phrases="$2" anchor="$3" plist out
+  plist="$(printf '%s' "$phrases" | jq -R -s -c 'split("\n") | map(select(length > 0))')" || return 2
+  out="$(printf '%s' "$snap" | jq -r --argjson want "$plist" --arg anchor "$anchor" '
+      [ (.comments // [])[]
+        | select(($anchor == "") or ((.created_at // "") >= $anchor))
+        | (.body // "" | sub("^\\s+";"") | sub("\\s+$";"")) as $b
+        | select(any($want[]; . == $b)) ] | length' 2>/dev/null)" || return 2
+  case "$out" in ''|*[!0-9]*) return 2 ;; esac
+  printf '%s' "$out"
+}
 cmd_observe() {
   local n want wrc
   [ -n "$OPT_PR" ] || { echo "pr-watch: observe requires --pr <number|url>" >&2; return 2; }
@@ -553,6 +922,10 @@ parse_opts() {
         [ "$#" -ge 2 ] || { echo "pr-watch: --max-secs needs a value" >&2; exit 2; }
         [ -n "$2" ] || { echo "pr-watch: --max-secs must not be empty" >&2; exit 2; }
         OPT_MAX_SECS="$2"; shift ;;
+      --max-rounds)
+        [ "$#" -ge 2 ] || { echo "pr-watch: --max-rounds needs a value" >&2; exit 2; }
+        [ -n "$2" ] || { echo "pr-watch: --max-rounds must not be empty" >&2; exit 2; }
+        _ADB_PW_MAX_ROUNDS="$2"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "pr-watch: unknown option '$1'" >&2; usage >&2; exit 2 ;;
     esac
@@ -563,8 +936,9 @@ parse_opts() {
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 SUB="$1"; shift
 case "$SUB" in
-  observe)   parse_opts "$@"; cmd_observe ;;
-  wait)      parse_opts "$@"; cmd_wait ;;
-  -h|--help) usage; exit 0 ;;
-  *) echo "pr-watch: unknown subcommand '$SUB' (expected 'observe' or 'wait')" >&2; usage >&2; exit 2 ;;
+  observe)        parse_opts "$@"; cmd_observe ;;
+  wait)           parse_opts "$@"; cmd_wait ;;
+  request-review) parse_opts "$@"; cmd_request_review ;;
+  -h|--help)      usage; exit 0 ;;
+  *) echo "pr-watch: unknown subcommand '$SUB' (expected 'observe', 'wait' or 'request-review')" >&2; usage >&2; exit 2 ;;
 esac

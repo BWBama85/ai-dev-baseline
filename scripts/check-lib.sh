@@ -614,3 +614,157 @@ check_undeclare_bots() { rm -f "$1/agents.toml" "$2/.config/ai-dev-baseline/agen
 # read (the client-supplied date #175 removed), and that the ref-activity read is not paid for when
 # no date-scoped signal needs dating.
 check_pr_called() { [ -f "$1" ] && grep -q -- "$2" "$1"; }
+
+# check_pr_graphql_assembler <path> — write the jq program that turns the four REST-shaped fixtures
+# above into the ONE GraphQL document `adb_pr_snapshot` reads (#174).
+#
+# WHY A PROGRAM FILE RATHER THAN A SHELL FUNCTION: both suites' `gh` stubs need it, and a stub is a
+# separate executable that cannot call back into this library. Writing it to the fixture directory
+# once gives the shape a single home while keeping the stubs standalone.
+#
+# THE ASSEMBLER IS THE INVERSE OF THE ADAPTER, so the suites exercise the real normalization rather
+# than a parallel implementation of it. Two mappings are load-bearing:
+#
+#   * `__typename` DEFAULTS TO "User", and is "Bot" only when a fixture asks (`--bot-typename`).
+#     This is the difference between preserving ~170 existing assertions and silently rewriting
+#     them. The adapter appends `[bot]` to a Bot-typed login, so blanket-typing every fixture actor
+#     as Bot would turn the fixture login `chatgpt-codex-connector` into
+#     `chatgpt-codex-connector[bot]` — which flips check-pr-review.sh's #176 fail-open test (a HUMAN
+#     login must NOT satisfy a `foo[bot]` declaration) from a refusal into a match. The reconstruction
+#     gets its own explicit fixtures instead, which is what a new behaviour is owed.
+#   * `totalCount` DEFAULTS TO THE NODE COUNT, so nothing looks truncated unless a scenario says so.
+#     A scenario asks for truncation by writing `<surface>-total.txt` with a larger number.
+check_pr_graphql_assembler() {
+  cat > "$1" <<'JQPROG'
+# $pr/$reviews/$comments/$reactions arrive as --argjson; $rvtotal/$cmtotal/$rxtotal as --arg.
+def actor($login; $isbot):
+  if $isbot then {login:($login | sub("\\[bot\\]$";"")), __typename:"Bot"}
+  else {login:$login, __typename:"User"} end;
+def tc($given; $nodes): if ($given|length) > 0 then ($given|tonumber) else ($nodes|length) end;
+{ data: { repository: {
+    pullRequest: (
+      if $pr == null then null else {
+        state: (if ($pr.state // "open") == "open" then "OPEN"
+                elif (($pr.merged_at // null) != null) then "MERGED" else "CLOSED" end),
+        merged: (($pr.merged_at // null) != null),
+        mergedAt: ($pr.merged_at // null),
+        headRefOid: ($pr.head.sha // null),
+        headRefName: ($pr.head.ref // null),
+        baseRepository: (if ($pr.base.repo.full_name // null) == null then null
+                         else {nameWithOwner: $pr.base.repo.full_name} end),
+        headRepository: (if ($pr.head.repo // null) == null then null
+                         else {nameWithOwner: ($pr.head.repo.full_name // null)} end),
+        reviews: { totalCount: tc($rvtotal; $reviews),
+                   nodes: [ $reviews[] | {author: actor(.user.login; (.gqlbot // false)),
+                                          state: .state,
+                                          commit: (if (.commit_id // null) == null then null
+                                                   else {oid: .commit_id} end)} ] },
+        comments: { totalCount: tc($cmtotal; $comments),
+                    nodes: [ $comments[] | {author: actor(.user.login; (.gqlbot // false)),
+                                            createdAt: .created_at} ] },
+        reactions: { totalCount: tc($rxtotal; ($reactions | map(select(.content == "+1")))),
+                     nodes: [ $reactions[] | select(.content == "+1")
+                              | {createdAt: .created_at,
+                                 user: actor(.user.login; (.gqlbot // false))} ] }
+      } end ) } } }
+JQPROG
+}
+
+# check_pr_graphql_stub_body — the shell the `gh` stubs run for a `gh api graphql` call. Emitted as
+# a string so each suite can drop it into its own stub without a second copy of the wiring.
+#
+# Reads the same `$S/*.json` fixtures the REST arms read, so a scenario that writes `review_fx …`
+# needs no change: only the TRANSPORT moved. `STUB_GRAPHQL_RAW` overrides the whole body (for the
+# malformed/partial-error cases), and `STUB_GRAPHQL_FAIL` makes the call fail outright.
+check_pr_graphql_stub_body() {
+  cat <<'BODY'
+  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
+  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
+  if [ -f "$S/graphql-raw.json" ]; then cat "$S/graphql-raw.json"; exit "${STUB_GRAPHQL_RC:-0}"; fi
+  _prf="$S/pr.json"; _n=0
+  [ -f "$S/polls" ] && _n="$(cat "$S/polls")"
+  _n=$(( _n + 1 )); printf '%s' "$_n" > "$S/polls"
+  [ -f "$S/pr.$_n.json" ] && _prf="$S/pr.$_n.json"
+  _fx() { if [ -f "$S/$1.$_n.json" ]; then printf '%s' "$S/$1.$_n.json"; else printf '%s' "$S/$1.json"; fi; }
+  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
+  _tot() { [ -f "$S/$1-total.txt" ] && cat "$S/$1-total.txt"; }
+  jq -n --argjson pr "$(_rd "$_prf")" \
+        --argjson reviews "$(_rd "$(_fx reviews)")" \
+        --argjson comments "$(_rd "$(_fx comments)")" \
+        --argjson reactions "$(_rd "$(_fx reactions)")" \
+        --arg rvtotal "$(_tot reviews)" --arg cmtotal "$(_tot comments)" \
+        --arg rxtotal "$(_tot reactions)" \
+        -f "$S/assemble.jq"
+  exit 0
+BODY
+}
+
+# check_pr_receipts_stub_body — the `request-review` receipt read (#169). A DIFFERENT query over the
+# same PR, selecting comment BODIES, so it needs its own assembly; `$S/receipts.json` is the
+# fixture, an array of `{created_at, body}`.
+check_pr_receipts_stub_body() {
+  cat <<'BODY'
+  # The SAME failure knobs as the snapshot arm: an unreadable read is an unreadable read whichever
+  # query asked, and `request-review` must refuse to post on one — an unprovable receipt read as
+  # "not yet asked" re-posts on every poll, which is the one way this mutation becomes spam.
+  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
+  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
+  # A raw override for shapes the assembler below would never build — a malformed or absent
+  # comments connection. Spliced INTO a well-formed pullRequest so the scenario under test is the
+  # connection, not the envelope.
+  if [ -f "$S/receipts-raw.json" ]; then
+    jq -n --argjson pr "$(cat "$S/pr.json")" --argjson cm "$(cat "$S/receipts-raw.json")" '
+      { data: { repository: { pullRequest: (
+          { state: (if ($pr.state // "open") == "open" then "OPEN" else "CLOSED" end),
+            headRefOid: ($pr.head.sha // null), headRefName: ($pr.head.ref // null),
+            baseRepository: {nameWithOwner: ($pr.base.repo.full_name // null)},
+            headRepository: {nameWithOwner: ($pr.head.repo.full_name // null)} } + $cm ) } } }'
+    exit 0
+  fi
+  # PER-CALL FIXTURE ROTATION. `request-review` reads this endpoint TWICE — once to find the
+  # receipt, and once immediately before the POST to re-verify the state that gates it. A scenario
+  # that wants the PR to change UNDER the caller writes `rpr.<n>.json` for the nth call; without
+  # this the re-verify can only ever see what the first read saw, and a test for it would pass
+  # whether or not the re-verify exists (observed: it did).
+  _rn=0; [ -f "$S/rpolls" ] && _rn="$(cat "$S/rpolls")"
+  _rn=$(( _rn + 1 )); printf '%s' "$_rn" > "$S/rpolls"
+  _prf="$S/pr.json"; [ -f "$S/rpr.$_rn.json" ] && _prf="$S/rpr.$_rn.json"
+  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
+  jq -n --argjson pr "$(_rd "$_prf")" \
+        --argjson rc "$(_rd "$S/receipts.json")" \
+        --arg total "$( [ -f "$S/receipts-total.txt" ] && cat "$S/receipts-total.txt" )" '
+    { data: { repository: { pullRequest: {
+        state: (if ($pr.state // "open") == "open" then "OPEN"
+                elif (($pr.merged_at // null) != null) then "MERGED" else "CLOSED" end),
+        headRefOid: ($pr.head.sha // null),
+        headRefName: ($pr.head.ref // null),
+        baseRepository: (if ($pr.base.repo.full_name // null) == null then null
+                         else {nameWithOwner: $pr.base.repo.full_name} end),
+        headRepository: (if ($pr.head.repo // null) == null then null
+                         else {nameWithOwner: ($pr.head.repo.full_name // null)} end),
+        comments: { totalCount: (if ($total|length) > 0 then ($total|tonumber) else ($rc|length) end),
+                    nodes: [ $rc[] | {createdAt: .created_at, body: .body} ] } } } } }'
+  exit 0
+BODY
+}
+
+# check_pr_mark_bot <fixture> — flag every actor in a REST-shaped fixture as one GraphQL will
+# report with `__typename: "Bot"` and the BARE login. This is how a scenario opts INTO the
+# suffix-reconstruction path; without it the assembler types actors as `User` and passes the login
+# through, which is what keeps every pre-#174 assertion meaning what it meant.
+check_pr_mark_bot() {
+  local t; t="$(mktemp)"
+  jq -c 'map(. + {gqlbot:true})' "$1" > "$t" && mv "$t" "$1"
+}
+
+# check_pr_receipts_json <out> <created_at> <body> [...] — one PR issue comment per pair, for the
+# receipt read above.
+check_pr_receipts_json() {
+  local out="$1"; shift
+  local acc="[]"
+  while [ "$#" -ge 2 ]; do
+    acc="$(printf '%s' "$acc" | jq -c --arg at "$1" --arg b "$2" '. + [{created_at:$at, body:$b}]')"
+    shift 2
+  done
+  printf '%s\n' "$acc" > "$out"
+}
