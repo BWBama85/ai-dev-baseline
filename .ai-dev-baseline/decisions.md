@@ -6651,6 +6651,17 @@ limit: none of them is sufficient alone.
                  this very rule skipped delimiters only AFTER the space, which the reviewer caught
                  on its second pass: with the STATUS word emphasised ("a **green** suite") the
                  closing delimiter lands BEFORE it. Both sides are skipped.
+                 Round 3 added the same treatment for MARKDOWN LINKS — `[suite](url)` opens with
+                 `[` before the neighbour and leaves `](url)` before the space when the status word
+                 is the linked one — and closed a hole in the predication lookback: it steps over a
+                 DETERMINER to reach the verb, so a quantifier it did not recognise stepped over the
+                 VERB instead and exempted "has two failing suites". Quantifiers are determiners,
+                 and a bare numeral is matched by pattern rather than by listing digits.
+                 THE SHAPE OF THE RESIDUE IS NOW CLEAR AND WORTH STATING: every one of these is the
+                 same defect — inline markup or a function word sitting where the raw read expects a
+                 neighbour. They are fixed one construct at a time BY NAME because the alternative,
+                 skipping punctuation generally, re-admits the clause boundaries the whole design
+                 rests on; three separate mutations pin that.
                  AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM. "resulted in passing"
                  and "ended in passing" predicate the run they follow and were exempted; the
                  lexical difference from "discovered in passing" is the verb two words back, so

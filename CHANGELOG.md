@@ -88,8 +88,10 @@ only by a published release, which is what these entries are the notes for.
   all: `they make a green suite mean something` and `CI for #1 has a green suite` differ only in the
   verb in front, so a copula or possession verb before the token — or before its determiner — turns
   the carve-out off. The idiom is defeated the same way when its preposition is a verb's complement,
-  so `resulted in passing` fires while `mentioned in passing` does not. Emphasis is skipped by name
-  rather than by relaxing the separator, so `a green **suite**` is adjacent while `;` still is not.
+  so `resulted in passing` fires while `mentioned in passing` does not. Inline markup — emphasis and
+  markdown links — is skipped by name rather than by relaxing the separator, so `a green **suite**`
+  and `a green [suite](url)` are adjacent while `;` still is not, and the predication lookback
+  treats quantifiers as determiners so `has two failing suites` cannot step over its own verb.
   The residue is stated rather than implied: those lists are closed, so `PR #1 shows a green suite`
   is still a miss. The third candidate the issue floated, "a token not predicated of
   the co-sentential entity reference", was **withdrawn**: it is coreference analysis, and the

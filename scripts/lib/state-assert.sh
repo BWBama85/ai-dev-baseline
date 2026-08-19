@@ -300,7 +300,10 @@ cmd_lint() {
       # immediately before the token — or before its determiner — turns the carve-out off.
       # This is why `suite` can be exempted at all without swallowing the claim it names.
       split("is are was were has have had", PRED, " ")
-      split("a an the its their our my this that", DET, " ")
+      # DETERMINERS INCLUDE QUANTIFIERS, or the lookback steps over the verb it exists to find:
+      # "has two failing suites" and "has no failing suites" are the same predication as "has a
+      # failing suite". A bare numeral is handled by pattern rather than by listing digits.
+      split("a an the its their our my this that no some any few many several both all each every other another one two three four five six seven eight nine ten", DET, " ")
       # ...AND AN IDIOM IS DEFEATED WHEN ITS PREPOSITION IS A COMPLEMENT. "resulted in passing"
       # and "ended in passing" predicate the run they follow; "discovered in passing" and
       # "mentioned in passing" modify the verb. The lexical difference is the verb two words back,
@@ -381,21 +384,24 @@ cmd_lint() {
             # HERE, by name, rather than by relaxing the separator: `,` `;` `—` still break both
             # reads, which is the whole point of taking them raw.
             #
-            # ON BOTH SIDES OF THE SPACE, because either word may be the emphasised one. With the
+            # ON BOTH SIDES OF THE SPACE, because either word may be the wrapped one. With the
             # STATUS word emphasised ("a **green** suite") the closing delimiter lands BEFORE the
             # space, so skipping only after it leaves the neighbour unread and the sentence firing.
+            # A markdown LINK is the same shape with a tail: "[suite](url)" opens with `[` before
+            # the neighbour, and a linked status word leaves "](url)" before the space.
             attrw = ""
-            if (rest ~ /^[*_]* [*_]*[a-z]/) {
+            if (rest ~ /^(\]\([^ )]*\))?[*_]* [*_[]*[a-z]/) {
               attrw = rest
-              sub(/^[*_]*/, "", attrw)   # the CLOSING delimiter of an emphasised status word
+              sub(/^\]\([^ )]*\)/, "", attrw)   # the link TAIL of a linked status word
+              sub(/^[*_]*/, "", attrw)          # the CLOSING delimiter of an emphasised one
               sub(/^ /, "", attrw)
-              sub(/^[*_]+/, "", attrw)   # ...and the OPENING one of an emphasised neighbour
+              sub(/^[*_[]+/, "", attrw)         # ...and the OPENING wrapper of the neighbour
               sub(/[^a-z0-9].*$/, "", attrw)
             }
             idiomw = ""
-            if (pre ~ /[^ ][ ][*_]*$/) {
+            if (pre ~ /[^ ][ ][*_[]*$/) {
               idiomw = pre
-              sub(/[*_]*$/, "", idiomw); sub(/ $/, "", idiomw); sub(/[*_]*$/, "", idiomw)
+              sub(/[*_[]*$/, "", idiomw); sub(/ $/, "", idiomw); sub(/[*_]*$/, "", idiomw)
               sub(/^.*[^a-z0-9]/, "", idiomw)
             }
             sub(/^[^a-z0-9]+/, "", rest)
@@ -412,6 +418,7 @@ cmd_lint() {
             pred = 0
             for (v in PRED) if (prevw == PRED[v]) pred = 1
             isdet = 0
+            if (prevw ~ /^[0-9]+$/) isdet = 1
             for (d in DET) if (prevw == DET[d]) isdet = 1
             if (isdet) for (v in PRED) if (prev2w == PRED[v]) pred = 1
             if (attrw != "" && !pred) for (k in ATTR) if (attrw == ATTR[k]) skip = 1

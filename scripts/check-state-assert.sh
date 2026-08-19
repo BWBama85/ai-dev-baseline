@@ -487,6 +487,21 @@ eq "${ lint_rc 'Mentioned **in** passing for #383'; }" 0 "...and around the idio
 eq "${ lint_rc 'PR #383 is merged; **files** are swept once.'; }" 1 "a semicolon still breaks adjacency, bold or not"
 eq "${ lint_rc 'CI for PR #383 has a **green** suite.'; }" 1 "...nor does emphasis defeat the predication rule"
 
+# A MARKDOWN LINK IS A WRAPPER, NOT A SEPARATOR (review round 3) — the same class as emphasis, and
+# it needs both sides too: a linked neighbour opens with `[`, a linked status word leaves `](url)`
+# sitting before the space.
+eq "${ lint_rc 'They make a green [suite](https://example.test) mean something for #383'; }" 0 "a linked attributive noun"
+eq "${ lint_rc 'The merged [files](https://example.test) are listed in #383'; }" 0 "...for the other witnessed noun"
+eq "${ lint_rc 'They make a [green](https://example.test) suite mean something for #383'; }" 0 "...and a linked STATUS word"
+eq "${ lint_rc 'Mentioned in [passing](https://example.test) for #383'; }" 0 "...on the idiom side too"
+
+# A QUANTIFIER IS A DETERMINER (review round 3). The predication lookback steps over the determiner
+# to find the verb, so a quantifier it does not recognise steps over the verb instead and exempts a
+# real claim.
+eq "${ lint_rc 'CI for #383 has two failing suites'; }" 1 "a number word between the verb and the adjective"
+eq "${ lint_rc 'CI for #383 has no failing suites'; }" 1 "...a negative quantifier"
+eq "${ lint_rc 'CI for #383 has 3 failing suites'; }" 1 "...and a bare numeral, matched by pattern not by list"
+
 # AN IDIOM WHOSE PREPOSITION IS A COMPLEMENT IS NOT AN IDIOM (review round 2). "resulted in
 # passing" predicates the run it follows; "discovered in passing" modifies the verb. The lexical
 # difference is the verb two words back.
