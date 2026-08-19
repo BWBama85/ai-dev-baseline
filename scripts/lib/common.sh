@@ -1528,6 +1528,200 @@ adb_paginated_list() {
   printf '%s' "$flat"
 }
 
+# ====== the ONE-READ PR SNAPSHOT (#174) =========================================================
+#
+# One GraphQL document replaces the four REST reads a classification used to make: the pull-request
+# object plus the three signal surfaces. Measured on this repo, PR #393 on 2026-08-18 —
+# 39,833 bytes over 4 round trips became 1,202 bytes over 1, a 97.0% reduction. The gate pays that
+# on every `/implement-issue` run and the watcher pays it once per poll, ~240-300 times in a default
+# half-hour watch.
+#
+# WHAT DID NOT MOVE, AND WHY. The head-arrival anchor stays REST (`adb_head_anchor`). Schema
+# introspection on 2026-08-18 found no ref-scoped update time anywhere in GraphQL: `Repository` has
+# only the repo-wide `pushedAt` — which D19 already REJECTED for liveness, not for safety — and
+# `Ref` exposes `target` but no history of when it moved. So the anchor keeps its own conditional
+# read, bounded to exactly the condition it has today: a date-scoped signal that needs dating.
+#
+# THE LOGIN SPELLING IS RECONSTRUCTED, NOT PASSED THROUGH, and this is the part a reader must not
+# "simplify". GraphQL and REST spell the same App differently, and GraphQL is not even consistent
+# with itself. Measured live on this repo, 2026-08-18:
+#
+#   surface     REST login                      GraphQL login                   __typename
+#   reviews     chatgpt-codex-connector[bot]    chatgpt-codex-connector         Bot
+#   comments    chatgpt-codex-connector[bot]    chatgpt-codex-connector         Bot
+#   reactions   chatgpt-codex-connector[bot]    chatgpt-codex-connector[bot]    User
+#
+# So the adapter appends `[bot]` iff `__typename` is `Bot` AND the login does not already carry the
+# suffix, which reproduces the REST spelling on all three surfaces and is a no-op on the third.
+#
+# THIS IS NOT D18's COLLISION REOPENED — the opposite. D18 forbids stripping `[bot]` from the
+# DECLARATION, because `bots = ["foo[bot]"]` would then be satisfied by a HUMAN named `foo`. Here
+# nothing touches the declaration: a login is promoted only when GitHub's own schema types the actor
+# as `Bot`, and a human account is never a `Bot`. Without this the collapse would SILENTLY BREAK
+# every strict declaration — `bots = ["foo[bot]"]` would stop matching a reviewer GraphQL reports as
+# bare `foo` — which fails safe (the guard withholds) but is a real, invisible regression, and #174
+# is explicitly a transport change that must not move a verdict.
+#
+# `-f` FOR owner/name, `-F` ONLY FOR number. `-F` type-infers, so a repository literally named `123`
+# arrives as the integer 123 and GraphQL rejects it ("Could not coerce value 123 to String").
+# Verified live. `-f` always sends a string.
+#
+# PAGINATION IS KEPT RATHER THAN ASSUMED AWAY (#174's own "or pagination kept"). A GraphQL connection
+# caps at 100 records per page — GitHub's documented hard limit, and `last:101` is refused outright
+# with EXCESSIVE_PAGINATION — and real pull requests exceed it: the gap-analysis pass measured
+# oven-sh/bun#30412 at 170 reviews, 708 issue comments and 1,752 THUMBS_UP reactions. Taking the
+# newest 100 and calling it the whole set is exactly the fail-open this family forbids: an older
+# CHANGES_REQUESTED could fall off the page while a newer `+1` survives, and the fold would return
+# `clean`. So every connection reports `totalCount` beside its nodes, and any connection whose
+# totalCount exceeds the nodes it returned is marked TRUNCATED — the caller then re-reads that ONE
+# surface through `adb_paginated_list`, the same fully-paginated REST read this collapse replaced.
+# The common case stays one round trip; the rare case is no worse than today and is never wrong.
+#
+# `content: THUMBS_UP` filters reactions SERVER-SIDE, so `totalCount` counts only the reactions this
+# classifier cares about (verified: the filtered and unfiltered counts differ on a PR carrying
+# other reaction types). That shrinks the payload and makes truncation rarer; it is NOT offered as a
+# proof that 100 is enough, because bun#30412 exceeds it even after the filter.
+#
+# Returns 0 with the normalized document on stdout, or 2 (the caller's unreadable code) — never a
+# partial document. `gh` exits non-zero on a GraphQL `errors` array but STILL WRITES the partial
+# body to stdout, so the status is checked first and `.errors` is rejected again in the parse.
+adb_pr_snapshot() {
+  local label="$1" n="$2" slug="$3" owner name raw out
+  case "$slug" in
+    */*) owner="${slug%%/*}"; name="${slug#*/}" ;;
+    *) echo "$label: cannot address PR #$n — '$slug' is not an owner/repo pair" >&2; return 2 ;;
+  esac
+  [ -n "$owner" ] && [ -n "$name" ] \
+    || { echo "$label: cannot address PR #$n — '$slug' is not an owner/repo pair" >&2; return 2; }
+
+  # Read, then parse — two steps, the same split every other read in this family uses. A pipeline
+  # would report jq's status for a failed read, and the parser would then see a partial document.
+  raw="$(gh api graphql -f owner="$owner" -f name="$name" -F number="$n" \
+           -f query="$(adb_pr_snapshot_query)" 2>/dev/null)" \
+    || { echo "$label: could not read PR #$n from $slug" >&2; return 2; }
+  [ -n "$raw" ] \
+    || { echo "$label: could not read PR #$n from $slug (empty response body)" >&2; return 2; }
+
+  # The adapter. Everything it emits is in the REST shape the shared classifier already consumes, so
+  # `adb_reviewer_evidence` is untouched by this change: `author.login` -> `user.login`,
+  # `commit.oid` -> `commit_id`, `createdAt` -> `created_at`, `THUMBS_UP` -> `+1`.
+  #
+  # `state` is mapped back to REST's vocabulary — GraphQL answers MERGED where REST answers `closed`
+  # with a non-null `merged_at` — because the callers' `!= "open"` test and their operator-facing
+  # diagnostics were written against the REST spelling and this is a transport change.
+  #
+  # `commit_id` is deliberately passed through as NULL when GraphQL reports no commit, rather than
+  # being defaulted to "": the classifier maps a non-string commit_id to `badreview` -> `unknown`
+  # (fail closed), and defaulting it to a string would smuggle it into the `!= $sha` arm and DROP it.
+  out="$(printf '%s' "$raw" | jq -c '
+      def actor:
+        if . == null then ""
+        else (.login // "") as $l
+          | if (.__typename == "Bot") and (($l | endswith("[bot]")) | not)
+            then $l + "[bot]" else $l end
+        end;
+      if (.errors | length) > 0 then error("graphql errors") else . end
+      | (.data.repository // null) as $r
+      | if $r == null then error("no repository") else . end
+      | ($r.pullRequest // null) as $p
+      | if $p == null then error("no pullRequest") else . end
+      | ($p.reviews // null) as $rv | ($p.comments // null) as $cm | ($p.reactions // null) as $rx
+      | if ($rv == null) or ($cm == null) or ($rx == null) then error("missing a connection") else . end
+      # EVERY CONNECTION MUST CARRY A REAL `nodes` ARRAY AND A REAL `totalCount`, and this check is
+      # NOT belt-and-braces — it is the same fail-open `adb_paginated_list` documents, in GraphQL
+      # spelling. A `// []` default reads a MISSING or non-array `nodes` as "that surface carried no
+      # records", so a partial document that dropped the reviews connection would discard a standing
+      # CHANGES_REQUESTED, leave a fresh `+1` as the only evidence, fold to `clean`, and PRINT THE
+      # HEAD SHA the caller hands to `gh pr merge --auto`. Reproduced end-to-end by
+      # check-pr-review.sh before this line existed: two of its malformed-connection cases returned
+      # 0 with a head SHA. `nodes:{}` is the nastiest of them, because jq iterates the VALUES of an
+      # object without erroring, so it degrades silently to the empty set.
+      # NOTE: no apostrophes in this block. It sits inside a shell single-quoted jq program.
+      | if (($rv.nodes | type) != "array") or (($cm.nodes | type) != "array")
+           or (($rx.nodes | type) != "array")
+        then error("a connection carries no nodes array") else . end
+      | if (($rv.totalCount | type) != "number") or (($cm.totalCount | type) != "number")
+           or (($rx.totalCount | type) != "number")
+        then error("a connection carries no totalCount") else . end
+      | { base_slug: ($p.baseRepository.nameWithOwner // ""),
+          head_sha:  ($p.headRefOid // ""),
+          head_ref:  ($p.headRefName // ""),
+          head_slug: ($p.headRepository.nameWithOwner // ""),
+          state:     (if ($p.state // "") == "MERGED" then "closed"
+                      else ($p.state // "" | ascii_downcase) end),
+          merged_at: ($p.mergedAt // ""),
+          trunc_reviews:   ($rv.totalCount > ($rv.nodes | length)),
+          trunc_comments:  ($cm.totalCount > ($cm.nodes | length)),
+          trunc_reactions: ($rx.totalCount > ($rx.nodes | length)),
+          reviews:   [ $rv.nodes[]
+                       | {user:{login:(.author|actor)}, state:(.state // ""), commit_id:(.commit.oid)} ],
+          comments:  [ $cm.nodes[]
+                       | {user:{login:(.author|actor)}, created_at:(.createdAt // "")} ],
+          reactions: [ $rx.nodes[]
+                       | {user:{login:(.user|actor)}, content:"+1", created_at:(.createdAt // "")} ] }' \
+      2>/dev/null)" \
+    || { echo "$label: could not parse the GraphQL snapshot of PR #$n (errors, or an unexpected shape)" >&2
+         return 2; }
+  [ -n "$out" ] \
+    || { echo "$label: could not parse the GraphQL snapshot of PR #$n" >&2; return 2; }
+  printf '%s' "$out"
+}
+
+# adb_pr_snapshot_query — the GraphQL document `adb_pr_snapshot` sends. A function rather than a
+# global so the string has one home and no caller can shadow it, and `printf` rather than a heredoc
+# because bash 3.2 backs a heredoc with a real temp file plus a `cat` exec (D30 keeps this file
+# parseable there).
+#
+# `last:` rather than `first:` on all three connections: the evidence that decides a verdict is the
+# NEWEST — a review at the current head, a signal postdating the head's arrival — so when a
+# connection IS truncated the records most likely to matter are the ones in hand, and the truncation
+# flag catches the rest. `totalCount` is what makes that detectable at all.
+adb_pr_snapshot_query() {
+  printf '%s' \
+'query($owner:String!,$name:String!,$number:Int!){' \
+'repository(owner:$owner,name:$name){' \
+'pullRequest(number:$number){' \
+'state merged mergedAt headRefOid headRefName ' \
+'baseRepository{nameWithOwner} headRepository{nameWithOwner} ' \
+'reviews(last:100){totalCount nodes{author{login __typename} state commit{oid}}} ' \
+'comments(last:100){totalCount nodes{author{login __typename} createdAt}} ' \
+'reactions(content:THUMBS_UP,last:100){totalCount nodes{createdAt user{login __typename}}}' \
+'}}}'
+}
+
+# adb_pr_query_slug <label> <pr-argument> — the `owner/repo` a PR read must ADDRESS.
+#
+# REST needed no such function: `repos/{owner}/{repo}/...` let gh expand the placeholder. GraphQL
+# takes owner and name as variables, so the repository has to be named up front — and naming it is
+# now this family's job rather than gh's.
+#
+# THE ORDER IS THE CONTRACT, and every rung is deliberate:
+#
+#   1. THE ARGUMENT'S OWN SLUG, when it carried one. A URL names a repository explicitly, and
+#      `adb_pr_slug_check` still refuses (2) if that repository is not one this checkout tracks —
+#      so a foreign URL is rejected exactly as before, now without spending a read on it.
+#   2. THE SOLE GitHub REMOTE, when the checkout has exactly one. Git-only, no round trip, and
+#      unambiguous by construction.
+#   3. gh's OWN resolution, otherwise. Several remotes means a fork clone is possible, and there
+#      `origin` is the FORK while the pull request lives on the parent — so guessing `origin` would
+#      answer confidently about a different pull request, which is the one thing these guards must
+#      never do. `adb_repo_slug` asks gh, which resolves the parent, and caches for the process: a
+#      half-hour watch pays it once, not once per poll.
+#
+# Prints the slug; returns 1 when no repository can be resolved at all.
+adb_pr_query_slug() {
+  local label="$1" arg="$2" slug slugs
+  slug="$(adb_pr_slug "$arg")"
+  [ -n "$slug" ] && { printf '%s' "$slug"; return 0; }
+  slugs="$(adb_git_repo_slugs)" || {
+    echo "$label: cannot resolve this checkout's GitHub repository from any git remote" >&2
+    return 1; }
+  if [ "$(printf '%s\n' "$slugs" | grep -c .)" -eq 1 ]; then
+    printf '%s' "$slugs"; return 0
+  fi
+  adb_repo_slug || return 1
+}
+
 # adb_reviewer_evidence <who-list> <reviews-json> <comments-json> <reactions-json> <head-sha> —
 # SELECTION ONLY, no dating and no verdict. Prints one TAB-separated `<login>\t<kind>\t<value>` line
 # per piece of evidence a declared reviewer left, where <kind> is `review` (value = the upper-cased
@@ -1711,8 +1905,21 @@ EOF
 }
 
 # adb_reviewer_classes_for_pr <label> <pr-number> <who-list> <head-sha> <head-repo-slug> <head-ref>
+#                             <snapshot>
 # — the whole read-and-classify pipeline for one pull request. Prints the `<login>\t<class>` lines;
 # returns 0, or 2 if anything could not be read or dated (the caller maps that to its own code).
+#
+# THE THREE SURFACE READS ARE GONE (#174). The signals arrive already in hand, inside the single
+# GraphQL <snapshot> the caller took with `adb_pr_snapshot` — the same document its own head SHA and
+# slug came out of, so the surfaces and the head they are judged against are now ONE observation
+# rather than four. That closes the read-per-surface cost AND narrows #215's window: the head can no
+# longer move between the PR read and the reviews read, because there is only one read.
+#
+# WHAT SURVIVES IS `adb_paginated_list`, AS THE TRUNCATION FALLBACK. A GraphQL connection caps at
+# 100 records and real pull requests exceed it (see adb_pr_snapshot), so a surface the snapshot
+# marked truncated is re-read here through the fully-paginated REST endpoint it always used. That is
+# #174's own "or pagination kept": the common case is one round trip, and the case where 100 is not
+# enough costs exactly what it costs today rather than silently classifying on a partial set.
 #
 # THE LAST THING BOTH GUARDS WERE STILL DOING SEPARATELY. After the classifier was shared, each one
 # still open-coded the same six steps — three `adb_paginated_list` calls with the same URLs in the
@@ -1733,18 +1940,37 @@ EOF
 # each guard, because "may I arm the merge?" and "is the reviewer done?" report at different
 # granularity (D20). Sharing the mapping is the trap; sharing the reading never was.
 adb_reviewer_classes_for_pr() {
-  local label="$1" n="$2" who="$3" head="$4" headslug="$5" headref="$6"
+  local label="$1" n="$2" who="$3" head="$4" headslug="$5" headref="$6" snap="$7"
   local reviews comments reacts evidence anchor arc tab
-  # A pull request IS an issue as far as comments and reactions go, so those two live under
-  # `issues/N/...`. The reactions read is deliberately NOT filtered server-side with `-f content=+1`:
-  # a bare `-f` makes `gh api` switch to POST, which would ADD a reaction rather than list them.
-  #
-  # ALL THREE ARE READ BEFORE ANYTHING IS CLASSIFIED. The verdict is a property of the whole declared
-  # set, so every reviewer's evidence must be in hand; and a failed read is then reported uniformly
-  # rather than being invisible on whichever path happened to return early.
-  reviews="$(adb_paginated_list "$label" "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" reviews "$n")" || return 2
-  comments="$(adb_paginated_list "$label" "repos/{owner}/{repo}/issues/$n/comments?per_page=100" comments "$n")" || return 2
-  reacts="$(adb_paginated_list "$label" "repos/{owner}/{repo}/issues/$n/reactions?per_page=100" reactions "$n")" || return 2
+
+  # Pull the three surfaces out of the ONE document. Read-then-check, as everywhere else: an
+  # unparseable snapshot must be an unreadable classification, never three empty surfaces — which
+  # would drop a standing CHANGES_REQUESTED and let a `+1` fold to `clean`, the exact false-arm
+  # `adb_paginated_list`'s empty-body guard exists to prevent.
+  reviews="$(printf '%s' "$snap" | jq -c '.reviews' 2>/dev/null)"
+  comments="$(printf '%s' "$snap" | jq -c '.comments' 2>/dev/null)"
+  reacts="$(printf '%s' "$snap" | jq -c '.reactions' 2>/dev/null)"
+  [ -n "$reviews" ] && [ -n "$comments" ] && [ -n "$reacts" ] \
+    && [ "$reviews" != null ] && [ "$comments" != null ] && [ "$reacts" != null ] \
+    || { echo "$label: PR #$n — the review snapshot carries no usable signal surfaces" >&2; return 2; }
+
+  # TRUNCATION -> RE-READ THAT SURFACE, FULLY PAGINATED. Only the connection that overflowed is
+  # re-read: a PR with 700 comments and 6 reviews pays for the comments and nothing else. A pull
+  # request IS an issue as far as comments and reactions go, so those two live under `issues/N/...`.
+  # The reactions read is deliberately NOT filtered server-side with `-f content=+1`: a bare `-f`
+  # makes `gh api` switch to POST, which would ADD a reaction rather than list them.
+  if [ "$(printf '%s' "$snap" | jq -r '.trunc_reviews' 2>/dev/null)" = true ]; then
+    echo "$label: PR #$n has more than 100 reviews — re-reading that surface with pagination" >&2
+    reviews="$(adb_paginated_list "$label" "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" reviews "$n")" || return 2
+  fi
+  if [ "$(printf '%s' "$snap" | jq -r '.trunc_comments' 2>/dev/null)" = true ]; then
+    echo "$label: PR #$n has more than 100 issue comments — re-reading that surface with pagination" >&2
+    comments="$(adb_paginated_list "$label" "repos/{owner}/{repo}/issues/$n/comments?per_page=100" comments "$n")" || return 2
+  fi
+  if [ "$(printf '%s' "$snap" | jq -r '.trunc_reactions' 2>/dev/null)" = true ]; then
+    echo "$label: PR #$n has more than 100 thumbs-up reactions — re-reading that surface with pagination" >&2
+    reacts="$(adb_paginated_list "$label" "repos/{owner}/{repo}/issues/$n/reactions?per_page=100" reactions "$n")" || return 2
+  fi
 
   evidence="$(adb_reviewer_evidence "$who" "$reviews" "$comments" "$reacts" "$head")" \
     || { echo "$label: could not evaluate the reviewer signals of PR #$n" >&2; return 2; }

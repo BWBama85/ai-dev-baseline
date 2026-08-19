@@ -8,6 +8,64 @@ only by a published release, which is what these entries are the notes for.
 
 ## [Unreleased]
 
+### Added
+
+- **`/resolve-pr-threads --watch` can now go round again (#169).** The multi-round loop #49
+  designed could never reach round 2: the Codex connector's own triggers are *open a PR*, *mark a
+  draft ready*, and *comment `@codex review`* — **a push is not among them** — so after a resolve
+  round pushed a fix, the watch correctly refused the review still pinned to the superseded head
+  and every multi-round resolve ended in a structural timeout.
+
+  `pr-watch.sh request-review --pr N` posts the reviewer's own trigger phrase and the workflow's
+  new step 7 loops back into the wait. It is **idempotent per head** — the receipt is a trigger
+  comment newer than the moment the head arrived, read from the PR itself, so a restarted or
+  resumed session picks up where the last one left off with no local state to go stale — and
+  **bounded**, at 3 rounds by default (`--max-rounds`), counted from the PR so a push cannot reset
+  the cap. A declared reviewer with no known trigger is skipped with no error, and every
+  unreadable path refuses to ask rather than re-asking on every poll.
+
+  **What is not proven, and is stated wherever the feature is described:** that `@codex review`
+  actually re-triggers anything. It is the vendor's own documented trigger for its **lightweight
+  review** mode, read this run off the connector's review bodies on this repo's PRs #127, #145,
+  #166, #393 and #398 — but this repo has also run in **task mode** (PR #178), where its effect is
+  untested. Nothing in the implementation depends on the answer; D81 records the deviation and the
+  probe the operator can run.
+
+  This deliberately moves `/resolve-pr-threads`' stated out-of-scope boundary and widens
+  `pr-watch.sh`'s observe-only contract. Both say so in place. Arming auto-merge after the loop is
+  still out of scope (#171).
+
+### Changed
+
+- **One read per reviewer classification, instead of four (#174).** `pr-watch.sh` and
+  `pr-review.sh` each read the pull-request object and then three paginated signal surfaces —
+  reviews, issue comments, reactions. All four are now a single GraphQL document, taken once in
+  the shared layer (`adb_pr_snapshot`) and consumed by both guards. Measured on this repo's PR
+  #393: **39,833 bytes over 4 round trips became 1,202 over 1, a 97.0% reduction.** The watcher
+  paid the old cost ~240-300 times in a default half-hour watch, and the arming guard pays it on
+  every `/implement-issue` run.
+
+  **Pagination is kept, not assumed away.** A GraphQL connection caps at 100 records and real pull
+  requests exceed it, so a connection whose `totalCount` exceeds the nodes it returned is re-read
+  through the paginated REST endpoint it always used. One round trip is the common case, not a
+  guarantee — and the alternative, trusting the newest 100, is a fail-open that could drop a
+  standing `CHANGES_REQUESTED` and let a fresh `+1` fold to `clean`. D78 records the choice.
+
+  **The verdict is unchanged by construction.** The adapter normalizes GraphQL back to the REST
+  shapes the shared classifier already consumed, including the login spelling: GitHub reports the
+  same App as bare `foo` with `__typename: "Bot"` on reviews and comments, but as `foo[bot]` on
+  reactions, so a `Bot`-typed login is given back its suffix. Without that, every strict
+  `bots = ["foo[bot]"]` declaration would have silently stopped matching. D79 records it.
+
+  The head-arrival staleness anchor **stays REST**: GraphQL exposes no ref-scoped update time at
+  all, so it keeps its own conditional read, bounded to exactly the condition it had before.
+
+### Fixed
+
+- **`pr-review.sh` no longer tells the operator that pushing a fix gets it re-reviewed.** It said
+  "address the feedback and push (which moves the head, and is re-reviewed)"; a push triggers no
+  review, which is the defect #169 exists to fix. It now names the step that does ask.
+
 ## [3.0.0] - 2026-08-18
 
 This release adds a **second install model**. The global symlink install is unchanged and stays

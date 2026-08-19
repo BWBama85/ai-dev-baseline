@@ -54,7 +54,14 @@ default set covers the common GitHub review bots:
 
 **Out of scope:** threads authored by humans (the repo owner or any other user). Never auto-resolve those — they require human-to-human discussion. If the only unresolved threads are human-authored, this skill reports them and exits without action.
 
-**Also out of scope:** opening new PRs, merging PRs, requesting re-review, or any action beyond addressing + resolving the listed threads.
+**Also out of scope:** opening new PRs, merging PRs, or any action beyond addressing + resolving the listed threads.
+
+> **Requesting a re-review WAS on that list, and #169 took it off deliberately.** The reviewer's own
+> triggers are: open a pull request, mark a draft ready, or comment `@codex review`. **A push is not
+> one of them** — so after step 4 pushes a fix, nothing tells the reviewer to look again, the watch
+> correctly refuses the now-stale evidence, and every multi-round resolve ended in a timeout. Step 7
+> closes that loop with one narrowly-scoped comment. It is still not merging, and still not arming
+> auto-merge (that is #171's decision, and it remains out of scope).
 
 ## Steps
 
@@ -176,10 +183,10 @@ reviewer has push access to this repo, the commit exists only in its sandbox and
 branch. `git cat-file -t <sha>` and `gh pr view <PR#> --json headRefOid` settle it in one step.
 
 **This step never mutates anything.** It observes and it waits. Every branch switch, commit, push,
-and resolution still happens in steps 1–7, under exactly the rules they already state.
+and resolution still happens in steps 1–8, under exactly the rules they already state.
 
 > **Run `--watch` in the foreground, in a session you are keeping.** The wait is cheap but it is
-> not detached: it lives as long as the invoking process does, and steps 1–7 switch your working
+> not detached: it lives as long as the invoking process does, and steps 1–8 switch your working
 > tree to the PR's head branch. Do not start a watch in a tree another session is working in. A
 > genuinely session-surviving watcher is #171, and isolating its working tree is #172.
 
@@ -283,7 +290,7 @@ if [ "${TOTAL:-0}" -ge 50 ]; then
 fi
 ```
 
-This abort happens **after** the step-1 branch switch, so run **step 7 (restore the
+This abort happens **after** the step-1 branch switch, so run **step 8 (restore the
 starting branch)** before exiting — do not leave the tree stranded on the PR head.
 
 ### 3. Classify each thread
@@ -411,7 +418,60 @@ Emit a concise summary to the user:
 >
 > Remaining unresolved bot threads: <REMAINING>. <If >0, name them.>
 
-### 7. Restore the starting branch (never strand the tree)
+
+### 7. Ask for a re-review, and go round again (`--watch` only)
+
+**Skip this step entirely unless `--watch` was given.** Without it this skill is one pass, exactly
+as it always was, and the operator decides what happens next.
+
+You addressed findings, pushed, and resolved the threads. **The reviewer does not know.** Its own
+triggers — quoted from every lightweight review body it posts — are *open a pull request for
+review*, *mark a draft as ready*, and *comment `@codex review`*. A push is not among them, and the
+watch is right to refuse a review pinned to the superseded head, so without this step round 2 never
+happens and `--watch` always ends in a timeout.
+
+Ask, then wait again. **Only when step 4 actually pushed something**: re-asking for a review of a
+head nobody changed is spam.
+
+```bash
+# Nothing was pushed -> nothing to re-review. `$LAST_SHA` is set by step 4 only when it committed.
+if [ -z "${LAST_SHA:-}" ]; then
+  echo "no fix was pushed; not requesting a re-review"
+else
+  bash "$HOME/.gemini/scripts/lib/pr-watch.sh" request-review --pr "$PR_NUM"
+fi
+```
+
+**Branch on that block's EXIT CODE.** Only `0` goes round again; the rest are terminal answers to
+report. None of `13`/`14`/`15` is a failure — each names a different reason nothing was posted:
+
+| Code | Meaning | What to do |
+| ---- | ------- | ---------- |
+| `0`  | a re-review was requested for this head | **go back to step 0's wait**, then round again from step 1 |
+| `13` | already requested for this head | do **not** ask again; go back to the wait |
+| `14` | no declared reviewer has a trigger this baseline knows | report it and **exit** — nothing will wake the watch, so a further round would only time out |
+| `15` | the round cap is reached | report it and **exit**; hand back to the operator |
+| `12` | the PR is no longer OPEN | report it and **exit** |
+| `20` | live state unreadable, or this head's arrival could not be dated | report it and **exit** — never re-ask on an unprovable receipt, that is how a reviewer gets spammed every poll |
+| `17` / `18` / `2` | the declaration is missing, malformed, or the arguments are bad | same remedies as step 0's table; **exit** |
+
+**The loop is bounded, and the bound is counted from the pull request itself** — every request this
+mechanism has posted, at any head. The default is 3; `--max-rounds N` changes it. There is no local
+counter to reset and none to go stale, which is what makes a resumed or restarted session pick up
+where the last one left off instead of starting the count again.
+
+**One request per (reviewer, head), for a single watcher.** The receipt is the comment: a trigger
+comment newer than the moment this head arrived means the ask already happened. Two watchers polling
+the same PR concurrently can still both post — read-then-post is not atomic and GitHub offers no
+lock on comments — so the guarantee is sequential, not global. Say that rather than implying more.
+
+**What the request does NOT do.** It does not arm auto-merge (#171 owns that decision), it does not
+merge, and it makes no claim that the reviewer will in fact respond: `@codex review` is the vendor's
+documented trigger for its **lightweight review** mode, and this repo has also been observed in
+**task mode**, where its effect is untested. If the reviewer stays silent the watch times out
+exactly as it does today — one comment worse off, and no further rounds are attempted past the cap.
+
+### 8. Restore the starting branch (never strand the tree)
 
 This skill switched your working tree to the PR head in step 1. Before exiting —
 on success **and** on every post-switch abort (the ≥50-thread guard, a gate failure,
@@ -446,12 +506,12 @@ fi
 - **Never `--no-verify`** on commits. Pre-commit gates exist for a reason.
 - **Never amend already-pushed commits.** Always make a new commit per bot-review batch.
 - **Idempotent:** running this skill twice in a row should be a no-op the second time. If you're about to resolve a thread that's already `isResolved`, skip it silently.
-- **Always restore the starting branch on exit** (step 7), on success or any post-switch abort — never leave the working tree stranded on the PR head (issue #17).
+- **Always restore the starting branch on exit** (step 8), on success or any post-switch abort — never leave the working tree stranded on the PR head (issue #17).
 
 ## Failure modes
 
 - **PR is not OPEN** (closed, merged, draft) → abort with a clear message. This skill only addresses live review traffic.
 - **Working tree dirty** → abort. The user must commit or stash before invoking; otherwise we'd risk losing their in-progress work when we check out the PR branch.
 - **Bot finding is ambiguous** (vague comment, can't tell what change is asked for) → reply `Need clarification: <what you don't understand>`, do **not** resolve. Let the human pick it up.
-- **All gates red after a fix attempt** → revert the fix in a new commit, leave the thread unresolved with a reply explaining the conflict, ask the user — then run step 7 to restore the starting branch so the tree isn't stranded on the PR head.
+- **All gates red after a fix attempt** → revert the fix in a new commit, leave the thread unresolved with a reply explaining the conflict, ask the user — then run step 8 to restore the starting branch so the tree isn't stranded on the PR head.
 - **≥50 unresolved threads** → abort; pagination is intentionally not implemented.

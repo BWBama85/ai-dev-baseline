@@ -6325,3 +6325,140 @@ limit: none of them is sufficient alone.
              and the later ones mostly found defects the earlier fixes introduced.** One review of a
              change this size is a sample, not a verdict.
 - baseline-issue: n/a — this repo IS the baseline; #285 is the tracking issue.
+
+## D78 — the reviewer read collapses to ONE GraphQL document, and pagination is KEPT as the truncation fallback rather than assumed away
+- date:      2026-08-19
+- category:  project-delta
+- unknown:   #174 asked for "one GraphQL read per classification" and required, in the same breath,
+             that the pagination bound be "shown safe where `--paginate` was, **or pagination
+             kept**". The gap-analysis pass returned those two as contradictory and escalated the
+             choice: GitHub caps a GraphQL connection at 100 records per page (documented, and
+             `last:101` is refused outright with `EXCESSIVE_PAGINATION` — verified live
+             2026-08-18), and real pull requests exceed it — oven-sh/bun#30412 was measured at 170
+             reviews, 708 issue comments and 1,752 THUMBS_UP reactions. Taking the newest 100 and
+             classifying on it is a fail-open: an older `CHANGES_REQUESTED` can fall off the page
+             while a newer `+1` survives, and the fold then returns `clean`, which on the arming
+             guard prints a head SHA. The three options offered were paginate, fail closed, or
+             revise the acceptance criteria — the first costs the round trip the issue exists to
+             remove, the second turns a busy PR into a permanent wedge, the third abandons the goal.
+- decision:  **A fourth option: GraphQL first, REST pagination only for a connection that actually
+             overflowed.** Every connection reports `totalCount` beside its nodes; a connection
+             whose `totalCount` exceeds the nodes returned is marked truncated, and
+             `adb_reviewer_classes_for_pr` re-reads THAT ONE SURFACE through `adb_paginated_list` —
+             the same fully-paginated REST read the collapse replaced. The common case is one round
+             trip and the acceptance criterion is met; the rare case costs exactly what it costs
+             today and is never wrong; and no PR becomes unclassifiable. `adb_paginated_list` is
+             therefore NOT retired — it changes from the primary read to the overflow path, and its
+             fail-closed guards stay exercised.
+- placement: `scripts/lib/common.sh` (`adb_pr_snapshot`, `adb_pr_snapshot_query`,
+             `adb_pr_query_slug`, the rewritten `adb_reviewer_classes_for_pr`);
+             `scripts/lib/pr-watch.sh` and `scripts/lib/pr-review.sh` (the callers);
+             `scripts/check-fact-drift.sh` (the `pr-onread-shared` pins)
+- reason:    The issue's own wording permits it, it is strictly better than all three escalated
+             options, and it is offline-assertable — a stub writes `<surface>-total.txt` and the
+             suite proves both that the fallback fires and that an untruncated read does NOT pay
+             for it. Measured on this repo's PR #393, 2026-08-18: 39,833 bytes over 4 round trips
+             became 1,202 over 1, a 97.0% reduction, against the issue's ">=95%".
+- baseline-issue: n/a
+
+## D79 — a GraphQL actor typed `Bot` is normalized to the REST `[bot]` spelling, and that is the OPPOSITE of D18's collision
+- date:      2026-08-19
+- category:  project-delta
+- unknown:   The gap-analysis pass flagged the collapse as reopening D18's login-identity gap:
+             GraphQL exposes the bare Actor login where REST exposes `foo[bot]`, so a strict
+             declaration `bots = ["foo[bot]"]` would silently stop matching, and "globally adding
+             the suffix would reintroduce the human/App collision D18 fixed".
+- decision:  Append `[bot]` iff GitHub's own schema types the actor `__typename: "Bot"` AND the
+             login does not already carry the suffix. Measured live on this repo, 2026-08-18,
+             across all three surfaces:
+
+               surface     REST login                      GraphQL login                 __typename
+               reviews     chatgpt-codex-connector[bot]    chatgpt-codex-connector       Bot
+               comments    chatgpt-codex-connector[bot]    chatgpt-codex-connector       Bot
+               reactions   chatgpt-codex-connector[bot]    chatgpt-codex-connector[bot]  User
+
+             The rule reproduces the REST spelling exactly on all three and is a no-op on the
+             third, so the collapse moves the transport and not the verdict — which is what #174
+             requires. It is NOT D18 reopened: D18 forbids stripping `[bot]` from the DECLARATION,
+             because a declared App would then be satisfied by a human holding the bare login.
+             Nothing here touches the declaration, and a human account is never `__typename: Bot`.
+             Without the rule the regression would be silent and safe-directioned (the guard
+             withholds), which is precisely the kind that survives review.
+- placement: `scripts/lib/common.sh` (`adb_pr_snapshot`'s `actor` filter);
+             `scripts/check-lib.sh` (`check_pr_mark_bot`, and the assembler that defaults actors to
+             `User` so the ~170 pre-existing assertions keep their meaning)
+- reason:    The fixtures could not simply be blanket-typed `Bot`: check-pr-review.sh's #176
+             fail-open test asserts that a HUMAN login `chatgpt-codex-connector` must NOT satisfy a
+             declared `chatgpt-codex-connector[bot]`, and blanket typing would have flipped that
+             refusal into a match — rewriting the assertion instead of preserving it. So the
+             reconstruction is opt-in per fixture and carries its own tests.
+- baseline-issue: n/a
+
+## D80 — a re-review request is `pr-watch`'s ONE mutation, its receipt is the PR itself, and the guarantee is SEQUENTIAL
+- date:      2026-08-19
+- category:  project-delta
+- unknown:   #169 required "at most one request per head SHA" and a bounded round count, and the
+             gap-analysis pass returned both as underspecified: exactly-once cannot be guaranteed
+             by a read-then-comment sequence (two watchers can both observe no receipt and post),
+             #49 said only "N rounds (~3)" without defining a round, and it was unstated whether
+             the orchestration belongs in prose or in code.
+- decision:  Four calls, each recorded rather than left implicit:
+             **(a) HOME.** `request-review` lives in `pr-watch.sh`, not `common.sh` and not the
+             resolver prose. The per-reviewer signal conventions are already this module's
+             knowledge; `common.sh` must stay parseable below the bash floor (D30) and should not
+             carry a one-consumer mutation table. This widens `pr-watch.sh`'s stated observe-only
+             contract, and the header says so explicitly rather than letting it drift.
+             **(b) RECEIPT.** Idempotency is derived from the pull request, never from local state:
+             a trigger comment postdating this head's arrival — the SAME `adb_head_anchor` every
+             date-scoped signal is judged by — IS the receipt. A marker file would be unreadable to
+             a second process and wrong after a crash, and this module already refuses to model
+             transient state for exactly that reason. An anchor that cannot be established is 20,
+             never "not yet asked": the permissive reading re-posts on every poll.
+             **(c) BOUND.** The guarantee is one request per (reviewer, head) FOR A SINGLE WATCHER.
+             Read-then-post is not atomic and GitHub offers no lock on comments, so concurrent
+             watchers can double-post. Stated, not overclaimed — the same honesty this family
+             already applies to #215's head-moved window.
+             **(d) ROUND.** A round is a re-review THIS mechanism requested, counted from trigger
+             comments on the PR regardless of head, capped at 3 (`--max-rounds`). The reviewer's
+             first, unrequested review is not a round. Deliberately NOT anchored to the head:
+             anchoring there would reset the cap on every push, which is the runaway it bounds.
+             The DECISION is code (`request-review`, regression-tested); the LOOP is prose
+             (`resolve-pr-threads.md` step 7), which is this repo's standing split.
+- placement: `scripts/lib/pr-watch.sh` (`adb_pw_trigger`, `cmd_request_review`, `adb_pw_receipts`,
+             `adb_pw_count_receipts`); `base/workflows/resolve-pr-threads.md` (step 7 and the
+             out-of-scope list); `scripts/check-pr-watch.sh`
+- reason:    Every acceptance criterion in #169 is offline-assertable under these choices, and none
+             of them depends on what the vendor actually does with the comment — see D81.
+- baseline-issue: n/a
+
+## D81 — DEVIATION: #169 ships without the live trigger probe its own comments called a prerequisite
+- date:          2026-08-19
+- category:      deviation
+- baseline-rule: `base/practices/third-party-claims.md` — a third-party behavior claim is
+                 unverified until checked this run, and rung 1 (an executed probe) outranks
+                 documentation. #169's own owner comment (2026-07-28) goes further: "before building
+                 a re-review trigger, establish empirically which mode the repo is in and what
+                 actually re-triggers it", and the gap-analysis pass returned the same as BLOCKING.
+- conflict:      The probe is an outward mutation — posting `@codex review` at a live reviewer — and
+                 it cannot be run from inside an implementation run without spending a real comment
+                 on a real PR to observe a vendor-side effect. Meanwhile the issue is a
+                 `release-blocker` in the active milestone and its acceptance criteria are all
+                 offline assertions, none of which the probe would change.
+- scope:         `scripts/lib/pr-watch.sh` (`adb_pw_trigger`'s phrase table only). Everything else
+                 in #169 — idempotency, the cap, the skip path, the workflow loop — is independent
+                 of whether the phrase works.
+- reason:        What IS established this run, at rung 1: the connector posts its own trigger list
+                 in every lightweight review body, and this repo carries that text on PRs #127,
+                 #145, #166, #393 and #398 — the last two dated 2026-08-18, i.e. the repo is in
+                 LIGHTWEIGHT mode today, which is the mode the quoted list describes. What is NOT
+                 established: that the comment re-triggers anything, and what task mode (observed on
+                 PR #178) does with it.
+
+                 The code is built so the answer does not change it. An unknown reviewer is skipped
+                 with no error, the request is idempotent per head, the rounds are capped, and a
+                 trigger that turns out to be a no-op costs exactly one comment before the watch
+                 times out as it does today. The unproven half is stated in the module header, in
+                 the workflow step, and in the PR body rather than being implied to work.
+
+                 The probe remains the operator's to run: post `@codex review` on a live PR and
+                 observe whether a review object, a second task, or nothing follows.

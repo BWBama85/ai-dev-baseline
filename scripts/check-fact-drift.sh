@@ -1293,6 +1293,20 @@ done
 for _fn in adb_reviewer_classes_for_pr adb_fold_reviewer_classes; do
   fact pr-classifier-shared "fixed:$_fn" -- $_prguards
 done
+# ...and ONE READ, in one place (#174). Both guards route their whole classification through
+# `adb_pr_snapshot`; neither may grow a `gh api graphql` of its own. The positive rule is what
+# proves each still calls it, and the `absent:` rule is what catches a guard that calls the shared
+# reader AND re-open-codes a query beside it — the shape #173 showed survives review, because the
+# copy looks correct in isolation and only diverges later.
+# shellcheck disable=SC2086
+fact pr-onread-shared "fixed:adb_pr_snapshot" -- $_prguards
+fact pr-onread-shared "fixed:adb_pr_snapshot" -- scripts/lib/common.sh
+# shellcheck disable=SC2086
+fact pr-onread-shared "absent:gh api graphql" "fires:gh api graphql -f owner=" -- scripts/lib/pr-review.sh
+# NOTE pr-watch.sh is deliberately NOT under that `absent:` rule: `request-review` legitimately
+# makes its OWN GraphQL read (#169), because the receipt query selects comment BODIES that the
+# classification snapshot must not pay for. The positive rule above still proves its CLASSIFY path
+# routes through the shared reader.
 # ...and the pipeline's own steps are pinned at the ONE place that now performs them. Pinning these
 # at the guards is what would push a future edit back toward open-coding the pipeline in each of
 # them, which is the duplication #167 removed at review time.

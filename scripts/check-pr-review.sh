@@ -114,6 +114,61 @@ case "${1:-}" in
   api)  ;;
   *)    exit 0 ;;
 esac
+# --- GraphQL: the ONE read a classification now makes (#174) --------------------------------
+# Two different queries reach here. They are told apart by a field only one of them selects:
+# the receipt read (#169's request-review) asks for comment BODIES, the classification snapshot
+# deliberately does not. Matching on that is the same "ask what the document actually contains"
+# discipline the REST arms use, rather than counting arguments.
+if [ "${2:-}" = "graphql" ]; then
+  _q=""
+  for a in "$@"; do case "$a" in query=*) _q="$a" ;; esac; done
+  case "$_q" in
+    *body*) printf 'graphql:receipts\n' >> "$S/calls"
+  # The SAME failure knobs as the snapshot arm: an unreadable read is an unreadable read whichever
+  # query asked, and `request-review` must refuse to post on one — an unprovable receipt read as
+  # "not yet asked" re-posts on every poll, which is the one way this mutation becomes spam.
+  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
+  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
+  _prf="$S/pr.json"
+  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
+  jq -n --argjson pr "$(_rd "$_prf")" \
+        --argjson rc "$(_rd "$S/receipts.json")" \
+        --arg total "$( [ -f "$S/receipts-total.txt" ] && cat "$S/receipts-total.txt" )" '
+    { data: { repository: { pullRequest: {
+        state: (if ($pr.state // "open") == "open" then "OPEN"
+                elif (($pr.merged_at // null) != null) then "MERGED" else "CLOSED" end),
+        headRefOid: ($pr.head.sha // null),
+        headRefName: ($pr.head.ref // null),
+        baseRepository: (if ($pr.base.repo.full_name // null) == null then null
+                         else {nameWithOwner: $pr.base.repo.full_name} end),
+        headRepository: (if ($pr.head.repo // null) == null then null
+                         else {nameWithOwner: ($pr.head.repo.full_name // null)} end),
+        comments: { totalCount: (if ($total|length) > 0 then ($total|tonumber) else ($rc|length) end),
+                    nodes: [ $rc[] | {createdAt: .created_at, body: .body} ] } } } } }'
+  exit 0
+      ;;
+    *) printf 'graphql:snapshot\n' >> "$S/calls"
+  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
+  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
+  if [ -f "$S/graphql-raw.json" ]; then cat "$S/graphql-raw.json"; exit "${STUB_GRAPHQL_RC:-0}"; fi
+  _prf="$S/pr.json"; _n=0
+  [ -f "$S/polls" ] && _n="$(cat "$S/polls")"
+  _n=$(( _n + 1 )); printf '%s' "$_n" > "$S/polls"
+  [ -f "$S/pr.$_n.json" ] && _prf="$S/pr.$_n.json"
+  _fx() { if [ -f "$S/$1.$_n.json" ]; then printf '%s' "$S/$1.$_n.json"; else printf '%s' "$S/$1.json"; fi; }
+  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
+  _tot() { [ -f "$S/$1-total.txt" ] && cat "$S/$1-total.txt"; }
+  jq -n --argjson pr "$(_rd "$_prf")" \
+        --argjson reviews "$(_rd "$(_fx reviews)")" \
+        --argjson comments "$(_rd "$(_fx comments)")" \
+        --argjson reactions "$(_rd "$(_fx reactions)")" \
+        --arg rvtotal "$(_tot reviews)" --arg cmtotal "$(_tot comments)" \
+        --arg rxtotal "$(_tot reactions)" \
+        -f "$S/assemble.jq"
+  exit 0
+      ;;
+  esac
+fi
 url=""
 for a in "$@"; do
   case "$a" in repos/*) [ -z "$url" ] && url="$a" ;; esac
@@ -168,6 +223,13 @@ exit 0
 STUB
 
 # ---- fixtures --------------------------------------------------------------------------------
+# The GraphQL assembler is a CONSTANT program, written once at setup rather than in `reset_fx`:
+# it is the TRANSPORT, not a scenario fixture. Recreating it per reset left every scenario
+# before the first reset reading an empty document — which is exactly how this suite failed
+# while #174 was being wired, and the failure looked like a broken guard rather than a broken
+# harness.
+check_pr_graphql_assembler "$S/assemble.jq"
+
 # WHEN THE HEAD REF BECAME THE HEAD SHA, as the repository activity API recorded it (#175/D19) —
 # NOT the head commit's committer date, which is client-supplied and which the guard never reads.
 # Every reaction/comment fixture is expressed relative to it so the staleness rule reads at a glance.
@@ -197,6 +259,8 @@ called()      { check_pr_called "$S/calls" "$1"; }
 # otherwise leak a signal into the next one.
 reset_fx() {
   rm -f "$S/reviews2.json" "$S/comments2.json" "$S/reactions2.json" "$S/calls"
+  # #174 fixtures: the truncation counters and the raw-document override.
+  rm -f "$S"/*-total.txt "$S/graphql-raw.json" "$S/polls"
   printf '[]\n' > "$S/reviews.json"
   printf '[]\n' > "$S/comments.json"
   printf '[]\n' > "$S/reactions.json"
@@ -218,6 +282,8 @@ _g() {
     STUB_EMPTY_ACTIVITY="${STUB_EMPTY_ACTIVITY:-0}" \
     STUB_EMPTY_REVIEWS="${STUB_EMPTY_REVIEWS:-0}" STUB_EMPTY_COMMENTS="${STUB_EMPTY_COMMENTS:-0}" \
     STUB_EMPTY_REACTIONS="${STUB_EMPTY_REACTIONS:-0}" \
+    STUB_GRAPHQL_FAIL="${STUB_GRAPHQL_FAIL:-0}" STUB_EMPTY_GRAPHQL="${STUB_EMPTY_GRAPHQL:-0}" \
+    STUB_GRAPHQL_RC="${STUB_GRAPHQL_RC:-0}" \
     bash "$PR" "$@" )
 }
 g() { OUT="${ _g "$@" 2>&1; }"; RC_=$?; }
@@ -312,6 +378,44 @@ eq "$RC_" "16" "a HUMAN login does not satisfy a '[bot]'-suffixed declaration (t
 review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 g gate --pr 7
 eq "$RC_" "0" "a '[bot]'-suffixed declaration matches the REST '[bot]' login"
+
+# ---- the GraphQL spelling, reconstructed (#174/D79) -------------------------------------------
+# GraphQL and REST spell the same App differently, and GraphQL is not consistent with itself.
+# Measured live on this repo, 2026-08-18: reviews and comments report the BARE login with
+# `__typename: "Bot"`, while reactions report `foo[bot]` with `__typename: "User"`. The adapter
+# gives a Bot-typed login its suffix back, which is what keeps the collapse a TRANSPORT change —
+# without it a strict `bots = ["foo[bot]"]` declaration would silently stop matching a reviewer
+# GraphQL reports as bare `foo`, and it would fail SAFE, i.e. invisibly.
+#
+# `check_pr_mark_bot` is what opts a fixture into that path; the assembler otherwise types actors
+# `User` and passes the login through, which is what preserves every assertion above.
+reset_fx; declare_bots '["chatgpt-codex-connector[bot]"]'
+review_fx "chatgpt-codex-connector" "APPROVED" "$HEAD_SHA"; check_pr_mark_bot "$S/reviews.json"
+gout gate --pr 7
+eq "$RC_" "0" "D79: a Bot-typed BARE login satisfies a '[bot]'-suffixed declaration (the REST spelling, reconstructed)"
+eq "$OUT" "$HEAD_SHA" "D79: ...and the reconstruction reaches the arm, head SHA and all"
+# The control that makes that assertion mean something: the SAME bare login, NOT typed Bot, is a
+# human and must still be refused. This is the pair — one without the other proves nothing.
+reset_fx; declare_bots '["chatgpt-codex-connector[bot]"]'
+review_fx "chatgpt-codex-connector" "APPROVED" "$HEAD_SHA"
+g gate --pr 7
+eq "$RC_" "16" "D79: a User-typed bare login is still a HUMAN and still does not satisfy it"
+# ...and the reconstruction must not double the suffix on a login that already carries one.
+reset_fx; declare_bots '["chatgpt-codex-connector[bot]"]'
+review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"; check_pr_mark_bot "$S/reviews.json"
+g gate --pr 7
+eq "$RC_" "0" "D79: an already-suffixed Bot login is not suffixed twice"
+# The reactions surface is the one where GraphQL already reports the suffix, so the rule is a
+# no-op there — pinned because a rule that fired there would produce `foo[bot][bot]` and match
+# nothing, wedging the guard at 16 on exactly the clean passes it exists to release.
+reset_fx; declare_bots '["chatgpt-codex-connector[bot]"]'
+reaction_fx "chatgpt-codex-connector[bot]" "+1" "$AFTER_AT"
+gout gate --pr 7
+eq "$RC_" "0" "D79: the reactions surface already carries the suffix; the rule is a no-op there"
+# RESTORE the state the block below was written against: it sets only `review_fx`/`declare_bots`
+# and relies on the other two surfaces being empty, so a reaction left here reports a clean pass
+# for five later scenarios that are asserting 16. (It did, while this block was being added.)
+reset_fx; declare_bots '["chatgpt-codex-connector[bot]"]'
 
 # A doubled suffix must not satisfy the strict form through the same one-suffix rule it exists to
 # deny — which is why the suffix is APPENDED to a bare declaration rather than stripped from the API
@@ -551,8 +655,11 @@ if called '/activity'; then ok; else bad "the ref-activity read MUST happen when
 
 # ---- every NEW surface fails closed ------------------------------------------------------------
 reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
-STUB_FAIL_COMMENTS=1  g gate --pr 7; eq "$RC_" "20" "a failed issue-comments read -> 20"; STUB_FAIL_COMMENTS=0
-STUB_FAIL_REACTIONS=1 g gate --pr 7; eq "$RC_" "20" "a failed reactions read -> 20"; STUB_FAIL_REACTIONS=0
+# THE THREE SURFACE READS ARE NOW ONE (#174), so the three per-endpoint failure knobs collapse into
+# one — and the invariant they protected does not change: a surface that could not be read must
+# never be classified as a surface that carried nothing.
+STUB_GRAPHQL_FAIL=1 g gate --pr 7; eq "$RC_" "20" "a failed single-read -> 20"; STUB_GRAPHQL_FAIL=0
+STUB_EMPTY_GRAPHQL=1 g gate --pr 7; eq "$RC_" "20" "an EMPTY response body is not an empty document -> 20"; STUB_EMPTY_GRAPHQL=0
 STUB_FAIL_ACTIVITY=1  g gate --pr 7; eq "$RC_" "20" "a failed ref-activity read -> 20 (never an arm)"; STUB_FAIL_ACTIVITY=0
 STUB_EMPTY_ACTIVITY=1 g gate --pr 7; eq "$RC_" "20" "an EMPTY activity body is not an empty list -> 20"; STUB_EMPTY_ACTIVITY=0
 
@@ -566,28 +673,54 @@ reset_fx; declare_bots '["chatgpt-codex-connector"]'
 review_fx   "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
 reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
 g gate --pr 7; eq "$RC_" "19" "control: the rejection is seen when the reviews surface reads normally"
-STUB_EMPTY_REVIEWS=1 g gate --pr 7
-eq "$RC_" "20" "an EMPTY reviews body -> 20; it must NOT let a fresh '+1' arm over a hidden rejection"
-STUB_EMPTY_REVIEWS=1 gout gate --pr 7
-eq "$OUT" "" "...and prints NO head SHA — printing it is what authorizes the arm"
-STUB_EMPTY_REVIEWS=0
-# The same hole on the other two surfaces, where an emptied read hides an ATTENTION signal instead.
-reset_fx; comment_fx "chatgpt-codex-connector[bot]" "$AFTER_AT"
-reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
-g gate --pr 7; eq "$RC_" "21" "control: the task-mode comment is seen when the comments surface reads normally"
-STUB_EMPTY_COMMENTS=1 g gate --pr 7
-eq "$RC_" "20" "an EMPTY comments body -> 20; it must not let a '+1' arm over a hidden comment"
-STUB_EMPTY_COMMENTS=0
-reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
-STUB_EMPTY_REACTIONS=1 g gate --pr 7
-eq "$RC_" "20" "an EMPTY reactions body -> 20, not 'no reaction here'"
-STUB_EMPTY_REACTIONS=0
-for bad_json in 'not json at all' '{"message":"Not Found"}'; do
-  reset_fx; printf '%s\n' "$bad_json" > "$S/comments.json"
-  g gate --pr 7; eq "$RC_" "20" "an unparseable/wrapped comments response -> 20 ($bad_json)"
-  reset_fx; printf '%s\n' "$bad_json" > "$S/reactions.json"
-  g gate --pr 7; eq "$RC_" "20" "an unparseable/wrapped reactions response -> 20 ($bad_json)"
+
+# A CONNECTION THAT IS ABSENT OR NULL IN THE DOCUMENT is the #174 shape of the same defect. GraphQL
+# answers a field it could not resolve with `null` and an `errors` entry beside otherwise-good data,
+# so the dangerous document is a PARTIAL one: the rejection's whole connection is gone while the
+# `+1` survives, and a reader that treated a missing connection as an empty one would fold to
+# `clean` AND PRINT THE HEAD SHA. Each is driven from a raw document, because that is the only way
+# to produce a shape the assembler never would.
+_gql_raw() { printf '%s\n' "$1" > "$S/graphql-raw.json"; }
+_pr_ok='"state":"OPEN","merged":false,"mergedAt":null,"headRefOid":"'"$HEAD_SHA"'","headRefName":"feature","baseRepository":{"nameWithOwner":"acme/widget"},"headRepository":{"nameWithOwner":"acme/widget"}'
+_rx_fresh='"reactions":{"totalCount":1,"nodes":[{"createdAt":"'"$AFTER_AT"'","user":{"login":"chatgpt-codex-connector","__typename":"User"}}]}'
+_cm_none='"comments":{"totalCount":0,"nodes":[]}'
+for missing in \
+  '"reviews":null' \
+  ; do
+  reset_fx
+  _gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"','"$missing"','"$_cm_none"','"$_rx_fresh"'}}}}'
+  g gate --pr 7
+  eq "$RC_" "20" "a NULL reviews connection -> 20; it must NOT let a fresh '+1' arm over a hidden rejection"
+  gout gate --pr 7
+  eq "$OUT" "" "...and prints NO head SHA — printing it is what authorizes the arm"
 done
+reset_fx
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":{"totalCount":0,"nodes":[]},"comments":null,'"$_rx_fresh"'}}}}'
+g gate --pr 7; eq "$RC_" "20" "a NULL comments connection -> 20; it must not let a '+1' arm over a hidden comment"
+reset_fx
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":{"totalCount":0,"nodes":[]},'"$_cm_none"',"reactions":null}}}}'
+g gate --pr 7; eq "$RC_" "20" "a NULL reactions connection -> 20, not 'no reaction here'"
+
+# A PARTIAL RESPONSE — `data` present AND `errors` present — is the one GraphQL shape with no REST
+# analogue, and it is the reason the adapter rejects `.errors` a SECOND time after `gh`'s exit
+# status. gh does exit non-zero on it, but it ALSO writes the partial body to stdout, so a caller
+# that only piped would parse a document GitHub itself called wrong.
+reset_fx
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":{"totalCount":0,"nodes":[]},'"$_cm_none"','"$_rx_fresh"'}}},"errors":[{"message":"Something went wrong"}]}'
+STUB_GRAPHQL_RC=0 g gate --pr 7
+eq "$RC_" "20" "a PARTIAL {data,errors} response -> 20 even when gh exits 0"
+STUB_GRAPHQL_RC=0
+reset_fx
+_gql_raw '{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"}]}'
+g gate --pr 7; eq "$RC_" "20" "a NOT_FOUND repository -> 20"
+reset_fx
+_gql_raw '{"data":{"repository":{"pullRequest":null}},"errors":[{"type":"NOT_FOUND","message":"no such PR"}]}'
+g gate --pr 7; eq "$RC_" "20" "a NOT_FOUND pull request -> 20"
+for bad_json in 'not json at all' '{"message":"Not Found"}' '[]'; do
+  reset_fx; _gql_raw "$bad_json"
+  g gate --pr 7; eq "$RC_" "20" "an unparseable/wrapped GraphQL response -> 20 ($bad_json)"
+done
+reset_fx; rm -f "$S/graphql-raw.json"
 # A NON-ARRAY DOCUMENT ON A SIGNAL SURFACE IS NOT AN EMPTY LIST — the empty-body bug's twin, and it
 # reaches the same false arm. Iterating a non-array does not fail: `{}` flattens to `[]`, i.e.
 # exactly "this surface carried no records". So a malformed reviews document discards a standing
@@ -596,20 +729,21 @@ reset_fx; declare_bots '["chatgpt-codex-connector"]'
 review_fx   "chatgpt-codex-connector[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
 reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
 g gate --pr 7; eq "$RC_" "19" "control: the rejection is seen when the reviews document is an array"
-for doc in '{}' '{"a":[]}' '{"message":"Not Found"}'; do
+for doc in '"reviews":{"totalCount":0}' '"reviews":{"totalCount":0,"nodes":{}}' '"reviews":"nope"'; do
   reset_fx
-  reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
-  printf '%s\n' "$doc" > "$S/reviews.json"
+  _gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"','"$doc"','"$_cm_none"','"$_rx_fresh"'}}}}'
   g gate --pr 7
-  eq "$RC_" "20" "a NON-ARRAY reviews document -> 20, never 'no reviews here' ($doc)"
+  eq "$RC_" "20" "a MALFORMED reviews connection -> 20, never 'no reviews here' ($doc)"
   gout gate --pr 7
   eq "$OUT" "" "...and prints NO head SHA ($doc)"
 done
-reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
-printf '%s\n' '{}' > "$S/comments.json"
-g gate --pr 7; eq "$RC_" "20" "a NON-ARRAY comments document -> 20"
-reset_fx; printf '%s\n' '{}' > "$S/reactions.json"
-g gate --pr 7; eq "$RC_" "20" "a NON-ARRAY reactions document -> 20"
+reset_fx
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":{"totalCount":0,"nodes":[]},"comments":{"totalCount":0,"nodes":"x"},'"$_rx_fresh"'}}}}'
+g gate --pr 7; eq "$RC_" "20" "a MALFORMED comments connection -> 20"
+reset_fx
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":{"totalCount":0,"nodes":[]},'"$_cm_none"',"reactions":{"totalCount":0,"nodes":5}}}}'
+g gate --pr 7; eq "$RC_" "20" "a MALFORMED reactions connection -> 20"
+reset_fx; rm -f "$S/graphql-raw.json"
 
 # A REVIEW THAT CANNOT BE TIED TO A COMMIT is unknown, not absent — end to end, on the arming path.
 # The commit filter used to run before the reviewer match, so this rejection vanished and the `+1`
@@ -661,14 +795,35 @@ gout gate --pr 7; eq "$RC_" "0" "an UNDECLARED login's undatable comment is igno
 # ---- pagination on the two new surfaces --------------------------------------------------------
 # A busy PR pushes the bot's reaction off page 1 behind human reactions; a missed `+1` wedges the
 # guard at 16 on a PR that was in fact reviewed clean.
+# A GraphQL connection caps at 100 records (GitHub refuses `last:101` outright), and real PRs
+# exceed it — the gap-analysis pass measured oven-sh/bun#30412 at 708 issue comments and 1,752
+# THUMBS_UP reactions. Trusting the newest 100 would be a fail-open, so a truncated connection is
+# RE-READ through the paginated REST endpoint. `<surface>-total.txt` is how a scenario says
+# "totalCount exceeds what the page returned"; the page-two fixtures below are the records that
+# only the paginated read can see, so this proves the fallback actually happened.
 reset_fx
 printf '%s\n' '[{"user":{"login":"a-human"},"content":"heart","created_at":"'"$AFTER_AT"'"}]' > "$S/reactions.json"
 printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"content":"+1","created_at":"'"$AFTER_AT"'"}]' > "$S/reactions2.json"
-gout gate --pr 7;  eq "$RC_" "0" "a '+1' on the SECOND page is found (paginated read)"
+printf '101\n' > "$S/reactions-total.txt"
+gout gate --pr 7;  eq "$RC_" "0" "a TRUNCATED reactions connection falls back to the paginated read"
+g gate --pr 7;     has "$OUT" "more than 100 thumbs-up reactions" "the fallback says which surface overflowed"
 reset_fx
 printf '%s\n' '[{"user":{"login":"a-human"},"created_at":"'"$AFTER_AT"'"}]' > "$S/comments.json"
 printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"created_at":"'"$AFTER_AT"'"}]' > "$S/comments2.json"
-g gate --pr 7;  eq "$RC_" "21" "a comment on the SECOND page is found (paginated read)"
+printf '101\n' > "$S/comments-total.txt"
+g gate --pr 7;  eq "$RC_" "21" "a TRUNCATED comments connection falls back to the paginated read"
+# ...and the fallback is FAIL-CLOSED too: if the re-read itself fails, the classification is
+# unreadable rather than "that surface carried nothing".
+reset_fx
+printf '101\n' > "$S/reviews-total.txt"
+STUB_FAIL_REVIEWS=1 g gate --pr 7
+eq "$RC_" "20" "a truncated surface whose paginated re-read FAILS -> 20, never a pass"
+STUB_FAIL_REVIEWS=0
+# An UNTRUNCATED connection must NOT pay for the fallback — the whole point of the collapse.
+reset_fx; review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
+gout gate --pr 7
+if called '/pulls/7/reviews'; then bad "an untruncated read must not fall back to REST"; else ok; fi
+eq "$RC_" "0" "control: the untruncated single read still classifies"
 reset_fx
 
 # ============================ multiple declared reviewers (ALL, not ANY) ============================
@@ -723,17 +878,18 @@ review_fx "dependabot[bot]" "APPROVED" "$HEAD_SHA"
 jq -c -n --arg sha "$HEAD_SHA" \
   '[{user:{login:"chatgpt-codex-connector[bot]",type:"Bot"},state:"APPROVED",commit_id:$sha}]' \
   > "$S/reviews2.json"
+printf '101\n' > "$S/reviews-total.txt"
 g gate --pr 7
-eq "$RC_" "0" "a review on the SECOND page is found (paginated read)"
-rm -f "$S/reviews2.json"
+eq "$RC_" "0" "a review on the SECOND page is found (truncation -> paginated read)"
+rm -f "$S/reviews2.json" "$S/reviews-total.txt"
 
 # ============================ every unreadable path fails closed ============================
 declare_bots '["chatgpt-codex-connector"]'; pr_fx
 review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 
 STUB_AUTH_FAIL=1 g gate --pr 7;    eq "$RC_" "20" "unauthenticated gh -> 20"; STUB_AUTH_FAIL=0
-STUB_FAIL_PR=1 g gate --pr 7;      eq "$RC_" "20" "a failed PR read -> 20 (never 'not reviewed')"; STUB_FAIL_PR=0
-STUB_FAIL_REVIEWS=1 g gate --pr 7; eq "$RC_" "20" "a failed reviews read -> 20"; STUB_FAIL_REVIEWS=0
+STUB_GRAPHQL_FAIL=1 g gate --pr 7;  eq "$RC_" "20" "a failed read -> 20 (never 'not reviewed')"; STUB_GRAPHQL_FAIL=0
+STUB_EMPTY_GRAPHQL=1 g gate --pr 7; eq "$RC_" "20" "an empty response body -> 20"; STUB_EMPTY_GRAPHQL=0
 
 pr_fx_raw '{"head":{}}';        g gate --pr 7; eq "$RC_" "20" "a PR object with no head SHA -> 20"
 pr_fx_raw '{"head":{"sha":null}}'; g gate --pr 7; eq "$RC_" "20" "a null head SHA -> 20"

@@ -137,6 +137,61 @@ case "${1:-}" in
   api)  ;;
   *)    exit 0 ;;
 esac
+# --- GraphQL: the ONE read a classification now makes (#174) --------------------------------
+# Two different queries reach here. They are told apart by a field only one of them selects:
+# the receipt read (#169's request-review) asks for comment BODIES, the classification snapshot
+# deliberately does not. Matching on that is the same "ask what the document actually contains"
+# discipline the REST arms use, rather than counting arguments.
+if [ "${2:-}" = "graphql" ]; then
+  _q=""
+  for a in "$@"; do case "$a" in query=*) _q="$a" ;; esac; done
+  case "$_q" in
+    *body*) printf 'graphql:receipts\n' >> "$S/calls"
+  # The SAME failure knobs as the snapshot arm: an unreadable read is an unreadable read whichever
+  # query asked, and `request-review` must refuse to post on one — an unprovable receipt read as
+  # "not yet asked" re-posts on every poll, which is the one way this mutation becomes spam.
+  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
+  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
+  _prf="$S/pr.json"
+  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
+  jq -n --argjson pr "$(_rd "$_prf")" \
+        --argjson rc "$(_rd "$S/receipts.json")" \
+        --arg total "$( [ -f "$S/receipts-total.txt" ] && cat "$S/receipts-total.txt" )" '
+    { data: { repository: { pullRequest: {
+        state: (if ($pr.state // "open") == "open" then "OPEN"
+                elif (($pr.merged_at // null) != null) then "MERGED" else "CLOSED" end),
+        headRefOid: ($pr.head.sha // null),
+        headRefName: ($pr.head.ref // null),
+        baseRepository: (if ($pr.base.repo.full_name // null) == null then null
+                         else {nameWithOwner: $pr.base.repo.full_name} end),
+        headRepository: (if ($pr.head.repo // null) == null then null
+                         else {nameWithOwner: ($pr.head.repo.full_name // null)} end),
+        comments: { totalCount: (if ($total|length) > 0 then ($total|tonumber) else ($rc|length) end),
+                    nodes: [ $rc[] | {createdAt: .created_at, body: .body} ] } } } } }'
+  exit 0
+      ;;
+    *) printf 'graphql:snapshot\n' >> "$S/calls"
+  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
+  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
+  if [ -f "$S/graphql-raw.json" ]; then cat "$S/graphql-raw.json"; exit "${STUB_GRAPHQL_RC:-0}"; fi
+  _prf="$S/pr.json"; _n=0
+  [ -f "$S/polls" ] && _n="$(cat "$S/polls")"
+  _n=$(( _n + 1 )); printf '%s' "$_n" > "$S/polls"
+  [ -f "$S/pr.$_n.json" ] && _prf="$S/pr.$_n.json"
+  _fx() { if [ -f "$S/$1.$_n.json" ]; then printf '%s' "$S/$1.$_n.json"; else printf '%s' "$S/$1.json"; fi; }
+  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
+  _tot() { [ -f "$S/$1-total.txt" ] && cat "$S/$1-total.txt"; }
+  jq -n --argjson pr "$(_rd "$_prf")" \
+        --argjson reviews "$(_rd "$(_fx reviews)")" \
+        --argjson comments "$(_rd "$(_fx comments)")" \
+        --argjson reactions "$(_rd "$(_fx reactions)")" \
+        --arg rvtotal "$(_tot reviews)" --arg cmtotal "$(_tot comments)" \
+        --arg rxtotal "$(_tot reactions)" \
+        -f "$S/assemble.jq"
+  exit 0
+      ;;
+  esac
+fi
 url=""
 for a in "$@"; do
   case "$a" in repos/*) [ -z "$url" ] && url="$a" ;; esac
@@ -228,10 +283,19 @@ exec /bin/sleep 1
 SLEEPSTUB
 
 # ---- fixtures --------------------------------------------------------------------------------
+# The GraphQL assembler is a CONSTANT program, written once at setup rather than in `reset_fx`:
+# it is the TRANSPORT, not a scenario fixture. Recreating it per reset left every scenario
+# before the first reset reading an empty document — which is exactly how this suite failed
+# while #174 was being wired, and the failure looked like a broken guard rather than a broken
+# harness.
+check_pr_graphql_assembler "$S/assemble.jq"
+
 reset_fx() {
   rm -f "$S/reviews2.json" "$S/reactions2.json" "$S/comments2.json" "$S/polls" "$S/slept" "$S/calls"
   rm -f "$S"/pr.[0-9]*.json "$S"/reviews.[0-9]*.json "$S"/reactions.[0-9]*.json \
         "$S"/comments.[0-9]*.json "$S"/activity.[0-9]*.json
+  # #174/#169 fixtures: the truncation counters, the receipt read, and the raw-document override.
+  rm -f "$S"/*-total.txt "$S/receipts.json" "$S/graphql-raw.json"
   printf '[]\n' > "$S/reviews.json"
   printf '[]\n' > "$S/reactions.json"
   printf '[]\n' > "$S/comments.json"
@@ -285,6 +349,8 @@ _w() {
     STUB_EMPTY_ACTIVITY="${STUB_EMPTY_ACTIVITY:-0}" \
     STUB_EMPTY_REVIEWS="${STUB_EMPTY_REVIEWS:-0}" STUB_EMPTY_COMMENTS="${STUB_EMPTY_COMMENTS:-0}" \
     STUB_EMPTY_REACTIONS="${STUB_EMPTY_REACTIONS:-0}" \
+    STUB_GRAPHQL_FAIL="${STUB_GRAPHQL_FAIL:-0}" STUB_EMPTY_GRAPHQL="${STUB_EMPTY_GRAPHQL:-0}" \
+    STUB_GRAPHQL_RC="${STUB_GRAPHQL_RC:-0}" \
     bash "$PW" "$@" )
 }
 # w : stdout AND stderr, for asserting diagnostics.
@@ -593,11 +659,13 @@ w observe --pr 1;  rc 10 "task mode: uses the NEWEST comment, not the first foun
 reset_fx; declare_bots "[\"$CODEX\"]"
 _comments_into "$S/comments.json"  "somebody" "$AFTER_AT"
 _comments_into "$S/comments2.json" "${CODEX}[bot]" "$AFTER_AT"
-w observe --pr 1;  rc 10 "task mode: a comment on page 2 is still found"
+printf '101\n' > "$S/comments-total.txt"
+w observe --pr 1;  rc 10 "task mode: a TRUNCATED comments connection falls back to the paginated read"
 
-# An unreadable comments read must fail closed like every other read.
+# An unreadable read must fail closed. The three surfaces are ONE read since #174, so the three
+# per-endpoint knobs are one — the invariant is unchanged, only the thing that can break it moved.
 reset_fx; declare_bots "[\"$CODEX\"]"
-STUB_FAIL_COMMENTS=1 w observe --pr 1; rc 20 "unreadable: a failed comments read -> 20"; STUB_FAIL_COMMENTS=0
+STUB_GRAPHQL_FAIL=1 w observe --pr 1; rc 20 "unreadable: a failed single-read -> 20"; STUB_GRAPHQL_FAIL=0
 
 # FINDINGS OUTRANK CLEAN across shapes: a reviewer that commented about this head has something to
 # say, even if a `+1` from an earlier pass is still sitting there.
@@ -703,14 +771,27 @@ wout observe --pr 1;  rc 0 "#185: a STALE '+1' beside that same reviewer's APPRO
 # A busy PR can push the bot's reaction off page 1 behind human reactions. A missed `+1` keeps a
 # finished watch running to its deadline, so the read must paginate.
 reset_fx; declare_bots "[\"$CODEX\"]"
+# Since #174 a busy PR reaches the paginated read through TRUNCATION: a GraphQL connection caps at
+# 100 records, so a surface whose totalCount exceeds its nodes is re-read through the REST endpoint
+# that always paginated. The page-two fixtures below are visible ONLY to that read, which is what
+# makes these assertions prove the fallback ran rather than merely that the answer came out right.
 _reactions_into "$S/reactions.json" "human-one" "heart" "$AFTER_AT"
 _reactions_into "$S/reactions2.json" "$CODEX" "+1" "$AFTER_AT"
-wout observe --pr 1;  rc 0 "pagination: a '+1' on page 2 is still found"
+printf '101\n' > "$S/reactions-total.txt"
+wout observe --pr 1;  rc 0 "pagination: a '+1' behind a truncated connection is still found"
 
 reset_fx; declare_bots "[\"$CODEX\"]"
 _reviews_into "$S/reviews.json"  "somebody" "COMMENTED" "$HEAD_SHA"
 _reviews_into "$S/reviews2.json" "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
-w observe --pr 1;  rc 10 "pagination: a review on page 2 is still found"
+printf '101\n' > "$S/reviews-total.txt"
+w observe --pr 1;  rc 10 "pagination: a review behind a truncated connection is still found"
+has "$OUT" "more than 100 reviews" "the fallback names which surface overflowed"
+
+# An UNTRUNCATED read must not pay for the fallback — the entire point of the collapse.
+reset_fx; declare_bots "[\"$CODEX\"]"
+review_fx "${CODEX}[bot]" "COMMENTED" "$HEAD_SHA"
+wout observe --pr 1;  rc 10 "control: the untruncated single read still classifies"
+if called "/pulls/1/reviews"; then bad "an untruncated read must not fall back to the REST surface"; else ok; fi
 
 # ============================ 6. the PR is no longer live ============================
 reset_fx; declare_bots "[\"$CODEX\"]"
@@ -747,9 +828,8 @@ undeclare; declare_bots "[\"$CODEX\"]"
 # A failed read must never look like a pass, and must never look like "nothing found yet" either:
 # the first would arm on unreviewed code, the second would silently watch a broken API forever.
 reset_fx; declare_bots "[\"$CODEX\"]"
-STUB_FAIL_PR=1       w observe --pr 1; rc 20 "unreadable: a failed PR read -> 20"; STUB_FAIL_PR=0
-STUB_FAIL_REVIEWS=1  w observe --pr 1; rc 20 "unreadable: a failed reviews read -> 20"; STUB_FAIL_REVIEWS=0
-STUB_FAIL_REACTIONS=1 w observe --pr 1; rc 20 "unreadable: a failed reactions read -> 20"; STUB_FAIL_REACTIONS=0
+STUB_GRAPHQL_FAIL=1  w observe --pr 1; rc 20 "unreadable: a failed single-read -> 20"; STUB_GRAPHQL_FAIL=0
+STUB_EMPTY_GRAPHQL=1 w observe --pr 1; rc 20 "unreadable: an EMPTY response body -> 20"; STUB_EMPTY_GRAPHQL=0
 
 # The anchor read happens ONLY when a date-scoped signal exists, so it needs a `+1` to reach it.
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
@@ -767,21 +847,39 @@ reset_fx; declare_bots "[\"$CODEX\"]"
 review_fx   "${CODEX}[bot]" "CHANGES_REQUESTED" "$HEAD_SHA"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 w observe --pr 1; rc 10 "control: the findings are seen when the reviews surface reads normally"
-STUB_EMPTY_REVIEWS=1 w observe --pr 1
-rc 20 "an EMPTY reviews body -> 20; it must NOT let a fresh '+1' report a clean pass"
-STUB_EMPTY_REVIEWS=0
+# The #174 shape of that same hole: the document arrives, but a CONNECTION is null or malformed.
+# A reader that treated a missing `nodes` as an empty list would discard the rejection and let the
+# `+1` report clean — and two of these cases DID exactly that before the adapter type-checked
+# `nodes` and `totalCount`, which is why each is pinned separately rather than as one case.
+_gql_raw() { printf '%s\n' "$1" > "$S/graphql-raw.json"; }
+_pr_ok='"state":"OPEN","merged":false,"mergedAt":null,"headRefOid":"'"$HEAD_SHA"'","headRefName":"'"$HEAD_REF"'","baseRepository":{"nameWithOwner":"acme/widget"},"headRepository":{"nameWithOwner":"acme/widget"}'
+_rx_fresh='"reactions":{"totalCount":1,"nodes":[{"createdAt":"'"$AFTER_AT"'","user":{"login":"'"$CODEX"'","__typename":"User"}}]}'
+_cm_none='"comments":{"totalCount":0,"nodes":[]}'
+_rv_none='"reviews":{"totalCount":0,"nodes":[]}'
+for broken in '"reviews":null' '"reviews":{"totalCount":0}' '"reviews":{"totalCount":0,"nodes":{}}'; do
+  reset_fx; declare_bots "[\"$CODEX\"]"
+  _gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"','"$broken"','"$_cm_none"','"$_rx_fresh"'}}}}'
+  w observe --pr 1
+  rc 20 "a broken reviews connection -> 20; it must NOT let a fresh '+1' report a clean pass ($broken)"
+  wout observe --pr 1
+  eq "$OUT" "" "...and prints no verdict line ($broken)"
+done
 reset_fx; declare_bots "[\"$CODEX\"]"
 comment_fx  "${CODEX}[bot]" "$AFTER_AT"
 reaction_fx "$CODEX" "+1" "$AFTER_AT"
 w observe --pr 1; rc 10 "control: the task-mode comment is seen when the comments surface reads normally"
-STUB_EMPTY_COMMENTS=1 w observe --pr 1
-rc 20 "an EMPTY comments body -> 20, not 'that reviewer said nothing'"
-STUB_EMPTY_COMMENTS=0
 reset_fx; declare_bots "[\"$CODEX\"]"
-reaction_fx "$CODEX" "+1" "$AFTER_AT"
-STUB_EMPTY_REACTIONS=1 w observe --pr 1
-rc 20 "an EMPTY reactions body -> 20, not 'no reaction here'"
-STUB_EMPTY_REACTIONS=0
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"','"$_rv_none"',"comments":null,'"$_rx_fresh"'}}}}'
+w observe --pr 1; rc 20 "a null comments connection -> 20, not 'that reviewer said nothing'"
+reset_fx; declare_bots "[\"$CODEX\"]"
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"','"$_rv_none"','"$_cm_none"',"reactions":null}}}}'
+w observe --pr 1; rc 20 "a null reactions connection -> 20, not 'no reaction here'"
+# A PARTIAL {data,errors} document is the one GraphQL shape with no REST analogue: gh exits
+# non-zero AND writes the body, so the adapter rejects `.errors` a second time.
+reset_fx; declare_bots "[\"$CODEX\"]"
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"','"$_rv_none"','"$_cm_none"','"$_rx_fresh"'}}},"errors":[{"message":"boom"}]}'
+STUB_GRAPHQL_RC=0 w observe --pr 1; rc 20 "a PARTIAL {data,errors} response -> 20 even when gh exits 0"
+reset_fx; rm -f "$S/graphql-raw.json"
 
 # A PR object that arrives fine but carries no head SHA is not a network failure — and must still
 # not be classified. This is why the read and the parse are separate steps.
@@ -913,15 +1011,15 @@ w wait --pr 1 --interval 1 --max-secs 30;  rc 0 "wait: rides out ONE unreadable 
 # contract says stdout is "<verdict> <sha>" or nothing — never a bare newline, which a caller doing
 # `read -r verdict sha` would silently take as two empty strings rather than "there was no answer".
 reset_fx; declare_bots "[\"$CODEX\"]"
-STUB_FAIL_PR=1 wout wait --pr 1 --interval 1 --max-secs 1;  rc 11 "wait: a bound reached mid-failure still reports pending"
+STUB_GRAPHQL_FAIL=1 wout wait --pr 1 --interval 1 --max-secs 1;  rc 11 "wait: a bound reached mid-failure still reports pending"
 eq "$OUT" "" "wait: prints NO stdout line when the final poll produced no verdict"
-STUB_FAIL_PR=0
+STUB_GRAPHQL_FAIL=0
 
 # ...but an endlessly unreadable API must not be polled forever either.
 reset_fx; declare_bots "[\"$CODEX\"]"
-STUB_FAIL_PR=1 w wait --pr 1 --interval 1 --max-secs 300;  rc 20 "wait: gives up after consecutive unreadable polls"
+STUB_GRAPHQL_FAIL=1 w wait --pr 1 --interval 1 --max-secs 300;  rc 20 "wait: gives up after consecutive unreadable polls"
 has "$OUT" "consecutive unreadable" "wait: names why it gave up"
-STUB_FAIL_PR=0
+STUB_GRAPHQL_FAIL=0
 
 # A PR that merges mid-watch stops the loop rather than running to the deadline.
 reset_fx; declare_bots "[\"$CODEX\"]"
@@ -1018,5 +1116,128 @@ absent 'git switch'         "the detector must never move the working tree"
 # or the next reader reaches for the same obvious lower bound — without tripping this rule.
 absent 'commit\.committer\.date' "the staleness proof must never return to the client-supplied committer date"
 absent 'commits/\$head'          "the head-commit endpoint must not come back as an anchor read"
+
+
+# ============================ 13. request-review (#169) ============================
+# ROUND 2 COULD NOT HAPPEN. A push is not one of the reviewer's triggers, so after a resolve round
+# pushes a fix the watch honestly reads `pending` until the bound expires. `request-review` is the
+# ask that closes the loop — and it is this module's ONE mutation, so every refusal path matters
+# more than the success path: the failure mode of getting it wrong is spamming a reviewer on every
+# poll of a half-hour watch.
+receipt_fx() { check_pr_receipts_json "$S/receipts.json" "$@"; }
+TRIGGER='@codex review'
+
+# --- the happy path: nothing has been asked yet, so ask exactly once --------------------------
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+w request-review --pr 1;  rc 0 "request-review: a head with no prior request is asked for once"
+has "$OUT" "$TRIGGER" "request-review: the posted phrase is the reviewer's own documented trigger"
+has "$OUT" "round 1 of 3" "request-review: the round is reported against the cap"
+wout request-review --pr 1
+eq "$OUT" "requested $HEAD_SHA" "request-review: stdout is '<verdict> <sha>', like every other verdict here"
+
+# --- IDEMPOTENCY, the property #169 names explicitly ------------------------------------------
+# The receipt is a trigger comment NEWER than this head's arrival. A second observation of the same
+# head must not post again, however many polls make it.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx "$AFTER_AT" "$TRIGGER"
+w request-review --pr 1;  rc 13 "request-review: a request already made for THIS head is not repeated"
+has "$OUT" "already requested" "request-review: says why nothing was posted"
+wout request-review --pr 1
+eq "$OUT" "already $HEAD_SHA" "request-review: the idempotent no-op still names the head it is about"
+# ...three times in a row, because "at most one per head however many polls observe it" is the claim.
+w request-review --pr 1;  rc 13 "request-review: still idempotent on a third observation"
+
+# A request from BEFORE this head arrived is NOT a receipt for it — that is the whole staleness
+# rule, applied to the ask instead of to the answer. This is the case a naive "has anyone ever
+# commented?" check gets wrong, and getting it wrong means round 2 never happens.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx "$BEFORE_AT" "$TRIGGER"
+w request-review --pr 1;  rc 0 "request-review: a request predating this head does not count as its receipt"
+
+# THE REVIEWER'S OWN BOILERPLATE MUST NOT COUNT AS A RECEIPT. Every lightweight review body quotes
+# the trigger list verbatim — 'Comment "@codex review".' — so a SUBSTRING match would read the
+# reviewer's own post as this module's request, spend the cap, and never ask at all.
+reset_fx; declare_bots "[\"$CODEX\"]"
+receipt_fx "$AFTER_AT" 'Reviews are triggered when you
+- Open a pull request for review
+- Comment "@codex review".'
+w request-review --pr 1;  rc 0 "request-review: the reviewer's own quoted trigger list is not a receipt"
+# ...but surrounding whitespace on a real request still is one: the body is TRIMMED, not exact.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx "$AFTER_AT" "  $TRIGGER
+"
+w request-review --pr 1;  rc 13 "request-review: a real request with stray whitespace still counts"
+
+# --- THE ROUND CAP ----------------------------------------------------------------------------
+# Counted from the PR, at ANY head — anchoring it to the head would reset the cap on every push,
+# which is the runaway it exists to bound.
+reset_fx; declare_bots "[\"$CODEX\"]"
+receipt_fx "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER" "$BEFORE_AT" "$TRIGGER"
+w request-review --pr 1;  rc 15 "request-review: the round cap refuses a fourth ask"
+has "$OUT" "cap 3" "request-review: the cap is named"
+wout request-review --pr 1
+eq "$OUT" "capped $HEAD_SHA" "request-review: the capped verdict names the head"
+# ...and the cap is configurable, in both directions.
+w request-review --pr 1 --max-rounds 4;  rc 0 "request-review: --max-rounds raises the bound"
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx "$BEFORE_AT" "$TRIGGER"
+w request-review --pr 1 --max-rounds 1;  rc 15 "request-review: --max-rounds 1 caps after a single ask"
+w request-review --pr 1 --max-rounds 0;  rc 2  "request-review: --max-rounds 0 is a usage error, not an infinite loop"
+w request-review --pr 1 --max-rounds x;  rc 2  "request-review: a non-numeric --max-rounds is rejected"
+
+# --- A REVIEWER WITH NO KNOWN TRIGGER IS SKIPPED, NOT FAILED ----------------------------------
+# #169 requires exactly this: no request, no error. Posting a guessed phrase at an unknown bot is
+# spam nobody asked for.
+reset_fx; declare_bots '["some-other-reviewer"]'; receipt_fx
+w request-review --pr 1;  rc 14 "request-review: a declared reviewer with no known trigger is skipped"
+has "$OUT" "no declared reviewer has a re-review trigger" "request-review: says why it skipped"
+reset_fx; declare_bots '[]'; receipt_fx
+w request-review --pr 1;  rc 14 "request-review: bots = [] has nobody to ask"
+# ...and a KNOWN reviewer beside an unknown one is still asked.
+reset_fx; declare_bots "[\"$CODEX\", \"some-other-reviewer\"]"; receipt_fx
+w request-review --pr 1;  rc 0 "request-review: a known trigger beside an unknown reviewer still asks"
+
+# The trigger table tolerates BOTH spellings of the same App, because GraphQL and REST disagree
+# about the `[bot]` suffix and a table that knew only one would silently stop firing (#173/D79).
+reset_fx; declare_bots "[\"${CODEX}[bot]\"]"; receipt_fx
+w request-review --pr 1;  rc 0 "request-review: the '[bot]'-suffixed spelling resolves the same trigger"
+reset_fx; declare_bots '["CHATGPT-Codex-Connector"]'; receipt_fx
+w request-review --pr 1;  rc 0 "request-review: the trigger lookup is case-insensitive"
+
+# --- EVERY UNREADABLE PATH REFUSES TO ASK -----------------------------------------------------
+# The dangerous direction here is the OPPOSITE of the classifier's: an unprovable receipt must
+# never read as "not yet asked", because that re-posts on every poll.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+STUB_GRAPHQL_FAIL=1 w request-review --pr 1; rc 20 "request-review: an unreadable read refuses to ask"; STUB_GRAPHQL_FAIL=0
+STUB_FAIL_ACTIVITY=1 w request-review --pr 1
+rc 20 "request-review: an unreadable ANCHOR refuses to ask — an undatable receipt is not 'no receipt'"
+STUB_FAIL_ACTIVITY=0
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+activity_fx "$OLD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"   # nothing puts THIS head on the ref
+w request-review --pr 1;  rc 20 "request-review: an UNESTABLISHED anchor refuses to ask"
+# More than 100 comments means the receipt cannot be proved absent -> refuse, never re-ask.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+printf '101\n' > "$S/receipts-total.txt"
+w request-review --pr 1;  rc 20 "request-review: a comment page it cannot see through refuses to ask"
+rm -f "$S/receipts-total.txt"
+
+# --- A DEAD PR IS NOT ASKED FOR A REVIEW ------------------------------------------------------
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+pr_fx --state closed --merged-at "2026-07-25T05:00:00Z"
+w request-review --pr 1;  rc 12 "request-review: a merged PR is not asked for a re-review"
+
+# --- the declaration tri-state, and argument handling -----------------------------------------
+reset_fx; undeclare; receipt_fx
+w request-review --pr 1;  rc 17 "request-review: an UNDECLARED repo fails closed like every other read here"
+reset_fx; printf '%s\n' '[reviewers]' 'bots = ["unterminated' > "$REPO/agents.toml"
+w request-review --pr 1;  rc 18 "request-review: a malformed declaration is 18, not a guess"
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+w request-review;         rc 2  "request-review: --pr is required"
+w request-review --pr 0;  rc 2  "request-review: a PR number of 0 is rejected"
+w request-review --pr https://github.com/other/repo/pull/7
+rc 2 "request-review: a URL naming ANOTHER repository is refused, before anything is posted"
+
+# --- the mutation itself is bounded ------------------------------------------------------------
+# One comment per DISTINCT phrase: two spellings of one App must not produce two comments.
+reset_fx; declare_bots "[\"$CODEX\", \"${CODEX}[bot]\"]"; receipt_fx
+w request-review --pr 1;  rc 0 "request-review: two spellings of one App still ask once"
+eq "$(grep -c "requested a re-review" <<<"$OUT")" "1" "request-review: exactly one comment is posted"
+reset_fx
 
 check_summary "pr-watch"
