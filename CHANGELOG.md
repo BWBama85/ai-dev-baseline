@@ -79,24 +79,33 @@ only by a published release, which is what these entries are the notes for.
   The lint's verb carve-outs missed three shapes that assert nothing, each witnessed live: `in
   passing` read as a CI status, `merged files` read as PR state, `green suite` read as CI. It now
   carves out a status word separated by **exactly one space** from a curated non-entity head noun
-  (`file files suite suites`), and the exact bigram `in passing`. The separator is what keeps this
-  narrow: read after punctuation stripping, `PR #1 is merged; files are swept once` would present
-  `files` as the next word and exempt a real claim. The stated cost is that `PR #1 has a green
-  suite` is now a miss — the same precision-over-recall trade `draft` already documents. The third
-  candidate the issue floated, "a token not predicated of the co-sentential entity reference", was
-  **withdrawn**: it is coreference analysis, and the practice already rules a classifier over
-  arbitrary English out of scope.
+  (`file files suite suites`), and the same bigram shape for `in passing`. Both separators are read
+  **raw**, and that is what keeps them narrow: read after punctuation stripping, `PR #1 is merged;
+  files are swept once` presents `files` as the next word and `CI for #1 is in, passing all checks`
+  presents `in` as the previous one — two real claims that a looser rule exempts.
+
+  The attributive reading is **defeated by predication**, which is what lets `suite` be exempted at
+  all: `they make a green suite mean something` and `CI for #1 has a green suite` differ only in the
+  verb in front, so a copula or possession verb before the token — or before its determiner — turns
+  the carve-out off. The residue is stated rather than implied: that list is closed, so `PR #1 shows
+  a green suite` is still a miss. The third candidate the issue floated, "a token not predicated of
+  the co-sentential entity reference", was **withdrawn**: it is coreference analysis, and the
+  practice already rules a classifier over arbitrary English out of scope.
 
   Separately, the Stop hook resolved "the turn's final message" by reading the last assistant record
   of the **transcript file**. A rejected draft is an ordinary assistant record, so between a retry
   completing and its own records landing, that read returns the **superseded** message — and the
   operator is blocked over a sentence they cannot find. Measured across this workstation's session
   logs: 29 of 301 firings quoted the previous message. The hook now takes the text from the hook
-  payload's `last_assistant_message`, which is built from the live message list and cannot lag, and
-  falls back to the transcript only when that field is absent — so an older CLI keeps working and no
-  version floor is declared. On that fallback path, sidechain records are skipped: a Task subagent's
-  messages land in the same log, and one of them resolving as "the final message" lints text the
-  operator never wrote.
+  payload's `last_assistant_message`, which is built from the live message list and cannot lag.
+
+  The transcript remains the fallback whenever that yields nothing, so an older CLI keeps working
+  and no version floor is declared — but an empty field is **not** proof of an old CLI, because the
+  field is omitted whenever the final message carries no text. That path therefore carries two
+  guards of its own: a record whose newest assistant text predates the last user record is a
+  final message that has not been written yet, and says nothing; and sidechain records are skipped,
+  because a Task subagent's messages land in the same log and one of them resolving as "the final
+  message" lints text the operator never wrote.
 
 - **Entry points could be tricked into running from the wrong clone, silently (#343).** Each of them
   locates its own repo root before it can source `scripts/lib/common.sh`, and the spellings differed

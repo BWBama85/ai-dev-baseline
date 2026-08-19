@@ -286,19 +286,28 @@ cmd_lint() {
       split("a an the this that it them pr prs pull issue issues branch branches", OBJ, " ")
       # An intent marker before the word is likewise a verb ("going to open", "let me close").
       split("to will can could should would must may let lets", MOD, " ")
-      # ATTRIBUTIVE HEAD NOUNS (#383). A status word immediately before one of these is an
-      # adjective describing a thing that has no PR/issue/CI state — "merged files", "green
-      # suite" — so it predicates nothing about the `#N` sharing its sentence.
+      # ATTRIBUTIVE HEAD NOUNS (#383). A status word in ATTRIBUTIVE POSITION — directly before one
+      # of these nouns — is an adjective inside a noun phrase ("merged files", "green suite")
+      # rather than a predication about the `#N` sharing its sentence.
       # GROWN BY WITNESS ONLY, exactly like the token set above and for the mirror-image reason:
       # every entry here is a new FALSE-NEGATIVE surface. `files` and `suite` are the two nouns
       # that actually fired; their number-partners are included because a rule that fires on the
       # plural of a word it exempts is a false positive waiting for the next sentence.
       split("file files suite suites", ATTR, " ")
+      # ...AND THE ATTRIBUTIVE READING IS DEFEATED WHEN THE PHRASE IS PREDICATED. "CI for #1 has a
+      # green suite" asserts that suite`s state; "they make a green suite mean something" does not,
+      # and the only lexical difference is the verb in front. So a copula or possession verb
+      # immediately before the token — or before its determiner — turns the carve-out off.
+      # This is why `suite` can be exempted at all without swallowing the claim it names.
+      split("is are was were has have had", PRED, " ")
+      split("a an the its their our my this that", DET, " ")
       # IDIOMS: an exact previous-word + status-word bigram in which the status word is not a
       # status at all. "in passing" is the whole list.
-      # THE SEPARATOR IS A COMMA because an entry contains a space, and a comma carries no regex
-      # meaning in any awk. POSIX leaves it to the implementation whether a one-character separator
-      # is an ERE, and `|` as an ERE is an empty alternation matching between every character.
+      # THE SEPARATOR IS A COMMA because an entry contains a space and a comma means nothing as an
+      # ERE — and POSIX specifies `split`s third argument AS an ERE (the single-character-is-literal
+      # rule belongs to FS, not to this argument). The one awk probed here treats a lone `|`
+      # literally, but an ERE `|` is an empty alternation, and leaning on that leniency buys
+      # nothing when a comma is unambiguous everywhere.
       split("in passing", IDIOM, ",")
     }
     # --- structure stripping: only prose declares -----------------------------------------
@@ -353,21 +362,34 @@ cmd_lint() {
             # Checked BEFORE punctuation is stripped, because stripping `#` is exactly what left
             # `nextw` empty and misread the object as absent.
             if (rest ~ /^[[:space:]]*#[0-9]+/) continue
-            # ATTRIBUTIVE POSITION, read off the RAW rest — the separator must be exactly ONE
-            # SPACE, and that is the load-bearing half of this carve-out rather than a detail.
-            # Read after punctuation is stripped, "PR #1 is merged; files are swept once" would
-            # present `files` as the next word and exempt a real claim; a single space cannot
-            # cross a clause boundary.
+            # THE RAW-SEPARATOR READS, taken BEFORE punctuation is stripped. Both carve-outs
+            # below demand exactly ONE SPACE between the status word and its neighbour, and that
+            # is the load-bearing half of each rather than a detail: read after stripping,
+            # "PR #1 is merged; files are swept once" presents `files` as the next word and
+            # "CI for #1 is in, passing all checks" presents `in` as the previous one — both real
+            # claims, both exempted. A single space cannot cross a clause boundary.
             attrw = ""
             if (rest ~ /^ [a-z]/) { attrw = substr(rest, 2); sub(/[^a-z0-9].*$/, "", attrw) }
+            idiomw = ""
+            if (pre ~ /[^ ] $/) { idiomw = pre; sub(/ $/, "", idiomw); sub(/^.*[^a-z0-9]/, "", idiomw) }
             sub(/^[^a-z0-9]+/, "", rest)
             nextw = rest; sub(/[^a-z0-9].*$/, "", nextw)
             skip = 0
             for (o in OBJ) if (nextw == OBJ[o]) skip = 1
             prevw = pre; sub(/[^a-z0-9]+$/, "", prevw); sub(/^.*[^a-z0-9]/, "", prevw)
             for (m in MOD) if (prevw == MOD[m]) skip = 1
-            if (attrw != "") for (k in ATTR) if (attrw == ATTR[k]) skip = 1
-            for (q in IDIOM) if (prevw " " w == IDIOM[q]) skip = 1
+            # PREDICATION BEATS ATTRIBUTION. `prevw` is the word before the token; `prev2w` the one
+            # before that, needed because a determiner usually sits between the verb and the
+            # adjective ("has a green suite").
+            prev2w = pre; sub(/[^a-z0-9]+$/, "", prev2w); sub(/[a-z0-9]+$/, "", prev2w)
+            sub(/[^a-z0-9]+$/, "", prev2w); sub(/^.*[^a-z0-9]/, "", prev2w)
+            pred = 0
+            for (v in PRED) if (prevw == PRED[v]) pred = 1
+            isdet = 0
+            for (d in DET) if (prevw == DET[d]) isdet = 1
+            if (isdet) for (v in PRED) if (prev2w == PRED[v]) pred = 1
+            if (attrw != "" && !pred) for (k in ATTR) if (attrw == ATTR[k]) skip = 1
+            for (q in IDIOM) if (idiomw != "" && idiomw " " w == IDIOM[q]) skip = 1
             if (skip) continue
             # THE MASK BYTE NEVER LEAVES THIS PROGRAM. `s` comes from MD_MASK, so a quoted span is
             # \x01 here — and the Stop hook prints this excerpt verbatim to the operator

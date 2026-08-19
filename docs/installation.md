@@ -170,14 +170,17 @@ the claim is re-read or removed.
 
 It is deliberately **precision-first**: quoting a status inside a fence, a code span, a blockquote
 or an HTML comment declares nothing, `open a PR` / `closed #195` are treated as verbs, a status
-word directly before a noun with no state of its own is an adjective (`merged files`, `green
-suite`), `in passing` is an idiom, and words that collide too often with ordinary prose are kept
-out of the token set entirely. It also never wedges a session — a missing `jq`, a text-free turn
-or a broken linter install are all reported on stderr and then allowed through.
+word directly before one of a few curated nouns is attributive rather than predicative (`merged
+files`, `green suite`) unless a copula or possession verb precedes it, `in passing` is an idiom,
+and words that collide too often with ordinary prose are kept out of the token set entirely. It
+also never wedges a session — a missing `jq`, a text-free turn or a broken linter install are all
+reported on stderr and then allowed through.
 
-It reads the turn's final message from the hook payload's `last_assistant_message`, falling back to
-the transcript file when that field is absent (an older CLI) — and an unreadable transcript on that
-fallback path is likewise a no-op, never a block.
+It reads the turn's final message from the hook payload's `last_assistant_message`, and falls back
+to the transcript file whenever that yields nothing — an older CLI omits the field, and so does a
+current one when the final message carries no text. On that fallback path an unreadable transcript
+is a no-op, and so is a transcript whose newest assistant text predates the last user record, which
+is how a not-yet-written final message is told apart from a real one.
 
 To turn it off, remove its entry from `~/.claude/settings.json`, or shadow it per-repo with your
 own `.claude/scripts/state-claim-gate.sh` (see [A repo's own gate always wins](#8-a-repos-own-gate-always-wins)).

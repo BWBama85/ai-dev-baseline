@@ -23,10 +23,11 @@
 # (see `state-assert.sh lint`), so unusual phrasings pass. This narrows the failure; it does not
 # close it.
 #
-# No-op (exit 0) when: the repo ships its own copy of this gate; jq is missing; the transcript is
-# absent or unparseable; the turn's final message carries no text. Infrastructure absence is
-# REPORTED once on stderr rather than swallowed (#35) — but it never blocks, because wedging a
-# session over a missing dependency is worse than the claim it was trying to catch.
+# No-op (exit 0) when: the repo ships its own copy of this gate; jq is missing; the turn's final
+# message carries no text; or — on the transcript fallback path only — the transcript is absent or
+# unparseable. Infrastructure absence is REPORTED once on stderr rather than swallowed (#35) — but
+# it never blocks, because wedging a session over a missing dependency is worse than the claim it
+# was trying to catch.
 
 set -u
 
@@ -80,14 +81,11 @@ fi
 # pipe, so a second read would get nothing.
 payload="$(cat 2>/dev/null || true)"
 
-# THE PAYLOAD IS THE SOURCE OF TRUTH FOR THE FINAL MESSAGE; the transcript is the FALLBACK (#383,
-# D83). `last_assistant_message` is computed from the live message list, so it is always THIS
-# turn's final text. The transcript is a file that the turn's own entries may not have reached
-# yet, and a read that loses the race resolves the PREVIOUS message instead — blocking a turn over
-# a sentence the operator can no longer see. The measurement is in D83.
-#
-# THE ORDER IS THE FIX. Do not reverse it, and do not drop the fallback: an absent field is an
-# older CLI, where the transcript is the only source there is.
+# PREFER THE STOP PAYLOAD: transcript persistence LAGS the turn (#383, D83).
+# `last_assistant_message` is built from the live message list, so it is this turn's own text; the
+# transcript is a file the turn's records may not have reached yet, and a read that loses that race
+# resolves the PREVIOUS message. The transcript stays as the fallback because a CLI that predates
+# the field leaves no other source — so no minimum version is declared here.
 text="$(printf '%s' "$payload" | jq -r '.last_assistant_message // ""' 2>/dev/null || true)"
 
 if [ -z "$text" ]; then
@@ -100,16 +98,26 @@ if [ -z "$text" ]; then
   # `-s` slurps the JSONL; a malformed trailing line (a session still being written) makes jq fail,
   # which is an unparseable transcript and therefore a no-op, not a block.
   #
-  # SIDECHAIN ENTRIES ARE EXCLUDED: a Task subagent's messages land in this same log, and one of
-  # them resolving as "the turn's final message" lints text the operator never wrote.
+  # TWO GUARDS MAKE THIS PATH SAFE, and both are reachable on a CURRENT CLI — an empty field is not
+  # proof of an old one, because the field is omitted when the final message carries no text:
+  #
+  #   STALENESS. If the last assistant record does not come AFTER the last user record, this turn's
+  #   final message has not been written yet and the newest text belongs to a SUPERSEDED one. Say
+  #   nothing rather than lint it. That comparison is what the lagging-write race looks like from
+  #   inside the file, and it needs no version probe to detect.
+  #
+  #   SIDECHAIN. A Task subagent's messages land in this same log; one of them resolving as "the
+  #   turn's final message" lints text the operator never wrote. Excluded from BOTH sides of the
+  #   comparison, or a subagent's own prompt would count as the last user record.
   transcript="$(printf '%s' "$payload" | jq -r '.transcript_path // ""' 2>/dev/null || true)"
   [ -n "$transcript" ] || exit 0
   [ -f "$transcript" ] || exit 0
   text="$(jq -s -r '
-    [ .[] | select(type == "object") | select(.type == "assistant")
-          | select(.isSidechain != true) ] as $a
-    | if ($a | length) == 0 then ""
-      else ($a | last | .message.content // [])
+    [ .[] | select(type == "object") | select(.isSidechain != true) ] as $r
+    | ([ $r | to_entries[] | select(.value.type == "assistant") ] | last) as $a
+    | ([ $r | to_entries[] | select(.value.type == "user")      ] | last) as $u
+    | if $a == null or ($u != null and $u.key > $a.key) then ""
+      else ($a.value.message.content // [])
            | map(select(type == "object") | select(.type == "text") | .text // "")
            | join("\n")
       end' "$transcript" 2>/dev/null || true)"

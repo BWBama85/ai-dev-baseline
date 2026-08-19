@@ -6593,19 +6593,31 @@ limit: none of them is sufficient alone.
              semantic analysis the line-oriented matcher cannot do.
 - decision:  (1) TWO NARROW CARVE-OUTS, not a classifier, and the third candidate WITHDRAWN.
                  `ATTR` — a status word separated by EXACTLY ONE SPACE from a curated non-entity
-                 head noun (`file files suite suites`) is an adjective: "merged files", "green
-                 suite". The separator is the load-bearing half. Read AFTER punctuation stripping,
-                 "PR #1 is merged; files are swept once" would present `files` as the next word and
-                 exempt a real claim; a single space cannot cross a clause boundary. The noun list
-                 grows BY WITNESS ONLY, the mirror of the token set's rule — every entry there is a
-                 new false-positive surface, every entry here a new false-negative one.
-                 `IDIOM` — an exact previous-word + status-word bigram. "in passing" is the list.
-                 "Not predicated of the co-sentential entity reference" is coreference analysis and
-                 was withdrawn rather than attempted: the practice already rules that a classifier
-                 over arbitrary English "would be theatre beyond a small documented grammar".
-             (2) THE COST IS STATED, NOT HIDDEN. `PR #1 has a green suite` is now a miss. That is
-                 the direction the practice already chose — misses are the accepted cost of not
-                 crying wolf — and it is pinned as a cost, the way `draft` already is.
+                 head noun (`file files suite suites`) is attributive: "merged files", "green
+                 suite". `IDIOM` — a previous word and a status word separated by exactly one
+                 space; "in passing" is the list.
+                 BOTH SEPARATORS ARE READ RAW, and that is the load-bearing half of each rather
+                 than a detail. Read AFTER punctuation stripping, "PR #1 is merged; files are
+                 swept once" presents `files` as the next word and "CI for #1 is in, passing all
+                 checks" presents `in` as the previous one — two real claims, both exempted.
+                 Review round 1 found the second of those live. A single space cannot cross a
+                 clause boundary. The noun list grows BY WITNESS ONLY, the mirror of the token
+                 set's rule — every entry there is a new false-positive surface, every entry here
+                 a new false-negative one.
+                 "Not predicated of the co-sentential entity reference" is coreference analysis
+                 and was withdrawn rather than attempted: the practice already rules that a
+                 classifier over arbitrary English "would be theatre beyond a small documented
+                 grammar".
+                 (2) PREDICATION BEATS ATTRIBUTION, which is what lets `suite` be exempted at
+                 all. "they make a green suite mean something" and "CI for #1 has a green suite"
+                 differ only in the verb in front, and the second is a real CI claim — so a copula
+                 or possession verb immediately before the token, or before its determiner, turns
+                 the carve-out off. Review round 1 found the naive rule admitting both "has a
+                 green suite" and "has a failing suite", which the issue's In-scope line forbids.
+                 THE RESIDUE IS STATED, NOT HIDDEN: the predication list is closed, so "PR #1
+                 shows a green suite" is still a miss. That is the direction the practice already
+                 chose — misses are the accepted cost of not crying wolf — and it is pinned AS
+                 residue, the way `draft`'s cost already is.
              (3) THE FOURTH OBSERVATION IS A REAL RACE, AND THE SOURCE WAS WRONG. The hook read the
                  last assistant record of the transcript FILE. A rejected draft is an ordinary
                  assistant record, so between the retry completing and its records landing, that
@@ -6613,11 +6625,21 @@ limit: none of them is sufficient alone.
                  `last_assistant_message` is built from the live message list
                  (`findLast(type=="assistant")`, text blocks joined with newlines — probed in the
                  installed 2.1.235 binary, not recalled), so it is always THIS turn's text. The
-                 hook now prefers it and falls back to the transcript when the field is absent,
+                 hook now prefers it and falls back to the transcript whenever it yields nothing,
                  which keeps every older CLI working with no declared version floor.
-             (4) SIDECHAIN RECORDS ARE EXCLUDED on the fallback path. A Task subagent's messages
-                 land in the same log, and one of them resolving as "the turn's final message"
-                 lints text the operator never wrote.
+             (4) THE FALLBACK PATH NEEDS ITS OWN TWO GUARDS, because an empty field is NOT proof of
+                 an old CLI: the binary omits it whenever the final message carries no text, so a
+                 text-free turn on a current CLI reaches the fallback and would re-lint the
+                 previous message. Review round 1 found that reachable.
+                 STALENESS — if the last assistant record does not come after the last user record,
+                 this turn's final message has not been written yet and the newest text belongs to
+                 a superseded one; say nothing. This is what the lagging write looks like from
+                 inside the file, and it needs no version probe, which is why it was preferred over
+                 keying on a neighbouring payload field's presence.
+                 SIDECHAIN — a Task subagent's messages land in the same log, and one of them
+                 resolving as "the turn's final message" lints text the operator never wrote.
+                 Excluded from BOTH sides of the comparison, or a subagent's own prompt would count
+                 as the last user record.
 - placement: `scripts/lib/state-assert.sh` (ATTR + IDIOM in `cmd_lint`) +
              `agents/claude/scripts/state-claim-gate.sh` (payload-first resolution) +
              `scripts/check-state-assert.sh` (3b-l and 3c-2) +
@@ -6630,6 +6652,8 @@ limit: none of them is sufficient alone.
              logs, 29 of 301 gate firings quoted the previous message rather than the current one —
              the mechanism is intermittent, not deterministic, which is why it survived review as
              an unexplained anecdote. The worked case is session
-             `febc77dc-237c-401d-92b4-b73f805d8112`, records 435/442/451/456: three consecutive
-             firings, each quoting the draft before the one on screen.
+             `febc77dc-237c-401d-92b4-b73f805d8112`: assistant text records 435, 442, 451 and 456
+             are four successive drafts, and the hook-feedback records at 447, 452 and 457 are
+             three consecutive firings, each quoting the draft BEFORE the one then on screen — 447
+             quotes 435, 452 quotes 442, 457 quotes 451.
 - baseline-issue: n/a
