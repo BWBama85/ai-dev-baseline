@@ -432,21 +432,29 @@ Ask, then wait again. **Only when step 4 actually pushed something**: re-asking 
 head nobody changed is spam.
 
 ```bash
-# Nothing was pushed -> nothing to re-review. `$LAST_SHA` is set by step 4 only when it committed.
+# CLEAR IT FIRST. `$LAST_SHA` is set by step 4 only when it actually committed and pushed, and a
+# variable that survives a round is how this loop runs forever: round 2 finds only declined or
+# already-addressed threads, pushes nothing, and STILL sees round 1's value — so it asks (or reads
+# 13), returns to the wait, is handed the same findings, and repeats with nothing changing and no
+# cap ever incrementing. Unset it here, before step 4 of THIS round can set it.
+#
+# `${LAST_SHA:-}` and not `$LAST_SHA`, because these fenced blocks may run as separate shells and an
+# unset variable under `set -u` would abort the step rather than take the no-push branch.
 if [ -z "${LAST_SHA:-}" ]; then
-  echo "no fix was pushed; not requesting a re-review"
-else
-  bash "$HOME/.claude/scripts/lib/pr-watch.sh" request-review --pr "$PR_NUM"
+  echo "no fix was pushed this round; not requesting a re-review"
+  exit 30   # nothing changed -> waiting again would re-find the same findings. STOP LOOPING.
 fi
+bash "$HOME/.claude/scripts/lib/pr-watch.sh" request-review --pr "$PR_NUM"
 ```
 
 **Branch on that block's EXIT CODE.** Only `0` goes round again; the rest are terminal answers to
-report. None of `13`/`14`/`15` is a failure — each names a different reason nothing was posted:
+report. None of `13`/`14`/`15`/`30` is a failure — each names a different reason nothing was posted:
 
 | Code | Meaning | What to do |
 | ---- | ------- | ---------- |
-| `0`  | a re-review was requested for this head | **go back to step 0's wait**, then round again from step 1 |
-| `13` | already requested for this head | do **not** ask again; go back to the wait |
+| `0`  | a re-review was requested for this head | **`unset LAST_SHA`**, go back to step 0's wait, then round again from step 1 |
+| `30` | this round pushed nothing | report what was declined or already addressed and **exit** — another wait would be handed the same findings |
+| `13` | already requested for this head (someone asked before you) | do **not** ask again; **`unset LAST_SHA`** and go back to the wait, since a response to that existing request is still coming |
 | `14` | no declared reviewer has a trigger this baseline knows | report it and **exit** — nothing will wake the watch, so a further round would only time out |
 | `15` | the round cap is reached | report it and **exit**; hand back to the operator |
 | `12` | the PR is no longer OPEN | report it and **exit** |

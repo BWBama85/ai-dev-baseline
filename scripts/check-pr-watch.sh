@@ -120,7 +120,13 @@ FORGED_COMMIT_AT="2026-07-25T00:00:00Z"
 # It also COUNTS polls (one `pulls/N` read per classification) and prefers a per-poll fixture
 # `<name>.<n>.json` when one exists, which is how the `wait` scenarios below make the answer change
 # between polls without any network.
-check_write_stub "$SBIN/gh" <<'STUB'
+# THE TWO GRAPHQL ARMS ARE COMPOSED IN FROM check-lib.sh, NOT PASTED. They were literals here
+# until the independent review pointed out that `check_pr_graphql_stub_body` and
+# `check_pr_receipts_stub_body` were DEFINED as the shared home and then never called — three copies
+# of one thing, in a repo whose first golden rule is "source the shared primitive, never copy it".
+# It had already drifted once: adding the failure knobs meant hand-patching all three. The stub is
+# therefore assembled by a group whose stdout is the program, so the shared bodies arrive by call.
+{ cat <<'STUB'
 #!/usr/bin/env bash
 # Knobs:
 #   STUB_AUTH_FAIL=1       -> `gh auth status` fails (unauthenticated)
@@ -147,48 +153,14 @@ if [ "${2:-}" = "graphql" ]; then
   for a in "$@"; do case "$a" in query=*) _q="$a" ;; esac; done
   case "$_q" in
     *body*) printf 'graphql:receipts\n' >> "$S/calls"
-  # The SAME failure knobs as the snapshot arm: an unreadable read is an unreadable read whichever
-  # query asked, and `request-review` must refuse to post on one — an unprovable receipt read as
-  # "not yet asked" re-posts on every poll, which is the one way this mutation becomes spam.
-  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
-  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
-  _prf="$S/pr.json"
-  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
-  jq -n --argjson pr "$(_rd "$_prf")" \
-        --argjson rc "$(_rd "$S/receipts.json")" \
-        --arg total "$( [ -f "$S/receipts-total.txt" ] && cat "$S/receipts-total.txt" )" '
-    { data: { repository: { pullRequest: {
-        state: (if ($pr.state // "open") == "open" then "OPEN"
-                elif (($pr.merged_at // null) != null) then "MERGED" else "CLOSED" end),
-        headRefOid: ($pr.head.sha // null),
-        headRefName: ($pr.head.ref // null),
-        baseRepository: (if ($pr.base.repo.full_name // null) == null then null
-                         else {nameWithOwner: $pr.base.repo.full_name} end),
-        headRepository: (if ($pr.head.repo // null) == null then null
-                         else {nameWithOwner: ($pr.head.repo.full_name // null)} end),
-        comments: { totalCount: (if ($total|length) > 0 then ($total|tonumber) else ($rc|length) end),
-                    nodes: [ $rc[] | {createdAt: .created_at, body: .body} ] } } } } }'
-  exit 0
+STUB
+check_pr_receipts_stub_body
+cat <<'STUB'
       ;;
     *) printf 'graphql:snapshot\n' >> "$S/calls"
-  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
-  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
-  if [ -f "$S/graphql-raw.json" ]; then cat "$S/graphql-raw.json"; exit "${STUB_GRAPHQL_RC:-0}"; fi
-  _prf="$S/pr.json"; _n=0
-  [ -f "$S/polls" ] && _n="$(cat "$S/polls")"
-  _n=$(( _n + 1 )); printf '%s' "$_n" > "$S/polls"
-  [ -f "$S/pr.$_n.json" ] && _prf="$S/pr.$_n.json"
-  _fx() { if [ -f "$S/$1.$_n.json" ]; then printf '%s' "$S/$1.$_n.json"; else printf '%s' "$S/$1.json"; fi; }
-  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
-  _tot() { [ -f "$S/$1-total.txt" ] && cat "$S/$1-total.txt"; }
-  jq -n --argjson pr "$(_rd "$_prf")" \
-        --argjson reviews "$(_rd "$(_fx reviews)")" \
-        --argjson comments "$(_rd "$(_fx comments)")" \
-        --argjson reactions "$(_rd "$(_fx reactions)")" \
-        --arg rvtotal "$(_tot reviews)" --arg cmtotal "$(_tot comments)" \
-        --arg rxtotal "$(_tot reactions)" \
-        -f "$S/assemble.jq"
-  exit 0
+STUB
+check_pr_graphql_stub_body
+cat <<'STUB'
       ;;
   esac
 fi
@@ -221,6 +193,24 @@ case "$url" in
     [ -f "$S/reviews2.json" ] && cat "$S/reviews2.json"
     exit 0 ;;
   */issues/*/comments*)
+    # A POST, NOT A GET — `request-review` creating a comment (#169). Told apart by the `body=`
+    # argument, because the URL is identical. RECORDED (so a test can assert a comment was really
+    # posted, and how many times) and PERSISTED into the receipt fixture (so the NEXT invocation
+    # sees the real receipt this one created, which is the only way to test idempotency as
+    # success-then-repeat rather than as a preloaded fixture). Both gaps were named by the
+    # independent review: without the record, deleting `-f body=` from the module stays green.
+    _body=""; _isprot=0
+    for _a in "$@"; do case "$_a" in body=*) _body="${_a#body=}"; _isprot=1 ;; esac; done
+    if [ "$_isprot" = "1" ]; then
+      [ "${STUB_FAIL_POST:-0}" = "1" ] && exit 1
+      printf '%s\n' "$_body" >> "$S/posted"
+      _at="${STUB_POST_AT:-2026-07-25T04:46:00Z}"
+      _cur="[]"; [ -f "$S/receipts.json" ] && _cur="$(cat "$S/receipts.json")"
+      printf '%s' "$_cur" | jq -c --arg at "$_at" --arg b "$_body" \
+        '. + [{created_at:$at, body:$b}]' > "$S/receipts.json.tmp" \
+        && mv "$S/receipts.json.tmp" "$S/receipts.json"
+      printf '{"id":1}\n'; exit 0
+    fi
     [ "${STUB_FAIL_COMMENTS:-0}" = "1" ] && exit 1
     [ "${STUB_EMPTY_COMMENTS:-0}" = "1" ] && exit 0
     fx comments
@@ -265,6 +255,7 @@ case "$url" in
 esac
 exit 0
 STUB
+} | check_write_stub "$SBIN/gh"
 
 # A `sleep` shim that RECORDS the requested nap and then sleeps a flat 1s.
 #
@@ -295,7 +286,8 @@ reset_fx() {
   rm -f "$S"/pr.[0-9]*.json "$S"/reviews.[0-9]*.json "$S"/reactions.[0-9]*.json \
         "$S"/comments.[0-9]*.json "$S"/activity.[0-9]*.json
   # #174/#169 fixtures: the truncation counters, the receipt read, and the raw-document override.
-  rm -f "$S"/*-total.txt "$S/receipts.json" "$S/graphql-raw.json"
+  rm -f "$S"/*-total.txt "$S/receipts.json" "$S/graphql-raw.json" "$S/posted" "$S/receipts-raw.json"
+  rm -f "$S/rpolls" "$S"/rpr.[0-9]*.json
   printf '[]\n' > "$S/reviews.json"
   printf '[]\n' > "$S/reactions.json"
   printf '[]\n' > "$S/comments.json"
@@ -351,6 +343,7 @@ _w() {
     STUB_EMPTY_REACTIONS="${STUB_EMPTY_REACTIONS:-0}" \
     STUB_GRAPHQL_FAIL="${STUB_GRAPHQL_FAIL:-0}" STUB_EMPTY_GRAPHQL="${STUB_EMPTY_GRAPHQL:-0}" \
     STUB_GRAPHQL_RC="${STUB_GRAPHQL_RC:-0}" \
+    STUB_FAIL_POST="${STUB_FAIL_POST:-0}" STUB_POST_AT="${STUB_POST_AT:-}" \
     bash "$PW" "$@" )
 }
 # w : stdout AND stderr, for asserting diagnostics.
@@ -1128,12 +1121,66 @@ receipt_fx() { check_pr_receipts_json "$S/receipts.json" "$@"; }
 TRIGGER='@codex review'
 
 # --- the happy path: nothing has been asked yet, so ask exactly once --------------------------
+# ASSERT THE POST ITSELF, not the module's own diagnostic about it. The stub records every comment
+# it is asked to create, so `$S/posted` is evidence a request really crossed the wire and what it
+# said — an assertion on the log line alone stays green if `-f body=...` is deleted or the call is
+# aimed at a no-op endpoint. Named by the independent review.
 reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
 w request-review --pr 1;  rc 0 "request-review: a head with no prior request is asked for once"
-has "$OUT" "$TRIGGER" "request-review: the posted phrase is the reviewer's own documented trigger"
+eq "$(wc -l < "$S/posted" | tr -d ' ')" "1" "request-review: exactly ONE comment was actually posted"
+eq "$(cat "$S/posted")" "$TRIGGER" "request-review: the posted BODY is the reviewer's own documented trigger"
 has "$OUT" "round 1 of 3" "request-review: the round is reported against the cap"
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
 wout request-review --pr 1
 eq "$OUT" "requested $HEAD_SHA" "request-review: stdout is '<verdict> <sha>', like every other verdict here"
+
+# IDEMPOTENCY AS SUCCESS-THEN-REPEAT, which is the property #169 actually states. The stub persists
+# the comment it posted into the receipt fixture, so the second invocation reads the receipt THIS
+# RUN created rather than one the scenario preloaded. That is the difference between proving
+# "a receipt is recognised" and proving "a successful request BECOMES the receipt". Named by the
+# independent review, which observed that the earlier pair proved only the first.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+w request-review --pr 1;  rc 0  "idempotency: the first request succeeds"
+w request-review --pr 1;  rc 13 "idempotency: the SECOND invocation sees the receipt the first one created"
+w request-review --pr 1;  rc 13 "idempotency: and the third"
+eq "$(wc -l < "$S/posted" | tr -d ' ')" "1" "idempotency: still exactly one comment on the wire after three calls"
+
+# THE SAME-SECOND BOUNDARY. GitHub timestamps are second-precision, so a request posted moments
+# after the push it answers can share a second with the ref-arrival anchor. The receipt comparison
+# is INCLUSIVE for exactly this case — treating the tie as "no receipt" posts again, and then again
+# on every poll. Note the signal rules deliberately round the OTHER way; see the function header.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+STUB_POST_AT="$ARRIVED_AT" w request-review --pr 1;  rc 0 "same-second: the first request is made"
+STUB_POST_AT="$ARRIVED_AT" w request-review --pr 1
+rc 13 "same-second: a receipt sharing the anchor's second still counts, and is not re-posted"
+eq "$(wc -l < "$S/posted" | tr -d ' ')" "1" "same-second: exactly one comment on the wire"
+
+# A FAILED POST IS NOT A MADE REQUEST.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+STUB_FAIL_POST=1 w request-review --pr 1;  rc 20 "request-review: a failed POST is 20, never a made request"
+STUB_FAIL_POST=0
+
+# THE PR MUST STILL BE OPEN AT THE MOMENT OF THE MUTATION, not merely when it was first read
+# (verify-before-asserting.md). Everything above it is read across two or three round trips.
+#
+# THE FIXTURE MUST CHANGE *UNDER* THE CALLER, or this proves nothing. The obvious version — a PR
+# that is closed from the start — is caught by the EARLIER state check and returns 12 either way,
+# so it passes with the re-verify deleted. Observed doing exactly that. `rpr.2.json` closes the PR
+# on the SECOND receipt read, which is the re-verify.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+check_pr_json "$S/rpr.2.json" --sha "$HEAD_SHA" --state closed --merged-at "2026-07-25T05:00:00Z" \
+  --base-slug acme/widget --head-slug acme/widget --head-ref "$HEAD_REF"
+w request-review --pr 1;  rc 12 "request-review: a PR closed before the POST is not asked"
+if [ -f "$S/posted" ]; then bad "request-review: nothing may be posted to a PR that closed under us"; else ok; fi
+# ...and the same for a head that moved: asking for a review of a superseded head is noise.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+check_pr_json "$S/rpr.2.json" --sha "$OLD_SHA" --state open --merged-at "" \
+  --base-slug acme/widget --head-slug acme/widget --head-ref "$HEAD_REF"
+w request-review --pr 1;  rc 20 "request-review: a head that moved before the POST is not asked about"
+if [ -f "$S/posted" ]; then bad "request-review: nothing may be posted about a superseded head"; else ok; fi
+# The control: an UNCHANGED PR still posts, so the re-verify is not simply blocking everything.
+reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+w request-review --pr 1;  rc 0 "control: an unchanged PR still gets its request"
 
 # --- IDEMPOTENCY, the property #169 names explicitly ------------------------------------------
 # The receipt is a trigger comment NEWER than this head's arrival. A second observation of the same
@@ -1216,6 +1263,25 @@ STUB_FAIL_ACTIVITY=0
 reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
 activity_fx "$OLD_SHA" "refs/heads/$HEAD_REF" "$ARRIVED_AT"   # nothing puts THIS head on the ref
 w request-review --pr 1;  rc 20 "request-review: an UNESTABLISHED anchor refuses to ask"
+# THE RECEIPT CONNECTION IS TYPE-VALIDATED, exactly like the classification snapshot, and here the
+# direction it protects is POSTING: `// 0` / `// []` would read a malformed read as "no comments",
+# which reads as "nobody has asked" and posts again on every poll. Found by the independent review.
+for broken in '{"comments":{"totalCount":0}}' '{"comments":{"totalCount":0,"nodes":{}}}' \
+              '{"comments":null}' '{"comments":{"totalCount":-1,"nodes":[]}}'; do
+  reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
+  printf '%s\n' "$broken" > "$S/receipts-raw.json"
+  w request-review --pr 1
+  rc 20 "request-review: a broken receipt connection refuses to ask ($broken)"
+  if [ -f "$S/posted" ]; then bad "request-review: nothing may be posted on an unreadable receipt read ($broken)"; else ok; fi
+  rm -f "$S/receipts-raw.json"
+done
+# A comment carrying no usable createdAt cannot be dated against the anchor, so it can be neither
+# honoured as a receipt nor dismissed as absent.
+reset_fx; declare_bots "[\"$CODEX\"]"
+printf '%s\n' '{"comments":{"totalCount":1,"nodes":[{"body":"@codex review"}]}}' > "$S/receipts-raw.json"
+w request-review --pr 1;  rc 20 "request-review: a receipt with no createdAt refuses to ask"
+rm -f "$S/receipts-raw.json"
+
 # More than 100 comments means the receipt cannot be proved absent -> refuse, never re-ask.
 reset_fx; declare_bots "[\"$CODEX\"]"; receipt_fx
 printf '101\n' > "$S/receipts-total.txt"

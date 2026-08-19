@@ -24,6 +24,11 @@ only by a published release, which is what these entries are the notes for.
   the cap. A declared reviewer with no known trigger is skipped with no error, and every
   unreadable path refuses to ask rather than re-asking on every poll.
 
+  Stated exactly, because the obvious stronger sentence is false: the guarantee is **sequential**.
+  Read-then-post is not atomic and GitHub has no lock on comments, so two watchers polling one PR
+  concurrently can both post. The state that gates the mutation is re-read immediately before it,
+  which narrows that window without closing it.
+
   **What is not proven, and is stated wherever the feature is described:** that `@codex review`
   actually re-triggers anything. It is the vendor's own documented trigger for its **lightweight
   review** mode, read this run off the connector's review bodies on this repo's PRs #127, #145,
@@ -47,9 +52,15 @@ only by a published release, which is what these entries are the notes for.
 
   **Pagination is kept, not assumed away.** A GraphQL connection caps at 100 records and real pull
   requests exceed it, so a connection whose `totalCount` exceeds the nodes it returned is re-read
-  through the paginated REST endpoint it always used. One round trip is the common case, not a
-  guarantee — and the alternative, trusting the newest 100, is a fail-open that could drop a
-  standing `CHANGES_REQUESTED` and let a fresh `+1` fold to `clean`. D78 records the choice.
+  through the paginated REST endpoint it always used — addressed by the *same* resolved slug the
+  snapshot came from, so the re-read cannot answer about a different repository. The alternative,
+  trusting the newest 100, is a fail-open that could drop a standing `CHANGES_REQUESTED` and let a
+  fresh `+1` fold to `clean`. D78 records the choice.
+
+  **One round trip is the common case, not a universal**, and both exceptions are bounded: the
+  staleness anchor (GraphQL exposes no ref-scoped update time), and repository resolution in a
+  multi-remote checkout, where one cached `gh repo view` is paid rather than guessing which
+  repository a bare PR number means. A URL argument or a single-remote checkout costs neither.
 
   **The verdict is unchanged by construction.** The adapter normalizes GraphQL back to the REST
   shapes the shared classifier already consumed, including the login spelling: GitHub reports the

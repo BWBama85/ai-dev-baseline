@@ -709,7 +709,26 @@ check_pr_receipts_stub_body() {
   # "not yet asked" re-posts on every poll, which is the one way this mutation becomes spam.
   if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
   if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
-  _prf="$S/pr.json"
+  # A raw override for shapes the assembler below would never build — a malformed or absent
+  # comments connection. Spliced INTO a well-formed pullRequest so the scenario under test is the
+  # connection, not the envelope.
+  if [ -f "$S/receipts-raw.json" ]; then
+    jq -n --argjson pr "$(cat "$S/pr.json")" --argjson cm "$(cat "$S/receipts-raw.json")" '
+      { data: { repository: { pullRequest: (
+          { state: (if ($pr.state // "open") == "open" then "OPEN" else "CLOSED" end),
+            headRefOid: ($pr.head.sha // null), headRefName: ($pr.head.ref // null),
+            baseRepository: {nameWithOwner: ($pr.base.repo.full_name // null)},
+            headRepository: {nameWithOwner: ($pr.head.repo.full_name // null)} } + $cm ) } } }'
+    exit 0
+  fi
+  # PER-CALL FIXTURE ROTATION. `request-review` reads this endpoint TWICE — once to find the
+  # receipt, and once immediately before the POST to re-verify the state that gates it. A scenario
+  # that wants the PR to change UNDER the caller writes `rpr.<n>.json` for the nth call; without
+  # this the re-verify can only ever see what the first read saw, and a test for it would pass
+  # whether or not the re-verify exists (observed: it did).
+  _rn=0; [ -f "$S/rpolls" ] && _rn="$(cat "$S/rpolls")"
+  _rn=$(( _rn + 1 )); printf '%s' "$_rn" > "$S/rpolls"
+  _prf="$S/pr.json"; [ -f "$S/rpr.$_rn.json" ] && _prf="$S/rpr.$_rn.json"
   _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
   jq -n --argjson pr "$(_rd "$_prf")" \
         --argjson rc "$(_rd "$S/receipts.json")" \

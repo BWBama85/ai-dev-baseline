@@ -235,7 +235,7 @@ EOF
   # selection, the conditional head-arrival anchor, and the per-reviewer classification. What stays
   # here is the mapping below — this guard's own exit codes, which are the thing that must NOT be
   # shared with the watcher.
-  classes="$(adb_reviewer_classes_for_pr pr-review "$n" "$want" "$head" "$headslug" "$headref" "$pjson")" \
+  classes="$(adb_reviewer_classes_for_pr pr-review "$n" "$want" "$head" "$headslug" "$headref" "$pjson" "$qslug")" \
     || { echo "pr-review: PR #$n — refusing to arm on review state it could not read" >&2; return 20; }
   verdict="$(adb_fold_reviewer_classes "$classes")"
 

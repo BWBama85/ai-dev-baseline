@@ -6347,9 +6347,24 @@ limit: none of them is sufficient alone.
              `adb_reviewer_classes_for_pr` re-reads THAT ONE SURFACE through `adb_paginated_list` —
              the same fully-paginated REST read the collapse replaced. The common case is one round
              trip and the acceptance criterion is met; the rare case costs exactly what it costs
-             today and is never wrong; and no PR becomes unclassifiable. `adb_paginated_list` is
-             therefore NOT retired — it changes from the primary read to the overflow path, and its
-             fail-closed guards stay exercised.
+             today; and no PR becomes unclassifiable. `adb_paginated_list` is therefore NOT retired
+             — it changes from the primary read to the overflow path, and its fail-closed guards
+             stay exercised.
+
+             **THE FALLBACK CARRIES THE RESOLVED SLUG.** The independent review caught this: the
+             re-read first spelled `repos/{owner}/{repo}/...`, which lets gh resolve the repository
+             a SECOND time and answer a different question from the one the snapshot asked. In a
+             fork clone gh may resolve the parent while the snapshot named the fork (or the
+             reverse), so a classification could pair one pull request head SHA with ANOTHER pull
+             request evidence, both legitimately numbered #N. Every read in one classification now
+             addresses `$qslug`.
+
+             **ONE ROUND TRIP IS THE COMMON CASE, NOT A UNIVERSAL.** Two stated exceptions, both
+             bounded: the staleness anchor (#174 grants this one explicitly — GraphQL has no
+             ref-scoped update time), and repository resolution in a MULTI-REMOTE checkout, where
+             `adb_pr_query_slug` falls to `adb_repo_slug` and pays one cached `gh repo view`. A URL
+             argument or a single-remote checkout — which is every clone `/implement-issue` creates
+             — costs nothing extra. Guessing the repository instead would be worse than a read.
 - placement: `scripts/lib/common.sh` (`adb_pr_snapshot`, `adb_pr_snapshot_query`,
              `adb_pr_query_slug`, the rewritten `adb_reviewer_classes_for_pr`);
              `scripts/lib/pr-watch.sh` and `scripts/lib/pr-review.sh` (the callers);
@@ -6418,6 +6433,18 @@ limit: none of them is sufficient alone.
              Read-then-post is not atomic and GitHub offers no lock on comments, so concurrent
              watchers can double-post. Stated, not overclaimed — the same honesty this family
              already applies to #215's head-moved window.
+
+             Three things the independent review found were needed before even that narrower claim
+             held. **The receipt boundary is INCLUSIVE** (`>=`) where every signal rule uses `>`:
+             GitHub timestamps are second-precision, so a request can share a second with the ref
+             arrival it answers, and rounding a tie the signal way would re-post on every poll. The
+             two sides round opposite ways because their safe directions are opposite. **The
+             receipt connection is type-validated** exactly like the classification snapshot —
+             `// 0` and `// []` read a malformed read as "nobody asked", which posts again.
+             **The gating state is re-read immediately before the POST**, per
+             `verify-before-asserting.md`, because everything above it was read across two or three
+             round trips and a PR can close inside that window. That NARROWS the race; it cannot
+             close it, and there is no conditional-comment primitive that would.
              **(d) ROUND.** A round is a re-review THIS mechanism requested, counted from trigger
              comments on the PR regardless of head, capped at 3 (`--max-rounds`). The reviewer's
              first, unrequested review is not a round. Deliberately NOT anchored to the head:
@@ -6459,6 +6486,15 @@ limit: none of them is sufficient alone.
                  trigger that turns out to be a no-op costs exactly one comment before the watch
                  times out as it does today. The unproven half is stated in the module header, in
                  the workflow step, and in the PR body rather than being implied to work.
+
+                 The independent review put the boundary better than the paragraph above did, and
+                 the wording is adopted: **this establishes only that the phrase is POSTED**, not
+                 that the reviewer looks again. It also argued that a decision-log deviation cannot
+                 override an issue owner’s stated prerequisite. That is a fair objection and it is
+                 recorded rather than argued away — the counter is that the prerequisite is an
+                 outward mutation against a live reviewer, which is the operator’s to run and not
+                 an implementation run’s to perform unasked. The operator decides whether to accept
+                 the deviation or hold the issue for the probe.
 
                  The probe remains the operator's to run: post `@codex review` on a live PR and
                  observe whether a review object, a second task, or nothing follows.

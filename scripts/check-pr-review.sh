@@ -97,7 +97,13 @@ OLD_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 # ORDERING IS LOAD-BEARING, and it is the trap a broad `repos/*` arm sets: the reviews URL is
 # ALSO a `repos/*` URL, so a case arm that matches the general shape first swallows the specific
 # one and every scenario silently reads the wrong fixture. Most specific first, always.
-check_write_stub "$SBIN/gh" <<'STUB'
+# THE TWO GRAPHQL ARMS ARE COMPOSED IN FROM check-lib.sh, NOT PASTED. They were literals here
+# until the independent review pointed out that `check_pr_graphql_stub_body` and
+# `check_pr_receipts_stub_body` were DEFINED as the shared home and then never called — three copies
+# of one thing, in a repo whose first golden rule is "source the shared primitive, never copy it".
+# It had already drifted once: adding the failure knobs meant hand-patching all three. The stub is
+# therefore assembled by a group whose stdout is the program, so the shared bodies arrive by call.
+{ cat <<'STUB'
 #!/usr/bin/env bash
 # Answers the FIVE reads the guard can make, from $S fixtures. Knobs:
 #   STUB_AUTH_FAIL=1       -> `gh auth status` fails (unauthenticated)
@@ -124,48 +130,14 @@ if [ "${2:-}" = "graphql" ]; then
   for a in "$@"; do case "$a" in query=*) _q="$a" ;; esac; done
   case "$_q" in
     *body*) printf 'graphql:receipts\n' >> "$S/calls"
-  # The SAME failure knobs as the snapshot arm: an unreadable read is an unreadable read whichever
-  # query asked, and `request-review` must refuse to post on one — an unprovable receipt read as
-  # "not yet asked" re-posts on every poll, which is the one way this mutation becomes spam.
-  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
-  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
-  _prf="$S/pr.json"
-  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
-  jq -n --argjson pr "$(_rd "$_prf")" \
-        --argjson rc "$(_rd "$S/receipts.json")" \
-        --arg total "$( [ -f "$S/receipts-total.txt" ] && cat "$S/receipts-total.txt" )" '
-    { data: { repository: { pullRequest: {
-        state: (if ($pr.state // "open") == "open" then "OPEN"
-                elif (($pr.merged_at // null) != null) then "MERGED" else "CLOSED" end),
-        headRefOid: ($pr.head.sha // null),
-        headRefName: ($pr.head.ref // null),
-        baseRepository: (if ($pr.base.repo.full_name // null) == null then null
-                         else {nameWithOwner: $pr.base.repo.full_name} end),
-        headRepository: (if ($pr.head.repo // null) == null then null
-                         else {nameWithOwner: ($pr.head.repo.full_name // null)} end),
-        comments: { totalCount: (if ($total|length) > 0 then ($total|tonumber) else ($rc|length) end),
-                    nodes: [ $rc[] | {createdAt: .created_at, body: .body} ] } } } } }'
-  exit 0
+STUB
+check_pr_receipts_stub_body
+cat <<'STUB'
       ;;
     *) printf 'graphql:snapshot\n' >> "$S/calls"
-  if [ "${STUB_GRAPHQL_FAIL:-0}" = "1" ]; then exit 1; fi
-  if [ "${STUB_EMPTY_GRAPHQL:-0}" = "1" ]; then exit 0; fi
-  if [ -f "$S/graphql-raw.json" ]; then cat "$S/graphql-raw.json"; exit "${STUB_GRAPHQL_RC:-0}"; fi
-  _prf="$S/pr.json"; _n=0
-  [ -f "$S/polls" ] && _n="$(cat "$S/polls")"
-  _n=$(( _n + 1 )); printf '%s' "$_n" > "$S/polls"
-  [ -f "$S/pr.$_n.json" ] && _prf="$S/pr.$_n.json"
-  _fx() { if [ -f "$S/$1.$_n.json" ]; then printf '%s' "$S/$1.$_n.json"; else printf '%s' "$S/$1.json"; fi; }
-  _rd() { if [ -f "$1" ]; then cat "$1"; else printf '[]'; fi; }
-  _tot() { [ -f "$S/$1-total.txt" ] && cat "$S/$1-total.txt"; }
-  jq -n --argjson pr "$(_rd "$_prf")" \
-        --argjson reviews "$(_rd "$(_fx reviews)")" \
-        --argjson comments "$(_rd "$(_fx comments)")" \
-        --argjson reactions "$(_rd "$(_fx reactions)")" \
-        --arg rvtotal "$(_tot reviews)" --arg cmtotal "$(_tot comments)" \
-        --arg rxtotal "$(_tot reactions)" \
-        -f "$S/assemble.jq"
-  exit 0
+STUB
+check_pr_graphql_stub_body
+cat <<'STUB'
       ;;
   esac
 fi
@@ -221,6 +193,7 @@ case "$url" in
 esac
 exit 0
 STUB
+} | check_write_stub "$SBIN/gh"
 
 # ---- fixtures --------------------------------------------------------------------------------
 # The GraphQL assembler is a CONSTANT program, written once at setup rather than in `reset_fx`:
@@ -739,6 +712,25 @@ g gate --pr 7; eq "$RC_" "20" "a MALFORMED comments connection -> 20"
 reset_fx
 _gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":{"totalCount":0,"nodes":[]},'"$_cm_none"',"reactions":{"totalCount":0,"nodes":5}}}}'
 g gate --pr 7; eq "$RC_" "20" "a MALFORMED reactions connection -> 20"
+
+# THE `totalCount` HALF OF THAT GUARD, which had no witness of its own until the independent review
+# supplied one. The truncation test is `totalCount > (nodes|length)`, so an IMPOSSIBLE count does
+# not merely look odd — it reports "not truncated" for a connection that was, the paginated re-read
+# never fires, and a hidden rejection stays hidden while a fresh `+1` folds to clean. `-1` is the
+# reviewer'"'"'s own witness; the others are the same hole in different spellings.
+for bad_count in '"totalCount":-1' '"totalCount":1.5' '"totalCount":"3"' '"totalCount":null'; do
+  reset_fx
+  _gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":{'"$bad_count"',"nodes":[]},'"$_cm_none"','"$_rx_fresh"'}}}}'
+  g gate --pr 7
+  eq "$RC_" "20" "an IMPOSSIBLE reviews totalCount -> 20, never a silent 'not truncated' ($bad_count)"
+  gout gate --pr 7
+  eq "$OUT" "" "...and prints NO head SHA ($bad_count)"
+done
+# A count BELOW the node count is impossible from GitHub and means the document cannot be trusted
+# to say what was truncated.
+reset_fx
+_gql_raw '{"data":{"repository":{"pullRequest":{'"$_pr_ok"',"reviews":{"totalCount":0,"nodes":[{"author":{"login":"chatgpt-codex-connector[bot]","__typename":"User"},"state":"CHANGES_REQUESTED","commit":{"oid":"'"$HEAD_SHA"'"}}]},'"$_cm_none"','"$_rx_fresh"'}}}}'
+g gate --pr 7; eq "$RC_" "20" "a totalCount BELOW the node count -> 20"
 reset_fx; rm -f "$S/graphql-raw.json"
 
 # A REVIEW THAT CANNOT BE TIED TO A COMMIT is unknown, not absent — end to end, on the arming path.
@@ -808,6 +800,18 @@ printf '%s\n' '[{"user":{"login":"a-human"},"created_at":"'"$AFTER_AT"'"}]' > "$
 printf '%s\n' '[{"user":{"login":"chatgpt-codex-connector"},"created_at":"'"$AFTER_AT"'"}]' > "$S/comments2.json"
 printf '101\n' > "$S/comments-total.txt"
 g gate --pr 7;  eq "$RC_" "21" "a TRUNCATED comments connection falls back to the paginated read"
+# THE FALLBACK MUST ADDRESS THE SAME REPOSITORY THE SNAPSHOT DID. It first spelled
+# `repos/{owner}/{repo}/...`, which lets gh resolve the repository a SECOND time — in a fork clone
+# that can be a different repo, so the classification would pair one PR head SHA with another PR
+# evidence, both numbered #N. The stub records URLs verbatim and never expands placeholders, so the
+# literal `{owner}` is exactly what a regression puts in the log. Found by the independent review.
+reset_fx
+printf '101\n' > "$S/reviews-total.txt"
+gout gate --pr 7
+if called 'repos/acme/widget/pulls/7/reviews'; then ok; else bad "the re-read must address the resolved slug"; fi
+if called '{owner}'; then bad "the re-read must NOT re-resolve the repository through a placeholder"; else ok; fi
+rm -f "$S/reviews-total.txt"
+
 # ...and the fallback is FAIL-CLOSED too: if the re-read itself fails, the classification is
 # unreadable rather than "that surface carried nothing".
 reset_fx
@@ -820,6 +824,23 @@ reset_fx; review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
 gout gate --pr 7
 if called '/pulls/7/reviews'; then bad "an untruncated read must not fall back to REST"; else ok; fi
 eq "$RC_" "0" "control: the untruncated single read still classifies"
+
+# #174'"'"'S ACCEPTANCE CRITERION, ASSERTED AS A COUNT. "One network round trip per classification" is
+# a claim about CARDINALITY, and no pin over a source token can express it — `fixed:adb_pr_snapshot`
+# matches the word in a comment, so deleting the call would stay green. The stub records every `gh
+# api` it answers, so the count IS the criterion. Named by the independent review.
+reset_fx; review_fx "chatgpt-codex-connector[bot]" "APPROVED" "$HEAD_SHA"
+gout gate --pr 7
+eq "$RC_" "0" "one-read: the classification succeeds"
+eq "$(grep -c "^graphql:snapshot$" "$S/calls")" "1" "one-read: EXACTLY ONE GraphQL read per classification"
+eq "$(grep -c "^repos/" "$S/calls")" "0" "one-read: and ZERO REST reads — no PR object, no surface reads"
+
+# ...and the conditional anchor is the ONE documented exception, still bounded to the same
+# condition it always had: a date-scoped signal that actually needs dating.
+reset_fx; reaction_fx "chatgpt-codex-connector" "+1" "$AFTER_AT"
+gout gate --pr 7
+eq "$(grep -c "^graphql:snapshot$" "$S/calls")" "1" "one-read: still one GraphQL read when a '"'"'+1'"'"' needs dating"
+eq "$(grep -c "activity" "$S/calls")" "1" "one-read: plus the anchor, which is the stated exception"
 reset_fx
 
 # ============================ multiple declared reviewers (ALL, not ANY) ============================

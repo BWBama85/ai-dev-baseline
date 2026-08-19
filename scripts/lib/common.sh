@@ -1532,9 +1532,15 @@ adb_paginated_list() {
 #
 # One GraphQL document replaces the four REST reads a classification used to make: the pull-request
 # object plus the three signal surfaces. Measured on this repo, PR #393 on 2026-08-18 —
-# 39,833 bytes over 4 round trips became 1,202 bytes over 1, a 97.0% reduction. The gate pays that
-# on every `/implement-issue` run and the watcher pays it once per poll, ~240-300 times in a default
-# half-hour watch.
+# 39,833 bytes over 4 round trips became 1,202 bytes over 1, a 97.0% reduction. The gate pays one
+# classification per `/implement-issue` run; the watcher pays one per poll, ~60 in a default
+# half-hour watch at 30s. (The old ~240-300 figure people remember counted individual REST
+# REQUESTS, not classifications — four or five per poll. Recomputed here rather than carried over.)
+#
+# THE MEASUREMENT IS A DATED SNAPSHOT OF A LIVE PULL REQUEST, not a reproducible constant: #393 has
+# gained review data since, and a re-read now returns slightly different byte counts at the same
+# ~97%. It is kept because the ORDER of the change is the point and a dated number can be checked;
+# do not read it as an invariant this code maintains.
 #
 # WHAT DID NOT MOVE, AND WHY. The head-arrival anchor stays REST (`adb_head_anchor`). Schema
 # introspection on 2026-08-18 found no ref-scoped update time anywhere in GraphQL: `Repository` has
@@ -1640,9 +1646,22 @@ adb_pr_snapshot() {
       | if (($rv.nodes | type) != "array") or (($cm.nodes | type) != "array")
            or (($rx.nodes | type) != "array")
         then error("a connection carries no nodes array") else . end
+      # A `totalCount` MUST BE A NON-NEGATIVE INTEGER AND AT LEAST THE NUMBER OF NODES RETURNED.
+      # Type alone is not enough, and the gap between the two is a fail-open: the truncation test
+      # is `totalCount > (nodes|length)`, so a NEGATIVE or otherwise-inconsistent count reports
+      # `trunc: false` for a connection that really was truncated — the paginated re-read never
+      # fires, a hidden CHANGES_REQUESTED stays hidden, and a fresh `+1` folds to `clean`. Reported
+      # by the independent reviewer with a working witness (`reviews.totalCount = -1`, empty nodes,
+      # a fresh reaction). A count BELOW the node count is impossible from GitHub and therefore
+      # means the document cannot be trusted to say what was truncated, which is exactly a read
+      # this family must refuse rather than interpret.
       | if (($rv.totalCount | type) != "number") or (($cm.totalCount | type) != "number")
            or (($rx.totalCount | type) != "number")
         then error("a connection carries no totalCount") else . end
+      | if (($rv.totalCount | floor) != $rv.totalCount) or ($rv.totalCount < ($rv.nodes | length))
+           or (($cm.totalCount | floor) != $cm.totalCount) or ($cm.totalCount < ($cm.nodes | length))
+           or (($rx.totalCount | floor) != $rx.totalCount) or ($rx.totalCount < ($rx.nodes | length))
+        then error("a connection carries an impossible totalCount") else . end
       | { base_slug: ($p.baseRepository.nameWithOwner // ""),
           head_sha:  ($p.headRefOid // ""),
           head_ref:  ($p.headRefName // ""),
@@ -1699,14 +1718,29 @@ adb_pr_snapshot_query() {
 #
 #   1. THE ARGUMENT'S OWN SLUG, when it carried one. A URL names a repository explicitly, and
 #      `adb_pr_slug_check` still refuses (2) if that repository is not one this checkout tracks —
-#      so a foreign URL is rejected exactly as before, now without spending a read on it.
+#      so a foreign URL is rejected exactly as before. NOTE it is refused AFTER the read, not
+#      instead of it: this function hands back the slug, the snapshot is fetched from it, and the
+#      cross-check then rejects the answer. The refusal is what matters and it is unchanged; the
+#      read is not free, and saying otherwise would be a claim this code does not honour.
 #   2. THE SOLE GitHub REMOTE, when the checkout has exactly one. Git-only, no round trip, and
 #      unambiguous by construction.
 #   3. gh's OWN resolution, otherwise. Several remotes means a fork clone is possible, and there
-#      `origin` is the FORK while the pull request lives on the parent — so guessing `origin` would
-#      answer confidently about a different pull request, which is the one thing these guards must
-#      never do. `adb_repo_slug` asks gh, which resolves the parent, and caches for the process: a
-#      half-hour watch pays it once, not once per poll.
+#      `origin` is the FORK while the pull request usually lives on the parent — so guessing
+#      `origin` would answer confidently about a different pull request, which is the one thing
+#      these guards must never do. `adb_repo_slug` asks gh, which applies gh's own base-repository
+#      resolution. Say that rather than "resolves the parent": `GH_REPO` or a `gh repo set-default`
+#      can point it at another tracked remote, and `adb_pr_slug_check` deliberately accepts any
+#      repository this checkout tracks, so the honest claim is "whichever of your remotes gh
+#      resolves", not "the parent".
+#
+#      THIS RUNG COSTS A ROUND TRIP, and it is the one place #174's "one read per classification"
+#      is not literally true. `gh repo view` is a network call (verified: it answers HTTP 401 with
+#      a bad token). It is cached for the process, so a half-hour watch pays it once rather than
+#      once per poll — but a one-shot `gate` in a multi-remote checkout makes two requests, not
+#      one. That is a bounded, stated exception in exactly the shape #174 already grants the
+#      staleness anchor, and the alternative is guessing the repository, which is worse than an
+#      extra read. Rungs 1 and 2 — a URL argument, or a single-remote checkout, which is every
+#      clone `/implement-issue` creates — cost nothing.
 #
 # Prints the slug; returns 1 when no repository can be resolved at all.
 adb_pr_query_slug() {
@@ -1940,8 +1974,16 @@ EOF
 # each guard, because "may I arm the merge?" and "is the reviewer done?" report at different
 # granularity (D20). Sharing the mapping is the trap; sharing the reading never was.
 adb_reviewer_classes_for_pr() {
-  local label="$1" n="$2" who="$3" head="$4" headslug="$5" headref="$6" snap="$7"
+  local label="$1" n="$2" who="$3" head="$4" headslug="$5" headref="$6" snap="$7" qslug="$8"
   local reviews comments reacts evidence anchor arc tab
+  # THE FALLBACK MUST ADDRESS THE SAME REPOSITORY THE SNAPSHOT CAME FROM. These URLs used to spell
+  # `repos/{owner}/{repo}/...` and let gh resolve the repository a SECOND time — which is not the
+  # same question the snapshot asked. In a fork clone gh resolves the PARENT while `qslug` may name
+  # the fork (or the reverse), and `GH_REPO` redirects the placeholder but not the GraphQL variables:
+  # the classification would then combine one pull request head SHA with ANOTHER pull request
+  # evidence, both legitimately numbered #N. Reported by the independent reviewer.
+  [ -n "$qslug" ] \
+    || { echo "$label: PR #$n — no repository to address the paginated re-read to" >&2; return 2; }
 
   # Pull the three surfaces out of the ONE document. Read-then-check, as everywhere else: an
   # unparseable snapshot must be an unreadable classification, never three empty surfaces — which
@@ -1956,20 +1998,21 @@ adb_reviewer_classes_for_pr() {
 
   # TRUNCATION -> RE-READ THAT SURFACE, FULLY PAGINATED. Only the connection that overflowed is
   # re-read: a PR with 700 comments and 6 reviews pays for the comments and nothing else. A pull
-  # request IS an issue as far as comments and reactions go, so those two live under `issues/N/...`.
+  # request IS an issue as far as comments and reactions go, so those two live under `issues/N/...`,
+  # and every one of them is addressed by `$qslug` rather than by a placeholder gh would re-resolve.
   # The reactions read is deliberately NOT filtered server-side with `-f content=+1`: a bare `-f`
   # makes `gh api` switch to POST, which would ADD a reaction rather than list them.
   if [ "$(printf '%s' "$snap" | jq -r '.trunc_reviews' 2>/dev/null)" = true ]; then
     echo "$label: PR #$n has more than 100 reviews — re-reading that surface with pagination" >&2
-    reviews="$(adb_paginated_list "$label" "repos/{owner}/{repo}/pulls/$n/reviews?per_page=100" reviews "$n")" || return 2
+    reviews="$(adb_paginated_list "$label" "repos/$qslug/pulls/$n/reviews?per_page=100" reviews "$n")" || return 2
   fi
   if [ "$(printf '%s' "$snap" | jq -r '.trunc_comments' 2>/dev/null)" = true ]; then
     echo "$label: PR #$n has more than 100 issue comments — re-reading that surface with pagination" >&2
-    comments="$(adb_paginated_list "$label" "repos/{owner}/{repo}/issues/$n/comments?per_page=100" comments "$n")" || return 2
+    comments="$(adb_paginated_list "$label" "repos/$qslug/issues/$n/comments?per_page=100" comments "$n")" || return 2
   fi
   if [ "$(printf '%s' "$snap" | jq -r '.trunc_reactions' 2>/dev/null)" = true ]; then
     echo "$label: PR #$n has more than 100 thumbs-up reactions — re-reading that surface with pagination" >&2
-    reacts="$(adb_paginated_list "$label" "repos/{owner}/{repo}/issues/$n/reactions?per_page=100" reactions "$n")" || return 2
+    reacts="$(adb_paginated_list "$label" "repos/$qslug/issues/$n/reactions?per_page=100" reactions "$n")" || return 2
   fi
 
   evidence="$(adb_reviewer_evidence "$who" "$reviews" "$comments" "$reacts" "$head")" \
